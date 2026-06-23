@@ -26,24 +26,13 @@ import numpy as np
 from gnuradio import gr
 from pathlib import Path
 from typing import Optional, List, Dict, Any
-import os
-import sys
 
-# Add path to gr_kyttar placement module
-_kyttar_path = os.environ.get('KYTTAR_PATH')
-if _kyttar_path:
-    if _kyttar_path not in sys.path:
-        sys.path.insert(0, _kyttar_path)
-else:
-    _default_paths = [
-        str(Path(__file__).resolve().parents[3] / 'python'),
-        os.path.expanduser('~/kyttar_sim/python'),
-    ]
-    for _path in _default_paths:
-        if os.path.isdir(os.path.join(_path, 'gr_kyttar')):
-            if _path not in sys.path:
-                sys.path.insert(0, _path)
-            break
+# SOCKET-ONLY OOT: this configuration block is retained so existing GRC
+# flowgraphs/.block.yml that reference kyttar.device still instantiate, but the
+# heavy SELF-PLACING path (which imported gr_kyttar + simkyt to place/route/build
+# a local chip) has been REMOVED. The supported model is server-batch: a
+# placeKYT-hosted chip driven over a socket by kyttar.source/kyttar.sink. This
+# block now does NO placement and imports gnuradio + numpy ONLY.
 
 from .registry import get_registry, DeviceType
 
@@ -114,177 +103,16 @@ class device(gr.basic_block):
         print(f"[kyttar.device] Registered device '{device_id}' with config: {self._config_file}")
 
     def start(self) -> bool:
-        """
-        Called when flowgraph starts.
-
-        This is where we:
-        1. Discover the topology from the generated Python file
-        2. Run placement and routing
-        3. Program the simulator
-        """
-        print(f"[kyttar.device] Starting device '{self._device_id}'...")
-
-        try:
-            self._initialize()
-            return True
-        except Exception as e:
-            print(f"[kyttar.device] ERROR during initialization: {e}")
-            import traceback
-            traceback.print_exc()
-            return False
+        """Called when flowgraph starts. No-op: self-placing has been removed; the
+        supported path is server-batch (placeKYT-hosted chip over a socket)."""
+        print(f"[kyttar.device] '{self._device_id}' is configuration-only "
+              f"(self-placing removed; use server-batch mode on source/sink)")
+        return True
 
     def stop(self) -> bool:
         """Called when flowgraph stops."""
-        print(f"[kyttar.device] Stopping device '{self._device_id}'")
         self._initialized = False
         return True
-
-    def _initialize(self) -> None:
-        """
-        Full initialization: discover topology, place, route, program.
-        """
-        from gr_kyttar.placement import (
-            ArrayConfig, Placer, Router, get_block_metrics
-        )
-        from gr_kyttar.bitstream import BitstreamGenerator
-
-        registry = get_registry()
-        device = registry.get_device(self._device_id)
-
-        if device is None:
-            raise RuntimeError(f"Device not found in registry: {self._device_id}")
-
-        # Get the DSP blocks registered with this device
-        dsp_blocks = device.dsp_blocks
-
-        if not dsp_blocks:
-            print(f"[kyttar.device] WARNING: No DSP blocks registered. Nothing to program.")
-            return
-
-        print(f"[kyttar.device] Found {len(dsp_blocks)} DSP blocks to place")
-
-        # === STEP 1: Load config ===
-        config = ArrayConfig.from_yaml(self._config_file)
-        print(f"[kyttar.device] Array: {config.width}x{config.height}")
-        print(f"[kyttar.device] Ports: {list(config.ports.keys())}")
-
-        # Determine which ports to use
-        # For now, use first input and output ports
-        # TODO: Get from source/sink block registrations
-        input_ports = config.get_input_ports()
-        output_ports = config.get_output_ports()
-
-        if not input_ports:
-            raise RuntimeError("No input ports defined in chip config")
-        if not output_ports:
-            raise RuntimeError("No output ports defined in chip config")
-
-        input_port_name = input_ports[0].name
-        output_port_name = output_ports[0].name
-
-        print(f"[kyttar.device] Using input port: {input_port_name}")
-        print(f"[kyttar.device] Using output port: {output_port_name}")
-
-        # === STEP 2: Get block definitions ===
-        block_defs = [b.get_block_definition() for b in dsp_blocks]
-
-        # === STEP 3: Place ===
-        print("[kyttar.device] Running placement...")
-        metrics = get_block_metrics(dsp_blocks)
-        placer = Placer(config, input_port=input_port_name, output_port=output_port_name)
-        placement = placer.place(block_defs, metrics)
-
-        for name, placed in placement.placed_blocks.items():
-            print(f"[kyttar.device]   {name} placed at {placed.anchor}")
-
-        # === STEP 4: Route ===
-        print("[kyttar.device] Running routing...")
-        router = Router(config, input_port=input_port_name, output_port=output_port_name)
-        cell_map = router.route(placement, block_defs)
-        print(f"[kyttar.device]   Total cells: {cell_map.cell_count()}")
-
-        # === STEP 5: Generate bitstream ===
-        print("[kyttar.device] Generating bitstream...")
-        gen = BitstreamGenerator(self._config_file)
-        gen.load_cell_map(cell_map)
-        bitstream = gen.generate(custom_row0=False)
-        print(f"[kyttar.device]   Bitstream words: {len(bitstream.words)}")
-
-        # === STEP 6: Create and program simulator ===
-        print("[kyttar.device] Programming simulator...")
-
-        import simkyt
-
-        chip_type_obj = simkyt.ChipType.from_yaml(self._config_file)
-        chip = simkyt.Chip.from_chip_type(chip_type_obj)
-
-        # Program cells from cell_map directly using write_cell_memory
-        cells_programmed = 0
-        # cell_map.Face enum: SOUTH=0, EAST=1, WEST=2, NORTH=3
-        face_names = {0: "south", 1: "east", 2: "west", 3: "north"}
-        for (col, row), cell_config in cell_map.cells.items():
-            cell_id = row * config.width + col
-            # Write memory contents
-            for addr, value in cell_config.memory.items():
-                chip.write_cell_memory(cell_id, addr, value)
-            # Set forward face
-            if cell_config.fwd_face is not None:
-                face_name = face_names.get(cell_config.fwd_face.value, "south")
-                chip.set_fwd_face(cell_id, face_name)
-            cells_programmed += 1
-
-        print(f"[kyttar.device]   Programmed {cells_programmed} cells")
-
-        # Set the input port entry address and target hop count
-        # When data arrives at the input port:
-        # 1. A WRITE instruction is injected with target_hop_count to route to the first block
-        # 2. A JUMP instruction follows to start execution at entry_addr
-        if placement.placed_blocks:
-            first_block = next(iter(placement.placed_blocks.values()))
-            first_cell_config = cell_map.get_cell(*first_block.entry_cell)
-            if first_cell_config and first_cell_config.entry_addr is not None:
-                entry_addr = first_cell_config.entry_addr
-            else:
-                entry_addr = 0  # Default entry point
-
-            # Calculate target hop count for routing from port to first block
-            # Get input port position from config
-            input_port_pos = config.get_port_position(input_port_name)
-            first_block_entry = first_block.entry_cell
-
-            # Manhattan distance from port cell to first block's entry cell
-            distance = abs(first_block_entry[0] - input_port_pos[0]) + \
-                       abs(first_block_entry[1] - input_port_pos[1])
-
-            # HOP_CNT is incremented BEFORE the check at each cell.
-            # For the instruction to execute at distance d:
-            #   - It visits d cells (including the port cell)
-            #   - Each cell increments HOP_CNT
-            #   - After d increments, HOP_CNT should equal 31
-            #   - So: target_hop_count + d = 31, therefore target_hop_count = 31 - d
-            # BUT: the port cell also increments HOP_CNT before checking!
-            # So actually: target_hop_count + d + 1 = 31, giving target_hop_count = 30 - d
-            target_hop_count = 30 - distance
-
-            chip.set_port_entry_address(input_port_name, entry_addr)
-            chip.set_port_target_hop_count(input_port_name, target_hop_count)
-
-            print(f"[kyttar.device]   Input port '{input_port_name}' -> block at {first_block_entry}")
-            print(f"[kyttar.device]   Distance: {distance} hops, target_hop_count: {target_hop_count}")
-            print(f"[kyttar.device]   Entry address: {entry_addr}")
-
-        # Store chip in registry
-        registry.set_chip(self._device_id, chip)
-
-        # Store additional state for source/sink blocks
-        self._placement = placement
-        self._block_defs = block_defs
-        self._config = config
-        self._input_port_name = input_port_name
-        self._output_port_name = output_port_name
-
-        self._initialized = True
-        print("[kyttar.device] Initialization complete!")
 
     def general_work(self, input_items, output_items):
         """

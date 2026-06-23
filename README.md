@@ -69,9 +69,11 @@ python3 -m venv .venv
 .venv/bin/python placekyt/main.py
 ```
 
-Then open the demo in [`examples/coherent_bpsk_rx/`](examples/coherent_bpsk_rx/) —
-a full coherent BPSK receiver. See [`INSTALL.md`](INSTALL.md) for the complete
-GNU Radio + demo walkthrough.
+Then start with the simplest demo, [`examples/gain/`](examples/gain/) — a single
+gain block, the best place to learn the placeKYT UI and the GNU Radio ↔ placeKYT
+workflow end to end. From there, [`examples/coherent_bpsk_rx/`](examples/coherent_bpsk_rx/)
+shows the same flow on a full coherent BPSK receiver. See [`INSTALL.md`](INSTALL.md)
+for the complete GNU Radio + demo walkthrough.
 
 To build a design headlessly and check it against a golden output:
 

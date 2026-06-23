@@ -15,11 +15,11 @@
 | **ComplexMixerBlock** | `blocks.multiply_cc + analog.sig_source` | 1 · feed-forward | ⬜ planned | — | — |
 | **NCOBlock** | `analog.sig_source_c` | 1 · feed-forward | ⬜ planned | — | — |
 | **SoftDemodulatorBlock** | `digital.constellation_soft_decoder_cf` | 1 · feed-forward | ⬜ planned | — | — |
-| **ComplexRRCMatchedFilterBlock** | `filter.fir_filter_ccf (rrc taps)` | 2 · stateful/loop | ⬜ planned | — | — |
+| **ComplexRRCMatchedFilterBlock** | `filter.fir_filter_ccf (rrc taps)` | 2 · stateful/loop | ⬜ planned · 🧪 proof-of-concept | — | — |
 | **AGCBlock** | `analog.agc_ff` | 2 · stateful/loop | ⬜ planned | — | — |
-| **ComplexCostasLoopBlock** | `digital.costas_loop_cc` | 2 · stateful/loop | ⬜ planned | — | — |
-| **GardnerTimingRecovery** | `digital.symbol_sync_cc` | 2 · stateful/loop | ⬜ planned | — | — |
-| **BPSKSlicerBlock** | `digital.binary_slicer_fb` | 2 · stateful/loop | ⬜ planned | — | — |
+| **ComplexCostasLoopBlock** | `digital.costas_loop_cc` | 2 · stateful/loop | ⬜ planned · 🧪 proof-of-concept | — | — |
+| **GardnerTimingRecovery** | `digital.symbol_sync_cc` | 2 · stateful/loop | ⬜ planned · 🧪 proof-of-concept | — | — |
+| **BPSKSlicerBlock** | `digital.binary_slicer_fb` | 2 · stateful/loop | ⬜ planned · 🧪 proof-of-concept | — | — |
 | **SquelchBlock** | `analog.pwr_squelch_ff` | 2 · stateful/loop | ⬜ planned | — | — |
 | **PSKSymbolMapperBlock** | `digital.chunks_to_symbols_bc` | 2 · stateful/loop | ⬜ planned | — | — |
 | **LFSRScramblerBlock** | `digital.additive_scrambler_bb` | 2 · stateful/loop | ⬜ planned | — | — |
@@ -28,6 +28,6 @@
 | **QuadratureDemod** | `analog.quadrature_demod_cf` | 3 · new GRC block | ⬜ planned | — | — |
 | **FreqXlatingFIR** | `filter.freq_xlating_fir_filter_ccf` | 3 · new GRC block | ⬜ planned | — | — |
 
-**Tiers** reflect verification difficulty (the build order): tier 1 = feed-forward, tier 2 = stateful/loop, tier 3 = new block to build. **Won't-map** blocks are GRC blocks that do not translate to the Kyttar fabric (with a reason in the manifest).
+**Tiers** reflect verification difficulty (the build order): tier 1 = feed-forward, tier 2 = stateful/loop, tier 3 = new block to build. **🧪 proof-of-concept** blocks exist and work in a demo (e.g. the coherent BPSK receiver) but have NOT yet been through per-block GNU Radio equivalence verification — treat them as demo-quality, not drop-in-verified. **Won't-map** blocks are GRC blocks that do not translate to the Kyttar fabric (with a reason in the manifest).
 
 > This table is generated from `verification/manifest.json` and the per-block reports in `verification/reports/`. To add or update a block, edit the manifest and commit its verification report; regenerate with `python verification/tools/gen_dashboard.py`.

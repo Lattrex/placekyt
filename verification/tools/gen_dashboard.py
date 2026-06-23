@@ -118,6 +118,9 @@ def render(manifest: dict) -> str:
     for b in blocks_sorted:
         rep = _load_report(b["kyttar_block"]) if b.get("status") == "done" else None
         status = _STATUS_ICON.get(b.get("status", "planned"), b.get("status", ""))
+        if b.get("poc"):
+            # Exists and works in a demo, but not yet per-block verified.
+            status += " · 🧪 proof-of-concept"
         tier = _TIER_LABEL.get(b.get("tier", 0), str(b.get("tier", "")))
         grc = f"`{b.get('grc_block', '')}`"
         lines.append(
@@ -126,8 +129,12 @@ def render(manifest: dict) -> str:
     lines.append("")
     lines.append("**Tiers** reflect verification difficulty (the build order): "
                  "tier 1 = feed-forward, tier 2 = stateful/loop, tier 3 = new "
-                 "block to build. **Won't-map** blocks are GRC blocks that do not "
-                 "translate to the Kyttar fabric (with a reason in the manifest).")
+                 "block to build. **🧪 proof-of-concept** blocks exist and work in a "
+                 "demo (e.g. the coherent BPSK receiver) but have NOT yet been "
+                 "through per-block GNU Radio equivalence verification — treat them "
+                 "as demo-quality, not drop-in-verified. **Won't-map** blocks are "
+                 "GRC blocks that do not translate to the Kyttar fabric (with a "
+                 "reason in the manifest).")
     lines.append("")
     lines.append("> This table is generated from `verification/manifest.json` and "
                  "the per-block reports in `verification/reports/`. To add or "

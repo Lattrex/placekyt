@@ -6,12 +6,17 @@ options:
     cmake_opt: ''
     comment: ''
     copyright: ''
-    description: Simple test of Kyttar Gain block
+    description: "MINIMAL Kyttar Gain demo (GRC-first socket-streaming workflow).\
+      \ A slow sine stimulus -> kyttar_source (x16_in) -> kyttar_gain (0.5) ->\
+      \ kyttar_sink (x16_out) -> QT time sink. Run as GNURadio Server in placeKYT,\
+      \ set server_port below to the printed port, then Execute here. The time sink\
+      \ shows the INPUT sine (top trace) versus the chip OUTPUT (input * 0.5),\
+      \ so the user SEES the gain take effect."
     gen_cmake: 'On'
     gen_linking: dynamic
     generate_options: qt_gui
     hier_block_src_path: '.:'
-    id: kyttar_gain_test
+    id: gain_demo
     max_nouts: '0'
     output_language: python
     placement: (0,0)
@@ -22,8 +27,8 @@ options:
     run_options: prompt
     sizing_mode: fixed
     thread_safe_setters: ''
-    title: Kyttar Gain Test
-    window_size: (1000,1000)
+    title: "Kyttar Gain demo — input vs gained output (gain=0.5)"
+    window_size: (1200,800)
   states:
     bus_sink: false
     bus_source: false
@@ -42,17 +47,29 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [184, 12]
+    coordinate: [200, 80]
     rotation: 0
     state: enabled
-- name: analog_sig_source_x_0
+- name: server_port
+  id: variable
+  parameters:
+    comment: placeKYT prints this on "Run as GNURadio Server"
+    value: '58950'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [40, 160]
+    rotation: 0
+    state: enabled
+- name: src
   id: analog_sig_source_x
   parameters:
     affinity: ''
     alias: ''
-    amp: '0.5'
-    comment: ''
-    freq: '1000'
+    amp: '0.8'
+    comment: slow sine stimulus in [-1,1] into the chip
+    freq: '500'
     maxoutbuf: '0'
     minoutbuf: '0'
     offset: '0'
@@ -65,50 +82,35 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [8, 224.0]
+    coordinate: [40, 320]
     rotation: 0
-    state: true
-- name: blocks_throttle_0
-  id: blocks_throttle
+    state: enabled
+- name: msrc
+  id: kyttar_source
   parameters:
     affinity: ''
     alias: ''
-    comment: ''
-    ignoretag: 'True'
+    comment: stimulus -> placeKYT chip x16_in
+    device_id: '"kyttar_0"'
     maxoutbuf: '0'
     minoutbuf: '0'
-    samples_per_second: samp_rate
-    type: float
-    vlen: '1'
+    num_channels: '1'
+    port_name: '"x16_in"'
+    server_host: '"127.0.0.1"'
+    server_port: server_port
   states:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [232, 232.0]
+    coordinate: [328, 312]
     rotation: 0
-    state: true
-- name: kyttar_device_0
-  id: kyttar_device
-  parameters:
-    alias: ''
-    chip_type: '"12x12_dev"'
-    comment: 'Kyttar Device Configuration
-
-      (No signal connections needed)'
-    device_id: '"kyttar_0"'
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [56, 380.0]
-    rotation: 0
-    state: true
-- name: kyttar_gain_0
+    state: enabled
+- name: gain
   id: kyttar_gain
   parameters:
     affinity: ''
     alias: ''
-    comment: ''
+    comment: gain = 0.5 (placed on chip)
     device_id: '"kyttar_0"'
     gain: '0.5'
     maxoutbuf: '0'
@@ -117,44 +119,31 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [552, 128.0]
+    coordinate: [560, 320]
     rotation: 0
-    state: true
-- name: kyttar_sink_0
+    state: enabled
+- name: msink
   id: kyttar_sink
   parameters:
     affinity: ''
     alias: ''
-    comment: ''
+    comment: gained output <- placeKYT chip x16_out
     device_id: '"kyttar_0"'
+    hold_secs: '8.0'
     maxoutbuf: '0'
     minoutbuf: '0'
+    num_channels: '1'
     port_name: '"x16_out"'
+    server_port: server_port
+    server_repeat: 'False'
   states:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [768, 128.0]
+    coordinate: [760, 328]
     rotation: 0
-    state: true
-- name: kyttar_source_0
-  id: kyttar_source
-  parameters:
-    affinity: ''
-    alias: ''
-    comment: ''
-    device_id: '"kyttar_0"'
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    port_name: '"x16_in"'
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [336, 128.0]
-    rotation: 0
-    state: true
-- name: qtgui_time_sink_x_0
+    state: enabled
+- name: time_sink
   id: qtgui_time_sink_x
   parameters:
     affinity: ''
@@ -181,14 +170,14 @@ blocks:
     color7: yellow
     color8: dark red
     color9: dark green
-    comment: ''
+    comment: input (top) vs gained output (input * 0.5)
     ctrlpanel: 'False'
     entags: 'True'
-    grid: 'False'
+    grid: 'True'
     gui_hint: ''
-    label1: Input
+    label1: input
     label10: Signal 10
-    label2: Output (Gain=0.5)
+    label2: output (gain=0.5)
     label3: Signal 3
     label4: Signal 4
     label5: Signal 5
@@ -207,7 +196,7 @@ blocks:
     marker7: '-1'
     marker8: '-1'
     marker9: '-1'
-    name: '""'
+    name: '"Kyttar Gain: input vs output"'
     nconnections: '2'
     size: '1024'
     srate: samp_rate
@@ -240,25 +229,24 @@ blocks:
     width7: '1'
     width8: '1'
     width9: '1'
-    ylabel: Amplitude
-    ymax: '1'
-    ymin: '-1'
+    ylabel: amplitude
+    ymax: '1.2'
+    ymin: '-1.2'
     yunit: '""'
   states:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [1016, 200.0]
+    coordinate: [1000, 240]
     rotation: 0
-    state: true
+    state: enabled
 
 connections:
-- [analog_sig_source_x_0, '0', blocks_throttle_0, '0']
-- [blocks_throttle_0, '0', kyttar_source_0, '0']
-- [blocks_throttle_0, '0', qtgui_time_sink_x_0, '0']
-- [kyttar_gain_0, '0', kyttar_sink_0, '0']
-- [kyttar_sink_0, '0', qtgui_time_sink_x_0, '1']
-- [kyttar_source_0, '0', kyttar_gain_0, '0']
+- [src, '0', msrc, '0']
+- [src, '0', time_sink, '0']
+- [msrc, '0', gain, '0']
+- [gain, '0', msink, '0']
+- [msink, '0', time_sink, '1']
 
 metadata:
   file_format: 1

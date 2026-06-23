@@ -4,6 +4,8 @@ Copyright (c) Lattrex. placeKYT and the Kyttar name and logo are trademarks of
 Lattrex; see CONTRIBUTING.md for the brand-usage note.
 -->
 
+<p align="center"><img src="assets/banner.gif" alt="placeKYT" width="100%"></p>
+
 # placeKYT
 
 **The place-and-route + simulation IDE for the Kyttar asynchronous cell array.**

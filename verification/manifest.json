@@ -1,5 +1,6 @@
 {
   "_comment": "GRC-parity block target manifest. Machine-readable source of truth for the status dashboard and the agent work-queue. Edit this (status, grc_block, params, notes); metrics are filled from verification reports by tools/gen_dashboard.py. Do NOT hand-edit STATUS.md. status: done | in_progress | planned | wont_map. tier: 1=feed-forward (autonomous), 2=stateful/loop, 3=new GRC block to build. Priority is tier-ascending then listed order.",
+  "_naming_principle": "Names must match GNU Radio so users never guess the equivalent. (1) Each Kyttar block's GRC palette LABEL is its GNU Radio counterpart's label verbatim (e.g. 'FIR Filter'), keeping a 'Kyttar'/'kyttar_' marker ONLY where GRC namespacing requires it to coexist with stock GR. (2) 'grc_block' below names the EXACT GNU Radio factory (e.g. filter.fir_filter_fff) so the equivalence is explicit and searchable in the dashboard. A Kyttar block with no clean GNU Radio counterpart sets grc_block to '' and explains in notes.",
   "schema_version": 1,
   "chip_yaml": "placekyt/resources/chips/kyttar_10x12.yaml",
   "blocks": [

@@ -1407,9 +1407,24 @@ class ChipCanvas(QGraphicsView):
     def mousePressEvent(self, event) -> None:  # noqa: N802 (Qt override)
         if self._tool is Tool.ROUTE_DRAW and event.button() == Qt.LeftButton:
             view_pt = event.position().toPoint()
-            # A clicked PortItem completes the route to that chip port (§3.2).
+            # A clicked PortItem completes the route to that chip port (§3.2) —
+            # UNLESS it is the port the route STARTED from. A chip port's marker
+            # sits on top of its own edge cell (e.g. x16_in over cell (0,0)), so a
+            # click meant for that cell hits the PortItem first. If that port is
+            # the route source, do NOT treat the click as a completion (it would
+            # try to close a zero-length route back onto the source and get
+            # rejected, swallowing the click); fall through to cell handling so
+            # the click advances the route from the source cell as the user
+            # expects.
             clicked = self.itemAt(view_pt)
-            if isinstance(clicked, PortItem) and clicked.chip_id == self._route_chip:
+            src = self._route_source
+            click_is_source_port = (
+                isinstance(clicked, PortItem)
+                and isinstance(src, tuple) and len(src) == 3 and src[0] == "port"
+                and clicked.chip_id == src[1] and clicked.name == src[2])
+            if isinstance(clicked, PortItem) \
+                    and clicked.chip_id == self._route_chip \
+                    and not click_is_source_port:
                 if self.complete_route_to_port(clicked.name):
                     event.accept()
                     return

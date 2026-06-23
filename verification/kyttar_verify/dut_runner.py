@@ -115,7 +115,14 @@ def run_block_dut(
                          + "; ".join(str(e) for e in bres.errors))
 
     words = bres.words(0)
-    entry, ins = cat.resolved_io(block_type)
+    # Resolve the entry/input WITH the block's actual params, not the bare type
+    # name. v2 blocks pack data low and instructions high, so a block's program
+    # length — and therefore its entry address — shifts with its parameters (e.g.
+    # a 3-tap FIR enters at 23, a default 1-tap FIR at 27). Resolving against the
+    # default construction would land the JUMP mid-program and the block would
+    # echo its input instead of computing. (GainBlock hid this: its program
+    # length is fixed regardless of gain.)
+    entry, ins = cat.resolved_io(block_type, params or {})
     data_addr = ins[0] if ins else 0
 
     # Placement-dependent hop: 31 - (number of cells the word transits from the

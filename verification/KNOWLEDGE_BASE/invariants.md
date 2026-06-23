@@ -94,3 +94,50 @@ the chip instance is initialized; otherwise `block.placement` is None and the ro
 reports "source block unplaced or port unknown." Pass `library="lattrex.official"`.
 
 **Applies to:** any headless single-block build (the DUT side of verification).
+
+---
+
+## INV-6 — Resolve a block's entry address WITH its params, never the bare type
+
+**Symptom:** a parameterized block (FIR, anything whose program size varies)
+**echoes its input** unchanged, or produces garbage, while the build and route
+succeed.
+
+**Root cause:** v2 blocks pack data low and instructions high, so a block's
+program length — and therefore its **entry address** — shifts with its
+parameters. `resolved_io(type_name)` with NO params constructs the block's
+*default* (e.g. a 1-tap FIR → entry 27); the actually-placed block (e.g. a 3-tap
+FIR → entry 23) has a different entry. JUMPing to the default entry lands
+mid-program (past the input-load and accumulator-prime), so the datapath never
+computes a clean output and the raw input passes through.
+
+**Fix:** always resolve with the instance's real params:
+`entry, ins = cat.resolved_io(type_name, params)`. `run_block_dut` does this.
+(GainBlock hid this — its program length is fixed regardless of gain, so its
+entry never moves and any block-class harness tested only on Gain would miss it.)
+
+**Applies to:** every block whose program size depends on its parameters — i.e.
+every scaling block (FIR, decimator, IIR, interleaver, …).
+
+---
+
+## INV-7 — A block's per-cell register budget (~31) caps a single-cell design
+
+**Symptom:** a scaling block's build fails with "no register space" past some
+parameter size, or builds as multi-cell but produces **no egress** through the
+single-block harness.
+
+**Root cause:** each cell has ~31 usable registers (R0 is the accumulator). A
+single-cell FIR holds its coefficients + delay line + scratch + program; past
+~7 taps that exceeds the budget (the block's own `<=12 → 1 cell` heuristic is
+too optimistic). Above the single-cell ceiling the block becomes a multi-cell
+**wavefront** whose output egresses from the *last* cell — which a harness that
+derives its hop/drive from `placement.cells[0]` (the input landing cell) does
+not yet handle.
+
+**Fix / status:** verify scaling blocks across their *proven* parameter range and
+record the ceiling as an explicit known limit (executable guard tests that flip
+when fixed) rather than claiming the block is fully done. Multi-cell egress
+(driving the last cell, not the first) is a harness capability still to be built.
+
+**Applies to:** FIR, decimator, IIR, and any block that grows past one cell.

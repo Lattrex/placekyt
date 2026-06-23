@@ -1,4 +1,22 @@
-<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!--## FIRFilterBlock — verified (in range) 2026-06-23
+
+- **Status:** IN PROGRESS. Verified 2-7 taps (single cell): filters correct vs
+  GNU Radio `filter.fir_filter_fff` within the derived per-tap tolerance
+  (op_count = tap count, so tolerance = taps+1 LSB). Edge + 3 random seeds +
+  tap-count sweep 2..7 + mutation tests (inverted, wrong-taps, delay offset).
+  Result: 1-4 LSB error, correlation 1.0.
+- **GR convention:** GNU Radio `fir_filter_fff` convolves with taps in
+  latest-sample-first order — pass `reversed(coefficients)` to the reference.
+- **KNOWN LIMITS (not done until fixed):** 8+ taps fail the single-cell register
+  budget (INV-7); 13+ taps build multi-cell but produce no egress through the
+  single-block harness (output exits the last cell, not cells[0]). Guarded by
+  executable known-limit tests that flip when fixed.
+- **Harness fix it forced:** entry must be resolved WITH the block's params, not
+  the bare type name — see INV-6. Without it the FIR echoed its input.
+
+---
+
+ SPDX-License-Identifier: GPL-3.0-or-later -->
 
 # Block verification — per-block lessons log
 

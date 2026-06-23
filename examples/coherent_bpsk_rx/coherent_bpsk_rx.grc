@@ -370,7 +370,7 @@ blocks:
     alias: ''
     burst_len: stim.burst_len(n_syms)
     comment: I/Q burst -> placeKYT chip x16_in (batch); fans to MF xi/xq
-    complex_in: 'True'
+    complex_in: complex
     device_id: '"kyttar_0"'
     maxoutbuf: '0'
     minoutbuf: '0'

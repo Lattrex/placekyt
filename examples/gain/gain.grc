@@ -98,7 +98,7 @@ blocks:
     port_name: '"x16_in"'
     server_host: '"127.0.0.1"'
     server_port: server_port
-    complex_in: 'False'
+    complex_in: float
   states:
     bus_sink: false
     bus_source: false

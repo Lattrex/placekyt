@@ -45,7 +45,7 @@ templates:
   imports: from gnuradio import kyttar
   make: kyttar.source(device_id=${device_id}, port_name=${port_name},
     num_channels=${num_channels}, server_host=${server_host},
-    server_port=${server_port}, complex_in=${complex_in}, burst_len=${burst_len})
+    server_port=${server_port}, complex_in=${complex_in.make_val}, burst_len=${burst_len})
 
 parameters:
   - id: device_id
@@ -72,12 +72,20 @@ parameters:
     label: Server Port
     dtype: int
     default: '0'
+  # Input stream type. An ENUM (not a bool) so the GRC stream dtype is set
+  # DIRECTLY from the selected option's io_type attribute — no boolean-truthiness
+  # ambiguity (a GRC bool param evaluates to the string 'False', which is truthy,
+  # which forced complex and broke float demos). `make_val` is the matching value
+  # passed to the Python block's complex_in= argument.
   - id: complex_in
-    label: Complex Input
-    dtype: bool
-    default: 'False'
-    options: ['True', 'False']
-    option_labels: ['Yes (I/Q)', 'No (real)']
+    label: Input Type
+    dtype: enum
+    default: float
+    options: [float, complex]
+    option_labels: ['Real (float)', 'I/Q (complex)']
+    option_attributes:
+      io_type: [float, complex]
+      make_val: ['False', 'True']
   - id: burst_len
     label: Burst length
     dtype: int
@@ -86,14 +94,8 @@ parameters:
 inputs:
   - label: in
     domain: stream
-    # Driven by the explicit Complex Input flag only — NOT by server_port. In
-    # server-batch mode the stream can be float (e.g. a gain) or complex (an I/Q
-    # receiver); the user states which via complex_in. (Forcing complex whenever
-    # a server port was set broke float demos like the gain example.)
-    # NOTE: compare against the STRING 'True' — a GRC bool param evaluates to the
-    # string 'True'/'False', and the string 'False' is truthy, so a bare
-    # `if complex_in` would always be complex. Test for equality with 'True'.
-    dtype: ${ 'complex' if str(complex_in) == 'True' else 'float' }
+    # Set directly from the Input Type enum's io_type attribute (float/complex).
+    dtype: ${ complex_in.io_type }
 
 outputs:
   - label: out

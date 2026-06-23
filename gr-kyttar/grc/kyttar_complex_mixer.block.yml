@@ -1,0 +1,48 @@
+id: kyttar_complex_mixer
+label: Kyttar Complex Mixer
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar Complex Mixer - Frequency Translation
+
+  Multiplies input signal by a cosine oscillator for frequency translation:
+      output = input * cos(2*pi*freq*n/sample_rate)
+
+  Uses an 8-entry sine lookup table with phase offset for cosine.
+  Place between a KyttarSource and KyttarSink block.
+
+  Parameters:
+  - Device ID: ID of the KyttarDevice block
+  - Freq Word: Phase increment per sample (0-65535)
+  - Sample Rate: Sample rate in Hz
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.complex_mixer(device_id=${device_id}, freq_word=${freq_word}, sample_rate=${sample_rate})
+  callbacks:
+    - set_freq_word(${freq_word})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+  - id: freq_word
+    label: Freq Word
+    dtype: int
+    default: 655
+  - id: sample_rate
+    label: Sample Rate
+    dtype: real
+    default: 32000.0
+
+inputs:
+  - label: in
+    dtype: float
+
+outputs:
+  - label: out
+    dtype: float
+
+file_format: 1

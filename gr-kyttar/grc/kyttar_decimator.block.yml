@@ -1,0 +1,55 @@
+id: kyttar_decimator
+label: Kyttar Decimator
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar Decimator - FIR Filter with Downsampling
+
+  Implements a decimating FIR filter that combines lowpass filtering
+  with sample rate reduction:
+      output[n] = sum(coeff[i] * input[n*decimate - i]) for i in 0..N-1
+
+  This block runs on the Kyttar chip. Place it between a KyttarSource
+  and KyttarSink block, and ensure the device_id matches your KyttarDevice.
+
+  Parameters:
+  - Device ID: ID of the KyttarDevice block
+  - Coefficients: FIR filter coefficients (anti-aliasing filter)
+  - Decimation Factor: Output one sample per N input samples
+
+  Default coefficients [0.25, 0.25, 0.25, 0.25] with decimation=4 implement
+  a simple 4:1 decimator.
+
+  Note: Coefficient values should be in the range -1.0 to 1.0 for Q15 representation.
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.decimator(device_id=${device_id}, coefficients=${coefficients}, decimation=${decimation})
+  callbacks:
+    - set_coefficients(${coefficients})
+    - set_decimation(${decimation})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+  - id: coefficients
+    label: Coefficients
+    dtype: real_vector
+    default: '[0.25, 0.25, 0.25, 0.25]'
+  - id: decimation
+    label: Decimation Factor
+    dtype: int
+    default: '4'
+
+inputs:
+  - label: in
+    dtype: float
+
+outputs:
+  - label: out
+    dtype: float
+
+file_format: 1

@@ -1,0 +1,47 @@
+id: kyttar_fir_filter
+label: Kyttar FIR Filter
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar FIR Filter - Finite Impulse Response Filter
+
+  Implements a FIR filter with configurable coefficients:
+      output = sum(coeff[i] * delay[i]) for i in 0..N-1
+
+  This block runs on the Kyttar chip. Place it between a KyttarSource
+  and KyttarSink block, and ensure the device_id matches your KyttarDevice.
+
+  Parameters:
+  - Device ID: ID of the KyttarDevice block
+  - Coefficients: List of filter coefficients (taps)
+
+  Default coefficients [0.25, 0.5, 0.25] implement a simple 3-tap lowpass filter.
+
+  Note: Coefficient values should be in the range -1.0 to 1.0 for Q15 representation.
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.fir_filter(device_id=${device_id}, coefficients=${coefficients})
+  callbacks:
+    - set_coefficients(${coefficients})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+  - id: coefficients
+    label: Coefficients
+    dtype: real_vector
+    default: '[0.25, 0.5, 0.25]'
+
+inputs:
+  - label: in
+    dtype: float
+
+outputs:
+  - label: out
+    dtype: float
+
+file_format: 1

@@ -1,0 +1,46 @@
+# placeKYT Python dependencies.
+#
+# From the repository root, create a venv (Python 3.12, the interpreter the
+# bundled simKYT extension is built for) and install these:
+#
+#     python3 -m venv .venv
+#     .venv/bin/pip install -r placekyt/requirements-dev.txt
+#
+# Then install the block-build library plus the prebuilt simKYT extension. Both
+# live under runtime/python/, so a single editable install wires up both (the
+# simkyt .so ships prebuilt — no Rust toolchain or build step needed):
+#
+#     .venv/bin/pip install -e runtime/python            # gr_kyttar + simkyt
+#
+# See INSTALL.md for the full, platform-specific bootstrap.
+
+# --- model/ + engine I/O ---
+ruamel.yaml              # .kyt/.kbl/.kdb round-trip YAML
+
+# --- ui/ (Qt layer) ---
+PySide6                  # Qt GUI; run tests headless via QT_QPA_PLATFORM=offscreen
+
+# --- optional CP-SAT bus-sharing router (engine/cpsat_router.py) ---
+# Only needed to route DENSE multi-net designs that must time-share bus corridors
+# (dense designs only). The heuristic BFS corridor router works without it; the
+# CP-SAT path degrades gracefully to the heuristic when ortools is absent.
+ortools
+
+# --- test tooling ---
+pytest
+pytest-cov
+pytest-qt                # Qt test helpers (offscreen smoke tests)
+
+# --- transitive (pulled in by simkyt packages; pinned-version note below) ---
+# numpy is required by simkyt + gr_kyttar. The placeKYT venv currently
+# resolves numpy 2.x, which is fine for model/engine work. NOTE: CI pins
+# numpy==1.26.4 for byte-exact simkyt goldens, and the system
+# GNURadio uses numpy 1.x. Revisit the pin when the GNURadio bridge lands.
+numpy
+
+# --- added later, as the corresponding layers land (kept here as a roadmap) ---
+# pygments       # ui/      console + assembly syntax highlighting
+# matplotlib     # ui/      signal plot, BER sweep, constellation
+# pyzmq          # engine/  GNURadio socket bridge
+# pyserial       # engine/  FTDI hardware manager
+# pyinstaller    # packaging

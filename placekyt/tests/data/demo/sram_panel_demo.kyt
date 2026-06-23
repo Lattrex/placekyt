@@ -1,0 +1,114 @@
+project:
+  format_version: 1
+  name: SRAM Panel Demo
+  version: '1.0'
+chip_type: kyttar_10x12
+chips:
+- id: 0
+  label: C0
+  position: {x: 0.0, y: 0.0}
+panels:
+- id: 0
+  label: Symbol RAM
+  mirrored: true
+  position: {x: 240.0, y: 840.0}
+  ports:
+  - {name: x16_in, direction: input, width: 16, face: east}
+  - {name: x1_in, direction: input, width: 1, face: east}
+  - {name: x16_out, direction: output, width: 16, face: west}
+  - {name: x1_out, direction: output, width: 1, face: west}
+panel_connections:
+- panel: {id: 0, port: x1_in}
+  chip: {id: 0, port: x1_out}
+- panel: {id: 0, port: x1_out}
+  chip: {id: 0, port: x1_in}
+blocks:
+- name: ctl
+  type: SramControllerBlock
+  library: lattrex.official
+  params:
+    panel_hop: 1
+    read_wr_desc: 25124
+    read_jp_desc: 29237
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 9, y: 11, face: south}
+- name: xover
+  type: CrossoverBlock
+  library: lattrex.official
+  params:
+    face_a: south
+    hop_a: 6
+    dest_a: 6
+    entry_a: 8
+    face_b: east
+    hop_b: 8
+    dest_b: 0
+    entry_b: 0
+    face_c: south
+    hop_c: 6
+    entry_c: 17
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 8, y: 6, face: south}
+connections:
+- name: in_to_xo
+  from: {chip_port: {chip: 0, port: x16_in}}
+  to: {block: xover, port: in}
+  route:
+  - {x: 0, y: 0}
+  - {x: 1, y: 0}
+  - {x: 2, y: 0}
+  - {x: 3, y: 0}
+  - {x: 4, y: 0}
+  - {x: 5, y: 0}
+  - {x: 6, y: 0}
+  - {x: 7, y: 0}
+  - {x: 8, y: 0}
+  - {x: 8, y: 1}
+  - {x: 8, y: 2}
+  - {x: 8, y: 3}
+  - {x: 8, y: 4}
+  - {x: 8, y: 5}
+- name: xo_to_ctl
+  from: {block: xover, port: out}
+  to: {block: ctl, port: in}
+  route:
+  - {x: 8, y: 7}
+  - {x: 8, y: 8}
+  - {x: 8, y: 9}
+  - {x: 8, y: 10}
+  - {x: 8, y: 11}
+- name: ret_to_xo
+  from: {chip_port: {chip: 0, port: x1_in}}
+  to: {block: xover, port: in}
+  route:
+  - {x: 0, y: 11}
+  - {x: 0, y: 10}
+  - {x: 0, y: 9}
+  - {x: 0, y: 8}
+  - {x: 0, y: 7}
+  - {x: 0, y: 6}
+  - {x: 1, y: 6}
+  - {x: 2, y: 6}
+  - {x: 3, y: 6}
+  - {x: 4, y: 6}
+  - {x: 5, y: 6}
+  - {x: 6, y: 6}
+  - {x: 7, y: 6}
+- name: xo_to_out
+  from: {block: xover, port: out}
+  to: {chip_port: {chip: 0, port: x16_out}}
+  route:
+  - {x: 9, y: 6}
+  - {x: 9, y: 5}
+  - {x: 9, y: 4}
+  - {x: 9, y: 3}
+  - {x: 9, y: 2}
+  - {x: 9, y: 1}
+  - {x: 9, y: 0}
+simulation:
+  default_stimulus: sram_panel_demo.kbs
+  fpga_latency_ns: 20.0

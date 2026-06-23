@@ -1,0 +1,74 @@
+project:
+  format_version: 1
+  name: BPSK Modem Demo
+  version: '1.0'
+  author: Lattrex
+chip_type: kyttar_10x12
+chips:
+- id: 0
+  label: C0
+  position: {x: 0.0, y: 0.0}
+# A symbol-level BPSK loopback laid out left-to-right along row 0 so the signal
+# flow reads at a glance and the per-word blink visibly marches between stages:
+#   x16_in -> [Mapper bit->+-1.0] -> [SoftDemod ->LLR] -> [Slicer ->bit] -> x16_out
+# Clean channel => bits out == bits in (identity).
+blocks:
+- name: mapper
+  type: PSKSymbolMapperBlock
+  library: lattrex.official
+  params:
+    modulation: bpsk
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 0, y: 0, face: east}
+- name: demod
+  type: SoftDemodulatorBlock
+  library: lattrex.official
+  params:
+    noise_variance: 0.1
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 3, y: 0, face: east}
+- name: slicer
+  type: BPSKSlicerBlock
+  library: lattrex.official
+  params:
+    out_mode: bit
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 6, y: 0, face: east}
+connections:
+- name: adc_to_mapper
+  from: {chip_port: {chip: 0, port: x16_in}}
+  to: {block: mapper, port: sample}
+- name: mapper_to_demod
+  from: {block: mapper, port: out}
+  to: {block: demod, port: sample}
+  route:
+  - {x: 0, y: 0}
+  - {x: 1, y: 0}
+  - {x: 2, y: 0}
+  - {x: 3, y: 0}
+- name: demod_to_slicer
+  from: {block: demod, port: llr}
+  to: {block: slicer, port: llr}
+  route:
+  - {x: 3, y: 0}
+  - {x: 4, y: 0}
+  - {x: 5, y: 0}
+  - {x: 6, y: 0}
+- name: slicer_to_dac
+  from: {block: slicer, port: out}
+  to: {chip_port: {chip: 0, port: x16_out}}
+  route:
+  - {x: 6, y: 0}
+  - {x: 7, y: 0}
+  - {x: 8, y: 0}
+  - {x: 9, y: 0}
+simulation:
+  default_stimulus: bpsk_stimulus.kbs
+  golden_output: bpsk_golden.kbs
+  fpga_latency_ns: 20.0

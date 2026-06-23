@@ -1,0 +1,96 @@
+id: kyttar_source
+label: Kyttar Source
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar Source - Entry Point into Chip
+
+  This block converts GNURadio samples to Q15 and injects them into
+  the Kyttar chip. Connect your GR source to this block's input.
+
+  Usage:
+  1. Connect a GR source (e.g., audio, signal source) to the input
+  2. Connect the output to a Kyttar DSP block (gain, filter, etc.)
+  3. Ensure device_id matches your KyttarDevice block
+  4. Select the input port on the chip (x16_in, x1_in)
+
+  Multi-Channel Mode (num_channels > 1):
+  For I/Q or multi-channel processing, set num_channels to 2 or 3.
+  The input is expected to be interleaved (I, Q, I, Q...) and each
+  sample is tagged with a channel-specific entry address:
+    - Channel 0 (I): Entry R1
+    - Channel 1 (Q): Entry R11
+    - Channel 2:     Entry R21
+
+  A Kyttar Demux block can then route each channel to different
+  processing paths within the chip.
+
+  SERVER-BATCH MODE (Server Port > 0): drive a placeKYT-hosted chip (Simulation ->
+  Run as GNURadio Server) via ONE process_batch RPC. The input is the whole complex
+  I/Q burst (set Complex Input = Yes); the matching Kyttar Sink (same Device ID)
+  emits the recovered words. This is the GRC-first workflow: keep the REAL DSP
+  blocks in the graph (so placeKYT can IMPORT + place them) AND run the same graph
+  linked to the hosted chip. Set Burst length to the number of complex samples.
+
+  Parameters:
+  - Device ID: ID of the KyttarDevice block (must match the Sink)
+  - Port Name: Chip input port to use
+  - Num Channels: 1=simple, 2=I/Q, 3=tri-channel
+  - Server Host / Server Port: the placeKYT SimServer endpoint (0 = local mode)
+  - Complex Input: Yes for an I/Q (coherent) burst in server mode
+  - Burst length: complex-sample count to batch (0 = flush at stop)
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.source(device_id=${device_id}, port_name=${port_name},
+    num_channels=${num_channels}, server_host=${server_host},
+    server_port=${server_port}, complex_in=${complex_in}, burst_len=${burst_len})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+  - id: port_name
+    label: Port Name
+    dtype: string
+    default: '"x16_in"'
+    options: ['"x16_in"', '"x1_in"']
+    option_labels: ['x16 (16-bit)', 'x1 (1-bit)']
+  - id: num_channels
+    label: Num Channels
+    dtype: int
+    default: '1'
+    options: ['1', '2', '3']
+    option_labels: ['1 (Simple)', '2 (I/Q)', '3 (Tri-Channel)']
+  - id: server_host
+    label: Server Host
+    dtype: string
+    default: '"127.0.0.1"'
+  - id: server_port
+    label: Server Port
+    dtype: int
+    default: '0'
+  - id: complex_in
+    label: Complex Input
+    dtype: bool
+    default: 'False'
+    options: ['True', 'False']
+    option_labels: ['Yes (I/Q)', 'No (real)']
+  - id: burst_len
+    label: Burst length
+    dtype: int
+    default: '0'
+
+inputs:
+  - label: in
+    domain: stream
+    dtype: ${ 'complex' if (complex_in or server_port > 0) else 'float' }
+
+outputs:
+  - label: out
+    domain: stream
+    dtype: ${ 'float' if server_port > 0 else ('complex' if complex_in else 'float') }
+
+file_format: 1

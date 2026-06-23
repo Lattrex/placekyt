@@ -1,0 +1,86 @@
+# Development 12x12 Chip Type Configuration
+#
+# A 12x12 fabric for HF modem development and testing.
+#
+# Primary ports at array extremes for programming and reset propagation:
+#   - Input at (0,0) WEST face - used for programming and data input
+#   - Output at (11,11) EAST face - used for programming verification and data output
+#
+# Memory: 32 words x 16 bits per cell
+# Total cells: 144
+#
+# Default cell state at reset:
+#   - FWD_FACE = South (data flows down by default)
+#   - All latches = 0
+#
+# Programming pattern: column-by-column, right-to-left, bottom-up
+#   1. Program row 0 cells with FACE=East (horizontal routing)
+#   2. Program column 11 bottom-up (11,11) to (11,0)
+#   3. Program column 10 bottom-up
+#   4. ... continue left ...
+#   5. Program column 0 bottom-up (ends at input port)
+
+chip_type:
+  name: dev_12x12
+  description: "12x12 development fabric for HF modem"
+  version: "2.0"
+
+fabric:
+  width: 12
+  height: 12
+  memory_words: 32
+
+# Timing: default estimates
+timing:
+  alu_operation_ns: 8.0
+  memory_read_ns: 3.0
+  memory_write_ns: 3.0
+  instruction_decode_ns: 2.0
+  handshake_ns: 5.0
+  hop_delay_ns: 10.0
+
+# Legacy format ports for Rust simulator compatibility
+ports:
+  # x16 input port - high-speed 16-bit data input
+  # Located at cell (0,1), west face - 16 data + 2 handshake = 18 pins
+  - name: x16_in
+    direction: input
+    width: 16
+    protocol: bundled_async_2phase
+    cell:
+      x: 0
+      y: 1
+      face: west
+
+  # x16 output port - high-speed 16-bit data output
+  # Located at cell (11,10), east face - 16 data + 2 handshake = 18 pins
+  - name: x16_out
+    direction: output
+    width: 16
+    protocol: bundled_async_2phase
+    cell:
+      x: 11
+      y: 10
+      face: east
+
+  # x1 input port - low-speed 1-bit data input
+  # Located at cell (0,0), north face - 1 data + 2 handshake = 3 pins
+  - name: x1_in
+    direction: input
+    width: 1
+    protocol: bundled_async_2phase
+    cell:
+      x: 0
+      y: 0
+      face: north
+
+  # x1 output port - low-speed 1-bit data output
+  # Located at cell (11,11), south face - 1 data + 2 handshake = 3 pins
+  - name: x1_out
+    direction: output
+    width: 1
+    protocol: bundled_async_2phase
+    cell:
+      x: 11
+      y: 11
+      face: south

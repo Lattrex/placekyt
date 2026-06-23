@@ -1,0 +1,54 @@
+id: kyttar_rrc_pulse_shaper
+label: Kyttar RRC Pulse Shaper
+category: '[Kyttar]'
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.rrc_pulse_shaper(${device_id}, ${alpha}, ${span})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+
+- id: alpha
+  label: Roll-off (alpha)
+  dtype: real
+  default: '0.35'
+
+- id: span
+  label: Filter Span (symbols)
+  dtype: int
+  default: '8'
+
+inputs:
+- label: sample
+  domain: stream
+  dtype: float
+
+outputs:
+- label: out
+  domain: stream
+  dtype: float
+
+documentation: |-
+  Root-Raised-Cosine (RRC) Pulse Shaper / Matched Filter
+
+  Spatial FIR filter with RRC coefficients (excess-bandwidth factor alpha).
+  Used as the transmit pulse shaper or the receive matched filter. The filter
+  is span*sps+1 taps (odd length, matching GNURadio), distributed across cells
+  (5 taps/cell).
+
+  Ports:
+    sample (in):  upsampled symbols / received samples
+    out:          pulse-shaped / matched-filtered samples
+
+  Parameters:
+    Device ID:    Which Kyttar device to use
+    alpha:        Roll-off / excess bandwidth (0.2-0.5 typical; 0.35 default)
+    span:         Filter span in symbols (default 8)
+
+  Mapped by placeKYT (File -> Import GNURadio Flowgraph) to RRCPulseShaperBlock.
+
+file_format: 1

@@ -1,0 +1,48 @@
+id: kyttar_dc_blocker
+label: Kyttar DC Blocker
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar DC Blocker - High-Pass Filter for DC Removal
+
+  Removes DC offset using an adaptive IIR filter:
+      output = input - dc_estimate
+      dc_estimate += alpha * (input - dc_estimate)
+
+  This block runs on the Kyttar chip. Place it between a KyttarSource
+  and KyttarSink block, and ensure the device_id matches your KyttarDevice.
+
+  Parameters:
+  - Device ID: ID of the KyttarDevice block
+  - Alpha: Adaptation rate (0.001 to 0.1, default 0.01)
+
+  The alpha parameter controls the adaptation rate:
+  - Smaller alpha = slower adaptation, more aggressive DC removal
+  - Larger alpha = faster adaptation, less filtering
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.dc_blocker(device_id=${device_id}, alpha=${alpha})
+  callbacks:
+    - set_alpha(${alpha})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+  - id: alpha
+    label: Alpha
+    dtype: real
+    default: 0.01
+
+inputs:
+  - label: in
+    dtype: float
+
+outputs:
+  - label: out
+    dtype: float
+
+file_format: 1

@@ -1,0 +1,25 @@
+title: gr-kyttar — GNU Radio blocks for the Kyttar cell array
+version: 1.0
+brief: Stream data to a placeKYT-hosted Kyttar chip from GNU Radio.
+tags:
+  - sdr
+  - kyttar
+  - placekyt
+  - dsp
+author:
+  - Lattrex
+copyright_owner:
+  - Lattrex
+license: GPL-3.0-or-later
+gr_supported_version:
+  - 3.10
+repo: https://github.com/Lattrex/placekyt
+website: https://github.com/Lattrex/placekyt
+description: |-
+  gr-kyttar is the GNU Radio out-of-tree module for placeKYT and the Kyttar
+  asynchronous cell array. Its source/sink blocks and SimServer client stream
+  data to a Kyttar chip hosted live inside placeKYT — letting you drive an
+  arbitrary placeKYT design from a flowgraph for stimulus and measurement —
+  and it ships runnable example flowgraphs (a gain demo, a DSP comparison, and
+  a coherent BPSK receiver). See the placeKYT repository for full documentation.
+file_format: 1

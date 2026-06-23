@@ -1,0 +1,48 @@
+id: kyttar_placekyt_device
+label: placeKYT Device (.kbs)
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  placeKYT Device - loads a HAND-PLACED design built by placeKYT.
+
+  Unlike "Kyttar Device" (which auto-places GNURadio DSP blocks), this block
+  loads a .kbs bitstream that placeKYT produced (placekyt --build PROJECT.kyt
+  -o OUT.kbs). The .kbs carries both the chip words AND the host-side port
+  config (input port, entry/hop/data-addr, output port) in its metadata, so the
+  device programs the chip and configures its ports with no extra wiring.
+
+  It has NO signal connections. Add a Kyttar Source / Sink with the same
+  Device ID to stream samples through the placed design.
+
+  Usage:
+  1. Build your placeKYT project to a .kbs.
+  2. Add this block; set the .kbs path and the chip-type YAML.
+  3. Add kyttar.source (this device, the .kbs input port).
+  4. Add kyttar.sink   (this device, the .kbs output port).
+  5. Connect: Source -> ... -> Sink.
+
+  Parameters:
+  - Device ID:    shared with the source/sink blocks
+  - .kbs Path:    placeKYT-built bitstream
+  - Chip Config:  chip-type YAML (must match the .kbs's chip type)
+
+templates:
+  imports: from gnuradio.kyttar.placekyt_device import placekyt_device
+  make: placekyt_device(device_id=${device_id}, kbs_path=${kbs_path}, chip_config=${chip_config})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+  - id: kbs_path
+    label: .kbs Path
+    dtype: file_open
+    default: '""'
+  - id: chip_config
+    label: Chip Config (YAML)
+    dtype: file_open
+    default: '""'
+
+file_format: 1

@@ -1,0 +1,45 @@
+id: kyttar_bpsk_slicer
+label: Kyttar BPSK Slicer
+category: '[Kyttar]'
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.bpsk_slicer(${device_id})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+
+inputs:
+- id: '0'
+  label: llr
+  domain: stream
+  dtype: float
+
+outputs:
+- id: '0'
+  label: out
+  domain: stream
+  dtype: float
+
+documentation: |-
+  BPSK Slicer (hard decision)
+
+  Maps a soft decision value (LLR / recovered I) to a hard coded bit:
+    value <  0 -> bit 1
+    value >= 0 -> bit 0
+  The recovered bit is packed in the output word's LSB (read the raw int16,
+  not Q15-scaled).
+
+  Ports:
+    llr (in):  soft value (recovered I / LLR from carrier+timing recovery)
+    out:       hard BPSK bit (0/1 in the LSB)
+
+  Parameters:
+    Device ID: Which Kyttar device to use
+
+  Mapped by placeKYT (File -> Import GNURadio Flowgraph) to BPSKSlicerBlock.
+
+file_format: 1

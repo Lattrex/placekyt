@@ -1,0 +1,60 @@
+id: kyttar_agc
+label: Kyttar AGC
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar AGC - Automatic Gain Control
+
+  Maintains a target output level by adaptively adjusting gain:
+      output = input * gain
+      if |output| > target: gain -= rate
+      else: gain += rate
+
+  This block runs on the Kyttar chip. Place it between a KyttarSource
+  and KyttarSink block, and ensure the device_id matches your KyttarDevice.
+
+  Parameters:
+  - Device ID: ID of the KyttarDevice block
+  - Target: Target output level (0.0 to 1.0)
+  - Rate: Attack/decay rate (smaller = slower adaptation)
+  - Initial Gain: Starting gain value
+
+  The AGC automatically adjusts gain to maintain the target level,
+  useful for handling signals with varying amplitude.
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.agc(device_id=${device_id}, target=${target}, rate=${rate}, initial_gain=${initial_gain})
+  callbacks:
+    - set_target(${target})
+    - set_rate(${rate})
+    - set_initial_gain(${initial_gain})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+  - id: target
+    label: Target Level
+    dtype: real
+    default: 0.7
+  - id: rate
+    label: Rate
+    dtype: real
+    default: 0.01
+  - id: initial_gain
+    label: Initial Gain
+    dtype: real
+    default: 0.5
+
+inputs:
+  - label: in
+    dtype: float
+
+outputs:
+  - label: out
+    dtype: float
+
+file_format: 1

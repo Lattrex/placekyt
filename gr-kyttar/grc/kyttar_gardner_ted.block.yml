@@ -1,0 +1,59 @@
+id: kyttar_gardner_ted
+label: Kyttar Gardner TED
+category: '[Kyttar]'
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.gardner_timing_recovery(${device_id}, ${kp}, ${ki})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+
+- id: kp
+  label: Proportional Gain (kp)
+  dtype: int
+  default: '3'
+
+- id: ki
+  label: Integral Gain (ki)
+  dtype: int
+  default: '1'
+
+inputs:
+- id: '0'
+  label: xi
+  domain: stream
+  dtype: float
+
+outputs:
+- id: '0'
+  label: out
+  domain: stream
+  dtype: float
+
+documentation: |-
+  Gardner Timing Error Detector Block
+
+  Performs symbol timing recovery using the Gardner TED algorithm.
+  Uses a multi-cell Ring pattern (3 cells) with:
+
+  - Interpolator: Linear interpolation based on timing offset
+  - TED: Computes Gardner error e = (x[n] - x[n-2]) * x[n-1]
+  - Loop Filter: PI controller for timing tracking
+
+  The Gardner TED is insensitive to carrier phase errors, making
+  it ideal for use before carrier recovery or in systems where
+  carrier phase is unknown.
+
+  Parameters:
+    Device ID: Which Kyttar device to use
+    Samples/Symbol: Oversampling factor (2-8 typical)
+    Loop Bandwidth: Normalized loop bandwidth (0.001-0.1)
+    Damping Factor: Loop damping (1.0 = critically damped)
+
+  Output rate is 1/sps of input rate (symbol rate).
+
+file_format: 1

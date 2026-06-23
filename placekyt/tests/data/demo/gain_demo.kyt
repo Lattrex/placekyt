@@ -1,0 +1,42 @@
+project:
+  format_version: 1
+  name: Gain Demo
+  version: '1.0'
+  author: Lattrex
+chip_type: kyttar_10x12
+chips:
+- id: 0
+  label: C0
+  position: {x: 0.0, y: 0.0}
+blocks:
+- name: gain
+  type: GainBlock
+  library: lattrex.official
+  params:
+    gain: 0.5
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 0, y: 0, face: east}
+connections:
+- name: adc_to_gain
+  from: {chip_port: {chip: 0, port: x16_in}}
+  to: {block: gain, port: in}
+- name: gain_to_dac
+  from: {block: gain, port: out}
+  to: {chip_port: {chip: 0, port: x16_out}}
+  route:
+  - {x: 0, y: 0}
+  - {x: 1, y: 0}
+  - {x: 2, y: 0}
+  - {x: 3, y: 0}
+  - {x: 4, y: 0}
+  - {x: 5, y: 0}
+  - {x: 6, y: 0}
+  - {x: 7, y: 0}
+  - {x: 8, y: 0}
+  - {x: 9, y: 0}
+simulation:
+  default_stimulus: gain_stimulus.kbs
+  golden_output: gain_golden.kbs
+  fpga_latency_ns: 20.0

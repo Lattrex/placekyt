@@ -1,0 +1,49 @@
+project:
+  format_version: 1
+  name: 16-QAM Modem Demo
+  version: '1.0'
+  author: Lattrex
+chip_type: kyttar_10x12
+chips:
+- id: 0
+  label: C0
+  position: {x: 0.0, y: 0.0}
+# A symbol-level 16-QAM loopback as ONE composed transceiver block, laid out
+# left-to-right along row 0 so the signal flow reads at a glance and the per-word
+# blink marches between stages:
+#   x16_in(4 bits/symbol) -> [QAM16 Transceiver: bits->I/Q->4-bit sym] -> x16_out
+# 16-QAM is separable Gray 4-PAM per axis. The block composes the proven mapper
+# (bits->I/Q) and slicer (I/Q->symbol); on a clean channel it is the identity
+# (proven 16/16). It is ONE block because the mapper's dual I/Q output must fan to
+# the slicer's two inputs via the block's internal_connections (a pair of separate
+# project connections does not route the dual handoff correctly).
+blocks:
+- name: transceiver
+  type: QAM16TransceiverBlock
+  library: lattrex.official
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: map0, x: 0, y: 0, face: east}
+    - {cell_id: map1, x: 1, y: 0, face: east}
+    - {cell_id: slice0, x: 2, y: 0, face: east}
+    - {cell_id: slice1, x: 3, y: 0, face: east}
+connections:
+- name: adc_to_transceiver
+  from: {chip_port: {chip: 0, port: x16_in}}
+  to: {block: transceiver, port: sample}
+- name: transceiver_to_dac
+  from: {block: transceiver, port: out}
+  to: {chip_port: {chip: 0, port: x16_out}}
+  route:
+  - {x: 3, y: 0}
+  - {x: 4, y: 0}
+  - {x: 5, y: 0}
+  - {x: 6, y: 0}
+  - {x: 7, y: 0}
+  - {x: 8, y: 0}
+  - {x: 9, y: 0}
+simulation:
+  default_stimulus: qam16_stimulus.kbs
+  golden_output: qam16_golden.kbs
+  fpga_latency_ns: 20.0

@@ -1,0 +1,51 @@
+project:
+  format_version: 1
+  name: Coherent BPSK RX (live monitor)
+  version: '1.0'
+chip_type: kyttar_10x12
+chips:
+- id: 0
+  label: Chip 0
+  position: {x: 0.0, y: 0.0}
+blocks:
+- name: coherentbpskrx
+  type: CoherentBPSKRxBlock
+  library: lattrex.official
+  params:
+    live_monitor: true
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: phase, x: 0, y: 0, face: east}
+    - {cell_id: sin_fold, x: 1, y: 0, face: east}
+    - {cell_id: cos_fold, x: 2, y: 0, face: east}
+    - {cell_id: table_sin, x: 3, y: 0, face: south}
+    - {cell_id: table_cos, x: 3, y: 1, face: west}
+    - {cell_id: rotate, x: 2, y: 1, face: west}
+    - {cell_id: pd_pi, x: 1, y: 1, face: west}
+    - {cell_id: slicer, x: 0, y: 1, face: north}
+connections:
+- name: coherentbpskrx_to_x1_out
+  from: {block: coherentbpskrx, port: out}
+  to: {chip_port: {chip: 0, port: x1_out}}
+  route:
+  - {x: 0, y: 1}
+  - {x: 0, y: 2}
+  - {x: 0, y: 3}
+  - {x: 0, y: 4}
+  - {x: 0, y: 5}
+  - {x: 0, y: 6}
+  - {x: 0, y: 7}
+  - {x: 0, y: 8}
+  - {x: 0, y: 9}
+  - {x: 0, y: 10}
+  - {x: 0, y: 11}
+  - {x: 1, y: 11}
+  - {x: 2, y: 11}
+  - {x: 3, y: 11}
+  - {x: 4, y: 11}
+  - {x: 5, y: 11}
+  - {x: 6, y: 11}
+  - {x: 7, y: 11}
+  - {x: 8, y: 11}
+  - {x: 9, y: 11}

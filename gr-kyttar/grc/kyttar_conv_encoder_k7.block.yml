@@ -1,0 +1,62 @@
+id: kyttar_conv_encoder_k7
+label: Kyttar Conv Encoder K=7
+category: '[Kyttar]/FEC'
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.conv_encoder_k7(${device_id})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+
+inputs:
+- label: in
+  domain: stream
+  dtype: float
+
+outputs:
+- label: out
+  domain: stream
+  dtype: float
+
+documentation: |-
+  Convolutional Encoder K=7 Rate 1/2 Block
+
+  Encodes input bits using the NASA standard K=7 convolutional code.
+  For each input bit, produces 2 output bits (rate 1/2).
+
+  This is the same code used in:
+  - CCSDS (space communications)
+  - DVB-S (satellite TV)
+  - MIL-STD-188-110B (HF modems)
+  - AX.25 FEC option
+
+  Generator polynomials (fixed):
+    G1 = 0x79 (171 octal) = 1111001 - taps at 0, 3, 4, 5, 6
+    G2 = 0x5B (133 octal) = 1011011 - taps at 0, 1, 3, 4, 6
+
+  Architecture:
+    Single cell implementation
+    - 7-bit shift register state stored in memory
+    - XOR cascade for efficient parity calculation
+    - Fits comfortably in 32-word cell memory
+
+  Algorithm:
+    For each input bit:
+      state = ((state << 1) | input_bit) & 0x7F
+      g1_out = parity(state & G1)
+      g2_out = parity(state & G2)
+      output g1_out, then g2_out
+
+  Parameters:
+    Device ID: Which Kyttar device to use
+
+  Input: Data bits (0/1 as float)
+  Output: Encoded bits (0/1 as float), 2x input rate
+
+  Pairing: Use with kyttar.viterbi_k7 decoder
+
+file_format: 1

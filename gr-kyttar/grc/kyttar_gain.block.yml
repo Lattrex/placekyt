@@ -1,0 +1,45 @@
+id: kyttar_gain
+label: Kyttar Gain
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar Gain - Simple Multiplier
+
+  Multiplies input by a gain coefficient:
+      output = input * gain
+
+  This block runs on the Kyttar chip. Place it between a KyttarSource
+  and KyttarSink block, and ensure the device_id matches your KyttarDevice.
+
+  Parameters:
+  - Device ID: ID of the KyttarDevice block
+  - Gain: Multiplication factor (-1.0 to 1.0 for Q15 representation)
+
+  Note: Values outside -1.0 to 1.0 will be clipped to Q15 range.
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.gain(device_id=${device_id}, gain=${gain})
+  callbacks:
+    - set_gain(${gain})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+  - id: gain
+    label: Gain
+    dtype: real
+    default: 0.5
+
+inputs:
+  - label: in
+    dtype: float
+
+outputs:
+  - label: out
+    dtype: float
+
+file_format: 1

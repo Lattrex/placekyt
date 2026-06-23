@@ -1,0 +1,71 @@
+id: kyttar_viterbi_k7
+label: Kyttar Viterbi K=7
+category: '[Kyttar]'
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.viterbi_k7(${device_id}, ${traceback_depth})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+
+- id: traceback_depth
+  label: Traceback Depth
+  dtype: int
+  default: '35'
+
+inputs:
+- label: in
+  domain: stream
+  dtype: float
+
+outputs:
+- label: out
+  domain: stream
+  dtype: float
+
+documentation: |-
+  Viterbi K=7 Rate 1/2 Decoder Block
+
+  Full soft-decision Viterbi decoder for the NASA standard K=7
+  convolutional code. This is the same code used in:
+  - CCSDS (space communications)
+  - DVB-S (satellite TV)
+  - AX.25 FEC option
+  - Amateur radio digital modes
+
+  Generator polynomials:
+    G1 = 0x79 (1111001 = 121 octal)
+    G2 = 0x5B (1011011 = 133 octal)
+
+  Architecture:
+    68-cell wavefront traceback design:
+    - 1 BMU cell (Branch Metric Unit)
+    - 64 ACS cells (Add-Compare-Select, 1 state each = 64 total)
+    - 2 Decision memory cells (ring buffer for survivors)
+    - 1 Traceback cell (output decoding)
+
+  Each ACS cell handles one state, fitting comfortably within
+  the 32-word memory limit per cell (16-23 words used).
+
+  Input: Soft bits (LLRs) from soft demodulator
+    - Positive LLR = more likely bit 0
+    - Negative LLR = more likely bit 1
+    - 2 soft bits per encoded symbol (rate 1/2)
+
+  Output: Decoded data bits (rate 1/2, so 1 output per 2 inputs)
+
+  Parameters:
+    Device ID: Which Kyttar device to use
+    Traceback Depth: Survivor path memory (default 35 = 5*K)
+
+  Coding Gain:
+    At BER 10^-5: approximately 5 dB coding gain
+    At BER 10^-3: approximately 3 dB coding gain
+
+  Latency: traceback_depth + pipeline depth (~100 samples)
+
+file_format: 1

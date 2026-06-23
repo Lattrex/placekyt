@@ -1,0 +1,52 @@
+id: kyttar_iir_biquad
+label: Kyttar IIR Biquad
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar IIR Biquad Filter - Second-Order Infinite Impulse Response Filter
+
+  Implements a direct form I biquad section:
+      y[n] = b0*x[n] + b1*x[n-1] + b2*x[n-2] - a1*y[n-1] - a2*y[n-2]
+
+  This block runs on the Kyttar chip. Place it between a KyttarSource
+  and KyttarSink block, and ensure the device_id matches your KyttarDevice.
+
+  Parameters:
+  - Device ID: ID of the KyttarDevice block
+  - B Coefficients: [b0, b1, b2] - feedforward coefficients
+  - A Coefficients: [a1, a2] - feedback coefficients (normalized, a0=1)
+
+  Default coefficients implement a simple lowpass filter at 0.1 * fs.
+
+  Note: Coefficient values should be in the range -1.0 to 1.0 for Q15 representation.
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.iir_biquad(device_id=${device_id}, b_coeffs=${b_coeffs}, a_coeffs=${a_coeffs})
+  callbacks:
+    - set_coefficients(${b_coeffs}, ${a_coeffs})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+  - id: b_coeffs
+    label: B Coefficients [b0, b1, b2]
+    dtype: real_vector
+    default: '[0.0976, 0.1953, 0.0976]'
+  - id: a_coeffs
+    label: A Coefficients [a1, a2]
+    dtype: real_vector
+    default: '[-0.9428, 0.3333]'
+
+inputs:
+  - label: in
+    dtype: float
+
+outputs:
+  - label: out
+    dtype: float
+
+file_format: 1

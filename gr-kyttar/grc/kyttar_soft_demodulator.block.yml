@@ -1,0 +1,60 @@
+id: kyttar_soft_demodulator
+label: Kyttar Soft Demodulator
+category: '[Kyttar]'
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.soft_demodulator(${device_id}, ${noise_variance}, ${llr_scale})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+
+- id: noise_variance
+  label: Noise Variance
+  dtype: real
+  default: '0.1'
+
+- id: llr_scale
+  label: LLR Scale
+  dtype: real
+  default: '1.0'
+
+inputs:
+- label: in
+  domain: stream
+  dtype: float
+
+outputs:
+- label: out
+  domain: stream
+  dtype: float
+
+documentation: |-
+  Soft-Decision Demodulator Block
+
+  Converts BPSK symbols to Log-Likelihood Ratios (LLRs) for use with
+  soft-decision FEC decoders like Viterbi.
+
+  Computes: LLR = I x (2/sigma^2)
+
+  Where:
+    - I is the in-phase sample from carrier recovery
+    - sigma^2 is the noise variance
+
+  Output interpretation:
+    - LLR > 0: more likely bit = 0
+    - LLR < 0: more likely bit = 1
+    - |LLR|: confidence level
+
+  Parameters:
+    Device ID: Which Kyttar device to use
+    Noise Variance: Estimated noise variance (0.01-1.0 typical)
+    LLR Scale: Output scaling factor (default 1.0)
+
+  Typical usage: Place after carrier recovery (Costas loop) and before
+  Viterbi decoder for soft-decision FEC.
+
+file_format: 1

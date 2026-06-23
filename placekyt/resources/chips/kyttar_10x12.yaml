@@ -1,0 +1,39 @@
+chip_type:
+  name: kyttar_10x12
+  description: "Kyttar 10x12 mcell array"
+  version: "1.0"
+
+fabric:
+  width: 10
+  height: 12
+  memory_words: 32
+
+timing:
+  alu_operation_ns: 8.0
+  memory_read_ns: 3.0
+  memory_write_ns: 3.0
+  instruction_decode_ns: 2.0
+  handshake_ns: 5.0
+  hop_delay_ns: 10.0
+
+ports:
+  - name: x16_in
+    direction: input
+    width: 16
+    protocol: bundled_async_2phase
+    cell: { x: 0, y: 0, face: north }
+  - name: x16_out
+    direction: output
+    width: 16
+    protocol: bundled_async_2phase
+    cell: { x: 9, y: 0, face: east }
+  - name: x1_in
+    direction: input
+    width: 1
+    protocol: bundled_async_2phase
+    cell: { x: 0, y: 11, face: south }
+  - name: x1_out
+    direction: output
+    width: 1
+    protocol: bundled_async_2phase
+    cell: { x: 9, y: 11, face: south }

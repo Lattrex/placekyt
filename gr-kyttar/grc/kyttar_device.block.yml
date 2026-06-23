@@ -1,0 +1,44 @@
+id: kyttar_device
+label: Kyttar Device
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar Device - Chip Configuration Block
+
+  This block configures a Kyttar chip. It has NO signal connections -
+  it's a configuration-only block.
+
+  When the flowgraph starts, this block:
+  1. Collects all DSP blocks registered with this device_id
+  2. Runs automatic placement and routing
+  3. Generates bitstream and programs the simulator
+
+  Usage:
+  1. Add a kyttar.device block to your flowgraph (no connections)
+  2. Add kyttar.source (select this device and input port)
+  3. Add Kyttar DSP blocks (gain, etc.)
+  4. Add kyttar.sink (select this device and output port)
+  5. Connect: Source -> DSP blocks -> Sink
+
+  Parameters:
+  - Device ID: Unique identifier for this device
+  - Chip Type: Chip configuration (12x12_dev)
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.device(device_id=${device_id}, chip_type=${chip_type})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+  - id: chip_type
+    label: Chip Type
+    dtype: string
+    default: '"12x12_dev"'
+    options: ['"12x12_dev"']
+    option_labels: ['12x12 Development']
+
+file_format: 1

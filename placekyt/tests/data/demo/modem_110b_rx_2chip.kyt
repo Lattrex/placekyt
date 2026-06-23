@@ -1,0 +1,106 @@
+project:
+  format_version: 1
+  name: 110B 75bps RX (2-chip)
+  version: '1.0'
+chip_type: kyttar_10x12
+chips:
+- id: 0
+  label: Chip 0
+  position: {x: 0.0, y: 0.0}
+- id: 1
+  label: RX recover
+  position: {x: 768.0, y: 0.0}
+inter_chip_connections:
+- from: {chip: 0, port: x16_out}
+  to: {chip: 1, port: x16_in}
+blocks:
+- name: rrcpulseshaper
+  type: RRCPulseShaperBlock
+  library: lattrex.official
+  params:
+    alpha: 0.35
+    span: 8
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 0, y: 0, face: east}
+    - {cell_id: 1, x: 1, y: 0, face: east}
+    - {cell_id: 2, x: 2, y: 0, face: east}
+    - {cell_id: 3, x: 3, y: 0, face: east}
+    - {cell_id: 4, x: 4, y: 0, face: east}
+    - {cell_id: 5, x: 5, y: 0, face: east}
+    - {cell_id: 6, x: 6, y: 0, face: east}
+- name: decimator
+  type: DecimatorBlock
+  library: lattrex.official
+  params:
+    decimation_factor: 4
+    coefficients:
+    - 0.25
+    - 0.25
+    - 0.25
+    - 0.25
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 8, y: 0, face: east}
+- name: coherentrx
+  type: CoherentRXBlock
+  library: lattrex.official
+  params:
+    loop_bw: 0.05
+    damping: 1.0
+    kp: 3
+    ki: 1
+  placement:
+    chip: 1
+    cells:
+    - {cell_id: phase, x: 0, y: 0, face: east}
+    - {cell_id: sin_fold, x: 1, y: 0, face: east}
+    - {cell_id: cos_fold, x: 2, y: 0, face: east}
+    - {cell_id: table_sin, x: 3, y: 0, face: east}
+    - {cell_id: table_cos, x: 4, y: 0, face: east}
+    - {cell_id: rotate, x: 5, y: 0, face: east}
+    - {cell_id: pd_pi, x: 6, y: 0, face: south}
+    - {cell_id: yi_relay, x: 7, y: 0, face: south}
+    - {cell_id: resampler, x: 7, y: 1, face: east}
+    - {cell_id: ted, x: 8, y: 1, face: east}
+    - {cell_id: loop_filter, x: 9, y: 1, face: east}
+    - {cell_id: slicer, x: 9, y: 0, face: east}
+    transit_cells:
+    - {x: 6, y: 1, face: west}
+    - {x: 5, y: 1, face: west}
+    - {x: 4, y: 1, face: west}
+    - {x: 3, y: 1, face: west}
+    - {x: 2, y: 1, face: west}
+    - {x: 1, y: 1, face: west}
+    - {x: 0, y: 1, face: north}
+connections:
+- name: c0_in_rrc
+  from: {chip_port: {chip: 0, port: x16_in}}
+  to: {block: rrcpulseshaper, port: sample}
+  route:
+  - {x: 0, y: 0}
+- name: c0_rrc_dec
+  from: {block: rrcpulseshaper, port: out}
+  to: {block: decimator, port: sample}
+  route:
+  - {x: 6, y: 0}
+  - {x: 7, y: 0}
+  - {x: 8, y: 0}
+- name: c0_dec_out
+  from: {block: decimator, port: out}
+  to: {chip_port: {chip: 0, port: x16_out}}
+  route:
+  - {x: 8, y: 0}
+  - {x: 9, y: 0}
+- name: c1_in_crx
+  from: {chip_port: {chip: 1, port: x16_in}}
+  to: {block: coherentrx, port: xi}
+  route:
+  - {x: 0, y: 0}
+- name: c1_crx_out
+  from: {block: coherentrx, port: bit}
+  to: {chip_port: {chip: 1, port: x16_out}}
+  route:
+  - {x: 9, y: 0}

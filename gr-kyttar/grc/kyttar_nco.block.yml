@@ -1,0 +1,49 @@
+id: kyttar_nco
+label: Kyttar NCO
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar NCO - Numerically Controlled Oscillator
+
+  Generates a sine wave output using a phase accumulator and 8-entry
+  lookup table:
+      output_freq = (freq_word / 65536) * sample_rate
+
+  Each input sample triggers one output sample; the input value is ignored.
+  Place between a KyttarSource and KyttarSink block.
+
+  Parameters:
+  - Device ID: ID of the KyttarDevice block
+  - Freq Word: Phase increment per sample (0-65535)
+  - Sample Rate: Sample rate in Hz
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.nco(device_id=${device_id}, freq_word=${freq_word}, sample_rate=${sample_rate})
+  callbacks:
+    - set_freq_word(${freq_word})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+  - id: freq_word
+    label: Freq Word
+    dtype: int
+    default: 655
+  - id: sample_rate
+    label: Sample Rate
+    dtype: real
+    default: 32000.0
+
+inputs:
+  - label: in
+    dtype: float
+
+outputs:
+  - label: out
+    dtype: float
+
+file_format: 1

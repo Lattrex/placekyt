@@ -1,0 +1,70 @@
+id: kyttar_complex_rrc_matched_filter
+label: Kyttar Complex RRC Matched Filter
+category: '[Kyttar]'
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.complex_rrc_matched_filter(${device_id}, ${alpha}, ${span})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+
+- id: alpha
+  label: Roll-off (alpha)
+  dtype: real
+  default: '0.35'
+
+- id: span
+  label: Filter Span (symbols)
+  dtype: int
+  default: '8'
+
+# The complex I/Q pair is TWO float stream ports each side — the LOGICAL view (xi/xq
+# in, yi/yq out) — so GRC renders + KEEPS both I/Q wires (a SINGLE port let the wiring
+# collapse to port-0 and silently drop the Q rail → garbage RX). GNURadio stream ports
+# are POSITIONAL INTEGERS — a ``gr.sync_block`` cannot have a STRING port id, so we give
+# each port only a ``label`` (the GUI/import name) and NO ``id:`` (GRC assigns the index
+# 0,1,…; a string id would make the generated ``connect((blk,'xi'),…)`` raise TypeError).
+# The placeKYT importer maps the index BACK to the name by position (port 0→xi, 1→xq;
+# 0→yi, 1→yq) via the ComplexRRCMatchedFilterBlock PortMap; the two logical nets share
+# ONE time-multiplexed chip route (the §1.2 complex-burst broker).
+inputs:
+- label: xi
+  domain: stream
+  dtype: float
+- label: xq
+  domain: stream
+  dtype: float
+
+outputs:
+- label: yi
+  domain: stream
+  dtype: float
+- label: yq
+  domain: stream
+  dtype: float
+
+documentation: |-
+  Complex RRC Matched Filter — receive matched filter front end.
+
+  Takes the COMPLEX baseband (xi = in-phase, xq = quadrature) and applies a
+  sqrt-Raised-Cosine matched filter on BOTH rails, emitting the matched-filtered
+  complex sample (yi = filtered I, yq = filtered Q). Together with the transmit
+  sqrt-RRC pulse shaper this forms a raised-cosine Nyquist response (zero ISI) and
+  is the optimal-SNR linear filter for the known pulse in AWGN.
+
+  The port names (xi, xq inputs; yi, yq outputs) and params (alpha, span) match the
+  placeKYT ComplexRRCMatchedFilterBlock interface, so a flowgraph using this block
+  wires up and imports into placeKYT cleanly (File -> Import GNURadio Flowgraph).
+
+  Parameters:
+    Device ID: which Kyttar device to use
+    alpha:     RRC roll-off / excess bandwidth (0.2-0.5 typical; 0.35 default)
+    span:      filter span in symbols (default 8)
+
+  Mapped by placeKYT to ComplexRRCMatchedFilterBlock.
+
+file_format: 1

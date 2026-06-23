@@ -1,0 +1,84 @@
+id: kyttar_block_interleaver
+label: Kyttar Block Interleaver
+category: '[Kyttar]/FEC'
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.block_interleaver(${device_id}, ${rows}, ${cols}, ${is_deinterleaver})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+
+- id: rows
+  label: Rows
+  dtype: int
+  default: '4'
+
+- id: cols
+  label: Columns
+  dtype: int
+  default: '16'
+
+- id: is_deinterleaver
+  label: Mode
+  dtype: enum
+  options: ['False', 'True']
+  option_labels: ['Interleaver', 'Deinterleaver']
+  default: 'False'
+
+inputs:
+- label: in
+  domain: stream
+  dtype: float
+
+outputs:
+- label: out
+  domain: stream
+  dtype: float
+
+documentation: |-
+  Block Interleaver/Deinterleaver Block
+
+  Block interleaver for burst error protection. Spreads burst errors
+  across multiple codewords to allow FEC decoder to correct them.
+
+  Interleaver: Writes bits row-wise, reads column-wise
+  Deinterleaver: Writes bits column-wise, reads row-wise
+
+  Used in:
+  - MIL-STD-188-110B HF modems
+  - DVB standards
+  - Many wireless standards
+
+  Matrix dimensions:
+    Rows: Number of rows (typically 4 or 8)
+    Cols: Number of columns (typically 16 or 32)
+    Block size = rows * cols bits
+
+  Architecture:
+    Multi-cell implementation (one cell per row)
+    - Each cell stores one row of the matrix
+    - Coordinated read/write across cells
+    - 4-row interleaver uses 4 cells
+
+  Example (4x4 matrix):
+    Input order:   0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15
+    Matrix:       [0  1  2  3]   (row 0)
+                  [4  5  6  7]   (row 1)
+                  [8  9 10 11]   (row 2)
+                  [12 13 14 15]  (row 3)
+    Output order:  0  4  8 12  1  5  9 13  2  6 10 14  3  7 11 15
+
+  Parameters:
+    Device ID: Which Kyttar device to use
+    Rows: Number of rows in interleaver matrix (default 4)
+    Columns: Number of columns in interleaver matrix (default 16)
+    Mode: Interleaver or Deinterleaver
+
+  Input: Data bits (0/1 as float), must be multiple of block size
+  Output: Interleaved/deinterleaved bits (0/1 as float)
+
+file_format: 1

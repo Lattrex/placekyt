@@ -1,0 +1,81 @@
+id: kyttar_placekyt_chip
+label: placeKYT Chip (live, threaded)
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  placeKYT Chip (live) - stream samples through a chip running inside placeKYT,
+  with a background thread so the GNURadio scheduler never blocks on the socket.
+
+  One block: float in -> float out (1:1). placeKYT hosts the chip (Simulation ->
+  "Run as GNURadio Server", note the printed port); this block connects, resets
+  the chip for a clean run, and streams samples through it. placeKYT's debug
+  views update live as the flowgraph runs.
+
+  Flowgraph:
+    sig_source -> placeKYT Chip -> Time Sink (ch1, chip output)
+    sig_source -> Time Sink (ch0, input, for comparison)
+
+  Parameters:
+  - Host / Port:  the SimServer address placeKYT printed
+  - Input Port:   the chip input port name (e.g. x16_in)
+  - Output Port:  the chip output port name (e.g. x16_out)
+  - Jump Entry:   (shared-port duplex) inject this stream with a fixed JUMP
+                  entry address so it routes to a specific landing-cell entry
+                  (e.g. a splitter's RX or TX arm). -1 = use the port default.
+  - Out Tag:      (shared-port duplex) return ONLY output WRITE words with this
+                  dest tag, so two instances can share one chip output port
+                  demuxed by tag. -1 = return everything.
+  - Complex In:   when True, the INPUT is gr_complex and each sample is injected as
+                  an (I->R0, Q->R1) pair + JUMP — for a coherent receiver whose
+                  landing cell takes complex baseband (e.g. the Costas phase cell).
+                  Output stays real (the recovered I). False = real float in.
+
+templates:
+  imports: from gnuradio.kyttar.placekyt_chip import placekyt_chip
+  make: placekyt_chip(host=${host}, port=${port}, input_port=${input_port},
+    output_port=${output_port}, jump_entry=${jump_entry}, out_tag=${out_tag},
+    complex_in=${complex_in})
+
+parameters:
+  - id: host
+    label: Host
+    dtype: string
+    default: '"127.0.0.1"'
+  - id: port
+    label: Port
+    dtype: int
+    default: '58950'
+  - id: input_port
+    label: Input Port
+    dtype: string
+    default: '"x16_in"'
+  - id: output_port
+    label: Output Port
+    dtype: string
+    default: '"x16_out"'
+  - id: jump_entry
+    label: Jump Entry (duplex)
+    dtype: int
+    default: '-1'
+  - id: out_tag
+    label: Out Tag (duplex)
+    dtype: int
+    default: '-1'
+  - id: complex_in
+    label: Complex In (I/Q)
+    dtype: bool
+    default: 'False'
+    options: ['False', 'True']
+
+inputs:
+  - label: in
+    domain: stream
+    dtype: ${ 'complex' if complex_in else 'float' }
+
+outputs:
+  - label: out
+    domain: stream
+    dtype: float
+
+file_format: 1

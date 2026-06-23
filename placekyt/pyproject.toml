@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "placekyt"
+version = "1.0.0"
+description = "placeKYT — Qt-based IDE for the Kyttar asynchronous mcell array"
+authors = [{ name = "Lattrex" }]
+requires-python = ">=3.10"
+# Runtime deps are intentionally NOT declared on model/ — the data model is
+# pure Python (the data model has no runtime deps). Qt (PySide6), ruamel.yaml, pyzmq,
+# matplotlib, pyserial, etc. are added as the engine/ and ui/ layers land.
+dependencies = []
+
+[project.scripts]
+# Installed console entry point. The CLI also runs directly as `python cli.py`
+# from the package root (flat layout).
+placekyt = "cli:main"
+
+[project.optional-dependencies]
+# Layered dependency groups. `model` needs nothing extra.
+io = ["ruamel.yaml"]
+ui = ["PySide6", "pygments", "matplotlib"]
+bridge = ["pyzmq"]
+hardware = ["pyserial"]
+# Optional CP-SAT bus-sharing auto-router (engine/cpsat_router.py). The heuristic
+# BFS corridor router works WITHOUT this; OR-Tools is only needed to route dense
+# multi-net designs that must time-share bus corridors (see the auto-P&R notes).
+router = ["ortools"]
+dev = ["pytest", "pytest-cov"]
+
+[tool.setuptools]
+# Flat layout: the importable package root is this
+# directory. Each subdir below is its own subpackage.
+packages = ["model", "engine", "commands", "ui"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

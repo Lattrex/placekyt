@@ -1,0 +1,63 @@
+id: kyttar_squelch
+label: Kyttar Squelch
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar Squelch - Signal Level Gate
+
+  Implements a noise squelch that gates the signal based on power level:
+      if power > threshold: output = input
+      else: output = 0
+
+  Power is estimated using separate attack/release smoothing filters.
+  Hysteresis prevents rapid on/off cycling near the threshold.
+
+  This block runs on the Kyttar chip. Place it between a KyttarSource
+  and KyttarSink block, and ensure the device_id matches your KyttarDevice.
+
+  Parameters:
+  - Device ID: ID of the KyttarDevice block
+  - Threshold: Power threshold for gating (0.0 to 1.0 in Q15 units)
+  - Hysteresis: Hysteresis amount to prevent rapid cycling
+  - Attack Alpha: Attack smoothing factor (0-1, higher = faster)
+  - Release Alpha: Release smoothing factor (0-1, higher = faster)
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.squelch(device_id=${device_id}, threshold=${threshold}, hysteresis=${hysteresis}, attack_alpha=${attack_alpha}, release_alpha=${release_alpha})
+  callbacks:
+    - set_threshold(${threshold})
+    - set_hysteresis(${hysteresis})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+  - id: threshold
+    label: Threshold
+    dtype: real
+    default: '0.1'
+  - id: hysteresis
+    label: Hysteresis
+    dtype: real
+    default: '0.02'
+  - id: attack_alpha
+    label: Attack Alpha
+    dtype: real
+    default: '0.25'
+  - id: release_alpha
+    label: Release Alpha
+    dtype: real
+    default: '0.03'
+
+inputs:
+  - label: in
+    dtype: float
+
+outputs:
+  - label: out
+    dtype: float
+
+file_format: 1

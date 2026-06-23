@@ -1,0 +1,74 @@
+id: kyttar_sink
+label: Kyttar Sink
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar Sink - Exit Point from Chip
+
+  This block reads results from the Kyttar chip and converts Q15
+  back to float32. Connect this block's output to your GR sink.
+
+  Usage:
+  1. Connect a Kyttar DSP block (gain, filter, etc.) to the input
+  2. Connect the output to a GR sink (e.g., audio sink, file sink)
+  3. Ensure device_id matches your KyttarDevice block
+  4. Select the output port on the chip (x16_out, x1_out)
+
+  Multi-channel I/Q mode:
+  When used with demux/mux blocks for I/Q processing, set Num Channels=2.
+  The sink will pair samples from each channel using per-channel FIFOs.
+  This handles async arrival order where I and Q may complete at different times.
+
+  Parameters:
+  - Device ID: ID of the KyttarDevice block
+  - Port Name: Chip output port to use
+  - Num Channels: 1 for simple mode, 2 for I/Q, 3 for tri-channel
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.sink(device_id=${device_id}, port_name=${port_name},
+    num_channels=${num_channels}, server_port=${server_port},
+    server_repeat=${server_repeat}, hold_secs=${hold_secs})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+  - id: port_name
+    label: Port Name
+    dtype: string
+    default: '"x16_out"'
+    options: ['"x16_out"', '"x1_out"']
+    option_labels: ['x16 (16-bit)', 'x1 (1-bit)']
+  - id: num_channels
+    label: Num Channels
+    dtype: int
+    default: 1
+    options: ['1', '2', '3']
+    option_labels: ['1 (Simple)', '2 (I/Q)', '3 (Tri-channel)']
+  - id: server_port
+    label: Server Port
+    dtype: int
+    default: '0'
+  - id: server_repeat
+    label: Repeat display
+    dtype: bool
+    default: 'False'
+    options: ['True', 'False']
+    option_labels: ['Yes (loop the batch)', 'No (one real batch, then end)']
+  - id: hold_secs
+    label: Hold (s)
+    dtype: float
+    default: '5.0'
+
+inputs:
+  - label: in
+    dtype: float
+
+outputs:
+  - label: out
+    dtype: float
+
+file_format: 1

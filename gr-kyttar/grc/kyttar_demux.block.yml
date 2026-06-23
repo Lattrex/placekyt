@@ -1,0 +1,58 @@
+id: kyttar_demux
+label: Kyttar Demux
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar Demux - Channel Splitter
+
+  Routes incoming data to different output channels based on JUMP entry address.
+  This is a fundamental routing primitive for I/Q and multi-channel processing.
+
+  The upstream source must tag samples by JUMPing to different addresses:
+  - Channel 0 (I): JUMP to R1 -> out0
+  - Channel 1 (Q): JUMP to R11 -> out1
+  - Channel 2: JUMP to R21 -> out2 (if 3-channel mode)
+
+  Use this at the start of parallel I/Q processing to split the interleaved
+  stream into separate I and Q processing paths.
+
+  Parameters:
+  - Device ID: ID of the KyttarDevice block
+  - Num Channels: Number of output channels (2 for I/Q, up to 3)
+
+  Example:
+    source -> demux --out0--> [I processing chain] --> mux -> sink
+                   \-out1--> [Q processing chain] -->/
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.demux(device_id=${device_id}, num_channels=${num_channels})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+  - id: num_channels
+    label: Num Channels
+    dtype: int
+    default: 2
+    options: ['2', '3']
+
+inputs:
+  - label: in
+    dtype: float
+
+outputs:
+  - label: out0
+    dtype: float
+    optional: false
+  - label: out1
+    dtype: float
+    optional: false
+  - label: out2
+    dtype: float
+    optional: true
+
+file_format: 1

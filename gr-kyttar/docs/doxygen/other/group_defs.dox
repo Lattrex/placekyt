@@ -1,0 +1,6 @@
+/*!
+ * \defgroup block GNU Radio KYTTAR C++ Signal Processing Blocks
+ * \brief All C++ blocks that can be used from the KYTTAR GNU Radio
+ *        module are listed here or in the subcategories below.
+ *
+ */

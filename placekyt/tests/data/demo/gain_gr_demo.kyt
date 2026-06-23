@@ -1,0 +1,34 @@
+project:
+  format_version: 1
+  name: Gain GR Demo
+  version: '1.0'
+chip_type: kyttar_10x12
+chips:
+- id: 0
+  label: Chip 0
+  position: {x: 0.0, y: 0.0}
+blocks:
+- name: gain
+  type: GainBlock
+  library: lattrex.official
+  params:
+    gain: 0.5
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 0, y: 0, face: east}
+connections:
+- name: gain_to_x16_out
+  from: {block: gain, port: out}
+  to: {chip_port: {chip: 0, port: x16_out}}
+  route:
+  - {x: 0, y: 0}
+  - {x: 1, y: 0}
+  - {x: 2, y: 0}
+  - {x: 3, y: 0}
+  - {x: 4, y: 0}
+  - {x: 5, y: 0}
+  - {x: 6, y: 0}
+  - {x: 7, y: 0}
+  - {x: 8, y: 0}
+  - {x: 9, y: 0}

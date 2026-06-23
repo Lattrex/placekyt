@@ -1,0 +1,88 @@
+id: kyttar_rx_batch
+label: Kyttar RX (batch)
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar RX (batch) — run a whole complex burst through a placeKYT-hosted chip
+  in ONE process_batch RPC and emit the decoded stream.
+
+  This is the GRC-native BATCH bridge. A multi-cell async DUT (a coherent BPSK
+  receiver and up) cannot be streamed per-sample in real time — it crawls. This
+  block collects the complex input, hands the entire interleaved-I/Q burst to
+  placeKYT's "Run as GNURadio Server" in a single RPC, and outputs the decoded
+  bits. Execute in GRC => one RPC => waveforms in a fraction of a second.
+
+  Workflow:
+  1. In placeKYT, open the auto-P&R'd receiver (e.g. coherent_bpsk_rx_autopnr.kyt),
+     then Simulation -> "Run as GNURadio Server" and note the printed port.
+  2. Feed this block a complex signal source (e.g. an RRC BPSK burst with carrier
+     and timing offset), set host/port to the placeKYT server, and connect the
+     output to a QT GUI Time Sink.
+  3. Hit Execute. The burst is sent once; the recovered bit stream plots.
+
+  Parameters:
+  - Host / Port: the placeKYT "Run as GNURadio Server" endpoint.
+  - In Port / Out Port: chip ingress/egress ports (x16_in / x16_out).
+  - Data Addr I / Q: the I and Q landing registers at the input cell (0, 1).
+  - Raw words: return raw int16 output words as float (correct for a bit-packing
+    slicer whose decoded bit is in the word LSB; Q15 scaling would crush it).
+  - Burst length: send as soon as this many samples accumulate (0 = flush on stop).
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.rx_batch(host=${host}, port=${port}, in_port=${in_port},
+    out_port=${out_port}, data_addr0=${data_addr0}, data_addr1=${data_addr1},
+    raw=${raw}, burst_len=${burst_len})
+
+parameters:
+  - id: host
+    label: Host
+    dtype: string
+    default: '"127.0.0.1"'
+  - id: port
+    label: Port
+    dtype: int
+    default: 58950
+  - id: in_port
+    label: In Port
+    dtype: string
+    default: '"x16_in"'
+    options: ['"x16_in"', '"x1_in"']
+    option_labels: ['x16 (16-bit)', 'x1 (1-bit)']
+  - id: out_port
+    label: Out Port
+    dtype: string
+    default: '"x16_out"'
+    options: ['"x16_out"', '"x1_out"']
+    option_labels: ['x16 (16-bit)', 'x1 (1-bit)']
+  - id: data_addr0
+    label: Data Addr I
+    dtype: int
+    default: 0
+  - id: data_addr1
+    label: Data Addr Q
+    dtype: int
+    default: 1
+  - id: raw
+    label: Raw words
+    dtype: bool
+    default: 'True'
+    options: ['True', 'False']
+    option_labels: ['Raw int16 words', 'Q15 float']
+  - id: burst_len
+    label: Burst length
+    dtype: int
+    default: 0
+
+inputs:
+  - label: iq
+    domain: stream
+    dtype: complex
+
+outputs:
+  - label: bits
+    domain: stream
+    dtype: float
+
+file_format: 1

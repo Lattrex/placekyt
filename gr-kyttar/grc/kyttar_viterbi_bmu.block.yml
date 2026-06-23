@@ -1,0 +1,51 @@
+id: kyttar_viterbi_bmu
+label: Kyttar Viterbi BMU
+category: '[Kyttar]'
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.viterbi_bmu(${device_id})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+
+inputs:
+- label: in
+  domain: stream
+  dtype: float
+
+outputs:
+- label: out
+  domain: stream
+  dtype: float
+
+documentation: |-
+  Viterbi Branch Metric Unit Block
+
+  Computes branch metrics for K=7 rate 1/2 Viterbi decoding. This is
+  the computationally intensive part of Viterbi decoding that benefits
+  from parallel Kyttar execution.
+
+  For each pair of soft bits (LLR0, LLR1), computes 4 branch metrics:
+    BM(0,0) = +LLR0 + LLR1  (expected encoder output 0,0)
+    BM(0,1) = +LLR0 - LLR1  (expected encoder output 0,1)
+    BM(1,0) = -LLR0 + LLR1  (expected encoder output 1,0)
+    BM(1,1) = -LLR0 - LLR1  (expected encoder output 1,1)
+
+  These metrics represent the "distance" between received soft bits
+  and each possible encoder output. Lower metric = better match.
+
+  Input: Sequential soft bits (LLR0, LLR1, LLR0, LLR1, ...)
+  Output: Primary branch metric BM(0,0) for each pair
+
+  Note: This is a building block for external Viterbi ACS/traceback.
+  Full K=7 Viterbi (64 states) is too complex for single-cell
+  implementation and requires external hardware coordination.
+
+  Parameters:
+    Device ID: Which Kyttar device to use
+
+file_format: 1

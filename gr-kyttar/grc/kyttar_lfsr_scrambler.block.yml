@@ -1,0 +1,66 @@
+id: kyttar_lfsr_scrambler
+label: Kyttar LFSR Scrambler
+category: '[Kyttar]/FEC'
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.lfsr_scrambler(${device_id}, ${initial_state}, ${mode})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+
+- id: initial_state
+  label: Initial LFSR State
+  dtype: int
+  default: '0x0001'
+
+- id: mode
+  label: Mode
+  dtype: enum
+  options: ['"scramble"', '"descramble"']
+  option_labels: ['Scramble', 'Descramble']
+  default: '"scramble"'
+
+inputs:
+- label: in
+  domain: stream
+  dtype: float
+
+outputs:
+- label: out
+  domain: stream
+  dtype: float
+
+documentation: |-
+  LFSR Scrambler/Descrambler Block
+
+  Self-synchronizing scrambler using polynomial x^15 + x^14 + 1.
+  This is the MIL-STD-188-110B standard scrambler.
+
+  The same algorithm works for both scrambling and descrambling
+  due to the self-synchronizing property of the LFSR.
+
+  Architecture:
+    Single cell implementation (fits in 32 words)
+    - R25: LFSR state (15-bit)
+    - R27: Constant 1
+    - Feedback = LFSR[14] XOR LFSR[0]
+    - Output = Input XOR Feedback
+
+  Algorithm:
+    feedback = LFSR[14] XOR LFSR[0]
+    output = input XOR feedback
+    LFSR = (LFSR >> 1) | (feedback << 14)
+
+  Parameters:
+    Device ID: Which Kyttar device to use
+    Initial LFSR State: Starting state for LFSR (default 0x5555)
+    Mode: Scramble or Descramble (same algorithm, label only)
+
+  Input: Data bits (0/1 as float)
+  Output: Scrambled/descrambled bits (0/1 as float)
+
+file_format: 1

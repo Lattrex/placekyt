@@ -1,0 +1,148 @@
+project:
+  format_version: 1
+  name: Coherent BPSK RX (RRC matched filter) — input vs recovered bits
+  version: '1.0'
+chip_type: kyttar_10x12
+chips:
+- id: 0
+  label: Chip 0
+  position: {x: 0.0, y: 0.0}
+blocks:
+- name: complexcostasloop
+  type: ComplexCostasLoopBlock
+  library: lattrex.official
+  params:
+    loop_bw: 0.05
+    damping: 1.0
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: phase, x: 6, y: 3, face: east}
+    - {cell_id: sin_fold, x: 7, y: 3, face: east}
+    - {cell_id: cos_fold, x: 8, y: 3, face: east}
+    - {cell_id: table_sin, x: 9, y: 3, face: south}
+    - {cell_id: table_cos, x: 9, y: 4, face: west}
+    - {cell_id: rotate, x: 8, y: 4, face: west}
+    - {cell_id: pd_pi, x: 7, y: 4, face: west}
+    transit_cells:
+    - {x: 6, y: 4, face: north}
+- name: gardnertimingrecovery
+  type: GardnerTimingRecovery
+  library: lattrex.official
+  params:
+    kp: 3
+    ki: 1
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: resampler, x: 3, y: 3, face: east}
+    - {cell_id: ted, x: 4, y: 3, face: south}
+    - {cell_id: loop_filter, x: 4, y: 4, face: west}
+    - {cell_id: period_relay, x: 3, y: 4, face: north}
+- name: complexrrcmatchedfilter
+  type: ComplexRRCMatchedFilterBlock
+  library: lattrex.official
+  params:
+    beta: 0.35
+    sps: 2
+    span: 8
+    headroom_shift: 1
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: head, x: 0, y: 0, face: east}
+    - {cell_id: q0, x: 1, y: 0, face: east}
+    - {cell_id: q1, x: 2, y: 0, face: east}
+    - {cell_id: q2, x: 3, y: 0, face: east}
+    - {cell_id: q3, x: 4, y: 0, face: east}
+    - {cell_id: q4, x: 5, y: 0, face: south}
+    - {cell_id: i0, x: 5, y: 1, face: west}
+    - {cell_id: i1, x: 4, y: 1, face: west}
+    - {cell_id: i2, x: 3, y: 1, face: west}
+    - {cell_id: i3, x: 2, y: 1, face: west}
+    - {cell_id: i4, x: 1, y: 1, face: west}
+- name: bpskslicer
+  type: BPSKSlicerBlock
+  library: lattrex.official
+  params:
+    out_mode: bit
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 1, y: 3, face: west}
+    orientation:
+    - mirror_h
+connections:
+- name: net1
+  from: {block: complexcostasloop, port: yi_tap}
+  to: {block: gardnertimingrecovery, port: xi}
+  route:
+  - {x: 8, y: 4}
+  - {x: 8, y: 5}
+  - {x: 7, y: 5}
+  - {x: 6, y: 5}
+  - {x: 5, y: 5}
+  - {x: 4, y: 5}
+  - {x: 3, y: 5}
+  - {x: 2, y: 5}
+  - {x: 2, y: 4}
+  - {x: 2, y: 3}
+  - {x: 3, y: 3}
+- name: net2
+  from: {block: gardnertimingrecovery, port: out}
+  to: {block: bpskslicer, port: llr}
+  route:
+  - {x: 4, y: 4}
+  - {x: 4, y: 5}
+  - {x: 3, y: 5}
+  - {x: 2, y: 5}
+  - {x: 1, y: 5}
+  - {x: 1, y: 4}
+- name: net3
+  from: {block: complexrrcmatchedfilter, port: yi}
+  to: {block: complexcostasloop, port: xi}
+  route:
+  - {x: 1, y: 1}
+  - {x: 1, y: 2}
+  - {x: 2, y: 2}
+  - {x: 3, y: 2}
+  - {x: 4, y: 2}
+  - {x: 5, y: 2}
+  - {x: 6, y: 2}
+- name: net4
+  from: {block: complexrrcmatchedfilter, port: yq}
+  to: {block: complexcostasloop, port: xq}
+  route:
+  - {x: 1, y: 1}
+  - {x: 1, y: 2}
+  - {x: 2, y: 2}
+  - {x: 3, y: 2}
+  - {x: 4, y: 2}
+  - {x: 5, y: 2}
+  - {x: 6, y: 2}
+- name: net5
+  from: {chip_port: {chip: 0, port: x16_in}}
+  to: {block: complexrrcmatchedfilter, port: xi}
+  route:
+  - {x: 0, y: 0}
+- name: net6
+  from: {chip_port: {chip: 0, port: x16_in}}
+  to: {block: complexrrcmatchedfilter, port: xq}
+  route:
+  - {x: 0, y: 0}
+- name: net7
+  from: {block: bpskslicer, port: out}
+  to: {chip_port: {chip: 0, port: x16_out}}
+  route:
+  - {x: 1, y: 3}
+  - {x: 2, y: 3}
+  - {x: 2, y: 2}
+  - {x: 3, y: 2}
+  - {x: 4, y: 2}
+  - {x: 5, y: 2}
+  - {x: 6, y: 2}
+  - {x: 6, y: 1}
+  - {x: 6, y: 0}
+  - {x: 7, y: 0}
+  - {x: 8, y: 0}
+  - {x: 9, y: 0}

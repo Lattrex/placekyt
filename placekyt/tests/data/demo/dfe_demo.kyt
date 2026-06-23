@@ -1,0 +1,75 @@
+project:
+  format_version: 1
+  name: DFE Demo
+  version: '1.0'
+chip_type: kyttar_10x12
+chips:
+- id: 0
+  label: Chip 0
+  position: {x: 0.0, y: 0.0}
+blocks:
+- name: dfeequalizer
+  type: DFEEqualizerBlock
+  library: lattrex.official
+  params:
+    forward_taps: 21
+    feedback_taps: 21
+    step_size: 0.0
+    forgetting_factor: 0.99
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: ff0, x: 6, y: 1, face: west}
+    - {cell_id: ff1, x: 5, y: 1, face: west}
+    - {cell_id: ff2, x: 4, y: 1, face: west}
+    - {cell_id: ff3, x: 3, y: 1, face: west}
+    - {cell_id: ff4, x: 2, y: 1, face: west}
+    - {cell_id: ff5, x: 1, y: 1, face: south}
+    - {cell_id: ff6, x: 1, y: 2, face: south}
+    - {cell_id: ff7, x: 1, y: 3, face: south}
+    - {cell_id: ff8, x: 1, y: 4, face: south}
+    - {cell_id: ff9, x: 1, y: 5, face: south}
+    - {cell_id: ff10, x: 1, y: 6, face: east}
+    - {cell_id: ff11, x: 2, y: 6, face: east}
+    - {cell_id: ff12, x: 3, y: 6, face: east}
+    - {cell_id: ff13, x: 4, y: 6, face: east}
+    - {cell_id: ff14, x: 5, y: 6, face: east}
+    - {cell_id: ff15, x: 6, y: 6, face: north}
+    - {cell_id: ff16, x: 6, y: 5, face: east}
+    - {cell_id: ff17, x: 7, y: 5, face: east}
+    - {cell_id: ff18, x: 8, y: 5, face: north}
+    - {cell_id: ff19, x: 8, y: 4, face: north}
+    - {cell_id: ff20, x: 8, y: 3, face: north}
+    - {cell_id: lock_drv, x: 8, y: 2, face: west}
+    - {cell_id: fb0, x: 6, y: 2, face: south}
+    - {cell_id: fb1, x: 6, y: 3, face: west}
+    - {cell_id: fb2, x: 5, y: 3, face: north}
+    - {cell_id: fb3, x: 5, y: 2, face: west}
+    - {cell_id: fb4, x: 4, y: 2, face: west}
+    - {cell_id: fb5, x: 3, y: 2, face: west}
+    - {cell_id: fb6, x: 2, y: 2, face: south}
+    - {cell_id: fb7, x: 2, y: 3, face: south}
+    - {cell_id: fb8, x: 2, y: 4, face: south}
+    - {cell_id: fb9, x: 2, y: 5, face: east}
+    - {cell_id: fb10, x: 3, y: 5, face: north}
+    - {cell_id: fb11, x: 3, y: 4, face: north}
+    - {cell_id: fb12, x: 3, y: 3, face: east}
+    - {cell_id: fb13, x: 4, y: 3, face: south}
+    - {cell_id: fb14, x: 4, y: 4, face: south}
+    - {cell_id: fb15, x: 4, y: 5, face: east}
+    - {cell_id: fb16, x: 5, y: 5, face: north}
+    - {cell_id: fb17, x: 5, y: 4, face: east}
+    - {cell_id: fb18, x: 6, y: 4, face: east}
+    - {cell_id: fb19, x: 7, y: 4, face: north}
+    - {cell_id: fb20, x: 7, y: 3, face: north}
+    - {cell_id: dc, x: 7, y: 2, face: north}
+    - {cell_id: dc_b, x: 7, y: 1, face: east}
+connections:
+- name: dfeequalizer_to_x16_out
+  from: {block: dfeequalizer, port: out}
+  to: {chip_port: {chip: 0, port: x16_out}}
+  route:
+  - {x: 7, y: 1}
+  - {x: 8, y: 1}
+  - {x: 9, y: 1}
+  - {x: 9, y: 0}

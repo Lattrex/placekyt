@@ -1,0 +1,62 @@
+id: kyttar_costas_loop
+label: Kyttar Costas Loop
+category: '[Kyttar]'
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.complex_costas_loop(${device_id}, ${loop_bw}, ${damping})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+
+- id: loop_bw
+  label: Loop Bandwidth
+  dtype: real
+  default: '0.05'
+
+- id: damping
+  label: Damping Factor
+  dtype: real
+  default: '1.0'
+
+# Single numeric stream port each: a GR Python block (this RUN-graph marker is a
+# pass-through; the real DSP runs on the chip) has integer stream ports only — it
+# cannot name them, so the .grc must wire by index 0. The MEANINGFUL multi-port
+# The complex baseband is TWO float input ports (xi/xq) — the LOGICAL I/Q pair — so GRC
+# renders + keeps both wires (a single port collapsed the I/Q wiring to port-0 and
+# dropped the Q rail). Output is the recovered-I tap. GNURadio stream ports are
+# POSITIONAL INTEGERS, so each port carries only a ``label`` (NO string ``id:`` — that
+# would make the generated ``connect((blk,'xi'),…)`` raise TypeError). The placeKYT
+# importer maps the index back by position (0→xi, 1→xq) via the ComplexCostasLoopBlock
+# PortMap; the two input nets share ONE time-multiplexed chip route.
+inputs:
+- label: xi
+  domain: stream
+  dtype: float
+- label: xq
+  domain: stream
+  dtype: float
+
+outputs:
+- label: yi_tap
+  domain: stream
+  dtype: float
+
+documentation: |-
+  Complex Costas Loop — decision-directed BPSK carrier recovery.
+
+  Takes the COMPLEX baseband (xi = in-phase, xq = quadrature) and recovers the
+  carrier, emitting yi_tap = the derotated in-phase (the recovered I). The port
+  names (xi, xq, yi_tap) and params (loop_bw, damping) match the placeKYT
+  ComplexCostasLoopBlock interface, so a flowgraph using this block wires up and
+  imports into placeKYT cleanly.
+
+  Parameters:
+    Device ID: which Kyttar device to use
+    Loop Bandwidth: normalized loop bandwidth (default 0.05)
+    Damping Factor: loop damping (default 1.0)
+
+file_format: 1

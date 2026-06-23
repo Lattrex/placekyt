@@ -1,0 +1,120 @@
+project:
+  format_version: 1
+  name: BPSK Duplex Demo
+  version: '1.0'
+  author: Lattrex
+chip_type: kyttar_10x12
+chips:
+- id: 0
+  label: C0
+  position: {x: 0.0, y: 0.0}
+# Full-duplex BPSK transceiver sharing ONE input + ONE output port.
+# A Splitter landing cell at (0,0) steers each incoming burst by its JUMP
+# entry-address tag: rx_entry -> FACE east (RX chain), tx_entry -> FACE south
+# (TX chain). Both chains emit on the shared x16_out with DIFFERENT dest tags
+# (out_tag), so RX and TX stay distinguishable on the wire.
+#   RX:  x16_in -(east)->  SoftDemod(1,0) -> Slicer(2,0) -> x16_out  [tag 5]
+#   TX:  x16_in -(south)-> PSKMapper(0,1) -> ...row 1... -> x16_out  [tag 10]
+blocks:
+- name: split
+  type: SplitterBlock
+  library: lattrex.official
+  params:
+    rx_face: east
+    rx_hop: 1
+    rx_dest: 0
+    rx_chain_entry: 28   # = SoftDemod@(1,0) resolved entry (set by generator)
+    tx_face: south
+    tx_hop: 1
+    tx_dest: 0
+    tx_chain_entry: 14   # = PSKMapper@(0,1) resolved entry (set by generator)
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 0, y: 0, face: east}
+- name: demod
+  type: SoftDemodulatorBlock
+  library: lattrex.official
+  params:
+    noise_variance: 0.1
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 1, y: 0, face: east}
+- name: slicer
+  type: BPSKSlicerBlock
+  library: lattrex.official
+  params:
+    out_mode: bit
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 2, y: 0, face: east}
+- name: mapper
+  type: PSKSymbolMapperBlock
+  library: lattrex.official
+  params:
+    modulation: bpsk
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 0, y: 1, face: east}
+connections:
+# --- input: shared x16_in lands on the splitter ---
+- name: in_to_split
+  from: {chip_port: {chip: 0, port: x16_in}}
+  to: {block: split, port: burst}
+# --- splitter authored relays (RAW_OUTPUT_HOPS): face the abutting cells ---
+- name: split_to_demod
+  from: {block: split, port: out}
+  to: {block: demod, port: sample}
+  route:
+  - {x: 0, y: 0}
+  - {x: 1, y: 0}
+- name: split_to_mapper
+  from: {block: split, port: out}
+  to: {block: mapper, port: sample}
+  route:
+  - {x: 0, y: 0}
+  - {x: 0, y: 1}
+# --- RX chain (east along row 0) ---
+- name: demod_to_slicer
+  from: {block: demod, port: llr}
+  to: {block: slicer, port: llr}
+  route:
+  - {x: 1, y: 0}
+  - {x: 2, y: 0}
+- name: slicer_to_out
+  from: {block: slicer, port: out}
+  to: {chip_port: {chip: 0, port: x16_out}}
+  out_tag: 5
+  route:
+  - {x: 2, y: 0}
+  - {x: 3, y: 0}
+  - {x: 4, y: 0}
+  - {x: 5, y: 0}
+  - {x: 6, y: 0}
+  - {x: 7, y: 0}
+  - {x: 8, y: 0}
+  - {x: 9, y: 0}
+# --- TX chain (south to (0,1), then east along row 1, north to x16_out) ---
+- name: mapper_to_out
+  from: {block: mapper, port: out}
+  to: {chip_port: {chip: 0, port: x16_out}}
+  out_tag: 10
+  route:
+  - {x: 0, y: 1}
+  - {x: 1, y: 1}
+  - {x: 2, y: 1}
+  - {x: 3, y: 1}
+  - {x: 4, y: 1}
+  - {x: 5, y: 1}
+  - {x: 6, y: 1}
+  - {x: 7, y: 1}
+  - {x: 8, y: 1}
+  - {x: 9, y: 1}
+  - {x: 9, y: 0}
+simulation:
+  default_stimulus: bpsk_duplex_stimulus.kbs
+  golden_output: bpsk_duplex_golden.kbs
+  fpga_latency_ns: 20.0

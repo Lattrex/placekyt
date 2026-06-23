@@ -1,0 +1,56 @@
+id: kyttar_placekyt_sim_client
+label: placeKYT Sim Client (live)
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  placeKYT Sim Client - drive a chip running LIVE inside placeKYT.
+
+  placeKYT hosts the running chip (Simulation → "Run as GNURadio Server"); it
+  prints a host:port. This block connects to that server and registers a remote
+  chip proxy, so the Kyttar Source / Sink stream samples through the chip
+  that's executing inside placeKYT — and you watch placeKYT's canvas /
+  transaction log / waveform update in real time as the flowgraph runs.
+
+  Usage:
+  1. In placeKYT: open your project, Simulation → Run as GNURadio Server. Note
+     the printed port.
+  2. Add this block; set host (127.0.0.1) + that port, and the input/output port
+     names of your design.
+  3. Add kyttar.source (this device, the input port) and kyttar.sink (this
+     device, the output port). Connect Source -> ... -> Sink.
+
+  Parameters:
+  - Device ID:    shared with the source/sink blocks
+  - Host / Port:  the SimServer address placeKYT printed
+  - Input Port:   the chip input port name (e.g. x16_in)
+  - Output Port:  the chip output port name (e.g. x16_out)
+
+templates:
+  imports: from gnuradio.kyttar.placekyt_sim_client import placekyt_sim_client
+  make: placekyt_sim_client(device_id=${device_id}, host=${host}, port=${port},
+    input_port=${input_port}, output_port=${output_port})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+  - id: host
+    label: Host
+    dtype: string
+    default: '"127.0.0.1"'
+  - id: port
+    label: Port
+    dtype: int
+    default: '0'
+  - id: input_port
+    label: Input Port
+    dtype: string
+    default: '"x16_in"'
+  - id: output_port
+    label: Output Port
+    dtype: string
+    default: '"x16_out"'
+
+file_format: 1

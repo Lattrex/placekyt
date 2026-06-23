@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+*.spec.bak
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Editable-install / build metadata
+*.egg-link
+pip-wheel-metadata/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# OS / editor
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/
+
+# GNU Radio generated flowgraph artifacts (the .grc is the source; the .py is generated)
+# Keep curated hand-written runners; ignore GRC-generated top_block .py if regenerated
+.mypy_cache/

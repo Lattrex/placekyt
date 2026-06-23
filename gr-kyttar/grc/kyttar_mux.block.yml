@@ -1,0 +1,62 @@
+id: kyttar_mux
+label: Kyttar Mux
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar Mux - Channel Combiner
+
+  Collects data from multiple input channels and forwards to single output,
+  preserving channel identity via JUMP entry addresses.
+
+  This is the counterpart to demux - use at the end of parallel I/Q processing
+  to recombine streams before the output port.
+
+  Input ports:
+  - in0: Channel 0 (I) data -> tagged with JUMP to R1 downstream
+  - in1: Channel 1 (Q) data -> tagged with JUMP to R11 downstream
+  - in2: Channel 2 data -> tagged with JUMP to R21 downstream (if 3-channel)
+
+  This allows the sink to maintain per-channel FIFOs and pair samples
+  correctly despite async arrival order (essential because I and Q paths
+  may have different processing latencies).
+
+  Parameters:
+  - Device ID: ID of the KyttarDevice block
+  - Num Channels: Number of input channels (2 for I/Q, up to 3)
+
+  Example:
+    source -> demux --out0--> [I processing chain] --in0--> mux -> sink
+                   \-out1--> [Q processing chain] --in1-->/
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.mux(device_id=${device_id}, num_channels=${num_channels})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+  - id: num_channels
+    label: Num Channels
+    dtype: int
+    default: 2
+    options: ['2', '3']
+
+inputs:
+  - label: in0
+    dtype: float
+    optional: false
+  - label: in1
+    dtype: float
+    optional: false
+  - label: in2
+    dtype: float
+    optional: true
+
+outputs:
+  - label: out
+    dtype: float
+
+file_format: 1

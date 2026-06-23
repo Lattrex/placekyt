@@ -27,8 +27,10 @@ worse than no gate, because the whole value proposition is drop-in equivalence.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 
 import numpy as np
 
@@ -79,6 +81,38 @@ class CompareResult:
         head = "PASS" if self.passed else "FAIL"
         tail = f" — {self.reason}" if self.reason else ""
         return f"[{head}] {self.metric.value}: n={self.n_compared}, {core}{tail}"
+
+
+def write_report(kyttar_block: str, result: "CompareResult", *,
+                 coverage: dict | None = None,
+                 reports_dir: str | Path | None = None) -> Path:
+    """Persist a block's verification result as the JSON the dashboard reads.
+
+    ``coverage`` records which stimulus families ran (e.g.
+    ``{"edge": True, "random": 3, "param_sweep": 4, "mutation": True}``) so the
+    dashboard can show coverage at a glance. Written to
+    ``verification/reports/<KyttarBlock>.json`` by default.
+    """
+    out_dir = Path(reports_dir) if reports_dir else (
+        Path(__file__).resolve().parents[1] / "reports")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    rec = {
+        "kyttar_block": kyttar_block,
+        "passed": bool(result.passed),
+        "metric": result.metric.value,
+        "n_compared": result.n_compared,
+        "max_abs_err": result.max_abs_err,
+        "tolerance": result.tolerance,
+        "nmse_db": (None if result.nmse_db != result.nmse_db else result.nmse_db),
+        "correlation": (None if result.correlation != result.correlation
+                        else result.correlation),
+        "bit_errors": result.bit_errors,
+        "delay_used": result.delay_used,
+        "coverage": coverage or {},
+    }
+    path = out_dir / f"{kyttar_block}.json"
+    path.write_text(json.dumps(rec, indent=2) + "\n")
+    return path
 
 
 def q15_quant_floor(op_count: int) -> int:

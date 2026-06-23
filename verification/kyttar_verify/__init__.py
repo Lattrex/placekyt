@@ -19,7 +19,7 @@ Public entry points:
 
 from .dut_runner import run_block_dut, DUTResult
 from .gnuradio_ref import run_gnuradio_ref, GrResult, q15_to_float, float_to_q15
-from .compare import compare_against_grc, CompareResult, Metric
+from .compare import compare_against_grc, write_report, CompareResult, Metric
 
 __all__ = [
     "run_block_dut",
@@ -29,6 +29,7 @@ __all__ = [
     "q15_to_float",
     "float_to_q15",
     "compare_against_grc",
+    "write_report",
     "CompareResult",
     "Metric",
 ]

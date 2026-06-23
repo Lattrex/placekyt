@@ -30,7 +30,7 @@ for p in (str(_PLACEKYT), str(_VERIFY)):
         sys.path.insert(0, p)
 
 from kyttar_verify import (  # noqa: E402
-    run_block_dut, run_gnuradio_ref, compare_against_grc, Metric)
+    run_block_dut, run_gnuradio_ref, compare_against_grc, write_report, Metric)
 
 CHIP_YAML = str(_PLACEKYT / "resources" / "chips" / "kyttar_10x12.yaml")
 
@@ -141,3 +141,12 @@ def test_empty_output_fails():
     ref = _gr_gain(EDGE, 0.5)
     res = compare_against_grc([], ref.floats, metric=Metric.AMPLITUDE)
     assert not res.passed
+
+
+def test_emit_report():
+    """Emit the dashboard report for GainBlock (records the verified metrics +
+    coverage). Runs last so it reflects a passing verification."""
+    dut, res = _run_and_compare(0.5, EDGE)
+    assert res.passed, res.summary()
+    write_report("GainBlock", res, coverage={
+        "edge": True, "random": 3, "param_sweep": 4, "mutation": True})

@@ -1,0 +1,18 @@
+{
+  "kyttar_block": "GainBlock",
+  "passed": true,
+  "metric": "amplitude",
+  "n_compared": 8,
+  "max_abs_err": 1,
+  "tolerance": 2,
+  "nmse_db": -89.95571907577693,
+  "correlation": 0.9999999996861695,
+  "bit_errors": 0,
+  "delay_used": 0,
+  "coverage": {
+    "edge": true,
+    "random": 3,
+    "param_sweep": 4,
+    "mutation": true
+  }
+}

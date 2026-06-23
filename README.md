@@ -89,7 +89,29 @@ To build a design headlessly and check it against a golden output:
 - **[PROGRAMMING_GUIDE.md](PROGRAMMING_GUIDE.md)** — the Kyttar programming model: the instruction set, memory map, configuration registers, Q15 fixed-point, and how DSP blocks are written and placed. This is what you need to read a simulation.
 - **[BLOCK_AUTHORING_GUIDE.md](BLOCK_AUTHORING_GUIDE.md)** — a step-by-step guide to writing your **own** DSP block (single-cell, multi-cell, feedback) and exposing it in GNU Radio Companion. Start here once you want to go beyond the bundled blocks.
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** — how to contribute, run the tests, and a note on the simKYT simulator and Lattrex branding.
-- **[gr-kyttar/examples/README.md](gr-kyttar/examples/README.md)** — the bundled demos.
+- **[gr-kyttar/examples/README.md](gr-kyttar/examples/README.md)** — the bundled GNU Radio demos.
+
+---
+
+## Block library & verification
+
+Every Kyttar DSP block is verified to be a **drop-in equivalent of its GNU Radio
+Companion counterpart** — same parameters, output matching within fixed-point
+quantization noise. GNU Radio is the golden reference; the Kyttar block runs on
+simKYT as the device under test.
+
+- **[Block status dashboard → `verification/STATUS.md`](verification/STATUS.md)** —
+  which blocks are verified, their GNU Radio equivalents, and the measured quality
+  (error vs. the reference). This is the at-a-glance view of what's done. It is
+  generated from [`verification/manifest.json`](verification/manifest.json) and is
+  never hand-edited.
+- **[The gain reference example → `verification/examples/gain_reference/`](verification/examples/gain_reference/)** —
+  a heavily-annotated, standalone walkthrough of the whole verification workflow
+  on the simplest possible block. **Read this first** if you want to build and
+  verify your own block.
+- **[The verification framework → `verification/`](verification/)** — the harness
+  itself (`run_block_dut`, `run_gnuradio_ref`, `compare_against_grc`) and the
+  knowledge base of substrate gotchas.
 
 ---
 

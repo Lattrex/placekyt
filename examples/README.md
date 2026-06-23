@@ -20,5 +20,10 @@ inside placeKYT. See `../INSTALL.md` for the one-time setup.
 
 | Demo | What it shows |
 |------|---------------|
+| [`gain/`](gain/) | **Start here.** The simplest possible flow: one gain block. The best place to learn the placeKYT UI and the GNU Radio ↔ placeKYT workflow end to end. |
 | [`coherent_bpsk_rx/`](coherent_bpsk_rx/) | The headline demo: a full coherent BPSK receiver (RRC matched filter → Costas carrier recovery → Gardner timing recovery → BPSK slicer) recovering bits with a carrier + timing offset, BER 0. |
-| [`gain/`](gain/) | The simplest possible flow: one gain block. Good first wiring to confirm GNU Radio ↔ placeKYT is working end to end. |
+
+> Learning to **build and verify your own** block (rather than use an existing
+> one)? The gain block is also the reference for that — see
+> [`../verification/examples/gain_reference/`](../verification/examples/gain_reference/).
+> These examples *use* blocks; that one shows how to *make* them.

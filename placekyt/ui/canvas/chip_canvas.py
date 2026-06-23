@@ -838,6 +838,7 @@ class ChipCanvas(QGraphicsView):
         self._route_chip = chip
         self._route_points = [(x, y)]
         self._scene.clearSelection()
+        self._update_preview()   # show the anchor immediately (route-in-progress)
         self._emit_progress()
 
     def start_route_from_port(self, chip: int, port_name: str) -> bool:
@@ -858,6 +859,7 @@ class ChipCanvas(QGraphicsView):
         self._route_chip = chip
         self._route_points = [edge]
         self._scene.clearSelection()
+        self._update_preview()   # show the port's edge cell anchored immediately
         self._emit_progress()
         return True
 
@@ -960,7 +962,13 @@ class ChipCanvas(QGraphicsView):
 
     def _update_preview(self) -> None:
         self._remove_preview()
-        if len(self._route_points) >= 2:
+        # Draw the preview as soon as the route has an anchor (>=1 point) so the
+        # user gets immediate feedback that a route is in progress — including the
+        # very first cell, which is otherwise invisible (the common case: start a
+        # route from an input port and click its edge cell). ConnectionItem
+        # renders an endpoint marker on points[0], so a single-point route shows a
+        # highlighted anchor; two or more points add the dashed line.
+        if len(self._route_points) >= 1:
             origin = self._chip_origin(self._route_chip)
             self._preview_item = ConnectionItem(
                 self._route_points, origin, preview=True)

@@ -136,27 +136,38 @@ README. We'll use [`examples/coherent_bpsk_rx/`](examples/coherent_bpsk_rx/).
 
 ### 3b. Host the receiver chip in placeKYT
 
-1. Launch the placeKYT GUI: `.venv/bin/python placekyt/main.py`
-2. **File → Import GNURadio Flowgraph…** →
+Launch the placeKYT GUI (from the repo root):
+
+```bash
+.venv/bin/python placekyt/main.py
+```
+
+Then, in placeKYT:
+
+1. **File → Import GNURadio Flowgraph…** →
    `examples/coherent_bpsk_rx/coherent_bpsk_rx.grc`. placeKYT reads the flowgraph
    and places the receiver — RRC matched filter → Costas loop → Gardner timing
    recovery → BPSK slicer — onto the cell array, so you see the same design as a
    chip. (You start from the flowgraph, so the GNU Radio graph and the hosted chip
    are guaranteed to match.)
-3. **Simulation → Run as GNURadio Server.** placeKYT builds the chip and starts
+2. **Simulation → Run as GNURadio Server.** placeKYT builds the chip and starts
    hosting it; the status bar shows the bound port (default **58950**). Leave
    placeKYT running.
 
 ### 3c. Run the flowgraph in GNU Radio Companion
 
-1. Launch GNU Radio Companion: `gnuradio-companion`
-2. **File → Open** → `examples/coherent_bpsk_rx/coherent_bpsk_rx.grc`
-   You'll see the full receiver wired up: an RRC-shaped BPSK stimulus source →
-   the Kyttar DSP blocks (matched filter, Costas, Gardner, slicer) → QT GUI sinks.
-   This is the whole flow, visible and editable as a flowgraph.
-3. Press **▶ Run** (or F6). A window opens plotting the **input I** (the
-   carrier+timing-offset BPSK waveform) against the **recovered bits** coming back
-   from the placeKYT-hosted chip.
+Open the same flowgraph in GNU Radio Companion (in a second terminal, leaving
+placeKYT running):
+
+```bash
+gnuradio-companion examples/coherent_bpsk_rx/coherent_bpsk_rx.grc
+```
+
+You'll see the full receiver wired up: an RRC-shaped BPSK stimulus source → the
+Kyttar DSP blocks (matched filter, Costas, Gardner, slicer) → QT GUI sinks — the
+whole flow, visible and editable as a flowgraph. Press **▶ Run** (or F6). A window
+opens plotting the **input I** (the carrier+timing-offset BPSK waveform) against
+the **recovered bits** coming back from the placeKYT-hosted chip.
 
 > **Harmless warning — just click OK.** On **Run**, GNU Radio may pop up
 > *"The xterm executable 'x-terminal-emulator' is missing. You can change this
@@ -214,14 +225,31 @@ be**. You do not need its source to use placeKYT. See [`LICENSE`](LICENSE) and
 
 ## 5. Upgrading
 
-- **placeKYT / `gr_kyttar` / the simKYT `.so`:** `git pull`, then re-run
-  `.venv/bin/pip install -e runtime/python`. Everything lives in the venv; the
-  GNU Radio side is untouched.
-- **The Kyttar GNU Radio blocks:** after a `git pull`, re-run
-  `cd gr-kyttar && ./install.sh` to refresh GNU Radio's copy.
+To update an existing install, run this from the repo root:
 
-Because placeKYT (its venv + the `.so`) and GNU Radio are fully decoupled — they
-only ever talk over the socket — upgrading one never breaks the other.
+```bash
+# 1. pull the latest code
+git pull
+
+# 2. refresh the placeKYT venv side (gr_kyttar + the prebuilt simkyt .so)
+.venv/bin/pip install -e runtime/python
+
+# 3. push the updated GNU Radio blocks INTO GNU Radio (see note below)
+cd gr-kyttar && ./install.sh && cd ..
+```
+
+> **Step 3 is not optional if you use the GNU Radio integration.** The Kyttar
+> GNU Radio blocks are *copied into* GNU Radio's own `site-packages` by
+> `install.sh` — they do **not** run from the repo. A `git pull` updates the repo
+> copy, but GNU Radio keeps loading the old copy until you re-run `./install.sh`.
+> Skipping it means GNU Radio runs stale blocks (you'd see old behavior and think
+> the update didn't take). If you only use the placeKYT GUI/CLI, you can stop
+> after step 2.
+
+Nothing needs to be compiled: the `simkyt` extension ships prebuilt, so an upgrade
+is just `git pull` + the two install steps above. Because placeKYT (its venv + the
+`.so`) and GNU Radio are fully decoupled — they only ever talk over the socket —
+upgrading one never breaks the other.
 
 ---
 

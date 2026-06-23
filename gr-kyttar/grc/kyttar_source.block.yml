@@ -86,7 +86,11 @@ parameters:
 inputs:
   - label: in
     domain: stream
-    dtype: ${ 'complex' if (complex_in or server_port > 0) else 'float' }
+    # Driven by the explicit Complex Input flag only — NOT by server_port. In
+    # server-batch mode the stream can be float (e.g. a gain) or complex (an I/Q
+    # receiver); the user states which via complex_in. (Forcing complex whenever
+    # a server port was set broke float demos like the gain example.)
+    dtype: ${ 'complex' if complex_in else 'float' }
 
 outputs:
   - label: out

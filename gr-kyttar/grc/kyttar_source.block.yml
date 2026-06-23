@@ -90,11 +90,17 @@ inputs:
     # server-batch mode the stream can be float (e.g. a gain) or complex (an I/Q
     # receiver); the user states which via complex_in. (Forcing complex whenever
     # a server port was set broke float demos like the gain example.)
-    dtype: ${ 'complex' if complex_in else 'float' }
+    # NOTE: compare against the STRING 'True' — a GRC bool param evaluates to the
+    # string 'True'/'False', and the string 'False' is truthy, so a bare
+    # `if complex_in` would always be complex. Test for equality with 'True'.
+    dtype: ${ 'complex' if str(complex_in) == 'True' else 'float' }
 
 outputs:
   - label: out
     domain: stream
-    dtype: ${ 'float' if server_port > 0 else ('complex' if complex_in else 'float') }
+    # The downstream Kyttar DSP markers are float-typed (an I/Q pair is two float
+    # ports), and the data handed back on the GR side is float, so the source's
+    # GR-facing output is always float regardless of the input type.
+    dtype: float
 
 file_format: 1

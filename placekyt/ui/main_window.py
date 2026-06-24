@@ -467,19 +467,26 @@ class MainWindow(QMainWindow):
             return [(dx - min_dx, dy - min_dy) for dx, dy in offs]
         return [(0, 0)]
 
-    def _block_port_cells(self, block_type, library):
+    def _block_port_cells(self, block_type, library, params=None):
         """``{port_name: (cell_id, direction)}`` for a block's external ports —
         from the PortMap (auto-P&R P2.3). Lets the canvas anchor a logical net's
-        flyline + a port stub at the right cell. Cached per (type, library) since
-        building a PortMap instantiates the block."""
+        flyline + a port stub at the right cell, and mark the input/output I/O
+        cells. Resolved WITH the block instance's ``params``: a scaling block's
+        program size — and therefore which cells are its input vs output —
+        depends on its params (a multi-cell FIR has input on cell 0, output on
+        its last cell; the param-less default is the 1-tap case where they
+        collapse to one cell). Cached per (type, library, params)."""
         cache = getattr(self, "_port_cell_cache", None)
         if cache is None:
             cache = self._port_cell_cache = {}
-        key = (block_type, library)
+        # params dict → a hashable, order-independent cache key.
+        pkey = tuple(sorted((str(k), str(v)) for k, v in (params or {}).items()))
+        key = (block_type, library, pkey)
         if key not in cache:
             out = {}
             try:
-                pm = self.controller.catalog.port_map(block_type, library=library)
+                pm = self.controller.catalog.port_map(
+                    block_type, params, library=library)
                 for p in pm.ports:
                     out[p.name] = (p.cell_id, p.direction)
             except Exception:  # noqa: BLE001 — no PortMap ⇒ canvas falls back

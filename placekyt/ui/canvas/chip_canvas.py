@@ -704,8 +704,23 @@ class ChipCanvas(QGraphicsView):
             if len(pl.cells) > 1:
                 pmap = None
                 if self.port_cell_provider is not None:
+                    # Resolve WITH the placed block's params: a scaling block
+                    # (FIR, …) only exposes its true, DISTINCT input vs output
+                    # cells when its PortMap is built for the instance's params.
+                    # The param-less default collapses to the 1-tap case where
+                    # input and output share cell 0, so the input-cell highlight
+                    # got overwritten by output and vanished (the regression).
+                    params = getattr(blk, "params", None)
                     try:
-                        pmap = self.port_cell_provider(blk.type, blk.library) or {}
+                        pmap = self.port_cell_provider(
+                            blk.type, blk.library, params) or {}
+                    except TypeError:
+                        # Provider without a params arg (older signature).
+                        try:
+                            pmap = self.port_cell_provider(
+                                blk.type, blk.library) or {}
+                        except Exception:  # noqa: BLE001
+                            pmap = None
                     except Exception:  # noqa: BLE001
                         pmap = None
                 if pmap:

@@ -14,8 +14,8 @@
 | **FIRFilterBlock** | `filter.fir_filter_fff` | 1 · feed-forward | ✅ done | err 10 / tol 17 LSB · -65 dB SNR | edge rand×3 sweep×12 mut |
 | **DecimatorBlock** | `filter.fir_filter_fff (decim)` | 1 · feed-forward | ✅ done | err 6 / tol 9 LSB · -72 dB SNR | edge rand×3 sweep×8 mut |
 | **IIRBiquadBlock** | `filter.iir_filter_ffd` | 1 · feed-forward | blocked | — | — |
-| **ComplexMixerBlock** | `blocks.multiply_cc + analog.sig_source` | 1 · feed-forward | ⬜ planned | — | — |
 | **NCOBlock** | `analog.sig_source_c` | 1 · feed-forward | ⬜ planned | — | — |
+| **ComplexMixerBlock** | `blocks.multiply_cc + analog.sig_source` | 1 · feed-forward | ⬜ planned | — | — |
 | **SoftDemodulatorBlock** | `digital.constellation_soft_decoder_cf` | 1 · feed-forward | ⬜ planned | — | — |
 | **ComplexRRCMatchedFilterBlock** | `filter.fir_filter_ccf (rrc taps)` | 2 · stateful/loop | ⬜ planned · 🧪 proof-of-concept | — | — |
 | **AGCBlock** | `analog.agc_ff` | 2 · stateful/loop | ⬜ planned | — | — |

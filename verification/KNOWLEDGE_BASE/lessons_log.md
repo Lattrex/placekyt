@@ -8,6 +8,45 @@ anything that generalizes across block classes into `invariants.md`.
 
 ---
 
+## NCO / ComplexMixer / SoftDemod — analysis + harness gap (not yet built) 2026-06-24
+
+These three remaining tier-1 blocks are FEASIBLE but each needs infrastructure
+the current harness lacks; analysis is captured here + in the manifest so the next
+run resumes without re-deriving. They are NOT blocked (no ISA wall like the IIR) —
+they are larger than one autonomous step at the production-quality bar.
+
+- **Shared gap — a COMPLEX / multi-channel verification harness.** `run_block_dut`
+  is real-only (one i16 in, `read_port_i16` out). Complex blocks carry I/Q on two
+  registers/channels (input_registers=[0,1] = xi/xq; output written `write yi`
+  (ch0) + `write yq` (ch1) + one `jump`, see `complex_rrc_matched_filter_block`).
+  A complex DUT path = inject `[I,Q]` (or a trigger for a source), read via
+  `read_port_with_channels` → split channel 0=I / 1=Q, compare each. Build this
+  ONCE; NCO, ComplexMixer, and SoftDemod all need it (SoftDemod needs complex IN,
+  float-LLR out).
+- **NCO (analog.sig_source_c).** Measured: `sig_source_c(fs, GR_COS_WAVE, f, amp)`
+  = `amp·(cos θ_n + j·sin θ_n)`, `θ_n = 2π f/fs·n` (n=0 → I=amp, Q=0). Must output
+  COMPLEX. Param refactor (decision A): sample_rate / frequency(Hz) / waveform /
+  amplitude, derive `freq_word = round(f/fs·65536)` (16-bit). **The real work is
+  PRECISION:** the existing 64-entry quarter-wave table (no interpolation) is
+  ~1600 LSB off GR's exact float sin/cos — not a match. Linear interpolation is
+  REQUIRED (64-entry+interp ≈ 40 LSB; 256-entry+interp ≈ 3 LSB — prototype
+  confirmed). A 256-entry table (65 quarter words) spans cells (LOAD is per-cell)
+  → cross-cell interpolation, intricate. Also the 16-bit freq_word DRIFTS vs GR's
+  exact frequency and the drift GROWS with sample index — verify on grid-aligned
+  frequencies (integer freq_word) to isolate the table floor; document the off-grid
+  freq resolution (fs/65536 Hz) separately.
+- **ComplexMixer (multiply_cc + sig_source).** The existing block is a REAL mixer
+  (`in·cos`), NOT a complex multiply → does not match GR. `multiply_cc` is the full
+  complex product `(ac−bd)+j(ad+bc)` (4 MULQ); the fused convenience block =
+  `multiply_cc(signal, sig_source_c)` = a frequency shift `in·exp(jθ_n)`, so it
+  reuses the NCO's complex exponential. Build the NCO first.
+- **SoftDemod (constellation_soft_decoder_cf).** Emits approximate LLRs (soft bits)
+  from complex symbols; the metric is on the soft values, and the GR soft decision
+  depends on the constellation object — characterize it empirically before building.
+  Build after NCO/ComplexMixer.
+
+---
+
 ## DecimatorBlock — GR fir_filter_fff(M,taps) = FIR + emit-every-M 2026-06-24
 
 - **Status:** PASS / DONE vs GNU Radio `filter.fir_filter_fff(M, taps)`, 25 tests;

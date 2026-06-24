@@ -8,6 +8,52 @@ anything that generalizes across block classes into `invariants.md`.
 
 ---
 
+## DecimatorBlock — GR fir_filter_fff(M,taps) = FIR + emit-every-M 2026-06-24
+
+- **Status:** PASS / DONE vs GNU Radio `filter.fir_filter_fff(M, taps)`, 25 tests;
+  full verification suite 93/93; placekyt suite 937 passed / 16 skipped.
+- **A decimator IS an FIR + a mod-M emit gate.** GR's `fir_filter_fff(M, taps)`
+  emits the full FIR sampled at PHASE 0 — `y_full[0::M]` (confirmed: it equals
+  `fir_filter_fff(1,taps)[0::M]`). So DecimatorBlock SUBCLASSES the verified
+  FIRFilterBlock: every wavefront cell runs each input sample (delay line /
+  partial forwarding / headroom saturation all inherited), and ONLY the last
+  cell's OUTPUT is gated by a counter (start M-1, emit when it hits M, reset). The
+  block emits on input samples 0, M, 2M, … → aligns with GR at delay 0.
+- **Reuse, don't reimplement.** Non-last cells come VERBATIM from
+  `super().build_cell_programs()`; only the last cell is rebuilt to splice in the
+  counter (so its register allocation accounts for the extra data/state). The
+  bit-exact reference is the inherited `process_reference_q15` decimated `[::M]`.
+- **The counter + the headroom restore must SHARE the last cell.** The FIR's
+  bias-and-shift restore (~9 instrs + 2 data) does NOT fit beside the counter
+  (~8 instrs + 2 data + state) — a 13-tap S=1 decimator failed to build. Fix: the
+  decimator restores the gain with the CHEAPER DOUBLING-saturate (`ADD R0,R0` +
+  `BR.NV +2; SHR R0,#15; SUB satneg,R0`, S times) — the FIR docstring's
+  alternative, bit-identical to `clamp(acc·2^S)` so the inherited reference STILL
+  predicts the DUT exactly, but cheap in fixed overhead. With it the restore +
+  counter coexist for the small S a decimation filter needs.
+- **S=1 is the COMMON case, not an edge.** A normalized anti-alias low-pass has
+  Σ taps = 1 but Σ|taps| slightly >1 (sidelobes) → `S=ceil(log2 Σ|h|)=1`. So the
+  decimator MUST support S>0 (an S=0-only block would reject most real filters).
+- **Harness: decimated output via the per-sample None pattern.** `run_block_dut`
+  records `None` for the silent (non-emit) inputs, so the emitted stream is
+  `dut.outputs_q15[::M]` and a dead block still fails (a real test asserts
+  `emitted iff index%M==0`). Aligns with GR at delay 0.
+- **Budget caps (re-derived against the allocator).** Counter+restore shrink the
+  last cell's tap room with S: single-cell ceiling 4 (S=0) / 2 (S=1); multi-cell
+  last cell 3 (S=0) / 2 (S=1) / 1 (S=2). `_segment_offsets` is overridden to
+  ALWAYS cap the last cell (it always has the counter).
+- **KNOWN LIMIT (guarded).** Σ|h| > 4 (head_shift > 2) raises a clear ValueError
+  — the doubling restore (4 instrs × S) no longer fits beside the counter. Every
+  realistic anti-alias decimator (normalized, or up to ~4× gain) is covered; a
+  bigger-gain filter scales the taps down or uses FIR+gain ahead of
+  decimate-by-[1.0]. (`test_decimator_excess_headroom_raises`.)
+- **Param rename:** `decimation_factor` → `decimation` (matches the GRC yaml and
+  GR's `decim`; the old yaml `make` passed `decimation=` to a `decimation_factor`
+  constructor — a latent import mismatch, now fixed). Updated callers:
+  `modem_110b_demo.py`, the `.kyt` demo, the `gr-kyttar` `decimator.py` wrapper.
+
+---
+
 ## IIRBiquadBlock — BLOCKED: recursive Q15 needs accumulator guard bits 2026-06-24
 
 - **Status:** BLOCKED (ISA/datapath limitation → out of autonomous scope per the

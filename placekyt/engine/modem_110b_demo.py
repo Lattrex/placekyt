@@ -51,7 +51,7 @@ def build_110b_rx_2chip(controller, *, library: str = "lattrex.official"):
     # (1/M each tap) is enough to suppress the imaging for this demo.
     dec = controller.place_block(
         "DecimatorBlock", 0, 3, 3, library=library,
-        params={"decimation_factor": _DECIM,
+        params={"decimation": _DECIM,
                 "coefficients": [1.0 / _DECIM] * _DECIM})
     controller.add_logical_connection(
         ChipPortEndpoint(chip=0, port="x16_in"),

@@ -34,7 +34,7 @@ blocks:
   type: DecimatorBlock
   library: lattrex.official
   params:
-    decimation_factor: 4
+    decimation: 4
     coefficients:
     - 0.25
     - 0.25

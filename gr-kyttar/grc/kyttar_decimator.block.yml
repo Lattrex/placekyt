@@ -1,14 +1,14 @@
 id: kyttar_decimator
-label: Kyttar Decimator
+label: Decimating FIR Filter
 category: '[Kyttar]'
 flags: [ python ]
 
 documentation: |-
-  Kyttar Decimator - FIR Filter with Downsampling
+  Decimating FIR Filter — drop-in for GNU Radio filter.fir_filter_fff(decim, taps).
 
-  Implements a decimating FIR filter that combines lowpass filtering
-  with sample rate reduction:
-      output[n] = sum(coeff[i] * input[n*decimate - i]) for i in 0..N-1
+  Runs the anti-alias FIR every input sample and emits every M-th output
+  (output[k] = the full FIR at input phase 0 == y_full[0::M]):
+      output[k] = sum(coeff[i] * input[k*M - i]) for i in 0..N-1
 
   This block runs on the Kyttar chip. Place it between a KyttarSource
   and KyttarSink block, and ensure the device_id matches your KyttarDevice.

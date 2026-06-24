@@ -1,0 +1,20 @@
+{
+  "kyttar_block": "DecimatorBlock",
+  "passed": true,
+  "metric": "amplitude",
+  "n_compared": 31,
+  "max_abs_err": 6,
+  "tolerance": 9,
+  "nmse_db": -71.58481209031831,
+  "correlation": 0.9999999701995745,
+  "bit_errors": 0,
+  "delay_used": 0,
+  "coverage": {
+    "edge": true,
+    "random": 3,
+    "param_sweep": 8,
+    "mutation": true,
+    "phase": true,
+    "bit_exact": true
+  }
+}

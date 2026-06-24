@@ -49,10 +49,10 @@ class decimator(_PassThrough):
         self._coefficients = list(coefficients)
         self._num_taps = len(self._coefficients)
         # Advertise params for GRC↔placeKYT sync detection (see dsp_markers).
-        # placeKYT names the rate `decimation_factor` (GRC marker: `decimation`).
+        # placeKYT names the rate `decimation` (matching GR's GRC `decim`).
         self._advertise_grc_params(
             device_id, "DecimatorBlock",
-            {"coefficients": self._coefficients, "decimation_factor": decimation})
+            {"coefficients": self._coefficients, "decimation": decimation})
 
     def set_coefficients(self, coefficients: List[float]):
         """Set filter coefficients."""

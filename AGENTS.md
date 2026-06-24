@@ -82,14 +82,20 @@ Set its status to `"in_progress"` in the manifest before you start.
 Read these IN ORDER. They will save you the exact mistakes that have already been
 made and solved:
 
-1. **`verification/KNOWLEDGE_BASE/invariants.md`** — INV-1…INV-7, the hard substrate
+1. **`verification/KNOWLEDGE_BASE/invariants.md`** — INV-1…INV-10, the hard substrate
    rules (placement-dependent hop counts, params-dependent entry addresses, Q15
-   saturation, the mandatory failing-mutation gate, the register budget, …). These
-   are model-agnostic and apply across blocks. **Not reading these is the #1 cause of
-   wasted time.**
-2. **`verification/KNOWLEDGE_BASE/lessons_log.md`** — per-block lessons (newest
+   saturation, the mandatory failing-mutation gate, the register budget, and the
+   layout rules INV-8/9/10). These are model-agnostic and apply across blocks.
+   **Not reading these is the #1 cause of wasted time.**
+2. **`verification/KNOWLEDGE_BASE/layout_rules.md`** — REQUIRED if your block is more
+   than one cell. How a block FOLDS on the array: input/output on the same edge so a
+   bus can tap both, output egressing the *last* cell of a wavefront, and the ≤8-cells-
+   across convention on this 10×12 chip. None of it is enforced by a DRC — a block
+   that ignores it builds fine and then **silently fails to route** (no output, no
+   error). This is exactly what trips up multi-cell blocks; do not skip it.
+3. **`verification/KNOWLEDGE_BASE/lessons_log.md`** — per-block lessons (newest
    first). If a similar block was done, its gotchas are here.
-3. **`BLOCK_AUTHORING_GUIDE.md`** (+ `PROGRAMMING_GUIDE.md` for the cell model, ISA,
+4. **`BLOCK_AUTHORING_GUIDE.md`** (+ `PROGRAMMING_GUIDE.md` for the cell model, ISA,
    Q15, and `@N` relative addressing) — how a block class is structured.
 
 ### Step 3 — Author the block
@@ -179,6 +185,7 @@ not lower:
 |------|------|
 | `verification/manifest.json` | **The work-queue.** Block targets, GR counterparts, tiers, status. |
 | `verification/KNOWLEDGE_BASE/invariants.md` | Substrate rules INV-1…N. **Read first.** |
+| `verification/KNOWLEDGE_BASE/layout_rules.md` | How a multi-cell block FOLDS on the array (same-edge I/O, last-cell egress, ≤8-across). **Read before any 2+ cell block.** |
 | `verification/KNOWLEDGE_BASE/lessons_log.md` | Per-block lessons. Read relevant ones; append yours. |
 | `verification/tests/test_gain.py` | The copy-me test template (DUT vs GR + mutations). |
 | `verification/kyttar_verify/` | Harness internals: `dut_runner` (build+sim a block), `gnuradio_ref` (golden), `compare` (aligned, Q15-aware compare). |

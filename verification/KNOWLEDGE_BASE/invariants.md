@@ -141,3 +141,66 @@ when fixed) rather than claiming the block is fully done. Multi-cell egress
 (driving the last cell, not the first) is a harness capability still to be built.
 
 **Applies to:** FIR, decimator, IIR, and any block that grows past one cell.
+
+---
+
+## INV-8 — A multi-cell block must FOLD; I/O on the SAME edge (not a line)
+
+**Symptom:** a multi-cell block builds fine but **never routes** — no output, no
+error naming the cause. Or a feedback block needs an absurd full-width return path.
+
+**Root cause:** the router runs a single **bus** along one edge of the block and
+taps it. If input and output sit on *opposite* edges (the default for a straight
+line of cells), the bus can't tap both, and the route fails silently. A feedback
+loop laid out as a line puts producer and consumer at opposite ends, forcing a
+full-width return (the early Costas: 7 cells + a 6-cell return for a 1-sample
+delay = 13 cells).
+
+**Fix:** lay the block out as a **serpentine fold**, with the external input
+port(s) and the output port on the **same** (bus-facing) edge, within ~2 cells —
+`portmap.py` then derives `io_colocated=True`. This is *observed, not enforced*:
+nothing forces it, but a non-colocated block does not tap a single bus → does not
+route on this chip. Author an explicit `default_layout` to fold; the base-class
+auto-snake makes the block *compact* but does NOT guarantee same-edge I/O.
+
+**Applies to:** every block of 2+ cells, especially anything with feedback.
+See `layout_rules.md` for the full rationale and the canonical 2×4 fold.
+
+---
+
+## INV-9 — On THIS 10×12 chip, keep a block ≤ 8 cells across (convention)
+
+**Symptom:** a wide block (a long FIR as a near-straight line) builds but won't
+route past itself; an adjacent block can't be reached by the bus.
+
+**Root cause:** the array is 10 wide and the bus needs one channel of cells on
+EACH side of a block to pass traffic. 8 + 1 + 1 = 10 = full width. A block wider
+than 8 in either dimension leaves no channel → routes fail silently.
+
+**Fix:** fold to keep both footprint dimensions ≤ 8 (a 64-tap FIR ≈ 13 cells must
+be ~4×4, never 13×1).
+
+**This is a CHIP-SIZE CONVENTION, not an architectural rule, and is deliberately
+NOT enforced by any DRC or warning** — on larger future chips it stops mattering
+and enforcement would have to be ripped out. Nothing flags a violation; it just
+won't work here. Honor it on this chip.
+
+**Applies to:** any multi-cell block on the 10×12 array.
+
+---
+
+## INV-10 — A wavefront block's output exits the LAST cell, not cell 0
+
+**Symptom:** a multi-cell filter injects correctly but reads back **nothing**.
+
+**Root cause:** in a chained partial-sum (wavefront) block the input enters cell 0
+but the partial sum flows 0 → 1 → … → N-1, and only the **last** cell produces the
+finished output. A harness/driver that derives its drain from
+`placement.cells[0]` reads the wrong cell and gets nothing.
+
+**Fix:** declare the output port on the last cell; anything draining the block
+(verification harness, bus tap) must target that cell's position, not cells[0].
+Extending the single-block harness to drive cell 0 but drain the last cell is the
+known capability gap behind the FIR multi-cell ceiling (INV-7).
+
+**Applies to:** FIR, RRC, decimator, and any chained/wavefront multi-cell block.

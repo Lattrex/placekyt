@@ -105,7 +105,8 @@ class SimServer:
 
     def __init__(self, chip, *, host: str = "127.0.0.1", port: int = 0,
                  on_activity=None, on_reset=None, on_before_batch=None,
-                 default_entries=None, on_grc_params=None, debug_hooks=None):
+                 default_entries=None, on_grc_params=None, debug_hooks=None,
+                 default_hops=None):
         self._chip = chip
         self._host = host
         self._req_port = port
@@ -133,6 +134,14 @@ class SimServer:
         # client injects WITHOUT specifying jump_entry, so a block whose entry is
         # not 0 works over the bridge without the GRC having to know the entry.
         self._default_entries: dict[str, int] = dict(default_entries or {})
+        # Per-input-port injection HOP (the raw 5-bit hop field = 31 - distance
+        # from the port cell to the block's landing cell). This is PLACEMENT-
+        # DEPENDENT (INV-1): a block 1 hop from the port needs 30, a block placed
+        # deeper needs less. process_batch MUST use this, not a hardcoded 30 —
+        # otherwise the WRITE/JUMP is consumed at the wrong cell and the block
+        # never executes (empty output). Absent ⇒ fall back to 30 (the 1-hop
+        # case, e.g. a block auto-placed on the port edge).
+        self._default_hops: dict[str, int] = dict(default_hops or {})
         # Optional: called when a client requests a chip reset (new flowgraph
         # run). The host rebuilds a fresh chip and calls set_chip(); on_reset
         # returns the new chip (or None to keep the current one).
@@ -328,6 +337,18 @@ class SimServer:
                     entry = int(self._default_entries.get(in_name, 0)) & 0xFF
                 else:
                     entry = int(raw_entry) & 0xFF
+                # PLACEMENT-DEPENDENT injection hop (INV-1): use the input port's
+                # build-configured hop (31 - distance to the block's landing
+                # cell), NOT a hardcoded 30. A header `jump_hop` overrides; else
+                # the per-port default; else 30 (the 1-hop, on-the-edge case).
+                # Hardcoding 30 made any block NOT 1 hop from the port silently
+                # produce NO output — the WRITE/JUMP lands at the wrong cell so
+                # the block never fires.
+                raw_hop = header.get("jump_hop", None)
+                if raw_hop is None:
+                    hop = int(self._default_hops.get(in_name, 30)) & 0x1F
+                else:
+                    hop = int(raw_hop) & 0x1F
                 mx = int(header.get("max_events_per", 40000))
                 # `raw`: return the raw int16 output WORDS (as float32, exact for
                 # the small integers a packer/slicer emits) instead of Q15-scaled
@@ -354,9 +375,10 @@ class SimServer:
                 # xq→a1, run;) JUMP entry, run; then drain the output port. (The
                 # write_port_multi_i16 path stalls the loop after one sample; the
                 # raw inject path advances every sample and is what the on-chip lock
-                # tests use.) target_hop_cnt=30 = @1 to the landing cell at the
-                # input-port edge. Wrapped so a debug-hook STOP (BatchAborted)
-                # returns the samples produced so far instead of the whole burst.
+                # tests use.) `hop` is placement-dependent (31 - distance to the
+                # landing cell), resolved above — NOT a hardcoded 30. Wrapped so a
+                # debug-hook STOP (BatchAborted) returns the samples produced so
+                # far instead of the whole burst.
                 try:
                     for k in range(nsamp):
                         if is_complex:
@@ -365,14 +387,14 @@ class SimServer:
                         else:
                             xi = _float_to_q15(float(data[k]))
                             xq = None
-                        self._chip.inject_data_physical([xi], target_hop_cnt=30,
+                        self._chip.inject_data_physical([xi], target_hop_cnt=hop,
                                                         target_addr=int(a0))
                         self._chip.run(max_events=3000)
                         if xq is not None:
-                            self._chip.inject_data_physical([xq], target_hop_cnt=30,
+                            self._chip.inject_data_physical([xq], target_hop_cnt=hop,
                                                             target_addr=int(a1))
                             self._chip.run(max_events=3000)
-                        self._chip.inject_jump_physical(target_hop_cnt=30,
+                        self._chip.inject_jump_physical(target_hop_cnt=hop,
                                                         entry_addr=entry)
                         self._chip.run(max_events=mx)
                         if raw:

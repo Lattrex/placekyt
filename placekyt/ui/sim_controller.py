@@ -387,6 +387,7 @@ class SimController(QObject):
         self._sim_chip = chip0.id if chip0 else 0
         cfg = self._input_port_config(self._sim_chip)
         default_entries: dict[str, int] = {}
+        default_hops: dict[str, int] = {}
         if cfg is not None:
             port_name, kw = cfg
             self.engine.configure_input_port(port_name, **kw)
@@ -395,6 +396,13 @@ class SimController(QObject):
             # e.g. the coherent-RX phase cell at 17, then work over the bridge).
             if "entry_addr" in kw:
                 default_entries[port_name] = int(kw["entry_addr"])
+            # And the resolved HOP (31 - distance to the block's landing cell):
+            # the bridge MUST inject the batch at this hop, NOT a hardcoded 30
+            # (INV-1). A block not 1 hop from the port (any non-edge placement,
+            # and what the resync/auto-place produces) otherwise never executes —
+            # the WRITE/JUMP is consumed at the wrong cell and output is empty.
+            if "hop_count" in kw:
+                default_hops[port_name] = int(kw["hop_count"])
         self._bp_scan = {}
         self._bp_hits = []
         self._last_server_refresh = 0.0  # for refresh throttling
@@ -433,7 +441,13 @@ class SimController(QObject):
         def _on_sample(sample_index, paused):
             # Queued to the GUI thread: refresh the debug views per sample, and
             # surface a pause so the toolbar state reflects a breakpoint stop.
-            self.server_activity.emit(False)
+            # full_capture=True: a process_batch is a BOUNDED burst, so EVERY
+            # mid-batch refresh must retain the whole trace (not just the final
+            # one) — else the rolling-window trim drops the start of the batch
+            # and the user sees only the tail. Continuous streaming never calls
+            # _on_sample (it uses write_port/run_until_output), so it stays
+            # bounded — see test_live_trace_is_bounded_and_cycles.
+            self.server_activity.emit(True)
             if paused:
                 self.state_changed.emit("paused")
 
@@ -447,6 +461,7 @@ class SimController(QObject):
             on_reset=self._rehost_server_chip_threadsafe,
             on_before_batch=self._rebuild_if_dirty_threadsafe,
             default_entries=default_entries,
+            default_hops=default_hops,
             on_grc_params=_grc_params,
             debug_hooks=self._batch_debug)
         bound = self._gr_server.start()
@@ -517,11 +532,13 @@ class SimController(QObject):
         # to end — is traceable. STREAMING: keep only the most-recent window's worth
         # before the expensive normalise/append (cost stays O(window) for an
         # unbounded stream).
-        # Retain the ENTIRE trace (no rolling-window trim) for a one-shot batch
-        # OR whenever a GRC server is hosting (every refresh, not just the final
-        # one) — a GRC run is a bounded burst the user must see in full. Only an
-        # unbounded interactive stream keeps the O(window) rolling tail.
-        retain_all = full_capture or self._server_batch_retain_all
+        # Retain the ENTIRE trace (no rolling-window trim) when full_capture is
+        # set — a BOUNDED process_batch burst (its final refresh AND every
+        # per-sample mid-batch refresh pass full_capture, so the user sees the
+        # whole burst start-to-end). Continuous/unbounded streaming
+        # (write_port + run_until_output) passes full_capture=False and keeps the
+        # O(window) rolling tail so it stays bounded (no growing Stop-lag).
+        retain_all = full_capture
         if retain_all:
             trimmed = new_events
         else:

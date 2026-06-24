@@ -51,13 +51,15 @@ class _RetentionHarness:
     _states_from_events = sc.SimController._states_from_events
     _trace_scan_reset = sc.SimController._trace_scan_reset
 
-    def __init__(self, events, *, retain_all):
+    def __init__(self, events):
         self.engine = _Engine(events)
         self.trace_model = TraceModel()
         self._width = 10
         self._sim_chip = 0
         self._live_trace_max = 50          # tiny window to force the bug if present
-        self._server_batch_retain_all = retain_all
+        # retention is driven by the full_capture arg to refresh_debug_from_chip
+        # (set by the batch path), not this field — kept only for the chip-cap.
+        self._server_batch_retain_all = False
         self._last_server_refresh = 0.0
         # signals the method emits — stub them out
         for name in ("cell_states", "handshakes", "trace_updated",
@@ -77,17 +79,19 @@ N = 500   # far more than the 50-event window
 
 
 def test_streaming_trims_to_window():
-    """An interactive stream (retain_all False) keeps only the rolling window."""
-    h = _RetentionHarness([_fake_event(i) for i in range(N)], retain_all=False)
-    h.refresh_debug_from_chip(force=True)
+    """Continuous streaming (full_capture=False, the default) keeps only the
+    rolling window — bounded, so no growing Stop-lag."""
+    h = _RetentionHarness([_fake_event(i) for i in range(N)])
+    h.refresh_debug_from_chip(force=True)            # streaming default
     assert len(h.trace_model.transactions) == h._live_trace_max, \
         "streaming must keep only the most-recent window"
 
 
 def test_server_batch_retains_everything():
-    """A GRC batch (retain_all True) keeps ALL events — start to end."""
-    h = _RetentionHarness([_fake_event(i) for i in range(N)], retain_all=True)
-    h.refresh_debug_from_chip(force=True)
+    """A BOUNDED process_batch refresh (full_capture=True — what _on_sample /
+    _activity pass during a batch) keeps ALL events, start to end."""
+    h = _RetentionHarness([_fake_event(i) for i in range(N)])
+    h.refresh_debug_from_chip(force=True, full_capture=True)
     assert len(h.trace_model.transactions) == N, \
         "a bounded GRC batch must retain the WHOLE trace, not just the tail"
     times = [t.time_ns for t in h.trace_model.transactions]

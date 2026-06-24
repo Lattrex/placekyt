@@ -49,6 +49,7 @@ class _RetentionHarness:
     # borrow the real methods under test
     refresh_debug_from_chip = sc.SimController.refresh_debug_from_chip
     _states_from_events = sc.SimController._states_from_events
+    _steps_from_events = sc.SimController._steps_from_events
     _trace_scan_reset = sc.SimController._trace_scan_reset
 
     def __init__(self, events):
@@ -62,7 +63,7 @@ class _RetentionHarness:
         self._server_batch_retain_all = False
         self._last_server_refresh = 0.0
         # signals the method emits — stub them out
-        for name in ("cell_states", "handshakes", "trace_updated",
+        for name in ("cell_states", "cell_faces", "handshakes", "trace_updated",
                      "cell_state_refreshed"):
             setattr(self, name, _Sig())
 

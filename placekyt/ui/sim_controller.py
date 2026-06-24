@@ -548,16 +548,35 @@ class SimController(QObject):
         # Cell-state overlay + handshakes from THIS batch of new events.
         states = self._states_from_events(new_events, chip)
         self.cell_states.emit(states)
-        cells, ports = [], []
-        for ev in new_events:
-            k = ev.get("kind")
-            cid = ev.get("cell_id")
-            if k == "output_ready" and cid is not None and ev.get("face"):
-                cells.append((chip, cid % self._width, cid // self._width,
-                              ev["face"]))
-            elif k in ("port_injection", "port_capture") and ev.get("port_name"):
-                ports.append((chip, ev["port_name"]))
-        self.handshakes.emit({"cells": cells, "ports": ports})
+        # Live output FACE for EVERY cell active this batch — block AND
+        # routing/transit/broker cells alike. Without this the canvas arrows stay
+        # frozen at the static build-resolved direction during a GRC batch run, so
+        # the port-adjacent routing cells never reflect the live forwarding
+        # direction (the reported "no face-arrow flipping" / "stuck in one
+        # direction" bug). The interactive timer path emits this every frame via
+        # _emit_single_chip_frame; the batch path must too.
+        active_xy = [(x, y) for (c, x, y) in states if c == chip]
+        if active_xy:
+            try:
+                faces = self.engine.cell_faces(self._width, cells=active_xy)
+                self.cell_faces.emit(
+                    {(chip, x, y): f for (x, y), f in faces.items()})
+            except Exception:  # noqa: BLE001 — engine without live-face read
+                pass
+        # Per-WORD handshake steps (NOT a single flat all-cells flash). Bucketed
+        # by sim-time so each word transiting the fabric — through the input-port
+        # routing cells, the block, and the output-port routing cells — flashes
+        # ONE AT A TIME (a rolling wave), exactly like the interactive path. The
+        # earlier flat form emitted every cell in one instant which, combined with
+        # the refresh throttle, collapsed to a single brief glow and read as "no
+        # activity" on the transit cells. The flat cells/ports union is kept for
+        # backward-compatible callers.
+        steps = self._steps_from_events(new_events, chip)
+        self.handshakes.emit({
+            "steps": steps,
+            "cells": [c for s in steps for c in s["cells"]],
+            "ports": [p for s in steps for p in s["ports"]],
+        })
 
         # Append the new events to the rolling TraceModel window, trim, clear the
         # chip trace (resets the hard cap so recording continues).
@@ -590,6 +609,48 @@ class SimController(QObject):
             out[(chip, cid % self._width, cid // self._width)] = (
                 CELL_EXECUTING if cid in exec_cells else CELL_ACTIVE)
         return out
+
+    def _steps_from_events(self, events, chip):
+        """Derive PER-WORD handshake steps from a batch of raw trace events,
+        bucketed by ``time_ns`` (mirrors ``engine.handshakes``).
+
+        Returns ``[{"cells": [(chip, x, y, face), …], "ports": [(chip, port), …]},
+        …]`` in time order — one step per sim-time = one word transacted across
+        the fabric. The canvas plays the steps back one-at-a-time so a word's
+        passage through the input-port routing cells, the block, and the
+        output-port routing cells lights as a rolling wave (per-word blink),
+        rather than every cell flashing at once. A cell transfer is an
+        ``output_ready`` carrying a ``face`` (true for routing/transit/broker
+        cells AND block cells — they all forward via a face); a port transfer is a
+        ``port_injection``/``port_capture``."""
+        buckets: dict[float, dict] = {}
+        order: list[float] = []
+        for ev in events:
+            kind = ev.get("kind")
+            t = ev.get("time_ns", 0.0)
+            cell = port = None
+            if kind == "output_ready":
+                cid = ev.get("cell_id")
+                face = ev.get("face")
+                if cid is not None and face:
+                    cell = (chip, cid % self._width, cid // self._width, face)
+            elif kind in ("port_injection", "port_capture"):
+                pn = ev.get("port_name")
+                if pn:
+                    port = (chip, pn)
+            if cell is None and port is None:
+                continue
+            b = buckets.get(t)
+            if b is None:
+                b = {"cells": [], "ports": []}
+                buckets[t] = b
+                order.append(t)
+            if cell is not None:
+                b["cells"].append(cell)
+            if port is not None:
+                b["ports"].append(port)
+        order.sort()
+        return [buckets[t] for t in order]
 
     def _trace_scan_reset(self) -> None:
         """Reset the engine's handshake trace cursor (we cleared the chip trace,

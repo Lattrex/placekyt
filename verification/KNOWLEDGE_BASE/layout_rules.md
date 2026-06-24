@@ -152,6 +152,20 @@ edge directly (convention 1). Feed-forward wavefronts (e.g. FIR) declare no
 internal connections — their forwarding faces come from `default_layout` and DO
 transform correctly — so they remain freely orientable.
 
+**The route-pass orient must respect the placer's applied orientation.** Route
+All (`auto_route_all`) runs a SECOND, older orient pass before routing
+(`AutoRouter.orient_for_flow`, "output faces the dominant consumer"). That pass
+scores a block's output face — but it must score against the block's *current*
+orientation, NOT the as-authored catalog PortMap. The flyline placer may have
+already rotated the block (e.g. a vertical-column FIR turned `ccw` so its input
+lands nearest its driver); the bare PortMap still reads as the un-rotated layout,
+so scoring it re-recommends the SAME rotation, which then composes on top
+(`ccw∘ccw` = 180°) and flips the block back — input FARTHEST from its driver
+(the bug). `orient_for_flow` therefore composes `placement.orientation` onto the
+PortMap before scoring, so an already-correctly-oriented block is left untouched
+(suggestion `None`). Regression: `tests/test_fir_orient_input_near_driver.py`
+asserts the input-near-driver invariant survives the full place+route flow.
+
 ---
 
 ## Checklist for a multi-cell block on this chip

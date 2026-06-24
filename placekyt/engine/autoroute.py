@@ -224,6 +224,22 @@ class AutoRouter:
                 pm = self._provider(self._port_maps, blk)
             except Exception:  # noqa: BLE001
                 continue
+            # Score against the block's CURRENT orientation, not the as-authored
+            # PortMap. The serpentine placer's flyline-minimising auto-orient
+            # (autoplace ``_orient_for``) may have ALREADY rotated this block
+            # (e.g. a vertical-column FIR turned ``ccw`` so its input lands nearest
+            # its driver). The bare catalog PortMap is still the as-authored layout,
+            # so ``suggest_flow_orientation`` on it would re-recommend that SAME
+            # rotation and apply it a SECOND time — ccw∘ccw = 180°, flipping the FIR
+            # back to a column with its input FARTHEST from the driver (the bug this
+            # guards). Composing the placement's applied transforms makes the
+            # already-correctly-oriented output read as already-facing the consumer,
+            # so the suggestion is correctly None (no needless re-transform).
+            for applied in getattr(blk.placement, "orientation", ()):  # noqa: B007
+                try:
+                    pm = pm.transformed(applied)
+                except Exception:  # noqa: BLE001
+                    break
             desired = counter.most_common(1)[0][0]
             kind = suggest_flow_orientation(pm, desired)
             if kind is not None:

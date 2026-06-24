@@ -103,3 +103,20 @@ def test_server_cap_exceeds_live_cap():
     """The server-mode chip-side trace cap must be far larger than the streaming
     cap so a whole burst isn't silently dropped mid-batch (hard cap, not a ring)."""
     assert sc._SERVER_CHIP_CAP > sc._LIVE_CHIP_CAP
+
+
+def test_batch_refresh_signals_full_capture_from_the_first_sample():
+    """The per-sample batch refresh (_on_sample) and the batch-finished refresh
+    (_activity) must BOTH signal full_capture=True — so retention is in effect
+    from the FIRST run (no need to nudge the speed slider). Guards the regression
+    where _on_sample emitted False and only the tail survived the first run."""
+    import inspect
+    src = inspect.getsource(sc.SimController.start_gnuradio_server)
+    emits = [ln.strip() for ln in src.splitlines()
+             if "server_activity.emit" in ln]
+    # _activity: emit(samples is not None) → True for a finished batch.
+    # _on_sample: emit(True) → retain every mid-batch refresh.
+    assert any("server_activity.emit(True)" in e for e in emits), \
+        "the per-sample batch refresh must signal full_capture=True (first-run retention)"
+    assert not any("server_activity.emit(False)" in e for e in emits), \
+        "no batch-path refresh may signal full_capture=False (would drop the batch start)"

@@ -43,10 +43,19 @@ Because it's a single block, this is the ideal design to learn the placeKYT UI o
 - **Parameter sync from GNU Radio.** With the chip hosted, change the gain in the
   flowgraph and re-run: placeKYT detects the drift and shows an "out of sync —
   click to resync" indicator in the status bar. Clicking it re-applies the GRC
-  parameters (re-placing and re-routing if the change resizes a block). The
-  policy is configurable in **Edit → Preferences → On GRC parameter change**
-  (*Notify only* — default; *Auto place & route* — resync automatically;
-  *Re-anchor only* — resize in place and surface any DRC violations).
+  parameters (re-placing and re-routing **only if** the change resizes a block —
+  a value-only change like the gain updates the parameter in place and leaves
+  every block's placement and every route untouched). The policy is configurable
+  in **Edit → Preferences → On GRC parameter change** (*Notify only* — default;
+  *Auto place & route* — resync automatically; *Re-anchor only* — resize in place
+  and surface any DRC violations).
+
+  > Detection happens **on Run**, not on Save. The Kyttar GRC blocks are passive
+  > markers that only advertise their parameters when the flowgraph runs and
+  > dispatches a batch — there is no channel for GNU Radio to notify placeKYT at
+  > save time. So after editing a parameter, **re-run** the flowgraph and the
+  > indicator appears. (The full sample trace is retained start-to-end from the
+  > first run — you do not need to nudge the speed slider to see it.)
 
 > **How the sync detection is wired (end to end).** Each Kyttar GRC DSP block
 > (`gain`, `fir_filter`, `dc_blocker`, `decimator`, `iir_biquad`,

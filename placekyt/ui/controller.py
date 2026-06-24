@@ -828,6 +828,7 @@ class AppController(QObject):
 
         router = AutoRouter(self.project, chip_types, port_cells,
                             port_map_provider=port_maps)
+        router.with_feedback(self._block_has_internal_feedback)
         cmds = [OrientBlockCommand(self.project, name, kind)
                 for name, kind in router.orient_for_flow().items()]
         if cmds:
@@ -877,6 +878,7 @@ class AppController(QObject):
 
         router = AutoRouter(self.project, chip_types, port_cells,
                             port_map_provider=port_maps)
+        router.with_feedback(self._block_has_internal_feedback)
 
         pre: list = []
         if auto_orient:

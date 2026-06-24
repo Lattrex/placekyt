@@ -64,6 +64,26 @@ def suggest_flow_orientation(port_map, desired_out_face: Face):
     return None
 
 
+def _transform_xy(p, box, kind):
+    """Map cell ``p=(x,y)`` under a D4 ``kind`` pivoting on bounding ``box``
+    (minx, miny, maxx, maxy) and re-anchoring at the same min corner — EXACTLY
+    as ``Placement.transform`` moves cells, so a candidate's I/O positions match
+    what applying the transform would actually produce."""
+    minx, miny, maxx, maxy = box
+    w, h = maxx - minx, maxy - miny
+    x, y = p
+    u, v = x - minx, y - miny
+    if kind == "cw":
+        return (minx + (h - v), miny + u)
+    if kind == "ccw":
+        return (minx + v, miny + (w - u))
+    if kind == "mirror_h":
+        return (minx + (w - u), y)
+    if kind == "mirror_v":
+        return (x, miny + (h - v))
+    return p
+
+
 def _cardinal(src, dst):
     """The dominant cardinal Face from cell ``src`` to cell ``dst`` (the larger of
     the x/y deltas), or None if the cells coincide."""
@@ -179,39 +199,33 @@ class AutoRouter:
 
     def orient_for_flow(self) -> dict:
         """Suggest a flow-ordered orientation per placed block (auto-orient,
-        P3.2): a block's OUTPUT should face the dominant downstream consumer so
-        the corridor leaves toward the next stage. Returns ``{block_name:
-        transform_kind}`` for the blocks that would benefit (omits blocks already
-        oriented / single-orientation / no PortMap). Pure suggestion — the caller
-        applies the transforms (undoably) before routing.
+        P3.2): the orientation that MINIMISES the block's total flyline — its
+        INPUT cell nearest its driver's output, its OUTPUT cell nearest its
+        consumer's input. Returns ``{block_name: transform_kind}`` only for blocks
+        a transform STRICTLY improves; blocks already flyline-optimal (e.g. those
+        the serpentine placer's ``_orient_for`` already oriented) are omitted. Pure
+        suggestion — the caller applies the transforms (undoably) before routing.
 
-        The desired output face is the majority direction from each producer block
-        to its consumers (the net's source→target vector), snapped to a cardinal.
+        This MUST agree with the placer's own flyline-minimising orient
+        (autoplace ``_orient_for``), not second-guess it. Earlier this pass scored
+        ONLY the OUTPUT face against the consumer direction. That ignores the
+        input-near-driver term the placer optimised for: when the placer
+        deliberately picks an orientation whose output does NOT face the consumer
+        because it puts the INPUT nearest the driver (the canonical N-tap FIR fed
+        by a gain — turned ``ccw`` so its input lands by the gain, output pointing
+        WEST not toward the EAST output port), the output-face heuristic
+        "corrected" it with a ``mirror_h`` and flipped the FIR back to input-
+        FARTHEST-from-driver. Scoring the FULL flyline (input AND output) makes an
+        already-optimal block read as un-improvable, so no transform is suggested.
+
         Requires ``port_map_provider``; returns ``{}`` without it."""
         if self._port_maps is None:
             return {}
-        # Tally, per source block, the cardinal direction to each consumer.
-        from collections import Counter
-        want: dict[str, Counter] = {}
-        for conn in self._project.connections:
-            src, tgt = conn.source, conn.target
-            if not isinstance(src, BlockEndpoint):
-                continue
-            sb = self._project.block(src.block)
-            if sb is None or sb.placement is None or not sb.placement.cells:
-                continue
-            tcell = self._consumer_anchor(tgt)
-            scell = self._block_out_anchor(sb)
-            if tcell is None or scell is None:
-                continue
-            face = _cardinal(scell, tcell)
-            if face is not None:
-                want.setdefault(src.block, Counter())[face] += 1
         out: dict[str, str] = {}
-        for block_name, counter in want.items():
-            blk = self._project.block(block_name)
-            if blk is None:
+        for blk in self._project.blocks:
+            if blk.placement is None or not blk.placement.cells:
                 continue
+            block_name = blk.name
             # Do NOT re-orient a block whose INPUT cell is anchored on a chip
             # input port: the serpentine placer deliberately seats the lead
             # input-fed block's input cell ON the port (it is the pipeline start)
@@ -220,31 +234,145 @@ class AutoRouter:
             # breaking I/Q ingress and the input flyline. The placer's anchor wins.
             if self._input_on_chip_port(block_name):
                 continue
-            try:
-                pm = self._provider(self._port_maps, blk)
-            except Exception:  # noqa: BLE001
+            # A block with INTERNAL feedback/forwarding hardcodes per-cell FACES
+            # in its assembly; a D4 transform rotates the PortMap geometry but not
+            # that program, silently breaking the loop. The placer leaves such
+            # blocks as-authored — mirror that here (never reorient them).
+            if self._has_internal_feedback(block_name):
                 continue
-            # Score against the block's CURRENT orientation, not the as-authored
-            # PortMap. The serpentine placer's flyline-minimising auto-orient
-            # (autoplace ``_orient_for``) may have ALREADY rotated this block
-            # (e.g. a vertical-column FIR turned ``ccw`` so its input lands nearest
-            # its driver). The bare catalog PortMap is still the as-authored layout,
-            # so ``suggest_flow_orientation`` on it would re-recommend that SAME
-            # rotation and apply it a SECOND time — ccw∘ccw = 180°, flipping the FIR
-            # back to a column with its input FARTHEST from the driver (the bug this
-            # guards). Composing the placement's applied transforms makes the
-            # already-correctly-oriented output read as already-facing the consumer,
-            # so the suggestion is correctly None (no needless re-transform).
-            for applied in getattr(blk.placement, "orientation", ()):  # noqa: B007
-                try:
-                    pm = pm.transformed(applied)
-                except Exception:  # noqa: BLE001
-                    break
-            desired = counter.most_common(1)[0][0]
-            kind = suggest_flow_orientation(pm, desired)
+            kind = self._best_flow_orient(blk)
             if kind is not None:
                 out[block_name] = kind
         return out
+
+    def _best_flow_orient(self, blk):
+        """The D4 transform that best flow-orients ``blk`` — or None when the
+        as-authored/placed orientation is already best (the common placer-oriented
+        case, so the route pass never undoes a placement the placer minimised).
+
+        Scoring mirrors the placer's ``_orient_for``:
+        - PRIMARY: total flyline = Manhattan(input cell → driver output) +
+          Manhattan(output cell → consumer input). The input-near-driver term is
+          what the placer optimises; scoring the FULL flyline (not just the output
+          face) means an already-optimal block can't be improved, so it's left be.
+        - TIE-BREAK (equal flyline): prefer the orientation whose OUTPUT FACE
+          points cardinally toward the consumer. This matters for a block whose I/O
+          cell positions DON'T move under rotation (a single cell, or co-located
+          I/O): the cells stay put so flyline ties, but the emit FACE — which sets
+          the direction the corridor leaves — should still face the consumer (the
+          §8 flow-orient intent). Identity wins remaining ties (never transform a
+          block needlessly).
+        """
+        driver_out = self._driver_out_cell(blk.name)
+        consumer_in = self._consumer_in_cell(blk.name)
+        if driver_out is None and consumer_in is None:
+            return None  # nothing to face — leave as-authored
+        in_xy = self._port_cell_xy(blk, "in")
+        out_xy = self._port_cell_xy(blk, "out")
+        if in_xy is None and out_xy is None:
+            return None
+        box = blk.placement.bounding_box()
+        if box is None:
+            return None
+        # The output face desired toward the consumer (for the tie-break) — the
+        # cardinal from the output cell to the consumer's input.
+        want_face = (_cardinal(out_xy, consumer_in)
+                     if out_xy is not None and consumer_in is not None else None)
+        try:
+            base_pm = self._provider(self._port_maps, blk)
+            for applied in getattr(blk.placement, "orientation", ()):
+                base_pm = base_pm.transformed(applied)
+        except Exception:  # noqa: BLE001
+            base_pm = None
+
+        def out_face(pm):
+            outs = pm.outputs() if pm is not None else ()
+            return outs[0].face if outs else None
+
+        def key(transform, pm, ident):
+            ic = transform(in_xy) if in_xy is not None else None
+            oc = transform(out_xy) if out_xy is not None else None
+            flyline = 0
+            if ic is not None and driver_out is not None:
+                flyline += abs(ic[0] - driver_out[0]) + abs(ic[1] - driver_out[1])
+            if oc is not None and consumer_in is not None:
+                flyline += abs(oc[0] - consumer_in[0]) + abs(oc[1] - consumer_in[1])
+            # face_rank 0 = output face points at the consumer (preferred on a tie).
+            face_rank = 0 if (want_face is None
+                              or out_face(pm) == want_face) else 1
+            return (flyline, face_rank, 0 if ident else 1)
+
+        best_key = key(lambda p: p, base_pm, ident=True)
+        best_kind = None
+        for kind in _ORIENTS[1:]:
+            pm = None
+            if base_pm is not None:
+                try:
+                    pm = base_pm.transformed(kind)
+                except Exception:  # noqa: BLE001
+                    pm = None
+            k = key(lambda p, kk=kind: _transform_xy(p, box, kk), pm, ident=False)
+            if k < best_key:
+                best_key, best_kind = k, kind
+        return best_kind
+
+    def _port_cell_xy(self, blk, direction):
+        """(x, y) of ``blk``'s first placed port cell in ``direction`` ('in'/'out'),
+        resolved via the PortMap → placed cell; None if absent."""
+        try:
+            pmap = self._provider(self._ports, blk) or {}
+        except Exception:  # noqa: BLE001
+            pmap = {}
+        for _name, (cell_id, d) in pmap.items():
+            if d == direction:
+                c = blk.placement.cell(cell_id)
+                if c is not None:
+                    return (c.x, c.y)
+        return None
+
+    def _driver_out_cell(self, block_name):
+        """(x, y) of the output cell of the BLOCK driving ``block_name``'s input,
+        if any (the cell this block's input should sit nearest). None if fed only
+        by a chip port / unconnected."""
+        for conn in self._project.connections:
+            s, t = conn.source, conn.target
+            if isinstance(t, BlockEndpoint) and t.block == block_name \
+                    and isinstance(s, BlockEndpoint):
+                sb = self._project.block(s.block)
+                if sb is not None and sb.placement is not None and sb.placement.cells:
+                    return self._block_out_anchor(sb)
+        return None
+
+    def _consumer_in_cell(self, block_name):
+        """(x, y) of the cell ``block_name``'s output should sit nearest: the chip
+        OUTPUT port it feeds, or the input cell of the block it feeds. None if it
+        feeds nothing placed."""
+        for conn in self._project.connections:
+            s, t = conn.source, conn.target
+            if isinstance(s, BlockEndpoint) and s.block == block_name:
+                return self._consumer_anchor(t)
+        return None
+
+    def _has_internal_feedback(self, block_name) -> bool:
+        """True if ``block_name`` has internal feedback/forwarding (hardcoded
+        per-cell faces), via the injected feedback provider; False without one."""
+        provider = getattr(self, "_feedback_provider", None)
+        if provider is None:
+            return False
+        blk = self._project.block(block_name)
+        if blk is None:
+            return False
+        try:
+            return bool(self._provider(provider, blk))
+        except Exception:  # noqa: BLE001
+            return False
+
+    def with_feedback(self, provider):
+        """Inject a ``feedback(block_type, library[, params]) -> bool`` provider so
+        the flow orienter leaves INTERNAL-feedback blocks as-authored (a D4
+        transform would break their hardcoded faces). Returns self (chainable)."""
+        self._feedback_provider = provider
+        return self
 
     def route_all(self) -> AutoRouteReport:
         """Route every UNROUTED connection between two placed blocks on one chip.

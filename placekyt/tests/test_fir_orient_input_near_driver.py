@@ -67,11 +67,12 @@ def _man(a, b):
     return abs(a[0] - b[0]) + abs(a[1] - b[1])
 
 
-def test_fir_input_near_driver_after_place_and_route(qapp, catalog, chip_type):
-    """gain → FIR(20-tap) → x16_out: after auto_place AND auto_route_all the FIR's
-    input cell is at least as near its driver (gain output) as its output cell is,
-    and the net still routes."""
-    coeffs = [0.05] * 20
+def _run_flow(catalog, chip_type, taps, use_bus):
+    """gain → FIR(``taps``-tap) → x16_out through the FULL place+route flow, with
+    the router selected by ``use_bus`` (the GUI default is ``"always"`` — the
+    BUS/BROKER path; ``None`` exercises the heuristic path). Returns the controller
+    plus the route report so the caller can assert the input-near-driver invariant."""
+    coeffs = [0.05] * taps
 
     ctrl = AppController(catalog=catalog)
     ctrl.new_project("fir", "kyttar_10x12")
@@ -90,7 +91,26 @@ def test_fir_input_near_driver_after_place_and_route(qapp, catalog, chip_type):
         ChipPortEndpoint(chip=0, port="x16_out"), name="f_out")
 
     ctrl.auto_place(0)
-    rep = ctrl.auto_route_all({"kyttar_10x12": chip_type}, auto_orient=True)
+    kwargs = {"auto_orient": True}
+    if use_bus is not None:
+        kwargs["use_bus"] = use_bus
+    rep = ctrl.auto_route_all({"kyttar_10x12": chip_type}, **kwargs)
+    return ctrl, g, f, rep
+
+
+# The GUI's GRC-import path calls auto_route_all(use_bus="always") — the BUS/BROKER
+# router. The earlier regression only ran the default heuristic path, so it missed
+# that the route-pass re-orient flipped the FIR on the GUI path too. Cover BOTH
+# router paths AND a 20- and 40-tap FIR (the footprint/orientation differs by size).
+@pytest.mark.parametrize("use_bus", [None, "always"])
+@pytest.mark.parametrize("taps", [20, 40])
+def test_fir_input_near_driver_after_place_and_route(qapp, catalog, chip_type,
+                                                     taps, use_bus):
+    """gain → FIR → x16_out: after auto_place AND auto_route_all the FIR's input
+    cell is at least as near its driver (gain output) as its output cell is, and
+    the net still routes — on BOTH the heuristic and the use_bus='always' (GUI)
+    router paths, for a 20- and a 40-tap FIR."""
+    ctrl, g, f, rep = _run_flow(catalog, chip_type, taps, use_bus)
     assert rep.ok, [(r.name, r.reason) for r in rep.failed]
 
     _, go = _io_cells(ctrl, catalog, g)
@@ -98,13 +118,17 @@ def test_fir_input_near_driver_after_place_and_route(qapp, catalog, chip_type):
     dist_in = _man(fi[0], go[0])
     dist_out = _man(fo[0], go[0])
     assert dist_in <= dist_out, (
-        f"FIR input {fi[0]} must be at least as near its driver {go[0]} as its "
-        f"output {fo[0]} (in={dist_in}, out={dist_out}) AFTER place+route")
+        f"FIR({taps} taps, use_bus={use_bus!r}) input {fi[0]} must be at least as "
+        f"near its driver {go[0]} as its output {fo[0]} (in={dist_in}, "
+        f"out={dist_out}) AFTER place+route")
 
 
 if __name__ == "__main__":
     app = QApplication.instance() or QApplication([])
     cat = BlockCatalog.from_gr_kyttar()
     ct = load_chip_type(str(CT_PATH))
-    test_fir_input_near_driver_after_place_and_route(app, cat, ct)
+    for _taps in (20, 40):
+        for _bus in (None, "always"):
+            test_fir_input_near_driver_after_place_and_route(
+                app, cat, ct, _taps, _bus)
     print("FIR orient input-near-driver after place+route: PASS")

@@ -110,6 +110,50 @@ auto-snake will not do it for you.
 
 ---
 
+## How the auto-placer ORIENTS a block (flyline minimisation)
+
+The conventions above shape a block in isolation. When the auto-placer
+(`engine/autoplace.py`) lays a flow-ordered pipeline, it ALSO chooses each
+block's D4 orientation — and it does so to **minimise routing (flyline) length**,
+not merely to point the output along the bus. Two rules drive that choice:
+
+**(a) Orient each block so its INPUT is nearest its driver and its OUTPUT is
+nearest its consumer.** For every candidate orientation (identity + the four
+primitive transforms, via `PortMap.transformed`) the placer computes where the
+block's input and output cells would physically land at its band, then scores the
+total Manhattan flyline to its *actual* neighbours: input cell → the upstream
+driver's output cell (already placed, so this is known exactly; for the pipeline
+lead it is the chip input port), and — when the block feeds a chip OUTPUT port —
+output cell → that port. The minimum-flyline orientation wins. The
+input-toward-driver term dominates because the driver is placed; an unplaced
+downstream BLOCK consumer is handled by a tie-break (the output should face the
+bus continuation / travel direction), never a fabricated distance that could
+swamp the real term. This replaces the old "output merely faces the travel
+direction" heuristic, which could seat a block's input FARTHER from its driver
+than its output — backwards, and longer to route.
+
+**(b) Prefer the fold aspect that CO-LOCATES I/O on the bus-facing edge.** When
+two orientations tie on flyline, the placer prefers the one whose input and
+output sit on the same bus-facing edge (`PortMap.io_colocated` — convention 1's
+cheap 1-D tap), then identity (never transform a block needlessly). So a block
+that can fold either W×H or H×W is oriented to keep both ports tappable from one
+bus edge, shortening the route — exactly the 4-wide-vs-5-wide choice that decides
+whether a wavefront's I/O end up on the same side.
+
+**Exception — internal-feedback blocks are left as-authored.** A block that
+declares INTERNAL connections/jumps (a Costas/Gardner-style loop, the complex
+matched filter) hardcodes per-cell FACES in its assembly — a dual-face emit or a
+feedback return that rests at a specific direction the build's feedback tracer
+follows. A D4 transform rotates the PortMap geometry but NOT that
+direction-specific program, so reorienting such a block silently breaks its loop
+(the receiver recovers nothing). The placer detects internal feedback and keeps
+those blocks at identity; author their `default_layout` to fold I/O on the bus
+edge directly (convention 1). Feed-forward wavefronts (e.g. FIR) declare no
+internal connections — their forwarding faces come from `default_layout` and DO
+transform correctly — so they remain freely orientable.
+
+---
+
 ## Checklist for a multi-cell block on this chip
 
 - [ ] Both dimensions of the footprint ≤ 8 cells.

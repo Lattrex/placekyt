@@ -189,6 +189,55 @@ class AutoPlacer:
                 return n
         return None
 
+    # -- neighbour graph (for flyline-minimising orientation) -----------------
+    def _neighbour_maps(self, names):
+        """Build, per block, its inter-block DRIVER and the chip ports it touches —
+        the data the flyline-minimising orienter needs to know which way the input
+        and output should point.
+
+        Returns ``(driver_of, in_port_of, out_port_of)``:
+        - ``driver_of[block]`` = the upstream BLOCK feeding this block's input (the
+          first such driver; that block's OUTPUT cell is where this block's INPUT
+          should sit nearest). None if fed only by a chip port / unconnected.
+        - ``in_port_of[block]`` = (cell_x, cell_y) of the chip INPUT port feeding
+          this block, if any (the lead block's driver is the port).
+        - ``out_port_of[block]`` = (cell_x, cell_y) of the chip OUTPUT port this
+          block feeds, if any (this block's OUTPUT should sit nearest it).
+        """
+        driver_of: dict = {}
+        in_port_of: dict = {}
+        out_port_of: dict = {}
+        for conn in self._project.connections:
+            s, t = conn.source, conn.target
+            if isinstance(t, BlockEndpoint) and t.block in names \
+                    and isinstance(s, BlockEndpoint) and s.block in names:
+                driver_of.setdefault(t.block, s.block)
+            if isinstance(t, BlockEndpoint) and t.block in names \
+                    and isinstance(s, ChipPortEndpoint):
+                pc = self._chip_port_cell(s)
+                if pc is not None:
+                    in_port_of.setdefault(t.block, pc)
+            if isinstance(s, BlockEndpoint) and s.block in names \
+                    and isinstance(t, ChipPortEndpoint):
+                pc = self._chip_port_cell(t)
+                if pc is not None:
+                    out_port_of.setdefault(s.block, pc)
+        return driver_of, in_port_of, out_port_of
+
+    def _chip_port_cell(self, ep: ChipPortEndpoint):
+        """(cell_x, cell_y) of a chip port, via an injected resolver if present.
+
+        The placer has no hard chip-type dependency; the controller injects
+        ``with_chip_ports(resolver)`` so the orienter can score flyline to the
+        actual chip I/O port cells. Returns None when no resolver is available."""
+        resolver = getattr(self, "_chip_port_resolver", None)
+        if resolver is None:
+            return None
+        try:
+            return resolver(ep.chip, ep.port)
+        except Exception:  # noqa: BLE001
+            return None
+
     # -- the serpentine pack --------------------------------------------------
     def plan(self, chip: int = 0) -> PlacePlan:
         """Compute a flow-ordered serpentine placement for the blocks on ``chip``.
@@ -207,9 +256,17 @@ class AutoPlacer:
         # The lead input-fed block (first in flow order fed by a chip input port):
         # its input cell anchors on the port and it is NOT reoriented.
         self._lead_block = self._lead_input_fed(order, names)
+        # Who drives whom, and which chip ports each block touches — so orientation
+        # can put the INPUT cell nearest its driver and the OUTPUT cell nearest its
+        # consumer (flyline minimisation, §8 / §4.3).
+        self._driver_of, self._in_port_of, self._out_port_of = \
+            self._neighbour_maps(names)
 
         positions: dict = {}
         orientations: dict = {}
+        # Where each placed block's OUTPUT cell physically landed, so the NEXT block
+        # in flow order can score its input flyline against an already-placed driver.
+        out_pos: dict = {}
         spine: list = []
 
         x = self._start_x
@@ -227,7 +284,7 @@ class AutoPlacer:
             if n == self._lead_block:
                 kind = None
             else:
-                kind = self._orient_for(blk, going_right)
+                kind = self._orient_for(blk, going_right, n, out_pos, x, band_top)
             orientations[n] = kind
             # Use the ORIENTED extent (a cw/ccw rotate swaps w/h) so positions match
             # the cells the caller places — keeping the spine and the next block
@@ -249,7 +306,8 @@ class AutoPlacer:
                 # derive it for the new direction (and the oriented extent with it)
                 # so the block faces the bus the right way on the new band.
                 if n != self._lead_block:
-                    kind = self._orient_for(blk, going_right)
+                    kind = self._orient_for(blk, going_right, n, out_pos, x,
+                                            band_top)
                     orientations[n] = kind
                     w, h = self._oriented_wh(blk, kind)
                 # mark the wrap column on the spine (the snake turns here)
@@ -260,6 +318,11 @@ class AutoPlacer:
             ax = x if going_right else max(0, x - w + 1)
             positions[n] = (chip, ax, band_top)
             band_h = max(band_h, h)
+            # Record where this block's OUTPUT cell lands (anchor + the post-orient
+            # output offset) so the next block scores its input flyline against it.
+            op = self._io_offsets(blk, kind)
+            if op is not None and op[1] is not None:
+                out_pos[n] = (ax + op[1][0], band_top + op[1][1])
 
             # Bus waypoint: the cell just outside the block on the travel side,
             # at the band row, so the spine threads block-to-block.
@@ -275,29 +338,184 @@ class AutoPlacer:
                          orientations=orientations, spine=spine,
                          backward_edges=backward)
 
-    # -- orientation (auto-orient toward the bus, §8) -------------------------
-    def _orient_for(self, blk, going_right):
-        """Suggest a D4 transform so the block's OUTPUT faces the travel direction
-        along the band (EAST when going right, WEST when going left), i.e. toward
-        the next block / the bus. Returns a transform kind ('cw'/'ccw'/'mirror_h'/
-        'mirror_v') or None (already aligned). Uses the PortMap if available; falls
-        back to None (no reorientation) so a block without port geometry is left
-        as authored.
+    # -- orientation (flyline-minimising auto-orient, §8 / §4.3) --------------
+    def _orient_for(self, blk, going_right, name, out_pos, x, band_top):
+        """Choose the D4 orientation that MINIMISES this block's total flyline to
+        its actual neighbours — the input cell nearest its driver, the output cell
+        nearest its consumer (AUTO_PNR_DESIGN §8, flow-ordered §4.3).
+
+        For each candidate orientation (identity + the 4 primitive transforms) we
+        compute where the block's INPUT and OUTPUT cells would physically land at
+        this band/x, then score:
+
+        - ``flyline_in``  = Manhattan(input cell → driver's output cell), where the
+          driver is the already-placed upstream block (its real output position is
+          in ``out_pos``) or, for a port-fed block, the chip INPUT port cell. This
+          is the dominant, fully-KNOWN term (the upstream neighbour is placed).
+        - ``flyline_out`` = Manhattan(output cell → consumer's input) — but ONLY
+          when the consumer is EXACT (this block feeds a chip OUTPUT port). The
+          downstream BLOCK consumer is not yet placed, so rather than fabricate a
+          distance that could swamp the real input term, an unplaced consumer is
+          handled by the travel-direction TIE-BREAK below (documented
+          approximation: the output should face the bus continuation).
+
+        Ties prefer, in order: an OUTPUT facing the travel direction (the bus
+        continuation toward the next stage, §8) when the consumer is not exact;
+        then an orientation whose input+output are **co-located on the bus-facing
+        edge** (``io_colocated`` — the cheap 1-D bus tap, §4.3 / INV-8); then
+        identity (stability — never transform a block needlessly). Returns the
+        transform kind ('cw'/'ccw'/'mirror_h'/'mirror_v') or None (identity).
+        Falls back to None when no PortMap is available.
         """
-        from model.enums import Face
-        pm = getattr(self, "_port_map_provider", None)
-        if pm is None:
+        pm_provider = getattr(self, "_port_map_provider", None)
+        if pm_provider is None:
             return None
         try:
-            port_map = self._provider(pm, blk)
+            base = self._provider(pm_provider, blk)
         except Exception:  # noqa: BLE001
             return None
-        from engine.autoroute import suggest_flow_orientation
-        want = Face.EAST if going_right else Face.WEST
-        return suggest_flow_orientation(port_map, want)
+        if base is None:
+            return None
+
+        # Where the driver's output sits (KNOWN): the placed upstream block, else
+        # the chip input port. None ⇒ no input flyline term (unconnected head).
+        drv = self._driver_of.get(name)
+        driver_out = out_pos.get(drv) if drv is not None else None
+        if driver_out is None:
+            driver_out = self._in_port_of.get(name)
+
+        # Where this block's consumer input is. Exact if it feeds a chip OUTPUT
+        # port; otherwise ESTIMATE it as the next anchor in the travel direction.
+        consumer_in = self._out_port_of.get(name)
+
+        # A block with INTERNAL feedback/forwarding (a Costas/Gardner-style loop,
+        # the complex matched filter) hardcodes per-cell FACES in its assembly — a
+        # dual-face emit / feedback return rests at a SPECIFIC direction the build's
+        # feedback tracer follows. A D4 transform rotates the PortMap faces but NOT
+        # that hand-authored direction-specific program, so reorienting such a block
+        # silently breaks its loop (the RX recovers nothing). Restrict its search to
+        # IDENTITY — its layout was authored to fold I/O on its bus edge already, so
+        # we never need to rotate it (verified: rotating Gardner cw breaks RX BER).
+        if self._has_internal_feedback(blk):
+            return None
+        # The bus continues in the travel direction, so absent an exact consumer
+        # the OUTPUT should face that way (EAST going right, WEST going left).
+        from model.enums import Face
+        travel = Face.EAST if going_right else Face.WEST
+        candidates = (None, "cw", "ccw", "mirror_h", "mirror_v")
+        best = None  # ((flyline, travel_rank, colo_rank, ident_rank), kind)
+        for kind in candidates:
+            try:
+                pm = base if kind is None else base.transformed(kind)
+            except Exception:  # noqa: BLE001
+                continue
+            io = self._io_offsets_from(pm)
+            if io is None:
+                continue
+            in_off, out_off = io
+            w, h = self._oriented_wh(blk, kind)
+            ax = x if going_right else max(0, x - w + 1)
+            # PRIMARY: the flyline to KNOWN neighbours only — the placed driver and
+            # (if this block feeds a chip output port) the exact consumer port. The
+            # input-near-driver term dominates because the upstream block IS placed;
+            # an unplaced downstream consumer is handled by a tie-break (below), not
+            # a fabricated distance that could swamp the real input term.
+            flyline = 0
+            if in_off is not None and driver_out is not None:
+                icx, icy = ax + in_off[0], band_top + in_off[1]
+                flyline += abs(icx - driver_out[0]) + abs(icy - driver_out[1])
+            out_face = None
+            if out_off is not None:
+                ocx, ocy = ax + out_off[0], band_top + out_off[1]
+                outs = pm.outputs()
+                out_face = outs[0].face if outs else None
+                if consumer_in is not None:
+                    flyline += abs(ocx - consumer_in[0]) + abs(ocy - consumer_in[1])
+            # Tie-breaks (0 sorts first = preferred):
+            #  - travel_rank: when the consumer is NOT exact, prefer an output that
+            #    faces the bus continuation (the §8 flow-orient intent, now a tie-
+            #    break rather than a distance term so it can't override the input).
+            #  - colo_rank: prefer the fold aspect that co-locates I/O on the bus
+            #    edge (the cheap 1-D tap, §4.3 / INV-8).
+            #  - ident_rank: prefer identity — never transform a block needlessly.
+            travel_rank = (0 if (consumer_in is not None or out_face == travel)
+                           else 1)
+            colo_rank = 0 if pm.io_colocated else 1
+            ident_rank = 0 if kind is None else 1
+            key = (flyline, travel_rank, colo_rank, ident_rank)
+            if best is None or key < best[0]:
+                best = (key, kind)
+        return best[1] if best is not None else None
+
+    def _has_internal_feedback(self, blk) -> bool:
+        """True if ``blk`` declares INTERNAL connections/jumps — a feedback loop or
+        cross-cell forwarding whose assembly hardcodes per-cell faces (so a D4
+        transform would rotate the PortMap geometry but not the program → break the
+        loop). Such blocks are left as-authored by the flyline orienter.
+
+        A multi-cell FEED-FORWARD wavefront (e.g. FIR) declares NO internal
+        connections — its forwarding faces come from its ``default_layout`` and DO
+        transform correctly — so it is NOT flagged and remains freely orientable.
+
+        Uses the injected ``feedback_provider(block_type, library[, params]) ->
+        bool`` when present; without it (a bare unit-test placer) NO block is
+        flagged, so the orienter is free — those callers don't build feedback DUTs.
+        """
+        provider = getattr(self, "_feedback_provider", None)
+        if provider is None:
+            return False
+        try:
+            return bool(self._provider(provider, blk))
+        except Exception:  # noqa: BLE001
+            return False
+
+    # -- I/O offset helpers ---------------------------------------------------
+    def _io_offsets(self, blk, kind):
+        """The (input_offset, output_offset) of ``blk`` AFTER orientation ``kind``,
+        each ``(dx, dy)`` from the block's min corner — or None if no PortMap. Used
+        to record where a placed block's output cell landed."""
+        pm_provider = getattr(self, "_port_map_provider", None)
+        if pm_provider is None:
+            return None
+        try:
+            base = self._provider(pm_provider, blk)
+            pm = base if kind is None else base.transformed(kind)
+        except Exception:  # noqa: BLE001
+            return None
+        return self._io_offsets_from(pm)
+
+    @staticmethod
+    def _io_offsets_from(port_map):
+        """(input_offset, output_offset) from a PortMap, each ``(dx, dy)`` or None.
+        Picks the FIRST input port and FIRST output port (a single bus tap each)."""
+        if port_map is None:
+            return None
+        ins = port_map.inputs()
+        outs = port_map.outputs()
+        in_off = (ins[0].dx, ins[0].dy) if ins else None
+        out_off = (outs[0].dx, outs[0].dy) if outs else None
+        return (in_off, out_off)
 
     def with_port_maps(self, provider):
         """Inject a ``port_map(block_type, library) -> PortMap`` provider so the
-        packer can auto-orient blocks toward the bus. Returns self (chainable)."""
+        packer can auto-orient blocks to minimise flyline. Returns self
+        (chainable)."""
         self._port_map_provider = provider
+        return self
+
+    def with_chip_ports(self, resolver):
+        """Inject a ``resolver(chip, port_name) -> (cell_x, cell_y)`` so the
+        flyline-minimising orienter can score against the actual chip I/O port
+        cells (input port for the lead block's driver, output port for a terminal
+        block's consumer). Returns self (chainable)."""
+        self._chip_port_resolver = resolver
+        return self
+
+    def with_feedback(self, provider):
+        """Inject a ``feedback(block_type, library[, params]) -> bool`` provider
+        that reports whether a block has INTERNAL feedback/forwarding (hardcoded
+        per-cell faces). The flyline orienter leaves such blocks as-authored — a D4
+        transform would rotate their PortMap but not their direction-specific
+        program, breaking the loop. Returns self (chainable)."""
+        self._feedback_provider = provider
         return self

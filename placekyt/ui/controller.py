@@ -436,8 +436,11 @@ class AppController(QObject):
         # block's landing cell lands ON the port — the port injects AT its cell, so
         # a block one cell away never receives the data (builds, but won't compute).
         anchor = self._input_port_anchor(chip)
-        placer = AutoPlacer(self.project, footprint, anchor=anchor,
-                            width=w, height=h).with_port_maps(port_maps)
+        placer = (AutoPlacer(self.project, footprint, anchor=anchor,
+                             width=w, height=h)
+                  .with_port_maps(port_maps)
+                  .with_chip_ports(self._chip_port_cell)
+                  .with_feedback(self._block_has_internal_feedback))
         plan = placer.plan(chip)
         # The INPUT-FED lead block (first in flow order, anchored at the port) must
         # land its INPUT/landing CELL on the port — not its min corner. The port
@@ -708,6 +711,45 @@ class AppController(QObject):
             return (10, 12)
         return (int(getattr(ct, "width", 10)), int(getattr(ct, "height", 12)))
 
+    def _block_has_internal_feedback(self, block_type, library, params=None):
+        """True if a block declares INTERNAL connections/jumps (a feedback loop or
+        cross-cell forwarding whose assembly hardcodes per-cell faces). The
+        flyline-minimising auto-orienter uses this to leave such blocks as-authored
+        (a D4 transform would rotate the PortMap but not the direction-specific
+        program → break the loop, e.g. rotating Gardner breaks the RX). Result is
+        cached per (type, library) — the answer doesn't depend on params."""
+        cache = getattr(self, "_feedback_cache", None)
+        if cache is None:
+            cache = self._feedback_cache = {}
+        key = (block_type, library)
+        if key in cache:
+            return cache[key]
+        result = False
+        try:
+            blk = self.catalog.instantiate(block_type, "__fb_probe__", params,
+                                           library=library)
+            ic = list(getattr(blk, "internal_connections", lambda: [])() or [])
+            ij = list(getattr(blk, "internal_jumps", lambda: [])() or [])
+            result = bool(ic or ij)
+        except Exception:  # noqa: BLE001
+            result = False
+        cache[key] = result
+        return result
+
+    def _chip_port_cell(self, chip: int, port_name: str):
+        """(cell_x, cell_y) of a chip port — for the flyline-minimising orienter to
+        score block I/O against the actual chip I/O port cells. None if unknown."""
+        chip_inst = self.project.chip(chip)
+        name = (getattr(chip_inst, "type_name", None) if chip_inst else None) \
+            or self.project.chip_type
+        ct = self.chip_types().get(name)
+        if ct is None:
+            return None
+        port = ct.port(port_name)
+        if port is None:
+            return None
+        return (port.cell_x, port.cell_y)
+
     def _input_port_anchor(self, chip: int):
         """(x, y) of the chip INPUT port that feeds a placed block — the pipeline
         start. Prefers a port named like an input (``*_in``) that a connection
@@ -916,8 +958,11 @@ class AppController(QObject):
 
         w, h = self._chip_dims(chip)
         anchor = self._input_port_anchor(chip)
-        placer = AutoPlacer(self.project, footprint, anchor=anchor,
-                            width=w, height=h).with_port_maps(port_maps)
+        placer = (AutoPlacer(self.project, footprint, anchor=anchor,
+                             width=w, height=h)
+                  .with_port_maps(port_maps)
+                  .with_chip_ports(self._chip_port_cell)
+                  .with_feedback(self._block_has_internal_feedback))
         return placer.plan(chip).spine
 
     def add_logical_connection(self, source, target, *, name: str | None = None,

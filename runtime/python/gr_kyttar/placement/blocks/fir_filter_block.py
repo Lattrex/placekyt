@@ -180,7 +180,11 @@ class FIRFilterBlock(KyttarBlock):
     # instructions fits; N=7 overflows. 7+ taps fold to multi-cell, where the
     # restore lives only on the last cell.
     MAX_SINGLE_CELL_TAPS = 6
-    # Cells per column in the multi-cell placement FOLD (see default_layout).
+    # Maximum column HEIGHT (rows) in the multi-cell placement FOLD. The fold
+    # chooser (see default_layout / _fold_geometry) snakes the datapath cells
+    # column-major up to this many rows tall, preferring the TALLEST (most
+    # compact) fold that keeps an EVEN number of columns — the parity that
+    # co-locates the block's input and output on the SAME edge (INV-14).
     FOLD_HEIGHT = 4
     # Saturating-shift rail constant: 0x7FFF = +32767. The headroom restore pins
     # to a rail with ``0x7FFF + signbit`` so this one word yields both +0x7FFF
@@ -254,40 +258,79 @@ class FIRFilterBlock(KyttarBlock):
             return 1  # Single-cell fits within the register budget
         return len(self._segment_offsets()) - 1
 
-    def default_layout(self):
-        """Place the multi-cell wavefront as a column-major serpentine FOLD, NOT
-        the base class's single straight row.
+    def _fold_geometry(self):
+        """Choose the (cols, rows) of the compact serpentine fold for ``n =
+        cell_count`` datapath cells.
 
-        The wavefront snakes DOWN a column of ``FOLD_HEIGHT`` cells, OVER one, and
-        UP the next column, repeating. This keeps a large FIR COMPACT (8 cells →
-        a 2×4 block, not a 1×8 strip stretched across the array) and — for a
-        2-column fold — lands the INPUT cell (cell 0, top of column 0) and the
-        OUTPUT cell (last cell, top of column 1) SIDE BY SIDE on the top edge, so
-        both the ingress and egress corridors leave from the same face. Each
-        cell's face points at its successor in the chain (its forwarding / JUMP
-        target): south down a column, east across the turn, north back up.
+        INV-14 — a column-major serpentine snake co-locates the block's INPUT
+        (cell 0, top of column 0) and its OUTPUT (the last datapath cell) on the
+        SAME edge when the COLUMN COUNT is EVEN: column 0 snakes DOWN, column 1
+        UP, …, so an even number of FULL columns ends travelling UP and lands the
+        last cell back at the TOP edge beside the input. We pick the most compact
+        fold (tallest column ≤ ``FOLD_HEIGHT`` ⇒ fewest columns) and PREFER one
+        whose cells fill an even number of full columns, so I/O co-locates with
+        NO padding. When ``n`` doesn't fold into full even columns we do NOT pad
+        (that complicates the egress) — we take the compact fold and let the
+        router hook up the output from wherever the last cell lands.
+
+        Returns ``(cols, rows)``; the snake fills ``n`` of the ``cols*rows``
+        positions left-to-right column-major (a partial last column is fine).
+        """
+        import math
+        n = self.cell_count
+        # Best EVEN-column full-rectangle fold (perfect I/O co-location, no pad):
+        # the tallest H≤FOLD_HEIGHT that divides n with an even quotient.
+        for H in range(self.FOLD_HEIGHT, 0, -1):
+            if n % H == 0 and (n // H) % 2 == 0:
+                return n // H, H
+        # No clean even fold — take the most compact one (tallest column ⇒ fewest
+        # columns) and accept the last cell may land a row off the input edge; the
+        # router connects the output from there.
+        H = min(self.FOLD_HEIGHT, n)
+        C = math.ceil(n / H)
+        return C, H
+
+    def default_layout(self):
+        """Place the multi-cell wavefront as a compact column-major serpentine
+        FOLD, NOT the base class's single straight row.
+
+        The wavefront snakes DOWN a column of up to ``FOLD_HEIGHT`` cells, OVER
+        one, and UP the next, repeating. This keeps a large FIR COMPACT (8 cells →
+        a 2×4 block, not a 1×8 strip across the array). When the cell count fills
+        an EVEN number of full columns, the snake ends travelling UP and lands the
+        OUTPUT cell (last cell) back on the INPUT's top edge — both I/O corridors
+        then leave from the same face (INV-14). When it doesn't fold into full
+        even columns the last cell lands wherever the snake ends (a row off the
+        input edge at worst); we keep the compact fold and let the router connect
+        the output from there. Each cell's face points at its successor in the
+        chain (south down a column, east across a turn, north back up); the final
+        cell continues its column's travel direction so its egress leaves cleanly.
 
         Single-cell FIRs (≤ MAX_SINGLE_CELL_TAPS) use the trivial 1-cell layout.
         """
         n = self.cell_count
         if n <= 1:
             return {0: (0, 0, "east")}
-        H = self.FOLD_HEIGHT
-        pos = {}
-        for i in range(n):
+        C, H = self._fold_geometry()
+
+        def snake_pos(i):
             col, r = divmod(i, H)
             dy = r if (col % 2 == 0) else (H - 1 - r)
-            pos[i] = (col, dy)
+            return col, dy
+
+        pos = {i: snake_pos(i) for i in range(n)}
         layout = {}
         for i in range(n):
             dx, dy = pos[i]
-            if i + 1 in pos:
-                nx, ny = pos[i + 1]
+            nxt = pos.get(i + 1)
+            if nxt is not None:
+                nx, ny = nxt
                 face = ("east" if nx > dx else "west" if nx < dx
                         else "south" if ny > dy else "north")
             else:
-                # Last cell: continue along the column's travel direction (north
-                # for an up-going column) so the output egress leaves cleanly.
+                # Last cell: continue the column's travel direction (north up an
+                # up-going column, south down a down-going one) so the output
+                # egress leaves the block cleanly for the router to pick up.
                 face = "north" if (i // H) % 2 == 1 else "south"
             layout[i] = (dx, dy, face)
         return layout

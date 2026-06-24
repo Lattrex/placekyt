@@ -351,20 +351,30 @@ After an **ODD** number of columns it ends going DOWN → at the **BOTTOM** → 
 **OPPOSITE edge**. This is pure geometry, independent of D4 orientation: rotating an
 odd-column fold still leaves I/O on opposite edges.
 
-**Fix / guideline (not a hard DRC — a layout constraint).** Choose the fold `(C
-columns × H height)` so **C is EVEN**, `C·H ≥ n`, and both `C ≤ 8` and `H ≤ 8` (the
-10×12 array / ≤8-across convention, INV-9). When the cell count `n` doesn't yield an
-even-column fold that fits, **PAD UP to a full rectangle** with spare RELAY/no-op
-cells (pure forwarding transit) so every column is full height and the snake reaches
-the TOP of the last column cleanly — one or two padding cells is cheap insurance for
-guaranteed I/O co-location. Prefer the most compact (near-square, minimal padding)
-even-column fold. (Examples: n=8 → 2×4 or 4×2; n=12 → 4×3 or 6×2; n=13 → 4×4 with 3
-relay cells; n=20 → 4×5; n=40 → 8×5.) The OUTPUT port must resolve to the last
-DATAPATH cell at the top of the last column — never a padding cell, never the bottom.
+**Fix / guideline (not a hard DRC — a layout constraint). NO PADDING (CM, this
+session).** Choose the most COMPACT fold (tallest column `H ≤ FOLD_HEIGHT` ⇒ fewest
+columns) and PREFER one whose `n` cells fill an **EVEN number of FULL columns** — then
+the snake ends going UP at the top, the output co-locates with the input on the top
+edge, and there is **no relay padding** in the egress (the output is just the last
+datapath cell at the top of the last column). The FIR chooser scans
+`H = FOLD_HEIGHT…1` and takes the first that divides `n` with an even quotient
+(`fir_filter_block.py:_fold_geometry`). Examples that fold cleanly: n=2 → 2×1; n=4 →
+2×2; n=8 → 2×4; n=20 cells… (per tap count).
+
+When `n` has **no** even-full-column fold (e.g. a prime-ish cell count like 3, or 13),
+do **NOT pad to force it** — padding the last column with transit relays puts a relay
+cell in the OUTPUT EGRESS path, and the auto-router starts its corridor one cell
+*outside* the block's emit face, so the source-exit WRITE hop is computed from the
+relay, not the output cell → the output WRITE lands one hop short and the block
+produces NO output (verified: a padded 13-tap FIR built `res.ok` but emitted zero
+samples). Instead take the most compact fold as-is and let the **router** connect the
+output from wherever the last cell lands (a row off the input edge at worst). "Get
+close, then let the router hook it up" — co-location is a preference, not a hard
+requirement, and is NOT worth a fragile egress-relay mechanism.
 
 A partial last column breaks the parity argument (an up-going partial column doesn't
-reach the top row), which is why padding to a FULL rectangle — not just an even
-column count — is what actually guarantees the same-edge landing.
+reach the top row); we simply accept the off-by-a-row landing in that case rather than
+pad.
 
 **Applies to:** every folded multi-cell block (FIR, and any future block whose
 `default_layout` serpentines). See `layout_rules.md` for the fold conventions this

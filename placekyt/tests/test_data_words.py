@@ -200,8 +200,14 @@ class TestAbutmentHops:
         ctrl.place_block("FIRFilterBlock", 0, 0, 0, library="lattrex.official",
                          params={"coefficients": [0.1] * 13})
         b = ctrl.project.blocks[0].name
-        ctrl.add_route(BlockEndpoint(b, "out"), ChipPortEndpoint(0, "x16_out"),
-                       [(2, 0)] + [(x, 0) for x in range(3, 10)])
+        # The multi-cell FIR FOLDS (INV-8): its output egresses the LAST cell,
+        # whose position depends on the fold, so don't hardcode waypoints — wire
+        # the logical net and let the auto-router source it from the real exit
+        # cell (it resolves the PortMap WITH params, INV-11).
+        ctrl.add_logical_connection(
+            BlockEndpoint(b, "out"), ChipPortEndpoint(0, "x16_out"), name="out")
+        ctrl.auto_route_all()
+        assert ctrl.project.connection("out").is_routed, "FIR output did not route"
         res = ctrl.build()
         assert res.ok, [str(e) for e in res.errors]
         entry, in_regs = catalog.resolved_io(

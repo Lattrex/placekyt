@@ -57,6 +57,8 @@ class FIRFilterBlock(KyttarBlock):
     # Largest tap count that fits one cell's ~31-register budget (see class
     # docstring). 8+ taps overflow → fold to the multi-cell wavefront.
     MAX_SINGLE_CELL_TAPS = 7
+    # Cells per column in the multi-cell placement FOLD (see default_layout).
+    FOLD_HEIGHT = 4
 
     @property
     def cell_count(self) -> int:
@@ -64,6 +66,44 @@ class FIRFilterBlock(KyttarBlock):
         if self._num_taps <= self.MAX_SINGLE_CELL_TAPS:
             return 1  # Single-cell fits within the register budget
         return math.ceil(self._num_taps / self.TAPS_PER_CELL)
+
+    def default_layout(self):
+        """Place the multi-cell wavefront as a column-major serpentine FOLD, NOT
+        the base class's single straight row.
+
+        The wavefront snakes DOWN a column of ``FOLD_HEIGHT`` cells, OVER one, and
+        UP the next column, repeating. This keeps a large FIR COMPACT (8 cells →
+        a 2×4 block, not a 1×8 strip stretched across the array) and — for a
+        2-column fold — lands the INPUT cell (cell 0, top of column 0) and the
+        OUTPUT cell (last cell, top of column 1) SIDE BY SIDE on the top edge, so
+        both the ingress and egress corridors leave from the same face. Each
+        cell's face points at its successor in the chain (its forwarding / JUMP
+        target): south down a column, east across the turn, north back up.
+
+        Single-cell FIRs (≤ MAX_SINGLE_CELL_TAPS) use the trivial 1-cell layout.
+        """
+        n = self.cell_count
+        if n <= 1:
+            return {0: (0, 0, "east")}
+        H = self.FOLD_HEIGHT
+        pos = {}
+        for i in range(n):
+            col, r = divmod(i, H)
+            dy = r if (col % 2 == 0) else (H - 1 - r)
+            pos[i] = (col, dy)
+        layout = {}
+        for i in range(n):
+            dx, dy = pos[i]
+            if i + 1 in pos:
+                nx, ny = pos[i + 1]
+                face = ("east" if nx > dx else "west" if nx < dx
+                        else "south" if ny > dy else "north")
+            else:
+                # Last cell: continue along the column's travel direction (north
+                # for an up-going column) so the output egress leaves cleanly.
+                face = "north" if (i // H) % 2 == 1 else "south"
+            layout[i] = (dx, dy, face)
+        return layout
 
     @property
     def num_taps(self) -> int:

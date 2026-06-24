@@ -74,12 +74,46 @@ class AutoPlacer:
         self._width = int(width)
         self._height = int(height)
         self._band_margin = int(band_margin)  # extra rows below a band for the bus
+        self._takes_params: dict = {}
+
+    # -- provider adapter -----------------------------------------------------
+    def _provider(self, fn, blk):
+        """Call a ``(block_type, library[, params])`` provider for a placed block,
+        passing the block's PARAMS when the provider accepts a third argument. A
+        block whose FOOTPRINT scales with params (e.g. an N-tap FIR: cells =
+        ceil(taps/5)) is mis-sized if resolved from the bare type — the default
+        construction is single-cell, so the packer reserves ONE cell for a block
+        that builds many, and the extra cells spill over / off-array. Back-compat:
+        older 2-arg providers are called as before."""
+        takes = self._takes_params.get(fn)
+        if takes is None:
+            takes = self._accepts_three(fn)
+            self._takes_params[fn] = takes
+        if takes:
+            return fn(blk.type, blk.library, getattr(blk, "params", None))
+        return fn(blk.type, blk.library)
+
+    @staticmethod
+    def _accepts_three(fn) -> bool:
+        """True if ``fn`` can be called with three positional args."""
+        import inspect
+        try:
+            params = inspect.signature(fn).parameters.values()
+        except (ValueError, TypeError):
+            return False
+        positional = 0
+        for p in params:
+            if p.kind is p.VAR_POSITIONAL:
+                return True
+            if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD):
+                positional += 1
+        return positional >= 3
 
     # -- footprint helper -----------------------------------------------------
     def _wh(self, blk):
         """Block cell extent (w, h) = footprint+1 (footprint is max offset)."""
         try:
-            fw, fh = self._fp(blk.type, blk.library)
+            fw, fh = self._provider(self._fp, blk)
         except Exception:  # noqa: BLE001
             fw, fh = 0, 0
         return int(fw) + 1, int(fh) + 1
@@ -255,7 +289,7 @@ class AutoPlacer:
         if pm is None:
             return None
         try:
-            port_map = pm(blk.type, blk.library)
+            port_map = self._provider(pm, blk)
         except Exception:  # noqa: BLE001
             return None
         from engine.autoroute import suggest_flow_orientation

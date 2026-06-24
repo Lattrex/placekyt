@@ -22,14 +22,16 @@ anything that generalizes across block classes into `invariants.md`.
   pass `reversed(coefficients)` to the reference. The single-cell datapath and
   the multi-cell datapath BOTH match this; keep them on one convention.
 - **Two substrate bugs fixed (promoted to invariants):**
-  - **Multi-cell egress (INV-8):** the auto-router resolved the block's output
+  - **Multi-cell egress (INV-11):** the auto-router/placer resolved the block's
     PortMap from the bare type (default = single-cell), so a 13-tap FIR routed
     its output from cell 0, not the real last cell → no egress. Fix: thread
-    `block.params` into PortMap resolution across autoroute/bus_router/controller.
+    `block.params` into PortMap resolution across autoroute/bus_router/controller
+    AND the autoplacer footprint/port-map providers (an arity adapter keeps old
+    2-arg providers working).
   - **Single-cell budget (INV-7):** the old `<=12 taps => 1 cell` threshold
     overflowed the ~31-register cell at 8 taps. Real ceiling is 7; 8+ now fold to
     multi-cell.
-- **The bug the OLD 'green' suite hid (INV-9):** the borrowed RRC multi-cell code
+- **The bug the OLD 'green' suite hid (INV-12):** the borrowed RRC multi-cell code
   reversed each coefficient SEGMENT — correct only for SYMMETRIC taps. The prior
   suite used EDGE (10 samples) + uniform positive taps, so the deep cells never
   saw data and the mis-ordering cancelled. Under >2*ntaps random input with
@@ -37,10 +39,22 @@ anything that generalizes across block classes into `invariants.md`.
   its OWN multi-cell builder; each cell takes `coeff[N-offset_{m+1} : N-offset_m]`
   in FORWARD order (derived from the cascaded-delay structure, validated against
   the single-cell datapath in float before touching the chip).
+- **Layout FOLD (INV-8/9/10) — the GUI revealed it; the harness hid it:** the
+  base-class auto-snake laid 8 cells as a 1x8 LINE, so input and output sat on
+  OPPOSITE edges → the single bus can't tap both → in GUI place+route the block
+  built but the gain→FIR net would not route (a flyline), even though the headless
+  verification harness "passed" (it injects/drains directly, not via the bus).
+  Fix: FIR now authors an explicit `default_layout` — a column-major serpentine
+  fold (down a column of FOLD_HEIGHT=4, over one, up the next). 40 taps (8 cells)
+  → the canonical **2x4** with input @(0,0) and output @(1,0) SIDE BY SIDE on one
+  edge → `portmap.io_colocated=True`, and the bus taps both. Consecutive cells
+  stay adjacent so the wavefront forwarding is unchanged (verification still 21/21).
+  LESSON: a headless DUT-vs-GR pass does NOT prove a block places+routes in the
+  real GUI/bus flow — verify both. (Now in layout_rules.md + INV-8/9/10.)
 - **Known limit (guarded, genuine substrate wall):** ~400 taps (80 cells) exceeds
-  the 10x12 array's routing capacity — the serpentine leaves no I/O corridor.
-  `test_fir_routing_capacity_limit` asserts it fails to route; flips if the array
-  grows. NOT a tap cap faked to pass — the block is correct up to ~360.
+  the 10x12 array's routing capacity (≤8 cells across per INV-9). The folded
+  footprint can't leave a bus channel. `test_fir_routing_capacity_limit` asserts
+  it fails to route; flips if the array grows. NOT a tap cap faked to pass.
 - **Method note:** model the datapath in plain float FIRST (single-cell vs
   multi-cell) to localise a structural index bug in seconds, before paying for
   build+sim+GNU-Radio round trips.

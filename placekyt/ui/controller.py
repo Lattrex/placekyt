@@ -401,8 +401,8 @@ class AppController(QObject):
         from commands import (CompositeCommand, MoveBlockCommand,
                               OrientBlockCommand)
 
-        def footprint(block_type, library):
-            pm = self.catalog.port_map(block_type, library=library)
+        def footprint(block_type, library, params=None):
+            pm = self.catalog.port_map(block_type, params=params, library=library)
             return pm.footprint
 
         def port_maps(block_type, library, params=None):
@@ -879,8 +879,8 @@ class AppController(QObject):
         ``spine`` without moving anything."""
         from engine.autoplace import AutoPlacer
 
-        def footprint(block_type, library):
-            return self.catalog.port_map(block_type, library=library).footprint
+        def footprint(block_type, library, params=None):
+            return self.catalog.port_map(block_type, params=params, library=library).footprint
 
         def port_maps(block_type, library, params=None):
             return self.catalog.port_map(block_type, params=params, library=library)

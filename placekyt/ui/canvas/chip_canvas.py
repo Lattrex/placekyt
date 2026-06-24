@@ -1297,8 +1297,13 @@ class ChipCanvas(QGraphicsView):
             from engine.route_analysis import (connections_terminating_at_cell,
                                                 connections_through_cell)
             chip = getattr(cell, "chip_id", 0) or 0
+            # Pass the port-cell provider so a connection is matched by its block
+            # I/O endpoint resolving to this cell — selecting an INPUT cell then
+            # highlights its INCOMING net too, not just the output cell its
+            # outgoing net (the reported input-vs-output asymmetry).
             names = set(connections_terminating_at_cell(
-                self._project, chip, cell.cx, cell.cy))
+                self._project, chip, cell.cx, cell.cy,
+                port_cell_resolver=self.port_cell_provider))
             if not names:
                 names = set(connections_through_cell(
                     self._project, chip, cell.cx, cell.cy))

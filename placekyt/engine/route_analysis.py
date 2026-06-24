@@ -71,22 +71,73 @@ def connections_through_cell(project, chip_id: int, x: int, y: int) -> list[str]
     return names
 
 
+def _endpoint_cell(project, port_cell_resolver, endpoint, chip_id):
+    """The (x, y) cell a connection ENDPOINT resolves to on ``chip_id``, or None.
+
+    A BlockEndpoint resolves through the block's placement + its PortMap to its
+    actual I/O landing cell (so an INPUT port maps to the block's input cell, an
+    OUTPUT port to its output cell — distinct for a multi-cell block). This lets a
+    selection highlight the net LOGICALLY terminating at a cell even when the net
+    is unrouted (a direct chip-input injection) or its route waypoints don't land
+    exactly on the block I/O cell.
+
+    ``port_cell_resolver(block_type, library, params) -> {port_name: (cell_id,
+    direction)}`` (the canvas's port-cell provider). When None, falls back to the
+    block's first cell."""
+    from model.connection import BlockEndpoint
+
+    if not isinstance(endpoint, BlockEndpoint):
+        return None  # chip-port endpoints have no block cell to resolve here
+    blk = project.block(endpoint.block)
+    if blk is None or blk.placement is None or blk.placement.chip != chip_id:
+        return None
+    cid = 0
+    if port_cell_resolver is not None:
+        try:
+            pmap = port_cell_resolver(
+                blk.type, blk.library, getattr(blk, "params", None)) or {}
+            entry = pmap.get(endpoint.port)
+            if entry is not None:
+                cid = entry[0] if isinstance(entry, (tuple, list)) else entry
+        except Exception:  # noqa: BLE001 — fall back to landing cell
+            cid = 0
+    pc = blk.placement.cell(cid)
+    if pc is None and blk.placement.cells:
+        pc = blk.placement.cells[0]
+    return (pc.x, pc.y) if pc is not None else None
+
+
 def connections_terminating_at_cell(
-        project, chip_id: int, x: int, y: int) -> list[str]:
-    """Names of routed connections whose route ENDS (source-output or
-    target-input endpoint) at cell ``(x, y)`` on ``chip_id``.
+        project, chip_id: int, x: int, y: int, port_cell_resolver=None) -> list[str]:
+    """Names of connections that END at cell ``(x, y)`` on ``chip_id`` — either by
+    a route endpoint (routed nets) OR by a block I/O endpoint resolving to this
+    cell (works for UNROUTED nets and multi-cell blocks whose input and output
+    sit on different cells).
 
     These are the connections an I/O cell selection should highlight first — the
-    ones that physically originate from / terminate at this block I/O cell (as
-    opposed to merely transiting it)."""
+    ones that originate from / terminate at this block I/O cell (vs merely
+    transiting it). Passing ``catalog`` enables the block-endpoint resolution, so
+    selecting a block's INPUT cell highlights its INCOMING net (not only the
+    OUTPUT cell highlighting the outgoing net — the reported asymmetry)."""
     names: list[str] = []
     for conn in project.connections:
-        if not conn.is_routed:
-            continue
         if route_chip_of(project, conn) != chip_id:
             continue
-        ends = (conn.route[0], conn.route[-1])
-        if any(rp.x == x and rp.y == y for rp in ends):
+        matched = False
+        # 1. Routed nets: a route endpoint lands on the cell.
+        if conn.is_routed and conn.route:
+            ends = (conn.route[0], conn.route[-1])
+            if any(rp.x == x and rp.y == y for rp in ends):
+                matched = True
+        # 2. Either net: a block I/O endpoint resolves to the cell (catches
+        #    unrouted nets and multi-cell input-vs-output cells).
+        if not matched:
+            for ep in (conn.source, conn.target):
+                ec = _endpoint_cell(project, port_cell_resolver, ep, chip_id)
+                if ec == (x, y):
+                    matched = True
+                    break
+        if matched:
             names.append(conn.name)
     return names
 

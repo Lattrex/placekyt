@@ -34,6 +34,13 @@ import numpy as np
 _HDR = struct.Struct(">I")  # 4-byte big-endian frame-header length
 
 
+class BatchAborted(Exception):
+    """Raised by a BatchDebugHooks.after_sample to abort an in-progress batch
+    (the user pressed Stop while paused at a breakpoint). process_batch catches
+    it and returns the samples produced so far with ``aborted: True``, rather
+    than running the rest of the burst."""
+
+
 def _q15_to_float(v: int) -> float:
     """uint16 Q15 → float in [-1, 1). Interprets bit 15 as the sign."""
     s = v - 0x10000 if (v & 0x8000) else v
@@ -98,11 +105,19 @@ class SimServer:
 
     def __init__(self, chip, *, host: str = "127.0.0.1", port: int = 0,
                  on_activity=None, on_reset=None, on_before_batch=None,
-                 default_entries=None, on_grc_params=None):
+                 default_entries=None, on_grc_params=None, debug_hooks=None):
         self._chip = chip
         self._host = host
         self._req_port = port
         self._on_activity = on_activity
+        # Optional: a BatchDebugHooks (thread-safe, Qt-free) that makes the GUI
+        # debug controls first-class DURING a GRC batch run. The process_batch
+        # per-sample loop consults it after every sample: honor a breakpoint
+        # (pause + report which sample), block while paused, single-step, and
+        # apply the playback speed delay — so breakpoints / speed / step work
+        # even though the burst runs server-side here rather than in the GUI's
+        # local SimController loop. None ⇒ the loop runs flat out as before.
+        self._debug_hooks = debug_hooks
         # Optional: called at the TOP of each process_batch, BEFORE the burst is
         # run. The host rebuilds the hosted chip from the CURRENT project if the
         # design was edited since the last build (placement/route/connection
@@ -333,53 +348,67 @@ class SimServer:
                 out_vals: list[float] = []
                 nsamp = (len(data) // 2) if is_complex else len(data)
                 _t_batch0 = time.perf_counter()
+                aborted = False
+                nrun = nsamp
                 # Drive each sample the PROVEN way: inject xi→a0, run; (complex:
                 # xq→a1, run;) JUMP entry, run; then drain the output port. (The
                 # write_port_multi_i16 path stalls the loop after one sample; the
                 # raw inject path advances every sample and is what the on-chip lock
                 # tests use.) target_hop_cnt=30 = @1 to the landing cell at the
-                # input-port edge.
-                for k in range(nsamp):
-                    if is_complex:
-                        xi = _float_to_q15(float(data[2 * k]))
-                        xq = _float_to_q15(float(data[2 * k + 1]))
-                    else:
-                        xi = _float_to_q15(float(data[k]))
-                        xq = None
-                    self._chip.inject_data_physical([xi], target_hop_cnt=30,
-                                                    target_addr=int(a0))
-                    self._chip.run(max_events=3000)
-                    if xq is not None:
-                        self._chip.inject_data_physical([xq], target_hop_cnt=30,
-                                                        target_addr=int(a1))
+                # input-port edge. Wrapped so a debug-hook STOP (BatchAborted)
+                # returns the samples produced so far instead of the whole burst.
+                try:
+                    for k in range(nsamp):
+                        if is_complex:
+                            xi = _float_to_q15(float(data[2 * k]))
+                            xq = _float_to_q15(float(data[2 * k + 1]))
+                        else:
+                            xi = _float_to_q15(float(data[k]))
+                            xq = None
+                        self._chip.inject_data_physical([xi], target_hop_cnt=30,
+                                                        target_addr=int(a0))
                         self._chip.run(max_events=3000)
-                    self._chip.inject_jump_physical(target_hop_cnt=30,
-                                                    entry_addr=entry)
-                    self._chip.run(max_events=mx)
-                    if raw:
-                        got = self._chip.read_port_i16(port)
-                        if got is not None and len(got):
-                            out_vals.extend(float(int(v)) for v in got)
-                    else:
-                        got = self._chip.read_port(port)
-                        if got is not None and len(got):
-                            out_vals.extend(float(v) for v in got)
+                        if xq is not None:
+                            self._chip.inject_data_physical([xq], target_hop_cnt=30,
+                                                            target_addr=int(a1))
+                            self._chip.run(max_events=3000)
+                        self._chip.inject_jump_physical(target_hop_cnt=30,
+                                                        entry_addr=entry)
+                        self._chip.run(max_events=mx)
+                        if raw:
+                            got = self._chip.read_port_i16(port)
+                            if got is not None and len(got):
+                                out_vals.extend(float(int(v)) for v in got)
+                        else:
+                            got = self._chip.read_port(port)
+                            if got is not None and len(got):
+                                out_vals.extend(float(v) for v in got)
+                        # Make the GUI debug controls first-class for this batch
+                        # run: after each sample, let the hooks pause on a
+                        # breakpoint, block while paused, single-step, and pace by
+                        # the speed setting. No hooks ⇒ no-op (flat-out, original
+                        # behavior). Raises BatchAborted if the user stops.
+                        if self._debug_hooks is not None:
+                            self._debug_hooks.after_sample(self._chip, k, port)
+                except BatchAborted:
+                    aborted = True
+                    nrun = k + 1   # samples actually driven before the stop
                 # Throughput metric: how fast simKYT processes I/Q samples on THIS
                 # machine. simkyt is an event-accurate async-ASIC sim, not a
                 # real-time DSP source — this tells the user roughly how long a given
                 # burst length will take (e.g. 1 s of 48 kHz audio ≈ nsamp/sps_rate
                 # seconds of wall time). Reported in the reply header and to the GUI.
                 _dt = max(1e-9, time.perf_counter() - _t_batch0)
-                sps = nsamp / _dt
+                sps = nrun / _dt
                 if self._on_activity is not None:
                     # Pass the metric if the callback accepts it; else ping plainly.
                     try:
-                        self._on_activity(samples=nsamp, seconds=_dt,
+                        self._on_activity(samples=nrun, seconds=_dt,
                                           samples_per_sec=sps)
                     except TypeError:
                         self._on_activity()
-                return ({"ok": True, "samples": nsamp, "seconds": _dt,
-                         "samples_per_sec": sps},
+                return ({"ok": True, "samples": nrun, "seconds": _dt,
+                         "samples_per_sec": sps, "aborted": aborted},
                         np.asarray(out_vals, dtype="<f4"))
             if op == "output_available":
                 return {"ok": True, "available":

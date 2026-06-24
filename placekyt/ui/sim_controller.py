@@ -167,6 +167,11 @@ class SimController(QObject):
         self._last_inject_count = 0
         # GNURadio bridge server (placeKYT hosts the chip; GRC streams to it).
         self._gr_server = None
+        # Debug hooks for a GRC batch run (breakpoints/speed/step honored in the
+        # server-side per-sample loop); created on server start, None otherwise.
+        self._batch_debug = None
+        # Current speed-slider index (also drives the batch playback delay).
+        self._speed_index = DEFAULT_SPEED
         # Host-side SRAM panel devices, registered in-fabric with the engine
         # (#193): run() self-pumps them. {panel_id: SramPanelDevice}; the chip
         # output ports feeding registered panels (for ack-pending checks).
@@ -209,9 +214,48 @@ class SimController(QObject):
         and lights ONE word per tick (slow-motion); the fast end runs big batches
         with flash catch-up."""
         index = max(0, min(len(SPEED_STEPS) - 1, index))
+        self._speed_index = index
         self._batch, tick_ms, self._flash_per_tick = SPEED_STEPS[index]
         self._timer.setInterval(tick_ms)
         self.flash_rate.emit(self._flash_per_tick)
+        # Same slider paces a GRC batch run (the per-sample server loop): map the
+        # speed step to a per-sample delay so slow = slow-motion, fast = no wait.
+        if self._batch_debug is not None:
+            self._batch_debug.set_delay(self._batch_debug_delay_for_speed())
+
+    def _batch_debug_delay_for_speed(self) -> float:
+        """Per-sample delay (seconds) for the current speed index in a GRC batch
+        run. The slow end pauses ~0.3 s/sample (slow-motion, one sample visible);
+        the fast end runs with no wait. Derived from the slider's tick interval so
+        it tracks the same ladder the interactive animation uses."""
+        # Fastest few steps → no artificial delay (flat-out). Below that, scale
+        # from the tick interval (ms) into a per-sample pause.
+        if self._speed_index >= 7:
+            return 0.0
+        tick_ms = SPEED_STEPS[self._speed_index][1]
+        return min(0.4, tick_ms / 1000.0)
+
+    def _batch_breakpoint_hit(self, chip, sample_index: int) -> bool:
+        """Server-thread breakpoint check for a GRC batch sample. Reuses the same
+        BreakpointSet as the interactive run, evaluated against the hosted chip's
+        recent trace events. Returns True if any enabled breakpoint fired on this
+        sample (the batch loop then pauses). Qt-free — touches engine only."""
+        if not self.breakpoints.breakpoints:
+            return False
+        chip_obj = self._gr_server._chip if self._gr_server is not None else None
+        if chip_obj is None:
+            return False
+        try:
+            sim_chip = getattr(chip_obj, "id", 0) or 0
+            events = chip_obj.drain_trace() if hasattr(chip_obj, "drain_trace") \
+                else chip_obj.trace_events()
+            hit = self.breakpoints.first_hit(sim_chip, list(events), self._width)
+        except Exception:
+            return False
+        if hit is not None:
+            self.breakpoint_hit.emit(hit)
+            return True
+        return False
 
     # -- lifecycle ------------------------------------------------------------
 
@@ -357,13 +401,34 @@ class SimController(QObject):
         def _grc_params(params_by_block):
             self.grc_params_received.emit(params_by_block)
 
+        # Debug hooks make breakpoints / speed / step first-class DURING a GRC
+        # batch run (the burst runs server-side, not in the interactive loop).
+        # breakpoint_check + on_sample run on the SERVER thread → keep them
+        # Qt-free / queued. We seed the speed delay from the current slider.
+        from engine.batch_debug import BatchDebugHooks
+
+        def _bp_check(chip, sample_index):
+            return self._batch_breakpoint_hit(chip, sample_index)
+
+        def _on_sample(sample_index, paused):
+            # Queued to the GUI thread: refresh the debug views per sample, and
+            # surface a pause so the toolbar state reflects a breakpoint stop.
+            self.server_activity.emit(False)
+            if paused:
+                self.state_changed.emit("paused")
+
+        self._batch_debug = BatchDebugHooks(
+            breakpoint_check=_bp_check, on_sample=_on_sample)
+        self._batch_debug.set_delay(self._batch_debug_delay_for_speed())
+
         self._gr_server = SimServer(
             self.engine.chip, host=host, port=port,
             on_activity=_activity,
             on_reset=self._rehost_server_chip_threadsafe,
             on_before_batch=self._rebuild_if_dirty_threadsafe,
             default_entries=default_entries,
-            on_grc_params=_grc_params)
+            on_grc_params=_grc_params,
+            debug_hooks=self._batch_debug)
         bound = self._gr_server.start()
         self.state_changed.emit(f"gnuradio-server :{bound}")
         self.server_state.emit(bound)
@@ -371,8 +436,13 @@ class SimController(QObject):
 
     def stop_gnuradio_server(self) -> None:
         if self._gr_server is not None:
+            # Abort any in-flight batch (e.g. paused at a breakpoint) so the
+            # server thread unblocks before we tear it down.
+            if self._batch_debug is not None:
+                self._batch_debug.stop()
             self._gr_server.stop()
             self._gr_server = None
+            self._batch_debug = None
             # One final (unthrottled) refresh so the debug views settle on the
             # last window of activity.
             self.refresh_debug_from_chip(force=True)
@@ -554,6 +624,12 @@ class SimController(QObject):
         self.state_changed.emit("idle")
 
     def pause(self) -> None:
+        # During a GRC batch run the burst runs in the server loop, not the
+        # interactive timer — pause the hooks so it blocks at the next sample.
+        if self._batch_debug is not None:
+            self._batch_debug.pause()
+            self.state_changed.emit("paused")
+            return
         if self._running and not self._paused:
             self._timer.stop()
             self._paused = True
@@ -561,6 +637,10 @@ class SimController(QObject):
             self.state_changed.emit("paused")
 
     def resume(self) -> None:
+        if self._batch_debug is not None:
+            self._batch_debug.resume()
+            self.state_changed.emit("running")
+            return
         if self._running and self._paused:
             self._paused = False
             self.state_changed.emit("running")
@@ -580,6 +660,11 @@ class SimController(QObject):
                                  ``output_ready``).
         Multi-chip falls back to a bounded batch step (round-based; per-event
         granularity isn't meaningful across the inter-chip relay)."""
+        # During a GRC batch run a "step" advances exactly one SAMPLE through the
+        # server loop (per-event stepping isn't meaningful across the RPC).
+        if self._batch_debug is not None:
+            self._batch_debug.step()
+            return
         if self.engine is None:
             return
         if self._multi or mode == "event":

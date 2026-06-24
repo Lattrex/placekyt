@@ -88,12 +88,17 @@ class source(gr.sync_block):
         # stay in the GR graph (so the flowgraph imports into placeKYT) while the
         # actual DSP runs on the hosted chip. `complex_in` accepts the I/Q burst.
         self._server_mode = int(server_port) > 0
-        # In server mode the INPUT is the complex I/Q burst (the session carries it
-        # to the chip), but the OUTPUT to the marker chain is FLOAT — the real DSP
-        # blocks (costas/gardner/slicer) are float-stream markers, so the chain
-        # source→costas→…→sink type-checks. The marker-chain data is unused; the
-        # burst travels via the batch session, not the GR stream.
-        in_dtype = np.complex64 if (complex_in or self._server_mode) else np.float32
+        # INPUT type is driven by complex_in ALONE — NOT by server mode. A
+        # server-mode source can be float (e.g. a gain demo) or complex (an I/Q
+        # receiver); the user states which via complex_in. This io_signature is
+        # what GRC's runtime connect() checks for item size, so it MUST match the
+        # .block.yml port type (the Input Type enum). Forcing complex whenever a
+        # server port was set made the float gain stimulus fail to connect
+        # ("itemsize mismatch: ... using 4, Kyttar Source ... using 8").
+        # OUTPUT stays float in server mode: the downstream marker chain
+        # (costas/gardner/slicer) is float, and the marker-chain data is unused —
+        # the burst travels via the batch session, not the GR stream.
+        in_dtype = np.complex64 if complex_in else np.float32
         out_dtype = np.float32 if self._server_mode else in_dtype
         gr.sync_block.__init__(
             self,

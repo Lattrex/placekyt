@@ -5,10 +5,12 @@
 
 **2 verified · 0 in progress · 20 targeted.** Each Kyttar block is verified as a drop-in equivalent of its GNU Radio Companion counterpart (same parameters, output matching within Q15 quantization). “Quality” is the measured error of the verified block versus the GNU Radio reference.
 
-| Kyttar block | GNU Radio equivalent | Tier | Status | Quality (err/tol) | Coverage |
+> **Reading the quality column.** `err N / tol M LSB` — the worst-case sample error (`N`) against the derived pass threshold (`M`), in Q15 **LSBs** (1 LSB = 1/32768 of full scale ≈ 3.05e-5); pass requires `N ≤ M`. `−X dB SNR` — the **NMSE**: the error power is `X` dB below the signal power (more negative = quieter; Q15's floor is ≈ −90 dB). Decision blocks report **BER** instead. To estimate a chain's total noise, convert each block's dB to linear power (`10^(dB/10)`), sum, and convert back (`10·log10`) — the noisiest stage dominates.
+
+| Kyttar block | GNU Radio equivalent | Tier | Status | Quality (vs GNU Radio) | Coverage |
 |--------------|----------------------|------|--------|-------------------|----------|
-| **GainBlock** | `blocks.multiply_const_ff` | 1 · feed-forward | ✅ done | 1/2 LSB, -90 dB | edge rand×3 sweep×4 mut |
-| **FIRFilterBlock** | `filter.fir_filter_fff` | 1 · feed-forward | ✅ done | 11/17 LSB, -65 dB | edge rand×3 sweep×12 mut |
+| **GainBlock** | `blocks.multiply_const_ff` | 1 · feed-forward | ✅ done | err 1 / tol 2 LSB · -90 dB SNR | edge rand×3 sweep×4 mut |
+| **FIRFilterBlock** | `filter.fir_filter_fff` | 1 · feed-forward | ✅ done | err 11 / tol 17 LSB · -65 dB SNR | edge rand×3 sweep×12 mut |
 | **DCBlockerBlock** | `filter.dc_blocker_ff` | 1 · feed-forward | ⬜ planned | — | — |
 | **IIRBiquadBlock** | `filter.iir_filter_fff` | 1 · feed-forward | ⬜ planned | — | — |
 | **DecimatorBlock** | `filter.fir_filter_fff (decim)` | 1 · feed-forward | ⬜ planned | — | — |

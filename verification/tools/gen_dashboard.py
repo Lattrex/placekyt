@@ -68,10 +68,15 @@ def _metrics_cell(report: dict | None) -> str:
     nmse = report.get("nmse_db")
     parts = []
     if mae is not None and tol is not None:
-        parts.append(f"{mae}/{tol} LSB")
+        # Peak quantization error vs GNU Radio, in Q15 LSBs (1 LSB = 1/32768 of
+        # full scale ≈ 3.05e-5). "err N / tol M LSB" = worst-case error N against
+        # the derived pass threshold M — labeled so it doesn't read as a fraction.
+        parts.append(f"err {mae} / tol {tol} LSB")
     if nmse is not None and nmse == nmse:  # not NaN
-        parts.append(f"{nmse:.0f} dB")
-    return ", ".join(parts) or "pass"
+        # NMSE: error power relative to signal power. -65 dB SNR = the noise floor
+        # is 65 dB below the signal (more negative = quieter = better).
+        parts.append(f"{nmse:.0f} dB SNR")
+    return " · ".join(parts) or "pass"
 
 
 def _coverage_cell(report: dict | None) -> str:
@@ -113,7 +118,17 @@ def render(manifest: dict) -> str:
         "quantization). “Quality” is the measured error of the verified block "
         "versus the GNU Radio reference.")
     lines.append("")
-    lines.append("| Kyttar block | GNU Radio equivalent | Tier | Status | Quality (err/tol) | Coverage |")
+    lines.append(
+        "> **Reading the quality column.** `err N / tol M LSB` — the worst-case "
+        "sample error (`N`) against the derived pass threshold (`M`), in Q15 "
+        "**LSBs** (1 LSB = 1/32768 of full scale ≈ 3.05e-5); pass requires "
+        "`N ≤ M`. `−X dB SNR` — the **NMSE**: the error power is `X` dB below the "
+        "signal power (more negative = quieter; Q15's floor is ≈ −90 dB). "
+        "Decision blocks report **BER** instead. To estimate a chain's total "
+        "noise, convert each block's dB to linear power (`10^(dB/10)`), sum, and "
+        "convert back (`10·log10`) — the noisiest stage dominates.")
+    lines.append("")
+    lines.append("| Kyttar block | GNU Radio equivalent | Tier | Status | Quality (vs GNU Radio) | Coverage |")
     lines.append("|--------------|----------------------|------|--------|-------------------|----------|")
     for b in blocks_sorted:
         rep = _load_report(b["kyttar_block"]) if b.get("status") == "done" else None
@@ -163,7 +178,7 @@ def render_readme_summary(manifest: dict) -> str:
         "Full table → [`verification/STATUS.md`](verification/STATUS.md).")
     lines.append("")
     if done:
-        lines.append("| Verified block | GNU Radio equivalent | Quality (err/tol) |")
+        lines.append("| Verified block | GNU Radio equivalent | Quality (vs GNU Radio) |")
         lines.append("|----------------|----------------------|-------------------|")
         for b in done:
             rep = _load_report(b["kyttar_block"])

@@ -423,12 +423,25 @@ def test_fir_routing_capacity_limit():
 
 
 def test_emit_report():
-    """Record the verified result for the dashboard (the 64-tap scaling case)."""
-    n = MAX_VERIFIED_TAPS
+    """Record the verified result for the dashboard.
+
+    The dashboard's quality column is the REAL Q15 error vs GNU Radio float, with
+    the derived tolerance — NOT the bit-exact-vs-own-reference check (which is
+    always 0/0 LSB and circular, telling the reader nothing about quantization).
+    So the report is the DUT-vs-GR AMPLITUDE comparison in the in-range regime (a
+    normalized multi-cell FIR where no intermediate sum overflows, so saturating
+    == float-clipped and the only error IS the Q15 quantization noise). The
+    bit-exact substrate, overload-saturation, and mutation checks are asserted in
+    their own tests; this one publishes the meaningful quality number.
+    """
+    n = 16  # a multi-cell, normalized in-range case → genuine Q15 error vs GR
     taps = _norm_taps(n, seed=164)
-    inputs = _random_input(seed=264, n=2 * n + 16)
-    dut, res = _verify_saturating(taps, inputs)
+    inputs = [v // 2 for v in _random_input(seed=264, n=2 * n + 16)]
+    dut, res = _verify(taps, inputs)
     assert res.passed, res.summary()
+    assert res.tolerance > 0, (
+        "the dashboard quality must be a REAL vs-GR amplitude error with a "
+        "derived (non-zero) tolerance, not the circular 0/0 bit-exact metric")
     write_report("FIRFilterBlock", res, coverage={
         "edge": True, "random": 3,
         "param_sweep": len(MULTICELL_SIZES) + (MAX_SINGLE_CELL_TAPS - 1),

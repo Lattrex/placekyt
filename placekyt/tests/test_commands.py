@@ -203,6 +203,22 @@ class TestMoveBlock:
         mgr.undo()
         assert [c.pos for c in project.block("g").placement.cells] == before
 
+    def test_move_keeps_connection_clears_route(self, project, mgr):
+        """A move UNROUTES the block's connections (so no stale route-marker
+        cells are left stranded at the old position, and the fly line reappears)
+        but must NOT delete the net. Undo restores both placement and route."""
+        blk, cells = _placed_block(name="g", n=1)
+        mgr.execute(PlaceBlockCommand(project, blk, 0, cells))
+        c = Connection("c", ChipPortEndpoint(0, "x16_in"),
+                       BlockEndpoint("g", "in"), route=[RoutePoint(0, 0)])
+        mgr.execute(AddConnectionCommand(project, c))
+        mgr.execute(MoveBlockCommand(project, "g", 2, 3))
+        conn = project.connection("c")
+        assert conn is not None, "move must KEEP the connection (net)"
+        assert not conn.is_routed, "move must clear the stale route (no orphan cells)"
+        mgr.undo()
+        assert project.connection("c").is_routed, "undo restores the route"
+
 
 class TestTransformBlock:
     def test_rotate_cw_and_undo(self, project, mgr):

@@ -109,12 +109,25 @@ class _AddBlockCommand(Command):
 
 
 class MoveBlockCommand(Command):
-    """Translate every cell of a placed block by (dx, dy). Undo translates back."""
+    """Translate every cell of a placed block by (dx, dy). Undo translates back.
+
+    A move shifts the block's cells to a new location, so any existing physical
+    route to/from this block is left pinned at the block's OLD coordinates — its
+    waypoints no longer touch the block. Like :class:`TransformBlockCommand`, this
+    therefore UNROUTES every connection touching the block (clears its waypoints)
+    while PRESERVING the logical net: the connection re-derives from the new
+    position as a clean fly line (or abutment), so the user re-routes or
+    re-abuts, instead of leaving stale, unselectable route-marker cells stranded
+    at the old location and phantom fly lines on nets that never got reconciled.
+    Undo restores both the placement and the original routes.
+    """
 
     def __init__(self, project: Project, block_name: str, dx: int, dy: int):
         self.project = project
         self.block_name = block_name
         self.dx, self.dy = dx, dy
+        # (connection_name, prior_route) snapshots so undo restores the routes.
+        self._prev_routes: list = []
 
     def _shift(self, dx: int, dy: int) -> None:
         block = self.project.block(self.block_name)
@@ -129,10 +142,21 @@ class MoveBlockCommand(Command):
             t.y += dy
 
     def execute(self) -> None:
+        # Clear the route of every connection touching this block (keep the net),
+        # snapshotting the prior routes for undo. The block's cells then move
+        # without leaving stale waypoints behind.
+        self._prev_routes = []
+        for conn in self.project.connections_for_block(self.block_name):
+            self._prev_routes.append((conn.name, conn.route))
+            conn.route = None
         self._shift(self.dx, self.dy)
 
     def undo(self) -> None:
         self._shift(-self.dx, -self.dy)
+        for name, route in self._prev_routes:
+            conn = self.project.connection(name)
+            if conn is not None:
+                conn.route = route
 
     def description(self) -> str:
         return f"Move {self.block_name}"

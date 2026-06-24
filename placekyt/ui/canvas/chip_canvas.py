@@ -288,12 +288,14 @@ class ChipCanvas(QGraphicsView):
 
         for conn in self._project.connections:
             if not conn.is_routed:
-                # A chip INPUT-port → block net injects DIRECTLY at the port edge
-                # cell — it has no physical route by design (the build treats it as
-                # a direct port injection; DRC accepts it unrouted). Drawing a fly
-                # line for it falsely reads as "not connected", so skip it.
-                if (isinstance(conn.source, ChipPortEndpoint)
-                        and conn.source.port.endswith("_in")):
+                # A chip INPUT-port net injects DIRECTLY at the port edge cell — it
+                # has no physical route by design (the build treats it as a direct
+                # port injection; DRC accepts it unrouted). Drawing a fly line for
+                # it falsely reads as "not connected", so skip it. Check BOTH
+                # endpoints: the input port is normally the source, but a net may
+                # carry it as either endpoint, and a one-sided check left a phantom
+                # fly line on the other orientation (seen as a "fly line at 0,0").
+                if self._is_direct_input_port_net(conn):
                     continue
                 # An UNROUTED connection (a logical net / ``route=auto`` / no
                 # route yet) draws as a dashed gray FLY LINE between its endpoint
@@ -347,6 +349,21 @@ class ChipCanvas(QGraphicsView):
         if isinstance(endpoint, BlockEndpoint):
             return self._block_port_anchor(endpoint)
         return None
+
+    def _is_direct_input_port_net(self, conn) -> bool:
+        """True when EITHER endpoint is a chip INPUT port (``*_in``).
+
+        Such a net injects directly at the port edge cell and has no physical
+        route by design, so it must not draw a fly line (that falsely reads as
+        "not connected"). Checking both endpoints, not just the source, avoids a
+        phantom fly line when the input port is carried as the target — the
+        one-sided check left a stray line (seen as a "fly line at 0,0")."""
+        from model.connection import ChipPortEndpoint
+
+        for ep in (conn.source, conn.target):
+            if isinstance(ep, ChipPortEndpoint) and ep.port.endswith("_in"):
+                return True
+        return False
 
     def _render_fly_line(self, conn) -> None:
         """Draw an unrouted connection as a dashed fly line between its endpoint
@@ -1361,6 +1378,14 @@ class ChipCanvas(QGraphicsView):
             cell = self.selected_cell()
             if cell is not None and cell.label:
                 self.delete_requested.emit(cell.label)
+                event.accept()
+                return
+            # A selected ROUTE-MARKER cell (a transit cell drawn from a
+            # connection's waypoints) has no block label but carries route_name —
+            # Delete removes that whole route, so an orphaned/unwanted route cell
+            # is always removable (it was previously stuck: no delete path).
+            if cell is not None and getattr(cell, "route_name", None):
+                self.delete_connection_requested.emit(cell.route_name)
                 event.accept()
                 return
             panel = self.selected_panel()

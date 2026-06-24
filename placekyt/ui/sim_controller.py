@@ -47,6 +47,11 @@ _TICK_MS = SPEED_STEPS[DEFAULT_SPEED][1]
 # slow. Refresh is throttled to _LIVE_REFRESH_HZ.
 _LIVE_TRACE_MAX = 20000     # default rolling window kept in the TraceModel (GUI)
 _LIVE_CHIP_CAP = 100_000    # chip-side cap between refreshes (drained each tick)
+# Server (GRC batch) mode hosts a BOUNDED burst whose trace must be retained in
+# full. The chip-side cap is a HARD stop (not a ring), so it must comfortably
+# exceed a whole burst's events (≈64 events/sample) between refreshes — sized for
+# a large batch without a mid-burst recording halt.
+_SERVER_CHIP_CAP = 5_000_000
 _LIVE_REFRESH_HZ = 8        # cap debug refreshes/sec during streaming
 
 
@@ -172,6 +177,14 @@ class SimController(QObject):
         self._batch_debug = None
         # Current speed-slider index (also drives the batch playback delay).
         self._speed_index = DEFAULT_SPEED
+        # True while a GRC server is hosting the chip. A GRC run sends a BOUNDED
+        # burst (the whole batch), so the waveform must retain the ENTIRE trace —
+        # NOT the rolling window used for an unbounded interactive stream. When
+        # set, refresh_debug_from_chip keeps every drained event (no trim) so the
+        # user sees ALL samples, same as the GRC waveform window. (Without this,
+        # the per-sample refreshes trimmed to the rolling window and only the tail
+        # survived — the reported bug.)
+        self._server_batch_retain_all = False
         # Host-side SRAM panel devices, registered in-fabric with the engine
         # (#193): run() self-pumps them. {panel_id: SramPanelDevice}; the chip
         # output ports feeding registered panels (for ack-pending checks).
@@ -348,6 +361,11 @@ class SimController(QObject):
             self.state_changed.emit("error: GNURadio server is single-chip only")
             return None
 
+        # Hosting for a GRC client → bounded batches → retain the WHOLE trace in
+        # the waveform (set before engine.load so the chip-side cap is sized for
+        # a full burst, not the rolling-stream window).
+        self._server_batch_retain_all = True
+
         chip0 = project.chip(0)
         type_name = (chip0.type_name if chip0 and chip0.type_name
                      else project.chip_type)
@@ -355,12 +373,14 @@ class SimController(QObject):
         self._width = entry.chip_type.width
         self._multi = False
         self.engine = SimulationEngine(entry.path)
-        # Live streaming can run indefinitely — cap the chip's trace to a ring
-        # buffer of the last N events so memory + refresh cost stay O(window),
-        # not O(total). Without this, a long stream grows the trace without
-        # bound and the GUI lags / stalls on Stop.
-        self.engine.load(result.words(0), trace=True,
-                         max_records=_LIVE_CHIP_CAP)
+        # A GRC run sends a BOUNDED batch and the waveform must retain it ALL, so
+        # in server mode the chip-side trace cap is generous (it must not stop
+        # recording mid-burst between refreshes — its hard cap halts recording
+        # when full, it is NOT a ring buffer). An interactive stream is unbounded,
+        # so it keeps the smaller rolling cap. The TraceModel-side retention is
+        # handled by _server_batch_retain_all in refresh_debug_from_chip.
+        chip_cap = _SERVER_CHIP_CAP if self._server_batch_retain_all else _LIVE_CHIP_CAP
+        self.engine.load(result.words(0), trace=True, max_records=chip_cap)
         # Server now hosts the design at this version; the pre-batch check rebuilds
         # only when the live design_version moves past it (i.e. an edit happened).
         self._hosted_design_version = getattr(self.app.project, "design_version", 0)
@@ -444,8 +464,11 @@ class SimController(QObject):
             self._gr_server = None
             self._batch_debug = None
             # One final (unthrottled) refresh so the debug views settle on the
-            # last window of activity.
+            # last window of activity — still retain-all (the batch trace stays
+            # fully visible after Stop); clear the flag AFTER so a later
+            # interactive run reverts to the rolling window.
             self.refresh_debug_from_chip(force=True)
+            self._server_batch_retain_all = False
             self.state_changed.emit("idle")
             self.server_state.emit(None)
 
@@ -494,7 +517,12 @@ class SimController(QObject):
         # to end — is traceable. STREAMING: keep only the most-recent window's worth
         # before the expensive normalise/append (cost stays O(window) for an
         # unbounded stream).
-        if full_capture:
+        # Retain the ENTIRE trace (no rolling-window trim) for a one-shot batch
+        # OR whenever a GRC server is hosting (every refresh, not just the final
+        # one) — a GRC run is a bounded burst the user must see in full. Only an
+        # unbounded interactive stream keeps the O(window) rolling tail.
+        retain_all = full_capture or self._server_batch_retain_all
+        if retain_all:
             trimmed = new_events
         else:
             cap = self._live_trace_max
@@ -518,7 +546,7 @@ class SimController(QObject):
         # chip trace (resets the hard cap so recording continues).
         tm = self.trace_model
         tm.append_live(chip, trimmed, self._width)
-        if not full_capture:
+        if not retain_all:
             tm.trim_to(self._live_trace_max)
         tm.set_cursor(tm.latest_ns())
         self.engine.clear_trace()

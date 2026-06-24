@@ -327,6 +327,49 @@ use the two-path / duplicated-`{write}` + terminal `HALT` structure above (the
 in-range path's HALT is REQUIRED — a remote JUMP does NOT stop local execution, so
 without it the in-range path falls into the sat block and double-emits).
 
+---
+
+## INV-14 — A serpentine fold co-locates I/O on one edge ONLY with an EVEN column count
+
+**Symptom:** a multi-cell block's INPUT and OUTPUT cells keep landing on OPPOSITE
+edges (e.g. input top-left, output bottom-left) — so the routing bus can't tap both
+from one side, the routes are long, and the recurring "input and output on opposite
+sides" placement complaint appears no matter how the orienter is tuned.
+
+**Root cause — column-major snake parity.** A folded block lays its cells column by
+column, snaking: cell 0 at the TOP of column 0, DOWN column 0, OVER, UP column 1,
+OVER, DOWN column 2, … The INPUT is cell 0 (top of column 0). Where the OUTPUT (the
+last datapath cell) lands depends on the parity of the COLUMN COUNT:
+
+  * column 0 snakes DOWN → ends at the bottom,
+  * column 1 snakes UP → ends at the top,
+  * column 2 DOWN, column 3 UP, …
+
+So after an **EVEN** number of columns the snake ends going UP → at the **TOP** of the
+last column → the **SAME edge** as the input (I/O co-located, `io_colocated=True`).
+After an **ODD** number of columns it ends going DOWN → at the **BOTTOM** → the
+**OPPOSITE edge**. This is pure geometry, independent of D4 orientation: rotating an
+odd-column fold still leaves I/O on opposite edges.
+
+**Fix / guideline (not a hard DRC — a layout constraint).** Choose the fold `(C
+columns × H height)` so **C is EVEN**, `C·H ≥ n`, and both `C ≤ 8` and `H ≤ 8` (the
+10×12 array / ≤8-across convention, INV-9). When the cell count `n` doesn't yield an
+even-column fold that fits, **PAD UP to a full rectangle** with spare RELAY/no-op
+cells (pure forwarding transit) so every column is full height and the snake reaches
+the TOP of the last column cleanly — one or two padding cells is cheap insurance for
+guaranteed I/O co-location. Prefer the most compact (near-square, minimal padding)
+even-column fold. (Examples: n=8 → 2×4 or 4×2; n=12 → 4×3 or 6×2; n=13 → 4×4 with 3
+relay cells; n=20 → 4×5; n=40 → 8×5.) The OUTPUT port must resolve to the last
+DATAPATH cell at the top of the last column — never a padding cell, never the bottom.
+
+A partial last column breaks the parity argument (an up-going partial column doesn't
+reach the top row), which is why padding to a FULL rectangle — not just an even
+column count — is what actually guarantees the same-edge landing.
+
+**Applies to:** every folded multi-cell block (FIR, and any future block whose
+`default_layout` serpentines). See `layout_rules.md` for the fold conventions this
+refines.
+
 **Budget / fold.** The headroom restore lives on ONE cell only (the single cell, or
 the last multi-cell cell). For S=0 the per-cell density is UNCHANGED (TAPS_PER_CELL=5,
 a 20-tap FIR = 4 cells). For S>0 the last cell caps its segment (≤3 taps) to fit the

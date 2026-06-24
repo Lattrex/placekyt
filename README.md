@@ -47,6 +47,12 @@ placeKYT-hosted chip from a flowgraph for stimulus and measurement.
 - **Drive it from GNU Radio**: host a chip in placeKYT and connect a flowgraph to
   it over a local socket for stimulus generation and waveform measurement —
   without hand-translating your design into a flowgraph.
+- **Stay in sync with GNU Radio**: when a block parameter changes in the connected
+  flowgraph (e.g. a FIR going 7→40 taps), placeKYT detects the drift and shows an
+  "out of sync — click to resync" indicator. Resync re-applies the GRC parameters
+  and — because a parameter change can resize a block — re-places and re-routes the
+  affected blocks. Choose the policy in **Edit → Preferences** (*Notify only*,
+  *Auto place & route*, or *Re-anchor only*).
 
 ---
 

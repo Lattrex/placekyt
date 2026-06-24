@@ -40,6 +40,10 @@ class AppController(QObject):
     # Emitted (post-flush) whenever the project changed — views refresh on this.
     changed = Signal()
     selection_changed = Signal(object)  # payload: a selection descriptor or None
+    # Emitted when the GRC-out-of-sync status changes (after observing GRC params
+    # or re-diffing). Payload: the current {block_name: BlockParamDiff} dict
+    # (empty ⇒ in sync). The status-bar indicator subscribes to this.
+    grc_sync_changed = Signal(object)
 
     def __init__(self, catalog: BlockCatalog | None = None,
                  registry: ChipTypeRegistry | None = None, parent=None):
@@ -49,6 +53,10 @@ class AppController(QObject):
         self.project = Project()
         self.commands = CommandManager(self.project)
         self.project_path: Path | None = None
+        # GRC↔placeKYT parameter-sync tracker (the GRC-side params last seen for
+        # each placed block + the current out-of-sync diff). Reset per project.
+        from engine.grc_sync import GrcSyncState
+        self.grc_sync = GrcSyncState()
         self._wire_bus()
 
     # -- file I/O -------------------------------------------------------------
@@ -92,8 +100,11 @@ class AppController(QObject):
     def set_project(self, project: Project) -> None:
         self.project = project
         self.commands = CommandManager(project)
+        # A new project starts in sync (no GRC params observed yet for it).
+        self.grc_sync.clear()
         self._wire_bus()
         self.changed.emit()
+        self.grc_sync_changed.emit(self.grc_sync.diffs)
 
     def _wire_bus(self) -> None:
         # Any delivered event → one coalesced refresh signal. The bus is only
@@ -387,15 +398,26 @@ class AppController(QObject):
         result = _import_grc(path, self.catalog, chip_type=ct)
         self.set_project(result.project)
         self.project_path = None
+        # Seed the GRC-sync baseline: the params just imported ARE the GRC params,
+        # so the freshly-imported design is in sync. Later GRC param changes (over
+        # the wire) or comparing a re-imported .grc diff against this baseline.
+        self.grc_sync.observe_many(
+            {b.name: dict(b.params) for b in result.project.blocks})
+        self.refresh_grc_sync()
         return result
 
-    def auto_place(self, chip: int = 0):
+    def auto_place(self, chip: int = 0, *, register: bool = True):
         """Flow-order the placed blocks on ``chip`` into a 1-D pipeline (auto-P&R
         §8): topological order by dataflow, packed left-to-right. Applies the
         repositioning as ONE undoable composite. Returns the
         :class:`~engine.autoplace.PlacePlan` (names any backward/ring-forcing
         edges — sound: nothing is hidden). Run BEFORE Route All for the
         drop-anywhere → auto-arrange → route flow.
+
+        ``register=False`` executes the moves but does NOT push them onto the
+        undo stack — used when a higher-level command (the GRC resync) owns the
+        single undoable unit via its own snapshot, so the place/route steps it
+        drives must not also self-register.
         """
         from engine.autoplace import AutoPlacer
         from commands import (CompositeCommand, MoveBlockCommand,
@@ -463,7 +485,7 @@ class AppController(QObject):
         # succeeds NATURALLY. This runs AFTER the main pack so it sees final
         # positions; it never moves the lead input-fed block.
         cmds.extend(self._abut_single_cell_terminals(chip, plan, lead))
-        if cmds:
+        if cmds and register:
             self.commands.add_executed(
                 CompositeCommand("Auto-place blocks", cmds))
         return plan
@@ -744,7 +766,7 @@ class AppController(QObject):
 
     def auto_route_all(self, chip_types: dict | None = None, *,
                        auto_orient: bool = True, use_cpsat: str = "auto",
-                       use_bus: str = "auto"):
+                       use_bus: str = "auto", register: bool = True):
         """Auto-route every UNROUTED logical net (Phase 3 "Route All"). Optionally
         AUTO-ORIENTS each block first (flow-order: output faces the downstream
         consumer, P3.2), then runs a router, applying the orientations + routes as
@@ -820,8 +842,15 @@ class AppController(QObject):
         for cmd in reversed(pre):
             cmd.undo()
         if cmds:
-            self.commands.execute(
-                CompositeCommand("Auto-route all nets", cmds))
+            composite = CompositeCommand("Auto-route all nets", cmds)
+            if register:
+                self.commands.execute(composite)
+            else:
+                # A higher-level command (GRC resync) owns the undo unit via its
+                # own snapshot — execute the routes but don't push our own.
+                composite.execute()
+                self.project.mark_dirty()
+                self.project.event_bus.flush()
         return report
 
     def _run_router(self, heuristic_router, port_cells, chip_types, use_cpsat,
@@ -924,6 +953,104 @@ class AppController(QObject):
 
     def edit_params(self, block_name: str, params: dict) -> None:
         self.commands.execute(EditParamsCommand(self.project, block_name, params))
+
+    # -- GRC↔placeKYT parameter sync (§GRC-sync) ------------------------------
+
+    def observe_grc_params(self, params_by_block: dict) -> dict:
+        """Record the GRC-side params for blocks (from the wire or a re-import),
+        re-diff against the live design, and emit ``grc_sync_changed``.
+
+        ``params_by_block`` is ``{placeKYT block name: raw GRC params}``. Returns
+        the resulting diff (``{block_name: BlockParamDiff}``; empty ⇒ in sync)."""
+        self.grc_sync.observe_many(params_by_block)
+        return self.refresh_grc_sync()
+
+    def refresh_grc_sync(self) -> dict:
+        """Recompute the GRC out-of-sync diff against the current design and emit
+        ``grc_sync_changed``. Returns the diff dict (empty ⇒ in sync)."""
+        diffs = self.grc_sync.diff_against(self.project, self.catalog)
+        self.grc_sync_changed.emit(diffs)
+        return diffs
+
+    def grc_out_of_sync(self) -> bool:
+        """True when at least one block's GRC params differ from the design."""
+        return not self.grc_sync.in_sync
+
+    def resync_from_grc(self, *, mode: str | None = None,
+                        chip_types: dict | None = None):
+        """Re-apply the recorded GRC params to the out-of-sync blocks, then
+        re-layout per ``mode`` (§GRC-sync). ONE undoable command.
+
+        ``mode`` (defaults to the persisted preference):
+          * ``notify`` / ``auto`` — re-apply params + re-place + re-route the
+            whole chip (a param change can RESIZE a block, moving neighbours).
+          * ``reanchor`` — re-apply params + rebuild each block's cells from its
+            default layout at the SAME anchor (resize in place); do NOT reroute.
+
+        Returns ``(diff_before, route_report_or_None)``. The route report (auto/
+        notify modes) carries any unroutable nets so the caller can surface DRC;
+        re-anchor returns None (the caller runs DRC to surface violations)."""
+        from commands import ResyncFromGrcCommand
+        from engine import preferences
+
+        if mode is None:
+            mode = preferences.grc_param_change_mode()
+        diffs = self.refresh_grc_sync()
+        if not diffs:
+            return {}, None
+        block_names = list(diffs.keys())
+        # Snapshot the diffs for the apply closure (refresh runs again post-apply).
+        affected = dict(diffs)
+
+        def _apply():
+            # 1. Apply merged GRC params to each affected block (direct model
+            #    mutation — the outer ResyncFromGrcCommand snapshot owns undo).
+            for name, d in affected.items():
+                blk = self.project.block(name)
+                if blk is None:
+                    continue
+                from engine.grc_sync import merged_params
+                self.project._set_block_params(
+                    name, merged_params(blk, d.grc_params))
+            # 2. Re-layout per mode.
+            if mode == preferences.GRC_REANCHOR:
+                self._reanchor_blocks(block_names)
+                report = None
+            else:
+                # Full re-place + re-route (register=False: this command owns undo).
+                self.auto_place(0, register=False)
+                report = self.auto_route_all(
+                    chip_types=chip_types, register=False)
+            self.project.mark_dirty()
+            self.project.event_bus.flush()
+            return report
+
+        cmd = ResyncFromGrcCommand(
+            self.project, block_names, _apply,
+            description=f"Resync {len(block_names)} block(s) from GRC")
+        self.commands.execute(cmd)
+        # The design now matches the GRC params → in sync.
+        self.refresh_grc_sync()
+        return affected, cmd.result
+
+    def _reanchor_blocks(self, block_names: list) -> None:
+        """Rebuild each block's cells from its default layout at its CURRENT
+        anchor (the min-corner of its present cells), so a param-driven resize is
+        applied IN PLACE without moving the block. Routes are left as-is — the
+        caller surfaces any resulting DRC violations (re-anchor mode)."""
+        from model.placement import Placement
+
+        for name in block_names:
+            blk = self.project.block(name)
+            if blk is None or blk.placement is None or not blk.placement.cells:
+                continue
+            pl = blk.placement
+            bb = pl.bounding_box()
+            ax, ay = (bb[0], bb[1]) if bb else (pl.cells[0].x, pl.cells[0].y)
+            cells, transit = self.default_cells(
+                blk.type, blk.library, pl.chip, ax, ay, params=blk.params)
+            self.project._set_block_placement(
+                name, Placement(chip=pl.chip, cells=cells, transit_cells=transit))
 
     def rename_block(self, old_name: str, new_name: str) -> None:
         """Rename a block instance (updates the block + all route references).

@@ -40,6 +40,13 @@ Because it's a single block, this is the ideal design to learn the placeKYT UI o
 - **Open the waveform viewer**, drag the input and output ports into it, and see
   the output is exactly the input scaled by the gain.
 - **Change the gain** parameter, rebuild, and re-run to see it change.
+- **Parameter sync from GNU Radio.** With the chip hosted, change the gain in the
+  flowgraph and re-run: placeKYT detects the drift and shows an "out of sync —
+  click to resync" indicator in the status bar. Clicking it re-applies the GRC
+  parameters (re-placing and re-routing if the change resizes a block). The
+  policy is configurable in **Edit → Preferences → On GRC parameter change**
+  (*Notify only* — default; *Auto place & route* — resync automatically;
+  *Re-anchor only* — resize in place and surface any DRC violations).
 
 Once this makes sense, the [coherent BPSK receiver](../coherent_bpsk_rx/) shows the
 same workflow on a real multi-block receiver.

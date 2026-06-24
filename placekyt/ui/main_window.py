@@ -180,6 +180,8 @@ class MainWindow(QMainWindow):
         self.act_redo = self._action("Redo", "Ctrl+Y", self._redo)
         m_edit.addAction(self.act_undo)
         m_edit.addAction(self.act_redo)
+        m_edit.addSeparator()
+        m_edit.addAction(self._action("Preferences…", None, self._open_preferences))
 
         # View — panel toggles + reset layout.
         m_view = mb.addMenu("&View")
@@ -317,7 +319,25 @@ class MainWindow(QMainWindow):
     # -- status bar -----------------------------------------------------------
 
     def _create_status_bar(self) -> None:
+        from PySide6.QtWidgets import QPushButton
+
         sb = self.statusBar()
+        # GRC out-of-sync indicator (§GRC-sync): hidden when in sync; when the
+        # connected GNURadio flowgraph's params drift from the design it shows a
+        # clickable "out of sync — click to resync" button. Leftmost permanent
+        # widget so it's prominent.
+        self._grc_sync_btn = QPushButton("GRC: out of sync — click to resync")
+        self._grc_sync_btn.setFlat(True)
+        self._grc_sync_btn.setStyleSheet(
+            "QPushButton { color: white; background: #c0392b; border-radius: 3px;"
+            " padding: 1px 6px; }")
+        self._grc_sync_btn.setToolTip(
+            "The connected GNURadio flowgraph's block parameters differ from this "
+            "design. Click to re-apply them and re-place/re-route.")
+        self._grc_sync_btn.clicked.connect(self._resync_from_grc)
+        self._grc_sync_btn.hide()
+        sb.addPermanentWidget(self._grc_sync_btn)
+
         self._status_canvas = QLabel("Canvas: Edit")
         self._status_hw = QLabel("HW: —")
         self._status_sim = QLabel("Sim: idle")
@@ -419,6 +439,14 @@ class MainWindow(QMainWindow):
         # route edited since the server started). Queued: emitted on the server thread.
         self.sim.chip_rehosted.connect(
             self._on_model_changed, _Qt.QueuedConnection)
+        # GRC↔placeKYT parameter sync (§GRC-sync): a GRC client advertised its
+        # flowgraph params (queued from the server thread) → re-diff against the
+        # design and update the indicator (auto-resync if the preference says so).
+        self.sim.grc_params_received.connect(
+            self._on_grc_params_received, _Qt.QueuedConnection)
+        # The controller flips the out-of-sync state → update the status-bar
+        # indicator.
+        self.controller.grc_sync_changed.connect(self._on_grc_sync_changed)
         # Cell Inspector live mode (DEBUG §3.2): after each step/stop or cursor
         # move, refresh the selected cell's PC + live registers in the program
         # view, and move the waveform + scrubber playheads to the shared cursor.
@@ -943,6 +971,86 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"simKYT: {n} samples in {secs*1000:.0f} ms = {rate:,.0f} samples/s "
             f"(≈{rt48:.0f}× slower than 48 kHz real-time)", 15000)
+
+    # -- preferences + GRC parameter sync (§GRC-sync) -------------------------
+
+    def _open_preferences(self) -> None:
+        """Open the Preferences dialog (QSettings-persisted)."""
+        from .preferences_dialog import PreferencesDialog
+
+        PreferencesDialog(self).exec()
+
+    def _on_grc_sync_changed(self, diffs) -> None:
+        """The GRC out-of-sync set changed → show/hide the status-bar indicator."""
+        n = len(diffs or {})
+        if n:
+            self._grc_sync_btn.setText(
+                f"GRC: {n} block(s) out of sync — click to resync")
+            self._grc_sync_btn.show()
+        else:
+            self._grc_sync_btn.hide()
+
+    def _on_grc_params_received(self, params_by_block) -> None:
+        """A GRC client advertised its flowgraph's block params. Re-diff against
+        the design; then branch on the persisted preference: NOTIFY shows the
+        indicator (handled by ``_on_grc_sync_changed``), AUTO resyncs seamlessly,
+        RE-ANCHOR resizes in place + surfaces DRC."""
+        from engine import preferences
+
+        diffs = self.controller.observe_grc_params(params_by_block or {})
+        if not diffs:
+            return
+        mode = preferences.grc_param_change_mode()
+        if mode == preferences.GRC_NOTIFY:
+            self.statusBar().showMessage(
+                f"GRC parameters changed in {len(diffs)} block(s) — "
+                "click the indicator to resync.", 6000)
+            return
+        # AUTO or RE-ANCHOR: act immediately.
+        self._resync_from_grc(mode=mode)
+
+    def _resync_from_grc(self, *, mode: str | None = None) -> None:
+        """Apply the recorded GRC params to the out-of-sync blocks and re-layout
+        (the indicator-click action, and the auto/re-anchor handler). Surfaces
+        any resulting DRC violations rather than silently proceeding."""
+        try:
+            affected, report = self.controller.resync_from_grc(
+                mode=mode, chip_types=self.controller.chip_types())
+        except Exception as exc:  # noqa: BLE001
+            self.statusBar().showMessage(f"GRC resync failed: {exc}", 6000)
+            return
+        self._on_model_changed()
+        if not affected:
+            self.statusBar().showMessage("Design already in sync with GRC.", 3000)
+            return
+        n = len(affected)
+        # Route failures (auto/notify) → surface; re-anchor → run DRC + surface.
+        unrouted = list(getattr(report, "failed", []) or []) if report else []
+        if unrouted:
+            names = ", ".join(getattr(r, "name", "?") for r in unrouted)
+            self._surface_drc(
+                f"Resynced {n} block(s) from GRC, but {len(unrouted)} net(s) "
+                f"could not route: {names}")
+            return
+        if report is None:
+            # Re-anchor mode: did not reroute — run DRC to surface any violations
+            # the resize introduced.
+            drc = self.controller.run_drc()
+            if not drc.ok:
+                self._surface_drc(
+                    f"Resynced {n} block(s) in place; "
+                    f"{len(drc.errors)} DRC violation(s) — see Build → Check "
+                    "Design Rules.")
+                return
+        self.statusBar().showMessage(
+            f"Resynced {n} block(s) from GRC.", 4000)
+
+    def _surface_drc(self, message: str) -> None:
+        """Surface a resync/DRC problem to the user (non-fatal warning)."""
+        from PySide6.QtWidgets import QMessageBox
+
+        self.statusBar().showMessage(message, 8000)
+        QMessageBox.warning(self, "GRC Resync", message)
 
     def _set_live_window(self) -> None:
         """Prompt for the live trace-window size (events kept in the rolling

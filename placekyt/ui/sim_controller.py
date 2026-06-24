@@ -104,6 +104,11 @@ class SimController(QObject):
     server_throughput = Signal(object)
     # The GNURadio server started/stopped: carries the bound port (or 0/None).
     server_state = Signal(object)
+    # A GRC client advertised its flowgraph's block params (the GRC↔placeKYT
+    # sync wire field / op). Payload: {placeKYT block name: params}. Emitted from
+    # the server thread → queued to the GUI thread, where the controller re-diffs
+    # against the placed design and flips the out-of-sync indicator.
+    grc_params_received = Signal(object)
 
     # Emitted (queued to the GUI thread) when the server REBUILT + re-hosted the
     # chip because the design was edited since the last run (build_dirty). The GUI
@@ -347,12 +352,18 @@ class SimController(QObject):
                     "samples": samples, "seconds": seconds,
                     "samples_per_sec": samples_per_sec})
 
+        # on_grc_params runs on the server thread → just emit a queued Qt signal
+        # so the controller re-diffs on the GUI thread (Qt-free server contract).
+        def _grc_params(params_by_block):
+            self.grc_params_received.emit(params_by_block)
+
         self._gr_server = SimServer(
             self.engine.chip, host=host, port=port,
             on_activity=_activity,
             on_reset=self._rehost_server_chip_threadsafe,
             on_before_batch=self._rebuild_if_dirty_threadsafe,
-            default_entries=default_entries)
+            default_entries=default_entries,
+            on_grc_params=_grc_params)
         bound = self._gr_server.start()
         self.state_changed.emit(f"gnuradio-server :{bound}")
         self.server_state.emit(bound)

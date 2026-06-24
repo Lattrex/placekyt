@@ -68,6 +68,57 @@ class EditParamsCommand(Command):
         return f"Edit params of {self.block_name}"
 
 
+class ResyncFromGrcCommand(Command):
+    """Re-apply GRC-side params to the placed design, then re-layout (§GRC-sync).
+
+    Used when placeKYT detects the connected GNURadio flowgraph's block params
+    drifted from the placed design (see ``engine/grc_sync.py``). It is ONE
+    undoable unit because a param change may RESIZE a block (FIR 7→40 taps), and
+    a resize must re-place + re-route — which rewrites many blocks' placements
+    and routes. Capturing the whole ``blocks`` + ``connections`` state lets undo
+    restore the design exactly, regardless of how far the re-layout reached.
+
+    ``apply`` is the param-application + re-layout work, run inside ``execute``
+    AFTER the snapshot is taken. The controller supplies it: it applies the
+    merged params to each affected block and then either re-places+re-routes
+    (notify/auto) or resizes-in-place keeping the anchor (re-anchor). Returning a
+    value (e.g. a route report) is fine — it is stashed on ``result`` for the
+    caller to surface DRC.
+    """
+
+    def __init__(self, project: Project, block_names: list, apply, *,
+                 description: str = "Resync from GRC"):
+        self.project = project
+        self.block_names = list(block_names)
+        self._apply = apply
+        self._description = description
+        self._snapshot = None
+        self.result = None
+
+    def execute(self) -> None:
+        # Full snapshot of the structural state a re-layout can touch (params,
+        # placement, routes). Deep-copied so the live mutation can't alias it.
+        self._snapshot = (
+            copy.deepcopy(self.project.blocks),
+            copy.deepcopy(self.project.connections),
+        )
+        self.result = self._apply()
+
+    def undo(self) -> None:
+        if self._snapshot is None:
+            return
+        blocks, conns = self._snapshot
+        # Restore by replacing list CONTENTS (keep the list objects the model and
+        # views hold references to), then announce the change.
+        self.project.blocks[:] = copy.deepcopy(blocks)
+        self.project.connections[:] = copy.deepcopy(conns)
+        self.project.build_dirty = True
+        self.project.event_bus.emit("project_resynced", source="grc-undo")
+
+    def description(self) -> str:
+        return self._description
+
+
 class RenameBlockCommand(Command):
     """Rename a block instance. Undo restores the previous name.
 

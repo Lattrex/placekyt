@@ -119,7 +119,8 @@ class ChipProxy:
         self._rpc(h, np.asarray(iq_interleaved, dtype="<f4"))
 
     def process_batch(self, in_port, out_port, iq_interleaved, data_addrs=(0, 1),
-                      jump_entry=0, max_events_per=40000, raw=False):
+                      jump_entry=0, max_events_per=40000, raw=False,
+                      grc_params=None):
         """BATCH (run-to-completion) processing — the right model for a multi-cell
         DUT (BPSK receiver and up). The WHOLE interleaved-I/Q burst
         ([xi0,xq0,xi1,xq1,...]) is processed on the server in ONE RPC: each
@@ -138,8 +139,24 @@ class ChipProxy:
              "jump_entry": int(jump_entry),
              "max_events_per": int(max_events_per),
              "raw": bool(raw)}
+        # Optional GRC-sync: advertise this flowgraph's per-block params alongside
+        # the batch so the host can flag a parameter drift (additive header field).
+        if grc_params:
+            h["grc_params"] = dict(grc_params)
         _reply, out = self._rpc(h, np.asarray(iq_interleaved, dtype="<f4"))
         return out if out is not None else np.array([], dtype=np.float32)
+
+    def set_grc_params(self, params_by_block):
+        """Advertise this flowgraph's per-block params to the host so placeKYT
+        can detect a parameter drift from the placed design (the GRC↔placeKYT
+        sync indicator). ``params_by_block`` = {placeKYT block name: {param:
+        value}}. Backward compatible: an older host that doesn't know the op
+        replies with an 'unknown op' error, which we swallow."""
+        try:
+            self._rpc({"op": "set_grc_params",
+                       "params": dict(params_by_block or {})})
+        except RuntimeError:
+            pass  # host predates GRC-sync — nothing to do
 
     def read_port_tagged(self, port, tag=None):
         """Read output WRITE values with their dest TAGS (shared-port demux).

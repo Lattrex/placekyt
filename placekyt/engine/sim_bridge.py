@@ -98,7 +98,7 @@ class SimServer:
 
     def __init__(self, chip, *, host: str = "127.0.0.1", port: int = 0,
                  on_activity=None, on_reset=None, on_before_batch=None,
-                 default_entries=None):
+                 default_entries=None, on_grc_params=None):
         self._chip = chip
         self._host = host
         self._req_port = port
@@ -122,6 +122,12 @@ class SimServer:
         # run). The host rebuilds a fresh chip and calls set_chip(); on_reset
         # returns the new chip (or None to keep the current one).
         self._on_reset = on_reset
+        # Optional: called when a GRC client advertises its flowgraph's block
+        # params (the ``set_grc_params`` op, or a ``grc_params`` field on a
+        # process_batch header). Receives ``{placeKYT block name: params}``; the
+        # host re-diffs against the placed design and flips the out-of-sync
+        # indicator. Qt-free contract (the host marshals to the GUI thread).
+        self._on_grc_params = on_grc_params
         self._sock: socket.socket | None = None
         self._thread: threading.Thread | None = None
         self._running = False
@@ -207,6 +213,15 @@ class SimServer:
         try:
             if op == "ping":
                 return {"ok": True}, None
+            if op == "set_grc_params":
+                # A GRC client advertises its flowgraph's per-block params so the
+                # host can detect a parameter drift from the placed design (the
+                # GRC↔placeKYT sync indicator). Header carries
+                # ``params`` = {placeKYT block name: {param: value}}. Forwarded to
+                # the host; never touches the chip, so it's safe any time.
+                if self._on_grc_params is not None:
+                    self._on_grc_params(dict(header.get("params", {}) or {}))
+                return {"ok": True}, None
             if op == "reset":
                 # A new flowgraph run — rehost a fresh chip if the host supports
                 # it (so the second run starts from clean state).
@@ -280,6 +295,15 @@ class SimServer:
                         return {"ok": False, "error": str(err)}, None
                     if new_chip is not None:
                         self._chip = new_chip
+                # ADDITIVE GRC-sync detection (backward compatible): an optional
+                # ``grc_params`` header field lets a client advertise its
+                # flowgraph's per-block params alongside a batch, so the host can
+                # flag a parameter drift from the placed design. Detected HERE at
+                # the top of the batch (not in the per-sample loop) — absent ⇒
+                # unchanged behaviour.
+                grc_params = header.get("grc_params")
+                if grc_params and self._on_grc_params is not None:
+                    self._on_grc_params(dict(grc_params))
                 data = np.asarray(payload, dtype="<f4")
                 a0, a1 = header.get("data_addrs", [0, 1])
                 in_name = header.get("in_port", "x16_in")

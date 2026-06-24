@@ -20,6 +20,7 @@ from .connection_cmds import (
 from .edit_cmds import (
     EditParamsCommand,
     RenameBlockCommand,
+    ResyncFromGrcCommand,
     SetCellFaceCommand,
     SetInstrOverrideCommand,
 )
@@ -56,6 +57,7 @@ __all__ = [
     "SetCellFaceCommand",
     "EditParamsCommand",
     "RenameBlockCommand",
+    "ResyncFromGrcCommand",
     "SetInstrOverrideCommand",
     "AddConnectionCommand",
     "RemoveConnectionCommand",

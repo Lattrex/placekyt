@@ -158,9 +158,23 @@ def internal_jumps(self):
 
 def default_layout(self):
     # Optional: a hand-tuned cell arrangement {cell_id: (dx, dy, face)}.
-    # Omit it and the base class snakes the cells into a compact serpentine.
+    # Omit it and the base class snakes the cells into a compact serpentine —
+    # but that only makes the block COMPACT. It does NOT guarantee the layout
+    # the router needs. For any multi-cell block you almost always must author
+    # this to FOLD the block so input and output land on the SAME edge and a
+    # wavefront's output exits the last cell. See the layout rules below.
     ...
 ```
+
+> **Read the layout rules before laying out any multi-cell block:**
+> **[`verification/KNOWLEDGE_BASE/layout_rules.md`](verification/KNOWLEDGE_BASE/layout_rules.md)**
+> (and invariants INV-8/9/10). None of it is enforced by a DRC — a block that
+> ignores it builds fine and then **silently fails to route**. In short: fold the
+> block (don't lay it in a line); put the external input and output ports on the
+> **same edge** so the routing bus can tap both; a wavefront block's output exits
+> its **last** cell, not cell 0; and on this 10×12 chip keep the footprint **≤ 8
+> cells across** in each direction so the bus has a channel to pass (a convention
+> for this small chip, not an architectural rule).
 
 `internal_connections` carries **data** (each is a WRITE); `internal_jumps`
 carries **triggers** (each is a JUMP). The resolver turns both into the right

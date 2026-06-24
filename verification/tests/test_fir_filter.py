@@ -8,47 +8,48 @@ derived tolerance that grows with tap count (each Q15 MAC contributes up to ~1
 LSB), GNU Radio's reversed-tap convention, and — past the single-cell ceiling — a
 MULTI-CELL wavefront whose output egresses from the block's LAST cell (INV-7/10).
 
-SATURATION — clamp ONCE, at the END (the correctness fix this suite gates)
---------------------------------------------------------------------------
+SATURATION — COEFFICIENT HEADROOM (the correctness fix this suite gates)
+-----------------------------------------------------------------------
 GNU Radio's ``fir_filter_fff`` is FLOATING POINT and never overflows. The Kyttar
 FIR runs Q15 fixed-point with a 16-bit accumulator (no guard bits). The cell ALU
 WRAPS on signed overflow — which flips the sign on overload and produces garbage.
 Production fixed-point FIRs (TI C5x/C6x, …) SATURATE (clamp to ±full-scale)
-instead. The block therefore clamps the accumulator EXACTLY ONCE, on the FINAL
-accumulation (the last MACQ in a single cell, or the cross-cell ADD on the last
-multi-cell cell), just before the output WRITE — NOT per tap. Per-tap clamping
-would (a) re-normalise legitimate mid-sum excursions and so MASK real overload
-(an overdriven filter would emit a clean rescaled signal instead of the
-flat-topped rails it must show), and (b) cost ~3 instructions PER TAP, exploding
-the cell count. The correct golden predictor for the DUT is consequently an
-END-ONLY-saturating Q15 accumulator (``FIRFilterBlock.process_reference_q15``):
-intermediate MACQ taps and cross-cell partials WRAP, only the final result is
-clamped. NOT the float ideal.
+instead. The naive fixes all FAIL on a high-gain filter because the ALU's V flag
+is NOT sticky: a sum can overflow a mid-chain MACQ and WRAP BACK into range by the
+final op, so a final-only (or per-cell) clamp never sees the overflow and the
+output ROLLS OVER (sign flip) — e.g. a 40-tap all-0.5 filter (gain 20) on a steady
+0.9 input rolled to a sign-flipping ±0.x mess instead of pinning at +1.0. A
+per-TAP clamp is correct but costs ~3 instructions/tap, collapsing TAPS_PER_CELL
+to 1 (a 40-tap FIR → 40 cells) — unacceptable.
 
-END-ONLY CORNER CASE: only the FINAL result is guaranteed saturated. Because the
-whole filter is ONE 16-bit accumulator, an intermediate sum can wrap and the
-final op can land back in range — so a vastly-over-unity float sum does NOT
-always pin at a rail (it does ONLY when the final accumulation step itself
-overflows). This is the standard single-accumulator fixed-point tradeoff, and the
-overload stimulus below is chosen so the FINAL op overflows (rails appear).
+The correct AND dense fix is COEFFICIENT HEADROOM (accumulator scaling): pre-scale
+the coefficients by ``2^-S`` (``S = max(0, ceil(log2 Σ|h|))``) so the running sum
+can NEVER overflow internally (Σ|scaled h| ≤ 1 ⇒ in range at every tap/cell —
+intermediate wrap is impossible), then restore the gain at the very END with ONE
+SATURATING left shift by S (the only place a true overdrive overflows, where it
+pins to ±full-scale). For a NORMALIZED filter (Σ|h| ≤ 1) S=0 — a no-op, identical
+to a plain Q15 FIR and bit-exact with GR. The golden predictor for the DUT is
+``FIRFilterBlock.process_reference_q15``: accumulate the scaled coeffs (wrapping,
+but it never leaves range), then the saturating shift. NOT the float ideal.
 
 Two reference tiers (per the verification plan / KNOWLEDGE_BASE):
-  * **DSP equivalence:** where NO accumulation overflows, the end-only-saturating
-    Q15 reference EQUALS GNU Radio's float output clipped to the Q15 range. The
+  * **DSP equivalence:** a NORMALIZED filter (S=0) has no headroom shift, so the
+    reference EQUALS GNU Radio's float output clipped to the Q15 range. The
     in-range tests assert DUT ≈ GR within the derived tolerance — proving the
     block is a real drop-in for the GR block, not just self-consistent.
-  * **Bit-exact substrate:** the DUT must match the end-only-saturating Q15
-    reference EXACTLY (it models the hardware datapath: wrapping intermediates,
-    the single final clamp, and the multi-cell accumulation order). The overload
-    + scaling tests gate on this.
+  * **Bit-exact substrate:** the DUT must match the headroom Q15 reference EXACTLY
+    (it models the hardware datapath: scaled wrapping accumulation, the final
+    saturating shift, and the multi-cell accumulation order). The overload +
+    scaling tests gate on this.
 
 VERIFIED RANGE (this suite): 2 … 64 taps (the headline target). Single-cell for
-≤MAX_SINGLE_CELL_TAPS=6 taps (one below the old wrapping FIR's 7 — the single
-end-only clamp costs one tap), a chained partial-sum systolic wavefront at
-TAPS_PER_CELL=5 above (fully restored, so a 20-tap FIR is 4 cells). Probing shows
-the same design routes to ~200 taps (40 cells); well above that the serpentine
-footprint leaves NO free routing corridor on the 10x12 array (the genuine
-substrate wall — guarded below).
+≤MAX_SINGLE_CELL_TAPS=6 taps (or ≤4 when the headroom restore is present, S>0), a
+chained partial-sum systolic wavefront at TAPS_PER_CELL=5 above (so a NORMALIZED
+20-tap FIR is 4 cells). A high-gain (S>0) FIR caps its LAST cell to 3 taps to fit
+the restore, so it may use one extra cell (e.g. a 40-tap all-0.5 FIR is 9 cells vs
+8 normalized). Probing shows the same design routes to ~200 taps; well above that
+the serpentine footprint leaves NO free routing corridor on the 10x12 array (the
+genuine substrate wall — guarded below).
 
 STIMULUS NOTE (INV-4/12): a multi-cell FIR is only exercised if the input is
 LONGER than the filter — otherwise the deep cells never see a non-zero sample and
@@ -88,12 +89,13 @@ pytestmark = pytest.mark.skipif(
     not (os.path.exists(CHIP_YAML) and _GR_AVAILABLE),
     reason="chip yaml or GNU Radio interpreter absent")
 
-# Largest single-cell FIR (the rest fold to the multi-cell wavefront). One below
-# the old wrapping FIR's 7 — the single END-ONLY clamp (3 instructions, paid once
-# for the whole filter) costs exactly one tap of the single cell's budget.
+# Largest single-cell FIR for a NORMALIZED (S=0) filter (the rest fold to the
+# multi-cell wavefront). A high-gain (S>0) single cell additionally carries the
+# saturating-shift restore, dropping its ceiling to 4.
 MAX_SINGLE_CELL_TAPS = FIRFilterBlock.MAX_SINGLE_CELL_TAPS  # 6
-# Taps per cell in the multi-cell wavefront — fully RESTORED to the wrapping
-# FIR's density (end-only clamp is paid once on the last cell, not per tap).
+# Taps per cell in the multi-cell wavefront — the plain wrapping FIR's density.
+# Intermediate cells forward an in-range scaled partial (no clamp/shift); only the
+# LAST cell carries the headroom restore (and so caps to 3 taps when S>0).
 TAPS_PER_CELL = FIRFilterBlock.TAPS_PER_CELL               # 5
 # Headline scaling target — verified end to end.
 MAX_VERIFIED_TAPS = 64
@@ -134,8 +136,9 @@ output_float = list(sink.data())
 
 
 def _sat_ref_floats(taps, inputs):
-    """The block's bit-exact SATURATING Q15 reference, returned as floats so it
-    feeds straight into ``compare_against_grc`` (which re-quantizes to Q15)."""
+    """The block's bit-exact COEFFICIENT-HEADROOM Q15 reference, returned as floats
+    so it feeds straight into ``compare_against_grc`` (which re-quantizes to Q15).
+    Models scaled wrapping accumulation + the final saturating shift."""
     blk = FIRFilterBlock("ref", taps)
     return [_s16(w) / 32768.0 for w in blk.process_reference_q15(inputs)]
 
@@ -146,12 +149,23 @@ def _random_input(seed, n):
 
 
 def _norm_taps(n, seed):
-    """A realistic (DC-gain≈1) random tap set — Σ|h|≈1 keeps the Q15 output and
-    the chained partial sums inside range, the normal case for an FIR filter."""
+    """A realistic NORMALIZED random tap set — Σ|h| ≈ 0.95 (< 1) so the filter has
+    no coefficient headroom (S=0): the Q15 output and the chained partial sums stay
+    in range, the saturating shift is a no-op, and the block is bit-exact with a
+    plain Q15 FIR / GNU Radio. This is the normal FIR case and gives deterministic
+    cell counts (Σ < 1 never trips the ceil(log2 Σ) headroom). High-gain (S>0)
+    behaviour is covered by the dedicated overload/headroom tests."""
     rng = random.Random(seed)
     t = [rng.uniform(0.0, 1.0) for _ in range(n)]
     s = sum(t)
-    return [round(v / s, 5) for v in t]
+    return [round(v / s * 0.95, 5) for v in t]
+
+
+def _head_shift(taps):
+    """The COEFFICIENT-HEADROOM shift S = max(0, ceil(log2 Σ|h|)) for a tap set."""
+    import math
+    s = sum(abs(c) for c in taps)
+    return 0 if s <= 1.0 else int(math.ceil(math.log2(s)))
 
 
 def _verify(taps, inputs):
@@ -170,10 +184,10 @@ def _verify(taps, inputs):
 
 
 def _verify_saturating(taps, inputs):
-    """Bit-exact substrate check: DUT vs the END-only-saturating Q15 reference,
-    EXACT. This is the predictor that models the hardware (wrapping intermediate
-    sums, the single final clamp, and the multi-cell accumulation order), so it is
-    exact even when intermediate sums wrap and the final result saturates."""
+    """Bit-exact substrate check: DUT vs the COEFFICIENT-HEADROOM Q15 reference,
+    EXACT. This is the predictor that models the hardware (scaled wrapping
+    accumulation, the final saturating shift, and the multi-cell accumulation
+    order), so it is exact in range AND when the final shift saturates."""
     dut = run_block_dut("FIRFilterBlock", inputs,
                         params={"coefficients": taps}, chip_yaml=CHIP_YAML)
     assert dut.ok, f"build/run failed: {dut.reason}"
@@ -241,15 +255,17 @@ def test_fir_multicell_scaling(n):
 
 
 def test_fir_20tap_is_4_cells_and_routes():
-    """Budget-restoration guard: with END-only clamping (TAPS_PER_CELL=5 restored)
-    a 20-tap FIR is a COMPACT 4-cell wavefront — NOT the ~10 cells the discarded
-    per-tap-clamp scheme produced — and it places, routes, builds, and runs
-    bit-exact against the END-only-saturating reference. If a regression re-inflates
+    """Budget guard: a NORMALIZED (S=0) 20-tap FIR is a COMPACT 4-cell wavefront
+    (TAPS_PER_CELL=5) — NOT the ~10 cells the discarded per-tap-clamp scheme
+    produced — and it places, routes, builds, and runs bit-exact against the
+    headroom reference. COEFFICIENT HEADROOM adds NOTHING to a normalized filter
+    (S=0), so this density is the plain wrapping FIR's. If a regression re-inflates
     the per-cell tap cost this flips."""
     taps = _norm_taps(20, seed=120)
+    assert _head_shift(taps) == 0, "normalized taps should have no headroom (S=0)"
     assert FIRFilterBlock("c", taps).cell_count == 4, (
-        "a 20-tap FIR should fold to 4 cells (TAPS_PER_CELL=5); the budget "
-        "regressed — did per-tap clamping creep back?")
+        "a normalized 20-tap FIR should fold to 4 cells (TAPS_PER_CELL=5); the "
+        "budget regressed — did per-tap clamping creep back?")
     inputs = _random_input(seed=220, n=2 * 20 + 16)
     dut, res = _verify_saturating(taps, inputs)
     assert dut.ok, f"20-tap FIR did not build/route: {dut.reason}"
@@ -257,14 +273,14 @@ def test_fir_20tap_is_4_cells_and_routes():
 
 
 def test_fir_saturating_ref_matches_gnuradio_when_in_range():
-    """Proves the saturating Q15 reference is REAL DSP (a GR drop-in), not merely
-    self-consistent with the DUT: with small normalized taps and modest input,
-    NO intermediate accumulation overflows, so the saturating reference must equal
-    GNU Radio's float output clipped to Q15 — within the derived per-tap LSB
-    floor. (If they disagreed here, the saturating reference would be wrong DSP.)
-    """
+    """Proves the headroom Q15 reference is REAL DSP (a GR drop-in), not merely
+    self-consistent with the DUT: with NORMALIZED taps (Σ|h| < 1, so S=0, no
+    headroom shift) and modest input, the reference must equal GNU Radio's float
+    output clipped to Q15 — within the derived per-tap LSB floor. (If they
+    disagreed here, the reference would be wrong DSP.)"""
     for n in (4, 8, 16):
         taps = _norm_taps(n, seed=300 + n)
+        assert _head_shift(taps) == 0, "in-range GR match requires S=0 (no headroom)"
         # half-scale input keeps the running sum well inside range
         inputs = [v // 2 for v in _random_input(seed=400 + n, n=2 * n + 16)]
         ref_sat = _sat_ref_floats(taps, inputs)
@@ -273,17 +289,17 @@ def test_fir_saturating_ref_matches_gnuradio_when_in_range():
         res = compare_against_grc(
             [w & 0xFFFF for w in sat_q15], gr.floats,
             metric=Metric.AMPLITUDE, delay=0, op_count=n)
-        assert res.passed, f"{n}-tap: saturating ref disagrees with GR: {res.summary()}"
+        assert res.passed, f"{n}-tap: headroom ref disagrees with GR: {res.summary()}"
 
 
 # --- the OVERLOAD test: the block must SATURATE, not wrap ----------------------
 
-# Each stimulus is chosen so the FINAL accumulation step itself overflows (large
-# taps + STEADY near-full-scale input), so the END-only clamp actually fires and
-# the DUT visibly pins at ±full-scale. (A vastly-over-unity sum that only wraps in
-# the INTERMEDIATE accumulators does NOT pin — see the END-ONLY corner case in the
-# module docstring — so a transient/alternating stimulus would not exercise the
-# clamp. These all drive the cell that carries the clamp into overflow.)
+# Each stimulus is a HIGH-GAIN filter (Σ|h| > 1 ⇒ headroom S > 0) driven near full
+# scale, so the steady-state output is far over unity and the final saturating
+# shift fires — the DUT visibly pins at ±full-scale. COEFFICIENT HEADROOM is what
+# makes this WORK without rolling over: the scaled accumulator stays in range, and
+# only the final shift overflows (and saturates). The 7-tap (S=2) is 2 cells; the
+# 13-tap (S=2) is 3 cells (the high-gain last cell caps to 3 taps for the restore).
 @pytest.mark.parametrize("taps,inp,cells", [
     ([0.9, 0.9],
      [0x7FFF, 0x7FFF, 0x7FFF, 0x7FFF, 0x8001, 0x8001, 0x7FFF, 0x7FFF], 1),
@@ -291,14 +307,16 @@ def test_fir_saturating_ref_matches_gnuradio_when_in_range():
     ([0.3] * 13, [0x7FFF] * 30, 3),
 ], ids=["single", "multi7", "multi13"])
 def test_fir_overload_saturates(taps, inp, cells):
-    """Drive the filter PAST full scale so the FINAL accumulation overflows. A
-    correct production FIR SATURATES — the DUT must clamp to ±full-scale and match
-    the END-only-saturating reference EXACTLY, and its outputs must actually be
-    pinned at the rails (proof it clamped rather than happening to land in range).
-    A WRAPPING accumulator (no final clamp) would instead flip sign / fold back to
-    small values on the final op (see test_fir_overload_wrap_mutation_fails)."""
+    """Drive a HIGH-GAIN filter PAST full scale so the final saturating shift
+    fires. A correct production FIR SATURATES — the DUT must pin to ±full-scale,
+    match the headroom reference EXACTLY, and its outputs must actually be at the
+    rails (proof it saturated rather than happening to land in range). A WRAPPING
+    accumulator (no headroom) would instead ROLL OVER / flip sign (see
+    test_fir_overload_wrap_mutation_fails). Also asserts S > 0 (the headroom is
+    genuinely engaged here)."""
+    assert _head_shift(taps) > 0, "overload stimulus must be a high-gain (S>0) filter"
     dut, res = _verify_saturating(taps, inp)
-    assert res.passed, f"DUT does not match saturating reference: {res.summary()}"
+    assert res.passed, f"DUT does not match headroom reference: {res.summary()}"
     assert FIRFilterBlock("c", taps).cell_count == cells, "footprint changed"
     sat = [_s16(w) for w in dut.outputs_q15]
     n_pinned = sum(1 for v in sat if v in (32767, -32768))
@@ -307,45 +325,76 @@ def test_fir_overload_saturates(taps, inp, cells):
         "test no longer exercises saturation")
 
 
+def test_fir_40tap_gain20_pins_no_rollover():
+    """THE headline real-path test: a 40-tap, all-0.5 (gain-20, S=5) FIR — the exact
+    case that ROLLED OVER before COEFFICIENT HEADROOM — driven with a STEADY 0.9
+    input must PIN at +full-scale with NO sign-discontinuous jump.
+
+    This is the full build → auto-route → simKYT path (run_block_dut, the same
+    place_block + auto_route_all + BuildEngine.build + inject/run/read flow the
+    GUI/SimServer use). Steady-state output of a gain-20 filter on 0.9 is +18 →
+    saturates; a WRAPPING accumulator gave a sign-flipping ±0.x mess (e.g.
+    [...0.9, -0.875...]). After headroom the DUT must (a) match the headroom Q15
+    reference EXACTLY, (b) pin every steady-state sample at +0x7FFF, and (c) show
+    NO sign flip between consecutive steady-state samples (the rollover signature).
+    """
+    taps = [0.5] * 40
+    assert _head_shift(taps) == 5, "40x0.5 should need S=5 of headroom"
+    blk = FIRFilterBlock("c", taps)
+    # High-gain last cell caps at 3 taps, so this folds to 9 cells (vs 8 normalized).
+    assert blk.cell_count == 9, f"40x0.5 (S=5) should be 9 cells, got {blk.cell_count}"
+    inp = [int(round(0.9 * 32767)) & 0xFFFF] * 30
+    dut, res = _verify_saturating(taps, inp)
+    assert dut.ok, f"40-tap gain-20 FIR did not build/route: {dut.reason}"
+    assert res.passed, f"DUT does not match headroom reference: {res.summary()}"
+    sat = [_s16(w) for w in dut.outputs_q15]
+    steady = sat[len(taps):]          # past the ramp-up transient
+    assert all(v == 32767 for v in steady), (
+        f"overdriven gain-20 FIR did not pin at +full-scale (steady tail={steady}); "
+        "it is still ROLLING OVER")
+    # No sign-discontinuous jump anywhere in steady state (the rollover signature).
+    assert not any(steady[i] * steady[i + 1] < 0 for i in range(len(steady) - 1)), (
+        "steady-state output sign-flips between samples — the filter is rolling "
+        "over, not saturating")
+
+
 # --- mandatory negative tests (prove the gate FAILS on a corrupted DUT) --------
 
 def test_fir_overload_wrap_mutation_fails():
-    """MUTATION (the heart of this fix, INV-4): a DUT that WRAPS the FINAL
-    accumulation instead of clamping it — the OLD, buggy behavior — must FAIL the
-    gate. We synthesize the fully-wrapping output (16-bit modulo accumulation, NO
-    final clamp) for an overload case whose FINAL op overflows, and compare it to
-    the end-only-saturating reference. Where the reference pins at a rail the
-    wrapping output folds back to a wrong small value, so the gate must REJECT it;
-    if it passed a wrapping DUT it would certify the overflow bug.
+    """MUTATION (the heart of this fix, INV-4): a DUT WITHOUT coefficient headroom —
+    the OLD, buggy behavior that accumulates the UNSCALED coeffs and WRAPS on
+    overflow with no saturation — must FAIL the gate. We synthesize that
+    fully-wrapping output for a high-gain overload case and compare it to the
+    headroom reference. Where the headroom DUT pins at a rail, the wrapping output
+    ROLLS OVER (flips sign / folds to a wrong small value), so the gate must REJECT
+    it; if it passed, it would certify the overflow rollover bug.
 
-    (The stimulus matters: it must overflow on the FINAL accumulation step — a
-    2-tap filter, whose single MACQ after the prime IS the final/clamped op — so
-    wrap and clamp genuinely diverge. A stimulus that only wraps INTERMEDIATE
-    sums would leave wrap == end-only-clamp and the mutation would not bite.)"""
+    The stimulus is a high-gain 2-tap filter (Σ|h|=1.8 ⇒ S=1) driven at full scale,
+    so the true sum is far over unity and wrap vs saturate genuinely diverge."""
     taps = [0.9, 0.9]
     inp = [0x7FFF, 0x7FFF, 0x7FFF, 0x7FFF, 0x8001, 0x8001, 0x7FFF, 0x7FFF]
-    blk = FIRFilterBlock("w", taps)
-    c = blk._coeff_q15
+    # The OLD no-headroom datapath: UNSCALED Q15 coeffs, every step WRAPS (incl. the
+    # final), NO saturating shift. (q15 of 0.9 = 0x7333.)
+    from gr_kyttar.placement.blocks._base import float_to_q15
+    c = [float_to_q15(t) for t in taps]
     N = len(c)
-    # Mirror the single-cell datapath (d0 = oldest), but WRAP every step including
-    # the final one — the bug. delay[i] == d{i}, newest at the end.
     delay = [0] * N
     wrapped = []
     for s in inp:
-        delay = delay[1:] + [_s16(int(s) & 0xFFFF)]
-        acc = (_s16(delay[0]) * _s16(c[0])) >> 15          # priming MULQ
+        delay = delay[1:] + [_s16(int(s) & 0xFFFF)]     # newest at the end (d{N-1})
+        acc = (_s16(delay[0]) * _s16(c[0])) >> 15        # priming MULQ
         for i in range(1, N):
             acc = _s16((acc + ((_s16(delay[i]) * _s16(c[i])) >> 15)) & 0xFFFF)  # WRAP
         wrapped.append(acc & 0xFFFF)
     ref = _sat_ref_floats(taps, inp)
-    # Sanity: the reference MUST actually pin at a rail here (else the mutation is
-    # vacuous — wrap would equal a non-saturated reference).
+    # Sanity: the headroom reference MUST actually pin at a rail here (else the
+    # mutation is vacuous — wrap would equal a non-saturated reference).
     assert any(_s16(int(round(v * 32768.0))) in (32767, -32768) for v in ref), \
         "overload reference does not saturate — mutation stimulus is vacuous"
     res = compare_against_grc(wrapped, ref, metric=Metric.EXACT, delay=0)
     assert not res.passed, (
-        "gate accepted a WRAPPING FIR against the saturating reference — it would "
-        "certify the overflow bug!")
+        "gate accepted a WRAPPING (no-headroom) FIR against the headroom reference "
+        "— it would certify the overflow rollover bug!")
 
 
 def test_fir_mutation_inverted_fails():

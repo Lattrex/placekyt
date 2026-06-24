@@ -116,7 +116,7 @@ factory is named in the dashboard so you never have to guess the equivalent.
 | Verified block | GNU Radio equivalent | Quality (vs GNU Radio) |
 |----------------|----------------------|-------------------|
 | **GainBlock** | `blocks.multiply_const_ff` | err 1 / tol 2 LSB · -90 dB SNR |
-| **FIRFilterBlock** | `filter.fir_filter_fff` | err 11 / tol 17 LSB · -65 dB SNR |
+| **FIRFilterBlock** | `filter.fir_filter_fff` | err 10 / tol 17 LSB · -65 dB SNR |
 <!-- BLOCK-STATUS:END -->
 
 - **[Block status dashboard → `verification/STATUS.md`](verification/STATUS.md)** —

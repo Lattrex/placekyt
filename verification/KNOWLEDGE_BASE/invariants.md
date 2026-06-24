@@ -262,44 +262,84 @@ internal state spans more than a couple of samples.
 
 ---
 
-## INV-13 — Saturate a Q15 accumulator ONCE at the end, never per-step
+## INV-13 — Saturate a Q15 MAC chain with COEFFICIENT HEADROOM, not per-tap or end-only clamping
 
-**Symptom:** a MAC-chain block (FIR/IIR/mixer) either (a) explodes in cell count —
-a 20-tap FIR balloons from ~4 cells to ~10 — or (b) under overload emits a clean
-rescaled signal instead of the flat-topped ±full-scale rails it should show, so a
-real overdrive is invisible.
+**Symptom:** a high-gain MAC-chain block (FIR/IIR/mixer, Σ|coeff| > 1) under
+overload ROLLS OVER — the output sign-flips / folds back to small values instead
+of pinning at the ±full-scale rails. (Concrete: a 40-tap all-0.5 FIR, gain 20, on a
+steady 0.9 input rolled to `[…0.9, −0.875…]` — wrap garbage — instead of pinning at
++1.0.) Or: an attempt to fix it explodes the cell count (a 40-tap FIR → 40 cells).
 
-**Root cause:** the cell ALU has NO auto-saturating mode — `MACQ`/`ADD` WRAP
-(modulo 2^16, sign-extended) and set the V (signed-overflow) flag. The tempting
-fix is to clamp R0 after *every* accumulation step (`BR.NV +2 ; SHR R0,#15 ;
-SUB satneg,R0` per tap). That is WRONG twice over: (1) it costs ~3 extra
-instructions PER TAP, collapsing the per-cell tap density (for FIR it dropped
-TAPS_PER_CELL 5→2 and the single-cell ceiling 7→3, ~2.5× the cells); and (2) it
-ALTERS THE MATH — clamping intermediate partial sums re-normalises legitimate
-mid-sum excursions that would otherwise wrap and return, masking genuine overload.
-A correctly-overdriven filter then looks fine.
+**Root cause — the V flag is NOT sticky.** The cell ALU has NO auto-saturating
+mode — `MACQ`/`ADD` WRAP (modulo 2^16) and only ADD/SUB/ADC/SBC set V at all. In a
+high-gain MAC chain the running sum can overflow a MID-chain `MACQ` and WRAP BACK
+into range by the final op, so V on the LAST op reflects nothing. Both naive fixes
+therefore fail or are unacceptable:
+  * **End-only clamp** (clamp R0 once, on the final op, off its V flag) MISSES the
+    overflow whenever an intermediate sum wrapped and the final op landed back in
+    range → it still rolls over. (The earlier INV-13 endorsed this; it was WRONG
+    for Σ|coeff| > 1.)
+  * **Per-tap clamp** (clamp after every accumulation) is correct but costs ~3
+    instructions PER TAP, collapsing TAPS_PER_CELL to 1 (a 40-tap FIR → 40 cells).
+    Rejected.
 
-**Fix:** clamp the accumulator EXACTLY ONCE — on the FINAL accumulation, just
-before the output WRITE. The whole filter (single cell, or the entire cross-cell
-wavefront) is ONE logical accumulator; let every intermediate MACQ tap and every
-cross-cell partial WRAP, and apply the 3-instruction clamp only to the last op
-(the final MACQ in a single cell, or the cross-cell ADD on the last multi-cell
-cell). The V flag of that last op decides the clamp:
-`true sum > +FS ⇒ wrapped N=1 ⇒ +0x7FFF`; `< −FS ⇒ wrapped N=0 ⇒ −0x8000`; via
-`0x8000 − (R0>>15)` from one shared `satneg=0x8000` word. The priming MULQ is
-NEVER clamped — MULQ sets V from the RAW 32-bit product (which almost always
-exceeds i16), so clamping there saturates spuriously.
+**Fix — COEFFICIENT HEADROOM (accumulator scaling).** Pre-scale the coefficients
+so the running sum can NEVER overflow internally, then restore the gain + saturate
+at the END:
+  1. `S = max(0, ceil(log2 Σ|coeff|))` (from the ORIGINAL coeffs, at construction).
+     Normalized filter (Σ|coeff| ≤ 1) → S = 0, a no-op (identical to a plain Q15
+     FIR, bit-exact with GR). High-gain → S > 0.
+  2. Scale every coeff by `2^-S` before Q15 conversion (store the SCALED coeffs).
+     Now `Σ|scaled| ≤ 1`, so `|Σ scaled·input| ≤ 1` — the accumulator is in range
+     at EVERY tap and EVERY cell; intermediate wrap is IMPOSSIBLE.
+  3. At the very END (single cell: after the last MACQ; multi-cell: on the LAST
+     cell after its final ADD) restore the gain with a SATURATING left shift by S.
+     The shift is the ONLY place a true overdrive overflows, and it pins to
+     ±full-scale. Intermediate cells forward their in-range scaled partial UNCLAMPED
+     — no overflow can happen there, which is the whole point.
 
-**Corner case (accept it):** with a single 16-bit accumulator, only the FINAL
-result is guaranteed saturated. An intermediate sum can wrap and the final op can
-land back in range, so a vastly-over-unity float sum does NOT always pin at a
-rail — it pins ONLY when the final accumulation step itself overflows. This is the
-standard single-accumulator fixed-point tradeoff. Consequence for verification:
-the bit-exact reference must model WRAPPING intermediates + a single final clamp
-(not per-step), and an overload/rail test must use stimulus whose FINAL op
-overflows (steady large input, not a transient) or it will not exercise the clamp;
-the wrap-mutation must likewise overflow the final op so wrap ≠ end-only-clamp.
+**The saturating left shift (S > 0), and why SHL alone won't do it.** `SHL` reports
+NO overflow (V stays 0), so a V-flag clamp after SHL never fires. Detect overflow in
+O(1) instructions with a bias-and-shift test — `acc<<S` overflows iff
+`acc ∉ [−2^(15−S), 2^(15−S)−1]`, which `(acc + 2^(15−S)) >> (16−S) != 0` (logical)
+decides — then pin to the rail of the ORIGINAL sign via `0x7FFF + signbit`
+(one shared `0x7FFF` word yields both +0x7FFF and −0x8000):
+```
+    MOVE acc_save, R0
+    ADD  acc_save, bias        ; bias = 2^(15-S)
+    SHR  R0, #(16-S)           ; 0 ⟺ in range
+    BR.NZ _sat
+    SHL  acc_save, #S          ; in range -> result; emit; HALT
+    {write}; {jump}; HALT
+_sat:
+    SHR  acc_save, #15         ; sign bit
+    ADD  R0, satpos            ; 0x7FFF + bit
+    {write}; {jump}
+```
+Exhaustively verified equal to `clamp(acc·2^S)` for all acc, S∈0..15.
+
+**Build-engine gotcha (cost me real time):** do NOT use a `GOTO`/branch whose target
+LABELS a `{write}`/`{jump}` placeholder — the build engine rewrites that jump with
+the placeholder's OUTPUT routing (it becomes a stray output JUMP, not a local goto),
+silently corrupting control flow (a pre-existing latent bug also present in
+SquelchBlock's `GOTO update`). Instead, branch to a label on a REAL instruction, and
+use the two-path / duplicated-`{write}` + terminal `HALT` structure above (the
+in-range path's HALT is REQUIRED — a remote JUMP does NOT stop local execution, so
+without it the in-range path falls into the sat block and double-emits).
+
+**Budget / fold.** The headroom restore lives on ONE cell only (the single cell, or
+the last multi-cell cell). For S=0 the per-cell density is UNCHANGED (TAPS_PER_CELL=5,
+a 20-tap FIR = 4 cells). For S>0 the last cell caps its segment (≤3 taps) to fit the
+restore, so a high-gain FIR may use one extra cell (a 40-tap gain-20 FIR = 9 cells vs
+8 normalized); single-cell ceiling drops 6→4 when S>0.
+
+**Verification.** The bit-exact reference models scaled wrapping accumulation + the
+final saturating shift (NOT the float ideal). In-range (S=0) it equals GR float
+clipped to Q15 (the GR drop-in claim — assert on NORMALIZED taps, Σ<1, so S=0
+deterministically and no headroom precision loss). The overload/rail test uses a
+HIGH-GAIN (S>0) filter at full scale so the shift fires and the DUT pins; the
+wrap-mutation models the OLD no-headroom UNSCALED+wrap DUT and must FAIL the gate.
 
 **Applies to:** FIR, IIR, complex mixer, correlators — any Q15 MAC chain. See
-[[layout_rules]] for how the resulting per-cell tap density sets the fold.
+[[layout_rules]] for how the per-cell tap density + the S>0 last-cell cap set the fold.
 

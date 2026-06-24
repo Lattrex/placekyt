@@ -8,6 +8,58 @@ anything that generalizes across block classes into `invariants.md`.
 
 ---
 
+## FIRFilterBlock — COEFFICIENT HEADROOM saturation (the keeper) 2026-06-24
+
+- **Why the prior fixes were wrong — the V flag is NOT sticky.** End-only clamping
+  (entry below) and per-cell clamping BOTH ROLL OVER on a high-gain filter: a sum can
+  overflow a mid-chain `MACQ` and WRAP BACK into range by the final op, so the final
+  op's V flag reflects nothing and the clamp misses the overflow. Proven on the real
+  build → auto-route → simKYT path: a 40-tap all-0.5 FIR (gain 20) on a steady 0.9
+  input emitted `[…0.9, −0.875…]` — a sign-flipping wrap mess — instead of pinning at
+  +1.0. Per-TAP clamping fixes it but collapses TAPS_PER_CELL to 1 (40-tap → 40 cells):
+  rejected.
+- **The keeper — COEFFICIENT HEADROOM (accumulator scaling), user-mandated.**
+  `S = max(0, ceil(log2 Σ|coeff|))`. Scale every coeff by `2^-S` before Q15 (store the
+  SCALED coeffs as `_coeff_q15`; keep originals for the float ref). Now `Σ|scaled| ≤ 1`
+  ⇒ the accumulator is in range at EVERY tap and EVERY cell — intermediate wrap is
+  IMPOSSIBLE. Restore the gain at the very END with ONE SATURATING left shift by S
+  (single cell: after the last MACQ; multi-cell: on the LAST cell after its final ADD).
+  Normalized filter (Σ ≤ 1) → S=0, a NO-OP: identical to a plain Q15 FIR, bit-exact GR.
+  Promoted to (rewritten) **INV-13**.
+- **SHL doesn't set V → the restore can't use a V-flag clamp.** Detect shift overflow
+  in O(1) instr with a bias-and-shift test: `acc<<S` overflows iff
+  `(acc + 2^(15-S)) >> (16-S) != 0` (logical), then pin to the rail of the ORIGINAL
+  sign via `0x7FFF + signbit` (one `0x7FFF` word gives both +0x7FFF and −0x8000).
+  Exhaustively verified == `clamp(acc·2^S)` for all acc, S∈0..15. A doubling-loop
+  (`ADD R0,R0` ×S + `BR.V`) also works but its 2·S instructions overflow the last
+  cell's budget at large S — the bias-and-shift is constant-cost.
+- **Build-engine GOTO gotcha (cost real time).** A `GOTO`/branch whose target LABELS a
+  `{write}`/`{jump}` placeholder is miscompiled — the engine rewrites it with the
+  placeholder's OUTPUT routing (it becomes a stray output JUMP), corrupting control
+  flow. (Confirmed latent in SquelchBlock's `GOTO update` too — its tests just never
+  exercise that arm.) FIX: branch to a label on a REAL instruction and use a two-path /
+  duplicated-`{write}` + terminal `HALT` structure (the in-range path's HALT is
+  REQUIRED — a remote JUMP does NOT stop local execution, else it falls into the sat
+  block and double-emits). This was THE reason the first headroom build pinned at
+  startup (the GOTO had turned the in-range path into a premature output emit).
+- **Budget / fold.** S=0 is UNCHANGED (TAPS_PER_CELL=5, MAX_SINGLE_CELL_TAPS=6; 20-tap
+  =4 cells, 40-tap=8, 64-tap=13). For S>0 the last multi-cell cell caps its segment at
+  3 taps (budget `4L+18≤32`) and the single-cell ceiling drops to 4 (`4N+16≤32`), so a
+  high-gain FIR may use one extra cell: a 40-tap gain-20 (S=5) FIR is **9 cells**.
+  `_segment_offsets()` is the single source of the fold (caps + rebalances the tail to
+  [1,3] when S>0); `cell_count`, layout, build and the reference all derive from it.
+- **Reference.** `process_reference_q15` accumulates the SCALED coeffs (wrapping, never
+  leaves range) then applies `_sat_shl` — bit-exact with the datapath (DUT==ref EXACT,
+  single + multi-cell, including the gain-20 overdrive pinning at +0x7FFF with no sign
+  flip). In-range GR-match asserts on NORMALIZED taps (Σ≈0.95 < 1 ⇒ S=0 deterministic,
+  no headroom precision loss; a near-unity Σ that rounds to S=1 loses ~1 bit and would
+  exceed the per-tap LSB tol).
+- **Result:** 27/27 FIR tests pass; full verification suite 40/40; placekyt GUI/engine
+  suite 930 passed / 13 skipped (baseline); `test_data_words::test_multicell_fir_flows
+  _correctly` green.
+
+---
+
 ## FIRFilterBlock — END-ONLY saturation correction + budget restored 2026-06-24
 
 - **What was wrong:** the first saturation cut (entry below) clamped R0 after

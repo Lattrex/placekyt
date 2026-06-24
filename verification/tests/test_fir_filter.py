@@ -5,25 +5,39 @@ FIR is the first block with a real coefficient set and the first that *scales*
 with a parameter (the tap list sizes the filter). It exercises parts of the
 harness that GainBlock did not: a params-dependent entry address (INV-6), a
 derived tolerance that grows with tap count (each Q15 MAC contributes up to ~1
-LSB), GNU Radio's reversed-tap convention, and — past 7 taps — a MULTI-CELL
-wavefront whose output egresses from the block's LAST cell (INV-7).
+LSB), GNU Radio's reversed-tap convention, and — past the single-cell ceiling — a
+MULTI-CELL wavefront whose output egresses from the block's LAST cell (INV-7/10).
 
-VERIFIED RANGE (this suite): 2 taps … 64 taps (the headline target), single-cell
-for ≤7 taps and a chained partial-sum systolic wavefront for ≥8. Probing shows
-the same design stays correct out to ~360 taps (72 cells); the wall above that is
-chip ROUTING CAPACITY, not the block (see the known-limit guard below).
+SATURATION (the correctness fix this suite gates)
+--------------------------------------------------
+GNU Radio's ``fir_filter_fff`` is FLOATING POINT and never overflows. The Kyttar
+FIR runs Q15 fixed-point with a 16-bit accumulator (no guard bits). The cell ALU
+WRAPS on signed overflow — which flips the sign on overload and produces garbage.
+Production fixed-point FIRs (TI C5x/C6x, …) SATURATE (clamp to ±full-scale)
+instead. The block therefore clamps R0 after every accumulation step. The correct
+golden predictor for the DUT is consequently a SATURATING Q15 accumulator
+(``FIRFilterBlock.process_reference_q15``), NOT the float ideal.
 
-TWO substrate fixes this block forced (both now in KNOWLEDGE_BASE):
-  * INV-6 (entry resolved WITH params) — without it the FIR echoed its input.
-  * Multi-cell EGRESS — the auto-router resolved a block's output PortMap WITHOUT
-    its params, so a params-scaling multi-cell block routed its output from the
-    DEFAULT (single-cell) cell 0 instead of its real last cell → no output. Fixed
-    by threading each placed block's params into the routing PortMap resolution.
+Two reference tiers (per the verification plan / KNOWLEDGE_BASE):
+  * **DSP equivalence:** where no intermediate overflow occurs, the saturating
+    Q15 reference EQUALS GNU Radio's float output clipped to the Q15 range. The
+    in-range tests assert DUT ≈ GR within the derived tolerance — proving the
+    block is a real drop-in for the GR block, not just self-consistent.
+  * **Bit-exact substrate:** the DUT must match the saturating Q15 reference
+    EXACTLY (it models the hardware datapath, including the per-step clamp and
+    the multi-cell accumulation order). The overload + scaling tests gate on this.
 
-STIMULUS NOTE (INV-4): a multi-cell FIR is only exercised if the input is LONGER
-than the filter — otherwise the deep cells never see a non-zero sample and a
-deep-cell bug hides. The multi-cell sweeps below drive ≥2·ntaps samples, and a
-deep-tap mutation test proves the gate actually sees the deepest cell.
+VERIFIED RANGE (this suite): 2 … 64 taps (the headline target). Single-cell for
+≤MAX_SINGLE_CELL_TAPS=3 taps (the per-tap saturation clamp shrank the budget from
+the old wrapping FIR's 7), a chained partial-sum systolic wavefront at TAPS_PER_CELL=2
+above. Probing shows the same design routes to ~80 taps (40 cells); above that the
+serpentine footprint leaves NO free routing corridor on the 10x12 array (the
+genuine substrate wall — guarded below).
+
+STIMULUS NOTE (INV-4/12): a multi-cell FIR is only exercised if the input is
+LONGER than the filter — otherwise the deep cells never see a non-zero sample and
+a deep-cell bug hides. The multi-cell sweeps drive ≥2·ntaps RANDOM samples with an
+ASYMMETRIC tap set, and a deep-tap mutation proves the gate sees the deepest cell.
 
 Run:
     KYTTAR_GR_PYTHON=/usr/bin/python3 QT_QPA_PLATFORM=offscreen \
@@ -43,12 +57,14 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 _PLACEKYT = Path(__file__).resolve().parents[2] / "placekyt"
 _VERIFY = Path(__file__).resolve().parents[1]
-for p in (str(_PLACEKYT), str(_VERIFY)):
+_RUNTIME = Path(__file__).resolve().parents[2] / "runtime" / "python"
+for p in (str(_PLACEKYT), str(_VERIFY), str(_RUNTIME)):
     if p not in sys.path:
         sys.path.insert(0, p)
 
 from kyttar_verify import (  # noqa: E402
     run_block_dut, run_gnuradio_ref, compare_against_grc, write_report, Metric)
+from gr_kyttar.placement.blocks.fir_filter_block import FIRFilterBlock  # noqa: E402
 
 CHIP_YAML = str(_PLACEKYT / "resources" / "chips" / "kyttar_10x12.yaml")
 _GR_AVAILABLE = os.path.exists(os.environ.get("KYTTAR_GR_PYTHON", "/usr/bin/python3"))
@@ -56,16 +72,27 @@ pytestmark = pytest.mark.skipif(
     not (os.path.exists(CHIP_YAML) and _GR_AVAILABLE),
     reason="chip yaml or GNU Radio interpreter absent")
 
-# Largest single-cell FIR (the rest fold to the multi-cell wavefront).
-MAX_SINGLE_CELL_TAPS = 7
-# Headline scaling target — verified end to end against GNU Radio.
+# Largest single-cell FIR WITH the per-tap saturation clamp (the rest fold to the
+# multi-cell wavefront). Lower than the old wrapping FIR's 7 — the clamp costs
+# ~3 extra instructions per tap, so the register budget fills sooner.
+MAX_SINGLE_CELL_TAPS = FIRFilterBlock.MAX_SINGLE_CELL_TAPS  # 3
+# Headline scaling target — verified end to end.
 MAX_VERIFIED_TAPS = 64
-# A FIR this large overflows the 10x12 array's ROUTING capacity (80 cells leaves
-# no free corridor for the I/O ports). The genuine substrate wall — guarded below.
-ROUTING_WALL_TAPS = 400
+# A FIR this large overflows the 10x12 array's ROUTING capacity: TAPS_PER_CELL=2
+# makes a 96-tap FIR 48 cells, whose serpentine footprint leaves no free corridor
+# for the I/O ports. The genuine substrate wall — guarded below. (80 taps / 40
+# cells still routes.)
+ROUTING_WALL_TAPS = 96
 
 EDGE = [0x0000, 0x4000, 0x2000, 0xC000, 0x7FFF, 0x8001, 0x6000, 0xA000,
         0x1000, 0x3000]
+
+
+# --- helpers ------------------------------------------------------------------
+
+def _s16(v):
+    v = int(v) & 0xFFFF
+    return v - 0x10000 if v >= 0x8000 else v
 
 
 def _gr_fir(inputs_q15, taps):
@@ -86,6 +113,13 @@ output_float = list(sink.data())
         extra_args={"taps": list(reversed(taps))})
 
 
+def _sat_ref_floats(taps, inputs):
+    """The block's bit-exact SATURATING Q15 reference, returned as floats so it
+    feeds straight into ``compare_against_grc`` (which re-quantizes to Q15)."""
+    blk = FIRFilterBlock("ref", taps)
+    return [_s16(w) / 32768.0 for w in blk.process_reference_q15(inputs)]
+
+
 def _random_input(seed, n):
     rng = random.Random(seed)
     return [rng.randint(0, 0xFFFF) for _ in range(n)]
@@ -101,25 +135,38 @@ def _norm_taps(n, seed):
 
 
 def _verify(taps, inputs):
+    """DSP-equivalence check (in-range): DUT vs GNU Radio float within the derived
+    Q15 tolerance. Valid only when no intermediate accumulation overflows (then
+    saturating == float-clipped); used for the small/normalized in-range cases."""
     dut = run_block_dut("FIRFilterBlock", inputs,
                         params={"coefficients": taps}, chip_yaml=CHIP_YAML)
     assert dut.ok, f"build/run failed: {dut.reason}"
     ref = _gr_fir(inputs, taps)
     # FIR (decimation 1) emits one output per input aligned with GNU Radio's
-    # output[n] — no extra latency in the compared stream; delay=0. The
-    # tolerance is derived from the tap count: each MAC truncation is <=1 LSB.
+    # output[n] — delay=0. Tolerance derived from the tap count: <=1 LSB per MAC.
     return dut, compare_against_grc(
         dut.outputs_q15, ref.floats, metric=Metric.AMPLITUDE,
         delay=0, op_count=len(taps))
 
 
+def _verify_saturating(taps, inputs):
+    """Bit-exact substrate check: DUT vs the SATURATING Q15 reference, EXACT. This
+    is the predictor that models the hardware (per-step clamp + multi-cell
+    accumulation order), so it is exact even when intermediate sums overload."""
+    dut = run_block_dut("FIRFilterBlock", inputs,
+                        params={"coefficients": taps}, chip_yaml=CHIP_YAML)
+    assert dut.ok, f"build/run failed: {dut.reason}"
+    ref = _sat_ref_floats(taps, inputs)
+    return dut, compare_against_grc(
+        dut.outputs_q15, ref, metric=Metric.EXACT, delay=0)
+
+
 # --- single-cell range (edge + random + sweep) --------------------------------
+# All in-range (|Σ coeff·x| stays representable), so DUT must match GNU Radio.
 TAP_SETS = [
     [0.5, 0.5],                        # 2-tap
-    [0.2, 0.2, 0.2],                   # 3-tap averager
-    [0.1, 0.2, 0.3, 0.2, 0.1],         # 5-tap symmetric
-    [0.05, 0.1, 0.2, 0.3, 0.2, 0.1, 0.05],   # 7-tap (top of single cell)
-    [0.3, -0.2, 0.5, -0.1],            # 4-tap ASYMMETRIC (catches tap-order bugs)
+    [0.2, 0.2, 0.2],                   # 3-tap averager (top of single cell)
+    [0.3, -0.2, 0.5],                  # 3-tap ASYMMETRIC (catches tap-order bugs)
 ]
 
 
@@ -148,31 +195,101 @@ def test_fir_single_cell_sweep():
             f"{n}-tap tolerance should scale to {n + 1}, got {res.tolerance}"
 
 
-# --- multi-cell scaling (the headline: 8 .. 64 taps) --------------------------
-# Representative sizes spanning 2..13 cells (TAPS_PER_CELL=5).
-MULTICELL_SIZES = [8, 9, 13, 16, 32, MAX_VERIFIED_TAPS]
+# --- multi-cell scaling (the headline: 4 .. 64 taps) --------------------------
+# Representative sizes spanning 2..32 cells (TAPS_PER_CELL=2).
+MULTICELL_SIZES = [4, 5, 8, 9, 16, 32, MAX_VERIFIED_TAPS]
 
 
 @pytest.mark.parametrize("n", MULTICELL_SIZES, ids=lambda n: f"{n}tap")
 def test_fir_multicell_scaling(n):
-    """A multi-cell wavefront FIR matches GNU Radio within the derived tolerance.
+    """A multi-cell wavefront FIR matches the SATURATING Q15 reference EXACTLY.
 
-    Driven with > 2*ntaps RANDOM samples and a REALISTIC (asymmetric, DC≈1) tap
-    set, so EVERY cell's delay segment is exercised with real data — a bug in any
-    cell (not just the first) would show. (A short/uniform/positive stimulus
-    hides such bugs; that is exactly how the prior 'passing' suite missed the
-    multi-cell coefficient-ordering bug — INV-4.)"""
+    Driven with > 2*ntaps RANDOM full-range samples and a REALISTIC (asymmetric)
+    tap set, so EVERY cell's delay segment is exercised with real data — a bug in
+    any cell (not just the first) would show. Full-range random input + a
+    chained partial-sum DOES overflow intermediate accumulators, so this gates on
+    the saturating reference (the true hardware predictor), not the float ideal.
+    (A short/uniform/positive stimulus hides such bugs; that is exactly how the
+    prior 'passing' suite missed the multi-cell coefficient-ordering bug — INV-4.)
+    """
     taps = _norm_taps(n, seed=100 + n)
     inputs = _random_input(seed=200 + n, n=2 * n + 16)
-    dut, res = _verify(taps, inputs)
+    dut, res = _verify_saturating(taps, inputs)
     print(f"\n{n}-tap multicell:", res.summary(), "| entry", dut.entry_addr)
     assert res.passed, res.summary()
-    # Tolerance is DERIVED from the op count (= tap count), never tuned.
-    assert res.tolerance == n + 1, \
-        f"{n}-tap tolerance should be {n + 1}, got {res.tolerance}"
+
+
+def test_fir_saturating_ref_matches_gnuradio_when_in_range():
+    """Proves the saturating Q15 reference is REAL DSP (a GR drop-in), not merely
+    self-consistent with the DUT: with small normalized taps and modest input,
+    NO intermediate accumulation overflows, so the saturating reference must equal
+    GNU Radio's float output clipped to Q15 — within the derived per-tap LSB
+    floor. (If they disagreed here, the saturating reference would be wrong DSP.)
+    """
+    for n in (4, 8, 16):
+        taps = _norm_taps(n, seed=300 + n)
+        # half-scale input keeps the running sum well inside range
+        inputs = [v // 2 for v in _random_input(seed=400 + n, n=2 * n + 16)]
+        ref_sat = _sat_ref_floats(taps, inputs)
+        gr = _gr_fir(inputs, taps)
+        sat_q15 = [int(round(v * 32768.0)) for v in ref_sat]
+        res = compare_against_grc(
+            [w & 0xFFFF for w in sat_q15], gr.floats,
+            metric=Metric.AMPLITUDE, delay=0, op_count=n)
+        assert res.passed, f"{n}-tap: saturating ref disagrees with GR: {res.summary()}"
+
+
+# --- the OVERLOAD test: the block must SATURATE, not wrap ----------------------
+
+@pytest.mark.parametrize("taps,inp,cells", [
+    ([0.9, 0.9, 0.9],
+     [0x7FFF, 0x7FFF, 0x7FFF, 0x7FFF, 0x6000, 0x7000, 0x7FFF, 0x7FFF], 1),
+    ([0.5] * 8, [0x7FFF if i % 2 == 0 else 0x6000 for i in range(24)], 4),
+    ([0.4] * 13, [0x7FFF, 0x7000] * 15, 7),
+], ids=["single", "multi8", "multi13"])
+def test_fir_overload_saturates(taps, inp, cells):
+    """Drive the filter PAST full scale (large taps + near-full-scale input) so
+    the float sum vastly exceeds ±1.0. A correct production FIR SATURATES — the
+    DUT must clamp to ±full-scale and match the saturating reference EXACTLY, and
+    its outputs must actually be pinned at the rails (proof it clamped rather than
+    happening to land in range). A WRAPPING accumulator would instead flip sign /
+    fold back to small values (see test_fir_overload_wrap_mutation_fails)."""
+    dut, res = _verify_saturating(taps, inp)
+    assert res.passed, f"DUT does not match saturating reference: {res.summary()}"
+    sat = [_s16(w) for w in dut.outputs_q15]
+    n_pinned = sum(1 for v in sat if v in (32767, -32768))
+    assert n_pinned >= len(sat) // 2, (
+        f"overload stimulus did not pin the DUT at the rails (got {sat}); the "
+        "test no longer exercises saturation")
 
 
 # --- mandatory negative tests (prove the gate FAILS on a corrupted DUT) --------
+
+def test_fir_overload_wrap_mutation_fails():
+    """MUTATION (the heart of this fix, INV-4): a DUT that WRAPS instead of
+    saturating — the OLD, buggy behavior — must FAIL the gate. We synthesize the
+    wrapping output (16-bit modulo accumulation, no clamp) for an overload case
+    and compare it to the saturating reference. If the gate passed a wrapping DUT
+    it would certify the bug; it must NOT."""
+    taps = [0.9, 0.9, 0.9]
+    inp = [0x7FFF, 0x7FFF, 0x7FFF, 0x7FFF, 0x6000, 0x7000, 0x7FFF, 0x7FFF]
+    blk = FIRFilterBlock("w", taps)
+    c = blk._coeff_q15
+    N = len(c)
+    delay = [0] * N
+    wrapped = []
+    for s in inp:
+        delay = [_s16(int(s) & 0xFFFF)] + delay[:-1]
+        acc = (_s16(delay[0]) * _s16(c[0])) >> 15          # priming MULQ
+        for i in range(1, N):
+            acc = _s16((acc + ((_s16(delay[i]) * _s16(c[i])) >> 15)) & 0xFFFF)  # WRAP
+        wrapped.append(acc & 0xFFFF)
+    ref = _sat_ref_floats(taps, inp)
+    res = compare_against_grc(wrapped, ref, metric=Metric.EXACT, delay=0)
+    assert not res.passed, (
+        "gate accepted a WRAPPING FIR against the saturating reference — it would "
+        "certify the overflow bug!")
+
 
 def test_fir_mutation_inverted_fails():
     dut, _ = _verify([0.2, 0.2, 0.2], EDGE)
@@ -206,11 +323,11 @@ def test_fir_mutation_delay_offset_fails():
 
 def test_fir_mutation_deep_cell_fails():
     """Prove the gate actually verifies the DEEPEST cell of a multi-cell FIR — not
-    just the first. Build a 32-tap (7-cell) DUT, drive it with long input, then
-    compare against a reference whose ONE perturbed tap lives in the LAST cell
-    (index 30 of 32). If the gate passed, the deep cell's output would not depend
-    on that tap → the multi-cell datapath would be unverified there. It must FAIL.
-    """
+    just the first. Build a 32-tap (16-cell) DUT, drive it with long input, then
+    compare against a saturating reference whose ONE perturbed tap lives in the
+    LAST cell (index 30 of 32). If the gate passed, the deep cell's output would
+    not depend on that tap → the multi-cell datapath would be unverified there. It
+    must FAIL."""
     n = 32
     taps = _norm_taps(n, seed=132)
     inputs = _random_input(seed=232, n=2 * n + 16)
@@ -219,9 +336,9 @@ def test_fir_mutation_deep_cell_fails():
     assert dut.ok, dut.reason
     perturbed = list(taps)
     perturbed[30] += 0.15   # a DEEP tap (last cell), well above the LSB floor
-    ref_wrong = _gr_fir(inputs, perturbed)
-    res = compare_against_grc(dut.outputs_q15, ref_wrong.floats,
-                              metric=Metric.AMPLITUDE, delay=0, op_count=n)
+    ref_wrong = _sat_ref_floats(perturbed, inputs)
+    res = compare_against_grc(dut.outputs_q15, ref_wrong, metric=Metric.EXACT,
+                              delay=0)
     assert not res.passed, (
         "gate did not catch a perturbed DEEP-cell tap — the last cell of the "
         "multi-cell FIR is not actually being verified!")
@@ -230,11 +347,12 @@ def test_fir_mutation_deep_cell_fails():
 # --- known-limit guard: the genuine substrate wall ----------------------------
 
 def test_fir_routing_capacity_limit():
-    """The block scales correctly to ~360 taps (72 cells); above that the
+    """The block scales correctly to ~80 taps (40 cells); above that the
     serpentine footprint leaves NO free routing corridor for the I/O ports on the
     10x12 array. This is a chip ROUTING-CAPACITY wall, not a block bug. Guarded as
     an executable expectation: if the array grows or placement improves so a
-    400-tap (80-cell) FIR routes, this flips — extend the verified range then."""
+    96-tap (48-cell) FIR routes, this flips — extend MAX_VERIFIED_TAPS and this
+    guard then."""
     dut = run_block_dut("FIRFilterBlock", EDGE[:4],
                         params={"coefficients": [round(1.0 / ROUTING_WALL_TAPS, 6)]
                                 * ROUTING_WALL_TAPS}, chip_yaml=CHIP_YAML)
@@ -248,9 +366,10 @@ def test_emit_report():
     n = MAX_VERIFIED_TAPS
     taps = _norm_taps(n, seed=164)
     inputs = _random_input(seed=264, n=2 * n + 16)
-    dut, res = _verify(taps, inputs)
+    dut, res = _verify_saturating(taps, inputs)
     assert res.passed, res.summary()
     write_report("FIRFilterBlock", res, coverage={
-        "edge": True, "random": 3, "param_sweep": len(MULTICELL_SIZES)
-        + (MAX_SINGLE_CELL_TAPS - 1), "mutation": True,
+        "edge": True, "random": 3,
+        "param_sweep": len(MULTICELL_SIZES) + (MAX_SINGLE_CELL_TAPS - 1),
+        "mutation": True, "overload": True,
         "max_verified_taps": MAX_VERIFIED_TAPS})

@@ -8,6 +8,58 @@ anything that generalizes across block classes into `invariants.md`.
 
 ---
 
+## FIRFilterBlock — SATURATION fix (Q15 overload) 2026-06-24
+
+- **The bug:** the multi-cell FIR let the Q15 accumulator WRAP on signed overflow
+  (modulo 2^16) — which flips sign on overload and produces garbage. GNU Radio's
+  `fir_filter_fff` is FLOAT and never overflows, so the only correct fixed-point
+  equivalent is a SATURATING accumulator (clamp to ±full-scale), as every
+  production fixed-point FIR does (TI C5x/C6x). Under full-scale random input the
+  chained partial sums overflow and the old block returned corr ~0.5–0.8 vs a
+  correct saturating reference.
+- **The fix — per-step software clamp:** the ALU has no auto-saturating mode;
+  MACQ/ADD WRITE the wrapped value but set the V (signed-overflow) flag. On
+  overflow the wrapped result's sign (N) is INVERTED vs the true sum, so the
+  3-instruction clamp **`BR.NV +2 ; SHR R0,#15 ; SUB satneg,R0`** computes
+  `0x8000 − (R0>>15)` = `N? 0x7FFF : 0x8000` — exactly the right rail. One branch
+  on the hot path, two instructions on the (rare) overflow path, ONE shared
+  `satneg=0x8000` data word per cell. Verified bit-exact vs a true clamping
+  accumulator over millions of random cases AND against the live simulator.
+- **DO NOT clamp the priming MULQ.** A single Q15 product `(a·b)>>15` is always
+  representable, but **MULQ sets V from the RAW 32-bit product** (which almost
+  always exceeds i16). Clamping on it saturates spuriously — the first cut did,
+  pinning every output at the rails even in-range. Clamp only the running MACQ
+  taps and the cross-cell partial ADD (whose V truly signals acc overflow).
+- **Budget/fold impact (INV-7/9):** the clamp costs ~3 extra instrs/tap, so the
+  per-cell register budget fills far sooner. Re-derived with the resolver's own
+  allocator: single-cell ceiling **7 → 3 taps**, **TAPS_PER_CELL 5 → 2** (a mid
+  cell at L=3 overflows the 32-word cell; L=2 fits first/mid/last). `satneg` must
+  get an EXPLICIT address (after the coeffs) — an auto address packs at 0 = R0
+  and corrupts the accumulator; `partial_reg` shifted +1 to account for it.
+- **The verified range moved (more cells/tap):** 64 taps is now 32 cells (was 13)
+  but still routes (FOLD_HEIGHT=4 serpentine = 8 wide). The routing wall dropped
+  from ~400 taps to **96 taps / 48 cells** ("no free corridor"); 80 taps / 40
+  cells still routes. Guard test updated to 96 (the `corridor` reason string is
+  unchanged so the check still matches).
+- **Reference = bit-exact predictor, not the float ideal (INV-3 sharpened):**
+  `compare_against_grc`'s `_saturate_ref_q15` only clips the FINAL value, not
+  each step, so it cannot predict a per-step-saturating DUT once an INTERMEDIATE
+  sum overflows. Added `process_reference_q15` which models (a) the per-step
+  clamp and (b) the CELL-ACCURATE wavefront: each cell holds its own segment
+  delay line, ingests the PREVIOUS cell's shifted-out oldest sample (the inter-
+  cell forwarding IS the delay — a naive global-delay-line index is WRONG, it
+  failed at corr 0.86 on asymmetric taps while the DUT held corr 1.0 vs GR). The
+  scaling/overload/deep-cell gates compare the DUT against this reference EXACTLY
+  (Metric.EXACT, 0 LSB). A separate test proves the saturating reference equals
+  GR-float-clipped where no overflow occurs — so it is real DSP, not circular.
+- **Mandatory mutation (INV-4):** `test_fir_overload_wrap_mutation_fails`
+  synthesises the OLD wrapping output for an overload case and asserts the gate
+  REJECTS it — a gate that can't tell saturate from wrap certifies the bug.
+  `test_fir_overload_saturates` additionally asserts the DUT outputs are pinned
+  at the rails (proof it clamped, not coincidentally landed in range).
+
+---
+
 ## FIRFilterBlock — verified (2..64 taps) 2026-06-24
 
 - **Status:** PASS / DONE. Verified vs GNU Radio `filter.fir_filter_fff` from 2 to

@@ -186,6 +186,12 @@ class FIRFilterBlock(KyttarBlock):
     # compact) fold that keeps an EVEN number of columns — the parity that
     # co-locates the block's input and output on the SAME edge (INV-14).
     FOLD_HEIGHT = 4
+    # INV-9: keep a block ≤ 8 cells across on the 10x12 array (a bus needs one
+    # channel of cells on each side). The fold chooser never accepts an
+    # even-column fold wider than this — otherwise a cell count whose only
+    # even-quotient divisor is H=1 (e.g. 26 → 26×1) would lay out as a full-width
+    # line that runs off the array and silently fails to route.
+    MAX_CELLS_ACROSS = 8
     # Saturating-shift rail constant: 0x7FFF = +32767. The headroom restore pins
     # to a rail with ``0x7FFF + signbit`` so this one word yields both +0x7FFF
     # (positive overflow) and -0x8000 (negative overflow) — see _satshift_and_emit /
@@ -279,9 +285,14 @@ class FIRFilterBlock(KyttarBlock):
         import math
         n = self.cell_count
         # Best EVEN-column full-rectangle fold (perfect I/O co-location, no pad):
-        # the tallest H≤FOLD_HEIGHT that divides n with an even quotient.
+        # the tallest H≤FOLD_HEIGHT that divides n with an even quotient. The
+        # column count (n//H) MUST stay within the ≤8-across cap (INV-9) — without
+        # it a cell count whose only even-quotient divisor is H=1 (e.g. n=26 →
+        # 26×1) would pick a degenerate full-width LINE that runs off the array and
+        # cannot route. When no in-cap even fold exists we fall through to the
+        # compact fallback below (tallest column ⇒ fewest columns).
         for H in range(self.FOLD_HEIGHT, 0, -1):
-            if n % H == 0 and (n // H) % 2 == 0:
+            if n % H == 0 and (n // H) % 2 == 0 and (n // H) <= self.MAX_CELLS_ACROSS:
                 return n // H, H
         # No clean even fold — take the most compact one (tallest column ⇒ fewest
         # columns) and accept the last cell may land a row off the input edge; the

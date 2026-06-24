@@ -412,6 +412,31 @@ class ChipCanvas(QGraphicsView):
         self.logical_wire_requested.emit(src, sport, dst, dport)
         return True
 
+    def _port_cells_for(self, blk) -> dict:
+        """``{port_name: (cell_id, direction)}`` for a placed block via
+        ``port_cell_provider``, resolved WITH the block's params.
+
+        A params-scaled block (FIR / DC blocker, whose output egresses the LAST
+        cell at a count that depends on the taps) only exposes its true,
+        DISTINCT input vs output cells when its PortMap is built for the
+        instance's params — the param-less default collapses to the 1-tap case
+        where input and output share cell 0, so the output stub lands on a cell
+        the placed instance doesn't have and silently vanishes (INV-11).
+        Arity-tolerant: falls back to a 2-arg provider (older signature)."""
+        prov = self.port_cell_provider
+        if prov is None:
+            return {}
+        params = getattr(blk, "params", None)
+        try:
+            return prov(blk.type, blk.library, params) or {}
+        except TypeError:
+            try:
+                return prov(blk.type, blk.library) or {}
+            except Exception:  # noqa: BLE001
+                return {}
+        except Exception:  # noqa: BLE001
+            return {}
+
     def _render_block_port_stubs(self) -> None:
         """Draw a labelled stub at each placed block's external INPUT/OUTPUT port
         (auto-P&R P2.3). Port → cell + direction come from the block's PortMap via
@@ -423,10 +448,7 @@ class ChipCanvas(QGraphicsView):
         for blk in self._project.blocks:
             if blk.placement is None or not blk.placement.cells:
                 continue
-            try:
-                pmap = self.port_cell_provider(blk.type, blk.library) or {}
-            except Exception:  # noqa: BLE001
-                pmap = {}
+            pmap = self._port_cells_for(blk)
             origin = self._chip_origin(blk.placement.chip)
             for port_name, (cell_id, direction) in pmap.items():
                 cell = blk.placement.cell(cell_id)
@@ -603,10 +625,7 @@ class ChipCanvas(QGraphicsView):
         name = getattr(endpoint, "port", None)
         cell = None
         if self.port_cell_provider is not None and name is not None:
-            try:
-                pmap = self.port_cell_provider(blk.type, blk.library) or {}
-            except Exception:  # noqa: BLE001
-                pmap = {}
+            pmap = self._port_cells_for(blk)
             entry = pmap.get(name)
             if entry is not None:
                 cell = blk.placement.cell(entry[0])
@@ -637,10 +656,7 @@ class ChipCanvas(QGraphicsView):
         # Resolve the port → cell_id via the PortMap, then find that placed cell.
         target_cell = None
         if self.port_cell_provider is not None and name is not None:
-            try:
-                pmap = self.port_cell_provider(blk.type, blk.library) or {}
-            except Exception:  # noqa: BLE001
-                pmap = {}
+            pmap = self._port_cells_for(blk)
             entry = pmap.get(name)
             if entry is not None:
                 cell_id = entry[0]

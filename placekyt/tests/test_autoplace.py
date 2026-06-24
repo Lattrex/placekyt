@@ -41,7 +41,7 @@ def _chain_out_of_order(ctrl):
     """Place A→B→C out of physical order (C, A, B), wired in flow order."""
     c = ctrl.place_block("BPSKSlicerBlock", 0, 1, 3, library="lattrex.official")
     a = ctrl.place_block("GainBlock", 0, 6, 3, library="lattrex.official")
-    b = ctrl.place_block("DCBlockerBlock", 0, 3, 3, library="lattrex.official")
+    b = ctrl.place_block("DCBlockerBlock", 0, 3, 3, library="lattrex.official", params={"length": 2, "long_form": False})
     ctrl.add_logical_connection(
         ChipPortEndpoint(chip=0, port="x16_in"),
         BlockEndpoint(block=a, port="sample"), name="in_a")
@@ -178,7 +178,7 @@ def test_backward_edge_is_named_not_hidden(qapp, catalog, chip_type):
     ctrl = AppController(catalog=catalog)
     ctrl.new_project("ring", "kyttar_10x12")
     a = ctrl.place_block("GainBlock", 0, 1, 3, library="lattrex.official")
-    b = ctrl.place_block("DCBlockerBlock", 0, 5, 3, library="lattrex.official")
+    b = ctrl.place_block("DCBlockerBlock", 0, 5, 3, library="lattrex.official", params={"length": 2, "long_form": False})
     # A→B and B→A: a 2-cycle (forces a ring).
     ctrl.add_logical_connection(
         BlockEndpoint(block=a, port="out"),
@@ -197,8 +197,12 @@ def test_placer_unit_packs_by_footprint(qapp, catalog, chip_type):
     ctrl.new_project("pack", "kyttar_10x12")
     a, b, c = _chain_out_of_order(ctrl)
 
-    def fp(bt, lib):
-        return catalog.port_map(bt, library=lib).footprint
+    def fp(bt, lib, params=None):
+        # Params-aware footprint: a block whose geometry scales with params (the
+        # DC blocker is a FIR sized by 'length') must be measured at its PLACED
+        # params, not the type default — else the packer spaces by a different
+        # (default) footprint than the one actually placed.
+        return catalog.port_map(bt, params, library=lib).footprint
 
     plan = AutoPlacer(ctrl.project, fp, row=2, gap=1).plan(0)
     # all on the chosen row, strictly increasing x
@@ -267,7 +271,7 @@ def test_multicell_block_packed_without_overlap(qapp, catalog, chip_type):
     ctrl = AppController(catalog=catalog)
     ctrl.new_project("mc", "kyttar_10x12")
     m = ctrl.place_block("ComplexMixerBlock", 0, 4, 6, library="lattrex.official")
-    d = ctrl.place_block("DCBlockerBlock", 0, 1, 2, library="lattrex.official")
+    d = ctrl.place_block("DCBlockerBlock", 0, 1, 2, library="lattrex.official", params={"length": 2, "long_form": False})
     ctrl.add_logical_connection(
         ChipPortEndpoint(chip=0, port="x16_in"),
         BlockEndpoint(block=m, port="sample"), name="in_m")

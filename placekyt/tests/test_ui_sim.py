@@ -238,7 +238,7 @@ class TestSimMenu:
         monkeypatch.setattr(QMessageBox, "exec", lambda self: None)
         controller.new_project("Bad", "kyttar_10x12")
         controller.place_block("GainBlock", 0, 3, 3, library="lattrex.official")
-        controller.place_block("DCBlockerBlock", 0, 3, 3, library="lattrex.official")
+        controller.place_block("DCBlockerBlock", 0, 3, 3, library="lattrex.official", params={"length": 2, "long_form": False})
         w = MainWindow(controller=controller)
         w._after_project_loaded()
         assert w.sim.start() is False

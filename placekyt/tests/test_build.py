@@ -100,6 +100,7 @@ class TestBuildErrors:
             Block("a", "AGCBlock", library="lattrex.official",
                   placement=Placement(0, [PlacedCell(0, 2, 2, Face.EAST)])),
             Block("b", "DCBlockerBlock", library="lattrex.official",
+                  params={"length": 2, "long_form": False},
                   placement=Placement(0, [PlacedCell(0, 2, 2, Face.EAST)])),
         ]
         res = BuildEngine(catalog, str(CT_PATH)).build(p, {"kyttar_10x12": chip_type})

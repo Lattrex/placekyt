@@ -210,9 +210,10 @@ blocks:
   parameters:
     affinity: ''
     alias: ''
-    alpha: '0.01'
     comment: Kyttar DC Blocker
     device_id: '"kyttar_0"'
+    length: '2'
+    long_form: 'False'
     maxoutbuf: '0'
     minoutbuf: '0'
   states:

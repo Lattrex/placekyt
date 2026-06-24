@@ -8,6 +8,67 @@ anything that generalizes across block classes into `invariants.md`.
 
 ---
 
+## DCBlockerBlock — GR dc_blocker_ff is an FIR (reuse the datapath) 2026-06-24
+
+- **Status:** PASS / DONE vs GNU Radio `filter.dc_blocker_ff`, 28 tests; full
+  verification suite 68/68; placekyt GUI/engine suite 937 passed / 16 skipped.
+- **The key insight — dc_blocker is LTI, i.e. a SYMMETRIC FIR.** Reverse-
+  engineered from GR's impulse/step response (no source needed): SHORT form
+  (`long_form=False`) = `x[n-(D-1)] - MA_D²(x)` (TWO cascaded length-D moving
+  averagers → a triangular kernel, `2D-1` taps, group delay `D-1`); LONG form
+  (`long_form=True`, GR default) = `x[n-(2D-2)] - MA_D⁴(x)` (FOUR cascaded,
+  `4D-3` taps, group delay `2D-2`). The subtracted MA cascade has unit DC gain
+  and the delayed-impulse minus it gives `Σtaps = 0` (a true DC notch). Confirmed
+  bit-for-bit (float, <1e-4) against GR for D∈{2,4,8,16,32}, both forms. So
+  DCBlockerBlock just **SUBCLASSES FIRFilterBlock** with these taps — zero new
+  datapath, all the headroom/saturation/fold machinery inherited. (This is the
+  "reuse existing datapaths" mandate paying off — like the queued firdes filters.)
+- **Params mirror GR's GRC `dc_blocker_xx` VERBATIM:** `length` (GR's `D`,
+  default 32) and `long_form` (default True) — NOT the old POC's `alpha` (a
+  totally different one-pole IIR; the prior block did not match GR at all).
+- **Taps are SYMMETRIC** ⇒ the FIR's reversed-tap convention is moot; pass them
+  straight through. And both DUT and GR carry the same group delay ⇒ compare at
+  `delay=0` (as for fir_filter).
+- **Tolerance — headroom-aware, DERIVED not loosened.** dc-blocker taps have
+  `Σ|h| ≈ 1.5..2` ⇒ COEFFICIENT HEADROOM (INV-13) always engages with **S=1**
+  (coeffs scaled by ½, saturating-shift restore ⇒ the block SATURATES on
+  overload, no rollover). S=1 costs ~1 bit of coefficient precision, so the plain
+  `N+1` floor is too tight (it false-failed by ~N/8). Added a headroom term to
+  `q15_quant_floor(op_count, head_shift=S)` = `N·(2^(S-1)+1)+1` (=`2N+1` at S=1):
+  each tap can carry up to `2^(S-1)` LSB of coeff-quantization error from the ½
+  scaling ON TOP of its ~1 LSB MAC truncation. A real fixed-point worst case
+  (empirically bounds the error with ~18% margin), not a tuned number. Verified
+  two-tier exactly like the FIR: DUT vs GR float (amplitude, headroom floor) AND
+  DUT vs `process_reference_q15` (EXACT, models the saturating datapath).
+- **Latent FIR `_fold_geometry` bug found & fixed (n=26).** The GR default
+  (length=32, long_form=True) is 125 taps = **26 cells**, a count the FIR's own
+  tests never hit. The even-column-preference fold scanned `H=FOLD_HEIGHT..1` and
+  took the first H dividing n with an even quotient — for n=26 the ONLY such H is
+  **1**, giving a **26×1 line** that runs off the 10-wide array (`unplaced_cell
+  outside fabric`). Fix: cap the accepted even-column fold to `≤ MAX_CELLS_ACROSS
+  = 8` (INV-9); when none qualifies, fall through to the compact fold (n=26 →
+  7×4). Changed NO FIR-tested geometry (their even folds are all at tall H, ≤8
+  wide). Refined INV-14.
+- **INV-11 extended to the GUI port-stub/flyline renderer.** `chip_canvas`
+  resolved port geometry via `port_cell_provider(type, library)` WITHOUT params,
+  so a params-scaled block (FIR/DC blocker, output on the LAST cell) collapsed to
+  its 1-tap default (output on cell 0) → for a placed multi-cell instance the
+  output stub landed on a non-existent cell and silently vanished (and an
+  out↔out wiring test couldn't find the stub). Threaded `blk.params` through a new
+  arity-tolerant `_port_cells_for` helper (3-arg provider, 2-arg fallback) at all
+  three call sites. Same root cause as INV-11, new surface (the GUI, not the
+  router).
+- **Blast radius / callers (the guardrail).** Making DCBlocker a GR-faithful
+  FIR changed its default footprint 1→26 cells, which ~12 placekyt test files use
+  as a SMALL fixture (geometry-sensitive corridor/abutment assertions). Fixed
+  every caller to a 1-cell instance (`length=2, long_form=False`) so those
+  fixtures are byte-for-byte unchanged in geometry; updated the two param-aware
+  tests (editable_params now `{length, long_form}` both topology-changing;
+  resolved_io/footprint closures made params-aware) and the `kyttar_dc_blocker`
+  GRC import fixture (alpha → length/long_form). No tolerance or test weakened.
+
+---
+
 ## FIRFilterBlock — COEFFICIENT HEADROOM saturation (the keeper) 2026-06-24
 
 - **Why the prior fixes were wrong — the V flag is NOT sticky.** End-only clamping

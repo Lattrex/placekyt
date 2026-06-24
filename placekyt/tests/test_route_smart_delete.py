@@ -96,7 +96,7 @@ def test_shared_bus_route_keeps_cells_and_makes_flyline(qapp, catalog):
     one keeps every shared cell, breaks only that connection's link to a fly
     line, and the co-tenant connection stays routed."""
     ctrl, a, b = _two_block_project(catalog)
-    c = ctrl.place_block("DCBlockerBlock", 0, 0, 5)
+    c = ctrl.place_block("DCBlockerBlock", 0, 0, 5, params={"length": 2, "long_form": False})
     # Both connections traverse the SAME row-3 lane cells (1..8, 3). net1 goes
     # gain->agc; net2 goes gain->dcblocker but is hand-routed down the SAME lane
     # then drops to (0,5) — so cells (1..8,3) are MULTIPLEXED between the two.

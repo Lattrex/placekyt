@@ -89,7 +89,7 @@ class TestCellProgram:
         ctrl = AppController(catalog=catalog)
         ctrl.new_project("Bad", "kyttar_10x12")
         ctrl.place_block("GainBlock", 0, 1, 1, library="lattrex.official")
-        ctrl.place_block("DCBlockerBlock", 0, 1, 1, library="lattrex.official")
+        ctrl.place_block("DCBlockerBlock", 0, 1, 1, library="lattrex.official", params={"length": 2, "long_form": False})
         assert ctrl.cell_program(0, 1, 1) is None  # overlap → no build
 
     def test_cached_build_reused(self, qapp, catalog):

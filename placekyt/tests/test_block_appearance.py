@@ -69,7 +69,7 @@ class TestBlockColor:
     def test_distinct_blocks_get_distinct_colors(self, controller):
         w = _window(controller)
         controller.place_block("DCBlockerBlock", 0, 5, 5,
-                               library="lattrex.official")
+                               library="lattrex.official", params={"length": 2, "long_form": False})
         w._on_model_changed()
         fills = _block_fills(w)
         assert len(fills) == 2

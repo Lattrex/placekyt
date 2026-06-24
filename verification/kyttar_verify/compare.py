@@ -115,19 +115,34 @@ def write_report(kyttar_block: str, result: "CompareResult", *,
     return path
 
 
-def q15_quant_floor(op_count: int) -> int:
+def q15_quant_floor(op_count: int, head_shift: int = 0) -> int:
     """Worst-case Q15 quantization bound (LSB) for a feed-forward block.
 
     Each Q15 multiply/MAC truncation contributes up to ~1 LSB; ``op_count`` such
     operations accumulate worst-case-linearly, plus one final-quantization LSB.
 
-    This is valid ONLY for feed-forward, non-saturating blocks (a single MULQ,
-    an N-tap FIR/MAC chain). Recursive (IIR) and feedback/loop blocks do NOT
-    obey an op-count bound — their error depends on pole radius / trajectory
-    divergence; those classes must pass an explicit ``tolerance`` and use a
-    behavioral metric, never this floor.
+    ``head_shift`` (S) accounts for COEFFICIENT-HEADROOM blocks (INV-13): a MAC
+    chain whose Σ|coeff| > 1 pre-scales every coefficient by ``2^-S`` so the
+    accumulator cannot overflow, then restores the gain with a saturating shift.
+    That scaling costs precision — a coefficient stored as ``round(c·2^15/2^S)``
+    and reconstructed as ``q·2^S/2^15`` carries up to ``2^(S-1)`` LSB of effective
+    coefficient error (vs 0.5 LSB at S=0), so each of the ``op_count`` taps can
+    contribute up to ``2^(S-1)`` coeff-error LSB ON TOP of its ~1 LSB MAC
+    truncation. Hence the bound is ``op_count·(2^(S-1)+1) + 1`` for S>0, and the
+    plain ``op_count+1`` for S=0 (the no-headroom case — a no-op, unchanged). This
+    is a DERIVED fixed-point worst case, not a tuned number; verified empirically
+    to bound the dc_blocker (a headroom FIR) with ~18% margin.
+
+    Valid ONLY for feed-forward MAC blocks (a single MULQ, an N-tap FIR/MAC
+    chain, with or without coefficient headroom). Recursive (IIR) and
+    feedback/loop blocks do NOT obey an op-count bound — their error depends on
+    pole radius / trajectory divergence; those classes must pass an explicit
+    ``tolerance`` and use a behavioral metric, never this floor.
     """
-    return max(1, int(op_count) + 1)
+    n = int(op_count)
+    if head_shift and head_shift > 0:
+        return n * ((1 << (head_shift - 1)) + 1) + 1
+    return max(1, n + 1)
 
 
 def _saturate_ref_q15(ref_floats) -> np.ndarray:
@@ -151,6 +166,7 @@ def compare_against_grc(
     metric: Metric = Metric.AMPLITUDE,
     delay: int = 0,
     op_count: int = 1,
+    head_shift: int = 0,
     tolerance: int | None = None,
     min_samples: int = 4,
     polarity_dont_care: bool = False,
@@ -165,6 +181,9 @@ def compare_against_grc(
             ``y[n]`` is compared to reference ``x[n-delay]``. Stated by the
             caller; the engine does not search for it.
         op_count: number of Q15 multiply/MAC ops (for the derived amplitude floor).
+        head_shift: coefficient-headroom shift S of the block (INV-13); widens the
+            derived amplitude floor to account for the precision lost to scaling
+            the coefficients by 2^-S. 0 (default) for non-headroom blocks.
         tolerance: explicit Q15 LSB bound; overrides the derived floor. Required
             for recursive/loop blocks.
         min_samples: fail if fewer than this many samples can be compared.
@@ -248,7 +267,8 @@ def compare_against_grc(
         return res
 
     # AMPLITUDE: max-abs within the derived (or explicit) Q15 floor.
-    tol = tolerance if tolerance is not None else q15_quant_floor(op_count)
+    tol = (tolerance if tolerance is not None
+           else q15_quant_floor(op_count, head_shift))
     res.tolerance = tol
     res.passed = (max_abs <= tol)
     if not res.passed:

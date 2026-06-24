@@ -48,7 +48,7 @@ def window(qapp, catalog):
     ctrl.new_project("Route Test", "kyttar_10x12")
     w._after_project_loaded()
     ctrl.place_block("GainBlock", 0, 1, 1, library="lattrex.official")
-    ctrl.place_block("DCBlockerBlock", 0, 1, 5, library="lattrex.official")
+    ctrl.place_block("DCBlockerBlock", 0, 1, 5, library="lattrex.official", params={"length": 2, "long_form": False})
     w.canvas.render_scene()
     return w
 
@@ -387,7 +387,7 @@ class TestFlyLines:
         w._after_project_loaded()
         # Two placed blocks: an input landing block and a downstream block.
         ctrl.place_block("GainBlock", 0, 1, 1, library="lattrex.official")
-        ctrl.place_block("DCBlockerBlock", 0, 5, 1, library="lattrex.official")
+        ctrl.place_block("DCBlockerBlock", 0, 5, 1, library="lattrex.official", params={"length": 2, "long_form": False})
         return w, ctrl
 
     def _fly_items(self, w):
@@ -515,7 +515,7 @@ class TestClickToWire:
         ctrl.new_project("Wire Test", "kyttar_10x12")
         w._after_project_loaded()
         ctrl.place_block("GainBlock", 0, 1, 1, library="lattrex.official")
-        ctrl.place_block("DCBlockerBlock", 0, 5, 1, library="lattrex.official")
+        ctrl.place_block("DCBlockerBlock", 0, 5, 1, library="lattrex.official", params={"length": 2, "long_form": False})
         w.canvas.set_show_port_stubs(True)
         w.canvas.render_scene()
         return w, ctrl
@@ -583,7 +583,7 @@ class TestRouteAll:
         ctrl.new_project("Route All", "kyttar_10x12")
         w._after_project_loaded()
         a = ctrl.place_block("GainBlock", 0, 1, 1, library="lattrex.official")
-        b = ctrl.place_block("DCBlockerBlock", 0, 5, 1, library="lattrex.official")
+        b = ctrl.place_block("DCBlockerBlock", 0, 5, 1, library="lattrex.official", params={"length": 2, "long_form": False})
         ctrl.add_logical_connection(
             BlockEndpoint(block=a, port="out"),
             BlockEndpoint(block=b, port="sample"), name="ab")
@@ -621,7 +621,7 @@ class TestAutoPlace:
         w._after_project_loaded()
         c = ctrl.place_block("BPSKSlicerBlock", 0, 1, 3, library="lattrex.official")
         a = ctrl.place_block("GainBlock", 0, 6, 3, library="lattrex.official")
-        b = ctrl.place_block("DCBlockerBlock", 0, 3, 3, library="lattrex.official")
+        b = ctrl.place_block("DCBlockerBlock", 0, 3, 3, library="lattrex.official", params={"length": 2, "long_form": False})
         ctrl.add_logical_connection(
             BlockEndpoint(block=a, port="out"),
             BlockEndpoint(block=b, port="sample"), name="ab")

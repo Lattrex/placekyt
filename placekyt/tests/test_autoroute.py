@@ -56,7 +56,7 @@ def test_routes_adjacent_blocks(qapp, catalog, chip_type):
     ctrl = AppController(catalog=catalog)
     ctrl.new_project("ar", "kyttar_10x12")
     a = ctrl.place_block("GainBlock", 0, 1, 1, library="lattrex.official")
-    b = ctrl.place_block("DCBlockerBlock", 0, 5, 1, library="lattrex.official")
+    b = ctrl.place_block("DCBlockerBlock", 0, 5, 1, library="lattrex.official", params={"length": 2, "long_form": False})
     ctrl.add_logical_connection(
         BlockEndpoint(block=a, port="out"),
         BlockEndpoint(block=b, port="sample"), name="a_b")
@@ -78,7 +78,7 @@ def test_full_chain_routes_and_builds(qapp, catalog, chip_type):
     ctrl = AppController(catalog=catalog)
     ctrl.new_project("chain", "kyttar_10x12")
     a = ctrl.place_block("GainBlock", 0, 1, 1, library="lattrex.official")
-    b = ctrl.place_block("DCBlockerBlock", 0, 5, 1, library="lattrex.official")
+    b = ctrl.place_block("DCBlockerBlock", 0, 5, 1, library="lattrex.official", params={"length": 2, "long_form": False})
     ctrl.add_logical_connection(
         ChipPortEndpoint(chip=0, port="x16_in"),
         BlockEndpoint(block=a, port="sample"), name="in_a")
@@ -104,9 +104,9 @@ def test_nets_do_not_share_cells(qapp, catalog, chip_type):
     ctrl = AppController(catalog=catalog)
     ctrl.new_project("disj", "kyttar_10x12")
     a = ctrl.place_block("GainBlock", 0, 1, 1, library="lattrex.official")
-    b = ctrl.place_block("DCBlockerBlock", 0, 5, 1, library="lattrex.official")
+    b = ctrl.place_block("DCBlockerBlock", 0, 5, 1, library="lattrex.official", params={"length": 2, "long_form": False})
     c = ctrl.place_block("GainBlock", 0, 1, 5, library="lattrex.official")
-    d = ctrl.place_block("DCBlockerBlock", 0, 5, 5, library="lattrex.official")
+    d = ctrl.place_block("DCBlockerBlock", 0, 5, 5, library="lattrex.official", params={"length": 2, "long_form": False})
     ctrl.add_logical_connection(
         BlockEndpoint(block=a, port="out"),
         BlockEndpoint(block=b, port="sample"), name="ab")
@@ -147,7 +147,7 @@ def test_controller_auto_route_all_is_undoable(qapp, catalog, chip_type):
     ctrl = AppController(catalog=catalog)
     ctrl.new_project("ctl", "kyttar_10x12")
     a = ctrl.place_block("GainBlock", 0, 1, 1, library="lattrex.official")
-    b = ctrl.place_block("DCBlockerBlock", 0, 5, 1, library="lattrex.official")
+    b = ctrl.place_block("DCBlockerBlock", 0, 5, 1, library="lattrex.official", params={"length": 2, "long_form": False})
     ctrl.add_logical_connection(
         BlockEndpoint(block=a, port="out"),
         BlockEndpoint(block=b, port="sample"), name="ab")
@@ -176,7 +176,7 @@ def test_orient_for_flow_points_output_at_consumer(qapp, catalog, chip_type):
     ctrl = AppController(catalog=catalog)
     ctrl.new_project("orient", "kyttar_10x12")
     a = ctrl.place_block("GainBlock", 0, 3, 1, library="lattrex.official")
-    b = ctrl.place_block("DCBlockerBlock", 0, 3, 5, library="lattrex.official")
+    b = ctrl.place_block("DCBlockerBlock", 0, 3, 5, library="lattrex.official", params={"length": 2, "long_form": False})
     ctrl.add_logical_connection(
         BlockEndpoint(block=a, port="out"),
         BlockEndpoint(block=b, port="sample"), name="ab")
@@ -193,7 +193,7 @@ def test_auto_route_all_with_orient_is_one_undo(qapp, catalog, chip_type):
     ctrl = AppController(catalog=catalog)
     ctrl.new_project("orient_route", "kyttar_10x12")
     a = ctrl.place_block("GainBlock", 0, 3, 1, library="lattrex.official")
-    b = ctrl.place_block("DCBlockerBlock", 0, 3, 5, library="lattrex.official")
+    b = ctrl.place_block("DCBlockerBlock", 0, 3, 5, library="lattrex.official", params={"length": 2, "long_form": False})
     ctrl.add_logical_connection(
         BlockEndpoint(block=a, port="out"),
         BlockEndpoint(block=b, port="sample"), name="ab")
@@ -214,7 +214,7 @@ def test_auto_orient_leaves_aligned_blocks_untouched(qapp, catalog, chip_type):
     ctrl = AppController(catalog=catalog)
     ctrl.new_project("aligned", "kyttar_10x12")
     a = ctrl.place_block("GainBlock", 0, 1, 1, library="lattrex.official")
-    b = ctrl.place_block("DCBlockerBlock", 0, 5, 1, library="lattrex.official")
+    b = ctrl.place_block("DCBlockerBlock", 0, 5, 1, library="lattrex.official", params={"length": 2, "long_form": False})
     ctrl.add_logical_connection(
         BlockEndpoint(block=a, port="out"),
         BlockEndpoint(block=b, port="sample"), name="ab")

@@ -1,0 +1,20 @@
+{
+  "kyttar_block": "DCBlockerBlock",
+  "passed": true,
+  "metric": "amplitude",
+  "n_compared": 82,
+  "max_abs_err": 34,
+  "tolerance": 59,
+  "nmse_db": -50.57396394318455,
+  "correlation": 0.9999994702502343,
+  "bit_errors": 0,
+  "delay_used": 0,
+  "coverage": {
+    "edge": true,
+    "random": 3,
+    "param_sweep": 7,
+    "mutation": true,
+    "overload": true,
+    "bit_exact": true
+  }
+}

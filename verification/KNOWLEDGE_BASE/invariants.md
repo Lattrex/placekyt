@@ -361,6 +361,16 @@ datapath cell at the top of the last column). The FIR chooser scans
 (`fir_filter_block.py:_fold_geometry`). Examples that fold cleanly: n=2 → 2×1; n=4 →
 2×2; n=8 → 2×4; n=20 cells… (per tap count).
 
+**Width cap (≤8 across, INV-9).** The even-column preference must REJECT any fold
+wider than the array allows: a cell count whose ONLY even-quotient divisor is
+`H=1` (e.g. `n=26` → its even folds are just `26×1`) would otherwise pick a
+degenerate full-width LINE that runs off the 10-wide array and cannot route (a
+26-tap... no — a 125-tap/26-cell dc_blocker hit exactly this: `_fold_geometry`
+returned `(26,1)` and placement failed `unplaced_cell outside fabric`). The
+chooser only accepts an even-column fold whose column count is `≤ 8`
+(`MAX_CELLS_ACROSS`); otherwise it falls through to the compact fold (n=26 →
+`7×4`). Co-location is still a preference, routability is not.
+
 When `n` has **no** even-full-column fold (e.g. a prime-ish cell count like 3, or 13),
 do **NOT pad to force it** — padding the last column with transit relays puts a relay
 cell in the OUTPUT EGRESS path, and the auto-router starts its corridor one cell

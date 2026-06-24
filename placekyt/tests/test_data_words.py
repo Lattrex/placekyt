@@ -157,16 +157,21 @@ class TestAbutmentHops:
     def test_abutting_handoff_resolves_entry_and_dest(self, qapp, catalog):
         # Two abutting blocks (no explicit route): the source's exit JUMP entry
         # and WRITE dest auto-resolve to the downstream block's resolved values.
+        # DCBlockerBlock is a FIR sized by 'length'; use a single-cell instance so
+        # it abuts GainBlock like the other single-cell downstreams.
+        dparams = {"DCBlockerBlock": {"length": 2, "long_form": False}}
         for down in ("NCOBlock", "SquelchBlock", "DCBlockerBlock"):
             ctrl = AppController(catalog=catalog)
             ctrl.new_project("Abut", "kyttar_10x12")
             ctrl.place_block("GainBlock", 0, 0, 0, library="lattrex.official")
-            ctrl.place_block(down, 0, 1, 0, library="lattrex.official")
+            ctrl.place_block(down, 0, 1, 0, library="lattrex.official",
+                             params=dparams.get(down))
             assert ctrl.build().ok
             prog = ctrl.cell_program(0, 0, 0)
             jump = next(i for i in prog["instructions"] if i["kind"] == "JUMP")
             write = next(i for i in prog["instructions"] if i["kind"] == "WRITE")
-            entry, in_regs = catalog.resolved_io(down, library="lattrex.official")
+            entry, in_regs = catalog.resolved_io(down, dparams.get(down),
+                                                 library="lattrex.official")
             assert jump["hop"] == 1 and write["hop"] == 1
             assert jump["field"] == entry, down
             assert write["field"] == in_regs[0], down
@@ -234,7 +239,13 @@ class TestEditableParams:
 
     def test_gain_and_dcblocker_editable(self, qapp, catalog):
         assert "gain" in catalog.editable_params("GainBlock")
-        assert "alpha" in catalog.editable_params("DCBlockerBlock")
+        # DCBlockerBlock is now a drop-in for filter.dc_blocker_ff (an FIR): its
+        # GR-faithful params are 'length' (D) and 'long_form'. Both change the tap
+        # count → cell geometry, so neither is a data-editable scalar (editing one
+        # re-tiles the block); editable_params is therefore empty for it.
+        params = {p.name for p in catalog.get("DCBlockerBlock").params}
+        assert params == {"length", "long_form"}
+        assert "length" not in catalog.editable_params("DCBlockerBlock")
 
 
 class TestExcludedBlocks:

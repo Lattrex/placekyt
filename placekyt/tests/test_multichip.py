@@ -286,7 +286,7 @@ class TestInterChipHop:
         g = ctrl.project.blocks[0].name
         ctrl.add_route(BlockEndpoint(g, "out"), ChipPortEndpoint(0, "x16_out"),
                        [(x, 0) for x in range(10)])
-        ctrl.place_block("DCBlockerBlock", 1, 1, 0, library="lattrex.official")
+        ctrl.place_block("DCBlockerBlock", 1, 1, 0, library="lattrex.official", params={"length": 2, "long_form": False})
         d = ctrl.project.blocks[1].name
         ctrl.add_route(ChipPortEndpoint(1, "x16_in"), BlockEndpoint(d, "in"),
                        [(0, 0), (1, 0)])
@@ -295,7 +295,8 @@ class TestInterChipHop:
         prog = ctrl.cell_program(0, 0, 0)
         jump = next(i for i in prog["instructions"] if i["kind"] == "JUMP")
         write = next(i for i in prog["instructions"] if i["kind"] == "WRITE")
-        entry, in_regs = catalog.resolved_io("DCBlockerBlock")
+        entry, in_regs = catalog.resolved_io(
+            "DCBlockerBlock", {"length": 2, "long_form": False})
         assert jump["hop"] == 11 and write["hop"] == 11
         assert jump["field"] == entry          # chip-1 block's entry
         assert write["field"] == in_regs[0]    # chip-1 block's input register
@@ -356,7 +357,7 @@ class TestCanvasRendering:
         ctrl.place_block("GainBlock", 0, 0, 0, library="lattrex.official")
         ctrl.add_chip("RX-2")
         # chip 1 block at local (2, 0) — coincides with a chip-0 route waypoint.
-        ctrl.place_block("DCBlockerBlock", 1, 2, 0, library="lattrex.official")
+        ctrl.place_block("DCBlockerBlock", 1, 2, 0, library="lattrex.official", params={"length": 2, "long_form": False})
         from ui.main_window import MainWindow
 
         w = MainWindow(controller=ctrl)
@@ -384,7 +385,7 @@ class TestCanvasRendering:
         ctrl.new_project("T", "kyttar_10x12")
         ctrl.place_block("GainBlock", 0, 0, 0, library="lattrex.official")
         ctrl.add_chip("RX-2")
-        ctrl.place_block("DCBlockerBlock", 1, 2, 0, library="lattrex.official")
+        ctrl.place_block("DCBlockerBlock", 1, 2, 0, library="lattrex.official", params={"length": 2, "long_form": False})
         g = ctrl.project.blocks[0].name
         ctrl.add_route(BlockEndpoint(g, "out"), ChipPortEndpoint(0, "x16_out"),
                        [(x, 0) for x in range(10)])

@@ -1,41 +1,45 @@
 id: kyttar_dc_blocker
-label: Kyttar DC Blocker
+label: DC Blocker
 category: '[Kyttar]'
 flags: [ python ]
 
 documentation: |-
-  Kyttar DC Blocker - High-Pass Filter for DC Removal
+  DC Blocker — drop-in for GNU Radio's filter.dc_blocker_ff.
 
-  Removes DC offset using an adaptive IIR filter:
-      output = input - dc_estimate
-      dc_estimate += alpha * (input - dc_estimate)
+  A computationally-efficient high-pass that produces a tight notch around DC
+  with a smaller group delay than an equivalent FIR or single-pole IIR. It is an
+  LTI filter (a symmetric FIR): a delayed copy of the input minus a cascade of
+  length-D moving averagers.
 
-  This block runs on the Kyttar chip. Place it between a KyttarSource
-  and KyttarSink block, and ensure the device_id matches your KyttarDevice.
+  This block runs on the Kyttar chip. Place it between a KyttarSource and
+  KyttarSink block, and ensure the device_id matches your KyttarDevice.
 
-  Parameters:
+  Parameters (mirroring GNU Radio's dc_blocker_xx verbatim):
   - Device ID: ID of the KyttarDevice block
-  - Alpha: Adaptation rate (0.001 to 0.1, default 0.01)
-
-  The alpha parameter controls the adaptation rate:
-  - Smaller alpha = slower adaptation, more aggressive DC removal
-  - Larger alpha = faster adaptation, less filtering
+  - Length (D): the moving-averager delay-line length (default 32). Longer
+    lines give a narrower DC notch.
+  - Long Form: long form (True, default) has a flatter passband at a group
+    delay of 2D-2; short form has group delay D-1 and is cheaper.
 
 templates:
   imports: from gnuradio import kyttar
-  make: kyttar.dc_blocker(device_id=${device_id}, alpha=${alpha})
+  make: kyttar.dc_blocker(device_id=${device_id}, length=${length}, long_form=${long_form})
   callbacks:
-    - set_alpha(${alpha})
+    - set_length(${length})
 
 parameters:
   - id: device_id
     label: Device ID
     dtype: string
     default: '"kyttar_0"'
-  - id: alpha
-    label: Alpha
-    dtype: real
-    default: 0.01
+  - id: length
+    label: Length (D)
+    dtype: int
+    default: 32
+  - id: long_form
+    label: Long Form
+    dtype: bool
+    default: 'True'
 
 inputs:
   - label: in

@@ -556,7 +556,8 @@ class TestProject:
         ]
         p.blocks = [
             Block("agc", "AGCBlock", library="lattrex.dsp", params={"target": 0.7}),
-            Block("dc", "DCBlockerBlock", library="lattrex.dsp"),
+            Block("dc", "DCBlockerBlock", library="lattrex.dsp",
+                  params={"length": 2, "long_form": False}),
         ]
         p.connections = [
             Connection(

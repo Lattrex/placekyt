@@ -58,12 +58,12 @@ def _wall_with_gap(ctrl, c1_row, c2_row):
     p1 = ctrl.place_block("GainBlock", 0, 0, 4, library="lattrex.official")
     p2 = ctrl.place_block("GainBlock", 0, 0, 6, library="lattrex.official")
     c1 = ctrl.place_block("DCBlockerBlock", 0, 9, c1_row,
-                          library="lattrex.official")
+                          library="lattrex.official", params={"length": 2, "long_form": False})
     if c2_row == c1_row:
         c2 = c1
     else:
         c2 = ctrl.place_block("DCBlockerBlock", 0, 9, c2_row,
-                              library="lattrex.official")
+                              library="lattrex.official", params={"length": 2, "long_form": False})
     for row in range(0, 12):
         if row == 5:
             continue
@@ -85,7 +85,7 @@ def test_cpsat_routes_single_net(qapp, catalog, chip_type):
     ctrl = AppController(catalog=catalog)
     ctrl.new_project("c", "kyttar_10x12")
     a = ctrl.place_block("GainBlock", 0, 1, 1, library="lattrex.official")
-    b = ctrl.place_block("DCBlockerBlock", 0, 5, 1, library="lattrex.official")
+    b = ctrl.place_block("DCBlockerBlock", 0, 5, 1, library="lattrex.official", params={"length": 2, "long_form": False})
     ctrl.add_logical_connection(
         BlockEndpoint(block=a, port="out"),
         BlockEndpoint(block=b, port="sample"), name="ab")

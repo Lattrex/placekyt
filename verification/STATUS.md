@@ -12,7 +12,7 @@
 | **GainBlock** | `blocks.multiply_const_ff` | 1 · feed-forward | ✅ done | err 1 / tol 2 LSB · -90 dB SNR | edge rand×3 sweep×4 mut |
 | **DCBlockerBlock** | `filter.dc_blocker_ff` | 1 · feed-forward | ✅ done | err 34 / tol 59 LSB · -51 dB SNR | edge rand×3 sweep×7 mut |
 | **FIRFilterBlock** | `filter.fir_filter_fff` | 1 · feed-forward | ✅ done | err 10 / tol 17 LSB · -65 dB SNR | edge rand×3 sweep×12 mut |
-| **IIRBiquadBlock** | `filter.iir_filter_fff` | 1 · feed-forward | ⬜ planned | — | — |
+| **IIRBiquadBlock** | `filter.iir_filter_ffd` | 1 · feed-forward | blocked | — | — |
 | **DecimatorBlock** | `filter.fir_filter_fff (decim)` | 1 · feed-forward | ⬜ planned | — | — |
 | **ComplexMixerBlock** | `blocks.multiply_cc + analog.sig_source` | 1 · feed-forward | ⬜ planned | — | — |
 | **NCOBlock** | `analog.sig_source_c` | 1 · feed-forward | ⬜ planned | — | — |

@@ -8,6 +8,40 @@ anything that generalizes across block classes into `invariants.md`.
 
 ---
 
+## IIRBiquadBlock — BLOCKED: recursive Q15 needs accumulator guard bits 2026-06-24
+
+- **Status:** BLOCKED (ISA/datapath limitation → out of autonomous scope per the
+  guardrail). No block source changed; only the manifest + this note.
+- **Manifest factory was wrong:** GR has NO `filter.iir_filter_fff`. The real
+  factory is `filter.iir_filter_ffd(fftaps, fbtaps, oldstyle)` (Direct Form I).
+  `oldstyle=False` (scipy/Matlab) is `y[n]=Σff·x[n-i] − Σ_{j≥1} fb·y[n-j]` with
+  `fb[0]=a0` — exactly the block's `b/a` convention. Corrected the grc_block.
+- **Root cause — no accumulator guard bits.** A Direct-Form biquad's feedback
+  term `a1·y` has `|a1|` up to ~2 (`a1 = −2cos(ω)/a0`; `<2` but routinely `>1`
+  even for gentle low-pass) and `|y|` up to ~1, so `−a1·y` reaches **~2.0** — not
+  representable as a Q15 partial, and it overflows the 16-bit accumulator
+  mid-chain. The 16-bit cell ALU has no guard bits.
+- **Why the FIR fix doesn't transfer.** COEFFICIENT HEADROOM (INV-13) pre-scales
+  the accumulator and restores at the end — but a recursive filter must store the
+  fed-back `y` at FULL Q15 scale to recurse correctly, so the feedback path can't
+  be pre-scaled. And no accumulation ORDER fixes it in general: splitting `a1`
+  into two halves and interleaving the `a2` subtraction keeps partials in range
+  for some low-fc/low-Q filters but OVERFLOWS for fc≥0.25 / Q≥2 / etc. (measured).
+  The V flag is not sticky (INV-13) so a per-term saturate can't catch the
+  mid-chain wrap either.
+- **Secondary limits.** A resonant filter's output `|y|` itself exceeds 1.0 and
+  saturates where GR float doesn't (fc=0.15, Q=5 → |y|=2.3). And the EXISTING
+  block is independently broken: it clamps a-coeffs to [−1,1] (`min(1,max(−1,a))`),
+  destroying any real biquad with `|a1|>1`.
+- **What it needs / when to revisit.** Accumulator guard bits (a wider recursive
+  accumulator, e.g. Q15 + 2–3 integer guard bits) in the cell ALU — a simKYT/.so
+  (Rust) ISA change, out of scope for an autonomous run. NOTE the recursive Q15
+  PRECISION itself is fine in-range (prototype max err ~1.6–9 LSB for pole radius
+  up to ~0.92), so once guard bits exist this is a normal empirical/pole-tolerance
+  + zero-input-limit-cycle verification, not a redesign.
+
+---
+
 ## DCBlockerBlock — GR dc_blocker_ff is an FIR (reuse the datapath) 2026-06-24
 
 - **Status:** PASS / DONE vs GNU Radio `filter.dc_blocker_ff`, 28 tests; full

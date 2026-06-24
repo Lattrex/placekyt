@@ -38,11 +38,11 @@ options:
     state: enabled
 
 blocks:
-- name: samp_rate
+- name: burst_len
   id: variable
   parameters:
-    comment: ''
-    value: '32000'
+    comment: fixed burst length (float samples) dispatched to the chip in one RPC
+    value: '256'
   states:
     bus_sink: false
     bus_source: false
@@ -63,21 +63,22 @@ blocks:
     rotation: 0
     state: enabled
 - name: src
-  id: analog_sig_source_x
+  id: blocks_vector_source_x
   parameters:
     affinity: ''
     alias: ''
-    amp: '0.8'
-    comment: slow sine stimulus in [-1,1] into the chip
-    freq: '500'
+    comment: "bounded slow-sine burst (one fixed-length vector) into the chip —\
+      \ REPEAT so the flowgraph never reaches EOF; the Kyttar Source accumulates\
+      \ exactly one burst, dispatches it ONCE via process_batch, then the Sink\
+      \ re-emits the gained result for a stable live plot."
     maxoutbuf: '0'
     minoutbuf: '0'
-    offset: '0'
-    phase: '0'
-    samp_rate: samp_rate
-    showports: 'False'
+    repeat: 'True'
+    tags: '[]'
     type: float
-    waveform: analog.GR_SIN_WAVE
+    vector: '[0.8*float(__import__(''math'').sin(2*3.141592653589793*2*n/burst_len))
+      for n in range(burst_len)]'
+    vlen: '1'
   states:
     bus_sink: false
     bus_source: false
@@ -90,7 +91,9 @@ blocks:
   parameters:
     affinity: ''
     alias: ''
-    comment: stimulus -> placeKYT chip x16_in
+    burst_len: burst_len
+    comment: stimulus -> placeKYT chip x16_in (batch); dispatches one bounded burst
+    complex_in: float
     device_id: '"kyttar_0"'
     maxoutbuf: '0'
     minoutbuf: '0'
@@ -98,7 +101,6 @@ blocks:
     port_name: '"x16_in"'
     server_host: '"127.0.0.1"'
     server_port: server_port
-    complex_in: float
   states:
     bus_sink: false
     bus_source: false
@@ -200,7 +202,7 @@ blocks:
     name: '"Kyttar Gain: input vs output"'
     nconnections: '2'
     size: '1024'
-    srate: samp_rate
+    srate: '1'
     stemplot: 'False'
     style1: '1'
     style10: '1'

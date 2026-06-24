@@ -4,25 +4,204 @@
   "schema_version": 1,
   "chip_yaml": "placekyt/resources/chips/kyttar_10x12.yaml",
   "blocks": [
-    {"kyttar_block": "GainBlock", "grc_block": "blocks.multiply_const_ff", "tier": 1, "status": "done", "metric": "amplitude", "params": {"gain": 0.5}, "notes": "Reference example; fully documented. Single MULQ."},
-    {"kyttar_block": "DCBlockerBlock", "grc_block": "filter.dc_blocker_ff", "tier": 1, "status": "planned", "metric": "amplitude", "notes": "High-pass DC remover."},
-    {"kyttar_block": "FIRFilterBlock", "grc_block": "filter.fir_filter_fff", "tier": 1, "status": "done", "metric": "exact", "notes": "Verified vs filter.fir_filter_fff from 2 to 64 taps. SATURATES on Q15 overflow (production fixed-point semantics; GR float never overflows) via COEFFICIENT HEADROOM, NOT a per-tap or end-only clamp (INV-13). The cell ALU WRAPS on overflow and its V flag is NOT sticky, so a sum can overflow a mid-chain MACQ and wrap back into range by the final op -- an end-only (or per-cell) clamp then MISSES it and the output rolls over (a 40-tap all-0.5 gain-20 FIR on steady 0.9 rolled to a sign-flipping mess). Fix: S=max(0,ceil(log2 sum|coeff|)); scale every coeff by 2^-S before Q15 (Sum|scaled|<=1 => the accumulator can NEVER overflow at any tap or cell), then restore the gain at the very END (single cell: after the last MACQ; multi-cell: on the LAST cell after its final ADD) with ONE SATURATING left shift by S -- the only place a true overdrive overflows, where it pins to +/-full-scale. Normalized filter (Sum<=1) => S=0, a no-op identical to a plain Q15 FIR and bit-exact with GR. The saturating shift can't use a V-flag clamp (SHL clears V); it detects overflow in O(1) with a bias-and-shift test ((acc+2^(15-S))>>(16-S)!=0) and pins via 0x7FFF+signbit. Build-engine gotcha: a GOTO/branch targeting a {write}/{jump}-placeholder label is miscompiled to a stray output jump, so the restore branches to a REAL-instruction label and uses a two-path duplicated-{write} + terminal HALT structure. Budget: S=0 unchanged (single-cell ceiling 6, TAPS_PER_CELL 5; 20-tap=4 cells, 40-tap=8, 64-tap=13); S>0 caps the last cell to 3 taps (and single-cell to 4) for the restore, so a high-gain FIR may use one extra cell (40-tap gain-20 S=5 = 9 cells). Bit-exact predictor = process_reference_q15 (scaled wrapping accumulation + the final saturating shift + the cell-accurate wavefront sample-forwarding); the gate compares the DUT against it EXACTLY. DSP equivalence cross-checked on NORMALIZED taps (S=0): the ref == GR float clipped to Q15. <=6 taps single-cell; 7+ a chained partial-sum systolic wavefront (TAPS_PER_CELL=5) laid out as a column-major serpentine FOLD (INV-8/9/10, output egresses the LAST cell). Substrate fixes inherited: INV-6 (entry WITH params), INV-11 (multi-cell egress PortMap WITH params). Sweeps drive >2*ntaps random samples + a deep-cell mutation (INV-12); the headline overload test builds the 40-tap gain-20 FIR on the real route+simKYT path and asserts it PINS at +full-scale with no sign flip, and a WRAPPING (no-headroom) DUT FAILS the gate (INV-4). KNOWN LIMIT (guarded): 320 taps (64 cells) exceeds the 10x12 routing capacity (no free corridor); ~200 taps / 40 cells still routes."},
-    {"kyttar_block": "IIRBiquadBlock", "grc_block": "filter.iir_filter_fff", "tier": 1, "status": "planned", "metric": "amplitude", "notes": "Recursive: needs empirical/pole tolerance + zero-input limit-cycle test, NOT op-count floor."},
-    {"kyttar_block": "DecimatorBlock", "grc_block": "filter.fir_filter_fff (decim)", "tier": 1, "status": "planned", "metric": "amplitude", "notes": "Rate change: fractional/decimated alignment; compare on decimated time base."},
-    {"kyttar_block": "ComplexMixerBlock", "grc_block": "blocks.multiply_cc + analog.sig_source", "tier": 1, "status": "planned", "metric": "amplitude", "notes": "Complex multiply; param parity = frequency in Hz, derive freq_word."},
-    {"kyttar_block": "NCOBlock", "grc_block": "analog.sig_source_c", "tier": 1, "status": "planned", "metric": "amplitude", "notes": "Param parity: frequency in Hz, not freq_word (worst-offender refactor)."},
-    {"kyttar_block": "SoftDemodulatorBlock", "grc_block": "digital.constellation_soft_decoder_cf", "tier": 1, "status": "planned", "metric": "amplitude", "notes": "LLR output; tolerance on soft values."},
-    {"kyttar_block": "ComplexRRCMatchedFilterBlock", "grc_block": "filter.fir_filter_ccf (rrc taps)", "tier": 2, "status": "planned", "poc": true, "metric": "amplitude", "notes": "Proof-of-concept: works in the coherent BPSK RX demo but has NOT been through per-block GRC-equivalence verification. Param parity: samp_rate/sym_rate/alpha/ntaps."},
-    {"kyttar_block": "AGCBlock", "grc_block": "analog.agc_ff", "tier": 2, "status": "planned", "metric": "amplitude", "notes": "Stateful gain loop; trim settling transient, behavioral metric."},
-    {"kyttar_block": "ComplexCostasLoopBlock", "grc_block": "digital.costas_loop_cc", "tier": 2, "status": "planned", "poc": true, "metric": "decision", "notes": "Proof-of-concept: works in the coherent BPSK RX demo but NOT yet per-block verified. Carrier recovery loop. Lock-detector + tracking-error metric, not sample-by-sample. Param: add order."},
-    {"kyttar_block": "GardnerTimingRecovery", "grc_block": "digital.symbol_sync_cc", "tier": 2, "status": "planned", "poc": true, "metric": "decision", "notes": "Proof-of-concept: works in the coherent BPSK RX demo but NOT yet per-block verified. Timing recovery loop. Worst-offender param refactor (kp/ki -> sps/loop_bw)."},
-    {"kyttar_block": "BPSKSlicerBlock", "grc_block": "digital.binary_slicer_fb", "tier": 2, "status": "planned", "poc": true, "metric": "decision", "notes": "Proof-of-concept: works in the coherent BPSK RX demo but NOT yet per-block verified. Decision output; BER metric, not NMSE on packed words."},
-    {"kyttar_block": "SquelchBlock", "grc_block": "analog.pwr_squelch_ff", "tier": 2, "status": "planned", "metric": "amplitude", "notes": "Gated passthrough; state-dependent."},
-    {"kyttar_block": "PSKSymbolMapperBlock", "grc_block": "digital.chunks_to_symbols_bc", "tier": 2, "status": "planned", "metric": "exact", "notes": "Bits -> constellation; deterministic, exact compare."},
-    {"kyttar_block": "LFSRScramblerBlock", "grc_block": "digital.additive_scrambler_bb", "tier": 2, "status": "planned", "metric": "exact", "notes": "Deterministic given seed; exact compare, NO correlation (no meaningful peak)."},
-    {"kyttar_block": "MultiplyConstComplex", "grc_block": "blocks.multiply_const_cc", "tier": 3, "status": "planned", "metric": "amplitude", "notes": "NEW: complex gain. Trivial extension of GainBlock to I/Q."},
-    {"kyttar_block": "AddConst", "grc_block": "blocks.add_const_ff", "tier": 3, "status": "planned", "metric": "amplitude", "notes": "NEW: single ADD with an immediate."},
-    {"kyttar_block": "QuadratureDemod", "grc_block": "analog.quadrature_demod_cf", "tier": 3, "status": "planned", "metric": "amplitude", "notes": "NEW: FM demod (atan2 of conjugate product). Common, high value."},
-    {"kyttar_block": "FreqXlatingFIR", "grc_block": "filter.freq_xlating_fir_filter_ccf", "tier": 3, "status": "planned", "metric": "amplitude", "notes": "NEW: mixer + decimating FIR fused. Workhorse channelizer block."}
+    {
+      "kyttar_block": "GainBlock",
+      "grc_block": "blocks.multiply_const_ff",
+      "tier": 1,
+      "status": "done",
+      "metric": "amplitude",
+      "params": {
+        "gain": 0.5
+      },
+      "notes": "Reference example; fully documented. Single MULQ."
+    },
+    {
+      "kyttar_block": "DCBlockerBlock",
+      "grc_block": "filter.dc_blocker_ff",
+      "tier": 1,
+      "status": "planned",
+      "metric": "amplitude",
+      "notes": "High-pass DC remover."
+    },
+    {
+      "kyttar_block": "FIRFilterBlock",
+      "grc_block": "filter.fir_filter_fff",
+      "tier": 1,
+      "status": "done",
+      "metric": "exact",
+      "notes": "Verified vs filter.fir_filter_fff from 2 to 64 taps. SATURATES on Q15 overflow (production fixed-point semantics; GR float never overflows) via COEFFICIENT HEADROOM, NOT a per-tap or end-only clamp (INV-13). The cell ALU WRAPS on overflow and its V flag is NOT sticky, so a sum can overflow a mid-chain MACQ and wrap back into range by the final op -- an end-only (or per-cell) clamp then MISSES it and the output rolls over (a 40-tap all-0.5 gain-20 FIR on steady 0.9 rolled to a sign-flipping mess). Fix: S=max(0,ceil(log2 sum|coeff|)); scale every coeff by 2^-S before Q15 (Sum|scaled|<=1 => the accumulator can NEVER overflow at any tap or cell), then restore the gain at the very END (single cell: after the last MACQ; multi-cell: on the LAST cell after its final ADD) with ONE SATURATING left shift by S -- the only place a true overdrive overflows, where it pins to +/-full-scale. Normalized filter (Sum<=1) => S=0, a no-op identical to a plain Q15 FIR and bit-exact with GR. The saturating shift can't use a V-flag clamp (SHL clears V); it detects overflow in O(1) with a bias-and-shift test ((acc+2^(15-S))>>(16-S)!=0) and pins via 0x7FFF+signbit. Build-engine gotcha: a GOTO/branch targeting a {write}/{jump}-placeholder label is miscompiled to a stray output jump, so the restore branches to a REAL-instruction label and uses a two-path duplicated-{write} + terminal HALT structure. Budget: S=0 unchanged (single-cell ceiling 6, TAPS_PER_CELL 5; 20-tap=4 cells, 40-tap=8, 64-tap=13); S>0 caps the last cell to 3 taps (and single-cell to 4) for the restore, so a high-gain FIR may use one extra cell (40-tap gain-20 S=5 = 9 cells). Bit-exact predictor = process_reference_q15 (scaled wrapping accumulation + the final saturating shift + the cell-accurate wavefront sample-forwarding); the gate compares the DUT against it EXACTLY. DSP equivalence cross-checked on NORMALIZED taps (S=0): the ref == GR float clipped to Q15. <=6 taps single-cell; 7+ a chained partial-sum systolic wavefront (TAPS_PER_CELL=5) laid out as a column-major serpentine FOLD (INV-8/9/10, output egresses the LAST cell). Substrate fixes inherited: INV-6 (entry WITH params), INV-11 (multi-cell egress PortMap WITH params). Sweeps drive >2*ntaps random samples + a deep-cell mutation (INV-12); the headline overload test builds the 40-tap gain-20 FIR on the real route+simKYT path and asserts it PINS at +full-scale with no sign flip, and a WRAPPING (no-headroom) DUT FAILS the gate (INV-4). KNOWN LIMIT (guarded): 320 taps (64 cells) exceeds the 10x12 routing capacity (no free corridor); ~200 taps / 40 cells still routes."
+    },
+    {
+      "kyttar_block": "IIRBiquadBlock",
+      "grc_block": "filter.iir_filter_fff",
+      "tier": 1,
+      "status": "planned",
+      "metric": "amplitude",
+      "notes": "Recursive: needs empirical/pole tolerance + zero-input limit-cycle test, NOT op-count floor."
+    },
+    {
+      "kyttar_block": "DecimatorBlock",
+      "grc_block": "filter.fir_filter_fff (decim)",
+      "tier": 1,
+      "status": "planned",
+      "metric": "amplitude",
+      "notes": "Rate change: fractional/decimated alignment; compare on decimated time base."
+    },
+    {
+      "kyttar_block": "ComplexMixerBlock",
+      "grc_block": "blocks.multiply_cc + analog.sig_source",
+      "tier": 1,
+      "status": "planned",
+      "metric": "amplitude",
+      "notes": "Complex multiply; param parity = frequency in Hz, derive freq_word."
+    },
+    {
+      "kyttar_block": "NCOBlock",
+      "grc_block": "analog.sig_source_c",
+      "tier": 1,
+      "status": "planned",
+      "metric": "amplitude",
+      "notes": "Param parity: frequency in Hz, not freq_word (worst-offender refactor)."
+    },
+    {
+      "kyttar_block": "SoftDemodulatorBlock",
+      "grc_block": "digital.constellation_soft_decoder_cf",
+      "tier": 1,
+      "status": "planned",
+      "metric": "amplitude",
+      "notes": "LLR output; tolerance on soft values."
+    },
+    {
+      "kyttar_block": "ComplexRRCMatchedFilterBlock",
+      "grc_block": "filter.fir_filter_ccf (rrc taps)",
+      "tier": 2,
+      "status": "planned",
+      "poc": true,
+      "metric": "amplitude",
+      "notes": "Proof-of-concept: works in the coherent BPSK RX demo but has NOT been through per-block GRC-equivalence verification. Param parity: samp_rate/sym_rate/alpha/ntaps."
+    },
+    {
+      "kyttar_block": "AGCBlock",
+      "grc_block": "analog.agc_ff",
+      "tier": 2,
+      "status": "planned",
+      "metric": "amplitude",
+      "notes": "Stateful gain loop; trim settling transient, behavioral metric."
+    },
+    {
+      "kyttar_block": "ComplexCostasLoopBlock",
+      "grc_block": "digital.costas_loop_cc",
+      "tier": 2,
+      "status": "planned",
+      "poc": true,
+      "metric": "decision",
+      "notes": "Proof-of-concept: works in the coherent BPSK RX demo but NOT yet per-block verified. Carrier recovery loop. Lock-detector + tracking-error metric, not sample-by-sample. Param: add order."
+    },
+    {
+      "kyttar_block": "GardnerTimingRecovery",
+      "grc_block": "digital.symbol_sync_cc",
+      "tier": 2,
+      "status": "planned",
+      "poc": true,
+      "metric": "decision",
+      "notes": "Proof-of-concept: works in the coherent BPSK RX demo but NOT yet per-block verified. Timing recovery loop. Worst-offender param refactor (kp/ki -> sps/loop_bw)."
+    },
+    {
+      "kyttar_block": "BPSKSlicerBlock",
+      "grc_block": "digital.binary_slicer_fb",
+      "tier": 2,
+      "status": "planned",
+      "poc": true,
+      "metric": "decision",
+      "notes": "Proof-of-concept: works in the coherent BPSK RX demo but NOT yet per-block verified. Decision output; BER metric, not NMSE on packed words."
+    },
+    {
+      "kyttar_block": "SquelchBlock",
+      "grc_block": "analog.pwr_squelch_ff",
+      "tier": 2,
+      "status": "planned",
+      "metric": "amplitude",
+      "notes": "Gated passthrough; state-dependent."
+    },
+    {
+      "kyttar_block": "PSKSymbolMapperBlock",
+      "grc_block": "digital.chunks_to_symbols_bc",
+      "tier": 2,
+      "status": "planned",
+      "metric": "exact",
+      "notes": "Bits -> constellation; deterministic, exact compare."
+    },
+    {
+      "kyttar_block": "LFSRScramblerBlock",
+      "grc_block": "digital.additive_scrambler_bb",
+      "tier": 2,
+      "status": "planned",
+      "metric": "exact",
+      "notes": "Deterministic given seed; exact compare, NO correlation (no meaningful peak)."
+    },
+    {
+      "kyttar_block": "MultiplyConstComplex",
+      "grc_block": "blocks.multiply_const_cc",
+      "tier": 3,
+      "status": "planned",
+      "metric": "amplitude",
+      "notes": "NEW: complex gain. Trivial extension of GainBlock to I/Q."
+    },
+    {
+      "kyttar_block": "AddConst",
+      "grc_block": "blocks.add_const_ff",
+      "tier": 3,
+      "status": "planned",
+      "metric": "amplitude",
+      "notes": "NEW: single ADD with an immediate."
+    },
+    {
+      "kyttar_block": "QuadratureDemod",
+      "grc_block": "analog.quadrature_demod_cf",
+      "tier": 3,
+      "status": "planned",
+      "metric": "amplitude",
+      "notes": "NEW: FM demod (atan2 of conjugate product). Common, high value."
+    },
+    {
+      "kyttar_block": "FreqXlatingFIR",
+      "grc_block": "filter.freq_xlating_fir_filter_ccf",
+      "tier": 3,
+      "status": "planned",
+      "metric": "amplitude",
+      "notes": "NEW: mixer + decimating FIR fused. Workhorse channelizer block."
+    },
+    {
+      "kyttar_block": "LowPassFilter",
+      "grc_block": "filter.fir_filter_fff (firdes.low_pass)",
+      "tier": 1,
+      "status": "planned",
+      "metric": "exact",
+      "notes": "Convenience FIR: taps from gnuradio.filter.firdes.low_pass(gain,samp_rate,cutoff_freq,transition_width,window). Reuses FIRFilterBlock datapath. GRC palette label 'Low Pass Filter'. Verify the taps are bit-exact firdes AND the filtered output matches fir_filter_fff with those taps."
+    },
+    {
+      "kyttar_block": "HighPassFilter",
+      "grc_block": "filter.fir_filter_fff (firdes.high_pass)",
+      "tier": 1,
+      "status": "planned",
+      "metric": "exact",
+      "notes": "Convenience FIR: firdes.high_pass(...). Same wrapper pattern as LowPassFilter. Label 'High Pass Filter'."
+    },
+    {
+      "kyttar_block": "BandPassFilter",
+      "grc_block": "filter.fir_filter_fff (firdes.band_pass)",
+      "tier": 1,
+      "status": "planned",
+      "metric": "exact",
+      "notes": "Convenience FIR: firdes.band_pass(gain,samp_rate,low_cutoff,high_cutoff,transition_width,window). Label 'Band Pass Filter'."
+    },
+    {
+      "kyttar_block": "BandRejectFilter",
+      "grc_block": "filter.fir_filter_fff (firdes.band_reject)",
+      "tier": 1,
+      "status": "planned",
+      "metric": "exact",
+      "notes": "Convenience FIR: firdes.band_reject(...). Label 'Band Reject Filter'."
+    }
   ]
 }

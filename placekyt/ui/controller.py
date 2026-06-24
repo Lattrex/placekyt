@@ -1046,6 +1046,14 @@ class AppController(QObject):
         block_names = list(diffs.keys())
         # Snapshot the diffs for the apply closure (refresh runs again post-apply).
         affected = dict(diffs)
+        # Does ANY affected block actually change footprint (cell_count)? A
+        # param-only change that does NOT resize (e.g. a gain value, a tap-value
+        # edit that keeps the tap COUNT) needs no re-layout at all — just the new
+        # params. Only a resize can move neighbours / require re-routing. Without
+        # this guard a gain-value change re-flowed the WHOLE chip and dumped
+        # unrelated blocks (e.g. the FIR) into new, rotated, disconnected
+        # positions — the reported garbage-placement bug.
+        any_resize = any(getattr(d, "resizes", False) for d in affected.values())
 
         def _apply():
             # 1. Apply merged GRC params to each affected block (direct model
@@ -1057,12 +1065,16 @@ class AppController(QObject):
                 from engine.grc_sync import merged_params
                 self.project._set_block_params(
                     name, merged_params(blk, d.grc_params))
-            # 2. Re-layout per mode.
-            if mode == preferences.GRC_REANCHOR:
+            # 2. Re-layout ONLY if a block resized. A non-resizing param change
+            #    leaves every block's placement AND every connection untouched.
+            if not any_resize:
+                report = None
+            elif mode == preferences.GRC_REANCHOR:
                 self._reanchor_blocks(block_names)
                 report = None
             else:
-                # Full re-place + re-route (register=False: this command owns undo).
+                # A resize can shift neighbours → re-place + re-route (register=
+                # False: this command owns undo).
                 self.auto_place(0, register=False)
                 report = self.auto_route_all(
                     chip_types=chip_types, register=False)

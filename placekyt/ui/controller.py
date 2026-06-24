@@ -57,6 +57,9 @@ class AppController(QObject):
         # each placed block + the current out-of-sync diff). Reset per project.
         from engine.grc_sync import GrcSyncState
         self.grc_sync = GrcSyncState()
+        # Path of the .grc this project was imported from (if any), so the GUI can
+        # watch it for re-saves and flag GRC drift on SAVE. None until imported.
+        self._grc_source_path = None
         self._wire_bus()
 
     # -- file I/O -------------------------------------------------------------
@@ -398,6 +401,10 @@ class AppController(QObject):
         result = _import_grc(path, self.catalog, chip_type=ct)
         self.set_project(result.project)
         self.project_path = None
+        # Remember the source .grc so the GUI can WATCH it and flag drift the
+        # moment the user re-saves it in GNU Radio — detect-on-save, before any
+        # run (no need to run first to discover a parameter changed).
+        self._grc_source_path = str(path)
         # Seed the GRC-sync baseline: the params just imported ARE the GRC params,
         # so the freshly-imported design is in sync. Later GRC param changes (over
         # the wire) or comparing a re-imported .grc diff against this baseline.
@@ -405,6 +412,27 @@ class AppController(QObject):
             {b.name: dict(b.params) for b in result.project.blocks})
         self.refresh_grc_sync()
         return result
+
+    def check_grc_file_drift(self):
+        """Re-read the imported .grc and flag drift vs the placed design — the
+        detect-on-SAVE path. Parses the current block params straight from the
+        .grc (no run / no GR process needed), feeds them to the same GRC-sync diff
+        the run-time advertise path uses, and emits ``grc_sync_changed`` so the
+        out-of-sync indicator appears the moment the user saves in GNU Radio,
+        BEFORE any run. Returns the diff dict (empty ⇒ in sync), or None if no
+        .grc source is tracked / the file is unreadable."""
+        path = getattr(self, "_grc_source_path", None)
+        if not path:
+            return None
+        try:
+            from engine.grc_import import grc_block_params
+            params_by_block = grc_block_params(path, self.catalog)
+        except Exception:  # noqa: BLE001 — a mid-save / malformed file: ignore
+            return None
+        if not params_by_block:
+            return None
+        self.grc_sync.observe_many(params_by_block)
+        return self.refresh_grc_sync()
 
     def auto_place(self, chip: int = 0, *, register: bool = True):
         """Flow-order the placed blocks on ``chip`` into a 1-D pipeline (auto-P&R

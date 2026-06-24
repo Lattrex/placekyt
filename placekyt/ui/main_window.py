@@ -997,6 +997,39 @@ class MainWindow(QMainWindow):
         else:
             self._grc_sync_btn.hide()
 
+    def _watch_grc_source(self, path) -> None:
+        """Watch the imported .grc for re-saves so drift is flagged on SAVE (no
+        run needed). One watcher, re-pointed on each import."""
+        from PySide6.QtCore import QFileSystemWatcher
+
+        w = getattr(self, "_grc_watcher", None)
+        if w is None:
+            w = self._grc_watcher = QFileSystemWatcher(self)
+            w.fileChanged.connect(self._on_grc_file_changed)
+        if w.files():
+            w.removePaths(w.files())
+        if path:
+            w.addPath(str(path))
+
+    def _on_grc_file_changed(self, path) -> None:
+        """The watched .grc was re-saved → re-diff its params vs the placed design
+        and update the out-of-sync indicator (detect-on-save). Many editors
+        replace the file on save (atomic write), which drops the watch — re-add
+        the path so subsequent saves keep firing."""
+        from PySide6.QtCore import QTimer
+
+        w = getattr(self, "_grc_watcher", None)
+        # A tiny delay lets an atomic-replace save settle before we read + re-watch.
+        def _recheck():
+            if w is not None and path and path not in w.files():
+                import os
+                if os.path.exists(path):
+                    w.addPath(path)
+            diffs = self.controller.check_grc_file_drift()
+            if diffs is not None:
+                self._on_grc_sync_changed(diffs)
+        QTimer.singleShot(150, _recheck)
+
     def _on_grc_params_received(self, params_by_block) -> None:
         """A GRC client advertised its flowgraph's block params. Re-diff against
         the design; then branch on the persisted preference: NOTIFY shows the
@@ -1225,6 +1258,10 @@ class MainWindow(QMainWindow):
             self._error("Auto-P&R failed", str(exc))
             return
         self._after_project_loaded()
+        # Watch the imported .grc so a re-save in GNU Radio flags drift on SAVE —
+        # the user sees "out of sync" and can resync BEFORE running, instead of
+        # having to run, resync, then run again.
+        self._watch_grc_source(path)
         n_blocks = len(result.block_map)
         if report is not None:
             msg = f"Imported {n_blocks} block(s), routed {len(report.routed)} net(s)."

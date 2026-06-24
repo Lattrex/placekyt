@@ -91,6 +91,40 @@ def _grc_id_to_type(grc_id: str, catalog) -> str | None:
     return None
 
 
+def grc_block_params(path, catalog) -> dict:
+    """``{placeKYT block name: coerced params}`` for the DSP blocks in a .grc —
+    WITHOUT building a project. Uses the SAME classification, naming (``_unique``
+    /``_default_name``), and ``_coerce_params`` as :func:`import_grc`, so the keys
+    line up with an imported design's block names. Used by the GRC-sync file
+    watcher to diff a re-saved .grc against the placed design (detect drift on
+    SAVE, before any run)."""
+    import yaml
+    from ui.controller import _default_name
+
+    p = Path(path)
+    data = yaml.safe_load(p.read_text()) or {}
+    grc_blocks = {b["name"]: b for b in data.get("blocks", []) if "name" in b}
+
+    out: dict = {}
+    names_used: list = []
+    for gname, gb in grc_blocks.items():
+        gid = gb.get("id", "")
+        if gid in _SOURCE_IDS or gid in _SINK_IDS or gid in _NON_DSP:
+            continue
+        btype = _grc_id_to_type(gid, catalog)
+        if btype is None:
+            continue
+        params = dict(gb.get("parameters", {}) or {})
+        params = _coerce_params(params, catalog, btype)
+        if (btype == "BPSKSlicerBlock"
+                and "out_mode" not in (gb.get("parameters") or {})):
+            params["out_mode"] = "bit"
+        blk_name = _unique(_default_name(btype), names_used)
+        names_used.append(blk_name)
+        out[blk_name] = params
+    return out
+
+
 def import_grc(path, catalog, chip_type: str = "kyttar_10x12",
                *, project_name: str | None = None) -> GrcImportResult:
     """Parse a .grc file and build a placeKYT project of placeKYT blocks + logical

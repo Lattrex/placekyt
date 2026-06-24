@@ -113,6 +113,7 @@ class source(gr.sync_block):
         self._device_id = device_id
         self._port_name = port_name
         self._num_channels = num_channels
+        self._complex_in = bool(complex_in)
         self._server_host = str(server_host) or "127.0.0.1"
         self._server_port = int(server_port)
         self._burst_len = int(burst_len)
@@ -158,8 +159,15 @@ class source(gr.sync_block):
             return
         from ._batch_session import get_session
         sess = get_session(self._device_id)
+        # OUTPUT representation: a COMPLEX-input block is a bit-packing receiver
+        # (Costas/Gardner/slicer) whose recovered bit lives in the word LSB — it
+        # must read RAW int16 (Q15 scaling would crush the bit to ~0). A
+        # REAL/float-input DSP block (gain, FIR, ...) emits a Q15 VALUE the sink
+        # should rescale to float. So tie raw to complex: raw for the receiver
+        # path, Q15-float for the value path.
         out = sess.dispatch(self._server_host, self._server_port, self._inbuf,
-                            in_port=self._port_name)
+                            in_port=self._port_name, complex=self._complex_in,
+                            raw=self._complex_in)
         self._dispatched = True
         print(f"[kyttar.source] SERVER-BATCH: sent {len(self._inbuf)} samples "
               f"-> {len(out)} recovered (one process_batch RPC)", flush=True)

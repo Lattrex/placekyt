@@ -298,24 +298,37 @@ class SimServer:
                 # receiver (CoherentBPSKRxBlock) emits a Q15 value and wants the
                 # default Q15 float. Default False keeps the existing behavior.
                 raw = bool(header.get("raw", False))
+                # `complex` (default True for back-compat): the payload is
+                # interleaved I/Q [xi0,xq0,...], two operands per sample — inject
+                # xi→a0 AND xq→a1. When False, the payload is a REAL burst
+                # [x0,x1,...], ONE operand per sample — inject ONLY xi→a0. A
+                # single-input float block (e.g. a gain) keeps state (its
+                # coefficient) in a1; injecting a phantom xq=0 there would clobber
+                # it and zero the output, so a real burst must NOT touch a1.
+                is_complex = bool(header.get("complex", True))
                 out_vals: list[float] = []
-                npairs = len(data) // 2
+                nsamp = (len(data) // 2) if is_complex else len(data)
                 _t_batch0 = time.perf_counter()
-                # Drive each complex sample the PROVEN way: inject xi→a0, run; xq→a1,
-                # run; JUMP entry, run; then drain the output port. (The
+                # Drive each sample the PROVEN way: inject xi→a0, run; (complex:
+                # xq→a1, run;) JUMP entry, run; then drain the output port. (The
                 # write_port_multi_i16 path stalls the loop after one sample; the
                 # raw inject path advances every sample and is what the on-chip lock
                 # tests use.) target_hop_cnt=30 = @1 to the landing cell at the
                 # input-port edge.
-                for k in range(npairs):
-                    xi = _float_to_q15(float(data[2 * k]))
-                    xq = _float_to_q15(float(data[2 * k + 1]))
+                for k in range(nsamp):
+                    if is_complex:
+                        xi = _float_to_q15(float(data[2 * k]))
+                        xq = _float_to_q15(float(data[2 * k + 1]))
+                    else:
+                        xi = _float_to_q15(float(data[k]))
+                        xq = None
                     self._chip.inject_data_physical([xi], target_hop_cnt=30,
                                                     target_addr=int(a0))
                     self._chip.run(max_events=3000)
-                    self._chip.inject_data_physical([xq], target_hop_cnt=30,
-                                                    target_addr=int(a1))
-                    self._chip.run(max_events=3000)
+                    if xq is not None:
+                        self._chip.inject_data_physical([xq], target_hop_cnt=30,
+                                                        target_addr=int(a1))
+                        self._chip.run(max_events=3000)
                     self._chip.inject_jump_physical(target_hop_cnt=30,
                                                     entry_addr=entry)
                     self._chip.run(max_events=mx)
@@ -330,18 +343,18 @@ class SimServer:
                 # Throughput metric: how fast simKYT processes I/Q samples on THIS
                 # machine. simkyt is an event-accurate async-ASIC sim, not a
                 # real-time DSP source — this tells the user roughly how long a given
-                # burst length will take (e.g. 1 s of 48 kHz audio ≈ npairs/sps_rate
+                # burst length will take (e.g. 1 s of 48 kHz audio ≈ nsamp/sps_rate
                 # seconds of wall time). Reported in the reply header and to the GUI.
                 _dt = max(1e-9, time.perf_counter() - _t_batch0)
-                sps = npairs / _dt
+                sps = nsamp / _dt
                 if self._on_activity is not None:
                     # Pass the metric if the callback accepts it; else ping plainly.
                     try:
-                        self._on_activity(samples=npairs, seconds=_dt,
+                        self._on_activity(samples=nsamp, seconds=_dt,
                                           samples_per_sec=sps)
                     except TypeError:
                         self._on_activity()
-                return ({"ok": True, "samples": npairs, "seconds": _dt,
+                return ({"ok": True, "samples": nsamp, "seconds": _dt,
                          "samples_per_sec": sps},
                         np.asarray(out_vals, dtype="<f4"))
             if op == "output_available":

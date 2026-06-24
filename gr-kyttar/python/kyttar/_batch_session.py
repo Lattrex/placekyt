@@ -96,19 +96,34 @@ class BatchSession:
             self._cv.notify_all()
 
     def dispatch(self, host, port, iq, in_port="x16_in", out_port="x16_out",
-                 data_addrs=(0, 1), raw=True):
-        """Send the whole interleaved-I/Q burst to the placeKYT SimServer in one
-        process_batch RPC; store the recovered words for the sink."""
-        iq = np.asarray(iq, dtype=np.complex64)
-        interleaved = np.empty(2 * len(iq), dtype=np.float32)
-        interleaved[0::2] = iq.real
-        interleaved[1::2] = iq.imag
+                 data_addrs=(0, 1), raw=True, complex=True):
+        """Send the whole burst to the placeKYT SimServer in one process_batch RPC;
+        store the recovered words for the sink.
+
+        ``complex=True``  → INTERLEAVED I/Q: payload is [xi0, xq0, xi1, xq1, ...],
+        TWO operands per sample (the I/Q receiver path); process_batch injects xi
+        and xq to two data addresses. ``complex=False`` → a REAL burst: payload is
+        [x0, x1, ...], ONE operand per sample; process_batch injects ONLY xi.
+
+        The real path is REQUIRED for single-input float blocks (e.g. a gain):
+        injecting a phantom xq=0 into the second data address would clobber that
+        block's state — a gain keeps its coefficient in R1, which is the second
+        data address, so the phantom imag zeros the gain and all output goes 0."""
+        arr = np.asarray(iq)
+        if complex:
+            iqc = arr.astype(np.complex64)
+            payload = np.empty(2 * len(iqc), dtype=np.float32)
+            payload[0::2] = iqc.real
+            payload[1::2] = iqc.imag
+        else:
+            # Real burst: one operand per sample, no phantom imaginary part.
+            payload = np.real(arr).astype(np.float32)
         conn = socket.create_connection((host, int(port)))
         try:
             _send_message(conn, {"op": "process_batch", "port": out_port,
-                                 "in_port": in_port,
+                                 "in_port": in_port, "complex": bool(complex),
                                  "data_addrs": list(data_addrs), "raw": bool(raw)},
-                          interleaved)
+                          payload)
             reply, out = _recv_message(conn)
         finally:
             conn.close()

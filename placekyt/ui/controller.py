@@ -1114,6 +1114,15 @@ class AppController(QObject):
                            if getattr(d, "resizes", False)]
                 self._rebuild_block_cells(resized)
                 self.auto_place(0, register=False)
+                # CLEAR every existing route before re-routing. A resize +
+                # auto_place changes the footprint and reflows neighbours, so the
+                # OLD routes' waypoints are stale (they still point at the old,
+                # now-gone cell positions). auto_route_all only routes UNROUTED
+                # nets — it would skip these still-"routed" nets and leave their
+                # stale waypoints, so the canvas shows orphaned blue route cells
+                # while the shrunken block sits elsewhere, disconnected. Unrouting
+                # them forces a fresh route against the new layout.
+                self._clear_routes(chip=0)
                 report = self.auto_route_all(
                     chip_types=chip_types, register=False)
             self.project.mark_dirty()
@@ -1146,6 +1155,23 @@ class AppController(QObject):
                 blk.type, blk.library, pl.chip, ax, ay, params=blk.params)
             self.project._set_block_placement(
                 name, Placement(chip=pl.chip, cells=cells, transit_cells=transit))
+
+    def _clear_routes(self, chip: int = 0) -> None:
+        """Unroute every connection whose route lives on ``chip`` (set route =
+        None) so a subsequent auto_route_all recomputes them from scratch. The
+        rendered routing cells are a projection of conn.route, so clearing it
+        drops the stale route markers too. Used before a resize re-route, where
+        the old waypoints point at cells that no longer exist."""
+        from engine.route_analysis import route_chip_of
+
+        for conn in self.project.connections:
+            if not conn.is_routed:
+                continue
+            try:
+                if route_chip_of(self.project, conn) == chip:
+                    conn.route = None
+            except Exception:  # noqa: BLE001 — be permissive; just unroute it
+                conn.route = None
 
     def _rebuild_block_cells(self, block_names: list) -> None:
         """Regenerate each block's placement CELLS from its (new) params — used

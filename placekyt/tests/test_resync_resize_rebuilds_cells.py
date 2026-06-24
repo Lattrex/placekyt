@@ -71,3 +71,30 @@ def test_resync_shrink_rebuilds_fir_cell_count():
         if isinstance(c.source, ChipPortEndpoint) and c.source.port.endswith("_in"):
             continue
         assert c.is_routed, f"net {c.name} must be routed after a resize resync"
+
+
+def test_resync_shrink_to_one_cell_reroutes_fresh_not_stale():
+    """Shrinking a FIR to a SINGLE cell must re-route the nets against the new
+    footprint — not leave the old multi-cell route waypoints orphaned (stale blue
+    cells while the block sits elsewhere, disconnected, with green flylines)."""
+    ctrl, g, f, ct = _gain_fir_chain(40)
+    ctrl.grc_sync.observe(
+        f, {"coefficients": "[" + ",".join(["0.25"] * 4) + "]"})  # 40 → 4 taps
+    ctrl.refresh_grc_sync()
+    ctrl.resync_from_grc(mode=prefs.GRC_AUTO, chip_types={"kyttar_10x12": ct})
+
+    fir_cells = {(c.x, c.y) for c in ctrl.project.block(f).placement.cells}
+    assert len(fir_cells) == 1, "4-tap FIR must shrink to a single cell"
+
+    # Each block net's route must START/END on a CURRENT block cell — not a stale
+    # cell from the old 8-cell footprint.
+    for c in ctrl.project.connections:
+        if isinstance(c.source, ChipPortEndpoint) and c.source.port.endswith("_in"):
+            continue
+        assert c.is_routed, f"net {c.name} must be routed (was orphaned)"
+        ends = {(c.route[0].x, c.route[0].y), (c.route[-1].x, c.route[-1].y)}
+        # the FIR endpoint of each block net must be the FIR's CURRENT cell
+        if "firfilter" in c.name:
+            assert fir_cells & ends, (
+                f"net {c.name} route {ends} doesn't touch the FIR's current "
+                f"cell {fir_cells} — stale waypoints from the old footprint")

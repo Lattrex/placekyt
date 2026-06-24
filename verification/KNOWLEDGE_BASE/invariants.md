@@ -260,3 +260,46 @@ for stateful blocks: a gate the stimulus never reaches certifies nothing.)
 **Applies to:** FIR, IIR, decimator, equalizers, correlators — any block whose
 internal state spans more than a couple of samples.
 
+---
+
+## INV-13 — Saturate a Q15 accumulator ONCE at the end, never per-step
+
+**Symptom:** a MAC-chain block (FIR/IIR/mixer) either (a) explodes in cell count —
+a 20-tap FIR balloons from ~4 cells to ~10 — or (b) under overload emits a clean
+rescaled signal instead of the flat-topped ±full-scale rails it should show, so a
+real overdrive is invisible.
+
+**Root cause:** the cell ALU has NO auto-saturating mode — `MACQ`/`ADD` WRAP
+(modulo 2^16, sign-extended) and set the V (signed-overflow) flag. The tempting
+fix is to clamp R0 after *every* accumulation step (`BR.NV +2 ; SHR R0,#15 ;
+SUB satneg,R0` per tap). That is WRONG twice over: (1) it costs ~3 extra
+instructions PER TAP, collapsing the per-cell tap density (for FIR it dropped
+TAPS_PER_CELL 5→2 and the single-cell ceiling 7→3, ~2.5× the cells); and (2) it
+ALTERS THE MATH — clamping intermediate partial sums re-normalises legitimate
+mid-sum excursions that would otherwise wrap and return, masking genuine overload.
+A correctly-overdriven filter then looks fine.
+
+**Fix:** clamp the accumulator EXACTLY ONCE — on the FINAL accumulation, just
+before the output WRITE. The whole filter (single cell, or the entire cross-cell
+wavefront) is ONE logical accumulator; let every intermediate MACQ tap and every
+cross-cell partial WRAP, and apply the 3-instruction clamp only to the last op
+(the final MACQ in a single cell, or the cross-cell ADD on the last multi-cell
+cell). The V flag of that last op decides the clamp:
+`true sum > +FS ⇒ wrapped N=1 ⇒ +0x7FFF`; `< −FS ⇒ wrapped N=0 ⇒ −0x8000`; via
+`0x8000 − (R0>>15)` from one shared `satneg=0x8000` word. The priming MULQ is
+NEVER clamped — MULQ sets V from the RAW 32-bit product (which almost always
+exceeds i16), so clamping there saturates spuriously.
+
+**Corner case (accept it):** with a single 16-bit accumulator, only the FINAL
+result is guaranteed saturated. An intermediate sum can wrap and the final op can
+land back in range, so a vastly-over-unity float sum does NOT always pin at a
+rail — it pins ONLY when the final accumulation step itself overflows. This is the
+standard single-accumulator fixed-point tradeoff. Consequence for verification:
+the bit-exact reference must model WRAPPING intermediates + a single final clamp
+(not per-step), and an overload/rail test must use stimulus whose FINAL op
+overflows (steady large input, not a transient) or it will not exercise the clamp;
+the wrap-mutation must likewise overflow the final op so wrap ≠ end-only-clamp.
+
+**Applies to:** FIR, IIR, complex mixer, correlators — any Q15 MAC chain. See
+[[layout_rules]] for how the resulting per-cell tap density sets the fold.
+

@@ -8,7 +8,7 @@
 | Kyttar block | GNU Radio equivalent | Tier | Status | Quality (err/tol) | Coverage |
 |--------------|----------------------|------|--------|-------------------|----------|
 | **GainBlock** | `blocks.multiply_const_ff` | 1 · feed-forward | ✅ done | 1/2 LSB, -90 dB | edge rand×3 sweep×4 mut |
-| **FIRFilterBlock** | `filter.fir_filter_fff` | 1 · feed-forward | ✅ done | 0/0 LSB | edge rand×3 sweep×9 mut |
+| **FIRFilterBlock** | `filter.fir_filter_fff` | 1 · feed-forward | ✅ done | 0/0 LSB | edge rand×3 sweep×12 mut |
 | **DCBlockerBlock** | `filter.dc_blocker_ff` | 1 · feed-forward | ⬜ planned | — | — |
 | **IIRBiquadBlock** | `filter.iir_filter_fff` | 1 · feed-forward | ⬜ planned | — | — |
 | **DecimatorBlock** | `filter.fir_filter_fff (decim)` | 1 · feed-forward | ⬜ planned | — | — |

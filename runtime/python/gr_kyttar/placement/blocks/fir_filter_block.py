@@ -16,8 +16,8 @@ class FIRFilterBlock(KyttarBlock):
     Larger: multi-cell chained partial-sum (systolic) wavefront, TAPS_PER_CELL
     taps per cell.
 
-    SATURATING Q15 ACCUMULATION (production DSP semantics)
-    -----------------------------------------------------
+    SATURATING Q15 ACCUMULATION — clamp ONCE, at the END (production DSP)
+    --------------------------------------------------------------------
     The cell ALU's MACQ/ADD are 16-bit and WRAP on signed overflow (modulo
     2^16), which flips the sign on overload and produces garbage — the opposite
     of every production fixed-point FIR (TI C5x/C6x, etc.) which SATURATE the
@@ -25,12 +25,27 @@ class FIRFilterBlock(KyttarBlock):
     and never overflows, so the correct Q15 equivalent of "what GR computes,
     clamped to the representable range" is a SATURATING accumulator.
 
-    This block therefore clamps R0 after EVERY accumulation step (each MULQ /
-    MACQ tap AND the cross-cell partial-sum ADD). The hardware has no
-    auto-saturating ALU mode and the MACQ result is the WRAPPED value, but it
-    sets the V (signed-overflow) flag and an N flag reflecting the wrapped
-    result's sign. On overflow the wrapped sign is INVERTED relative to the true
-    sum, so:
+    This block clamps the accumulator EXACTLY ONCE — on the FINAL accumulation,
+    just before the output WRITE — NOT after every tap. The whole filter (single
+    cell, or the entire cross-cell wavefront) is ONE logical accumulator; only
+    its final value is saturated. Intermediate partial sums (the running MACQ
+    taps, and each cell's forwarded cross-cell partial) are left WRAPPED — they
+    are allowed to swing past full-scale and back. This is both correct DSP and
+    cheaper:
+
+      * Clamping per tap would alter the math (re-normalising legitimate mid-sum
+        excursions) and so MASK real overload — an overdriven filter would emit a
+        clean rescaled signal instead of the flat-topped ±full-scale rails it
+        must show.
+      * Per-tap clamping also costs ~3 extra instructions PER TAP, which
+        collapses the per-cell tap density (it dropped TAPS_PER_CELL to 2 and
+        the single-cell ceiling to 3, exploding a 20-tap FIR to ~10 cells).
+        END-only clamping costs the chain just ONE clamp, restoring the density.
+
+    The hardware has no auto-saturating ALU mode; the final MACQ/ADD leaves the
+    WRAPPED value in R0 but sets the V (signed-overflow) flag and an N flag
+    reflecting the wrapped result's sign. On overflow the wrapped sign is
+    INVERTED relative to the true sum, so:
 
         true sum > +full-scale  ⇒  wrapped is NEGATIVE (N=1)  ⇒  clamp to +0x7FFF
         true sum < −full-scale  ⇒  wrapped is POSITIVE (N=0)  ⇒  clamp to −0x8000
@@ -42,18 +57,27 @@ class FIRFilterBlock(KyttarBlock):
         SUB   R{satneg}, R0   ; R0 = 0x8000 − bit  ⇒  N? 0x7FFF : 0x8000
 
     i.e. one branch on the hot path, two instructions on the (rare) overflow
-    path, and a single shared 0x8000 data word per cell. (Verified bit-exact
-    against a true clamping accumulator over millions of random cases.)
+    path, and a single shared 0x8000 data word per cell carrying the clamp. The
+    priming MULQ is NEVER clamped: a single Q15 product (a·b)>>15 is always
+    representable, but MULQ sets V from the RAW 32-bit product, so clamping there
+    would saturate spuriously.
 
-    Single-cell ceiling (MAX_SINGLE_CELL_TAPS = 3) and TAPS_PER_CELL = 2 are the
-    register budget WITH the per-tap clamp, NOT tuned numbers. Each tap now
-    costs ~5 instructions (1 MAC + 3 clamp + amortised shift) instead of ~2, so
-    the per-cell instruction budget fills far faster than the wrapping version
-    (which got 7 single-cell taps and 5 taps/cell). A single cell holds N coeffs
-    + N delay regs + 1 input + the satneg const + ≈(2N+2)+3N instructions; N=3
-    fits, N=4 overflows the 32-word cell. Likewise a multi-cell segment of L taps
-    fits at L=2 for every cell role (first/mid/last) but a mid cell overflows at
-    L=3 — hence TAPS_PER_CELL = 2.
+    BUDGET (END-only clamp, re-derived against the resolver's own allocator)
+    -----------------------------------------------------------------------
+    Because the clamp is paid ONCE, the per-cell tap density is back to the old
+    wrapping FIR's. A cell holds, at addr 0..31: L coeffs + (optionally) satneg +
+    L delay regs (+ old_save on non-last cells) + the input reg + the program.
+
+      * Single cell (MAX_SINGLE_CELL_TAPS = 6): the whole filter is one cell, so
+        it carries N coeffs + satneg + N delay regs + 1 input + ≈(2N+2) program
+        instructions + the 3-instruction clamp. N=6 fits the 32-word cell; N=7
+        overflows (the 7th delay register has no free gap register). This is one
+        tap below the wrapping FIR's 7 — the single, one-time clamp costs it.
+      * Multi-cell (TAPS_PER_CELL = 5): the densest role is a MID cell — L coeffs
+        + L delay regs + old_save + partial-input + program — which fits at L=5
+        and overflows at L=6. The LAST cell additionally carries the clamp but
+        has NO old_save register, so a FULL last segment (L=5) + clamp still
+        fits. Hence 7+ taps fold to ⌈N/5⌉ cells (a 20-tap FIR = 4 cells).
 
     Supports arbitrary coefficients for any FIR application (channel
     filter, matched filter, anti-alias, interpolation, etc.).
@@ -85,12 +109,22 @@ class FIRFilterBlock(KyttarBlock):
         # Initialize delay line
         self._delay_line = [0.0] * self._num_taps
 
-    # WITH per-tap saturation clamps a cell fills much faster than the old
-    # wrapping FIR. See the class docstring for the budget derivation.
-    TAPS_PER_CELL = 2
-    # Largest tap count that fits one cell's ~31-register budget WITH the per-tap
-    # saturation clamp (see class docstring). 4+ taps overflow → multi-cell.
-    MAX_SINGLE_CELL_TAPS = 3
+    # END-ONLY clamping costs the chain only ONE 3-instruction clamp (on the
+    # last cell / final accumulation), NOT 3 per tap — so the per-cell tap
+    # density is restored to the old wrapping FIR's. Re-derived against the
+    # resolver's own allocator (see class docstring for the budget derivation):
+    # a mid cell at L=5 (5 coeffs + 5 delay regs + old_save + input + program)
+    # is the densest role that fits the 32-word cell; L=6 overflows. The LAST
+    # cell carries the clamp but has NO old_save reg, so a full last segment
+    # (L=5) + clamp still fits.
+    TAPS_PER_CELL = 5
+    # Largest tap count that fits one cell's 32-word budget. The single cell
+    # additionally carries the END-ONLY clamp (the whole filter is one cell), so
+    # its ceiling is one tap below the wrapping FIR's 7: N=6 coeffs + N delay
+    # regs + satneg + input + (~2N + clamp) instructions fits; N=7 overflows
+    # (verified: the 7th delay reg has no gap register). 7+ taps fold to
+    # multi-cell, where the clamp lives only on the last cell.
+    MAX_SINGLE_CELL_TAPS = 6
     # Cells per column in the multi-cell placement FOLD (see default_layout).
     FOLD_HEIGHT = 4
     # Full-scale clamp constant: 0x8000 = -32768. The 3-instruction clamp
@@ -176,11 +210,17 @@ class FIRFilterBlock(KyttarBlock):
         # The priming MULQ needs NO clamp: a single Q15 product (a*b)>>15 is
         # always representable, and MULQ sets V from the RAW 32-bit product (which
         # almost always exceeds i16) — clamping on it would saturate spuriously.
-        # Only the running MACQ/ADD accumulations can truly overflow R0.
         lines.append(f"    MULQ R{{state:d0}}, R{{data:c0}}")
         for i in range(1, self._num_taps):
             lines.append(f"    MACQ R{{state:d{i}}}, R{{data:c{i}}}")
-            lines.extend(self._clamp_lines())                   # saturate each tap
+        # Clamp ONCE, on the FINAL accumulation, just before output (NOT per tap).
+        # The last MACQ leaves V set iff the final sum overflowed the representable
+        # range → saturate to ±full-scale (production-DSP semantics, and what shows
+        # as flat-topped rails on an overdriven filter). Clamping per-tap instead
+        # would (a) cost ~3 instr × every tap, exploding the cell count, and (b)
+        # alter the math / hide real overload by re-normalising intermediate
+        # partial sums that legitimately swing past full-scale and return.
+        lines.extend(self._clamp_lines())
         lines.append("    {write:out}")
         lines.append("    {jump:out}")
 
@@ -196,16 +236,17 @@ class FIRFilterBlock(KyttarBlock):
         )}
 
     def _clamp_lines(self):
-        """The 3-instruction per-step saturating clamp (see class docstring).
+        """The 3-instruction END-ONLY saturating clamp (see class docstring).
 
-        After an accumulation op (MULQ/MACQ/ADD), if the signed sum overflowed
-        the 16-bit accumulator (V set), replace the WRAPPED R0 with the correct
-        full-scale value: ``0x8000 - (R0>>15)`` = +0x7FFF when the wrapped result
-        is negative (true overflow positive) else -0x8000 (true overflow
-        negative). On no overflow the BR.NV skips both clamp instructions, so the
-        common path costs one branch. SUB clobbers the flags, but the next
-        accumulation op (or the terminal WRITE/JUMP, which read no flags) makes
-        that harmless.
+        Emitted ONCE, after the FINAL accumulation op (the last MACQ in the
+        single cell, or the cross-cell ADD on the last multi-cell cell), just
+        before the output WRITE — never per tap. If the signed final sum
+        overflowed the 16-bit accumulator (V set), replace the WRAPPED R0 with
+        the correct full-scale value: ``0x8000 - (R0>>15)`` = +0x7FFF when the
+        wrapped result is negative (true overflow positive) else -0x8000 (true
+        overflow negative). On no overflow the BR.NV skips both clamp
+        instructions, so the common path costs one branch. SUB clobbers the
+        flags, but the terminal WRITE/JUMP read no flags, so that is harmless.
         """
         return [
             "    BR.NV +2",
@@ -288,11 +329,17 @@ class FIRFilterBlock(KyttarBlock):
             lines.append("    MULQ R{state:d0}, R{data:c0}")
             for i in range(1, L):
                 lines.append(f"    MACQ R{{state:d{i}}}, R{{data:c{i}}}")
-                lines.extend(self._clamp_lines())               # saturate each tap
             if not is_first:
                 lines.append("    ADD R0, R{in:partial}")
-                lines.extend(self._clamp_lines())               # saturate cross-cell sum
             if is_last:
+                # Clamp ONCE, on the LAST cell's final accumulation, before the
+                # block output. Intermediate cells forward their (wrapped) partial
+                # sum unclamped — the whole chain is one logical accumulator and
+                # only its final value is saturated (production-DSP semantics, and
+                # what makes an overdriven filter show flat-topped rails). Per-tap
+                # / per-cell clamping would explode the cell count and re-normalise
+                # legitimate mid-sum excursions, hiding real overload.
+                lines.extend(self._clamp_lines())
                 lines.append("    {write:out}")
                 lines.append("    {jump:out}")
             else:
@@ -320,15 +367,30 @@ class FIRFilterBlock(KyttarBlock):
         return v - 0x10000 if v >= 0x8000 else v
 
     @classmethod
-    def _sat_acc(cls, acc: int, addend: int) -> int:
-        """One saturating accumulation step in Q15, bit-exact with the hardware
-        ``ADD/MACQ`` + 3-instruction clamp: wrap to 16 bits, and on signed
-        overflow replace with ``0x8000 - (wrapped>>15)`` = ±full-scale."""
-        true_sum = acc + addend
+    def _wrap_acc(cls, acc: int, addend: int) -> int:
+        """One WRAPPING accumulation step in Q15, bit-exact with the hardware
+        ``ADD/MACQ`` WITHOUT a clamp: the 16-bit ALU simply wraps (modulo 2^16,
+        sign-extended). Intermediate sums are left wrapped — only the FINAL
+        accumulation is clamped (see :meth:`_clamp_final`)."""
+        return cls._to_s16((acc + addend) & 0xFFFF)
+
+    @classmethod
+    def _clamp_final(cls, acc: int, last_addend: int) -> int:
+        """The END-ONLY saturating clamp, bit-exact with the hardware BR.NV /
+        SHR / SUB sequence applied to the FINAL accumulation only.
+
+        ``acc`` is the running sum BEFORE the last addend; ``last_addend`` is the
+        final MACQ tap (single cell) or cross-cell partial (last multi-cell
+        cell). The hardware computes the wrapped final sum and sets V iff that
+        addition overflowed the signed 16-bit range; on V it replaces R0 with
+        ``0x8000 - (wrapped>>15)`` = ±full-scale. The V flag reflects the LAST
+        op only, exactly as the chip does — intermediate wrap is invisible to it.
+        """
+        true_sum = acc + last_addend
         wrapped = cls._to_s16(true_sum & 0xFFFF)
         if -32768 <= true_sum <= 32767:
             return wrapped
-        bit = (wrapped & 0xFFFF) >> 15           # SHR R0,#15 (logical)
+        bit = (wrapped & 0xFFFF) >> 15               # SHR R0,#15 (logical)
         return cls._to_s16((0x8000 - bit) & 0xFFFF)  # SUB satneg, R0
 
     @staticmethod
@@ -337,13 +399,18 @@ class FIRFilterBlock(KyttarBlock):
         return (FIRFilterBlock._to_s16(a_q15) * FIRFilterBlock._to_s16(b_q15)) >> 15
 
     def process_reference_q15(self, input_q15) -> list:
-        """Bit-exact Q15 SATURATING reference, in the SAME accumulation order as
-        the built datapath (single-cell vs multi-cell wavefront).
+        """Bit-exact Q15 END-ONLY-SATURATING reference, in the SAME accumulation
+        order as the built datapath (single-cell vs multi-cell wavefront).
 
-        This — NOT the float ideal — is what a correct saturating fixed-point FIR
-        produces, so it is the golden predictor the overload test compares the DUT
-        against. (For in-range stimulus it equals GNU Radio's float output clipped
-        to the Q15 range, so the existing GR comparison still holds there.)
+        Mirrors the hardware exactly: every intermediate MACQ tap and every
+        cross-cell partial-sum ADD simply WRAPS (16-bit modulo, sign-extended);
+        the single saturating clamp is applied ONLY to the FINAL accumulation
+        (the last MACQ in a single cell, or the cross-cell ADD on the last
+        multi-cell cell). This — NOT the float ideal — is what a correct
+        end-only-saturating fixed-point FIR produces, so it is the golden
+        predictor the overload test compares the DUT against. (For in-range
+        stimulus no accumulation overflows, so it equals GNU Radio's float output
+        clipped to the Q15 range, and the existing GR comparison still holds.)
 
         Returns one signed Q15 int per input sample.
         """
@@ -352,13 +419,22 @@ class FIRFilterBlock(KyttarBlock):
         delay = [0] * N
         out = []
         if N <= self.MAX_SINGLE_CELL_TAPS:
-            # Single cell: acc = clamp(d0*c0); for i>0: acc = clamp(acc + di*ci),
-            # delay order = coefficient order.
+            # Single cell — mirrors build_cell_programs EXACTLY. The delay line is
+            # shifted ``MOVE d{i}, d{i+1}`` then ``MOVE d{N-1}, sample``, so d0
+            # holds the OLDEST sample and d{N-1} the newest; register d{i} is
+            # multiplied by coeff c{i}. Model that with the newest sample at the
+            # END of ``delay`` (delay[i] == d{i}). Then: acc = d0*c0 (priming
+            # MULQ, no clamp); for 0<i<N-1 acc = wrap(acc + di*ci); the LAST tap
+            # is the only clamped op: acc = clamp_final(acc, d{N-1}*c{N-1}).
             for s in input_q15:
-                delay = [self._to_s16(int(s) & 0xFFFF)] + delay[:-1]
-                acc = self._macq(delay[0], coeffs[0])   # priming MULQ, no clamp
-                for i in range(1, N):
-                    acc = self._sat_acc(acc, self._macq(delay[i], coeffs[i]))
+                delay = delay[1:] + [self._to_s16(int(s) & 0xFFFF)]
+                acc = self._macq(delay[0], coeffs[0])     # priming MULQ, no clamp
+                if N == 1:
+                    out.append(acc & 0xFFFF)              # (not reached: N>=2)
+                    continue
+                for i in range(1, N - 1):
+                    acc = self._wrap_acc(acc, self._macq(delay[i], coeffs[i]))
+                acc = self._clamp_final(acc, self._macq(delay[N - 1], coeffs[N - 1]))
                 out.append(acc & 0xFFFF)
             return out
 
@@ -366,10 +442,14 @@ class FIRFilterBlock(KyttarBlock):
         # Each cell holds its OWN segment delay line; per input sample the
         # wavefront runs cell 0 → cell N-1. A cell: saves its oldest sample
         # (old_save = d0), shifts its segment ingesting the INCOMING sample into
-        # d{L-1}, MACs (clamping each tap), ADDs the partial sum from the previous
-        # cell (clamped), forwards the new partial AND its saved oldest sample on
-        # to the next cell. Cell 0's incoming sample is x[n]; every later cell's
-        # incoming sample is the previous cell's shifted-out oldest sample (NOT a
+        # d{L-1}, MACs its taps (all WRAPPING), ADDs the partial sum forwarded
+        # from the previous cell (WRAPPING), and forwards the new partial AND its
+        # saved oldest sample on to the next cell. ONLY the LAST cell's final
+        # accumulation is clamped — every intermediate cell forwards its wrapped
+        # partial sum unclamped (the whole chain is one logical accumulator). The
+        # last cell's final op is its cross-cell ADD, so that is where the clamp
+        # lands. Cell 0's incoming sample is x[n]; every later cell's incoming
+        # sample is the previous cell's shifted-out oldest sample (NOT a
         # global-delay-line index — the inter-cell forwarding IS the delay).
         # Cell m owns coefficients coeff[N-offset_{m+1} : N-offset_m] in forward
         # order — mirrors :meth:`_build_multicell_programs` exactly.
@@ -384,17 +464,24 @@ class FIRFilterBlock(KyttarBlock):
             for m in range(n_cells):
                 start, end = offsets[m], offsets[m + 1]
                 L = end - start
+                is_last = (m == n_cells - 1)
                 seg_coeffs = coeffs[N - end:N - start]   # forward order
                 d = seg[m]
                 old = d[0]                               # MOVE old_save, d0
                 for i in range(L - 1):                   # shift segment
                     d[i] = d[i + 1]
                 d[L - 1] = incoming                      # ingest incoming sample
-                acc = self._macq(d[0], seg_coeffs[0])    # priming MULQ
-                for i in range(1, L):
-                    acc = self._sat_acc(acc, self._macq(d[i], seg_coeffs[i]))
+                acc = self._macq(d[0], seg_coeffs[0])    # priming MULQ, no clamp
+                for i in range(1, L):                    # taps all WRAP
+                    acc = self._wrap_acc(acc, self._macq(d[i], seg_coeffs[i]))
+                # Every multi-cell non-first cell receives a partial; the last
+                # cell (always index >= 1) ends on its cross-cell ADD, the one
+                # clamped op. Intermediate cells just wrap and forward.
                 if partial is not None:
-                    acc = self._sat_acc(acc, partial)    # add cross-cell partial
+                    if is_last:
+                        acc = self._clamp_final(acc, partial)
+                    else:
+                        acc = self._wrap_acc(acc, partial)
                 partial = acc
                 incoming = old                           # forward oldest onward
             out.append(partial & 0xFFFF)

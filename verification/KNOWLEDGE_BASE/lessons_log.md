@@ -8,6 +8,62 @@ anything that generalizes across block classes into `invariants.md`.
 
 ---
 
+## FIRFilterBlock — END-ONLY saturation correction + budget restored 2026-06-24
+
+- **What was wrong:** the first saturation cut (entry below) clamped R0 after
+  EVERY MACQ tap (a 3-instruction clamp per tap). That (1) exploded the cell count
+  — TAPS_PER_CELL collapsed 5→2 and the single-cell ceiling 7→3, so a 20-tap FIR
+  went from ~4 cells to ~10 — and (2) altered the math: clamping intermediate
+  partial sums re-normalises legitimate mid-sum excursions and MASKS real overload
+  (an overdriven filter produced a clean rescaled sinusoid, not flat-topped rails).
+- **The correction (user-confirmed):** clamp the accumulator ONCE, on the FINAL
+  accumulation, just before the output WRITE — the last MACQ in a single cell, or
+  the cross-cell ADD on the LAST multi-cell cell. Every intermediate tap and every
+  cross-cell partial is left WRAPPED; the whole chain is one logical accumulator
+  and only its final value is saturated. The `_clamp_lines` helper (BR.NV +2 /
+  SHR R0,#15 / SUB satneg,R0) and the priming-MULQ-not-clamped rule are unchanged;
+  only the PLACEMENT moved (per-tap → once at the end). Promoted to **INV-13**.
+- **Budget RESTORED (re-derived against the resolver's own allocator, not guessed):**
+  probed real builds across tap counts — `MAX_SINGLE_CELL_TAPS 3→6` (N=6 fits the
+  32-word cell, N=7's 7th delay reg has no free gap register; one below the old
+  wrapping FIR's 7 because the single end-only clamp costs one tap) and
+  `TAPS_PER_CELL 2→5` (a MID cell — the densest role, with old_save — fits at L=5,
+  overflows at L=6; the LAST cell carries the clamp but has NO old_save reg, so a
+  FULL L=5 last segment + clamp still fits). 20-tap FIR is **4 cells** again; 64
+  taps = 13 cells (same footprint as the original wrapping FIR).
+- **Q15 reference fixed to END-ONLY:** `process_reference_q15` now WRAPS every
+  intermediate (`_wrap_acc`) and applies the single saturating clamp
+  (`_clamp_final`) only to the final op — bit-exact with the datapath (DUT==ref
+  EXACT, 0 LSB, single-cell + multi-cell, 2..64 taps). The old `_sat_acc`
+  per-step clamp was removed.
+- **Latent single-cell delay-orientation bug found & fixed:** the single-cell
+  builder shifts so `d0`=OLDEST (`MOVE d{i},d{i+1}` then `MOVE d{N-1},sample`) and
+  multiplies `d{i}*c{i}`. The old reference shifted newest-first (`[s]+delay[:-1]`)
+  with `c0` on the newest — REVERSED. It was never caught because single-cell was
+  capped at 3 symmetric taps AND the single-cell path was only ever gated DUT-vs-GR
+  (free Q15 rounding tolerance), never DUT-vs-reference EXACT. With the ceiling now
+  6, an asymmetric 4/5/6-tap single-cell EXACT compare exposed it; fixed to shift
+  `delay = delay[1:] + [newest]` (delay[i]==d{i}). (INV-12 sharpened: a wider
+  single-cell range exercised a path the narrow one never did.)
+- **Overload test now genuinely shows rails (the bug was it DIDN'T):** because of
+  the END-only corner case (intermediate wrap can bring the final op back in
+  range), the old transient/alternating overload stimulus did NOT pin at the rails
+  — the saturating reference matched a plain wrapping output and the mutation was
+  vacuous. New stimulus drives the FINAL op into overflow (2-tap [0.9,0.9] steady
+  0x7FFF/0x8001 → single MACQ is the clamped op; 7-tap / 13-tap steady large
+  input → last cell's ADD overflows): DUT pins ≥half its outputs at ±FS and
+  matches the reference EXACTLY. The wrap-mutation uses the same 2-tap overload so
+  wrap (no final clamp) ≠ end-only-clamp, and asserts the gate REJECTS it (with a
+  vacuity guard that the reference actually saturates). Deep-cell mutation now
+  perturbs a tap owned by the LAST cell (segments are assigned from the END of the
+  tap array → last cell owns the FIRST indices).
+- **Routing wall moved (restored footprint):** with K=5 the wall is back near the
+  original ~200 taps / 40 cells (placement-noisy in the 41..63-cell band); 64 cells
+  (320 taps) fails reliably with "no free corridor". `ROUTING_WALL_TAPS 96→320`.
+- **Result:** 26/26 FIR tests pass; full verification suite 39/39.
+
+---
+
 ## FIRFilterBlock — SATURATION fix (Q15 overload) 2026-06-24
 
 - **The bug:** the multi-cell FIR let the Q15 accumulator WRAP on signed overflow

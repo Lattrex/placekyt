@@ -12,7 +12,7 @@
   "coverage": {
     "edge": true,
     "random": 3,
-    "param_sweep": 9,
+    "param_sweep": 12,
     "mutation": true,
     "overload": true,
     "max_verified_taps": 64

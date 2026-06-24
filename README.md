@@ -90,6 +90,7 @@ To build a design headlessly and check it against a golden output:
 - **[INSTALL.md](INSTALL.md)** — install from source (now) and the packaged-installer roadmap (Windows `.exe`/`.msi`, Linux `.AppImage`/`.deb`/`.rpm`, macOS `.app`).
 - **[PROGRAMMING_GUIDE.md](PROGRAMMING_GUIDE.md)** — the Kyttar programming model: the instruction set, memory map, configuration registers, Q15 fixed-point, and how DSP blocks are written and placed. This is what you need to read a simulation.
 - **[BLOCK_AUTHORING_GUIDE.md](BLOCK_AUTHORING_GUIDE.md)** — a step-by-step guide to writing your **own** DSP block (single-cell, multi-cell, feedback) and exposing it in GNU Radio Companion. Start here once you want to go beyond the bundled blocks.
+- **[AGENTS.md](AGENTS.md)** — the front door for an **automated agent**: the default mission (build and verify the next block in `verification/manifest.json`), the per-block loop, and the definition of done. Tool-neutral.
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** — how to contribute, run the tests, and a note on the simKYT simulator and Lattrex branding.
 - **[gr-kyttar/examples/README.md](gr-kyttar/examples/README.md)** — the bundled GNU Radio demos.
 

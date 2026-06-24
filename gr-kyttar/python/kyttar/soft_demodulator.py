@@ -35,6 +35,10 @@ class soft_demodulator(_PassThrough):
         self._device_id = device_id
         self._noise_variance = noise_variance
         self._llr_scale = llr_scale
+        # Advertise params for GRC↔placeKYT sync detection (see dsp_markers).
+        self._advertise_grc_params(
+            device_id, "SoftDemodulatorBlock",
+            {"noise_variance": noise_variance, "llr_scale": llr_scale})
 
     @property
     def noise_variance(self) -> float:

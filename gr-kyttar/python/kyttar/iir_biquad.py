@@ -47,6 +47,10 @@ class iir_biquad(_PassThrough):
 
         self._b_coeffs = list(b_coeffs)
         self._a_coeffs = list(a_coeffs)
+        # Advertise params for GRC↔placeKYT sync detection (see dsp_markers).
+        self._advertise_grc_params(
+            device_id, "IIRBiquadBlock",
+            {"b_coeffs": self._b_coeffs, "a_coeffs": self._a_coeffs})
 
     def set_coefficients(self, b_coeffs: List[float], a_coeffs: List[float]):
         """Set filter coefficients."""

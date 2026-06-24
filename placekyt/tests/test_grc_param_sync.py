@@ -165,6 +165,121 @@ def test_process_batch_without_grc_params_is_backward_compatible():
 
 
 # ----------------------------------------------------------------------------
+# SENDING / advertising link (gr-kyttar _batch_session)
+# ----------------------------------------------------------------------------
+#
+# The receiving side (above) is proven. These tests cover the missing SEND link:
+# the GRC marker DSP blocks advertise their params into the shared per-device
+# BatchSession (``register_params``), and the source's batch dispatch ships them
+# to the SimServer (``grc_params`` header) → ``on_grc_params`` → a real diff.
+#
+# ``_batch_session`` lives in gr-kyttar and imports with only socket+numpy (no
+# GNURadio, no placeKYT), so we load it by path and drive the wire directly —
+# exactly what the source block does at dispatch, minus GNURadio.
+
+import importlib.util  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+_BS_PATH = (Path(__file__).resolve().parents[2]
+            / "gr-kyttar" / "python" / "kyttar" / "_batch_session.py")
+
+
+def _load_batch_session():
+    spec = importlib.util.spec_from_file_location("kyttar_batch_session", _BS_PATH)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_register_params_keys_match_importer_naming():
+    """A marker advertises by TYPE; the session reconstructs the placeKYT block
+    NAME the importer would assign — first instance = _default_name, repeats get
+    the ``_2`` suffix — so the keys line up with the diff."""
+    bs = _load_batch_session()
+    sess = bs.BatchSession("kyttar_0")
+    assert sess.register_params("GainBlock", {"gain": 0.9}) == "gain"
+    assert sess.register_params("FIRFilterBlock", {"coefficients": [1.0] * 40}) \
+        == "firfilter"
+    # A second instance of the same type gets the importer's _unique suffix.
+    assert sess.register_params("GainBlock", {"gain": 0.3}) == "gain_2"
+    collected = sess.collected_params()
+    assert collected == {"gain": {"gain": 0.9},
+                         "firfilter": {"coefficients": [1.0] * 40},
+                         "gain_2": {"gain": 0.3}}
+
+
+def test_dispatch_sends_grc_params_and_server_diffs():
+    """FULL send path: advertise → dispatch ships ``grc_params`` → SimServer
+    ``on_grc_params`` fires → the grc_sync diff against a placed design is
+    non-empty (the indicator's data)."""
+    bs = _load_batch_session()
+    sess = bs.BatchSession("kyttar_0")
+    # GRC says gain=0.9 — a drift from a placed 0.5 (built below).
+    sess.register_params("GainBlock", {"gain": 0.9})
+
+    seen = []
+    srv = SimServer(_NullChip(), on_grc_params=lambda p: seen.append(p))
+    port = srv.start()
+    try:
+        # A real REAL-burst dispatch (complex=False) over the live socket — the
+        # source's exact call shape, sans GNURadio. The _NullChip returns no
+        # output, which dispatch tolerates.
+        sess.dispatch("127.0.0.1", port, [0.1, 0.2, 0.3],
+                      in_port="x16_in", out_port="x16_out",
+                      complex=False, raw=False)
+    finally:
+        srv.stop()
+
+    # The server received the advertised params alongside the batch.
+    assert seen == [{"gain": {"gain": 0.9}}]
+
+    # And those params, fed to the same diff the GUI uses, flag the drift. The
+    # placed block is named "gain" — exactly what grc_import's _default_name
+    # assigns the first GainBlock — which is the key the marker reconstructs.
+    catalog = BlockCatalog.from_gr_kyttar()
+    spec = catalog.get("GainBlock")
+    proj = Project(chip_type="kyttar_10x12")
+    blk = Block("gain", "GainBlock", library=spec.library,
+                params={"gain": 0.5, "gain_range": 15})
+    blk.placement = Placement(chip=0, cells=[PlacedCell(0, 0, 0, Face.EAST)])
+    proj.blocks.append(blk)
+    diff = compute_param_diff(proj, catalog, seen[0])
+    assert "gain" in diff
+    cur, grc = diff["gain"].changes["gain"]
+    assert cur == 0.5 and grc == 0.9
+
+
+def test_dispatch_without_advertised_params_omits_header():
+    """No advertised params ⇒ no ``grc_params`` header ⇒ callback never fires
+    (backward compatible with a host/run that has nothing to sync)."""
+    bs = _load_batch_session()
+    sess = bs.BatchSession("kyttar_0")  # nothing registered
+    seen = []
+    srv = SimServer(_NullChip(), on_grc_params=lambda p: seen.append(p))
+    port = srv.start()
+    try:
+        sess.dispatch("127.0.0.1", port, [0.1, 0.2],
+                      in_port="x16_in", out_port="x16_out",
+                      complex=False, raw=False)
+    finally:
+        srv.stop()
+    assert seen == []
+
+
+def test_register_params_resets_on_new_run():
+    """Across runs (a prior dispatch flipped ``done``) the first re-registration
+    starts a fresh advertisement map, so per-type counters don't grow unbounded
+    in a long-lived GR process."""
+    bs = _load_batch_session()
+    sess = bs.BatchSession("kyttar_0")
+    sess.register_params("GainBlock", {"gain": 0.9})
+    sess.done = True  # simulate a completed dispatch (end of run 1)
+    # Run 2: the first registration clears the stale map and re-keys from scratch.
+    assert sess.register_params("GainBlock", {"gain": 0.4}) == "gain"
+    assert sess.collected_params() == {"gain": {"gain": 0.4}}
+
+
+# ----------------------------------------------------------------------------
 # Controller + the 3 preference modes + undoable resync
 # ----------------------------------------------------------------------------
 

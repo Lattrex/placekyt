@@ -32,6 +32,8 @@ class dc_blocker(_PassThrough):
         super().__init__(name="Kyttar DC Blocker", n_in=1, n_out=1)
         self._device_id = device_id
         self._alpha = alpha
+        # Advertise params for GRC↔placeKYT sync detection (see dsp_markers).
+        self._advertise_grc_params(device_id, "DCBlockerBlock", {"alpha": alpha})
 
     def set_alpha(self, alpha: float):
         """Set alpha value."""

@@ -43,6 +43,11 @@ class squelch(_PassThrough):
         self._hysteresis = hysteresis
         self._attack_alpha = attack_alpha
         self._release_alpha = release_alpha
+        # Advertise params for GRC↔placeKYT sync detection (see dsp_markers).
+        self._advertise_grc_params(
+            device_id, "SquelchBlock",
+            {"threshold": threshold, "hysteresis": hysteresis,
+             "attack_alpha": attack_alpha, "release_alpha": release_alpha})
 
     def set_threshold(self, threshold: float):
         """Set squelch threshold."""

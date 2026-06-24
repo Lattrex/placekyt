@@ -44,6 +44,12 @@ class lfsr_scrambler(_PassThrough):
         self._device_id = device_id
         self._initial_state = initial_state
         self._mode = mode
+        # Advertise params for GRC↔placeKYT sync detection (see dsp_markers).
+        # placeKYT models scramble/descramble as a bool `is_descrambler`.
+        self._advertise_grc_params(
+            device_id, "LFSRScramblerBlock",
+            {"initial_state": initial_state,
+             "is_descrambler": (mode == "descramble")})
 
     @property
     def initial_state(self) -> int:

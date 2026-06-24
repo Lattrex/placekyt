@@ -41,6 +41,9 @@ class fir_filter(_PassThrough):
 
         self._coefficients = list(coefficients)
         self._num_taps = len(self._coefficients)
+        # Advertise params for GRC↔placeKYT sync detection (see dsp_markers).
+        self._advertise_grc_params(
+            device_id, "FIRFilterBlock", {"coefficients": self._coefficients})
 
     def set_coefficients(self, coefficients: List[float]):
         """Set filter coefficients."""

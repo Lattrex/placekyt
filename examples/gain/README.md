@@ -48,5 +48,26 @@ Because it's a single block, this is the ideal design to learn the placeKYT UI o
   (*Notify only* — default; *Auto place & route* — resync automatically;
   *Re-anchor only* — resize in place and surface any DRC violations).
 
+> **How the sync detection is wired (end to end).** Each Kyttar GRC DSP block
+> (`gain`, `fir_filter`, `dc_blocker`, `decimator`, `iir_biquad`,
+> `lfsr_scrambler`, the complex-RX markers, …) advertises its current params into
+> a process-global per-device `BatchSession` (`gr-kyttar/.../_batch_session.py`,
+> `register_params`) at flowgraph `start()`. It keys each block by the placeKYT
+> block NAME the importer would assign — the type's default name (`GainBlock` →
+> `gain`), with the importer's `_2`/`_3` suffix for repeats. On dispatch, the
+> source ships that `{block name: params}` map as the additive `grc_params` field
+> on its single `process_batch` RPC; placeKYT's SimServer routes it to
+> `on_grc_params`, which re-diffs against the placed design and drives the
+> out-of-sync indicator. This SEND side completes the link whose receiving half
+> (detection, the wire ops, the three preference modes) shipped earlier.
+>
+> *Deferred:* placeKYT→GRC write-back (editing the `.grc` from placeKYT) is NOT
+> implemented — placeKYT detects and indicates the mismatch so you update GRC.
+> *Limitation:* the name reconstruction assumes the placed design was imported
+> from this flowgraph (importer naming) with matching per-type instance order; a
+> manually-renamed or reordered block simply won't match (no false sync, no
+> crash) — robust per-instance keying needs the GRC instance id, which a
+> `gr.sync_block` does not expose to its own Python instance.
+
 Once this makes sense, the [coherent BPSK receiver](../coherent_bpsk_rx/) shows the
 same workflow on a real multi-block receiver.

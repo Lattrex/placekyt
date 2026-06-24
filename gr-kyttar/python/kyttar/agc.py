@@ -38,6 +38,13 @@ class agc(_PassThrough):
         self._target = target
         self._rate = rate
         self._initial_gain = initial_gain
+        # Advertise params for GRC↔placeKYT sync detection (see dsp_markers).
+        # Only the params with a 1:1 placeKYT counterpart are advertised; the GRC
+        # single `rate` has no single placeKYT field (it splits attack/decay), so
+        # it is omitted rather than guessed.
+        self._advertise_grc_params(
+            device_id, "AGCBlock",
+            {"target": target, "initial_gain": initial_gain})
 
     def set_target(self, target: float):
         """Set target level."""

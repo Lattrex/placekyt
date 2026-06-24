@@ -41,6 +41,11 @@ class costas_loop(_PassThrough):
         self._loop_bw = loop_bw
         self._damping = damping
         self._lpf_alpha = lpf_alpha
+        # Advertise params for GRC↔placeKYT sync detection (see dsp_markers).
+        # `kyttar_costas_loop` maps to ComplexCostasLoopBlock (loop_bw, damping).
+        self._advertise_grc_params(
+            device_id, "ComplexCostasLoopBlock",
+            {"loop_bw": loop_bw, "damping": damping})
 
     @property
     def freq_word(self) -> int:

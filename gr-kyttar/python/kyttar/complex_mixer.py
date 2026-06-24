@@ -37,6 +37,10 @@ class complex_mixer(_PassThrough):
         self._device_id = device_id
         self._freq_word = freq_word
         self._sample_rate = sample_rate
+        # Advertise params for GRC↔placeKYT sync detection (see dsp_markers).
+        self._advertise_grc_params(
+            device_id, "ComplexMixerBlock",
+            {"freq_word": freq_word, "sample_rate": sample_rate})
 
     def set_freq_word(self, freq_word: int):
         self._freq_word = freq_word

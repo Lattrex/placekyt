@@ -34,6 +34,32 @@ class _PassThrough(gr.sync_block):
                                in_sig=[np.float32] * n_in,
                                out_sig=[np.float32] * n_out)
 
+    def _advertise_grc_params(self, device_id, placekyt_type, params):
+        """Record this marker's params for GRC↔placeKYT sync advertising.
+
+        Markers call this in ``__init__`` to declare their placeKYT TYPE (e.g.
+        ``"GainBlock"``) and current params. The ACTUAL registration into the
+        shared per-device BatchSession happens in :meth:`start` (every flowgraph
+        run), so the params reach the session fresh each run alongside the source's
+        batch dispatch — which sends them to placeKYT for drift detection. Minimal
+        and never crashy: a marker that can't determine its type simply records
+        nothing; advertising is best-effort telemetry, not on the data path."""
+        self._grc_advert = (str(device_id), str(placekyt_type), dict(params or {}))
+
+    def start(self) -> bool:
+        # Register the recorded advertisement into the per-device BatchSession
+        # each run, so the source's batch dispatch ships current params to placeKYT
+        # (GRC↔placeKYT sync indicator). Best-effort: never break the flowgraph.
+        advert = getattr(self, "_grc_advert", None)
+        if advert is not None:
+            try:
+                from ._batch_session import get_session
+                device_id, placekyt_type, params = advert
+                get_session(device_id).register_params(placekyt_type, params)
+            except Exception:  # noqa: BLE001 — advertising is best-effort
+                pass
+        return True
+
     def work(self, input_items, output_items):
         n = len(input_items[0])
         for o in output_items:
@@ -54,6 +80,9 @@ class complex_rrc_matched_filter(_PassThrough):
         self.device_id = device_id
         self.alpha = alpha
         self.span = span
+        # placeKYT uses `beta` for the roll-off (GRC marker calls it `alpha`).
+        self._advertise_grc_params(device_id, "ComplexRRCMatchedFilterBlock",
+                                   {"beta": alpha, "span": span})
 
 
 class complex_costas_loop(_PassThrough):
@@ -67,6 +96,8 @@ class complex_costas_loop(_PassThrough):
         self.device_id = device_id
         self.loop_bw = loop_bw
         self.damping = damping
+        self._advertise_grc_params(device_id, "ComplexCostasLoopBlock",
+                                   {"loop_bw": loop_bw, "damping": damping})
 
 
 class gardner_timing_recovery(_PassThrough):
@@ -77,6 +108,8 @@ class gardner_timing_recovery(_PassThrough):
         self.device_id = device_id
         self.kp = kp
         self.ki = ki
+        self._advertise_grc_params(device_id, "GardnerTimingRecovery",
+                                   {"kp": kp, "ki": ki})
 
 
 class bpsk_slicer(_PassThrough):

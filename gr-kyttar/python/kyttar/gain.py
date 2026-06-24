@@ -28,6 +28,8 @@ class gain(_PassThrough):
         super().__init__(name="Kyttar Gain", n_in=1, n_out=1)
         self._device_id = device_id
         self._gain = gain
+        # Advertise params for GRC↔placeKYT sync detection (see dsp_markers).
+        self._advertise_grc_params(device_id, "GainBlock", {"gain": gain})
 
     def set_gain(self, gain: float):
         """Set gain value."""

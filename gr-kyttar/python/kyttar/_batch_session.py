@@ -32,6 +32,16 @@ _LOCK = threading.Lock()
 _SESSIONS = {}   # device_id -> BatchSession
 
 
+def _default_block_name(placekyt_type):
+    """Mirror placeKYT ``ui.controller._default_name`` / ``grc_import`` naming:
+    a block TYPE → the default instance NAME (``GainBlock`` → ``"gain"``). Kept in
+    sync by hand because this module imports with only socket + numpy (no placeKYT
+    on the GR side). Must stay identical to the importer's ``_default_name``."""
+    t = str(placekyt_type or "")
+    base = t[:-5] if t.endswith("Block") else t
+    return base.lower() or "block"
+
+
 def get_session(device_id):
     with _LOCK:
         s = _SESSIONS.get(device_id)
@@ -88,12 +98,60 @@ class BatchSession:
         self._cv = threading.Condition()
         self._result = None
         self.done = False
+        # GRC-sync: per-flowgraph block params advertised by the marker DSP blocks
+        # in this same GR process (keyed by the placeKYT block NAME the importer
+        # would assign — see ``register_params``). Sent alongside the batch so the
+        # placeKYT host can flag a parameter drift from the placed design.
+        self._params_lock = threading.Lock()
+        self.grc_params = {}              # placeKYT block name -> params dict
+        self._type_counts = {}            # placeKYT type -> instances advertised
 
     def reset(self):
         with self._cv:
             self._result = None
             self.done = False
             self._cv.notify_all()
+
+    def register_params(self, placekyt_type, params):
+        """Advertise one DSP marker block's params for GRC↔placeKYT sync.
+
+        The marker knows its placeKYT TYPE (e.g. ``"GainBlock"``) and its current
+        params; it does NOT know the placeKYT block NAME the importer assigned. We
+        reconstruct that name with the SAME scheme ``engine/grc_import`` uses: the
+        first instance of a type gets ``_default_name(type)`` (``GainBlock`` →
+        ``"gain"``), and further instances get ``<base>_2``, ``<base>_3``, … (the
+        importer's ``_unique`` suffix). Markers register in GR construction order,
+        which mirrors the .grc block order the importer walks, so the names line up
+        for the common single-instance-per-type demo. Returns the assigned name.
+
+        NOTE/LIMITATION: this name reconstruction is correct when the placed design
+        was IMPORTED from this flowgraph (so names follow the importer scheme) and
+        the per-type instance ORDER matches. A user who manually RENAMED a block in
+        placeKYT, or hand-built/reordered the design, can desync the keying for
+        that block; the diff then simply won't match that block (no false sync, no
+        crash). Robust per-instance keying needs the GRC instance id, which a
+        ``gr.sync_block`` does not expose to its own Python instance."""
+        base = _default_block_name(placekyt_type)
+        with self._params_lock:
+            # New-run boundary: the previous burst already dispatched (``done``),
+            # so the first registration of the NEW run starts a fresh advertisement
+            # map. This keeps the per-type counter from growing unboundedly across
+            # repeated flowgraph runs in one long-lived GR process (markers
+            # re-register every run via ``start``).
+            if self.done:
+                self.grc_params.clear()
+                self._type_counts.clear()
+                self.done = False
+            n = self._type_counts.get(base, 0)
+            self._type_counts[base] = n + 1
+            name = base if n == 0 else f"{base}_{n + 1}"
+            self.grc_params[name] = dict(params or {})
+        return name
+
+    def collected_params(self):
+        """A snapshot of the advertised {block name: params} for dispatch."""
+        with self._params_lock:
+            return {k: dict(v) for k, v in self.grc_params.items()}
 
     def dispatch(self, host, port, iq, in_port="x16_in", out_port="x16_out",
                  data_addrs=(0, 1), raw=True, complex=True):
@@ -118,12 +176,19 @@ class BatchSession:
         else:
             # Real burst: one operand per sample, no phantom imaginary part.
             payload = np.real(arr).astype(np.float32)
+        header = {"op": "process_batch", "port": out_port,
+                  "in_port": in_port, "complex": bool(complex),
+                  "data_addrs": list(data_addrs), "raw": bool(raw)}
+        # GRC-sync: advertise the flowgraph's per-block params alongside the burst
+        # (additive header field). The placeKYT SimServer routes a present
+        # ``grc_params`` to ``on_grc_params`` → the out-of-sync indicator. Absent
+        # ⇒ no callback (an older host ignores the field — backward compatible).
+        collected = self.collected_params()
+        if collected:
+            header["grc_params"] = collected
         conn = socket.create_connection((host, int(port)))
         try:
-            _send_message(conn, {"op": "process_batch", "port": out_port,
-                                 "in_port": in_port, "complex": bool(complex),
-                                 "data_addrs": list(data_addrs), "raw": bool(raw)},
-                          payload)
+            _send_message(conn, header, payload)
             reply, out = _recv_message(conn)
         finally:
             conn.close()

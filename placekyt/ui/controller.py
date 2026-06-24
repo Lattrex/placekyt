@@ -1101,8 +1101,16 @@ class AppController(QObject):
                 self._reanchor_blocks(block_names)
                 report = None
             else:
-                # A resize can shift neighbours → re-place + re-route (register=
-                # False: this command owns undo).
+                # A resize CHANGES the block's cell COUNT — its placement cells
+                # must be REBUILT from the new params, else the old footprint
+                # lingers (a 40→8-tap FIR kept 8 cells instead of 2, leaving
+                # stale cells + a stray fly line). Rebuild each RESIZED block's
+                # cells from its default layout (same as a fresh import), THEN
+                # re-place + re-route the whole chip (register=False: this
+                # command owns undo).
+                resized = [n for n, d in affected.items()
+                           if getattr(d, "resizes", False)]
+                self._rebuild_block_cells(resized)
                 self.auto_place(0, register=False)
                 report = self.auto_route_all(
                     chip_types=chip_types, register=False)
@@ -1123,6 +1131,26 @@ class AppController(QObject):
         anchor (the min-corner of its present cells), so a param-driven resize is
         applied IN PLACE without moving the block. Routes are left as-is — the
         caller surfaces any resulting DRC violations (re-anchor mode)."""
+        from model.placement import Placement
+
+        for name in block_names:
+            blk = self.project.block(name)
+            if blk is None or blk.placement is None or not blk.placement.cells:
+                continue
+            pl = blk.placement
+            bb = pl.bounding_box()
+            ax, ay = (bb[0], bb[1]) if bb else (pl.cells[0].x, pl.cells[0].y)
+            cells, transit = self.default_cells(
+                blk.type, blk.library, pl.chip, ax, ay, params=blk.params)
+            self.project._set_block_placement(
+                name, Placement(chip=pl.chip, cells=cells, transit_cells=transit))
+
+    def _rebuild_block_cells(self, block_names: list) -> None:
+        """Regenerate each block's placement CELLS from its (new) params — used
+        after a resync RESIZE so the block's cell COUNT matches its new size,
+        instead of keeping the old footprint's cells. The block is rebuilt at its
+        current anchor; auto_place repositions it afterward. Without this a
+        40→8-tap FIR kept 8 cells (the old size) and stranded a fly line."""
         from model.placement import Placement
 
         for name in block_names:

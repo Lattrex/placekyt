@@ -136,6 +136,44 @@ class AutoRouter:
         self._chip_types = chip_types
         self._ports = port_cell_provider
         self._port_maps = port_map_provider
+        self._takes_params: dict = {}
+
+    # -- provider adapter -----------------------------------------------------
+
+    def _provider(self, fn, blk):
+        """Call a ``(block_type, library[, params])`` port provider for a placed
+        block, passing the block's PARAMS when the provider accepts a third
+        argument. A multi-cell block whose footprint/output cell scales with its
+        params (e.g. an N-tap FIR) is mis-resolved if the PortMap is built from
+        the bare type (INV-6/egress): the default construction is single-cell, so
+        the output port lands on cell 0 instead of the real last cell. Back-compat:
+        older providers take only ``(block_type, library)`` — call them as before.
+        """
+        if fn is None:
+            return None
+        takes = self._takes_params.get(fn)
+        if takes is None:
+            takes = self._accepts_three(fn)
+            self._takes_params[fn] = takes
+        if takes:
+            return fn(blk.type, blk.library, getattr(blk, "params", None))
+        return fn(blk.type, blk.library)
+
+    @staticmethod
+    def _accepts_three(fn) -> bool:
+        """True if ``fn`` can be called with three positional args."""
+        import inspect
+        try:
+            params = inspect.signature(fn).parameters.values()
+        except (ValueError, TypeError):
+            return False
+        positional = 0
+        for p in params:
+            if p.kind is p.VAR_POSITIONAL:
+                return True
+            if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD):
+                positional += 1
+        return positional >= 3
 
     # -- public ---------------------------------------------------------------
 
@@ -183,7 +221,7 @@ class AutoRouter:
             if self._input_on_chip_port(block_name):
                 continue
             try:
-                pm = self._port_maps(blk.type, blk.library)
+                pm = self._provider(self._port_maps, blk)
             except Exception:  # noqa: BLE001
                 continue
             desired = counter.most_common(1)[0][0]
@@ -294,7 +332,7 @@ class AutoRouter:
             if blk is None or blk.placement is None or not blk.placement.cells:
                 return None
             try:
-                pmap = self._ports(blk.type, blk.library) or {}
+                pmap = self._provider(self._ports, blk) or {}
             except Exception:  # noqa: BLE001
                 pmap = {}
             entry = pmap.get(ep.port)
@@ -370,7 +408,7 @@ class AutoRouter:
         """(x, y) of a block's OUTPUT cell (PortMap output port → placed cell;
         falls back to the last placed cell)."""
         try:
-            pmap = self._ports(blk.type, blk.library) or {}
+            pmap = self._provider(self._ports, blk) or {}
         except Exception:  # noqa: BLE001
             pmap = {}
         for _name, (cell_id, direction) in pmap.items():
@@ -390,7 +428,7 @@ class AutoRouter:
         if blk is None or blk.placement is None or not blk.placement.cells:
             return False
         try:
-            pmap = self._ports(blk.type, blk.library) or {}
+            pmap = self._provider(self._ports, blk) or {}
         except Exception:  # noqa: BLE001
             pmap = {}
         in_cells = {
@@ -422,7 +460,7 @@ class AutoRouter:
             if blk is None or blk.placement is None or not blk.placement.cells:
                 return None
             try:
-                pmap = self._ports(blk.type, blk.library) or {}
+                pmap = self._provider(self._ports, blk) or {}
             except Exception:  # noqa: BLE001
                 pmap = {}
             entry = pmap.get(ep.port)

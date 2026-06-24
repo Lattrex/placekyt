@@ -405,8 +405,8 @@ class AppController(QObject):
             pm = self.catalog.port_map(block_type, library=library)
             return pm.footprint
 
-        def port_maps(block_type, library):
-            return self.catalog.port_map(block_type, library=library)
+        def port_maps(block_type, library, params=None):
+            return self.catalog.port_map(block_type, params=params, library=library)
 
         # The array bounds the serpentine wraps within.
         w, h = self._chip_dims(chip)
@@ -727,12 +727,12 @@ class AppController(QObject):
         if chip_types is None:
             chip_types = self.chip_types()
 
-        def port_cells(block_type, library):
-            pm = self.catalog.port_map(block_type, library=library)
+        def port_cells(block_type, library, params=None):
+            pm = self.catalog.port_map(block_type, params=params, library=library)
             return {p.name: (p.cell_id, p.direction) for p in pm.ports}
 
-        def port_maps(block_type, library):
-            return self.catalog.port_map(block_type, library=library)
+        def port_maps(block_type, library, params=None):
+            return self.catalog.port_map(block_type, params=params, library=library)
 
         router = AutoRouter(self.project, chip_types, port_cells,
                             port_map_provider=port_maps)
@@ -776,12 +776,12 @@ class AppController(QObject):
         if chip_types is None:
             chip_types = self.chip_types()
 
-        def port_cells(block_type, library):
-            pm = self.catalog.port_map(block_type, library=library)
+        def port_cells(block_type, library, params=None):
+            pm = self.catalog.port_map(block_type, params=params, library=library)
             return {p.name: (p.cell_id, p.direction) for p in pm.ports}
 
-        def port_maps(block_type, library):
-            return self.catalog.port_map(block_type, library=library)
+        def port_maps(block_type, library, params=None):
+            return self.catalog.port_map(block_type, params=params, library=library)
 
         router = AutoRouter(self.project, chip_types, port_cells,
                             port_map_provider=port_maps)
@@ -882,8 +882,8 @@ class AppController(QObject):
         def footprint(block_type, library):
             return self.catalog.port_map(block_type, library=library).footprint
 
-        def port_maps(block_type, library):
-            return self.catalog.port_map(block_type, library=library)
+        def port_maps(block_type, library, params=None):
+            return self.catalog.port_map(block_type, params=params, library=library)
 
         w, h = self._chip_dims(chip)
         anchor = self._input_port_anchor(chip)

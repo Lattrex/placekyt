@@ -3,13 +3,13 @@
 
 # Kyttar block library — status
 
-**1 verified · 1 in progress · 20 targeted.** Each Kyttar block is verified as a drop-in equivalent of its GNU Radio Companion counterpart (same parameters, output matching within Q15 quantization). “Quality” is the measured error of the verified block versus the GNU Radio reference.
+**2 verified · 0 in progress · 20 targeted.** Each Kyttar block is verified as a drop-in equivalent of its GNU Radio Companion counterpart (same parameters, output matching within Q15 quantization). “Quality” is the measured error of the verified block versus the GNU Radio reference.
 
 | Kyttar block | GNU Radio equivalent | Tier | Status | Quality (err/tol) | Coverage |
 |--------------|----------------------|------|--------|-------------------|----------|
 | **GainBlock** | `blocks.multiply_const_ff` | 1 · feed-forward | ✅ done | 1/2 LSB, -90 dB | edge rand×3 sweep×4 mut |
+| **FIRFilterBlock** | `filter.fir_filter_fff` | 1 · feed-forward | ✅ done | 40/65 LSB, -40 dB | edge rand×3 sweep×12 mut |
 | **DCBlockerBlock** | `filter.dc_blocker_ff` | 1 · feed-forward | ⬜ planned | — | — |
-| **FIRFilterBlock** | `filter.fir_filter_fff` | 1 · feed-forward | 🟡 in progress | — | — |
 | **IIRBiquadBlock** | `filter.iir_filter_fff` | 1 · feed-forward | ⬜ planned | — | — |
 | **DecimatorBlock** | `filter.fir_filter_fff (decim)` | 1 · feed-forward | ⬜ planned | — | — |
 | **ComplexMixerBlock** | `blocks.multiply_cc + analog.sig_source` | 1 · feed-forward | ⬜ planned | — | — |

@@ -135,9 +135,68 @@ too optimistic). Above the single-cell ceiling the block becomes a multi-cell
 derives its hop/drive from `placement.cells[0]` (the input landing cell) does
 not yet handle.
 
-**Fix / status:** verify scaling blocks across their *proven* parameter range and
-record the ceiling as an explicit known limit (executable guard tests that flip
-when fixed) rather than claiming the block is fully done. Multi-cell egress
-(driving the last cell, not the first) is a harness capability still to be built.
+**Fix / status:** the single-cell budget is real — derive the per-block ceiling
+(FIR: 7 taps = N coeff + N delay + 1 input + ~2N+2 instr ≤ 32 words) and FOLD
+above it to a multi-cell wavefront, never let the single-cell build overflow.
+Multi-cell EGRESS (output leaving the LAST cell) is now solved — see **INV-8**.
+With both in place FIR scales to ~360 taps; the remaining ceiling is chip
+ROUTING CAPACITY (a serpentine that large leaves no I/O corridor), recorded as an
+executable guard test that flips if the array grows.
 
 **Applies to:** FIR, decimator, IIR, and any block that grows past one cell.
+
+---
+
+## INV-8 — Resolve a block's PortMap (routing geometry) WITH its params
+
+**Symptom:** a multi-cell, parameter-scaling block builds and routes with no
+error but produces **no output** — the output egress goes nowhere. (For FIR this
+read as the "multi-cell egress" limit: 13+ taps build but emit nothing.)
+
+**Root cause:** the auto-router/auto-placer resolve a block's `PortMap` (its
+input/output cell offsets) from the **bare type name**, NOT the placed instance's
+params. A block whose footprint scales with params (FIR: cells = ⌈taps/5⌉) then
+has its OUTPUT port located on the *default* construction's cell — a 1-tap FIR is
+single-cell, so the output port is cell 0. The block→`x16_out` net is therefore
+sourced from the FIRST cell, while the wavefront's result actually leaves the
+LAST cell. The output WRITE (hop computed for the cell-0 route) fires from a cell
+that isn't on that route → the word never reaches the port. This is the routing
+twin of **INV-6** (which is about the *entry address*; this is about *port
+geometry*).
+
+**Fix:** thread the placed block's params into EVERY PortMap resolution on the
+routing path — `catalog.port_map(type, block.params, library=...)`. In placeKYT
+this is `engine/autoroute.py` (`_endpoint_cell`, `_block_out_anchor`,
+`orient_for_flow`, …), `engine/bus_router.py`, and the `port_cells`/`port_maps`
+provider closures in `ui/controller.py`. Make the provider callbacks accept an
+optional 3rd `params` arg and pass it; keep an arity adapter so older
+2-arg providers still work. (Verified: a 13-tap FIR routed its `out` net from
+cell 0 (1,1) instead of the last cell (3,1); with params the net sources the
+real exit and the wavefront egresses correctly.)
+
+**Applies to:** every multi-cell block whose footprint/output cell depends on
+params — FIR, decimator, and any scaling filter routed by the auto-P&R.
+
+---
+
+## INV-9 — Stimulus must be LONGER than the block's state depth
+
+**Symptom:** a scaling/stateful block passes a green suite yet is actually broken;
+the bug appears only at larger sizes or under different stimulus.
+
+**Root cause:** a short stimulus never fills a deep delay line / state, so the
+deep cells only ever multiply ZERO. The output then depends only on the first few
+taps, and a bug in any later cell (wrong coefficient order, a dead handoff) is
+invisible. A uniform / symmetric / all-positive tap set hides it further (many
+wrong orderings coincide). This is exactly how a multi-cell FIR shipped a
+coefficient-ordering bug under an "all green" gate (EDGE = 10 samples, uniform
+positive taps): the deep cells were never exercised.
+
+**Fix:** drive ≥ `2 * state_depth` samples (FIR: `2*ntaps`) of RANDOM input, with
+an ASYMMETRIC parameter set, so every cell sees real data; and add a mutation
+that perturbs the DEEPEST cell's parameter and asserts the gate FAILS — proof the
+deep datapath is actually under test, not just the head. (This is INV-4 sharpened
+for stateful blocks: a gate the stimulus never reaches certifies nothing.)
+
+**Applies to:** FIR, IIR, decimator, equalizers, correlators — any block whose
+internal state spans more than a couple of samples.

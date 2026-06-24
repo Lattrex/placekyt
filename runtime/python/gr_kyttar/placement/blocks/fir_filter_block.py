@@ -4,7 +4,6 @@ import math
 from ..block import CellProgram, Port, EntryPoint, StateVar, DataWord
 from typing import Dict, List
 from ._base import KyttarBlock, BlockInterface, assemble_to_words, float_to_q15, q15_to_float
-from .rrc_pulse_shaper_block import RRCPulseShaperBlock
 
 
 class FIRFilterBlock(KyttarBlock):
@@ -13,9 +12,16 @@ class FIRFilterBlock(KyttarBlock):
 
     output = sum(coeff[i] * delay[i]) for i in 0..N-1
 
-    For ≤12 taps: single cell (v2 template, compact).
-    For >12 taps: multi-cell wavefront using the same chained partial-sum
+    For ≤7 taps: single cell (v2 template, compact).
+    For >7 taps: multi-cell wavefront using the same chained partial-sum
     architecture as RRCPulseShaperBlock (TAPS_PER_CELL=5).
+
+    Single-cell ceiling (MAX_SINGLE_CELL_TAPS = 7) is the register budget, NOT a
+    tuned number: a 1-cell FIR of N taps packs N coefficient data words + N
+    delay-line state regs + 1 input reg + its program (≈2N+2 instructions) into
+    one 32-word cell (R31 reserved for HALT). N=7 fits; N=8 overflows ("No
+    register space for state d4"). The old <=12 threshold tried single-cell for
+    8..12 taps and the build failed; those now fold to multi-cell.
 
     Supports arbitrary coefficients for any FIR application (channel
     filter, matched filter, anti-alias, interpolation, etc.).
@@ -48,12 +54,15 @@ class FIRFilterBlock(KyttarBlock):
         self._delay_line = [0.0] * self._num_taps
 
     TAPS_PER_CELL = 5  # Same as RRCPulseShaperBlock
+    # Largest tap count that fits one cell's ~31-register budget (see class
+    # docstring). 8+ taps overflow → fold to the multi-cell wavefront.
+    MAX_SINGLE_CELL_TAPS = 7
 
     @property
     def cell_count(self) -> int:
         import math
-        if self._num_taps <= 12:
-            return 1  # Single-cell fits up to ~12 taps
+        if self._num_taps <= self.MAX_SINGLE_CELL_TAPS:
+            return 1  # Single-cell fits within the register budget
         return math.ceil(self._num_taps / self.TAPS_PER_CELL)
 
     @property
@@ -65,23 +74,15 @@ class FIRFilterBlock(KyttarBlock):
         return self._interface
 
     def build_cell_programs(self) -> Dict[int, CellProgram]:
-        """FIR filter: single-cell for ≤12 taps, multi-cell for larger.
+        """FIR filter: single-cell for ≤MAX_SINGLE_CELL_TAPS, multi-cell larger.
 
-        Multi-cell uses the same chained partial-sum architecture as
-        RRCPulseShaperBlock. Each cell handles TAPS_PER_CELL taps.
+        The multi-cell path is FIR's OWN chained partial-sum (systolic) wavefront
+        — NOT borrowed from RRCPulseShaperBlock, whose per-segment coefficient
+        REVERSAL is only correct for symmetric taps (it silently mis-convolves a
+        general/asymmetric FIR). See :meth:`_build_multicell_programs`.
         """
-        if self._num_taps > 12:
-            # Multi-cell: use RRC's generic multi-cell FIR architecture.
-            # Create a temporary RRC-like object with our coefficients.
-            rrc = RRCPulseShaperBlock.__new__(RRCPulseShaperBlock)
-            rrc._name = self._name
-            rrc._kwargs = {}
-            rrc._connections = []
-            rrc._metrics = None
-            rrc._num_taps = self._num_taps
-            rrc._coeff_q15 = self._coeff_q15
-            rrc.TAPS_PER_CELL = self.TAPS_PER_CELL
-            return rrc.build_cell_programs()
+        if self._num_taps > self.MAX_SINGLE_CELL_TAPS:
+            return self._build_multicell_programs()
 
         # Single-cell: compact version for small filters
         data = [DataWord(f"c{i}", c, address=i+1) for i, c in enumerate(self._coeff_q15)]
@@ -107,6 +108,96 @@ class FIRFilterBlock(KyttarBlock):
             state=state,
             assembly_template=template,
         )}
+
+    def _build_multicell_programs(self) -> Dict[int, CellProgram]:
+        """Multi-cell systolic FIR: a single delay line spread across cells.
+
+        Architecture (a chained partial-sum wavefront, one cell per
+        ``TAPS_PER_CELL`` taps). Per input sample the wavefront runs cell 0 →
+        cell 1 → … → cell M-1, each cell:
+          * shifts its delay-line SEGMENT, ingesting this cell's incoming sample;
+          * MACs its segment against its coefficients;
+          * ADDs the partial sum arriving from the previous cell;
+          * forwards (a) the new partial sum and (b) the sample SHIFTED OUT of its
+            segment to the next cell, then JUMPs to trigger it.
+        The last cell WRITEs/JUMPs its final sum to the block output.
+
+        Cell ``m`` therefore sees the input stream delayed by ``offset_m`` samples
+        (the total length of all preceding segments), so its register ``i`` (after
+        the shift) holds ``x[n - offset_m - (L_m-1-i)]`` — i.e. delay
+        ``d = offset_m + L_m-1-i``. To match the single-cell / GNU Radio
+        convention ``y[n] = Σ_d coeff[N-1-d]·x[n-d]``, register ``i`` must be
+        multiplied by ``coeff[N-1-d] = coeff[N - offset_{m+1} + i]``. Hence cell
+        ``m`` takes the coefficient segment ``coeff[N-offset_{m+1} : N-offset_m]``
+        in FORWARD order — segments assigned from the END of the tap array, the
+        LAST cell getting the FIRST taps. (RRC instead reversed
+        ``coeff[m*K:(m+1)*K]``; that coincides only for symmetric taps.)
+        """
+        K = self.TAPS_PER_CELL
+        N = self._num_taps
+        n_cells = self.cell_count
+        # offset_m = number of taps in all cells before m (= m*K for full cells).
+        offsets = [min(m * K, N) for m in range(n_cells + 1)]
+        offsets[n_cells] = N
+
+        programs: Dict[int, CellProgram] = {}
+        for m in range(n_cells):
+            start, end = offsets[m], offsets[m + 1]
+            L = end - start
+            is_first = (m == 0)
+            is_last = (m == n_cells - 1)
+
+            # Coefficients: coeff[N-end : N-start], forward order (derived above).
+            cell_coeffs = self._coeff_q15[N - end:N - start]
+            data = [DataWord(f"c{i}", cell_coeffs[i], address=i + 1)
+                    for i in range(L)]
+
+            state = [StateVar(f"d{i}") for i in range(L)]
+            if not is_last:
+                state.append(StateVar("old_save"))  # oldest sample, forwarded
+
+            if is_first:
+                inputs = [Port("sample", register=0)]
+            else:
+                partial_reg = (L + 1) + len(state)
+                inputs = [Port("sample", register=0),
+                          Port("partial", register=partial_reg)]
+
+            if is_last:
+                outputs = [Port("out")]
+            else:
+                outputs = [Port("partial"), Port("sample_out"), Port("fwd")]
+
+            lines = []
+            if not is_last:
+                lines.append("    MOVE R{state:old_save}, R{state:d0}")
+            for i in range(L - 1):
+                lines.append(f"    MOVE R{{state:d{i}}}, R{{state:d{i+1}}}")
+            lines.append(f"    MOVE R{{state:d{L-1}}}, R{{in:sample}}")
+            lines.append("    MULQ R{state:d0}, R{data:c0}")
+            for i in range(1, L):
+                lines.append(f"    MACQ R{{state:d{i}}}, R{{data:c{i}}}")
+            if not is_first:
+                lines.append("    ADD R0, R{in:partial}")
+            if is_last:
+                lines.append("    {write:out}")
+                lines.append("    {jump:out}")
+            else:
+                lines.append("    {write:partial}")
+                lines.append("    MOVE R0, R{state:old_save}")
+                lines.append("    {write:sample_out}")
+                lines.append("    {jump:fwd}")
+
+            template = "start:\n" + "\n".join(lines) + "\n"
+            programs[m] = CellProgram(
+                inputs=inputs,
+                outputs=outputs,
+                entries=[EntryPoint("default")],
+                data=data,
+                state=state,
+                assembly_template=template,
+            )
+        return programs
 
     def process_reference(self, input_samples: np.ndarray) -> np.ndarray:
         """Reference implementation."""

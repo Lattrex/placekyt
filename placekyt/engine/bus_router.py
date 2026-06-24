@@ -811,7 +811,7 @@ def broker_plan(project, chip_id, chip_type, catalog):
                                              library=block.library)
         reg = in_regs[0] if in_regs else 0
         try:
-            pmap = catalog.port_map(block.type, library=block.library)
+            pmap = catalog.port_map(block.type, block.params, library=block.library)
             for p in pmap.ports:
                 if p.name == port and p.direction == "in" and p.register is not None:
                     reg = p.register
@@ -999,7 +999,7 @@ def _target_input_cell(block, port, catalog):
     """(x, y) of a block's input PORT cell (PortMap port → placed cell; falls back
     to the block's first/landing cell)."""
     try:
-        pmap = catalog.port_map(block.type, library=block.library)
+        pmap = catalog.port_map(block.type, block.params, library=block.library)
     except Exception:  # noqa: BLE001
         pmap = None
     cell_id = None
@@ -1023,7 +1023,7 @@ def _source_output_cell(block, port, catalog):
     the target's input cell) when the user made the connection without drawing a
     route."""
     try:
-        pmap = catalog.port_map(block.type, library=block.library)
+        pmap = catalog.port_map(block.type, block.params, library=block.library)
     except Exception:  # noqa: BLE001
         pmap = None
     cell_id = None

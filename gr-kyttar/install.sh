@@ -180,9 +180,30 @@ done
 say "  done."
 
 # --- clear the GRC parse cache so new defs are loaded -------------------------
+# GRC caches parsed block definitions and will keep serving the OLD definition
+# of a block even after its .block.yml changes, until this cache is cleared.
+# The file is cache_v2.json (GRC 3.10) under the GRC cache dir; clear every
+# known location and honor XDG_CACHE_HOME so this works regardless of distro.
 say "[3/3] clear GRC parse cache"
-run 0 rm -rf "$HOME/.cache/gnuradio/grc"
-say "  done."
+CACHE_BASE="${XDG_CACHE_HOME:-$HOME/.cache}"
+for cdir in \
+  "$CACHE_BASE/gnuradio/grc" \
+  "$HOME/.cache/gnuradio/grc" \
+  "$HOME/.cache/grc_gnuradio" \
+  "$HOME/.grc_gnuradio"; do
+  if [ -e "$cdir" ]; then
+    say "  clearing $cdir"
+    run 0 rm -rf "$cdir"
+  fi
+done
+# also remove the cache_v2.json file directly under every candidate base — GRC
+# 3.10 keeps it at ~/.cache/grc_gnuradio/cache_v2.json (note the UNDERSCORE),
+# which is the one that actually goes stale after a .block.yml change.
+run 0 rm -f "$CACHE_BASE"/grc_gnuradio/cache_v2.json \
+            "$CACHE_BASE"/grc_gnuradio/example_cache.json \
+            "$CACHE_BASE"/gnuradio/grc/cache_v2.json \
+            "$CACHE_BASE"/gnuradio/grc/cache.json 2>/dev/null
+say "  done. (GRC will re-parse the Kyttar blocks on next launch.)"
 
 say ""
 if [ "$DRY_RUN" = 1 ]; then

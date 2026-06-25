@@ -1,0 +1,18 @@
+{
+  "kyttar_block": "IIRBiquadBlock",
+  "passed": true,
+  "metric": "amplitude",
+  "n_compared": 200,
+  "max_abs_err": 16,
+  "tolerance": 21,
+  "nmse_db": -63.5270320084696,
+  "correlation": 0.9999999004822753,
+  "bit_errors": 0,
+  "delay_used": 0,
+  "coverage": {
+    "bit_exact": true,
+    "param_sweep": 4,
+    "known_limit": 2,
+    "mutation": true
+  }
+}

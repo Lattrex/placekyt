@@ -261,6 +261,17 @@ class MycWriter:
         }
 
         if opcode in opcodes:
+            # MUL (0xC) and MAC (0xD) carry a 2-bit MODE in bits [11:10] that
+            # selects a sub-instruction (architecture_spec_v0.11.md §4.11/§4.12).
+            # Decode it so MULQ/MULHI and MACQ/MSU/MSUQ disassemble to their real
+            # mnemonic instead of the bare opcode group name.
+            mode = (word >> 10) & 0x3
+            if opcode == 0xC:  # MUL group (00=MUL, 01=MULQ, 10=MULHI, 11=reserved)
+                sub = {0: "MUL", 1: "MULQ", 2: "MULHI", 3: "MUL?"}[mode]
+                return f"{sub} (0x{word:04X})"
+            if opcode == 0xD:  # MAC group (00=MAC, 01=MACQ, 10=MSU, 11=MSUQ)
+                sub = {0: "MAC", 1: "MACQ", 2: "MSU", 3: "MSUQ"}[mode]
+                return f"{sub} (0x{word:04X})"
             return f"{opcodes[opcode]} (0x{word:04X})"
         else:
             # Treat as data

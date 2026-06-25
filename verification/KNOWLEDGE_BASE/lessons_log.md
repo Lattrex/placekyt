@@ -8,6 +8,45 @@ anything that generalizes across block classes into `invariants.md`.
 
 ---
 
+## IIRBiquadBlock — Q15 biquad via half-and-double-MSUQ (the keeper) 2026-06-24
+
+- **The "impossible" claim was half-right.** An earlier pass marked IIR BLOCKED:
+  "a Direct-Form feedback term `a1*y` reaches ~2.0, overflows the 16-bit Q15
+  accumulator, needs ISA guard bits." The OVERFLOW is real (a1 = -2cos(omega), so
+  |a1| up to ~2 > Q15 full scale), but the conclusion was wrong — it's the classic
+  fixed-point-DSP problem with a classic fix, no ISA change.
+- **The real bug was a silent CLAMP.** The old block did
+  `a_q15 = float_to_q15(min(1, max(-1, a)))` — clamping every |a|>1 feedback coeff
+  to ±1.0, i.e. building a COMPLETELY DIFFERENT (wrong) filter for any sharp pole,
+  with no error. That clamp, not the architecture, was the defect.
+- **The keeper — half-and-double MSUQ.** Store each feedback coeff HALVED (`a/2`,
+  always representable since |a|<2 ⇒ |a/2|<1) and apply its `MSUQ Ra,Rb`
+  (`R0 -= (Ra*Rb)>>15`, arch_spec v0.11 §4.12, MAC opcode MODE=11) TWICE.
+  Subtracting `a/2 * y` twice == subtracting `a*y`, and EACH product is in range,
+  so no intermediate overflow. A stable biquad's output is itself bounded, so the
+  whole Direct-Form-I accumulator stays in range — NO saturating shift needed
+  (unlike the FIR gain restore), single cell, bit-exact with GR's accumulation
+  order. (Verified MSUQ executes correctly on simKYT first: a gentle |a|<1 biquad
+  matched the float ref to 1e-4 before relying on the double-MSUQ.)
+- **Precision is the real (documented) limit, not overflow.** GR `iir_filter_ffd`
+  uses DOUBLE-precision feedback taps; Q15's 15 fractional bits are coarser and the
+  recursive-loop quantization error GROWS as poles approach |z|=1. Measured vs GR
+  (butterworth-2): cutoff 0.10-0.40 = 3-16 LSB (production-accurate); 0.05 ~53 LSB
+  (marginal); 0.02 ~160 LSB. So: ship the proven range, GUARD the sharp-pole edge
+  with a known-limit test (INV-7 style) that flips if precision is ever improved.
+- **Gate (16 tests, all green):** DUT == `process_reference_q15` EXACT at EVERY
+  cutoff (the datapath IS the predictor); DUT ≈ GR `iir_filter_ffd` in the
+  production range; a sharp-pole known-limit guard (16 < err_LSB < 2000); and
+  MANDATORY mutations — inverted, the clamped-a1 REGRESSION (the original bug must
+  fail the gate), +1 delay — all FAIL (INV-4).
+- **Disassembler gap found + fixed.** `bitstream.py` decoded only the top-level
+  MAC (0xD) / MUL (0xC) opcodes, mislabeling MACQ/MSU/MSUQ/MULQ/MULHI all as
+  "MAC"/"MUL". Decoded the 2-bit MODE field [11:10] per the spec so sub-modes show
+  their real mnemonic. The disassembler — not the ISA — was incomplete; MSUQ is a
+  real, simKYT-correct instruction.
+- **Generalizes:** see invariants.md INV-15 (any Q15 block needing a coefficient
+  with |.|>1 uses store-halved + apply-twice; cascade the split for |.|>2).
+
 ## NCO / ComplexMixer / SoftDemod — analysis + harness gap (not yet built) 2026-06-24
 
 These three remaining tier-1 blocks are FEASIBLE but each needs infrastructure

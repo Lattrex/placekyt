@@ -406,3 +406,36 @@ wrap-mutation models the OLD no-headroom UNSCALED+wrap DUT and must FAIL the gat
 **Applies to:** FIR, IIR, complex mixer, correlators — any Q15 MAC chain. See
 [[layout_rules]] for how the per-cell tap density + the S>0 last-cell cap set the fold.
 
+---
+
+## INV-15 — A Q15 coefficient with |c| > 1 is stored HALVED and applied TWICE
+
+**Symptom:** a block whose math needs a coefficient outside Q15's [-1, +1) range
+(an IIR feedback tap `a1 = -2cos(omega)`, |a1| up to ~2; any gain > 1; a loop
+constant > 1) either overflows mid-chain OR — worse — was silently CLAMPED to ±1.0
+and now computes a completely different, wrong function with no error.
+
+**Root cause:** Q15 represents only [-1, +1). `float_to_q15(c)` for |c|>1 saturates
+to ±0x7FFF/0x8000, so storing the coefficient directly LOSES it. Clamping it to fit
+("min(1,max(-1,c))") is the trap — it builds the wrong filter/gain quietly.
+
+**Fix — store HALVED, apply TWICE.** Store `c/2` (representable whenever |c|<2) and
+apply its multiply-op TWICE: `MACQ Ra,c_half` twice == `+c*Ra`; `MSUQ Ra,c_half`
+twice == `-c*Ra` (`MSUQ` is `R0 -= (Ra*Rb)>>15`, arch_spec v0.11 §4.12 — MAC opcode
+MODE=11). Each `(Ra * c/2)>>15` product is in range, so there is NO intermediate
+overflow and NO new ISA/guard bits. For |c|>2, cascade: store `c/4` and apply four
+times, etc. (Distinct from the FIR's COEFFICIENT HEADROOM [[INV-13]], which scales
+the WHOLE coefficient set down and restores once with a saturating shift; that's for
+keeping an ACCUMULATOR in range. INV-15 is for representing a SINGLE out-of-range
+coefficient. They compose.) A naturally-bounded output (a stable IIR's `y`) keeps
+the accumulator in range with no extra clamp; an unbounded one still needs INV-13.
+
+**Verify:** the block must be BIT-EXACT with a `process_reference_q15` that models
+the exact halved-and-doubled op order; and a MANDATORY mutation that CLAMPS the
+coefficient (the original bug) must FAIL the gate. The disassembler must decode the
+MAC/MUL MODE sub-field [11:10] so `MACQ/MSU/MSUQ/MULQ/MULHI` show their real
+mnemonic (a top-level-opcode-only table mislabels them all as "MAC"/"MUL").
+
+**Applies to:** IIR biquads (the canonical case), high-gain blocks, any loop/filter
+coefficient that can exceed unity in Q15.
+

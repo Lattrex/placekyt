@@ -39,9 +39,20 @@
       "kyttar_block": "IIRBiquadBlock",
       "grc_block": "filter.iir_filter_ffd",
       "tier": 1,
-      "status": "planned",
+      "status": "done",
       "metric": "amplitude",
-      "notes": "Recursive: needs empirical/pole tolerance + zero-input limit-cycle test, NOT op-count floor."
+      "notes": "Verified vs filter.iir_filter_ffd (Direct Form I). Q15 feedback coefficient |a1|=-2cos(omega) can reach ~2, UNREPRESENTABLE in Q15 [-1,1) -- the old block CLAMPED a-coeffs to [-1,1], silently turning every sharp filter into a wrong one. Fix (no new ISA): store each a-coeff HALVED (representable) and apply its MSUQ (R0-=(A*B)>>15, arch_spec v0.11 \u00a74.12 MAC opcode MODE=11) TWICE -- subtracting a/2 twice == subtracting a, every product in range. A stable biquad output is bounded so the DF-I accumulator stays in range, no saturating shift needed; single cell. DUT is BIT-EXACT with process_reference_q15 at EVERY cutoff. DSP-equivalence vs GR (butterworth-2): normalized cutoff 0.10-0.40 = 3-16 LSB (production), 0.05 ~53 LSB (marginal), 0.02 ~160 LSB (poles within ~0.02 of |z|=1 -- a GUARDED known precision limit vs GR double taps, INV-7 style, NOT a silent failure). Mandatory mutations (inverted, clamped-a1 regression, +1 delay) all FAIL the gate (INV-4).",
+      "params": {
+        "b_coeffs": [
+          0.0675,
+          0.135,
+          0.0675
+        ],
+        "a_coeffs": [
+          -1.143,
+          0.413
+        ]
+      }
     },
     {
       "kyttar_block": "DecimatorBlock",

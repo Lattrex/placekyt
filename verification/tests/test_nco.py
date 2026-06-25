@@ -250,10 +250,23 @@ def test_nco_empty_output_fails():
 
 def test_emit_report():
     import json
-    dut = _run_dut(32000, 2000, 0.9, 64)
-    gr = _gr_sig_source(32000, 2000, 0.9, 64)
+    # Report the OFF-GRID (interpolated) floor — the REPRESENTATIVE noise the block
+    # produces at an arbitrary requested frequency, not the grid-aligned best case
+    # (where the phase lands exactly on table entries and the NCO is ~1 LSB / -88 dB,
+    # which over-states real-world accuracy). 2050 Hz is off the 33-entry table grid
+    # (freq_word % 512 != 0), so this exercises the linear interpolation. Compared to
+    # GR at the DUT's ACTUAL freq_word frequency so only the table-interp error shows
+    # (the separate freq_word-quantization drift is a frequency-accuracy spec, not a
+    # per-sample noise floor).
+    fs, f, amp = 32000, 2050, 0.9
+    blk = NCOBlock("c", sample_rate=fs, frequency=f, amplitude=amp)
+    assert blk.freq_word % 512 != 0, "report must use an OFF-grid frequency"
+    f_actual = blk.freq_word / 65536.0 * fs
+    dut = _run_dut(fs, f, amp, 64)
+    gr = _gr_sig_source(fs, f_actual, amp, 64)
     res = compare_complex_against_grc(dut.i_q15, dut.q_q15, gr.i, gr.q,
-                                      metric=Metric.AMPLITUDE, delay=0, tolerance=2)
+                                      metric=Metric.AMPLITUDE, delay=0,
+                                      tolerance=TABLE_FLOOR_LSB)
     assert res.passed, res.summary()
     report = {
         "kyttar_block": "NCOBlock", "passed": True, "metric": "amplitude",

@@ -232,11 +232,23 @@ def test_mixer_empty_output_fails():
 
 def test_emit_report():
     import json
+    # Report the OFF-GRID (interpolated) floor — the representative noise at an
+    # arbitrary mixing frequency, not the grid-aligned best case (where the NCO
+    # phase lands on table entries and the mixer is ~1 LSB / -83 dB, over-stating
+    # real accuracy). 2050 Hz is off the table grid; compare to GR mixing at the
+    # DUT's ACTUAL freq_word frequency so only the table-NCO floor through the
+    # complex product shows (the freq_word-quantization drift is a separate
+    # frequency-accuracy spec).
+    fs, f = 32000, 2050
+    blk = ComplexMixerBlock("c", sample_rate=fs, frequency=f)
+    assert blk.freq_word % 512 != 0, "report must use an OFF-grid frequency"
+    f_actual = blk.freq_word / 65536.0 * fs
     stim = _signal(7, 64)
-    dut = _run_dut(32000, 2000, stim)
-    gr = _gr_mix(32000, 2000, stim)
+    dut = _run_dut(fs, f, stim)
+    gr = _gr_mix(fs, f_actual, stim)
     res = compare_complex_against_grc(dut.i_q15, dut.q_q15, gr.i, gr.q,
-                                      metric=Metric.AMPLITUDE, delay=0, tolerance=4)
+                                      metric=Metric.AMPLITUDE, delay=0,
+                                      tolerance=TABLE_FLOOR_LSB)
     assert res.passed, res.summary()
     report = {
         "kyttar_block": "ComplexMixerBlock", "passed": True, "metric": "amplitude",

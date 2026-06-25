@@ -124,8 +124,8 @@ factory is named in the dashboard so you never have to guess the equivalent.
 | **FIRFilterBlock** | `filter.fir_filter_fff` | err 10 / tol 17 LSB · -65 dB SNR |
 | **IIRBiquadBlock** | `filter.iir_filter_ffd` | err 16 / tol 21 LSB · -64 dB SNR |
 | **DecimatorBlock** | `filter.fir_filter_fff (decim)` | err 6 / tol 9 LSB · -72 dB SNR |
-| **ComplexMixerBlock** | `blocks.multiply_cc + analog.sig_source` | err 1 / tol 4 LSB · -83 dB SNR |
-| **NCOBlock** | `analog.sig_source_c` | err 1 / tol 2 LSB · -88 dB SNR |
+| **ComplexMixerBlock** | `blocks.multiply_cc + analog.sig_source` | err 5 / tol 12 LSB · -74 dB SNR |
+| **NCOBlock** | `analog.sig_source_c` | err 9 / tol 12 LSB · -72 dB SNR |
 | **SoftDemodulatorBlock** | `digital.constellation_soft_decoder_cf` | err 1 / tol 2 LSB |
 | **LowPassFilter** | `filter.fir_filter_fff (firdes.low_pass)` | err 37 / tol 79 LSB · -55 dB SNR |
 | **HighPassFilter** | `filter.fir_filter_fff (firdes.high_pass)` | err 40 / tol 79 LSB · -48 dB SNR |

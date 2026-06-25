@@ -14,8 +14,8 @@
 | **FIRFilterBlock** | `filter.fir_filter_fff` | 1 · feed-forward | ✅ done | err 10 / tol 17 LSB · -65 dB SNR | edge rand×3 sweep×12 mut |
 | **IIRBiquadBlock** | `filter.iir_filter_ffd` | 1 · feed-forward | ✅ done | err 16 / tol 21 LSB · -64 dB SNR | sweep×4 mut |
 | **DecimatorBlock** | `filter.fir_filter_fff (decim)` | 1 · feed-forward | ✅ done | err 6 / tol 9 LSB · -72 dB SNR | edge rand×3 sweep×8 mut |
-| **ComplexMixerBlock** | `blocks.multiply_cc + analog.sig_source` | 1 · feed-forward | ✅ done | err 1 / tol 4 LSB · -83 dB SNR | sweep×5 mut |
-| **NCOBlock** | `analog.sig_source_c` | 1 · feed-forward | ✅ done | err 1 / tol 2 LSB · -88 dB SNR | sweep×5 mut |
+| **ComplexMixerBlock** | `blocks.multiply_cc + analog.sig_source` | 1 · feed-forward | ✅ done | err 5 / tol 12 LSB · -74 dB SNR | sweep×5 mut |
+| **NCOBlock** | `analog.sig_source_c` | 1 · feed-forward | ✅ done | err 9 / tol 12 LSB · -72 dB SNR | sweep×5 mut |
 | **SoftDemodulatorBlock** | `digital.constellation_soft_decoder_cf` | 1 · feed-forward | ✅ done | err 1 / tol 2 LSB | rand×4 sweep×5 mut |
 | **LowPassFilter** | `filter.fir_filter_fff (firdes.low_pass)` | 1 · feed-forward | ✅ done | err 37 / tol 79 LSB · -55 dB SNR | edge rand×1 sweep×4 mut |
 | **HighPassFilter** | `filter.fir_filter_fff (firdes.high_pass)` | 1 · feed-forward | ✅ done | err 40 / tol 79 LSB · -48 dB SNR | edge rand×1 sweep×4 mut |

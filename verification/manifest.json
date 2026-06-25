@@ -210,9 +210,17 @@
       "kyttar_block": "HighPassFilter",
       "grc_block": "filter.fir_filter_fff (firdes.high_pass)",
       "tier": 1,
-      "status": "planned",
-      "metric": "exact",
-      "notes": "Convenience FIR: firdes.high_pass(...). Same wrapper pattern as LowPassFilter. Label 'High Pass Filter'."
+      "status": "done",
+      "metric": "amplitude",
+      "params": {
+        "gain": 1.0,
+        "samp_rate": 32000.0,
+        "cutoff_freq": 4000.0,
+        "transition_width": 2000.0,
+        "window": "hamming",
+        "beta": 6.76
+      },
+      "notes": "Verified vs GNU Radio firdes.high_pass + fir_filter_fff (30 tests; full verification suite 185; placekyt 937/16-skip). Same pattern as LowPassFilter: SUBCLASSES FIRFilterBlock with firdes-designed taps from the shared pure-Python blocks/_firdes.py (GR absent in the runtime .venv). firdes high_pass is normalized to unity gain at NYQUIST (fmax accumulates taps[n]*cos(n*pi)); taps linear-phase SYMMETRIC (delay=0, reversed-tap convention moot). Params mirror GRC's High Pass Filter VERBATIM: gain, samp_rate, cutoff_freq(Hz), transition_width(Hz), window, beta. Q15-quantized taps BIT-EXACT to firdes for ALL six windows (hamming/hann/blackman/rectangular/kaiser/blackman_harris x 3 configs) -> on-chip filter IS the firdes filter (INV-16); float taps ~1 ULP (cross-interpreter libm). A firdes high-pass has Sum|h|>1 (large centre tap + negative sidelobes) so COEFFICIENT HEADROOM engages (default 39-tap fs32k/co4k/tw2k = 9 cells, S=1). Two-tier: DUT vs GR firdes->fir_filter_fff (AMPLITUDE, headroom floor) AND DUT vs process_reference_q15 (EXACT). Mutations (inverted, wrong-cutoff, +1 delay, empty) all FAIL. GRC: kyttar_high_pass_filter.block.yml label 'High Pass Filter' + kyttar.high_pass_filter wrapper."
     },
     {
       "kyttar_block": "BandPassFilter",

@@ -8,6 +8,20 @@ anything that generalizes across block classes into `invariants.md`.
 
 ---
 
+## HighPassFilter — firdes.high_pass (same pattern as LowPassFilter) 2026-06-25
+
+- **Status:** PASS / DONE vs GNU Radio `firdes.high_pass` + `fir_filter_fff`, 30
+  tests; full verification suite 185; placekyt 937 / 16 skipped.
+- Reuses the shared `_firdes.py` designer (built for LowPassFilter) and the same
+  FIRFilterBlock subclass pattern. The only design difference is the
+  normalization: a high-pass is unity-gain at NYQUIST, so `fmax` accumulates
+  `taps[n]*cos(n*pi)` (the `(-1)^n` alternation), exactly as `firdes.cc`. Q15
+  taps bit-exact firdes for all six windows (INV-16); float ~1 ULP. Default
+  39-tap (fs32k/co4k/tw2k) = 9 cells, S=1. Mutations (inverted, wrong-cutoff, +1
+  delay, empty) all fail. GRC label "High Pass Filter".
+
+---
+
 ## LowPassFilter — firdes reimplemented in pure Python (GR absent at runtime) 2026-06-25
 
 - **Status:** PASS / DONE vs GNU Radio `firdes.low_pass` + `fir_filter_fff`, 31

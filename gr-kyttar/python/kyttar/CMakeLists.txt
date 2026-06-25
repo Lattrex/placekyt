@@ -18,6 +18,7 @@ GR_PYTHON_INSTALL(
     gain.py
     fir_filter.py
     low_pass_filter.py
+    high_pass_filter.py
     dc_blocker.py
     agc.py
     nco.py

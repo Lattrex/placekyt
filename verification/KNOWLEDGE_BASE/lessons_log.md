@@ -196,6 +196,62 @@ anything that generalizes across block classes into `invariants.md`.
 - **Generalizes:** see invariants.md INV-15 (any Q15 block needing a coefficient
   with |.|>1 uses store-halved + apply-twice; cascade the split for |.|>2).
 
+## NCOBlock — iter 3: DSP pipeline works BIT-EXACT on chip; blocker = folded egress 2026-06-25
+
+Big progress. The interpolated complex NCO was REDESIGNED to fit the substrate and
+the sin/cos datapath now computes BIT-EXACT on simKYT. The block is still not done:
+the 10-cell folded layout doesn't egress correctly. WIP at
+`verification/KNOWLEDGE_BASE/drafts/nco_block_parity_split.py.draft`; nco_block.py
+reverted to the working original so the suite stays green.
+
+- **The keeper design — parity-split table + angle-fold.** Two changes made it fit
+  the 32-reg/cell budget AND avoid cross-cell straddle:
+  1. **Angle-fold:** fold the quadrant mirror INTO the angle (`q = mir ? 16384-within
+     : within`) so interpolation is always FORWARD `table[idx]→table[idx+1]` — no
+     per-cell mirror/step logic in the lookup. idx_bits=7 → 10-11 LSB (validated).
+  2. **Parity-split table:** the 33-entry table is split EVEN (`table[0,2,…,32]`,
+     17 entries) / ODD (`table[1,3,…,31]`). Since `idx` and `idx+1` always have
+     OPPOSITE parity, each table cell does ONE unconditional LOAD (no range test,
+     no straddle, no cross-cell addressing). The interp cell re-pairs by parity.
+  10 cells: `phase | (fold even odd interp)_sin | (…)_cos | emit`.
+- **THE substrate calling conventions (cost the most time — promote/remember):**
+  * **ALU first operand must be a NAMED register, never R0.** `AND R0, x` /
+    `ADD R0, x` / `SHR R0, n` (R0 as the *source* `Ra`) are MISCOMPILED (silently
+    wrong). The SECOND operand MAY be R0 (`SUB zero, R0`, `ADD p, R0` are fine).
+  * **An input port at R0 must be MOVEd out before R0 is clobbered**, and a value
+    read from `R{in:x}` (which aliases R0 for the landing reg) can be read ONCE —
+    after the first ALU op R0 changes. Save it to a state reg immediately
+    (IQUpconvert does exactly this: `MOVE state, R{in:phase}` first).
+  * **`AND` does NOT set the branch flag** — a `BR.Z` must be preceded by an
+    explicit `CMP R0, R{data:zero}` (CMP may take R0 as `Ra`).
+  * **Per-cell budget:** usable gap = `(31 - instr_count) - data_top - 1` ≥
+    state + (inputs not pinned to R0). The fold only fit after moving `neg` out to
+    the phase cell (phase computes `neg_sin = phase>>15`, `neg_cos =
+    (phase+16384)>>15` and forwards them straight to emit).
+  * **Multi-write handoff + DANGLING outputs:** a cell that `{write:}`s several
+    output ports works ONLY if every port has a real internal destination. A
+    DANGLING output (e.g. `ph_cos` with no consumer in a bisect) MISROUTES the
+    other writes (it showed as a clean 90°-shifted sine — the fold received
+    `ph_cos`=phase+16384 instead of `ph_sin`). Fan-out (one output → 3 cells, e.g.
+    `idx`→even/odd/interp) DOES work.
+- **VALIDATED:** the 6-cell sin pipeline (phase→fold→even→odd→interp→emit, 1-row
+  layout) is BIT-EXACT vs the reference for all 16 test phases (full quarter-wave
+  incl. the mirror). Reference `_sine_q15` mirrors the datapath op-for-op; n=0 =
+  (amp, 0) (GR phase-0 start).
+- **THE remaining blocker — folded 10-cell egress (P&R geometry).** A 1-row chain
+  egresses; the 10-cell needs a 2-row/2-col FOLD (≤8 across, INV-9) and there the
+  output cell's egress is geometry-sensitive: `port_map.io_colocated` must be True
+  (input + emit on the SAME bus-facing edge). Observed: column-major+`face=east`
+  put emit on the EAST edge opposite the WEST input → bus tapped `cos_fold`'s `idx`
+  (1 wrong word); 2-row+`face=west` (phase 0,0 / emit 0,1) → empty. The fix is the
+  right fold + face so `io_colocated=True` with emit on the bus edge (study the
+  FIR `_fold_geometry` and the Costas/RRC `default_layout`, which solve exactly
+  this for folded/feedback blocks). Once egress lands, the 6-cell-proven pipeline
+  makes the full block bit-exact — then GR-amplitude verify (~11 LSB derived floor,
+  grid-aligned freq_word), mutations, GR-native params, GRC yml, ComplexMixer.
+
+---
+
 ## NCOBlock — build attempt: validated, blocked on per-cell register budget 2026-06-25 (iter 2)
 
 A FULL build attempt was made (the WIP block is saved at

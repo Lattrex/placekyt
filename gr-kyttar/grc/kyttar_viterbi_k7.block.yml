@@ -1,5 +1,5 @@
 id: kyttar_viterbi_k7
-label: Kyttar Viterbi K=7
+label: 🧪 Kyttar Viterbi K=7
 category: '[Kyttar]'
 
 templates:
@@ -28,6 +28,9 @@ outputs:
   dtype: float
 
 documentation: |-
+  🧪 NOT YET VERIFIED: this block is queued for GNU Radio-equivalence
+  verification but hasn't been validated yet. Use with care.
+
   Viterbi K=7 Rate 1/2 Decoder Block
 
   Full soft-decision Viterbi decoder for the NASA standard K=7

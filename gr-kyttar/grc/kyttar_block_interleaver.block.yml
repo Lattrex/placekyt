@@ -1,5 +1,5 @@
 id: kyttar_block_interleaver
-label: Kyttar Block Interleaver
+label: 🧪 Kyttar Block Interleaver
 category: '[Kyttar]/FEC'
 
 templates:
@@ -40,6 +40,9 @@ outputs:
   dtype: float
 
 documentation: |-
+  🧪 NOT YET VERIFIED: this block is queued for GNU Radio-equivalence
+  verification but hasn't been validated yet. Use with care.
+
   Block Interleaver/Deinterleaver Block
 
   Block interleaver for burst error protection. Spreads burst errors

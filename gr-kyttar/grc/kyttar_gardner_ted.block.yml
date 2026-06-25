@@ -1,5 +1,5 @@
 id: kyttar_gardner_ted
-label: Kyttar Gardner TED
+label: 🧪 Kyttar Gardner TED
 category: '[Kyttar]'
 
 templates:
@@ -35,6 +35,9 @@ outputs:
   dtype: float
 
 documentation: |-
+  🧪 PROOF-OF-CONCEPT: this block works in a demo but has NOT been through
+  per-block GNU Radio-equivalence verification. Use with care.
+
   Gardner Timing Error Detector Block
 
   Performs symbol timing recovery using the Gardner TED algorithm.

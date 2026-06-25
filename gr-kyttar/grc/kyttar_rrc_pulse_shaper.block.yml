@@ -1,5 +1,5 @@
 id: kyttar_rrc_pulse_shaper
-label: Kyttar RRC Pulse Shaper
+label: 🧪 Kyttar RRC Pulse Shaper
 category: '[Kyttar]'
 
 templates:
@@ -33,6 +33,9 @@ outputs:
   dtype: float
 
 documentation: |-
+  🧪 NOT YET VERIFIED: this block is queued for GNU Radio-equivalence
+  verification but hasn't been validated yet. Use with care.
+
   Root-Raised-Cosine (RRC) Pulse Shaper / Matched Filter
 
   Spatial FIR filter with RRC coefficients (excess-bandwidth factor alpha).

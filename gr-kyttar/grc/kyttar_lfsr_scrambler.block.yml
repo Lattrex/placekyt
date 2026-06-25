@@ -1,5 +1,5 @@
 id: kyttar_lfsr_scrambler
-label: Kyttar LFSR Scrambler
+label: 🧪 Kyttar LFSR Scrambler
 category: '[Kyttar]/FEC'
 
 templates:
@@ -35,6 +35,9 @@ outputs:
   dtype: float
 
 documentation: |-
+  🧪 NOT YET VERIFIED: this block is queued for GNU Radio-equivalence
+  verification but hasn't been validated yet. Use with care.
+
   LFSR Scrambler/Descrambler Block
 
   Self-synchronizing scrambler using polynomial x^15 + x^14 + 1.

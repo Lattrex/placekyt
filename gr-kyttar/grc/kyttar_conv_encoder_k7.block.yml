@@ -1,5 +1,5 @@
 id: kyttar_conv_encoder_k7
-label: Kyttar Conv Encoder K=7
+label: 🧪 Kyttar Conv Encoder K=7
 category: '[Kyttar]/FEC'
 
 templates:
@@ -23,6 +23,9 @@ outputs:
   dtype: float
 
 documentation: |-
+  🧪 NOT YET VERIFIED: this block is queued for GNU Radio-equivalence
+  verification but hasn't been validated yet. Use with care.
+
   Convolutional Encoder K=7 Rate 1/2 Block
 
   Encodes input bits using the NASA standard K=7 convolutional code.

@@ -1,5 +1,5 @@
 id: kyttar_viterbi_bmu
-label: Kyttar Viterbi BMU
+label: 🧪 Kyttar Viterbi BMU
 category: '[Kyttar]'
 
 templates:
@@ -23,6 +23,9 @@ outputs:
   dtype: float
 
 documentation: |-
+  🧪 NOT YET VERIFIED: this block is queued for GNU Radio-equivalence
+  verification but hasn't been validated yet. Use with care.
+
   Viterbi Branch Metric Unit Block
 
   Computes branch metrics for K=7 rate 1/2 Viterbi decoding. This is

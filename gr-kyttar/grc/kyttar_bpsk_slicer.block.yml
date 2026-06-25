@@ -1,5 +1,5 @@
 id: kyttar_bpsk_slicer
-label: Kyttar BPSK Slicer
+label: 🧪 Kyttar BPSK Slicer
 category: '[Kyttar]'
 
 templates:
@@ -25,6 +25,9 @@ outputs:
   dtype: float
 
 documentation: |-
+  🧪 PROOF-OF-CONCEPT: this block works in a demo but has NOT been through
+  per-block GNU Radio-equivalence verification. Use with care.
+
   BPSK Slicer (hard decision)
 
   Maps a soft decision value (LLR / recovered I) to a hard coded bit:

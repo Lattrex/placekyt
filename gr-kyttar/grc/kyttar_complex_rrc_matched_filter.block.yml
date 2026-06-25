@@ -1,5 +1,5 @@
 id: kyttar_complex_rrc_matched_filter
-label: Kyttar Complex RRC Matched Filter
+label: 🧪 Kyttar Complex RRC Matched Filter
 category: '[Kyttar]'
 
 templates:
@@ -48,6 +48,9 @@ outputs:
   dtype: float
 
 documentation: |-
+  🧪 PROOF-OF-CONCEPT: this block works in a demo but has NOT been through
+  per-block GNU Radio-equivalence verification. Use with care.
+
   Complex RRC Matched Filter — receive matched filter front end.
 
   Takes the COMPLEX baseband (xi = in-phase, xq = quadrature) and applies a

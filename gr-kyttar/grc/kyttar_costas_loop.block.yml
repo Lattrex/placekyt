@@ -1,5 +1,5 @@
 id: kyttar_costas_loop
-label: Kyttar Costas Loop
+label: 🧪 Kyttar Costas Loop
 category: '[Kyttar]'
 
 templates:
@@ -46,6 +46,9 @@ outputs:
   dtype: float
 
 documentation: |-
+  🧪 PROOF-OF-CONCEPT: this block works in a demo but has NOT been through
+  per-block GNU Radio-equivalence verification. Use with care.
+
   Complex Costas Loop — decision-directed BPSK carrier recovery.
 
   Takes the COMPLEX baseband (xi = in-phase, xq = quadrature) and recovers the

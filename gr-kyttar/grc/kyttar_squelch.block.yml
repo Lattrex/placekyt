@@ -1,9 +1,12 @@
 id: kyttar_squelch
-label: Kyttar Squelch
+label: 🧪 Kyttar Squelch
 category: '[Kyttar]'
 flags: [ python ]
 
 documentation: |-
+  🧪 NOT YET VERIFIED: this block is queued for GNU Radio-equivalence
+  verification but hasn't been validated yet. Use with care.
+
   Kyttar Squelch - Signal Level Gate
 
   Implements a noise squelch that gates the signal based on power level:

@@ -1,9 +1,12 @@
 id: kyttar_agc
-label: Kyttar AGC
+label: 🧪 Kyttar AGC
 category: '[Kyttar]'
 flags: [ python ]
 
 documentation: |-
+  🧪 NOT YET VERIFIED: this block is queued for GNU Radio-equivalence
+  verification but hasn't been validated yet. Use with care.
+
   Kyttar AGC - Automatic Gain Control
 
   Maintains a target output level by adaptively adjusting gain:

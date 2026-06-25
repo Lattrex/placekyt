@@ -16,6 +16,7 @@ install(FILES
     kyttar_low_pass_filter.block.yml
     kyttar_high_pass_filter.block.yml
     kyttar_band_pass_filter.block.yml
+    kyttar_band_reject_filter.block.yml
     kyttar_dc_blocker.block.yml
     kyttar_agc.block.yml
     kyttar_nco.block.yml

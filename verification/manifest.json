@@ -243,9 +243,18 @@
       "kyttar_block": "BandRejectFilter",
       "grc_block": "filter.fir_filter_fff (firdes.band_reject)",
       "tier": 1,
-      "status": "planned",
-      "metric": "exact",
-      "notes": "Convenience FIR: firdes.band_reject(...). Label 'Band Reject Filter'."
+      "status": "done",
+      "metric": "amplitude",
+      "params": {
+        "gain": 1.0,
+        "samp_rate": 32000.0,
+        "low_cutoff_freq": 4000.0,
+        "high_cutoff_freq": 8000.0,
+        "transition_width": 2000.0,
+        "window": "hamming",
+        "beta": 6.76
+      },
+      "notes": "Verified vs GNU Radio firdes.band_reject + fir_filter_fff (30 tests; full verification suite 245; placekyt 937/16-skip). Band-stop/notch; same pattern as the other firdes filters: SUBCLASSES FIRFilterBlock with taps from the shared blocks/_firdes.py (GR absent in the runtime .venv). Takes low_cutoff_freq + high_cutoff_freq (Hz); normalized to unity gain at DC (fmax accumulates taps[n], like low_pass). Taps linear-phase SYMMETRIC (delay=0). Params mirror GRC's Band Reject Filter VERBATIM. Q15-quantized taps BIT-EXACT to firdes for ALL six windows (x3 configs) -> on-chip filter IS the firdes filter (INV-16); float ~1 ULP. The notch has a LARGE centre tap so Sum|h|>2 -> COEFFICIENT HEADROOM S=2 (the highest of the four firdes filters; default 39-tap fs32k/4k-8k/tw2k = 9 cells, the FIR's last cell caps its segment to fit the S=2 saturating-shift restore, EXERCISING the FIR's S>=2 budget path end-to-end). Two-tier: DUT vs GR firdes->fir_filter_fff (AMPLITUDE, headroom floor) AND DUT vs process_reference_q15 (EXACT). Mutations (inverted, wrong-band, +1 delay, empty) all FAIL. GRC: kyttar_band_reject_filter.block.yml label 'Band Reject Filter' + kyttar.band_reject_filter wrapper. COMPLETES the four firdes convenience filters (Decision B)."
     }
   ]
 }

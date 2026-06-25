@@ -8,6 +8,21 @@ anything that generalizes across block classes into `invariants.md`.
 
 ---
 
+## BandRejectFilter — firdes.band_reject (notch, S=2) 2026-06-25
+
+- **Status:** PASS / DONE vs GNU Radio `firdes.band_reject` + `fir_filter_fff`, 30
+  tests; full verification suite 245; placekyt 937 / 16 skipped. COMPLETES the
+  four firdes convenience filters (Decision B).
+- Shares `_firdes.py` + the FIRFilterBlock subclass pattern. Band-stop / notch;
+  normalized to unity gain at DC (`fmax` over `taps[n]`, like low_pass). The notch
+  has a LARGE centre tap ⇒ `Σ|h| > 2` ⇒ COEFFICIENT HEADROOM **S=2** (the highest
+  of the four — exercises the FIR's S≥2 last-cell budget path end-to-end on the
+  real route+sim). Q15 taps bit-exact firdes for all six windows (INV-16). Default
+  39-tap = 9 cells. Mutations (inverted, wrong-band, +1 delay, empty) all fail.
+  Label "Band Reject Filter".
+
+---
+
 ## BandPassFilter — firdes.band_pass (two cutoffs) 2026-06-25
 
 - **Status:** PASS / DONE vs GNU Radio `firdes.band_pass` + `fir_filter_fff`, 30

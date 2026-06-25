@@ -89,6 +89,33 @@ class ConsolePanel(QPlainTextEdit):
         self._append("placeKYT console — `project`, `controller` in scope.\n",
                      _OUTPUT_COLOR)
 
+    def echo_command(self, ev: dict) -> None:
+        """Echo a command-trace event into the console as a live, dimmed line —
+        EVERY GUI interaction is a command, and this shows the equivalent
+        controller call as it happens, so the console doubles as a session log
+        the user can read, script from, and export. The echo is inserted ABOVE
+        the current input prompt so the user's in-progress typing is preserved."""
+        op = ev.get("op")
+        kind = ev.get("kind", "do")
+        if kind in ("undo", "redo"):
+            line = f"# {kind}: {ev.get('description', '')}"
+        elif op:
+            args = ev.get("args", {})
+            kw = ", ".join(f"{k}={v!r}" for k, v in args.items())
+            line = f"controller.{op}({kw})"
+        else:
+            line = f"# {ev.get('description', '')}"
+        # Preserve any half-typed input: capture it, append the echo, restore it.
+        pending = self._current_input()
+        # Move to the very end and drop the current prompt line, echo, re-prompt.
+        cur = self.textCursor()
+        cur.movePosition(QTextCursor.End)
+        self.setTextCursor(cur)
+        self._append("\n" + line + "\n", _INPUT_COLOR)
+        self._write_prompt(PROMPT)
+        if pending:
+            self._append(pending, _OUTPUT_COLOR)
+
     def _write_prompt(self, prompt: str) -> None:
         self._append(prompt, _OUTPUT_COLOR)
         self._input_start = self.textCursor().position()

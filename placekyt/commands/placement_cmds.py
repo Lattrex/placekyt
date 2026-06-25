@@ -86,8 +86,18 @@ class PlaceBlockCommand(CompositeCommand):
             PlaceTransitCommand(project, block.name, chip, t.x, t.y, t.face)
             for t in (transit_cells or [])
         ]
+        # The block's anchor (x, y) for replay = its FIRST placed cell.
+        self._anchor = (chip, cells[0].x, cells[0].y) if cells else (chip, 0, 0)
         super().__init__(f"Place block {block.name}",
                          [self._add, *cell_cmds, *transit_cmds])
+
+    def to_trace(self) -> dict:
+        chip, x, y = self._anchor
+        return {"op": "place_block",
+                "args": {"type_name": self.block.type, "chip": chip,
+                         "x": x, "y": y, "library": self.block.library,
+                         "params": dict(self.block.params),
+                         "name": self.block.name}}
 
 
 class _AddBlockCommand(Command):
@@ -160,6 +170,11 @@ class MoveBlockCommand(Command):
 
     def description(self) -> str:
         return f"Move {self.block_name}"
+
+    def to_trace(self) -> dict:
+        return {"op": "move_block",
+                "args": {"block_name": self.block_name,
+                         "dx": self.dx, "dy": self.dy}}
 
 
 class MoveBlockToChipCommand(Command):
@@ -274,6 +289,10 @@ class TransformBlockCommand(Command):
                  "mirror_h": "Mirror H", "mirror_v": "Mirror V"}
         return f"{names.get(self.kind, self.kind)} {self.block_name}"
 
+    def to_trace(self) -> dict:
+        return {"op": "transform_block",
+                "args": {"block_name": self.block_name, "kind": self.kind}}
+
 
 class OrientBlockCommand(Command):
     """Rotate/mirror a placed block WITHOUT touching its connections — for
@@ -305,6 +324,10 @@ class OrientBlockCommand(Command):
 
     def description(self) -> str:
         return f"Orient {self.block_name} ({self.kind})"
+
+    def to_trace(self) -> dict:
+        return {"op": "transform_block",
+                "args": {"block_name": self.block_name, "kind": self.kind}}
 
 
 class RemoveBlockCommand(Command):

@@ -102,12 +102,21 @@ class AppController(QObject):
 
     def set_project(self, project: Project) -> None:
         self.project = project
-        self.commands = CommandManager(project)
+        # Preserve the command trace across project swaps so a whole session
+        # (import → edits → re-import) is captured as one continuous, replayable
+        # log. The first set_project (from __init__) seeds a fresh trace.
+        prev_trace = getattr(getattr(self, "commands", None), "trace", None)
+        self.commands = CommandManager(project, trace=prev_trace)
         # A new project starts in sync (no GRC params observed yet for it).
         self.grc_sync.clear()
         self._wire_bus()
         self.changed.emit()
         self.grc_sync_changed.emit(self.grc_sync.diffs)
+
+    @property
+    def trace(self):
+        """The session command trace (shared across project swaps)."""
+        return self.commands.trace
 
     def _wire_bus(self) -> None:
         # Any delivered event → one coalesced refresh signal. The bus is only
@@ -224,7 +233,11 @@ class AppController(QObject):
     def remove_block(self, block_name: str) -> None:
         self.commands.execute(RemoveBlockCommand(self.project, block_name))
 
-    def set_cell_face(self, block_name: str, cell_id, face: Face) -> None:
+    def set_cell_face(self, block_name: str, cell_id, face) -> None:
+        # Accept a Face OR its string value (e.g. "north") so a command trace can
+        # be replayed directly from its serialized args.
+        if not isinstance(face, Face):
+            face = Face(face)
         self.commands.execute(
             SetCellFaceCommand(self.project, block_name, cell_id, face))
 
@@ -1005,6 +1018,10 @@ class AppController(QObject):
         from commands import AddConnectionCommand
         from model.connection import Connection, NET_DATA_TRIGGER
 
+        # Accept dict endpoints ({"block":..,"port":..} / {"chip":..,"port":..})
+        # so a command trace replays directly from its serialized args.
+        source = self._endpoint_from_any(source)
+        target = self._endpoint_from_any(target)
         conn_name = name or self._unique_connection_name(source, target)
         conn = Connection(
             conn_name, source=source, target=target, route=None,
@@ -1012,6 +1029,83 @@ class AppController(QObject):
         )
         self.commands.execute(AddConnectionCommand(self.project, conn))
         return conn_name
+
+    @staticmethod
+    def _endpoint_from_any(ep):
+        """An endpoint object from either an Endpoint OR a serialized dict
+        (command-trace replay): ``{"block": n, "port": p}`` or
+        ``{"chip": id, "port": p}``."""
+        if isinstance(ep, dict):
+            from model.connection import BlockEndpoint, ChipPortEndpoint
+            if "block" in ep:
+                return BlockEndpoint(ep["block"], ep["port"])
+            return ChipPortEndpoint(ep["chip"], ep["port"])
+        return ep
+
+    # -- command trace (live console echo + replayable export) ----------------
+
+    def export_trace(self, path) -> None:
+        """Write the session command trace to ``path``. A ``.py`` extension emits
+        a runnable replay SCRIPT (calls ``controller.<op>(**args)`` in order); any
+        other extension (``.kytrace`` / ``.json``) emits the structured JSON log.
+        Both capture EVERY operation performed this session — the exact, replayable
+        sequence to reproduce a bug on any machine."""
+        import json
+        from pathlib import Path
+
+        p = Path(path)
+        events = self.trace.events()
+        if p.suffix == ".py":
+            lines = [
+                "# placeKYT command trace — replay with:",
+                "#   from ui.controller import AppController",
+                "#   ctrl = AppController(); exec(open(__file__).read())",
+                "# (or run inside the placeKYT console where `controller` exists)",
+                "ctrl = controller  # the live AppController",
+                "",
+            ]
+            for ev in events:
+                op = ev.get("op")
+                desc = ev.get("description", "")
+                if ev.get("kind") == "undo":
+                    lines.append(f"ctrl.undo()  # {desc}")
+                    continue
+                if ev.get("kind") == "redo":
+                    lines.append(f"ctrl.redo()  # {desc}")
+                    continue
+                if not op:
+                    lines.append(f"# (manual) {desc}")
+                    continue
+                args = ev.get("args", {})
+                kw = ", ".join(f"{k}={v!r}" for k, v in args.items())
+                lines.append(f"ctrl.{op}({kw})  # {desc}")
+            p.write_text("\n".join(lines) + "\n")
+        else:
+            p.write_text(json.dumps(events, indent=2))
+
+    def replay_trace(self, path) -> None:
+        """Replay a ``.kytrace`` JSON (or a list of events) onto THIS controller —
+        reproduce a captured session. Each event with an ``op`` calls
+        ``getattr(self, op)(**args)``; undo/redo events call undo()/redo().
+        Events with no ``op`` (manual / composite) are skipped (logged)."""
+        import json
+        from pathlib import Path
+
+        events = path
+        if not isinstance(path, list):
+            events = json.loads(Path(path).read_text())
+        for ev in events:
+            kind = ev.get("kind", "do")
+            if kind == "undo":
+                self.undo() if hasattr(self, "undo") else self.commands.undo()
+                continue
+            if kind == "redo":
+                self.redo() if hasattr(self, "redo") else self.commands.redo()
+                continue
+            op = ev.get("op")
+            if not op:
+                continue
+            getattr(self, op)(**ev.get("args", {}))
 
     def _unique_connection_name(self, source, target) -> str:
         from model.connection import BlockEndpoint

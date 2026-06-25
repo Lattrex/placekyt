@@ -10,6 +10,18 @@ from model.project import Project
 from .base import Command
 
 
+def _endpoint_to_trace(ep) -> dict | None:
+    """Serialize a connection endpoint to a replayable dict the controller's
+    add_logical_connection understands: ``{"block": name, "port": port}`` or
+    ``{"chip": id, "port": port}``. Returns None for an unrecognized endpoint."""
+    from model.connection import BlockEndpoint, ChipPortEndpoint
+    if isinstance(ep, BlockEndpoint):
+        return {"block": ep.block, "port": ep.port}
+    if isinstance(ep, ChipPortEndpoint):
+        return {"chip": ep.chip, "port": ep.port}
+    return None
+
+
 class AddConnectionCommand(Command):
     """Add a connection. Undo removes it."""
 
@@ -34,6 +46,15 @@ class AddConnectionCommand(Command):
 
     def description(self) -> str:
         return f"Add connection {self.connection.name}"
+
+    def to_trace(self) -> dict | None:
+        src = _endpoint_to_trace(self.connection.source)
+        tgt = _endpoint_to_trace(self.connection.target)
+        if src is None or tgt is None:
+            return None  # unknown endpoint type → human description only
+        return {"op": "add_logical_connection",
+                "args": {"source": src, "target": tgt,
+                         "name": self.connection.name}}
 
 
 class SetConnectionRouteCommand(Command):
@@ -71,6 +92,11 @@ class SetConnectionRouteCommand(Command):
     def description(self) -> str:
         return f"Route connection {self.name}"
 
+    def to_trace(self) -> dict:
+        pts = ([[int(x), int(y)] for (x, y) in self.points]
+               if self.points else None)
+        return {"op": "set_route", "args": {"name": self.name, "points": pts}}
+
 
 class RemoveConnectionCommand(Command):
     """Remove a connection by name. Undo restores it."""
@@ -93,6 +119,9 @@ class RemoveConnectionCommand(Command):
 
     def description(self) -> str:
         return f"Remove connection {self.name}"
+
+    def to_trace(self) -> dict:
+        return {"op": "remove_connection", "args": {"name": self.name}}
 
 
 class DeleteRouteCommand(Command):
@@ -160,6 +189,9 @@ class DeleteRouteCommand(Command):
 
     def description(self) -> str:
         return f"Delete route {self.name}"
+
+    def to_trace(self) -> dict:
+        return {"op": "delete_route", "args": {"name": self.name}}
 
 
 class AddInterChipCommand(Command):

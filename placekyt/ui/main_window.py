@@ -116,6 +116,10 @@ class MainWindow(QMainWindow):
         self.console = ConsolePanel(self._api_namespace())
         console_dock = self._add_dock("Console", self.console,
                                       Qt.BottomDockWidgetArea)
+        # Every GUI interaction is a Command; echo each one into the console live
+        # (the same controller call you'd script), so the console is also a
+        # session log. The trace survives project swaps, so register once.
+        self.controller.trace.add_listener(self.console.echo_command)
 
         # Disassembly (bottom): load a .kbs bitstream → mnemonic listing (#184).
         from .panels.disassembly_panel import DisassemblyPanel
@@ -171,6 +175,9 @@ class MainWindow(QMainWindow):
                                       self._import_grc))
         m_file.addAction(self._action("Save", "Ctrl+S", self._save))
         m_file.addAction(self._action("Save As…", "Ctrl+Shift+S", self._save_as))
+        m_file.addSeparator()
+        m_file.addAction(self._action("Export Command Trace…", None,
+                                      self._export_trace))
         m_file.addSeparator()
         m_file.addAction(self._action("Quit", "Ctrl+Q", self.close))
 
@@ -1326,6 +1333,27 @@ class MainWindow(QMainWindow):
             if not path.endswith(".kyt"):
                 path += ".kyt"
             self._do_save(path)
+
+    def _export_trace(self) -> None:
+        """Export the session command trace — every operation performed — as a
+        runnable replay script (.py) or a structured log (.kytrace), to reproduce
+        a session / attach to a bug report."""
+        from PySide6.QtWidgets import QFileDialog
+
+        path, sel = QFileDialog.getSaveFileName(
+            self, "Export Command Trace", "",
+            "Replay script (*.py);;Command trace (*.kytrace)")
+        if not path:
+            return
+        if not path.endswith((".py", ".kytrace")):
+            path += ".py" if "py" in (sel or "").lower() else ".kytrace"
+        try:
+            self.controller.export_trace(path)
+            n = len(self.controller.trace.events())
+            self.statusBar().showMessage(
+                f"Exported {n} commands to {path}", 4000)
+        except Exception as exc:  # noqa: BLE001
+            self.statusBar().showMessage(f"Trace export failed: {exc}", 5000)
 
     def _do_save(self, path) -> None:
         try:

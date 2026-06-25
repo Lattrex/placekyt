@@ -39,6 +39,13 @@ class SetCellFaceCommand(Command):
     def description(self) -> str:
         return f"Set {self.block_name}[{self.cell_id}] face → {self.face.value}"
 
+    def to_trace(self) -> dict:
+        # face recorded as its string value; the controller's set_cell_face
+        # accepts either a Face or its string (replay-friendly).
+        return {"op": "set_cell_face",
+                "args": {"block_name": self.block_name, "cell_id": self.cell_id,
+                         "face": self.face.value}}
+
 
 class EditParamsCommand(Command):
     """Replace a block's parameter dict. Undo restores the prior params.
@@ -66,6 +73,10 @@ class EditParamsCommand(Command):
 
     def description(self) -> str:
         return f"Edit params of {self.block_name}"
+
+    def to_trace(self) -> dict:
+        return {"op": "edit_params",
+                "args": {"block_name": self.block_name, "params": self.params}}
 
 
 class ResyncFromGrcCommand(Command):
@@ -148,6 +159,10 @@ class RenameBlockCommand(Command):
 
     def description(self) -> str:
         return f"Rename {self.old_name} → {self.new_name}"
+
+    def to_trace(self) -> dict:
+        return {"op": "rename_block",
+                "args": {"old_name": self.old_name, "new_name": self.new_name}}
 
 
 class SetInstrOverrideCommand(Command):

@@ -27,6 +27,19 @@ class Command(ABC):
         return False while a generator result is in-flight). Default True."""
         return True
 
+    def to_trace(self) -> dict | None:
+        """A structured, REPLAYABLE record of this operation for the command
+        trace (§ console trace / bug-report capture).
+
+        Returns ``{"op": <controller-method>, "args": {...}}`` where ``op`` names
+        the public ``AppController`` method that performs this operation and
+        ``args`` are its keyword arguments — so a trace can be replayed by calling
+        ``getattr(controller, op)(**args)``. Commands override this; the default
+        returns ``None`` (the op is recorded as a human-readable description only,
+        not auto-replayable — e.g. an internal composite the controller exposes
+        under its own higher-level method)."""
+        return None
+
 
 class CompositeCommand(Command):
     """Groups commands into one atomic undo/redo unit (§4.2).
@@ -63,6 +76,58 @@ class CompositeCommand(Command):
         return list(self._commands)
 
 
+class CommandTrace:
+    """An append-only log of every command the user performs, for live display
+    in the console AND export to a replayable script / .kytrace.
+
+    EVERY GUI interaction is a Command, so recording at the CommandManager is a
+    complete, faithful capture of the session: place / move / rotate / face /
+    param / connect / route / rename / delete — and undo/redo. Each entry is a
+    dict ``{seq, kind, description, op, args}`` where ``kind`` is
+    "do"/"undo"/"redo", ``description`` is the human one-liner, and ``op``/``args``
+    (when present) are the replayable ``AppController`` call. A trace can be
+    exported and replayed on another machine to reproduce a bug EXACTLY.
+    """
+
+    def __init__(self) -> None:
+        self._events: list[dict] = []
+        self._seq = 0
+        self._listeners: list = []  # callbacks(event_dict) for live console echo
+
+    def add_listener(self, fn) -> None:
+        """Register a callback fired for each recorded event (the console echo)."""
+        self._listeners.append(fn)
+
+    def record(self, cmd: "Command", kind: str = "do") -> dict:
+        ev = {
+            "seq": self._seq,
+            "kind": kind,
+            "description": cmd.description(),
+        }
+        try:
+            tr = cmd.to_trace()
+        except Exception:  # noqa: BLE001 — a bad to_trace must never break an edit
+            tr = None
+        if tr:
+            ev["op"] = tr.get("op")
+            ev["args"] = tr.get("args", {})
+        self._events.append(ev)
+        self._seq += 1
+        for fn in list(self._listeners):
+            try:
+                fn(ev)
+            except Exception:  # noqa: BLE001 — a listener must not break the edit
+                pass
+        return ev
+
+    def events(self) -> list[dict]:
+        return list(self._events)
+
+    def clear(self) -> None:
+        self._events.clear()
+        self._seq = 0
+
+
 class CommandManager:
     """Owns undo/redo stacks and drives the model event bus (§4.2, §6).
 
@@ -73,14 +138,20 @@ class CommandManager:
       * ``redo`` pops the redo stack, re-executes, pushes to undo, flushes.
       * the undo stack is capped at ``MAX_HISTORY`` (oldest dropped, releasing
         references for GC).
+      * every executed/undone/redone command is recorded in ``trace`` (a shared
+        :class:`CommandTrace`) for the live console echo + replayable export.
     """
 
     MAX_HISTORY = 200
 
-    def __init__(self, project: Project):
+    def __init__(self, project: Project, trace: "CommandTrace | None" = None):
         self.project = project
         self._undo: list[Command] = []
         self._redo: list[Command] = []
+        # The command trace SURVIVES project swaps (set_project rebuilds the
+        # CommandManager but passes the SAME trace), so a full session — import,
+        # edits, re-imports — is captured as one continuous log.
+        self.trace = trace if trace is not None else CommandTrace()
 
     # -- queries --------------------------------------------------------------
 
@@ -120,6 +191,7 @@ class CommandManager:
         self._undo.append(cmd)
         self._redo.clear()
         self._trim()
+        self.trace.record(cmd, "do")
         self.project.mark_dirty()
         self.project.event_bus.flush()
 
@@ -132,6 +204,7 @@ class CommandManager:
         self._undo.append(cmd)
         self._redo.clear()
         self._trim()
+        self.trace.record(cmd, "do")
         self.project.mark_dirty()
         self.project.event_bus.flush()
 
@@ -141,6 +214,7 @@ class CommandManager:
         cmd = self._undo.pop()
         cmd.undo()
         self._redo.append(cmd)
+        self.trace.record(cmd, "undo")
         self.project.mark_dirty()
         self.project.event_bus.flush()
 
@@ -150,6 +224,7 @@ class CommandManager:
         cmd = self._redo.pop()
         cmd.execute()
         self._undo.append(cmd)
+        self.trace.record(cmd, "redo")
         self.project.mark_dirty()
         self.project.event_bus.flush()
 

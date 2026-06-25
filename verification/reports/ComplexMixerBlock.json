@@ -1,0 +1,1 @@
+{"kyttar_block": "ComplexMixerBlock", "passed": true, "metric": "amplitude", "n_compared": 64, "max_abs_err": 1, "tolerance": 4, "nmse_db": -83.31374134392688, "correlation": 0.9999999977267371, "bit_errors": 0, "delay_used": 0, "coverage": {"param_sweep": 5, "bit_exact": true, "mutation": true, "grid_aligned": true, "off_grid": true}}

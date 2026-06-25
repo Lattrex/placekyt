@@ -104,36 +104,50 @@ class SoftDemodulatorBlock(KyttarBlock):
         coeff = min(0.5, two_inv_sigma2)
         self._llr_coeff_q15 = float_to_q15(coeff)
 
+    @property
+    def llr_coeff_q15(self) -> int:
+        """The signed Q15 LLR coefficient the on-chip MULQ applies (LLR = coeff·I)."""
+        c = self._llr_coeff_q15
+        return c - 65536 if c > 32767 else c
+
+    def process_reference_q15(self, input_samples) -> list:
+        """Bit-exact predictor of the on-chip datapath: a single ``MULQ`` per
+        sample (``LLR = (I · coeff) >> 15``), returned as unsigned Q15 words.
+
+        Models the hardware exactly: each input is taken at full Q15 scale, the
+        signed product is arithmetic-right-shifted by 15, and clipped to the Q15
+        range (a no-op for the production coeff ≤ 0.5 since |I·coeff| ≤ 0.5)."""
+        coef = self.llr_coeff_q15
+        out = []
+        for s in input_samples:
+            iq = int(s) & 0xFFFF
+            i_signed = iq - 65536 if iq >= 32768 else iq
+            llr = (i_signed * coef) >> 15
+            llr = max(-32768, min(32767, llr))
+            out.append(llr & 0xFFFF)
+        return out
+
     def process_reference(self, input_samples: np.ndarray) -> np.ndarray:
-        """
-        Reference implementation of BPSK soft demodulation.
+        """Float reference of BPSK soft demodulation (``LLR = coeff·I``), modelling
+        the on-chip Q15 MULQ exactly (see :meth:`process_reference_q15`).
 
         Args:
-            input_samples: I samples from carrier recovery
+            input_samples: I samples (floats in [-1, 1) or Q15 ints).
 
         Returns:
-            LLR values (scaled to approximately ±1 range)
+            LLR values as float32 in the block's [-0.5, 0.5) output scale.
         """
         n = len(input_samples)
         output = np.zeros(n, dtype=np.float32)
-
+        coef = self.llr_coeff_q15
         for i in range(n):
-            # Convert to Q15 and multiply
-            i_q15 = float_to_q15(input_samples[i])
-            i_signed = i_q15 if i_q15 < 32768 else i_q15 - 65536
-
-            coef_signed = self._inv_variance_q15
-            if coef_signed > 32767:
-                coef_signed = coef_signed - 65536
-
-            # Q15 multiply: (a * b) >> 15
-            llr = (i_signed * coef_signed) >> 15
-
-            # Clip to Q15 range
+            s = input_samples[i]
+            # Accept floats in [-1,1) or raw Q15 ints.
+            i_q15 = float_to_q15(s) if isinstance(s, (float, np.floating)) else int(s) & 0xFFFF
+            i_signed = i_q15 - 65536 if i_q15 >= 32768 else i_q15
+            llr = (i_signed * coef) >> 15
             llr = max(-32768, min(32767, llr))
-
             output[i] = llr / 32768.0
-
         return output
 
     def build_cell_programs(self) -> Dict[int, CellProgram]:

@@ -8,6 +8,30 @@ anything that generalizes across block classes into `invariants.md`.
 
 ---
 
+## SoftDemodulatorBlock — BPSK soft demapper vs GR soft decoder 2026-06-25
+
+- **Status:** PASS / DONE vs GNU Radio `digital.constellation_soft_decoder_cf`
+  (BPSK), 12 tests; full verification suite 257; placekyt 937 / 16 skipped.
+- **A single MULQ.** On chip the soft demapper is `LLR = coeff·I`, one `MULQ`,
+  where `coeff = min(0.5, 2/σ²·llr_scale)`. The block was already proven on the
+  LLR harness (test_complex_harness.py); this gives it a dedicated suite + makes
+  it a manifest-`done` block.
+- **noise_variance is a REAL knob.** `coeff` tracks `2/σ²` and SATURATES at the
+  production scale 0.5 for any realistic `σ² ≤ 4`, then scales down for very high
+  noise (`σ²=10 → coeff=0.2`). GR's BPSK soft decoder emits `4·I`, so the LLR
+  comparator aligns the two scales with `llr_scale = coeff/4` (0.125 at the
+  production scale). Both regimes match GR on sign + (rescaled) magnitude.
+- **Metric = LLR (sign exact + magnitude floor).** The SIGN is the hard bit the
+  FEC decoder acts on → must agree exactly outside the near-zero dead zone; the
+  soft magnitude is held to a derived Q15 floor. Mutations (flipped sign, halved
+  magnitude, +1 delay, empty) all fail.
+- **Fixed a latent reference bug.** `process_reference` referenced a nonexistent
+  `self._inv_variance_q15` and would `AttributeError` if ever called. Rewrote it
+  to model the on-chip `LLR = (coeff·I)>>15` exactly and added `llr_coeff_q15` +
+  `process_reference_q15` (the bit-exact predictor the EXACT gate uses).
+
+---
+
 ## BandRejectFilter — firdes.band_reject (notch, S=2) 2026-06-25
 
 - **Status:** PASS / DONE vs GNU Radio `firdes.band_reject` + `fir_filter_fff`, 30
@@ -171,6 +195,305 @@ anything that generalizes across block classes into `invariants.md`.
   real, simKYT-correct instruction.
 - **Generalizes:** see invariants.md INV-15 (any Q15 block needing a coefficient
   with |.|>1 uses store-halved + apply-twice; cascade the split for |.|>2).
+
+## ComplexMixerBlock — DONE: multiply_cc via NCO + a signal-RELAY cell 2026-06-25
+
+The complex mixer (= multiply_cc(signal, sig_source_c) = in·exp(jθ_n)) is COMPLETE
+and verified vs GNU Radio (19 tests; full verification suite 297; placekyt 937).
+It REUSES the verified NCO interpolated cos/sin pipeline verbatim (with a sign-
+applying interp so cos/sin come out signed, no amplitude) + a mixer cell doing the
+full complex product yi=xi·cos−xq·sin, yq=xi·sin+xq·cos (4 MULQ).
+
+- **THE fix — a mid-pipeline RELAY cell for the signal.** The signal (xi,xq) must
+  travel phase→mixer (the pipeline ends), but a value forwarded across ~8 skipped
+  cells arrives 0 (the substrate forward-distance limit: IQUpconvert's skip-4 works,
+  the NCO's phase→emit skip-8 failed). The budget-tight pipeline cells can't
+  passthrough 2 extra values either. The clean fix: insert a CHEAP relay cell
+  (2 state, ~6 instr, no table) mid-chain (after sin_interp, before cos_fold) so
+  xi,xq hop phase→relay (skip-4) then relay→mixer (skip-4) — both within the proven
+  distance. 11 cells, column-major fold, mixer faces east to the bus.
+- **Overflow note:** yi=xi·cos−xq·sin can exceed Q15 for a full-scale signal; the
+  DUT wraps and the bit-exact reference models the wrap, but the GR-amplitude test
+  drives signal amplitude ≤ 0.5 so the product stays in range (DUT wrap == GR float).
+- **Generalised** to [[kyttar-cell-asm-conventions]]: to carry a value across a long
+  datapath, hop it through a cheap relay cell every ≤4 cells, not a single far
+  forward. This + the NCO completes the tier-1 GRC-parity queue.
+
+---
+
+## ComplexMixerBlock — cos/sin done (reuses NCO); blocked on signal routing 2026-06-25
+
+The complex mixer = multiply_cc(signal, sig_source_c) = in*exp(j theta_n). It
+REUSES the verified NCO interpolated cos/sin pipeline verbatim (phase | sin{fold
+even odd interp} | cos{...} | mixer), with a sign-applying interp (the mixer wants
+signed cos/sin, no amplitude) and a mixer cell doing the full complex product
+yi=xi*cos-xq*sin, yq=xi*sin+xq*cos (4 MULQ). The 10-cell block BUILDS, ROUTES,
+EGRESSES, and the bit-exact reference is written.
+
+- **THE blocker — the SIGNAL doesn't reach the mixer.** The phase cell forwards the
+  input (xi,xq) to the mixer cell (the last of 10), and it arrives 0 (output all
+  zero; echoing confirms xi=0 at the mixer). IQUpconvertBlock forwards phase->upmix
+  over 6 cells (skip-4) and works; this is skip-8 and fails -- a forward over too
+  many intermediate cells doesn't deliver, even though the column-major layout
+  places phase and mixer physically adjacent (so it's a CHAIN-distance limit, not a
+  physical-routing one). The NCO hit the same wall (phase->emit neg forward arrived
+  0) and dodged it by computing neg LOCALLY in the fold -- but the signal is an
+  external input, it can't be recomputed downstream.
+- **Why passthrough doesn't fit:** routing xi,xq THROUGH the pipeline needs each hop
+  cell to forward 2 extra values, but every pipeline cell is budget-tight (fold ~23
+  instr + 4 data + 3 state; even/odd carry 18-word tables; interp already has 5
+  inputs). Adding a 2-value passthrough overflows the 32-reg/cell budget in all of
+  them.
+- **The fix (not yet built):** a dedicated signal-RELAY path -- a couple of cheap
+  cells (no table, few instr) interleaved so xi,xq hop <=4 cells at a time from
+  phase to the mixer; OR a shorter cos/sin pipeline (a single-cell 17-entry table
+  gives 37 LSB but halves the cell count, putting the mixer within skip-4 of phase);
+  OR pin down the exact forward-distance limit and route within it. The cos/sin half
+  is proven, so the mixer is finished modulo this signal route. nco-style WIP in
+  complex_mixer_block.py was reverted to the old real-mixer so the suites stay green.
+
+---
+
+## NCOBlock — DONE: complex interpolated NCO bit-exact vs GR sig_source_c 2026-06-25 (iter 5)
+
+The 10-cell interpolated complex NCO is COMPLETE and verified vs GNU Radio
+``analog.sig_source_c`` (21 tests; full verification suite 278; placekyt 938).
+
+- **The off-grid bug (iter-4) was an output FAN-OUT failure.** `fold.idx` was fanned
+  to even+odd+interp; only the FIRST destination (even) received it — odd and interp
+  got 0, so the odd cell looked up garbage and the interp never swapped P/Q. The fix:
+  emit idx as **two separate writes** `idx_e`→even, `idx_o`→odd (one output port per
+  destination, like the phase cell's ph_sin/ph_cos), and forward the parity
+  `par=idx&1` from the even cell to the interp. A single output port driving multiple
+  cells is the trap — `{write:idx_e}{write:idx_o}` is reliable, fan-out is not.
+- **Budget reclaim:** the 2nd write put the fold 1 over; computing `frac=(w&0x1FF)<<6`
+  as `SHL #7; SHR #1` (instead of `AND mask1ff; SHL #6`) drops the `mask1ff` data
+  word — same instruction count, gap +1.
+- **The complete keeper design** (angle-fold + parity-split + amp-then-sign +
+  face-east folded egress) is in the iter-4 entry below; iter-5 only fixed the
+  fan-out + budget. Result: BIT-EXACT vs ``process_reference_q15`` on both channels
+  at grid AND off-grid frequencies; ~1 LSB vs GR grid-aligned; ~10 LSB off-grid vs
+  GR at the DUT's actual (freq_word) frequency = the derived 33-entry-table
+  interpolation floor. Off-grid vs GR's EXACT frequency shows the separate, expected
+  freq_word-quantization drift (fs/65536 Hz resolution), corr=1.0.
+- **Generalised** to [[kyttar-cell-asm-conventions]]: never drive multiple cells from
+  one output port (emit one write per destination); folded-egress needs the output
+  cell's FACE = its bus direction; explicit input regs don't reserve from the state
+  gap (place data past the highest input reg); amplitude-then-sign in emit.
+
+---
+
+## NCOBlock — iter 4: full datapath + egress working; grid-aligned bit-exact; off-grid interp bug 2026-06-25
+
+The 10-cell interpolated complex NCO is ~90% done. It BUILDS, ROUTES, EGRESSES two
+words/trigger, and is BIT-EXACT vs the reference AND matches GR ``sig_source_c`` to
+**1 LSB** on grid-aligned frequencies (freq_word a multiple of 512). Reverted to the
+working original (suite green); best WIP saved at
+`verification/KNOWLEDGE_BASE/drafts/nco_block_WORKING.py`.
+
+- **FOLDED-EGRESS SOLVED (the iter-3 blocker).** A 2-row fold egresses only when the
+  output cell's FACE = its egress direction toward the bus (NOT via io_colocated,
+  which can be False — the RRC egresses with it False). The winning layout is a
+  COLUMN-MAJOR serpentine: col 0 flows SOUTH (phase→sin_interp, faces "south"), the
+  corner cell faces "east", col 1 flows NORTH (cos_fold→emit, faces "north") and
+  **emit faces "east"** so its two writes egress east, off-block, to the bus. With
+  the wrong face the bus taps an internal cell (it read cos_fold's idx) or nothing.
+- **Two-write complex egress** needs `emit` to compute both yi,yq then `{write:yi}`
+  `{write:yq}` — both ride the bus interleaved (harness de-interleaves).
+- **MORE substrate gotchas found (add to [[kyttar-cell-asm-conventions]]):**
+  * **A fan-out of one output to 3 cells silently drops the 3rd.** `fold.idx →
+    even, odd, interp` delivered idx to even+odd but left interp's idx = 0. Fix:
+    don't fan a value to 3 — derive it once and forward from a 2nd hop (the even
+    cell computes `par = idx&1` and forwards it to interp).
+  * **A long forward (first cell → last cell across the whole chain) fails.** The
+    phase cell's `neg_sin/neg_cos → emit` arrived as 0; a mid-chain forward
+    (interp → emit) works. So compute `neg` in the fold, carry it fold→interp, and
+    apply the sign there/at emit (a short forward).
+  * **Explicit input registers do NOT reserve themselves from the gap.** The
+    resolver allocates state from `gap = range(next_data_addr, base)` BEFORE inputs;
+    a cell with 5 inputs at R0..R4 and data at addr 1..2 puts state on R3/R4 →
+    collides with the frac/neg inputs (the value read back is the state, not the
+    input). Fix: place the cell's DATA past the highest input register (e.g. addr 5)
+    so the gap starts above the inputs.
+  * **Amplitude-then-sign**: emit applies amp (MULQ) THEN negates, so the bit-exact
+    reference must do `neg ? -((mag·amp)>>15) : ((mag·amp)>>15)` (negate-after-amp),
+    not negate the table value first — a 1-LSB-on-negatives difference otherwise.
+- **REMAINING BUG — off-grid interpolation.** All grid-aligned tests use frac=0 and
+  EVEN idx, so interpolation + the odd path were under-tested. Off-grid: `idx=8`
+  (frac≠0) is bit-exact, but `idx=16` produces a magnitude (~25749) LARGER than both
+  table endpoints (table[16]=23170, table[17]=24279) — impossible for linear interp,
+  so the interp used a wrong P/Q or frac for that idx. The even/odd tables +
+  addressing + frac are all PROVEN correct in isolation (`even[8]@addr9=table[16]`,
+  `odd[8]@addr9=table[17]`, `frac=13056`), so the fault is in an on-chip forward or
+  the interp's MULQ/SUB for larger idx — needs cell-echo instrumentation to localize
+  (echo eval/oval/frac/delta from the interp at idx=16). Once fixed, the
+  grid-aligned-proven pipeline makes the full block bit-exact; then GR-amplitude
+  verify (~11 LSB off-grid floor), mutations, GRC yml, ComplexMixer.
+
+---
+
+## NCOBlock — iter 3: DSP pipeline works BIT-EXACT on chip; blocker = folded egress 2026-06-25
+
+Big progress. The interpolated complex NCO was REDESIGNED to fit the substrate and
+the sin/cos datapath now computes BIT-EXACT on simKYT. The block is still not done:
+the 10-cell folded layout doesn't egress correctly. WIP at
+`verification/KNOWLEDGE_BASE/drafts/nco_block_parity_split.py.draft`; nco_block.py
+reverted to the working original so the suite stays green.
+
+- **The keeper design — parity-split table + angle-fold.** Two changes made it fit
+  the 32-reg/cell budget AND avoid cross-cell straddle:
+  1. **Angle-fold:** fold the quadrant mirror INTO the angle (`q = mir ? 16384-within
+     : within`) so interpolation is always FORWARD `table[idx]→table[idx+1]` — no
+     per-cell mirror/step logic in the lookup. idx_bits=7 → 10-11 LSB (validated).
+  2. **Parity-split table:** the 33-entry table is split EVEN (`table[0,2,…,32]`,
+     17 entries) / ODD (`table[1,3,…,31]`). Since `idx` and `idx+1` always have
+     OPPOSITE parity, each table cell does ONE unconditional LOAD (no range test,
+     no straddle, no cross-cell addressing). The interp cell re-pairs by parity.
+  10 cells: `phase | (fold even odd interp)_sin | (…)_cos | emit`.
+- **THE substrate calling conventions (cost the most time — promote/remember):**
+  * **ALU first operand must be a NAMED register, never R0.** `AND R0, x` /
+    `ADD R0, x` / `SHR R0, n` (R0 as the *source* `Ra`) are MISCOMPILED (silently
+    wrong). The SECOND operand MAY be R0 (`SUB zero, R0`, `ADD p, R0` are fine).
+  * **An input port at R0 must be MOVEd out before R0 is clobbered**, and a value
+    read from `R{in:x}` (which aliases R0 for the landing reg) can be read ONCE —
+    after the first ALU op R0 changes. Save it to a state reg immediately
+    (IQUpconvert does exactly this: `MOVE state, R{in:phase}` first).
+  * **`AND` does NOT set the branch flag** — a `BR.Z` must be preceded by an
+    explicit `CMP R0, R{data:zero}` (CMP may take R0 as `Ra`).
+  * **Per-cell budget:** usable gap = `(31 - instr_count) - data_top - 1` ≥
+    state + (inputs not pinned to R0). The fold only fit after moving `neg` out to
+    the phase cell (phase computes `neg_sin = phase>>15`, `neg_cos =
+    (phase+16384)>>15` and forwards them straight to emit).
+  * **Multi-write handoff + DANGLING outputs:** a cell that `{write:}`s several
+    output ports works ONLY if every port has a real internal destination. A
+    DANGLING output (e.g. `ph_cos` with no consumer in a bisect) MISROUTES the
+    other writes (it showed as a clean 90°-shifted sine — the fold received
+    `ph_cos`=phase+16384 instead of `ph_sin`). Fan-out (one output → 3 cells, e.g.
+    `idx`→even/odd/interp) DOES work.
+- **VALIDATED:** the 6-cell sin pipeline (phase→fold→even→odd→interp→emit, 1-row
+  layout) is BIT-EXACT vs the reference for all 16 test phases (full quarter-wave
+  incl. the mirror). Reference `_sine_q15` mirrors the datapath op-for-op; n=0 =
+  (amp, 0) (GR phase-0 start).
+- **THE remaining blocker — folded 10-cell egress (P&R geometry).** A 1-row chain
+  egresses; the 10-cell needs a 2-row/2-col FOLD (≤8 across, INV-9) and there the
+  output cell's egress is geometry-sensitive: `port_map.io_colocated` must be True
+  (input + emit on the SAME bus-facing edge). Observed: column-major+`face=east`
+  put emit on the EAST edge opposite the WEST input → bus tapped `cos_fold`'s `idx`
+  (1 wrong word); 2-row+`face=west` (phase 0,0 / emit 0,1) → empty. The fix is the
+  right fold + face so `io_colocated=True` with emit on the bus edge (study the
+  FIR `_fold_geometry` and the Costas/RRC `default_layout`, which solve exactly
+  this for folded/feedback blocks). Once egress lands, the 6-cell-proven pipeline
+  makes the full block bit-exact — then GR-amplitude verify (~11 LSB derived floor,
+  grid-aligned freq_word), mutations, GR-native params, GRC yml, ComplexMixer.
+
+---
+
+## NCOBlock — build attempt: validated, blocked on per-cell register budget 2026-06-25 (iter 2)
+
+A FULL build attempt was made (the WIP block is saved at
+`verification/KNOWLEDGE_BASE/drafts/nco_block_interpolated.py.draft`). The
+algorithm + reference are VALIDATED; the block is NOT done because the
+interpolated complex NCO exceeds the substrate's per-cell register budget and
+needs a ~10-cell split. nco_block.py was reverted to the working original so the
+suite stays green (test_data_words builds NCOBlock).
+
+- **Reference VALIDATED vs GR.** The complex reference (interp quarter-wave,
+  phase-0 start, amplitude MULQ) matches exact float: 1.4 LSB on grid-aligned
+  freq_word (e.g. 2000/32000 → freq_word=4096), 37 LSB worst-case off-grid; n=0 =
+  (amp, 0). The on-chip `_sine_q15` mirrors the fold+table datapath op-for-op.
+- **Architecture builds — modelled on IQUpconvertBlock** (the proven 6-cell NCO:
+  phase | sin_fold | cos_fold | table_sin | table_cos | combine, with
+  `internal_connections`/`internal_jumps`/`default_layout`). Complex egress copies
+  the matched-filter pattern (`{write:yi}{write:yq}`, wire ONE net, harness
+  de-interleaves). The complex harness needs the NCO to declare TWO trigger inputs
+  (R0,R1, ignored) so `run_block_dut_complex` drives it.
+- **THE blocker — per-cell budget (the number).** The resolver packs data low and
+  instructions high; usable gap registers for state+preserved-inputs is
+  `gap = (31 − instr_count) − data_top − 1`. Interpolation breaks two cells:
+    * FOLD (decomp → idx, idxB, frac, neg): ~24 instr + 5 data + 3 state + 1
+      preserved input → gap = (31−24)−4−1 = 2 < 4 needed. **"No register space for
+      state 'fidx'."**
+    * TABLE+interp (17 entries = 18 data words): gap = (31−12)−19−1 = −1. The
+      17-entry table alone leaves no room for the interp arithmetic + 4 state.
+- **THE fix — split into a 10-cell datapath (fully worked out, fits each cell):**
+  `phase | sinA | sinB | sinTab | sinInt | cosA | cosB | cosTab | cosInt | emit`
+    * fold_a (per ch): phase → frac (=(phase&0x3FF)<<5), neg (=phase>>15), fidx
+      (=phase>>10). ~7 instr, fits trivially.
+    * fold_b: fidx → idx, idxB. loc=fidx&15; mir=(fidx>>4)&1; if mir loc=16−loc;
+      idx=loc; idxB=loc+1−2·mir. ~18 instr + 4 data + 2 state → gap 8 ≥ 3. Fits.
+    * tab: LOAD table[idx]→write valA; LOAD table[idxB]→write valB (write each
+      straight from R0, NO state). 7 instr + 18 data + 2 input → gap 4 ≥ 2. Fits.
+    * interp: mag = valA + (valB−valA)·frac (SUB, MULQ frac, ADD). ~6 instr, 1
+      state, 3 input. Fits easily.
+    * emit: apply neg sign + amplitude MULQ to cos_mag & sin_mag; `{write:yi}`
+      (cos) `{write:yq}` (sin). frac/neg PASSTHROUGH-plumbed fold_a→…→interp/emit.
+  10 cells folds ≤8 across (e.g. 5×2, INV-9). This is the largest tier-1 block by
+  far; the remaining work is mechanical (write the 10 cells + the frac/neg
+  passthrough ports + iterate build→route→sim) but substantial.
+- **OPEN design decision (worth review):** 37 LSB is the 17-entry (idx_bits=6)
+  linear-interp floor — defensible as a documented table-NCO limit (cf. the IIR
+  3–160 LSB), but coarse for a SOURCE. A 33-entry table (idx_bits=7, ~10 LSB) or
+  65-entry (~4 LSB) needs an even bigger cross-cell table. Pick the precision/cell
+  tradeoff before finishing the build.
+
+---
+
+## NCO / ComplexMixer — de-risked build design (still planned, NOT blocked) 2026-06-25
+
+SoftDemod (the third block of the older note below) is now DONE. The remaining two
+tier-1 complex blocks are FEASIBLE (no ISA wall) but are each a full block-build —
+larger than the firdes/SoftDemod steps. This note records the CONCRETE, measured
+design so the next iteration builds without re-deriving.
+
+- **The golden is EXACT FLOAT.** Measured: GNU Radio `analog.sig_source_c(fs,
+  GR_COS_WAVE, f, amp)` matches `amp·exp(jθ_n)` to **0.002 LSB** (it uses a
+  high-precision NCO, not a coarse table). So the Kyttar NCO's table+interp error
+  is the WHOLE error vs GR — the tolerance is the table-approximation bound
+  (derived, documented like the IIR pole-precision limit), not a quantization
+  excuse. (Use a `blocks.head(sizeof_gr_complex, N)` to bound the free-running
+  source or `tb.run()` never returns — cost real time.)
+- **Phase starts at 0.** GR's first output (n=0) is `(amp, 0)` = `amp·(cos0, sin0)`
+  — phase 0, THEN increment. The CURRENT NCOBlock increments phase BEFORE the
+  first output (`phase = phase + freq_word` then look up), so its n=0 is at
+  phase=freq_word — a one-sample PHASE OFFSET vs GR. Fix: emit at the current
+  phase, increment after (init phase=0).
+- **Interpolation is mandatory and PROVEN.** Linear interpolation on the phase
+  fraction, quarter-wave table with symmetry. Measured max error vs exact (amp
+  0.9), `idx_bits` = phase MSBs used for the table index:
+    * idx_bits=6 (17 quarter entries — the CURRENT table size): **37 LSB** (vs
+      ~1600 with no interp — interpolation alone is a 40x win on the same table).
+    * idx_bits=7 (33 quarter entries): **10 LSB**.
+    * idx_bits=8 (65 quarter entries): **4 LSB**.
+  33 entries just exceeds a 32-word cell, so idx_bits≥7 puts the table across ≥2
+  cells (cross-cell interp, intricate). idx_bits=6 fits one cell but 37 LSB is
+  coarse for a SOURCE (0.1% amplitude). Pick the table size for the target derived
+  tolerance and document it as the table-NCO floor.
+- **Output is COMPLEX (I=cos, Q=sin).** Emit BOTH from the output cell as two
+  WRITEs but wire only ONE net to x16_out (the harness de-interleaves
+  `[yi,yq,yi,yq]`); wiring a second net silently zeros egress (HARNESS note below).
+  cos = sin(phase + 90°) = sin(phase + 16384), so the datapath does TWO
+  symmetric+interpolated lookups per sample.
+- **Harness: NCO is a complex SOURCE.** Input is just a trigger (value ignored).
+  `run_block_dut_complex` drives two input regs; an NCO needs a single trigger in +
+  two output words. Either extend the complex driver for a 1-in/2-out source, or
+  drive via `run_block_dut` (single trigger) and read 2 words/sample, de-interleave.
+- **Params (Decision A):** `sample_rate`, `frequency` (Hz), `waveform`, `amplitude`;
+  derive `freq_word = round(frequency/sample_rate·65536)` internally; label "Signal
+  Source". Verify on GRID-ALIGNED frequencies (integer freq_word) to isolate the
+  table floor from the freq_word-vs-exact-f drift (fs/65536 Hz resolution, drift
+  grows with n — document separately).
+- **Blast radius is SMALL (checked).** `IQUpconvertBlock`, `ComplexMixerBlock`,
+  `CostasLoopBlock`, `ComplexCostasLoopBlock` carry their OWN embedded `freq_word`
+  NCO — they do NOT construct `NCOBlock`, so refactoring NCOBlock's signature does
+  not touch them. The one geometry test that names NCOBlock
+  (`test_data_words::test_abutting_handoff_resolves_entry_and_dest`) uses
+  `catalog.resolved_io(...)` for the EXPECTED entry/in_reg, so it is robust to
+  NCO internals as long as NCO keeps a single trigger INPUT register.
+- **ComplexMixer = multiply_cc(signal, sig_source_c)** — a frequency shift
+  `in·exp(jθ_n)`, reusing the NCO's complex exponential (4 MULQ for the complex
+  product). BUILD THE NCO FIRST.
+
+---
 
 ## NCO / ComplexMixer / SoftDemod — analysis + harness gap (not yet built) 2026-06-24
 

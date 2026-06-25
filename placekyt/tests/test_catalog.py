@@ -22,6 +22,7 @@ EXPECTED_CATEGORIES = {
     "memory_interface",
     "routing",          # SplitterBlock (full-duplex shared-port fan-out)
     "modulation",       # IQUpconvertBlock (I/Q passband upconvert, s=I·cos−Q·sin)
+    "sources",          # NCOBlock (complex Signal Source, analog.sig_source_c)
 }
 
 

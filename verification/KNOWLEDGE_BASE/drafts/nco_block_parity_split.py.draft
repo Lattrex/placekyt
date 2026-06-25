@@ -136,17 +136,24 @@ class NCOBlock(KyttarBlock):
 
         phase_cell = CellProgram(
             inputs=[Port("xi", register=0), Port("xq", register=1)],  # trigger only
-            outputs=[Port("ph_sin"), Port("ph_cos"), Port("trig")],
+            outputs=[Port("ph_sin"), Port("neg_sin"), Port("ph_cos"),
+                     Port("neg_cos"), Port("trig")],
             entries=[EntryPoint("default")],
             data=[DataWord("freq", self._freq_word, address=3),
                   DataWord("quarter", 16384, address=4)],
-            state=[StateVar("phase")],
+            state=[StateVar("phase"), StateVar("s")],
             assembly_template="""\
 start:
     MOVE R0, R{state:phase}
     {write:ph_sin}
+    MOVE R{state:s}, R{state:phase}
+    SHR R{state:s}, #15
+    {write:neg_sin}
     ADD R{state:phase}, R{data:quarter}
     {write:ph_cos}
+    MOVE R{state:s}, R0
+    SHR R{state:s}, #15
+    {write:neg_cos}
     ADD R{state:phase}, R{data:freq}
     MOVE R{state:phase}, R0
     {jump:trig}
@@ -155,17 +162,14 @@ start:
 
         def _fold_cell():
             return CellProgram(
-                # idx is emitted as TWO separate writes (idx_e -> even, idx_o ->
-                # odd): a single output port fanned out to multiple cells only
-                # reliably delivers to the FIRST destination (the 2nd/3rd get 0).
                 inputs=[Port("phase", register=0)],
-                outputs=[Port("idx_e"), Port("idx_o"), Port("frac"), Port("neg"),
-                         Port("trig")],
+                outputs=[Port("idx"), Port("frac"), Port("trig")],
                 entries=[EntryPoint("default")],
                 data=[DataWord("mask3fff", 0x3FFF, address=1),
                       DataWord("one", 1, address=2),
                       DataWord("c16384", 16384, address=3),
-                      DataWord("zero", 0, address=4)],
+                      DataWord("mask1ff", 0x1FF, address=4),
+                      DataWord("zero", 0, address=5)],
                 state=[StateVar("ph"), StateVar("w"), StateVar("mir")],
                 assembly_template="""\
 start:
@@ -176,8 +180,6 @@ start:
     MOVE R{state:mir}, R{state:ph}
     SHR R{state:mir}, #14
     MOVE R{state:mir}, R0
-    SHR R{state:mir}, #1
-    {write:neg}
     AND R{state:mir}, R{data:one}
     CMP R0, R{data:zero}
     BR.Z nomir
@@ -185,13 +187,12 @@ start:
     MOVE R{state:w}, R0
 nomir:
     MOVE R{state:ph}, R{state:w}
-    SHL R{state:ph}, #7
+    AND R{state:ph}, R{data:mask1ff}
     MOVE R{state:ph}, R0
-    SHR R{state:ph}, #1
+    SHL R{state:ph}, #6
     {write:frac}
     SHR R{state:w}, #9
-    {write:idx_e}
-    {write:idx_o}
+    {write:idx}
     {jump:trig}
 """,
             )
@@ -202,14 +203,13 @@ nomir:
             data += [DataWord("one", 1, address=1 + len(even_tbl))]
             return CellProgram(
                 inputs=[Port("idx", register=0)],
-                outputs=[Port("eval"), Port("par"), Port("trig")],
+                outputs=[Port("eval"), Port("trig")],
                 entries=[EntryPoint("default")],
                 data=data, state=[StateVar("p")],
                 assembly_template="""\
 start:
     MOVE R{state:p}, R{in:idx}
     AND R{state:p}, R{data:one}
-    {write:par}
     ADD R{state:p}, R0
     MOVE R{state:p}, R0
     SHR R{state:p}, #1
@@ -246,38 +246,33 @@ start:
 
         def _interp_cell():
             return CellProgram(
-                # par (idx&1) comes from the even cell — the fold's idx fans only
-                # to even/odd as separate writes, never to a 3rd cell.
                 inputs=[Port("eval", register=0), Port("oval", register=1),
-                        Port("par", register=2), Port("frac", register=3),
-                        Port("neg", register=4)],
-                outputs=[Port("mag"), Port("negf"), Port("trig")],
+                        Port("idx", register=2), Port("frac", register=3)],
+                outputs=[Port("mag"), Port("trig")],
                 entries=[EntryPoint("default")],
-                # Data MUST sit past the 5 explicit input registers (R0..R4): the
-                # resolver allocates state from gap = range(next_data_addr, base),
-                # so data low at 1..2 would push the gap onto R3/R4 and collide
-                # state with the frac/neg inputs.
-                data=[DataWord("zero", 0, address=5)],
+                data=[DataWord("one", 1, address=1), DataWord("zero", 0, address=2)],
                 state=[StateVar("p"), StateVar("Pe"), StateVar("Po"),
-                       StateVar("d")],
+                       StateVar("P"), StateVar("Q"), StateVar("d")],
                 assembly_template="""\
 start:
     MOVE R{state:Pe}, R{in:eval}
     MOVE R{state:Po}, R{in:oval}
-    CMP R{in:par}, R{data:zero}
-    BR.Z evencase
-    MOVE R{state:p}, R{state:Pe}
-    MOVE R{state:Pe}, R{state:Po}
-    MOVE R{state:Po}, R{state:p}
-evencase:
-    SUB R{state:Po}, R{state:Pe}
+    MOVE R{state:p}, R{in:idx}
+    AND R{state:p}, R{data:one}
+    MOVE R{state:p}, R0
+    MOVE R{state:P}, R{state:Pe}
+    MOVE R{state:Q}, R{state:Po}
+    CMP R{state:p}, R{data:zero}
+    BR.Z doint
+    MOVE R{state:P}, R{state:Po}
+    MOVE R{state:Q}, R{state:Pe}
+doint:
+    SUB R{state:Q}, R{state:P}
     MOVE R{state:d}, R0
     MULQ R{state:d}, R{in:frac}
     MOVE R{state:d}, R0
-    ADD R{state:d}, R{state:Pe}
+    ADD R{state:d}, R{state:P}
     {write:mag}
-    MOVE R0, R{in:neg}
-    {write:negf}
     {jump:trig}
 """,
             )
@@ -287,30 +282,26 @@ evencase:
                     Port("cos_neg", register=2), Port("sin_neg", register=3)],
             outputs=[Port("yi"), Port("yq"), Port("trig")],
             entries=[EntryPoint("default")],
-            data=[DataWord("amp", self._amp_q15, address=4),
-                  DataWord("zero", 0, address=5)],
+            data=[DataWord("zero", 0, address=4),
+                  DataWord("amp", self._amp_q15, address=5)],
             state=[StateVar("cv"), StateVar("sv")],
             assembly_template="""\
 start:
     MOVE R{state:cv}, R{in:cos_mag}
-    MOVE R{state:sv}, R{in:sin_mag}
-    MULQ R{state:cv}, R{data:amp}
-    MOVE R{state:cv}, R0
-    MULQ R{state:sv}, R{data:amp}
-    MOVE R{state:sv}, R0
     CMP R{in:cos_neg}, R{data:zero}
     BR.Z cpos
     SUB R{data:zero}, R{state:cv}
     MOVE R{state:cv}, R0
 cpos:
-    MOVE R0, R{state:cv}
+    MULQ R{state:cv}, R{data:amp}
     {write:yi}
+    MOVE R{state:sv}, R{in:sin_mag}
     CMP R{in:sin_neg}, R{data:zero}
     BR.Z spos
     SUB R{data:zero}, R{state:sv}
     MOVE R{state:sv}, R0
 spos:
-    MOVE R0, R{state:sv}
+    MULQ R{state:sv}, R{data:amp}
     {write:yq}
     {jump:trig}
 """,
@@ -329,18 +320,18 @@ spos:
         conns = [
             ("phase", "ph_sin", "sin_fold", "phase"),
             ("phase", "ph_cos", "cos_fold", "phase"),
+            ("phase", "neg_sin", "emit", "sin_neg"),
+            ("phase", "neg_cos", "emit", "cos_neg"),
         ]
         for ch in ("sin", "cos"):
             conns += [
-                (f"{ch}_fold", "idx_e", f"{ch}_even", "idx"),
-                (f"{ch}_fold", "idx_o", f"{ch}_odd", "idx"),
+                (f"{ch}_fold", "idx", f"{ch}_even", "idx"),
+                (f"{ch}_fold", "idx", f"{ch}_odd", "idx"),
+                (f"{ch}_fold", "idx", f"{ch}_interp", "idx"),
                 (f"{ch}_fold", "frac", f"{ch}_interp", "frac"),
-                (f"{ch}_fold", "neg", f"{ch}_interp", "neg"),
                 (f"{ch}_even", "eval", f"{ch}_interp", "eval"),
-                (f"{ch}_even", "par", f"{ch}_interp", "par"),
                 (f"{ch}_odd", "oval", f"{ch}_interp", "oval"),
                 (f"{ch}_interp", "mag", "emit", f"{ch}_mag"),
-                (f"{ch}_interp", "negf", "emit", f"{ch}_neg"),
             ]
         return conns
 
@@ -355,42 +346,26 @@ spos:
         return ["emit"]
 
     def default_layout(self) -> Dict[Any, Tuple[int, int, str]]:
-        # Two-row serpentine modelled on the proven ComplexRRCMatchedFilter layout.
-        # The FACE = each cell's egress direction matching the flow (this is what
-        # makes egress work, not I/O co-location): row 0 (sin) flows EAST; its last
-        # cell turns the corner SOUTH to the cos rail; row 1 (cos) flows WEST and
-        # ends at emit, which egresses WEST to the bus.
-        #
-        #   col:    0          1        2        3        4
-        #   row 0: phase ->  sin_fold sin_even sin_odd sin_interp(South)
-        #   row 1: emit  <-  cos_interp cos_odd cos_even cos_fold
-        # Column-major serpentine: col 0 flows SOUTH (phase down to sin_interp),
-        # col 1 flows NORTH (cos_fold up to emit). emit (output) sits at the top of
-        # col 1 and egresses EAST to the bus; faces match each cell's flow.
-        col0 = ["phase", "sin_fold", "sin_even", "sin_odd", "sin_interp"]
-        col1_bottom_up = ["cos_fold", "cos_even", "cos_odd", "cos_interp", "emit"]
-        layout = {}
-        for j, cid in enumerate(col0):
-            face = "east" if cid == "sin_interp" else "south"
-            layout[cid] = (0, j, face)
-        for k, cid in enumerate(col1_bottom_up):
-            y = 4 - k
-            face = "east" if cid == "emit" else "north"
-            layout[cid] = (1, y, face)
+        # Serpentine fold, ≤8 across (INV-9): two rows of 5.
+        # 2-wide x 5-tall column-major serpentine: column 0 runs DOWN, column 1
+        # runs UP, so the input (phase, top of col 0) and output (emit, top of
+        # col 1) co-locate on the TOP edge (INV-14, even column count).
+        # Two rows; phase (input, 0,0) and emit (output, 0,1) co-locate on the WEST
+        # edge. The chain snakes EAST along row 0, drops to row 1 at the far column,
+        # and snakes WEST back to emit — every trigger handoff orthogonally adjacent.
+        row0 = ["phase", "sin_fold", "sin_even", "sin_odd", "sin_interp"]
+        row1 = ["emit", "cos_interp", "cos_odd", "cos_even", "cos_fold"]
+        layout = {cid: (i, 0, "west") for i, cid in enumerate(row0)}
+        layout.update({cid: (i, 1, "west") for i, cid in enumerate(row1)})
         return layout
 
     # -------------------------------------------------------------- reference
-    @staticmethod
-    def _s16(v):
-        v &= 0xFFFF
-        return v - 0x10000 if v >= 0x8000 else v
-
-    def _sine_mag_neg(self, phase16: int, tbl: List[int]):
-        """The on-chip POSITIVE interpolated magnitude + the sign flag for a 16-bit
-        phase — mirrors the fold + even/odd + interp cells op-for-op (angle-fold,
-        forward interp). The emit cell applies amplitude THEN the sign, so the
-        reference returns them separately and the caller applies amp before neg."""
-        s16 = self._s16
+    def _sine_q15(self, phase16: int, tbl: List[int]) -> int:
+        """The EXACT on-chip interpolated sine (signed) for a 16-bit phase — mirrors
+        the fold + even/odd + interp cells op-for-op (angle-fold, forward interp)."""
+        def s16(v):
+            v &= 0xFFFF
+            return v - 0x10000 if v >= 0x8000 else v
         phase16 &= 0xFFFF
         within = phase16 & 0x3FFF
         neg = phase16 >> 15
@@ -400,28 +375,22 @@ spos:
         frac = (q & 0x1FF) << 6
         P = s16(tbl[idx])
         Q = s16(tbl[idx + 1]) if idx < 32 else P
-        mag = P + ((s16((Q - P) & 0xFFFF) * frac) >> 15)
-        return mag, neg
-
-    def _channel_q15(self, phase16, tbl, amp):
-        """One channel's signed Q15 output: amplitude FIRST (Q15 MULQ), THEN the
-        sign — exactly the emit cell's order (``neg ? -((mag·amp)>>15) : ...``)."""
-        mag, neg = self._sine_mag_neg(phase16, tbl)
-        v = (mag * amp) >> 15
-        return -v if neg else v
+        val = P + ((s16((Q - P) & 0xFFFF) * frac) >> 15)
+        return -val if neg else val
 
     def process_reference(self, input_samples) -> np.ndarray:
         """Complex reference ``amplitude·(cos θ_n + j sin θ_n)`` via the on-chip
         interpolated table; ``input_samples`` is only a trigger count."""
         tbl = self._quarter_table()
-        amp = self._s16(self._amp_q15)
+        amp = self._amp_q15 - 0x10000 if self._amp_q15 >= 0x8000 else self._amp_q15
         n = len(input_samples)
         out = np.zeros(n, dtype=np.complex64)
         phase = 0
         for i in range(n):
-            cos = self._channel_q15((phase + 16384) & 0xFFFF, tbl, amp)
-            sin = self._channel_q15(phase, tbl, amp)
-            out[i] = complex(cos / 32768.0, sin / 32768.0)
+            cos = self._sine_q15((phase + 16384) & 0xFFFF, tbl)
+            sin = self._sine_q15(phase, tbl)
+            out[i] = complex(((cos * amp) >> 15) / 32768.0,
+                             ((sin * amp) >> 15) / 32768.0)
             phase = (phase + self._freq_word) & 0xFFFF
         return out
 
@@ -429,13 +398,13 @@ spos:
         """Bit-exact on-chip predictor: ``(yi, yq)`` unsigned Q15 pairs per trigger
         (I=cos, Q=sin)."""
         tbl = self._quarter_table()
-        amp = self._s16(self._amp_q15)
+        amp = self._amp_q15 - 0x10000 if self._amp_q15 >= 0x8000 else self._amp_q15
         out = []
         phase = 0
         for _ in range(len(input_samples)):
-            cos = self._channel_q15((phase + 16384) & 0xFFFF, tbl, amp)
-            sin = self._channel_q15(phase, tbl, amp)
-            out.append((cos & 0xFFFF, sin & 0xFFFF))
+            cos = self._sine_q15((phase + 16384) & 0xFFFF, tbl)
+            sin = self._sine_q15(phase, tbl)
+            out.append((((cos * amp) >> 15) & 0xFFFF, ((sin * amp) >> 15) & 0xFFFF))
             phase = (phase + self._freq_word) & 0xFFFF
         return out
 

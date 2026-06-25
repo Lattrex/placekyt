@@ -22,6 +22,10 @@ placeKYT-hosted chip from a flowgraph for stimulus and measurement.
 > software-defined radio: place a chain of DSP blocks, and the array runs them in
 > parallel with no global clock.
 
+<p align="center"><img src="assets/placekyt-bpsk-demo.png" alt="placeKYT showing a BPSK receiver: the GNU Radio block library on the left, the design placed and routed on the Kyttar cell array in the center, the per-cell program and instruction view on the right, and the live waveform output along the bottom" width="100%"></p>
+
+<p align="center"><sub>A BPSK receiver in placeKYT — the block library (left), the design placed and routed on the cell array (center), the per-cell program view (right), and the live waveform output (bottom).</sub></p>
+
 ---
 
 ## What's in this repository

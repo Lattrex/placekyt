@@ -196,6 +196,55 @@ anything that generalizes across block classes into `invariants.md`.
 - **Generalizes:** see invariants.md INV-15 (any Q15 block needing a coefficient
   with |.|>1 uses store-halved + apply-twice; cascade the split for |.|>2).
 
+## NCOBlock — iter 4: full datapath + egress working; grid-aligned bit-exact; off-grid interp bug 2026-06-25
+
+The 10-cell interpolated complex NCO is ~90% done. It BUILDS, ROUTES, EGRESSES two
+words/trigger, and is BIT-EXACT vs the reference AND matches GR ``sig_source_c`` to
+**1 LSB** on grid-aligned frequencies (freq_word a multiple of 512). Reverted to the
+working original (suite green); best WIP saved at
+`verification/KNOWLEDGE_BASE/drafts/nco_block_WORKING.py`.
+
+- **FOLDED-EGRESS SOLVED (the iter-3 blocker).** A 2-row fold egresses only when the
+  output cell's FACE = its egress direction toward the bus (NOT via io_colocated,
+  which can be False — the RRC egresses with it False). The winning layout is a
+  COLUMN-MAJOR serpentine: col 0 flows SOUTH (phase→sin_interp, faces "south"), the
+  corner cell faces "east", col 1 flows NORTH (cos_fold→emit, faces "north") and
+  **emit faces "east"** so its two writes egress east, off-block, to the bus. With
+  the wrong face the bus taps an internal cell (it read cos_fold's idx) or nothing.
+- **Two-write complex egress** needs `emit` to compute both yi,yq then `{write:yi}`
+  `{write:yq}` — both ride the bus interleaved (harness de-interleaves).
+- **MORE substrate gotchas found (add to [[kyttar-cell-asm-conventions]]):**
+  * **A fan-out of one output to 3 cells silently drops the 3rd.** `fold.idx →
+    even, odd, interp` delivered idx to even+odd but left interp's idx = 0. Fix:
+    don't fan a value to 3 — derive it once and forward from a 2nd hop (the even
+    cell computes `par = idx&1` and forwards it to interp).
+  * **A long forward (first cell → last cell across the whole chain) fails.** The
+    phase cell's `neg_sin/neg_cos → emit` arrived as 0; a mid-chain forward
+    (interp → emit) works. So compute `neg` in the fold, carry it fold→interp, and
+    apply the sign there/at emit (a short forward).
+  * **Explicit input registers do NOT reserve themselves from the gap.** The
+    resolver allocates state from `gap = range(next_data_addr, base)` BEFORE inputs;
+    a cell with 5 inputs at R0..R4 and data at addr 1..2 puts state on R3/R4 →
+    collides with the frac/neg inputs (the value read back is the state, not the
+    input). Fix: place the cell's DATA past the highest input register (e.g. addr 5)
+    so the gap starts above the inputs.
+  * **Amplitude-then-sign**: emit applies amp (MULQ) THEN negates, so the bit-exact
+    reference must do `neg ? -((mag·amp)>>15) : ((mag·amp)>>15)` (negate-after-amp),
+    not negate the table value first — a 1-LSB-on-negatives difference otherwise.
+- **REMAINING BUG — off-grid interpolation.** All grid-aligned tests use frac=0 and
+  EVEN idx, so interpolation + the odd path were under-tested. Off-grid: `idx=8`
+  (frac≠0) is bit-exact, but `idx=16` produces a magnitude (~25749) LARGER than both
+  table endpoints (table[16]=23170, table[17]=24279) — impossible for linear interp,
+  so the interp used a wrong P/Q or frac for that idx. The even/odd tables +
+  addressing + frac are all PROVEN correct in isolation (`even[8]@addr9=table[16]`,
+  `odd[8]@addr9=table[17]`, `frac=13056`), so the fault is in an on-chip forward or
+  the interp's MULQ/SUB for larger idx — needs cell-echo instrumentation to localize
+  (echo eval/oval/frac/delta from the interp at idx=16). Once fixed, the
+  grid-aligned-proven pipeline makes the full block bit-exact; then GR-amplitude
+  verify (~11 LSB off-grid floor), mutations, GRC yml, ComplexMixer.
+
+---
+
 ## NCOBlock — iter 3: DSP pipeline works BIT-EXACT on chip; blocker = folded egress 2026-06-25
 
 Big progress. The interpolated complex NCO was REDESIGNED to fit the substrate and

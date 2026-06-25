@@ -155,14 +155,17 @@ start:
 
         def _fold_cell():
             return CellProgram(
+                # idx is emitted as TWO separate writes (idx_e -> even, idx_o ->
+                # odd): a single output port fanned out to multiple cells only
+                # reliably delivers to the FIRST destination (the 2nd/3rd get 0).
                 inputs=[Port("phase", register=0)],
-                outputs=[Port("idx"), Port("frac"), Port("neg"), Port("trig")],
+                outputs=[Port("idx_e"), Port("idx_o"), Port("frac"), Port("neg"),
+                         Port("trig")],
                 entries=[EntryPoint("default")],
                 data=[DataWord("mask3fff", 0x3FFF, address=1),
                       DataWord("one", 1, address=2),
                       DataWord("c16384", 16384, address=3),
-                      DataWord("mask1ff", 0x1FF, address=4),
-                      DataWord("zero", 0, address=5)],
+                      DataWord("zero", 0, address=4)],
                 state=[StateVar("ph"), StateVar("w"), StateVar("mir")],
                 assembly_template="""\
 start:
@@ -182,12 +185,13 @@ start:
     MOVE R{state:w}, R0
 nomir:
     MOVE R{state:ph}, R{state:w}
-    AND R{state:ph}, R{data:mask1ff}
+    SHL R{state:ph}, #7
     MOVE R{state:ph}, R0
-    SHL R{state:ph}, #6
+    SHR R{state:ph}, #1
     {write:frac}
     SHR R{state:w}, #9
-    {write:idx}
+    {write:idx_e}
+    {write:idx_o}
     {jump:trig}
 """,
             )
@@ -198,13 +202,14 @@ nomir:
             data += [DataWord("one", 1, address=1 + len(even_tbl))]
             return CellProgram(
                 inputs=[Port("idx", register=0)],
-                outputs=[Port("eval"), Port("trig")],
+                outputs=[Port("eval"), Port("par"), Port("trig")],
                 entries=[EntryPoint("default")],
                 data=data, state=[StateVar("p")],
                 assembly_template="""\
 start:
     MOVE R{state:p}, R{in:idx}
     AND R{state:p}, R{data:one}
+    {write:par}
     ADD R{state:p}, R0
     MOVE R{state:p}, R0
     SHR R{state:p}, #1
@@ -241,8 +246,10 @@ start:
 
         def _interp_cell():
             return CellProgram(
+                # par (idx&1) comes from the even cell — the fold's idx fans only
+                # to even/odd as separate writes, never to a 3rd cell.
                 inputs=[Port("eval", register=0), Port("oval", register=1),
-                        Port("idx", register=2), Port("frac", register=3),
+                        Port("par", register=2), Port("frac", register=3),
                         Port("neg", register=4)],
                 outputs=[Port("mag"), Port("negf"), Port("trig")],
                 entries=[EntryPoint("default")],
@@ -250,17 +257,14 @@ start:
                 # resolver allocates state from gap = range(next_data_addr, base),
                 # so data low at 1..2 would push the gap onto R3/R4 and collide
                 # state with the frac/neg inputs.
-                data=[DataWord("one", 1, address=5), DataWord("zero", 0, address=6)],
+                data=[DataWord("zero", 0, address=5)],
                 state=[StateVar("p"), StateVar("Pe"), StateVar("Po"),
                        StateVar("d")],
                 assembly_template="""\
 start:
     MOVE R{state:Pe}, R{in:eval}
     MOVE R{state:Po}, R{in:oval}
-    MOVE R{state:p}, R{in:idx}
-    AND R{state:p}, R{data:one}
-    MOVE R{state:p}, R0
-    CMP R{state:p}, R{data:zero}
+    CMP R{in:par}, R{data:zero}
     BR.Z evencase
     MOVE R{state:p}, R{state:Pe}
     MOVE R{state:Pe}, R{state:Po}
@@ -328,12 +332,12 @@ spos:
         ]
         for ch in ("sin", "cos"):
             conns += [
-                (f"{ch}_fold", "idx", f"{ch}_even", "idx"),
-                (f"{ch}_fold", "idx", f"{ch}_odd", "idx"),
-                (f"{ch}_fold", "idx", f"{ch}_interp", "idx"),
+                (f"{ch}_fold", "idx_e", f"{ch}_even", "idx"),
+                (f"{ch}_fold", "idx_o", f"{ch}_odd", "idx"),
                 (f"{ch}_fold", "frac", f"{ch}_interp", "frac"),
                 (f"{ch}_fold", "neg", f"{ch}_interp", "neg"),
                 (f"{ch}_even", "eval", f"{ch}_interp", "eval"),
+                (f"{ch}_even", "par", f"{ch}_interp", "par"),
                 (f"{ch}_odd", "oval", f"{ch}_interp", "oval"),
                 (f"{ch}_interp", "mag", "emit", f"{ch}_mag"),
                 (f"{ch}_interp", "negf", "emit", f"{ch}_neg"),

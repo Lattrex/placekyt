@@ -196,6 +196,35 @@ anything that generalizes across block classes into `invariants.md`.
 - **Generalizes:** see invariants.md INV-15 (any Q15 block needing a coefficient
   with |.|>1 uses store-halved + apply-twice; cascade the split for |.|>2).
 
+## NCOBlock — DONE: complex interpolated NCO bit-exact vs GR sig_source_c 2026-06-25 (iter 5)
+
+The 10-cell interpolated complex NCO is COMPLETE and verified vs GNU Radio
+``analog.sig_source_c`` (21 tests; full verification suite 278; placekyt 938).
+
+- **The off-grid bug (iter-4) was an output FAN-OUT failure.** `fold.idx` was fanned
+  to even+odd+interp; only the FIRST destination (even) received it — odd and interp
+  got 0, so the odd cell looked up garbage and the interp never swapped P/Q. The fix:
+  emit idx as **two separate writes** `idx_e`→even, `idx_o`→odd (one output port per
+  destination, like the phase cell's ph_sin/ph_cos), and forward the parity
+  `par=idx&1` from the even cell to the interp. A single output port driving multiple
+  cells is the trap — `{write:idx_e}{write:idx_o}` is reliable, fan-out is not.
+- **Budget reclaim:** the 2nd write put the fold 1 over; computing `frac=(w&0x1FF)<<6`
+  as `SHL #7; SHR #1` (instead of `AND mask1ff; SHL #6`) drops the `mask1ff` data
+  word — same instruction count, gap +1.
+- **The complete keeper design** (angle-fold + parity-split + amp-then-sign +
+  face-east folded egress) is in the iter-4 entry below; iter-5 only fixed the
+  fan-out + budget. Result: BIT-EXACT vs ``process_reference_q15`` on both channels
+  at grid AND off-grid frequencies; ~1 LSB vs GR grid-aligned; ~10 LSB off-grid vs
+  GR at the DUT's actual (freq_word) frequency = the derived 33-entry-table
+  interpolation floor. Off-grid vs GR's EXACT frequency shows the separate, expected
+  freq_word-quantization drift (fs/65536 Hz resolution), corr=1.0.
+- **Generalised** to [[kyttar-cell-asm-conventions]]: never drive multiple cells from
+  one output port (emit one write per destination); folded-egress needs the output
+  cell's FACE = its bus direction; explicit input regs don't reserve from the state
+  gap (place data past the highest input reg); amplitude-then-sign in emit.
+
+---
+
 ## NCOBlock — iter 4: full datapath + egress working; grid-aligned bit-exact; off-grid interp bug 2026-06-25
 
 The 10-cell interpolated complex NCO is ~90% done. It BUILDS, ROUTES, EGRESSES two

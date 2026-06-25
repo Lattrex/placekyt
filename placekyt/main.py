@@ -22,12 +22,28 @@ def main(argv: list[str] | None = None) -> int:
 
     window = MainWindow()
 
-    # Optional: open a project passed as the first positional arg.
+    # Open a project passed as the first positional arg; otherwise start with a
+    # ready-to-use default project (a single 10x12 array) so the user can place
+    # blocks immediately instead of landing in an empty, do-nothing window.
     if len(argv) > 1 and argv[1].endswith(".kyt"):
         _try_open(window, argv[1])
+    else:
+        _new_default_project(window)
 
     window.show()
     return app.exec()
+
+
+def _new_default_project(window) -> None:
+    """Start placeKYT with a blank but USABLE project — one chip of the default
+    10x12 Kyttar array — so launching the GUI with no file drops the user
+    straight into a canvas they can build on. Best-effort: any failure leaves the
+    empty project (and a status message) rather than crashing the launch."""
+    try:
+        window.controller.new_project("Untitled", "kyttar_10x12")
+        window._after_project_loaded()
+    except Exception as exc:  # noqa: BLE001 — launch must not crash
+        window.statusBar().showMessage(f"Could not start a default project: {exc}")
 
 
 def _apply_app_icon(app) -> None:

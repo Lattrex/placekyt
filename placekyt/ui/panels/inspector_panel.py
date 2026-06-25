@@ -155,6 +155,7 @@ class InspectorPanel(QWidget):
                 self._add_name_editor(block_name)
                 if block is not None:
                     self._add_row("Type", block.type)
+                    self._add_verification_row(block)
                     if block.params:
                         self._add_params_editor(block)
 
@@ -240,6 +241,24 @@ class InspectorPanel(QWidget):
         w = QLabel(str(value))
         w.setWordWrap(True)
         self._form.addRow(f"{label}:", w)
+        self._rows.append(w)
+
+    def _add_verification_row(self, block) -> None:
+        """A 'Verification' row flagging an unverified / proof-of-concept block
+        (🧪) with an explanatory tooltip. Verified blocks show nothing (the
+        default — no clutter)."""
+        from engine.catalog import (VERIFY_VERIFIED, verify_badge, verify_note)
+
+        spec = (self._controller.catalog.get(block.type, block.library)
+                if self._controller else None)
+        state = getattr(spec, "verification", VERIFY_VERIFIED) if spec else VERIFY_VERIFIED
+        if state == VERIFY_VERIFIED:
+            return
+        note = verify_note(state)
+        w = QLabel(f"{verify_badge(state)} {state}".strip())
+        w.setWordWrap(True)
+        w.setToolTip(note)
+        self._form.addRow("Verification:", w)
         self._rows.append(w)
 
     def _add_name_editor(self, block_name: str) -> None:

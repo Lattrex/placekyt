@@ -47,16 +47,50 @@ _EXCLUDED_BLOCKS = frozenset({
 })
 
 
-def _palette_allowlist() -> frozenset[str] | None:
-    """Block type names that may appear in the PALETTE — the curated set from the
-    verification manifest (any status: verified ``done``, ``planned``, or
-    proof-of-concept). A block NOT in the manifest is still resolvable (so designs
-    referencing it load) but is HIDDEN from the palette, so users don't unknowingly
-    build on the ~28 unverified leftover blocks.
+# Verification state of a block (from the manifest). Drives the palette allowlist
+# AND the trust badge shown in the library/inspector (and exported to GRC).
+VERIFY_VERIFIED = "verified"   # manifest status == 'done' — vs GR, fully verified
+VERIFY_POC = "poc"             # proof-of-concept (works in a demo, not per-block verified)
+VERIFY_PLANNED = "planned"     # curated/queued but not yet built+verified
+VERIFY_UNCURATED = "uncurated"  # not in the manifest at all (hidden from the palette)
 
-    Returns ``None`` if the manifest can't be found (e.g. a packaged bundle without
-    the verification tree) — in that case nothing is hidden and the full set shows,
-    the safe fallback (never hide a block we can't confirm is uncurated).
+# A short unicode badge shown after a block name in the library/inspector (and
+# exported to the GRC block label) to signal its verification state at a glance.
+_VERIFY_BADGE = {
+    VERIFY_VERIFIED: "",        # verified blocks are the default — no badge (uncluttered)
+    VERIFY_POC: "🧪",            # proof-of-concept — test tube
+    VERIFY_PLANNED: "🧪",        # not yet verified — same caution badge
+    VERIFY_UNCURATED: "🧪",
+}
+_VERIFY_NOTE = {
+    VERIFY_VERIFIED: "",
+    VERIFY_POC: "🧪 Proof-of-concept: works in a demo but has NOT been through "
+                "per-block GRC-equivalence verification. Use with care.",
+    VERIFY_PLANNED: "🧪 Not yet verified: this block is queued for GRC-equivalence "
+                    "verification but hasn't been validated. Use with care.",
+    VERIFY_UNCURATED: "🧪 Unverified / experimental block — not part of the "
+                      "curated, verified library.",
+}
+
+
+def verify_badge(state: str) -> str:
+    """The short test-tube badge for a verification state ("" for verified)."""
+    return _VERIFY_BADGE.get(state, "")
+
+
+def verify_note(state: str) -> str:
+    """A one-paragraph tooltip explaining a verification state ("" for verified)."""
+    return _VERIFY_NOTE.get(state, "")
+
+
+def _manifest_status() -> dict[str, str] | None:
+    """Map each manifest block name → its verification state (verified / poc /
+    planned). Used for BOTH the palette allowlist (a block must be a key here to
+    show) and the trust badge.
+
+    Returns ``None`` if the manifest can't be found (e.g. a packaged bundle
+    without the verification tree) — the safe fallback: nothing is hidden, no
+    badges, the full set shows.
     """
     import json
     import os
@@ -74,11 +108,20 @@ def _palette_allowlist() -> frozenset[str] | None:
             try:
                 with open(path) as f:
                     m = json.load(f)
-                return frozenset(
-                    b["kyttar_block"] for b in m.get("blocks", [])
-                    if "kyttar_block" in b)
             except Exception:  # noqa: BLE001 — malformed manifest ⇒ show all
                 return None
+            out: dict[str, str] = {}
+            for b in m.get("blocks", []):
+                name = b.get("kyttar_block")
+                if not name:
+                    continue
+                if b.get("status") == "done":
+                    out[name] = VERIFY_VERIFIED
+                elif b.get("poc"):
+                    out[name] = VERIFY_POC
+                else:
+                    out[name] = VERIFY_PLANNED
+            return out
     return None
 
 
@@ -142,8 +185,13 @@ class BlockSpec:
     # demos that reference it continue to load). A block is shown only if it is in
     # the curated verification manifest (verified, planned, or proof-of-concept);
     # the ~28 unverified HF-modem leftovers are hidden so users don't unknowingly
-    # build on questionable blocks. See ``_palette_allowlist``.
+    # build on questionable blocks. See ``_manifest_status``.
     hidden: bool = field(default=False, compare=False)
+    # Verification state (manifest-derived): "verified" (vs GR, done), "poc"
+    # (proof-of-concept — works in a demo, not per-block verified), "planned"
+    # (curated but not yet verified), or "uncurated" (not in the manifest). Drives
+    # the trust badge in the library/inspector and the GRC export.
+    verification: str = field(default=VERIFY_UNCURATED, compare=False)
 
     def param(self, name: str) -> ParamSpec | None:
         for p in self.params:
@@ -190,7 +238,7 @@ class BlockCatalog:
         """
         import dataclasses
 
-        allow = _palette_allowlist()  # None ⇒ show everything (safe fallback)
+        status = _manifest_status()  # None ⇒ show everything, no badges (fallback)
         specs: dict[tuple[str, str], BlockSpec] = {}
         for obj in vars(_mb).values():
             if (
@@ -201,10 +249,14 @@ class BlockCatalog:
                 and obj.__name__ not in _EXCLUDED_BLOCKS
             ):
                 spec = _build_spec(obj)
-                # A block NOT in the curated manifest is HIDDEN from the palette
-                # (but still resolvable, so designs/demos referencing it load).
-                if allow is not None and spec.type_name not in allow:
-                    spec = dataclasses.replace(spec, hidden=True)
+                if status is not None:
+                    verify = status.get(spec.type_name, VERIFY_UNCURATED)
+                    # A block NOT in the curated manifest is HIDDEN from the
+                    # palette (but still resolvable, so designs referencing it
+                    # load). Carry the verification state for the trust badge.
+                    spec = dataclasses.replace(
+                        spec, verification=verify,
+                        hidden=(verify == VERIFY_UNCURATED))
                 specs[(spec.library, spec.type_name)] = spec
         return cls(specs)
 

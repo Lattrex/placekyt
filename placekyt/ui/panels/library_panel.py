@@ -19,7 +19,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from engine.catalog import BlockCatalog
+from engine.catalog import BlockCatalog, verify_badge as _verify_badge, \
+    verify_note as _verify_note
 from ui.canvas.chip_canvas import BLOCK_MIME
 
 # Role storing the (block_type, library) tuple on leaf items.
@@ -77,9 +78,15 @@ class LibraryPanel(QWidget):
         for category in sorted(by_cat):
             cat_item = QTreeWidgetItem([_pretty(category)])
             for spec in by_cat[category]:
-                leaf = QTreeWidgetItem([spec.type_name])
+                badge = _verify_badge(getattr(spec, "verification", "verified"))
+                label = f"{spec.type_name} {badge}".rstrip()
+                leaf = QTreeWidgetItem([label])
                 leaf.setData(0, _BLOCK_ROLE, (spec.type_name, spec.library))
-                leaf.setToolTip(0, spec.description)
+                tip = spec.description
+                note = _verify_note(getattr(spec, "verification", "verified"))
+                if note:
+                    tip = f"{tip}\n\n{note}" if tip else note
+                leaf.setToolTip(0, tip)
                 cat_item.addChild(leaf)
             self.tree.addTopLevelItem(cat_item)
             cat_item.setExpanded(True)

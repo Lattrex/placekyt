@@ -196,6 +196,64 @@ anything that generalizes across block classes into `invariants.md`.
 - **Generalizes:** see invariants.md INV-15 (any Q15 block needing a coefficient
   with |.|>1 uses store-halved + apply-twice; cascade the split for |.|>2).
 
+## ComplexMixerBlock — DONE: multiply_cc via NCO + a signal-RELAY cell 2026-06-25
+
+The complex mixer (= multiply_cc(signal, sig_source_c) = in·exp(jθ_n)) is COMPLETE
+and verified vs GNU Radio (19 tests; full verification suite 297; placekyt 937).
+It REUSES the verified NCO interpolated cos/sin pipeline verbatim (with a sign-
+applying interp so cos/sin come out signed, no amplitude) + a mixer cell doing the
+full complex product yi=xi·cos−xq·sin, yq=xi·sin+xq·cos (4 MULQ).
+
+- **THE fix — a mid-pipeline RELAY cell for the signal.** The signal (xi,xq) must
+  travel phase→mixer (the pipeline ends), but a value forwarded across ~8 skipped
+  cells arrives 0 (the substrate forward-distance limit: IQUpconvert's skip-4 works,
+  the NCO's phase→emit skip-8 failed). The budget-tight pipeline cells can't
+  passthrough 2 extra values either. The clean fix: insert a CHEAP relay cell
+  (2 state, ~6 instr, no table) mid-chain (after sin_interp, before cos_fold) so
+  xi,xq hop phase→relay (skip-4) then relay→mixer (skip-4) — both within the proven
+  distance. 11 cells, column-major fold, mixer faces east to the bus.
+- **Overflow note:** yi=xi·cos−xq·sin can exceed Q15 for a full-scale signal; the
+  DUT wraps and the bit-exact reference models the wrap, but the GR-amplitude test
+  drives signal amplitude ≤ 0.5 so the product stays in range (DUT wrap == GR float).
+- **Generalised** to [[kyttar-cell-asm-conventions]]: to carry a value across a long
+  datapath, hop it through a cheap relay cell every ≤4 cells, not a single far
+  forward. This + the NCO completes the tier-1 GRC-parity queue.
+
+---
+
+## ComplexMixerBlock — cos/sin done (reuses NCO); blocked on signal routing 2026-06-25
+
+The complex mixer = multiply_cc(signal, sig_source_c) = in*exp(j theta_n). It
+REUSES the verified NCO interpolated cos/sin pipeline verbatim (phase | sin{fold
+even odd interp} | cos{...} | mixer), with a sign-applying interp (the mixer wants
+signed cos/sin, no amplitude) and a mixer cell doing the full complex product
+yi=xi*cos-xq*sin, yq=xi*sin+xq*cos (4 MULQ). The 10-cell block BUILDS, ROUTES,
+EGRESSES, and the bit-exact reference is written.
+
+- **THE blocker — the SIGNAL doesn't reach the mixer.** The phase cell forwards the
+  input (xi,xq) to the mixer cell (the last of 10), and it arrives 0 (output all
+  zero; echoing confirms xi=0 at the mixer). IQUpconvertBlock forwards phase->upmix
+  over 6 cells (skip-4) and works; this is skip-8 and fails -- a forward over too
+  many intermediate cells doesn't deliver, even though the column-major layout
+  places phase and mixer physically adjacent (so it's a CHAIN-distance limit, not a
+  physical-routing one). The NCO hit the same wall (phase->emit neg forward arrived
+  0) and dodged it by computing neg LOCALLY in the fold -- but the signal is an
+  external input, it can't be recomputed downstream.
+- **Why passthrough doesn't fit:** routing xi,xq THROUGH the pipeline needs each hop
+  cell to forward 2 extra values, but every pipeline cell is budget-tight (fold ~23
+  instr + 4 data + 3 state; even/odd carry 18-word tables; interp already has 5
+  inputs). Adding a 2-value passthrough overflows the 32-reg/cell budget in all of
+  them.
+- **The fix (not yet built):** a dedicated signal-RELAY path -- a couple of cheap
+  cells (no table, few instr) interleaved so xi,xq hop <=4 cells at a time from
+  phase to the mixer; OR a shorter cos/sin pipeline (a single-cell 17-entry table
+  gives 37 LSB but halves the cell count, putting the mixer within skip-4 of phase);
+  OR pin down the exact forward-distance limit and route within it. The cos/sin half
+  is proven, so the mixer is finished modulo this signal route. nco-style WIP in
+  complex_mixer_block.py was reverted to the old real-mixer so the suites stay green.
+
+---
+
 ## NCOBlock — DONE: complex interpolated NCO bit-exact vs GR sig_source_c 2026-06-25 (iter 5)
 
 The 10-cell interpolated complex NCO is COMPLETE and verified vs GNU Radio

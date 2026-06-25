@@ -70,9 +70,13 @@
       "kyttar_block": "ComplexMixerBlock",
       "grc_block": "blocks.multiply_cc + analog.sig_source",
       "tier": 1,
-      "status": "planned",
+      "status": "done",
       "metric": "amplitude",
-      "notes": "NOT blocked -- DEPENDS ON NCO (build NCO first). The fused convenience mixer = multiply_cc(signal, sig_source_c) = a frequency shift in*exp(j theta_n), reusing the NCO's complex exponential (the full complex product (ac-bd)+j(ad+bc) = 4 MULQ). The EXISTING ComplexMixerBlock is a REAL mixer (in*cos only) -> does NOT match GR's complex multiply; needs the same complex-output + interpolation rebuild as NCO. See the NCO note + lessons_log 2026-06-25 for the de-risked design."
+      "params": {
+        "sample_rate": 32000.0,
+        "frequency": 2000.0
+      },
+      "notes": "DONE -- verified vs GNU Radio blocks.multiply_cc(signal, analog.sig_source_c) (19 tests; full verification suite 297; placekyt 937/16-skip). The fused complex mixer / frequency shifter: out[n]=in[n]*exp(j theta_n), the FULL complex product yi=xi*cos-xq*sin, yq=xi*sin+xq*cos (multiply_cc, 4 MULQ). Params GR-native: sample_rate, frequency(Hz); freq_word derived; n=0 multiplies by exp(j0)=1 (signal passthrough). REUSES the verified NCO interpolated cos/sin pipeline verbatim (angle-fold + parity-split 33-entry table + two-write idx), with a SIGN-applying interp (the mixer wants signed cos/sin, no amplitude) and a mixer cell doing the complex product. 11 cells: phase | sin{fold even odd interp} | RELAY | cos{fold even odd interp} | mixer. KEY: the input signal (xi,xq) reaches the mixer (pipeline end) via a cheap RELAY cell placed mid-chain -- a value forwarded across too many cells of a long datapath arrives 0 (a substrate forward-distance limit: phase->last over 8 skipped cells failed; IQUpconvert's skip-4 works), so xi,xq hop phase->relay (skip-4)->mixer (skip-4). The budget-tight pipeline cells can't passthrough xi,xq, so the dedicated relay is the fix. VERIFIED two-tier: DUT vs process_reference_q15 BIT-EXACT (interpolated cos/sin + Q15 complex product) at GRID + OFF-GRID frequencies; DUT vs GR multiply_cc = ~1-2 LSB grid-aligned, ~5-8 LSB off-grid (vs GR at the DUT's actual freq_word frequency = the table-NCO floor propagated through the multiply). Signal amplitude kept <=0.5 so the complex product stays in Q15 (no overflow). Mutations (swap I/Q, negate Q, +1 delay, wrong freq, conjugate, empty) all FAIL. GRC: kyttar_complex_mixer.block.yml label 'Complex Mixer' + kyttar.complex_mixer wrapper (GR-native params); CATEGORY 'modulation'. COMPLETES the tier-1 GRC-parity queue."
     },
     {
       "kyttar_block": "NCOBlock",

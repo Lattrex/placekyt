@@ -264,13 +264,14 @@ def test_auto_pnr_output_computes(qapp, catalog, chip_type):
 
 
 def test_multicell_block_packed_without_overlap(qapp, catalog, chip_type):
-    """A multi-cell block (ComplexMixer, 3 cells) keeps its internal cells together
+    """A multi-cell block (an 8-tap FIR, 2 cells) keeps its internal cells together
     under auto-place AND the next block is spaced clear of it (footprint-aware
     packing — no overlap), then the chain routes + builds. This proves auto-place
     handles real multi-cell DSP blocks, not just single-cell ones."""
     ctrl = AppController(catalog=catalog)
     ctrl.new_project("mc", "kyttar_10x12")
-    m = ctrl.place_block("ComplexMixerBlock", 0, 4, 6, library="lattrex.official")
+    m = ctrl.place_block("FIRFilterBlock", 0, 4, 6, library="lattrex.official",
+                         params={"coefficients": [0.1] * 8})
     d = ctrl.place_block("DCBlockerBlock", 0, 1, 2, library="lattrex.official", params={"length": 2, "long_form": False})
     ctrl.add_logical_connection(
         ChipPortEndpoint(chip=0, port="x16_in"),
@@ -284,10 +285,10 @@ def test_multicell_block_packed_without_overlap(qapp, catalog, chip_type):
     ctrl.auto_place(0)
     mcells = {(c.x, c.y) for c in ctrl.project.block(m).placement.cells}
     dcells = {(c.x, c.y) for c in ctrl.project.block(d).placement.cells}
-    # the mixer's 3 cells stayed contiguous in a row
-    assert len(mcells) == 3
+    # the FIR's 2 cells stayed contiguous
+    assert len(mcells) == 2
     assert mcells.isdisjoint(dcells)              # no overlap with the next block
-    assert max(x for x, _ in mcells) < min(x for x, _ in dcells)  # mixer before dc
+    assert max(x for x, _ in mcells) < min(x for x, _ in dcells)  # fir before dc
     rep = ctrl.auto_route_all({"kyttar_10x12": chip_type}, auto_orient=True)
     assert rep.ok, [(r.name, r.reason) for r in rep.failed]
     res = BuildEngine(catalog, str(CT_PATH)).build(

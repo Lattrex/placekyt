@@ -5,6 +5,7 @@ BUILTIN_BLOCKS = {
     'DCBlockerBlock': 'dc_blocker_block',
     'LowPassFilter': 'low_pass_filter_block',
     'HighPassFilter': 'high_pass_filter_block',
+    'BandPassFilter': 'band_pass_filter_block',
     'AGCBlock': 'agc_block',
     'NCOBlock': 'nco_block',
     'ComplexMixerBlock': 'complex_mixer_block',

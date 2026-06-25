@@ -68,6 +68,7 @@ from .gain import gain
 from .fir_filter import fir_filter
 from .low_pass_filter import low_pass_filter
 from .high_pass_filter import high_pass_filter
+from .band_pass_filter import band_pass_filter
 from .dc_blocker import dc_blocker
 from .agc import agc
 from .nco import nco
@@ -104,6 +105,7 @@ __all__ = [
     "fir_filter",
     "low_pass_filter",
     "high_pass_filter",
+    "band_pass_filter",
     "dc_blocker",
     "agc",
     "nco",

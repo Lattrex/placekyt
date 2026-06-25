@@ -8,6 +8,19 @@ anything that generalizes across block classes into `invariants.md`.
 
 ---
 
+## BandPassFilter — firdes.band_pass (two cutoffs) 2026-06-25
+
+- **Status:** PASS / DONE vs GNU Radio `firdes.band_pass` + `fir_filter_fff`, 30
+  tests; full verification suite 215; placekyt 937 / 16 skipped.
+- Shares `_firdes.py` + the FIRFilterBlock subclass pattern. Takes TWO cutoffs
+  (`low_cutoff_freq`, `high_cutoff_freq`); normalized to unity gain at the band
+  CENTRE (`fmax` over `taps[n]*cos(n*freq)`, `freq=pi*(lo+hi)/fs`). Q15 taps
+  bit-exact firdes for all six windows (INV-16). Default 39-tap = 9 cells, S=1.
+  Mutations (inverted, wrong-band, +1 delay, empty) all fail. Label "Band Pass
+  Filter".
+
+---
+
 ## HighPassFilter — firdes.high_pass (same pattern as LowPassFilter) 2026-06-25
 
 - **Status:** PASS / DONE vs GNU Radio `firdes.high_pass` + `fir_filter_fff`, 30

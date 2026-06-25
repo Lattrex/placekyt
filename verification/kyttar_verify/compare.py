@@ -275,3 +275,205 @@ def compare_against_grc(
         res.reason = (f"max_abs_err {max_abs} LSB exceeds tolerance {tol} "
                       f"(worst: {worst[:3]})")
     return res
+
+
+# =============================================================================
+# Complex (I/Q) and LLR (soft-decision) comparison
+# =============================================================================
+
+@dataclass
+class ComplexCompareResult:
+    """Outcome of a complex (I/Q) DUT-vs-reference comparison.
+
+    A complex block passes ONLY if BOTH channels pass — an I-only check would miss
+    a swapped or sign-flipped Q. Each channel is gated by the same per-channel
+    amplitude metric and derived Q15 floor as the real path (so I/Q parity is held
+    to the same quantization bound, not a looser one)."""
+
+    passed: bool
+    i: CompareResult
+    q: CompareResult
+    reason: str = ""
+
+    def summary(self) -> str:
+        head = "PASS" if self.passed else "FAIL"
+        tail = f" — {self.reason}" if self.reason else ""
+        return (f"[{head}] complex: I={self.i.summary()} | "
+                f"Q={self.q.summary()}{tail}")
+
+
+def compare_complex_against_grc(
+    dut_i_q15: list,
+    dut_q_q15: list,
+    ref_i_floats: list,
+    ref_q_floats: list,
+    *,
+    metric: Metric = Metric.AMPLITUDE,
+    delay: int = 0,
+    op_count: int = 1,
+    head_shift: int = 0,
+    tolerance: int | None = None,
+    min_samples: int = 4,
+) -> ComplexCompareResult:
+    """Compare a COMPLEX DUT output (I and Q channels) against a complex GR
+    reference. Each channel is run through :func:`compare_against_grc` with the
+    SAME predicted delay / op-count / derived tolerance; the block passes only if
+    BOTH channels pass.
+
+    A swapped I/Q, a negated Q, or a Q-channel latency error all fail here — the
+    I channel alone would not catch them, which is why both are gated. The two
+    channels share one group delay (a complex matched filter / mixer delays I and
+    Q identically), so a single ``delay`` is stated for both."""
+    ri = compare_against_grc(
+        dut_i_q15, ref_i_floats, metric=metric, delay=delay,
+        op_count=op_count, head_shift=head_shift, tolerance=tolerance,
+        min_samples=min_samples)
+    rq = compare_against_grc(
+        dut_q_q15, ref_q_floats, metric=metric, delay=delay,
+        op_count=op_count, head_shift=head_shift, tolerance=tolerance,
+        min_samples=min_samples)
+    passed = ri.passed and rq.passed
+    reason = ""
+    if not passed:
+        bad = []
+        if not ri.passed:
+            bad.append(f"I: {ri.reason}")
+        if not rq.passed:
+            bad.append(f"Q: {rq.reason}")
+        reason = "; ".join(bad)
+    return ComplexCompareResult(passed=passed, i=ri, q=rq, reason=reason)
+
+
+@dataclass
+class LLRCompareResult:
+    """Outcome of a SOFT-DECISION (LLR) DUT-vs-reference comparison.
+
+    Soft (LLR) outputs are NOT bit-exact: a Q15 fixed-point LLR carries
+    quantization + scaling error vs the GR float LLR. But the SIGN of an LLR is
+    the hard decision the FEC decoder acts on, so sign agreement must be (near)
+    perfect even where the magnitudes differ. This result therefore gates on BOTH:
+
+      * ``magnitude`` — the soft values within a derived Q15 tolerance (after the
+        block's known LLR scaling is applied to the reference), and
+      * ``sign_mismatches`` — the count of samples whose hard decision (sign)
+        disagrees. A sign flip is a wrong bit; near the decision boundary
+        (|ref| ~ 0) a flip is quantization-benign and is EXCLUDED from the count
+        via a small dead-zone.
+    """
+
+    passed: bool
+    n_compared: int = 0
+    sign_mismatches: int = 0
+    max_abs_err: int = 0
+    tolerance: int = 0
+    correlation: float = float("nan")
+    delay_used: int = 0
+    reason: str = ""
+
+    def summary(self) -> str:
+        head = "PASS" if self.passed else "FAIL"
+        tail = f" — {self.reason}" if self.reason else ""
+        return (f"[{head}] llr: n={self.n_compared}, "
+                f"sign_mismatch={self.sign_mismatches}, "
+                f"max_abs_err={self.max_abs_err} LSB (tol {self.tolerance}), "
+                f"corr={self.correlation:.4f}{tail}")
+
+
+def compare_llr_against_grc(
+    dut_q15: list,
+    ref_floats: list,
+    *,
+    delay: int = 0,
+    tolerance: int | None = None,
+    op_count: int = 1,
+    llr_scale: float = 1.0,
+    sign_dead_zone: float = 0.02,
+    max_sign_mismatch: int = 0,
+    min_samples: int = 4,
+) -> LLRCompareResult:
+    """Compare a soft-decision (LLR) DUT output against a GR float LLR reference.
+
+    The decision-relevant property is the SIGN (the hard bit); the magnitude is a
+    confidence the decoder weights. So this gate has two parts:
+
+      1. SIGN AGREEMENT — every sample's sign must match the reference's, EXCEPT
+         where the reference LLR is within ``sign_dead_zone`` of zero (a
+         decision-boundary sample where a flip is pure quantization noise, not a
+         real bit error). At most ``max_sign_mismatch`` (default 0) mismatches are
+         allowed outside the dead zone.
+      2. MAGNITUDE — the soft values within a derived Q15 tolerance. The GR float
+         LLR is first scaled by ``llr_scale`` (the block's LLR coefficient maps
+         the theoretical 2I/σ² LLR into the Q15-representable range; the reference
+         must be scaled the same way before diffing), then Q15-saturated.
+
+    Args:
+        dut_q15: DUT LLR output as uint16 Q15 words (``None`` = missing).
+        ref_floats: the GR float LLR reference (same stimulus, theoretical scale).
+        delay: predicted group delay (memoryless demod = 0).
+        tolerance: explicit Q15 LSB magnitude bound; derived from ``op_count`` if
+            None (a single MULQ = ~1 LSB).
+        op_count: Q15 op count for the derived magnitude floor.
+        llr_scale: scale applied to ``ref_floats`` so its range matches the DUT's
+            Q15-clamped LLR (the block's LLR coefficient, e.g. 0.5 for the BPSK
+            soft demod).
+        sign_dead_zone: |ref·llr_scale| below this is a boundary sample, excluded
+            from the sign count.
+        max_sign_mismatch: tolerated sign mismatches outside the dead zone.
+        min_samples: fail if fewer than this many samples are comparable.
+    """
+    dut = _to_signed(dut_q15)
+    if not dut:
+        return LLRCompareResult(False, reason="DUT produced no output")
+    if any(d is None for d in dut):
+        n_missing = sum(1 for d in dut if d is None)
+        return LLRCompareResult(
+            False, reason=f"{n_missing} DUT outputs missing (no egress)")
+    if not ref_floats:
+        return LLRCompareResult(False, reason="empty reference")
+    if delay < 0:
+        return LLRCompareResult(False, reason=f"negative delay {delay}")
+    ref_arr = np.asarray(ref_floats, dtype=float)
+    if not np.all(np.isfinite(ref_arr)):
+        return LLRCompareResult(False, reason="NaN/Inf in reference")
+
+    # Scale the reference LLR to the DUT's representable range, then Q15-saturate.
+    ref_scaled = ref_arr * float(llr_scale)
+    ref_q15 = _saturate_ref_q15(ref_scaled)
+
+    dut_arr = np.asarray(dut, dtype=np.int64)
+    ref_al = ref_q15[delay:]
+    n = min(len(dut_arr), len(ref_al))
+    if n < min_samples:
+        return LLRCompareResult(
+            False, n_compared=n, delay_used=delay,
+            reason=f"only {n} samples comparable (< min {min_samples})")
+    a = dut_arr[:n].astype(np.int64)
+    b = ref_al[:n].astype(np.int64)
+    ref_floats_al = ref_scaled[delay:delay + n]
+
+    # 1) sign agreement outside the dead zone (a sign = the hard bit decision).
+    # ``ref_floats_al`` is the SCALED reference LLR in float units ([-1, 1)-ish, the
+    # same scale as a Q15 value / 32768), so the dead zone is a direct float
+    # threshold — NOT multiplied by 32768.
+    confident = np.abs(ref_floats_al) >= sign_dead_zone
+    sign_a = np.sign(a)
+    sign_b = np.sign(b)
+    mism = int(np.count_nonzero((sign_a != sign_b) & confident))
+
+    # 2) magnitude within the derived Q15 floor
+    err = a - b
+    max_abs = int(np.max(np.abs(err))) if n else 0
+    tol = tolerance if tolerance is not None else q15_quant_floor(op_count)
+    corr = (float(np.corrcoef(a, b)[0, 1])
+            if n > 1 and np.std(a) > 0 and np.std(b) > 0 else float("nan"))
+
+    passed = (mism <= max_sign_mismatch) and (max_abs <= tol)
+    reason = ""
+    if mism > max_sign_mismatch:
+        reason = (f"{mism} hard-decision sign mismatch(es) > "
+                  f"{max_sign_mismatch} allowed")
+    elif max_abs > tol:
+        reason = f"LLR magnitude max_abs_err {max_abs} LSB exceeds tolerance {tol}"
+    return LLRCompareResult(
+        passed=passed, n_compared=n, sign_mismatches=mism, max_abs_err=max_abs,
+        tolerance=tol, correlation=corr, delay_used=delay, reason=reason)

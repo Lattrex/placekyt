@@ -17,18 +17,32 @@ Public entry points:
     per-class metrics).
 """
 
-from .dut_runner import run_block_dut, DUTResult
-from .gnuradio_ref import run_gnuradio_ref, GrResult, q15_to_float, float_to_q15
-from .compare import compare_against_grc, write_report, CompareResult, Metric
+from .dut_runner import (
+    run_block_dut, DUTResult, run_block_dut_complex, ComplexDUTResult)
+from .gnuradio_ref import (
+    run_gnuradio_ref, GrResult, q15_to_float, float_to_q15,
+    run_gnuradio_ref_complex, GrComplexResult)
+from .compare import (
+    compare_against_grc, write_report, CompareResult, Metric,
+    compare_complex_against_grc, ComplexCompareResult,
+    compare_llr_against_grc, LLRCompareResult)
 
 __all__ = [
     "run_block_dut",
     "DUTResult",
+    "run_block_dut_complex",
+    "ComplexDUTResult",
     "run_gnuradio_ref",
     "GrResult",
+    "run_gnuradio_ref_complex",
+    "GrComplexResult",
     "q15_to_float",
     "float_to_q15",
     "compare_against_grc",
+    "compare_complex_against_grc",
+    "ComplexCompareResult",
+    "compare_llr_against_grc",
+    "LLRCompareResult",
     "write_report",
     "CompareResult",
     "Metric",

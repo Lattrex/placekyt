@@ -8,6 +8,46 @@ anything that generalizes across block classes into `invariants.md`.
 
 ---
 
+## HARNESS — complex (I/Q) + LLR (soft-decision) support 2026-06-24
+
+- **Additive, real path untouched.** New `run_block_dut_complex` /
+  `run_gnuradio_ref_complex` / `compare_complex_against_grc` /
+  `compare_llr_against_grc` sit alongside the real ones; all 109 prior tests stay
+  green (125 total with the 16 new).
+- **Complex input = two-operand transaction.** A complex block lands its sample as
+  `WRITE xi -> in_regs[0]`, `WRITE xq -> in_regs[1]`, then ONE `JUMP entry` — the
+  exact representation `sim_bridge.process_batch(complex=True)` and the on-chip
+  Costas/MF lock tests use (xi@R0, xq@R1). The driver reuses INV-1 (placement hop)
+  and INV-6 (resolve entry+regs WITH params) unchanged.
+- **Complex output egress — wire ONE net, not two (the real gotcha).** A complex
+  output cell (the MF's `i4`) emits BOTH `yi` and `yq` as two WRITEs from one cell.
+  Wiring ONLY `yi -> x16_out` makes both ride the same bus corridor out, arriving
+  INTERLEAVED `[yi, yq, yi, yq, ...]` — BIT-EXACT vs the reference. Wiring a SECOND
+  net `yq -> x16_out` creates a dual-route-to-one-port conflict that
+  `_patch_last_write_handoff` (patches only the highest-addr WRITE) cannot resolve →
+  the build succeeds but egress is SILENTLY ZERO. So the driver wires the primary
+  output port only and de-interleaves. (Verified: yi-only -> 2 words/sample,
+  maxerr 0; yi+yq -> 0 output.)
+- **Complex comparator gates BOTH channels.** I and Q each pass the per-channel
+  amplitude/exact metric + derived floor; a swapped I/Q, negated Q, or Q-only
+  latency all FAIL (an I-only check would miss them — mandatory mutations cover
+  each).
+- **LLR metric = SIGN agreement + magnitude.** An LLR's sign is the hard bit the
+  FEC decoder acts on, so sign agreement must be perfect (outside a near-zero
+  dead zone where a flip is quantization-benign); the soft magnitude is held to a
+  derived Q15 floor after the block's LLR scale is applied to the GR reference.
+  GR BPSK `constellation_soft_decoder_cf` emits `4*I`; the Kyttar SoftDemod emits
+  `0.5*I` -> `llr_scale = 0.5/4 = 0.125` aligns them (signs identical). Dead-zone
+  threshold is a FLOAT on the scaled ref ([-1,1) units), NOT *32768 (a units bug
+  that made the sign gate never fire — caught by the flipped-sign mutation).
+- **Proven on:** ComplexRRCMatchedFilterBlock (complex, vs `fir_filter_ccf`: I 11 /
+  Q 12 LSB within an 18-LSB floor; bit-exact 0 LSB) and SoftDemodulatorBlock (LLR,
+  vs the GR soft decoder: 0 sign mismatch, 1 LSB magnitude). Mutations
+  (swap I/Q, negate Q, +1 delay, wrong taps, empty, flip LLR sign, LLR +1 delay)
+  all FAIL the gate as required.
+
+---
+
 ## IIRBiquadBlock — Q15 biquad via half-and-double-MSUQ (the keeper) 2026-06-24
 
 - **The "impossible" claim was half-right.** An earlier pass marked IIR BLOCKED:

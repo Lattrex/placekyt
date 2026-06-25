@@ -196,6 +196,63 @@ anything that generalizes across block classes into `invariants.md`.
 - **Generalizes:** see invariants.md INV-15 (any Q15 block needing a coefficient
   with |.|>1 uses store-halved + apply-twice; cascade the split for |.|>2).
 
+## NCO / ComplexMixer — de-risked build design (still planned, NOT blocked) 2026-06-25
+
+SoftDemod (the third block of the older note below) is now DONE. The remaining two
+tier-1 complex blocks are FEASIBLE (no ISA wall) but are each a full block-build —
+larger than the firdes/SoftDemod steps. This note records the CONCRETE, measured
+design so the next iteration builds without re-deriving.
+
+- **The golden is EXACT FLOAT.** Measured: GNU Radio `analog.sig_source_c(fs,
+  GR_COS_WAVE, f, amp)` matches `amp·exp(jθ_n)` to **0.002 LSB** (it uses a
+  high-precision NCO, not a coarse table). So the Kyttar NCO's table+interp error
+  is the WHOLE error vs GR — the tolerance is the table-approximation bound
+  (derived, documented like the IIR pole-precision limit), not a quantization
+  excuse. (Use a `blocks.head(sizeof_gr_complex, N)` to bound the free-running
+  source or `tb.run()` never returns — cost real time.)
+- **Phase starts at 0.** GR's first output (n=0) is `(amp, 0)` = `amp·(cos0, sin0)`
+  — phase 0, THEN increment. The CURRENT NCOBlock increments phase BEFORE the
+  first output (`phase = phase + freq_word` then look up), so its n=0 is at
+  phase=freq_word — a one-sample PHASE OFFSET vs GR. Fix: emit at the current
+  phase, increment after (init phase=0).
+- **Interpolation is mandatory and PROVEN.** Linear interpolation on the phase
+  fraction, quarter-wave table with symmetry. Measured max error vs exact (amp
+  0.9), `idx_bits` = phase MSBs used for the table index:
+    * idx_bits=6 (17 quarter entries — the CURRENT table size): **37 LSB** (vs
+      ~1600 with no interp — interpolation alone is a 40x win on the same table).
+    * idx_bits=7 (33 quarter entries): **10 LSB**.
+    * idx_bits=8 (65 quarter entries): **4 LSB**.
+  33 entries just exceeds a 32-word cell, so idx_bits≥7 puts the table across ≥2
+  cells (cross-cell interp, intricate). idx_bits=6 fits one cell but 37 LSB is
+  coarse for a SOURCE (0.1% amplitude). Pick the table size for the target derived
+  tolerance and document it as the table-NCO floor.
+- **Output is COMPLEX (I=cos, Q=sin).** Emit BOTH from the output cell as two
+  WRITEs but wire only ONE net to x16_out (the harness de-interleaves
+  `[yi,yq,yi,yq]`); wiring a second net silently zeros egress (HARNESS note below).
+  cos = sin(phase + 90°) = sin(phase + 16384), so the datapath does TWO
+  symmetric+interpolated lookups per sample.
+- **Harness: NCO is a complex SOURCE.** Input is just a trigger (value ignored).
+  `run_block_dut_complex` drives two input regs; an NCO needs a single trigger in +
+  two output words. Either extend the complex driver for a 1-in/2-out source, or
+  drive via `run_block_dut` (single trigger) and read 2 words/sample, de-interleave.
+- **Params (Decision A):** `sample_rate`, `frequency` (Hz), `waveform`, `amplitude`;
+  derive `freq_word = round(frequency/sample_rate·65536)` internally; label "Signal
+  Source". Verify on GRID-ALIGNED frequencies (integer freq_word) to isolate the
+  table floor from the freq_word-vs-exact-f drift (fs/65536 Hz resolution, drift
+  grows with n — document separately).
+- **Blast radius is SMALL (checked).** `IQUpconvertBlock`, `ComplexMixerBlock`,
+  `CostasLoopBlock`, `ComplexCostasLoopBlock` carry their OWN embedded `freq_word`
+  NCO — they do NOT construct `NCOBlock`, so refactoring NCOBlock's signature does
+  not touch them. The one geometry test that names NCOBlock
+  (`test_data_words::test_abutting_handoff_resolves_entry_and_dest`) uses
+  `catalog.resolved_io(...)` for the EXPECTED entry/in_reg, so it is robust to
+  NCO internals as long as NCO keeps a single trigger INPUT register.
+- **ComplexMixer = multiply_cc(signal, sig_source_c)** — a frequency shift
+  `in·exp(jθ_n)`, reusing the NCO's complex exponential (4 MULQ for the complex
+  product). BUILD THE NCO FIRST.
+
+---
+
 ## NCO / ComplexMixer / SoftDemod — analysis + harness gap (not yet built) 2026-06-24
 
 These three remaining tier-1 blocks are FEASIBLE but each needs infrastructure

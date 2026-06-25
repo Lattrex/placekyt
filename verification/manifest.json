@@ -72,7 +72,7 @@
       "tier": 1,
       "status": "planned",
       "metric": "amplitude",
-      "notes": "Complex multiply; param parity = frequency in Hz, derive freq_word."
+      "notes": "NOT blocked -- DEPENDS ON NCO (build NCO first). The fused convenience mixer = multiply_cc(signal, sig_source_c) = a frequency shift in*exp(j theta_n), reusing the NCO's complex exponential (the full complex product (ac-bd)+j(ad+bc) = 4 MULQ). The EXISTING ComplexMixerBlock is a REAL mixer (in*cos only) -> does NOT match GR's complex multiply; needs the same complex-output + interpolation rebuild as NCO. See the NCO note + lessons_log 2026-06-25 for the de-risked design."
     },
     {
       "kyttar_block": "NCOBlock",
@@ -80,7 +80,7 @@
       "tier": 1,
       "status": "planned",
       "metric": "amplitude",
-      "notes": "Param parity: frequency in Hz, not freq_word (worst-offender refactor)."
+      "notes": "NOT blocked (no ISA wall) -- a full complex block-build, design DE-RISKED in lessons_log 2026-06-25. Concrete findings: (1) GR sig_source_c is EXACT float (measured 0.002 LSB vs amp*exp(j theta_n)) so the table+interp error IS the whole error vs GR -> derived table-NCO tolerance. (2) GR phase starts at 0 (n=0 -> (amp,0)); the CURRENT NCOBlock increments phase BEFORE the first output = a 1-sample phase offset to fix. (3) Linear interpolation is mandatory + PROVEN: idx_bits 6/7/8 (17/33/65 quarter entries) -> 37/10/4 LSB (vs ~1600 with no interp). (4) Output COMPLEX (I=cos,Q=sin; cos=sin(phase+16384)); emit two WRITEs, wire ONE net (harness de-interleaves). (5) Params -> sample_rate, frequency(Hz), waveform, amplitude; freq_word=round(f/fs*65536) derived; label 'Signal Source'; verify grid-aligned freqs. (6) Blast radius SMALL: IQUpconvert/ComplexMixer/Costas have their OWN freq_word NCOs (don't construct NCOBlock); the one geometry test uses resolved_io so is robust. Needs: cross-cell interpolated lookup assembly + a complex-source harness path (1 trigger in / 2 words out)."
     },
     {
       "kyttar_block": "SoftDemodulatorBlock",

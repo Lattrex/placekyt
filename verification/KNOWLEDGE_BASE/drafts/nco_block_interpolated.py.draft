@@ -1,0 +1,350 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""NCOBlock — see :class:`NCOBlock`."""
+import math
+from typing import Any, Dict, List, Tuple
+
+import numpy as np
+
+from ..block import CellProgram, DataWord, EntryPoint, Port, StateVar
+from ._base import BlockInterface, KyttarBlock, float_to_q15
+
+
+class NCOBlock(KyttarBlock):
+    """
+    Signal Source — drop-in for GNU Radio ``analog.sig_source_c`` (complex cosine).
+
+    A numerically-controlled oscillator that emits the complex exponential
+    ``amplitude · exp(jθ_n)`` — ``I = amplitude·cos θ_n``, ``Q = amplitude·sin θ_n``
+    — with ``θ_n = 2π · frequency/sample_rate · n``. Each input sample is a TRIGGER
+    (its value is ignored); one complex output is produced per trigger.
+
+    Parameters mirror GRC's **Signal Source** (the complex sig_source) in the user's
+    units — NOT an internal fixed-point ``freq_word``:
+
+      * ``sample_rate``  — sample rate in Hz.
+      * ``frequency``    — tone frequency in Hz.
+      * ``amplitude``    — output amplitude (0..1), applied as a Q15 gain.
+      * ``waveform``     — ``"cos"`` (the complex exponential cos + j·sin; GR's
+        ``GR_COS_WAVE`` for ``sig_source_c``). Only the complex cosine is built.
+
+    The phase increment is derived internally:
+    ``freq_word = round(frequency / sample_rate · 65536)`` (a 16-bit phase word).
+
+    PRECISION (the table-NCO floor, a derived limit — NOT a loosened gate)
+    ---------------------------------------------------------------------
+    GNU Radio's ``sig_source_c`` is effectively EXACT (measured 0.002 LSB vs
+    ``amp·exp(jθ)``). The Kyttar NCO uses a 17-entry quarter-wave Q15 sine table
+    with LINEAR INTERPOLATION on the phase fraction (reconstructing the full wave by
+    quadrant symmetry). With a 64-point effective table (``idx_bits = 6``: the top 6
+    phase bits index, the low 10 interpolate) the worst-case error vs the exact tone
+    is **≈ 37 LSB** (vs ~1600 LSB with no interpolation — interpolation is a ~40×
+    win on the same table). On phase that lands exactly on a table grid point the
+    error is ≤ 1 LSB. 37 LSB is the analytic linear-interpolation bound of a 17-entry
+    quarter table, not a tuned tolerance; a finer (cross-cell) table would lower it
+    (a documented improvement path, like the IIR pole-precision limit).
+
+    Off-grid ``freq_word`` additionally DRIFTS vs GR's exact ``frequency`` (the
+    phase word is 16-bit → fs/65536 Hz resolution; the drift grows with n). Verify on
+    GRID-ALIGNED frequencies (integer ``freq_word``) to isolate the table floor from
+    that separate, documented frequency-quantization effect.
+
+    DATAPATH (6 cells, modelled on the proven IQUpconvertBlock NCO)
+    --------------------------------------------------------------
+    ``phase | sin_fold | cos_fold | table_sin | table_cos | emit``
+
+      * phase: holds the 16-bit phase; emits the CURRENT phase to sin_fold and
+        ``phase+90°`` (=phase+16384) to cos_fold, THEN increments by freq_word — so
+        the n=0 output is at phase 0 = ``(amp, 0)``, matching GR (the older block
+        incremented BEFORE emitting → a one-sample phase offset, now fixed).
+      * sin_fold / cos_fold: quarter-wave fold — decompose the angle into the table
+        index ``idx``, the interpolation neighbour ``idxB`` (idx±1 by quadrant), the
+        Q15 fraction ``frac``, and the sign flag ``neg``.
+      * table_sin / table_cos: LOAD ``table[idx]`` and ``table[idxB]`` and linearly
+        interpolate ``A + (B−A)·frac`` (the positive quarter-wave magnitude).
+      * emit: apply the sign (``neg``) and the amplitude (Q15 MULQ), then write
+        ``yi`` (=I=cos) and ``yq`` (=Q=sin) — two writes from one cell, ONE net
+        wired out (the harness de-interleaves), per the complex-egress convention.
+
+    Interface: complex TRIGGER input (R0/R1, ignored) so the block drives through
+    the complex harness; complex output (yi, yq).
+    """
+    CATEGORY = "sources"
+    TAGS = ["nco", "oscillator", "signal_source", "sig_source", "sources"]
+
+    QUARTER_SIZE = 17  # quarter-wave table entries 0..16 = sin(0°)..sin(90°)
+
+    _interface = BlockInterface(
+        entry_address=1, input_registers=[0, 1], output_registers=[0, 1])
+
+    _CELL_IDS = ["phase", "sin_fold", "cos_fold", "table_sin", "table_cos", "emit"]
+
+    def __init__(self, name: str, sample_rate: float = 32000.0,
+                 frequency: float = 2000.0, amplitude: float = 0.9,
+                 waveform: str = "cos"):
+        super().__init__(name, sample_rate=sample_rate, frequency=frequency,
+                         amplitude=amplitude, waveform=waveform)
+        self._sample_rate = float(sample_rate)
+        self._frequency = float(frequency)
+        self._amplitude = float(amplitude)
+        if str(waveform).lower().replace("_wave", "").replace("gr_", "") not in (
+                "cos", "complex", "exp"):
+            raise ValueError(
+                f"NCOBlock builds the complex cosine (GR_COS_WAVE); got "
+                f"waveform={waveform!r}")
+        self._waveform = waveform
+        self._freq_word = round(self._frequency / self._sample_rate * 65536) & 0xFFFF
+        self._amp_q15 = float_to_q15(self._amplitude)
+        self._phase = 0  # reference-model state
+
+    @property
+    def cell_count(self) -> int:
+        return 6
+
+    @property
+    def interface(self) -> BlockInterface:
+        return self._interface
+
+    @property
+    def frequency(self) -> float:
+        """Tone frequency in Hz (as requested)."""
+        return self._frequency
+
+    @property
+    def freq_word(self) -> int:
+        """The derived 16-bit phase increment per sample."""
+        return self._freq_word
+
+    def _quarter_wave_table(self) -> List[int]:
+        # sin(0..90°) in Q15; table[16] = 1.0 clamps to 0x7FFF.
+        return [min(32767, int(round(math.sin(k / 16 * math.pi / 2) * 32768))) & 0xFFFF
+                for k in range(self.QUARTER_SIZE)]
+
+    # ------------------------------------------------------------------ cells
+    def build_cell_programs(self) -> Dict[str, CellProgram]:
+        qt = self._quarter_wave_table()
+
+        phase_cell = CellProgram(
+            inputs=[Port("xi", register=0), Port("xq", register=1)],  # trigger only
+            outputs=[Port("ph_sin"), Port("ph_cos"), Port("trig")],
+            entries=[EntryPoint("default")],
+            data=[DataWord("freq", self._freq_word, address=3),
+                  DataWord("quarter", 16384, address=4)],
+            state=[StateVar("phase")],
+            assembly_template="""\
+start:
+    MOVE R0, R{state:phase}
+    {write:ph_sin}
+    ADD R{state:phase}, R{data:quarter}
+    {write:ph_cos}
+    ADD R{state:phase}, R{data:freq}
+    MOVE R{state:phase}, R0
+    {jump:trig}
+""",
+        )
+
+        def _fold_cell():
+            return CellProgram(
+                inputs=[Port("phase", register=0)],
+                outputs=[Port("idx"), Port("idxB"), Port("frac"), Port("neg"),
+                         Port("trig")],
+                entries=[EntryPoint("default")],
+                data=[DataWord("mask3ff", 0x3FF, address=1),
+                      DataWord("c32", 32, address=2),
+                      DataWord("c16", 16, address=3),
+                      DataWord("c15", 15, address=4),
+                      DataWord("one", 1, address=5),
+                      DataWord("zero", 0, address=6)],
+                state=[StateVar("fidx"), StateVar("loc"), StateVar("mir")],
+                assembly_template="""\
+start:
+    AND R{in:phase}, R{data:mask3ff}
+    SHL R0, #5
+    {write:frac}
+    SHR R{in:phase}, #10
+    MOVE R{state:fidx}, R0
+    AND R{state:fidx}, R{data:c32}
+    {write:neg}
+    AND R{state:fidx}, R{data:c16}
+    MOVE R{state:mir}, R0
+    AND R{state:fidx}, R{data:c15}
+    MOVE R{state:loc}, R0
+    CMP R{state:mir}, R{data:zero}
+    BR.Z locdone
+    SUB R{data:c16}, R{state:loc}
+    MOVE R{state:loc}, R0
+locdone:
+    MOVE R0, R{state:loc}
+    {write:idx}
+    SHR R{state:mir}, #3
+    MOVE R{state:mir}, R0
+    ADD R{state:loc}, R{data:one}
+    MOVE R{state:loc}, R0
+    SUB R{state:loc}, R{state:mir}
+    {write:idxB}
+    {jump:trig}
+""",
+            )
+
+        def _table_cell():
+            data = [DataWord(f"qt{i}", v, address=2 + i) for i, v in enumerate(qt)]
+            data += [DataWord("tbase", 2, address=2 + self.QUARTER_SIZE)]
+            return CellProgram(
+                inputs=[Port("idx", register=0), Port("idxB", register=1),
+                        Port("frac", register=2)],
+                outputs=[Port("val"), Port("trig")],
+                entries=[EntryPoint("default")],
+                data=data,
+                state=[StateVar("A"), StateVar("B"), StateVar("d"), StateVar("val")],
+                assembly_template="""\
+start:
+    ADD R{in:idx}, R{data:tbase}
+    LOAD R0
+    MOVE R{state:A}, R0
+    ADD R{in:idxB}, R{data:tbase}
+    LOAD R0
+    MOVE R{state:B}, R0
+    SUB R{state:B}, R{state:A}
+    MOVE R{state:d}, R0
+    MULQ R{state:d}, R{in:frac}
+    MOVE R{state:val}, R0
+    ADD R{state:val}, R{state:A}
+    {write:val}
+    {jump:trig}
+""",
+            )
+
+        emit_cell = CellProgram(
+            inputs=[Port("cos_mag", register=0), Port("sin_mag", register=1),
+                    Port("cos_neg", register=2), Port("sin_neg", register=3)],
+            outputs=[Port("yi"), Port("yq"), Port("trig")],
+            entries=[EntryPoint("default")],
+            data=[DataWord("zero", 0, address=4),
+                  DataWord("amp", self._amp_q15, address=5)],
+            state=[StateVar("cv"), StateVar("sv")],
+            assembly_template="""\
+start:
+    MOVE R{state:cv}, R{in:cos_mag}
+    CMP R{in:cos_neg}, R{data:zero}
+    BR.Z cpos
+    SUB R{data:zero}, R{state:cv}
+    MOVE R{state:cv}, R0
+cpos:
+    MULQ R{state:cv}, R{data:amp}
+    {write:yi}
+    MOVE R{state:sv}, R{in:sin_mag}
+    CMP R{in:sin_neg}, R{data:zero}
+    BR.Z spos
+    SUB R{data:zero}, R{state:sv}
+    MOVE R{state:sv}, R0
+spos:
+    MULQ R{state:sv}, R{data:amp}
+    {write:yq}
+    {jump:trig}
+""",
+        )
+
+        return {
+            "phase": phase_cell,
+            "sin_fold": _fold_cell(),
+            "cos_fold": _fold_cell(),
+            "table_sin": _table_cell(),
+            "table_cos": _table_cell(),
+            "emit": emit_cell,
+        }
+
+    def internal_connections(self) -> List[Tuple[str, str, str, str]]:
+        return [
+            ("phase", "ph_sin", "sin_fold", "phase"),
+            ("phase", "ph_cos", "cos_fold", "phase"),
+            ("sin_fold", "idx", "table_sin", "idx"),
+            ("sin_fold", "idxB", "table_sin", "idxB"),
+            ("sin_fold", "frac", "table_sin", "frac"),
+            ("sin_fold", "neg", "emit", "sin_neg"),
+            ("cos_fold", "idx", "table_cos", "idx"),
+            ("cos_fold", "idxB", "table_cos", "idxB"),
+            ("cos_fold", "frac", "table_cos", "frac"),
+            ("cos_fold", "neg", "emit", "cos_neg"),
+            ("table_sin", "val", "emit", "sin_mag"),
+            ("table_cos", "val", "emit", "cos_mag"),
+        ]
+
+    def internal_jumps(self) -> List[Tuple[str, str, str, str]]:
+        return [
+            ("phase", "trig", "sin_fold", "default"),
+            ("sin_fold", "trig", "cos_fold", "default"),
+            ("cos_fold", "trig", "table_sin", "default"),
+            ("table_sin", "trig", "table_cos", "default"),
+            ("table_cos", "trig", "emit", "default"),
+        ]
+
+    def default_layout(self) -> Dict[Any, Tuple[int, int, str]]:
+        # Two-row serpentine fold (≤8 across, INV-9); the emit cell carries the
+        # external complex output.
+        return {
+            "phase": (0, 0, "east"), "sin_fold": (1, 0, "east"),
+            "cos_fold": (2, 0, "east"), "table_cos": (2, 1, "east"),
+            "table_sin": (1, 1, "east"), "emit": (0, 1, "east"),
+        }
+
+    # -------------------------------------------------------------- reference
+    def _sine_q15(self, phase16: int, qt: List[int]) -> int:
+        """The EXACT on-chip interpolated quarter-wave sine (signed) for a 16-bit
+        phase — mirrors the fold+table cells op-for-op."""
+        def s16(v):
+            v &= 0xFFFF
+            return v - 0x10000 if v >= 0x8000 else v
+        phase16 &= 0xFFFF
+        frac = (phase16 & 0x3FF) << 5            # Q15 fraction
+        fidx = phase16 >> 10                     # 0..63
+        neg = fidx & 32
+        mir = fidx & 16
+        loc = fidx & 15
+        if mir:
+            loc = 16 - loc
+        idxb = loc + 1 - 2 * (mir >> 4)
+        A = s16(qt[loc])
+        B = s16(qt[idxb])
+        val = A + ((s16((B - A) & 0xFFFF) * frac) >> 15)
+        return -val if neg else val
+
+    def process_reference(self, input_samples) -> np.ndarray:
+        """Complex reference: ``amplitude·(cos θ_n + j·sin θ_n)`` via the on-chip
+        interpolated table, returned as a complex array. ``input_samples`` is only a
+        trigger count (its values are ignored)."""
+        qt = self._quarter_wave_table()
+        amp = self._amp_q15 - 0x10000 if self._amp_q15 >= 0x8000 else self._amp_q15
+
+        def mq(a, b):
+            return (a * b) >> 15
+
+        n = len(input_samples)
+        out = np.zeros(n, dtype=np.complex64)
+        phase = 0
+        for i in range(n):
+            cos = self._sine_q15((phase + 16384) & 0xFFFF, qt)
+            sin = self._sine_q15(phase, qt)
+            ci = mq(cos, amp)
+            si = mq(sin, amp)
+            out[i] = complex(ci / 32768.0, si / 32768.0)
+            phase = (phase + self._freq_word) & 0xFFFF
+        return out
+
+    def process_reference_q15(self, input_samples) -> List[Tuple[int, int]]:
+        """Bit-exact on-chip predictor: ``(yi, yq)`` unsigned Q15 pairs per trigger
+        (I=cos, Q=sin), modelling the interpolated table + sign + amplitude MULQ +
+        phase-0 start exactly."""
+        qt = self._quarter_wave_table()
+        amp = self._amp_q15 - 0x10000 if self._amp_q15 >= 0x8000 else self._amp_q15
+        out = []
+        phase = 0
+        for _ in range(len(input_samples)):
+            cos = self._sine_q15((phase + 16384) & 0xFFFF, qt)
+            sin = self._sine_q15(phase, qt)
+            yi = ((cos * amp) >> 15) & 0xFFFF
+            yq = ((sin * amp) >> 15) & 0xFFFF
+            out.append((yi, yq))
+            phase = (phase + self._freq_word) & 0xFFFF
+        return out
+
+    def reset(self):
+        self._phase = 0

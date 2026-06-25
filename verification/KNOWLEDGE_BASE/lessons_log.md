@@ -196,6 +196,56 @@ anything that generalizes across block classes into `invariants.md`.
 - **Generalizes:** see invariants.md INV-15 (any Q15 block needing a coefficient
   with |.|>1 uses store-halved + apply-twice; cascade the split for |.|>2).
 
+## NCOBlock — build attempt: validated, blocked on per-cell register budget 2026-06-25 (iter 2)
+
+A FULL build attempt was made (the WIP block is saved at
+`verification/KNOWLEDGE_BASE/drafts/nco_block_interpolated.py.draft`). The
+algorithm + reference are VALIDATED; the block is NOT done because the
+interpolated complex NCO exceeds the substrate's per-cell register budget and
+needs a ~10-cell split. nco_block.py was reverted to the working original so the
+suite stays green (test_data_words builds NCOBlock).
+
+- **Reference VALIDATED vs GR.** The complex reference (interp quarter-wave,
+  phase-0 start, amplitude MULQ) matches exact float: 1.4 LSB on grid-aligned
+  freq_word (e.g. 2000/32000 → freq_word=4096), 37 LSB worst-case off-grid; n=0 =
+  (amp, 0). The on-chip `_sine_q15` mirrors the fold+table datapath op-for-op.
+- **Architecture builds — modelled on IQUpconvertBlock** (the proven 6-cell NCO:
+  phase | sin_fold | cos_fold | table_sin | table_cos | combine, with
+  `internal_connections`/`internal_jumps`/`default_layout`). Complex egress copies
+  the matched-filter pattern (`{write:yi}{write:yq}`, wire ONE net, harness
+  de-interleaves). The complex harness needs the NCO to declare TWO trigger inputs
+  (R0,R1, ignored) so `run_block_dut_complex` drives it.
+- **THE blocker — per-cell budget (the number).** The resolver packs data low and
+  instructions high; usable gap registers for state+preserved-inputs is
+  `gap = (31 − instr_count) − data_top − 1`. Interpolation breaks two cells:
+    * FOLD (decomp → idx, idxB, frac, neg): ~24 instr + 5 data + 3 state + 1
+      preserved input → gap = (31−24)−4−1 = 2 < 4 needed. **"No register space for
+      state 'fidx'."**
+    * TABLE+interp (17 entries = 18 data words): gap = (31−12)−19−1 = −1. The
+      17-entry table alone leaves no room for the interp arithmetic + 4 state.
+- **THE fix — split into a 10-cell datapath (fully worked out, fits each cell):**
+  `phase | sinA | sinB | sinTab | sinInt | cosA | cosB | cosTab | cosInt | emit`
+    * fold_a (per ch): phase → frac (=(phase&0x3FF)<<5), neg (=phase>>15), fidx
+      (=phase>>10). ~7 instr, fits trivially.
+    * fold_b: fidx → idx, idxB. loc=fidx&15; mir=(fidx>>4)&1; if mir loc=16−loc;
+      idx=loc; idxB=loc+1−2·mir. ~18 instr + 4 data + 2 state → gap 8 ≥ 3. Fits.
+    * tab: LOAD table[idx]→write valA; LOAD table[idxB]→write valB (write each
+      straight from R0, NO state). 7 instr + 18 data + 2 input → gap 4 ≥ 2. Fits.
+    * interp: mag = valA + (valB−valA)·frac (SUB, MULQ frac, ADD). ~6 instr, 1
+      state, 3 input. Fits easily.
+    * emit: apply neg sign + amplitude MULQ to cos_mag & sin_mag; `{write:yi}`
+      (cos) `{write:yq}` (sin). frac/neg PASSTHROUGH-plumbed fold_a→…→interp/emit.
+  10 cells folds ≤8 across (e.g. 5×2, INV-9). This is the largest tier-1 block by
+  far; the remaining work is mechanical (write the 10 cells + the frac/neg
+  passthrough ports + iterate build→route→sim) but substantial.
+- **OPEN design decision (worth review):** 37 LSB is the 17-entry (idx_bits=6)
+  linear-interp floor — defensible as a documented table-NCO limit (cf. the IIR
+  3–160 LSB), but coarse for a SOURCE. A 33-entry table (idx_bits=7, ~10 LSB) or
+  65-entry (~4 LSB) needs an even bigger cross-cell table. Pick the precision/cell
+  tradeoff before finishing the build.
+
+---
+
 ## NCO / ComplexMixer — de-risked build design (still planned, NOT blocked) 2026-06-25
 
 SoftDemod (the third block of the older note below) is now DONE. The remaining two

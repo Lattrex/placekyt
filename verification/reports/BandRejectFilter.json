@@ -1,0 +1,20 @@
+{
+  "kyttar_block": "BandRejectFilter",
+  "passed": true,
+  "metric": "amplitude",
+  "n_compared": 120,
+  "max_abs_err": 84,
+  "tolerance": 118,
+  "nmse_db": -48.70098199468761,
+  "correlation": 0.9999980827900354,
+  "bit_errors": 0,
+  "delay_used": 0,
+  "coverage": {
+    "edge": true,
+    "random": 1,
+    "param_sweep": 4,
+    "windows": 6,
+    "mutation": true,
+    "ntaps": 39
+  }
+}

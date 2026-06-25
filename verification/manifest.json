@@ -194,33 +194,67 @@
       "kyttar_block": "LowPassFilter",
       "grc_block": "filter.fir_filter_fff (firdes.low_pass)",
       "tier": 1,
-      "status": "planned",
-      "metric": "exact",
-      "notes": "Convenience FIR: taps from gnuradio.filter.firdes.low_pass(gain,samp_rate,cutoff_freq,transition_width,window). Reuses FIRFilterBlock datapath. GRC palette label 'Low Pass Filter'. Verify the taps are bit-exact firdes AND the filtered output matches fir_filter_fff with those taps."
+      "status": "done",
+      "metric": "amplitude",
+      "params": {
+        "gain": 1.0,
+        "samp_rate": 32000.0,
+        "cutoff_freq": 4000.0,
+        "transition_width": 2000.0,
+        "window": "hamming",
+        "beta": 6.76
+      },
+      "notes": "Verified vs GNU Radio firdes.low_pass + fir_filter_fff (31 tests; full verification suite 155; placekyt 937/16-skip). A convenience FIR specified in DSP units, so LowPassFilter SUBCLASSES the verified FIRFilterBlock (all Q15 coefficient-headroom/saturation/multi-cell-fold machinery inherited) with firdes-designed taps. Params mirror GRC's Low Pass Filter VERBATIM: gain, samp_rate, cutoff_freq(Hz), transition_width(Hz), window, beta(Kaiser). KEY CONSTRAINT: GR is NOT importable in the runtime .venv (ships only on the verification host), so the block CANNOT call gnuradio.filter.firdes -- it REIMPLEMENTS firdes in pure Python (runtime/.../blocks/_firdes.py): windowed-sinc + the same compute_ntaps (atten*fs/(22*tw) -> odd), the gr::fft::window builders (Hamming/Hann/Blackman/Rectangular/Blackman-Harris cos-windows + Kaiser via Izero Bessel series), and the unity-gain normalization, all op-for-op (double product -> float32 per tap, double fmax accumulation, float*=double restore). FAITHFULNESS: tap count exact; FLOAT taps reproduce firdes to ~1 float32 ULP -- NOT bit-exact across the run boundary because the customer-modem .venv links a DIFFERENT libm than the GR host so sin/cos differ in the last bit (and GR's C++ coswindow uses FMA), a sub-ULP difference far below a Q15 LSB; the Q15-QUANTIZED taps (what reaches the chip) are BIT-EXACT to firdes for EVERY window (verified across hamming/hann/blackman/rectangular/kaiser/blackman_harris x 3 configs), so the on-chip filter IS provably the firdes filter. firdes low-pass taps are linear-phase SYMMETRIC (reversed-tap convention moot; delay=0). Tolerance = inherited headroom-aware q15_quant_floor(N, head_shift=S); a normalized low-pass has Sum|h| slightly >1 (sidelobes) so S=1 is typical (default 39-tap fs32k/co4k/tw2k = 9 cells, S=1). Two-tier: DUT vs GR firdes->fir_filter_fff end-to-end (AMPLITUDE, headroom floor) AND DUT vs FIRFilterBlock.process_reference_q15 (EXACT). Mutations (inverted, wrong-cutoff, +1 delay, empty) all FAIL the gate. GRC: kyttar_low_pass_filter.block.yml label 'Low Pass Filter' (+ kyttar.low_pass_filter marker wrapper); grc_import maps kyttar_low_pass_filter -> LowPassFilter via the snake->Pascal fallback (no override). _firdes.py is shared by the High/Band-pass + Band-reject convenience filters."
     },
     {
       "kyttar_block": "HighPassFilter",
       "grc_block": "filter.fir_filter_fff (firdes.high_pass)",
       "tier": 1,
-      "status": "planned",
-      "metric": "exact",
-      "notes": "Convenience FIR: firdes.high_pass(...). Same wrapper pattern as LowPassFilter. Label 'High Pass Filter'."
+      "status": "done",
+      "metric": "amplitude",
+      "params": {
+        "gain": 1.0,
+        "samp_rate": 32000.0,
+        "cutoff_freq": 4000.0,
+        "transition_width": 2000.0,
+        "window": "hamming",
+        "beta": 6.76
+      },
+      "notes": "Verified vs GNU Radio firdes.high_pass + fir_filter_fff (30 tests; full verification suite 185; placekyt 937/16-skip). Same pattern as LowPassFilter: SUBCLASSES FIRFilterBlock with firdes-designed taps from the shared pure-Python blocks/_firdes.py (GR absent in the runtime .venv). firdes high_pass is normalized to unity gain at NYQUIST (fmax accumulates taps[n]*cos(n*pi)); taps linear-phase SYMMETRIC (delay=0, reversed-tap convention moot). Params mirror GRC's High Pass Filter VERBATIM: gain, samp_rate, cutoff_freq(Hz), transition_width(Hz), window, beta. Q15-quantized taps BIT-EXACT to firdes for ALL six windows (hamming/hann/blackman/rectangular/kaiser/blackman_harris x 3 configs) -> on-chip filter IS the firdes filter (INV-16); float taps ~1 ULP (cross-interpreter libm). A firdes high-pass has Sum|h|>1 (large centre tap + negative sidelobes) so COEFFICIENT HEADROOM engages (default 39-tap fs32k/co4k/tw2k = 9 cells, S=1). Two-tier: DUT vs GR firdes->fir_filter_fff (AMPLITUDE, headroom floor) AND DUT vs process_reference_q15 (EXACT). Mutations (inverted, wrong-cutoff, +1 delay, empty) all FAIL. GRC: kyttar_high_pass_filter.block.yml label 'High Pass Filter' + kyttar.high_pass_filter wrapper."
     },
     {
       "kyttar_block": "BandPassFilter",
       "grc_block": "filter.fir_filter_fff (firdes.band_pass)",
       "tier": 1,
-      "status": "planned",
-      "metric": "exact",
-      "notes": "Convenience FIR: firdes.band_pass(gain,samp_rate,low_cutoff,high_cutoff,transition_width,window). Label 'Band Pass Filter'."
+      "status": "done",
+      "metric": "amplitude",
+      "params": {
+        "gain": 1.0,
+        "samp_rate": 32000.0,
+        "low_cutoff_freq": 4000.0,
+        "high_cutoff_freq": 8000.0,
+        "transition_width": 2000.0,
+        "window": "hamming",
+        "beta": 6.76
+      },
+      "notes": "Verified vs GNU Radio firdes.band_pass + fir_filter_fff (30 tests; full verification suite 215; placekyt 937/16-skip). Same pattern as LowPassFilter/HighPassFilter: SUBCLASSES FIRFilterBlock with firdes-designed taps from the shared pure-Python blocks/_firdes.py (GR absent in the runtime .venv). Takes TWO cutoffs: low_cutoff_freq + high_cutoff_freq (Hz). firdes band_pass is normalized to unity gain at the band CENTRE (fmax accumulates taps[n]*cos(n*freq), freq=pi*(lo+hi)/fs); taps linear-phase SYMMETRIC (delay=0). Params mirror GRC's Band Pass Filter VERBATIM. Q15-quantized taps BIT-EXACT to firdes for ALL six windows (x3 configs) -> on-chip filter IS the firdes filter (INV-16); float ~1 ULP. Sum|h|>1 so COEFFICIENT HEADROOM engages (default 39-tap fs32k/4k-8k/tw2k = 9 cells, S=1). Two-tier: DUT vs GR firdes->fir_filter_fff (AMPLITUDE, headroom floor) AND DUT vs process_reference_q15 (EXACT). Mutations (inverted, wrong-band, +1 delay, empty) all FAIL. GRC: kyttar_band_pass_filter.block.yml label 'Band Pass Filter' + kyttar.band_pass_filter wrapper."
     },
     {
       "kyttar_block": "BandRejectFilter",
       "grc_block": "filter.fir_filter_fff (firdes.band_reject)",
       "tier": 1,
-      "status": "planned",
-      "metric": "exact",
-      "notes": "Convenience FIR: firdes.band_reject(...). Label 'Band Reject Filter'."
+      "status": "done",
+      "metric": "amplitude",
+      "params": {
+        "gain": 1.0,
+        "samp_rate": 32000.0,
+        "low_cutoff_freq": 4000.0,
+        "high_cutoff_freq": 8000.0,
+        "transition_width": 2000.0,
+        "window": "hamming",
+        "beta": 6.76
+      },
+      "notes": "Verified vs GNU Radio firdes.band_reject + fir_filter_fff (30 tests; full verification suite 245; placekyt 937/16-skip). Band-stop/notch; same pattern as the other firdes filters: SUBCLASSES FIRFilterBlock with taps from the shared blocks/_firdes.py (GR absent in the runtime .venv). Takes low_cutoff_freq + high_cutoff_freq (Hz); normalized to unity gain at DC (fmax accumulates taps[n], like low_pass). Taps linear-phase SYMMETRIC (delay=0). Params mirror GRC's Band Reject Filter VERBATIM. Q15-quantized taps BIT-EXACT to firdes for ALL six windows (x3 configs) -> on-chip filter IS the firdes filter (INV-16); float ~1 ULP. The notch has a LARGE centre tap so Sum|h|>2 -> COEFFICIENT HEADROOM S=2 (the highest of the four firdes filters; default 39-tap fs32k/4k-8k/tw2k = 9 cells, the FIR's last cell caps its segment to fit the S=2 saturating-shift restore, EXERCISING the FIR's S>=2 budget path end-to-end). Two-tier: DUT vs GR firdes->fir_filter_fff (AMPLITUDE, headroom floor) AND DUT vs process_reference_q15 (EXACT). Mutations (inverted, wrong-band, +1 delay, empty) all FAIL. GRC: kyttar_band_reject_filter.block.yml label 'Band Reject Filter' + kyttar.band_reject_filter wrapper. COMPLETES the four firdes convenience filters (Decision B)."
     }
   ]
 }

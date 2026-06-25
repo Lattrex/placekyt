@@ -1,0 +1,82 @@
+id: kyttar_band_pass_filter
+label: Band Pass Filter
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar Band Pass Filter — drop-in for GNU Radio's Band Pass Filter
+  (filter.fir_filter_fff fed taps from filter.firdes.band_pass).
+
+  A convenience FIR specified in DSP units: the chip block designs the firdes
+  windowed-sinc taps internally (bit-exact firdes after Q15 quantization) and
+  runs them on the verified Kyttar FIR datapath.
+
+  This block runs on the Kyttar chip. Place it between a KyttarSource and
+  KyttarSink block, and ensure the device_id matches your KyttarDevice.
+
+  Parameters (mirroring GNU Radio's Band Pass Filter verbatim):
+  - Device ID: ID of the KyttarDevice block
+  - Gain: passband gain
+  - Sample Rate: sample rate in Hz
+  - Low Cutoff Freq: lower passband edge in Hz
+  - High Cutoff Freq: upper passband edge in Hz
+  - Transition Width: transition-band width in Hz (sets the tap count)
+  - Window: design window (Hamming default, Hann, Blackman, Rectangular,
+    Blackman-Harris, Kaiser)
+  - Beta: Kaiser window beta (used only when Window = Kaiser)
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.band_pass_filter(device_id=${device_id}, gain=${gain}, samp_rate=${samp_rate},
+    low_cutoff_freq=${low_cutoff_freq}, high_cutoff_freq=${high_cutoff_freq},
+    transition_width=${transition_width}, window=${window}, beta=${beta})
+  callbacks:
+    - set_low_cutoff_freq(${low_cutoff_freq})
+    - set_high_cutoff_freq(${high_cutoff_freq})
+    - set_transition_width(${transition_width})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+  - id: gain
+    label: Gain
+    dtype: real
+    default: '1.0'
+  - id: samp_rate
+    label: Sample Rate
+    dtype: real
+    default: samp_rate
+  - id: low_cutoff_freq
+    label: Low Cutoff Freq
+    dtype: real
+    default: '4000'
+  - id: high_cutoff_freq
+    label: High Cutoff Freq
+    dtype: real
+    default: '8000'
+  - id: transition_width
+    label: Transition Width
+    dtype: real
+    default: '2000'
+  - id: window
+    label: Window
+    dtype: string
+    default: '"hamming"'
+    options: ['"hamming"', '"hann"', '"blackman"', '"rectangular"', '"blackman_harris"', '"kaiser"']
+    option_labels: [Hamming, Hann, Blackman, Rectangular, Blackman-harris, Kaiser]
+  - id: beta
+    label: Beta
+    dtype: real
+    default: '6.76'
+
+inputs:
+  - label: in
+    dtype: float
+
+outputs:
+  - label: out
+    dtype: float
+
+file_format: 1

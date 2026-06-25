@@ -3,7 +3,7 @@
 
 # Kyttar block library — status
 
-**5 verified · 0 in progress · 24 targeted.** Each Kyttar block is verified as a drop-in equivalent of its GNU Radio Companion counterpart (same parameters, output matching within Q15 quantization). “Quality” is the measured error of the verified block versus the GNU Radio reference.
+**6 verified · 0 in progress · 24 targeted.** Each Kyttar block is verified as a drop-in equivalent of its GNU Radio Companion counterpart (same parameters, output matching within Q15 quantization). “Quality” is the measured error of the verified block versus the GNU Radio reference.
 
 > **Reading the quality column.** `err N / tol M LSB` — the worst-case sample error (`N`) against the derived pass threshold (`M`), in Q15 **LSBs** (1 LSB = 1/32768 of full scale ≈ 3.05e-5); pass requires `N ≤ M`. `−X dB SNR` — the **NMSE**: the error power is `X` dB below the signal power (more negative = quieter; Q15's floor is ≈ −90 dB). Decision blocks report **BER** instead. To estimate a chain's total noise, convert each block's dB to linear power (`10^(dB/10)`), sum, and convert back (`10·log10`) — the noisiest stage dominates.
 
@@ -14,10 +14,10 @@
 | **FIRFilterBlock** | `filter.fir_filter_fff` | 1 · feed-forward | ✅ done | err 10 / tol 17 LSB · -65 dB SNR | edge rand×3 sweep×12 mut |
 | **IIRBiquadBlock** | `filter.iir_filter_ffd` | 1 · feed-forward | ✅ done | err 16 / tol 21 LSB · -64 dB SNR | sweep×4 mut |
 | **DecimatorBlock** | `filter.fir_filter_fff (decim)` | 1 · feed-forward | ✅ done | err 6 / tol 9 LSB · -72 dB SNR | edge rand×3 sweep×8 mut |
+| **LowPassFilter** | `filter.fir_filter_fff (firdes.low_pass)` | 1 · feed-forward | ✅ done | err 37 / tol 79 LSB · -55 dB SNR | edge rand×1 sweep×4 mut |
 | **ComplexMixerBlock** | `blocks.multiply_cc + analog.sig_source` | 1 · feed-forward | ⬜ planned | — | — |
 | **NCOBlock** | `analog.sig_source_c` | 1 · feed-forward | ⬜ planned | — | — |
 | **SoftDemodulatorBlock** | `digital.constellation_soft_decoder_cf` | 1 · feed-forward | ⬜ planned | — | — |
-| **LowPassFilter** | `filter.fir_filter_fff (firdes.low_pass)` | 1 · feed-forward | ⬜ planned | — | — |
 | **HighPassFilter** | `filter.fir_filter_fff (firdes.high_pass)` | 1 · feed-forward | ⬜ planned | — | — |
 | **BandPassFilter** | `filter.fir_filter_fff (firdes.band_pass)` | 1 · feed-forward | ⬜ planned | — | — |
 | **BandRejectFilter** | `filter.fir_filter_fff (firdes.band_reject)` | 1 · feed-forward | ⬜ planned | — | — |

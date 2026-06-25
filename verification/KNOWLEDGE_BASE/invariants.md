@@ -439,3 +439,38 @@ mnemonic (a top-level-opcode-only table mislabels them all as "MAC"/"MUL").
 **Applies to:** IIR biquads (the canonical case), high-gain blocks, any loop/filter
 coefficient that can exceed unity in Q15.
 
+---
+
+## INV-16 — Coefficient parity vs a GR designer is a Q15-EXACT gate, not a float-bit gate
+
+**Symptom:** a convenience/designer block (firdes Low/High/Band filters, any block
+whose taps come from a GR algorithm) is held to "float taps BIT-EXACT to GNU
+Radio" and false-fails by ~1 float32 ULP, OR an agent weakens the gate to a loose
+relative tolerance to get green.
+
+**Root cause — float bit-exactness is interpreter-dependent and not the thing that
+matters.** Two sub-ULP sources put the last bit out of reach: (a) GR's C++ is
+compiled with fused multiply-add (e.g. `firdes` `coswindow`), not portably
+reproducible in Python; (b) the production runtime (the modem `.venv`) links a
+DIFFERENT libm than the GR verification host, so `sin`/`cos`/`exp` differ in the
+last bit. Neither changes what reaches the chip: the tap is QUANTIZED TO Q15 (15
+fractional bits) before it is used, and a sub-ULP float difference (~1e-8) is ~5e-4
+of one Q15 LSB (3.05e-5) — it never crosses a rounding boundary.
+
+**Fix — gate on the Q15-quantized tap, which IS the hardware coefficient.** Assert
+`float_to_q15(block_tap) == float_to_q15(gr_designer_tap)` BIT-EXACT for every tap
+and every parameter/window combination — this is a strong, honest, hardware-
+determining gate (the on-chip filter provably equals the GR filter). Keep a SECOND
+float-level assertion as a DERIVED floor (e.g. `max|Δ| < 1e-6`, far below ½ Q15
+LSB) to prove it is the same design up to floating-point rounding — but do NOT
+require float bit-equality, and do NOT loosen the floor to a percentage. The
+end-to-end DSP gate (DUT output vs the GR block fed the GR-designed taps, within
+the inherited Q15 FIR floor) and the bit-exact `process_reference_q15` gate are
+unchanged. (Verified: firdes taps are float bit-exact for Hamming/Hann/Rectangular/
+Kaiser on the GR host but ~1 ULP off in the `.venv`; Q15-exact for ALL six windows
+in both.)
+
+**Applies to:** every block that reproduces a GNU Radio coefficient designer in
+pure Python because GR is absent at runtime — the firdes filters ([[INV-13]]
+headroom still governs the datapath), and any future windowed/designed-tap block.
+

@@ -8,6 +8,49 @@ anything that generalizes across block classes into `invariants.md`.
 
 ---
 
+## LowPassFilter — firdes reimplemented in pure Python (GR absent at runtime) 2026-06-25
+
+- **Status:** PASS / DONE vs GNU Radio `firdes.low_pass` + `fir_filter_fff`, 31
+  tests; full verification suite 155; placekyt 937 passed / 16 skipped.
+- **A convenience FIR IS a FIRFilterBlock + a tap designer.** Like DCBlocker,
+  `LowPassFilter` SUBCLASSES the verified FIRFilterBlock and just supplies
+  firdes-designed taps — zero new datapath, all headroom/saturation/fold
+  machinery inherited. Params mirror GRC's Low Pass Filter verbatim (gain,
+  samp_rate, cutoff_freq Hz, transition_width Hz, window, beta).
+- **THE constraint that shaped the build — GR is NOT in the runtime `.venv`.**
+  GNU Radio is importable only on the verification host (`/usr/bin/python3`), not
+  in the customer-modem `.venv` the blocks run in. So the block CANNOT
+  `import gnuradio.filter.firdes` (Decision B's literal wording). Instead
+  `blocks/_firdes.py` REIMPLEMENTS firdes op-for-op in pure Python: `compute_ntaps`
+  (`int(atten*fs/(22*tw))` → next odd), the `gr::fft::window` builders (Hamming/
+  Hann/Blackman/Rectangular/Blackman-Harris cos-windows + Kaiser via the `Izero`
+  Bessel series), the windowed-sinc, and the unity-gain normalization — each cast
+  point matched (double product → float32 per tap, double `fmax`, `float *= double`
+  restore).
+- **"Bit-exact firdes taps" is NOT achievable across the run boundary — and that's
+  fine.** Two last-bit sources, both sub-ULP: (a) GR's C++ `coswindow` is compiled
+  with FMA (Blackman/Blackman-Harris differ by 1 ULP even on the GR host); (b) the
+  `.venv` links a DIFFERENT libm than the GR host, so `sin`/`cos` differ in the
+  last bit and ANY window's float tap can move ~1 ULP. The honest, hardware-
+  meaningful gate is the **Q15-quantized** tap: `float_to_q15(mine) ==
+  float_to_q15(firdes)` is BIT-EXACT for EVERY window (the sub-ULP float diff never
+  crosses a Q15 boundary), so the on-chip filter IS provably the firdes filter.
+  The float-tap test asserts a derived floor (< 1e-6, far below ½ Q15 LSB), not bit
+  equality — promoted to INV-16.
+- **Tolerance inherited, not tuned.** A normalized firdes low-pass has Σ|h|
+  slightly >1 (sidelobes) → COEFFICIENT HEADROOM S=1 (default 39-tap = 9 cells).
+  DUT-vs-GR uses the headroom-aware `q15_quant_floor(N, head_shift=S)`; DUT-vs-
+  `process_reference_q15` is EXACT. Taps symmetric (linear phase) ⇒ delay=0,
+  reversed-tap convention moot.
+- **GRC + import.** `kyttar_low_pass_filter.block.yml` (label "Low Pass Filter") +
+  the `kyttar.low_pass_filter` marker wrapper; `grc_import` maps
+  `kyttar_low_pass_filter` → `LowPassFilter` through the existing snake→Pascal
+  fallback (`(pascal+"Block", pascal)`) — no `_TYPE_OVERRIDES` entry needed.
+- **Shared designer.** `_firdes.py` exposes `low_pass`/`high_pass`/`band_pass`/
+  `band_reject`; the High/Band-pass + Band-reject convenience blocks reuse it.
+
+---
+
 ## HARNESS — complex (I/Q) + LLR (soft-decision) support 2026-06-24
 
 - **Additive, real path untouched.** New `run_block_dut_complex` /

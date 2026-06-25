@@ -66,6 +66,7 @@ from .dsp_markers import (complex_rrc_matched_filter, complex_costas_loop,
                           gardner_timing_recovery, bpsk_slicer)
 from .gain import gain
 from .fir_filter import fir_filter
+from .low_pass_filter import low_pass_filter
 from .dc_blocker import dc_blocker
 from .agc import agc
 from .nco import nco
@@ -100,6 +101,7 @@ __all__ = [
     # DSP blocks
     "gain",
     "fir_filter",
+    "low_pass_filter",
     "dc_blocker",
     "agc",
     "nco",

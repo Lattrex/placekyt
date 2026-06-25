@@ -33,11 +33,38 @@ def catalog() -> BlockCatalog:
 
 class TestDiscovery:
     def test_discovers_all_blocks(self, catalog):
-        # §0.1 lists 25+ production blocks; the tree currently has 28 classes.
-        assert len(catalog.all()) >= 25
+        # Discovery finds every block class (25+); they stay RESOLVABLE even when
+        # hidden from the palette. The PALETTE is the curated subset — see
+        # test_palette_is_curated.
+        assert len(catalog.all(include_hidden=True)) >= 25
+
+    def test_palette_is_curated(self, catalog):
+        # The palette (default ``all()``) shows ONLY blocks in the verification
+        # manifest (verified / planned / proof-of-concept); the unverified
+        # leftovers are hidden so users don't build on questionable blocks. The
+        # curated set is strictly smaller than the full discovered set.
+        palette = {s.type_name for s in catalog.all()}
+        full = {s.type_name for s in catalog.all(include_hidden=True)}
+        assert 0 < len(palette) < len(full), "palette must be a curated subset"
+        for n in ("GainBlock", "FIRFilterBlock", "IIRBiquadBlock", "NCOBlock",
+                  "ComplexMixerBlock", "LowPassFilter"):
+            assert n in palette, f"{n} (verified) must be in the palette"
+        for n in ("DFEEqualizerBlock", "QAM16TransceiverBlock", "FrameSyncBlock",
+                  "CoherentRXBlock", "EOMDetectorBlock"):
+            assert n not in palette, f"{n} (unverified) must be hidden"
+
+    def test_hidden_blocks_still_resolve(self, catalog):
+        # Hiding is palette-only: a hidden block must still resolve via get() so a
+        # design/demo that references it continues to LOAD.
+        for n in ("DFEEqualizerBlock", "CoherentRXBlock", "SramControllerBlock"):
+            spec = catalog.get(n)
+            assert spec is not None and spec.hidden, n
 
     def test_all_categories_present(self, catalog):
-        assert set(catalog.by_category().keys()) == EXPECTED_CATEGORIES
+        # Categories are checked against the FULL discovered set; the palette
+        # legitimately omits whole categories whose blocks are all unverified.
+        cats = {s.category for s in catalog.all(include_hidden=True)}
+        assert cats == EXPECTED_CATEGORIES
 
     def test_known_blocks_exist(self, catalog):
         for name in ("AGCBlock", "FIRFilterBlock", "DFEEqualizerBlock",
@@ -98,8 +125,10 @@ class TestResolution:
 
 class TestSearch:
     def test_search_by_name(self, catalog):
+        # Search is over the PALETTE (curated) set. The visible Costas block is
+        # ComplexCostasLoopBlock; the bare CostasLoopBlock is hidden.
         names = {s.type_name for s in catalog.search("costas")}
-        assert "CostasLoopBlock" in names
+        assert "ComplexCostasLoopBlock" in names
 
     def test_search_by_tag_or_category(self, catalog):
         results = {s.type_name for s in catalog.search("filter")}

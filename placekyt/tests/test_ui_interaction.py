@@ -193,8 +193,13 @@ class TestController:
 
 class TestLibraryPanel:
     def test_lists_all_blocks(self, qapp, catalog):
+        # The library panel shows the CURATED palette (manifest blocks only) — a
+        # smaller, trustworthy set than every discovered class. It must list the
+        # verified production blocks and exclude the unverified leftovers.
         panel = LibraryPanel(catalog)
-        assert panel.block_count() >= 25
+        n = panel.block_count()
+        assert n >= 12, "the verified+POC palette should list at least a dozen blocks"
+        assert n < len(catalog.all(include_hidden=True)), "palette is a curated subset"
 
     def test_search_filters(self, qapp, catalog):
         panel = LibraryPanel(catalog)

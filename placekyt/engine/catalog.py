@@ -47,6 +47,41 @@ _EXCLUDED_BLOCKS = frozenset({
 })
 
 
+def _palette_allowlist() -> frozenset[str] | None:
+    """Block type names that may appear in the PALETTE — the curated set from the
+    verification manifest (any status: verified ``done``, ``planned``, or
+    proof-of-concept). A block NOT in the manifest is still resolvable (so designs
+    referencing it load) but is HIDDEN from the palette, so users don't unknowingly
+    build on the ~28 unverified leftover blocks.
+
+    Returns ``None`` if the manifest can't be found (e.g. a packaged bundle without
+    the verification tree) — in that case nothing is hidden and the full set shows,
+    the safe fallback (never hide a block we can't confirm is uncurated).
+    """
+    import json
+    import os
+
+    here = os.path.dirname(os.path.abspath(__file__))
+    # repo layout: <repo>/placekyt/engine/catalog.py and
+    # <repo>/verification/manifest.json
+    candidates = [
+        os.path.join(here, "..", "..", "verification", "manifest.json"),
+        os.path.join(here, "..", "verification", "manifest.json"),
+    ]
+    for path in candidates:
+        path = os.path.normpath(path)
+        if os.path.isfile(path):
+            try:
+                with open(path) as f:
+                    m = json.load(f)
+                return frozenset(
+                    b["kyttar_block"] for b in m.get("blocks", [])
+                    if "kyttar_block" in b)
+            except Exception:  # noqa: BLE001 — malformed manifest ⇒ show all
+                return None
+    return None
+
+
 @dataclass(frozen=True)
 class ParamSpec:
     """A block constructor parameter: name, default, and (best-effort) type."""
@@ -103,6 +138,12 @@ class BlockSpec:
     output_registers: tuple[int, ...]
     params: tuple[ParamSpec, ...]
     cls: type = field(compare=False, repr=False)
+    # Hidden from the block PALETTE (still fully resolvable so existing designs /
+    # demos that reference it continue to load). A block is shown only if it is in
+    # the curated verification manifest (verified, planned, or proof-of-concept);
+    # the ~28 unverified HF-modem leftovers are hidden so users don't unknowingly
+    # build on questionable blocks. See ``_palette_allowlist``.
+    hidden: bool = field(default=False, compare=False)
 
     def param(self, name: str) -> ParamSpec | None:
         for p in self.params:
@@ -147,6 +188,9 @@ class BlockCatalog:
         definition and would not build (placeKYT consumes only the v2/canonical
         path). See §0.1.
         """
+        import dataclasses
+
+        allow = _palette_allowlist()  # None ⇒ show everything (safe fallback)
         specs: dict[tuple[str, str], BlockSpec] = {}
         for obj in vars(_mb).values():
             if (
@@ -157,19 +201,31 @@ class BlockCatalog:
                 and obj.__name__ not in _EXCLUDED_BLOCKS
             ):
                 spec = _build_spec(obj)
+                # A block NOT in the curated manifest is HIDDEN from the palette
+                # (but still resolvable, so designs/demos referencing it load).
+                if allow is not None and spec.type_name not in allow:
+                    spec = dataclasses.replace(spec, hidden=True)
                 specs[(spec.library, spec.type_name)] = spec
         return cls(specs)
 
     # -- queries --------------------------------------------------------------
 
-    def all(self) -> list[BlockSpec]:
-        """All block specs, sorted by category then type name (for the panel)."""
-        return sorted(self._specs.values(), key=lambda s: (s.category, s.type_name))
+    def all(self, include_hidden: bool = False) -> list[BlockSpec]:
+        """Block specs sorted by category then type name (for the panel).
 
-    def by_category(self) -> dict[str, list[BlockSpec]]:
-        """Specs grouped by category (drives the §3.4 categorized tree)."""
+        By default only PALETTE-visible (non-hidden) blocks are returned — the
+        curated manifest set. Pass ``include_hidden=True`` for the complete set
+        (e.g. tooling that must see every resolvable block)."""
+        specs = self._specs.values()
+        if not include_hidden:
+            specs = [s for s in specs if not s.hidden]
+        return sorted(specs, key=lambda s: (s.category, s.type_name))
+
+    def by_category(self, include_hidden: bool = False) -> dict[str, list[BlockSpec]]:
+        """Specs grouped by category (drives the §3.4 categorized tree). Hidden
+        (uncurated) blocks are excluded unless ``include_hidden=True``."""
         out: dict[str, list[BlockSpec]] = {}
-        for spec in self.all():
+        for spec in self.all(include_hidden=include_hidden):
             out.setdefault(spec.category, []).append(spec)
         return out
 

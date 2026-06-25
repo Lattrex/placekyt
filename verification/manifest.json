@@ -19,9 +19,13 @@
       "kyttar_block": "DCBlockerBlock",
       "grc_block": "filter.dc_blocker_ff",
       "tier": 1,
-      "status": "planned",
+      "status": "done",
       "metric": "amplitude",
-      "notes": "High-pass DC remover."
+      "notes": "Verified vs filter.dc_blocker_ff. GR's DC blocker is LTI -- a SYMMETRIC FIR -- so DCBlockerBlock SUBCLASSES the verified FIRFilterBlock with the dc-blocker impulse response as its coefficients. Reverse-engineered from GR impulse/step response and confirmed bit-for-bit (float, <1e-4) for D in {2,4,8,16,32}, both forms: SHORT form (long_form=False) = x[n-(D-1)] - MA_D^2(x) (two cascaded length-D moving averagers; triangular kernel, 2D-1 taps, group delay D-1); LONG form (long_form=True, GR default) = x[n-(2D-2)] - MA_D^4(x) (four cascaded; 4D-3 taps, group delay 2D-2). Sum(taps)=0 (true DC notch); taps symmetric so the FIR reversed-tap convention is moot. Params mirror GR's GRC dc_blocker_xx VERBATIM: length (GR's D, default 32) + long_form (default True). GR default = 125 taps = 26 cells; folds 7x4 (<=8 across, INV-9), routes + sims + matches GR end-to-end. TOLERANCE: the dc-blocker taps have Sum|h|~1.5..2, so COEFFICIENT HEADROOM (INV-13) engages with S=1 (coeffs pre-scaled by 1/2, saturating-shift gain restore -> the block SATURATES on overload, no rollover). S=1 costs ~1 bit of coeff precision, so the DUT-vs-GR amplitude floor is the HEADROOM-AWARE q15_quant_floor(N, head_shift=S) = N*(2^(S-1)+1)+1 LSB (=2N+1 at S=1), NOT the plain N+1 -- a DERIVED fixed-point worst case (empirically bounds the error with ~18% margin), not a loosened gate. Two-tier verification like the FIR: DUT vs GR float (amplitude, headroom floor) AND DUT vs process_reference_q15 (EXACT, models the saturating datapath). Coverage: taps-vs-GR-impulse, edge + 3 random + (length,long_form) sweep single->26 cells, bit-exact multicell, overload-saturation (sign-aligned full-scale pins the rails) + wrap-mutation, and inverted/wrong-length/+1-delay/empty/deep-cell mutations all FAIL the gate. Fixed a latent FIR _fold_geometry bug (n=26 had only the H=1 even-column fold -> a 26x1 off-grid LINE; capped even-column folds to <=8 across, INV-9) and extended INV-11 params-threading to the GUI port-stub/flyline renderer (chip_canvas resolved port geometry param-less, dropping a scaling block's last-cell output stub). All placekyt callers updated to a 1-cell instance (length=2, long_form=False) so geometry-sensitive fixtures are unchanged; full suite 937 passed.",
+      "params": {
+        "length": 32,
+        "long_form": true
+      }
     },
     {
       "kyttar_block": "FIRFilterBlock",
@@ -33,7 +37,7 @@
     },
     {
       "kyttar_block": "IIRBiquadBlock",
-      "grc_block": "filter.iir_filter_fff",
+      "grc_block": "filter.iir_filter_ffd",
       "tier": 1,
       "status": "planned",
       "metric": "amplitude",
@@ -43,9 +47,13 @@
       "kyttar_block": "DecimatorBlock",
       "grc_block": "filter.fir_filter_fff (decim)",
       "tier": 1,
-      "status": "planned",
+      "status": "done",
       "metric": "amplitude",
-      "notes": "Rate change: fractional/decimated alignment; compare on decimated time base."
+      "notes": "Verified vs filter.fir_filter_fff(M, taps). A decimator IS an FIR + emit-every-M, so DecimatorBlock SUBCLASSES the verified FIRFilterBlock: every wavefront cell runs each sample (delay line / partial forwarding / COEFFICIENT-HEADROOM saturation all INHERITED unchanged) and only the LAST cell's OUTPUT is gated by a mod-M counter. GR's fir_filter_fff(M, taps) emits the full FIR sampled at PHASE 0 -- y_full[0::M] (confirmed empirically) -- so the block emits on input samples 0, M, 2M, ... and aligns with GR at delay=0. Params mirror the GR decimating FIR: coefficients (GR taps) + decimation (GR's first fir_filter_fff arg / GRC decim); renamed the old decimation_factor -> decimation (matches the GRC yaml + GR; fixed callers: modem_110b_demo, the .kyt demo, the gr-kyttar decimator.py wrapper). Non-last cells are reused VERBATIM from the FIR builder; only the last cell is rebuilt to add the counter (so register allocation accounts for it). Headroom restore on the last cell uses the cheaper DOUBLING-saturate (S doublings of ADD R0,R0 + V-clamp) instead of the FIR's bias-shift -- bit-identical to clamp(acc*2^S) so the inherited process_reference_q15 still predicts the DUT EXACTLY, but cheap enough to COEXIST with the mod-M counter on one cell. Tolerance = headroom-aware q15_quant_floor(N, head_shift=S) (S=1 is the COMMON real case: a normalized anti-alias low-pass has Sum|h| slightly >1 from sidelobes). Two-tier verification: DUT emitted stream vs GR float (amplitude, headroom floor) AND DUT vs process_reference_q15 (EXACT, saturating datapath). Budget: the counter+restore share the last cell, so its tap cap shrinks with S (single-cell ceiling 4@S=0 / 2@S=1; multi-cell last cell 3@S=0 / 2@S=1 / 1@S=2). KNOWN LIMIT (guarded, test_decimator_excess_headroom_raises): Sum|h|>4 (head_shift>2) raises a clear ValueError -- the restore no longer fits beside the counter; every realistic anti-alias decimator (normalized or up to ~4x gain) is covered. Coverage: decimation-phase contract (emit iff index%M==0), edge + 3 random + (taps,M) sweep single->deep-multicell, S=1 headroom filter, bit-exact multicell, and inverted/wrong-M/wrong-taps/+1-delay/empty/deep-cell mutations all FAIL the gate.",
+      "params": {
+        "coefficients": "<taps>",
+        "decimation": 2
+      }
     },
     {
       "kyttar_block": "ComplexMixerBlock",

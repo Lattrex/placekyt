@@ -86,9 +86,12 @@
       "kyttar_block": "SoftDemodulatorBlock",
       "grc_block": "digital.constellation_soft_decoder_cf",
       "tier": 1,
-      "status": "planned",
-      "metric": "amplitude",
-      "notes": "LLR output; tolerance on soft values."
+      "status": "done",
+      "metric": "llr",
+      "params": {
+        "noise_variance": 0.1
+      },
+      "notes": "Verified vs GNU Radio digital.constellation_soft_decoder_cf on a constellation_bpsk() (12 tests; full verification suite 257; placekyt 937/16-skip). BPSK soft-decision demapper: turns a carrier-recovered real-axis I sample into an LLR for a soft-input FEC (Viterbi) decoder. On chip it is a SINGLE MULQ -- LLR = coeff*I -- where coeff = min(0.5, 2/sigma2 * llr_scale) maps the theoretical BPSK LLR 2I/sigma2 into the Q15 range. The noise_variance param is REAL, not cosmetic: coeff tracks 2/sigma2 and SATURATES at the production scale 0.5 for any realistic sigma2<=4 (verified coeff==0.5 at sigma2 in {0.05,0.1,1,4}), then scales down for very high noise (sigma2=10 -> coeff=0.2). GR's BPSK soft decoder emits LLR=4*I (a fixed scale), so the LLR comparator aligns the two via llr_scale=coeff/4 (=0.125 at production scale). METRIC = LLR (compare_llr_against_grc): SIGN agreement is the hard bit the decoder acts on and must be EXACT (0 mismatches outside the near-zero dead zone); the soft magnitude is held to a derived Q15 floor after the scale. Two-tier: DUT vs GR BPSK soft decoder (sign exact + magnitude) AND DUT vs process_reference_q15 (EXACT single-MULQ datapath; FIXED a latent reference bug -- it referenced a nonexistent self._inv_variance_q15 and would AttributeError; now models LLR=(coeff*I)>>15 exactly + added llr_coeff_q15/process_reference_q15). Mutations (flipped sign=wrong bit, halved magnitude, +1 delay, empty) all FAIL the gate (INV-4). Uses the complex/LLR harness proven in test_complex_harness.py. GRC: kyttar_soft_demodulator.block.yml; grc_import maps kyttar_soft_demodulator -> SoftDemodulatorBlock via _TYPE_OVERRIDES."
     },
     {
       "kyttar_block": "ComplexRRCMatchedFilterBlock",

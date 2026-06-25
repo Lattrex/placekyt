@@ -8,6 +8,30 @@ anything that generalizes across block classes into `invariants.md`.
 
 ---
 
+## SoftDemodulatorBlock — BPSK soft demapper vs GR soft decoder 2026-06-25
+
+- **Status:** PASS / DONE vs GNU Radio `digital.constellation_soft_decoder_cf`
+  (BPSK), 12 tests; full verification suite 257; placekyt 937 / 16 skipped.
+- **A single MULQ.** On chip the soft demapper is `LLR = coeff·I`, one `MULQ`,
+  where `coeff = min(0.5, 2/σ²·llr_scale)`. The block was already proven on the
+  LLR harness (test_complex_harness.py); this gives it a dedicated suite + makes
+  it a manifest-`done` block.
+- **noise_variance is a REAL knob.** `coeff` tracks `2/σ²` and SATURATES at the
+  production scale 0.5 for any realistic `σ² ≤ 4`, then scales down for very high
+  noise (`σ²=10 → coeff=0.2`). GR's BPSK soft decoder emits `4·I`, so the LLR
+  comparator aligns the two scales with `llr_scale = coeff/4` (0.125 at the
+  production scale). Both regimes match GR on sign + (rescaled) magnitude.
+- **Metric = LLR (sign exact + magnitude floor).** The SIGN is the hard bit the
+  FEC decoder acts on → must agree exactly outside the near-zero dead zone; the
+  soft magnitude is held to a derived Q15 floor. Mutations (flipped sign, halved
+  magnitude, +1 delay, empty) all fail.
+- **Fixed a latent reference bug.** `process_reference` referenced a nonexistent
+  `self._inv_variance_q15` and would `AttributeError` if ever called. Rewrote it
+  to model the on-chip `LLR = (coeff·I)>>15` exactly and added `llr_coeff_q15` +
+  `process_reference_q15` (the bit-exact predictor the EXACT gate uses).
+
+---
+
 ## BandRejectFilter — firdes.band_reject (notch, S=2) 2026-06-25
 
 - **Status:** PASS / DONE vs GNU Radio `firdes.band_reject` + `fir_filter_fff`, 30

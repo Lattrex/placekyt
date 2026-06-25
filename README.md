@@ -88,7 +88,7 @@ for the complete GNU Radio + demo walkthrough.
 To build a design headlessly and check it against a golden output:
 
 ```bash
-.venv/bin/python placekyt/cli.py --test placekyt/tests/data/demo/qam16_demo.kyt \
+.venv/bin/python placekyt/cli.py --test examples/gain/gain.kyt \
     --chip-type placekyt/resources/chips/kyttar_10x12.yaml
 # -> test PASSED: 12 output words match
 ```

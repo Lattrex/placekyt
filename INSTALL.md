@@ -84,7 +84,7 @@ Build a demo design and compare it to its golden output — this exercises the f
 place → route → build → simulate path:
 
 ```bash
-.venv/bin/python placekyt/cli.py --test placekyt/tests/data/demo/qam16_demo.kyt \
+.venv/bin/python placekyt/cli.py --test examples/gain/gain.kyt \
     --chip-type placekyt/resources/chips/kyttar_10x12.yaml
 # -> test PASSED: 12 output words match (tolerance 2).
 ```

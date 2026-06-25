@@ -36,3 +36,7 @@ connections:
 - name: net2
   from: {chip_port: {chip: 0, port: x16_in}}
   to: {block: gain, port: sample}
+simulation:
+  default_stimulus: gain_stimulus.kbs
+  golden_output: gain_golden.kbs
+  fpga_latency_ns: 20.0

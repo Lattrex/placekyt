@@ -106,6 +106,24 @@
       "notes": "Verified vs GNU Radio blocks.moving_average_ff (out=scale*sum of last `length` samples; 18 tests). A moving average IS an FIR whose `length` taps are all equal to `scale`, so MovingAverageBlock SUBCLASSES the verified FIRFilterBlock with constant box taps (the LowPassFilter pattern) -- all Q15 datapath / multi-cell fold / COEFFICIENT-HEADROOM saturation inherited unchanged. Constant taps are symmetric so the reversed-tap convention is moot and group delay=0, aligned with GR's causal running sum. Params mirror GRC's Moving Average: length + scale (GR's max_iter is an output-buffer bound and vlen=1 -- neither affects the sample math, so neither is a Kyttar param). scale=1/length is a true average (Sum|tap|=1 -> S=0); a larger scale engages the inherited saturating headroom restore (S>0). Two-tier: DUT vs GR moving_average_ff (AMPLITUDE, headroom-aware q15_quant_floor(length,S)) AND DUT vs the inherited process_reference_q15 (EXACT). Coverage: edge + 3 random + length sweep {2,3,5,8,16} (true average) + bit-exact incl. S=1 headroom (3,0.5)/(6,0.3); mutations inverted/wrong-length/+1-delay/empty all FAIL (INV-4). KNOWN LIMIT (inherited FIR per-cell budget): a SINGLE-cell box with S>0 caps at ~3 taps -- a 4-tap box at scale 0.5 (4 taps + S=1 restore on one cell) raises at build; use scale<=1/length (S=0) or a longer/multi-cell length. Not a moving-average-specific limit."
     },
     {
+      "kyttar_block": "ComplexToRealBlock",
+      "grc_block": "blocks.complex_to_real",
+      "tier": 1,
+      "status": "done",
+      "metric": "exact",
+      "params": {},
+      "notes": "Verified vs GNU Radio blocks.complex_to_real (out=real(in); 18 tests shared with ComplexToImagBlock). A complex sample is carried as a two-operand (re@R0, im@R1) pair; this selector forwards the RE operand as its single real output (words_per_sample=1). A subset of complex_to_float but a separate GR block people wire directly to grab one rail. Pure data movement (one MOVE) -> EXACT (0 LSB vs GR). No params. Single cell, shares _ComplexSelect/complex_real_imag_block.py with ComplexToImagBlock. Key mutation (teeth): selecting the WRONG rail (real DUT vs GR imag reference) FAILS, proving it picks the correct channel; plus +1-delay/empty FAIL (INV-4)."
+    },
+    {
+      "kyttar_block": "ComplexToImagBlock",
+      "grc_block": "blocks.complex_to_imag",
+      "tier": 1,
+      "status": "done",
+      "metric": "exact",
+      "params": {},
+      "notes": "Verified vs GNU Radio blocks.complex_to_imag (out=imag(in)). The IM-channel twin of ComplexToRealBlock and the SAME selector datapath (shares _ComplexSelect/complex_real_imag_block.py): forwards the im operand (R1) as the single real output. EXACT (0 LSB), single cell, words_per_sample=1. Mutations (wrong rail = imag DUT vs GR real, +1-delay, empty) all FAIL."
+    },
+    {
       "kyttar_block": "DCBlockerBlock",
       "grc_block": "filter.dc_blocker_ff",
       "tier": 1,

@@ -65,6 +65,8 @@ Squelch*  (*= present but Tier-2/verify-pending; not Tier-1 agent work).
     taps [scale]*length, verified vs `blocks.moving_average_ff` (manifest, 2026-06-26).
 11. **Complex → Real / Imag selectors** — `blocks.complex_to_real`,
     `complex_to_imag` (subset of #3 but separate GRC blocks people wire directly).
+    **DONE:** `ComplexToRealBlock` / `ComplexToImagBlock` — single-cell channel
+    selectors, EXACT vs GR (manifest, 2026-06-26).
 
 ## Deferred to Tier-2 (needs human review)
 

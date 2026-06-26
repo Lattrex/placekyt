@@ -11,6 +11,8 @@ BUILTIN_BLOCKS = {
     'AbsBlock': 'abs_block',
     'KeepOneInNBlock': 'keep_one_in_n_block',
     'MovingAverageBlock': 'moving_average_block',
+    'ComplexToRealBlock': 'complex_real_imag_block',
+    'ComplexToImagBlock': 'complex_real_imag_block',
     'FIRFilterBlock': 'fir_filter_block',
     'DCBlockerBlock': 'dc_blocker_block',
     'LowPassFilter': 'low_pass_filter_block',

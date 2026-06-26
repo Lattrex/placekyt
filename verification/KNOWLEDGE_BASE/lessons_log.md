@@ -1082,3 +1082,18 @@ they are larger than one autonomous step at the production-quality bar.
   restore on ONE cell) exceeds the cell register budget and raises at build — a
   FIRFilterBlock per-cell limit, not moving-average-specific. Pick scale≤1/length
   (S=0) or a length that folds multi-cell. Documented in the test + manifest.
+
+---
+
+## ComplexToRealBlock / ComplexToImagBlock — verified 2026-06-26
+
+- **Status:** PASS. GR `blocks.complex_to_real` / `blocks.complex_to_imag`. 18
+  shared tests, EXACT, 0 LSB. Single cell each, shared `_ComplexSelect`.
+- **Channel selectors = forward one operand:** a complex sample is the (re@R0,
+  im@R1) pair, so selecting a rail is one MOVE of the chosen operand to R0 then
+  emit (words_per_sample=1). Two thin subclasses differ only by `_SEL` ('re'/'im').
+- **The mutation with teeth is wrong-channel:** compare the real-selector DUT to
+  the GR IMAG reference — must FAIL. It proves the block forwards the correct rail
+  (the dangerous bug is selecting/echoing the other one). +1-delay / empty round it.
+- Completes the Tier-1 GRC-parity backlog buildable set (#1–#11); the sqrt/atan/
+  multi-rate/4-operand items are recorded in the backlog's deferred (Tier-2) section.

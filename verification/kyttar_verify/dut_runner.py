@@ -199,6 +199,121 @@ def run_block_dut(
                      entry_addr=entry, hop_count=hop)
 
 
+@dataclass
+class RateDUTResult:
+    """Outcome of running a RATE-CHANGING (real-in) block on simKYT.
+
+    Unlike :func:`run_block_dut` (which keeps only the LAST word per trigger — fine
+    for 1-in-1-out and rate-REDUCING blocks), this drains EVERY word that egresses
+    per trigger and returns the FLAT output stream. Use for rate-EXPANDING blocks
+    (upsampler / interpolating filter): one input -> N outputs in a burst.
+
+      * ``outputs_q15`` — the flat output word stream (all triggers concatenated).
+      * ``per_trigger`` — list of per-trigger word lists (to assert the rate).
+    """
+
+    ok: bool
+    outputs_q15: list[int] = field(default_factory=list)        # flat output stream
+    per_trigger: list[list[int]] = field(default_factory=list)  # words per input
+    n_words: int = 0
+    entry_addr: int = 0
+    hop_count: int = 0
+    reason: str = ""
+
+
+def run_block_dut_rate(
+    block_type: str,
+    inputs_q15: list[int],
+    *,
+    params: dict | None = None,
+    chip_yaml: str,
+    library: str = "lattrex.official",
+    in_port: str = "x",
+    out_port: str = "out",
+    place_xy: tuple[int, int] = (1, 1),
+    data_run: int = 6000,
+    jump_run: int = 120000,
+    drain_run: int = 6000,
+) -> RateDUTResult:
+    """Build ``block_type`` (x16_in -> block -> x16_out) and run ``inputs_q15``,
+    draining ALL words per trigger — the rate-aware driver for rate-CHANGING blocks.
+
+    One input is injected + triggered per element; every word that egresses before
+    the next input is captured (a rate-expanding block emits a burst). Returns the
+    flat output stream + the per-trigger word lists.
+
+    NOTE the no-FIFO output port is single-outstanding, so we drain (read + ack +
+    run) in a loop after each trigger until the port is empty — the burst surfaces
+    one word at a time as each is consumed. This is why ``run_block_dut`` (which
+    keeps only the last word) cannot verify a rate-expanding block.
+    """
+    import simkyt  # noqa: PLC0415
+
+    (app, BlockCatalog, load_chip_type, BuildEngine, AppController,
+     ChipPortEndpoint, BlockEndpoint) = _engine()
+
+    cat = BlockCatalog.from_gr_kyttar()
+    ct = load_chip_type(chip_yaml)
+    ct_key = getattr(ct, "name", None) or "kyttar_10x12"
+    ctrl = AppController(catalog=cat)
+    ctrl.new_project("dut_rate", ct_key)
+    px, py = place_xy
+    blk = ctrl.place_block(block_type, 0, px, py, library=library,
+                           params=params or {})
+    ctrl.add_logical_connection(
+        ChipPortEndpoint(chip=0, port="x16_in"),
+        BlockEndpoint(block=blk, port=in_port), name="in_blk")
+    ctrl.add_logical_connection(
+        BlockEndpoint(block=blk, port=out_port),
+        ChipPortEndpoint(chip=0, port="x16_out"), name="blk_out")
+    rep = ctrl.auto_route_all({ct_key: ct})
+    if not rep.ok:
+        return RateDUTResult(False, reason="route failed: "
+                             + "; ".join(f"{r.name}:{r.reason}" for r in rep.failed))
+    bres = BuildEngine(cat, chip_yaml).build(ctrl.project, {ct_key: ct})
+    if not bres.ok:
+        return RateDUTResult(False, reason="build failed: "
+                             + "; ".join(str(e) for e in bres.errors))
+    words = bres.words(0)
+    entry, ins = cat.resolved_io(block_type, params or {})
+    data_addr = ins[0] if ins else 0
+    port = ct.port("x16_in")
+    blk_obj = ctrl.project.block(blk)
+    landing = (blk_obj.placement.cells[0]
+               if blk_obj and blk_obj.placement and blk_obj.placement.cells
+               else None)
+    if landing is not None:
+        dist = abs(landing.x - port.cell_x) + abs(landing.y - port.cell_y) + 1
+    else:
+        dist = abs(px - port.cell_x) + abs(py - port.cell_y) + 1
+    hop = max(0, 31 - dist)
+
+    chip = simkyt.Chip.from_yaml(chip_yaml)
+    chip.load_bitstream_physical(words)
+    chip.set_port_entry_address("x16_in", entry)
+
+    per_trigger: list[list[int]] = []
+    flat: list[int] = []
+    for v in inputs_q15:
+        chip.inject_data_physical([int(v) & 0xFFFF], target_hop_cnt=hop,
+                                  target_addr=data_addr)
+        chip.run(max_events=data_run)
+        chip.inject_jump_physical(target_hop_cnt=hop, entry_addr=entry)
+        chip.run(max_events=jump_run)
+        got: list[int] = []
+        # Drain the whole burst: read + ack + run until the port stops producing.
+        while chip.output_available("x16_out"):
+            w = chip.read_port_i16("x16_out").view("uint16").tolist()
+            got.extend(int(x) & 0xFFFF for x in w)
+            chip.release_output_ack("x16_out")
+            chip.run(max_events=drain_run)
+        per_trigger.append(got)
+        flat.extend(got)
+
+    return RateDUTResult(True, outputs_q15=flat, per_trigger=per_trigger,
+                         n_words=len(words), entry_addr=entry, hop_count=hop)
+
+
 def _to_q15(v: float) -> int:
     """float in [-1, 1) -> uint16 Q15 (saturating). Mirrors the live bridge's
     ``_float_to_q15`` so the DUT is driven with the SAME quantization the

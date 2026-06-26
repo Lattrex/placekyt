@@ -265,11 +265,14 @@
     },
     {
       "kyttar_block": "PSKSymbolMapperBlock",
-      "grc_block": "digital.chunks_to_symbols_bc",
+      "grc_block": "digital.chunks_to_symbols_bf",
       "tier": 2,
-      "status": "planned",
+      "status": "done",
       "metric": "exact",
-      "notes": "Bits -> constellation; deterministic, exact compare."
+      "params": {
+        "modulation": "bpsk"
+      },
+      "notes": "BPSK verified 1:1 vs chunks_to_symbols_bf([1,-1]): bit 0->+1, 1->-1, full-scale +/-1 exact in Q15. I-only (Q=0). test_psk_symbol_mapper.py (7 tests, sign-flip+shift mutations). QPSK/8PSK use the _bc complex map (separate verification)."
     },
     {
       "kyttar_block": "LFSRScramblerBlock",

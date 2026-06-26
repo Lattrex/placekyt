@@ -27,6 +27,18 @@
       "notes": "Zero-stuffing rate expander (front half of an interpolating pulse-shaper). Verified 1:1 vs interp_fir_filter_fff(sps,[1.0]): one input -> sample + sps-1 zeros, kept sample pass-through, zeros exact -> bit-exact in Q15. RATE-EXPANDING: verified with run_block_dut_rate (drains the full per-trigger burst; plain run_block_dut keeps only the last word). 9 tests (sps in {2,4,8}, full-scale edges, repeat-instead-of-zero + wrong-rate mutations). Single cell, unrolled WRITE/JUMP burst then HALT (JUMP does NOT halt the issuer)."
     },
     {
+      "kyttar_block": "RRCPulseShaperBlock",
+      "grc_block": "filter.fir_filter_fff",
+      "tier": 1,
+      "status": "done",
+      "metric": "amplitude",
+      "params": {
+        "alpha": 0.35,
+        "span": 8
+      },
+      "notes": "Root-raised-cosine pulse shaper: a span*sps+1 tap causal multi-cell FIR (default 33 taps, 7 cells, chained partial-sum MACs). Coefficients are BIT-FOR-BIT firdes.root_raised_cosine(1.0,sps,1.0,alpha,ntaps) (tap-parity test <1e-5). GR equivalent = fir_filter_fff(1, those taps); aligns at delay 0 (same causal convention), 3 LSB error = 33-tap Q15 MAC floor. 10 tests: tap-parity, BPSK stream, impulse, alpha sweep {0.25,0.35,0.5}, inverted + wrong-alpha mutations. Expects a PRE-UPSAMPLED stream (pair with UpsamplerBlock = interp_fir_filter)."
+    },
+    {
       "kyttar_block": "MultiplyBlock",
       "grc_block": "blocks.multiply_ff",
       "tier": 1,

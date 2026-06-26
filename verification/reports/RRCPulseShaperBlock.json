@@ -1,0 +1,24 @@
+{
+  "kyttar_block": "RRCPulseShaperBlock",
+  "passed": true,
+  "metric": "amplitude",
+  "n_compared": 40,
+  "max_abs_err": 4,
+  "tolerance": 34,
+  "nmse_db": -65.67511703347779,
+  "correlation": 0.9999999307936647,
+  "bit_errors": 0,
+  "delay_used": 0,
+  "coverage": {
+    "alpha_sweep": [
+      0.25,
+      0.35,
+      0.5
+    ],
+    "patterns": "bpsk stream, impulse",
+    "tap_parity": "exact vs firdes.root_raised_cosine (<1e-5)",
+    "mutation": true,
+    "gr_equiv": "filter.fir_filter_fff(1, firdes.root_raised_cosine(1,sps,1,alpha,ntaps))",
+    "note": "33-tap causal multi-cell FIR; aligns at delay 0"
+  }
+}

@@ -27,6 +27,17 @@
       "notes": "Zero-stuffing rate expander (front half of an interpolating pulse-shaper). Verified 1:1 vs interp_fir_filter_fff(sps,[1.0]): one input -> sample + sps-1 zeros, kept sample pass-through, zeros exact -> bit-exact in Q15. RATE-EXPANDING: verified with run_block_dut_rate (drains the full per-trigger burst; plain run_block_dut keeps only the last word). 9 tests (sps in {2,4,8}, full-scale edges, repeat-instead-of-zero + wrong-rate mutations). Single cell, unrolled WRITE/JUMP burst then HALT (JUMP does NOT halt the issuer)."
     },
     {
+      "kyttar_block": "IQUpconvertBlock",
+      "grc_block": "blocks.multiply_cc",
+      "tier": 2,
+      "status": "done",
+      "metric": "amplitude",
+      "params": {
+        "freq_word": 4096
+      },
+      "notes": "I/Q passband upconverter (6 cells: free-running NCO + dual mixer). out = I*cos(ph) - Q*sin(ph), ph += freq_word (increment-before-emit). GR equivalent = multiply_cc(baseband, sig_source_c(65536,COS,freq_word,1,0,ph0)) -> complex_to_real, ph0=2pi*freq_word/65536. The quantized 17-entry quarter-wave NCO matches GR's continuous oscillator to 1 LSB (corr 1.0000), delay 0. 11 tests: freq sweep {2048,4096,8192}, real-only BPSK, large-in-range, inverted/wrong-freq/dropped-Q-arm mutations. Q15 OVERFLOW CORNER (|I|+|Q|>1): the upmix SUB WRAPS (does not saturate) where GR clamps -> at that corner verified bit-exact vs the block's OWN Q15 reference, GR-equivalence stimulus kept off the corner."
+    },
+    {
       "kyttar_block": "RRCPulseShaperBlock",
       "grc_block": "filter.fir_filter_fff",
       "tier": 1,

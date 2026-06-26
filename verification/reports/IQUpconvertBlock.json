@@ -1,0 +1,23 @@
+{
+  "kyttar_block": "IQUpconvertBlock",
+  "passed": true,
+  "metric": "amplitude",
+  "n_compared": 24,
+  "max_abs_err": 1,
+  "tolerance": 6,
+  "nmse_db": -84.95428071996508,
+  "correlation": 0.9999999995071526,
+  "bit_errors": 0,
+  "delay_used": 0,
+  "coverage": {
+    "freq_sweep": [
+      2048,
+      4096,
+      8192
+    ],
+    "patterns": "complex baseband, real-only (BPSK), full-scale",
+    "mutation": true,
+    "gr_equiv": "multiply_cc(bb, sig_source_c) -> complex_to_real",
+    "note": "I*cos - Q*sin; quantized quarter-wave NCO matches GR to 1 LSB"
+  }
+}

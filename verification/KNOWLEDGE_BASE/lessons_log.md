@@ -1170,3 +1170,43 @@ they are larger than one autonomous step at the production-quality bar.
      CELL's data_arrival, or drain per-emit. `run_block_dut` reads one-per-trigger, so
      it is NOT valid for rate-EXPANDING blocks (same class as the deferred 4-operand
      INPUT-burst harness gap). A rate-expand verify harness is owed.
+
+## TX-chain block 1:1 verification (2026-06-26)
+
+- **Rate-expand harness owed -> DELIVERED.** Added `run_block_dut_rate` /
+  `RateDUTResult` to `kyttar_verify/dut_runner.py`: drives one input per trigger and
+  DRAINS THE WHOLE per-trigger burst (read+ack+run loop until the port is empty),
+  returning the flat output stream + per-trigger word lists. This is the rate-aware
+  twin of `run_block_dut` (which keeps only `got[-1]`, wrong for rate-EXPANDING blocks).
+  Smoke-proven on UpsamplerBlock, then used to verify it 1:1.
+- **PSKSymbolMapperBlock (BPSK) == `digital.chunks_to_symbols_bf([1.0,-1.0],1)`** — bit
+  0->+1 (0x7FFF), 1->-1 (0x8000), full-scale +/-1 EXACT in Q15 (Metric.EXACT, tol 1).
+  The manifest's old `_bc` (complex) grc_block was wrong for BPSK; BPSK is I-only.
+- **UpsamplerBlock == `filter.interp_fir_filter_fff(sps,[1.0])`** — a unit-tap interp
+  filter IS the zero-stuffer (sample then sps-1 exact zeros). Verified with the new rate
+  driver, Metric.EXACT, sps in {2,4,8}. The exact GR zero-stuff primitive is the
+  unit-tap interp_fir, NOT `blocks.repeat` (repeat DUPLICATES, doesn't zero-stuff).
+- **RRCPulseShaperBlock taps ARE `firdes.root_raised_cosine(1.0,sps,1.0,alpha,ntaps)`**
+  bit-for-bit (<1e-5) — the block's closed-form RRC + sum-to-1 normalization equals GR's
+  gain=1 firdes taps. So GR equiv = `fir_filter_fff(1, those taps)`. The on-chip
+  multi-cell FIR is CAUSAL (out[n]=sum h[k]x[n-k]) like fir_filter_fff -> aligns at
+  delay 0, 3 LSB error = 33-tap MAC floor (use `op_count=ntaps` for the derived tol).
+  Always check tap-equivalence FIRST (a `test_taps_match_firdes`) before the output
+  test — it isolates "same filter" from "same alignment".
+- **IQUpconvertBlock == `multiply_cc(bb, sig_source_c) -> complex_to_real`** with
+  ph0 = 2pi*freq_word/65536 (the NCO increments BEFORE the first emit, so phase[0]=
+  freq_word). The quantized 17-entry quarter-wave LUT matches GR's CONTINUOUS oscillator
+  to 1 LSB (corr 1.0000) — table is fine enough that quantization is sub-LSB at normal
+  amplitudes.
+- **Q15 OVERFLOW CORNER is real datapath behaviour, not a bug (recurring pattern).**
+  IQUpconvert at |I|+|Q|>1: `I*cos - Q*sin` can exceed +/-1.0; the Q15 SUB WRAPS while
+  GR's float clamps -> a huge max-abs-err if you compare to GR there. SAME as
+  MultiplyBlock's documented (-1)*(-1) wrap. The right pattern (per CM: understand root
+  cause, don't hide): keep the GR-equivalence stimulus OFF the overflow corner
+  (`|I|+|Q|<=1` envelope), and add a DEDICATED test asserting the DUT WRAPS bit-exact
+  vs the block's OWN process_reference at the corner. Pass that own-reference as floats
+  (Q15/32768) so the compare engine re-quantizes to the same word (in-range -> exact
+  round-trip).
+- **All four TX-chain blocks (PSKMapper-BPSK, Upsampler, RRC, IQUpconvert) are now
+  status=done in the manifest, each with mandatory mutation tests.** TX baseband+passband
+  is fully GR-verified; ready to assemble the full-duplex modem.

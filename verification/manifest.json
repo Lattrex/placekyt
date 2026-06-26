@@ -43,6 +43,24 @@
       "notes": "Verified vs GNU Radio blocks.sub_ff (out=a-b of two real streams). Same single-cell SATURATING combiner as AddBlock (shares add_block.py / _TwoStreamAddSub), with SUB instead of ADD. For subtract, overflow occurs on OPPOSITE-sign operands and the true result's sign is STILL sign(a) (a>0,b<0 -> +; a<0,b>0 -> -), so the identical sign(a)-rail saturation applies. Two-tier verification identical to AddBlock. Subtract is NOT commutative (a-b != b-a) so a swapped-stream mutation IS a corruption and is tested (must FAIL), in addition to inverted/wrong-second-stream/+1-delay/empty. add_cc/sub_cc (complex, 4 external operands) deferred to Tier-2 -- the proven 2-operand fan-in cannot deliver four (see TIER1_BLOCK_BACKLOG deferred section)."
     },
     {
+      "kyttar_block": "ComplexToFloatBlock",
+      "grc_block": "blocks.complex_to_float",
+      "tier": 1,
+      "status": "done",
+      "metric": "exact",
+      "params": {},
+      "notes": "Verified vs GNU Radio blocks.complex_to_float (re=real(in), im=imag(in); 20 tests shared with FloatToComplexBlock). On the Kyttar substrate a complex sample IS a two-operand (re@R0, im@R1) pair, so this conversion is the IDENTITY datapath: read the pair, emit it as two words (re then im) on one bus corridor, de-interleaved by the harness into I/Q (the NCO/mixer two-word-egress pattern). Pure data movement (MOVE/WRITE, NO arithmetic) so it is EXACT -- zero Q15 error -- and the gate is bit-exact (metric=exact) on BOTH channels. Single cell, words_per_sample=2. Mutations (swapped re/im, negated imag/conjugate, +1 delay, empty) all FAIL (INV-4). Shares _IQPassthrough/complex_float_block.py with FloatToComplexBlock."
+    },
+    {
+      "kyttar_block": "FloatToComplexBlock",
+      "grc_block": "blocks.float_to_complex",
+      "tier": 1,
+      "status": "done",
+      "metric": "exact",
+      "params": {},
+      "notes": "Verified vs GNU Radio blocks.float_to_complex (out=re+j*im of two real streams). The complement of ComplexToFloatBlock and the SAME identity datapath (shares _IQPassthrough/complex_float_block.py): the two real inputs (re@R0, im@R1) are emitted as the two words of one complex sample. EXACT, bit-exact gate on both channels, single cell, words_per_sample=2. The complex<->float pair is the most common type conversion in any I/Q graph. Mutations (swapped re/im, negated imag, +1 delay, empty) all FAIL."
+    },
+    {
       "kyttar_block": "DCBlockerBlock",
       "grc_block": "filter.dc_blocker_ff",
       "tier": 1,

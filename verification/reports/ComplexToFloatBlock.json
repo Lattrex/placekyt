@@ -1,0 +1,1 @@
+{"kyttar_block": "ComplexToFloatBlock", "passed": true, "metric": "exact", "n_compared": 8, "max_abs_err": 0, "tolerance": 0, "nmse_db": NaN, "correlation": 1.0, "bit_errors": 0, "delay_used": 0, "coverage": {"edge": true, "random": 3, "bit_exact": true, "mutation": true}}

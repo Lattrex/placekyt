@@ -32,6 +32,8 @@ Squelch*  (*= present but Tier-2/verify-pending; not Tier-1 agent work).
    2026-06-26). `add_cc`/`sub_cc` deferred (below, same 4-operand reason as multiply_cc).
 3. **Complex → Float / Float → Complex** — `blocks.complex_to_float`,
    `float_to_complex`. The single most common type-conversion pair in any I/Q graph.
+   **DONE:** `ComplexToFloatBlock` / `FloatToComplexBlock` — single-cell identity
+   I/Q passthrough, EXACT vs GR (manifest, 2026-06-26).
 4. **Complex → Mag / Mag² / Arg** — `blocks.complex_to_mag`, `complex_to_mag_squared`,
    `complex_to_arg`. Envelope/power/phase — used in every detector & AGC.
 5. **Conjugate** — `blocks.conjugate_cc`. Trivial (negate Q); needed for correlators

@@ -964,3 +964,26 @@ they are larger than one autonomous step at the production-quality bar.
 - **One module, two GRC blocks:** `add_block.py` defines `_TwoStreamAddSub` +
   `AddBlock`/`SubtractBlock`; both map to the same module in `_modmap.py`. Distinct
   classes keep GRC parity (add_ff and sub_ff are distinct GR blocks).
+
+---
+
+## ComplexToFloatBlock / FloatToComplexBlock — verified 2026-06-26
+
+- **Status:** PASS. GR `blocks.complex_to_float` / `blocks.float_to_complex`. 20
+  shared tests, EXACT gate, err 0 LSB. Single cell each, shared `_IQPassthrough`.
+- **Both are the SAME identity datapath:** on the Kyttar substrate a complex value
+  is already a two-operand (re@R0, im@R1) pair, so a complex<->float conversion is
+  pure relabeling — read the pair, emit it as two words. No arithmetic → EXACT
+  (zero Q15 error). The two GR blocks differ only in GRC port typing, so one
+  `_IQPassthrough` base + two thin subclasses keeps GRC parity with no dup.
+- **Two-word egress, single cell:** mirror the NCO/mixer emit — declare two output
+  ports (`out_re`, `out_im`) + a `trig`, `{write:out_re}` then `{write:out_im}`
+  then `{jump:trig}`; the harness wires only the primary (out_re) to x16_out and
+  both words ride the one corridor, de-interleaved with `words_per_sample=2`.
+  `output_cell_ids()=[0]` for the single cell.
+- **Driving it:** `run_block_dut_complex(in_ports=('re','im'), words_per_sample=2)`;
+  for complex_to_float the GR side reconstructs `output_complex=[complex(re,im)]`
+  from its two float sinks so the comparator checks both channels uniformly.
+- **Identity makes EXACT trivially correct:** the harness `_to_q15` and the
+  comparator `_saturate_ref_q15` are the same round-and-clamp on the same float, so
+  DUT == ref bit-for-bit; EXACT (not AMPLITUDE-with-tol) gives the most teeth.

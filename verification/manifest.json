@@ -151,9 +151,9 @@
       "kyttar_block": "SquelchBlock",
       "grc_block": "analog.pwr_squelch_ff",
       "tier": 2,
-      "status": "planned",
-      "metric": "amplitude",
-      "notes": "Gated passthrough; state-dependent."
+      "status": "done",
+      "metric": "decision",
+      "notes": "GRC-verbatim params (db, alpha, ramp, gate); power squelch pwr=(1-alpha)*pwr+alpha*|x|^2, gate at 10^(db/10). Verified vs pwr_squelch_ff: gate pattern matches except <=3 Q15 edge samples, passed samples within 4 LSB. ramp!=0 + gate=True unsupported (raise)."
     },
     {
       "kyttar_block": "PSKSymbolMapperBlock",

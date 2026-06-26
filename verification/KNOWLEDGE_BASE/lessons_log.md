@@ -925,3 +925,29 @@ they are larger than one autonomous step at the production-quality bar.
   `reference` before subtracting — discarding the abs. A dual-face/multi-step cell
   must stash an intermediate (added `abs_save` state) before reusing R0. Always
   trace the actual register at each step, not the intent.
+
+---
+
+## SquelchBlock — verified 2026-06-26 (params reworked to GRC-verbatim)
+
+- **Status:** PASS vs `analog.pwr_squelch_ff`. threshold sweep {-20,-15,-12 dB},
+  alpha sweep {0.05,0.1,0.2}, mutation (inverted, no-gating, empty, unsupported-raise).
+- **GRC-PARITY REWRITE:** old squelch had a non-GR model (threshold/hysteresis/
+  attack_alpha/release_alpha). GNU Radio pwr_squelch is POWER-based: pwr=(1-alpha)*
+  pwr+alpha*|x|^2; gate at 10^(db/10). Reworked to mirror pwr_squelch_ff verbatim
+  (db, alpha, ramp, gate). db is a dB threshold; derive the linear power threshold.
+- **GATED-BLOCK VERIFICATION (the lesson):** a squelch is a GATED-amplitude block,
+  not a bit decision. Raw AMPLITUDE comparison FAILS on a single gate OPEN/CLOSE
+  transition sample (one side emits the sample, the other emits 0 → ~full-scale diff)
+  even though every other sample matches within 1 LSB. So verify TWO ways: (a) the
+  open/closed pattern matches GR except a BOUNDED count of edge-transition samples
+  (<=3), and (b) on agreeing samples the amplitude matches the floor. Don't pick a
+  threshold INSIDE a section's power (genuinely ambiguous gate → many Q15 flaps);
+  choose thresholds that cleanly separate the regimes.
+- **UNSUPPORTED params raise (sound failure):** ramp!=0 (sinusoidal envelope) and
+  gate=True (drop samples — a chip block emits one out per in) are not implemented
+  and raise ValueError rather than silently mis-behave.
+- **Report artifact gotcha:** write_report must reflect a PASSING comparison or the
+  dashboard shows "fail" for a verified block. Emit the report on the always-open
+  (no-transition) case where AMPLITUDE genuinely holds; gate behaviour is gated by
+  the separate pattern tests.

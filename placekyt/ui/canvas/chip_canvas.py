@@ -931,6 +931,39 @@ class ChipCanvas(QGraphicsView):
         self._emit_progress()
         return True
 
+    def extend_route_to(self, x: int, y: int) -> bool:
+        """Extend the path from the last waypoint toward cell ``(x, y)`` one
+        N/S/E/W step at a time (the click-and-drag path tracer, §3.2).
+
+        A drag moves the cursor across several cells per mouse-move event, and a
+        fast drag can skip cells entirely; rather than reject the whole gesture
+        (``add_waypoint`` only accepts a single adjacent step) this walks an
+        orthogonal, axis-by-axis staircase from the current end toward the target
+        cell, adding each empty intermediate cell as a waypoint. Stops early at the
+        first cell it cannot enter (a block, an occupied cell, or a repeat) so the
+        drawn path never jumps over an obstacle — the user just drags around it.
+
+        Returns True if at least one waypoint was added."""
+        if self._tool is not Tool.ROUTE_DRAW or not self._route_points:
+            return False
+        added = False
+        guard = 0  # bound the walk so a pathological target can't spin
+        while self._route_points[-1] != (x, y) and guard < 64:
+            guard += 1
+            lx, ly = self._route_points[-1]
+            # Step along the axis with the larger remaining distance first, so the
+            # staircase tracks the cursor; add_waypoint enforces adjacency/empty.
+            if abs(x - lx) >= abs(y - ly) and x != lx:
+                nx, ny = lx + (1 if x > lx else -1), ly
+            elif y != ly:
+                nx, ny = lx, ly + (1 if y > ly else -1)
+            else:
+                nx, ny = lx + (1 if x > lx else -1), ly
+            if not self.add_waypoint(nx, ny):
+                break  # hit a block/occupied/repeat — stop short, keep what we have
+            added = True
+        return added
+
     def undo_waypoint(self) -> None:
         """Backspace — drop the last waypoint (but keep the source, §3.2 step 7)."""
         if self._tool is Tool.ROUTE_DRAW and len(self._route_points) > 1:
@@ -1604,6 +1637,30 @@ class ChipCanvas(QGraphicsView):
         self._dragging = False  # becomes True once the cursor leaves the cell
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        # Click-and-drag route drawing (§3.2): in ROUTE_DRAW mode, holding the
+        # left button and dragging traces the path — each cell the cursor crosses
+        # becomes a waypoint — instead of clicking cell-by-cell. A plain click
+        # still adds one waypoint (mousePressEvent); this just lets a held drag
+        # lay down the whole path in one gesture.
+        if self._tool is Tool.ROUTE_DRAW and (event.buttons() & Qt.LeftButton):
+            pt = self.mapToScene(event.position().toPoint())
+            hit = self._which_chip_at(pt.x(), pt.y())
+            if hit is not None and hit[0].id == self._route_chip:
+                _chip, _ct, cx, cy = hit
+                cell = self._cell_at(cx, cy, self._route_chip)
+                # Drag INTO a block cell (not the source) ends the route there.
+                if cell is not None and cell.kind is CellKind.BLOCK \
+                        and cell.label != self._route_source:
+                    # Walk up to the block's edge, then complete onto it.
+                    self.extend_route_to(cx, cy)  # no-op if already adjacent
+                    if abs(self._route_points[-1][0] - cx) \
+                            + abs(self._route_points[-1][1] - cy) == 1:
+                        self.complete_route(cell.label, (cx, cy))
+                else:
+                    self.extend_route_to(cx, cy)
+            event.accept()
+            return
+
         # Port → waveform-viewer drag: once the cursor moves past the drag
         # threshold, start a QDrag carrying the port identity. The waveform view
         # accepts it and pops a channel/tag picker.

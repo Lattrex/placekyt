@@ -119,6 +119,42 @@ class TestRouteStateMachine:
         assert not c.add_waypoint(1, 1)  # back onto the source
 
 
+class TestDragTraceRoute:
+    """Click-and-drag route drawing (§3.2): a held drag lays down the whole
+    path; ``extend_route_to`` walks an orthogonal staircase toward the cursor
+    cell, adding each empty cell crossed and stopping short at any obstacle."""
+
+    def test_straight_drag_fills_intermediate_cells(self, window):
+        c = window.canvas
+        c.start_route("gain", 0, 1, 1)
+        # Drag straight down past several cells in one gesture (skips (1,2),(1,3)).
+        assert c.extend_route_to(1, 4)
+        assert c._route_points == [(1, 1), (1, 2), (1, 3), (1, 4)]
+
+    def test_L_shaped_drag_staircases(self, window):
+        c = window.canvas
+        c.start_route("gain", 0, 1, 1)
+        # Drag to a cell offset on both axes → orthogonal staircase, no diagonal.
+        assert c.extend_route_to(3, 2)
+        pts = c._route_points
+        # every consecutive pair is N/S/E/W-adjacent (never diagonal)
+        for (ax, ay), (bx, by) in zip(pts, pts[1:]):
+            assert abs(ax - bx) + abs(ay - by) == 1
+        assert pts[0] == (1, 1) and pts[-1] == (3, 2)
+
+    def test_drag_stops_short_at_a_block(self, window):
+        c = window.canvas
+        c.start_route("gain", 0, 1, 1)
+        # (1,5) is the dcblocker block; dragging "through" it must stop at (1,4).
+        c.extend_route_to(1, 9)
+        assert c._route_points[-1] == (1, 4)
+
+    def test_drag_only_in_route_mode(self, window):
+        c = window.canvas
+        # No active route → extend is a no-op.
+        assert not c.extend_route_to(1, 2)
+
+
 class TestRouteFromPort:
     def test_start_from_input_port(self, window):
         c = window.canvas

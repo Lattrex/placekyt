@@ -95,71 +95,37 @@ def test_crossover_program_demuxes_two_streams_on_chip(qapp):
 #     un-crossover'd conflict (P3.4 — a silent corruption becomes a named one).
 # --------------------------------------------------------------------------- #
 
-def _flagship_routes(qapp):
-    """Flagship routes with the slicer FORCED to the old corner (9,3).
+def test_drc_names_uncrossovered_corner_conflict_but_passes_a_crossover(qapp):
+    """The face-conflict DRC over a DETERMINISTIC corner conflict (independent of any
+    flagship layout, which the production 4-block chain happens to route without a
+    corner crossover): two nets transit the SAME corner cell exiting DIFFERENT faces.
 
-    The tool's auto-place now applies the §5.3 ABUT-FIRST pass (it re-seats a
-    single-cell bus-fed terminal NEXT to its driver, NOT at the egress corner), so the
-    live flagship no longer produces the (9,0) E/W corner conflict these crossover/DRC
-    unit tests pin — the placer correctly AVOIDS it. To keep exercising the crossover
-    machinery against the conflict it exists to resolve, this fixture re-pins the
-    slicer at the OLD stranded corner (9,3) after auto-place (overriding the abut
-    pass for this one block), reproducing the corner crossover deterministically.
-    """
-    from engine.catalog import BlockCatalog
-    from engine.io.chip_type_io import load_chip_type
-    from ui.controller import AppController
-    from commands import MoveBlockCommand
-    ct = load_chip_type(str(CT_PATH))
-    cat = BlockCatalog.from_gr_kyttar()
-    ctrl = AppController(catalog=cat)
-    ctrl.import_grc(str(GRC), chip_type="kyttar_10x12")
-    ctrl.auto_place(0)
-    # Re-pin the single-cell slicer to the old far corner (9,3) so the (9,0) corner
-    # crossover the abut pass now prevents is reproduced for these machinery tests.
-    sli = next(b for b in ctrl.project.blocks
-               if b.placement is not None and len(b.placement.cells) == 1)
-    c = sli.placement.cells[0]
-    MoveBlockCommand(ctrl.project, sli.name, 9 - c.x, 3 - c.y).execute()
-    ctrl.auto_route_all({"kyttar_10x12": ct}, auto_orient=False, use_bus="always")
-    return ctrl, ct, cat
+    ``netW`` enters the corner (9,0) from the SOUTH and exits WEST; ``netE`` enters
+    from the WEST and exits EAST (its egress face). Sharing one cell with two exit
+    faces is the single-fwd_face hazard the crossover resolves.
 
-
-def test_crossover_plan_names_the_corner_conflict(qapp):
-    """On the flagship, ``crossover_plan`` identifies the (9,0) corner as a crossover
-    carrying BOTH net3 (Costas->Gardner, exits WEST) and net5 (slicer->x16_out,
-    exits EAST) — the demux that resolves the single-fwd_face conflict."""
-    from engine.bus_router import crossover_plan
-    ctrl, ct, cat = _flagship_routes(qapp)
-    taps = crossover_plan(ctrl.project, 0, ct, cat)
-    assert (9, 0) in taps, f"expected a crossover at (9,0), got {sorted(taps)}"
-    tracks = {t.conn: t.exit_face for t in taps[(9, 0)].tracks}
-    assert tracks.get("net3") == 2, "net3 must exit WEST (face 2)"
-    assert tracks.get("net5") == 1, "net5 must exit EAST (face 1)"
-
-
-def test_drc_names_uncrossovered_conflict_but_passes_the_crossover(qapp):
-    """The face-conflict DRC: with NO exempt set, the (9,0) transit/egress overlap is
-    NAMED (the gap the old DRC silently tolerated, because net5's egress was an
-    endpoint). Exempting the crossover cell (the build promotes it) clears it — a
-    DELIBERATE un-crossover'd conflict is still named (gate #4)."""
-    from engine.bus_router import crossover_plan, broker_plan
-    ctrl, ct, cat = _flagship_routes(qapp)
-    routes = {c.name: [(p.x, p.y) for p in c.route]
-              for c in ctrl.project.connections if c.is_routed}
-    # The slicer->x16_out egress face at its final cell (EAST) — supplied so the
+      * WITHOUT exempting the corner, the DRC NAMES the (9,0) E/W conflict (the gap
+        the old DRC silently tolerated when one stream's egress was an endpoint);
+      * exempting that cell (as the build does when it promotes a programmed
+        crossover there) clears it — a legitimately-programmed demux serves both
+        faces, so no violation. A still-un-crossover'd conflict stays named."""
+    # netW: ... -> (9,1) -> (9,0) -> (8,0)   (enters S, exits W)
+    # netE: ... -> (8,0) -> (9,0)            (enters W, exits E at its egress)
+    routes = {
+        "netW": [(9, 3), (9, 2), (9, 1), (9, 0), (8, 0)],
+        "netE": [(7, 0), (8, 0), (9, 0)],
+    }
+    # netE's egress face at its final cell (9,0) is EAST (face 1) — supplied so the
     # egress counts as a forward (closes the silent-endpoint gap).
-    egress = {"net5": ((9, 0), 1)}
+    egress = {"netE": ((9, 0), 1)}
 
-    # WITHOUT exempting the crossover: the un-crossover'd (9,0) conflict is NAMED.
+    # WITHOUT exempting the corner: the un-crossover'd (9,0) conflict is NAMED.
     bare = check_bus(None, routes, {}, egress=egress)
     named = [v for v in bare if v.kind == "face_conflict" and v.cell == (9, 0)]
     assert named, "the un-crossover'd (9,0) E/W conflict must be NAMED"
-    assert set(named[0].nets) == {"net3", "net5"}
+    assert set(named[0].nets) == {"netW", "netE"}
 
-    # WITH the crossover (+ brokers) exempt: the conflict is RESOLVED, no violation.
-    exempt = set(crossover_plan(ctrl.project, 0, ct, cat).keys())
-    exempt |= set(broker_plan(ctrl.project, 0, ct, cat).keys())
-    clean = check_bus(None, routes, {}, exempt_cells=exempt, egress=egress)
+    # WITH the corner exempt (a programmed crossover would sit there): RESOLVED.
+    clean = check_bus(None, routes, {}, exempt_cells={(9, 0)}, egress=egress)
     assert not any(v.kind == "face_conflict" and v.cell == (9, 0) for v in clean), \
         "a programmed crossover legitimately serves both faces — no violation"

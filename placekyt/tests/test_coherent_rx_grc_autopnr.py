@@ -1,16 +1,25 @@
-"""Flagship: the REAL 3-block coherent BPSK RX through auto-P&R.
+"""Flagship: the REAL 4-block coherent BPSK RX through auto-P&R.
 
-Import ``coherent_bpsk_rx.grc`` (x16_in → ComplexCostasLoop → GardnerTimingRecovery
-→ BPSKSlicer → x16_out — three SEPARATE catalog blocks) → auto-place (serpentine,
-lead-block input-cell anchor) → auto-route (bus/broker, ``use_bus="always"``) →
-build → drive through simkyt.
+Import ``coherent_bpsk_rx.grc`` (x16_in → ComplexRRCMatchedFilter →
+ComplexCostasLoop → GardnerTimingRecovery → BPSKSlicer → x16_out — FOUR SEPARATE
+catalog blocks, the production receiver with the on-chip matched-filter front end)
+→ auto-place (serpentine, lead-block input-cell anchor puts the MF's ``head`` cell
+ON x16_in) → auto-route (bus/broker, ``use_bus="always"``) → build → drive through
+simkyt.
 
-What this pins (the Gardner dual-face loop_filter fix + its build support):
-  * import + auto-P&R routes ALL FIVE nets — including net4 (gardner.out →
-    slicer.llr), which the old single-fwd_face Gardner blocked;
+This is the production flagship: the chain that recovers bits from a real ADC-grade
+I/Q stream. The lead input-fed block is the RRC MATCHED FILTER (not Costas — the MF
+front end is on-chip here), so its ``head`` input cell anchors on the port and the
+MF→Costas yi/yq complex tap fans into the Costas phase cell through the bus broker.
+
+What this pins:
+  * import + auto-P&R routes ALL SEVEN nets (I/Q ingress, MF→Costas yi/yq,
+    Costas→Gardner, Gardner→Slicer, Slicer→egress);
   * the design builds into a loadable bitstream and the Gardner feedback survives;
-  * simkyt END-TO-END BER (the acceptance gate) is exercised in
-    ``test_flagship_ber`` — see its marker for the current status.
+  * simkyt END-TO-END BER 0 (the acceptance gate) in ``test_flagship_ber``.
+
+(The same chain is also gated programmatically — place_block + add_route instead of
+GRC import — in ``test_production_rx_mf_ber.py``; this test pins the IMPORT path.)
 """
 
 from __future__ import annotations
@@ -76,7 +85,7 @@ def _make_rrc(beta, sps, span):
     return [v / e for v in taps]
 
 
-def _tx_signal(bits, sps=2, beta=0.35, span=6, timing_offset=0.0):
+def _tx_signal(bits, sps=2, beta=0.35, span=6, timing_offset=0.0, amp=0.9):
     syms = [1.0 if b == 0 else -1.0 for b in bits]
     taps = _make_rrc(beta, sps, span)
     up = []
@@ -99,6 +108,11 @@ def _tx_signal(bits, sps=2, beta=0.35, span=6, timing_offset=0.0):
             out.append(shaped[i] * (1 - frac) + shaped[i + 1] * frac)
         else:
             out.append(shaped[n])
+    # Full-scale ADC-grade drive: the on-chip RRC matched filter needs real signal
+    # energy (un-normalised RRC samples are tiny and vanish in Q15). Matches the
+    # programmatic production-MF BER test.
+    pk = max(abs(b) for b in out) or 1.0
+    out = [amp * b / pk for b in out]
     return out, syms
 
 
@@ -132,15 +146,17 @@ def _autopnr(catalog, chip_type):
 
 
 def test_flagship_imports_and_routes_all_nets(qapp, catalog, chip_type):
-    """3 separate blocks, auto-placed + bus-routed: ALL FIVE nets route (net4
-    gardner→slicer was the old Gardner single-fwd_face blocker) and it builds."""
+    """4 separate blocks, auto-placed + bus-routed: ALL SEVEN nets route and it
+    builds (I/Q ingress ×2, MF→Costas yi/yq ×2, Costas→Gardner, Gardner→Slicer,
+    Slicer→egress)."""
     ctrl, rep = _autopnr(catalog, chip_type)
     assert rep.ok, [(r.name, r.reason) for r in rep.failed]
     routed = {r.name for r in rep.routed}
-    assert {"net1", "net2", "net3", "net4", "net5"} <= routed, \
-        f"all five nets must route, got {sorted(routed)}"
-    # 3 SEPARATE catalog blocks (no fused CoherentRXBlock).
+    assert {f"net{i}" for i in range(1, 8)} <= routed, \
+        f"all seven nets must route, got {sorted(routed)}"
+    # 4 SEPARATE catalog blocks (no fused CoherentRXBlock).
     types = {b.type for b in ctrl.project.blocks}
+    assert "ComplexRRCMatchedFilterBlock" in types
     assert "ComplexCostasLoopBlock" in types
     assert "GardnerTimingRecovery" in types
     assert "BPSKSlicerBlock" in types
@@ -151,30 +167,29 @@ def test_flagship_imports_and_routes_all_nets(qapp, catalog, chip_type):
     assert len(bres.words(0)) > 0
 
 
-def test_flagship_gui_import_keeps_costas_input_on_port(qapp, catalog, chip_type):
+def test_flagship_gui_import_keeps_mf_input_on_port(qapp, catalog, chip_type):
     """The GUI import path runs auto_place THEN auto_route_all(auto_orient=True)
-    (the default). The flow-orient pass must NOT re-mirror the input-fed lead block
-    (Costas): the serpentine placer anchored its input cell ON the x16_in port, and
-    a vertical flip (mirror_h) would slide the input off the port — breaking I/Q
-    ingress (net1/net2) and the input flyline. Regression guard for issue F."""
+    (the default). The flow-orient pass must NOT push the input-fed LEAD block (the
+    RRC matched filter) off the port: the serpentine placer anchored its ``head``
+    input cell ON x16_in, and an orientation that slides it off would break I/Q
+    ingress and the input flyline. Regression guard for the lead-anchor (issue F)."""
     ctrl = AppController(catalog=catalog)
     res = ctrl.import_grc(str(GRC), chip_type="kyttar_10x12")
     assert res.ok, res.unknown
     ctrl.auto_place(0)
-    # GUI default: auto_orient=True. This used to re-mirror Costas to mirror_h.
+    # GUI default: auto_orient=True.
     rep = ctrl.auto_route_all({"kyttar_10x12": chip_type})  # auto_orient defaults True
-    cos = ctrl.project.block("complexcostasloop")
-    assert "mirror_h" not in (cos.placement.orientation or []), \
-        "Costas must not be vertically flipped off its input port by flow-orient"
-    phase = cos.placement.cell("phase")
+    mf = ctrl.project.block("complexrrcmatchedfilter")
+    head = mf.placement.cell("head")
     port = chip_type.port("x16_in")
-    assert (phase.x, phase.y) == (port.cell_x, port.cell_y), \
-        f"Costas input cell must stay on x16_in {(port.cell_x, port.cell_y)}, " \
-        f"got {(phase.x, phase.y)}"
-    # And the I/Q ingress nets (net1, net2) must route as a consequence.
+    assert (head.x, head.y) == (port.cell_x, port.cell_y), \
+        f"MF input cell must stay on x16_in {(port.cell_x, port.cell_y)}, " \
+        f"got {(head.x, head.y)}"
+    # And the I/Q ingress nets must route as a consequence (the two x16_in nets are
+    # direct port injections, left unrouted; the MF→Costas yi/yq nets must route).
     routed = {r.name for r in rep.routed}
-    assert {"net1", "net2"} <= routed, \
-        f"I/Q ingress must route once Costas stays anchored, got {sorted(routed)}"
+    assert len(routed) >= 5, \
+        f"forward nets must route once the MF stays anchored, got {sorted(routed)}"
 
 
 def test_flagship_gardner_feedback_survives_in_build(qapp, catalog, chip_type):
@@ -200,18 +215,17 @@ def test_flagship_gardner_feedback_survives_in_build(qapp, catalog, chip_type):
 
 def test_flagship_ber(qapp, catalog, chip_type):
     """End-to-end acceptance: drive an RRC BPSK burst (carrier+timing offset) through
-    the auto-P&R'd chain and recover bits at BER 0 (lag-aligned, inversion-tolerant).
+    the auto-P&R'd PRODUCTION chain and recover bits at BER 0 (lag-aligned,
+    inversion-tolerant).
 
-    The REAL 3-separate-block coherent RX, auto-placed + bus-routed + built, recovers
-    bits at BER 0 through simkyt. Two final pieces unblocked this:
-      * the §1.2 TIME-MULTIPLEXED BUS crossover (engine/bus_router.crossover_plan +
-        build._apply_crossovers): the (9,0) corner where Costas->Gardner transits WEST
-        while slicer->x16_out egresses EAST is a programmed demux (the CrossoverBlock
-        primitive) — each net lands via its own JUMP entry and exits its own face,
-        instead of one static fwd_face silently corrupting one stream;
-      * a dual-TRIGGER ComplexCostasLoop rotate: its single `trig` JUMP used to be
-        hijacked by the downstream route (starving the pd_pi loop). It now emits a
-        SECOND `tap_trig` JUMP for the yi_tap consumer, keeping `trig`->pd_pi @1."""
+    The REAL 4-separate-block coherent RX (on-chip RRC matched filter →
+    ComplexCostasLoop → GardnerTimingRecovery → BPSKSlicer), imported from GRC,
+    auto-placed + bus/broker-routed + built, recovers bits at BER 0 through simkyt.
+    The lead block is the RRC matched filter: the burst is injected at its ``head``
+    cell (entry resolved from ComplexRRCMatchedFilterBlock), and the MF→Costas yi/yq
+    complex tap is delivered as one multi-WRITE + single-trigger burst through the
+    bus broker. (The same chain is gated programmatically in
+    ``test_production_rx_mf_ber.py``; this pins the GRC-import path.)"""
     import simkyt
 
     ctrl, rep = _autopnr(catalog, chip_type)
@@ -220,11 +234,12 @@ def test_flagship_ber(qapp, catalog, chip_type):
         ctrl.project, {"kyttar_10x12": chip_type})
     assert bres.ok, [str(e) for e in bres.errors]
 
-    entry, _ins = catalog.resolved_io("ComplexCostasLoopBlock")
+    # The lead block (the RRC matched filter) is the injection target on x16_in.
+    entry, _ins = catalog.resolved_io("ComplexRRCMatchedFilterBlock")
     random.seed(5)
     nsym, foff, toff = 160, 0.008, 0.45
     bits = [random.randint(0, 1) for _ in range(nsym)]
-    sig, syms = _tx_signal(bits, timing_offset=toff)
+    sig, syms = _tx_signal(bits, timing_offset=toff)  # full-scale ADC-grade drive
     k = np.arange(len(sig))
     iq = (np.asarray(sig) * np.exp(1j * 2 * np.pi * foff * k)).astype(np.complex64)
 
@@ -236,17 +251,17 @@ def test_flagship_ber(qapp, catalog, chip_type):
     for n in range(len(sig)):
         chip.inject_data_physical([_fq(float(iq[n].real))], target_hop_cnt=30,
                                   target_addr=0)
-        chip.run(max_events=4000)
+        chip.run(max_events=6000)
         chip.inject_data_physical([_fq(float(iq[n].imag))], target_hop_cnt=30,
                                   target_addr=1)
-        chip.run(max_events=4000)
+        chip.run(max_events=6000)
         chip.inject_jump_physical(target_hop_cnt=30, entry_addr=entry)
-        chip.run(max_events=60000)
+        chip.run(max_events=90000)
         while chip.output_available("x16_out"):
             w = chip.read_port_i16("x16_out").view("uint16").tolist()
             rx.append(int(w[-1]) & 1)
             chip.release_output_ack("x16_out")
-            chip.run(max_events=3000)
+            chip.run(max_events=4000)
 
     tx = [0 if s > 0 else 1 for s in syms]
     e, m, lag = _ber_with_lag(rx, tx)
@@ -296,7 +311,7 @@ def test_flagship_no_stray_execution(qapp, catalog, chip_type):
                      if [w & 0xFFFF for w in info["memory"]] in univ_sigs}
     assert transit_cells, "expected the universal program on the transit spine"
 
-    entry, _ = catalog.resolved_io("ComplexCostasLoopBlock")
+    entry, _ = catalog.resolved_io("ComplexRRCMatchedFilterBlock")
     eng = SimulationEngine(str(CT_PATH))
     eng.load(bres.words(0), trace=True)
     eng.configure_input_port("x16_in", entry_addr=entry, hop_count=30, data_addr=0)

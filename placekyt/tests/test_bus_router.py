@@ -255,20 +255,19 @@ def test_different_sink_share_routes_and_builds(qapp, catalog, chip_type):
 
 @pytest.mark.skipif(not GRC_COHERENT.exists(), reason="coherent .grc absent")
 def test_coherent_chain_bus_routes_and_builds(qapp, catalog, chip_type):
-    """Import the corrected coherent BPSK RX flowgraph (x16_in → Costas(xi,xq) →
-    Gardner → Slicer → x16_out, the proven RX — RRC is a TX pulse-shaper, not an RX
-    stage) → auto-place (lead Costas input cell anchored on the port) → BUS-route →
-    build. ALL FIVE nets route now: the I/Q FAN-IN ingress (net1/net2), the
-    costas→gardner tap (net3), the gardner→slicer tap (net4), and the slicer egress
-    (net5).
+    """Import the PRODUCTION coherent BPSK RX flowgraph (x16_in → RRC matched filter
+    → Costas(xi,xq) → Gardner → Slicer → x16_out — the on-chip MF front end is the
+    lead block) → auto-place (lead RRC ``head`` cell anchored on the port) → BUS-route
+    → build. ALL SEVEN nets route: I/Q ingress ×2, MF→Costas yi/yq ×2, costas→gardner,
+    gardner→slicer, slicer egress.
 
-    The Gardner-block single-fwd_face conflict that used to block net4 (loop_filter
-    emitting BOTH `out` and `period_fb` on one face) is FIXED: loop_filter is now a
-    DUAL-FACE cell (in-program FACE flips — see ``GardnerTimingRecovery``), so `out`
-    egresses outward to the bus while `period_fb` returns to the resampler. The build
-    transforms the in-program face constants by the block's orientation, and traces
-    the feedback via the block's transit cell even when the source face is route-
-    overridden."""
+    The Gardner-block single-fwd_face conflict that used to block gardner→slicer
+    (loop_filter emitting BOTH `out` and `period_fb` on one face) is FIXED: loop_filter
+    is now a DUAL-FACE cell (in-program FACE flips — see ``GardnerTimingRecovery``), so
+    `out` egresses outward to the bus while `period_fb` returns to the resampler. The
+    build transforms the in-program face constants by the block's orientation, and
+    traces the feedback via the block's transit cell even when the source face is
+    route-overridden."""
     ctrl = AppController(catalog=catalog)
     res = ctrl.import_grc(str(GRC_COHERENT), chip_type="kyttar_10x12")
     assert res.ok, res.unknown
@@ -276,21 +275,18 @@ def test_coherent_chain_bus_routes_and_builds(qapp, catalog, chip_type):
     rep = ctrl.auto_route_all({"kyttar_10x12": chip_type}, auto_orient=False,
                               use_bus="always")
     assert rep.ok, [(r.name, r.reason) for r in rep.failed]
-    # ALL nets route — including net4 (gardner.out → slicer.llr), the old blocker.
+    # ALL seven nets route — including gardner→slicer, the old single-fwd_face blocker.
     routed = {r.name for r in rep.routed}
-    assert {"net1", "net2", "net3", "net4", "net5"} <= routed, \
-        f"all five coherent-RX nets must route, got {sorted(routed)}"
+    assert {f"net{i}" for i in range(1, 8)} <= routed, \
+        f"all seven coherent-RX nets must route, got {sorted(routed)}"
 
-    # The lead-block input-cell anchor lands the Costas PHASE cell directly ON the
-    # x16_in port, so BOTH xi (net1) and xq (net2) inject straight into the phase
-    # cell (R0/R1) at the port cell — the proven complex-ingress, no broker needed.
-    n1 = next(r for r in rep.routed if r.name == "net1")
-    n2 = next(r for r in rep.routed if r.name == "net2")
-    assert n1.points[-1] == n2.points[-1], \
-        "xi and xq must land on the same (phase) cell"
-    phase = ctrl.project.block("complexcostasloop").placement.cell("phase")
-    assert n1.points[-1] == (phase.x, phase.y), \
-        "I/Q ingress must land on the phase cell (the lead input-cell anchor)"
+    # The lead-block input-cell anchor lands the RRC matched filter's HEAD cell
+    # directly ON the x16_in port, so both I and Q inject straight into head (R0/R1)
+    # at the port cell — the proven complex-ingress, no broker needed.
+    head = ctrl.project.block("complexrrcmatchedfilter").placement.cell("head")
+    port = chip_type.port("x16_in")
+    assert (head.x, head.y) == (port.cell_x, port.cell_y), \
+        "I/Q ingress must land on the RRC head cell (the lead input-cell anchor)"
 
     # The routed design BUILDS into a loadable bitstream.
     bres = BuildEngine(catalog, str(CT_PATH)).build(

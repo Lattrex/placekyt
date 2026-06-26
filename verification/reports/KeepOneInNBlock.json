@@ -1,0 +1,18 @@
+{
+  "kyttar_block": "KeepOneInNBlock",
+  "passed": true,
+  "metric": "exact",
+  "n_compared": 13,
+  "max_abs_err": 0,
+  "tolerance": 0,
+  "nmse_db": null,
+  "correlation": 1.0,
+  "bit_errors": 0,
+  "delay_used": 0,
+  "coverage": {
+    "param_sweep": 5,
+    "phase_contract": true,
+    "bit_exact": true,
+    "mutation": true
+  }
+}

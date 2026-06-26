@@ -53,8 +53,12 @@ Squelch*  (*= present but Tier-2/verify-pending; not Tier-1 agent work).
    covered, no separate block). `rms_cf` deferred (sqrt + state; see below).
 8. **Interleave / Deinterleave** — `blocks.interleave`, `deinterleave` (stream rate
    change; simple counter+route — may be 2-cell, still Tier-1-ish).
+   **DEFERRED to Tier-2 (below):** multi-stream, multi-rate, N-stream param changes
+   topology, and it's pure reordering (no DSP) — doesn't fit the single-rate harness.
 9. **Repeat / Keep-1-in-N (decimate-by-drop)** — `blocks.repeat`,
    `blocks.keep_one_in_n`. Rate adapters distinct from the FIR decimator.
+   **DONE (keep_one_in_n):** `KeepOneInNBlock` — single cell, mod-n emit gate,
+   verified vs `blocks.keep_one_in_n` (manifest, 2026-06-26). `repeat` deferred (below).
 10. **Moving Average** — `blocks.moving_average_ff`. Box filter; a very common
     smoother (could also be a FIR-of-ones, but the GRC block is its own thing).
 11. **Complex → Real / Imag selectors** — `blocks.complex_to_real`,
@@ -108,6 +112,22 @@ Squelch*  (*= present but Tier-2/verify-pending; not Tier-1 agent work).
   √(single-pole-averaged |z|²): it needs BOTH the deferred Q15 sqrt (see
   complex_to_mag) AND a stateful IIR averager (an `alpha` param + persistent
   accumulator). Stateful + sqrt → Tier-2, not autonomous single-cell Tier-1.
+
+- **`blocks.interleave` / `blocks.deinterleave`** — deferred 2026-06-26. Multi-rate
+  AND multi-stream: interleave merges N input streams into one at N× rate;
+  deinterleave splits one into N at 1/N rate. The stream count N is a param that
+  changes the block's PORT TOPOLOGY (N input or N output ports), and the operation
+  is pure sample REORDERING (no arithmetic). The verify harness models one logical
+  rate with ≤2 fan-in operands and one primary output; an N-port multi-rate reorder
+  needs a multi-stream driver — harness extension + human review, not Tier-1.
+- **`blocks.repeat` (upsample-by-repetition)** — deferred 2026-06-26. repeat(interp)
+  emits each input sample `interp` times → output rate = interp× input. The compute
+  is trivial (write the input `interp` times per trigger), but `run_block_dut`
+  records only ONE word per trigger (`got[-1]`), so it cannot capture the multiple
+  copies that ARE the block's behavior; verifying the repeat COUNT needs an
+  all-words-per-trigger capture (a harness option) — human review. (keep_one_in_n,
+  the downsampling twin, IS done — the harness already records None for dropped
+  samples, the decimator path.)
 
 ## Notes for the agent
 - Mirror the GRC block's params verbatim; derive the Q15 internals (the GRC-parity

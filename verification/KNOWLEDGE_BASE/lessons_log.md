@@ -1045,3 +1045,21 @@ they are larger than one autonomous step at the production-quality bar.
   uniformly 16-bit, so a Q15 "float" and an int16 "short" are the same bits; the
   only on-chip op is the constant scale = GainBlock. Recorded in the backlog
   deferred section rather than building a redundant block.
+
+---
+
+## KeepOneInNBlock — verified 2026-06-26
+
+- **Status:** PASS. GR `blocks.keep_one_in_n`. 26 tests (n∈{1..5}, 3 seeds), EXACT.
+  Single cell: modulo-n emit gate over a pass-through (the decimator's gate, no FIR).
+- **Phase matters — measure it, don't assume:** GR keep_one_in_n keeps the LAST of
+  each group of n (`keep_one_in_n(3)` of 0..11 → 2,5,8,11 = phase n−1), NOT phase 0.
+  An up-counter that emits when it reaches n (then XOR-resets) lands exactly there.
+  The kept stream is `outputs[n-1::n]` and the emit-phase contract (emit iff
+  i%n==n−1) is asserted directly — the strongest test for a rate adapter.
+- **The harness already does decimation:** `run_block_dut` records None on triggers
+  that produce no egress, so a drop-decimator needs no harness change (same path the
+  DecimatorBlock verifies on). The UPSAMPLING twin `repeat` does NOT fit — it keeps
+  only `got[-1]` per trigger, so multiple copies can't be counted → deferred.
+- **interleave/deinterleave deferred:** multi-rate + N-stream (topology-varying) +
+  pure reorder — needs a multi-stream driver, not the single-rate harness.

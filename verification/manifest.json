@@ -88,6 +88,15 @@
       "notes": "Verified vs GNU Radio blocks.abs_ff (out=|in|; 9 tests). Single cell, one conditional negate (CMP vs 0, then 0-in if negative -- the AGC/QAM16-slicer abs idiom; BR.NN target on a REAL instruction). Single real input via run_block_dut, single real output. No params (full GRC parity). Result is EXACT (0 LSB vs GR) except the lone in=-1.0 (0x8000) corner: |-1.0|=+1.0 unrepresentable so the negate WRAPS to 0x8000=-1.0 -- the bit-exact reference models the wrap (a dedicated test pins it) and the GR-equivalence stimulus stays off it. Key mutation (teeth): a NON-rectified DUT (a negative passed through) FAILS, proving the block takes the magnitude; plus +1-delay/empty FAIL (INV-4). NOTE the backlog #7 'negate' (unary sign flip) is GainBlock(gain=-1) -- already covered, not a separate block; analog.rms_cf is deferred to Tier-2 (needs the deferred Q15 sqrt + a stateful averager)."
     },
     {
+      "kyttar_block": "KeepOneInNBlock",
+      "grc_block": "blocks.keep_one_in_n",
+      "tier": 1,
+      "status": "done",
+      "metric": "exact",
+      "params": {"n": 2},
+      "notes": "Verified vs GNU Radio blocks.keep_one_in_n (keep 1 sample of every n, no filter; 26 tests). A pure pass-through gated by a modulo-n counter -- the DecimatorBlock's emit gate WITHOUT the FIR. Single cell. Param mirrors GR: n (keep factor). PHASE: GR keeps the LAST sample of each group of n (verified empirically: keep_one_in_n(3) of 0..11 -> 2,5,8,11 = phase n-1), so the up-counter emits when it reaches n then resets (XOR self), matching GR. EXACT pass-through (no Q15 arithmetic) -> bit-exact gate; emitted samples equal the input bit-for-bit. run_block_dut records None on dropped triggers so the kept stream is outputs[n-1::n]; the emit-phase contract (emit iff i%n==n-1) is asserted directly across n in {1..5}. Mutations (wrong n, wrong phase n-2, +1 delay, empty) all FAIL (INV-4). Counter is a persistent StateVar (init 0); the skip path is a bare HALT label (a REAL instruction, not a {write}/{jump} placeholder -- build-engine GOTO miscompile). repeat (the upsampling twin) and interleave/deinterleave deferred to Tier-2 (see TIER1_BLOCK_BACKLOG)."
+    },
+    {
       "kyttar_block": "DCBlockerBlock",
       "grc_block": "filter.dc_blocker_ff",
       "tier": 1,

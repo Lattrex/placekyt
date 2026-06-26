@@ -28,24 +28,6 @@ MIN_WIDTH = 1200
 MIN_HEIGHT = 800
 
 
-def _trace_name_for_filter(name: str, flt: str, base: str) -> tuple[str, str]:
-    """Pick the filename + extension for the trace-export filter the user chose.
-
-    The export dialog offers TWO formats — the structured ``.kytrace`` log and a
-    runnable ``.py`` replay script — and the typed filename's suffix must follow the
-    selected filter LIVE (Qt's static save dialog never swaps it, so choosing the
-    ``.py`` filter used to still save ``<name>.kytrace``). Returns
-    ``(new_name, ext)`` where ``ext`` includes the dot. Only a recognized trace
-    suffix is swapped — any other dotted name keeps its stem (so ``my.flow`` →
-    ``my.flow.kytrace`` is NOT mangled into ``my.kytrace``)."""
-    ext = ".py" if "*.py" in flt else ".kytrace"
-    stem = name or base
-    lower = stem.lower()
-    if lower.endswith((".py", ".kytrace")):       # swap a known trace suffix
-        stem = stem.rsplit(".", 1)[0]
-    return stem + ext, ext
-
-
 class MainWindow(QMainWindow):
     """The application main window."""
 
@@ -1354,53 +1336,27 @@ class MainWindow(QMainWindow):
 
     def _export_trace(self) -> None:
         """Export the session command trace — every operation performed — as a
-        structured log (.kytrace) or a runnable replay script (.py), to reproduce
-        a session / attach to a bug report."""
+        runnable Python replay SCRIPT (``.py``), to reproduce a session / attach to
+        a bug report. The ``.py`` IS the trace: it both documents the session and
+        replays it (``placekyt --replay foo.py``), so there is a single trace format
+        (no separate JSON)."""
         import os
 
         from PySide6.QtWidgets import QFileDialog, QMessageBox
 
-        # Default the dialog to a sensible NAME + the canonical .kytrace filter
-        # (the structured bug-report format), so the user isn't faced with a blank
-        # filename and no extension. Seed from the project name if there is one.
+        # Default to a sensible name (seeded from the project) + the .py suffix, so
+        # the user isn't faced with a blank filename.
         proj = getattr(self.controller.project, "metadata", None)
         base = (getattr(proj, "name", None) or "placekyt_trace").strip() or \
             "placekyt_trace"
-
-        # A NON-static dialog so switching the filter LIVE rewrites the filename's
-        # suffix: pick "Replay script (*.py)" and the typed name becomes <name>.py,
-        # not <name>.kytrace. (The static getSaveFileName never swaps the suffix when
-        # the filter changes, so the .py export silently saved as .kytrace.)
-        kytrace_filter = "Command trace (*.kytrace)"
-        py_filter = "Replay script (*.py)"
-        dlg = QFileDialog(self, "Export Command Trace",
-                          os.path.expanduser("~"))
-        dlg.setAcceptMode(QFileDialog.AcceptSave)
-        dlg.setNameFilters([kytrace_filter, py_filter])
-        dlg.selectNameFilter(kytrace_filter)
-        dlg.setDefaultSuffix("kytrace")
-        dlg.selectFile(f"{base}.kytrace")
-
-        def _swap_suffix(flt):
-            cur = dlg.selectedFiles()
-            name = os.path.basename(cur[0]) if cur else f"{base}.kytrace"
-            new_name, ext = _trace_name_for_filter(name, flt, base)
-            dlg.setDefaultSuffix(ext.lstrip("."))
-            dlg.selectFile(new_name)
-
-        dlg.filterSelected.connect(_swap_suffix)
-        if dlg.exec() != QFileDialog.Accepted:
+        default = os.path.join(os.path.expanduser("~"), f"{base}.py")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Command Trace (replay script)", default,
+            "Replay script (*.py)")
+        if not path:
             return
-        files = dlg.selectedFiles()
-        if not files:
-            return
-        path = files[0]
-        sel = dlg.selectedNameFilter()
-        # setDefaultSuffix handles the no-extension case, but guard anyway so the
-        # filter always wins for a recognized choice (and never double-append).
-        if not path.lower().endswith((".py", ".kytrace")):
-            ext = ".py" if "*.py" in (sel or "") else ".kytrace"
-            path += ext
+        if not path.lower().endswith(".py"):
+            path += ".py"
         try:
             warning = self.controller.export_trace(path)
             n = len(self.controller.trace.events())

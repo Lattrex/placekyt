@@ -6,7 +6,6 @@ complete, faithful session. The trace can be exported to a runnable .py script o
 a structured .kytrace JSON and replayed on another machine to reproduce a session
 (or a bug) precisely — the basis for "send me your trace" bug reports.
 """
-import json
 import os
 from pathlib import Path
 
@@ -67,28 +66,31 @@ def test_trace_replays_to_identical_state():
     assert _snapshot(replay) == expected
 
 
-def test_export_py_and_kytrace(tmp_path):
+def test_export_is_python_only(tmp_path):
+    """The trace exports as a SINGLE format: a runnable Python replay script. The
+    .py IS the trace (documents + replays); export always writes Python regardless
+    of the path's suffix — there is no separate JSON/.kytrace format."""
     ctrl = AppController()
     _session(ctrl)
 
     py = tmp_path / "trace.py"
-    kt = tmp_path / "trace.kytrace"
     ctrl.export_trace(str(py))
-    ctrl.export_trace(str(kt))
-
-    # The .py is a readable, runnable replay script (calls ctrl.<op>(...)).
     script = py.read_text()
+    # A readable, runnable replay script (calls ctrl.<op>(...)).
     assert "ctrl.move_block(" in script
     assert "ctrl.set_cell_face(" in script
-    # The .kytrace is structured JSON with replayable op/args.
-    events = json.loads(kt.read_text())
-    assert any(e.get("op") == "move_block" for e in events)
-    assert all("description" in e for e in events)
+    assert script.lstrip().startswith("#")  # python comment header
 
-    # Replaying the .kytrace from disk reproduces the state.
+    # export_trace writes PYTHON even when the path has a non-.py suffix.
+    other = tmp_path / "trace.kytrace"
+    ctrl.export_trace(str(other))
+    assert other.read_text().lstrip().startswith("#")  # not JSON
+
+    # Replaying the .py from disk (exec) reproduces the state.
     replay = AppController()
     replay.new_project("t", "kyttar_10x12")
-    replay.replay_trace(str(kt))
+    ns = {"controller": replay, "ctrl": replay}
+    exec(compile(py.read_text(), str(py), "exec"), ns)  # noqa: S102
     assert _snapshot(replay) == _snapshot(ctrl)
 
 

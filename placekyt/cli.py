@@ -42,7 +42,8 @@ def build_parser() -> argparse.ArgumentParser:
                       help="disassemble a .kbs bitstream to a mnemonic listing")
     mode.add_argument("--test", metavar="PROJECT", help="build + compare vs golden")
     mode.add_argument("--replay", metavar="TRACE",
-                      help="replay a command trace (.py or .kytrace) headlessly: "
+                      help="replay a command trace (.py replay script; legacy "
+                           ".kytrace JSON also accepted) headlessly: "
                            "re-run a captured session to reproduce a bug, then "
                            "build + DRC-report the result")
     p.add_argument("-o", "--output", metavar="OUT.kbs", help="output path for --build")

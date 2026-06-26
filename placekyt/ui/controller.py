@@ -1124,50 +1124,47 @@ class AppController(QObject):
     # -- command trace (live console echo + replayable export) ----------------
 
     def export_trace(self, path) -> str | None:
-        """Write the session command trace to ``path``. A ``.py`` extension emits
-        a runnable replay SCRIPT (calls ``controller.<op>(**args)`` in order); any
-        other extension (``.kytrace`` / ``.json``) emits the structured JSON log.
+        """Write the session command trace to ``path`` as a runnable Python replay
+        SCRIPT — calls ``controller.<op>(**args)`` in order (plus undo()/redo()).
+        The ``.py`` IS the trace: it both documents the session and replays it
+        (``placekyt --replay``), so there is a SINGLE trace format (no JSON). The
+        suffix is not interpreted — a Python script is always written.
 
         Returns a WARNING string if the trace has GAPS (operations that produced
         no replayable op — see :meth:`CommandTrace.gaps`), else None. A trace with
         gaps cannot fully reproduce the session, so the caller should surface the
         warning prominently (a trace that omits an op is worthless)."""
-        import json
         from pathlib import Path
 
-        p = Path(path)
         events = self.trace.events()
         gaps = self.trace.gaps()
-        if p.suffix == ".py":
-            lines = [
-                "# placeKYT command trace — replay with:",
-                "#   from ui.controller import AppController",
-                "#   ctrl = AppController(); exec(open(__file__).read())",
-                "# (or run inside the placeKYT console where `controller` exists)",
-            ]
-            if gaps:
-                lines.append("# WARNING: this trace has NON-REPLAYABLE gaps "
-                             "(marked '!! GAP' below) — it cannot fully reproduce "
-                             "the session. Fill them in by hand before replaying.")
-            lines += ["ctrl = controller  # the live AppController", ""]
-            for ev in events:
-                op = ev.get("op")
-                desc = ev.get("description", "")
-                if ev.get("kind") == "undo":
-                    lines.append(f"ctrl.undo()  # {desc}")
-                    continue
-                if ev.get("kind") == "redo":
-                    lines.append(f"ctrl.redo()  # {desc}")
-                    continue
-                if not op:
-                    lines.append(f"# !! GAP (not replayable): {desc}")
-                    continue
-                args = ev.get("args", {})
-                kw = ", ".join(f"{k}={v!r}" for k, v in args.items())
-                lines.append(f"ctrl.{op}({kw})  # {desc}")
-            p.write_text("\n".join(lines) + "\n")
-        else:
-            p.write_text(json.dumps(events, indent=2))
+        lines = [
+            "# placeKYT command trace (runnable replay) — replay with:",
+            "#   placekyt --replay this_file.py",
+            "# or inside the placeKYT console where `controller` exists:",
+            "#   exec(open('this_file.py').read())",
+        ]
+        if gaps:
+            lines.append("# WARNING: this trace has NON-REPLAYABLE gaps "
+                         "(marked '!! GAP' below) — it cannot fully reproduce "
+                         "the session. Fill them in by hand before replaying.")
+        lines += ["ctrl = controller  # the live AppController", ""]
+        for ev in events:
+            op = ev.get("op")
+            desc = ev.get("description", "")
+            if ev.get("kind") == "undo":
+                lines.append(f"ctrl.undo()  # {desc}")
+                continue
+            if ev.get("kind") == "redo":
+                lines.append(f"ctrl.redo()  # {desc}")
+                continue
+            if not op:
+                lines.append(f"# !! GAP (not replayable): {desc}")
+                continue
+            args = ev.get("args", {})
+            kw = ", ".join(f"{k}={v!r}" for k, v in args.items())
+            lines.append(f"ctrl.{op}({kw})  # {desc}")
+        Path(path).write_text("\n".join(lines) + "\n")
         if gaps:
             return (f"Trace has {len(gaps)} non-replayable gap(s): "
                     + "; ".join(g.get("description", "?") for g in gaps)

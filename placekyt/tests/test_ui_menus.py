@@ -265,30 +265,31 @@ class TestMainWindowMenus:
         assert ns["drc"]().ok
 
 
-class TestTraceExportFilterSuffix:
-    """The Export Command Trace dialog must swap the filename suffix LIVE to match
-    the chosen format filter (.kytrace structured log vs .py replay script) — the
-    static save dialog never did, so picking the .py filter still saved .kytrace."""
+class TestTraceExportPythonOnly:
+    """The command trace exports as a single format: a runnable Python replay
+    script (.py). The .py IS the trace (documents + replays), so there is no
+    separate JSON/.kytrace format."""
 
-    def test_py_filter_yields_py_suffix(self):
-        from ui.main_window import _trace_name_for_filter
-        assert _trace_name_for_filter(
-            "myrun.kytrace", "Replay script (*.py)", "base") == ("myrun.py", ".py")
+    def test_export_writes_runnable_python(self, controller, qapp, tmp_path):
+        from PySide6.QtWidgets import QFileDialog
+        controller.open_project(DEMO)
+        controller.place_block("GainBlock", 0, 7, 7, library="lattrex.official")
+        out = tmp_path / "trace"  # no extension — handler appends .py
+        import pytest as _pytest
+        _pytest.MonkeyPatch().setattr(
+            QFileDialog, "getSaveFileName",
+            staticmethod(lambda *a, **k: (str(out), "")))
+        w = MainWindow(controller=controller)
+        # _no_modal isn't active here; export shouldn't pop a modal on a clean trace.
+        w._export_trace()
+        written = tmp_path / "trace.py"
+        assert written.exists()
+        text = written.read_text()
+        assert "ctrl = controller" in text and "ctrl." in text
 
-    def test_kytrace_filter_yields_kytrace_suffix(self):
-        from ui.main_window import _trace_name_for_filter
-        assert _trace_name_for_filter(
-            "myrun.py", "Command trace (*.kytrace)", "base") \
-            == ("myrun.kytrace", ".kytrace")
-
-    def test_unknown_suffix_is_appended_not_replaced(self):
-        from ui.main_window import _trace_name_for_filter
-        # 'my.flow' is NOT a trace suffix → keep the stem, append the format ext.
-        name, _ = _trace_name_for_filter(
-            "my.flow", "Command trace (*.kytrace)", "base")
-        assert name == "my.flow.kytrace"
-
-    def test_empty_name_falls_back_to_base(self):
-        from ui.main_window import _trace_name_for_filter
-        name, _ = _trace_name_for_filter("", "Replay script (*.py)", "base")
-        assert name == "base.py"
+    def test_export_trace_ignores_non_py_extension(self, controller, tmp_path):
+        # export_trace always writes a Python script regardless of suffix.
+        controller.open_project(DEMO)
+        p = tmp_path / "x.kytrace"
+        controller.export_trace(p)
+        assert p.read_text().lstrip().startswith("#")  # python comment header

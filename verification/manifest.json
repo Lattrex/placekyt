@@ -16,6 +16,15 @@
       "notes": "Reference example; fully documented. Single MULQ."
     },
     {
+      "kyttar_block": "MultiplyBlock",
+      "grc_block": "blocks.multiply_ff",
+      "tier": 1,
+      "status": "done",
+      "metric": "amplitude",
+      "params": {},
+      "notes": "Verified vs GNU Radio blocks.multiply_ff (19 tests). The generic two-stream real product out[n]=a[n]*b[n] (AM detect, squaring, error nodes) -- distinct from GainBlock (multiply by a CONSTANT) and ComplexMixerBlock (multiply by an internally-generated complex exponential). Single cell, single MULQ: out=(a*b)>>15. multiply_ff takes NO params so the block has none (full GRC parity); the 'param sweep' is over input amplitude regimes. The two streams reuse the proven complex-burst fan-in (Costas xi/xq tap): each sample = WRITE a->R0, WRITE b->R1, JUMP; the verify harness carries them as one complex array (real=a, imag=b) via run_block_dut_complex(in_ports=('a','b'), words_per_sample=1), DUT product lands in the I channel. Two-tier: DUT vs GR multiply_ff (AMPLITUDE, single-MULQ floor ~1 LSB) AND DUT vs process_reference_q15 (EXACT, the wrapping Q15 MULQ). Q15 OVERFLOW: the lone overflow is the exact (-1.0)*(-1.0)=+1.0 corner where MULQ WRAPS to -1.0 (the datapath wraps, does not saturate) -- a dedicated test drives that corner and asserts DUT==wrapping reference; the GR-equivalence stimulus stays off the simultaneous full-scale-negative corner. Multiply is COMMUTATIVE so a swapped-stream mutation is not a corruption (not tested, documented); mutations inverted/wrong-second-stream/halved-magnitude/+1-delay/empty all FAIL the gate (INV-4). GOTCHA: a {write:NAME}/{jump:NAME} placeholder must be ALONE on its line (resolver _RE_WRITE matches ^\\s*\\{write:(\\w+)\\}\\s*$); a trailing inline comment leaves it unsubstituted and the assembler errors 'Unknown opcode {WRITE:OUT}'."
+    },
+    {
       "kyttar_block": "DCBlockerBlock",
       "grc_block": "filter.dc_blocker_ff",
       "tier": 1,

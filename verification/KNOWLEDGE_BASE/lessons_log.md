@@ -899,3 +899,36 @@ they are larger than one autonomous step at the production-quality bar.
 - **Gotcha:** hit the placement-dependent hop-count trap (zero output) before the
   fix — see invariants.md INV-1. GainBlock is the template for feed-forward,
   single-cell, single-MULQ blocks.
+
+---
+
+## MultiplyBlock — verified 2026-06-26
+
+- **Status:** PASS. GR `blocks.multiply_ff` (the generic two-stream real product
+  `out=a*b`). 19 tests: edge + 3 random + amplitude sweep {0.25,0.5,0.75,0.9} +
+  3-seed bit-exact + overflow-corner + 5 mutations. Single cell, single MULQ.
+- **Metric:** amplitude, delay=0, op_count=1 → tolerance 2 LSB; measured 1 LSB,
+  NMSE ~-92 dB. Bit-exact vs `process_reference_q15` (the wrapping Q15 MULQ).
+- **Two-stream fan-in (reused, not reinvented):** the proven complex-burst broker
+  delivers the two streams as one transaction — `WRITE a->R0`, `WRITE b->R1`,
+  `JUMP`. Drive it from the verify side with `run_block_dut_complex(in_ports=
+  ('a','b'), words_per_sample=1)`, carrying the streams as one complex array
+  (real=a, imag=b); the single real product lands in the I channel. No new harness.
+- **Q15 overflow is a WRAP, not a saturate:** the only product that overflows is
+  the exact `(-1.0)*(-1.0)=+1.0` corner — `(0x8000*0x8000)>>15` = 0x8000 = -1.0
+  (the MULQ datapath wraps; its V flag is not sticky and nothing clamps a lone
+  MULQ). The bit-exact reference models the wrap; a dedicated test pins the corner
+  and asserts DUT==wrap. Keep the GR-equivalence stimulus off the simultaneous
+  full-scale-negative corner so the product tracks GR float within the floor.
+- **Commutativity:** `a*b == b*a`, so a swapped-stream mutation is NOT a corruption
+  — don't test it (documented). The teeth come from a WRONG-second-stream mutation
+  (reference built with a different b) + inverted/halved/+1-delay/empty.
+- **Gotcha (cost me a build):** a `{write:NAME}`/`{jump:NAME}` placeholder must be
+  ALONE on its line — the resolver matches `^\s*\{write:(\w+)\}\s*$` (MULTILINE).
+  A trailing inline comment leaves the placeholder unsubstituted; the assembler
+  then sees the literal and errors `Unknown opcode: {WRITE:OUT}`. Comments are
+  fine on real-instruction lines (the MULQ line), never on a placeholder line.
+- **Registration:** a built-in block must be added to `placement/blocks/_modmap.py`
+  (`ClassName -> module`) or discovery never finds it (`KeyError: unknown block
+  type`). The catalog palette/hidden state then comes from the manifest (a block
+  absent from `manifest.json` is resolvable but hidden).

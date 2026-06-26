@@ -23,6 +23,8 @@ Squelch*  (*= present but Tier-2/verify-pending; not Tier-1 agent work).
 1. **Multiply (two-stream)** — `blocks.multiply_cc` / `multiply_ff`. Two data inputs,
    product out. (We have multiply_CONST and the mixer; the generic two-stream
    multiply is the missing staple — AM detect, squaring, etc.)
+   **DONE (multiply_ff):** `MultiplyBlock` — single MULQ, verified vs
+   `blocks.multiply_ff` (manifest, 2026-06-26). `multiply_cc` deferred (below).
 2. **Add / Subtract (two-stream)** — `blocks.add_ff` / `add_cc` / `sub_ff`. Two
    inputs → sum/difference. Ubiquitous (combiners, error nodes).
 3. **Complex → Float / Float → Complex** — `blocks.complex_to_float`,
@@ -42,6 +44,19 @@ Squelch*  (*= present but Tier-2/verify-pending; not Tier-1 agent work).
     smoother (could also be a FIR-of-ones, but the GRC block is its own thing).
 11. **Complex → Real / Imag selectors** — `blocks.complex_to_real`,
     `complex_to_imag` (subset of #3 but separate GRC blocks people wire directly).
+
+## Deferred to Tier-2 (needs human review)
+
+- **`blocks.multiply_cc` (two EXTERNAL complex streams)** — deferred 2026-06-26.
+  The on-chip block is a single cell (the 4-MULQ complex product, same datapath
+  the ComplexMixer's `mixer` cell already proves), so the COMPUTE is Tier-1. What
+  blocks it is DELIVERY: two external complex streams = **four** input operands
+  per trigger (ai, aq, bi, bq), but the proven complex-burst fan-in (and its
+  `run_block_dut_complex` driver) delivers exactly **two** operands (xi@R0, xq@R1).
+  Verifying multiply_cc needs a 4-operand burst driver — a verification-harness
+  extension, i.e. human review — so it is NOT autonomous Tier-1. (The common
+  multiply-by-a-complex-exponential case is already covered by ComplexMixerBlock;
+  `multiply_const_cc` — complex × CONSTANT — is the planned tier-3 MultiplyConstComplex.)
 
 ## Notes for the agent
 - Mirror the GRC block's params verbatim; derive the Q15 internals (the GRC-parity

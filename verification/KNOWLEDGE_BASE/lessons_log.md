@@ -1012,3 +1012,19 @@ they are larger than one autonomous step at the production-quality bar.
   exists in the tree; single-cell magnitude estimators are approximations that fail
   a sqrt-exact gate, and atan needs a divide (no DIV) or a multi-cell CORDIC. Both
   are new algorithms → Tier-2 (build the CORDIC once, shared with QuadratureDemod).
+
+---
+
+## ConjugateBlock — verified 2026-06-26
+
+- **Status:** PASS. GR `blocks.conjugate_cc` (re − j·im). 11 tests, EXACT, 0 LSB.
+  Single cell: re passthrough + `SUB 0,im` negate, two-word egress.
+- **Negate-wrap corner:** im = −1.0 (0x8000) is the only value whose negate
+  overflows (−(−1.0)=+1.0 unrepresentable) → SUB wraps to 0x8000. Model it in the
+  bit-exact reference, keep GR-equivalence stimulus off it (same single-corner
+  pattern as MultiplyBlock's (−1,−1)).
+- **The mutation with teeth is "not conjugated":** for an identity-ish I/Q block,
+  the dangerous failure is the block ECHOING its input (no-op) and reading green.
+  So the key negative test passes im through UN-negated and asserts the gate FAILS
+  — it proves the negate actually happened. (Swapped-channels / +1-delay / empty
+  round out the set.)

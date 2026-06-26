@@ -40,7 +40,8 @@ Squelch*  (*= present but Tier-2/verify-pending; not Tier-1 agent work).
    saturating), verified vs `blocks.complex_to_mag_squared` (manifest, 2026-06-26).
    `complex_to_mag` (sqrt) and `complex_to_arg` (atan2) deferred (below).
 5. **Conjugate** — `blocks.conjugate_cc`. Trivial (negate Q); needed for correlators
-   and conjugate-multiply.
+   and conjugate-multiply. **DONE:** `ConjugateBlock` — single cell, EXACT vs GR
+   (manifest, 2026-06-26).
 6. **Float → Short / Short → Float / scaling** — `blocks.float_to_short`,
    `short_to_float`, `blocks.multiply_const` already covers scale; add the int casts.
 7. **Abs / Negate / RMS** — `blocks.abs_ff`, the unary sign flip, `blocks.rms_cf`.

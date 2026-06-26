@@ -70,6 +70,15 @@
       "notes": "Verified vs GNU Radio blocks.complex_to_mag_squared (out=re^2+im^2; 21 tests). The instantaneous-power / envelope primitive (energy detectors, AGC error, squelch). Single cell, two Q15 ops: MULQ re,re then MACQ im,im accumulate (re^2+im^2) in R0. No params (full GRC parity). SATURATION: the power range [0,2) overflows Q15's [0,1) for |z|>=1 (the unit circle), so the block SATURATES to +full-scale. The power is ALWAYS >=0, so any overflow makes the 16-bit accumulator look negative (bit15 set) -- detected with a single BR.N and pinned to 0x7FFF (a cheaper one-sided clamp than the add/sub sign-rail; no satpos sign math needed). Two-tier: DUT vs GR (AMPLITUDE, IN-RANGE |z|<1 where the result is representable, op_count=2 floor=3 LSB, measured ~2 LSB from MULQ/MACQ truncation vs GR's rounded square) AND DUT vs process_reference_q15 ((re^2>>15)+(im^2>>15) saturating, EXACT, incl. overflow corners). Saturation verified directly (|z|>=1 pins to +full, no wrap). |z|^2 is SYMMETRIC in re/im so a swapped-channel mutation is not a corruption (documented); mutations inverted/halved/wrong-second-stream/+1-delay/empty all FAIL (INV-4). complex_to_mag (sqrt) and complex_to_arg (atan2) of backlog #4 are DEFERRED to Tier-2 (need new sqrt/CORDIC machinery -- see TIER1_BLOCK_BACKLOG)."
     },
     {
+      "kyttar_block": "ConjugateBlock",
+      "grc_block": "blocks.conjugate_cc",
+      "tier": 1,
+      "status": "done",
+      "metric": "exact",
+      "params": {},
+      "notes": "Verified vs GNU Radio blocks.conjugate_cc (out=conj(in)=re-j*im; 11 tests). The correlator / conjugate-multiply staple. Single cell: pass re through, negate im (0-im via SUB), emit the two words; words_per_sample=2. No params (full GRC parity). EXACT gate (0 LSB vs GR on both channels) -- pure data movement + one negate. Q15 corner: the only imag whose negate overflows is exactly -1.0 (0x8000): -(-1.0)=+1.0 is unrepresentable so SUB WRAPS to 0x8000 (the bit-exact reference models the wrap; a dedicated test pins it). GR-equivalence stimulus stays off im=-1.0 so the conjugate is exact. Key mutation (teeth): a NOT-conjugated DUT (im passed through un-negated) FAILS -- proves the block actually conjugates, not echoes; plus swapped-channels/+1-delay/empty all FAIL (INV-4)."
+    },
+    {
       "kyttar_block": "DCBlockerBlock",
       "grc_block": "filter.dc_blocker_ff",
       "tier": 1,

@@ -354,6 +354,17 @@ class AppController(QObject):
         self.commands.execute(AddConnectionCommand(self.project, conn))
         return conn_name
 
+    def set_route(self, name: str, points) -> None:
+        """Set (or clear, ``points=None``) the route of an EXISTING connection by
+        name. The replay target for ``SetConnectionRouteCommand`` in a command
+        trace (a reroute the GUI performed in place). ``points`` is a waypoint
+        list ``[[x, y], …]`` or None to drop back to a fly line."""
+        from commands import SetConnectionRouteCommand
+
+        pts = [tuple(p) for p in points] if points else None
+        self.commands.execute(
+            SetConnectionRouteCommand(self.project, name, pts))
+
     def _route_siblings(self, conn):
         """Other UNROUTED connections that share ``conn``'s physical source-output
         cell AND target-input cell — an I/Q complex pair the auto-router routes
@@ -424,6 +435,12 @@ class AppController(QObject):
         self.grc_sync.observe_many(
             {b.name: dict(b.params) for b in result.project.blocks})
         self.refresh_grc_sync()
+        # Record as a replayable trace op (set_project swapped the CommandManager
+        # but kept the trace). import_grc replaces the project, so it must be the
+        # FIRST op in any trace that starts from an imported flowgraph.
+        self.trace.record_op(
+            "import_grc", {"path": str(path), "chip_type": ct},
+            f"Import GNURadio flowgraph {Path(path).name}")
         return result
 
     def check_grc_file_drift(self):
@@ -531,7 +548,9 @@ class AppController(QObject):
         cmds.extend(self._abut_single_cell_terminals(chip, plan, lead))
         if cmds and register:
             self.commands.add_executed(
-                CompositeCommand("Auto-place blocks", cmds))
+                CompositeCommand("Auto-place blocks", cmds,
+                                 trace_op={"op": "auto_place",
+                                           "args": {"chip": chip}}))
         return plan
 
     def _abut_single_cell_terminals(self, chip, plan, lead):
@@ -927,7 +946,9 @@ class AppController(QObject):
         for cmd in reversed(pre):
             cmd.undo()
         if cmds:
-            composite = CompositeCommand("Auto-route all nets", cmds)
+            composite = CompositeCommand("Auto-route all nets", cmds,
+                                         trace_op={"op": "auto_route_all",
+                                                   "args": {}})
             if register:
                 self.commands.execute(composite)
             else:

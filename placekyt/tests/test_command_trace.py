@@ -8,6 +8,7 @@ a structured .kytrace JSON and replayed on another machine to reproduce a sessio
 """
 import json
 import os
+from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -114,3 +115,33 @@ def test_undo_redo_are_traced():
     ctrl.redo()
     kinds = [e["kind"] for e in ctrl.trace.events()]
     assert "undo" in kinds and "redo" in kinds
+
+
+# --- high-level ops (import / auto-place / auto-route) are replayable too ------
+
+GRC = Path(__file__).resolve().parents[1] / "tests" / "data" / "grc" \
+    / "coherent_bpsk_rx_mf_demo.grc"
+
+
+@pytest.mark.skipif(not GRC.exists(), reason="grc fixture absent")
+def test_import_autoplace_autoroute_are_traced_and_replay():
+    """import_grc / auto_place / auto_route_all are NOT single Commands, but they
+    ARE replayable controller ops — so they must appear in the trace (not as
+    '(manual)' gaps) and a fresh controller must replay them to the same state."""
+    ctrl = AppController()
+    ctrl.import_grc(str(GRC), chip_type="kyttar_10x12")
+    ctrl.auto_place(0)
+    ctrl.auto_route_all()
+    ops = [e.get("op") for e in ctrl.trace.events()]
+    assert ops[0] == "import_grc", "import must be the first replayable op"
+    assert "auto_place" in ops
+    assert "auto_route_all" in ops
+
+    def snap(c):
+        return sorted(
+            (b.name, tuple((cc.x, cc.y, cc.face.value) for cc in b.placement.cells))
+            for b in c.project.blocks if b.placement)
+
+    replay = AppController()
+    replay.replay_trace(ctrl.trace.events())  # NO manual prefix needed
+    assert snap(replay) == snap(ctrl)

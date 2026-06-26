@@ -41,6 +41,10 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument("--disasm", metavar="BITSTREAM",
                       help="disassemble a .kbs bitstream to a mnemonic listing")
     mode.add_argument("--test", metavar="PROJECT", help="build + compare vs golden")
+    mode.add_argument("--replay", metavar="TRACE",
+                      help="replay a command trace (.py or .kytrace) headlessly: "
+                           "re-run a captured session to reproduce a bug, then "
+                           "build + DRC-report the result")
     p.add_argument("-o", "--output", metavar="OUT.kbs", help="output path for --build")
     p.add_argument(
         "--chip-dir", action="append", default=[], metavar="DIR",
@@ -247,6 +251,69 @@ def cmd_test(args) -> int:
     return EXIT_DRC_ERRORS  # exit 1 = test failed (§11.4)
 
 
+def cmd_replay(args) -> int:
+    """Replay a command trace headlessly, then build + DRC-report the result.
+
+    A trace captured in the GUI (File -> Export Command Trace) is the exact,
+    replayable sequence of operations a user performed. Re-running it on another
+    machine reproduces the session — the basis for deterministic bug reports.
+    Supports a .py replay script (run as code with ``controller`` in scope) or a
+    .kytrace JSON (structured events). After replay it BUILDS the resulting design
+    and prints DRC findings, so a 'phantom cells / no output' bug surfaces as
+    concrete DRC errors here.
+
+    NOTE: a trace captures COMMANDS (place/move/rotate/face/param/connect/route/
+    rename/delete). Operations that are NOT commands — importing a .grc, starting
+    the GNU Radio server, running the simulation — are NOT in the trace. A .py
+    trace whose first lines are ``# (manual) ...`` flags these gaps; reproduce
+    those steps yourself (the .py is editable) before/around the replay.
+    """
+    import os
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+    from pathlib import Path
+
+    from engine.build import BuildEngine
+    from ui.controller import AppController
+
+    trace_path = Path(args.replay)
+    ctrl = AppController()
+    reg = _registry(args)
+    # Seed a default project so a trace that starts with edits (its import was a
+    # non-command 'manual' step) still has a chip to act on.
+    ctrl.registry = reg
+    try:
+        ctrl.new_project("replay", "kyttar_10x12")
+    except Exception:  # noqa: BLE001 — chip type may come from the trace itself
+        pass
+
+    if trace_path.suffix == ".py":
+        # Run the .py replay script with `controller`/`ctrl` in scope.
+        ns = {"controller": ctrl, "ctrl": ctrl}
+        code = trace_path.read_text()
+        print(f"replaying {trace_path} (.py script)…")
+        exec(compile(code, str(trace_path), "exec"), ns)  # noqa: S102
+    else:
+        print(f"replaying {trace_path} (.kytrace)…")
+        ctrl.replay_trace(str(trace_path))
+
+    n = len(ctrl.trace.events())
+    print(f"replayed {n} command(s); "
+          f"{len(ctrl.project.blocks)} block(s), "
+          f"{len(ctrl.project.connections)} connection(s).")
+
+    catalog = ctrl.catalog
+    result = BuildEngine(catalog, reg.paths()).build(
+        ctrl.project, reg.chip_types())
+    _print_findings(result.errors)
+    if result.ok:
+        print("build OK (no DRC errors).")
+        return EXIT_OK
+    print(f"build has {len(result.errors)} DRC finding(s) — "
+          f"the replayed design does not build cleanly.", file=sys.stderr)
+    return EXIT_DRC_ERRORS
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     # Import errors lazily so --help etc. work without the engine deps.
@@ -264,6 +331,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_disasm(args)
         if args.test is not None:
             return cmd_test(args)
+        if args.replay is not None:
+            return cmd_replay(args)
     except FileNotFoundError as exc:
         print(f"file error: {exc}", file=sys.stderr)
         return EXIT_FILE_ERROR

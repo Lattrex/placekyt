@@ -49,9 +49,18 @@ class CompositeCommand(Command):
     composite.
     """
 
-    def __init__(self, description: str, commands: list[Command]):
+    def __init__(self, description: str, commands: list[Command],
+                 trace_op: dict | None = None):
         self._commands = list(commands)
         self._description = description
+        # Optional {op, args}: record this composite in the command trace as ONE
+        # high-level controller call (e.g. auto_place / auto_route_all) rather
+        # than as its decomposed child commands — so the trace replays at the
+        # granularity the user acted.
+        self._trace_op = trace_op
+
+    def to_trace(self) -> dict | None:
+        return self._trace_op
 
     def execute(self) -> None:
         executed: list[Command] = []
@@ -117,6 +126,24 @@ class CommandTrace:
             try:
                 fn(ev)
             except Exception:  # noqa: BLE001 — a listener must not break the edit
+                pass
+        return ev
+
+    def record_op(self, op: str, args: dict, description: str) -> dict:
+        """Record a HIGH-LEVEL controller operation directly (not via a Command)
+        — for replayable controller methods that aren't a single Command, e.g.
+        ``import_grc`` (replaces the project), ``auto_place`` / ``auto_route_all``
+        (composites whose child moves shouldn't each appear in the trace). Keeps
+        the trace at the granularity the USER acted, and replayable as
+        ``controller.<op>(**args)``."""
+        ev = {"seq": self._seq, "kind": "do",
+              "description": description, "op": op, "args": dict(args)}
+        self._events.append(ev)
+        self._seq += 1
+        for fn in list(self._listeners):
+            try:
+                fn(ev)
+            except Exception:  # noqa: BLE001
                 pass
         return ev
 

@@ -1,6 +1,18 @@
 # auto-generated: ClassName -> module name
 BUILTIN_BLOCKS = {
     'GainBlock': 'gain_block',
+    'MultiplyBlock': 'multiply_block',
+    'AddBlock': 'add_block',
+    'SubtractBlock': 'add_block',
+    'FloatToComplexBlock': 'complex_float_block',
+    'ComplexToFloatBlock': 'complex_float_block',
+    'ComplexToMagSquaredBlock': 'complex_mag_block',
+    'ConjugateBlock': 'conjugate_block',
+    'AbsBlock': 'abs_block',
+    'KeepOneInNBlock': 'keep_one_in_n_block',
+    'MovingAverageBlock': 'moving_average_block',
+    'ComplexToRealBlock': 'complex_real_imag_block',
+    'ComplexToImagBlock': 'complex_real_imag_block',
     'FIRFilterBlock': 'fir_filter_block',
     'DCBlockerBlock': 'dc_blocker_block',
     'LowPassFilter': 'low_pass_filter_block',

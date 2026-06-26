@@ -1,0 +1,20 @@
+{
+  "kyttar_block": "MovingAverageBlock",
+  "passed": true,
+  "metric": "amplitude",
+  "n_compared": 40,
+  "max_abs_err": 2,
+  "tolerance": 5,
+  "nmse_db": -71.69447464321755,
+  "correlation": 0.9999999964361066,
+  "bit_errors": 0,
+  "delay_used": 0,
+  "coverage": {
+    "edge": true,
+    "random": 3,
+    "length_sweep": 5,
+    "bit_exact": true,
+    "headroom": true,
+    "mutation": true
+  }
+}

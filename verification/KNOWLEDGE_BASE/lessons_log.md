@@ -951,3 +951,198 @@ they are larger than one autonomous step at the production-quality bar.
   dashboard shows "fail" for a verified block. Emit the report on the always-open
   (no-transition) case where AMPLITUDE genuinely holds; gate behaviour is gated by
   the separate pattern tests.
+## MultiplyBlock — verified 2026-06-26
+
+- **Status:** PASS. GR `blocks.multiply_ff` (the generic two-stream real product
+  `out=a*b`). 19 tests: edge + 3 random + amplitude sweep {0.25,0.5,0.75,0.9} +
+  3-seed bit-exact + overflow-corner + 5 mutations. Single cell, single MULQ.
+- **Metric:** amplitude, delay=0, op_count=1 → tolerance 2 LSB; measured 1 LSB,
+  NMSE ~-92 dB. Bit-exact vs `process_reference_q15` (the wrapping Q15 MULQ).
+- **Two-stream fan-in (reused, not reinvented):** the proven complex-burst broker
+  delivers the two streams as one transaction — `WRITE a->R0`, `WRITE b->R1`,
+  `JUMP`. Drive it from the verify side with `run_block_dut_complex(in_ports=
+  ('a','b'), words_per_sample=1)`, carrying the streams as one complex array
+  (real=a, imag=b); the single real product lands in the I channel. No new harness.
+- **Q15 overflow is a WRAP, not a saturate:** the only product that overflows is
+  the exact `(-1.0)*(-1.0)=+1.0` corner — `(0x8000*0x8000)>>15` = 0x8000 = -1.0
+  (the MULQ datapath wraps; its V flag is not sticky and nothing clamps a lone
+  MULQ). The bit-exact reference models the wrap; a dedicated test pins the corner
+  and asserts DUT==wrap. Keep the GR-equivalence stimulus off the simultaneous
+  full-scale-negative corner so the product tracks GR float within the floor.
+- **Commutativity:** `a*b == b*a`, so a swapped-stream mutation is NOT a corruption
+  — don't test it (documented). The teeth come from a WRONG-second-stream mutation
+  (reference built with a different b) + inverted/halved/+1-delay/empty.
+- **Gotcha (cost me a build):** a `{write:NAME}`/`{jump:NAME}` placeholder must be
+  ALONE on its line — the resolver matches `^\s*\{write:(\w+)\}\s*$` (MULTILINE).
+  A trailing inline comment leaves the placeholder unsubstituted; the assembler
+  then sees the literal and errors `Unknown opcode: {WRITE:OUT}`. Comments are
+  fine on real-instruction lines (the MULQ line), never on a placeholder line.
+- **Registration:** a built-in block must be added to `placement/blocks/_modmap.py`
+  (`ClassName -> module`) or discovery never finds it (`KeyError: unknown block
+  type`). The catalog palette/hidden state then comes from the manifest (a block
+  absent from `manifest.json` is resolvable but hidden).
+
+---
+
+## AddBlock / SubtractBlock — verified 2026-06-26
+
+- **Status:** PASS. GR `blocks.add_ff` / `blocks.sub_ff` (two-stream real
+  combiners). 39 shared tests: edge + 3 random + amplitude sweep + 3-seed
+  bit-exact (incl. saturation) + 4 saturation-corner + mutations. Single cell.
+- **Metric:** amplitude, delay=0, op_count=1 → tol 2 LSB; measured 1 LSB. Bit-exact
+  vs the SATURATING `process_reference_q15`.
+- **Saturate, don't wrap (the design call):** the Q15 ALU ADD/SUB WRAPS on overflow
+  (0.6+0.6 → -0.8, a sign flip) — unacceptable for a production combiner. ADD/SUB
+  set the **V** (signed-overflow) flag, so saturate with a `BR.V` to a clamp path.
+  KEY INSIGHT: on overflow the true result's sign is `sign(a)` for BOTH add
+  (same-sign operands) AND subtract (opposite-sign: a>0,b<0→+; a<0,b>0→−), so ONE
+  `SHR a,#15; ADD R0,satpos` (the shared `0x7FFF+signbit` rail) serves both ops —
+  the only difference between the two blocks is the ADD vs SUB mnemonic.
+- **Reused the FIR's two-path emit shape** (duplicated `{write}`/`{jump}` + a
+  terminal `HALT`, `BR.V` target on a REAL instruction `MOVE R0,Rasav`): a branch
+  whose target LABELS a `{write}`/`{jump}` placeholder is miscompiled into a stray
+  output JUMP. Save `a` BEFORE the ADD — `ADD R0,R1` overwrites R0 (=input a), so
+  the sign test needs a presaved copy.
+- **In-range only vs GR:** GR float add has no saturation and unbounded range; once
+  |a±b| ≥ 1 NEITHER wrap nor saturate can match a float > 1.0. So the GR-equivalence
+  stimulus stays in range (|a±b|<1, where saturate ≡ true sum ≡ GR); saturation is
+  proven against the saturating reference + direct corner tests, not against GR.
+- **Commutativity asymmetry in the mutation set:** add is commutative (no
+  swapped-stream test); subtract is NOT (a−b≠b−a) so swapped-streams IS a tested
+  corruption. Both share a WRONG-second-stream mutation for teeth.
+- **One module, two GRC blocks:** `add_block.py` defines `_TwoStreamAddSub` +
+  `AddBlock`/`SubtractBlock`; both map to the same module in `_modmap.py`. Distinct
+  classes keep GRC parity (add_ff and sub_ff are distinct GR blocks).
+
+---
+
+## ComplexToFloatBlock / FloatToComplexBlock — verified 2026-06-26
+
+- **Status:** PASS. GR `blocks.complex_to_float` / `blocks.float_to_complex`. 20
+  shared tests, EXACT gate, err 0 LSB. Single cell each, shared `_IQPassthrough`.
+- **Both are the SAME identity datapath:** on the Kyttar substrate a complex value
+  is already a two-operand (re@R0, im@R1) pair, so a complex<->float conversion is
+  pure relabeling — read the pair, emit it as two words. No arithmetic → EXACT
+  (zero Q15 error). The two GR blocks differ only in GRC port typing, so one
+  `_IQPassthrough` base + two thin subclasses keeps GRC parity with no dup.
+- **Two-word egress, single cell:** mirror the NCO/mixer emit — declare two output
+  ports (`out_re`, `out_im`) + a `trig`, `{write:out_re}` then `{write:out_im}`
+  then `{jump:trig}`; the harness wires only the primary (out_re) to x16_out and
+  both words ride the one corridor, de-interleaved with `words_per_sample=2`.
+  `output_cell_ids()=[0]` for the single cell.
+- **Driving it:** `run_block_dut_complex(in_ports=('re','im'), words_per_sample=2)`;
+  for complex_to_float the GR side reconstructs `output_complex=[complex(re,im)]`
+  from its two float sinks so the comparator checks both channels uniformly.
+- **Identity makes EXACT trivially correct:** the harness `_to_q15` and the
+  comparator `_saturate_ref_q15` are the same round-and-clamp on the same float, so
+  DUT == ref bit-for-bit; EXACT (not AMPLITUDE-with-tol) gives the most teeth.
+
+---
+
+## ComplexToMagSquaredBlock — verified 2026-06-26
+
+- **Status:** PASS. GR `blocks.complex_to_mag_squared` (|z|²=re²+im²). 21 tests,
+  err 2 LSB / tol 3 (op_count=2). Single cell: `MULQ re,re` + `MACQ im,im`.
+- **One-sided saturation is cheaper:** power is ALWAYS ≥ 0, so an overflow (|z|≥1,
+  range [0,2) vs Q15 [0,1)) can only push the 16-bit accumulator into the
+  negative-looking half (bit15 set). Detect with a single `BR.N _sat` → `MOVE R0,
+  0x7FFF`. No sign-rail / `0x7FFF+signbit` math (that's only needed when overflow
+  can go either way, as in add/sub). Max sum 32767+32767=65534 < 65536 so it can't
+  double-wrap back into the positive half — `BR.N` is exact.
+- **Symmetry trims the mutation set:** re²+im² is symmetric in re/im, so a swapped
+  channel is NOT a corruption (don't test it). Teeth from inverted (power is ≥0),
+  halved, wrong-second-stream, +1-delay, empty.
+- **In-range vs GR, full-range vs the reference:** GR float power is unbounded;
+  keep the GR-equivalence stimulus inside the unit circle (|z|<1, amp≤0.65) where
+  the result is representable, and exercise saturation against the saturating
+  reference + direct corner tests. The ~2 LSB vs GR is MULQ/MACQ truncation (floor)
+  vs GR's rounded float square.
+- **complex_to_mag (sqrt) + complex_to_arg (atan2) DEFERRED:** no sqrt/atan/CORDIC
+  exists in the tree; single-cell magnitude estimators are approximations that fail
+  a sqrt-exact gate, and atan needs a divide (no DIV) or a multi-cell CORDIC. Both
+  are new algorithms → Tier-2 (build the CORDIC once, shared with QuadratureDemod).
+
+---
+
+## ConjugateBlock — verified 2026-06-26
+
+- **Status:** PASS. GR `blocks.conjugate_cc` (re − j·im). 11 tests, EXACT, 0 LSB.
+  Single cell: re passthrough + `SUB 0,im` negate, two-word egress.
+- **Negate-wrap corner:** im = −1.0 (0x8000) is the only value whose negate
+  overflows (−(−1.0)=+1.0 unrepresentable) → SUB wraps to 0x8000. Model it in the
+  bit-exact reference, keep GR-equivalence stimulus off it (same single-corner
+  pattern as MultiplyBlock's (−1,−1)).
+- **The mutation with teeth is "not conjugated":** for an identity-ish I/Q block,
+  the dangerous failure is the block ECHOING its input (no-op) and reading green.
+  So the key negative test passes im through UN-negated and asserts the gate FAILS
+  — it proves the negate actually happened. (Swapped-channels / +1-delay / empty
+  round out the set.)
+
+---
+
+## AbsBlock — verified 2026-06-26
+
+- **Status:** PASS. GR `blocks.abs_ff` (|in|). 9 tests, 0 LSB vs GR. Single cell,
+  single real input (`run_block_dut`, not the complex driver).
+- **Reused the AGC/QAM16 abs idiom:** `CMP xs,0; BR.NN _emit; SUB 0,xs; MOVE xs,R0;
+  _emit: MOVE R0,xs`. Branch target `_emit` on a REAL instruction (not the `{write}`
+  placeholder). −1.0 (0x8000) is the one abs-wrap corner (|−1.0|→−1.0), modeled in
+  the reference, kept out of the GR stimulus.
+- **#7 housekeeping:** the backlog "negate" is just `GainBlock(gain=-1)` — no new
+  block. `analog.rms_cf` needs the deferred sqrt + a stateful averager → Tier-2.
+- **#6 float_to_short/short_to_float resolved as NOT a chip block:** the bus is
+  uniformly 16-bit, so a Q15 "float" and an int16 "short" are the same bits; the
+  only on-chip op is the constant scale = GainBlock. Recorded in the backlog
+  deferred section rather than building a redundant block.
+
+---
+
+## KeepOneInNBlock — verified 2026-06-26
+
+- **Status:** PASS. GR `blocks.keep_one_in_n`. 26 tests (n∈{1..5}, 3 seeds), EXACT.
+  Single cell: modulo-n emit gate over a pass-through (the decimator's gate, no FIR).
+- **Phase matters — measure it, don't assume:** GR keep_one_in_n keeps the LAST of
+  each group of n (`keep_one_in_n(3)` of 0..11 → 2,5,8,11 = phase n−1), NOT phase 0.
+  An up-counter that emits when it reaches n (then XOR-resets) lands exactly there.
+  The kept stream is `outputs[n-1::n]` and the emit-phase contract (emit iff
+  i%n==n−1) is asserted directly — the strongest test for a rate adapter.
+- **The harness already does decimation:** `run_block_dut` records None on triggers
+  that produce no egress, so a drop-decimator needs no harness change (same path the
+  DecimatorBlock verifies on). The UPSAMPLING twin `repeat` does NOT fit — it keeps
+  only `got[-1]` per trigger, so multiple copies can't be counted → deferred.
+- **interleave/deinterleave deferred:** multi-rate + N-stream (topology-varying) +
+  pure reorder — needs a multi-stream driver, not the single-rate harness.
+
+---
+
+## MovingAverageBlock — verified 2026-06-26
+
+- **Status:** PASS. GR `blocks.moving_average_ff`. 18 tests. SUBCLASSES
+  FIRFilterBlock with constant box taps `[scale]*length` (the LowPassFilter
+  pattern) — zero new datapath code, all Q15/fold/headroom machinery inherited.
+- **A moving average IS a constant-tap FIR:** `scale·Σx[n-k] = Σ(scale)·x[n-k]`.
+  Constant taps are symmetric → delay 0, aligned with GR's causal running sum, so
+  the comparison is delay=0 like the other symmetric-tap filters.
+- **Param mapping:** mirror GRC length + scale; GR's `max_iter` (output-buffer
+  bound) and `vlen` don't affect the sample math → not Kyttar params. `scale=1/length`
+  is the true average (Σ|tap|=1, S=0); larger scale engages the inherited saturating
+  headroom restore (S>0), checked against the bit-exact reference.
+- **Inherited single-cell budget edge:** a 4-tap box at scale 0.5 (4 taps + S=1
+  restore on ONE cell) exceeds the cell register budget and raises at build — a
+  FIRFilterBlock per-cell limit, not moving-average-specific. Pick scale≤1/length
+  (S=0) or a length that folds multi-cell. Documented in the test + manifest.
+
+---
+
+## ComplexToRealBlock / ComplexToImagBlock — verified 2026-06-26
+
+- **Status:** PASS. GR `blocks.complex_to_real` / `blocks.complex_to_imag`. 18
+  shared tests, EXACT, 0 LSB. Single cell each, shared `_ComplexSelect`.
+- **Channel selectors = forward one operand:** a complex sample is the (re@R0,
+  im@R1) pair, so selecting a rail is one MOVE of the chosen operand to R0 then
+  emit (words_per_sample=1). Two thin subclasses differ only by `_SEL` ('re'/'im').
+- **The mutation with teeth is wrong-channel:** compare the real-selector DUT to
+  the GR IMAG reference — must FAIL. It proves the block forwards the correct rail
+  (the dangerous bug is selecting/echoing the other one). +1-delay / empty round it.
+- Completes the Tier-1 GRC-parity backlog buildable set (#1–#11); the sqrt/atan/
+  multi-rate/4-operand items are recorded in the backlog's deferred (Tier-2) section.

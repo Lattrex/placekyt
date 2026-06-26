@@ -16,6 +16,114 @@
       "notes": "Reference example; fully documented. Single MULQ."
     },
     {
+      "kyttar_block": "MultiplyBlock",
+      "grc_block": "blocks.multiply_ff",
+      "tier": 1,
+      "status": "done",
+      "metric": "amplitude",
+      "params": {},
+      "notes": "Verified vs GNU Radio blocks.multiply_ff (19 tests). The generic two-stream real product out[n]=a[n]*b[n] (AM detect, squaring, error nodes) -- distinct from GainBlock (multiply by a CONSTANT) and ComplexMixerBlock (multiply by an internally-generated complex exponential). Single cell, single MULQ: out=(a*b)>>15. multiply_ff takes NO params so the block has none (full GRC parity); the 'param sweep' is over input amplitude regimes. The two streams reuse the proven complex-burst fan-in (Costas xi/xq tap): each sample = WRITE a->R0, WRITE b->R1, JUMP; the verify harness carries them as one complex array (real=a, imag=b) via run_block_dut_complex(in_ports=('a','b'), words_per_sample=1), DUT product lands in the I channel. Two-tier: DUT vs GR multiply_ff (AMPLITUDE, single-MULQ floor ~1 LSB) AND DUT vs process_reference_q15 (EXACT, the wrapping Q15 MULQ). Q15 OVERFLOW: the lone overflow is the exact (-1.0)*(-1.0)=+1.0 corner where MULQ WRAPS to -1.0 (the datapath wraps, does not saturate) -- a dedicated test drives that corner and asserts DUT==wrapping reference; the GR-equivalence stimulus stays off the simultaneous full-scale-negative corner. Multiply is COMMUTATIVE so a swapped-stream mutation is not a corruption (not tested, documented); mutations inverted/wrong-second-stream/halved-magnitude/+1-delay/empty all FAIL the gate (INV-4). GOTCHA: a {write:NAME}/{jump:NAME} placeholder must be ALONE on its line (resolver _RE_WRITE matches ^\\s*\\{write:(\\w+)\\}\\s*$); a trailing inline comment leaves it unsubstituted and the assembler errors 'Unknown opcode {WRITE:OUT}'."
+    },
+    {
+      "kyttar_block": "AddBlock",
+      "grc_block": "blocks.add_ff",
+      "tier": 1,
+      "status": "done",
+      "metric": "amplitude",
+      "params": {},
+      "notes": "Verified vs GNU Radio blocks.add_ff (out=a+b of two real streams; 39 tests shared with SubtractBlock). Single cell: one ADD + a SATURATING clamp. add_ff has NO params (full GRC parity); the 'param sweep' is over in-range amplitude regimes. Two streams via the proven complex-burst fan-in (WRITE a->R0, WRITE b->R1, JUMP); verify harness run_block_dut_complex(in_ports=('a','b'), words_per_sample=1) carries them as one complex array (real=a, imag=b), product/sum in the I channel. PRODUCTION SATURATION (not wrap): the Q15 ALU ADD WRAPS on overflow (0.6+0.6 -> -0.8 sign flip), a footgun; this block instead SATURATES like the FIR/decimator/dc-blocker. Mechanism: ADD sets the V (signed-overflow) flag; on overflow the true result's sign == sign(a) (same-sign operands for add), so the rail is picked from a's sign bit via the shared 0x7FFF+signbit trick (+0x7FFF / -0x8000). Two-path structure (duplicated emit + terminal HALT, BR.V target on a REAL instruction) reuses the FIR's saturating-restore shape -- a branch onto a {write}/{jump} placeholder label is miscompiled to a stray output JUMP. Two-tier: DUT vs GR add_ff (AMPLITUDE, in-range |a+b|<1 where saturate==true sum, ~1 LSB) AND DUT vs process_reference_q15 (EXACT, the saturating add, incl. overflow corners). Saturation verified directly (out-of-range pins to +-full, no wrap). Add is COMMUTATIVE so a swapped-stream mutation is not a corruption (documented); mutations inverted/wrong-second-stream/+1-delay/empty all FAIL (INV-4). Shares add_block.py with SubtractBlock."
+    },
+    {
+      "kyttar_block": "SubtractBlock",
+      "grc_block": "blocks.sub_ff",
+      "tier": 1,
+      "status": "done",
+      "metric": "amplitude",
+      "params": {},
+      "notes": "Verified vs GNU Radio blocks.sub_ff (out=a-b of two real streams). Same single-cell SATURATING combiner as AddBlock (shares add_block.py / _TwoStreamAddSub), with SUB instead of ADD. For subtract, overflow occurs on OPPOSITE-sign operands and the true result's sign is STILL sign(a) (a>0,b<0 -> +; a<0,b>0 -> -), so the identical sign(a)-rail saturation applies. Two-tier verification identical to AddBlock. Subtract is NOT commutative (a-b != b-a) so a swapped-stream mutation IS a corruption and is tested (must FAIL), in addition to inverted/wrong-second-stream/+1-delay/empty. add_cc/sub_cc (complex, 4 external operands) deferred to Tier-2 -- the proven 2-operand fan-in cannot deliver four (see TIER1_BLOCK_BACKLOG deferred section)."
+    },
+    {
+      "kyttar_block": "ComplexToFloatBlock",
+      "grc_block": "blocks.complex_to_float",
+      "tier": 1,
+      "status": "done",
+      "metric": "exact",
+      "params": {},
+      "notes": "Verified vs GNU Radio blocks.complex_to_float (re=real(in), im=imag(in); 20 tests shared with FloatToComplexBlock). On the Kyttar substrate a complex sample IS a two-operand (re@R0, im@R1) pair, so this conversion is the IDENTITY datapath: read the pair, emit it as two words (re then im) on one bus corridor, de-interleaved by the harness into I/Q (the NCO/mixer two-word-egress pattern). Pure data movement (MOVE/WRITE, NO arithmetic) so it is EXACT -- zero Q15 error -- and the gate is bit-exact (metric=exact) on BOTH channels. Single cell, words_per_sample=2. Mutations (swapped re/im, negated imag/conjugate, +1 delay, empty) all FAIL (INV-4). Shares _IQPassthrough/complex_float_block.py with FloatToComplexBlock."
+    },
+    {
+      "kyttar_block": "FloatToComplexBlock",
+      "grc_block": "blocks.float_to_complex",
+      "tier": 1,
+      "status": "done",
+      "metric": "exact",
+      "params": {},
+      "notes": "Verified vs GNU Radio blocks.float_to_complex (out=re+j*im of two real streams). The complement of ComplexToFloatBlock and the SAME identity datapath (shares _IQPassthrough/complex_float_block.py): the two real inputs (re@R0, im@R1) are emitted as the two words of one complex sample. EXACT, bit-exact gate on both channels, single cell, words_per_sample=2. The complex<->float pair is the most common type conversion in any I/Q graph. Mutations (swapped re/im, negated imag, +1 delay, empty) all FAIL."
+    },
+    {
+      "kyttar_block": "ComplexToMagSquaredBlock",
+      "grc_block": "blocks.complex_to_mag_squared",
+      "tier": 1,
+      "status": "done",
+      "metric": "amplitude",
+      "params": {},
+      "notes": "Verified vs GNU Radio blocks.complex_to_mag_squared (out=re^2+im^2; 21 tests). The instantaneous-power / envelope primitive (energy detectors, AGC error, squelch). Single cell, two Q15 ops: MULQ re,re then MACQ im,im accumulate (re^2+im^2) in R0. No params (full GRC parity). SATURATION: the power range [0,2) overflows Q15's [0,1) for |z|>=1 (the unit circle), so the block SATURATES to +full-scale. The power is ALWAYS >=0, so any overflow makes the 16-bit accumulator look negative (bit15 set) -- detected with a single BR.N and pinned to 0x7FFF (a cheaper one-sided clamp than the add/sub sign-rail; no satpos sign math needed). Two-tier: DUT vs GR (AMPLITUDE, IN-RANGE |z|<1 where the result is representable, op_count=2 floor=3 LSB, measured ~2 LSB from MULQ/MACQ truncation vs GR's rounded square) AND DUT vs process_reference_q15 ((re^2>>15)+(im^2>>15) saturating, EXACT, incl. overflow corners). Saturation verified directly (|z|>=1 pins to +full, no wrap). |z|^2 is SYMMETRIC in re/im so a swapped-channel mutation is not a corruption (documented); mutations inverted/halved/wrong-second-stream/+1-delay/empty all FAIL (INV-4). complex_to_mag (sqrt) and complex_to_arg (atan2) of backlog #4 are DEFERRED to Tier-2 (need new sqrt/CORDIC machinery -- see TIER1_BLOCK_BACKLOG)."
+    },
+    {
+      "kyttar_block": "ConjugateBlock",
+      "grc_block": "blocks.conjugate_cc",
+      "tier": 1,
+      "status": "done",
+      "metric": "exact",
+      "params": {},
+      "notes": "Verified vs GNU Radio blocks.conjugate_cc (out=conj(in)=re-j*im; 11 tests). The correlator / conjugate-multiply staple. Single cell: pass re through, negate im (0-im via SUB), emit the two words; words_per_sample=2. No params (full GRC parity). EXACT gate (0 LSB vs GR on both channels) -- pure data movement + one negate. Q15 corner: the only imag whose negate overflows is exactly -1.0 (0x8000): -(-1.0)=+1.0 is unrepresentable so SUB WRAPS to 0x8000 (the bit-exact reference models the wrap; a dedicated test pins it). GR-equivalence stimulus stays off im=-1.0 so the conjugate is exact. Key mutation (teeth): a NOT-conjugated DUT (im passed through un-negated) FAILS -- proves the block actually conjugates, not echoes; plus swapped-channels/+1-delay/empty all FAIL (INV-4)."
+    },
+    {
+      "kyttar_block": "AbsBlock",
+      "grc_block": "blocks.abs_ff",
+      "tier": 1,
+      "status": "done",
+      "metric": "amplitude",
+      "params": {},
+      "notes": "Verified vs GNU Radio blocks.abs_ff (out=|in|; 9 tests). Single cell, one conditional negate (CMP vs 0, then 0-in if negative -- the AGC/QAM16-slicer abs idiom; BR.NN target on a REAL instruction). Single real input via run_block_dut, single real output. No params (full GRC parity). Result is EXACT (0 LSB vs GR) except the lone in=-1.0 (0x8000) corner: |-1.0|=+1.0 unrepresentable so the negate WRAPS to 0x8000=-1.0 -- the bit-exact reference models the wrap (a dedicated test pins it) and the GR-equivalence stimulus stays off it. Key mutation (teeth): a NON-rectified DUT (a negative passed through) FAILS, proving the block takes the magnitude; plus +1-delay/empty FAIL (INV-4). NOTE the backlog #7 'negate' (unary sign flip) is GainBlock(gain=-1) -- already covered, not a separate block; analog.rms_cf is deferred to Tier-2 (needs the deferred Q15 sqrt + a stateful averager)."
+    },
+    {
+      "kyttar_block": "KeepOneInNBlock",
+      "grc_block": "blocks.keep_one_in_n",
+      "tier": 1,
+      "status": "done",
+      "metric": "exact",
+      "params": {"n": 2},
+      "notes": "Verified vs GNU Radio blocks.keep_one_in_n (keep 1 sample of every n, no filter; 26 tests). A pure pass-through gated by a modulo-n counter -- the DecimatorBlock's emit gate WITHOUT the FIR. Single cell. Param mirrors GR: n (keep factor). PHASE: GR keeps the LAST sample of each group of n (verified empirically: keep_one_in_n(3) of 0..11 -> 2,5,8,11 = phase n-1), so the up-counter emits when it reaches n then resets (XOR self), matching GR. EXACT pass-through (no Q15 arithmetic) -> bit-exact gate; emitted samples equal the input bit-for-bit. run_block_dut records None on dropped triggers so the kept stream is outputs[n-1::n]; the emit-phase contract (emit iff i%n==n-1) is asserted directly across n in {1..5}. Mutations (wrong n, wrong phase n-2, +1 delay, empty) all FAIL (INV-4). Counter is a persistent StateVar (init 0); the skip path is a bare HALT label (a REAL instruction, not a {write}/{jump} placeholder -- build-engine GOTO miscompile). repeat (the upsampling twin) and interleave/deinterleave deferred to Tier-2 (see TIER1_BLOCK_BACKLOG)."
+    },
+    {
+      "kyttar_block": "MovingAverageBlock",
+      "grc_block": "blocks.moving_average_ff",
+      "tier": 1,
+      "status": "done",
+      "metric": "amplitude",
+      "params": {"length": 4, "scale": 0.25},
+      "notes": "Verified vs GNU Radio blocks.moving_average_ff (out=scale*sum of last `length` samples; 18 tests). A moving average IS an FIR whose `length` taps are all equal to `scale`, so MovingAverageBlock SUBCLASSES the verified FIRFilterBlock with constant box taps (the LowPassFilter pattern) -- all Q15 datapath / multi-cell fold / COEFFICIENT-HEADROOM saturation inherited unchanged. Constant taps are symmetric so the reversed-tap convention is moot and group delay=0, aligned with GR's causal running sum. Params mirror GRC's Moving Average: length + scale (GR's max_iter is an output-buffer bound and vlen=1 -- neither affects the sample math, so neither is a Kyttar param). scale=1/length is a true average (Sum|tap|=1 -> S=0); a larger scale engages the inherited saturating headroom restore (S>0). Two-tier: DUT vs GR moving_average_ff (AMPLITUDE, headroom-aware q15_quant_floor(length,S)) AND DUT vs the inherited process_reference_q15 (EXACT). Coverage: edge + 3 random + length sweep {2,3,5,8,16} (true average) + bit-exact incl. S=1 headroom (3,0.5)/(6,0.3); mutations inverted/wrong-length/+1-delay/empty all FAIL (INV-4). KNOWN LIMIT (inherited FIR per-cell budget): a SINGLE-cell box with S>0 caps at ~3 taps -- a 4-tap box at scale 0.5 (4 taps + S=1 restore on one cell) raises at build; use scale<=1/length (S=0) or a longer/multi-cell length. Not a moving-average-specific limit."
+    },
+    {
+      "kyttar_block": "ComplexToRealBlock",
+      "grc_block": "blocks.complex_to_real",
+      "tier": 1,
+      "status": "done",
+      "metric": "exact",
+      "params": {},
+      "notes": "Verified vs GNU Radio blocks.complex_to_real (out=real(in); 18 tests shared with ComplexToImagBlock). A complex sample is carried as a two-operand (re@R0, im@R1) pair; this selector forwards the RE operand as its single real output (words_per_sample=1). A subset of complex_to_float but a separate GR block people wire directly to grab one rail. Pure data movement (one MOVE) -> EXACT (0 LSB vs GR). No params. Single cell, shares _ComplexSelect/complex_real_imag_block.py with ComplexToImagBlock. Key mutation (teeth): selecting the WRONG rail (real DUT vs GR imag reference) FAILS, proving it picks the correct channel; plus +1-delay/empty FAIL (INV-4)."
+    },
+    {
+      "kyttar_block": "ComplexToImagBlock",
+      "grc_block": "blocks.complex_to_imag",
+      "tier": 1,
+      "status": "done",
+      "metric": "exact",
+      "params": {},
+      "notes": "Verified vs GNU Radio blocks.complex_to_imag (out=imag(in)). The IM-channel twin of ComplexToRealBlock and the SAME selector datapath (shares _ComplexSelect/complex_real_imag_block.py): forwards the im operand (R1) as the single real output. EXACT (0 LSB), single cell, words_per_sample=1. Mutations (wrong rail = imag DUT vs GR real, +1-delay, empty) all FAIL."
+    },
+    {
       "kyttar_block": "DCBlockerBlock",
       "grc_block": "filter.dc_blocker_ff",
       "tier": 1,

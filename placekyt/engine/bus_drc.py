@@ -338,3 +338,159 @@ def _face_code_of(face):
         return int(val) & 0x3
     except (TypeError, ValueError):
         return None
+
+
+# --------------------------------------------------------------------------- #
+# Stray-emission DRC (P3.4): a WRITE/JUMP that lands on an EMPTY/unowned cell.
+#
+# Catches the class of bug where a block's emission fires into dead space — e.g. a
+# dual-face output cell whose `out` FACE flip didn't follow the drawn route, so the
+# word shoots into empty cells and stray-EXECUTES on the universal program ("phantom
+# routes" that light red and forward to nothing). Reads the BUILT memory + resolved
+# faces, models the per-cell FACE flips (MOVE [FACE], Rk), and follows each emission
+# through the transit forwarding to its terminal cell; flags any that end UNOWNED.
+# --------------------------------------------------------------------------- #
+
+def _decode_ops(cells: dict) -> dict:
+    """Disassemble each cell's memory and return, per (x, y), the address-ordered
+    list of relevant ops: ``("face", src)`` for ``MOVE [FACE], R{src}``,
+    ``("write", hop)`` / ``("jump", hop)`` for emissions. Uses the simkyt
+    disassembler so the decode matches the simulator exactly (the raw word layout
+    is NOT re-derived here). If simkyt is unavailable the result is empty (the check
+    no-ops rather than guessing)."""
+    import re
+    try:
+        from simkyt import Program
+    except Exception:  # noqa: BLE001
+        return {}
+    face_re = re.compile(r"Move\s*\{\s*dest:\s*33\s*,\s*src:\s*(\d+)")
+    write_re = re.compile(r"Write\s*\{[^}]*hop_cnt:\s*(\d+)")
+    jump_re = re.compile(r"Jump\s*\{[^}]*hop_cnt:\s*(\d+)")
+    out: dict = {}
+    for (x, y), info in cells.items():
+        mem = info.get("memory") or []
+        if not any(w for w in mem):
+            continue
+        try:
+            text = Program.from_words("c", [w & 0xFFFF for w in mem]).disassemble()
+        except Exception:  # noqa: BLE001
+            continue
+        seq = []
+        for line in text.splitlines():
+            m = face_re.search(line)
+            if m:
+                seq.append(("face", int(m.group(1))))
+                continue
+            m = write_re.search(line)
+            if m:
+                seq.append(("write", int(m.group(1))))
+                continue
+            m = jump_re.search(line)
+            if m:
+                seq.append(("jump", int(m.group(1))))
+        if seq:
+            out[(x, y)] = seq
+    return out
+
+
+def check_stray_emissions(cells: dict, owned: set, width: int, height: int
+                          ) -> list[Violation]:
+    """Flag any WRITE/JUMP whose forwarding path TERMINATES on a cell not in
+    ``owned`` (a block cell, transit cell, or route waypoint).
+
+    ``cells`` maps (x, y) -> {"memory": [w0..w31], "face": <face>} from the build.
+    ``owned`` is the set of (x, y) that legitimately carry traffic. The walk:
+      * decode the cell's program in address order, tracking the current FACE
+        (init = the cell's resting face; updated by ``MOVE [FACE], Rk`` whose value
+        is the const at memory[k]);
+      * for each WRITE(0x6xxx)/JUMP(0x7xxx), distance = 31 - hop; step ``distance``
+        cells, the FIRST hop on the emitter's current FACE, each subsequent hop on
+        the TRANSIT cell's own resting face (universal-program forwarding);
+      * the terminal cell is where the word executes — if it is not ``owned`` (and
+        on-grid), that is a stray emission.
+    """
+    viols: list[Violation] = []
+    # Decode each cell's program via the simkyt disassembler (authoritative — the
+    # raw bit layout is not re-derived here). We read, in address order:
+    #   MOVE [FACE], Rk  -> "Move { dest: 33, src: k }"  (33 = the CONFIG FACE addr)
+    #   WRITE @h         -> "Write { ..., hop_cnt: h, ... }"
+    #   JUMP  @h         -> "Jump { hop_cnt: h, ... }"
+    # tracking the runtime FACE (init = the cell's resting face; a face MOVE sets it
+    # to the const at memory[k]) and the emission distance (31 - hop_cnt).
+    ops = _decode_ops(cells)
+    for (x, y), info in cells.items():
+        mem = info.get("memory") or []
+        if not any(w for w in mem):
+            continue  # empty cell, nothing emits
+        cur_face = _face_code_of(info.get("face"))
+        for kind, arg in ops.get((x, y), []):
+            if kind == "face":          # MOVE [FACE], R{arg}
+                v = mem[arg] & 0xFFFF if 0 <= arg < len(mem) else None
+                if v in (0, 1, 2, 3):
+                    cur_face = v
+                continue
+            # kind in ("write","jump"); arg = hop_cnt
+            if cur_face is None:
+                continue
+            dist = 31 - arg
+            if dist <= 0:
+                continue  # @31 = execute locally, no emission
+            # First hop on the emitter's current face; then follow transit faces.
+            # The word executes on the dist-th cell. A word that enters an UNOWNED
+            # cell along the way is already astray: either it dies there (no
+            # forwarding face) or the universal program ferries it to another dead
+            # cell. Flag the FIRST unowned cell the path enters. Steps that leave the
+            # grid are a separate (port/edge) case and are not flagged here.
+            dx, dy = _FWD_DELTA[cur_face]
+            cx, cy = x + dx, y + dy
+            stray_at = None
+            for hop in range(dist):
+                if not (0 <= cx < width and 0 <= cy < height):
+                    break  # off-grid — port/edge egress, not a dead-cell stray
+                if (cx, cy) not in owned:
+                    stray_at = (cx, cy)
+                    break
+                if hop == dist - 1:
+                    break  # reached the (owned) terminal cleanly
+                tf = _face_code_of((cells.get((cx, cy)) or {}).get("face"))
+                if tf is None:
+                    break  # owned but unforwardable here — not this check's concern
+                tdx, tdy = _FWD_DELTA[tf]
+                cx, cy = cx + tdx, cy + tdy
+            if stray_at is not None:
+                viols.append(Violation(
+                    cell=stray_at, kind="stray_emission",
+                    reason=(f"a WRITE/JUMP from cell ({x},{y}) reaches EMPTY/unowned "
+                            f"cell {stray_at} — it will stray-execute on the universal "
+                            f"forwarding program (data into dead space). The emitting "
+                            f"cell's output FACE does not follow a route to an owned "
+                            f"cell."),
+                    nets=()))
+    # De-dup by terminal cell (many emissions can converge on one dead cell).
+    seen = set()
+    uniq = []
+    for v in viols:
+        if v.cell in seen:
+            continue
+        seen.add(v.cell)
+        uniq.append(v)
+    return uniq
+
+
+def owned_cells(project, chip_id: int = 0) -> set:
+    """The set of (x, y) on ``chip_id`` that legitimately carry traffic: every block
+    cell, every block transit cell, and every routed-connection waypoint. The
+    complement (programmed-but-unowned) is what :func:`check_stray_emissions` flags."""
+    owned: set = set()
+    for b in project.blocks:
+        pl = getattr(b, "placement", None)
+        if pl is None or getattr(pl, "chip", 0) != chip_id:
+            continue
+        for c in pl.cells:
+            owned.add((c.x, c.y))
+        for t in (getattr(pl, "transit_cells", None) or []):
+            owned.add((t.x, t.y))
+    for conn in project.connections:
+        for p in (conn.route or []):
+            owned.add((p.x, p.y))
+    return owned

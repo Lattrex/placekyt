@@ -42,7 +42,8 @@ from model.chip_type import ChipType
 from model.project import Project
 
 from .catalog import BlockCatalog
-from .drc import DRCError, DRCResult, check_project, error as drc_error
+from .drc import (DRCError, DRCResult, check_project, error as drc_error,
+                  warning as drc_warning)
 
 # BuildError is an alias of the shared DRCError so a build surfaces one uniform
 # error type whether the finding came from the DRC pass or from generation.
@@ -313,6 +314,25 @@ class BuildEngine:
             cell_count=cell_map.cell_count(),
             cells=_extract_cell_memory(cell_map, ownership, classes),
         )
+
+        # STRAY-EMISSION DRC (P3.4): a WRITE/JUMP that lands on an EMPTY/unowned
+        # cell will stray-execute on the universal forwarding program (data into
+        # dead space — the "phantom route" hazard, e.g. a dual-face output cell
+        # whose egress FACE didn't follow its drawn route, or an output not yet
+        # wired anywhere). Surfaced as a WARNING (named, with the dead cell) so it
+        # shows in the GUI findings + names the phantom WITHOUT blocking a build of
+        # an in-progress design whose output simply isn't routed yet. The real
+        # mis-route is prevented at the source (the output FACE follows the route).
+        try:
+            from .bus_drc import check_stray_emissions, owned_cells
+            own = owned_cells(project, chip_id)
+            for v in check_stray_emissions(
+                    result.chips[chip_id].cells, own, ct.width, ct.height):
+                result.warnings.append(drc_warning(
+                    "stray_emission", v.reason,
+                    chip=chip_id, x=v.cell[0], y=v.cell[1]))
+        except Exception:  # noqa: BLE001 — best-effort; never break a build itself
+            pass
 
     def _translate(
         self,
@@ -709,6 +729,15 @@ def _apply_routes(cell_map, gr_placement, blocks, connections, chip_type,
                 f = _step_face(ex, ey, *nxt)
                 if f is not None:
                     cfg.fwd_face = f
+                    # DUAL-FACE output cell: its `out` WRITE fires on an in-program
+                    # MOVE [FACE], R{face_out} flip, NOT on fwd_face (which carries
+                    # its feedback). Rewrite that face word to the route's first-hop
+                    # direction so `out` follows the route — else it fires on the
+                    # baked-in/rotated face_out and shoots into empty cells (the
+                    # stray-exec "phantom route" hazard). See output_face_addr().
+                    ofa = gb.output_face_addr() if gb is not None else None
+                    if ofa is not None:
+                        cfg.set_memory(int(ofa), int(f))
             # Resolve the handoff target: a block target → its entry/input reg
             # (so the WRITE lands in the next block's input and the JUMP triggers
             # its entry); a chip-output-port target → entry 0 and dest = the

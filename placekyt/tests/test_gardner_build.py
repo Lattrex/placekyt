@@ -169,3 +169,102 @@ def test_output_egress_preserves_period_feedback(qapp, catalog, chip_type):
     # And it must still build into a loadable bitstream.
     chip = simkyt.Chip.from_yaml(str(CT_PATH))
     chip.load_bitstream_physical(res.words(0))
+
+
+# --------------------------------------------------------------------------- #
+# Dual-face output egress FOLLOWS the drawn route (the "phantom route" stray-exec
+# regression): a rotated/relocated Gardner whose `out` route leaves in a direction
+# DIFFERENT from the rotated face_out must rewrite face_out to the route, so `out`
+# does not fire into empty cells and stray-execute.
+# --------------------------------------------------------------------------- #
+
+def _step_face(ax, ay, bx, by):
+    if bx == ax + 1 and by == ay:
+        return 1   # E
+    if bx == ax - 1 and by == ay:
+        return 2   # W
+    if by == ay + 1 and bx == ax:
+        return 0   # S
+    if by == ay - 1 and bx == ax:
+        return 3   # N
+    return None
+
+
+def test_dualface_output_face_follows_route(qapp, catalog, chip_type):
+    """The loop_filter is a dual-face output cell: its `out` WRITE fires on the
+    in-program ``MOVE [FACE], R{face_out}`` flip (DataWord addr 2), NOT on the
+    cell's resting fwd_face. When the drawn route leaves the cell in a direction
+    other than the (possibly rotated) baked-in face_out, the build must REWRITE that
+    face word to the route's first hop — else `out` shoots into empty cells and
+    stray-executes (the user-seen "phantom route" that flashes red, forwarding data
+    to nothing). Regression for the rotated+relocated manual layout."""
+    from commands import OrientBlockCommand, SetConnectionRouteCommand
+    from model.connection import BlockEndpoint, ChipPortEndpoint
+    from model.placement import CellId
+
+    ctrl = AppController(catalog=catalog)
+    ctrl.new_project("g", "kyttar_10x12")
+    name = ctrl.place_block("GardnerTimingRecovery", 0, 2, 2,
+                            library="lattrex.official")
+    # Rotate cw×3 (the manual session's transform) — rotates face_out to a value
+    # that need NOT match where the output route will leave.
+    for _ in range(3):
+        OrientBlockCommand(ctrl.project, name, "cw").execute()
+
+    g = ctrl.project.block(name)
+    lf = g.placement.cell("loop_filter")
+    # Route the output to the x16_out port via an explicit path; its FIRST hop sets
+    # the required egress face. Use a simple path leaving NORTH from the loop_filter.
+    conn = ctrl.add_route(BlockEndpoint(block=name, port="out"),
+                          ChipPortEndpoint(chip=0, port="x16_out"), [])
+    # Force a deterministic first-hop direction (NORTH) regardless of auto-route.
+    first = (lf.x, lf.y - 1)
+    SetConnectionRouteCommand(
+        ctrl.project, conn,
+        [(lf.x, lf.y), first]).execute()
+    want = _step_face(lf.x, lf.y, *first)   # NORTH = 3
+
+    res = BuildEngine(catalog, str(CT_PATH)).build(
+        ctrl.project, {"kyttar_10x12": chip_type})
+    # face_out (DataWord addr 2 on the loop_filter cell) must equal the route's
+    # first-hop face — proving the build rewrote it to follow the route.
+    mem = res.chips[0].cells[(lf.x, lf.y)]["memory"]
+    assert mem[2] == want, \
+        f"face_out should follow the route (={want}), got {mem[2]}"
+
+
+def test_build_flags_stray_emission_into_empty_cell(qapp, catalog, chip_type):
+    """The stray-emission DRC (P3.4): a WRITE/JUMP that lands on an EMPTY/unowned
+    cell is a NAMED build error (it would stray-execute on the universal forwarding
+    program). Forge the bug — point the loop_filter's face_out at an empty
+    direction — and assert the check flags the dead cell. (The real build no longer
+    produces this; the fix makes face_out follow the route.)"""
+    from engine.bus_drc import (check_stray_emissions, owned_cells,
+                                _FWD_DELTA)
+
+    ctrl = _place(catalog, 3, 3)
+    res = BuildEngine(catalog, str(CT_PATH)).build(
+        ctrl.project, {"kyttar_10x12": chip_type})
+    assert res.ok, [str(e) for e in res.errors]
+    g = ctrl.project.blocks[-1]
+    lf = g.placement.cell("loop_filter")
+    own = owned_cells(ctrl.project, 0)
+
+    # Forge a face_out (addr 2) pointing at an empty neighbour: the loop_filter's
+    # `out` then fires into dead space. The DRC must NAME that cell. (Pick a face
+    # whose neighbour is unowned + on-grid so the forge is deterministic.)
+    forged = next(
+        (fc for fc, (dx, dy) in _FWD_DELTA.items()
+         if 0 <= lf.x + dx < chip_type.width and 0 <= lf.y + dy < chip_type.height
+         and (lf.x + dx, lf.y + dy) not in own),
+        None)
+    assert forged is not None, "expected an empty neighbour to forge toward"
+    cells = {k: {"memory": list(v["memory"]), "face": v.get("face")}
+             for k, v in res.chips[0].cells.items()}
+    cells[(lf.x, lf.y)]["memory"][2] = forged
+    viols = check_stray_emissions(cells, own, chip_type.width, chip_type.height)
+    stray_cells = {v.cell for v in viols}
+    nb = (lf.x + _FWD_DELTA[forged][0], lf.y + _FWD_DELTA[forged][1])
+    assert nb in stray_cells, \
+        f"stray emission into empty cell {nb} must be NAMED, got {sorted(stray_cells)}"
+    assert all(v.kind == "stray_emission" for v in viols)

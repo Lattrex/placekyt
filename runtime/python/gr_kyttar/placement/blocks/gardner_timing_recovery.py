@@ -343,6 +343,16 @@ ilo:
         of how many cells the block has or their dict ordering."""
         return "loop_filter"
 
+    def output_face_addr(self) -> Any:
+        """The loop_filter is a DUAL-FACE output cell: its ``out`` WRITE fires on the
+        in-program ``MOVE [FACE], R{face_out}`` flip (addr 2), independent of the
+        cell's resting ``fwd_face`` (which carries the WEST feedback). So the build
+        must rewrite THIS face word to the drawn route's first-hop direction — else
+        the ``out`` word fires on the baked-in/rotated ``face_out`` and, when the
+        route leaves another way (a rotated/relocated block), shoots into empty cells
+        and stray-executes (the phantom-route bug). ``face_out`` is DataWord addr 2."""
+        return 2
+
     def process_reference(self, input_samples: np.ndarray) -> np.ndarray:
         """Reference Q15 Gardner loop modelling the on-chip cells EXACTLY (matches
         the chip bit-exact; recovers timing BER=0 frac 0.3-0.7).

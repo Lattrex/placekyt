@@ -269,6 +269,24 @@ class KyttarBlock(ABC):
         the right cell (so the output WRITE's hop reaches the actual exit)."""
         return None
 
+    def output_face_addr(self) -> Optional[int]:
+        """The memory ADDRESS of the in-program output-egress FACE constant on the
+        output cell, for a DUAL-FACE output cell — or ``None`` (the default) for a
+        normal single-face cell whose ``fwd_face`` alone determines the egress.
+
+        A dual-face output cell flips ``MOVE [FACE], R{face_out}`` at runtime to
+        steer its ``out`` WRITE, INDEPENDENT of the cell's resting ``fwd_face``
+        (which it uses for its feedback). The route patch sets ``fwd_face`` toward
+        the drawn route but cannot know which memory word holds ``face_out`` — so
+        without this hook the ``out`` word fires on the BAKED-IN ``face_out`` and,
+        when the route leaves in a different direction (e.g. a rotated/relocated
+        block), the word fires into empty cells and stray-executes (the "phantom
+        route" hazard). Declaring the addr lets the build REWRITE that face word to
+        the route's first-hop direction so ``out`` follows the route. The value at
+        the addr is rotated with the block (``is_face=True``); the build overwrites
+        it with the resolved route face."""
+        return None
+
     @staticmethod
     def _serpentine_layout(cell_count: int, width: int) -> Dict[Any, Tuple[int, int, str]]:
         """Snake ``cell_count`` cells within ``width`` columns.

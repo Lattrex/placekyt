@@ -288,14 +288,26 @@ def cmd_replay(args) -> int:
         pass
 
     if trace_path.suffix == ".py":
-        # Run the .py replay script with `controller`/`ctrl` in scope.
+        # Run the .py replay script with `controller`/`ctrl` in scope. A '# !! GAP'
+        # line in the script is a non-replayable hole — the script just skips it
+        # (it's a comment), so warn that the reproduction may be incomplete.
         ns = {"controller": ctrl, "ctrl": ctrl}
         code = trace_path.read_text()
         print(f"replaying {trace_path} (.py script)…")
+        if "!! GAP" in code:
+            print("WARNING: this .py trace has non-replayable GAP lines — the "
+                  "reproduction may differ from the captured session.",
+                  file=sys.stderr)
         exec(compile(code, str(trace_path), "exec"), ns)  # noqa: S102
     else:
         print(f"replaying {trace_path} (.kytrace)…")
-        ctrl.replay_trace(str(trace_path))
+        # strict=False so a gap doesn't abort the whole replay here; we REPORT
+        # the gaps loudly instead (a CLI bug-repro wants to see how far it got).
+        skipped = ctrl.replay_trace(str(trace_path), strict=False)
+        if skipped:
+            print(f"WARNING: skipped {len(skipped)} non-replayable gap(s): "
+                  + "; ".join(s.get("description", "?") for s in skipped)
+                  + " — reproduction may be incomplete.", file=sys.stderr)
 
     n = len(ctrl.trace.events())
     print(f"replayed {n} command(s); "

@@ -45,6 +45,11 @@ class PlaceCellCommand(Command):
     def description(self) -> str:
         return f"Place {self.block_name}[{self.cell_id}]"
 
+    def to_trace(self) -> dict:
+        return {"op": "move_cell",
+                "args": {"block_name": self.block_name, "cell_id": self.cell_id,
+                         "x": self.x, "y": self.y}}
+
 
 class PlaceTransitCommand(Command):
     """Place (or reposition) a block-internal transit (routing-only) cell. Undo
@@ -235,6 +240,11 @@ class MoveBlockToChipCommand(Command):
     def description(self) -> str:
         return f"Move {self.block_name} to chip {self.chip}"
 
+    def to_trace(self) -> dict:
+        return {"op": "move_block_to_chip",
+                "args": {"block_name": self.block_name, "chip": self.chip,
+                         "ax": self.ax, "ay": self.ay}}
+
 
 class TransformBlockCommand(Command):
     """Rotate or mirror a placed block in place (§3.2). The block pivots on its
@@ -362,3 +372,6 @@ class RemoveBlockCommand(Command):
 
     def description(self) -> str:
         return f"Remove block {self.block_name}"
+
+    def to_trace(self) -> dict:
+        return {"op": "remove_block", "args": {"block_name": self.block_name}}

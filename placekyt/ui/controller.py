@@ -342,8 +342,14 @@ class AppController(QObject):
                 if len(cmds) == 1:
                     self.commands.execute(cmds[0])
                 else:
+                    names = [existing.name] + [
+                        s.name for s in self._route_siblings(existing)]
                     self.commands.execute(
-                        CompositeCommand("Route connection (I/Q pair)", cmds))
+                        CompositeCommand(
+                            "Route connection (I/Q pair)", cmds,
+                            trace_op={"op": "set_route_group",
+                                      "args": {"names": names,
+                                               "points": [list(p) for p in points]}}))
                 return existing.name
 
         conn_name = name or self._unique_connection_name(source, target)
@@ -364,6 +370,25 @@ class AppController(QObject):
         pts = [tuple(p) for p in points] if points else None
         self.commands.execute(
             SetConnectionRouteCommand(self.project, name, pts))
+
+    def set_route_group(self, names: list, points) -> None:
+        """Route SEVERAL named connections along the SAME path as one undoable
+        unit — the I/Q-pair reroute (two logical nets sharing one physical
+        corridor). The replay target for that composite, so a trace reproduces
+        the grouped route exactly."""
+        from commands import CompositeCommand, SetConnectionRouteCommand
+
+        pts = [tuple(p) for p in points] if points else None
+        cmds = [SetConnectionRouteCommand(self.project, n, pts) for n in names]
+        if len(cmds) == 1:
+            self.commands.execute(cmds[0])
+        else:
+            self.commands.execute(
+                CompositeCommand("Route connection (I/Q pair)", cmds,
+                                 trace_op={"op": "set_route_group",
+                                           "args": {"names": list(names),
+                                                    "points": ([list(p) for p in points]
+                                                               if points else None)}}))
 
     def _route_siblings(self, conn):
         """Other UNROUTED connections that share ``conn``'s physical source-output
@@ -1065,26 +1090,33 @@ class AppController(QObject):
 
     # -- command trace (live console echo + replayable export) ----------------
 
-    def export_trace(self, path) -> None:
+    def export_trace(self, path) -> str | None:
         """Write the session command trace to ``path``. A ``.py`` extension emits
         a runnable replay SCRIPT (calls ``controller.<op>(**args)`` in order); any
         other extension (``.kytrace`` / ``.json``) emits the structured JSON log.
-        Both capture EVERY operation performed this session — the exact, replayable
-        sequence to reproduce a bug on any machine."""
+
+        Returns a WARNING string if the trace has GAPS (operations that produced
+        no replayable op — see :meth:`CommandTrace.gaps`), else None. A trace with
+        gaps cannot fully reproduce the session, so the caller should surface the
+        warning prominently (a trace that omits an op is worthless)."""
         import json
         from pathlib import Path
 
         p = Path(path)
         events = self.trace.events()
+        gaps = self.trace.gaps()
         if p.suffix == ".py":
             lines = [
                 "# placeKYT command trace — replay with:",
                 "#   from ui.controller import AppController",
                 "#   ctrl = AppController(); exec(open(__file__).read())",
                 "# (or run inside the placeKYT console where `controller` exists)",
-                "ctrl = controller  # the live AppController",
-                "",
             ]
+            if gaps:
+                lines.append("# WARNING: this trace has NON-REPLAYABLE gaps "
+                             "(marked '!! GAP' below) — it cannot fully reproduce "
+                             "the session. Fill them in by hand before replaying.")
+            lines += ["ctrl = controller  # the live AppController", ""]
             for ev in events:
                 op = ev.get("op")
                 desc = ev.get("description", "")
@@ -1095,7 +1127,7 @@ class AppController(QObject):
                     lines.append(f"ctrl.redo()  # {desc}")
                     continue
                 if not op:
-                    lines.append(f"# (manual) {desc}")
+                    lines.append(f"# !! GAP (not replayable): {desc}")
                     continue
                 args = ev.get("args", {})
                 kw = ", ".join(f"{k}={v!r}" for k, v in args.items())
@@ -1103,18 +1135,30 @@ class AppController(QObject):
             p.write_text("\n".join(lines) + "\n")
         else:
             p.write_text(json.dumps(events, indent=2))
+        if gaps:
+            return (f"Trace has {len(gaps)} non-replayable gap(s): "
+                    + "; ".join(g.get("description", "?") for g in gaps)
+                    + ". The trace cannot fully reproduce the session.")
+        return None
 
-    def replay_trace(self, path) -> None:
+    def replay_trace(self, path, *, strict: bool = True) -> list[dict]:
         """Replay a ``.kytrace`` JSON (or a list of events) onto THIS controller —
         reproduce a captured session. Each event with an ``op`` calls
         ``getattr(self, op)(**args)``; undo/redo events call undo()/redo().
-        Events with no ``op`` (manual / composite) are skipped (logged)."""
+
+        A 'do' event with NO op is a GAP (an operation that wasn't replayable). In
+        ``strict`` mode (default) the replay RAISES at the first gap, because a
+        replay that silently skips an op produces a DIFFERENT design than the
+        captured session — a worthless, misleading reproduction. Pass
+        ``strict=False`` to skip gaps and continue (returns the list of skipped
+        gap events) — use only when you've confirmed the gaps don't matter."""
         import json
         from pathlib import Path
 
         events = path
         if not isinstance(path, list):
             events = json.loads(Path(path).read_text())
+        skipped: list[dict] = []
         for ev in events:
             kind = ev.get("kind", "do")
             if kind == "undo":
@@ -1125,8 +1169,17 @@ class AppController(QObject):
                 continue
             op = ev.get("op")
             if not op:
+                desc = ev.get("description", "?")
+                if strict:
+                    raise ValueError(
+                        f"replay GAP at seq {ev.get('seq')}: '{desc}' is not "
+                        f"replayable — the trace is incomplete and cannot "
+                        f"reproduce the session. (Re-export after the op gains a "
+                        f"trace mapping, or replay with strict=False to skip.)")
+                skipped.append(ev)
                 continue
             getattr(self, op)(**ev.get("args", {}))
+        return skipped
 
     def _unique_connection_name(self, source, target) -> str:
         from model.connection import BlockEndpoint

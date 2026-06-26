@@ -120,6 +120,12 @@ class CommandTrace:
         if tr:
             ev["op"] = tr.get("op")
             ev["args"] = tr.get("args", {})
+        elif kind == "do":
+            # A 'do' command with NO replayable op is a GAP: the trace cannot be
+            # replayed past it. Flag it loudly so a trace is never SILENTLY
+            # incomplete (a trace that omits an op is worthless — it can't
+            # reproduce the session). Export + --replay surface this.
+            ev["replayable"] = False
         self._events.append(ev)
         self._seq += 1
         for fn in list(self._listeners):
@@ -128,6 +134,13 @@ class CommandTrace:
             except Exception:  # noqa: BLE001 — a listener must not break the edit
                 pass
         return ev
+
+    def gaps(self) -> list[dict]:
+        """Recorded 'do' events that are NOT replayable (no op) — the holes that
+        make a trace unable to reproduce a session. Empty ⇒ the trace is
+        complete and fully replayable."""
+        return [e for e in self._events
+                if e.get("kind") == "do" and e.get("replayable") is False]
 
     def record_op(self, op: str, args: dict, description: str) -> dict:
         """Record a HIGH-LEVEL controller operation directly (not via a Command)

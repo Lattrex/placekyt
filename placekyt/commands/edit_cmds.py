@@ -200,3 +200,15 @@ class SetInstrOverrideCommand(Command):
 
     def description(self) -> str:
         return f"Set instruction override {self.block_name}[{self.cell_id}]@{self.addr}"
+
+    def to_trace(self) -> dict:
+        # InstrOverride is a dataclass of tri-state handoff fields (hop/dest/
+        # entry/dest_config); serialize the SET ones as set_instr_override kwargs.
+        import dataclasses
+        fields = {}
+        if self.override is not None:
+            fields = {k: v for k, v in dataclasses.asdict(self.override).items()
+                      if v is not None}
+        return {"op": "set_instr_override",
+                "args": {"block_name": self.block_name, "cell_id": self.cell_id,
+                         "addr": self.addr, **fields}}

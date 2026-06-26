@@ -1336,22 +1336,39 @@ class MainWindow(QMainWindow):
 
     def _export_trace(self) -> None:
         """Export the session command trace — every operation performed — as a
-        runnable replay script (.py) or a structured log (.kytrace), to reproduce
+        structured log (.kytrace) or a runnable replay script (.py), to reproduce
         a session / attach to a bug report."""
-        from PySide6.QtWidgets import QFileDialog
+        import os
 
+        from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+        # Default the dialog to a sensible NAME + the canonical .kytrace filter
+        # (the structured bug-report format), so the user isn't faced with a blank
+        # filename and no extension. Seed from the project name if there is one.
+        proj = getattr(self.controller.project, "metadata", None)
+        base = (getattr(proj, "name", None) or "placekyt_trace").strip() or \
+            "placekyt_trace"
+        default = os.path.join(os.path.expanduser("~"), f"{base}.kytrace")
         path, sel = QFileDialog.getSaveFileName(
-            self, "Export Command Trace", "",
-            "Replay script (*.py);;Command trace (*.kytrace)")
+            self, "Export Command Trace", default,
+            "Command trace (*.kytrace);;Replay script (*.py)")
         if not path:
             return
-        if not path.endswith((".py", ".kytrace")):
-            path += ".py" if "py" in (sel or "").lower() else ".kytrace"
+        # Append the extension from the chosen filter ONLY if the user didn't type
+        # a recognized one — and never double-append (the prior code turned
+        # 'x.ktrace' into 'x.ktrace.kytrace').
+        if not path.lower().endswith((".py", ".kytrace")):
+            ext = ".py" if "*.py" in (sel or "") else ".kytrace"
+            path += ext
         try:
-            self.controller.export_trace(path)
+            warning = self.controller.export_trace(path)
             n = len(self.controller.trace.events())
             self.statusBar().showMessage(
                 f"Exported {n} commands to {path}", 4000)
+            if warning:
+                # A trace with non-replayable gaps can't reproduce the session —
+                # tell the user loudly, not just a transient status message.
+                QMessageBox.warning(self, "Command trace has gaps", warning)
         except Exception as exc:  # noqa: BLE001
             self.statusBar().showMessage(f"Trace export failed: {exc}", 5000)
 

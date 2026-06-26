@@ -10,6 +10,7 @@ BUILTIN_BLOCKS = {
     'ConjugateBlock': 'conjugate_block',
     'AbsBlock': 'abs_block',
     'KeepOneInNBlock': 'keep_one_in_n_block',
+    'UpsamplerBlock': 'upsampler_block',
     'MovingAverageBlock': 'moving_average_block',
     'ComplexToRealBlock': 'complex_real_imag_block',
     'ComplexToImagBlock': 'complex_real_imag_block',

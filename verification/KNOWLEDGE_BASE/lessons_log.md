@@ -1146,3 +1146,27 @@ they are larger than one autonomous step at the production-quality bar.
   (the dangerous bug is selecting/echoing the other one). +1-delay / empty round it.
 - Completes the Tier-1 GRC-parity backlog buildable set (#1–#11); the sqrt/atan/
   multi-rate/4-operand items are recorded in the backlog's deferred (Tier-2) section.
+
+---
+
+## UpsamplerBlock + the BURST-EMIT primitive — 2026-06-26
+
+- **CRITICAL ISA FACT (was wrong, now corrected):** a remote JUMP does NOT halt the
+  issuing cell. The issuer keeps executing the next instruction; only HALT (or R31/R32)
+  releases a cell. So ONE cell CAN emit a burst of N outputs in one entry —
+  `WRITE,JUMP ×N, HALT` — all N fire. No self-loop or 2-cell pacing is needed.
+  (See memory project_jump_does_not_halt_issuer.)
+- **UpsamplerBlock** (rate-expand 1->sps): emits the sample then sps-1 zeros, unrolled
+  WRITE/JUMP per output. Proven on-chip: a downstream cell consumer receives the full
+  burst `[0x4000, 0, 0, 0]` for sps=4 (verified via the consumer's data_arrival trace).
+  It is the front half of GR `filter.interp_fir_filter_fff(sps, rrc_taps)`; feed it to
+  the RRC pulse shaper (which expects pre-upsampled input, SAMPLES_PER_SYMBOL=4).
+- **Two test-harness traps that masqueraded as block bugs (don't repeat):**
+  1. A truncated trace read (only first 40 events) hid that the cell ran the WHOLE
+     burst — always print the full exec-pc sequence for the cell.
+  2. The host OUTPUT PORT has NO FIFO (single-outstanding): a burst emitted faster than
+     the host drains COLLAPSES to one word at the port (you read only the last). This is
+     a host-drain artifact, NOT a chip bug — verify burst blocks by the DOWNSTREAM
+     CELL's data_arrival, or drain per-emit. `run_block_dut` reads one-per-trigger, so
+     it is NOT valid for rate-EXPANDING blocks (same class as the deferred 4-operand
+     INPUT-burst harness gap). A rate-expand verify harness is owed.

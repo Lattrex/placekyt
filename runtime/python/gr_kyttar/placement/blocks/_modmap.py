@@ -2,6 +2,8 @@
 BUILTIN_BLOCKS = {
     'GainBlock': 'gain_block',
     'MultiplyBlock': 'multiply_block',
+    'AddBlock': 'add_block',
+    'SubtractBlock': 'add_block',
     'FIRFilterBlock': 'fir_filter_block',
     'DCBlockerBlock': 'dc_blocker_block',
     'LowPassFilter': 'low_pass_filter_block',

@@ -932,3 +932,35 @@ they are larger than one autonomous step at the production-quality bar.
   (`ClassName -> module`) or discovery never finds it (`KeyError: unknown block
   type`). The catalog palette/hidden state then comes from the manifest (a block
   absent from `manifest.json` is resolvable but hidden).
+
+---
+
+## AddBlock / SubtractBlock — verified 2026-06-26
+
+- **Status:** PASS. GR `blocks.add_ff` / `blocks.sub_ff` (two-stream real
+  combiners). 39 shared tests: edge + 3 random + amplitude sweep + 3-seed
+  bit-exact (incl. saturation) + 4 saturation-corner + mutations. Single cell.
+- **Metric:** amplitude, delay=0, op_count=1 → tol 2 LSB; measured 1 LSB. Bit-exact
+  vs the SATURATING `process_reference_q15`.
+- **Saturate, don't wrap (the design call):** the Q15 ALU ADD/SUB WRAPS on overflow
+  (0.6+0.6 → -0.8, a sign flip) — unacceptable for a production combiner. ADD/SUB
+  set the **V** (signed-overflow) flag, so saturate with a `BR.V` to a clamp path.
+  KEY INSIGHT: on overflow the true result's sign is `sign(a)` for BOTH add
+  (same-sign operands) AND subtract (opposite-sign: a>0,b<0→+; a<0,b>0→−), so ONE
+  `SHR a,#15; ADD R0,satpos` (the shared `0x7FFF+signbit` rail) serves both ops —
+  the only difference between the two blocks is the ADD vs SUB mnemonic.
+- **Reused the FIR's two-path emit shape** (duplicated `{write}`/`{jump}` + a
+  terminal `HALT`, `BR.V` target on a REAL instruction `MOVE R0,Rasav`): a branch
+  whose target LABELS a `{write}`/`{jump}` placeholder is miscompiled into a stray
+  output JUMP. Save `a` BEFORE the ADD — `ADD R0,R1` overwrites R0 (=input a), so
+  the sign test needs a presaved copy.
+- **In-range only vs GR:** GR float add has no saturation and unbounded range; once
+  |a±b| ≥ 1 NEITHER wrap nor saturate can match a float > 1.0. So the GR-equivalence
+  stimulus stays in range (|a±b|<1, where saturate ≡ true sum ≡ GR); saturation is
+  proven against the saturating reference + direct corner tests, not against GR.
+- **Commutativity asymmetry in the mutation set:** add is commutative (no
+  swapped-stream test); subtract is NOT (a−b≠b−a) so swapped-streams IS a tested
+  corruption. Both share a WRONG-second-stream mutation for teeth.
+- **One module, two GRC blocks:** `add_block.py` defines `_TwoStreamAddSub` +
+  `AddBlock`/`SubtractBlock`; both map to the same module in `_modmap.py`. Distinct
+  classes keep GRC parity (add_ff and sub_ff are distinct GR blocks).

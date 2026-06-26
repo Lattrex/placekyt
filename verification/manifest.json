@@ -25,6 +25,24 @@
       "notes": "Verified vs GNU Radio blocks.multiply_ff (19 tests). The generic two-stream real product out[n]=a[n]*b[n] (AM detect, squaring, error nodes) -- distinct from GainBlock (multiply by a CONSTANT) and ComplexMixerBlock (multiply by an internally-generated complex exponential). Single cell, single MULQ: out=(a*b)>>15. multiply_ff takes NO params so the block has none (full GRC parity); the 'param sweep' is over input amplitude regimes. The two streams reuse the proven complex-burst fan-in (Costas xi/xq tap): each sample = WRITE a->R0, WRITE b->R1, JUMP; the verify harness carries them as one complex array (real=a, imag=b) via run_block_dut_complex(in_ports=('a','b'), words_per_sample=1), DUT product lands in the I channel. Two-tier: DUT vs GR multiply_ff (AMPLITUDE, single-MULQ floor ~1 LSB) AND DUT vs process_reference_q15 (EXACT, the wrapping Q15 MULQ). Q15 OVERFLOW: the lone overflow is the exact (-1.0)*(-1.0)=+1.0 corner where MULQ WRAPS to -1.0 (the datapath wraps, does not saturate) -- a dedicated test drives that corner and asserts DUT==wrapping reference; the GR-equivalence stimulus stays off the simultaneous full-scale-negative corner. Multiply is COMMUTATIVE so a swapped-stream mutation is not a corruption (not tested, documented); mutations inverted/wrong-second-stream/halved-magnitude/+1-delay/empty all FAIL the gate (INV-4). GOTCHA: a {write:NAME}/{jump:NAME} placeholder must be ALONE on its line (resolver _RE_WRITE matches ^\\s*\\{write:(\\w+)\\}\\s*$); a trailing inline comment leaves it unsubstituted and the assembler errors 'Unknown opcode {WRITE:OUT}'."
     },
     {
+      "kyttar_block": "AddBlock",
+      "grc_block": "blocks.add_ff",
+      "tier": 1,
+      "status": "done",
+      "metric": "amplitude",
+      "params": {},
+      "notes": "Verified vs GNU Radio blocks.add_ff (out=a+b of two real streams; 39 tests shared with SubtractBlock). Single cell: one ADD + a SATURATING clamp. add_ff has NO params (full GRC parity); the 'param sweep' is over in-range amplitude regimes. Two streams via the proven complex-burst fan-in (WRITE a->R0, WRITE b->R1, JUMP); verify harness run_block_dut_complex(in_ports=('a','b'), words_per_sample=1) carries them as one complex array (real=a, imag=b), product/sum in the I channel. PRODUCTION SATURATION (not wrap): the Q15 ALU ADD WRAPS on overflow (0.6+0.6 -> -0.8 sign flip), a footgun; this block instead SATURATES like the FIR/decimator/dc-blocker. Mechanism: ADD sets the V (signed-overflow) flag; on overflow the true result's sign == sign(a) (same-sign operands for add), so the rail is picked from a's sign bit via the shared 0x7FFF+signbit trick (+0x7FFF / -0x8000). Two-path structure (duplicated emit + terminal HALT, BR.V target on a REAL instruction) reuses the FIR's saturating-restore shape -- a branch onto a {write}/{jump} placeholder label is miscompiled to a stray output JUMP. Two-tier: DUT vs GR add_ff (AMPLITUDE, in-range |a+b|<1 where saturate==true sum, ~1 LSB) AND DUT vs process_reference_q15 (EXACT, the saturating add, incl. overflow corners). Saturation verified directly (out-of-range pins to +-full, no wrap). Add is COMMUTATIVE so a swapped-stream mutation is not a corruption (documented); mutations inverted/wrong-second-stream/+1-delay/empty all FAIL (INV-4). Shares add_block.py with SubtractBlock."
+    },
+    {
+      "kyttar_block": "SubtractBlock",
+      "grc_block": "blocks.sub_ff",
+      "tier": 1,
+      "status": "done",
+      "metric": "amplitude",
+      "params": {},
+      "notes": "Verified vs GNU Radio blocks.sub_ff (out=a-b of two real streams). Same single-cell SATURATING combiner as AddBlock (shares add_block.py / _TwoStreamAddSub), with SUB instead of ADD. For subtract, overflow occurs on OPPOSITE-sign operands and the true result's sign is STILL sign(a) (a>0,b<0 -> +; a<0,b>0 -> -), so the identical sign(a)-rail saturation applies. Two-tier verification identical to AddBlock. Subtract is NOT commutative (a-b != b-a) so a swapped-stream mutation IS a corruption and is tested (must FAIL), in addition to inverted/wrong-second-stream/+1-delay/empty. add_cc/sub_cc (complex, 4 external operands) deferred to Tier-2 -- the proven 2-operand fan-in cannot deliver four (see TIER1_BLOCK_BACKLOG deferred section)."
+    },
+    {
       "kyttar_block": "DCBlockerBlock",
       "grc_block": "filter.dc_blocker_ff",
       "tier": 1,

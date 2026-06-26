@@ -1,0 +1,20 @@
+{
+  "kyttar_block": "SubtractBlock",
+  "passed": true,
+  "metric": "amplitude",
+  "n_compared": 10,
+  "max_abs_err": 1,
+  "tolerance": 2,
+  "nmse_db": -88.91992052264615,
+  "correlation": 0.9999999995440318,
+  "bit_errors": 0,
+  "delay_used": 0,
+  "coverage": {
+    "edge": true,
+    "random": 3,
+    "amplitude_sweep": 4,
+    "bit_exact": true,
+    "saturation": true,
+    "mutation": true
+  }
+}

@@ -27,6 +27,9 @@ Squelch*  (*= present but Tier-2/verify-pending; not Tier-1 agent work).
    `blocks.multiply_ff` (manifest, 2026-06-26). `multiply_cc` deferred (below).
 2. **Add / Subtract (two-stream)** — `blocks.add_ff` / `add_cc` / `sub_ff`. Two
    inputs → sum/difference. Ubiquitous (combiners, error nodes).
+   **DONE (add_ff, sub_ff):** `AddBlock` / `SubtractBlock` — single cell, ADD/SUB +
+   saturating clamp, verified vs `blocks.add_ff` / `blocks.sub_ff` (manifest,
+   2026-06-26). `add_cc`/`sub_cc` deferred (below, same 4-operand reason as multiply_cc).
 3. **Complex → Float / Float → Complex** — `blocks.complex_to_float`,
    `float_to_complex`. The single most common type-conversion pair in any I/Q graph.
 4. **Complex → Mag / Mag² / Arg** — `blocks.complex_to_mag`, `complex_to_mag_squared`,
@@ -57,6 +60,12 @@ Squelch*  (*= present but Tier-2/verify-pending; not Tier-1 agent work).
   extension, i.e. human review — so it is NOT autonomous Tier-1. (The common
   multiply-by-a-complex-exponential case is already covered by ComplexMixerBlock;
   `multiply_const_cc` — complex × CONSTANT — is the planned tier-3 MultiplyConstComplex.)
+- **`blocks.add_cc` / `blocks.sub_cc` (two EXTERNAL complex streams)** — deferred
+  2026-06-26. Same blocker as multiply_cc: a complex combiner of two external
+  complex streams needs FOUR input operands per trigger (ai, aq, bi, bq); the
+  proven complex-burst fan-in delivers exactly two. The compute is trivial (two
+  saturating adds, the AddBlock datapath twice), so this is purely a 4-operand
+  burst-driver (harness) extension — human review, not autonomous Tier-1.
 
 ## Notes for the agent
 - Mirror the GRC block's params verbatim; derive the Q15 internals (the GRC-parity

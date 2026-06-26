@@ -97,6 +97,15 @@
       "notes": "Verified vs GNU Radio blocks.keep_one_in_n (keep 1 sample of every n, no filter; 26 tests). A pure pass-through gated by a modulo-n counter -- the DecimatorBlock's emit gate WITHOUT the FIR. Single cell. Param mirrors GR: n (keep factor). PHASE: GR keeps the LAST sample of each group of n (verified empirically: keep_one_in_n(3) of 0..11 -> 2,5,8,11 = phase n-1), so the up-counter emits when it reaches n then resets (XOR self), matching GR. EXACT pass-through (no Q15 arithmetic) -> bit-exact gate; emitted samples equal the input bit-for-bit. run_block_dut records None on dropped triggers so the kept stream is outputs[n-1::n]; the emit-phase contract (emit iff i%n==n-1) is asserted directly across n in {1..5}. Mutations (wrong n, wrong phase n-2, +1 delay, empty) all FAIL (INV-4). Counter is a persistent StateVar (init 0); the skip path is a bare HALT label (a REAL instruction, not a {write}/{jump} placeholder -- build-engine GOTO miscompile). repeat (the upsampling twin) and interleave/deinterleave deferred to Tier-2 (see TIER1_BLOCK_BACKLOG)."
     },
     {
+      "kyttar_block": "MovingAverageBlock",
+      "grc_block": "blocks.moving_average_ff",
+      "tier": 1,
+      "status": "done",
+      "metric": "amplitude",
+      "params": {"length": 4, "scale": 0.25},
+      "notes": "Verified vs GNU Radio blocks.moving_average_ff (out=scale*sum of last `length` samples; 18 tests). A moving average IS an FIR whose `length` taps are all equal to `scale`, so MovingAverageBlock SUBCLASSES the verified FIRFilterBlock with constant box taps (the LowPassFilter pattern) -- all Q15 datapath / multi-cell fold / COEFFICIENT-HEADROOM saturation inherited unchanged. Constant taps are symmetric so the reversed-tap convention is moot and group delay=0, aligned with GR's causal running sum. Params mirror GRC's Moving Average: length + scale (GR's max_iter is an output-buffer bound and vlen=1 -- neither affects the sample math, so neither is a Kyttar param). scale=1/length is a true average (Sum|tap|=1 -> S=0); a larger scale engages the inherited saturating headroom restore (S>0). Two-tier: DUT vs GR moving_average_ff (AMPLITUDE, headroom-aware q15_quant_floor(length,S)) AND DUT vs the inherited process_reference_q15 (EXACT). Coverage: edge + 3 random + length sweep {2,3,5,8,16} (true average) + bit-exact incl. S=1 headroom (3,0.5)/(6,0.3); mutations inverted/wrong-length/+1-delay/empty all FAIL (INV-4). KNOWN LIMIT (inherited FIR per-cell budget): a SINGLE-cell box with S>0 caps at ~3 taps -- a 4-tap box at scale 0.5 (4 taps + S=1 restore on one cell) raises at build; use scale<=1/length (S=0) or a longer/multi-cell length. Not a moving-average-specific limit."
+    },
+    {
       "kyttar_block": "DCBlockerBlock",
       "grc_block": "filter.dc_blocker_ff",
       "tier": 1,

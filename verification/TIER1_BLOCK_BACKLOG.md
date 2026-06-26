@@ -61,6 +61,8 @@ Squelch*  (*= present but Tier-2/verify-pending; not Tier-1 agent work).
    verified vs `blocks.keep_one_in_n` (manifest, 2026-06-26). `repeat` deferred (below).
 10. **Moving Average** — `blocks.moving_average_ff`. Box filter; a very common
     smoother (could also be a FIR-of-ones, but the GRC block is its own thing).
+    **DONE:** `MovingAverageBlock` — subclasses FIRFilterBlock with constant box
+    taps [scale]*length, verified vs `blocks.moving_average_ff` (manifest, 2026-06-26).
 11. **Complex → Real / Imag selectors** — `blocks.complex_to_real`,
     `complex_to_imag` (subset of #3 but separate GRC blocks people wire directly).
 

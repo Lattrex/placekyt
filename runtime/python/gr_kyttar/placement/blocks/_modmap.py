@@ -10,6 +10,7 @@ BUILTIN_BLOCKS = {
     'ConjugateBlock': 'conjugate_block',
     'AbsBlock': 'abs_block',
     'KeepOneInNBlock': 'keep_one_in_n_block',
+    'MovingAverageBlock': 'moving_average_block',
     'FIRFilterBlock': 'fir_filter_block',
     'DCBlockerBlock': 'dc_blocker_block',
     'LowPassFilter': 'low_pass_filter_block',

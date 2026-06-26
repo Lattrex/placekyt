@@ -1063,3 +1063,22 @@ they are larger than one autonomous step at the production-quality bar.
   only `got[-1]` per trigger, so multiple copies can't be counted → deferred.
 - **interleave/deinterleave deferred:** multi-rate + N-stream (topology-varying) +
   pure reorder — needs a multi-stream driver, not the single-rate harness.
+
+---
+
+## MovingAverageBlock — verified 2026-06-26
+
+- **Status:** PASS. GR `blocks.moving_average_ff`. 18 tests. SUBCLASSES
+  FIRFilterBlock with constant box taps `[scale]*length` (the LowPassFilter
+  pattern) — zero new datapath code, all Q15/fold/headroom machinery inherited.
+- **A moving average IS a constant-tap FIR:** `scale·Σx[n-k] = Σ(scale)·x[n-k]`.
+  Constant taps are symmetric → delay 0, aligned with GR's causal running sum, so
+  the comparison is delay=0 like the other symmetric-tap filters.
+- **Param mapping:** mirror GRC length + scale; GR's `max_iter` (output-buffer
+  bound) and `vlen` don't affect the sample math → not Kyttar params. `scale=1/length`
+  is the true average (Σ|tap|=1, S=0); larger scale engages the inherited saturating
+  headroom restore (S>0), checked against the bit-exact reference.
+- **Inherited single-cell budget edge:** a 4-tap box at scale 0.5 (4 taps + S=1
+  restore on ONE cell) exceeds the cell register budget and raises at build — a
+  FIRFilterBlock per-cell limit, not moving-average-specific. Pick scale≤1/length
+  (S=0) or a length that folds multi-cell. Documented in the test + manifest.

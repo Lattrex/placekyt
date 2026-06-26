@@ -430,7 +430,8 @@ class AppController(QObject):
                 continue
         return out
 
-    def import_grc(self, path, *, chip_type: str | None = None):
+    def import_grc(self, path, *, chip_type: str | None = None,
+                   name: str | None = None):
         """Import a GNURadio .grc flowgraph as the live placeKYT project (P4.2 —
         the GRC-first flow). Maps the Kyttar DSP blocks to placeKYT blocks +
         logical nets (source/sink → chip I/O ports). The caller then runs
@@ -447,6 +448,12 @@ class AppController(QObject):
         if not ct:
             types = list(self.chip_types().keys())
             ct = types[0] if types else "kyttar_10x12"
+        # PORTABLE REPLAY: a trace records the .grc's absolute path, which won't
+        # exist when the trace is replayed on another machine. If the given path is
+        # missing, fall back to locating a same-named .grc shipped with the repo
+        # (examples/ + the test fixtures) so a .kytrace replays anywhere. ``name``
+        # (recorded alongside the path) is the basename hint for that fallback.
+        path = self._resolve_grc_path(path, name)
         result = _import_grc(path, self.catalog, chip_type=ct)
         self.set_project(result.project)
         self.project_path = None
@@ -463,10 +470,36 @@ class AppController(QObject):
         # Record as a replayable trace op (set_project swapped the CommandManager
         # but kept the trace). import_grc replaces the project, so it must be the
         # FIRST op in any trace that starts from an imported flowgraph.
+        # Record BOTH the resolved path and the bare name: replay prefers the path
+        # but falls back to the name (via _resolve_grc_path) so a trace authored on
+        # one machine replays on another where the absolute path differs.
         self.trace.record_op(
-            "import_grc", {"path": str(path), "chip_type": ct},
+            "import_grc",
+            {"path": str(path), "name": Path(path).name, "chip_type": ct},
             f"Import GNURadio flowgraph {Path(path).name}")
         return result
+
+    def _resolve_grc_path(self, path, name: str | None = None):
+        """Return ``path`` if it exists; otherwise locate a same-named ``.grc`` in
+        the repo (so a trace's absolute path from another machine still resolves).
+        Searches ``examples/`` (recursively) and the test GRC fixtures dir. ``name``
+        (the basename a trace records alongside the path) is the search key when the
+        path is gone. Returns the original ``path`` unchanged if nothing matches
+        (import then raises a clear not-found, not a silent wrong-file)."""
+        import os
+        if os.path.exists(path):
+            return path
+        name = name or os.path.basename(str(path))
+        here = Path(__file__).resolve().parent          # .../placekyt/ui
+        pkg = here.parent                               # .../placekyt
+        repo = pkg.parent                               # repo root
+        roots = [repo / "examples", pkg / "tests" / "data" / "grc"]
+        for root in roots:
+            if not root.exists():
+                continue
+            for cand in root.rglob(name):
+                return str(cand)
+        return path
 
     def check_grc_file_drift(self):
         """Re-read the imported .grc and flag drift vs the placed design — the

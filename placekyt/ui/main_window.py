@@ -28,6 +28,24 @@ MIN_WIDTH = 1200
 MIN_HEIGHT = 800
 
 
+def _trace_name_for_filter(name: str, flt: str, base: str) -> tuple[str, str]:
+    """Pick the filename + extension for the trace-export filter the user chose.
+
+    The export dialog offers TWO formats — the structured ``.kytrace`` log and a
+    runnable ``.py`` replay script — and the typed filename's suffix must follow the
+    selected filter LIVE (Qt's static save dialog never swaps it, so choosing the
+    ``.py`` filter used to still save ``<name>.kytrace``). Returns
+    ``(new_name, ext)`` where ``ext`` includes the dot. Only a recognized trace
+    suffix is swapped — any other dotted name keeps its stem (so ``my.flow`` →
+    ``my.flow.kytrace`` is NOT mangled into ``my.kytrace``)."""
+    ext = ".py" if "*.py" in flt else ".kytrace"
+    stem = name or base
+    lower = stem.lower()
+    if lower.endswith((".py", ".kytrace")):       # swap a known trace suffix
+        stem = stem.rsplit(".", 1)[0]
+    return stem + ext, ext
+
+
 class MainWindow(QMainWindow):
     """The application main window."""
 
@@ -1348,15 +1366,38 @@ class MainWindow(QMainWindow):
         proj = getattr(self.controller.project, "metadata", None)
         base = (getattr(proj, "name", None) or "placekyt_trace").strip() or \
             "placekyt_trace"
-        default = os.path.join(os.path.expanduser("~"), f"{base}.kytrace")
-        path, sel = QFileDialog.getSaveFileName(
-            self, "Export Command Trace", default,
-            "Command trace (*.kytrace);;Replay script (*.py)")
-        if not path:
+
+        # A NON-static dialog so switching the filter LIVE rewrites the filename's
+        # suffix: pick "Replay script (*.py)" and the typed name becomes <name>.py,
+        # not <name>.kytrace. (The static getSaveFileName never swaps the suffix when
+        # the filter changes, so the .py export silently saved as .kytrace.)
+        kytrace_filter = "Command trace (*.kytrace)"
+        py_filter = "Replay script (*.py)"
+        dlg = QFileDialog(self, "Export Command Trace",
+                          os.path.expanduser("~"))
+        dlg.setAcceptMode(QFileDialog.AcceptSave)
+        dlg.setNameFilters([kytrace_filter, py_filter])
+        dlg.selectNameFilter(kytrace_filter)
+        dlg.setDefaultSuffix("kytrace")
+        dlg.selectFile(f"{base}.kytrace")
+
+        def _swap_suffix(flt):
+            cur = dlg.selectedFiles()
+            name = os.path.basename(cur[0]) if cur else f"{base}.kytrace"
+            new_name, ext = _trace_name_for_filter(name, flt, base)
+            dlg.setDefaultSuffix(ext.lstrip("."))
+            dlg.selectFile(new_name)
+
+        dlg.filterSelected.connect(_swap_suffix)
+        if dlg.exec() != QFileDialog.Accepted:
             return
-        # Append the extension from the chosen filter ONLY if the user didn't type
-        # a recognized one — and never double-append (the prior code turned
-        # 'x.ktrace' into 'x.ktrace.kytrace').
+        files = dlg.selectedFiles()
+        if not files:
+            return
+        path = files[0]
+        sel = dlg.selectedNameFilter()
+        # setDefaultSuffix handles the no-extension case, but guard anyway so the
+        # filter always wins for a recognized choice (and never double-append).
         if not path.lower().endswith((".py", ".kytrace")):
             ext = ".py" if "*.py" in (sel or "") else ".kytrace"
             path += ext

@@ -1,0 +1,18 @@
+{
+  "kyttar_block": "AGCBlock",
+  "passed": true,
+  "metric": "amplitude",
+  "n_compared": 300,
+  "max_abs_err": 40,
+  "tolerance": 80,
+  "nmse_db": -56.57170274072088,
+  "correlation": 0.9999996561724455,
+  "bit_errors": 0,
+  "delay_used": 0,
+  "coverage": {
+    "rate_sweep": 3,
+    "reference_sweep": 3,
+    "mutation": true,
+    "regime": "attenuating (gain<=1); amplification needs gain headroom"
+  }
+}

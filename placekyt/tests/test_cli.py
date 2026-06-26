@@ -30,7 +30,7 @@ blocks:
   - name: agc
     type: AGCBlock
     library: lattrex.official
-    params: {target: 0.7}
+    params: {reference: 0.7}
     placement:
       chip: 0
       cells:

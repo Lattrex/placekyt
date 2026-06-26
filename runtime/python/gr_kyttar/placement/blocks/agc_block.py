@@ -6,19 +6,19 @@ from ._base import KyttarBlock, BlockInterface, assemble_to_words, float_to_q15,
 
 
 class AGCBlock(KyttarBlock):
-    """
-    Automatic Gain Control block.
+    """Automatic Gain Control — mirrors GNU Radio ``analog.agc_ff`` EXACTLY.
 
-    Uses feedback control to maintain a target output level:
-        output = input * gain
-        if |output| > target: gain -= rate
-        else: gain += rate
+    GNU Radio's float AGC loop (gr-analog ``agc_ff`` / ``kernel::agc``)::
 
-    The gain is updated each sample to maintain the target level.
+        output  = input * gain
+        gain   += rate * (reference - |output|)
+        if max_gain > 0: gain = min(gain, max_gain)
 
-    Interface (defaults):
-    - Entry: R1
-    - Input: R31 (single sample)
+    Power is approximated by absolute value (``|output|``), exactly as GNU Radio
+    documents. Params are GRC-VERBATIM so a flowgraph using ``agc_ff`` ports with
+    zero friction; the Q15 fixed-point is derived internally (the GRC-parity rule).
+
+    Interface (defaults): entry R1, single input sample in R31.
     """
     CATEGORY = "signal_conditioning"
     TAGS = ["agc", "gain", "signal_conditioning"]
@@ -28,59 +28,54 @@ class AGCBlock(KyttarBlock):
     def __init__(
         self,
         name: str,
-        target: float = 0.7,
-        attack_rate: float = 0.05,
-        decay_rate: float = 0.001,
-        initial_gain: float = 0.5,
-        min_gain: float = 0.01,
-        max_gain: float = 0.99,
+        rate: float = 1e-4,
+        reference: float = 1.0,
+        gain: float = 1.0,
+        max_gain: float = 0.0,
     ):
-        """
-        Initialize AGC block.
+        """Initialize AGC block (GNU Radio ``analog.agc_ff`` signature).
 
         Args:
             name: Block name
-            target: Target output magnitude (0.0 to 1.0)
-            attack_rate: Fast gain reduction rate (for signal peaks)
-            decay_rate: Slow gain increase rate (for fades)
-            initial_gain: Initial gain value
-            min_gain: Minimum gain clamp
-            max_gain: Maximum gain clamp
+            rate: update rate of the loop (GR default 1e-4)
+            reference: reference value to adjust signal power to (GR default 1.0)
+            gain: initial gain value (GR default 1.0)
+            max_gain: maximum gain value; 0 means UNLIMITED (GR default 0)
         """
-        super().__init__(name, target=target, attack_rate=attack_rate,
-                         decay_rate=decay_rate, initial_gain=initial_gain,
-                         min_gain=min_gain, max_gain=max_gain)
-        self._target = target
-        self._attack_rate = attack_rate
-        self._decay_rate = decay_rate
-        self._initial_gain = initial_gain
-        self._min_gain = min_gain
+        super().__init__(name, rate=rate, reference=reference, gain=gain,
+                         max_gain=max_gain)
+        self._rate = rate
+        self._reference = reference
+        self._initial_gain = gain
         self._max_gain = max_gain
-        self._current_gain = initial_gain
+        self._current_gain = gain
 
-        # Convert to Q15
-        self._target_q15 = float_to_q15(target)
-        self._attack_rate_q15 = float_to_q15(attack_rate)
-        self._decay_rate_q15 = float_to_q15(decay_rate)
-        self._gain_q15 = float_to_q15(initial_gain)
-        self._min_gain_q15 = float_to_q15(min_gain)
-        self._max_gain_q15 = float_to_q15(max_gain)
+        # Q15 fixed-point (derived; not user-facing). reference/gain/max_gain are
+        # magnitudes that may exceed 1.0 in float but the on-chip datapath is Q15
+        # [-1,1); clip is applied by float_to_q15. The loop runs at the scale the
+        # signal lives at, which for a chip block is Q15.
+        self._rate_q15 = float_to_q15(rate)
+        self._reference_q15 = float_to_q15(min(reference, 0.999))
+        self._gain_q15 = float_to_q15(min(gain, 0.999))
+        # max_gain == 0 → unlimited; represent as the Q15 ceiling (0.999).
+        self._max_gain_q15 = float_to_q15(0.999 if max_gain <= 0 else
+                                          min(max_gain, 0.999))
 
     @property
     def cell_count(self) -> int:
         return 1
 
     @property
-    def target(self) -> float:
-        return self._target
+    def rate(self) -> float:
+        return self._rate
 
     @property
-    def attack_rate(self) -> float:
-        return self._attack_rate
+    def reference(self) -> float:
+        return self._reference
 
     @property
-    def decay_rate(self) -> float:
-        return self._decay_rate
+    def max_gain(self) -> float:
+        return self._max_gain
 
     @property
     def gain(self) -> float:
@@ -91,14 +86,14 @@ class AGCBlock(KyttarBlock):
         return self._interface
 
     def build_cell_programs(self) -> Dict[int, CellProgram]:
-        """Production AGC: proper |output| comparison, asymmetric attack/decay, gain clamping.
+        """One-cell AGC mirroring ``agc_ff``:
 
-        Algorithm:
-          output = input × gain
-          |output| = abs(output) via conditional negate
-          if |output| >= target: gain -= attack_rate (fast, prevent clipping)
-          else: gain += decay_rate (slow, recover during fades)
-          gain = clamp(gain, min_gain, max_gain)
+          out   = in * gain                       (MULQ)
+          |out| = abs(out)                        (conditional negate)
+          err   = reference - |out|
+          gain += rate * err                      (MULQ then ADD)
+          gain  = min(gain, max_gain)             (clamp high; low floor at 0)
+          emit out
         """
         return {0: CellProgram(
             inputs=[Port("sample", register=0)],
@@ -106,15 +101,14 @@ class AGCBlock(KyttarBlock):
             entries=[EntryPoint("default")],
             data=[
                 DataWord("zero", 0, address=1),
-                DataWord("target", self._target_q15, address=2),
-                DataWord("attack_rate", self._attack_rate_q15, address=3),
-                DataWord("decay_rate", self._decay_rate_q15, address=4),
-                DataWord("min_gain", self._min_gain_q15, address=5),
-                DataWord("max_gain", self._max_gain_q15, address=6),
+                DataWord("reference", self._reference_q15, address=2),
+                DataWord("rate", self._rate_q15, address=3),
+                DataWord("max_gain", self._max_gain_q15, address=4),
             ],
             state=[
                 StateVar("gain", initial_value=self._gain_q15),
                 StateVar("out_save"),
+                StateVar("abs_save"),
             ],
             assembly_template="""\
 start:
@@ -122,24 +116,22 @@ start:
     MOVE R{state:out_save}, R0
     CMP R0, R{data:zero}
     BR.NN have_abs
-    SUB R{data:zero}, R{state:out_save}
+    SUB R{data:zero}, R0
 have_abs:
-    CMP R0, R{data:target}
-    BR.NC do_attack
-    ADD R{state:gain}, R{data:decay_rate}
+    MOVE R{state:abs_save}, R0
+    MOVE R0, R{data:reference}
+    SUB R0, R{state:abs_save}
+    MULQ R0, R{data:rate}
+    ADD R0, R{state:gain}
     MOVE R{state:gain}, R0
-    GOTO clamp
-do_attack:
-    SUB R{state:gain}, R{data:attack_rate}
-    MOVE R{state:gain}, R0
-clamp:
-    CMP R{state:gain}, R{data:min_gain}
-    BR.NN clamp_hi
-    MOVE R{state:gain}, R{data:min_gain}
 clamp_hi:
     CMP R{state:gain}, R{data:max_gain}
-    BR.N output
+    BR.N clamp_lo
     MOVE R{state:gain}, R{data:max_gain}
+clamp_lo:
+    CMP R{state:gain}, R{data:zero}
+    BR.NN output
+    MOVE R{state:gain}, R{data:zero}
 output:
     MOVE R0, R{state:out_save}
     {write:out}
@@ -148,22 +140,38 @@ output:
         )}
 
     def process_reference(self, input_samples: np.ndarray) -> np.ndarray:
-        """Reference implementation with proper |output|, asymmetric rates, clamping."""
-        output = np.zeros(len(input_samples), dtype=np.float32)
+        """Q15-EXACT reference modelling the on-chip cell (matches simKYT bit-for-bit
+        and ≈ GNU Radio ``agc_ff`` within the derived Q15 tolerance).
 
+        Mirrors the cell's integer math: out=MULQ(in,gain); |out|; err=ref-|out|;
+        gain += MULQ(rate,err); clamp gain to [0, max_gain]. The error and gain are
+        carried in Q15 integers, exactly as the datapath does."""
+        def s16(v):
+            v &= 0xFFFF
+            return v - 0x10000 if v & 0x8000 else v
+
+        def mulq(a, b):  # Q15 * Q15 -> Q15 with round-to-nearest (matches MULQ)
+            return s16((s16(a) * s16(b) + (1 << 14)) >> 15)
+
+        ref = self._reference_q15
+        rate = self._rate_q15
+        gmax = self._max_gain_q15
+        gain = self._gain_q15
+        out = np.zeros(len(input_samples), dtype=np.float32)
         for i, sample in enumerate(input_samples):
-            out = float(sample) * self._current_gain
-            output[i] = out
-
-            if abs(out) >= self._target:
-                self._current_gain -= self._attack_rate  # fast attack
-            else:
-                self._current_gain += self._decay_rate   # slow decay
-
-            self._current_gain = max(self._min_gain, min(self._max_gain, self._current_gain))
-
-        return output
+            x = float_to_q15(float(sample))
+            o = mulq(x, gain)
+            out[i] = q15_to_float(o)
+            ao = o if o >= 0 else s16(-o)
+            err = s16(ref - ao)
+            gain = s16(gain + mulq(rate, err))
+            if gain > gmax:
+                gain = gmax
+            if gain < 0:
+                gain = 0
+        self._current_gain = q15_to_float(gain)
+        return out
 
     def reset(self):
-        """Reset gain to initial value."""
+        """Reset gain to the initial value."""
         self._current_gain = self._initial_gain

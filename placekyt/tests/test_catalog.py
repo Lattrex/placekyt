@@ -87,11 +87,12 @@ class TestMetadata:
     def test_agc_params(self, catalog):
         agc = catalog.get("AGCBlock")
         names = {p.name for p in agc.params}
-        assert {"target", "attack_rate", "decay_rate"} <= names
-        target = agc.param("target")
-        assert target.default == 0.7
-        assert target.type_name == "float"
-        assert not target.required
+        # GRC-verbatim params (analog.agc_ff): rate, reference, gain, max_gain.
+        assert {"rate", "reference", "gain", "max_gain"} <= names
+        reference = agc.param("reference")
+        assert reference.default == 1.0
+        assert reference.type_name == "float"
+        assert not reference.required
 
     def test_agc_interface(self, catalog):
         agc = catalog.get("AGCBlock")
@@ -106,7 +107,7 @@ class TestMetadata:
     def test_default_params(self, catalog):
         agc = catalog.get("AGCBlock")
         dp = agc.default_params()
-        assert dp["target"] == 0.7
+        assert dp["reference"] == 1.0
         assert "name" not in dp
 
 
@@ -144,7 +145,7 @@ class TestSearch:
 
 class TestInstantiation:
     def test_instantiate_with_params(self, catalog):
-        block = catalog.instantiate("AGCBlock", "agc1", {"target": 0.5})
+        block = catalog.instantiate("AGCBlock", "agc1", {"reference": 0.5})
         assert block.name == "agc1"
         assert type(block).__name__ == "AGCBlock"
         assert block.cell_count == 1

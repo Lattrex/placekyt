@@ -42,7 +42,7 @@ def _agc_project() -> Project:
             "agc",
             "AGCBlock",
             library="lattrex.official",
-            params={"target": 0.7},
+            params={"reference": 0.7},
             placement=Placement(0, [PlacedCell(0, 0, 0, Face.EAST)]),
         )
     ]

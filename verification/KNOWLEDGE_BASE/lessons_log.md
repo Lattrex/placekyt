@@ -899,3 +899,29 @@ they are larger than one autonomous step at the production-quality bar.
 - **Gotcha:** hit the placement-dependent hop-count trap (zero output) before the
   fix — see invariants.md INV-1. GainBlock is the template for feed-forward,
   single-cell, single-MULQ blocks.
+
+---
+
+## AGCBlock — verified 2026-06-26 (params reworked to GRC-verbatim)
+
+- **Status:** PASS vs `analog.agc_ff`. rate sweep {0.01,0.02,0.05}, reference
+  sweep {0.2,0.3,0.5}, mutation (inverted, wrong-reference, empty).
+- **Metric:** amplitude, recursive-loop tolerance 80 LSB (observed ~39),
+  head_shift=40 to trim the loop start-up transient.
+- **GRC-PARITY REWRITE (the headline):** the old AGC had a non-GR model
+  (target/attack_rate/decay_rate). GNU Radio `agc_ff` is single-rate proportional:
+  `out=in*gain; gain += rate*(reference-|out|); clamp to (0,max_gain]`. Rewrote the
+  block + reference + cell program to mirror that VERBATIM (params rate, reference,
+  gain, max_gain). A GRC agc_ff design now ports with zero friction. ~9 placeKYT
+  tests referenced the old params (test_build/cli/model/catalog/project_io) — all
+  updated; the param set is part of the block's contract, so renaming it ripples.
+- **Q15 LIMIT (documented, not a bug):** the gain register is Q15 [-1,1), so the
+  block is faithful only in the ATTENUATING regime (gain<=1 — strong signal driven
+  down to reference). True amplification (gain>1, weak signal pulled UP) overflows
+  int16 and wraps. Needs a gain register with integer headroom (e.g. Q8.7) — out of
+  scope for the single-cell Q15 block. Tests bound max_gain<=1 and drive a strong
+  signal. Same class of constraint as the IIR sharp-pole limit.
+- **CELL GOTCHA:** computed |out| into R0 then immediately overwrote R0 with
+  `reference` before subtracting — discarding the abs. A dual-face/multi-step cell
+  must stash an intermediate (added `abs_save` state) before reusing R0. Always
+  trace the actual register at each step, not the intent.

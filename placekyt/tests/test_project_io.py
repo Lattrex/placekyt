@@ -67,8 +67,8 @@ blocks:
     type: AGCBlock
     library: lattrex.dsp
     params:
-      target: 0.35
-      attack_rate: 0.05
+      reference: 0.35
+      rate: 0.01
     placement:
       chip: 0
       cells:
@@ -112,7 +112,7 @@ class TestProjectLoad:
     def test_blocks_and_params(self):
         p = project_from_str(SAMPLE_KYT)
         assert {b.name for b in p.blocks} == {"agc", "dfe"}
-        assert p.block("agc").params["target"] == 0.35
+        assert p.block("agc").params["reference"] == 0.35
         assert p.block("agc").is_placed
         assert not p.block("dfe").is_placed  # no placement key
 
@@ -179,7 +179,7 @@ class TestRoundTrip:
         save_project(p, fp)
         p2 = load_project(fp)
         assert p2.metadata.name == p.metadata.name
-        assert p2.block("agc").params["target"] == 0.35
+        assert p2.block("agc").params["reference"] == 0.35
         assert p2.connection("dfe_to_chip1").modulation is Modulation.QPSK
         # panels + panel connections round-trip
         assert p2.panel(0).label == "Symbol Table"

@@ -116,9 +116,9 @@
       "kyttar_block": "AGCBlock",
       "grc_block": "analog.agc_ff",
       "tier": 2,
-      "status": "planned",
+      "status": "done",
       "metric": "amplitude",
-      "notes": "Stateful gain loop; trim settling transient, behavioral metric."
+      "notes": "GRC-verbatim params (rate, reference, gain, max_gain); update law gain += rate*(reference-|out|). Verified vs analog.agc_ff within ~39 LSB in the ATTENUATING regime (gain<=1, Q15 range). Amplification (gain>1) needs a gain register with integer headroom \u2014 out of scope for the single-cell Q15 block."
     },
     {
       "kyttar_block": "ComplexCostasLoopBlock",

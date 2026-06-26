@@ -555,7 +555,7 @@ class TestProject:
             ChipInstance(1, "RX Back-End", 720.0, 0.0),
         ]
         p.blocks = [
-            Block("agc", "AGCBlock", library="lattrex.dsp", params={"target": 0.7}),
+            Block("agc", "AGCBlock", library="lattrex.dsp", params={"reference": 0.7}),
             Block("dc", "DCBlockerBlock", library="lattrex.dsp",
                   params={"length": 2, "long_form": False}),
         ]

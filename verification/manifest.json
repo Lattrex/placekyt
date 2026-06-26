@@ -16,6 +16,17 @@
       "notes": "Reference example; fully documented. Single MULQ."
     },
     {
+      "kyttar_block": "UpsamplerBlock",
+      "grc_block": "filter.interp_fir_filter_fff",
+      "tier": 1,
+      "status": "done",
+      "metric": "exact",
+      "params": {
+        "sps": 4
+      },
+      "notes": "Zero-stuffing rate expander (front half of an interpolating pulse-shaper). Verified 1:1 vs interp_fir_filter_fff(sps,[1.0]): one input -> sample + sps-1 zeros, kept sample pass-through, zeros exact -> bit-exact in Q15. RATE-EXPANDING: verified with run_block_dut_rate (drains the full per-trigger burst; plain run_block_dut keeps only the last word). 9 tests (sps in {2,4,8}, full-scale edges, repeat-instead-of-zero + wrong-rate mutations). Single cell, unrolled WRITE/JUMP burst then HALT (JUMP does NOT halt the issuer)."
+    },
+    {
       "kyttar_block": "MultiplyBlock",
       "grc_block": "blocks.multiply_ff",
       "tier": 1,

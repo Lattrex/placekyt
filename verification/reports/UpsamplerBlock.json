@@ -1,0 +1,23 @@
+{
+  "kyttar_block": "UpsamplerBlock",
+  "passed": true,
+  "metric": "exact",
+  "n_compared": 24,
+  "max_abs_err": 0,
+  "tolerance": 0,
+  "nmse_db": null,
+  "correlation": 1.0,
+  "bit_errors": 0,
+  "delay_used": 0,
+  "coverage": {
+    "sps_sweep": [
+      2,
+      4,
+      8
+    ],
+    "patterns": "ramp, full-scale edges, zero",
+    "mutation": true,
+    "gr_equiv": "filter.interp_fir_filter_fff(sps, [1.0])",
+    "note": "rate-EXPANDING (run_block_dut_rate); zero-stuff exact in Q15"
+  }
+}

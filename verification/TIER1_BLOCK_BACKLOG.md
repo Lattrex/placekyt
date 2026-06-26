@@ -36,6 +36,9 @@ Squelch*  (*= present but Tier-2/verify-pending; not Tier-1 agent work).
    I/Q passthrough, EXACT vs GR (manifest, 2026-06-26).
 4. **Complex → Mag / Mag² / Arg** — `blocks.complex_to_mag`, `complex_to_mag_squared`,
    `complex_to_arg`. Envelope/power/phase — used in every detector & AGC.
+   **DONE (mag_squared):** `ComplexToMagSquaredBlock` — single cell (MULQ+MACQ,
+   saturating), verified vs `blocks.complex_to_mag_squared` (manifest, 2026-06-26).
+   `complex_to_mag` (sqrt) and `complex_to_arg` (atan2) deferred (below).
 5. **Conjugate** — `blocks.conjugate_cc`. Trivial (negate Q); needed for correlators
    and conjugate-multiply.
 6. **Float → Short / Short → Float / scaling** — `blocks.float_to_short`,
@@ -68,6 +71,20 @@ Squelch*  (*= present but Tier-2/verify-pending; not Tier-1 agent work).
   proven complex-burst fan-in delivers exactly two. The compute is trivial (two
   saturating adds, the AddBlock datapath twice), so this is purely a 4-operand
   burst-driver (harness) extension — human review, not autonomous Tier-1.
+
+- **`blocks.complex_to_mag` (|z| = √(re²+im²))** — deferred 2026-06-26. Needs a
+  Q15 square root accurate to ~1 LSB to match GR's float sqrt within the gate. No
+  sqrt/CORDIC machinery exists in the codebase; the magnitude estimators that ARE
+  single-cell (alpha-max-plus-beta-min) are APPROXIMATIONS (several-% error) that
+  fail a sqrt-exact gate. A real Q15 sqrt (reciprocal-sqrt Newton with a table seed,
+  or CORDIC vectoring) is a new multi-step algorithm needing its own design +
+  verification — human review, not autonomous single-cell Tier-1.
+- **`blocks.complex_to_arg` (atan2(im, re))** — deferred 2026-06-26. Needs a
+  full-range four-quadrant arctangent. No atan/CORDIC machinery exists (the NCO is a
+  FORWARD sin/cos table; arg is its inverse). A table-atan needs a divide (im/re)
+  the ISA lacks; CORDIC vectoring needs ~12 iterations (multi-cell). New algorithm,
+  human review — Tier-2. (Closely related to the planned tier-3 QuadratureDemod,
+  which is also atan-based; build the shared CORDIC once for both.)
 
 ## Notes for the agent
 - Mirror the GRC block's params verbatim; derive the Q15 internals (the GRC-parity

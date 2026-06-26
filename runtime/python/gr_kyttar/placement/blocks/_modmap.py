@@ -6,6 +6,7 @@ BUILTIN_BLOCKS = {
     'SubtractBlock': 'add_block',
     'FloatToComplexBlock': 'complex_float_block',
     'ComplexToFloatBlock': 'complex_float_block',
+    'ComplexToMagSquaredBlock': 'complex_mag_block',
     'FIRFilterBlock': 'fir_filter_block',
     'DCBlockerBlock': 'dc_blocker_block',
     'LowPassFilter': 'low_pass_filter_block',

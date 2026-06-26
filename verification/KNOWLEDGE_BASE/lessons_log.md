@@ -987,3 +987,28 @@ they are larger than one autonomous step at the production-quality bar.
 - **Identity makes EXACT trivially correct:** the harness `_to_q15` and the
   comparator `_saturate_ref_q15` are the same round-and-clamp on the same float, so
   DUT == ref bit-for-bit; EXACT (not AMPLITUDE-with-tol) gives the most teeth.
+
+---
+
+## ComplexToMagSquaredBlock — verified 2026-06-26
+
+- **Status:** PASS. GR `blocks.complex_to_mag_squared` (|z|²=re²+im²). 21 tests,
+  err 2 LSB / tol 3 (op_count=2). Single cell: `MULQ re,re` + `MACQ im,im`.
+- **One-sided saturation is cheaper:** power is ALWAYS ≥ 0, so an overflow (|z|≥1,
+  range [0,2) vs Q15 [0,1)) can only push the 16-bit accumulator into the
+  negative-looking half (bit15 set). Detect with a single `BR.N _sat` → `MOVE R0,
+  0x7FFF`. No sign-rail / `0x7FFF+signbit` math (that's only needed when overflow
+  can go either way, as in add/sub). Max sum 32767+32767=65534 < 65536 so it can't
+  double-wrap back into the positive half — `BR.N` is exact.
+- **Symmetry trims the mutation set:** re²+im² is symmetric in re/im, so a swapped
+  channel is NOT a corruption (don't test it). Teeth from inverted (power is ≥0),
+  halved, wrong-second-stream, +1-delay, empty.
+- **In-range vs GR, full-range vs the reference:** GR float power is unbounded;
+  keep the GR-equivalence stimulus inside the unit circle (|z|<1, amp≤0.65) where
+  the result is representable, and exercise saturation against the saturating
+  reference + direct corner tests. The ~2 LSB vs GR is MULQ/MACQ truncation (floor)
+  vs GR's rounded float square.
+- **complex_to_mag (sqrt) + complex_to_arg (atan2) DEFERRED:** no sqrt/atan/CORDIC
+  exists in the tree; single-cell magnitude estimators are approximations that fail
+  a sqrt-exact gate, and atan needs a divide (no DIV) or a multi-cell CORDIC. Both
+  are new algorithms → Tier-2 (build the CORDIC once, shared with QuadratureDemod).

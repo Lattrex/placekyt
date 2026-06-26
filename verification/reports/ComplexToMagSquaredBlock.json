@@ -1,0 +1,20 @@
+{
+  "kyttar_block": "ComplexToMagSquaredBlock",
+  "passed": true,
+  "metric": "amplitude",
+  "n_compared": 8,
+  "max_abs_err": 2,
+  "tolerance": 3,
+  "nmse_db": -83.27489714381332,
+  "correlation": 0.9999999950214205,
+  "bit_errors": 0,
+  "delay_used": 0,
+  "coverage": {
+    "edge": true,
+    "random": 3,
+    "amplitude_sweep": 4,
+    "bit_exact": true,
+    "saturation": true,
+    "mutation": true
+  }
+}

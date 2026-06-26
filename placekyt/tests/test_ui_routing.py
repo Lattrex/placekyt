@@ -142,6 +142,27 @@ class TestDragTraceRoute:
             assert abs(ax - bx) + abs(ay - by) == 1
         assert pts[0] == (1, 1) and pts[-1] == (3, 2)
 
+    def test_drag_onto_port_completes_the_route(self, window):
+        """Dragging a route onto a chip PORT completes it there — a port is a valid
+        drag endpoint (the drag handler walks to the port's edge cell, then calls
+        complete_route_to_port). x16_in is the port at the array edge."""
+        c = window.canvas
+        ctrl = window.controller
+        port = next(p for p in c.port_items() if p.name == "x16_in")
+        edge = c._port_cell("x16_in")
+        # Start a route at the port's neighbour and "drag" onto the port (the
+        # gesture the mouseMove handler performs: extend to the edge, complete).
+        c.start_route("gain", 0, 1, 1)
+        c.extend_route_to(*edge)
+        assert c.complete_route_to_port("x16_in")
+        _pump()
+        # The route completed: tool back to SELECT and a connection to the port exists.
+        assert c.tool is Tool.SELECT
+        assert any(
+            isinstance(conn.target, ChipPortEndpoint) and conn.target.port == "x16_in"
+            or isinstance(conn.source, ChipPortEndpoint) and conn.source.port == "x16_in"
+            for conn in ctrl.project.connections)
+
     def test_drag_stops_short_at_a_block(self, window):
         c = window.canvas
         c.start_route("gain", 0, 1, 1)

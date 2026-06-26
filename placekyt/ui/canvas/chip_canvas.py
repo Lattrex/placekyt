@@ -1643,7 +1643,30 @@ class ChipCanvas(QGraphicsView):
         # still adds one waypoint (mousePressEvent); this just lets a held drag
         # lay down the whole path in one gesture.
         if self._tool is Tool.ROUTE_DRAW and (event.buttons() & Qt.LeftButton):
-            pt = self.mapToScene(event.position().toPoint())
+            view_pt = event.position().toPoint()
+            # Drag ONTO a chip PORT completes the route there (the port marker sits
+            # ON TOP of its edge cell, so _which_chip_at would only see the cell —
+            # check the PortItem first). Only the port ITSELF is a valid endpoint:
+            # dragging onto the cell just BEFORE it keeps drawing (so the user can
+            # route up to a port without prematurely finishing). Mirrors the click
+            # completion in mousePressEvent; skips the route's own SOURCE port.
+            clicked = self.itemAt(view_pt)
+            src = self._route_source
+            is_source_port = (
+                isinstance(clicked, PortItem)
+                and isinstance(src, tuple) and len(src) == 3 and src[0] == "port"
+                and clicked.chip_id == src[1] and clicked.name == src[2])
+            if isinstance(clicked, PortItem) \
+                    and clicked.chip_id == self._route_chip \
+                    and not is_source_port:
+                # Walk to the port's edge cell, then complete onto the port.
+                edge = self._port_cell(clicked.name)
+                if edge is not None:
+                    self.extend_route_to(*edge)  # no-op if already there/adjacent
+                self.complete_route_to_port(clicked.name)
+                event.accept()
+                return
+            pt = self.mapToScene(view_pt)
             hit = self._which_chip_at(pt.x(), pt.y())
             if hit is not None and hit[0].id == self._route_chip:
                 _chip, _ct, cx, cy = hit
@@ -1872,6 +1895,16 @@ class ChipCanvas(QGraphicsView):
             menu.addAction(
                 "Delete Route",
                 lambda: self.delete_connection_requested.emit(item.connection_name))
+            menu.exec(event.globalPos())
+            return
+        # A chip PORT → start drawing a route FROM it (a port is a valid route
+        # endpoint; mirrors the W-key start). Drag the path, then drop onto the
+        # destination block cell or another port to finish.
+        if isinstance(item, PortItem):
+            menu = QMenu(self)
+            menu.addAction(
+                "Route from here…",
+                lambda: self.start_route_from_port(item.chip_id, item.name))
             menu.exec(event.globalPos())
             return
         # An SRAM panel → mirror / delete.

@@ -1028,3 +1028,20 @@ they are larger than one autonomous step at the production-quality bar.
   So the key negative test passes im through UN-negated and asserts the gate FAILS
   — it proves the negate actually happened. (Swapped-channels / +1-delay / empty
   round out the set.)
+
+---
+
+## AbsBlock — verified 2026-06-26
+
+- **Status:** PASS. GR `blocks.abs_ff` (|in|). 9 tests, 0 LSB vs GR. Single cell,
+  single real input (`run_block_dut`, not the complex driver).
+- **Reused the AGC/QAM16 abs idiom:** `CMP xs,0; BR.NN _emit; SUB 0,xs; MOVE xs,R0;
+  _emit: MOVE R0,xs`. Branch target `_emit` on a REAL instruction (not the `{write}`
+  placeholder). −1.0 (0x8000) is the one abs-wrap corner (|−1.0|→−1.0), modeled in
+  the reference, kept out of the GR stimulus.
+- **#7 housekeeping:** the backlog "negate" is just `GainBlock(gain=-1)` — no new
+  block. `analog.rms_cf` needs the deferred sqrt + a stateful averager → Tier-2.
+- **#6 float_to_short/short_to_float resolved as NOT a chip block:** the bus is
+  uniformly 16-bit, so a Q15 "float" and an int16 "short" are the same bits; the
+  only on-chip op is the constant scale = GainBlock. Recorded in the backlog
+  deferred section rather than building a redundant block.

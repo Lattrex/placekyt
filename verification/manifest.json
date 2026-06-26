@@ -79,6 +79,15 @@
       "notes": "Verified vs GNU Radio blocks.conjugate_cc (out=conj(in)=re-j*im; 11 tests). The correlator / conjugate-multiply staple. Single cell: pass re through, negate im (0-im via SUB), emit the two words; words_per_sample=2. No params (full GRC parity). EXACT gate (0 LSB vs GR on both channels) -- pure data movement + one negate. Q15 corner: the only imag whose negate overflows is exactly -1.0 (0x8000): -(-1.0)=+1.0 is unrepresentable so SUB WRAPS to 0x8000 (the bit-exact reference models the wrap; a dedicated test pins it). GR-equivalence stimulus stays off im=-1.0 so the conjugate is exact. Key mutation (teeth): a NOT-conjugated DUT (im passed through un-negated) FAILS -- proves the block actually conjugates, not echoes; plus swapped-channels/+1-delay/empty all FAIL (INV-4)."
     },
     {
+      "kyttar_block": "AbsBlock",
+      "grc_block": "blocks.abs_ff",
+      "tier": 1,
+      "status": "done",
+      "metric": "amplitude",
+      "params": {},
+      "notes": "Verified vs GNU Radio blocks.abs_ff (out=|in|; 9 tests). Single cell, one conditional negate (CMP vs 0, then 0-in if negative -- the AGC/QAM16-slicer abs idiom; BR.NN target on a REAL instruction). Single real input via run_block_dut, single real output. No params (full GRC parity). Result is EXACT (0 LSB vs GR) except the lone in=-1.0 (0x8000) corner: |-1.0|=+1.0 unrepresentable so the negate WRAPS to 0x8000=-1.0 -- the bit-exact reference models the wrap (a dedicated test pins it) and the GR-equivalence stimulus stays off it. Key mutation (teeth): a NON-rectified DUT (a negative passed through) FAILS, proving the block takes the magnitude; plus +1-delay/empty FAIL (INV-4). NOTE the backlog #7 'negate' (unary sign flip) is GainBlock(gain=-1) -- already covered, not a separate block; analog.rms_cf is deferred to Tier-2 (needs the deferred Q15 sqrt + a stateful averager)."
+    },
+    {
       "kyttar_block": "DCBlockerBlock",
       "grc_block": "filter.dc_blocker_ff",
       "tier": 1,

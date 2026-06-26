@@ -8,6 +8,7 @@ BUILTIN_BLOCKS = {
     'ComplexToFloatBlock': 'complex_float_block',
     'ComplexToMagSquaredBlock': 'complex_mag_block',
     'ConjugateBlock': 'conjugate_block',
+    'AbsBlock': 'abs_block',
     'FIRFilterBlock': 'fir_filter_block',
     'DCBlockerBlock': 'dc_blocker_block',
     'LowPassFilter': 'low_pass_filter_block',

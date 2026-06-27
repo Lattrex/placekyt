@@ -51,20 +51,41 @@ class IQUpconvertBlock(KyttarBlock):
         "phase", "sin_fold", "cos_fold", "table_sin", "table_cos", "upmix",
     ]
 
-    def __init__(self, name: str, freq_word: int = 4096):
+    def __init__(self, name: str, sample_rate: float = 32000.0,
+                 frequency: float = 2000.0):
         """
         Args:
             name: Block name.
-            freq_word: NCO phase increment per sample (0-65535); the carrier is
-                ``(freq_word / 65536) * sample_rate``.
+            sample_rate: sample rate in Hz (GR sig_source ``sampling_freq``).
+            frequency: carrier frequency in Hz (GR sig_source ``frequency``). The
+                16-bit NCO phase increment is derived internally:
+                ``freq_word = round(frequency/sample_rate · 65536)``.
+
+        Parameters mirror GR's mixing **Signal Source** in DSP units — NOT the raw
+        hardware ``freq_word`` (the sibling NCO/ComplexMixer expose Hz the same
+        way; the GR equivalent is ``multiply_cc(baseband, sig_source_c(samp_rate,
+        COS, frequency, 1, 0, ph0)) -> complex_to_real`` with
+        ``ph0 = 2π·frequency/sample_rate`` for the increment-before-emit NCO).
         """
-        super().__init__(name, freq_word=freq_word)
-        self._freq_word = freq_word & 0xFFFF
+        super().__init__(name, sample_rate=sample_rate, frequency=frequency)
+        self._sample_rate = float(sample_rate)
+        self._frequency = float(frequency)
+        self._freq_word = round(self._frequency / self._sample_rate * 65536) & 0xFFFF
         self._phase = 0  # reference-model state
 
     @property
     def cell_count(self) -> int:
         return 6
+
+    @property
+    def frequency(self) -> float:
+        """Carrier frequency in Hz (as requested)."""
+        return self._frequency
+
+    @property
+    def freq_word(self) -> int:
+        """The derived 16-bit NCO phase increment per sample."""
+        return self._freq_word
 
     @property
     def interface(self) -> BlockInterface:

@@ -30,12 +30,13 @@
       "kyttar_block": "IQUpconvertBlock",
       "grc_block": "blocks.multiply_cc",
       "tier": 2,
-      "status": "in_progress",
+      "status": "done",
       "metric": "amplitude",
       "params": {
-        "freq_word": 4096
+        "sample_rate": 32000.0,
+        "frequency": 2000.0
       },
-      "notes": "PARITY-GAP: exposes hardware-internal freq_word instead of GR frequency+sample_rate; missing amplitude/phase. Siblings NCO/ComplexMixer already derive freq_word from Hz -> no excuse. Must expose real-world params."
+      "notes": "Now takes GR real-world params sample_rate + frequency (Hz); derives the 16-bit freq_word internally (freq_word=round(freq/samp*65536)) \u2014 was exposing the raw hardware freq_word proxy. GR equivalent = multiply_cc(baseband, sig_source_c(samp,COS,freq,1,0,ph0)) -> complex_to_real, ph0=2pi*freq/samp (increment-before-emit). 1 LSB vs GR, delay 0. 11 verify + 25 build/catalog tests. Q15 overflow corner (|I|+|Q|>1 WRAPS) verified vs own ref. Migrated the build/catalog/verify tests off freq_word."
     },
     {
       "kyttar_block": "RRCPulseShaperBlock",

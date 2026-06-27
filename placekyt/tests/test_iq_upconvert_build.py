@@ -27,7 +27,9 @@ from ui.controller import AppController  # noqa: E402
 from tests.conftest import CHIP_YAML as CT_PATH  # noqa: E402
 pytestmark = pytest.mark.skipif(not CT_PATH.exists(), reason="chip yaml absent")
 
-FREQ = 4096
+# freq_word 4096 @ 32 kHz == 2000 Hz carrier (the block now takes Hz, not freq_word)
+SAMPLE_RATE = 32000.0
+FREQUENCY = 2000.0
 
 
 @pytest.fixture(scope="module")
@@ -49,7 +51,7 @@ def _place(catalog, x=0, y=0):
     ctrl = AppController(catalog=catalog)
     ctrl.new_project("IQUp", "kyttar_10x12")
     ctrl.place_block("IQUpconvertBlock", 0, x, y,
-                     library="lattrex.official", params={"freq_word": FREQ})
+                     library="lattrex.official", params={"sample_rate": SAMPLE_RATE, "frequency": FREQUENCY})
     return ctrl
 
 
@@ -79,7 +81,7 @@ def test_built_bitstream_upconverts(qapp, catalog, chip_type):
         ctrl.project, {"kyttar_10x12": chip_type})
     assert res.ok, [str(e) for e in res.errors]
     entry, _ = catalog.resolved_io(
-        "IQUpconvertBlock", {"freq_word": FREQ}, library="lattrex.official")
+        "IQUpconvertBlock", {"sample_rate": SAMPLE_RATE, "frequency": FREQUENCY}, library="lattrex.official")
 
     def fq(f):
         return int(round(max(-1, min(0.999, f)) * 32768)) & 0xFFFF
@@ -107,7 +109,7 @@ def test_built_bitstream_upconverts(qapp, catalog, chip_type):
         chip.inject_jump_physical(target_hop_cnt=30, entry_addr=entry)
         chip.run(max_events=20000)
         chip_out.append(s16(chip.read_cell_memory(upmix, 9)))
-        ph += FREQ / 65536 * 2 * math.pi
+        ph += round(FREQUENCY / SAMPLE_RATE * 65536) / 65536 * 2 * math.pi
         ideal.append((i * math.cos(ph) - q * math.sin(ph)) * 32768)
 
     max_err = max(abs(chip_out[k] - ideal[k]) for k in range(n))

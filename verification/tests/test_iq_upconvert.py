@@ -90,11 +90,18 @@ output_float = list(snk.data())
     )
 
 
+# The block now takes Hz params (sample_rate, frequency) and derives freq_word
+# internally. Using sample_rate == 65536 makes freq_word == frequency numerically,
+# so the existing freq_word-parametrized cases map 1:1 to a carrier in Hz.
+_SAMP = 65536.0
+
+
 def _run(iq, freq_word):
-    dut = run_block_dut_complex("IQUpconvertBlock", iq,
-                                params={"freq_word": int(freq_word)},
-                                chip_yaml=CHIP_YAML, in_ports=("xi", "xq"),
-                                out_port="out", words_per_sample=1)
+    dut = run_block_dut_complex(
+        "IQUpconvertBlock", iq,
+        params={"sample_rate": _SAMP, "frequency": float(freq_word)},
+        chip_yaml=CHIP_YAML, in_ports=("xi", "xq"),
+        out_port="out", words_per_sample=1)
     assert dut.ok, dut.reason
     ref = _gr_upconvert(iq, freq_word)
     res = compare_against_grc(dut.i_q15, ref.i, metric=Metric.AMPLITUDE,
@@ -144,11 +151,11 @@ def test_overflow_wraps_to_own_reference():
     iq = np.array([complex(0.9 * (1 if k % 2 else -1),
                            0.9 * (1 if (k // 2) % 2 else -1)) for k in range(20)])
     dut = run_block_dut_complex("IQUpconvertBlock", iq,
-                                params={"freq_word": freq_word},
+                                params={"sample_rate": _SAMP, "frequency": float(freq_word)},
                                 chip_yaml=CHIP_YAML, in_ports=("xi", "xq"),
                                 out_port="out", words_per_sample=1)
     assert dut.ok, dut.reason
-    ref_i16 = IQUpconvertBlock("iq", freq_word=freq_word).process_reference(iq)
+    ref_i16 = IQUpconvertBlock("iq", sample_rate=_SAMP, frequency=float(freq_word)).process_reference(iq)
     # int16 -> float so the compare engine re-quantizes back to the same Q15 word
     # (these wrapped values are all in-range, so the round-trip is exact).
     ref_floats = [int(v) / 32768.0 for v in ref_i16]
@@ -162,7 +169,7 @@ def test_overflow_wraps_to_own_reference():
 
 def test_mutation_inverted_output_fails():
     iq = _baseband(24)
-    dut = run_block_dut_complex("IQUpconvertBlock", iq, params={"freq_word": 4096},
+    dut = run_block_dut_complex("IQUpconvertBlock", iq, params={"sample_rate": _SAMP, "frequency": 4096.0},
                                 chip_yaml=CHIP_YAML, in_ports=("xi", "xq"),
                                 out_port="out", words_per_sample=1)
     assert dut.ok, dut.reason
@@ -176,7 +183,7 @@ def test_mutation_inverted_output_fails():
 def test_mutation_wrong_freq_fails():
     """A fw=4096 DUT must FAIL against a fw=8192 golden (wrong carrier)."""
     iq = _baseband(24)
-    dut = run_block_dut_complex("IQUpconvertBlock", iq, params={"freq_word": 4096},
+    dut = run_block_dut_complex("IQUpconvertBlock", iq, params={"sample_rate": _SAMP, "frequency": 4096.0},
                                 chip_yaml=CHIP_YAML, in_ports=("xi", "xq"),
                                 out_port="out", words_per_sample=1)
     assert dut.ok, dut.reason
@@ -193,7 +200,7 @@ def test_mutation_drop_q_arm_fails():
     freq_word = 4096
     # Build an "I*cos only" corruption from the (proven) reference model.
     from gr_kyttar.placement.blocks.iq_upconvert_block import IQUpconvertBlock
-    blk = IQUpconvertBlock("iq", freq_word=freq_word)
+    blk = IQUpconvertBlock("iq", sample_rate=_SAMP, frequency=float(freq_word))
     iq_real_only = np.array([complex(c.real, 0.0) for c in iq])
     corrupt_ref = blk.process_reference(iq_real_only)  # I*cos, Q arm dropped
     corrupt = [int(v) & 0xFFFF for v in corrupt_ref]

@@ -49,8 +49,8 @@ for p in (str(_PLACEKYT), str(_VERIFY), str(_RUNTIME)):
         sys.path.insert(0, p)
 
 from kyttar_verify import (  # noqa: E402
-    run_block_dut_complex, run_gnuradio_ref_complex, compare_against_grc,
-    write_report, Metric)
+    run_block_dut_complex, run_block_dut_nstream, run_gnuradio_ref_complex,
+    compare_against_grc, write_report, Metric)
 from gr_kyttar.placement.blocks.multiply_block import MultiplyBlock  # noqa: E402
 
 CHIP_YAML = str(_PLACEKYT / "resources" / "chips" / "kyttar_10x12.yaml")
@@ -90,7 +90,7 @@ def _random(seed, n=24, amp=0.9):
 def _run_dut(stim):
     dut = run_block_dut_complex(
         "MultiplyBlock", stim, chip_yaml=CHIP_YAML,
-        in_ports=("a", "b"), words_per_sample=1)
+        in_ports=("a0", "a1"), words_per_sample=1)
     assert dut.ok, dut.reason
     return dut
 
@@ -156,6 +156,78 @@ def test_multiply_amplitude_sweep(amp):
     res = _compare(dut, gr)
     print(f"\namp={amp}:", res.summary())
     assert res.passed, res.summary()
+
+
+# --- num_inputs parity: GR multiply_xx exposes num_inputs (N streams) ----------
+# The block mirrors it: num_inputs real streams chained through MULQ. The N>2
+# fan-in needs the N-operand driver (the 2-operand complex driver only carries a/b).
+
+def _nstreams(seed, n, *, amp=0.6, ns=20):
+    rng = random.Random(seed)
+    return [[rng.uniform(-amp, amp) for _ in range(ns)] for _ in range(n)]
+
+
+def _gr_multiply_n(streams):
+    """GR golden: multiply_ff with N connected input ports (the GRC num_inputs)."""
+    import json
+    import subprocess
+    script = """
+from gnuradio import gr, blocks
+import json, sys
+st = json.loads(sys.stdin.read())
+tb = gr.top_block(); op = blocks.multiply_ff()
+srcs = [blocks.vector_source_f(list(s), False) for s in st]
+snk = blocks.vector_sink_f()
+for i, s in enumerate(srcs):
+    tb.connect(s, (op, i))
+tb.connect(op, snk); tb.run()
+print(json.dumps(list(snk.data())))
+"""
+    gr_py = os.environ.get("KYTTAR_GR_PYTHON", "/usr/bin/python3")
+    r = subprocess.run([gr_py, "-c", script], input=json.dumps(streams),
+                       capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr[-500:]
+    return json.loads(r.stdout.strip().splitlines()[-1])
+
+
+@pytest.mark.parametrize("n", [3, 4])
+def test_multiply_num_inputs_vs_gr(n):
+    """N-stream product matches GR multiply_ff (N connected ports) within floor."""
+    streams = _nstreams(5, n)
+    in_ports = tuple(f"a{i}" for i in range(n))
+    dut = run_block_dut_nstream(
+        "MultiplyBlock", streams, params={"num_inputs": n},
+        chip_yaml=CHIP_YAML, in_ports=in_ports)
+    assert dut.ok, dut.reason
+    gr = _gr_multiply_n(streams)
+    got = [_s16(w) / 32768.0 for w in dut.outputs_q15]
+    max_err = max(abs(g - r) for g, r in zip(got, gr))
+    print(f"\nmultiply N={n}: max|dut-GR| = {max_err * 32768:.2f} LSB")
+    # chained MULQ: ~ (n-1) single-MULQ floors; allow a few LSB.
+    assert max_err * 32768 <= 4 * (n - 1), f"{max_err * 32768:.2f} LSB too high"
+
+
+@pytest.mark.parametrize("n", [3, 4])
+def test_multiply_num_inputs_bitexact(n):
+    """N-stream DUT matches its chained-MULQ Q15 reference EXACTLY."""
+    streams = _nstreams(9, n)
+    in_ports = tuple(f"a{i}" for i in range(n))
+    dut = run_block_dut_nstream(
+        "MultiplyBlock", streams, params={"num_inputs": n},
+        chip_yaml=CHIP_YAML, in_ports=in_ports)
+    assert dut.ok, dut.reason
+    ref = MultiplyBlock("r", num_inputs=n).process_reference_q15(
+        *[[_q15(x) for x in s] for s in streams])
+    assert [_s16(w) for w in dut.outputs_q15] == [_s16(r) for r in ref], \
+        "N-stream chained MULQ must match the wrapping Q15 reference exactly"
+
+
+def test_multiply_num_inputs_over_limit_raises():
+    """num_inputs above the cell budget MUST raise (loud HW limit, not silent)."""
+    with pytest.raises(ValueError, match="HARDWARE LIMIT"):
+        MultiplyBlock("x", num_inputs=MultiplyBlock.MAX_INPUTS + 1)
+    with pytest.raises(ValueError):
+        MultiplyBlock("x", num_inputs=1)
 
 
 # --- bit-exact substrate ------------------------------------------------------

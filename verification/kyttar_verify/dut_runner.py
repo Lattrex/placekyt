@@ -499,3 +499,133 @@ def run_block_dut_complex(
         True, outputs_q15=per_sample, i_q15=i_ch, q_q15=q_ch,
         words_per_sample=wps, n_words=len(words), entry_addr=entry,
         hop_count=hop, in_regs=(a0, a1))
+
+
+def run_block_dut_nstream(
+    block_type: str,
+    streams,
+    *,
+    params: dict | None = None,
+    chip_yaml: str,
+    library: str = "lattrex.official",
+    in_ports: tuple[str, ...],
+    out_port: str | None = None,
+    place_xy: tuple[int, int] = (1, 1),
+    data_run: int = 6000,
+    jump_run: int = 200000,
+    drain_run: int = 8000,
+) -> DUTResult:
+    """Build an N-input block (``num_inputs`` real streams fanned in from
+    ``x16_in``) and run it on simKYT — the N-operand generalization of
+    :func:`run_block_dut_complex`.
+
+    Each sample is delivered as an N-operand transaction: ``WRITE s0 ->
+    in_regs[0]`` … ``WRITE s(N-1) -> in_regs[N-1]``, then one ``JUMP entry`` —
+    the same multi-WRITE-one-JUMP fan-in the complex (2-operand) driver uses,
+    extended to N. The block emits ONE real word per trigger (the chained
+    product / sum). All N input ports are wired from ``x16_in``; only the
+    primary output is wired to ``x16_out``.
+
+    Args:
+        block_type: catalog block type (e.g. ``"MultiplyBlock"``).
+        streams: a sequence of N equal-length float lists — ``streams[k]`` is the
+            stimulus for input register ``in_regs[k]``. (Transposed per-sample
+            internally.)
+        in_ports: the block's N input port names (``len`` must equal ``len(streams)``).
+        out_port: primary output port name; first ``out`` port if None.
+
+    Returns:
+        :class:`DUTResult` (``outputs_q15`` = one uint16 word per sample).
+    """
+    import simkyt  # noqa: PLC0415
+
+    (app, BlockCatalog, load_chip_type, BuildEngine, AppController,
+     ChipPortEndpoint, BlockEndpoint) = _engine()
+
+    n = len(streams)
+    if n != len(in_ports):
+        return DUTResult(False, reason=f"{n} streams but {len(in_ports)} in_ports")
+    if n < 2:
+        return DUTResult(False, reason="need >= 2 streams")
+    lens = {len(s) for s in streams}
+    if len(lens) != 1:
+        return DUTResult(False, reason=f"streams have unequal lengths: {lens}")
+    nsamp = lens.pop()
+
+    cat = BlockCatalog.from_gr_kyttar()
+    ct = load_chip_type(chip_yaml)
+    ct_key = getattr(ct, "name", None) or "kyttar_10x12"
+
+    ctrl = AppController(catalog=cat)
+    ctrl.new_project("dut_nstream", ct_key)
+    px, py = place_xy
+    blk = ctrl.place_block(block_type, 0, px, py, library=library,
+                           params=params or {})
+
+    if out_port is None:
+        pm = cat.port_map(block_type, params or {}, library=library)
+        outs = [p.name for p in pm.ports if p.direction == "out"]
+        if not outs:
+            return DUTResult(False, reason="block declares no output port")
+        out_port = outs[0]
+
+    # Wire all N inputs from x16_in; only the primary output to x16_out.
+    for k, port_name in enumerate(in_ports):
+        ctrl.add_logical_connection(
+            ChipPortEndpoint(chip=0, port="x16_in"),
+            BlockEndpoint(block=blk, port=port_name), name=f"in_{k}")
+    ctrl.add_logical_connection(
+        BlockEndpoint(block=blk, port=out_port),
+        ChipPortEndpoint(chip=0, port="x16_out"), name="blk_out")
+
+    rep = ctrl.auto_route_all({ct_key: ct})
+    if not rep.ok:
+        return DUTResult(False, reason="route failed: "
+                         + "; ".join(f"{r.name}:{r.reason}" for r in rep.failed))
+
+    bres = BuildEngine(cat, chip_yaml).build(ctrl.project, {ct_key: ct})
+    if not bres.ok:
+        return DUTResult(False, reason="build failed: "
+                         + "; ".join(str(e) for e in bres.errors))
+
+    words = bres.words(0)
+    entry, ins = cat.resolved_io(block_type, params or {}, library=library)
+    if len(ins) < n:
+        return DUTResult(
+            False, reason=f"block resolved {len(ins)} input register(s); needs {n}")
+    regs = [int(ins[k]) for k in range(n)]
+
+    port = ct.port("x16_in")
+    blk_obj = ctrl.project.block(blk)
+    landing = (blk_obj.placement.cells[0]
+               if blk_obj and blk_obj.placement and blk_obj.placement.cells
+               else None)
+    if landing is not None:
+        dist = abs(landing.x - port.cell_x) + abs(landing.y - port.cell_y) + 1
+    else:
+        dist = abs(px - port.cell_x) + abs(py - port.cell_y) + 1
+    hop = max(0, 31 - dist)
+
+    chip = simkyt.Chip.from_yaml(chip_yaml)
+    chip.load_bitstream_physical(words)
+    chip.set_port_entry_address("x16_in", entry)
+
+    out: list = []
+    for s in range(nsamp):
+        for k in range(n):
+            chip.inject_data_physical([_to_q15(float(streams[k][s]))],
+                                      target_hop_cnt=hop, target_addr=regs[k])
+            chip.run(max_events=data_run)
+        chip.inject_jump_physical(target_hop_cnt=hop, entry_addr=entry)
+        chip.run(max_events=jump_run)
+        got = None
+        while chip.output_available("x16_out"):
+            w = chip.read_port_i16("x16_out").view("uint16").tolist()
+            if got is None and w:
+                got = int(w[0]) & 0xFFFF
+            chip.release_output_ack("x16_out")
+            chip.run(max_events=drain_run)
+        out.append(got)
+
+    return DUTResult(True, outputs_q15=out, n_words=len(words),
+                     entry_addr=entry, hop_count=hop)

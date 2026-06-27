@@ -8,36 +8,49 @@ from ._base import BlockInterface, KyttarBlock
 
 class MultiplyBlock(KyttarBlock):
     """
-    Two-stream multiply — drop-in for GNU Radio ``blocks.multiply_ff``: the
-    element-wise product of two real input streams.
+    N-stream multiply — drop-in for GNU Radio ``blocks.multiply_ff``: the
+    element-wise product of ``num_inputs`` real input streams.
 
-        out[n] = a[n] · b[n]
+        out[n] = a0[n] · a1[n] · … · a(N-1)[n]
 
-    GNU Radio's ``multiply_ff`` takes no parameters (it is a pure pointwise
-    product), so this block has none either — full GRC parity. On chip it is a
-    SINGLE ``MULQ``: ``out = (a · b) >> 15`` (Q15 fixed-point product).
+    GNU Radio's ``multiply_xx`` exposes ``num_inputs`` (the number of streams to
+    multiply, default 2), so this block mirrors it: ``num_inputs`` real inputs land
+    in R0..R(N-1); the product is a chain of ``MULQ`` (``out = ((a0·a1)>>15·a2)>>15
+    …``) — each ``MULQ`` is a Q15 product. Memoryless, no group delay (delay=0).
 
-    Interface: TWO real inputs ``a`` @R0 and ``b`` @R1 (the same complex-burst
-    fan-in the Costas xi/xq tap proves — each sample delivers ``WRITE a -> R0`` +
-    ``WRITE b -> R1`` + one ``JUMP``), and ONE real output. Memoryless, no group
-    delay (delay=0).
+    Interface: ``num_inputs`` real inputs ``a0..a(N-1)`` in R0..R(N-1) (the proven
+    complex-burst fan-in delivers a0/a1; N>2 needs an N-operand driver), ONE real
+    output. ``num_inputs`` is bounded by the cell's register budget (HW limit ~24);
+    raises above.
 
-    Q15 note: the only product that overflows the Q15 range is the exact
-    ``(-1.0) · (-1.0) = +1.0`` corner — ``(0x8000·0x8000) >> 15`` wraps to
-    ``0x8000`` (the MULQ datapath WRAPS, it does not saturate). The bit-exact
-    reference models that wrap; verification keeps the GR-equivalence stimulus off
-    the simultaneous full-scale-negative corner so the Q15 product matches GR float
-    within the single-MULQ quantization floor.
+    Q15 note: the only 2-input product that overflows is the exact
+    ``(-1.0)·(-1.0)=+1.0`` corner — the MULQ datapath WRAPS (not saturates); the
+    bit-exact reference models that, and the GR-equivalence stimulus stays off the
+    simultaneous full-scale-negative corner.
     """
     CATEGORY = "signal_conditioning"
-    TAGS = ["multiply", "product", "two_stream", "multiply_ff", "signal_conditioning"]
+    TAGS = ["multiply", "product", "multiply_ff", "signal_conditioning"]
 
-    # Two real inputs land in R0 (a) and R1 (b); the product egresses from R0.
-    _interface = BlockInterface(
-        entry_address=1, input_registers=[0, 1], output_registers=[0])
+    MAX_INPUTS = 24
 
-    def __init__(self, name: str):
-        super().__init__(name)
+    def __init__(self, name: str, num_inputs: int = 2):
+        n = int(num_inputs)
+        if n < 2:
+            raise ValueError(f"num_inputs must be >= 2, got {n}")
+        if n > self.MAX_INPUTS:
+            raise ValueError(
+                f"HARDWARE LIMIT: num_inputs={n} exceeds {self.MAX_INPUTS} "
+                f"(the N input registers + chained MULQ program must fit one "
+                f"32-word cell).")
+        super().__init__(name, num_inputs=n)
+        self._num_inputs = n
+        # N real inputs in R0..R(N-1); the product egresses from R0.
+        self._interface = BlockInterface(
+            entry_address=1, input_registers=list(range(n)), output_registers=[0])
+
+    @property
+    def num_inputs(self) -> int:
+        return self._num_inputs
 
     @property
     def cell_count(self) -> int:
@@ -48,17 +61,19 @@ class MultiplyBlock(KyttarBlock):
         return self._interface
 
     def build_cell_programs(self) -> dict:
+        n = self._num_inputs
+        ports = [Port(f"a{i}", register=i) for i in range(n)]
+        # MULQ a0,a1 -> R0; then MULQ R0,a2; ... chain across all N inputs.
+        lines = ["    MULQ R{in:a0}, R{in:a1}"]
+        for i in range(2, n):
+            lines.append(f"    MULQ R0, R{{in:a{i}}}")
+        lines += ["    {write:out}", "    {jump:out}"]
         return {0: CellProgram(
-            inputs=[Port("a", register=0), Port("b", register=1)],
+            inputs=ports,
             outputs=[Port("out")],
             entries=[EntryPoint("default")],
             data=[],
-            assembly_template="""\
-start:
-    MULQ R{in:a}, R{in:b}     ; R0 = (a * b) >> 15   (Q15 product)
-    {write:out}
-    {jump:out}
-""",
+            assembly_template="start:\n" + "\n".join(lines) + "\n",
         )}
 
     # -------------------------------------------------------------- reference
@@ -67,13 +82,17 @@ start:
         v = int(v) & 0xFFFF
         return v - 0x10000 if v >= 0x8000 else v
 
-    def process_reference_q15(self, a_q15, b_q15) -> list:
-        """Bit-exact predictor of the on-chip MULQ: ``(a · b) >> 15`` with the Q15
-        datapath's wrapping overflow. ``a_q15``/``b_q15`` are uint16 Q15 words."""
+    def process_reference_q15(self, *streams) -> list:
+        """Bit-exact predictor of the on-chip chained MULQ: ``((a0·a1)>>15·a2)>>15
+        …`` with the Q15 datapath's wrapping overflow. Each ``streams[i]`` is a list
+        of uint16 Q15 words (one per input; 2 for the default 2-input block)."""
         out = []
-        for a, b in zip(a_q15, b_q15):
-            p = (self._s16(a) * self._s16(b)) >> 15   # arithmetic shift (floor)
-            out.append(p & 0xFFFF)
+        for sample in zip(*streams):
+            acc = self._s16(sample[0])
+            for s in sample[1:]:
+                acc = (acc * self._s16(s)) >> 15      # one Q15 MULQ (arith floor)
+                acc = self._s16(acc & 0xFFFF)         # wrap to Q15 (datapath wraps)
+            out.append(acc & 0xFFFF)
         return out
 
     def process_reference(self, input_samples) -> np.ndarray:

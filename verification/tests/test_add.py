@@ -45,8 +45,8 @@ for p in (str(_PLACEKYT), str(_VERIFY), str(_RUNTIME)):
         sys.path.insert(0, p)
 
 from kyttar_verify import (  # noqa: E402
-    run_block_dut_complex, run_gnuradio_ref_complex, compare_against_grc,
-    write_report, Metric)
+    run_block_dut_complex, run_block_dut_nstream, run_gnuradio_ref_complex,
+    compare_against_grc, write_report, Metric)
 from gr_kyttar.placement.blocks.add_block import AddBlock, SubtractBlock  # noqa: E402
 
 CHIP_YAML = str(_PLACEKYT / "resources" / "chips" / "kyttar_10x12.yaml")
@@ -89,7 +89,7 @@ def _random(seed, n=24, amp=0.45):
 def _run_dut(block_type, stim):
     dut = run_block_dut_complex(
         block_type, stim, chip_yaml=CHIP_YAML,
-        in_ports=("a", "b"), words_per_sample=1)
+        in_ports=("a0", "a1"), words_per_sample=1)
     assert dut.ok, dut.reason
     return dut
 
@@ -197,6 +197,115 @@ def test_saturates_not_wraps(variant, corner, rail):
     dut = _run_dut(block_type, stim)
     assert _s16(dut.i_q15[1]) == rail and _s16(dut.i_q15[3]) == rail, \
         f"{variant} must saturate to {rail}, got {_s16(dut.i_q15[1])}"
+
+
+# --- num_inputs parity: GR add_xx/sub_xx expose num_inputs (N streams) ---------
+# add sums all N; sub computes a0 - a1 - … - a(N-1). The block mirrors num_inputs
+# (chained saturating ADD/SUB). N>2 fan-in needs the N-operand driver.
+
+def _nstreams(seed, n, *, amp=0.45, ns=20):
+    rng = random.Random(seed)
+    return [[rng.uniform(-amp, amp) for _ in range(ns)] for _ in range(n)]
+
+
+def _gr_nstream(grblk, streams):
+    """GR golden: add_ff/sub_ff with N connected input ports (the GRC num_inputs)."""
+    import json
+    import subprocess
+    script = f"""
+from gnuradio import gr, blocks
+import json, sys
+st = json.loads(sys.stdin.read())
+tb = gr.top_block(); op = blocks.{grblk}()
+srcs = [blocks.vector_source_f(list(s), False) for s in st]
+snk = blocks.vector_sink_f()
+for i, s in enumerate(srcs):
+    tb.connect(s, (op, i))
+tb.connect(op, snk); tb.run()
+print(json.dumps(list(snk.data())))
+"""
+    gr_py = os.environ.get("KYTTAR_GR_PYTHON", "/usr/bin/python3")
+    r = subprocess.run([gr_py, "-c", script], input=json.dumps(streams),
+                       capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr[-500:]
+    return json.loads(r.stdout.strip().splitlines()[-1])
+
+
+import json  # noqa: E402
+
+_N_VARIANTS = {
+    "add": ("AddBlock", "add_ff", AddBlock),
+    "sub": ("SubtractBlock", "sub_ff", SubtractBlock),
+}
+
+
+@pytest.mark.parametrize("variant", ["add", "sub"])
+@pytest.mark.parametrize("n", [3, 4])
+def test_num_inputs_vs_gr(variant, n):
+    """N-stream add/sub matches GR (N connected ports) within the floor.
+
+    The GR-equivalence stimulus stays IN-RANGE: amplitude is scaled by 1/N so the
+    N-way running sum/difference stays inside [-1, 1) where the block SATURATES =
+    the float result (out of range the block clamps where GR float keeps growing —
+    that production saturation is gated by the bit-exact reference test below)."""
+    block_type, grblk, _ = _N_VARIANTS[variant]
+    streams = _nstreams(5, n, amp=0.9 / n)
+    in_ports = tuple(f"a{i}" for i in range(n))
+    dut = run_block_dut_nstream(
+        block_type, streams, params={"num_inputs": n},
+        chip_yaml=CHIP_YAML, in_ports=in_ports)
+    assert dut.ok, dut.reason
+    gr = _gr_nstream(grblk, streams)
+    got = [_s16(w) / 32768.0 for w in dut.outputs_q15]
+    max_err = max(abs(g - r) for g, r in zip(got, gr))
+    print(f"\n{variant} N={n}: max|dut-GR| = {max_err * 32768:.2f} LSB")
+    assert max_err * 32768 <= 2.0, f"{max_err * 32768:.2f} LSB too high"
+
+
+@pytest.mark.parametrize("variant", ["add", "sub"])
+@pytest.mark.parametrize("n", [3, 4])
+def test_num_inputs_bitexact(variant, n):
+    """N-stream DUT matches its chained-saturating Q15 reference EXACTLY."""
+    block_type, _, cls = _N_VARIANTS[variant]
+    streams = _nstreams(9, n)
+    in_ports = tuple(f"a{i}" for i in range(n))
+    dut = run_block_dut_nstream(
+        block_type, streams, params={"num_inputs": n},
+        chip_yaml=CHIP_YAML, in_ports=in_ports)
+    assert dut.ok, dut.reason
+    ref = cls("r", num_inputs=n).process_reference_q15(
+        *[[_q15(x) for x in s] for s in streams])
+    assert [_s16(w) for w in dut.outputs_q15] == [_s16(r) for r in ref], \
+        "N-stream chained add/sub must match the Q15 reference exactly"
+
+
+@pytest.mark.parametrize("variant", ["add", "sub"])
+def test_num_inputs_saturates(variant):
+    """A 3-stream sum/difference that overflows must SATURATE (no wrap)."""
+    block_type, _, cls = _N_VARIANTS[variant]
+    # add: 0.5+0.5+0.5 = 1.5 -> +full;  sub: -0.5-0.5-0.5 = -1.5 -> -full.
+    if variant == "add":
+        streams = [[0.5], [0.5], [0.5]]
+        rail = 32767
+    else:
+        streams = [[-0.5], [0.5], [0.5]]
+        rail = -32768
+    dut = run_block_dut_nstream(
+        block_type, streams, params={"num_inputs": 3},
+        chip_yaml=CHIP_YAML, in_ports=("a0", "a1", "a2"))
+    assert dut.ok, dut.reason
+    assert _s16(dut.outputs_q15[0]) == rail, \
+        f"{variant} N=3 overflow must saturate to {rail}, got {_s16(dut.outputs_q15[0])}"
+
+
+@pytest.mark.parametrize("variant", ["add", "sub"])
+def test_num_inputs_over_limit_raises(variant):
+    """num_inputs above the cell budget MUST raise (loud HW limit)."""
+    _, _, cls = _N_VARIANTS[variant]
+    with pytest.raises(ValueError, match="HARDWARE LIMIT"):
+        cls("x", num_inputs=cls.MAX_INPUTS + 1)
+    with pytest.raises(ValueError):
+        cls("x", num_inputs=1)
 
 
 # --- MANDATORY mutation tests -------------------------------------------------

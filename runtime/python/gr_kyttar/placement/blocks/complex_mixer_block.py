@@ -25,7 +25,12 @@ class ComplexMixerBlock(KyttarBlock):
     ``multiply_cc`` (both quadrature arms).
 
     Parameters mirror GRC's Signal Source (the mixing oscillator) in DSP units:
-    ``sample_rate`` (Hz) and ``frequency`` (Hz, the shift; ``freq_word`` derived).
+    ``sample_rate`` (Hz), ``frequency`` (Hz, the shift; ``freq_word`` derived),
+    ``amplitude`` (scales the oscillator — folded into the NCO table, so free) and
+    ``phase`` (initial angle, radians). The GR ``offset`` (a DC bias on the mixing
+    LO) is a HARDWARE DEVIATION — unsupported and RAISES (the mixer output cell is
+    at its full register budget; a biased LO is a near-never case — compose a
+    separate NCO + Add stage if truly needed).
 
     Interface: COMPLEX input (the signal, xi@R0 / xq@R1) and COMPLEX output (yi, yq).
     Each input sample triggers one output; n=0 multiplies by exp(j·0)=1 (phase-0).
@@ -49,12 +54,39 @@ class ComplexMixerBlock(KyttarBlock):
                  "cos_fold", "cos_even", "cos_odd", "cos_interp", "mixer"]
 
     def __init__(self, name: str, sample_rate: float = 32000.0,
-                 frequency: float = 2000.0):
-        super().__init__(name, sample_rate=sample_rate, frequency=frequency)
+                 frequency: float = 2000.0, amplitude: float = 1.0,
+                 offset: float = 0.0, phase: float = 0.0):
+        super().__init__(name, sample_rate=sample_rate, frequency=frequency,
+                         amplitude=amplitude, offset=offset, phase=phase)
         self._sample_rate = float(sample_rate)
         self._frequency = float(frequency)
+        self._amplitude = float(amplitude)
+        self._offset = float(offset)
+        self._init_phase = float(phase)
         self._freq_word = round(self._frequency / self._sample_rate * 65536) & 0xFFFF
-        self._phase = 0
+        # The mixing-oscillator's GR sig_source_c params: amplitude scales the
+        # oscillator (Q15 gain on cos/sin), offset is a real DC bias added to the
+        # oscillator's real (cos) arm only (GR real-offset behaviour), phase is the
+        # initial angle (radians -> 16-bit accumulator start).
+        self._amp_q15 = float_to_q15(self._amplitude)
+        self._offset_q15 = float_to_q15(self._offset)
+        self._phase0_word = round(self._init_phase / (2.0 * math.pi) * 65536) & 0xFFFF
+        self._phase = self._phase0_word
+        # HARDWARE DEVIATION: the GR sig_source_c `offset` (a complex DC bias on the
+        # mixing oscillator) is NOT supported. The mixer's output cell already uses
+        # its full 32-register budget (6 state vars + 4 complex operands + the Q15
+        # cross-product), leaving no room for the per-sample `signal*offset` add.
+        # offset on a MIXING oscillator is a near-never-used case (you DC-bias a
+        # source, not an LO), so rather than spend a whole extra cell we RAISE.
+        # amplitude (folded into the NCO table) and phase (initial angle) ARE
+        # supported. Use a separate Add/source stage if a biased LO is truly needed.
+        if abs(self._offset) > 1e-9:
+            raise ValueError(
+                f"HARDWARE LIMIT: ComplexMixerBlock does not support a non-zero "
+                f"oscillator offset (got offset={self._offset}); the mixer output "
+                f"cell is at its full register budget. amplitude and phase ARE "
+                f"supported. For a biased mixing oscillator, compose a separate "
+                f"NCO + Add stage.")
 
     @property
     def cell_count(self) -> int:
@@ -73,8 +105,13 @@ class ComplexMixerBlock(KyttarBlock):
         return self._freq_word
 
     def _quarter_table(self) -> List[int]:
-        return [min(32767, int(round(math.sin((math.pi / 2) * k / 32) * 32768))) & 0xFFFF
-                for k in range(self.TABLE_SIZE)]
+        # Pre-scale the quarter-wave table by the oscillator AMPLITUDE (GR
+        # sig_source_c `ampl`): cos/sin then come out already scaled, so no extra
+        # MULQ is needed in the dense mixer cell. amplitude=1.0 -> the original
+        # unit table (exact); <1 scales down, matching multiply_cc(sig, amp·osc).
+        amp = self._amplitude
+        return [min(32767, int(round(math.sin((math.pi / 2) * k / 32) * 32768 * amp)))
+                & 0xFFFF for k in range(self.TABLE_SIZE)]
 
     def _even_odd_tables(self):
         t = self._quarter_table()
@@ -93,7 +130,9 @@ class ComplexMixerBlock(KyttarBlock):
             entries=[EntryPoint("default")],
             data=[DataWord("freq", self._freq_word, address=4),
                   DataWord("quarter", 16384, address=5)],
-            state=[StateVar("phase"), StateVar("xis"), StateVar("xqs")],
+            # Initial phase (GR sig_source_c `phase`, radians -> 16-bit word).
+            state=[StateVar("phase", initial_value=self._phase0_word),
+                   StateVar("xis"), StateVar("xqs")],
             assembly_template="""\
 start:
     MOVE R{state:xis}, R{in:xi}
@@ -254,6 +293,9 @@ out:
 """,
             )
 
+        # Amplitude is folded into the quarter-wave table (_quarter_table), so the
+        # mixer needs NO amp MULQ and stays at the original (budget-tight) shape.
+        # offset is unsupported (raised in __init__) — no extra op here.
         mixer_cell = CellProgram(
             inputs=[Port("cosv", register=0), Port("sinv", register=1),
                     Port("xi", register=2), Port("xq", register=3)],
@@ -375,8 +417,10 @@ start:
         else:
             xs = [(float_to_q15(float(x)), 0) for x in arr]
         out = []
-        phase = 0
+        phase = self._phase0_word
         for (xi, xq) in xs:
+            # amplitude is baked into tbl (_quarter_table) -> cos/sin already scaled.
+            # offset is unsupported (raised in __init__). phase0 starts the angle.
             cos = self._signed_sine_q15((phase + 16384) & 0xFFFF, tbl)
             sin = self._signed_sine_q15(phase, tbl)
             xi_s, xq_s = s16(xi), s16(xq)

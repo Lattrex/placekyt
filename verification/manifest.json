@@ -216,13 +216,15 @@
       "kyttar_block": "ComplexMixerBlock",
       "grc_block": "blocks.multiply_cc + analog.sig_source",
       "tier": 1,
-      "status": "in_progress",
+      "status": "done",
       "metric": "amplitude",
       "params": {
         "sample_rate": 32000.0,
-        "frequency": 2000.0
+        "frequency": 2000.0,
+        "amplitude": 1.0,
+        "phase": 0.0
       },
-      "notes": "PARITY-GAP: missing oscillator amplitude (NCO exposes it - inconsistent), phase, offset vs analog.sig_source_c. Add them."
+      "notes": "Matches multiply_cc(signal, sig_source_c(samp,COS,freq,amp,offset,phase)) \u2014 added oscillator amplitude (scales osc; folded into the NCO quarter-wave table, so FREE/no extra MULQ) + phase (initial angle radians). HW-DEVIATION: oscillator offset (DC bias on the mixing LO) UNSUPPORTED -> RAISES (mixer output cell at full register budget; near-never case, compose NCO+Add). Real-world Hz params. 25 tests incl. amp/phase sweep vs GR (1-2 LSB grid) + offset-raises."
     },
     {
       "kyttar_block": "NCOBlock",

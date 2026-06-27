@@ -31,6 +31,7 @@ Run:
 from __future__ import annotations
 
 import os
+import math
 import random
 import sys
 from pathlib import Path
@@ -72,29 +73,32 @@ def _signal(seed, n, amp=0.5):
     return [complex(rng.uniform(-amp, amp), rng.uniform(-amp, amp)) for _ in range(n)]
 
 
-def _run_dut(fs, f, stim):
+def _run_dut(fs, f, stim, amplitude=1.0, offset=0.0, phase=0.0):
     dut = run_block_dut_complex(
-        "ComplexMixerBlock", stim, params={"sample_rate": fs, "frequency": f},
+        "ComplexMixerBlock", stim,
+        params={"sample_rate": fs, "frequency": f, "amplitude": amplitude,
+                "offset": offset, "phase": phase},
         chip_yaml=CHIP_YAML, words_per_sample=2)
     assert dut.ok, dut.reason
     return dut
 
 
-def _gr_mix(fs, f, stim):
+def _gr_mix(fs, f, stim, amplitude=1.0, offset=0.0, phase=0.0):
     return run_gnuradio_ref_complex(
         stim,
         gnuradio_script="""
 from gnuradio import gr, analog, blocks
 tb = gr.top_block()
 src = blocks.vector_source_c(input_complex, False)
-osc = analog.sig_source_c(fs, analog.GR_COS_WAVE, f, 1.0, 0)
+osc = analog.sig_source_c(fs, analog.GR_COS_WAVE, f, amplitude, offset, phase)
 mul = blocks.multiply_cc()
 snk = blocks.vector_sink_c()
 tb.connect(src, (mul, 0)); tb.connect(osc, (mul, 1)); tb.connect(mul, snk)
 tb.run()
 output_complex = list(snk.data())
 """,
-        extra_args={"fs": fs, "f": f})
+        extra_args={"fs": fs, "f": f, "amplitude": amplitude,
+                    "offset": offset, "phase": phase})
 
 
 # --- structure / smoke --------------------------------------------------------
@@ -149,6 +153,34 @@ def test_mixer_matches_gnuradio_grid(fs, f):
                                       metric=Metric.AMPLITUDE, delay=0, tolerance=4)
     print(f"\nvs GR grid f={f}:", res.summary())
     assert res.passed, res.summary()
+
+
+@pytest.mark.parametrize("amplitude,phase", [
+    (1.0, 0.0), (0.5, 0.0), (1.0, math.pi / 2), (0.7, math.pi / 4),
+    (0.9, math.pi)])
+def test_mixer_oscillator_amp_phase(amplitude, phase):
+    """The mixing oscillator's GR sig_source_c params amplitude (scales the
+    oscillator, folded into the NCO table) and initial phase (radians) match
+    multiply_cc(sig, sig_source_c) on a grid-aligned tone within the table floor."""
+    fs, f = 32000, 2000
+    blk = ComplexMixerBlock("c", sample_rate=fs, frequency=f,
+                            amplitude=amplitude, phase=phase)
+    assert blk.freq_word % 512 == 0
+    stim = _signal(7, 48)
+    dut = _run_dut(fs, f, stim, amplitude=amplitude, phase=phase)
+    gr = _gr_mix(fs, f, stim, amplitude=amplitude, phase=phase)
+    res = compare_complex_against_grc(dut.i_q15, dut.q_q15, gr.i, gr.q,
+                                      metric=Metric.AMPLITUDE, delay=0, tolerance=15)
+    print(f"\nvs GR amp={amplitude} ph={phase:.3f}:", res.summary())
+    assert res.passed, res.summary()
+
+
+def test_mixer_oscillator_offset_raises():
+    """HARDWARE LIMIT (documented): a non-zero mixing-oscillator offset is not
+    supported (the mixer output cell is at its register budget) and RAISES with a
+    clear message rather than silently mis-building."""
+    with pytest.raises(ValueError, match="offset"):
+        ComplexMixerBlock("c", sample_rate=32000, frequency=2000, offset=0.2)
 
 
 @pytest.mark.parametrize("fs,f", [(32000, 2050), (48000, 5000)])

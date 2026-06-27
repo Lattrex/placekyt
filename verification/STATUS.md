@@ -3,7 +3,7 @@
 
 # Kyttar block library — status
 
-**23 verified · 6 in progress · 38 targeted.** Each Kyttar block is verified as a drop-in equivalent of its GNU Radio Companion counterpart (same parameters, output matching within Q15 quantization). “Quality” is the measured error of the verified block versus the GNU Radio reference.
+**24 verified · 5 in progress · 38 targeted.** Each Kyttar block is verified as a drop-in equivalent of its GNU Radio Companion counterpart (same parameters, output matching within Q15 quantization). “Quality” is the measured error of the verified block versus the GNU Radio reference.
 
 > **Reading the quality column.** `err N / tol M LSB` — the worst-case sample error (`N`) against the derived pass threshold (`M`), in Q15 **LSBs** (1 LSB = 1/32768 of full scale ≈ 3.05e-5); pass requires `N ≤ M`. `−X dB SNR` — the **NMSE**: the error power is `X` dB below the signal power (more negative = quieter; Q15's floor is ≈ −90 dB). Decision blocks report **BER** instead. To estimate a chain's total noise, convert each block's dB to linear power (`10^(dB/10)`), sum, and convert back (`10·log10`) — the noisiest stage dominates.
 
@@ -26,13 +26,13 @@
 | **ComplexToImagBlock** | `blocks.complex_to_imag` | 1 · feed-forward | ✅ done | err 0 / tol 0 LSB | edge rand×3 mut |
 | **DCBlockerBlock** | `filter.dc_blocker_ff` | 1 · feed-forward | ✅ done | err 34 / tol 59 LSB · -51 dB SNR | edge rand×3 sweep×7 mut |
 | **FIRFilterBlock** | `filter.fir_filter_fff` | 1 · feed-forward | ✅ done | err 11 / tol 17 LSB · -65 dB SNR | edge rand×3 sweep×12 mut |
+| **ComplexMixerBlock** | `blocks.multiply_cc + analog.sig_source` | 1 · feed-forward | ✅ done | err 5 / tol 12 LSB · -74 dB SNR | sweep×5 mut |
 | **NCOBlock** | `analog.sig_source_c` | 1 · feed-forward | ✅ done | err 9 / tol 12 LSB · -72 dB SNR | sweep×5 mut |
 | **LowPassFilter** | `filter.fir_filter_fff (firdes.low_pass)` | 1 · feed-forward | ✅ done | err 37 / tol 79 LSB · -55 dB SNR | edge rand×1 sweep×4 mut |
 | **HighPassFilter** | `filter.fir_filter_fff (firdes.high_pass)` | 1 · feed-forward | ✅ done | err 40 / tol 79 LSB · -48 dB SNR | edge rand×1 sweep×4 mut |
 | **BandPassFilter** | `filter.fir_filter_fff (firdes.band_pass)` | 1 · feed-forward | ✅ done | err 36 / tol 79 LSB · -43 dB SNR | edge rand×1 sweep×4 mut |
 | **BandRejectFilter** | `filter.fir_filter_fff (firdes.band_reject)` | 1 · feed-forward | ✅ done | err 84 / tol 118 LSB · -49 dB SNR | edge rand×1 sweep×4 mut |
 | **IIRBiquadBlock** | `filter.iir_filter_ffd` | 1 · feed-forward | 🟡 in progress | — | — |
-| **ComplexMixerBlock** | `blocks.multiply_cc + analog.sig_source` | 1 · feed-forward | 🟡 in progress | — | — |
 | **SoftDemodulatorBlock** | `digital.constellation_soft_decoder_cf` | 1 · feed-forward | 🟡 in progress | — | — |
 | **AGCBlock** | `analog.agc_ff` | 2 · stateful/loop | ✅ done | err 40 / tol 80 LSB · -57 dB SNR | mut |
 | **IQUpconvertBlock** | `blocks.multiply_cc` | 2 · stateful/loop | 🟡 in progress | — | — |

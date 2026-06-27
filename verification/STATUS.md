@@ -3,7 +3,7 @@
 
 # Kyttar block library — status
 
-**25 verified · 4 in progress · 38 targeted.** Each Kyttar block is verified as a drop-in equivalent of its GNU Radio Companion counterpart (same parameters, output matching within Q15 quantization). “Quality” is the measured error of the verified block versus the GNU Radio reference.
+**26 verified · 3 in progress · 38 targeted.** Each Kyttar block is verified as a drop-in equivalent of its GNU Radio Companion counterpart (same parameters, output matching within Q15 quantization). “Quality” is the measured error of the verified block versus the GNU Radio reference.
 
 > **Reading the quality column.** `err N / tol M LSB` — the worst-case sample error (`N`) against the derived pass threshold (`M`), in Q15 **LSBs** (1 LSB = 1/32768 of full scale ≈ 3.05e-5); pass requires `N ≤ M`. `−X dB SNR` — the **NMSE**: the error power is `X` dB below the signal power (more negative = quieter; Q15's floor is ≈ −90 dB). Decision blocks report **BER** instead. To estimate a chain's total noise, convert each block's dB to linear power (`10^(dB/10)`), sum, and convert back (`10·log10`) — the noisiest stage dominates.
 
@@ -36,11 +36,11 @@
 | **SoftDemodulatorBlock** | `digital.constellation_soft_decoder_cf` | 1 · feed-forward | 🟡 in progress | — | — |
 | **IQUpconvertBlock** | `blocks.multiply_cc` | 2 · stateful/loop | ✅ done | err 1 / tol 6 LSB · -85 dB SNR | mut |
 | **AGCBlock** | `analog.agc_ff` | 2 · stateful/loop | ✅ done | err 40 / tol 80 LSB · -57 dB SNR | mut |
+| **SquelchBlock** | `analog.pwr_squelch_ff` | 2 · stateful/loop | ✅ done | err 0 / tol 4 LSB | mut |
 | **ComplexRRCMatchedFilterBlock** | `filter.fir_filter_ccf (rrc taps)` | 2 · stateful/loop | ⬜ planned · 🧪 proof-of-concept | — | — |
 | **ComplexCostasLoopBlock** | `digital.costas_loop_cc` | 2 · stateful/loop | ⬜ planned · 🧪 proof-of-concept | — | — |
 | **GardnerTimingRecovery** | `digital.symbol_sync_cc` | 2 · stateful/loop | ⬜ planned · 🧪 proof-of-concept | — | — |
 | **BPSKSlicerBlock** | `digital.binary_slicer_fb` | 2 · stateful/loop | ⬜ planned · 🧪 proof-of-concept | — | — |
-| **SquelchBlock** | `analog.pwr_squelch_ff` | 2 · stateful/loop | 🟡 in progress | — | — |
 | **PSKSymbolMapperBlock** | `digital.chunks_to_symbols_bf` | 2 · stateful/loop | 🟡 in progress | — | — |
 | **LFSRScramblerBlock** | `digital.additive_scrambler_bb` | 2 · stateful/loop | ⬜ planned | — | — |
 | **MultiplyConstComplex** | `blocks.multiply_const_cc` | 3 · new GRC block | ⬜ planned | — | — |

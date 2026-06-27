@@ -188,8 +188,50 @@ def test_empty_output_fails():
     assert not res.passed
 
 
+def _gr_squelch_ramp(inputs_q15, db, alpha, ramp):
+    return run_gnuradio_ref(
+        input_q15=inputs_q15,
+        gnuradio_script="""
+from gnuradio import gr, blocks, analog
+tb = gr.top_block()
+src = blocks.vector_source_f(input_float, False)
+sq = analog.pwr_squelch_ff(db, alpha, ramp, False)
+sink = blocks.vector_sink_f()
+tb.connect(src, sq); tb.connect(sq, sink)
+tb.run()
+output_float = list(sink.data())
+""",
+        extra_args={"db": db, "alpha": alpha, "ramp": int(ramp)},
+    )
+
+
+@pytest.mark.parametrize("ramp", [1, 2, 3, 4])
+def test_squelch_ramp_matches_gnuradio(ramp):
+    """The raised-cosine ramp (attack/release envelope, GR pwr_squelch_ff) matches
+    GNU Radio bit-for-bit. A CLEAN burst (flat silence -> flat tone -> flat
+    silence) gives ONE unambiguous gate transition each way, so the ramp envelope
+    sequence is deterministic (a wobbling near-threshold input would flicker the
+    gate at the Q15 floor — that's a separate edge effect, covered by the
+    decision-vs-amplitude tests). ramp<=4 fits the 2-cell pipeline (the documented
+    hardware ceiling)."""
+    sig = [0.0] * 10 + [0.7] * 24 + [0.0] * 16   # clean single open/close
+    inq = [_fq(v) for v in sig]
+    dut = run_block_dut("SquelchBlock", inq,
+                        params=dict(db=-20.0, alpha=0.1, ramp=ramp, gate=False),
+                        chip_yaml=CHIP_YAML, in_port="sample", out_port="out")
+    assert dut.ok, dut.reason
+    gr = _gr_squelch_ramp(inq, -20.0, 0.1, ramp)
+    d = np.array([(w - 0x10000 if w & 0x8000 else w) if w is not None else 0
+                  for w in dut.outputs_q15], dtype=float) / 32768.0
+    g = np.array(gr.floats, dtype=float)
+    n = min(len(d), len(g))
+    max_err = float(np.max(np.abs(d[:n] - g[:n]))) * 32768
+    print(f"\nramp={ramp}: max_err {max_err:.1f} LSB over {n} samples")
+    assert max_err <= 3, f"ramp={ramp} differs from GR by {max_err:.1f} LSB"
+
+
 def test_ramp_and_gate_unsupported():
-    """ramp!=0 and gate=True are explicitly unsupported and must raise (sound
+    """ramp>MAX_RAMP and gate=True are explicitly unsupported and must raise (sound
     failure, not a silent wrong result)."""
     from gr_kyttar.placement.blocks.squelch_block import SquelchBlock
     with pytest.raises(ValueError):

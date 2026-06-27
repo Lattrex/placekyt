@@ -301,9 +301,15 @@
       "kyttar_block": "SquelchBlock",
       "grc_block": "analog.pwr_squelch_ff",
       "tier": 2,
-      "status": "in_progress",
+      "status": "done",
       "metric": "decision",
-      "notes": "PARITY-GAP: ramp param raises (UNIMPLEMENTED, not a HW limit) - GR analog.pwr_squelch_ff supports a sinusoidal ramp; must implement. gate=True is a genuine HW limit (one-output-per-input) - keep raising but must be documented LOUDLY per INV-0."
+      "notes": "Matches analog.pwr_squelch_ff(db,alpha,ramp,gate). ramp NOW IMPLEMENTED (was raising): raised-cosine attack/release envelope 0.5-0.5cos(pi*k/ramp), envelope-then-update counter, bit-for-bit with GR. ramp>0 uses a 2-CELL pipeline (squelch cell + envelope/counter cell). HW-DEVIATION: ramp<=4 (the ramp+1 envelope table + program fit one cell only to ramp 4; measured; raises above, documented). gate=True (drop samples) HW-unsupported -> raises (one-output-per-input). 17 tests incl. ramp 1-4 vs GR (<=1 LSB on a clean burst).",
+      "params": {
+        "db": -50.0,
+        "alpha": 0.0001,
+        "ramp": 0,
+        "gate": false
+      }
     },
     {
       "kyttar_block": "PSKSymbolMapperBlock",

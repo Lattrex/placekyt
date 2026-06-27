@@ -73,29 +73,31 @@ def _s16(v):
     return v - 0x10000 if v >= 0x8000 else v
 
 
-def _run_dut(fs, f, amp, n):
+def _run_dut(fs, f, amp, n, offset=0.0, phase=0.0):
     dut = run_block_dut_complex(
         "NCOBlock", [complex(0, 0)] * n,
-        params={"sample_rate": fs, "frequency": f, "amplitude": amp},
+        params={"sample_rate": fs, "frequency": f, "amplitude": amp,
+                "offset": offset, "phase": phase},
         chip_yaml=CHIP_YAML, words_per_sample=2)
     assert dut.ok, dut.reason
     return dut
 
 
-def _gr_sig_source(fs, f, amp, n):
+def _gr_sig_source(fs, f, amp, n, offset=0.0, phase=0.0):
     return run_gnuradio_ref_complex(
         [complex(0, 0)] * n,
         gnuradio_script="""
 from gnuradio import gr, analog, blocks
 tb = gr.top_block()
-src = analog.sig_source_c(fs, analog.GR_COS_WAVE, f, amp, 0)
+src = analog.sig_source_c(fs, analog.GR_COS_WAVE, f, amp, offset, phase)
 hd = blocks.head(gr.sizeof_gr_complex, N)
 snk = blocks.vector_sink_c()
 tb.connect(src, hd); tb.connect(hd, snk)
 tb.run()
 output_complex = list(snk.data())
 """,
-        extra_args={"fs": fs, "f": f, "amp": amp, "N": n})
+        extra_args={"fs": fs, "f": f, "amp": amp, "N": n,
+                    "offset": offset, "phase": phase})
 
 
 # --- structure / smoke --------------------------------------------------------
@@ -159,6 +161,27 @@ def test_nco_matches_gnuradio_grid(fs, f, amp):
     res = compare_complex_against_grc(dut.i_q15, dut.q_q15, gr.i, gr.q,
                                       metric=Metric.AMPLITUDE, delay=0, tolerance=2)
     print(f"\nvs GR grid f={f} fw={blk.freq_word}:", res.summary())
+    assert res.passed, res.summary()
+
+
+@pytest.mark.parametrize("offset,phase", [
+    (0.0, 0.0), (0.2, 0.0), (0.0, math.pi / 2), (0.0, math.pi),
+    (0.1, math.pi / 4)])
+def test_nco_offset_and_phase_match_gnuradio(offset, phase):
+    """The GR sig_source_c ``offset`` (a real DC bias on the I/real channel only)
+    and initial ``phase`` (radians) match GNU Radio on a grid-aligned tone. offset
+    shifts I only (Q unchanged), phase rotates the start angle — both within the
+    grid ~1-2 LSB floor."""
+    fs, f, amp = 32000, 2000, 0.7
+    blk = NCOBlock("c", sample_rate=fs, frequency=f, amplitude=amp,
+                   offset=offset, phase=phase)
+    assert blk.freq_word % 512 == 0
+    n = 48
+    dut = _run_dut(fs, f, amp, n, offset=offset, phase=phase)
+    gr = _gr_sig_source(fs, f, amp, n, offset=offset, phase=phase)
+    res = compare_complex_against_grc(dut.i_q15, dut.q_q15, gr.i, gr.q,
+                                      metric=Metric.AMPLITUDE, delay=0, tolerance=3)
+    print(f"\nvs GR offset={offset} phase={phase:.3f}:", res.summary())
     assert res.passed, res.summary()
 
 

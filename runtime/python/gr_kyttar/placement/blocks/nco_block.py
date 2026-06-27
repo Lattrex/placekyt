@@ -24,6 +24,11 @@ class NCOBlock(KyttarBlock):
       * ``sample_rate``  — sample rate in Hz.
       * ``frequency``    — tone frequency in Hz.
       * ``amplitude``    — output amplitude (0..1), applied as a Q15 gain.
+      * ``offset``       — GR ``sig_source_c`` DC offset: a real bias added to the
+        I (real) channel only (Q unchanged), matching GR's behaviour when given a
+        real-valued offset. Default 0.
+      * ``phase``        — initial phase θ₀ in RADIANS (GR ``sig_source_c`` phase);
+        maps to the 16-bit phase accumulator's start value. Default 0.
       * ``waveform``     — ``"cos"`` (the complex exponential cos + j·sin; GR's
         ``GR_COS_WAVE`` for ``sig_source_c``). Only the complex cosine is built.
 
@@ -86,12 +91,16 @@ class NCOBlock(KyttarBlock):
 
     def __init__(self, name: str, sample_rate: float = 32000.0,
                  frequency: float = 2000.0, amplitude: float = 0.9,
+                 offset: float = 0.0, phase: float = 0.0,
                  waveform: str = "cos"):
         super().__init__(name, sample_rate=sample_rate, frequency=frequency,
-                         amplitude=amplitude, waveform=waveform)
+                         amplitude=amplitude, offset=offset, phase=phase,
+                         waveform=waveform)
         self._sample_rate = float(sample_rate)
         self._frequency = float(frequency)
         self._amplitude = float(amplitude)
+        self._offset = float(offset)
+        self._init_phase = float(phase)
         if str(waveform).lower().replace("_wave", "").replace("gr_", "") not in (
                 "cos", "complex", "exp"):
             raise ValueError(
@@ -100,7 +109,13 @@ class NCOBlock(KyttarBlock):
         self._waveform = waveform
         self._freq_word = round(self._frequency / self._sample_rate * 65536) & 0xFFFF
         self._amp_q15 = float_to_q15(self._amplitude)
-        self._phase = 0  # reference-model state
+        # GR sig_source_c params offset + phase (initial phase in radians).
+        # phase -> the 16-bit phase accumulator's initial value; offset -> a Q15
+        # DC bias added to the output (GR's offset is complex but is applied to
+        # the real-valued sum per channel; the common case is a real offset).
+        self._offset_q15 = float_to_q15(self._offset)
+        self._phase0_word = round(self._init_phase / (2.0 * math.pi) * 65536) & 0xFFFF
+        self._phase = self._phase0_word  # reference-model state
 
     @property
     def cell_count(self) -> int:
@@ -140,7 +155,8 @@ class NCOBlock(KyttarBlock):
             entries=[EntryPoint("default")],
             data=[DataWord("freq", self._freq_word, address=3),
                   DataWord("quarter", 16384, address=4)],
-            state=[StateVar("phase")],
+            # Initial phase (GR sig_source_c `phase`, radians -> 16-bit word).
+            state=[StateVar("phase", initial_value=self._phase0_word)],
             assembly_template="""\
 start:
     MOVE R0, R{state:phase}
@@ -287,8 +303,11 @@ evencase:
                     Port("cos_neg", register=2), Port("sin_neg", register=3)],
             outputs=[Port("yi"), Port("yq"), Port("trig")],
             entries=[EntryPoint("default")],
+            # `off` = the GR sig_source_c `offset`, a Q15 DC bias added to each
+            # channel after amplitude+sign (offset==0 -> ADD R0,off is a no-op).
             data=[DataWord("amp", self._amp_q15, address=4),
-                  DataWord("zero", 0, address=5)],
+                  DataWord("zero", 0, address=5),
+                  DataWord("off", self._offset_q15, address=6)],
             state=[StateVar("cv"), StateVar("sv")],
             assembly_template="""\
 start:
@@ -303,7 +322,7 @@ start:
     SUB R{data:zero}, R{state:cv}
     MOVE R{state:cv}, R0
 cpos:
-    MOVE R0, R{state:cv}
+    ADD R{state:cv}, R{data:off}
     {write:yi}
     CMP R{in:sin_neg}, R{data:zero}
     BR.Z spos
@@ -415,11 +434,12 @@ spos:
         interpolated table; ``input_samples`` is only a trigger count."""
         tbl = self._quarter_table()
         amp = self._s16(self._amp_q15)
+        off = self._s16(self._offset_q15)
         n = len(input_samples)
         out = np.zeros(n, dtype=np.complex64)
-        phase = 0
+        phase = self._phase0_word
         for i in range(n):
-            cos = self._channel_q15((phase + 16384) & 0xFFFF, tbl, amp)
+            cos = self._channel_q15((phase + 16384) & 0xFFFF, tbl, amp) + off
             sin = self._channel_q15(phase, tbl, amp)
             out[i] = complex(cos / 32768.0, sin / 32768.0)
             phase = (phase + self._freq_word) & 0xFFFF
@@ -427,15 +447,16 @@ spos:
 
     def process_reference_q15(self, input_samples) -> List[Tuple[int, int]]:
         """Bit-exact on-chip predictor: ``(yi, yq)`` unsigned Q15 pairs per trigger
-        (I=cos, Q=sin)."""
+        (I=cos, Q=sin). Includes the initial phase + DC offset (GR sig_source_c)."""
         tbl = self._quarter_table()
         amp = self._s16(self._amp_q15)
+        off = self._s16(self._offset_q15)
         out = []
-        phase = 0
+        phase = self._phase0_word
         for _ in range(len(input_samples)):
-            cos = self._channel_q15((phase + 16384) & 0xFFFF, tbl, amp)
-            sin = self._channel_q15(phase, tbl, amp)
-            out.append((cos & 0xFFFF, sin & 0xFFFF))
+            cos = (self._channel_q15((phase + 16384) & 0xFFFF, tbl, amp) + off) & 0xFFFF
+            sin = self._channel_q15(phase, tbl, amp) & 0xFFFF
+            out.append((cos, sin))
             phase = (phase + self._freq_word) & 0xFFFF
         return out
 

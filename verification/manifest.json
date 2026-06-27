@@ -228,15 +228,16 @@
       "kyttar_block": "NCOBlock",
       "grc_block": "analog.sig_source_c",
       "tier": 1,
-      "status": "in_progress",
+      "status": "done",
       "metric": "amplitude",
       "params": {
         "sample_rate": 32000.0,
         "frequency": 2000.0,
         "amplitude": 0.9,
-        "waveform": "cos"
+        "offset": 0.0,
+        "phase": 0.0
       },
-      "notes": "PARITY-GAP: missing offset and phase (GR analog.sig_source_c has both; phase hardcoded 0). Real-world Hz params ARE exposed (good). Add offset+phase."
+      "notes": "Matches analog.sig_source_c(samp_rate,COS,freq,amp,offset,phase) \u2014 added offset (real DC bias on I only, matching GR real-offset behaviour) + phase (initial phase radians -> 16-bit accumulator start). Real-world Hz params (NOT a freq_word proxy). 33-entry quarter-wave LUT + interp -> ~1-2 LSB on grid; ~11 LSB derived table floor off-grid. 26 tests incl. offset/phase sweep vs GR."
     },
     {
       "kyttar_block": "SoftDemodulatorBlock",

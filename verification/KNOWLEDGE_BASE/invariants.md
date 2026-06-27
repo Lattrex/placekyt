@@ -8,6 +8,47 @@ or verifying a Kyttar block should read these first. Each is a *constraint* ("al
 
 ---
 
+## INV-0 — MATCH THE GNU RADIO BLOCK'S PARAMETERS EXACTLY (deviate ONLY for hardware, and say so LOUDLY)
+
+**This is the most important rule. Violating it silently makes automated block
+generation worthless — the block does not mean what its name claims.**
+
+A Kyttar block that maps to a GNU Radio block MUST expose the **same parameters**,
+with the **same generality and units**, as that GNU Radio block:
+
+- GR takes an **arbitrary table** (constellation `symbol_table`, FIR `taps`, IIR
+  tap lists) → the Kyttar block takes an arbitrary table. **NOT** a fixed enum of
+  presets, **NOT** a hardcoded set.
+- GR takes a **real-world** param (`frequency` Hz + `sample_rate`, `db`, `alpha`)
+  → expose that. **NEVER** a hardware-internal proxy (`freq_word`, raw Q15 coeff)
+  *instead*; derive the internal value inside the block.
+- GR bundles a behavior as a **parameter** (e.g. `fir_filter_fff(decimation, taps)`)
+  → it stays a parameter on ONE block. **Do NOT split a GR block into two Kyttar
+  blocks to dodge a parameter.**
+- Match GR's exact param **names and defaults**.
+
+**The ONLY permitted deviation is a genuine HARDWARE/ISA limit** (Q15 `[-1,1)`,
+32 words/cell, finite cells, one-output-per-input). "It was easier", "the demo only
+needs X", or "it fits the common cases" are NOT hardware limits. If the full GR
+parameter is implementable within the ISA, you MUST implement it (e.g. a 32-entry
+constellation table FITS 32 words/cell → there is no excuse for a 3-mode enum).
+
+When a deviation is a REAL hardware limit, document it **CLEARLY and LOUDLY** in
+THREE places, and **raise** (never silently clamp/ignore) on an unsupported value:
+1. a `# HARDWARE DEVIATION:` comment at the param in `__init__`,
+2. a `Hardware deviations from <gr_block>:` heading in the class docstring,
+3. the manifest `notes`, prefixed `HW-DEVIATION:`.
+
+**`done` bar:** a block is `done` ONLY when its test sweeps the WHOLE declared
+parameter space (every enum value; representative points across each continuous
+range; arbitrary tables exercised with several real tables) against a GR golden
+built from the SAME params. One default config is not "done".
+
+**If unsure whether a deviation is truly hardware-forced: STOP and ASK. Never
+decide it unilaterally and never deviate without saying so.**
+
+---
+
 ## INV-1 — The port target hop count is PLACEMENT-DEPENDENT, never a constant
 
 **Symptom:** a block builds and routes fine but produces **zero outputs** on simKYT.

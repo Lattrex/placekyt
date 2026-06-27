@@ -2,6 +2,63 @@
 
 # Writing a Kyttar DSP Block
 
+> # ⛔ RULE #0 — MATCH THE GNU RADIO BLOCK EXACTLY. NO EXCEPTIONS.
+>
+> **A Kyttar block that claims a GNU Radio equivalent MUST expose the SAME
+> PARAMETERS that GNU Radio block exposes — same knobs, same generality, same
+> units.** "Matching" means *matching*. It does **not** mean "a useful subset",
+> "the common cases", "three preset modes", or "an internal hardware proxy".
+>
+> Concretely, if the GNU Radio factory takes:
+> - an **arbitrary table** (e.g. `chunks_to_symbols(symbol_table)`, a constellation
+>   object, a `taps` list) → your block MUST accept an arbitrary table. NOT a fixed
+>   enum of presets. NOT a hardcoded set.
+> - a **real-world parameter** (e.g. `frequency` in Hz + `sample_rate`) → your block
+>   MUST expose that real-world parameter. NEVER expose the hardware-internal proxy
+>   (a `freq_word` phase increment, a raw Q15 coefficient) *instead*. Derive the
+>   internal value from the GR-facing parameter inside the block.
+> - a parameter with a **default** → use GNU Radio's exact default and name.
+>
+> ### The ONLY permitted deviation: a genuine HARDWARE constraint.
+> You may narrow a parameter's range **only** when the chip's hardware truly cannot
+> do what GR does (e.g. Q15 range `[-1, 1)`, 32 words per cell, finite cell count,
+> one-output-per-input dataflow). When you do:
+>
+> 1. **It MUST be a real ISA/hardware limit — not "this was easier" or "the demo
+>    only needs X".** If you can implement the full GR parameter within the ISA, you
+>    MUST. ("It fits in 32 words" means there is NO excuse.)
+> 2. **You MUST document it CLEARLY and LOUDLY** in THREE places:
+>    - a `# HARDWARE DEVIATION:` comment at the param in the block's `__init__`,
+>    - the block's class docstring, under a `Hardware deviations from <gr_block>:`
+>      heading,
+>    - the block's `notes` field in `verification/manifest.json`, prefixed
+>      `HW-DEVIATION:`.
+> 3. **You MUST raise a clear error** if the user passes a value the hardware can't
+>    honor (never silently clamp or ignore it).
+>
+> ### What is FORBIDDEN (these are the exact mistakes that have happened):
+> - ❌ Inventing a parameter abstraction GR doesn't have ("3 modes" instead of a
+>   constellation table).
+> - ❌ Splitting one GR block into two Kyttar blocks to dodge a parameter (e.g. a
+>   separate "Decimator" instead of `decimation=` on the FIR — decimation is a GR
+>   *parameter*, so it is a *parameter*).
+> - ❌ Exposing a hardware-internal proxy in place of GR's real-world knob.
+> - ❌ Marking a block `done` when only a subset of its parameter space is verified.
+> - ❌ Deviating for ANY reason other than hardware **and** not saying so, loudly.
+>
+> ### Verification "done" bar:
+> A block is `done` ONLY when its test sweeps the **whole declared parameter space**
+> (every enum value; representative points across every continuous range; arbitrary
+> tables exercised with several real tables), each compared against a GNU Radio
+> golden built from the **same** parameters. One default config is NOT "done".
+>
+> If you are unsure whether a deviation is a real hardware limit: **STOP and ASK.**
+> Do not decide unilaterally. Silent deviation is the single worst thing you can do
+> here — it makes automated block generation impossible because the output cannot be
+> trusted to mean what it says.
+
+---
+
 This guide walks through adding your **own** DSP block to placeKYT — from a
 single-cell block to a multi-cell block with feedback, and (optionally) wrapping
 it as a GNU Radio Companion block. It assumes you've read

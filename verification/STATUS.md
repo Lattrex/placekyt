@@ -3,7 +3,7 @@
 
 # Kyttar block library — status
 
-**30 verified · 0 in progress · 39 targeted.** Each Kyttar block is verified as a drop-in equivalent of its GNU Radio Companion counterpart (same parameters, output matching within Q15 quantization). “Quality” is the measured error of the verified block versus the GNU Radio reference.
+**20 verified · 10 in progress · 39 targeted.** Each Kyttar block is verified as a drop-in equivalent of its GNU Radio Companion counterpart (same parameters, output matching within Q15 quantization). “Quality” is the measured error of the verified block versus the GNU Radio reference.
 
 > **Reading the quality column.** `err N / tol M LSB` — the worst-case sample error (`N`) against the derived pass threshold (`M`), in Q15 **LSBs** (1 LSB = 1/32768 of full scale ≈ 3.05e-5); pass requires `N ≤ M`. `−X dB SNR` — the **NMSE**: the error power is `X` dB below the signal power (more negative = quieter; Q15's floor is ≈ −90 dB). Decision blocks report **BER** instead. To estimate a chain's total noise, convert each block's dB to linear power (`10^(dB/10)`), sum, and convert back (`10·log10`) — the noisiest stage dominates.
 
@@ -11,7 +11,6 @@
 |--------------|----------------------|------|--------|-------------------|----------|
 | **GainBlock** | `blocks.multiply_const_ff` | 1 · feed-forward | ✅ done | err 1 / tol 2 LSB · -90 dB SNR | edge rand×3 sweep×4 mut |
 | **UpsamplerBlock** | `filter.interp_fir_filter_fff` | 1 · feed-forward | ✅ done | err 0 / tol 0 LSB | mut |
-| **RRCPulseShaperBlock** | `filter.fir_filter_fff` | 1 · feed-forward | ✅ done | err 4 / tol 34 LSB · -66 dB SNR | mut |
 | **MultiplyBlock** | `blocks.multiply_ff` | 1 · feed-forward | ✅ done | err 1 / tol 2 LSB · -92 dB SNR | edge rand×3 mut |
 | **AddBlock** | `blocks.add_ff` | 1 · feed-forward | ✅ done | err 1 / tol 2 LSB · -90 dB SNR | edge rand×3 mut |
 | **SubtractBlock** | `blocks.sub_ff` | 1 · feed-forward | ✅ done | err 1 / tol 2 LSB · -89 dB SNR | edge rand×3 mut |
@@ -25,24 +24,25 @@
 | **ComplexToRealBlock** | `blocks.complex_to_real` | 1 · feed-forward | ✅ done | err 0 / tol 0 LSB | edge rand×3 mut |
 | **ComplexToImagBlock** | `blocks.complex_to_imag` | 1 · feed-forward | ✅ done | err 0 / tol 0 LSB | edge rand×3 mut |
 | **DCBlockerBlock** | `filter.dc_blocker_ff` | 1 · feed-forward | ✅ done | err 34 / tol 59 LSB · -51 dB SNR | edge rand×3 sweep×7 mut |
-| **FIRFilterBlock** | `filter.fir_filter_fff` | 1 · feed-forward | ✅ done | err 10 / tol 17 LSB · -65 dB SNR | edge rand×3 sweep×12 mut |
-| **IIRBiquadBlock** | `filter.iir_filter_ffd` | 1 · feed-forward | ✅ done | err 16 / tol 21 LSB · -64 dB SNR | sweep×4 mut |
-| **DecimatorBlock** | `filter.fir_filter_fff (decim)` | 1 · feed-forward | ✅ done | err 6 / tol 9 LSB · -72 dB SNR | edge rand×3 sweep×8 mut |
-| **ComplexMixerBlock** | `blocks.multiply_cc + analog.sig_source` | 1 · feed-forward | ✅ done | err 5 / tol 12 LSB · -74 dB SNR | sweep×5 mut |
-| **NCOBlock** | `analog.sig_source_c` | 1 · feed-forward | ✅ done | err 9 / tol 12 LSB · -72 dB SNR | sweep×5 mut |
-| **SoftDemodulatorBlock** | `digital.constellation_soft_decoder_cf` | 1 · feed-forward | ✅ done | err 1 / tol 2 LSB | rand×4 sweep×5 mut |
 | **LowPassFilter** | `filter.fir_filter_fff (firdes.low_pass)` | 1 · feed-forward | ✅ done | err 37 / tol 79 LSB · -55 dB SNR | edge rand×1 sweep×4 mut |
 | **HighPassFilter** | `filter.fir_filter_fff (firdes.high_pass)` | 1 · feed-forward | ✅ done | err 40 / tol 79 LSB · -48 dB SNR | edge rand×1 sweep×4 mut |
 | **BandPassFilter** | `filter.fir_filter_fff (firdes.band_pass)` | 1 · feed-forward | ✅ done | err 36 / tol 79 LSB · -43 dB SNR | edge rand×1 sweep×4 mut |
 | **BandRejectFilter** | `filter.fir_filter_fff (firdes.band_reject)` | 1 · feed-forward | ✅ done | err 84 / tol 118 LSB · -49 dB SNR | edge rand×1 sweep×4 mut |
-| **IQUpconvertBlock** | `blocks.multiply_cc` | 2 · stateful/loop | ✅ done | err 1 / tol 6 LSB · -85 dB SNR | mut |
+| **RRCPulseShaperBlock** | `filter.fir_filter_fff` | 1 · feed-forward | 🟡 in progress | — | — |
+| **FIRFilterBlock** | `filter.fir_filter_fff` | 1 · feed-forward | 🟡 in progress | — | — |
+| **IIRBiquadBlock** | `filter.iir_filter_ffd` | 1 · feed-forward | 🟡 in progress | — | — |
+| **DecimatorBlock** | `filter.fir_filter_fff (decim)` | 1 · feed-forward | 🟡 in progress | — | — |
+| **ComplexMixerBlock** | `blocks.multiply_cc + analog.sig_source` | 1 · feed-forward | 🟡 in progress | — | — |
+| **NCOBlock** | `analog.sig_source_c` | 1 · feed-forward | 🟡 in progress | — | — |
+| **SoftDemodulatorBlock** | `digital.constellation_soft_decoder_cf` | 1 · feed-forward | 🟡 in progress | — | — |
 | **AGCBlock** | `analog.agc_ff` | 2 · stateful/loop | ✅ done | err 40 / tol 80 LSB · -57 dB SNR | mut |
-| **SquelchBlock** | `analog.pwr_squelch_ff` | 2 · stateful/loop | ✅ done | err 0 / tol 4 LSB | mut |
-| **PSKSymbolMapperBlock** | `digital.chunks_to_symbols_bf` | 2 · stateful/loop | ✅ done | err 0 / tol 0 LSB | mut |
+| **IQUpconvertBlock** | `blocks.multiply_cc` | 2 · stateful/loop | 🟡 in progress | — | — |
 | **ComplexRRCMatchedFilterBlock** | `filter.fir_filter_ccf (rrc taps)` | 2 · stateful/loop | ⬜ planned · 🧪 proof-of-concept | — | — |
 | **ComplexCostasLoopBlock** | `digital.costas_loop_cc` | 2 · stateful/loop | ⬜ planned · 🧪 proof-of-concept | — | — |
 | **GardnerTimingRecovery** | `digital.symbol_sync_cc` | 2 · stateful/loop | ⬜ planned · 🧪 proof-of-concept | — | — |
 | **BPSKSlicerBlock** | `digital.binary_slicer_fb` | 2 · stateful/loop | ⬜ planned · 🧪 proof-of-concept | — | — |
+| **SquelchBlock** | `analog.pwr_squelch_ff` | 2 · stateful/loop | 🟡 in progress | — | — |
+| **PSKSymbolMapperBlock** | `digital.chunks_to_symbols_bf` | 2 · stateful/loop | 🟡 in progress | — | — |
 | **LFSRScramblerBlock** | `digital.additive_scrambler_bb` | 2 · stateful/loop | ⬜ planned | — | — |
 | **MultiplyConstComplex** | `blocks.multiply_const_cc` | 3 · new GRC block | ⬜ planned | — | — |
 | **AddConst** | `blocks.add_const_ff` | 3 · new GRC block | ⬜ planned | — | — |

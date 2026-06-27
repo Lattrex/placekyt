@@ -30,24 +30,24 @@
       "kyttar_block": "IQUpconvertBlock",
       "grc_block": "blocks.multiply_cc",
       "tier": 2,
-      "status": "done",
+      "status": "in_progress",
       "metric": "amplitude",
       "params": {
         "freq_word": 4096
       },
-      "notes": "I/Q passband upconverter (6 cells: free-running NCO + dual mixer). out = I*cos(ph) - Q*sin(ph), ph += freq_word (increment-before-emit). GR equivalent = multiply_cc(baseband, sig_source_c(65536,COS,freq_word,1,0,ph0)) -> complex_to_real, ph0=2pi*freq_word/65536. The quantized 17-entry quarter-wave NCO matches GR's continuous oscillator to 1 LSB (corr 1.0000), delay 0. 11 tests: freq sweep {2048,4096,8192}, real-only BPSK, large-in-range, inverted/wrong-freq/dropped-Q-arm mutations. Q15 OVERFLOW CORNER (|I|+|Q|>1): the upmix SUB WRAPS (does not saturate) where GR clamps -> at that corner verified bit-exact vs the block's OWN Q15 reference, GR-equivalence stimulus kept off the corner."
+      "notes": "PARITY-GAP: exposes hardware-internal freq_word instead of GR frequency+sample_rate; missing amplitude/phase. Siblings NCO/ComplexMixer already derive freq_word from Hz -> no excuse. Must expose real-world params."
     },
     {
       "kyttar_block": "RRCPulseShaperBlock",
       "grc_block": "filter.fir_filter_fff",
       "tier": 1,
-      "status": "done",
+      "status": "in_progress",
       "metric": "amplitude",
       "params": {
         "alpha": 0.35,
         "span": 8
       },
-      "notes": "Root-raised-cosine pulse shaper: a span*sps+1 tap causal multi-cell FIR (default 33 taps, 7 cells, chained partial-sum MACs). Coefficients are BIT-FOR-BIT firdes.root_raised_cosine(1.0,sps,1.0,alpha,ntaps) (tap-parity test <1e-5). GR equivalent = fir_filter_fff(1, those taps); aligns at delay 0 (same causal convention), 3 LSB error = 33-tap Q15 MAC floor. 10 tests: tap-parity, BPSK stream, impulse, alpha sweep {0.25,0.35,0.5}, inverted + wrong-alpha mutations. Expects a PRE-UPSAMPLED stream (pair with UpsamplerBlock = interp_fir_filter)."
+      "notes": "PARITY-GAP: hand-rolled RRC formula, sps hardcoded to 4, no gain, no ntaps (only span), Sum=1 normalization; GR firdes.root_raised_cosine takes (gain, sampling_freq, symbol_rate, alpha, ntaps). Taps only matched firdes at the default sps. Must use a firdes-faithful generator."
     },
     {
       "kyttar_block": "MultiplyBlock",
@@ -127,7 +127,9 @@
       "tier": 1,
       "status": "done",
       "metric": "exact",
-      "params": {"n": 2},
+      "params": {
+        "n": 2
+      },
       "notes": "Verified vs GNU Radio blocks.keep_one_in_n (keep 1 sample of every n, no filter; 26 tests). A pure pass-through gated by a modulo-n counter -- the DecimatorBlock's emit gate WITHOUT the FIR. Single cell. Param mirrors GR: n (keep factor). PHASE: GR keeps the LAST sample of each group of n (verified empirically: keep_one_in_n(3) of 0..11 -> 2,5,8,11 = phase n-1), so the up-counter emits when it reaches n then resets (XOR self), matching GR. EXACT pass-through (no Q15 arithmetic) -> bit-exact gate; emitted samples equal the input bit-for-bit. run_block_dut records None on dropped triggers so the kept stream is outputs[n-1::n]; the emit-phase contract (emit iff i%n==n-1) is asserted directly across n in {1..5}. Mutations (wrong n, wrong phase n-2, +1 delay, empty) all FAIL (INV-4). Counter is a persistent StateVar (init 0); the skip path is a bare HALT label (a REAL instruction, not a {write}/{jump} placeholder -- build-engine GOTO miscompile). repeat (the upsampling twin) and interleave/deinterleave deferred to Tier-2 (see TIER1_BLOCK_BACKLOG)."
     },
     {
@@ -136,7 +138,10 @@
       "tier": 1,
       "status": "done",
       "metric": "amplitude",
-      "params": {"length": 4, "scale": 0.25},
+      "params": {
+        "length": 4,
+        "scale": 0.25
+      },
       "notes": "Verified vs GNU Radio blocks.moving_average_ff (out=scale*sum of last `length` samples; 18 tests). A moving average IS an FIR whose `length` taps are all equal to `scale`, so MovingAverageBlock SUBCLASSES the verified FIRFilterBlock with constant box taps (the LowPassFilter pattern) -- all Q15 datapath / multi-cell fold / COEFFICIENT-HEADROOM saturation inherited unchanged. Constant taps are symmetric so the reversed-tap convention is moot and group delay=0, aligned with GR's causal running sum. Params mirror GRC's Moving Average: length + scale (GR's max_iter is an output-buffer bound and vlen=1 -- neither affects the sample math, so neither is a Kyttar param). scale=1/length is a true average (Sum|tap|=1 -> S=0); a larger scale engages the inherited saturating headroom restore (S>0). Two-tier: DUT vs GR moving_average_ff (AMPLITUDE, headroom-aware q15_quant_floor(length,S)) AND DUT vs the inherited process_reference_q15 (EXACT). Coverage: edge + 3 random + length sweep {2,3,5,8,16} (true average) + bit-exact incl. S=1 headroom (3,0.5)/(6,0.3); mutations inverted/wrong-length/+1-delay/empty all FAIL (INV-4). KNOWN LIMIT (inherited FIR per-cell budget): a SINGLE-cell box with S>0 caps at ~3 taps -- a 4-tap box at scale 0.5 (4 taps + S=1 restore on one cell) raises at build; use scale<=1/length (S=0) or a longer/multi-cell length. Not a moving-average-specific limit."
     },
     {
@@ -173,17 +178,17 @@
       "kyttar_block": "FIRFilterBlock",
       "grc_block": "filter.fir_filter_fff",
       "tier": 1,
-      "status": "done",
+      "status": "in_progress",
       "metric": "exact",
-      "notes": "Verified vs filter.fir_filter_fff from 2 to 64 taps. SATURATES on Q15 overflow (production fixed-point semantics; GR float never overflows) via COEFFICIENT HEADROOM, NOT a per-tap or end-only clamp (INV-13). The cell ALU WRAPS on overflow and its V flag is NOT sticky, so a sum can overflow a mid-chain MACQ and wrap back into range by the final op -- an end-only (or per-cell) clamp then MISSES it and the output rolls over (a 40-tap all-0.5 gain-20 FIR on steady 0.9 rolled to a sign-flipping mess). Fix: S=max(0,ceil(log2 sum|coeff|)); scale every coeff by 2^-S before Q15 (Sum|scaled|<=1 => the accumulator can NEVER overflow at any tap or cell), then restore the gain at the very END (single cell: after the last MACQ; multi-cell: on the LAST cell after its final ADD) with ONE SATURATING left shift by S -- the only place a true overdrive overflows, where it pins to +/-full-scale. Normalized filter (Sum<=1) => S=0, a no-op identical to a plain Q15 FIR and bit-exact with GR. The saturating shift can't use a V-flag clamp (SHL clears V); it detects overflow in O(1) with a bias-and-shift test ((acc+2^(15-S))>>(16-S)!=0) and pins via 0x7FFF+signbit. Build-engine gotcha: a GOTO/branch targeting a {write}/{jump}-placeholder label is miscompiled to a stray output jump, so the restore branches to a REAL-instruction label and uses a two-path duplicated-{write} + terminal HALT structure. Budget: S=0 unchanged (single-cell ceiling 6, TAPS_PER_CELL 5; 20-tap=4 cells, 40-tap=8, 64-tap=13); S>0 caps the last cell to 3 taps (and single-cell to 4) for the restore, so a high-gain FIR may use one extra cell (40-tap gain-20 S=5 = 9 cells). Bit-exact predictor = process_reference_q15 (scaled wrapping accumulation + the final saturating shift + the cell-accurate wavefront sample-forwarding); the gate compares the DUT against it EXACTLY. DSP equivalence cross-checked on NORMALIZED taps (S=0): the ref == GR float clipped to Q15. <=6 taps single-cell; 7+ a chained partial-sum systolic wavefront (TAPS_PER_CELL=5) laid out as a column-major serpentine FOLD (INV-8/9/10, output egresses the LAST cell). Substrate fixes inherited: INV-6 (entry WITH params), INV-11 (multi-cell egress PortMap WITH params). Sweeps drive >2*ntaps random samples + a deep-cell mutation (INV-12); the headline overload test builds the 40-tap gain-20 FIR on the real route+simKYT path and asserts it PINS at +full-scale with no sign flip, and a WRAPPING (no-headroom) DUT FAILS the gate (INV-4). KNOWN LIMIT (guarded): 320 taps (64 cells) exceeds the 10x12 routing capacity (no free corridor); ~200 taps / 40 cells still routes."
+      "notes": "PARITY-GAP: missing GR fir_filter_fff's decimation parameter (was wrongly split into a separate DecimatorBlock). Add decimation= here."
     },
     {
       "kyttar_block": "IIRBiquadBlock",
       "grc_block": "filter.iir_filter_ffd",
       "tier": 1,
-      "status": "done",
+      "status": "in_progress",
       "metric": "amplitude",
-      "notes": "Verified vs filter.iir_filter_ffd (Direct Form I). Q15 feedback coefficient |a1|=-2cos(omega) can reach ~2, UNREPRESENTABLE in Q15 [-1,1) -- the old block CLAMPED a-coeffs to [-1,1], silently turning every sharp filter into a wrong one. Fix (no new ISA): store each a-coeff HALVED (representable) and apply its MSUQ (R0-=(A*B)>>15, arch_spec v0.11 \u00a74.12 MAC opcode MODE=11) TWICE -- subtracting a/2 twice == subtracting a, every product in range. A stable biquad output is bounded so the DF-I accumulator stays in range, no saturating shift needed; single cell. DUT is BIT-EXACT with process_reference_q15 at EVERY cutoff. DSP-equivalence vs GR (butterworth-2): normalized cutoff 0.10-0.40 = 3-16 LSB (production), 0.05 ~53 LSB (marginal), 0.02 ~160 LSB (poles within ~0.02 of |z|=1 -- a GUARDED known precision limit vs GR double taps, INV-7 style, NOT a silent failure). Mandatory mutations (inverted, clamped-a1 regression, +1 delay) all FAIL the gate (INV-4).",
+      "notes": "PARITY-GAP: fixed single biquad (3 fftaps + 2 fbtaps); GR filter.iir_filter_ffd takes ARBITRARY-length tap lists (any order) + oldstyle flag. Higher order achievable via cascaded cells -> not a hard ISA wall. Must generalize or document a justified HW limit.",
       "params": {
         "b_coeffs": [
           0.0675,
@@ -200,9 +205,9 @@
       "kyttar_block": "DecimatorBlock",
       "grc_block": "filter.fir_filter_fff (decim)",
       "tier": 1,
-      "status": "done",
+      "status": "in_progress",
       "metric": "amplitude",
-      "notes": "Verified vs filter.fir_filter_fff(M, taps). A decimator IS an FIR + emit-every-M, so DecimatorBlock SUBCLASSES the verified FIRFilterBlock: every wavefront cell runs each sample (delay line / partial forwarding / COEFFICIENT-HEADROOM saturation all INHERITED unchanged) and only the LAST cell's OUTPUT is gated by a mod-M counter. GR's fir_filter_fff(M, taps) emits the full FIR sampled at PHASE 0 -- y_full[0::M] (confirmed empirically) -- so the block emits on input samples 0, M, 2M, ... and aligns with GR at delay=0. Params mirror the GR decimating FIR: coefficients (GR taps) + decimation (GR's first fir_filter_fff arg / GRC decim); renamed the old decimation_factor -> decimation (matches the GRC yaml + GR; fixed callers: modem_110b_demo, the .kyt demo, the gr-kyttar decimator.py wrapper). Non-last cells are reused VERBATIM from the FIR builder; only the last cell is rebuilt to add the counter (so register allocation accounts for it). Headroom restore on the last cell uses the cheaper DOUBLING-saturate (S doublings of ADD R0,R0 + V-clamp) instead of the FIR's bias-shift -- bit-identical to clamp(acc*2^S) so the inherited process_reference_q15 still predicts the DUT EXACTLY, but cheap enough to COEXIST with the mod-M counter on one cell. Tolerance = headroom-aware q15_quant_floor(N, head_shift=S) (S=1 is the COMMON real case: a normalized anti-alias low-pass has Sum|h| slightly >1 from sidelobes). Two-tier verification: DUT emitted stream vs GR float (amplitude, headroom floor) AND DUT vs process_reference_q15 (EXACT, saturating datapath). Budget: the counter+restore share the last cell, so its tap cap shrinks with S (single-cell ceiling 4@S=0 / 2@S=1; multi-cell last cell 3@S=0 / 2@S=1 / 1@S=2). KNOWN LIMIT (guarded, test_decimator_excess_headroom_raises): Sum|h|>4 (head_shift>2) raises a clear ValueError -- the restore no longer fits beside the counter; every realistic anti-alias decimator (normalized or up to ~4x gain) is covered. Coverage: decimation-phase contract (emit iff index%M==0), edge + 3 random + (taps,M) sweep single->deep-multicell, S=1 headroom filter, bit-exact multicell, and inverted/wrong-M/wrong-taps/+1-delay/empty/deep-cell mutations all FAIL the gate.",
+      "notes": "PARITY-GAP / INVENTED BLOCK: GR fir_filter_fff(decimation, taps) is ONE block - decimation is a PARAMETER. This block should NOT exist separately; decimation must be a param on FIRFilterBlock. To be folded in / deprecated.",
       "params": {
         "coefficients": "<taps>",
         "decimation": 2
@@ -212,19 +217,19 @@
       "kyttar_block": "ComplexMixerBlock",
       "grc_block": "blocks.multiply_cc + analog.sig_source",
       "tier": 1,
-      "status": "done",
+      "status": "in_progress",
       "metric": "amplitude",
       "params": {
         "sample_rate": 32000.0,
         "frequency": 2000.0
       },
-      "notes": "DONE -- verified vs GNU Radio blocks.multiply_cc(signal, analog.sig_source_c) (19 tests; full verification suite 297; placekyt 937/16-skip). The fused complex mixer / frequency shifter: out[n]=in[n]*exp(j theta_n), the FULL complex product yi=xi*cos-xq*sin, yq=xi*sin+xq*cos (multiply_cc, 4 MULQ). Params GR-native: sample_rate, frequency(Hz); freq_word derived; n=0 multiplies by exp(j0)=1 (signal passthrough). REUSES the verified NCO interpolated cos/sin pipeline verbatim (angle-fold + parity-split 33-entry table + two-write idx), with a SIGN-applying interp (the mixer wants signed cos/sin, no amplitude) and a mixer cell doing the complex product. 11 cells: phase | sin{fold even odd interp} | RELAY | cos{fold even odd interp} | mixer. KEY: the input signal (xi,xq) reaches the mixer (pipeline end) via a cheap RELAY cell placed mid-chain -- a value forwarded across too many cells of a long datapath arrives 0 (a substrate forward-distance limit: phase->last over 8 skipped cells failed; IQUpconvert's skip-4 works), so xi,xq hop phase->relay (skip-4)->mixer (skip-4). The budget-tight pipeline cells can't passthrough xi,xq, so the dedicated relay is the fix. VERIFIED two-tier: DUT vs process_reference_q15 BIT-EXACT (interpolated cos/sin + Q15 complex product) at GRID + OFF-GRID frequencies; DUT vs GR multiply_cc = ~1-2 LSB grid-aligned, ~5-8 LSB off-grid (vs GR at the DUT's actual freq_word frequency = the table-NCO floor propagated through the multiply). Signal amplitude kept <=0.5 so the complex product stays in Q15 (no overflow). Mutations (swap I/Q, negate Q, +1 delay, wrong freq, conjugate, empty) all FAIL. GRC: kyttar_complex_mixer.block.yml label 'Complex Mixer' + kyttar.complex_mixer wrapper (GR-native params); CATEGORY 'modulation'. COMPLETES the tier-1 GRC-parity queue."
+      "notes": "PARITY-GAP: missing oscillator amplitude (NCO exposes it - inconsistent), phase, offset vs analog.sig_source_c. Add them."
     },
     {
       "kyttar_block": "NCOBlock",
       "grc_block": "analog.sig_source_c",
       "tier": 1,
-      "status": "done",
+      "status": "in_progress",
       "metric": "amplitude",
       "params": {
         "sample_rate": 32000.0,
@@ -232,18 +237,18 @@
         "amplitude": 0.9,
         "waveform": "cos"
       },
-      "notes": "DONE -- verified vs GNU Radio analog.sig_source_c (21 tests; full verification suite 278; placekyt 938/16-skip). A complex NCO emitting amplitude*exp(j*theta_n) (I=amp*cos, Q=amp*sin); each input sample is a trigger (value ignored). Params mirror GRC's Signal Source VERBATIM in user units: sample_rate, frequency(Hz), amplitude, waveform='cos'; freq_word=round(frequency/sample_rate*65536) derived internally; n=0=(amp,0) (GR phase-0 start). 10-cell datapath: phase | (fold even odd interp)_sin | (fold even odd interp)_cos | emit. DESIGN: (1) angle-fold -- fold the quadrant mirror INTO the angle (q=mir?16384-within:within) so interpolation is always FORWARD table[idx]->table[idx+1]; idx=q>>9 (0..32), frac=(q&0x1FF)<<6, idx_bits=7. (2) parity-split table -- the 33-entry quarter table is split EVEN(table[0,2,..,32], 17 entries)/ODD(table[1,3,..,31]); idx and idx+1 always have opposite parity so each table cell does ONE unconditional LOAD (no range test, no straddle, fits the 32-reg/cell budget). interp re-pairs by parity (par=idx&1 from the even cell). (3) amplitude-then-sign in emit; complex egress = two writes (yi,yq) from emit, ONE net wired (harness de-interleaves). VERIFICATION two-tier: DUT vs process_reference_q15 BIT-EXACT on BOTH channels at GRID-ALIGNED *and* OFF-GRID frequencies (the off-grid cases exercise interpolation + the odd-idx path); DUT vs GR sig_source_c = ~1 LSB grid-aligned (freq_word%512==0, no interp error + no drift) and ~10 LSB off-grid vs GR-at-the-DUT's-actual-frequency (the derived 33-entry-table linear-interpolation floor). TWO documented precision effects: the ~11-LSB table-interp floor, and the freq_word quantization (16-bit phase word -> fs/65536 Hz resolution; an off-grid requested freq runs at the nearest representable tone, drifting vs GR's exact frequency -- a separate, expected effect). Mutations (swap I/Q, negate Q, +1 delay, wrong freq, empty) all FAIL the gate. KEY SUBSTRATE GOTCHAS solved (in [[kyttar-cell-asm-conventions]]): folded-egress face geometry (column-major serpentine, emit faces east off-block to the bus); a single output fanned to >1 cell only delivers to the FIRST -- emit idx as TWO writes idx_e/idx_o; first->last-cell forwards fail (compute neg in fold, carry fold->interp); explicit input regs don't reserve from the state-allocation gap (place data past the highest input reg). GRC: kyttar_nco.block.yml label 'Signal Source' + kyttar.nco wrapper (GR-native params); CATEGORY 'sources' (added to test_catalog EXPECTED_CATEGORIES). ComplexMixer reuses this complex exponential."
+      "notes": "PARITY-GAP: missing offset and phase (GR analog.sig_source_c has both; phase hardcoded 0). Real-world Hz params ARE exposed (good). Add offset+phase."
     },
     {
       "kyttar_block": "SoftDemodulatorBlock",
       "grc_block": "digital.constellation_soft_decoder_cf",
       "tier": 1,
-      "status": "done",
+      "status": "in_progress",
       "metric": "llr",
       "params": {
         "noise_variance": 0.1
       },
-      "notes": "Verified vs GNU Radio digital.constellation_soft_decoder_cf on a constellation_bpsk() (12 tests; full verification suite 257; placekyt 937/16-skip). BPSK soft-decision demapper: turns a carrier-recovered real-axis I sample into an LLR for a soft-input FEC (Viterbi) decoder. On chip it is a SINGLE MULQ -- LLR = coeff*I -- where coeff = min(0.5, 2/sigma2 * llr_scale) maps the theoretical BPSK LLR 2I/sigma2 into the Q15 range. The noise_variance param is REAL, not cosmetic: coeff tracks 2/sigma2 and SATURATES at the production scale 0.5 for any realistic sigma2<=4 (verified coeff==0.5 at sigma2 in {0.05,0.1,1,4}), then scales down for very high noise (sigma2=10 -> coeff=0.2). GR's BPSK soft decoder emits LLR=4*I (a fixed scale), so the LLR comparator aligns the two via llr_scale=coeff/4 (=0.125 at production scale). METRIC = LLR (compare_llr_against_grc): SIGN agreement is the hard bit the decoder acts on and must be EXACT (0 mismatches outside the near-zero dead zone); the soft magnitude is held to a derived Q15 floor after the scale. Two-tier: DUT vs GR BPSK soft decoder (sign exact + magnitude) AND DUT vs process_reference_q15 (EXACT single-MULQ datapath; FIXED a latent reference bug -- it referenced a nonexistent self._inv_variance_q15 and would AttributeError; now models LLR=(coeff*I)>>15 exactly + added llr_coeff_q15/process_reference_q15). Mutations (flipped sign=wrong bit, halved magnitude, +1 delay, empty) all FAIL the gate (INV-4). Uses the complex/LLR harness proven in test_complex_harness.py. GRC: kyttar_soft_demodulator.block.yml; grc_import maps kyttar_soft_demodulator -> SoftDemodulatorBlock via _TYPE_OVERRIDES."
+      "notes": "PARITY-GAP: hardwired BPSK (LLR=coeff*I); GR digital.constellation_soft_decoder_cf is CONSTELLATION-DRIVEN (takes a constellation object, complex input, per-bit LLRs). No constellation param exposed. Must generalize."
     },
     {
       "kyttar_block": "ComplexRRCMatchedFilterBlock",
@@ -293,20 +298,20 @@
       "kyttar_block": "SquelchBlock",
       "grc_block": "analog.pwr_squelch_ff",
       "tier": 2,
-      "status": "done",
+      "status": "in_progress",
       "metric": "decision",
-      "notes": "GRC-verbatim params (db, alpha, ramp, gate); power squelch pwr=(1-alpha)*pwr+alpha*|x|^2, gate at 10^(db/10). Verified vs pwr_squelch_ff: gate pattern matches except <=3 Q15 edge samples, passed samples within 4 LSB. ramp!=0 + gate=True unsupported (raise)."
+      "notes": "PARITY-GAP: ramp param raises (UNIMPLEMENTED, not a HW limit) - GR analog.pwr_squelch_ff supports a sinusoidal ramp; must implement. gate=True is a genuine HW limit (one-output-per-input) - keep raising but must be documented LOUDLY per INV-0."
     },
     {
       "kyttar_block": "PSKSymbolMapperBlock",
       "grc_block": "digital.chunks_to_symbols_bf",
       "tier": 2,
-      "status": "done",
+      "status": "in_progress",
       "metric": "exact",
       "params": {
         "modulation": "bpsk"
       },
-      "notes": "BPSK verified 1:1 vs chunks_to_symbols_bf([1,-1]): bit 0->+1, 1->-1, full-scale +/-1 exact in Q15. I-only (Q=0). test_psk_symbol_mapper.py (7 tests, sign-flip+shift mutations). QPSK/8PSK use the _bc complex map (separate verification)."
+      "notes": "PARITY-GAP: hardcoded 3-mode enum (bpsk/qpsk/8psk); GR digital.chunks_to_symbols_bc takes an ARBITRARY symbol_table + dimensionality. A 32-entry constellation table fits the ISA (LOAD supports 32 entries) -> the 3-mode limit is ARBITRARY, not hardware. Must generalize. Only BPSK was ever verified."
     },
     {
       "kyttar_block": "LFSRScramblerBlock",

@@ -1,13 +1,14 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Verify DecimatorBlock against GNU Radio's filter.fir_filter_fff(decim, taps).
+"""Verify FIRFilterBlock's DECIMATION parameter vs GR filter.fir_filter_fff(M, taps).
 
-A decimator IS an FIR plus an emit-every-M counter. GR's ``fir_filter_fff(M,
-taps)`` produces the full FIR output sampled at phase 0 — ``y_full[0::M]``
-(verified). DecimatorBlock SUBCLASSES the verified FIRFilterBlock: every cell of
-the wavefront runs each sample (delay line / partial forwarding / COEFFICIENT-
-HEADROOM saturation all inherited), and only the LAST cell's OUTPUT is gated by a
-modulo-M counter, so it emits on input samples 0, M, 2M, … — aligned with GR at
-delay 0.
+Decimation is a FIRFilterBlock PARAMETER (matching GR — fir_filter_fff bundles
+decim + taps in one block), NOT a separate block; the standalone DecimatorBlock
+was removed. A decimating FIR IS an FIR plus an emit-every-M counter. GR's
+``fir_filter_fff(M, taps)`` produces the full FIR output sampled at phase 0 —
+``y_full[0::M]`` (verified). The FIR wavefront runs each sample (delay line /
+partial forwarding / COEFFICIENT-HEADROOM saturation), and only the OUTPUT cell's
+emit is gated by a modulo-M counter, so it emits on input samples 0, M, 2M, … —
+aligned with GR at delay 0.
 
 Params mirror the GR decimating FIR: ``coefficients`` (GR ``taps``) and
 ``decimation`` (GR's first ``fir_filter_fff`` arg / the GRC ``decim``).
@@ -49,7 +50,7 @@ for p in (str(_PLACEKYT), str(_VERIFY), str(_RUNTIME)):
 
 from kyttar_verify import (  # noqa: E402
     run_block_dut, run_gnuradio_ref, compare_against_grc, write_report, Metric)
-from gr_kyttar.placement.blocks.decimator_block import DecimatorBlock  # noqa: E402
+from gr_kyttar.placement.blocks.fir_filter_block import FIRFilterBlock  # noqa: E402
 
 CHIP_YAML = str(_PLACEKYT / "resources" / "chips" / "kyttar_10x12.yaml")
 _GR_AVAILABLE = os.path.exists(os.environ.get("KYTTAR_GR_PYTHON", "/usr/bin/python3"))
@@ -96,7 +97,7 @@ def _lp(n):
 
 
 def _block(taps, M):
-    return DecimatorBlock("ref", taps, decimation=M)
+    return FIRFilterBlock("ref", taps, decimation=M)
 
 
 def _emitted(dut, M):
@@ -108,7 +109,7 @@ def _emitted(dut, M):
 def _verify_vs_gr(taps, M, inputs):
     blk = _block(taps, M)
     n_taps, S = blk.num_taps, blk._head_shift
-    dut = run_block_dut("DecimatorBlock", inputs,
+    dut = run_block_dut("FIRFilterBlock", inputs,
                         params={"coefficients": taps, "decimation": M},
                         chip_yaml=CHIP_YAML)
     assert dut.ok, f"build/run failed: {dut.reason}"
@@ -120,7 +121,7 @@ def _verify_vs_gr(taps, M, inputs):
 
 def _verify_bitexact(taps, M, inputs):
     blk = _block(taps, M)
-    dut = run_block_dut("DecimatorBlock", inputs,
+    dut = run_block_dut("FIRFilterBlock", inputs,
                         params={"coefficients": taps, "decimation": M},
                         chip_yaml=CHIP_YAML)
     assert dut.ok, f"build/run failed: {dut.reason}"
@@ -138,7 +139,7 @@ def test_decimation_phase_is_every_Mth_sample(M):
     so a non-None output must appear iff the input index is a multiple of M."""
     taps = _lp(4)
     inp = _random_input(seed=10 + M, n=6 * M + 3)
-    dut = run_block_dut("DecimatorBlock", inp,
+    dut = run_block_dut("FIRFilterBlock", inp,
                         params={"coefficients": taps, "decimation": M},
                         chip_yaml=CHIP_YAML)
     assert dut.ok, dut.reason
@@ -227,7 +228,7 @@ def test_decimator_mutation_wrong_decimation_fails():
     (different output stream)."""
     taps = _lp(4)
     inp = _random_input(seed=9, n=120)
-    dut = run_block_dut("DecimatorBlock", inp,
+    dut = run_block_dut("FIRFilterBlock", inp,
                         params={"coefficients": taps, "decimation": 2},
                         chip_yaml=CHIP_YAML)
     assert dut.ok, dut.reason
@@ -242,7 +243,7 @@ def test_decimator_mutation_wrong_decimation_fails():
 def test_decimator_mutation_wrong_taps_fails():
     taps = _lp(4)
     inp = _random_input(seed=3, n=80)
-    dut = run_block_dut("DecimatorBlock", inp,
+    dut = run_block_dut("FIRFilterBlock", inp,
                         params={"coefficients": taps, "decimation": 2},
                         chip_yaml=CHIP_YAML)
     assert dut.ok, dut.reason
@@ -282,13 +283,13 @@ def test_decimator_mutation_deep_cell_fails():
     blk = _block(taps, M)
     assert blk.cell_count >= 2, "deep-cell test needs a multi-cell decimator"
     inp = _random_input(seed=313, n=2 * 8 * M + 30)
-    dut = run_block_dut("DecimatorBlock", inp,
+    dut = run_block_dut("FIRFilterBlock", inp,
                         params={"coefficients": taps, "decimation": M},
                         chip_yaml=CHIP_YAML)
     assert dut.ok, dut.reason
     perturbed = list(taps)
     perturbed[0] += 0.2
-    ref_blk = DecimatorBlock("c", perturbed, decimation=M)
+    ref_blk = FIRFilterBlock("c", perturbed, decimation=M)
     ref_wrong = [_s16(w) / 32768.0 for w in ref_blk.process_reference_q15(inp)]
     res = compare_against_grc(_emitted(dut, M), ref_wrong, metric=Metric.EXACT,
                               delay=0)
@@ -304,7 +305,7 @@ def test_decimator_excess_headroom_raises():
     counter on one cell; the block raises a clear error rather than silently
     failing to build. If the budget is ever extended this guard flips."""
     with pytest.raises(ValueError, match="headroom"):
-        DecimatorBlock("x", [0.9] * 7, decimation=2)   # Σ|h|=6.3 → S=3
+        FIRFilterBlock("x", [0.9] * 7, decimation=2)   # Σ|h|=6.3 → S=3
 
 
 # --- report -------------------------------------------------------------------
@@ -314,6 +315,7 @@ def test_emit_report():
     inp = [v // 2 for v in _random_input(seed=777, n=2 * 8 * 2 + 30)]
     dut, res, n, S = _verify_vs_gr(taps, 2, inp)
     assert res.passed, res.summary()
-    write_report("DecimatorBlock", res, coverage={
+    write_report("FIRFilterBlock_decim", res, coverage={
         "edge": True, "random": 3, "param_sweep": 8, "mutation": True,
-        "phase": True, "bit_exact": True})
+        "phase": True, "bit_exact": True,
+        "note": "decimation is a FIRFilterBlock parameter (GR fir_filter_fff(M,taps))"})

@@ -1210,3 +1210,31 @@ they are larger than one autonomous step at the production-quality bar.
 - **All four TX-chain blocks (PSKMapper-BPSK, Upsampler, RRC, IQUpconvert) are now
   status=done in the manifest, each with mandatory mutation tests.** TX baseband+passband
   is fully GR-verified; ready to assemble the full-duplex modem.
+
+## FIR decim+interp merge + a MASKED tap-reversal bug (2026-06-27)
+
+- **GR's decim/interp are FIR PARAMETERS, not separate blocks.** `fir_filter_fff(decim,
+  taps)` and `interp_fir_filter_fff(interp, taps)` are ONE block each; the GRC
+  Low/High/Band filter blocks expose BOTH `decim` and `interp`. So FIRFilterBlock now
+  takes `decimation` + `interpolation`; the 4 convenience filters inherit them via
+  super().__init__. The standalone DecimatorBlock was an INVENTED block (decimation is
+  a parameter) — DELETED, all call-sites migrated to FIRFilterBlock(decimation=M).
+- **decim** = mod-M output gate (proven DecimatorBlock logic folded in). HW-DEVIATION
+  (decim>1 only, documented loudly + raises): the counter shares the output cell with
+  the saturating restore -> Σ|h|≤4. **interp** = zero-stuff burst (L FIR passes/input,
+  rate-EXPANDING, verified with run_block_dut_rate). Single-cell interp only for now
+  (measured unrolled-burst tap caps: L=2→4, L=3,4→2); larger RAISES "compose
+  Upsampler->FIR" (honest limit). Both verified 1:1 vs real GR.
+- **MASKED BUG FOUND (the big one): the FIR convolved with taps REVERSED vs real GR for
+  ASYMMETRIC filters.** Doubly hidden: (1) the block computed Σ h[reversed]·x, and (2)
+  the FIR test's `_gr_fir` golden DELIBERATELY reversed the taps before feeding GR (with
+  a false comment "GR convolves latest-sample-first"). Every FIR test used SYMMETRIC
+  taps, so reversed==forward and nothing caught it. Surfaced the instant asymmetric taps
+  were tried (which RULE #0's full-coverage bar demands). FIX: single-cell + multi-cell
+  build paths AND the Q15 reference now reverse each cell's segment to match real
+  `fir_filter_fff` (y[n]=Σ_k h[k]x[n-k]); the test golden feeds taps AS-IS;
+  asymmetric/ramp tap sets added permanently. RRC/Costas/modem unaffected (symmetric).
+- **LESSON: ALWAYS verify a convolution/FIR/correlator with ASYMMETRIC stimulus AND an
+  UNDOCTORED GR golden.** A golden that "adjusts" the input to match the DUT is not a
+  golden — it's a second copy of the bug. If a test helper transforms taps/inputs before
+  GR, that's a red flag: GR must be called exactly as a user/GRC would.

@@ -1,0 +1,22 @@
+{
+  "kyttar_block": "FIRFilterBlock_interp",
+  "passed": true,
+  "metric": "amplitude",
+  "n_compared": 12,
+  "max_abs_err": 1,
+  "tolerance": 4,
+  "nmse_db": -77.45574873025804,
+  "correlation": 0.9999999955214369,
+  "bit_errors": 0,
+  "delay_used": 0,
+  "coverage": {
+    "L_sweep": [
+      2,
+      3,
+      4
+    ],
+    "mutation": true,
+    "rate_check": true,
+    "note": "interpolation is a FIRFilterBlock parameter (GR interp_fir_filter_fff(L,taps)); single-cell unrolled burst"
+  }
+}

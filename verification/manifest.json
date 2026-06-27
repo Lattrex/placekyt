@@ -178,9 +178,17 @@
       "kyttar_block": "FIRFilterBlock",
       "grc_block": "filter.fir_filter_fff",
       "tier": 1,
-      "status": "in_progress",
+      "status": "done",
       "metric": "exact",
-      "notes": "PARITY-GAP: missing GR fir_filter_fff's decimation parameter (was wrongly split into a separate DecimatorBlock). Add decimation= here."
+      "notes": "Now owns GR's decim AND interp params (fir_filter_fff(decim,taps) / interp_fir_filter_fff(interp,taps)) -- decimation folded in (the standalone DecimatorBlock was removed; it was an INVENTED block, decimation is a GR PARAMETER). decim: mod-M output gate, verified bit-exact on-chip + vs GR (test_decimator.py). interp: zero-stuff burst, verified vs interp_fir_filter (1 LSB). HW-DEVIATION (decim>1 only): mod-M counter shares the output cell with the saturating restore -> Sum|h|<=4 (raises above); a plain/interp FIR has no such limit. HW-DEVIATION (interp>1): single-cell unrolled-burst tap cap (L=2->4 taps etc.); larger interp FIRs compose Upsampler->FIR (raises with that message). Plain-FIR arbitrary-taps path verified vs GR.",
+      "params": {
+        "coefficients": [
+          0.25,
+          0.3,
+          0.2,
+          0.25
+        ]
+      }
     },
     {
       "kyttar_block": "IIRBiquadBlock",
@@ -199,18 +207,6 @@
           -1.143,
           0.413
         ]
-      }
-    },
-    {
-      "kyttar_block": "DecimatorBlock",
-      "grc_block": "filter.fir_filter_fff (decim)",
-      "tier": 1,
-      "status": "in_progress",
-      "metric": "amplitude",
-      "notes": "PARITY-GAP / INVENTED BLOCK: GR fir_filter_fff(decimation, taps) is ONE block - decimation is a PARAMETER. This block should NOT exist separately; decimation must be a param on FIRFilterBlock. To be folded in / deprecated.",
-      "params": {
-        "coefficients": "<taps>",
-        "decimation": 2
       }
     },
     {

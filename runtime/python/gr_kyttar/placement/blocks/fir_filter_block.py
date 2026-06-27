@@ -119,14 +119,44 @@ class FIRFilterBlock(KyttarBlock):
 
     _interface = BlockInterface(entry_address=1, input_registers=[31], output_registers=[31])
 
-    def __init__(self, name: str, coefficients: List[float]):
+    def __init__(self, name: str, coefficients: List[float],
+                 decimation: int = 1, interpolation: int = 1):
         """
-        Initialize FIR filter.
+        Initialize FIR filter — matches GNU Radio's GRC **FIR Filter** /
+        **interp_fir_filter** parameterization.
+
+        GRC's ``filter_fir_filter_xxx`` exposes ``decim`` + ``taps``; its
+        ``interp_fir_filter_xxx`` exposes ``interp`` + ``taps``; and the GRC
+        convenience filters (Low/High/Band-pass, Band-reject) expose BOTH
+        ``decim`` and ``interp`` (selecting fir_filter vs interp_fir_filter). So
+        this block exposes both as first-class parameters:
 
         Args:
             name: Block name
-            coefficients: Filter coefficients (length determines tap count)
+            coefficients: Filter coefficients / GR ``taps`` (length = tap count).
+            decimation: GR ``decim`` (M). Output rate = input rate / M; the FIR
+                runs every input sample and emits only every M-th output (phase 0,
+                ``y_full[0::M]``) — exactly GR ``fir_filter_fff(M, taps)``. M=1 is
+                a plain FIR (no gating). decimation>1 and interpolation>1 together
+                is rejected (GR uses one or the other per block instance).
+            interpolation: GR ``interp`` (L). Output rate = input rate * L; the
+                input is zero-stuffed by L (sample then L-1 zeros) and filtered —
+                exactly GR ``interp_fir_filter_fff(L, taps)``. L=1 is a plain FIR.
         """
+        decimation = int(decimation)
+        interpolation = int(interpolation)
+        if decimation < 1:
+            raise ValueError(f"decimation must be >= 1, got {decimation}")
+        if interpolation < 1:
+            raise ValueError(f"interpolation must be >= 1, got {interpolation}")
+        if decimation > 1 and interpolation > 1:
+            raise ValueError(
+                "decimation>1 and interpolation>1 cannot be combined on one FIR "
+                "block (GR uses fir_filter for decim, interp_fir_filter for "
+                f"interp); got decim={decimation}, interp={interpolation}. Use "
+                "two cascaded blocks.")
+        self._decimation = decimation
+        self._interpolation = interpolation
         super().__init__(name, coefficients=coefficients)
         self._coefficients = coefficients  # ORIGINAL coeffs (reference / display)
         self._num_taps = len(coefficients)
@@ -162,6 +192,25 @@ class FIRFilterBlock(KyttarBlock):
         # reference / display.
         scale = float(1 << self._head_shift)
         self._coeff_q15 = [float_to_q15(c / scale) for c in coefficients]
+
+        # HARDWARE DEVIATION (decimation>1 only): the mod-M output-gate counter
+        # SHARES the output cell with the saturating-shift restore, so a
+        # decimating filter needing more than MAX_HEADROOM_SHIFT_DECIM bits of
+        # coefficient headroom (Σ|h| > 2^MAX_HEADROOM_SHIFT_DECIM) cannot fit one
+        # cell. RAISE loudly rather than silently mis-build. A plain or
+        # interpolating FIR has no counter on the output cell and is NOT subject to
+        # this — full headroom range (S≤15) applies there.
+        if self._decimation > 1 and self._head_shift > self.MAX_HEADROOM_SHIFT_DECIM:
+            raise ValueError(
+                f"HARDWARE LIMIT: a DECIMATING FIR (decimation={self._decimation}) "
+                f"needs {self._head_shift} bits of coefficient headroom "
+                f"(Σ|h|={sum_abs:.2f}), but the decimator supports at most "
+                f"{self.MAX_HEADROOM_SHIFT_DECIM} (Σ|h| ≤ "
+                f"{1 << self.MAX_HEADROOM_SHIFT_DECIM}) because the mod-M output "
+                f"counter shares the output cell with the saturating-gain restore. "
+                f"Scale the taps down (Σ|h| ≤ {1 << self.MAX_HEADROOM_SHIFT_DECIM}) "
+                f"and apply the gain in a separate stage, or decimate a normalized "
+                f"filter. (A non-decimating FIR has no such limit.)")
 
         # Initialize delay line
         self._delay_line = [0.0] * self._num_taps
@@ -210,11 +259,26 @@ class FIRFilterBlock(KyttarBlock):
     # to the multi-cell wavefront so the restore has room. A normalized filter
     # (S=0) keeps the full MAX_SINGLE_CELL_TAPS single-cell ceiling.
     MAX_SINGLE_CELL_TAPS_WITH_SHIFT = 4
+    # DECIMATION (M>1) caps: the output cell also carries the mod-M counter
+    # (≈9 words), so its tap room shrinks. Re-derived against the resolver
+    # allocator (probed real builds, inherited from the former DecimatorBlock):
+    #   * single cell + counter (S=0): 4 taps; (S>0): 2 taps.
+    #   * multi-cell last cell + counter (S=0): 3 taps; (S=1): 2 taps.
+    # Non-output cells keep the full TAPS_PER_CELL (no counter). These apply ONLY
+    # when decimation>1; a plain/interpolating FIR uses the un-capped values above.
+    MAX_SINGLE_CELL_TAPS_DECIM = 4            # S=0 single cell + counter
+    MAX_SINGLE_CELL_TAPS_DECIM_WITH_SHIFT = 2  # S>0 single cell + counter + restore
+    LAST_CELL_TAPS_DECIM = 3                  # S=0 multi-cell last cell + counter
+    LAST_CELL_TAPS_DECIM_WITH_SHIFT = 2       # S=1 multi-cell last cell + counter + restore
 
     def _single_cell_max(self) -> int:
-        """Largest tap count that still fits ONE cell, accounting for the
-        headroom restore: MAX_SINGLE_CELL_TAPS normally, but capped lower when the
-        saturating-shift restore is present (S>0)."""
+        """Largest tap count that still fits ONE cell, accounting for the headroom
+        restore (S>0) and — when decimation>1 — the mod-M output counter that
+        shares the cell."""
+        if self._decimation > 1:
+            if self._head_shift > 0:
+                return self.MAX_SINGLE_CELL_TAPS_DECIM_WITH_SHIFT
+            return self.MAX_SINGLE_CELL_TAPS_DECIM
         if self._head_shift > 0:
             return self.MAX_SINGLE_CELL_TAPS_WITH_SHIFT
         return self.MAX_SINGLE_CELL_TAPS
@@ -233,13 +297,22 @@ class FIRFilterBlock(KyttarBlock):
         N, K = self._num_taps, self.TAPS_PER_CELL
         if N <= self._single_cell_max():
             return [0, N]
-        if self._head_shift == 0:
+        # The LAST cell is capped when it carries the saturating-shift restore
+        # (S>0) and/or — when decimation>1 — the mod-M output counter. A plain
+        # normalized FIR (S=0, decim=1) has no cap → simple ⌈N/K⌉ packing.
+        S = self._head_shift
+        if self._decimation > 1:
+            # Output cell always carries the counter (every S); tighter with the
+            # restore. S=0 → 3, S=1 → 2, S≥2 → 1 (S≤2 enforced in __init__).
+            last_max = (self.LAST_CELL_TAPS_DECIM if S == 0
+                        else self.LAST_CELL_TAPS_DECIM_WITH_SHIFT if S == 1 else 1)
+        elif S == 0:
             c = math.ceil(N / K)
             offs = [min(m * K, N) for m in range(c + 1)]
             offs[c] = N
             return offs
-        # S>0: cap the last segment so the restore fits.
-        last_max = self.LAST_CELL_TAPS_WITH_SHIFT
+        else:
+            last_max = self.LAST_CELL_TAPS_WITH_SHIFT
         c = math.ceil((N - last_max) / K) + 1
         segs = [K] * (c - 1) + [N - K * (c - 1)]
         # Rebalance so the last segment lands in [1, last_max].
@@ -351,8 +424,76 @@ class FIRFilterBlock(KyttarBlock):
         return self._num_taps
 
     @property
+    def decimation(self) -> int:
+        return self._decimation
+
+    @property
+    def interpolation(self) -> int:
+        return self._interpolation
+
+    @property
     def interface(self) -> BlockInterface:
         return self._interface
+
+    # ---- decimation gate (GR fir_filter_fff(M, taps)) -----------------------
+    # When decimation M>1 the FIR runs EVERY input sample but emits only every
+    # M-th output (phase 0, y_full[0::M]) — exactly GR. The output emit is gated
+    # by a mod-M counter on the last cell (the cell that produces the output). The
+    # counter (decim, one) + a few instructions cost ≈9 words, so when M>1 the
+    # output cell's tap segment is capped tighter (see _single_cell_max /
+    # _segment_offsets). HARDWARE DEVIATION (see __init__ / class docstring):
+    # because the mod-M counter SHARES the output cell with the saturating-shift
+    # restore, a high-gain decimating filter (Σ|h| needing S>MAX_HEADROOM_SHIFT)
+    # cannot fit one cell and RAISES — documented loudly, never silent.
+    MAX_HEADROOM_SHIFT_DECIM = 2   # Σ|h| ≤ 4 when M>1 (counter + restore share a cell)
+    SAT_NEG_Q15 = 0x8000           # rail for the doubling-restore form used with the gate
+
+    def _counter_data(self, base_addr: int):
+        """The two mod-M counter DataWords (``decim``=M, ``one``=1) at explicit
+        addresses just past ``base_addr`` (the last coeff/bias/satpos word)."""
+        return [DataWord("decim", self._decimation, address=base_addr + 1),
+                DataWord("one", 1, address=base_addr + 2)]
+
+    @staticmethod
+    def _counter_gate_open():
+        """Lines run EVERY sample after the delay shift: bump the mod-M counter
+        and, until it reaches M, branch past the MAC+emit to a HALT (state updated,
+        no output). Targets a REAL instruction (``_decim_skip`` on a HALT), never a
+        {write}/{jump} placeholder (the build-engine GOTO miscompile, INV-13)."""
+        return [
+            "    ADD R{state:counter}, R{data:one}",
+            "    MOVE R{state:counter}, R0",
+            "    CMP R{state:counter}, R{data:decim}",
+            "    BR.NZ _decim_skip",
+            "    XOR R{state:counter}, R{state:counter}",
+            "    MOVE R{state:counter}, R0",
+        ]
+
+    @staticmethod
+    def _counter_gate_close():
+        """End the emit path and provide the skip target. The emit path must HALT
+        before falling into the skip block (a remote {jump} does NOT stop local
+        execution)."""
+        return ["    HALT", "_decim_skip:", "    HALT"]
+
+    def _decim_satshift_and_emit(self, S: int, emit_lines):
+        """Decim-path gain restore: a SATURATING left shift by ``S`` done as ``S``
+        DOUBLINGS (``ADD R0,R0`` + a V-flag clamp each), then emit. Equivalent to
+        ``clamp(acc·2^S)`` — bit-identical to :meth:`_sat_shl`, so the inherited
+        Q15 reference still predicts the DUT exactly. The doubling form is CHEAPER
+        in fixed overhead than the bias-shift restore, which is what lets the
+        restore COEXIST with the mod-M counter on one cell for the small S a
+        decimation filter needs (S∈{0,1,2})."""
+        if S <= 0:
+            return list(emit_lines)
+        lines = []
+        for _ in range(S):
+            lines.append("    ADD R0, R0")
+            lines.append("    BR.NV +2")
+            lines.append("    SHR R0, #15")
+            lines.append("    SUB R{data:satneg}, R0")
+        lines.extend(emit_lines)
+        return lines
 
     def build_cell_programs(self) -> Dict[int, CellProgram]:
         """FIR filter: single-cell for ≤MAX_SINGLE_CELL_TAPS, multi-cell larger.
@@ -361,13 +502,34 @@ class FIRFilterBlock(KyttarBlock):
         — NOT borrowed from RRCPulseShaperBlock, whose per-segment coefficient
         REVERSAL is only correct for symmetric taps (it silently mis-convolves a
         general/asymmetric FIR). See :meth:`_build_multicell_programs`.
+
+        With ``decimation`` M>1 the output emit is gated by a mod-M counter
+        (:meth:`_build_decim_programs`); with ``interpolation`` L>1 the landing
+        cell zero-stuffs by L and emits a burst of L outputs per input
+        (:meth:`_build_interp_programs`). M=L=1 is the plain FIR below.
         """
+        if self._decimation > 1:
+            return self._build_decim_programs()
+        if self._interpolation > 1:
+            return self._build_interp_programs()
         if self._num_taps > self._single_cell_max():
             return self._build_multicell_programs()
+        return self._build_plain_single_cell()
 
-        # Single-cell: compact version for small filters
+    def _build_plain_single_cell(self) -> Dict[int, CellProgram]:
+        """The plain (non-decim, non-interp) single-cell FIR — compact version for
+        small filters. The decim builder reuses this for its non-gated base.
+
+        TAP ORDER: after the shift, ``d{i}`` holds x[n-(N-1-i)] (d0=oldest,
+        d{N-1}=newest). GR's convention y[n]=Σ_k h[k]·x[n-k] then requires register
+        ``d{i}`` to be multiplied by ``h[N-1-i]`` — i.e. the coefficients REVERSED.
+        (The multi-cell path documents the same reversal. The single-cell path
+        previously used forward order, which is correct ONLY for symmetric taps and
+        silently mis-convolved asymmetric filters — fixed here, asymmetric-tap
+        regression test added.)"""
         S = self._head_shift
-        data = [DataWord(f"c{i}", c, address=i+1) for i, c in enumerate(self._coeff_q15)]
+        rev = list(reversed(self._coeff_q15))  # d{i} multiplies h[N-1-i]
+        data = [DataWord(f"c{i}", c, address=i+1) for i, c in enumerate(rev)]
         if S > 0:
             # bias (2^(15-S)) + satpos (0x7FFF) carry the saturating-shift restore.
             # EXPLICIT addresses right after the coeffs; an auto address would pack
@@ -404,6 +566,188 @@ class FIRFilterBlock(KyttarBlock):
             state=state,
             assembly_template=template,
         )}
+
+    def _build_decim_programs(self) -> Dict[int, CellProgram]:
+        """Decimating FIR (GR fir_filter_fff(M, taps)): the plain FIR wavefront
+        with the OUTPUT cell's emit gated by a mod-M counter. The FIR runs every
+        input sample; only every M-th output (phase 0) is emitted. Non-output
+        cells are reused verbatim from the plain builder; only the output cell is
+        rebuilt to add the counter (so the register allocator accounts for it).
+        Mirrors the (now-removed) DecimatorBlock exactly."""
+        # Build the un-gated FIR programs first (single- or multi-cell), then
+        # rebuild the output cell with the counter. We temporarily run the plain
+        # path by dispatching on tap count (decimation>1 already routed us here).
+        if self._num_taps > self._single_cell_max():
+            base = self._build_multicell_programs()
+        else:
+            base = self._build_plain_single_cell()
+        programs = dict(base)
+        last = max(programs.keys())
+        n_cells = len(programs)
+        S = self._head_shift
+        N = self._num_taps
+        emit = ["    {write:out}", "    {jump:out}"]
+
+        if n_cells == 1:
+            coeffs = list(reversed(self._coeff_q15))  # d{i} multiplies h[N-1-i]
+            data = [DataWord(f"c{i}", c, address=i + 1) for i, c in enumerate(coeffs)]
+            base_addr = N
+            if S > 0:
+                data.append(DataWord("satneg", self.SAT_NEG_Q15, address=N + 1))
+                base_addr = N + 1
+            data += self._counter_data(base_addr)
+            state = [StateVar(f"d{i}") for i in range(N)]
+            if S > 0:
+                state.append(StateVar("acc_save"))
+            state.append(StateVar("counter", initial_value=self._decimation - 1))
+            lines = []
+            for i in range(N - 1):
+                lines.append(f"    MOVE R{{state:d{i}}}, R{{state:d{i+1}}}")
+            lines.append(f"    MOVE R{{state:d{N-1}}}, R{{in:sample}}")
+            lines += self._counter_gate_open()
+            lines.append("    MULQ R{state:d0}, R{data:c0}")
+            for i in range(1, N):
+                lines.append(f"    MACQ R{{state:d{i}}}, R{{data:c{i}}}")
+            lines.extend(self._decim_satshift_and_emit(S, emit))
+            lines += self._counter_gate_close()
+            programs[0] = CellProgram(
+                inputs=[Port("sample", register=0)],
+                outputs=[Port("out")],
+                entries=[EntryPoint("default")],
+                data=data, state=state,
+                assembly_template="start:\n" + "\n".join(lines) + "\n")
+            return programs
+
+        # Multi-cell: rebuild ONLY the last (output) cell with the counter.
+        offsets = self._segment_offsets()
+        start, end = offsets[last], offsets[last + 1]
+        L = end - start
+        cell_coeffs = list(reversed(self._coeff_q15[start:end]))  # GR tap convention
+        data = [DataWord(f"c{i}", cell_coeffs[i], address=i + 1) for i in range(L)]
+        base_addr = L
+        if S > 0:
+            data.append(DataWord("satneg", self.SAT_NEG_Q15, address=L + 1))
+            base_addr = L + 1
+        data += self._counter_data(base_addr)
+        state = [StateVar(f"d{i}") for i in range(L)]
+        if S > 0:
+            state.append(StateVar("acc_save"))
+        state.append(StateVar("counter", initial_value=self._decimation - 1))
+        last_data_addr = max(dw.address for dw in data)
+        partial_reg = last_data_addr + len(state) + 1
+        inputs = [Port("sample", register=0),
+                  Port("partial", register=partial_reg)]
+        lines = []
+        for i in range(L - 1):
+            lines.append(f"    MOVE R{{state:d{i}}}, R{{state:d{i+1}}}")
+        lines.append(f"    MOVE R{{state:d{L-1}}}, R{{in:sample}}")
+        lines += self._counter_gate_open()
+        lines.append("    MULQ R{state:d0}, R{data:c0}")
+        for i in range(1, L):
+            lines.append(f"    MACQ R{{state:d{i}}}, R{{data:c{i}}}")
+        lines.append("    ADD R0, R{in:partial}")
+        lines.extend(self._decim_satshift_and_emit(S, emit))
+        lines += self._counter_gate_close()
+        programs[last] = CellProgram(
+            inputs=inputs,
+            outputs=[Port("out")],
+            entries=[EntryPoint("default")],
+            data=data, state=state,
+            assembly_template="start:\n" + "\n".join(lines) + "\n")
+        return programs
+
+    def _build_interp_programs(self) -> Dict[int, CellProgram]:
+        """Interpolating FIR (GR interp_fir_filter_fff(L, taps)): the input is
+        zero-stuffed by L (sample then L-1 zeros) and filtered. Per input sample
+        the landing cell runs the FIR L times — once on the real sample, L-1 times
+        on a zero — emitting a BURST of L outputs (rate-EXPANDING). The L passes
+        are UNROLLED in the cell (a remote JUMP does not halt the issuer, so one
+        entry can emit the whole burst then HALT).
+
+        Single-cell (≤ single-cell tap budget after the unrolled burst): one cell
+        holds the delay line + the L-pass burst. Larger filters need the burst to
+        drive a multi-cell wavefront L times, which is a separate datapath — until
+        that lands, a multi-cell interpolating FIR RAISES with a clear message
+        (compose UpsamplerBlock -> FIRFilterBlock) rather than silently
+        mis-building. (HONEST LIMIT, documented — see __init__.)"""
+        L = self._interpolation
+        S = self._head_shift
+        N = self._num_taps
+        # The unrolled L-pass burst costs ~ (shift + N MACs + restore + emit) * L
+        # words. Cap the single-cell interp tap count so the unrolled program +
+        # delay line + coeffs fit one 32-word cell. Derived conservatively: coeffs
+        # (N) + delay (N) + zero const + (S>0: bias/satpos/acc_save) + program.
+        single_cap = self._interp_single_cell_max()
+        if N > single_cap:
+            raise ValueError(
+                f"HARDWARE LIMIT (current): an INTERPOLATING FIR "
+                f"(interpolation={L}) with {N} taps exceeds the single-cell "
+                f"unrolled-burst budget ({single_cap} taps for L={L}). A "
+                f"multi-cell interpolating wavefront is not yet built. Compose "
+                f"UpsamplerBlock(sps={L}) -> FIRFilterBlock(taps) instead (exactly "
+                f"GR interp_fir_filter), or reduce the tap count.")
+
+        coeffs = list(reversed(self._coeff_q15))  # d{i} multiplies h[N-1-i]
+        data = [DataWord(f"c{i}", c, address=i + 1) for i, c in enumerate(coeffs)]
+        addr = N
+        data.append(DataWord("zero", 0, address=addr + 1)); addr += 1
+        if S > 0:
+            data.append(DataWord("bias", 1 << (15 - S), address=addr + 1))
+            data.append(DataWord("satpos", self.SAT_POS_Q15, address=addr + 2))
+            addr += 2
+        state = [StateVar(f"d{i}") for i in range(N)]
+        if S > 0:
+            state.append(StateVar("acc_save"))
+
+        emit = ["    {write:out}", "    {jump:out}"]
+
+        def fir_pass(sample_ref: str):
+            """One FIR pass: shift in ``sample_ref`` (a reg ref), MAC, restore,
+            emit. ``sample_ref`` is R{in:sample} for the real sample or
+            R{data:zero} for a stuffed zero."""
+            ls = []
+            for i in range(N - 1):
+                ls.append(f"    MOVE R{{state:d{i}}}, R{{state:d{i+1}}}")
+            ls.append(f"    MOVE R{{state:d{N-1}}}, {sample_ref}")
+            ls.append("    MULQ R{state:d0}, R{data:c0}")
+            for i in range(1, N):
+                ls.append(f"    MACQ R{{state:d{i}}}, R{{data:c{i}}}")
+            ls.extend(self._satshift_and_emit(S, emit))
+            return ls
+
+        lines = []
+        lines += fir_pass("R{in:sample}")          # pass 0: the real sample
+        for _ in range(L - 1):                       # passes 1..L-1: stuffed zeros
+            lines += fir_pass("R{data:zero}")
+        lines.append("    HALT")
+
+        return {0: CellProgram(
+            inputs=[Port("sample", register=0)],
+            outputs=[Port("out")],
+            entries=[EntryPoint("default")],
+            data=data, state=state,
+            assembly_template="start:\n" + "\n".join(lines) + "\n")}
+
+    def _interp_single_cell_max(self) -> int:
+        """Largest tap count that fits ONE cell for an interpolating FIR, given the
+        L-pass unrolled burst (each pass is a full shift+MAC+emit). The cell holds
+        N coeffs + N delay regs + a zero const (+ S>0: bias/satpos/acc_save) plus
+        the unrolled program (≈(2N+4)·L words). The limit shrinks as L grows.
+
+        EMPIRICALLY MEASURED against real builds (probed N up to 8, both S=0 and
+        S>0): the largest N that builds AND computes per L. Above this the
+        interpolating FIR must be composed as Upsampler(L) -> FIR(taps), or use a
+        multi-cell interpolating wavefront (not yet built — see
+        :meth:`_build_interp_programs`)."""
+        L = self._interpolation
+        # Measured single-cell ceilings (normalized taps, S=0), probed against
+        # real builds: largest N that builds AND computes per L. The headroom
+        # restore (S>0) costs a few more words; subtract one tap to stay safe.
+        table = {1: 6, 2: 4, 3: 2, 4: 2}
+        cap = table.get(L, 1)  # L>=5: very tight bursts, 1 tap (or compose)
+        if self._head_shift > 0:
+            cap = max(1, cap - 1)
+        return cap
 
     def _satshift_and_emit(self, S: int, emit_lines):
         """The END-ONLY COEFFICIENT-HEADROOM gain restore (a SATURATING left
@@ -478,13 +822,20 @@ class FIRFilterBlock(KyttarBlock):
         Cell ``m`` therefore sees the input stream delayed by ``offset_m`` samples
         (the total length of all preceding segments), so its register ``i`` (after
         the shift) holds ``x[n - offset_m - (L_m-1-i)]`` — i.e. delay
-        ``d = offset_m + L_m-1-i``. To match the single-cell / GNU Radio
-        convention ``y[n] = Σ_d coeff[N-1-d]·x[n-d]``, register ``i`` must be
-        multiplied by ``coeff[N-1-d] = coeff[N - offset_{m+1} + i]``. Hence cell
-        ``m`` takes the coefficient segment ``coeff[N-offset_{m+1} : N-offset_m]``
-        in FORWARD order — segments assigned from the END of the tap array, the
-        LAST cell getting the FIRST taps. (RRC instead reversed
-        ``coeff[m*K:(m+1)*K]``; that coincides only for symmetric taps.)
+        ``d = offset_m + (L_m-1-i)``. GR's convention is ``y[n] = Σ_d h[d]·x[n-d]``
+        (NOT the reversed ``h[N-1-d]``), so register ``i`` must be multiplied by
+        ``h[d] = h[offset_m + L_m-1-i]``. As ``i`` runs 0..L_m-1, that index runs
+        ``offset_{m+1}-1`` down to ``offset_m`` — i.e. cell ``m`` takes the segment
+        ``h[offset_m : offset_{m+1}]`` in REVERSE order. (Cell 0 gets the FIRST
+        taps, the last cell the LAST taps — the natural left-to-right split, each
+        segment internally reversed for the delay-line order.)
+
+        BUG HISTORY: this previously used ``coeff[N-end:N-start]`` forward (the
+        reversed-whole-filter convention), which silently convolved ASYMMETRIC
+        filters BACKWARDS vs real GR. It was masked because the FIR test's golden
+        reversed the taps before feeding GR, and all FIR tests used SYMMETRIC taps.
+        Fixed to match real ``fir_filter_fff``; asymmetric multi-tap regression
+        tests added.
 
         Segment boundaries come from :meth:`_segment_offsets` — TAPS_PER_CELL per
         cell, except the LAST cell is capped (and the tail rebalanced) when the
@@ -504,8 +855,10 @@ class FIRFilterBlock(KyttarBlock):
             is_first = (m == 0)
             is_last = (m == n_cells - 1)
 
-            # Coefficients: coeff[N-end : N-start], forward order (derived above).
-            cell_coeffs = self._coeff_q15[N - end:N - start]
+            # Coefficients: cell m owns h[start:end], REVERSED so register d{i}
+            # (holding x[n-(offset_m+L-1-i)]) multiplies h[offset_m+L-1-i] — the
+            # real GR y[n]=Σ_d h[d]x[n-d] convention (see the class derivation).
+            cell_coeffs = list(reversed(self._coeff_q15[start:end]))
             data = [DataWord(f"c{i}", cell_coeffs[i], address=i + 1)
                     for i in range(L)]
             # bias + satpos live ONLY on the LAST cell (and only when S>0 — they
@@ -640,7 +993,29 @@ class FIRFilterBlock(KyttarBlock):
         comparison still holds. An overdrive overflows the final shift and pins at
         ±full-scale.
 
-        Returns one signed Q15 int per input sample.
+        Returns one signed Q15 int per OUTPUT sample. For a plain FIR
+        (decim=interp=1) that is one per input. With ``interpolation`` (L) the
+        input is first zero-stuffed by L (so L outputs per input); with
+        ``decimation`` (M) only every M-th FIR output is emitted (phase 0).
+        """
+        # GR interp_fir_filter_fff(L, taps): zero-stuff input by L, then filter.
+        L = self._interpolation
+        if L > 1:
+            stuffed = []
+            for s in input_q15:
+                stuffed.append(int(s) & 0xFFFF)
+                stuffed.extend([0] * (L - 1))
+            input_q15 = stuffed
+        full = self._full_fir_q15(input_q15)
+        # GR fir_filter_fff(M, taps): emit only every M-th output (phase 0).
+        M = self._decimation
+        return full[::M] if M > 1 else full
+
+    def _full_fir_q15(self, input_q15) -> list:
+        """The core Q15 COEFFICIENT-HEADROOM FIR (no decim/interp) — one output
+        per input sample, in the SAME accumulation order as the built datapath
+        (single-cell vs multi-cell wavefront). ``process_reference_q15`` wraps this
+        with the interp zero-stuff (input side) and decim subsample (output side).
         """
         coeffs = self._coeff_q15
         S = self._head_shift
@@ -648,21 +1023,23 @@ class FIRFilterBlock(KyttarBlock):
         delay = [0] * N
         out = []
         if N <= self._single_cell_max():
-            # Single cell — mirrors build_cell_programs EXACTLY. The delay line is
-            # shifted ``MOVE d{i}, d{i+1}`` then ``MOVE d{N-1}, sample``, so d0
-            # holds the OLDEST sample and d{N-1} the newest; register d{i} is
-            # multiplied by the SCALED coeff c{i}. Model that with the newest
-            # sample at the END of ``delay`` (delay[i] == d{i}). acc = d0*c0
-            # (priming MULQ); acc = wrap(acc + di*ci) for the rest (never actually
-            # wraps with headroom); then the final saturating left shift by S.
+            # Single cell — mirrors _build_plain_single_cell EXACTLY. The delay
+            # line is shifted ``MOVE d{i}, d{i+1}`` then ``MOVE d{N-1}, sample``,
+            # so d0 holds the OLDEST sample (x[n-(N-1)]) and d{N-1} the newest;
+            # register d{i} = x[n-(N-1-i)] is multiplied by h[N-1-i] — i.e. the
+            # coefficients REVERSED (the GR y[n]=Σ_k h[k]x[n-k] convention). Model
+            # that with the newest sample at the END of ``delay`` (delay[i]==d{i})
+            # and reversed coeffs. (Forward order is correct only for symmetric
+            # taps — the single-cell asymmetric-tap bug fixed alongside.)
+            rev = list(reversed(coeffs))               # rev[i] == h[N-1-i]
             for s in input_q15:
                 delay = delay[1:] + [self._to_s16(int(s) & 0xFFFF)]
-                acc = self._macq(delay[0], coeffs[0])     # priming MULQ
+                acc = self._macq(delay[0], rev[0])        # priming MULQ
                 if N == 1:
                     out.append(self._sat_shl(acc, S) & 0xFFFF)  # (not reached: N>=2)
                     continue
                 for i in range(1, N):
-                    acc = self._wrap_acc(acc, self._macq(delay[i], coeffs[i]))
+                    acc = self._wrap_acc(acc, self._macq(delay[i], rev[i]))
                 acc = self._sat_shl(acc, S)               # END-only gain restore
                 out.append(acc & 0xFFFF)
             return out
@@ -681,7 +1058,7 @@ class FIRFilterBlock(KyttarBlock):
         # x[n]; every later cell's incoming sample is the previous cell's
         # shifted-out oldest sample (NOT a global-delay-line index — the
         # inter-cell forwarding IS the delay). Cell m owns coefficients
-        # coeff[N-offset_{m+1} : N-offset_m] in forward order — mirrors
+        # h[offset_m:offset_{m+1}] REVERSED (the real GR tap convention) — mirrors
         # :meth:`_build_multicell_programs` exactly.
         offsets = self._segment_offsets()
         n_cells = len(offsets) - 1
@@ -693,7 +1070,7 @@ class FIRFilterBlock(KyttarBlock):
                 start, end = offsets[m], offsets[m + 1]
                 L = end - start
                 is_last = (m == n_cells - 1)
-                seg_coeffs = coeffs[N - end:N - start]   # forward order (scaled)
+                seg_coeffs = list(reversed(coeffs[start:end]))  # GR tap convention
                 d = seg[m]
                 old = d[0]                               # MOVE old_save, d0
                 for i in range(L - 1):                   # shift segment
@@ -715,21 +1092,31 @@ class FIRFilterBlock(KyttarBlock):
     def process_reference(self, input_samples: np.ndarray) -> np.ndarray:
         """Float reference (legacy / diagnostic). For the bit-exact saturating
         predictor used by the verification gate, see :meth:`process_reference_q15`.
+
+        Honors ``interpolation`` (zero-stuff input by L, GR interp_fir_filter) and
+        ``decimation`` (emit every M-th output, phase 0, GR fir_filter(M,taps)).
         """
-        output = np.zeros(len(input_samples), dtype=np.float32)
+        # interp: zero-stuff input by L before filtering (GR interp_fir_filter).
+        L = self._interpolation
+        if L > 1:
+            stuffed = np.zeros(len(input_samples) * L, dtype=np.float32)
+            stuffed[::L] = np.asarray(input_samples, dtype=np.float32)
+            stream = stuffed
+        else:
+            stream = np.asarray(input_samples, dtype=np.float32)
 
-        for i, sample in enumerate(input_samples):
-            # Shift delay line
-            self._delay_line = [float(sample)] + self._delay_line[:-1]
-
-            # Compute output
+        full = np.zeros(len(stream), dtype=np.float32)
+        delay = [0.0] * self._num_taps
+        for i, sample in enumerate(stream):
+            delay = [float(sample)] + delay[:-1]
             acc = 0.0
             for j, coeff in enumerate(self._coefficients):
-                acc += coeff * self._delay_line[j]
+                acc += coeff * delay[j]
+            full[i] = acc
 
-            output[i] = acc
-
-        return output
+        # decim: emit every M-th output (phase 0, GR fir_filter(M,taps)).
+        M = self._decimation
+        return full[::M] if M > 1 else full
 
     def reset(self):
         """Reset delay line."""

@@ -37,9 +37,13 @@ def catalog():
 
 
 def _decimator(catalog):
+    # A decimating FIR (decimation is now a FIRFilterBlock parameter, not a
+    # separate block) — exercises data-word classification on a block whose
+    # coefficient (~1.0 = 0x7fff) disassembles as a bogus JUMP.
     ctrl = AppController(catalog=catalog)
     ctrl.new_project("Data", "kyttar_10x12")
-    ctrl.place_block("DecimatorBlock", 0, 3, 2, library="lattrex.official")
+    ctrl.place_block("FIRFilterBlock", 0, 3, 2, library="lattrex.official",
+                     params={"coefficients": [1.0, 0.0], "decimation": 2})
     assert ctrl.build().ok
     return ctrl
 
@@ -78,16 +82,17 @@ class TestClassification:
 class TestWriteConfigOverride:
     def test_config_bit_set_on_override(self, qapp, catalog):
         ctrl = _decimator(catalog)
+        bname = ctrl.project.blocks[0].name  # the placed FIR block's actual name
         prog = ctrl.cell_program(0, 3, 2)
         cid = prog["cell_id"]
         waddr = next(i["addr"] for i in prog["instructions"]
                      if i["kind"] == "WRITE")
-        ctrl.set_instr_override("decimator", cid, waddr, dest=1, dest_config=True)
+        ctrl.set_instr_override(bname, cid, waddr, dest=1, dest_config=True)
         prog2 = ctrl.cell_program(0, 3, 2)
         wi = next(i for i in prog2["instructions"] if i["addr"] == waddr)
         assert wi["field"] == 1 and wi["field_config"] is True
         # Clearing config reverts the bit.
-        ctrl.set_instr_override("decimator", cid, waddr, dest_config=False)
+        ctrl.set_instr_override(bname, cid, waddr, dest_config=False)
         prog3 = ctrl.cell_program(0, 3, 2)
         wi3 = next(i for i in prog3["instructions"] if i["addr"] == waddr)
         assert wi3["field_config"] is False

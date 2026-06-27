@@ -1,6 +1,6 @@
 project:
   format_version: 1
-  name: 110B 75bps RX (2-chip)
+  name: 110B c0
   version: '1.0'
 chip_type: kyttar_10x12
 chips:
@@ -30,8 +30,8 @@ blocks:
     - {cell_id: 4, x: 4, y: 0, face: east}
     - {cell_id: 5, x: 5, y: 0, face: east}
     - {cell_id: 6, x: 6, y: 0, face: east}
-- name: decimator
-  type: DecimatorBlock
+- name: firfilter
+  type: FIRFilterBlock
   library: lattrex.official
   params:
     decimation: 4
@@ -43,7 +43,7 @@ blocks:
   placement:
     chip: 0
     cells:
-    - {cell_id: 0, x: 8, y: 0, face: east}
+    - {cell_id: 0, x: 9, y: 0, face: east}
 - name: coherentrx
   type: CoherentRXBlock
   library: lattrex.official
@@ -79,26 +79,22 @@ connections:
 - name: c0_in_rrc
   from: {chip_port: {chip: 0, port: x16_in}}
   to: {block: rrcpulseshaper, port: sample}
-  route:
-  - {x: 0, y: 0}
 - name: c0_rrc_dec
   from: {block: rrcpulseshaper, port: out}
-  to: {block: decimator, port: sample}
+  to: {block: firfilter, port: sample}
   route:
   - {x: 6, y: 0}
   - {x: 7, y: 0}
   - {x: 8, y: 0}
+  - {x: 9, y: 0}
 - name: c0_dec_out
-  from: {block: decimator, port: out}
+  from: {block: firfilter, port: out}
   to: {chip_port: {chip: 0, port: x16_out}}
   route:
-  - {x: 8, y: 0}
   - {x: 9, y: 0}
 - name: c1_in_crx
   from: {chip_port: {chip: 1, port: x16_in}}
   to: {block: coherentrx, port: xi}
-  route:
-  - {x: 0, y: 0}
 - name: c1_crx_out
   from: {block: coherentrx, port: bit}
   to: {chip_port: {chip: 1, port: x16_out}}

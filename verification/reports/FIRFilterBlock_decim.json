@@ -1,5 +1,5 @@
 {
-  "kyttar_block": "DecimatorBlock",
+  "kyttar_block": "FIRFilterBlock_decim",
   "passed": true,
   "metric": "amplitude",
   "n_compared": 31,
@@ -15,6 +15,7 @@
     "param_sweep": 8,
     "mutation": true,
     "phase": true,
-    "bit_exact": true
+    "bit_exact": true,
+    "note": "decimation is a FIRFilterBlock parameter (GR fir_filter_fff(M,taps))"
   }
 }

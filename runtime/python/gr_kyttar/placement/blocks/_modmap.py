@@ -24,7 +24,6 @@ BUILTIN_BLOCKS = {
     'NCOBlock': 'nco_block',
     'ComplexMixerBlock': 'complex_mixer_block',
     'IQUpconvertBlock': 'iq_upconvert_block',
-    'DecimatorBlock': 'decimator_block',
     'SquelchBlock': 'squelch_block',
     'IIRBiquadBlock': 'iir_biquad_block',
     'CostasLoopBlock': 'costas_loop_block',

@@ -3,10 +3,10 @@
   "passed": true,
   "metric": "amplitude",
   "n_compared": 48,
-  "max_abs_err": 10,
+  "max_abs_err": 11,
   "tolerance": 17,
-  "nmse_db": -64.80479076561691,
-  "correlation": 0.9999999330538645,
+  "nmse_db": -64.71096537127423,
+  "correlation": 0.9999999357623692,
   "bit_errors": 0,
   "delay_used": 0,
   "coverage": {

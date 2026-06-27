@@ -118,8 +118,12 @@ def _s16(v):
 
 
 def _gr_fir(inputs_q15, taps):
-    # GNU Radio's fir_filter_fff convolves with taps in latest-sample-first
-    # order, the reverse of the Kyttar coefficient order — so reverse them here.
+    # GR's fir_filter_fff(1, taps) IS the standard FIR y[n]=Σ_k h[k]x[n-k] — feed
+    # the taps AS-IS, exactly as a user / GRC flowgraph would. (This previously
+    # reversed the taps to compensate for a single-cell tap-ORDER bug in the block
+    # — that masked the bug for asymmetric filters and was itself wrong per RULE #0:
+    # the golden must be the real GR block, undoctored. Block fixed to reverse
+    # internally; the golden is now plain fir_filter_fff.)
     return run_gnuradio_ref(
         input_q15=inputs_q15,
         gnuradio_script="""
@@ -132,7 +136,7 @@ tb.connect(src, fir); tb.connect(fir, sink)
 tb.run()
 output_float = list(sink.data())
 """,
-        extra_args={"taps": list(reversed(taps))})
+        extra_args={"taps": list(taps)})
 
 
 def _sat_ref_floats(taps, inputs):
@@ -202,6 +206,8 @@ TAP_SETS = [
     [0.5, 0.5],                        # 2-tap
     [0.2, 0.2, 0.2],                   # 3-tap averager (top of single cell)
     [0.3, -0.2, 0.5],                  # 3-tap ASYMMETRIC (catches tap-order bugs)
+    [0.25, 0.3, 0.2, 0.25],            # 4-tap ASYMMETRIC even-length (tap-order)
+    [0.1, 0.2, 0.3, 0.4],              # 4-tap RAMP — maximally asymmetric (order)
 ]
 
 

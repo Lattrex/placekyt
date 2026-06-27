@@ -46,7 +46,8 @@ class LowPassFilter(FIRFilterBlock):
 
     def __init__(self, name: str, gain: float = 1.0, samp_rate: float = 32000.0,
                  cutoff_freq: float = 4000.0, transition_width: float = 2000.0,
-                 window: str = "hamming", beta: float = 6.76):
+                 window: str = "hamming", beta: float = 6.76,
+                 decimation: int = 1, interpolation: int = 1):
         self._gain = float(gain)
         self._samp_rate = float(samp_rate)
         self._cutoff_freq = float(cutoff_freq)
@@ -55,7 +56,8 @@ class LowPassFilter(FIRFilterBlock):
         self._beta = float(beta)
         taps = _firdes.low_pass(self._gain, self._samp_rate, self._cutoff_freq,
                                 self._transition_width, self._window, self._beta)
-        super().__init__(name, coefficients=taps)
+        super().__init__(name, coefficients=taps,
+                         decimation=decimation, interpolation=interpolation)
 
     @property
     def design_taps(self) -> List[float]:

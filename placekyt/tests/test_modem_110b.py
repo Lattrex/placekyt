@@ -122,13 +122,15 @@ _KYT = Path(__file__).parent / "data" / "demo" / "modem_110b_rx_2chip.kyt"
 
 @pytest.mark.skipif(not _KYT.exists(), reason="demo .kyt absent")
 def test_110b_demo_kyt_reloads_and_builds(qapp, catalog, chip_type):
-    """The shipped 2-chip 110B RX demo project reloads (2 chips, RRC + decimator +
-    CoherentRX) and rebuilds clean — a usable saved artifact, not just a generator."""
+    """The shipped 2-chip 110B RX demo project reloads (2 chips, RRC +
+    decimating FIR + CoherentRX) and rebuilds clean — a usable saved artifact,
+    not just a generator. (Decimation is now a FIRFilterBlock parameter, matching
+    GR fir_filter_fff(decim, taps); the standalone DecimatorBlock was removed.)"""
     ctrl = AppController(catalog=catalog)
     ctrl.open_project(str(_KYT))
     assert len(ctrl.project.chips) == 2
     types = sorted(b.type for b in ctrl.project.blocks)
-    assert types == ["CoherentRXBlock", "DecimatorBlock", "RRCPulseShaperBlock"]
+    assert types == ["CoherentRXBlock", "FIRFilterBlock", "RRCPulseShaperBlock"]
     res = BuildEngine(catalog, str(CT_PATH)).build(
         ctrl.project, {"kyttar_10x12": chip_type})
     assert res.ok, [str(e) for e in res.errors]

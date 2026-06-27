@@ -1,6 +1,6 @@
 """Round-3 live-GUI fixes (the architecture notes §2.2, §3.2). Offscreen Qt.
 
-- required-param blocks (FIR/IIR/Decimator) placeable via placeholder params
+- required-param blocks (FIR/IIR) placeable via placeholder params
 - library drag anchor normalized to the drop cell
 - route-to-port adjacency enforced (no diagonal jump)
 - Ctrl/Shift+scroll pan, 'w' key starts a route
@@ -59,8 +59,7 @@ def window(qapp, catalog):
 
 
 class TestRequiredParamBlocks:
-    @pytest.mark.parametrize("btype", ["FIRFilterBlock", "IIRBiquadBlock",
-                                       "DecimatorBlock"])
+    @pytest.mark.parametrize("btype", ["FIRFilterBlock", "IIRBiquadBlock"])
     def test_places_with_placeholder(self, window, btype):
         name = window.controller.place_block(btype, 0, 1, 1,
                                              library="lattrex.official")

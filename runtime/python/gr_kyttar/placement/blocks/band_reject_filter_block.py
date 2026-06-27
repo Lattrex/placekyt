@@ -38,7 +38,7 @@ class BandRejectFilter(FIRFilterBlock):
     def __init__(self, name: str, gain: float = 1.0, samp_rate: float = 32000.0,
                  low_cutoff_freq: float = 4000.0, high_cutoff_freq: float = 8000.0,
                  transition_width: float = 2000.0, window: str = "hamming",
-                 beta: float = 6.76):
+                 beta: float = 6.76, decimation: int = 1, interpolation: int = 1):
         self._gain = float(gain)
         self._samp_rate = float(samp_rate)
         self._low_cutoff_freq = float(low_cutoff_freq)
@@ -49,7 +49,8 @@ class BandRejectFilter(FIRFilterBlock):
         taps = _firdes.band_reject(self._gain, self._samp_rate, self._low_cutoff_freq,
                                    self._high_cutoff_freq, self._transition_width,
                                    self._window, self._beta)
-        super().__init__(name, coefficients=taps)
+        super().__init__(name, coefficients=taps,
+                         decimation=decimation, interpolation=interpolation)
 
     @property
     def design_taps(self) -> List[float]:

@@ -252,12 +252,13 @@
       "kyttar_block": "SoftDemodulatorBlock",
       "grc_block": "digital.constellation_soft_decoder_cf",
       "tier": 1,
-      "status": "in_progress",
+      "status": "done",
       "metric": "llr",
       "params": {
-        "noise_variance": 0.1
+        "constellation": "bpsk",
+        "npwr": -1
       },
-      "notes": "PARITY-GAP: hardwired BPSK (LLR=coeff*I); GR digital.constellation_soft_decoder_cf is CONSTELLATION-DRIVEN (takes a constellation object, complex input, per-bit LLRs). No constellation param exposed. Must generalize."
+      "notes": "Verified vs GNU Radio digital.constellation_soft_decoder_cf (constellation + npwr params, GRC-verbatim). Complex input, emits bits_per_symbol soft LLRs/symbol MSB-first, GR's sign (POSITIVE LLR => bit 1). The block's calc_soft_dec_float reproduces GR's EXACT full-log soft decision (log-sum-exp) for BPSK and QPSK to <1e-3 (the golden predictor is GR-faithful). npwr is a linear scale on squared distance; GRC default -1 resolves to GR's stored d_npwr=1.0 (NOT a derived noise estimate) -- verified. HARDWARE DEVIATION (documented + LOUD in __init__ + docstring): the CHIP computes the separable max-log approximation, ONLY for separable Gray square constellations (bpsk, qpsk), where each LLR is an affine function of one axis (a single MULQ by a precomputed slope) -- bit-identical to full-log for these. BPSK (1 cell, LLR=slope*I) is unchanged from the original block (back-compat: old noise_variance/llr_scale signature preserved EXACTLY, 12 legacy tests pass). QPSK (complex in, 2 LLRs MSB=Q-axis, LSB=I-axis) builds + runs: on-chip bit-EXACT vs the Q15 reference AND 0 sign mismatches vs GR + soft magnitude within a single fixed LLR-scale (8*sqrt(2)). A non-separable / non-Gray constellation (e.g. 8-PSK ring, arbitrary constellation_calcdist points) RAISES (HARDWARE LIMIT) -- it needs a full per-symbol distance LUT (a Tier-2 multi-cell block). Unknown constellation name raises. Two-tier verification (DUT vs GR sign+magnitude; DUT vs process_reference_q15 bit-exact) + mutation gates (flipped sign, halved magnitude, +1 delay, empty)."
     },
     {
       "kyttar_block": "ComplexRRCMatchedFilterBlock",

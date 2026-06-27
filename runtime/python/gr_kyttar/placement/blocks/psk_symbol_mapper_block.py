@@ -100,21 +100,76 @@ class PSKSymbolMapperBlock(KyttarBlock):
         float_to_q15(-0.7071),   # bits=111: 225° (Gray mapped)
     ]
 
+    # On-chip the symbol_table is a per-cell I + Q LOAD-indirect table (I at
+    # addr 1..M, Q at addr M+1..2M, + a few scalars), so the table size M is
+    # bounded by the 32-word cell. M<=14 fits comfortably (BPSK/QPSK/8PSK/16-QAM
+    # all do); raise above (a larger constellation would need a multi-cell table).
+    MAX_SYMBOL_TABLE = 14
+
     def __init__(
         self,
         name: str,
         modulation: str = "8psk",
+        symbol_table=None,
+        dimension: int = 1,
     ):
-        """
-        Initialize PSK Symbol Mapper.
+        """Initialize the symbol mapper — GR ``digital.chunks_to_symbols`` parity.
+
+        Two ways to specify the constellation:
+
+        * GR-native ``symbol_table`` (keyword): an arbitrary complex constellation
+          (a list of complex points). The TRUE ``chunks_to_symbols`` mapping —
+          ``output[n] = symbol_table[input_index[n]]`` (INDEX in, NOT bits; GR does
+          not pack bits, that is an upstream block). ``dimension`` D mirrors GR's
+          dimension (D entries per index); only D=1 (one complex symbol per index)
+          is supported on chip (a documented limit — D>1 vector symbols would need
+          a multi-word burst per index). When ``symbol_table`` is given, the block
+          is index-driven and the ``modulation`` arg is ignored.
+        * ``modulation`` preset (back-compat, a KYTTAR EXTENSION beyond
+          chunks_to_symbols): "bpsk"|"qpsk"|"8psk" build the corresponding Gray
+          constellation AND retain an internal BIT ACCUMULATOR (1/2/3 input bits ->
+          one symbol). This bit-packing is NOT part of GR ``chunks_to_symbols``
+          (which is index-in); it is a Kyttar convenience so bit-fed flowgraphs map
+          directly. Documented LOUDLY as an extension.
 
         Args:
-            name: Block name
-            modulation: "bpsk", "qpsk", or "8psk" (default)
+            name: block name.
+            modulation: "bpsk"|"qpsk"|"8psk" preset (bit-packing extension).
+            symbol_table: arbitrary complex constellation (GR-native, index-in).
+            dimension: GR dimension D (entries per index); on chip D=1 only.
         """
-        super().__init__(name, modulation=modulation)
-        self._modulation = modulation.lower()
+        super().__init__(name, modulation=modulation, symbol_table=symbol_table,
+                         dimension=dimension)
+        self._dimension = int(dimension)
 
+        # --- GR-native index-driven path (arbitrary symbol_table) -------------
+        if symbol_table is not None:
+            tbl = [complex(s) for s in symbol_table]
+            if self._dimension != 1:
+                raise ValueError(
+                    "HARDWARE LIMIT: SymbolMapper supports dimension=1 only (one "
+                    "complex symbol per index). A vector symbol (dimension>1) "
+                    f"would need a multi-word burst per index; got {dimension}.")
+            if not (1 <= len(tbl) <= self.MAX_SYMBOL_TABLE):
+                raise ValueError(
+                    f"HARDWARE LIMIT: symbol_table has {len(tbl)} entries; the "
+                    f"per-cell I+Q LOAD-indirect table holds at most "
+                    f"{self.MAX_SYMBOL_TABLE} (a larger constellation needs a "
+                    f"multi-cell table).")
+            self._symbol_table = tbl
+            self._index_driven = True
+            self._modulation = "table"
+            self._mode = None
+            # bits_per_symbol is informational for an index-driven mapper.
+            self._bits_per_symbol = max(1, (len(tbl) - 1).bit_length())
+            self._bit_buffer = 0
+            self._bit_count = 0
+            return
+
+        # --- preset (bit-packing) path, back-compat ---------------------------
+        self._symbol_table = None
+        self._index_driven = False
+        self._modulation = modulation.lower()
         if self._modulation == "bpsk":
             self._mode = self.MODE_BPSK
             self._bits_per_symbol = 1
@@ -132,10 +187,16 @@ class PSKSymbolMapperBlock(KyttarBlock):
 
     @property
     def cell_count(self) -> int:
+        if self._index_driven:
+            return 1   # index in -> I+Q LOAD-indirect table, one cell
         return 1 if self._modulation == "bpsk" else 2
 
     @property
     def interface(self) -> BlockInterface:
+        if self._index_driven:
+            # index in @R0, I+Q out from R0.
+            return BlockInterface(entry_address=1, input_registers=[0],
+                                  output_registers=[0])
         return self._interface
 
     @property
@@ -146,6 +207,14 @@ class PSKSymbolMapperBlock(KyttarBlock):
     def modulation(self) -> str:
         return self._modulation
 
+    @property
+    def symbol_table(self):
+        return list(self._symbol_table) if self._symbol_table else None
+
+    @property
+    def dimension(self) -> int:
+        return self._dimension
+
     def build_cell_programs(self) -> Dict[int, CellProgram]:
         """V2 PSK symbol mapper: accumulate bits, LOAD indirect for I/Q constellation lookup.
 
@@ -154,6 +223,9 @@ class PSKSymbolMapperBlock(KyttarBlock):
         QPSK: I and Q tables in same cell, 2 LOADs — 1 cell.
         8-PSK: bit accumulator (cell 0) + I/Q lookup table (cell 1) — 2 cells.
         """
+        if self._index_driven:
+            return self._build_index_table()
+
         n_entries = 1 << self._bits_per_symbol  # 2/4/8
         mask_val = n_entries - 1
 
@@ -370,6 +442,51 @@ start:
         )
 
         return {0: cell0, 1: cell1}
+
+    def _build_index_table(self) -> Dict[int, CellProgram]:
+        """GR-native chunks_to_symbols (dimension 1): index in -> symbol_table[idx].
+
+        One cell: I table at addr 1..M, Q table at addr M+1..2M; the index selects
+        the entry via LOAD-indirect; emit I then Q. (A remote JUMP does not halt
+        the issuer, so both emits + the trigger ride one program.)"""
+        M = len(self._symbol_table)
+        i_table = [DataWord(f"i{k}", float_to_q15(self._symbol_table[k].real),
+                            address=1 + k) for k in range(M)]
+        q_table = [DataWord(f"q{k}", float_to_q15(self._symbol_table[k].imag),
+                            address=1 + M + k) for k in range(M)]
+        base = 1 + 2 * M
+        return {0: CellProgram(
+            inputs=[Port("index", register=0)],
+            outputs=[Port("out_i"), Port("out_q"), Port("out_trigger")],
+            entries=[EntryPoint("default")],
+            data=i_table + q_table + [
+                DataWord("one", 1, address=base),
+                DataWord("q_offset", M, address=base + 1),
+            ],
+            state=[StateVar("addr_tmp")],
+            assembly_template="""\
+start:
+    ADD R{in:index}, R{data:one}
+    MOVE R{state:addr_tmp}, R0
+    LOAD R{state:addr_tmp}
+    {write:out_i}
+    ADD R{state:addr_tmp}, R{data:q_offset}
+    MOVE R{state:addr_tmp}, R0
+    LOAD R{state:addr_tmp}
+    {write:out_q}
+    {jump:out_trigger}
+""",
+        )}
+
+    def process_reference_index(self, indices) -> Tuple[np.ndarray, np.ndarray]:
+        """Index-driven reference (GR chunks_to_symbols, dimension 1):
+        out[n] = symbol_table[indices[n]], modelled at the on-chip Q15 precision."""
+        i_out, q_out = [], []
+        for ix in indices:
+            s = self._symbol_table[int(ix)]
+            i_out.append(q15_to_float(float_to_q15(s.real)))
+            q_out.append(q15_to_float(float_to_q15(s.imag)))
+        return np.asarray(i_out, dtype=np.float32), np.asarray(q_out, dtype=np.float32)
 
     def process_reference(self, input_bits: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """

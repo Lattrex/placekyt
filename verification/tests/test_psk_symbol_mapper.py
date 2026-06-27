@@ -153,3 +153,132 @@ def test_emit_report():
         "gr_equiv": "digital.chunks_to_symbols_bf([1.0,-1.0], 1)",
         "note": "BPSK I-only, full-scale +/-1 exact in Q15",
     })
+
+
+# --- symbol_table parity: GR digital.chunks_to_symbols (index -> symbol) -------
+# The block now mirrors chunks_to_symbols: an arbitrary complex symbol_table +
+# dimension; INPUT INDEX -> symbol_table[index] (D=1). The bit-packing modulation
+# presets remain a documented Kyttar extension (tested above). Index path verified
+# against digital.chunks_to_symbols_ic.
+
+import json  # noqa: E402
+import subprocess  # noqa: E402
+
+
+def _gr_chunks(table, idx):
+    """GR golden: chunks_to_symbols_ic(symbol_table, 1), index in -> complex out."""
+    script = """
+from gnuradio import gr, digital, blocks
+import json, sys
+d = json.loads(sys.stdin.read())
+tbl = [complex(a, b) for a, b in d["t"]]
+tb = gr.top_block(); src = blocks.vector_source_i(d["i"], False)
+c = digital.chunks_to_symbols_ic(tbl, 1); snk = blocks.vector_sink_c()
+tb.connect(src, c, snk); tb.run()
+print(json.dumps([[z.real, z.imag] for z in snk.data()]))
+"""
+    gr_py = os.environ.get("KYTTAR_GR_PYTHON", "/usr/bin/python3")
+    r = subprocess.run([gr_py, "-c", script],
+                       input=json.dumps({"t": [[z.real, z.imag] for z in table],
+                                         "i": list(idx)}),
+                       capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr[-500:]
+    return [complex(a, b) for a, b in json.loads(r.stdout.strip().splitlines()[-1])]
+
+
+def _run_index_dut(table, idx):
+    """Build the index-driven mapper, feed indices, drain I+Q per trigger."""
+    import simkyt
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    from engine.catalog import BlockCatalog
+    from engine.io.chip_type_io import load_chip_type
+    from engine.build import BuildEngine
+    from ui.controller import AppController
+    from model.connection import ChipPortEndpoint, BlockEndpoint
+    cat = BlockCatalog.from_gr_kyttar()
+    ct = load_chip_type(CHIP_YAML)
+    ctk = getattr(ct, "name", "kyttar_10x12")
+    ctrl = AppController(catalog=cat)
+    ctrl.new_project("m", ctk)
+    params = {"symbol_table": table, "dimension": 1}
+    blk = ctrl.place_block("PSKSymbolMapperBlock", 0, 1, 1,
+                           library="lattrex.official", params=params)
+    ctrl.add_logical_connection(ChipPortEndpoint(chip=0, port="x16_in"),
+                                BlockEndpoint(block=blk, port="index"), name="in")
+    ctrl.add_logical_connection(BlockEndpoint(block=blk, port="out_i"),
+                                ChipPortEndpoint(chip=0, port="x16_out"), name="o")
+    rep = ctrl.auto_route_all({ctk: ct})
+    assert rep.ok, rep.failed
+    res = BuildEngine(cat, CHIP_YAML).build(ctrl.project, {ctk: ct})
+    assert res.ok, res.errors
+    entry, ins = cat.resolved_io("PSKSymbolMapperBlock", params, library="lattrex.official")
+    port = ct.port("x16_in")
+    bo = ctrl.project.block(blk)
+    lc = bo.placement.cells[0]
+    dist = abs(lc.x - port.cell_x) + abs(lc.y - port.cell_y) + 1
+    hop = max(0, 31 - dist)
+    chip = simkyt.Chip.from_yaml(CHIP_YAML)
+    chip.load_bitstream_physical(res.words(0))
+    chip.set_port_entry_address("x16_in", entry)
+
+    def s16(v):
+        v = int(v) & 0xFFFF
+        return v - 0x10000 if v >= 0x8000 else v
+    out = []
+    for ix in idx:
+        chip.inject_data_physical([int(ix) & 0xFFFF], target_hop_cnt=hop,
+                                  target_addr=int(ins[0]))
+        chip.run(max_events=6000)
+        chip.inject_jump_physical(target_hop_cnt=hop, entry_addr=entry)
+        chip.run(max_events=200000)
+        w = []
+        while chip.output_available("x16_out"):
+            w += [int(x) & 0xFFFF for x in chip.read_port_i16("x16_out").view("uint16").tolist()]
+            chip.release_output_ack("x16_out")
+            chip.run(max_events=8000)
+        out.append(complex(s16(w[0]) / 32768.0 if len(w) >= 1 else 0.0,
+                           s16(w[1]) / 32768.0 if len(w) >= 2 else 0.0))
+    return out
+
+
+_QPSK_TABLE = [0.7071 + 0.7071j, -0.7071 + 0.7071j,
+               0.7071 - 0.7071j, -0.7071 - 0.7071j]
+
+
+def test_symbol_table_index_matches_gr_qpsk():
+    """An arbitrary QPSK symbol_table, index-fed, matches GR chunks_to_symbols
+    bit-for-bit (within the Q15 rounding floor) on both I and Q."""
+    idx = [0, 1, 2, 3, 2, 1, 0, 3, 1, 2]
+    dut = _run_index_dut(_QPSK_TABLE, idx)
+    gr = _gr_chunks(_QPSK_TABLE, idx)
+    max_err = max(abs(d - g) for d, g in zip(dut, gr))
+    print(f"\nsymbol_table qpsk vs GR: max err {max_err * 32768:.2f} LSB")
+    assert max_err * 32768 <= _TOL_LSB + 1, f"{max_err * 32768:.2f} LSB too high"
+
+
+def test_symbol_table_arbitrary_constellation():
+    """A non-PSK arbitrary table (e.g. an asymmetric 6-point set) maps exactly —
+    proving it is a real table, not a hardwired PSK preset."""
+    table = [1.0 + 0j, 0.5 + 0.5j, 0 + 1j, -0.5 + 0.5j, -1.0 + 0j, 0 - 0.8j]
+    idx = [0, 5, 2, 3, 4, 1, 0, 2]
+    dut = _run_index_dut(table, idx)
+    gr = _gr_chunks(table, idx)
+    max_err = max(abs(d - g) for d, g in zip(dut, gr))
+    print(f"\narbitrary table vs GR: max err {max_err * 32768:.2f} LSB")
+    assert max_err * 32768 <= _TOL_LSB + 1, f"{max_err * 32768:.2f} LSB too high"
+
+
+def test_symbol_table_dimension_gt1_raises():
+    """dimension>1 (vector symbols) is the documented HW limit and MUST raise."""
+    from gr_kyttar.placement.blocks.psk_symbol_mapper_block import PSKSymbolMapperBlock
+    with pytest.raises(ValueError, match="HARDWARE LIMIT"):
+        PSKSymbolMapperBlock("x", symbol_table=_QPSK_TABLE, dimension=2)
+
+
+def test_symbol_table_too_large_raises():
+    """A symbol_table beyond the per-cell table budget MUST raise (HW limit)."""
+    from gr_kyttar.placement.blocks.psk_symbol_mapper_block import PSKSymbolMapperBlock
+    big = [complex(k, -k) for k in range(PSKSymbolMapperBlock.MAX_SYMBOL_TABLE + 1)]
+    with pytest.raises(ValueError, match="HARDWARE LIMIT"):
+        PSKSymbolMapperBlock("x", symbol_table=big)

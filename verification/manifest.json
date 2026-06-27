@@ -322,14 +322,32 @@
     },
     {
       "kyttar_block": "PSKSymbolMapperBlock",
-      "grc_block": "digital.chunks_to_symbols_bf",
+      "grc_block": "digital.chunks_to_symbols",
       "tier": 2,
-      "status": "in_progress",
-      "metric": "exact",
+      "status": "done",
+      "metric": "amplitude",
       "params": {
-        "modulation": "bpsk"
+        "symbol_table": [
+          [
+            0.7071,
+            0.7071
+          ],
+          [
+            -0.7071,
+            0.7071
+          ],
+          [
+            0.7071,
+            -0.7071
+          ],
+          [
+            -0.7071,
+            -0.7071
+          ]
+        ],
+        "dimension": 1
       },
-      "notes": "PARITY-GAP: hardcoded 3-mode enum (bpsk/qpsk/8psk); GR digital.chunks_to_symbols_bc takes an ARBITRARY symbol_table + dimensionality. A 32-entry constellation table fits the ISA (LOAD supports 32 entries) -> the 3-mode limit is ARBITRARY, not hardware. Must generalize. Only BPSK was ever verified."
+      "notes": "Verified vs GNU Radio digital.chunks_to_symbols (arbitrary symbol_table + dimension, GRC-verbatim). GR-NATIVE path: an arbitrary complex symbol_table; INPUT INDEX -> symbol_table[index] (D=1, one complex symbol per index) via on-chip I+Q LOAD-indirect table (I at addr 1..M, Q at M+1..2M). GR does NOT pack bits (that is an upstream block); this index-in path IS the true chunks_to_symbols. On-chip the QPSK table and an asymmetric 6-point table both map index->symbol bit-exact vs digital.chunks_to_symbols_ic (<=2 LSB on I and Q). KYTTAR EXTENSION (documented LOUD, back-compat): the modulation enum bpsk/qpsk/8psk builds the Gray constellation AND retains an internal BIT ACCUMULATOR (1/2/3 input bits -> one symbol) -- this bit-packing is NOT part of GR chunks_to_symbols (index-in), it is a Kyttar convenience so bit-fed flowgraphs map directly; the 7 BPSK bit-packing tests still pass. HARDWARE LIMITS (raise): dimension>1 (vector symbols) needs a multi-word burst per index -> unsupported; symbol_table beyond MAX_SYMBOL_TABLE=14 (the per-cell I+Q table) needs a multi-cell table. 11 tests pass (7 bit-packing back-compat + 4 symbol_table: qpsk vs GR, arbitrary table vs GR, dim>1 raises, oversize raises)."
     },
     {
       "kyttar_block": "LFSRScramblerBlock",

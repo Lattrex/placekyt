@@ -276,3 +276,93 @@ def test_iir_mutation_delay_fails():
         [int(round(np.clip(v, -1, 0.999) * 32768)) & 0xFFFF for v in shifted],
         ref.floats, metric=Metric.AMPLITUDE, delay=0, op_count=20)
     assert not res.passed, "a +1 delay passed — gate can't see a latency bug"
+
+
+# --- arbitrary-order parity: GR iir_filter_ffd(fftaps, fbtaps, oldstyle) -------
+# The block is no longer a fixed 2nd-order biquad: it takes arbitrary-length
+# fftaps/fbtaps + oldstyle (GR iir_filter_ffd VERBATIM). y[n] = Σff·x (±) Σfb·y,
+# sign + if oldstyle else -, fb[0] IGNORED. Single cell: bounded by the 31-word
+# budget (raises above), the documented HW limit.
+
+def _gr_iir_ff(inputs_q15, ff, fb, oldstyle):
+    return run_gnuradio_ref(
+        input_q15=inputs_q15,
+        gnuradio_script="""
+from gnuradio import gr, filter as gr_filter, blocks
+tb = gr.top_block()
+src = blocks.vector_source_f(input_float, False)
+iir = gr_filter.iir_filter_ffd(ff, fb, oldstyle)
+sink = blocks.vector_sink_f()
+tb.connect(src, iir); tb.connect(iir, sink)
+tb.run()
+output_float = list(sink.data())
+""",
+        extra_args={"ff": list(ff), "fb": list(fb), "oldstyle": bool(oldstyle)})
+
+
+# (fftaps, fbtaps, oldstyle) cases that fit one cell, both tap-sign conventions.
+_ARB_CASES = [
+    ([0.5, 0.2], [1.0, -0.4, 0.1], True),            # ff order 1, fb order 2, old
+    ([0.5, 0.2], [1.0, -0.4, 0.1], False),           # same, newstyle
+    ([0.3, 0.2, 0.1, 0.05], [1.0, -0.5, 0.2], False),  # ff order 3, fb order 2
+    ([0.3, 0.15], [1.0, -0.5, 0.2, 0.05], True),     # ff order 1, fb order 3
+]
+
+
+@pytest.mark.parametrize("ff,fb,oldstyle", _ARB_CASES)
+def test_iir_arbitrary_order_bit_exact(ff, fb, oldstyle):
+    """An arbitrary-order DUT matches its own bit-exact Q15 reference EXACTLY."""
+    inp = _stim()
+    dut = run_block_dut("IIRBiquadBlock", inp,
+                        params={"fftaps": ff, "fbtaps": fb, "oldstyle": oldstyle},
+                        chip_yaml=CHIP_YAML)
+    assert dut.ok, dut.reason
+    ref = IIRBiquadBlock("r", fftaps=ff, fbtaps=fb, oldstyle=oldstyle)
+    ref_f = [_s16(w) / 32768.0 for w in ref.process_reference_q15(inp)]
+    res = compare_against_grc(dut.outputs_q15, ref_f, metric=Metric.EXACT, delay=0)
+    print(f"\narb {ff}/{fb} old={oldstyle} bit-exact:", res.summary())
+    assert res.passed, res.summary()
+
+
+@pytest.mark.parametrize("ff,fb,oldstyle", _ARB_CASES)
+def test_iir_arbitrary_order_matches_gr(ff, fb, oldstyle):
+    """An arbitrary-order DUT matches GR iir_filter_ffd within the Q15 floor
+    (in-range stable taps), proving fftaps/fbtaps/oldstyle drive the real
+    GR recursion — including fb[0] being ignored and the oldstyle sign flip."""
+    inp = _stim()
+    dut = run_block_dut("IIRBiquadBlock", inp,
+                        params={"fftaps": ff, "fbtaps": fb, "oldstyle": oldstyle},
+                        chip_yaml=CHIP_YAML)
+    assert dut.ok, dut.reason
+    ref = _gr_iir_ff(inp, ff, fb, oldstyle)
+    res = compare_against_grc(dut.outputs_q15, ref.floats, metric=Metric.AMPLITUDE,
+                              delay=0, op_count=20)
+    print(f"\narb {ff}/{fb} old={oldstyle} vs GR:", res.summary())
+    assert res.passed, res.summary()
+
+
+def test_iir_fb0_is_ignored():
+    """fbtaps[0] is IGNORED (GR iir_filter_ffd, both styles) — changing it must
+    NOT change the output. Proves the GR-faithful feedback indexing."""
+    inp = _stim()
+    ff, fb1, fb2 = [0.5, 0.2], [1.0, -0.4, 0.1], [99.0, -0.4, 0.1]
+    a = IIRBiquadBlock("a", fftaps=ff, fbtaps=fb1, oldstyle=True)
+    b = IIRBiquadBlock("b", fftaps=ff, fbtaps=fb2, oldstyle=True)
+    assert a.process_reference_q15(inp) == b.process_reference_q15(inp), \
+        "fbtaps[0] changed the output — it must be ignored"
+
+
+def test_iir_oldstyle_flips_feedback_sign():
+    """oldstyle True vs False flips the feedback sign (GR convention). For the
+    same taps the two outputs MUST differ (not a cosmetic flag)."""
+    inp = _stim()
+    ff, fb = [0.5, 0.2], [1.0, -0.4, 0.1]
+    old = IIRBiquadBlock("o", fftaps=ff, fbtaps=fb, oldstyle=True).process_reference_q15(inp)
+    new = IIRBiquadBlock("n", fftaps=ff, fbtaps=fb, oldstyle=False).process_reference_q15(inp)
+    assert old != new, "oldstyle did not change the feedback sign"
+
+
+def test_iir_over_budget_raises():
+    """A filter too large for one cell MUST raise (documented HW limit)."""
+    with pytest.raises(ValueError, match="HARDWARE LIMIT"):
+        IIRBiquadBlock("x", fftaps=[0.1] * 3, fbtaps=[1.0] + [0.1] * 3)  # 32 words

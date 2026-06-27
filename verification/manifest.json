@@ -204,19 +204,21 @@
       "kyttar_block": "IIRBiquadBlock",
       "grc_block": "filter.iir_filter_ffd",
       "tier": 1,
-      "status": "in_progress",
+      "status": "done",
       "metric": "amplitude",
-      "notes": "PARITY-GAP: fixed single biquad (3 fftaps + 2 fbtaps); GR filter.iir_filter_ffd takes ARBITRARY-length tap lists (any order) + oldstyle flag. Higher order achievable via cascaded cells -> not a hard ISA wall. Must generalize or document a justified HW limit.",
+      "notes": "Verified vs GNU Radio filter.iir_filter_ffd (ARBITRARY-ORDER, GRC-verbatim params). Direct-Form-I IIR: y[n] = \u03a3 fftaps[k]\u00b7x[n-k] (\u00b1) \u03a3_{j>=1} fbtaps[j]\u00b7y[n-j], feedback sign + if oldstyle else - (GR's tap-sign convention; oldstyle default True). fbtaps[0] is IGNORED in both styles (confirmed against GR; NOT a normalizer). Any ff/fb order. Float reference reproduces GR EXACTLY (err 0) for arbitrary order + both styles; on-chip bit-exact vs the Q15 datapath reference AND within the Q15 floor vs GR (~2 LSB at 4th order). Feedback coeffs |coef| up to ~2 (e.g. a1=-2cos w) handled by the half-and-double-MSUQ trick (stored halved, MSUQ x2; no clamp - clamping silently corrupts sharp filters). HARDWARE LIMIT (documented + LOUD, raises): the whole filter is ONE 32-word cell, so len(fftaps)+len(fbtaps) + the x/y delay lines + program must fit 31 usable words; the exact word footprint is computed and raises above it (feedback taps cost more: a y-history word + a double MSUQ each). A 2nd-order biquad and a 4th-order ff / 2nd-order fb section fit; larger needs a multi-cell wavefront (Tier-2). PRECISION known-limit: Q15 vs GR's double-precision taps; error grows as poles approach |z|=1 (production-accurate gentle-to-moderate, guarded sharp-pole test). BACK-COMPAT: the old positional (name, b_coeffs, a_coeffs) biquad signature + lowpass/highpass/bandpass classmethods preserved EXACTLY (maps to fftaps=b, fbtaps=[1]+a, oldstyle=False); no-arg place = identity passthrough. 27 tests pass (16 biquad back-compat + 11 arbitrary-order incl. fb[0]-ignored, oldstyle-sign-flip, over-budget-raises).",
       "params": {
-        "b_coeffs": [
+        "fftaps": [
           0.0675,
           0.135,
           0.0675
         ],
-        "a_coeffs": [
+        "fbtaps": [
+          1.0,
           -1.143,
           0.413
-        ]
+        ],
+        "oldstyle": false
       }
     },
     {

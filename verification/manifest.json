@@ -39,15 +39,18 @@
     },
     {
       "kyttar_block": "RRCPulseShaperBlock",
-      "grc_block": "filter.fir_filter_fff",
+      "grc_block": "filter.firdes.root_raised_cosine",
       "tier": 1,
-      "status": "in_progress",
+      "status": "done",
       "metric": "amplitude",
       "params": {
+        "gain": 1.0,
+        "sampling_freq": 4.0,
+        "symbol_rate": 1.0,
         "alpha": 0.35,
-        "span": 8
+        "ntaps": 33
       },
-      "notes": "PARITY-GAP: hand-rolled RRC formula, sps hardcoded to 4, no gain, no ntaps (only span), Sum=1 normalization; GR firdes.root_raised_cosine takes (gain, sampling_freq, symbol_rate, alpha, ntaps). Taps only matched firdes at the default sps. Must use a firdes-faithful generator."
+      "notes": "Matches firdes.root_raised_cosine(gain,sampling_freq,symbol_rate,alpha,ntaps) VERBATIM via a bit-exact firdes port in _firdes.root_raised_cosine (max dev ~1e-8 across gain/fs/alpha/ntaps). Taps run on the verified FIR datapath; sps derived from sampling_freq/symbol_rate (was hardcoded 4). 15 tests: tap-parity, BPSK stream, impulse, alpha+ntaps+gain sweeps, inverted+wrong-alpha mutations. Old hand-rolled alpha/span formula removed."
     },
     {
       "kyttar_block": "MultiplyBlock",

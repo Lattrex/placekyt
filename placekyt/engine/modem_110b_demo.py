@@ -31,8 +31,11 @@ from model.connection import BlockEndpoint, ChipPortEndpoint
 
 
 # 110B 75-bps on-chip RX parameters (the subset that maps to placeKYT blocks).
+# RRC uses GR firdes.root_raised_cosine params: 4 sps (fs/sym_rate=4), 33 taps
+# (= the old span-8 @ 4 sps), alpha 0.35, unit gain.
 _RRC_ALPHA = 0.35
-_RRC_SPAN = 8
+_RRC_SPS = 4.0
+_RRC_NTAPS = 33
 _DECIM = 4               # 8 sps (110B) → 2 sps (CoherentRX Gardner expects 2 sps)
 
 
@@ -46,7 +49,8 @@ def build_110b_rx_2chip(controller, *, library: str = "lattrex.official"):
     # --- Chip 0: filter front-end (RRC MF → decimate 8→2 sps) ----------------
     rrc = controller.place_block(
         "RRCPulseShaperBlock", 0, 0, 0, library=library,
-        params={"alpha": _RRC_ALPHA, "span": _RRC_SPAN})
+        params={"gain": 1.0, "sampling_freq": _RRC_SPS, "symbol_rate": 1.0,
+                "alpha": _RRC_ALPHA, "ntaps": _RRC_NTAPS})
     # Anti-alias lowpass for the 8→2 sps decimation: a short moving-average
     # (1/M each tap) is enough to suppress the imaging for this demo.
     dec = controller.place_block(

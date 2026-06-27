@@ -47,10 +47,10 @@ _GR_AVAILABLE = os.path.exists(os.environ.get("KYTTAR_GR_PYTHON", "/usr/bin/pyth
 pytestmark = pytest.mark.skipif(
     not _GR_AVAILABLE, reason="GNU Radio interpreter not available")
 
-_SPS = 4
+_SPS = 4            # sampling_freq/symbol_rate
 _ALPHA = 0.35
-_SPAN = 8
-_NTAPS = _SPAN * _SPS + 1  # 33
+_NTAPS = 33         # GR ntaps (= the old span-8 @ 4 sps)
+_GAIN = 1.0
 
 
 def _fq(v: float) -> int:
@@ -58,21 +58,23 @@ def _fq(v: float) -> int:
     return max(-32768, min(32767, q)) & 0xFFFF
 
 
-def _kyttar_taps(alpha=_ALPHA, span=_SPAN):
+def _kyttar_taps(gain=_GAIN, sps=_SPS, alpha=_ALPHA, ntaps=_NTAPS):
     """The block's own coefficients (so the tap-equivalence test is self-contained)."""
     from gr_kyttar.placement.blocks.rrc_pulse_shaper_block import RRCPulseShaperBlock
-    return list(RRCPulseShaperBlock("rrc", alpha=alpha, span=span).coefficients)
+    return list(RRCPulseShaperBlock(
+        "rrc", gain=gain, sampling_freq=float(sps), symbol_rate=1.0,
+        alpha=alpha, ntaps=ntaps).coefficients)
 
 
-def _gr_rrc(inq, alpha=_ALPHA, ntaps=_NTAPS, sps=_SPS):
-    """GNU Radio golden: causal fir_filter_fff with firdes RRC taps."""
+def _gr_rrc(inq, gain=_GAIN, alpha=_ALPHA, ntaps=_NTAPS, sps=_SPS):
+    """GNU Radio golden: causal fir_filter_fff with firdes.root_raised_cosine taps."""
     return run_gnuradio_ref(
         inq,
         """
 from gnuradio import gr, blocks, filter as gfilter
 from gnuradio.filter import firdes
 
-taps = firdes.root_raised_cosine(1.0, float(sps), 1.0, alpha, ntaps)
+taps = firdes.root_raised_cosine(gain, float(sps), 1.0, alpha, ntaps)
 tb = gr.top_block()
 src = blocks.vector_source_f(input_float, False, 1, [])
 f = gfilter.fir_filter_fff(1, taps)
@@ -81,7 +83,8 @@ tb.connect(src, f, snk)
 tb.run()
 output_float = list(snk.data())
 """,
-        extra_args={"alpha": alpha, "ntaps": int(ntaps), "sps": int(sps)},
+        extra_args={"gain": gain, "alpha": alpha, "ntaps": int(ntaps),
+                    "sps": int(sps)},
     )
 
 
@@ -93,14 +96,14 @@ def _upsampled(symbols, sps=_SPS):
     return up
 
 
-def _run(symbols, *, alpha=_ALPHA, span=_SPAN):
-    inq = [_fq(v) for v in _upsampled(symbols)]
+def _run(symbols, *, gain=_GAIN, alpha=_ALPHA, ntaps=_NTAPS, sps=_SPS):
+    inq = [_fq(v) for v in _upsampled(symbols, sps=sps)]
     dut = run_block_dut("RRCPulseShaperBlock", inq,
-                        params={"alpha": alpha, "span": span},
+                        params={"gain": gain, "sampling_freq": float(sps),
+                                "symbol_rate": 1.0, "alpha": alpha, "ntaps": ntaps},
                         chip_yaml=CHIP_YAML, in_port="sample", out_port="out")
     assert dut.ok, dut.reason
-    ntaps = span * _SPS + 1
-    ref = _gr_rrc(inq, alpha=alpha, ntaps=ntaps)
+    ref = _gr_rrc(inq, gain=gain, alpha=alpha, ntaps=ntaps, sps=sps)
     res = compare_against_grc(dut.outputs_q15, ref.floats, metric=Metric.AMPLITUDE,
                               delay=0, op_count=ntaps)
     return dut, res
@@ -161,7 +164,9 @@ def test_mutation_inverted_output_fails():
     syms = [0.5, -0.5, 0.5, 0.5, -0.5, -0.5, 0.5, -0.5]
     inq = [_fq(v) for v in _upsampled(syms)]
     dut = run_block_dut("RRCPulseShaperBlock", inq,
-                        params={"alpha": _ALPHA, "span": _SPAN},
+                        params={"gain": _GAIN, "sampling_freq": float(_SPS),
+                                "symbol_rate": 1.0, "alpha": _ALPHA,
+                                "ntaps": _NTAPS},
                         chip_yaml=CHIP_YAML, in_port="sample", out_port="out")
     assert dut.ok, dut.reason
     ref = _gr_rrc(inq)
@@ -176,13 +181,36 @@ def test_mutation_wrong_alpha_fails():
     syms = [0.5, -0.5, 0.5, 0.5, -0.5, -0.5, 0.5, -0.5, 0.5, -0.5]
     inq = [_fq(v) for v in _upsampled(syms)]
     dut = run_block_dut("RRCPulseShaperBlock", inq,
-                        params={"alpha": 0.5, "span": _SPAN},
+                        params={"gain": _GAIN, "sampling_freq": float(_SPS),
+                                "symbol_rate": 1.0, "alpha": 0.5,
+                                "ntaps": _NTAPS},
                         chip_yaml=CHIP_YAML, in_port="sample", out_port="out")
     assert dut.ok, dut.reason
     ref_wrong = _gr_rrc(inq, alpha=0.2)
     res = compare_against_grc(dut.outputs_q15, ref_wrong.floats,
                               metric=Metric.AMPLITUDE, delay=0, op_count=_NTAPS)
     assert not res.passed, "gate failed to detect a wrong-alpha RRC!"
+
+
+# --- new GR-param coverage: ntaps + gain sweeps --------------------------------
+
+@pytest.mark.parametrize("ntaps", [21, 33, 41])
+def test_rrc_ntaps_sweep(ntaps):
+    """Different tap counts all match firdes.root_raised_cosine."""
+    syms = [0.5, -0.5, 0.5, -0.5, 0.5, 0.5, -0.5, -0.5]
+    dut, res = _run(syms, ntaps=ntaps)
+    print(f"\nrrc ntaps={ntaps}:", res.summary())
+    assert res.passed, res.summary()
+
+
+@pytest.mark.parametrize("gain", [0.5, 1.0])
+def test_rrc_gain_sweep(gain):
+    """The firdes `gain` scales the taps (sum == gain); the on-chip output
+    matches GR at each gain (kept <=1 to stay in the Q15 range)."""
+    syms = [0.4, -0.4, 0.4, -0.4, 0.4, 0.4, -0.4, -0.4]
+    dut, res = _run(syms, gain=gain)
+    print(f"\nrrc gain={gain}:", res.summary())
+    assert res.passed, res.summary()
 
 
 def test_empty_output_fails():

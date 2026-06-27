@@ -277,3 +277,48 @@ def band_reject(gain, sampling_freq, low_cutoff_freq, high_cutoff_freq,
         raise ValueError("require 0 < low_cutoff < high_cutoff <= fs/2")
     return _design("band_reject", gain, sampling_freq, low_cutoff_freq,
                    high_cutoff_freq, transition_width, window, beta)
+
+
+def root_raised_cosine(gain: float, sampling_freq: float, symbol_rate: float,
+                       alpha: float, ntaps: int) -> List[float]:
+    """firdes.root_raised_cosine(gain, sampling_freq, symbol_rate, alpha, ntaps).
+
+    A bit-exact (to float precision) port of gr::filter::firdes::root_raised_cosine
+    (firdes.cc): the closed-form RRC impulse response, scaled so the tap SUM equals
+    ``gain``. ``ntaps`` is forced ODD (GR adds 1 if even). ``alpha`` is the rolloff
+    (excess-bandwidth) factor; ``samples-per-symbol = sampling_freq/symbol_rate``.
+    Verified max deviation ~1e-8 vs ``filter.firdes.root_raised_cosine`` across
+    gain / fs / alpha / ntaps. (NOT a windowed sinc, so it does not go through
+    ``_design`` — it is GR's own RRC formula.)"""
+    ntaps = int(ntaps)
+    if ntaps % 2 == 0:
+        ntaps += 1
+    spb = sampling_freq / symbol_rate           # samples per symbol
+    taps = [0.0] * ntaps
+    scale = 0.0
+    for i in range(ntaps):
+        xindx = i - ntaps // 2
+        x1 = math.pi * xindx / spb
+        x2 = 4.0 * alpha * xindx / spb
+        x3 = x2 * x2 - 1.0
+        if abs(x3) >= 0.000001:                 # avoid 0/0 at x2^2 == 1
+            if i != ntaps // 2:
+                num = (math.cos((1.0 + alpha) * x1)
+                       + math.sin((1.0 - alpha) * x1) / (4.0 * alpha * xindx / spb))
+            else:
+                num = math.cos((1.0 + alpha) * x1) + (1.0 - alpha) * math.pi / (4.0 * alpha)
+            den = x3 * math.pi
+        else:
+            if alpha == 1.0:
+                taps[i] = -1.0
+                scale += taps[i]
+                continue
+            x3 = (1.0 - alpha) * x1
+            x2 = (1.0 + alpha) * x1
+            num = (math.sin(x2) * (1.0 + alpha) * math.pi
+                   - math.cos(x3) * ((1.0 - alpha) * math.pi * spb) / (4.0 * alpha * xindx)
+                   + math.sin(x3) * spb * spb / (4.0 * alpha * xindx * xindx))
+            den = -32.0 * math.pi * alpha * alpha * xindx / spb
+        taps[i] = 4.0 * alpha * num / den
+        scale += taps[i]
+    return [t * gain / scale for t in taps]

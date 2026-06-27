@@ -18,8 +18,11 @@ blocks:
   type: RRCPulseShaperBlock
   library: lattrex.official
   params:
+    gain: 1.0
+    sampling_freq: 4.0
+    symbol_rate: 1.0
     alpha: 0.35
-    span: 8
+    ntaps: 33
   placement:
     chip: 0
     cells:

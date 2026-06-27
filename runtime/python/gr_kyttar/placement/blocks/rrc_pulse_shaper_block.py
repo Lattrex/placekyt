@@ -50,61 +50,60 @@ class RRCPulseShaperBlock(KyttarBlock):
     def __init__(
         self,
         name: str,
+        gain: float = 1.0,
+        sampling_freq: float = 4.0,
+        symbol_rate: float = 1.0,
         alpha: float = 0.35,
-        span: int = 8,
+        ntaps: int = 33,
     ):
         """
-        Initialize RRC Pulse Shaper.
+        Initialize RRC Pulse Shaper — matches GNU Radio's
+        ``filter.firdes.root_raised_cosine(gain, sampling_freq, symbol_rate,
+        alpha, ntaps)`` (the GRC **Root Raised Cosine Taps** a user would feed a
+        FIR) VERBATIM. The coefficients are computed by the bit-exact firdes port
+        in ``_firdes.root_raised_cosine`` and run on the verified FIR datapath.
 
         Args:
-            name: Block name
-            alpha: Excess bandwidth factor (default 0.35)
-            span: Filter span in symbols (default 8)
-        """
-        super().__init__(name, alpha=alpha, span=span)
-        self._alpha = alpha
-        self._span = span
-        # Odd-length FIR (standard for symmetric filters, matches GNURadio)
-        self._num_taps = span * self.SAMPLES_PER_SYMBOL + 1
+            name: Block name.
+            gain: passband/scale gain — the taps are scaled so their SUM == gain
+                (GR firdes convention), default 1.0.
+            sampling_freq: sample rate; ``sampling_freq/symbol_rate`` =
+                samples-per-symbol. Default 4.0 (with symbol_rate 1.0 → 4 sps).
+            symbol_rate: symbol rate (same units as sampling_freq). Default 1.0.
+            alpha: rolloff / excess-bandwidth factor, default 0.35.
+            ntaps: number of taps (forced ODD, GR adds 1 if even). Default 33
+                (= the old span-8 @ 4 sps length, for back-compat defaults).
 
-        # Generate RRC coefficients
+        (Previously this took ``alpha, span`` and a hand-rolled formula normalized
+        to DC gain 1 — that did NOT match firdes on any axis but the default. Now
+        it mirrors firdes.root_raised_cosine exactly. ``samples_per_symbol`` is
+        derived from sampling_freq/symbol_rate, not hardcoded.)
+        """
+        super().__init__(name, gain=gain, sampling_freq=sampling_freq,
+                         symbol_rate=symbol_rate, alpha=alpha, ntaps=ntaps)
+        self._gain = float(gain)
+        self._sampling_freq = float(sampling_freq)
+        self._symbol_rate = float(symbol_rate)
+        self._alpha = float(alpha)
+        ntaps = int(ntaps)
+        if ntaps % 2 == 0:
+            ntaps += 1
+        self._num_taps = ntaps
+        # samples-per-symbol derived from the GR params (not hardcoded).
+        self._sps = self._sampling_freq / self._symbol_rate
+
+        # firdes.root_raised_cosine taps (bit-exact port).
         self._coefficients = self._generate_rrc_coefficients()
         self._coeff_q15 = [float_to_q15(c) for c in self._coefficients]
 
     def _generate_rrc_coefficients(self) -> List[float]:
-        """Generate RRC filter coefficients."""
-        n_taps = self._num_taps
-        taps = []
-
-        for i in range(n_taps):
-            t = (i - n_taps // 2) / self.SAMPLES_PER_SYMBOL
-            if abs(t) < 1e-10:
-                # t = 0
-                h = 1.0 + self._alpha * (4 / np.pi - 1)
-            elif abs(abs(t) - 1 / (4 * self._alpha)) < 1e-10:
-                # t = ±1/(4α)
-                h = (self._alpha / np.sqrt(2)) * (
-                    (1 + 2 / np.pi) * np.sin(np.pi / (4 * self._alpha)) +
-                    (1 - 2 / np.pi) * np.cos(np.pi / (4 * self._alpha))
-                )
-            else:
-                # General case
-                num = np.sin(np.pi * t * (1 - self._alpha)) + 4 * self._alpha * t * np.cos(np.pi * t * (1 + self._alpha))
-                den = np.pi * t * (1 - (4 * self._alpha * t) ** 2)
-                if abs(den) > 1e-10:
-                    h = num / den
-                else:
-                    h = 0.0
-            taps.append(h)
-
-        # Normalize to DC gain = 1 (sum of taps = 1.0), matching GNURadio
-        # convention. This prevents output clipping for any symbol amplitude
-        # within Q15 range.
-        tap_sum = sum(taps)
-        if abs(tap_sum) > 1e-10:
-            taps = [h / tap_sum for h in taps]
-
-        return taps
+        """firdes.root_raised_cosine(gain, sampling_freq, symbol_rate, alpha,
+        ntaps) taps — the bit-exact port in ``_firdes`` (NOT a hand-rolled formula).
+        The taps are scaled so their SUM == gain (GR firdes convention)."""
+        from . import _firdes
+        return _firdes.root_raised_cosine(
+            self._gain, self._sampling_freq, self._symbol_rate,
+            self._alpha, self._num_taps)
 
     @property
     def cell_count(self) -> int:

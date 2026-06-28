@@ -69,6 +69,25 @@ def test_diff_in_sync_when_equal(catalog):
     assert diff == {}
 
 
+def test_none_default_param_does_not_falsely_drift(catalog):
+    """An optional param whose default is None (e.g. PSKSymbolMapperBlock's
+    ``symbol_table``) must NOT be flagged out-of-sync on a fresh import. The
+    coercion used to stringify it (``str(None)`` -> ``'None'``), making the
+    re-coerced GRC param ('None') differ from the real placed value (None) and
+    falsely reporting drift. None defaults now literal-eval back to None."""
+    spec = catalog.get("PSKSymbolMapperBlock")
+    proj = Project(chip_type="kyttar_10x12")
+    blk = Block("mapper0", "PSKSymbolMapperBlock", library=spec.library,
+                params={"modulation": "bpsk", "symbol_table": None,
+                        "dimension": 1})
+    blk.placement = Placement(chip=0, cells=[PlacedCell(0, 0, 0, Face.EAST)])
+    proj.blocks.append(blk)
+    # The GRC baseline (as observe_many seeds it) carries the real placed params,
+    # including symbol_table=None. The diff must come back EMPTY (in sync).
+    diff = compute_param_diff(proj, catalog, {"mapper0": dict(blk.params)})
+    assert diff == {}, f"None-default param falsely drifted: {diff}"
+
+
 def test_diff_flags_resize_on_fir_taps(catalog):
     """A FIR going 7→40 coefficients grows its cell count → resizes=True."""
     spec = catalog.get("FIRFilterBlock")

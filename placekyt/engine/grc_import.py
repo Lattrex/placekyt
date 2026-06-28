@@ -326,6 +326,17 @@ def _coerce_params(params, catalog, btype):
                 val = ast.literal_eval(s)
                 if isinstance(val, type(dv)):
                     out[k] = val
+            elif dv is None:
+                # An UNTYPED default (e.g. an optional ``symbol_table=None``): there
+                # is no target type to coerce to, so DON'T stringify (str(None) ->
+                # 'None' would make a re-coerced param drift from the real None and
+                # falsely flag the block out-of-sync). Parse the literal if it is
+                # one (so 'None' -> None, '5' -> 5, '[1,2]' -> [1,2]); otherwise
+                # keep the raw string (a real string value the GRC set).
+                try:
+                    out[k] = ast.literal_eval(s)
+                except (ValueError, SyntaxError):
+                    out[k] = s
             else:
                 out[k] = s
         except (ValueError, TypeError, SyntaxError):

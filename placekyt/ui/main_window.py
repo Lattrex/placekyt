@@ -1255,9 +1255,17 @@ class MainWindow(QMainWindow):
             return
         report = None
         try:
-            self.controller.auto_place()
+            self.controller.auto_place(use_bus=opts["use_bus"])
             if opts["route"]:                     # full place-and-route
-                report = self.controller.auto_route_all(use_bus=opts["use_bus"])
+                # For BUS routing the strategy-aware placer has already oriented
+                # every block coherently (multi-filament: input cells on the
+                # shared bus row, each filament in its own region). The flow-
+                # orient re-pass would re-rotate blocks and strand a broker tap
+                # (the multi-filament net10 "no free broker cell" regression), so
+                # skip it for bus mode; keep it for block-to-block routing.
+                auto_orient = opts["use_bus"] != "always"
+                report = self.controller.auto_route_all(
+                    use_bus=opts["use_bus"], auto_orient=auto_orient)
             else:                                 # rough: place + flow-orient only
                 self.controller.auto_orient_for_flow()
         except Exception as exc:  # noqa: BLE001

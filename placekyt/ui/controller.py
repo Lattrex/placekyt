@@ -522,7 +522,8 @@ class AppController(QObject):
         self.grc_sync.observe_many(params_by_block)
         return self.refresh_grc_sync()
 
-    def auto_place(self, chip: int = 0, *, register: bool = True):
+    def auto_place(self, chip: int = 0, *, register: bool = True,
+                   use_bus: str = "auto"):
         """Flow-order the placed blocks on ``chip`` into a 1-D pipeline (auto-P&R
         §8): topological order by dataflow, packed left-to-right. Applies the
         repositioning as ONE undoable composite. Returns the
@@ -534,6 +535,15 @@ class AppController(QObject):
         undo stack — used when a higher-level command (the GRC resync) owns the
         single undoable unit via its own snapshot, so the place/route steps it
         drives must not also self-register.
+
+        ``use_bus`` mirrors :meth:`auto_route_all`'s flag so the placer can pick a
+        STRATEGY-AWARE layout (the project-owner's context rule): with BUS routing
+        (``"always"``) — OR whenever >1 filament feeds the shared input port — NO
+        block may anchor on a port cell (the port must stay a free bus tap so the bus
+        reaches each filament); each filament is packed as its own coherent region.
+        With block-to-block routing of a SINGLE filament, the lead block's input cell
+        anchors ON the port (preferred — lowest latency; the proven coherent-RX
+        layout). ``"auto"`` lets the >1-filament count alone decide.
         """
         from engine.autoplace import AutoPlacer
         from commands import (CompositeCommand, MoveBlockCommand,
@@ -552,11 +562,18 @@ class AppController(QObject):
         # block's landing cell lands ON the port — the port injects AT its cell, so
         # a block one cell away never receives the data (builds, but won't compute).
         anchor = self._input_port_anchor(chip)
+        # STRATEGY: force the multi-filament (off-port, per-filament-region) layout
+        # when routing is BUS-mode — the bus needs the port to stay a free tap. (A
+        # design with >1 filament feeding the port is multi-filament regardless; the
+        # placer detects that itself.) "auto"/"never" leave the filament count to
+        # decide, preserving the single-filament lead-on-port path.
+        force_multi = (use_bus == "always")
         placer = (AutoPlacer(self.project, footprint, anchor=anchor,
                              width=w, height=h)
                   .with_port_maps(port_maps)
                   .with_chip_ports(self._chip_port_cell)
-                  .with_feedback(self._block_has_internal_feedback))
+                  .with_feedback(self._block_has_internal_feedback)
+                  .with_multi_filament(force_multi))
         plan = placer.plan(chip)
         # The INPUT-FED lead block (first in flow order, anchored at the port) must
         # land its INPUT/landing CELL on the port — not its min corner. The port
@@ -564,8 +581,11 @@ class AppController(QObject):
         # at the phase cell) only fires when BOTH land there. Orientation can move
         # the input cell off the min corner, so we translate by the input cell's
         # POST-orient offset for the lead block. (Other blocks anchor by min corner;
-        # the bus router brokers their inputs.)
-        lead = self._input_fed_block(plan, chip)
+        # the bus router brokers their inputs.) In MULTI-FILAMENT mode NO block
+        # anchors on the port — the placer leaves ``_lead_block`` None — so there is
+        # no lead and every block anchors by its min corner.
+        lead = None if getattr(placer, "_lead_block", None) is None \
+            else self._input_fed_block(plan, chip)
         cmds = []
         # Apply orientation + translate per block, EXECUTING each in order so the
         # post-orient cell positions are visible for the lead block's input-cell

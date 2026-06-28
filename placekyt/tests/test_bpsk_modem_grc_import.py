@@ -142,13 +142,16 @@ def _t(c):
             getattr(c.target, "block", None) or getattr(c.target, "port", None))
 
 
-def test_autoplace_then_route_status(catalog):
-    """BONUS (non-gating): import via the controller, auto-place all 8 blocks, and
-    ATTEMPT a bus auto-route. Auto-route is EXPECTED to be partial — the bus router
-    cannot fan ONE input port (x16_in) out to two parallel input nets (mapper AND
-    the MF I/Q pair), so the headless modem (engine.bpsk_modem_demo) direct-injects
-    each chain by per-burst hop instead. This test asserts only that import + place
-    succeed and records the route outcome; BER is proven by test_bpsk_modem.
+def test_autoplace_strategy_aware_off_port(catalog):
+    """STRATEGY-AWARE multi-filament auto-place: x16_in feeds TWO filaments (the TX
+    mapper chain AND the RX matched-filter chain), so the placer must NOT anchor any
+    block on the input port (it stays a free bus tap) and must lay each filament as
+    its own coherent region. Asserts:
+      * import + place succeed, all 8 blocks placed;
+      * NO block sits on the chip INPUT port cell (the multi-filament off-port rule);
+      * the RRC pulse shaper is FOLDED (~2 rows, not a flat 1x7 line);
+      * the TX and RX filaments are vertically SEPARABLE (their cell rows don't
+        interleave) — a coherent, not jumbled, layout.
     """
     from ui.controller import AppController
     from engine.io.chip_type_io import load_chip_type
@@ -159,19 +162,93 @@ def test_autoplace_then_route_status(catalog):
     assert res.ok, res.unknown
     assert len(ctrl.project.blocks) == 8
 
-    ctrl.auto_place(0)
-    # Every block got real cell placements.
+    ctrl.auto_place(0, use_bus="always")
     for b in ctrl.project.blocks:
         assert b.placement is not None and b.placement.cells, \
             f"{b.name} ({b.type}) was not placed"
 
+    # The chip INPUT port cell.
+    port = chip_type.port("x16_in")
+    port_cell = (port.cell_x, port.cell_y)
+    # NO block may cover the input port cell (multi-filament: the port stays a free
+    # bus tap so the bus can reach each filament).
+    for b in ctrl.project.blocks:
+        cells = {(c.x, c.y) for c in b.placement.cells}
+        assert port_cell not in cells, \
+            f"{b.type} sits ON the input port {port_cell} (multi-filament must be off-port)"
+
+    # The RRC pulse shaper is FOLDED: ~2 rows, not a flat 1x7 line.
+    rrc = next(b for b in ctrl.project.blocks if b.type == "RRCPulseShaperBlock")
+    rys = {c.y for c in rrc.placement.cells}
+    rxs = {c.x for c in rrc.placement.cells}
+    assert len(rys) <= 2 and len(rxs) <= 4, \
+        f"RRC not folded: spans rows {sorted(rys)}, cols {sorted(rxs)}"
+
+    # The two filaments occupy SEPARABLE row bands (TX: mapper/up/rrc/upc ; RX:
+    # MF/costas/gardner/slicer). The RX-only blocks (Costas, Gardner, Slicer) sit in a
+    # band BELOW the TX-only blocks (Upsampler, RRC, IQUpconvert) — a coherent split,
+    # not an interleaved jumble. (The two heads, mapper + MF, share the port row.)
+    def rows(type_name):
+        b = next(x for x in ctrl.project.blocks if x.type == type_name)
+        return {c.y for c in b.placement.cells}
+    tx_rows = rows("UpsamplerBlock") | rows("RRCPulseShaperBlock") | rows("IQUpconvertBlock")
+    rx_rows = rows("ComplexCostasLoopBlock") | rows("GardnerTimingRecovery") \
+        | rows("BPSKSlicerBlock")
+    assert min(rx_rows) > max(tx_rows), \
+        f"filaments interleave: TX rows {sorted(tx_rows)}, RX rows {sorted(rx_rows)}"
+
+
+def test_autoplace_then_route_status(catalog):
+    """The strategy-aware multi-filament auto-place + bus auto-route routes ALL 12 of
+    the modem's logical nets over the shared bus. The off-port multi-filament placement
+    (the port stays a free tap, each filament in its own coherent region) plus the
+    folded RRC and the egress-corridor reservation let the bus fan x16_in out to BOTH
+    filaments AND egress BOTH back to x16_out — the full-duplex shared-port design,
+    fully routed (no block on a port cell). This is the GUI deliverable: importing
+    bpsk_modem.grc → full place-and-route yields a coherent, completely-routed layout.
+    """
+    from ui.controller import AppController
+    from engine.io.chip_type_io import load_chip_type
+
+    chip_type = load_chip_type(str(CT_PATH))
+    ctrl = AppController(catalog=catalog)
+    res = ctrl.import_grc(str(GRC_MODEM), chip_type="kyttar_10x12")
+    assert res.ok, res.unknown
+    assert len(ctrl.project.blocks) == 8
+
+    ctrl.auto_place(0, use_bus="always")
     rep = ctrl.auto_route_all({"kyttar_10x12": chip_type}, auto_orient=False,
                               use_bus="always")
     routed = sorted(r.name for r in rep.routed)
     failed = [(r.name, r.reason) for r in rep.failed]
-    # Informational — NOT an assertion on rep.ok (shared-port fan-out is a known
-    # router limit; the modem uses direct-inject, see test_bpsk_modem).
     print(f"\n[bpsk_modem auto-route] ok={rep.ok} "
           f"routed={len(routed)} failed={len(failed)}")
     if failed:
         print("  failed nets:", failed)
+    # ALL 12 nets route — the coherent, fully-routed multi-filament modem layout.
+    assert rep.ok and len(routed) == 12, \
+        f"routed {len(routed)}/12, failed: {failed}"
+
+
+def test_gui_import_path_routes_all_12(catalog):
+    """The ACTUAL GUI import path (File→Import GNURadio Flowgraph, full P&R) must
+    route all 12 nets. The GUI runs auto_place(use_bus) then auto_route_all with
+    auto_orient = (use_bus != "always") — for bus mode the strategy-aware placer
+    already oriented everything, and the flow-orient re-pass would re-rotate a
+    block and strand a broker tap (the net10 "no free broker cell" regression).
+    This mirrors ui.main_window._import_grc exactly so a future change there can't
+    silently leave the modem 11/12."""
+    from ui.controller import AppController
+    from engine.io.chip_type_io import load_chip_type
+
+    chip_type = load_chip_type(str(CT_PATH))
+    ctrl = AppController(catalog=catalog)
+    ctrl.import_grc(str(GRC_MODEM), chip_type="kyttar_10x12")
+    use_bus = "always"                       # the GUI default route strategy
+    ctrl.auto_place(use_bus=use_bus)
+    rep = ctrl.auto_route_all({"kyttar_10x12": chip_type},
+                              use_bus=use_bus,
+                              auto_orient=(use_bus != "always"))
+    failed = [(r.name, r.reason) for r in rep.failed]
+    assert rep.ok and len(rep.routed) == 12, \
+        f"GUI import path routed {len(rep.routed)}/12, failed: {failed}"

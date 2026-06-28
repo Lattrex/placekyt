@@ -75,6 +75,11 @@ class AutoPlacer:
         self._height = int(height)
         self._band_margin = int(band_margin)  # extra rows below a band for the bus
         self._takes_params: dict = {}
+        # Strategy hint: force MULTI-FILAMENT placement (no block on the port, one
+        # region per filament) even for a single filament — set by the caller when the
+        # route mode is BUS (``use_bus``), which also requires the port stay a free
+        # tap. >1 filament always triggers multi regardless of this flag.
+        self._multi_filament = False
 
     # -- provider adapter -----------------------------------------------------
     def _provider(self, fn, blk):
@@ -189,6 +194,65 @@ class AutoPlacer:
                 return n
         return None
 
+    # -- filament detection (strategy-aware placement) ------------------------
+    def _port_fed_blocks(self, names):
+        """The set of blocks fed DIRECTLY by a chip INPUT port — each is the head of
+        a distinct FILAMENT (a maximal forward chain from the port)."""
+        fed = set()
+        for conn in self._project.connections:
+            s, t = conn.source, conn.target
+            if isinstance(s, ChipPortEndpoint) and isinstance(t, BlockEndpoint) \
+                    and t.block in names:
+                fed.add(t.block)
+        return fed
+
+    def _filaments(self, order, names):
+        """Partition the flow ``order`` into FILAMENTS — one per distinct chip-input
+        head, each being that head and the maximal forward chain reachable from it.
+
+        A "filament" is a maximal forward chain (the design's term). Two filaments
+        fed from the SAME shared input port (the full-duplex modem's x16_in feeding
+        BOTH the TX mapper and the RX matched filter) are SEPARATE filaments — they
+        diverge at the port and only re-converge at the output port (not a block), so
+        the block graph splits cleanly into one component per head.
+
+        Returns ``[[block, ...], ...]`` in flow order, one list per filament head (in
+        the order the heads appear in ``order``). Blocks reachable from no input head
+        (rare: an unconnected island) form a trailing catch-all filament so nothing is
+        dropped. The partition is by forward reachability: a block belongs to the head
+        whose forward cone first reaches it (heads taken in flow order), so a chain
+        that forks is assigned greedily but every block lands in exactly one filament.
+        """
+        succ: dict[str, set] = {n: set() for n in names}
+        for conn in self._project.connections:
+            s, t = conn.source, conn.target
+            if isinstance(s, BlockEndpoint) and isinstance(t, BlockEndpoint) \
+                    and s.block in names and t.block in names:
+                succ[s.block].add(t.block)
+        heads = [n for n in order if n in self._port_fed_blocks(names)]
+        assigned: dict[str, int] = {}
+        filaments: list[list] = []
+        for fi, head in enumerate(heads):
+            # Forward-reachable cone from this head, claiming any not-yet-assigned
+            # block (a block already claimed by an earlier head's cone stays there).
+            stack = [head]
+            members: list = []
+            while stack:
+                n = stack.pop()
+                if n in assigned:
+                    continue
+                assigned[n] = fi
+                members.append(n)
+                stack.extend(succ.get(n, ()))
+            # Keep members in flow order for a coherent left-to-right run.
+            members.sort(key=order.index)
+            filaments.append(members)
+        # Anything unreachable from any input head (islands) -> a trailing filament.
+        leftover = [n for n in order if n not in assigned]
+        if leftover:
+            filaments.append(leftover)
+        return [f for f in filaments if f]
+
     # -- neighbour graph (for flyline-minimising orientation) -----------------
     def _neighbour_maps(self, names):
         """Build, per block, its inter-block DRIVER and the chip ports it touches —
@@ -246,21 +310,58 @@ class AutoPlacer:
         the array width then wraps DOWN to the next band, reversing direction so
         the bus snakes. Returns anchor positions, the flow order, per-block
         orientation hints, the bus-spine waypoints, and any backward edges.
+
+        STRATEGY-AWARE (the project-owner's context rule): the placer chooses
+        between two strategies based on how many FILAMENTS feed the chip input port
+        and the route mode (``multi_filament`` flag set by the caller from the bus
+        mode):
+
+        * **Single filament + block-to-block routing** — the proven coherent-RX
+          path: the lead input-fed block ANCHORS its input cell ON the port (lowest
+          latency; the port injects at its own cell). One serpentine run.
+        * **Multiple filaments from a shared port, OR bus routing** — the modem
+          path: NO block may sit on the port (it must stay a FREE BUS TAP so the bus
+          can reach each filament's input). Each filament is packed as its OWN
+          coherent serpentine run in its own band-region (stacked vertically), so
+          the filaments are visually separable, and every filament head sits OFF the
+          port with a clear bus corridor from the port to it.
         """
         blocks = [b for b in self._project.blocks
                   if b.placement is not None and b.placement.chip == chip
                   and b.placement.cells]
         names = {b.name for b in blocks}
         order, backward = self._flow_order(blocks, names)
-        blk_of = {b.name: b for b in blocks}
-        # The lead input-fed block (first in flow order fed by a chip input port):
-        # its input cell anchors on the port and it is NOT reoriented.
-        self._lead_block = self._lead_input_fed(order, names)
+        self._blk_of = {b.name: b for b in blocks}
+        self._flow_order_index = {n: i for i, n in enumerate(order)}
         # Who drives whom, and which chip ports each block touches — so orientation
         # can put the INPUT cell nearest its driver and the OUTPUT cell nearest its
         # consumer (flyline minimisation, §8 / §4.3).
         self._driver_of, self._in_port_of, self._out_port_of = \
             self._neighbour_maps(names)
+        # The chip OUTPUT-port cells terminal blocks egress to MUST stay free — a block
+        # body covering one leaves the bus no port cell to exit through (the §1.2 "no
+        # bus path to the broker" egress failure).
+        self._reserved_out = {c for c in self._out_port_of.values() if c is not None}
+        # A chip OUTPUT-port cell at the array's RIGHTMOST column must stay free so the
+        # egress can reach it. Reserve, PER ROW, the columns a block may not extend onto:
+        # only the rows that actually hold an output port at the last column get their
+        # last column withheld (``_east_bound_row[row] = port_col``). Other rows keep the
+        # full width, so the proven single-filament serpentine (whose mid-block bands DO
+        # use the last column, e.g. the coherent-RX Costas at column 9 row 3) is
+        # unaffected — only a block on the port's OWN row is kept off the port cell's
+        # column. This fixes the folded-terminal-covers-the-port-cell egress failure
+        # without perturbing layouts that never touch the port row's last column.
+        self._east_bound_row: dict = {}
+        for c in self._reserved_out:
+            if c[0] == self._width - 1:
+                self._east_bound_row[c[1]] = min(
+                    self._east_bound_row.get(c[1], self._width), c[0])
+
+        # Strategy selection. Multi-filament when >1 distinct chain feeds the port,
+        # OR when the caller forces bus mode (``multi_filament``): both demand the
+        # port stay a free bus tap (no lead-on-port).
+        filaments = self._filaments(order, names)
+        multi = self._multi_filament or len(filaments) > 1
 
         positions: dict = {}
         orientations: dict = {}
@@ -269,12 +370,162 @@ class AutoPlacer:
         out_pos: dict = {}
         spine: list = []
 
+        # Whether the per-block packer is running inside the MULTI-filament layout
+        # (controls the egress-column reservation: in multi mode EVERY multi-cell block
+        # — folds included — keeps the egress corridor clear; in single mode a feedback
+        # fold legitimately uses the last column). Set per-run below.
+        self._in_multi_pack = False
+        if not multi:
+            # SINGLE-FILAMENT, block-to-block: the lead input-fed block anchors its
+            # input cell ON the port (preferred — lowest latency). One serpentine run.
+            self._lead_block = self._lead_input_fed(order, names)
+            self._pack_run(order, positions, orientations, out_pos, spine, chip,
+                           band_top=self._row)
+        else:
+            # MULTI-FILAMENT / bus: NO block on the port. The chip input port is a
+            # SINGLE cell that fans out in ONE committed bus direction (a cell has one
+            # fwd_face, §1.3), so EVERY filament's input cell must be reachable along
+            # that one shared corridor off the port — they cannot each get an
+            # independent direction. We therefore seat all filament HEADS side-by-side
+            # on the port's bus ROW going east (the port stays a free tap at column 0;
+            # the bus travels east and each head taps it at its own broker), with the
+            # NARROWEST head nearest the port so a wider head's body never walls the
+            # lane to a farther head. Each filament's BODY then snakes DOWN into its
+            # OWN band-region below the head row, keeping the filaments separable.
+            self._lead_block = None          # nothing anchors on the port
+            self._in_multi_pack = True       # reserve the egress corridor for all folds
+            self._pack_filaments(filaments, positions, orientations, out_pos,
+                                 spine, chip)
+
+        return PlacePlan(positions=positions, order=order,
+                         orientations=orientations, spine=spine,
+                         backward_edges=backward)
+
+    # -- multi-filament packing (shared-port, off-port heads) -----------------
+    def _pack_filaments(self, filaments, positions, orientations, out_pos, spine,
+                        chip):
+        """Lay several filaments that share ONE chip input port, keeping the port a
+        FREE bus tap (no block on it). Because the port is one cell with one fwd_face
+        (§1.3) it fans out in a SINGLE direction, so every filament's input cell must
+        be reachable along that one shared corridor — the heads cannot each claim an
+        independent direction. We therefore:
+
+          1. seat all filament HEADS side-by-side on the port's bus ROW (``self._row``)
+             going east, starting one column off the port (the port stays free at the
+             array edge). The NARROWEST head goes nearest the port so a wider head's
+             body never walls the lane to a farther head (the proven fan-out: the bus
+             leaves the port, runs east just below/along the head row, and each head
+             taps it at its own broker);
+          2. pack each filament's TAIL (the blocks after its head) as its OWN coherent
+             serpentine run in its OWN band-region below the head row, so the filaments
+             stay visually separable. The head→tail link is a normal block→block net.
+
+        Heads are ordered narrowest-first; ties keep flow order. Each tail region is
+        stacked under the previous one. Mutates the shared accumulators."""
+        blk_of = self._blk_of
+
+        def head_w(members):
+            kind = self._orient_for(blk_of[members[0]], True, members[0], out_pos,
+                                    self._start_x, self._row)
+            return self._oriented_wh(blk_of[members[0]], kind)[0]
+
+        ordered = sorted(filaments, key=lambda m: (head_w(m), self._order_index(m)))
+
+        # The chip OUTPUT-port cells the terminal blocks egress to MUST stay free (a
+        # block covering one leaves the bus no port cell to exit through — the egress
+        # then can't route). Collect them so head packing never seats a head on one.
+        out_cells = {c for c in self._out_port_of.values() if c is not None}
+        # If an output port sits ON the head row (e.g. x16_out at (9,0) on row 0), cap
+        # the head row's east edge just WEST of it so no head ever covers it.
+        head_row_cap = self._width
+        for oc in out_cells:
+            if oc[1] == self._row:
+                head_row_cap = min(head_row_cap, oc[0])
+
+        # 1) Heads on the port row, left to right, off the port (>= start_x + 1).
+        hx = self._start_x + 1
+        head_band_h = 0
+        for members in ordered:
+            head = members[0]
+            blk = blk_of[head]
+            # Heads are freely oriented to put their input on the west (bus) edge; a
+            # feedback fold keeps its authored faces (orienter returns identity).
+            kind = self._orient_for(blk, True, head, out_pos, hx, self._row)
+            orientations[head] = kind
+            w, h = self._oriented_wh(blk, kind)
+            if hx + w > head_row_cap:        # would reach the output-port column
+                # No room left on the head row before the output-port column. Fall
+                # back to seating this head at the START of its own tail region (still
+                # off the port, reachable by the bus turning down) rather than dropping
+                # it — every block must be placed.
+                positions[head] = None       # marker: place with the tail run below
+                continue
+            positions[head] = (chip, hx, self._row)
+            op = self._io_offsets(blk, kind)
+            if op is not None and op[1] is not None:
+                out_pos[head] = (hx + op[1][0], self._row + op[1][1])
+            head_band_h = max(head_band_h, h)
+            spine.append((min(self._width - 1, hx + w), self._row))
+            # Heads ABUT on the row (gap 0): the bus fans from the port and threads the
+            # free cells around/below them, tapping each at its own broker — a gap would
+            # only widen the head row and push a wide head past the output-port column.
+            hx += w
+
+        # 2) Tails: each filament's remaining blocks as a serpentine in its own region
+        # below the head row. Regions stack so the filaments are separable. A head that
+        # could NOT fit on the head row (marked None) is packed at the FRONT of its tail
+        # run so it still gets a position.
+        band_top = self._row + head_band_h + self._band_margin
+        for members in ordered:
+            head = members[0]
+            tail = list(members[1:])
+            if positions.get(head) is None:
+                positions.pop(head, None)                 # drop the marker
+                tail = [head] + tail                      # pack the head with its tail
+            if not tail:
+                continue
+            spine.append((self._start_x, band_top))      # region-break waypoint
+            band_top = self._pack_run(tail, positions, orientations, out_pos,
+                                      spine, chip, band_top=band_top)
+
+    def _east_bound_for(self, row) -> int:
+        """The rightmost column a block may extend onto for a band at ``row`` — the
+        array width, except a row holding an OUTPUT port at the last column withholds
+        that column (a clear egress to the port). Other rows are unconstrained, so the
+        proven serpentines that use the last column on non-port rows are unaffected."""
+        return self._east_bound_row.get(row, self._width)
+
+    def _east_bound_col(self) -> int:
+        """The rightmost column a feed-forward block may extend onto on ANY band — one
+        west of a chip OUTPUT port at the array's last column, so the egress column
+        stays a clear vertical corridor (no forward-route vs egress fwd_face contention).
+        Falls back to the full width when no output port holds the last column."""
+        cols = [c[0] for c in self._reserved_out if c[0] == self._width - 1]
+        return min([self._width] + cols)
+
+    def _order_index(self, members):
+        """A stable sort key for a filament: the flow-order index of its head."""
+        try:
+            return self._flow_order_index.get(members[0], 0)
+        except AttributeError:
+            return 0
+
+    def _pack_run(self, run_order, positions, orientations, out_pos, spine, chip,
+                  *, band_top):
+        """Pack ONE serpentine run (a single filament/tail, or the whole flow order in
+        single-filament mode) starting at band ``band_top``. Lays the run's blocks
+        left-to-right, wrapping DOWN to the next band at the array width. Mutates the
+        shared ``positions``/``orientations``/``out_pos``/``spine`` accumulators (so a
+        later filament's blocks treat earlier ones as placed) and returns the band row
+        just BELOW this run (where the next filament region begins). The per-block
+        logic is identical for both strategies — only the lead-on-port exemption
+        (``self._lead_block``) and the starting band differ."""
+        blk_of = self._blk_of
         x = self._start_x
-        band_top = self._row
         going_right = True
         band_h = 0  # tallest block extent in the current band
 
-        for n in order:
+        for n in run_order:
             blk = blk_of[n]
             # Decide the orientation FIRST so the pack reserves space for the cells
             # actually placed. Don't reorient the LEAD input-fed block: its input
@@ -292,9 +543,32 @@ class AutoPlacer:
             w, h = self._oriented_wh(blk, kind)
             # Would this block overflow the band horizontally? If so, wrap to the
             # next band and reverse direction (serpentine). The lead block never
-            # wraps (it must land on the anchor/input port).
+            # wraps (it must land on the anchor/input port). The east boundary keeps a
+            # chip OUTPUT port at the array's last column a clear EGRESS: PER ROW the
+            # band on the port's own row is held one column short of it (so a block body
+            # never covers the port cell and walls every egress), EXCEPT a NON-FEEDBACK
+            # multi-cell block keeps the WHOLE egress column clear on every band: its
+            # output/egress route would otherwise wind through that column and CONTEND
+            # with another stream on the single bus fwd_face — the "routes but doesn't
+            # deliver" folded-RRC→IQUpconvert failure, and the cross-filament net1
+            # contention in the modem. A FEEDBACK fold (Costas/Gardner) is exempt: it
+            # has no forward-route-vs-egress contention and legitimately uses the last
+            # column (the coherent-RX Costas at column 9 row 3), so it keeps the per-row
+            # bound. Terminal blocks are NOT exempt — keeping them west of the egress
+            # column lets their output route cleanly UP that clear column to the port.
+            # In MULTI-filament mode the egress column must stay clear for EVERY
+            # multi-cell block (even a feedback fold like IQUpconvert): two filaments'
+            # egresses share that corridor and a fold body on it strands the other
+            # filament's internal handoff (the modem net1 cross-filament contention).
+            # In SINGLE-filament mode a feedback fold is exempt (it legitimately uses
+            # the last column — the coherent-RX Costas — with no competing egress).
+            col_reserve = (n != self._lead_block and (w * h) > 1
+                           and (self._in_multi_pack
+                                or not self._has_internal_feedback(blk)))
+            east = self._east_bound_col() if col_reserve \
+                else self._east_bound_for(band_top)
             if going_right:
-                overflow = (x + w) > self._width and positions
+                overflow = (x + w) > east and positions
             else:
                 overflow = (x - w + 1) < 0 and positions
             # A FEEDBACK FOLD (Costas/Gardner/IQUpconvert) is non-reorientable and
@@ -319,7 +593,12 @@ class AutoPlacer:
                 band_top = band_top + band_h + self._band_margin
                 going_right = not going_right
                 band_h = 0
-                x = (self._width - 1) if not going_right else 0
+                # A leftward band starts at its east boundary minus one so it never seats
+                # a block on a reserved output-port cell (or, for a feed-forward block
+                # keeping the egress column clear, on that column).
+                bnd = self._east_bound_col() if col_reserve \
+                    else self._east_bound_for(band_top)
+                x = (bnd - 1) if not going_right else 0
                 # The travel direction flipped after we chose the orientation; re-
                 # derive it for the new direction (and the oriented extent with it)
                 # so the block faces the bus the right way on the new band.
@@ -393,9 +672,9 @@ class AutoPlacer:
                 spine.append((max(0, ax - 1), bus_y))
                 x = ax - 1 - self._gap
 
-        return PlacePlan(positions=positions, order=order,
-                         orientations=orientations, spine=spine,
-                         backward_edges=backward)
+        # The next filament region begins one band below this run's last band
+        # (its tallest block + the routing margin), so the regions don't overlap.
+        return band_top + band_h + self._band_margin
 
     # -- orientation (flyline-minimising auto-orient, §8 / §4.3) --------------
     def _orient_for(self, blk, going_right, name, out_pos, x, band_top):
@@ -641,6 +920,15 @@ class AutoPlacer:
         cells (input port for the lead block's driver, output port for a terminal
         block's consumer). Returns self (chainable)."""
         self._chip_port_resolver = resolver
+        return self
+
+    def with_multi_filament(self, on: bool = True):
+        """Force the MULTI-FILAMENT strategy (no block anchored on the port; one
+        coherent serpentine region per filament). The caller sets this when routing
+        is BUS-mode (``use_bus``), since the bus needs the port to stay a free tap.
+        A design that already has >1 filament feeding the port is multi-filament
+        regardless of this flag. Returns self (chainable)."""
+        self._multi_filament = bool(on)
         return self
 
     def with_feedback(self, provider):

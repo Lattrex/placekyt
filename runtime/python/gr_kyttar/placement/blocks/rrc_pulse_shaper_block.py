@@ -105,10 +105,28 @@ class RRCPulseShaperBlock(KyttarBlock):
             self._gain, self._sampling_freq, self._symbol_rate,
             self._alpha, self._num_taps)
 
+    # Fold the FIR pipeline into a compact ~4-wide serpentine instead of one flat
+    # row, matching the other multi-cell blocks. The default 33-tap shaper is 7
+    # cells; at width 4 it folds to a 4x2 footprint (row 0 east, row 1 west) rather
+    # than sprawling 1x7 across the array — so auto-place can pack it in a band and
+    # the bus taps it without a 7-wide wall. Geometry only: the cells still abut
+    # consecutively along the snake, so the linear cell N -> N+1 @1 handoff (the
+    # feed-forward partial-sum chain, no internal feedback) lands on the next cell
+    # exactly as it did flat. The DSP/program is unchanged.
+    FOLD_LAYOUT_WIDTH = 4
+
     @property
     def cell_count(self) -> int:
         import math
         return math.ceil(self._num_taps / self.TAPS_PER_CELL)
+
+    def default_layout(self):
+        """Compact folded serpentine (FOLD_LAYOUT_WIDTH-wide) for this feed-forward
+        FIR, so the shaper occupies ~2 rows instead of a flat 1xN line. Reuses the
+        base boustrophedon helper (east on row 0, south at the turn-down cell, west
+        on row 1), which keeps consecutive cells abutting so the linear @1 handoff
+        between cells still lands on the next cell. Geometry only."""
+        return self._serpentine_layout(self.cell_count, self.FOLD_LAYOUT_WIDTH)
 
     @property
     def interface(self) -> BlockInterface:

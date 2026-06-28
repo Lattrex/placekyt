@@ -118,3 +118,47 @@ class bpsk_slicer(_PassThrough):
     def __init__(self, device_id="kyttar_0"):
         super().__init__("Kyttar BPSK Slicer")
         self.device_id = device_id
+
+
+class psk_symbol_mapper(_PassThrough):
+    """PSK symbol mapper — GR marker (maps to PSKSymbolMapperBlock).
+
+    TX front end: input bit(s) -> complex PSK constellation symbol. One float in
+    (the bit), one complex out (the I/Q symbol). The real DSP runs on the chip."""
+
+    def __init__(self, device_id="kyttar_0", modulation="bpsk"):
+        super().__init__("Kyttar PSK Symbol Mapper", n_in=1, n_out=1)
+        self.device_id = device_id
+        self.modulation = modulation
+        self._advertise_grc_params(device_id, "PSKSymbolMapperBlock",
+                                   {"modulation": modulation})
+
+
+class upsampler(_PassThrough):
+    """Upsampler — GR marker (maps to UpsamplerBlock).
+
+    Zero-stuffing rate expander: one input sample -> ``sps`` outputs (the sample,
+    then sps-1 zeros). One float in, one float out."""
+
+    def __init__(self, device_id="kyttar_0", sps=4):
+        super().__init__("Kyttar Upsampler", n_in=1, n_out=1)
+        self.device_id = device_id
+        self.sps = sps
+        self._advertise_grc_params(device_id, "UpsamplerBlock", {"sps": sps})
+
+
+class iq_upconvert(_PassThrough):
+    """I/Q upconvert — GR marker (maps to IQUpconvertBlock).
+
+    Complex baseband (xi/xq, two named float ports) -> real passband sample
+    (out). s = I*cos(phase) - Q*sin(phase), free-running NCO."""
+
+    def __init__(self, device_id="kyttar_0", sample_rate=32000.0,
+                 frequency=4000.0):
+        super().__init__("Kyttar I/Q Upconvert", n_in=2, n_out=1)
+        self.device_id = device_id
+        self.sample_rate = sample_rate
+        self.frequency = frequency
+        self._advertise_grc_params(device_id, "IQUpconvertBlock",
+                                   {"sample_rate": sample_rate,
+                                    "frequency": frequency})

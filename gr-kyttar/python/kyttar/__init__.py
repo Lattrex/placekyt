@@ -63,7 +63,8 @@ from .source import source
 from .sink import sink
 from .rx_batch import rx_batch
 from .dsp_markers import (complex_rrc_matched_filter, complex_costas_loop,
-                          gardner_timing_recovery, bpsk_slicer)
+                          gardner_timing_recovery, bpsk_slicer,
+                          psk_symbol_mapper, upsampler, iq_upconvert)
 from .gain import gain
 from .fir_filter import fir_filter
 from .low_pass_filter import low_pass_filter
@@ -98,6 +99,9 @@ __all__ = [
     "complex_costas_loop",
     "gardner_timing_recovery",
     "bpsk_slicer",
+    "psk_symbol_mapper",
+    "upsampler",
+    "iq_upconvert",
     # Routing primitives
     "demux",
     "mux",

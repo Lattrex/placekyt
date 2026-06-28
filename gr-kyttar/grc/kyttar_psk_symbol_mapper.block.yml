@@ -1,0 +1,52 @@
+id: kyttar_psk_symbol_mapper
+label: 🧪 Kyttar PSK Symbol Mapper
+category: '[Kyttar]'
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.psk_symbol_mapper(${device_id}, ${modulation})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+
+- id: modulation
+  label: Modulation
+  dtype: enum
+  options: ['"bpsk"', '"qpsk"', '"8psk"']
+  option_labels: [BPSK, QPSK, 8-PSK]
+  default: '"bpsk"'
+
+inputs:
+- label: sample
+  domain: stream
+  dtype: float
+
+outputs:
+- label: out
+  domain: stream
+  dtype: complex
+
+documentation: |-
+  🧪 PROOF-OF-CONCEPT: this block works in a demo but has NOT been through
+  per-block GNU Radio-equivalence verification. Use with care.
+
+  PSK Symbol Mapper — bit/index -> PSK constellation symbol.
+
+  Maps input bits to PSK constellation symbols for BPSK, QPSK, or 8-PSK
+  (Gray-coded) as used in MIL-STD-188-110B. The "modulation" preset accumulates
+  1/2/3 input bits per symbol and emits the complex constellation point (I/Q).
+
+  Ports:
+    sample (in): input bit (one 0/1 word per call; 1/2/3 bits -> one symbol)
+    out:         complex constellation symbol (I + jQ)
+
+  Parameters:
+    Device ID:  which Kyttar device to use
+    Modulation: "bpsk" (1 bit/sym) | "qpsk" (2) | "8psk" (3); default bpsk
+
+  Mapped by placeKYT (File -> Import GNURadio Flowgraph) to PSKSymbolMapperBlock.
+
+file_format: 1

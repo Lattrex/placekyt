@@ -1,0 +1,73 @@
+id: kyttar_iq_upconvert
+label: 🧪 Kyttar I/Q Upconvert
+category: '[Kyttar]'
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.iq_upconvert(${device_id}, ${sample_rate}, ${frequency})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+
+- id: sample_rate
+  label: Sample Rate (Hz)
+  dtype: real
+  default: '32000'
+
+- id: frequency
+  label: Carrier Frequency (Hz)
+  dtype: real
+  default: '4000'
+
+# The complex baseband is TWO float input ports (xi/xq) — the LOGICAL I/Q pair — so GRC
+# renders + keeps both wires (a single port collapsed the I/Q wiring to port-0 and
+# dropped the Q rail). Output is the REAL passband sample. GNURadio stream ports are
+# POSITIONAL INTEGERS, so each port carries only a ``label`` (NO string ``id:`` — that
+# would make the generated ``connect((blk,'xi'),…)`` raise TypeError). The placeKYT
+# importer maps the index back by position (0→xi, 1→xq) via the IQUpconvertBlock
+# PortMap; the two input nets share ONE time-multiplexed chip route.
+inputs:
+- label: xi
+  domain: stream
+  dtype: float
+- label: xq
+  domain: stream
+  dtype: float
+
+outputs:
+- label: out
+  domain: stream
+  dtype: float
+
+documentation: |-
+  🧪 PROOF-OF-CONCEPT: this block works in a demo but has NOT been through
+  per-block GNU Radio-equivalence verification. Use with care.
+
+  I/Q Upconvert — complex baseband -> real passband.
+
+  Produces a REAL passband signal from the complex baseband (xi = in-phase,
+  xq = quadrature):
+
+      s[n] = I[n]*cos(phase) - Q[n]*sin(phase),   phase += freq (free-run)
+
+  The GR equivalent is multiply_cc(baseband, sig_source_c(samp_rate, COS,
+  frequency, ...)) -> complex_to_real. Exactly what PSK/QAM passband TX needs.
+
+  Ports:
+    xi (in): in-phase baseband
+    xq (in): quadrature baseband
+    out:     real passband sample
+
+  Parameters:
+    Device ID:   which Kyttar device to use
+    Sample Rate: sample rate in Hz (GR sig_source sampling_freq; default 32000)
+    Carrier Frequency: carrier in Hz (GR sig_source frequency; default 4000). The
+                 16-bit NCO phase increment is derived internally
+                 (freq_word = round(frequency/sample_rate * 65536)).
+
+  Mapped by placeKYT (File -> Import GNURadio Flowgraph) to IQUpconvertBlock.
+
+file_format: 1

@@ -1,0 +1,324 @@
+options:
+  parameters:
+    author: Lattrex
+    catch_exceptions: 'True'
+    category: '[GRC Hier Blocks]'
+    cmake_opt: ''
+    comment: ''
+    copyright: ''
+    description: "Full-duplex BPSK modem authored in GNU Radio (GRC-first workflow).\
+      \ The TX chain (PSK symbol mapper -> upsampler -> RRC pulse shaper -> I/Q upconvert)\
+      \ and the coherent RX chain (complex RRC matched filter -> complex Costas loop\
+      \ -> Gardner timing recovery -> BPSK slicer) live on ONE placeKYT array, sharing\
+      \ ONE input port (x16_in) and ONE output port (x16_out): both TX and RX source\
+      \ blocks map to x16_in and both sink blocks map to x16_out (the shared-port\
+      \ duplex). Built from the REAL DSP blocks so it IMPORTS into placeKYT (File ->\
+      \ Import GNURadio Flowgraph): all 8 blocks get placed and the logical nets\
+      \ are recovered; the headless engine.bpsk_modem_demo proves BER 0 on the built\
+      \ bitstream."
+    gen_cmake: 'On'
+    gen_linking: dynamic
+    generate_options: qt_gui
+    hier_block_src_path: '.:'
+    id: bpsk_modem
+    max_nouts: '0'
+    output_language: python
+    placement: (0,0)
+    qt_qss_theme: ''
+    realtime_scheduling: ''
+    run: 'True'
+    run_command: '{python} -u {filename}'
+    run_options: prompt
+    sizing_mode: fixed
+    thread_safe_setters: ''
+    title: Full-duplex BPSK modem (TX + coherent RX on one array)
+    window_size: (1600,1000)
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [8, 8]
+    rotation: 0
+    state: enabled
+
+blocks:
+- name: sps
+  id: variable
+  parameters:
+    comment: TX samples per symbol
+    value: '4'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [200, 12]
+    rotation: 0
+    state: enabled
+- name: samp_rate
+  id: variable
+  parameters:
+    comment: TX passband sample rate
+    value: '32000'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [320, 12]
+    rotation: 0
+    state: enabled
+- name: carrier
+  id: variable
+  parameters:
+    comment: TX carrier frequency
+    value: '4000'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [440, 12]
+    rotation: 0
+    state: enabled
+# ============================ TX chain ============================
+- name: tx_src
+  id: kyttar_source
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: TX bits -> placeKYT chip x16_in (shared duplex port)
+    complex_in: float
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_channels: '1'
+    port_name: '"x16_in"'
+    server_host: '"127.0.0.1"'
+    server_port: '58950'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [40, 120]
+    rotation: 0
+    state: enabled
+- name: mapper
+  id: kyttar_psk_symbol_mapper
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: PSK symbol mapper (BPSK) — placed on chip
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    modulation: '"bpsk"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [248, 116]
+    rotation: 0
+    state: enabled
+- name: up
+  id: kyttar_upsampler
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: Zero-stuff upsampler (sps) — placed on chip
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    sps: sps
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [448, 116]
+    rotation: 0
+    state: enabled
+- name: rrc
+  id: kyttar_rrc_pulse_shaper
+  parameters:
+    affinity: ''
+    alias: ''
+    alpha: '0.35'
+    comment: RRC pulse shaper — placed on chip
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    span: '8'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [624, 116]
+    rotation: 0
+    state: enabled
+- name: upc
+  id: kyttar_iq_upconvert
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: I/Q upconvert to real passband — placed on chip
+    device_id: '"kyttar_0"'
+    frequency: carrier
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    sample_rate: samp_rate
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [832, 100]
+    rotation: 0
+    state: enabled
+- name: tx_sink
+  id: kyttar_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: TX passband -> placeKYT chip x16_out (shared duplex port)
+    device_id: '"kyttar_0"'
+    hold_secs: '8.0'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_channels: '1'
+    port_name: '"x16_out"'
+    server_port: '58950'
+    server_repeat: 'False'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1040, 120]
+    rotation: 0
+    state: enabled
+# ============================ RX chain ============================
+- name: rx_src
+  id: kyttar_source
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: RX I/Q burst -> placeKYT chip x16_in (shared duplex port); fans to MF xi/xq
+    complex_in: complex
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_channels: '1'
+    port_name: '"x16_in"'
+    server_host: '"127.0.0.1"'
+    server_port: '58950'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [40, 320]
+    rotation: 0
+    state: enabled
+- name: mf
+  id: kyttar_complex_rrc_matched_filter
+  parameters:
+    affinity: ''
+    alias: ''
+    alpha: '0.35'
+    comment: Complex RRC matched filter front end — placed on chip
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    span: '8'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [248, 308]
+    rotation: 0
+    state: enabled
+- name: costas
+  id: kyttar_costas_loop
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: Complex Costas carrier recovery — placed on chip
+    damping: '1.0'
+    device_id: '"kyttar_0"'
+    loop_bw: '0.05'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [464, 308]
+    rotation: 0
+    state: enabled
+- name: gardner
+  id: kyttar_gardner_ted
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: Gardner timing recovery — placed on chip
+    device_id: '"kyttar_0"'
+    ki: '1'
+    kp: '3'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [672, 324]
+    rotation: 0
+    state: enabled
+- name: slicer
+  id: kyttar_bpsk_slicer
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: BPSK slicer (recovered bits) — placed on chip
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [864, 324]
+    rotation: 0
+    state: enabled
+- name: rx_sink
+  id: kyttar_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: recovered bits -> placeKYT chip x16_out (shared duplex port)
+    device_id: '"kyttar_0"'
+    hold_secs: '8.0'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_channels: '1'
+    port_name: '"x16_out"'
+    server_port: '58950'
+    server_repeat: 'False'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1056, 324]
+    rotation: 0
+    state: enabled
+
+connections:
+- [costas, '0', gardner, '0']
+- [gardner, '0', slicer, '0']
+- [mapper, '0', up, '0']
+- [mf, '0', costas, '0']
+- [mf, '1', costas, '1']
+- [rrc, '0', upc, '0']
+- [rx_src, '0', mf, '0']
+- [rx_src, '0', mf, '1']
+- [slicer, '0', rx_sink, '0']
+- [tx_src, '0', mapper, '0']
+- [up, '0', rrc, '0']
+- [upc, '0', tx_sink, '0']
+
+metadata:
+  file_format: 1
+  grc_version: 3.10.12.0

@@ -1,0 +1,54 @@
+id: kyttar_upsampler
+label: 🧪 Kyttar Upsampler
+category: '[Kyttar]'
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.upsampler(${device_id}, ${sps})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+
+- id: sps
+  label: Samples/Symbol (sps)
+  dtype: int
+  default: '4'
+
+inputs:
+- label: x
+  domain: stream
+  dtype: float
+
+outputs:
+- label: out
+  domain: stream
+  dtype: float
+
+asserts:
+- ${ 1 <= sps <= 8 }
+
+documentation: |-
+  🧪 PROOF-OF-CONCEPT: this block works in a demo but has NOT been through
+  per-block GNU Radio-equivalence verification. Use with care.
+
+  Upsampler — zero-stuffing rate expander (front half of an interpolating filter).
+
+  On each input sample it emits sps outputs: the sample itself followed by sps-1
+  ZEROS. Feed its output to the RRC Pulse Shaper and the pair is GNU Radio's
+  filter.interp_fir_filter_fff(sps, rrc_taps). Sits between the symbol mapper and
+  the RRC in the TX chain. Rate-EXPANDING: one input -> sps outputs.
+
+  Ports:
+    x (in):  symbol-rate samples
+    out:     upsampled stream (sample, then sps-1 zeros)
+
+  Parameters:
+    Device ID: which Kyttar device to use
+    sps:       samples per symbol / interpolation factor (1-8; default 4)
+
+  Mapped by placeKYT (File -> Import GNURadio Flowgraph) to UpsamplerBlock.
+
+file_format: 1

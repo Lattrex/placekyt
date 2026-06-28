@@ -297,6 +297,24 @@ class AutoPlacer:
                 overflow = (x + w) > self._width and positions
             else:
                 overflow = (x - w + 1) < 0 and positions
+            # A FEEDBACK FOLD (Costas/Gardner/IQUpconvert) is non-reorientable and
+            # authored WEST-in / EAST-out: its input cell sits on the WEST footprint
+            # edge (the broker taps there) and its output continues EAST toward the
+            # next stage / the output port. On a LEFT-going band the fold's egress
+            # would have to double back ACROSS its own input broker (a single-
+            # outstanding cell the fold's arbiter LOCK backpressures) — sharing it
+            # deadlocks the burst (the IQUpconvert collapse). Force such a fold onto a
+            # fresh RIGHT-going band so input (west) and egress (east) have clearance
+            # on opposite sides and the output flows toward its consumer. No-op when
+            # already going right (the flagship Costas/Gardner land right-going).
+            # Only a BUS-FED fold (one with an upstream BLOCK driver) is managed: a
+            # standalone / lead fold (no inter-block driver — e.g. the single-block
+            # CoherentRX smoke test, or the input-fed lead) keeps its natural anchor,
+            # since there is no source-bus to double back across.
+            fold_managed = (n != self._lead_block and self._is_west_in_fold(blk)
+                            and self._driver_of.get(n) is not None)
+            if fold_managed and not going_right and positions:
+                overflow = True
             if overflow:
                 band_top = band_top + band_h + self._band_margin
                 going_right = not going_right
@@ -316,6 +334,47 @@ class AutoPlacer:
             # Place the block's anchor (min corner). When travelling LEFT the
             # block still occupies [x-w+1 .. x]; anchor at the min corner.
             ax = x if going_right else max(0, x - w + 1)
+            # FEEDBACK-FOLD output alignment (§4.3 / §5.3): a west-in/east-out fold's
+            # INPUT route must stay SHORT (not sweep across the array — a long input
+            # bus walls the egress) and its OUTPUT must reach its consumer WITHOUT the
+            # egress doubling back over the input broker. Both hold when the fold's
+            # OUTPUT cell sits NEAR its consumer's column: the input then taps the bus
+            # just to the fold's west and the egress continues straight east. Slide the
+            # (right-going) fold so its output cell aligns under its consumer (the
+            # downstream block's input, or the chip output port), clamped to keep the
+            # input edge off the wall (ax>=1) and the whole footprint on-grid.
+            if going_right and fold_managed:
+                tgt = self._fold_consumer_x(n)
+                if tgt is not None:
+                    io = self._io_offsets(blk, kind)
+                    out_dx = io[1][0] if (io and io[1]) else (w - 1)
+                    # Anchor so the OUTPUT cell lands one column WEST of the consumer
+                    # (the egress then continues @1 into it). The hi clamp keeps the
+                    # fold's east edge off the array's last column so a chip OUTPUT
+                    # port cell there stays FREE (the fold must not cover it — that
+                    # leaves the corridor/bus router no port cell to egress to); the
+                    # lo clamp keeps the west input edge off the wall (ax>=1).
+                    want = tgt - 1 - out_dx
+                    hi = max(1, self._width - 1 - w)   # east edge at most W-2
+                    ax = max(1, min(want, hi))
+                    x = ax                        # keep the band cursor consistent
+            # Wall inset (§4.3): keep the block's BUS-FACING edge off the array
+            # boundary so its I/O cell retains a free bus-facing NEIGHBOUR for the
+            # broker tap. A FOLDED non-reorientable block (Costas/Gardner/IQ-
+            # upconvert: a hand-authored serpentine whose faces don't transform, so
+            # the orienter leaves it as-authored) seats its input cell on the
+            # footprint edge that abuts the bus; when a left-going band-wrap anchors
+            # that edge ON the array wall (ax==0), the input cell has NO free
+            # neighbour and the router can find no broker tap (the §1.2 "no bus path
+            # to the broker" failure). Nudge the anchor one cell inward so the bus
+            # edge faces open fabric. Harmless for unwalled placements (no-op there).
+            # The LEAD input-fed block is EXEMPT: its input cell is deliberately
+            # seated ON the chip input port at the array edge (the controller re-
+            # anchors it post-plan), so insetting it off the port would break ingress.
+            # Only a BUS-FED fold needs the input-broker neighbour; a standalone fold
+            # (no inter-block driver) has no bus input to keep off the wall.
+            if n != self._lead_block and self._driver_of.get(n) is not None:
+                ax, band_top = self._wall_inset(blk, kind, ax, band_top, w, h)
             positions[n] = (chip, ax, band_top)
             band_h = max(band_h, h)
             # Record where this block's OUTPUT cell lands (anchor + the post-orient
@@ -447,6 +506,31 @@ class AutoPlacer:
                 best = (key, kind)
         return best[1] if best is not None else None
 
+    def _fold_consumer_x(self, name):
+        """The x-column a feedback fold's OUTPUT should align under: its consumer's
+        input column. The consumer is a chip OUTPUT port (exact, ``_out_port_of``) or
+        the downstream block — but a downstream block is not yet placed, so for that
+        case fall back to the chip output port the pipeline ultimately egresses to (a
+        terminal fold), else None (no alignment hint; the natural pack position
+        stands)."""
+        cx = self._out_port_of.get(name)
+        if cx is not None:
+            return cx[0]
+        return None
+
+    def _is_west_in_fold(self, blk) -> bool:
+        """True if ``blk`` is a non-reorientable FEEDBACK FOLD whose input edge faces
+        WEST (its broker taps the west side, its output continues east) — the
+        Costas/Gardner/IQUpconvert family. Such a fold must sit on a RIGHT-going band
+        so its egress never doubles back across its input broker (§5.3 deadlock).
+        Resolved from the feedback flag + the (identity) PortMap bus edge; False if
+        either is unavailable."""
+        if not self._has_internal_feedback(blk):
+            return False
+        pm = self._oriented_port_map(blk, None)   # identity — folds aren't reoriented
+        from model.enums import Face
+        return getattr(pm, "bus_facing_edge", None) == Face.WEST if pm else False
+
     def _has_internal_feedback(self, blk) -> bool:
         """True if ``blk`` declares INTERNAL connections/jumps — a feedback loop or
         cross-cell forwarding whose assembly hardcodes per-cell faces (so a D4
@@ -483,6 +567,54 @@ class AutoPlacer:
         except Exception:  # noqa: BLE001
             return None
         return self._io_offsets_from(pm)
+
+    def _oriented_port_map(self, blk, kind):
+        """The block's :class:`PortMap` AFTER orientation ``kind`` (or None)."""
+        pm_provider = getattr(self, "_port_map_provider", None)
+        if pm_provider is None:
+            return None
+        try:
+            base = self._provider(pm_provider, blk)
+            return base if kind is None else base.transformed(kind)
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _wall_inset(self, blk, kind, ax, band_top, w, h):
+        """Nudge a FOLDED block's anchor so its BUS-FACING edge does not lie on the
+        array wall — returns the (possibly shifted) ``(ax, band_top)``.
+
+        A folded, non-reorientable block (one with internal feedback/forwarding,
+        whose hand-authored faces the orienter leaves as identity — Costas, Gardner,
+        IQUpconvert) seats its I/O cell on the footprint edge that taps the bus
+        (``bus_facing_edge``). A serpentine band-wrap can anchor that edge ON the
+        array boundary (e.g. a left-going wrap puts a WEST-edge fold at ax==0), which
+        strips the I/O cell of its only free bus-facing neighbour, so the router
+        finds no broker tap (§1.2). One cell of inset away from that wall restores a
+        free neighbour. Applied ONLY to folded blocks (a freely-orientable block's
+        edge is already chosen by the flyline orienter) and ONLY when room remains
+        inside the array; otherwise the anchor is unchanged (the router then reports
+        a sound failure rather than the placer fabricating an off-grid position).
+        """
+        if not self._has_internal_feedback(blk):
+            return ax, band_top                  # orientable — orienter owns its edge
+        pm = self._oriented_port_map(blk, kind)
+        edge = getattr(pm, "bus_facing_edge", None) if pm is not None else None
+        if edge is None:
+            return ax, band_top
+        from model.enums import Face
+        # Inset away from the wall the bus-facing edge would sit on. ``w``/``h`` are
+        # the ORIENTED cell extents, so ax+w-1 / band_top+h-1 are the far columns.
+        if edge == Face.WEST and ax <= 0 and (w + 1) <= self._width:
+            ax = 1
+        elif edge == Face.EAST and (ax + w - 1) >= self._width - 1 \
+                and (w + 1) <= self._width:
+            ax = self._width - 1 - w
+        elif edge == Face.NORTH and band_top <= 0 and (h + 1) <= self._height:
+            band_top = 1
+        elif edge == Face.SOUTH and (band_top + h - 1) >= self._height - 1 \
+                and (h + 1) <= self._height:
+            band_top = self._height - 1 - h
+        return ax, band_top
 
     @staticmethod
     def _io_offsets_from(port_map):

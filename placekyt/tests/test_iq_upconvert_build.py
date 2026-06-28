@@ -72,11 +72,23 @@ def test_builds_to_bitstream(qapp, catalog, chip_type):
 
 def test_built_bitstream_upconverts(qapp, catalog, chip_type):
     """The BUILT bitstream must produce s = I*cos - Q*sin: high correlation +
-    <=2-LSB error vs an ideal continuous passband. Anchored at (0,0) so the
-    phase landing cell is reachable from x16_in."""
+    <=3-LSB error vs an ideal continuous passband.
+
+    The block's real consumer is a downstream block, so the standalone build is
+    wired ``upmix.out -> x16_out`` and the passband is read from the PORT (the
+    real egress the LOCK fix made work) — no fragile internal-register poke at a
+    hardcoded coordinate (the block is a 4x2 fold; upmix is no longer at (5,0))."""
     import simkyt
+    from model.connection import BlockEndpoint, ChipPortEndpoint
 
     ctrl = _place(catalog, 0, 0)
+    blk = ctrl.project.blocks[0]
+    # Route the block's passband output to x16_out so we read the real egress.
+    ctrl.add_route(BlockEndpoint(block=blk.name, port="out"),
+                   ChipPortEndpoint(chip=0, port="x16_out"), [])
+    rep = ctrl.auto_route_all({"kyttar_10x12": chip_type}, auto_orient=False,
+                              use_bus="always")
+    assert rep.ok, [(r.name, r.reason) for r in rep.failed]
     res = BuildEngine(catalog, str(CT_PATH)).build(
         ctrl.project, {"kyttar_10x12": chip_type})
     assert res.ok, [str(e) for e in res.errors]
@@ -91,10 +103,7 @@ def test_built_bitstream_upconverts(qapp, catalog, chip_type):
 
     chip = simkyt.Chip.from_yaml(str(CT_PATH))
     chip.load_bitstream_physical(res.words(0))
-    # The block's exit-cell output is @1-abutment (its real consumer is a
-    # downstream block); standalone there is no port route, so read the computed
-    # passband sample from the upmix cell's 'acc' state register (R9).
-    upmix = chip.cell_id_at(5, 0)
+    chip.set_port_entry_address("x16_in", entry)
     random.seed(7)
     n = 64
     iq = [(random.uniform(-0.7, 0.7), random.uniform(-0.7, 0.7))
@@ -108,13 +117,20 @@ def test_built_bitstream_upconverts(qapp, catalog, chip_type):
         chip.run(max_events=3000)
         chip.inject_jump_physical(target_hop_cnt=30, entry_addr=entry)
         chip.run(max_events=20000)
-        chip_out.append(s16(chip.read_cell_memory(upmix, 9)))
+        got = None
+        while chip.output_available("x16_out"):
+            w = chip.read_port_i16("x16_out").view("uint16").tolist()
+            if got is None and w:
+                got = s16(int(w[-1]))
+            chip.release_output_ack("x16_out")
+            chip.run(max_events=3000)
+        chip_out.append(got if got is not None else 0)
         ph += round(FREQUENCY / SAMPLE_RATE * 65536) / 65536 * 2 * math.pi
         ideal.append((i * math.cos(ph) - q * math.sin(ph)) * 32768)
 
     max_err = max(abs(chip_out[k] - ideal[k]) for k in range(n))
     num = sum(chip_out[k] * ideal[k] for k in range(n))
     den = math.sqrt(sum(c * c for c in chip_out) * sum(v * v for v in ideal))
-    corr = num / den
+    corr = num / den if den else 0.0
     assert corr > 0.999, f"correlation {corr:.4f} too low"
     assert max_err <= 3, f"max error {max_err} LSB too high"

@@ -412,6 +412,22 @@ class SimController(QObject):
         stream_targets = _stream_targets_fn(
             self.app.project, self.app.registry, self.app.catalog, self._sim_chip,
             build_result=result)
+        # OBSERVABILITY: report what the server resolved at start-up. An EMPTY map
+        # is why a duplex run injects at the entry=0/hop=30 single-stream fallback
+        # and gets 0 words — it means no x16_in→block input net carried a stream_id
+        # (e.g. a hand-edited project, or a design that wasn't imported from a
+        # stream-tagged .grc). Listing the input nets' stream_ids makes the cause
+        # obvious from the server console instead of a silent flat run.
+        import sys as _sys
+        from model.connection import ChipPortEndpoint as _CPE, BlockEndpoint as _BE
+        _in_sids = [(getattr(c, "stream_id", None), getattr(c.target, "block", None))
+                    for c in self.app.project.connections
+                    if isinstance(c.source, _CPE) and isinstance(c.target, _BE)]
+        _sys.stderr.write(
+            f"[placeKYT server] stream_targets resolved: "
+            f"{ {k: (v['entry_addr'], v['hop_count'], v['out_tag']) for k, v in stream_targets.items()} } "
+            f"| input nets (stream_id, block): {_in_sids}\n")
+        _sys.stderr.flush()
         self._bp_scan = {}
         self._bp_hits = []
         self._last_server_refresh = 0.0  # for refresh throttling

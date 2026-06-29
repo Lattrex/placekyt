@@ -22,30 +22,15 @@ parameters:
   dtype: int
   default: '8'
 
-# The complex I/Q pair is TWO float stream ports each side — the LOGICAL view (xi/xq
-# in, yi/yq out) — so GRC renders + KEEPS both I/Q wires (a SINGLE port let the wiring
-# collapse to port-0 and silently drop the Q rail → garbage RX). GNURadio stream ports
-# are POSITIONAL INTEGERS — a ``gr.sync_block`` cannot have a STRING port id, so we give
-# each port only a ``label`` (the GUI/import name) and NO ``id:`` (GRC assigns the index
-# 0,1,…; a string id would make the generated ``connect((blk,'xi'),…)`` raise TypeError).
-# The placeKYT importer maps the index BACK to the name by position (port 0→xi, 1→xq;
-# 0→yi, 1→yq) via the ComplexRRCMatchedFilterBlock PortMap; the two logical nets share
-# ONE time-multiplexed chip route (the §1.2 complex-burst broker).
 inputs:
 - label: xi
   domain: stream
-  dtype: float
-- label: xq
-  domain: stream
-  dtype: float
+  dtype: complex
 
 outputs:
 - label: yi
   domain: stream
-  dtype: float
-- label: yq
-  domain: stream
-  dtype: float
+  dtype: complex
 
 documentation: |-
   🧪 PROOF-OF-CONCEPT: this block works in a demo but has NOT been through

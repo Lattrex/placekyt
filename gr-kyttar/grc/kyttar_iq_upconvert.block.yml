@@ -22,20 +22,10 @@ parameters:
   dtype: real
   default: '4000'
 
-# The complex baseband is TWO float input ports (xi/xq) — the LOGICAL I/Q pair — so GRC
-# renders + keeps both wires (a single port collapsed the I/Q wiring to port-0 and
-# dropped the Q rail). Output is the REAL passband sample. GNURadio stream ports are
-# POSITIONAL INTEGERS, so each port carries only a ``label`` (NO string ``id:`` — that
-# would make the generated ``connect((blk,'xi'),…)`` raise TypeError). The placeKYT
-# importer maps the index back by position (0→xi, 1→xq) via the IQUpconvertBlock
-# PortMap; the two input nets share ONE time-multiplexed chip route.
 inputs:
 - label: xi
   domain: stream
-  dtype: float
-- label: xq
-  domain: stream
-  dtype: float
+  dtype: complex
 
 outputs:
 - label: out

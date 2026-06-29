@@ -25,12 +25,12 @@ parameters:
 inputs:
 - label: sample
   domain: stream
-  dtype: float
+  dtype: complex
 
 outputs:
 - label: out
   domain: stream
-  dtype: float
+  dtype: complex
 
 documentation: |-
   🧪 NOT YET VERIFIED: this block is queued for GNU Radio-equivalence

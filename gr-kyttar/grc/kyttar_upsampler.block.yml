@@ -20,12 +20,12 @@ parameters:
 inputs:
 - label: x
   domain: stream
-  dtype: float
+  dtype: complex
 
 outputs:
 - label: out
   domain: stream
-  dtype: float
+  dtype: complex
 
 asserts:
 - ${ 1 <= sps <= 8 }

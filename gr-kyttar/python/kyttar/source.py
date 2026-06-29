@@ -80,6 +80,7 @@ class source(gr.sync_block):
         server_port: int = 0,
         complex_in: bool = False,
         burst_len: int = 0,
+        stream_id: str = "",
     ):
         # SERVER-BATCH MODE (server_port > 0): drive a placeKYT-hosted chip via ONE
         # process_batch RPC instead of building/owning a local chip. The input is
@@ -95,11 +96,12 @@ class source(gr.sync_block):
         # .block.yml port type (the Input Type enum). Forcing complex whenever a
         # server port was set made the float gain stimulus fail to connect
         # ("itemsize mismatch: ... using 4, Kyttar Source ... using 8").
-        # OUTPUT stays float in server mode: the downstream marker chain
-        # (costas/gardner/slicer) is float, and the marker-chain data is unused —
-        # the burst travels via the batch session, not the GR stream.
+        # OUTPUT now MIRRORS the input type (complex in -> complex out) so the
+        # source connects to the single-complex marker chain (matched filter etc.)
+        # with no dtype mismatch. The burst still travels via the batch session;
+        # the GR stream is cosmetic (marker-chain data is unused).
         in_dtype = np.complex64 if complex_in else np.float32
-        out_dtype = np.float32 if self._server_mode else in_dtype
+        out_dtype = in_dtype
         gr.sync_block.__init__(
             self,
             name="Kyttar Source",
@@ -117,6 +119,11 @@ class source(gr.sync_block):
         self._server_host = str(server_host) or "127.0.0.1"
         self._server_port = int(server_port)
         self._burst_len = int(burst_len)
+        # SHARED-INPUT-PORT DUPLEX: when two sources share one chip device (the
+        # full-duplex modem), each names a distinct stream_id ("tx"/"rx") so its
+        # burst is injected at its own block and its sink (same stream_id) drains
+        # only ITS recovered words. Empty ⇒ today's single-stream behavior.
+        self._stream_id = str(stream_id or "")
         self._inbuf = []          # server mode: accumulated complex burst
         self._dispatched = False
 
@@ -158,7 +165,7 @@ class source(gr.sync_block):
         if self._dispatched or not self._inbuf:
             return
         from ._batch_session import get_session
-        sess = get_session(self._device_id)
+        sess = get_session(self._device_id, self._stream_id)
         # OUTPUT representation: a COMPLEX-input block is a bit-packing receiver
         # (Costas/Gardner/slicer) whose recovered bit lives in the word LSB — it
         # must read RAW int16 (Q15 scaling would crush the bit to ~0). A
@@ -167,7 +174,7 @@ class source(gr.sync_block):
         # path, Q15-float for the value path.
         out = sess.dispatch(self._server_host, self._server_port, self._inbuf,
                             in_port=self._port_name, complex=self._complex_in,
-                            raw=self._complex_in)
+                            raw=self._complex_in, stream_id=self._stream_id)
         self._dispatched = True
         print(f"[kyttar.source] SERVER-BATCH: sent {len(self._inbuf)} samples "
               f"-> {len(out)} recovered (one process_batch RPC)", flush=True)
@@ -198,7 +205,10 @@ class source(gr.sync_block):
         # (same device_id) drains the recovered words. No local chip is touched. The
         # float OUTPUT carries the input magnitude only (marker-chain viz; unused).
         if self._server_mode:
-            out[:] = np.real(np.asarray(inp, dtype=np.complex64)).astype(np.float32)
+            if np.iscomplexobj(out):
+                out[:] = np.asarray(inp, dtype=np.complex64)
+            else:
+                out[:] = np.real(np.asarray(inp, dtype=np.complex64)).astype(np.float32)
             if not self._dispatched:
                 self._inbuf.extend(np.asarray(inp, dtype=np.complex64).tolist())
                 if self._burst_len > 0 and len(self._inbuf) >= self._burst_len:

@@ -50,6 +50,36 @@ while [ $# -gt 0 ]; do
 done
 
 say() { printf '%s\n' "$*"; }
+
+# --- resolve the interpreter GRC ACTUALLY uses -------------------------------
+# CRITICAL: GRC (gnuradio-companion) runs under its OWN interpreter — the one in
+# its launcher's shebang (e.g. /usr/bin/python3), NOT whatever `python3` is first
+# on PATH. With a conda env active, bare `python3` is conda's python, so resolving
+# the kyttar install dir with `python3` targets the WRONG python and GRC keeps
+# importing a stale copy (the "two installs, GRC sees the old one" disaster). So we
+# derive GRC's interpreter from its launcher shebang and use THAT to locate the
+# install dir. Override with KYTTAR_GR_PYTHON=/path/to/python if needed.
+resolve_grc_python() {
+  if [ -n "${KYTTAR_GR_PYTHON:-}" ]; then printf '%s' "$KYTTAR_GR_PYTHON"; return; fi
+  local launcher shebang py
+  launcher="$(command -v gnuradio-companion 2>/dev/null || true)"
+  if [ -n "$launcher" ]; then
+    shebang="$(head -1 "$launcher" 2>/dev/null)"
+    py="$(printf '%s' "$shebang" | sed -n 's|^#!\s*\([^ ]*\).*|\1|p')"
+    # A `#!/usr/bin/env python3` shebang resolves via PATH (could be conda) — fall
+    # through to the system python in that case for determinism.
+    case "$py" in
+      */env) py="" ;;
+    esac
+    if [ -n "$py" ] && [ -x "$py" ]; then printf '%s' "$py"; return; fi
+  fi
+  # GRC launcher not found / not a direct-path shebang: prefer the system python
+  # (GRC's most common interpreter) over a possibly-conda `python3`.
+  if [ -x /usr/bin/python3 ]; then printf '%s' /usr/bin/python3; return; fi
+  command -v python3
+}
+GR_PYTHON="$(resolve_grc_python)"
+
 run() {
   # run a command, honoring --dry-run; escalate to sudo only if the target is not
   # writable AND sudo is permitted.
@@ -69,7 +99,7 @@ run() {
 # fresh install should land (no root). Only if kyttar isn't importable yet do we
 # fall back to a writable gnuradio parent, preferring user-local over system.
 if [ -z "$PY_DEST" ]; then
-  PY_DEST="$(python3 - <<'PY'
+  PY_DEST="$("$GR_PYTHON" - <<'PY'
 import os, sys, sysconfig
 # 1) the kyttar subpackage already on the path — install where it lives.
 try:

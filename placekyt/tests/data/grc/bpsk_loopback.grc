@@ -1,0 +1,650 @@
+options:
+  parameters:
+    author: Lattrex
+    catch_exceptions: 'True'
+    category: '[GRC Hier Blocks]'
+    cmake_opt: ''
+    comment: ''
+    copyright: ''
+    description: 'BPSK transceiver PASSBAND LOOPBACK. A DRIVER flowgraph (NOT a placeKYT chip design): it drives a placeKYT-hosted chip that has BOTH a TX and an RX chain (the bpsk_modem design). TX bits
+      -> kyttar.chip_batch[tx] -> REAL passband (carrier = fs/8) -> downconvert in stock GR (float_to_complex * sig_source, image-reject gain 2.0, skiphead(1) + keep_one_in_n(2)) -> kyttar.chip_batch[rx]
+      -> recovered bits. Closes the loop: bits in == bits out (BER 0). Run placeKYT''s ''Run as GNURadio Server'' on the bpsk_modem design, set Host/Port to match, then Execute this.'
+    gen_cmake: 'On'
+    gen_linking: dynamic
+    generate_options: qt_gui
+    hier_block_src_path: '.:'
+    id: bpsk_loopback
+    max_nouts: '0'
+    output_language: python
+    placement: (0,0)
+    qt_qss_theme: ''
+    realtime_scheduling: ''
+    run: 'True'
+    run_command: '{python} -u {filename}'
+    run_options: prompt
+    sizing_mode: fixed
+    thread_safe_setters: ''
+    title: BPSK transceiver passband loopback (TX -> upconvert -> downconvert -> RX)
+    window_size: (1600,1000)
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 8
+    - 8
+    rotation: 0
+    state: enabled
+blocks:
+- name: n_bits
+  id: variable
+  parameters:
+    comment: TX bits in the burst
+    value: '64'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 200
+    - 12
+    rotation: 0
+    state: enabled
+- name: fs
+  id: variable
+  parameters:
+    comment: passband sample rate (Hz)
+    value: '32000'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 320
+    - 12
+    rotation: 0
+    state: enabled
+- name: carrier
+  id: variable
+  parameters:
+    comment: carrier = fs/8 -> 0.125 cyc/sample
+    value: '4000'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 440
+    - 12
+    rotation: 0
+    state: enabled
+- name: sps_tx
+  id: variable
+  parameters:
+    comment: TX samples-per-symbol
+    value: '4'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 560
+    - 12
+    rotation: 0
+    state: enabled
+- name: host
+  id: variable
+  parameters:
+    comment: placeKYT GNURadio server host
+    value: '"127.0.0.1"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 680
+    - 12
+    rotation: 0
+    state: enabled
+- name: port
+  id: variable
+  parameters:
+    comment: placeKYT GNURadio server port
+    value: '58950'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 800
+    - 12
+    rotation: 0
+    state: enabled
+- name: import_stim
+  id: import
+  parameters:
+    comment: TX bit stimulus
+    imports: from gnuradio.kyttar import modem_demo_stim as stim
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 920
+    - 12
+    rotation: 0
+    state: enabled
+- name: tx_bits
+  id: blocks_vector_source_x
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: TX bits (+ pad so the rate-expanding chip_batch[tx] drains all 256 passband words live)
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    repeat: 'False'
+    tags: '[]'
+    type: float
+    vector: '[float(b) for b in stim.tx_bits(n_bits)] + [0.0]*512'
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 40
+    - 180
+    rotation: 0
+    state: enabled
+- name: tx_chip
+  id: kyttar_chip_batch
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'TX chain on the hosted chip: bits -> real passband'
+    host: host
+    port: port
+    stream_id: '"tx"'
+    in_kind: real
+    out_kind: real
+    in_port: '"x16_in"'
+    out_port: '"x16_out"'
+    data_addr0: '0'
+    data_addr1: '1'
+    raw: 'False'
+    burst_len: n_bits
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 280
+    - 172
+    rotation: 0
+    state: enabled
+- name: f2c
+  id: blocks_float_to_complex
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: real passband -> complex (imag = 0)
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 520
+    - 180
+    rotation: 0
+    state: enabled
+- name: lo
+  id: analog_sig_source_x
+  parameters:
+    affinity: ''
+    alias: ''
+    amp: '2.0'
+    comment: LO = 2*exp(-j*2*pi*0.125*n) (image-reject gain 2.0); freq=-carrier, phase=0 (skiphead(1) absorbs the NCO increment-before-emit delay-1)
+    freq: -carrier
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    offset: '0'
+    phase: '0'
+    samp_rate: fs
+    showports: 'False'
+    type: complex
+    waveform: analog.GR_COS_WAVE
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 520
+    - 320
+    rotation: 0
+    state: enabled
+- name: mix
+  id: blocks_multiply_xx
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: bb = 2*pb*exp(-j*2*pi*0.125*n)
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_inputs: '2'
+    type: complex
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 760
+    - 188
+    rotation: 0
+    state: enabled
+- name: skip
+  id: blocks_skiphead
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'bb[1:]  (delay 1: exact, not blocks.delay)'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_items: '1'
+    type: complex
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 960
+    - 188
+    rotation: 0
+    state: enabled
+- name: keep
+  id: blocks_keep_one_in_n
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: bb[::2]  (decimate sps 4 -> RX sps 2)
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    n: '2'
+    type: complex
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1120
+    - 188
+    rotation: 0
+    state: enabled
+- name: rx_chip
+  id: kyttar_chip_batch
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'RX chain on the hosted chip: complex baseband -> bits'
+    host: host
+    port: port
+    stream_id: '"rx"'
+    in_kind: complex
+    out_kind: real
+    in_port: '"x16_in"'
+    out_port: '"x16_out"'
+    data_addr0: '0'
+    data_addr1: '1'
+    raw: 'True'
+    burst_len: n_bits*sps_tx//2-1
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1320
+    - 172
+    rotation: 0
+    state: enabled
+- name: bit_sink
+  id: qtgui_time_sink_x
+  parameters:
+    affinity: ''
+    alias: ''
+    alpha1: '1.0'
+    alpha10: '1.0'
+    alpha2: '1.0'
+    alpha3: '1.0'
+    alpha4: '1.0'
+    alpha5: '1.0'
+    alpha6: '1.0'
+    alpha7: '1.0'
+    alpha8: '1.0'
+    alpha9: '1.0'
+    autoscale: 'False'
+    axislabels: 'True'
+    color1: blue
+    color10: dark blue
+    color2: red
+    color3: green
+    color4: black
+    color5: cyan
+    color6: magenta
+    color7: yellow
+    color8: dark red
+    color9: dark green
+    comment: recovered bits (loopback out)
+    ctrlpanel: 'False'
+    entags: 'True'
+    grid: 'True'
+    gui_hint: 1,0,1,1
+    label1: recovered bit
+    label10: Signal 10
+    label2: Signal 2
+    label3: Signal 3
+    label4: Signal 4
+    label5: Signal 5
+    label6: Signal 6
+    label7: Signal 7
+    label8: Signal 8
+    label9: Signal 9
+    legend: 'True'
+    marker1: '-1'
+    marker10: '-1'
+    marker2: '-1'
+    marker3: '-1'
+    marker4: '-1'
+    marker5: '-1'
+    marker6: '-1'
+    marker7: '-1'
+    marker8: '-1'
+    marker9: '-1'
+    name: '"Recovered bits (loopback)"'
+    nconnections: '1'
+    size: '128'
+    srate: '1'
+    stemplot: 'False'
+    style1: '1'
+    style10: '1'
+    style2: '1'
+    style3: '1'
+    style4: '1'
+    style5: '1'
+    style6: '1'
+    style7: '1'
+    style8: '1'
+    style9: '1'
+    tr_chan: '0'
+    tr_delay: '0'
+    tr_level: '0.0'
+    tr_mode: qtgui.TRIG_MODE_FREE
+    tr_slope: qtgui.TRIG_SLOPE_POS
+    tr_tag: '""'
+    type: float
+    update_time: '0.10'
+    width1: '1'
+    width10: '1'
+    width2: '1'
+    width3: '1'
+    width4: '1'
+    width5: '1'
+    width6: '1'
+    width7: '1'
+    width8: '1'
+    width9: '1'
+    ylabel: bit
+    ymax: '1.3'
+    ymin: '-0.3'
+    yunit: '""'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1560
+    - 156
+    rotation: 0
+    state: enabled
+- name: pb_sink
+  id: qtgui_time_sink_x
+  parameters:
+    affinity: ''
+    alias: ''
+    alpha1: '1.0'
+    alpha10: '1.0'
+    alpha2: '1.0'
+    alpha3: '1.0'
+    alpha4: '1.0'
+    alpha5: '1.0'
+    alpha6: '1.0'
+    alpha7: '1.0'
+    alpha8: '1.0'
+    alpha9: '1.0'
+    autoscale: 'False'
+    axislabels: 'True'
+    color1: blue
+    color10: dark blue
+    color2: red
+    color3: green
+    color4: black
+    color5: cyan
+    color6: magenta
+    color7: yellow
+    color8: dark red
+    color9: dark green
+    comment: TX passband (real)
+    ctrlpanel: 'False'
+    entags: 'True'
+    grid: 'True'
+    gui_hint: 0,0,1,1
+    label1: passband
+    label10: Signal 10
+    label2: Signal 2
+    label3: Signal 3
+    label4: Signal 4
+    label5: Signal 5
+    label6: Signal 6
+    label7: Signal 7
+    label8: Signal 8
+    label9: Signal 9
+    legend: 'True'
+    marker1: '-1'
+    marker10: '-1'
+    marker2: '-1'
+    marker3: '-1'
+    marker4: '-1'
+    marker5: '-1'
+    marker6: '-1'
+    marker7: '-1'
+    marker8: '-1'
+    marker9: '-1'
+    name: '"TX passband"'
+    nconnections: '1'
+    size: '128'
+    srate: '1'
+    stemplot: 'False'
+    style1: '1'
+    style10: '1'
+    style2: '1'
+    style3: '1'
+    style4: '1'
+    style5: '1'
+    style6: '1'
+    style7: '1'
+    style8: '1'
+    style9: '1'
+    tr_chan: '0'
+    tr_delay: '0'
+    tr_level: '0.0'
+    tr_mode: qtgui.TRIG_MODE_FREE
+    tr_slope: qtgui.TRIG_SLOPE_POS
+    tr_tag: '""'
+    type: float
+    update_time: '0.10'
+    width1: '1'
+    width10: '1'
+    width2: '1'
+    width3: '1'
+    width4: '1'
+    width5: '1'
+    width6: '1'
+    width7: '1'
+    width8: '1'
+    width9: '1'
+    ylabel: bit
+    ymax: '1.0'
+    ymin: '-1.0'
+    yunit: '""'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 520
+    - 60
+    rotation: 0
+    state: enabled
+- name: const_sink
+  id: qtgui_const_sink_x
+  parameters:
+    affinity: ''
+    alias: ''
+    alpha1: '1.0'
+    alpha10: '1.0'
+    alpha2: '1.0'
+    alpha3: '1.0'
+    alpha4: '1.0'
+    alpha5: '1.0'
+    alpha6: '1.0'
+    alpha7: '1.0'
+    alpha8: '1.0'
+    alpha9: '1.0'
+    autoscale: 'False'
+    color1: '"blue"'
+    color10: '"red"'
+    color2: '"red"'
+    color3: '"red"'
+    color4: '"red"'
+    color5: '"red"'
+    color6: '"red"'
+    color7: '"red"'
+    color8: '"red"'
+    color9: '"red"'
+    comment: downconverted BPSK constellation (2 clean points)
+    grid: 'False'
+    gui_hint: 1,1,1,1
+    label1: baseband
+    label10: ''
+    label2: ''
+    label3: ''
+    label4: ''
+    label5: ''
+    label6: ''
+    label7: ''
+    label8: ''
+    label9: ''
+    legend: 'True'
+    marker1: '0'
+    marker10: '0'
+    marker2: '0'
+    marker3: '0'
+    marker4: '0'
+    marker5: '0'
+    marker6: '0'
+    marker7: '0'
+    marker8: '0'
+    marker9: '0'
+    name: '"Downconverted constellation"'
+    nconnections: '1'
+    size: '1024'
+    style1: '0'
+    style10: '0'
+    style2: '0'
+    style3: '0'
+    style4: '0'
+    style5: '0'
+    style6: '0'
+    style7: '0'
+    style8: '0'
+    style9: '0'
+    tr_chan: '0'
+    tr_level: '0.0'
+    tr_mode: qtgui.TRIG_MODE_FREE
+    tr_slope: qtgui.TRIG_MODE_POS
+    tr_tag: '""'
+    type: complex
+    update_time: '0.10'
+    width1: '1'
+    width10: '1'
+    width2: '1'
+    width3: '1'
+    width4: '1'
+    width5: '1'
+    width6: '1'
+    width7: '1'
+    width8: '1'
+    width9: '1'
+    xmax: '2'
+    xmin: '-2'
+    ymax: '2'
+    ymin: '-2'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1320
+    - 320
+    rotation: 0
+    state: enabled
+connections:
+- - tx_bits
+  - '0'
+  - tx_chip
+  - '0'
+- - tx_chip
+  - '0'
+  - f2c
+  - '0'
+- - tx_chip
+  - '0'
+  - pb_sink
+  - '0'
+- - f2c
+  - '0'
+  - mix
+  - '0'
+- - lo
+  - '0'
+  - mix
+  - '1'
+- - mix
+  - '0'
+  - skip
+  - '0'
+- - skip
+  - '0'
+  - keep
+  - '0'
+- - keep
+  - '0'
+  - rx_chip
+  - '0'
+- - keep
+  - '0'
+  - const_sink
+  - '0'
+- - rx_chip
+  - '0'
+  - bit_sink
+  - '0'
+metadata:
+  file_format: 1
+  grc_version: 3.10.12.0

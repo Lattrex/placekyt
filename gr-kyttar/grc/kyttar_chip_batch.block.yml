@@ -35,7 +35,7 @@ documentation: |-
 templates:
   imports: from gnuradio import kyttar
   make: kyttar.chip_batch(host=${host}, port=${port}, stream_id=${stream_id},
-    in_kind=${in_kind}, out_kind=${out_kind}, in_port=${in_port},
+    in_kind="${in_kind}", out_kind="${out_kind}", in_port=${in_port},
     out_port=${out_port}, data_addr0=${data_addr0}, data_addr1=${data_addr1},
     raw=${raw}, burst_len=${burst_len})
 
@@ -54,16 +54,27 @@ parameters:
     default: '""'
   - id: in_kind
     label: In Kind
+    # An ENUM whose value is the string passed to the Python block AND whose
+    # io_type attribute sets the GRC stream dtype DIRECTLY. We cannot write
+    # `${ 'complex' if in_kind=='complex' else 'float' }` for the port dtype —
+    # GRC returns an enum value UNQUOTED (Mako no_quotes), so `in_kind` renders as
+    # the bare token `complex` and the comparison is always False (the port would
+    # always be float). The io_type attribute (mirrors kyttar_source's complex_in)
+    # avoids the comparison entirely.
     dtype: enum
-    default: '"complex"'
-    options: ['"complex"', '"real"']
+    default: complex
+    options: [complex, real]
     option_labels: ['I/Q (complex)', 'Real (float)']
+    option_attributes:
+      io_type: [complex, float]
   - id: out_kind
     label: Out Kind
     dtype: enum
-    default: '"real"'
-    options: ['"real"', '"complex"']
+    default: real
+    options: [real, complex]
     option_labels: ['Real (float)', 'I/Q (complex)']
+    option_attributes:
+      io_type: [float, complex]
   - id: in_port
     label: In Port
     dtype: string
@@ -98,11 +109,14 @@ parameters:
 inputs:
   - label: in
     domain: stream
-    dtype: ${ 'complex' if in_kind == 'complex' else 'float' }
+    # Set DIRECTLY from the In Kind enum's io_type attribute (complex/float) —
+    # see the In Kind comment for why a `${ ... if in_kind == ... }` comparison
+    # cannot work (GRC renders the enum value unquoted).
+    dtype: ${ in_kind.io_type }
 
 outputs:
   - label: out
     domain: stream
-    dtype: ${ 'complex' if out_kind == 'complex' else 'float' }
+    dtype: ${ out_kind.io_type }
 
 file_format: 1

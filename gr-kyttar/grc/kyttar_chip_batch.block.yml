@@ -1,0 +1,108 @@
+id: kyttar_chip_batch
+label: Kyttar Chip (batch)
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar Chip (batch) — run a whole burst through ONE chain on a placeKYT-hosted
+  chip in a single process_batch RPC and EMIT the chain's recovered stream.
+
+  This is the rate-changing generalization of "Kyttar RX (batch)". A batch DSP
+  chain is DECIMATING (a coherent BPSK RX turns ~239 I/Q samples into ~119 bits;
+  a TX turns 64 bits into 256 passband words). It is a gr.basic_block so the FULL
+  recovered stream reaches the next block regardless of the input burst length —
+  a sync block would truncate it to the input length and the words never reach the
+  plot.
+
+  TRANSCEIVER LOOPBACK: host ONE chip that has BOTH a TX and an RX chain placed on
+  it, then instantiate this block twice and close the loop in GRC:
+    bit source -> chip_batch(Stream='tx', In=Real, Out=Real)  -> passband
+               -> [optional channel: noise / offset] ->
+       chip_batch(Stream='rx', In=Complex, Out=Real) -> recovered bits -> sinks
+  The Stream ID tells placeKYT which placed chain to drive (it resolves THAT
+  chain's broker landing + output tag from the hosted build), so the two chains
+  share one chip.
+
+  Parameters:
+  - Host / Port: the placeKYT "Run as GNURadio Server" endpoint.
+  - Stream ID: which placed chain to drive ('tx' / 'rx'); empty = single-stream.
+  - In Kind / Out Kind: complex (I/Q) vs real (scalar) for the in/out streams.
+  - Raw words: return raw int16 output words as float (correct for a bit-packing
+    slicer; Q15 scaling would crush a bit-in-LSB). Use Q15 float for a value path.
+  - Burst length: dispatch once this many INPUT samples accumulate (set it to the
+    burst length for a finite vector source; 0 = flush on stop).
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.chip_batch(host=${host}, port=${port}, stream_id=${stream_id},
+    in_kind=${in_kind}, out_kind=${out_kind}, in_port=${in_port},
+    out_port=${out_port}, data_addr0=${data_addr0}, data_addr1=${data_addr1},
+    raw=${raw}, burst_len=${burst_len})
+
+parameters:
+  - id: host
+    label: Host
+    dtype: string
+    default: '"127.0.0.1"'
+  - id: port
+    label: Port
+    dtype: int
+    default: 58950
+  - id: stream_id
+    label: Stream ID
+    dtype: string
+    default: '""'
+  - id: in_kind
+    label: In Kind
+    dtype: enum
+    default: '"complex"'
+    options: ['"complex"', '"real"']
+    option_labels: ['I/Q (complex)', 'Real (float)']
+  - id: out_kind
+    label: Out Kind
+    dtype: enum
+    default: '"real"'
+    options: ['"real"', '"complex"']
+    option_labels: ['Real (float)', 'I/Q (complex)']
+  - id: in_port
+    label: In Port
+    dtype: string
+    default: '"x16_in"'
+    options: ['"x16_in"', '"x1_in"']
+    option_labels: ['x16 (16-bit)', 'x1 (1-bit)']
+  - id: out_port
+    label: Out Port
+    dtype: string
+    default: '"x16_out"'
+    options: ['"x16_out"', '"x1_out"']
+    option_labels: ['x16 (16-bit)', 'x1 (1-bit)']
+  - id: data_addr0
+    label: Data Addr I
+    dtype: int
+    default: 0
+  - id: data_addr1
+    label: Data Addr Q
+    dtype: int
+    default: 1
+  - id: raw
+    label: Raw words
+    dtype: bool
+    default: 'True'
+    options: ['True', 'False']
+    option_labels: ['Raw int16 words', 'Q15 float']
+  - id: burst_len
+    label: Burst length
+    dtype: int
+    default: 0
+
+inputs:
+  - label: in
+    domain: stream
+    dtype: ${ 'complex' if in_kind == 'complex' else 'float' }
+
+outputs:
+  - label: out
+    domain: stream
+    dtype: ${ 'complex' if out_kind == 'complex' else 'float' }
+
+file_format: 1

@@ -62,6 +62,7 @@ from .device import device
 from .source import source
 from .sink import sink
 from .rx_batch import rx_batch
+from .chip_batch import chip_batch
 from .dsp_markers import (complex_rrc_matched_filter, complex_costas_loop,
                           gardner_timing_recovery, bpsk_slicer,
                           psk_symbol_mapper, upsampler, rrc_pulse_shaper,
@@ -96,6 +97,7 @@ __all__ = [
     "source",
     "sink",
     "rx_batch",
+    "chip_batch",
     "complex_rrc_matched_filter",
     "complex_costas_loop",
     "gardner_timing_recovery",

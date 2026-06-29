@@ -102,6 +102,15 @@ class Connection:
     # exit WRITE so multiple chains sharing one output port stay distinguishable
     # on the wire (the captured OutWord.tag). Default None ⇒ dest 0 (untagged).
     out_tag: int | None = None
+    # Per-stream identifier (§ shared-port duplex). When several input nets fan
+    # off ONE chip input port (the full-duplex modem: x16_in → TX mapper AND
+    # x16_in → RX matched filter), each carries a ``stream_id`` (e.g. "tx"/"rx",
+    # set by the GRC importer from the source block's stream_id param). The live
+    # bridge resolves this id to the net's block entry/hop/data-registers
+    # (engine.port_config.stream_targets) so each GR source's burst injects at the
+    # right block WITHOUT the source knowing any placement-dependent value.
+    # Default None ⇒ single-stream net (uses input_port_config).
+    stream_id: str | None = None
     # The LOGICAL kind of this edge — ``data`` (WRITE), ``trigger`` (JUMP), or
     # ``data+trigger`` (both; the auto-P&R design notes §4). Default ``data+trigger``
     # matches how every realized inter-block handoff works today (WRITE + JUMP),

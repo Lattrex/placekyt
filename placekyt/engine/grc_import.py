@@ -151,6 +151,8 @@ def import_grc(path, catalog, chip_type: str = "kyttar_10x12",
     # dropped plumbing. Unknown kyttar_* blocks are reported.
     block_map: dict = {}         # grc name → placeKYT block name
     role: dict = {}              # grc name → "block" | "source" | "sink" | "drop"
+    src_stream: dict = {}        # grc source name → its stream_id param (or "")
+    sink_stream: dict = {}       # grc sink name → its stream_id param (or "")
     _INSTANCE_TYPE.clear()       # grc name → placeKYT type (for port resolution)
     unknown, dropped = [], []
     placed_idx = 0
@@ -158,9 +160,17 @@ def import_grc(path, catalog, chip_type: str = "kyttar_10x12",
         gid = gb.get("id", "")
         if gid in _SOURCE_IDS:
             role[gname] = "source"
+            # SHARED-INPUT-PORT DUPLEX: remember the source's stream_id so the
+            # x16_in→block net it feeds carries it (so the live bridge resolves
+            # each stream to its own block via engine.port_config.stream_targets).
+            sid = str(gb.get("parameters", {}).get("stream_id", "") or "").strip()
+            sid = sid.strip("'\"")
+            src_stream[gname] = sid
             continue
         if gid in _SINK_IDS:
             role[gname] = "sink"
+            ssid = str(gb.get("parameters", {}).get("stream_id", "") or "").strip()
+            sink_stream[gname] = ssid.strip("'\"")
             continue
         if gid in _NON_DSP:
             role[gname] = "drop"
@@ -204,6 +214,11 @@ def import_grc(path, catalog, chip_type: str = "kyttar_10x12",
     # Connections → logical nets. Drop nets touching a dropped block; map
     # source→block to chip-input→block, block→sink to block→chip-output.
     net_idx = 0
+    # The set of explicit block→block port pairs already wired, so a synthesised
+    # complex-Q sibling is NOT added when the flowgraph ALREADY wires the Q rail
+    # (some demo .grc author the xi/xq + yi/yq rails explicitly — never double-wire).
+    wired_pairs: set = set()
+    split_candidates: list = []   # (sname, dname, src, dst) deferred until all wired
     for entry in conns:
         if len(entry) < 4:
             continue
@@ -216,14 +231,76 @@ def import_grc(path, catalog, chip_type: str = "kyttar_10x12",
         if src is None or dst is None:
             continue
         net_idx += 1
+        # Carry the source's stream_id onto the x16_in→block input net only
+        # (source role + block target), so the live bridge keys this stream's
+        # injection. Other nets stay single-stream (stream_id None).
+        sid = src_stream.get(sname) if srole == "source" else None
+        # SHARED-OUTPUT-PORT DEMUX: a block→sink net whose sink names a stream_id
+        # gets a DISTINCT out_tag (a stable small int per stream_id) so the two
+        # chains sharing x16_out are separable on the wire — the build sets the
+        # exit WRITE's dest to this tag, and the live bridge demuxes each sink's
+        # words by it (engine.port_config.stream_targets reads it back). Keyed the
+        # SAME way as the input stream_id so the round trip lines up.
+        out_tag = None
+        if drole == "sink":
+            ssid = sink_stream.get(dname)
+            if ssid:
+                out_tag = _stream_tag(ssid)
         project.connections.append(Connection(
-            f"net{net_idx}", source=src, target=dst, route=None))
+            f"net{net_idx}", source=src, target=dst, route=None,
+            stream_id=(sid or None), out_tag=out_tag))
+        if isinstance(src, BlockEndpoint) and isinstance(dst, BlockEndpoint):
+            wired_pairs.add((src.block, src.port, dst.block, dst.port))
+            split_candidates.append((sname, dname, src, dst))
+
+    # COMPLEX (I/Q) BLOCK→BLOCK EDGE SPLIT: GNURadio represents a complex stream as ONE
+    # port, so a complex link between two complex placeKYT blocks (e.g. the MF ``yi``→
+    # Costas ``xi``) imports as a SINGLE net carrying only the I operand. But a placeKYT
+    # complex block has TWO scalar input regs (xi=R0, xq=R1) at one cell/entry and the
+    # source emits TWO outputs (yi, yq) — both MUST be wired or the target derotates
+    # against a stale Q and never locks (the auto-P&R RX regression). When the resolved
+    # ports are the I-half of an I/Q pair on BOTH ends, synthesise the matching Q net
+    # (yq→xq) — exactly the two-delivery wiring the explicit modem demo hand-builds.
+    # Deferred + deduped: a .grc that ALREADY wires the Q rail keeps its own net (never
+    # double-delivered, which would fire the target twice / corrupt the derotation).
+    for sname, dname, src, dst in split_candidates:
+        sbt = _btype_of(block_map, sname, catalog)
+        dbt = _btype_of(block_map, dname, catalog)
+        sq = _iq_sibling(catalog, sbt, src.port, want_out=True)
+        dq = _iq_sibling(catalog, dbt, dst.port, want_out=False)
+        if sq is None or dq is None:
+            continue
+        if (src.block, sq, dst.block, dq) in wired_pairs:
+            continue  # the Q rail is already explicitly wired — don't duplicate
+        net_idx += 1
+        wired_pairs.add((src.block, sq, dst.block, dq))
+        project.connections.append(Connection(
+            f"net{net_idx}",
+            source=BlockEndpoint(block=src.block, port=sq),
+            target=BlockEndpoint(block=dst.block, port=dq),
+            route=None, stream_id=None, out_tag=None))
 
     return GrcImportResult(project=project, block_map=block_map,
                            unknown=unknown, dropped=dropped)
 
 
 # -- helpers -------------------------------------------------------------------
+
+# Stable, deterministic out_tag per stream_id for the shared-output-port demux.
+# Known demo ids get fixed tags matching engine.bpsk_modem_demo (rx=5, tx=10);
+# any other id derives a small nonzero tag from its name (0 = untagged/default,
+# so never assign it). The same id always maps to the same tag, so the input-side
+# stream and the output-side tag round-trip consistently.
+_STREAM_TAGS = {"rx": 5, "tx": 10}
+
+
+def _stream_tag(stream_id: str) -> int:
+    sid = str(stream_id)
+    if sid in _STREAM_TAGS:
+        return _STREAM_TAGS[sid]
+    # Deterministic small nonzero tag (1..63) for an arbitrary stream id.
+    return (sum(ord(c) for c in sid) % 62) + 2
+
 
 def _endpoint(gname, role, block_map, catalog, grc_port, *, is_src):
     from model.connection import BlockEndpoint, ChipPortEndpoint
@@ -290,6 +367,41 @@ def _resolve_port(catalog, btype, grc_port, *, want_out):
             if 0 <= i < len(ports):
                 return ports[i]
     return ports[0]
+
+
+def _iq_sibling(catalog, btype, port, *, want_out):
+    """The Q-half port name paired with an I-half ``port`` on a complex block, or
+    ``None`` when ``port`` is not the I-half of an on-cell I/Q pair.
+
+    A placeKYT complex block exposes its I/Q stream as TWO scalar ports that share
+    one cell (and, for inputs, one entry) with consecutive registers — named with an
+    ``i``/``q`` suffix: ``xi``/``xq`` (in), ``yi``/``yq`` (out). GNURadio collapses
+    the pair into ONE complex port, so the importer wires only the I-half; this finds
+    the matching Q-half so the second (Q) net can be synthesised. Returns ``None`` if
+    there's no such sibling (a real scalar port, or an already-Q port) so a plain real
+    link is never double-wired."""
+    if btype is None or not port:
+        return None
+    direction = "out" if want_out else "in"
+    try:
+        pm = catalog.port_map(btype)
+    except Exception:  # noqa: BLE001 — no PortMap → no pairing
+        return None
+    ports = {p.name: p for p in pm.ports if p.direction == direction}
+    p = ports.get(port)
+    if p is None or not port.endswith("i"):
+        return None
+    qname = port[:-1] + "q"
+    q = ports.get(qname)
+    if q is None:
+        return None
+    # Same cell, and (inputs) same entry — a genuine on-cell I/Q pair.
+    if getattr(p, "cell_id", None) != getattr(q, "cell_id", None):
+        return None
+    if (not want_out
+            and getattr(p, "entry", None) != getattr(q, "entry", None)):
+        return None
+    return qname
 
 
 def _coerce_params(params, catalog, btype):

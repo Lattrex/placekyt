@@ -60,6 +60,14 @@ class ChipBuild:
     # Per-cell resolved program: (x, y) -> {"entry": int, "memory": [32 words]}
     # — feeds the Inspector memory/assembly view (§3.3).
     cells: dict = field(default_factory=dict)
+    # Per PORT→block input-net HOST-injection landing, keyed by connection name:
+    # ``{conn: {"cell": (x,y), "entry": int, "hop": int, "data_addrs": [reg,...]}}``.
+    # Resolved from the BUILT corridor faces + broker entries (NOT a manhattan straight
+    # line), so engine.port_config.stream_targets steers each shared-port stream to the
+    # cell/entry/hop the routed corridor actually delivers to. A net that rides its
+    # corridor straight to the block resolves to the block cell+entry; one diverted at
+    # a broker resolves to that broker's deliver entry. ``hop`` is the raw 5-bit field.
+    input_landings: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -242,8 +250,9 @@ class BuildEngine:
         # source exit toward the target) and OVERRIDES the source exit toward the
         # broker for bus-routed nets. Plain corridor/abutment nets (route ends ON
         # the target) have no broker and are untouched.
-        _apply_brokers(cell_map, gr_placement, blocks_here, conns_here,
-                       project, chip_id, chip_type, gr_blocks, self.catalog)
+        broker_conn_entry, broker_conn_burst = _apply_brokers(
+            cell_map, gr_placement, blocks_here, conns_here,
+            project, chip_id, chip_type, gr_blocks, self.catalog)
 
         # Resolve single-fwd_face CONFLICT cells (§1.2/§1.3): where two routed nets
         # must leave one PLAIN routing cell in DIFFERENT directions (the (9,0) corner
@@ -299,6 +308,14 @@ class BuildEngine:
         # program's entries fire only at HOP_CNT==31, never for transiting traffic).
         _apply_routing_cell_programs(cell_map)
 
+        # Resolve each PORT→block input net's HOST-injection landing from the BUILT
+        # corridor (faces + broker entries) — so the live bridge steers a shared-port
+        # stream to the cell/entry/hop the routed corridor actually delivers to, not a
+        # manhattan straight line (which the off-port multi-filament auto-layout breaks).
+        input_landings = _resolve_input_landings(
+            cell_map, blocks_here, conns_here, project, chip_id, chip_type,
+            gr_placement, self.catalog, broker_conn_entry, broker_conn_burst)
+
         # Per-cell address classification (data / state / instruction) from the
         # v2 CellProgram of each block, so the Inspector can tell DATA words
         # (coefficients, etc.) from executable instructions (§3.3).
@@ -313,6 +330,7 @@ class BuildEngine:
             words=list(bitstream.words),
             cell_count=cell_map.cell_count(),
             cells=_extract_cell_memory(cell_map, ownership, classes),
+            input_landings=input_landings,
         )
 
         # STRAY-EMISSION DRC (P3.4): a WRITE/JUMP that lands on an EMPTY/unowned
@@ -893,11 +911,19 @@ def _apply_brokers(cell_map, gr_placement, blocks, connections, project,
     """
     from model.connection import BlockEndpoint
     from gr_kyttar.placement.cell_map import CellConfig
-    from .bus_router import BROKER_BURST_REG, broker_plan, _phys_pts
+    from .bus_router import (BROKER_BURST_REG, broker_plan, broker_through_face,
+                             _phys_pts)
 
     taps = broker_plan(project, chip_id, chip_type, catalog)
     if not taps:
-        return
+        return {}, {}
+    # Cells where a FOREIGN net merely TRANSITS this broker (the auto-router packed
+    # two corridors onto one broker cell). The broker's restore/bus face MUST serve
+    # that foreign through-direction or the foreign stream is silently mis-faced and
+    # dies — the modem's MF→Costas (net4) transiting the Upsampler→RRC broker at
+    # (2,3), and the Slicer→x16_out egress (net7) transiting the Costas→Gardner broker
+    # at (6,9). This OVERRIDES the route-derived face below.
+    through_face = broker_through_face(project, chip_id, chip_type, catalog)
 
     placed = {b.name for b in blocks}
 
@@ -931,6 +957,12 @@ def _apply_brokers(cell_map, gr_placement, blocks, connections, project,
         if (bx, by) not in feedback_transit_cells \
                 and cfg is not None and getattr(cfg, "fwd_face", None) is not None:
             bus_face = int(cfg.fwd_face)
+        # A FOREIGN net transiting this broker pins the restore face to its forwarding
+        # direction (it overrides the route face, which serves only this broker's own
+        # delivery, not the through-traffic). Without this the foreign stream dies on
+        # the broker's static fwd_face (the §1.3 single-fwd_face corruption).
+        if (bx, by) in through_face:
+            bus_face = int(through_face[(bx, by)])
         by_conn, memory, burst_reg_by_conn = _broker_program(tap.deliveries, bus_face)
         if cfg is None:
             cfg = CellConfig(block_name="_broker")
@@ -1012,6 +1044,125 @@ def _apply_brokers(cell_map, gr_placement, blocks, connections, project,
         else:
             _patch_cell_handoff(cfg, distance, dest=BROKER_BURST_REG,
                                 entry=b_entry)
+
+    # Hand the resolved broker entries + burst-reg map back so the build can resolve
+    # each PORT→block input net's HOST-injection landing (engine.port_config reads it
+    # via the BuildResult): a port net whose corridor is DIVERTED at a broker cell
+    # (the modem's tx mapper net at (1,1), which the rx corridor pins EAST) must be
+    # injected to LAND at that broker's deliver entry — not ridden straight through.
+    return dict(conn_entry), dict(conn_burst_reg)
+
+
+def _resolve_input_landings(cell_map, blocks, connections, project, chip_id,
+                            chip_type, gr_placement, catalog,
+                            broker_conn_entry, broker_conn_burst) -> dict:
+    """For each PORT→block INPUT net on this chip, resolve the HOST-injection landing
+    ``{conn: {"cell", "entry", "hop", "data_addrs"}}`` from the BUILT corridor.
+
+    The live bridge drives a hosted chip by injecting WRITE(s)+JUMP through the input
+    port; the word transits cells on their built ``fwd_face`` until ``HOP_CNT==31``.
+    A manhattan straight-line hop (the legacy model) only works when the corridor's
+    faces run straight from the port to the block — which the off-port multi-filament
+    auto-layout breaks: two input corridors SHARE a cell that one stream pins to a face
+    diverting the OTHER (the modem's x16_in→MF rx corridor pins (1,1) EAST, so the
+    x16_in→mapper tx word can no longer transit (1,1) NORTH to the mapper).
+
+    So we walk each net's physical corridor against the BUILT faces:
+
+      * If every corridor cell forwards toward the next waypoint AND the final broker
+        forwards into the block's input cell, the net RIDES STRAIGHT — land at the
+        block's own input cell (entry = block entry, data_addrs = block input regs).
+        This delivers a COMPLEX block's xi+xq directly (the host writes both operands),
+        exactly the explicit-demo contract.
+      * Else, at the FIRST cell whose built ``fwd_face`` does NOT point to the next
+        waypoint, the corridor is DIVERTED — the net must LAND THERE, at that cell's
+        broker deliver entry for this net (which flips toward the block + relays). The
+        operand(s) land in the broker burst reg(s).
+
+    ``hop`` is the raw 5-bit field = ``30 - corridor_index`` (port cell = index 0,
+    hop 30; the block input cell sits one past the last corridor waypoint)."""
+    from model.connection import BlockEndpoint, ChipPortEndpoint
+    from .bus_router import _phys_pts, _target_input_cell
+
+    in_port = next((p for p in chip_type.ports
+                    if p.direction.value == "input"), None)
+    if in_port is None:
+        return {}
+    port_cell = (in_port.cell_x, in_port.cell_y)
+
+    def _face_of(cell):
+        cfg = cell_map.get_cell(*cell)
+        f = getattr(cfg, "fwd_face", None) if cfg is not None else None
+        return int(f) if f is not None else None
+
+    landings: dict = {}
+    for conn in connections:
+        if not (isinstance(conn.source, ChipPortEndpoint)
+                and conn.source.chip == chip_id
+                and conn.source.port == in_port.name
+                and isinstance(conn.target, BlockEndpoint)):
+            continue
+        blk = project.block(conn.target.block)
+        if blk is None or blk.placement is None or not blk.placement.cells:
+            continue
+        pts = _phys_pts(project, conn, catalog) if conn.is_routed else []
+        # Unrouted (direct-on-port placement): keep the legacy manhattan model so the
+        # proven explicit modem path (block on the port cell) is untouched.
+        if not pts or pts[0] != port_cell:
+            cell0 = blk.placement.cells[0]
+            dist = abs(cell0.x - in_port.cell_x) + abs(cell0.y - in_port.cell_y)
+            entry, in_regs = catalog.resolved_io(
+                blk.type, blk.params, library=blk.library)
+            landings[conn.name] = {
+                "cell": (cell0.x, cell0.y), "entry": int(entry),
+                "hop": (30 - dist) & 0x1F,
+                "data_addrs": list(in_regs) if in_regs else [0]}
+            continue
+
+        in_cell = _target_input_cell(blk, conn.target.port, catalog)
+        # Full corridor incl. the block's own input cell as the final straight target.
+        full = list(pts)
+        if full[-1] != in_cell:
+            full.append(in_cell)
+        # Find the FIRST corridor cell that mis-forwards (its built fwd_face does not
+        # point to the next waypoint). The block input cell (last) has no "next".
+        divert = None
+        for i in range(len(full) - 1):
+            want = _step_face(full[i][0], full[i][1], full[i + 1][0], full[i + 1][1])
+            if want is None or _face_of(full[i]) != want:
+                divert = i
+                break
+
+        if divert is None:
+            # Rides straight to the block input cell — deliver operand(s) there.
+            entry, in_regs = catalog.resolved_io(
+                blk.type, blk.params, library=blk.library)
+            idx = len(full) - 1                  # block input cell's corridor index
+            landings[conn.name] = {
+                "cell": in_cell, "entry": int(entry), "hop": (30 - idx) & 0x1F,
+                "data_addrs": list(in_regs) if in_regs else [0]}
+        else:
+            # Diverted at full[divert] — land at that broker's deliver entry for THIS
+            # net (it flips toward the block + relays). The operand lands in the broker
+            # burst reg the source-patch path assigned this net.
+            b_entry = broker_conn_entry.get(conn.name)
+            if b_entry is None:
+                # No broker entry for this net at the divert cell (shouldn't happen for
+                # a routed net); fall back to the straight block landing.
+                entry, in_regs = catalog.resolved_io(
+                    blk.type, blk.params, library=blk.library)
+                idx = len(full) - 1
+                landings[conn.name] = {
+                    "cell": in_cell, "entry": int(entry),
+                    "hop": (30 - idx) & 0x1F,
+                    "data_addrs": list(in_regs) if in_regs else [0]}
+                continue
+            from .bus_router import BROKER_BURST_REG
+            reg = BROKER_BURST_REG + int(broker_conn_burst.get(conn.name, 0))
+            landings[conn.name] = {
+                "cell": full[divert], "entry": int(b_entry),
+                "hop": (30 - divert) & 0x1F, "data_addrs": [reg]}
+    return landings
 
 
 def _read_source_exit(cfg, gb):

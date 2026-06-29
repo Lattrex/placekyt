@@ -4,9 +4,17 @@ A GNU Radio .grc flowgraph of the 8 modem DSP blocks (TX: PSK symbol mapper ->
 upsampler -> RRC pulse shaper -> I/Q upconvert; RX: complex RRC matched filter ->
 complex Costas loop -> Gardner timing recovery -> BPSK slicer) imports CLEANLY
 into placeKYT: every kyttar_* block resolves to a catalog type, both source/sink
-pairs collapse onto the shared x16_in / x16_out duplex ports, and the 12 logical
+pairs collapse onto the shared x16_in / x16_out duplex ports, and the 11 logical
 nets are recovered. This is the IMPORT gate; BER is proven headless by
 engine.bpsk_modem_demo / test_bpsk_modem on the built bitstream.
+
+Complex baseband is carried as a SINGLE gr_complex stream per hop in GNURadio, but a
+complex placeKYT block has TWO scalar input regs (xi/xq) that must BOTH be fed. So the
+importer resolves a single complex net's port-0 onto the block's first I/Q rail (xi/yi
+/ out_i) AND, when a complex link connects two complex blocks (here MF→Costas), SPLITS
+it into its I and Q nets (yi→xi AND yq→xq) so the downstream block gets both rails and
+can lock. Hence 11 nets (10 GRC edges + the one split Q net), and x16_in fans out to
+exactly 2 (mapper + MF).
 """
 
 from __future__ import annotations
@@ -81,9 +89,15 @@ def _name_of(result, type_name):
     return matches[0]
 
 
-def test_twelve_logical_nets(result):
-    """Exactly 12 logical nets, matching the modem topology with the shared
-    x16_in / x16_out duplex ports and the MF I/Q fan-out (xi AND xq)."""
+def test_eleven_logical_nets(result):
+    """Exactly 11 logical nets for the duplex modem topology on the shared
+    x16_in / x16_out ports. GNURadio carries a complex baseband as ONE gr_complex
+    wire, but a complex placeKYT block has TWO scalar input regs (xi/xq) that must
+    BOTH be fed; so the importer SPLITS a complex link between two complex blocks into
+    its I and Q nets. The only such link here is MF→Costas (both blocks complex), which
+    becomes two nets (yi→xi AND yq→xq) — hence 11, not 10. The TX chain's complex links
+    touch a real block on only one side (RRC→IQUpconvert: RRC out is real), so they
+    stay single. Each non-split complex net resolves to the block's first I/Q rail."""
     mapper = _name_of(result, "PSKSymbolMapperBlock")
     up = _name_of(result, "UpsamplerBlock")
     rrc = _name_of(result, "RRCPulseShaperBlock")
@@ -98,23 +112,27 @@ def test_twelve_logical_nets(result):
         return ("blk", b, ep.port) if b is not None else ("chip", ep.port)
 
     nets = {(src(c.source), src(c.target)) for c in result.project.connections}
-    assert len(result.project.connections) == 12, (
-        f"expected 12 nets, got {len(result.project.connections)}")
+    assert len(result.project.connections) == 11, (
+        f"expected 11 nets, got {len(result.project.connections)}")
 
     IN = ("chip", "x16_in")
     OUT = ("chip", "x16_out")
 
-    # TX chain: x16_in -> mapper -> up -> rrc -> upc -> x16_out
+    # TX chain: x16_in -> mapper -> up -> rrc -> upc -> x16_out (one wire per hop).
+    # The mapper's complex output resolves to its first output rail (out_i); the
+    # IQUpconvert's complex input resolves to its first input rail (xi).
     assert (IN, ("blk", mapper, "sample")) in nets
     assert (("blk", mapper, "out_i"), ("blk", up, "x")) in nets
     assert (("blk", up, "out"), ("blk", rrc, "sample")) in nets
     assert (("blk", rrc, "out"), ("blk", upc, "xi")) in nets
     assert (("blk", upc, "out"), OUT) in nets
 
-    # RX chain: x16_in -> MF (xi AND xq) -> costas (xi AND xq) -> gardner -> slicer -> x16_out
+    # RX chain: x16_in -> MF (single complex xi) -> costas (single complex xi) ->
+    # gardner -> slicer -> x16_out. Each complex net resolves to the first I/Q rail.
     assert (IN, ("blk", mf, "xi")) in nets
-    assert (IN, ("blk", mf, "xq")) in nets
     assert (("blk", mf, "yi"), ("blk", costas, "xi")) in nets
+    # The MF→Costas complex link is split: the synthesised Q net (yq→xq) feeds the
+    # Costas's second rail so it has both I and Q to derotate (and can lock).
     assert (("blk", mf, "yq"), ("blk", costas, "xq")) in nets
     assert (("blk", costas, "yi_tap"), ("blk", gardner, "xi")) in nets
     assert (("blk", gardner, "out"), ("blk", slicer, "llr")) in nets
@@ -123,16 +141,16 @@ def test_twelve_logical_nets(result):
 
 def test_shared_duplex_ports(result):
     """Both TX and RX source/sink pairs collapse onto the SAME chip ports
-    (the shared-port full-duplex): x16_in appears as the source of >=2 nets
-    (mapper + MF), x16_out as the target of >=2 nets (upc + slicer)."""
+    (the shared-port full-duplex): x16_in is the source of 2 nets (mapper + MF),
+    x16_out the target of 2 nets (upc + slicer)."""
     from_in = [c for c in result.project.connections
                if getattr(c.source, "port", None) == "x16_in"
                and getattr(c.source, "block", None) is None]
     to_out = [c for c in result.project.connections
               if getattr(c.target, "port", None) == "x16_out"
               and getattr(c.target, "block", None) is None]
-    # x16_in -> mapper, x16_in -> mf:xi, x16_in -> mf:xq  (3 fan-out nets)
-    assert len(from_in) == 3, [(_t(c)) for c in from_in]
+    # x16_in -> mapper, x16_in -> mf:xi  (2 fan-out nets; complex MF is one wire)
+    assert len(from_in) == 2, [(_t(c)) for c in from_in]
     # upc -> x16_out, slicer -> x16_out  (2 fan-in nets)
     assert len(to_out) == 2, [(_t(c)) for c in to_out]
 
@@ -199,7 +217,7 @@ def test_autoplace_strategy_aware_off_port(catalog):
 
 
 def test_autoplace_then_route_status(catalog):
-    """The strategy-aware multi-filament auto-place + bus auto-route routes ALL 12 of
+    """The strategy-aware multi-filament auto-place + bus auto-route routes ALL 10 of
     the modem's logical nets over the shared bus. The off-port multi-filament placement
     (the port stays a free tap, each filament in its own coherent region) plus the
     folded RRC and the egress-corridor reservation let the bus fan x16_in out to BOTH
@@ -225,19 +243,20 @@ def test_autoplace_then_route_status(catalog):
           f"routed={len(routed)} failed={len(failed)}")
     if failed:
         print("  failed nets:", failed)
-    # ALL 12 nets route — the coherent, fully-routed multi-filament modem layout.
-    assert rep.ok and len(routed) == 12, \
-        f"routed {len(routed)}/12, failed: {failed}"
+    # ALL 11 nets route — the coherent, fully-routed multi-filament modem layout
+    # (11 = 10 GRC edges + the synthesised MF.yq→Costas.xq complex-split net).
+    assert rep.ok and len(routed) == 11, \
+        f"routed {len(routed)}/11, failed: {failed}"
 
 
-def test_gui_import_path_routes_all_12(catalog):
+def test_gui_import_path_routes_all_10(catalog):
     """The ACTUAL GUI import path (File→Import GNURadio Flowgraph, full P&R) must
-    route all 12 nets. The GUI runs auto_place(use_bus) then auto_route_all with
-    auto_orient = (use_bus != "always") — for bus mode the strategy-aware placer
-    already oriented everything, and the flow-orient re-pass would re-rotate a
-    block and strand a broker tap (the net10 "no free broker cell" regression).
-    This mirrors ui.main_window._import_grc exactly so a future change there can't
-    silently leave the modem 11/12."""
+    route all 11 nets (10 GRC edges + the MF.yq→Costas.xq complex-split net). The GUI
+    runs auto_place(use_bus) then auto_route_all with auto_orient = (use_bus !=
+    "always") — for bus mode the strategy-aware placer already oriented everything, and
+    the flow-orient re-pass would re-rotate a block and strand a broker tap (the net10
+    "no free broker cell" regression). This mirrors ui.main_window._import_grc exactly
+    so a future change there can't silently leave the modem short a net."""
     from ui.controller import AppController
     from engine.io.chip_type_io import load_chip_type
 
@@ -250,5 +269,5 @@ def test_gui_import_path_routes_all_12(catalog):
                               use_bus=use_bus,
                               auto_orient=(use_bus != "always"))
     failed = [(r.name, r.reason) for r in rep.failed]
-    assert rep.ok and len(rep.routed) == 12, \
-        f"GUI import path routed {len(rep.routed)}/12, failed: {failed}"
+    assert rep.ok and len(rep.routed) == 11, \
+        f"GUI import path routed {len(rep.routed)}/11, failed: {failed}"

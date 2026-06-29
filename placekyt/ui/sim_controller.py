@@ -403,6 +403,15 @@ class SimController(QObject):
             # the WRITE/JUMP is consumed at the wrong cell and output is empty.
             if "hop_count" in kw:
                 default_hops[port_name] = int(kw["hop_count"])
+        # SHARED-INPUT-PORT DUPLEX: resolve EVERY x16_in→block input net that
+        # carries a stream_id to its injection params (entry/hop/data-addrs/out_tag),
+        # keyed by stream_id, so two GR sources sharing the input port each reach
+        # their own block over the bridge. Single-stream nets (no stream_id) are
+        # skipped here and use the default_entries/default_hops path above.
+        from engine.port_config import stream_targets as _stream_targets_fn
+        stream_targets = _stream_targets_fn(
+            self.app.project, self.app.registry, self.app.catalog, self._sim_chip,
+            build_result=result)
         self._bp_scan = {}
         self._bp_hits = []
         self._last_server_refresh = 0.0  # for refresh throttling
@@ -462,6 +471,7 @@ class SimController(QObject):
             on_before_batch=self._rebuild_if_dirty_threadsafe,
             default_entries=default_entries,
             default_hops=default_hops,
+            stream_targets=stream_targets,
             on_grc_params=_grc_params,
             debug_hooks=self._batch_debug)
         bound = self._gr_server.start()

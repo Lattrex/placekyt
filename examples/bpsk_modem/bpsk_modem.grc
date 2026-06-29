@@ -78,13 +78,48 @@ blocks:
     coordinate: [440, 12]
     rotation: 0
     state: enabled
+- name: import_stim
+  id: import
+  parameters:
+    imports: from gnuradio.kyttar import modem_demo_stim as stim
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [560, 12]
+    rotation: 0
+    state: enabled
+- name: n_syms
+  id: variable
+  parameters:
+    comment: RX symbols in the burst
+    value: '120'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [680, 12]
+    rotation: 0
+    state: enabled
+- name: n_bits
+  id: variable
+  parameters:
+    comment: TX bits in the burst
+    value: '64'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [800, 12]
+    rotation: 0
+    state: enabled
 # ============================ TX chain ============================
 - name: tx_src
   id: kyttar_source
   parameters:
     affinity: ''
     alias: ''
-    comment: TX bits -> placeKYT chip x16_in (shared duplex port)
+    comment: TX bits -> placeKYT chip x16_in (shared duplex port, stream 'tx')
     complex_in: float
     device_id: '"kyttar_0"'
     maxoutbuf: '0'
@@ -93,6 +128,8 @@ blocks:
     port_name: '"x16_in"'
     server_host: '"127.0.0.1"'
     server_port: '58950'
+    stream_id: '"tx"'
+    burst_len: n_bits
   states:
     bus_sink: false
     bus_source: false
@@ -175,7 +212,7 @@ blocks:
   parameters:
     affinity: ''
     alias: ''
-    comment: TX passband -> placeKYT chip x16_out (shared duplex port)
+    comment: TX passband -> placeKYT chip x16_out (shared duplex port, stream 'tx')
     device_id: '"kyttar_0"'
     hold_secs: '8.0'
     maxoutbuf: '0'
@@ -184,6 +221,7 @@ blocks:
     port_name: '"x16_out"'
     server_port: '58950'
     server_repeat: 'False'
+    stream_id: '"tx"'
   states:
     bus_sink: false
     bus_source: false
@@ -197,7 +235,7 @@ blocks:
   parameters:
     affinity: ''
     alias: ''
-    comment: RX I/Q burst -> placeKYT chip x16_in (shared duplex port); fans to MF xi/xq
+    comment: RX I/Q burst -> placeKYT chip x16_in (shared duplex port, stream 'rx')
     complex_in: complex
     device_id: '"kyttar_0"'
     maxoutbuf: '0'
@@ -206,6 +244,8 @@ blocks:
     port_name: '"x16_in"'
     server_host: '"127.0.0.1"'
     server_port: '58950'
+    stream_id: '"rx"'
+    burst_len: stim.rx_burst_len(n_syms)
   states:
     bus_sink: false
     bus_source: false
@@ -288,7 +328,7 @@ blocks:
   parameters:
     affinity: ''
     alias: ''
-    comment: recovered bits -> placeKYT chip x16_out (shared duplex port)
+    comment: recovered bits -> placeKYT chip x16_out (shared duplex port, stream 'rx')
     device_id: '"kyttar_0"'
     hold_secs: '8.0'
     maxoutbuf: '0'
@@ -297,11 +337,75 @@ blocks:
     port_name: '"x16_out"'
     server_port: '58950'
     server_repeat: 'False'
+    stream_id: '"rx"'
   states:
     bus_sink: false
     bus_source: false
     bus_structure: null
     coordinate: [1056, 324]
+    rotation: 0
+    state: enabled
+# ================== GR heads/tails (terminate every port) ==================
+# A GRC flowgraph requires every stream port to be connected. These GR blocks
+# feed the kyttar_source inputs and drain the kyttar_sink outputs so the graph is
+# valid and runnable; placeKYT DROPS them on import (only the kyttar_* DSP blocks
+# and the source/sink→chip-port mapping survive), so they don't affect placement.
+- name: tx_bits
+  id: blocks_vector_source_x
+  parameters:
+    comment: TX bit stimulus (one finite burst -> EOF dispatches it; no repeat)
+    type: float
+    vector: stim.tx_bits(n_bits)
+    repeat: 'False'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [40, 16]
+    rotation: 0
+    state: enabled
+- name: tx_passband
+  id: qtgui_time_sink_x
+  parameters:
+    comment: TX passband (real) — recovered from the chip x16_out (stream 'tx')
+    type: float
+    name: '"TX passband (real)"'
+    nconnections: '1'
+    ylabel: amplitude
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1264, 112]
+    rotation: 0
+    state: enabled
+- name: rx_iq
+  id: blocks_vector_source_x
+  parameters:
+    comment: RX RRC-BPSK I/Q burst (carrier+timing offset); finite, no repeat
+    type: complex
+    vector: stim.rx_burst(n_syms)
+    repeat: 'False'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [40, 232]
+    rotation: 0
+    state: enabled
+- name: rx_bits
+  id: qtgui_time_sink_x
+  parameters:
+    comment: recovered bits — from the chip x16_out (stream 'rx')
+    type: float
+    name: '"Recovered bits"'
+    nconnections: '1'
+    ylabel: bit
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1264, 316]
     rotation: 0
     state: enabled
 
@@ -310,14 +414,16 @@ connections:
 - [gardner, '0', slicer, '0']
 - [mapper, '0', up, '0']
 - [mf, '0', costas, '0']
-- [mf, '1', costas, '1']
 - [rrc, '0', upc, '0']
 - [rx_src, '0', mf, '0']
-- [rx_src, '0', mf, '1']
 - [slicer, '0', rx_sink, '0']
 - [tx_src, '0', mapper, '0']
 - [up, '0', rrc, '0']
 - [upc, '0', tx_sink, '0']
+- [tx_bits, '0', tx_src, '0']
+- [tx_sink, '0', tx_passband, '0']
+- [rx_iq, '0', rx_src, '0']
+- [rx_sink, '0', rx_bits, '0']
 
 metadata:
   file_format: 1

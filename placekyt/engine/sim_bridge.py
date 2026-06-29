@@ -106,7 +106,7 @@ class SimServer:
     def __init__(self, chip, *, host: str = "127.0.0.1", port: int = 0,
                  on_activity=None, on_reset=None, on_before_batch=None,
                  default_entries=None, on_grc_params=None, debug_hooks=None,
-                 default_hops=None):
+                 default_hops=None, stream_targets=None):
         self._chip = chip
         self._host = host
         self._req_port = port
@@ -142,6 +142,16 @@ class SimServer:
         # never executes (empty output). Absent ⇒ fall back to 30 (the 1-hop
         # case, e.g. a block auto-placed on the port edge).
         self._default_hops: dict[str, int] = dict(default_hops or {})
+        # Per-STREAM injection targets for the shared-input-port duplex case
+        # (engine.port_config.stream_targets): {stream_id -> {entry_addr,
+        # hop_count, data_addrs, in_port, out_tag}}. When a process_batch header
+        # names a ``stream_id`` present here, the burst is injected at THAT
+        # stream's block entry/hop/data-registers and its output is tagged with
+        # out_tag (so the matching sink demuxes its own words). Absent / no
+        # stream_id ⇒ the single-stream default_entries/default_hops path. This is
+        # how two GR sources sharing x16_in (TX mapper + RX matched filter) each
+        # reach the right block without the GR source knowing any placement value.
+        self._stream_targets: dict[str, dict] = dict(stream_targets or {})
         # Optional: called when a client requests a chip reset (new flowgraph
         # run). The host rebuilds a fresh chip and calls set_chip(); on_reset
         # returns the new chip (or None to keep the current one).
@@ -337,6 +347,28 @@ class SimServer:
                     entry = int(self._default_entries.get(in_name, 0)) & 0xFF
                 else:
                     entry = int(raw_entry) & 0xFF
+                # SHARED-INPUT-PORT DUPLEX (§ stream_id): when the client names a
+                # ``stream_id`` the server knows (engine.port_config.stream_targets
+                # resolved at server start), the SERVER is the source of truth for
+                # this stream's placement — OVERRIDE the header's entry/hop/data
+                # addrs with the resolved values so two GR sources sharing x16_in
+                # each inject at their own block's landing cell without the source
+                # knowing any placement-dependent value. ``out_tag`` then demuxes
+                # this stream's recovered words off the shared output port.
+                stream_id = header.get("stream_id")
+                out_tag = None
+                if stream_id and stream_id in self._stream_targets:
+                    tgt = self._stream_targets[stream_id]
+                    entry = int(tgt["entry_addr"]) & 0xFF
+                    hop_override = int(tgt["hop_count"]) & 0x1F
+                    das = list(tgt.get("data_addrs") or [])
+                    if das:
+                        a0 = das[0]
+                        a1 = das[1] if len(das) > 1 else a0 + 1
+                    in_name = tgt.get("in_port", in_name)
+                    out_tag = tgt.get("out_tag")
+                else:
+                    hop_override = None
                 # PLACEMENT-DEPENDENT injection hop (INV-1): use the input port's
                 # build-configured hop (31 - distance to the block's landing
                 # cell), NOT a hardcoded 30. A header `jump_hop` overrides; else
@@ -345,7 +377,10 @@ class SimServer:
                 # produce NO output — the WRITE/JUMP lands at the wrong cell so
                 # the block never fires.
                 raw_hop = header.get("jump_hop", None)
-                if raw_hop is None:
+                if hop_override is not None:
+                    # The resolved stream's hop (server source of truth) wins.
+                    hop = hop_override
+                elif raw_hop is None:
                     hop = int(self._default_hops.get(in_name, 30)) & 0x1F
                 else:
                     hop = int(raw_hop) & 0x1F
@@ -367,6 +402,14 @@ class SimServer:
                 # it and zero the output, so a real burst must NOT touch a1.
                 is_complex = bool(header.get("complex", True))
                 out_vals: list[float] = []
+                # Pull any words for THIS stream's tag that a prior (other-stream)
+                # process_batch parked while draining its own tag, so they aren't
+                # lost across interleaved RPCs.
+                if out_tag is not None:
+                    parked = self._tag_buf.pop(int(out_tag), [])
+                    for v in parked:
+                        out_vals.append(float(int(v) & 0xFFFF) if raw
+                                        else _q15_to_float(int(v)))
                 nsamp = (len(data) // 2) if is_complex else len(data)
                 _t_batch0 = time.perf_counter()
                 aborted = False
@@ -397,7 +440,23 @@ class SimServer:
                         self._chip.inject_jump_physical(target_hop_cnt=hop,
                                                         entry_addr=entry)
                         self._chip.run(max_events=mx)
-                        if raw:
+                        if out_tag is not None:
+                            # SHARED-OUTPUT-PORT DEMUX: drain the chip's tagged
+                            # output WORDS (value, dest, t) and keep only those
+                            # whose dest == this stream's out_tag; OTHER tags are
+                            # buffered in self._tag_buf so the other stream's
+                            # process_batch (its own RPC) can still claim them.
+                            # Mirrors bpsk_modem_demo._drain_tagged's tag filter.
+                            for (v, d, _t) in self._chip.read_port_words_timed(port):
+                                if int(d) == int(out_tag):
+                                    if raw:
+                                        out_vals.append(float(int(v) & 0xFFFF))
+                                    else:
+                                        out_vals.append(_q15_to_float(int(v)))
+                                else:
+                                    self._tag_buf.setdefault(int(d), []).append(
+                                        int(v))
+                        elif raw:
                             got = self._chip.read_port_i16(port)
                             if got is not None and len(got):
                                 out_vals.extend(float(int(v)) for v in got)
@@ -430,7 +489,8 @@ class SimServer:
                     except TypeError:
                         self._on_activity()
                 return ({"ok": True, "samples": nrun, "seconds": _dt,
-                         "samples_per_sec": sps, "aborted": aborted},
+                         "samples_per_sec": sps, "aborted": aborted,
+                         "out_tag": out_tag, "stream_id": stream_id},
                         np.asarray(out_vals, dtype="<f4"))
             if op == "output_available":
                 return {"ok": True, "available":

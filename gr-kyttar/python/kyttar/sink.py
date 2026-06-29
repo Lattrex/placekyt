@@ -64,6 +64,7 @@ class sink(gr.sync_block):
         server_port: int = 0,
         server_repeat: bool = False,
         hold_secs: float = 5.0,
+        stream_id: str = "",
     ):
         # SERVER-BATCH MODE (server_port > 0): the matching kyttar_source (same
         # device_id) batches the burst through the placeKYT-hosted chip; this sink
@@ -85,6 +86,10 @@ class sink(gr.sync_block):
         self._device_id = device_id
         self._port_name = port_name
         self._num_channels = num_channels
+        # SHARED-OUTPUT-PORT DUPLEX: a sink waits on ITS stream's session (keyed by
+        # (device_id, stream_id)), so two sinks sharing one chip device each drain
+        # only their own recovered words. Empty ⇒ today's single-stream behavior.
+        self._stream_id = str(stream_id or "")
         self._server_repeat = bool(server_repeat)
         self._hold_secs = float(hold_secs)   # render window after the one emit
         self._emit_done_at = None            # wall time the burst finished emitting
@@ -157,7 +162,7 @@ class sink(gr.sync_block):
         # looping display for visual impact.
         if self._server_mode:
             from ._batch_session import get_session
-            sess = get_session(self._device_id)
+            sess = get_session(self._device_id, self._stream_id)
             if self._server_result is None:
                 # Degrade gracefully if the session never produced a result (server
                 # absent/refused): the source logs the failure; here we simply keep

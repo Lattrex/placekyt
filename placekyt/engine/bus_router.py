@@ -995,6 +995,62 @@ def crossover_plan(project, chip_id, chip_type, catalog):
     return taps
 
 
+def broker_through_face(project, chip_id, chip_type, catalog):
+    """``{(x, y): face}`` — for each BROKER cell that a FOREIGN routed net merely
+    TRANSITS (passes through as a non-terminal waypoint, or egresses through), the
+    forwarding face that foreign through-traffic needs.
+
+    A broker delivers its OWN net(s) by landing them (HOP==31) + flipping per entry,
+    then restores its cell ``fwd_face`` for transiting (HOP<31) words. When a DIFFERENT
+    net's route passes THROUGH the broker cell (the auto-router packed two corridors
+    onto it — e.g. the modem's MF→Costas net4 transiting the Upsampler→RRC broker at
+    (2,3), or the Slicer→x16_out egress net7 transiting the Costas→Gardner broker at
+    (6,9)), that foreign word is forwarded on the broker's static ``fwd_face`` — so the
+    restore face MUST equal the foreign net's forwarding direction, NOT the broker's
+    own into-cell travel. Otherwise the foreign stream is silently mis-faced and dies
+    (the same single-``fwd_face`` corruption :func:`crossover_plan` resolves for plain
+    cells; a broker can carry ONE extra through-direction by choosing its restore face,
+    which is the common case here — two distinct foreign directions would need a full
+    crossover and are reported by the bus DRC).
+
+    Returns only the cells that HAVE a foreign-transit face (a broker with no through-
+    traffic is absent ⇒ keep its own restore). The build's :func:`_apply_brokers`
+    overrides ``bus_face`` with this value so the broker forwards the foreign stream
+    correctly."""
+    taps = broker_plan(project, chip_id, chip_type, catalog)
+    if not taps:
+        return {}
+    brokers = set(taps.keys())
+    # Each broker's OWN nets (delivered here) — excluded from "foreign".
+    own: dict = {}
+    for cell, tap in taps.items():
+        own[cell] = {d.conn for d in tap.deliveries}
+
+    block_cells: set = set()
+    for blk in project.blocks:
+        pl = blk.placement
+        if pl is None or pl.chip != chip_id:
+            continue
+        block_cells.update((c.x, c.y) for c in pl.cells)
+
+    through: dict = {}
+    for conn in project.connections:
+        if not conn.is_routed or _conn_chip(project, conn) != chip_id:
+            continue
+        pts = _phys_pts(project, conn, catalog)
+        for i, c in enumerate(pts):
+            if c not in brokers:
+                continue
+            if conn.name in own.get(c, set()):
+                continue  # this broker's OWN delivery terminates here — not transit
+            face = _net_exit_face(conn, pts, i, project, chip_id, chip_type,
+                                  catalog, block_cells)
+            if face is None:
+                continue
+            through.setdefault(c, face)  # first foreign use wins (one extra direction)
+    return through
+
+
 def _target_input_cell(block, port, catalog):
     """(x, y) of a block's input PORT cell (PortMap port → placed cell; falls back
     to the block's first/landing cell)."""

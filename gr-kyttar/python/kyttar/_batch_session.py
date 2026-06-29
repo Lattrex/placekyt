@@ -29,7 +29,7 @@ import numpy as np
 
 _HDR = struct.Struct(">I")
 _LOCK = threading.Lock()
-_SESSIONS = {}   # device_id -> BatchSession
+_SESSIONS = {}   # (device_id, stream_id) -> BatchSession
 
 
 def _default_block_name(placekyt_type):
@@ -42,12 +42,20 @@ def _default_block_name(placekyt_type):
     return base.lower() or "block"
 
 
-def get_session(device_id):
+def get_session(device_id, stream_id=""):
+    """One shared source↔sink batch session, keyed by ``(device_id, stream_id)``.
+
+    SHARED-INPUT-PORT DUPLEX: two source↔sink pairs that share ONE chip device
+    (the full-duplex modem: a TX pair and an RX pair) get SEPARATE sessions by
+    naming distinct ``stream_id``s ("tx"/"rx"), so each sink takes only ITS
+    stream's recovered words. The default empty ``stream_id`` preserves today's
+    single-stream session (one source, one sink, no stream_id)."""
     with _LOCK:
-        s = _SESSIONS.get(device_id)
+        key = (device_id, str(stream_id or ""))
+        s = _SESSIONS.get(key)
         if s is None:
             s = BatchSession(device_id)
-            _SESSIONS[device_id] = s
+            _SESSIONS[key] = s
         return s
 
 
@@ -154,7 +162,7 @@ class BatchSession:
             return {k: dict(v) for k, v in self.grc_params.items()}
 
     def dispatch(self, host, port, iq, in_port="x16_in", out_port="x16_out",
-                 data_addrs=(0, 1), raw=True, complex=True):
+                 data_addrs=(0, 1), raw=True, complex=True, stream_id=""):
         """Send the whole burst to the placeKYT SimServer in one process_batch RPC;
         store the recovered words for the sink.
 
@@ -179,6 +187,12 @@ class BatchSession:
         header = {"op": "process_batch", "port": out_port,
                   "in_port": in_port, "complex": bool(complex),
                   "data_addrs": list(data_addrs), "raw": bool(raw)}
+        # SHARED-INPUT-PORT DUPLEX: name this burst's stream so the placeKYT
+        # server resolves it to the right block's entry/hop/data-addrs and demuxes
+        # its recovered words by out_tag (engine.port_config.stream_targets). Empty
+        # ⇒ the single-stream path (server uses the port's default entry/hop).
+        if stream_id:
+            header["stream_id"] = str(stream_id)
         # GRC-sync: advertise the flowgraph's per-block params alongside the burst
         # (additive header field). The placeKYT SimServer routes a present
         # ``grc_params`` to ``on_grc_params`` → the out-of-sync indicator. Absent

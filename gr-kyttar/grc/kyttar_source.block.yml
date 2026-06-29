@@ -45,7 +45,8 @@ templates:
   imports: from gnuradio import kyttar
   make: kyttar.source(device_id=${device_id}, port_name=${port_name},
     num_channels=${num_channels}, server_host=${server_host},
-    server_port=${server_port}, complex_in=${complex_in.make_val}, burst_len=${burst_len})
+    server_port=${server_port}, complex_in=${complex_in.make_val}, burst_len=${burst_len},
+    stream_id=${stream_id})
 
 parameters:
   - id: device_id
@@ -90,6 +91,15 @@ parameters:
     label: Burst length
     dtype: int
     default: '0'
+  # SHARED-INPUT-PORT DUPLEX: when two sources feed ONE chip input port (the
+  # full-duplex modem: TX bits AND RX I/Q both off x16_in), name a distinct
+  # stream for each ('tx'/'rx'). The placeKYT importer copies this onto the
+  # x16_in→block net so the server resolves each burst to its own block's
+  # entry/hop/data-registers and demuxes its words by tag. Empty ⇒ single-stream.
+  - id: stream_id
+    label: Stream ID
+    dtype: string
+    default: ''
 
 inputs:
   - label: in
@@ -100,9 +110,12 @@ inputs:
 outputs:
   - label: out
     domain: stream
-    # The downstream Kyttar DSP markers are float-typed (an I/Q pair is two float
-    # ports), and the data handed back on the GR side is float, so the source's
-    # GR-facing output is always float regardless of the input type.
-    dtype: float
+    # The output MIRRORS the input type (single-complex model): a complex (I/Q)
+    # source emits a complex baseband stream into the complex DSP markers (matched
+    # filter, Costas), a real (float) source emits float (e.g. the TX bit into the
+    # PSK mapper). This matches source.py's out_dtype = in_dtype. The GR stream is
+    # cosmetic in server-batch mode (the burst travels via the batch RPC), but its
+    # TYPE must equal the downstream marker's port type or GRC reports a mismatch.
+    dtype: ${ complex_in.io_type }
 
 file_format: 1

@@ -29,7 +29,7 @@ templates:
   imports: from gnuradio import kyttar
   make: kyttar.sink(device_id=${device_id}, port_name=${port_name},
     num_channels=${num_channels}, server_port=${server_port},
-    server_repeat=${server_repeat}, hold_secs=${hold_secs})
+    server_repeat=${server_repeat}, hold_secs=${hold_secs}, stream_id=${stream_id})
 
 parameters:
   - id: device_id
@@ -62,6 +62,13 @@ parameters:
     label: Hold (s)
     dtype: float
     default: '5.0'
+  # SHARED-OUTPUT-PORT DUPLEX: a sink draining ITS stream's recovered words must
+  # name the SAME stream as its matching source ('tx'/'rx'), so the two sinks on
+  # one chip device each take only their own batch result. Empty ⇒ single-stream.
+  - id: stream_id
+    label: Stream ID
+    dtype: string
+    default: ''
 
 inputs:
   - label: in

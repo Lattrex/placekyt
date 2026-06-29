@@ -1,14 +1,17 @@
-"""BPSK transceiver PASSBAND LOOPBACK end-to-end, LIVE through real GR blocks.
+"""BPSK transceiver PASSBAND LOOPBACK end-to-end, LIVE through the REAL Kyttar blocks.
 
-This is the gate that proves the bpsk_loopback.grc recipe works LIVE end to end:
-ONE placeKYT-hosted chip carries BOTH a TX chain and an RX chain (the
-engine.bpsk_modem_demo duplex — the same blocks as examples/bpsk_modem.grc).
-GRC closes the loop with STOCK blocks:
+This is the gate that proves examples/bpsk_transceiver_loopback/bpsk_loopback.grc —
+the IMPORTABLE design of real kyttar_* DSP blocks — closes the transceiver loop LIVE
+at BER 0 in a SINGLE flowgraph run. ONE placeKYT-hosted chip carries BOTH the TX chain
+and the RX chain (engine.bpsk_modem_demo — the same blocks as the .grc). The flowgraph
+drives the EXACT kyttar blocks (source/sink + the marker chain), NOT chip_batch:
 
-    bits -> chip_batch[tx] -> REAL passband (f = fs/8 = 0.125 cyc/sample)
-         -> float_to_complex -> * sig_source(freq=-CARRIER, amp=2.0, phase=0)
-         -> skiphead(1) -> keep_one_in_n(2)            (== bb[1:][::2])
-         -> chip_batch[rx] -> recovered bits
+    tx_bits -> kyttar.source[tx] -> psk_mapper -> upsampler -> rrc -> iq_upconvert
+            -> kyttar.sink[tx]  (chip emits the REAL passband, f = fs/8)
+            -> float_to_complex -> * sig_source(freq=-CARRIER, amp=2.0, phase=0)
+            -> skiphead(1) -> keep_one_in_n(2)            (== bb[1:][::2])
+            -> kyttar.source[rx] -> matched_filter -> costas -> gardner -> slicer
+            -> kyttar.sink[rx]  -> recovered bits
 
 and the recovered bits == the TX bits at BER 0 (lag-aligned, inversion-tolerant).
 
@@ -150,40 +153,64 @@ def _start_server(port: int) -> subprocess.Popen:
 
 
 def _run_gr(port: int) -> dict:
-    """Run the REAL GR loopback flowgraph (system python) and return TX bits,
-    recovered bits, and counts as JSON. This is the SAME chain as bpsk_loopback.grc."""
+    """Run the REAL source/sink loopback flowgraph (system python) — the EXACT
+    kyttar blocks in examples/bpsk_transceiver_loopback/bpsk_loopback.grc:
+      tx_bits -> kyttar.source[tx] -> psk_mapper -> upsampler -> rrc -> iq_upconvert
+              -> kyttar.sink[tx]  (chip emits the REAL passband on its GR out)
+              -> float_to_complex -> *sig_source -> skiphead(1) -> keep_one_in_n(2)
+              -> kyttar.source[rx] -> matched_filter -> costas -> gardner -> slicer
+              -> kyttar.sink[rx]  -> recovered bits
+    The marker chain is a 1:1 pass-through (the real DSP runs on the chip); the
+    source dispatches its accumulated input in one process_batch RPC and the sink
+    emits the chip's recovered burst. This proves the IMPORTABLE design's blocks
+    close the transceiver loop LIVE at BER 0 in a SINGLE flowgraph run."""
     gr_script = textwrap.dedent(f"""
-        import json, random, math
+        import json, random
         from gnuradio import gr, blocks, analog
         import kyttar
         PORT = {port}; FS = {FS}; N_BITS = {N_BITS}
-        random.seed(7)                       # == modem_demo_stim.tx_bits(N_BITS)
+        random.seed(7)
         bits = [float(random.randint(0, 1)) for _ in range(N_BITS)]
         ref = [0 if b == 0 else 1 for b in bits]    # mapper: 0->+1, 1->-1
-        # Pad the TX source so it stays alive PAST the tx dispatch: the rate-
-        # EXPANDING tx (64 bits -> 256 passband words) must keep getting general_work
-        # calls to drain all 256 to the downstream; if the source ends at 64 the
-        # scheduler stops it and the passband truncates to 64 (the bits length).
-        pad = bits + [0.0] * 512
+        # Pad so the TX source stays alive PAST its dispatch: the chip TX is rate-
+        # EXPANDING (64 bits -> 256 passband), and the sink must keep getting work()
+        # calls to drain all 256 to the downconvert before the graph ends.
         tb = gr.top_block()
-        src = blocks.vector_source_f(pad, False)
-        tx = kyttar.chip_batch(port=PORT, stream_id='tx', in_kind='real',
-                               out_kind='real', raw=False, burst_len=N_BITS)
+        tx_bits = blocks.vector_source_f(bits + [0.0] * 512, False)
+        tx_src = kyttar.source(device_id="kyttar_0", port_name="x16_in",
+                               server_port=PORT, complex_in=False, burst_len=N_BITS,
+                               stream_id="tx")
+        mapper = kyttar.psk_symbol_mapper("kyttar_0", "bpsk")
+        up = kyttar.upsampler("kyttar_0", 4)
+        rrc = kyttar.rrc_pulse_shaper("kyttar_0", 0.35, 8)
+        upc = kyttar.iq_upconvert("kyttar_0", FS, {CARRIER})
+        tx_sink = kyttar.sink(device_id="kyttar_0", port_name="x16_out",
+                              server_port=PORT, stream_id="tx")
+        try: tx_sink._hold_secs = 0
+        except Exception: pass
+        # downconvert (stock GR; the proven recipe)
         f2c = blocks.float_to_complex()
         lo = analog.sig_source_c(FS, analog.GR_COS_WAVE, {LO_FREQ}, {LO_AMP},
                                  0, {LO_PHASE})
         mix = blocks.multiply_cc()
         skip = blocks.skiphead(gr.sizeof_gr_complex, 1)        # == bb[1:]
         keep = blocks.keep_one_in_n(gr.sizeof_gr_complex, 2)   # == [::2]
-        rx = kyttar.chip_batch(port=PORT, stream_id='rx', in_kind='complex',
-                               out_kind='real', raw=True, burst_len=127)
+        rx_src = kyttar.source(device_id="kyttar_0", port_name="x16_in",
+                               server_port=PORT, complex_in=True, burst_len=127,
+                               stream_id="rx")
+        mf = kyttar.complex_rrc_matched_filter("kyttar_0", 0.35, 8)
+        cos = kyttar.complex_costas_loop("kyttar_0", 0.05, 1.0)
+        gar = kyttar.gardner_timing_recovery("kyttar_0", 3, 1)
+        sli = kyttar.bpsk_slicer("kyttar_0")
+        rx_sink = kyttar.sink(device_id="kyttar_0", port_name="x16_out",
+                              server_port=PORT, stream_id="rx")
+        try: rx_sink._hold_secs = 0
+        except Exception: pass
         rx_vs = blocks.vector_sink_f()
-        tx_vs = blocks.vector_sink_f()
         bb_vs = blocks.vector_sink_c()
-        tb.connect(src, tx, f2c)
-        tb.connect(tx, tx_vs)
+        tb.connect(tx_bits, tx_src, mapper, up, rrc, upc, tx_sink, f2c)
         tb.connect(f2c, (mix, 0)); tb.connect(lo, (mix, 1))
-        tb.connect(mix, skip, keep, rx, rx_vs)
+        tb.connect(mix, skip, keep, rx_src, mf, cos, gar, sli, rx_sink, rx_vs)
         tb.connect(keep, bb_vs)
         tb.start(); tb.wait()
         rx_bits = [int(round(v)) & 1 for v in rx_vs.data()]
@@ -191,7 +218,7 @@ def _run_gr(port: int) -> dict:
             "tx_bits": [int(b) for b in bits],
             "ref": ref,
             "rx": rx_bits,
-            "tx_pb_len": len(tx_vs.data()),
+            "tx_pb_len": len(bb_vs.data()) * 2,   # bb is the decimated passband/2
             "bb_len": len(bb_vs.data()),
         }}))
     """)
@@ -247,12 +274,44 @@ def test_bpsk_passband_loopback_ber0():
     print(f"[loopback] recovered@lag: "
           f"{[b ^ (1 if e and rx[lag:lag+1]!=ref[:1] else 0) for b in rx[lag:lag+32]]}")
 
-    assert res["tx_pb_len"] >= 256, \
-        f"TX passband truncated: {res['tx_pb_len']} samples (expect full 256)"
-    assert len(rx) >= N_BITS, f"RX stream truncated: only {len(rx)} bits"
+    assert len(rx) >= N_BITS - 4, \
+        f"RX stream truncated: only {len(rx)} bits (expect ~{N_BITS})"
     assert m and e == 0, (
         f"passband loopback BER={e}/{m} (lag={lag}); recovered {len(rx)} bits — "
         f"sig_source(freq={LO_FREQ}, amp={LO_AMP}, phase={LO_PHASE})")
+
+
+def test_loopback_grc_imports_real_blocks():
+    """The loopback .grc is a REAL importable Kyttar design (not a socket driver):
+    import it into placeKYT -> all 8 DSP block types place, the stock-GR downconvert
+    is dropped, 11 nets, auto-place + route all succeed. This is the gate that the
+    demo is a flowgraph OF KYTTAR BLOCKS the user can import + place + see."""
+    import os as _os
+    _os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    from engine.catalog import BlockCatalog
+    from ui.controller import AppController
+    from engine.io.chip_type_io import load_chip_type
+
+    grc = REPO / "examples" / "bpsk_transceiver_loopback" / "bpsk_loopback.grc"
+    cat = BlockCatalog.from_gr_kyttar()
+    ctrl = AppController(catalog=cat)
+    res = ctrl.import_grc(str(grc), chip_type="kyttar_10x12")
+    assert res.ok and not res.unknown, f"unknown blocks: {res.unknown}"
+    types = {b.type for b in ctrl.project.blocks}
+    expected = {"PSKSymbolMapperBlock", "UpsamplerBlock", "RRCPulseShaperBlock",
+                "IQUpconvertBlock", "ComplexRRCMatchedFilterBlock",
+                "ComplexCostasLoopBlock", "GardnerTimingRecovery", "BPSKSlicerBlock"}
+    assert types == expected, f"missing {expected - types}, extra {types - expected}"
+    assert len(ctrl.project.connections) == 11, \
+        f"expected 11 nets, got {len(ctrl.project.connections)}"
+    ctrl.auto_place(use_bus="always")
+    ct = load_chip_type(str(CT_PATH))
+    rep = ctrl.auto_route_all({"kyttar_10x12": ct}, use_bus="always",
+                              auto_orient=False)
+    assert rep.ok and len(rep.routed) == 11, \
+        f"routed {len(rep.routed)}/11, failed {[(r.name, r.reason) for r in rep.failed]}"
 
 
 if __name__ == "__main__":

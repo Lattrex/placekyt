@@ -24,6 +24,7 @@ Ops: ``write_port`` (payload=samples), ``output_available``, ``run_until_output`
 from __future__ import annotations
 
 import json
+import os
 import socket
 import struct
 import threading
@@ -481,6 +482,22 @@ class SimServer:
                 # seconds of wall time). Reported in the reply header and to the GUI.
                 _dt = max(1e-9, time.perf_counter() - _t_batch0)
                 sps = nrun / _dt
+                # OBSERVABILITY: one concise line per batch to the server console
+                # (the GUI's terminal). Turns "x16_out is flat, why?" into a precise
+                # readout — which stream, the resolved inject landing (entry/hop/
+                # data_addrs/out_tag), samples in, words out, and the distinct output
+                # tags actually seen on the port. A produced-zero batch shows the
+                # resolved landing so a stale/wrong stream_target is obvious at a
+                # glance. Gated off only by an env var for a totally quiet run.
+                if os.environ.get("KYTTAR_SERVER_QUIET") != "1":
+                    import sys as _sys
+                    seen_tags = sorted(self._tag_buf.keys())
+                    _sys.stderr.write(
+                        f"[placeKYT batch] stream={stream_id!r} in={in_name} "
+                        f"entry={entry} hop={hop} addrs=[{a0},{a1}] "
+                        f"out_tag={out_tag} | {nsamp} samples -> {len(out_vals)} "
+                        f"words (other-tag buf: {seen_tags})\n")
+                    _sys.stderr.flush()
                 if self._on_activity is not None:
                     # Pass the metric if the callback accepts it; else ping plainly.
                     try:

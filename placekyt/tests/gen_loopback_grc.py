@@ -53,10 +53,12 @@ def main():
         "upsampler -> RRC -> I/Q upconvert) and the coherent RX chain (complex RRC "
         "matched filter -> Costas -> Gardner -> BPSK slicer) both live on ONE placeKYT "
         "array. GRC closes the loop: the TX passband leaves the chip, is downconverted "
-        "to complex baseband in stock GR (the 'channel'), and re-enters as the RX input "
-        "-> recovered bits == transmitted bits (BER 0). Import into placeKYT (File -> "
-        "Import GNURadio Flowgraph): all 8 DSP blocks place on the chip; the GR "
-        "downconvert is dropped. Then 'Run as GNURadio Server' + Execute this graph.")
+        "to complex baseband in stock GR (the 'channel'), AWGN is added (noise_volt "
+        "variable; 0 = clean, BER 0), and it re-enters as the RX input -> recovered "
+        "bits == transmitted bits. Raise noise_volt live to watch the constellation "
+        "smear and the BER climb. Import into placeKYT (File -> Import GNURadio "
+        "Flowgraph): all 8 DSP blocks place on the chip; the GR downconvert + AWGN "
+        "channel are dropped. Then 'Run as GNURadio Server' + Execute this graph.")
 
     # 2. Variables: the modem already has sps/samp_rate/carrier/n_syms/n_bits. The
     #    downconvert needs fs + carrier; the modem's samp_rate (32k) and carrier (4k)
@@ -116,6 +118,34 @@ def main():
     rx_src["parameters"]["comment"] = (
         "RX I/Q baseband (from the downconverted TX passband) -> matched filter")
 
+    # 5b. Stage D — AWGN channel (stock GR, dropped on import). A complex Gaussian
+    #     noise source is ADDED to the downconverted baseband before the RX chain.
+    #     noise_volt is a GUI variable: 0.0 = clean (BER 0, the default so the
+    #     headless loopback test still passes); raise it live to watch the
+    #     constellation smear and the recovered-bit BER climb. The add_cc + noise
+    #     source are stock GR blocks → dropped on import (the chip is unchanged).
+    noise_volt = {
+        "name": "noise_volt", "id": "variable",
+        "parameters": {"comment": "AWGN std-dev on the baseband I/Q (0 = clean). "
+                       "Raise live to degrade BER + smear the constellation.",
+                       "value": "0.0"},
+        "states": _state([1056, 12])}
+    noise = {
+        "name": "awgn", "id": "analog_noise_source_x",
+        "parameters": {"affinity": "", "alias": "", "amp": "noise_volt",
+                       "comment": "complex AWGN (channel noise)",
+                       "maxoutbuf": "0", "minoutbuf": "0",
+                       "noise_type": "analog.GR_GAUSSIAN", "seed": "0",
+                       "type": "complex"},
+        "states": _state([1816, 432])}
+    chan = {
+        "name": "chan", "id": "blocks_add_xx",
+        "parameters": {"affinity": "", "alias": "",
+                       "comment": "baseband + AWGN -> noisy RX input",
+                       "maxoutbuf": "0", "minoutbuf": "0", "num_inputs": "2",
+                       "type": "complex", "vlen": "1"},
+        "states": _state([2008, 204])}
+
     # 6. Constellation sink off the downconverted baseband (2 clean BPSK points).
     const_sink = {
         "name": "const_sink", "id": "qtgui_const_sink_x",
@@ -148,12 +178,14 @@ def main():
             "xmax": "2", "xmin": "-2", "ymax": "2", "ymin": "-2"},
         "states": _state([1816, 320])}
 
-    doc["blocks"].extend([f2c, lo, mix, skip, keep, const_sink])
+    doc["blocks"].extend([f2c, lo, mix, skip, keep, noise_volt, noise, chan,
+                          const_sink])
 
     # 7. Connections: keep the modem's, but RE-WIRE the loop:
     #    - drop  rx_iq -> rx_src   (independent stimulus gone)
     #    - drop  tx_sink -> tx_passband stays (the passband scope) — keep it.
-    #    - add   tx_sink -> f2c -> mix(*lo) -> skip -> keep -> rx_src  (+ const off keep)
+    #    - add   tx_sink -> f2c -> mix(*lo) -> skip -> keep -> chan(+AWGN) ->
+    #            rx_src  (+ const off chan, so the scope shows the NOISY baseband)
     conns = [c for c in doc["connections"]
              if not (c[0] == "rx_iq" and c[2] == "rx_src")]
     conns += [
@@ -162,8 +194,10 @@ def main():
         ["lo", "0", "mix", "1"],
         ["mix", "0", "skip", "0"],
         ["skip", "0", "keep", "0"],
-        ["keep", "0", "rx_src", "0"],
-        ["keep", "0", "const_sink", "0"],
+        ["keep", "0", "chan", "0"],          # baseband -> AWGN adder
+        ["awgn", "0", "chan", "1"],          # noise -> AWGN adder
+        ["chan", "0", "rx_src", "0"],        # noisy baseband -> RX chain
+        ["chan", "0", "const_sink", "0"],    # constellation taps the NOISY baseband
     ]
     doc["connections"] = conns
 

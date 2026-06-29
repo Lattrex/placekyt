@@ -32,3 +32,4 @@ htmlcov/
 # GNU Radio generated flowgraph artifacts (the .grc is the source; the .py is generated)
 # Keep curated hand-written runners; ignore GRC-generated top_block .py if regenerated
 .mypy_cache/
+examples/bpsk_transceiver_loopback/bpsk_loopback.py

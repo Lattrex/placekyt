@@ -7,9 +7,9 @@ options:
     comment: ''
     copyright: ''
     description: 'ONE importable design of REAL Kyttar blocks. The TX chain (PSK mapper -> upsampler -> RRC -> I/Q upconvert) and the coherent RX chain (complex RRC matched filter -> Costas -> Gardner ->
-      BPSK slicer) both live on ONE placeKYT array. GRC closes the loop: the TX passband leaves the chip, is downconverted to complex baseband in stock GR (the ''channel''), and re-enters as the RX input
-      -> recovered bits == transmitted bits (BER 0). Import into placeKYT (File -> Import GNURadio Flowgraph): all 8 DSP blocks place on the chip; the GR downconvert is dropped. Then ''Run as GNURadio Server''
-      + Execute this graph.'
+      BPSK slicer) both live on ONE placeKYT array. GRC closes the loop: the TX passband leaves the chip, is downconverted to complex baseband in stock GR (the ''channel''), AWGN is added (noise_volt variable;
+      0 = clean, BER 0), and it re-enters as the RX input -> recovered bits == transmitted bits. Raise noise_volt live to watch the constellation smear and the BER climb. Import into placeKYT (File -> Import
+      GNURadio Flowgraph): all 8 DSP blocks place on the chip; the GR downconvert + AWGN channel are dropped. Then ''Run as GNURadio Server'' + Execute this graph.'
     gen_cmake: 'On'
     gen_linking: dynamic
     generate_options: qt_gui
@@ -525,6 +525,61 @@ blocks:
     - 204
     rotation: 0
     state: enabled
+- name: noise_volt
+  id: variable
+  parameters:
+    comment: AWGN std-dev on the baseband I/Q (0 = clean). Raise live to degrade BER + smear the constellation.
+    value: '0.0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1056
+    - 12
+    rotation: 0
+    state: enabled
+- name: awgn
+  id: analog_noise_source_x
+  parameters:
+    affinity: ''
+    alias: ''
+    amp: noise_volt
+    comment: complex AWGN (channel noise)
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    noise_type: analog.GR_GAUSSIAN
+    seed: '0'
+    type: complex
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1816
+    - 432
+    rotation: 0
+    state: enabled
+- name: chan
+  id: blocks_add_xx
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: baseband + AWGN -> noisy RX input
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_inputs: '2'
+    type: complex
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 2008
+    - 204
+    rotation: 0
+    state: enabled
 - name: const_sink
   id: qtgui_const_sink_x
   parameters:
@@ -693,9 +748,17 @@ connections:
   - '0'
 - - keep
   - '0'
+  - chan
+  - '0'
+- - awgn
+  - '0'
+  - chan
+  - '1'
+- - chan
+  - '0'
   - rx_src
   - '0'
-- - keep
+- - chan
   - '0'
   - const_sink
   - '0'

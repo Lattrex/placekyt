@@ -158,6 +158,62 @@ SIMPLE-PATH backbone (crossover empty by construction):
 (`_bus_snake_sc_deadlock`, see below). Otherwise it falls back to the proven on-grid
 MULTI-FILAMENT regions (tall designs — the 110B front end — stay on that path).
 
+### Compact-placer + backtracking v2 threader (2026-06-30)
+
+The compact placer (`_pack_compact`) + the v2 threader (`_route_chip_bus_v2`) now route the
+compact BPSK modem as ONE clean simple-path backbone (crossover empty), via four changes:
+
+* **Column-0 vertical rail + egress-column rail (placer).** `_pack_compact` reserves the
+  input-port-side column (`left = _start_x + 1`) as a clear vertical descent rail and caps
+  the pack just west of the output-port column. The serpentine backbone descends the rail
+  to reach each band's LEFTMOST tap first (bands are packed left-to-right in flow order), so
+  the bus never has to enter a band's clear lane from the right and double back — the
+  `mf-walls-column-0 / costas-strands-gardner` simple-path failure. A SINGLE-CELL terminal
+  that drives the output port (the slicer) is seated in the CLEAR CHANNEL ROW above its band
+  one cell west of the egress rail, where it has four free faces — the §5.3 bend with full
+  clearance (no cramped corner pocket beside its driver).
+* **Backtracking DFS tap thread (threader).** The greedy one-candidate-per-tap thread had a
+  1-step connectivity guard but NO backtracking, so it bailed when a tap's only candidates
+  all walled a later tap. It is now a bounded DFS over `(abut-cell, path)` choices per tap
+  that backtracks; each tap keeps the connectivity guard (every later tap + the out port
+  stays reachable), so the kept thread is a clean simple path (crossover empty).
+* **Lane-aware + connectivity-aware path cost (threader).** `bfs` prefers CLEAR-LANE cells
+  (fully-free rows/cols the serpentine rides without bisecting an open row) and steers the
+  connecting segment AWAY from the cells later taps need (`avoid`), so a tap's path does not
+  strand a later goal. Plain wall-hugging alone DE-prioritised the open lanes (wallness 0)
+  and descended columns instead — the original stranding bug.
+* **Egress-terminal bend (threader).** The last tap, if a single-cell output-driving
+  terminal, is pulled off the DFS and threaded as a coupled input-tap → output-cell → egress
+  bend so its bus input and egress leave on DIFFERENT faces (the §5.3 split).
+
+`controller.auto_pnr` now also CLEARS routes between iterations (`_clear_chip_routes`) and
+re-applies the accepted iteration's CAPTURED geometry+routes verbatim
+(`_capture_chip_layout` / `_apply_chip_layout`) instead of re-running the (position-dependent,
+non-idempotent) placer — a registered re-place after the unregistered exploration otherwise
+re-derived a different, unroutable layout (the TX/RX bands swapping → net10 stale build).
+
+**Result:** the compact modem ROUTES fully (all 11 nets) with `crossover_plan` EMPTY and a
+DRC-CLEAN build (no single-cell deadlock, no hop overflow) — vs the prior unroutable state.
+
+A **multi-operand bus broker for complex port inputs** was also added (`broker_plan` +
+`build._resolve_input_landings`): a chip-INPUT-port net into a COMPLEX block (>1 input reg,
+e.g. the RX matched filter's xi=R0/xq=R1) now expands into one broker delivery per reg,
+coalesced into a single multi-WRITE+single-JUMP burst, and the landing reports ALL burst regs
+(`stream_targets['rx'].data_addrs == [0, 1]`). Previously a broker delivered only ONE operand,
+so MF got xi but never xq (`test_stream_targets_resolved` now PASSES).
+
+**Remaining (out of scope for the threader fix):** despite the above, the compact duplex modem
+still produces NO recovered output on either stream (RX `test_rx_recovers_ber0`, TX
+`test_tx_returns_passband`), even though the build is structurally valid (all nets routed,
+crossover empty, DRC clean, complex operands delivered). The single-filament coherent RX
+(`test_coherent_rx_grc_autopnr`, PASSES) recovers bits, and the EXPLICIT hand-placed duplex
+(`test_live_duplex_stream_id`, PASSES) recovers bits — so the RX blocks + the bus broker
+primitive both work; the failure is specific to the auto-placed multi-filament bus EXECUTION
+(a subtle face/hop interaction the DRC does not flag), at the simKYT execution level, NOT in
+the routing geometry. Pre-existing on main (`test_chip_batch_live`, `test_auto_pnr_tx_passband`,
+`test_modem_grc_import_duplex_e2e` all failed on main; this work fixed the routing + several of
+their sub-asserts but not the end-to-end recovery).
+
 ### Single-cell in==out split (§5.3) and the remaining BPSK-modem TX-corr limitation
 
 A SINGLE-CELL block both receives its input and drives its output on its ONE cell. On a

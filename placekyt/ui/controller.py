@@ -1047,6 +1047,89 @@ class AppController(QObject):
             self.commands.execute(CompositeCommand("Auto-orient blocks", cmds))
         return len(cmds)
 
+    def _capture_chip_layout(self, chip: int, report) -> dict:
+        """Deep-copy the CURRENT placement (per-block ``Placement``) + the routes the
+        ``report`` produced for ``chip`` — the concrete geometry of one auto-P&R
+        iteration, so the accepted one can be re-applied verbatim (the placer is not
+        idempotent; see :meth:`auto_pnr`)."""
+        import copy
+        from engine.bus_router import _conn_chip
+        placements = {}
+        for b in self.project.blocks:
+            if b.placement is not None and b.placement.chip == chip:
+                placements[b.name] = copy.deepcopy(b.placement)
+        routes = {}
+        for conn in self.project.connections:
+            try:
+                cc = _conn_chip(self.project, conn)
+            except Exception:  # noqa: BLE001
+                cc = None
+            if (cc is None or cc == chip) and conn.is_routed:
+                routes[conn.name] = [(p.x, p.y) for p in conn.route]
+        return {"placements": placements, "routes": routes}
+
+    def _apply_chip_layout(self, chip: int, snapshot: dict) -> None:
+        """Re-apply a captured layout (placements + routes) as ONE undoable composite —
+        used by :meth:`auto_pnr` to register the accepted iteration WITHOUT re-running
+        the (non-idempotent) placer/router."""
+        import copy
+        from commands import CompositeCommand, SetConnectionRouteCommand
+        from commands.base import Command
+
+        placements = snapshot.get("placements", {})
+        routes = snapshot.get("routes", {})
+
+        class _SetPlacement(Command):
+            def __init__(self, project, name, placement):
+                self.project, self.name = project, name
+                self.placement = placement
+                self._prev = None
+
+            def execute(self):
+                blk = self.project.block(self.name)
+                self._prev = copy.deepcopy(blk.placement) if blk else None
+                self.project._set_block_placement(
+                    self.name, copy.deepcopy(self.placement))
+
+            def undo(self):
+                if self.project.block(self.name) is not None:
+                    self.project._set_block_placement(
+                        self.name, copy.deepcopy(self._prev) if self._prev else None)
+
+            def description(self):
+                return f"Place {self.name}"
+
+        self._clear_chip_routes(chip)
+        cmds = [_SetPlacement(self.project, n, pl) for n, pl in placements.items()]
+        cmds += [SetConnectionRouteCommand(self.project, n, pts)
+                 for n, pts in routes.items()]
+        if cmds:
+            self.commands.execute(
+                CompositeCommand("Auto-place and route", cmds,
+                                 trace_op={"op": "auto_pnr", "args": {"chip": chip}}))
+
+    def _clear_chip_routes(self, chip: int) -> None:
+        """Reset every routed connection on ``chip`` back to AUTO_ROUTE so the next
+        ``auto_route_all`` re-routes it from scratch. Used by :meth:`auto_pnr` between
+        place-and-route iterations: there is no project snapshot/restore API, so without
+        this a route from a PRIOR reserve survives a re-place (which moves the blocks)
+        and points at the OLD cells — ``auto_route_all`` skips it (it routes only
+        UNROUTED nets), yielding a stale, DRC-failing build. Direct mutation (not a
+        command): auto_pnr's iterations are exploratory, and the accepted iteration's
+        REAL routes are then registered by ``auto_route_all`` as one undoable composite.
+        """
+        from model.connection import AUTO_ROUTE
+        from engine.bus_router import _conn_chip
+        for conn in self.project.connections:
+            if not conn.is_routed:
+                continue
+            try:
+                cc = _conn_chip(self.project, conn)
+            except Exception:  # noqa: BLE001
+                cc = None
+            if cc is None or cc == chip:
+                conn.route = AUTO_ROUTE
+
     def auto_pnr(self, chip_types: dict | None = None, *, chip: int = 0,
                  use_bus: str = "always", register: bool = True):
         """Iterative place-and-route (the OpenROAD-style place<->route loop, §PNR).
@@ -1073,6 +1156,12 @@ class AppController(QObject):
         for reserve in (1, 2, 3, 4):
             self._pnr_channel_reserve = reserve
             snap = self.project.snapshot() if hasattr(self.project, "snapshot") else None
+            # Clear any routes left by the PREVIOUS iteration BEFORE re-placing +
+            # re-routing. ``auto_route_all`` only routes UNROUTED nets, so a stale route
+            # from a prior reserve would survive a re-place (which moves the blocks) and
+            # point at the OLD cells — a wrong, DRC-failing build. Clearing makes every
+            # iteration route the CURRENT placement from scratch (no snapshot API).
+            self._clear_chip_routes(chip)
             self.auto_place(chip=chip, use_bus=use_bus, register=False)
             report = self.auto_route_all(cts, use_bus=use_bus, auto_orient=False,
                                          register=False)
@@ -1084,10 +1173,18 @@ class AppController(QObject):
                 except Exception:  # noqa: BLE001
                     clean = True
             n_routed = sum(1 for r in report.results if r.ok)
+            # Capture this iteration's CONCRETE result (placement geometry + routes) so
+            # the accepted one can be re-applied deterministically as registered commands.
+            # The placer is NOT idempotent (its flow-order tie-break reads current block
+            # X positions, §_flow_order), so a registered RE-run after the unregistered
+            # exploration would re-derive a DIFFERENT layout from the now-moved blocks
+            # (the TX/RX bands swapping → the net10 unroutable re-place). Re-applying the
+            # captured geometry verbatim avoids that.
+            snapshot = self._capture_chip_layout(chip, report)
             if best is None or n_routed > best[0]:
-                best = (n_routed, reserve, report)
+                best = (n_routed, reserve, report, snapshot)
             if ok and clean:
-                best = (n_routed, reserve, report)
+                best = (n_routed, reserve, report, snapshot)
                 break
             # Not accepted — revert this exploration iteration before the next.
             if snap is not None:
@@ -1102,9 +1199,11 @@ class AppController(QObject):
         # stack hold the winning placement + routes.
         self._pnr_channel_reserve = best[1]
         if register:
-            self.auto_place(chip=chip, use_bus=use_bus, register=True)
-            report = self.auto_route_all(cts, use_bus=use_bus, auto_orient=False,
-                                         register=True)
+            # Re-apply the ACCEPTED iteration's captured geometry + routes as ONE
+            # undoable composite — NOT a placer re-run (the placer is position-dependent
+            # and would re-derive a different, unroutable layout from the moved blocks).
+            self._apply_chip_layout(chip, best[3])
+            report = best[2]
         else:
             report = best[2]
         self._pnr_channel_reserve = 1

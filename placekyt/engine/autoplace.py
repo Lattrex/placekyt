@@ -433,7 +433,32 @@ class AutoPlacer:
         """
         blk_of = self._blk_of
         reserve = max(0, int(self._channel_reserve))
+        # Reserve column ``_start_x`` (the input-port side) as a CLEAR VERTICAL RAIL: the
+        # serpentine backbone descends it between clear lane rows, reaching the LEFTMOST
+        # tap of each band FIRST (flow order is left-to-right within a band). Without it a
+        # band's left wall is a block body, so the bus must enter the band's clear lane
+        # from the RIGHT and double back to the leftmost tap — not a simple path (the
+        # modem's mf-walls-column-0 / costas-strands-gardner thread failure). Insetting one
+        # column costs negligible width (the modem's widest band still fits) and makes the
+        # compact layout threadable as ONE clean simple-path bus. Only when the array is
+        # too narrow for the inset do we fall back to starting at the port column.
         left = max(0, self._start_x)        # first block column (off the port column)
+        inset_left = left + 1
+        if inset_left + 1 < self._width:    # keep room for at least a 1-wide band
+            left = inset_left
+        # Reserve the OUTPUT-PORT COLUMN as a clear EGRESS RAIL (the terminal climb to the
+        # output port rides it), capping the pack's right edge just west of it when there's
+        # room. A single-cell egress terminal is then seated one cell west of the rail
+        # (below) with a clear east rail + free west input tap — the §5.3 bend. Narrow
+        # arrays keep full width (fall back, as before).
+        right = self._width
+        out_cols = {c[0] for c in getattr(self, "_reserved_out", set())
+                    if c is not None}
+        if out_cols:
+            egress_col = max(out_cols)
+            if egress_col >= self._width - 1 and egress_col - 1 > left:
+                right = egress_col          # blocks pack into [left, egress_col)
+        self._compact_right = right
         # Start one row below the port row so the whole port row stays a free I/O lane.
         row_top = self._row + 1
         x = left
@@ -453,8 +478,38 @@ class AutoPlacer:
             blk = blk_of[n]
             kind = self._orient_for(blk, True, n, out_pos, x, row_top)
             w, h = self._oriented_wh(blk, kind)
-            # Wrap to a new row + channel reserve when this block would overflow width.
-            if positions and (x + w) > self._width:
+            # A SINGLE-CELL terminal that drives the chip OUTPUT port (the slicer) is the
+            # §5.3 in==out hazard: its bus input and its egress contend on its ONE cell.
+            # The bus router can only split input-face != output-face if it abuts the
+            # reserved egress rail on ONE face (it drives output EAST onto the rail) and
+            # takes its bus input from a DIFFERENT face. Seat it at the column just WEST of
+            # the egress rail (``right`` = the egress column) on the CURRENT band so it
+            # abuts the rail on its east and has free N/S/W bus-input faces — the clean
+            # §5.3 bend. Topology-agnostic: applies to ANY such terminal, no-op otherwise.
+            # (Falls through to the normal placement if that column is taken or off-grid.)
+            is_egress_sc = (w == 1 and h == 1
+                            and self._out_port_of.get(n) is not None
+                            and right < self._width and reserve >= 1)
+            # Seat the egress terminal in the CLEAR CHANNEL ROW just ABOVE its band, at the
+            # column one WEST of the egress rail. There it has FOUR free faces (the channel
+            # is empty and the rail column is reserved): the backbone taps its bus input
+            # from the west/north and it drives its egress EAST onto the rail — the §5.3
+            # split with full clearance (no cramped corner pocket next to its driver). The
+            # backbone simply climbs from the band up to this cell, then up the rail to the
+            # port. Topology-agnostic; no-op when no egress rail / channel is reserved.
+            seat_x = right - 1
+            seat_y = row_top - 1                 # the clear channel row above this band
+            if positions and is_egress_sc and seat_x > left and seat_y > self._row:
+                orientations[n] = kind
+                positions[n] = (chip, seat_x, seat_y)
+                op = self._io_offsets(blk, kind)
+                if op is not None and op[1] is not None:
+                    out_pos[n] = (seat_x + op[1][0], seat_y + op[1][1])
+                spine.append((min(self._width - 1, seat_x + w), seat_y))
+                continue                         # placed; do not advance the band cursor
+            # Wrap to a new row + channel reserve when this block would overflow the pack
+            # width (capped just west of the reserved egress column, ``_compact_right``).
+            if positions and (x + w) > right:
                 row_top = row_top + row_h + reserve
                 x = left
                 row_h = 0

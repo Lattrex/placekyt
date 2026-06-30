@@ -1158,10 +1158,22 @@ def _resolve_input_landings(cell_map, blocks, connections, project, chip_id,
                     "data_addrs": list(in_regs) if in_regs else [0]}
                 continue
             from .bus_router import BROKER_BURST_REG
-            reg = BROKER_BURST_REG + int(broker_conn_burst.get(conn.name, 0))
+            # A COMPLEX block (>1 input reg) fed from the port through a broker delivers
+            # ALL its operands: the host injects N operands then ONE trigger, the broker
+            # relays N WRITEs + 1 JUMP (broker_plan expands it into a multi-operand group).
+            # Report ALL burst regs (R0..R{N-1}) so the host writes every operand — a
+            # single reg would deliver only xi and the complex block never computes (the
+            # duplex RX "MF gets xi but never xq" data-loss).
+            _entry2, _in_regs = catalog.resolved_io(
+                blk.type, blk.params, library=blk.library)
+            if _in_regs and len(_in_regs) > 1:
+                data_addrs = [BROKER_BURST_REG + i for i in range(len(_in_regs))]
+            else:
+                data_addrs = [BROKER_BURST_REG
+                              + int(broker_conn_burst.get(conn.name, 0))]
             landings[conn.name] = {
                 "cell": full[divert], "entry": int(b_entry),
-                "hop": (30 - divert) & 0x1F, "data_addrs": [reg]}
+                "hop": (30 - divert) & 0x1F, "data_addrs": data_addrs}
     return landings
 
 

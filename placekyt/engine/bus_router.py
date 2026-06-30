@@ -437,6 +437,19 @@ def _route_chip_bus_v2(project, ct, chip_id, nets, spine, *, port_map_provider):
             "ord": (fil_of.get(blk.name, 0), fpos.get(blk.name, 1 << 20))})
         ent["conns"].append(name)
 
+    # Input cells of blocks whose output drives the chip OUTPUT port (the filament
+    # TERMINALS, e.g. the modem's TX IQUpconvert + RX slicer). Both egress to the shared
+    # out_port, so they should tap the backbone LATE (near the port) — otherwise a terminal
+    # tapped early (the TX IQUpconvert, tapped before the whole RX chain) makes its egress
+    # ride the ENTIRE backbone down through RX and back up to the port (a ~26-cell, 29-hop
+    # route that never delivers). Ordering terminals last keeps each egress SHORT.
+    _term_blocks = set()
+    for (_n, s, _sf, d, _df, _sp, dp_, conn) in nets:
+        if dp_ and isinstance(conn.source, BlockEndpoint):
+            _term_blocks.add(conn.source.block)
+    _term_in: set = {ic for ic, meta in tap_in.items()
+                     if meta["block"] in _term_blocks}
+
     def serp_key(cell):
         x, y = cell
         return (y, x if (y % 2 == 0) else (W - 1 - x))
@@ -475,6 +488,22 @@ def _route_chip_bus_v2(project, ct, chip_id, nets, spine, *, port_map_provider):
     # at the shared sink), no ordering threads and v2 soundly returns None.
     spine_set = {tuple(p) for p in spine if in_bounds(tuple(p))}
 
+    # CLEAR LANES — fully-free rows / columns (no block cell). The compact placer leaves
+    # ``channel_reserve`` free rows BETWEEN block bands and the egress column clear; those
+    # are the natural backbone corridors. Threading ALONG a clear lane keeps the free
+    # region connected (it never bisects an open row), so prefer lane cells in the path
+    # cost. Wall-hugging alone FAILS here: an open lane row has wallness 0 (no adjacent
+    # obstacle) → wall-hugging de-prioritises exactly the lanes the serpentine wants, and
+    # the path descends a column instead, walling a later tap (the modem's mf→costas
+    # descent eating the row gardner needs). Lane preference fixes that.
+    _clear_rows = {y for y in range(H)
+                   if not any((x, y) in block_cells for x in range(W))}
+    _clear_cols = {x for x in range(W)
+                   if not any((x, y) in block_cells for y in range(H))}
+
+    def _is_lane(c):
+        return c[1] in _clear_rows or c[0] in _clear_cols
+
     def _wallness(c, occ_set):
         """How wall-adjacent ``c`` is: count of off-grid/occupied orthogonal
         neighbours. Higher = clings to a wall → a path that prefers it keeps the
@@ -486,10 +515,11 @@ def _route_chip_bus_v2(project, ct, chip_id, nets, spine, *, port_map_provider):
                 n += 1
         return n
 
-    def bfs(src, goal, blocked, wall_occ):
+    def bfs(src, goal, blocked, wall_occ, avoid=None):
         if src == goal:
             return [src]
         import heapq
+        avoid = avoid or set()
         seen = {src}
         pq = [(0, 0, src, [src])]
         tie = 1
@@ -505,8 +535,20 @@ def _route_chip_bus_v2(project, ct, chip_id, nets, spine, *, port_map_provider):
                 np_ = path + [nxt]
                 if nxt == goal:
                     return np_
-                # Prefer the spine (cost 0); else prefer wall-hugging (4 - wallness).
-                step = 0 if nxt in spine_set else (1 + (4 - _wallness(nxt, wall_occ)))
+                # Cost: prefer the spine (0), then a CLEAR LANE cell (1) — a fully-free
+                # row/col the serpentine rides without bisecting an open row — then
+                # wall-hugging (4 - wallness) for the rest. A big penalty steers the
+                # connecting segment OUT of ``avoid`` cells (the interior region a LATER
+                # tap needs) so it does not wall that tap off — the connectivity-aware
+                # path that lets the backtracking thread succeed.
+                if nxt in spine_set:
+                    step = 0
+                elif _is_lane(nxt):
+                    step = 1
+                else:
+                    step = 2 + (4 - _wallness(nxt, wall_occ))
+                if nxt in avoid:
+                    step += 50
                 heapq.heappush(pq, (cost + step, tie, nxt, np_))
                 tie += 1
         return None
@@ -528,6 +570,46 @@ def _route_chip_bus_v2(project, ct, chip_id, nets, spine, *, port_map_provider):
                 seen.add(n)
                 q.append(n)
         return False
+
+    def bfs_paths(src, goal, blocked, wall_occ, limit=6, avoid=None):
+        """Up to ``limit`` DISTINCT simple paths src→goal over free cells, shortest /
+        wall-hugging first. Used by the backtracking tap thread so a tap that strands a
+        later goal on its FIRST (greedy) path can be retried on an ALTERNATIVE path
+        (e.g. hug the far wall and leave the near row open). The CONNECTIVITY-AWARE
+        variant (``avoid`` = the interior cells later taps need) is tried first so the
+        connecting segment steers around the region later taps live in; then plain
+        variants forbidding one interior cell of an already-yielded path at a time —
+        cheap on this tiny array, and enough variety to escape the single-path wall."""
+        paths = []
+        seen_sig = set()
+        if avoid:
+            ap = bfs(src, goal, blocked, wall_occ, avoid=avoid)
+            if ap is not None:
+                paths.append(ap)
+                seen_sig.add(tuple(ap))
+        first = bfs(src, goal, blocked, wall_occ)
+        if first is None:
+            return paths
+        if tuple(first) not in seen_sig:
+            paths.append(first)
+            seen_sig.add(tuple(first))
+        # Re-search forbidding one interior cell of an existing path at a time, to
+        # surface genuinely different routes (a detour around the cell that walls a
+        # later goal). Bounded by ``limit`` so the DFS stays fast.
+        i = 0
+        while len(paths) < limit and i < len(paths):
+            base = paths[i]
+            i += 1
+            for mid in base[1:-1]:
+                alt = bfs(src, goal, blocked | {mid}, wall_occ)
+                if alt is not None:
+                    sig = tuple(alt)
+                    if sig not in seen_sig:
+                        seen_sig.add(sig)
+                        paths.append(alt)
+                        if len(paths) >= limit:
+                            break
+        return paths
 
     backbone = [in_port_cell]
     occ = set(block_cells)
@@ -614,49 +696,101 @@ def _route_chip_bus_v2(project, ct, chip_id, nets, spine, *, port_map_provider):
             # spine (the lane the snake taps this block from on its forward sweep).
             pref_abut[_ic] = min(_adj, key=lambda a: _spine_pos[a])
 
+    # BACKTRACKING TAP THREAD (the §ROUTING_TOPOLOGIES robustness fix). The greedy
+    # one-candidate-per-tap thread BAILS when its committed segment walls a later tap
+    # (the modem's costas tap walls gardner): the 1-step connectivity guard correctly
+    # REJECTS every costas candidate, but with no backtracking the whole thread dies.
+    # Here we DFS over (abut-cell, path) choices per tap and BACKTRACK when a tap can't
+    # be threaded — trying alternative PATHS for THIS tap (``bfs_paths`` hugs the far
+    # wall, leaving the near row open) and, failing that, alternative choices for the
+    # PREVIOUS tap. The connectivity guard is kept (a candidate is accepted only if every
+    # later tap + the output port stays reachable), so the kept thread is a clean simple
+    # path → ``crossover_plan`` empty by construction. Bounded (few taps, few paths each)
+    # so it stays fast. The explicit-spine fast path above skips this entirely.
+    thread_taps = [] if use_explicit else taps
     remaining_in = [ic for ic, _m in taps]
-    for ti, (in_cell, _meta) in enumerate([] if use_explicit else taps):
-        later = remaining_in[ti + 1:]
-        cands = _abut_free(in_cell, occ)
-        if _DBG:
-            print(f"[bus_v2] tap#{ti} in={in_cell} head={backbone[-1]} cands={cands}")
-        on_bb = [c for c in cands if c in set(backbone)]
-        if on_bb:
-            # Reuse an existing backbone cell, preferring the placer's PREFERRED tap lane
-            # cell for this block, then any spine cell, then a stray.
-            pref = pref_abut.get(in_cell)
-            on_bb.sort(key=lambda c: (0 if c == pref else 1,
-                                      0 if c in spine_set else 1))
-            tap_abut[in_cell] = on_bb[0]
+
+    # Single-cell terminal blocks that DRIVE the chip output port (e.g. the modem's
+    # slicer at the bottom-right corner). Such a block both RECEIVES its bus input and
+    # DRIVES its egress on its ONE cell; if its input tap sits on the OUTPUT-PORT COLUMN
+    # (the egress climb) the input and the egress share a face → the §5.3 single-cell
+    # deadlock the build rejects. Tapping its input from a DIFFERENT face (off the egress
+    # column) keeps input-face != output-face. Map: their input cell -> the egress column.
+    _sc_egress_in: dict = {}
+    for blk in project.blocks:
+        pl = blk.placement
+        if pl is None or pl.chip != chip_id or len(pl.cells) != 1:
             continue
-        # Try every abutting cell, keeping only a segment that leaves all LATER taps +
-        # the output port reachable from the head. PREFER an abut cell on the placer's
-        # BUS LANE (spine) — the co-designed snake puts a free lane cell beside every
-        # block's input, so tapping from the lane keeps the backbone on the clean lane
-        # (riding row 0 / the inter-band lanes) instead of dropping into a block's
-        # interior pocket and walling later taps. Among equal-laneness, shortest
-        # wall-hugging path first.
-        wall_occ = set(block_cells) | set(backbone)
-        # RESERVE THE EGRESS CORRIDOR: keep the output-port column free of INTERMEDIATE
-        # backbone segments (the snake's tap-to-tap thread), so a mid-snake drop never
-        # consumes the only clear climb to the output port (the "cannot reach out_port"
-        # dead-end). The final egress (below the tap loop) is free to use it. Don't
-        # reserve a cell that is itself an abut candidate for THIS tap.
-        blocked = occ | (set(backbone) - {backbone[-1]})
+        c0 = (pl.cells[0].x, pl.cells[0].y)
+        drives_out = any(d == out_port_cell and s == c0
+                         for (_n, s, _sf, d, _df, _sp, dp_, _c) in nets if dp_)
+        if drives_out:
+            _sc_egress_in[c0] = out_port_cell[0]
+
+    def _tap_candidates(ti, head, bb_set, occ_now):
+        """Ordered (abut_cell, path) candidates for tap ``ti`` from ``head``. An abut on
+        an EXISTING backbone cell needs no new path (reuse); otherwise enumerate paths
+        (``bfs_paths``). Preference: reuse first, then the placer's lane abut, then spine,
+        then shortest wall-hugging path."""
+        in_cell = thread_taps[ti][0]
+        cands = _abut_free(in_cell, occ_now)
         pref = pref_abut.get(in_cell)
-        scored = []
+        wall_occ = set(block_cells) | bb_set
+        blocked = occ_now | (bb_set - {head})
+        # AVOID region: the abut cells of every LATER tap + the output port. A connecting
+        # segment that ploughs through them walls the later tap off (the modem's mf→costas
+        # descent eating the row gardner needs); steering around them keeps the free region
+        # connected so the backtracking thread completes. The tap's OWN abut cells are
+        # never avoided (they are the goal).
+        avoid = set()
+        for lic in remaining_in[ti + 1:]:
+            avoid.update(_abut_free(lic, occ_now))
+        avoid.update(_abut_free(out_port_cell, occ_now))
+        avoid.add(out_port_cell)
+        # Keep the EGRESS column clear of tap-connecting segments so the terminal climb to
+        # the output port is never walled (and a single-cell egress terminal keeps its
+        # output-face = the egress column, distinct from its side input tap). Excludes the
+        # tap's own abut cells (the goal).
+        avoid.update(c for c in _EGRESS_COL if c not in cands)
+        # A single-cell terminal that egresses (the slicer): deprioritise an input tap on
+        # the egress column (it would share the slicer's output face → §5.3 deadlock at
+        # build); a side-face tap lets the backbone bend at the block (input from the side,
+        # output up the egress column = the §5.3 split). Kept SOFT (a tie-break, not an
+        # exclusion) so a tight corner where no side tap reaches still routes.
+        egress_col = _sc_egress_in.get(in_cell)
+        out = []
         for c in cands:
-            p = bfs(backbone[-1], c, blocked, wall_occ)
-            if p is not None:
-                prefer = 0 if c == pref else 1       # the placer's intended tap lane cell
+            sc_pen = 1 if (egress_col is not None and c[0] == egress_col) else 0
+            if c in bb_set:
+                out.append(((0, sc_pen, 0, 0), c, [c]))     # reuse: no new segment
+                continue
+            for p in bfs_paths(head, c, blocked, wall_occ,
+                               avoid=avoid - {c}):
+                prefer = 0 if c == pref else 1
                 lane = 0 if c in spine_set else 1
-                scored.append(((prefer, lane, len(p)), c, p))
-        scored.sort(key=lambda t: t[0])
-        chosen = None
-        for _len, c, p in scored:
+                out.append(((1, sc_pen, prefer, lane * 100 + len(p)), c, p))
+        out.sort(key=lambda t: t[0])
+        return out
+
+    def _dfs(ti, backbone, occ, tap_abut):
+        """Thread taps ``ti..`` onto ``backbone``; return (backbone, tap_abut) on the
+        first complete thread that keeps every later tap + the output port reachable, or
+        None (backtrack)."""
+        if ti >= len(thread_taps):
+            return backbone, tap_abut
+        in_cell = thread_taps[ti][0]
+        head = backbone[-1]
+        bb_set = set(backbone)
+        later = remaining_in[ti + 1:]
+        if _DBG:
+            print(f"[bus_v2] tap#{ti} in={in_cell} head={head} "
+                  f"cands={_abut_free(in_cell, occ)}")
+        for _rank, c, p in _tap_candidates(ti, head, bb_set, occ):
             new_head = c
             new_occ = occ | set(p[1:])
-            blk = new_occ | (set(backbone + p[1:]) - {new_head})
+            blk = new_occ | ((bb_set | set(p[1:])) - {new_head})
+            # Connectivity guard: every LATER tap abut + the output port must stay
+            # reachable from the new head over the still-free cells.
             ok = True
             for lic in later:
                 if not any(reachable(new_head, ac, blk)
@@ -670,20 +804,86 @@ def _route_chip_bus_v2(project, ct, chip_id, nets, spine, *, port_map_provider):
                 ok = False
                 if _DBG:
                     print(f"[bus_v2]   cand {c} cannot reach out_port {out_port_cell}")
-            if ok:
-                chosen = (c, p)
+            if not ok:
+                continue
+            nb = list(backbone)
+            for cell in p[1:]:
+                nb.append(cell)
+            nta = dict(tap_abut)
+            nta[in_cell] = c
+            res = _dfs(ti + 1, nb, new_occ, nta)
+            if res is not None:
+                return res
+        if _DBG:
+            print(f"[bus_v2] backtrack at tap {in_cell} head={head}")
+        return None
+
+    # The LAST tap is a single-cell EGRESS terminal (the slicer) when it drives the output
+    # port: thread it specially (a coupled input-tap + egress BEND) AFTER the rest, so its
+    # bus input and its egress leave on DIFFERENT faces (the §5.3 split). Pull it off the
+    # normal DFS; thread taps 0..n-2 first.
+    egress_terminal = None
+    if thread_taps and thread_taps[-1][0] in _sc_egress_in:
+        egress_terminal = thread_taps[-1][0]
+        thread_taps = thread_taps[:-1]
+        remaining_in = remaining_in[:-1]
+
+    if thread_taps:
+        threaded = _dfs(0, backbone, occ, tap_abut)
+        if threaded is None:
+            return _bail("cannot thread backbone to all taps (backtrack exhausted)")
+        backbone, tap_abut = list(threaded[0]), dict(threaded[1])
+        occ = set(block_cells)
+        occ.discard(in_port_cell)
+        occ.update(backbone[1:])
+
+    if egress_terminal is not None:
+        # Build the §5.3 bend: head → INPUT tap (a free face-neighbour of the terminal) →
+        # OUTPUT cell (a DIFFERENT free face-neighbour) → egress to the output port. The
+        # terminal then delivers its bus input on the input-tap face and drives its egress
+        # on the output-cell face (distinct faces, no single-link contention). We try every
+        # (input, output) ordered pair of the terminal's free face-neighbours and keep the
+        # first whose two segments both route. ``tap_abut[egress_terminal]`` = the input
+        # tap (sc_out_tap below then finds the output cell as the §5.3 second tap).
+        et = egress_terminal
+        nbrs = [(et[0] + dx, et[1] + dy) for dx, dy in _NEI
+                if in_bounds((et[0] + dx, et[1] + dy))
+                and (et[0] + dx, et[1] + dy) not in (set(backbone) | block_cells)]
+        head = backbone[-1]
+        done = False
+        for in_tap in sorted(nbrs, key=lambda c: (0 if c[0] != et[0] else 1)):
+            for out_cell in nbrs:
+                if out_cell == in_tap:
+                    continue
+                wall = set(block_cells) | set(backbone)
+                seg_in = bfs(head, in_tap, occ | (set(backbone) - {head}), wall)
+                if seg_in is None:
+                    continue
+                occ2 = occ | set(seg_in[1:])
+                bb2 = set(backbone) | set(seg_in[1:])
+                # out_cell must be reachable from in_tap WITHOUT reusing it, and reach port.
+                seg_mid = bfs(in_tap, out_cell, occ2 | (bb2 - {in_tap}), wall | bb2)
+                if seg_mid is None:
+                    continue
+                occ3 = occ2 | set(seg_mid[1:])
+                bb3 = bb2 | set(seg_mid[1:])
+                seg_out = bfs(out_cell, out_port_cell, occ3 | (bb3 - {out_cell}),
+                              wall | bb3)
+                if seg_out is None:
+                    continue
+                for c in seg_in[1:]:
+                    backbone.append(c); occ.add(c)
+                tap_abut[et] = in_tap
+                for c in seg_mid[1:]:
+                    backbone.append(c); occ.add(c)
+                for c in seg_out[1:]:
+                    backbone.append(c); occ.add(c)
+                done = True
                 break
-        if chosen is None:
-            if _DBG:
-                print(f"[bus_v2] FAIL tap {in_cell} head={backbone[-1]} "
-                      f"cands={cands} scored={[(c,len(p)) for _l,c,p in scored]} "
-                      f"later={later}")
-            return _bail(f"cannot thread backbone to tap at {in_cell}")
-        c, p = chosen
-        for cell in p[1:]:
-            backbone.append(cell)
-            occ.add(cell)
-        tap_abut[in_cell] = c
+            if done:
+                break
+        if not done:
+            return _bail(f"cannot thread egress-terminal bend at {et}")
 
     if out_port_cell != backbone[-1]:
         blocked = occ | (set(backbone) - {backbone[-1]})
@@ -1461,6 +1661,31 @@ def broker_plan(project, chip_id, chip_type, catalog):
         # a COMPLEX-SAMPLE fan-in: two nets from the SAME source cell into the SAME
         # target cell must be relayed as one multi-WRITE + single-JUMP burst.
         src_cell = pts[0] if isinstance(conn.source, BlockEndpoint) else None
+        # A chip-INPUT-port net into a COMPLEX block (>1 input reg, e.g. the RX matched
+        # filter's xi+xq) must deliver ALL operands: the host injects N operands then ONE
+        # trigger (the complex-sample contract), so the broker relays N WRITEs + 1 JUMP.
+        # A single delivery would relay only the FIRST operand (the duplex RX "MF gets xi
+        # but never xq" data-loss). Expand into one delivery per input reg, coalesced by
+        # ``_broker_program`` (same in_cell) into the multi-operand group. A common
+        # ``src_cell`` sentinel keys them as one group even though the source is the port.
+        port_complex_regs = None
+        if isinstance(conn.source, ChipPortEndpoint):
+            _e2, _regs = catalog.resolved_io(tgt.type, tgt.params,
+                                             library=tgt.library)
+            if _regs and len(_regs) > 1:
+                port_complex_regs = list(_regs)
+        if port_complex_regs is not None:
+            grp_key = ("port_complex", in_cell)
+            for _r in port_complex_regs:
+                d = BrokerDelivery(conn=conn.name, in_cell=in_cell, in_reg=_r,
+                                   in_entry=entry, deliver_face=df, src_cell=grp_key)
+                if last in taps:
+                    taps[last].deliveries.append(d)
+                else:
+                    bus_face = transit_face.get(last, _bus_forward_face(pts))
+                    taps[last] = BrokerTap(cell=last, deliveries=[d],
+                                           bus_face=bus_face)
+            continue
         delivery = BrokerDelivery(conn=conn.name, in_cell=in_cell, in_reg=in_reg,
                                   in_entry=entry, deliver_face=df, src_cell=src_cell)
         if last in taps:

@@ -569,24 +569,42 @@ class AppController(QObject):
         # decide, preserving the single-filament lead-on-port path. The bus v2 router
         # threads ONE directed backbone of broker taps over that placement; a single
         # filament keeps the lead-on-port block-to-block path.
-        #
-        # NOTE: ``with_bus_snake`` (lay ALL filaments along ONE serpentine) is the
-        # co-designed ideal, but for real multi-filament designs on a 10x12 array it
-        # currently overflows the grid (a single serpentine of the modem's tall folds
-        # exceeds 12 rows → off-grid cells). Until the bus-snake packer is height-aware
-        # we keep the proven on-grid multi-filament regions (which the placer already
-        # selects for >1 filament); ``use_bus="always"`` forces it for the explicit
-        # bus request. We deliberately DON'T widen this to the smart-default topology:
-        # the placer's own >1-filament detection already covers it, and changing the
-        # ``auto`` placement strategy regressed multi-region demos (110B front end).
         force_multi = (use_bus == "always")
-        placer = (AutoPlacer(self.project, footprint, anchor=anchor,
-                             width=w, height=h)
-                  .with_port_maps(port_maps)
-                  .with_chip_ports(self._chip_port_cell)
-                  .with_feedback(self._block_has_internal_feedback)
-                  .with_multi_filament(force_multi))
-        plan = placer.plan(chip)
+
+        def _mk_placer(bus_snake, band_margin):
+            """Build an AutoPlacer with the given bus-snake / band-margin strategy
+            (the shared provider wiring). ``bus_snake`` lays ALL filaments along ONE
+            serpentine (the co-designed bus backbone); ``band_margin`` controls the
+            inter-band slack (0 packs the snake tight enough to fit a tall design)."""
+            p = (AutoPlacer(self.project, footprint, anchor=anchor,
+                            width=w, height=h, band_margin=band_margin)
+                 .with_port_maps(port_maps)
+                 .with_chip_ports(self._chip_port_cell)
+                 .with_feedback(self._block_has_internal_feedback))
+            if bus_snake:
+                return p.with_bus_snake(True)
+            return p.with_multi_filament(force_multi)
+
+        # BUS topology (``use_bus="always"``): PREFER the co-designed bus-snake layout
+        # (all filaments on ONE serpentine, off-port, so the bus v2 router threads a
+        # single directed backbone of ordered taps). ``band_margin=0`` packs it tight
+        # enough to fit a 10×12 grid. Use the snake ONLY if every block footprint stays
+        # ON-GRID *and* it keeps the chip I/O ports REACHABLE from the free-cell region
+        # (a sealed port has no bus path to it — the router would silently fall back).
+        # Otherwise fall back to the proven on-grid MULTI-FILAMENT placement (two
+        # stacked filament regions), which keeps tall designs (110B front end) on the
+        # path that the placer's own >1-filament detection already covers.
+        placer = None
+        if use_bus == "always":
+            snake = _mk_placer(bus_snake=True, band_margin=0)
+            snake_plan = snake.plan(chip)
+            if self._plan_on_grid(snake_plan, w, h, footprint, port_maps) \
+                    and self._plan_ports_reachable(snake_plan, chip, w, h,
+                                                   footprint, port_maps):
+                placer, plan = snake, snake_plan
+        if placer is None:
+            placer = _mk_placer(bus_snake=False, band_margin=1)
+            plan = placer.plan(chip)
         # The INPUT-FED lead block (first in flow order, anchored at the port) must
         # land its INPUT/landing CELL on the port — not its min corner. The port
         # injects AT its own cell, and a multi-input block (e.g. Costas xi@R0/xq@R1
@@ -642,6 +660,92 @@ class AppController(QObject):
                                  trace_op={"op": "auto_place",
                                            "args": {"chip": chip}}))
         return plan
+
+    # -- bus-snake plan acceptance gates (§ROUTING_TOPOLOGIES bus topology) ----
+    def _plan_cell_footprints(self, plan, footprint, port_maps):
+        """The (x, y) cells each block in ``plan`` would occupy after orientation —
+        derived from the plan's positions + per-block (oriented) footprint, WITHOUT
+        mutating the project. Yields ``(name, [(x, y), ...])``. A block whose
+        footprint can't be resolved is skipped (it can't be checked)."""
+        for name, (_chip, bx, by) in plan.positions.items():
+            blk = self.project.block(name)
+            if blk is None:
+                continue
+            try:
+                fw, fh = footprint(blk.type, blk.library, blk.params)
+            except TypeError:
+                try:
+                    fw, fh = footprint(blk.type, blk.library)
+                except Exception:  # noqa: BLE001
+                    continue
+            except Exception:  # noqa: BLE001
+                continue
+            w, h = int(fw) + 1, int(fh) + 1
+            kind = plan.orientations.get(name)
+            if kind in ("cw", "ccw"):
+                w, h = h, w
+            cells = [(bx + dx, by + dy) for dy in range(h) for dx in range(w)]
+            yield name, cells
+
+    def _plan_on_grid(self, plan, w, h, footprint, port_maps) -> bool:
+        """True if EVERY block footprint in ``plan`` stays on the ``w``×``h`` grid
+        (no cell off the array). The bus-snake snake is used only when this holds —
+        a tall design whose single serpentine overflows the grid must fall back to the
+        proven multi-filament regions (the §ROUTING_TOPOLOGIES bus-snake gate)."""
+        for _name, cells in self._plan_cell_footprints(plan, footprint, port_maps):
+            for (cx, cy) in cells:
+                if not (0 <= cx < w and 0 <= cy < h):
+                    return False
+        return True
+
+    def _plan_ports_reachable(self, plan, chip, w, h, footprint,
+                              port_maps) -> bool:
+        """True if every chip I/O port cell stays REACHABLE from the free-cell region
+        of ``plan`` (the bus needs a free path to/from each port). A snake that SEALS a
+        port in a dead pocket (a block body walling the port's only free neighbours)
+        has no bus route to it — the router would silently fall back — so such a plan is
+        rejected here and the proven multi-filament layout is used instead.
+
+        Reachability: all free cells touching ANY port must lie in ONE connected free
+        component (so a word can travel from the input port, through the array, to the
+        output port)."""
+        from collections import deque
+
+        occ = set()
+        for _name, cells in self._plan_cell_footprints(plan, footprint, port_maps):
+            occ.update(cells)
+        ct = None
+        chip_inst = self.project.chip(chip)
+        name = (getattr(chip_inst, "type_name", None) if chip_inst else None) \
+            or self.project.chip_type
+        ct = self.chip_types().get(name)
+        if ct is None:
+            return True  # can't check — don't block (the router's own gate decides)
+        port_cells = [(p.cell_x, p.cell_y) for p in ct.ports]
+        if len(port_cells) < 2:
+            return True
+        free = {(x, y) for y in range(h) for x in range(w)
+                if (x, y) not in occ}
+        # A port cell occupied by a block (the lead-on-port contract) is itself the
+        # anchor; treat it as a valid start. Flood from the FIRST port over free cells
+        # (plus the port cells, which are always traversable as bus origins/sinks).
+        starts = [pc for pc in port_cells]
+        seed = starts[0]
+        seen = {seed}
+        dq = deque([seed])
+        nei = ((1, 0), (-1, 0), (0, 1), (0, -1))
+        while dq:
+            cur = dq.popleft()
+            for dx, dy in nei:
+                n = (cur[0] + dx, cur[1] + dy)
+                if n in seen:
+                    continue
+                if not (0 <= n[0] < w and 0 <= n[1] < h):
+                    continue
+                if n in free or n in port_cells:
+                    seen.add(n)
+                    dq.append(n)
+        return all(pc in seen for pc in port_cells)
 
     def _abut_single_cell_terminals(self, chip, plan, lead):
         """Re-seat each single-cell bus-fed terminal block next to its driver output

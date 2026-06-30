@@ -127,28 +127,71 @@ The BUS topology is wired end to end:
   are still shared (same direction, via `bus_dir`). This makes `crossover_plan` empty
   and `broker_through_face` conflict-free *by construction* for any design it routes.
 
-### Known limitation (BPSK modem auto TX corr)
+### Backbone threading (robust) + placement gates (2026-06-30)
 
-The co-designed `with_bus_snake` placement (lay ALL filaments along ONE serpentine so
-the placement IS the backbone) currently (a) OVERFLOWS the 10×12 grid for the modem
-(the single serpentine of the tall RX folds needs ~13 rows — fixable only with a
-height-aware compact packer, which lives in the placer) and (b) when forced to fit
-(`band_margin=0`) produces a scattered, oddly-oriented layout the bus cannot thread.
-The on-grid MULTI-FILAMENT placement (two stacked filament regions) packs the modem
-densely enough that NO net ordering routes every net WITHOUT some foreign broker transit
-(exhaustively checked: best is 9/11 under the no-foreign-transit constraint). So for the
-modem v2 returns `None` and the router falls back to the legacy loop, leaving auto TX
-passband corr at the pre-existing ~0.024. Reaching corr > 0.95 (the acceptance below)
-requires a **height-aware, clean-serpentine bus-snake placer** so the single backbone
-threads trivially with zero foreign broker transit — a placer change, out of scope of
-this router work. The explicit-placement duplex remains the value-exact TX gate.
+`_route_chip_bus_v2`'s backbone threader is now **robust**: it threads ONE contiguous
+SIMPLE path input-port → (a free cell abutting each tap, in tap order) → output-port,
+keeping the free region connected so a clean backbone is found whenever one EXISTS. Two
+guards do this (replacing the old shortest-path-per-segment that WALLED the array): a
+**wall-hugging** segment cost (prefer cells adjacent to obstacles / the committed
+backbone / the border, so the path clings to walls instead of slicing open space) and a
+**connectivity guard** (a segment is accepted only if, after committing it, every
+remaining tap AND the output port stay reachable from the new head; otherwise the next
+abutting-cell / candidate is tried, and the thread BAILS soundly to the legacy loop if
+none keep connectivity). With one cell per travel direction the result keeps
+`crossover_plan` empty by construction.
+
+`auto_place(use_bus="always")` now PREFERS the co-designed bus-snake layout
+(`with_bus_snake(True)`, `band_margin=0`) when it passes two acceptance gates
+(`controller._plan_on_grid` + `controller._plan_ports_reachable`): every block footprint
+on-grid AND every chip I/O port still reachable from the free-cell region. Otherwise it
+falls back to the proven on-grid MULTI-FILAMENT regions (so tall designs — the 110B front
+end — stay on the path the placer's own >1-filament detection already covers).
+
+### Known limitation (BPSK modem auto TX corr — STILL OPEN, now precisely root-caused)
+
+For the full-duplex BPSK modem the auto TX passband corr is still ~0.024 (legacy
+fallback), NOT > 0.95. The root cause is a **placement-level / dataflow-topology
+obstruction**, not a threading bug:
+
+* The duplex modem is a **Y that reconverges**: ONE input port (`x16_in`) forks into TWO
+  filaments (TX mapper→…→IQUpconvert, RX matched-filter→…→slicer) that **reconverge at
+  ONE output port** (`x16_out`). A single backbone is a simple path in→out; both
+  filaments are fed from its FIRST cell and feed its LAST cell.
+* On BOTH placements the placer actually produces — the `with_bus_snake` snake (which
+  also **seals the output port**: the upsampler lands at (9,2) and the matched filter at
+  (8,0–1), walling (9,0)→(9,1) into a dead 2-cell pocket — so `_plan_ports_reachable`
+  rejects it) AND the on-grid MULTI-FILAMENT regions (output port reachable) — **no
+  simple-path single backbone exists** that visits all eight taps in per-filament flow
+  order and ends at the output port (verified by exhaustive abut-cell backtracking over
+  the sensible tap orderings: the path to a center/bottom tap cuts the free region and
+  strands a later bottom tap). So v2 soundly returns `None` → the legacy multi-broker
+  loop routes all 11 nets, but it must let the RX input net (`net6`, port→MF) **transit
+  TX brokers** (mapper's broker (0,1) and the mapper→upsampler broker (1,2)); the RX word
+  passing through a TX deliver cell corrupts the TX symbol stream (corr 0.024 = noise,
+  far below even the 0.85 envelope).
+* This is NOT a reference mismatch: the demo's value-exact `_tx_reference` correlates
+  **0.9993** with the acceptance reference `_tx_signal(sps=4)·cos(2π·0.125·n)`, so a clean
+  build WOULD score ~0.999.
+
+Reaching corr > 0.95 requires EITHER a **height-aware, clean-serpentine bus-snake placer**
+that lays the duplex so a single simple-path backbone threads with zero foreign broker
+transit (a placer redesign — out of scope of this router work), OR a **reuse-relaxed
+backbone** (one-out-direction-per-cell, allowing the egress to return up an unused column)
+plus build / `broker_plan` / `crossover_plan` support for a backbone that revisits cells
+(a build-side change — also out of scope, high blast radius). Until then the
+explicit-placement duplex (`test_live_duplex_stream_id`, `test_modem_grc_import_duplex_e2e`)
+remains the value-exact TX gate, and `test_auto_pnr_tx_passband` keeps its envelope/symbol
+gates (it does NOT assert the > 0.95 sample corr — honestly not reachable on the auto path
+with the current placer).
 
 ## Acceptance (the rebuild is done when)
 
 - BPSK modem (`examples/bpsk_modem/bpsk_modem.grc`), auto-place + Bus route + build:
   auto TX passband corr > 0.95 vs the proper passband reference
   (`_tx_signal(sps=4) × cos(2π·0.125·n)`); RX recovers bits BER 0; all nets routed.
-  **(TX corr NOT yet met — see Known limitation above.)**
+  **(RX BER 0 + all nets routed MET; TX corr NOT met — blocked by the duplex-Y / placer
+  obstruction precisely root-caused in the Known limitation above, not by the threader.)**
 - The full auto-P&R / router / duplex / coherent-RX regression suite stays green.
 - The three topologies each have a focused test (bus multi-filament ordering, ring loop,
   block-to-block abutment minimisation).

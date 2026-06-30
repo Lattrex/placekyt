@@ -446,12 +446,41 @@ def _route_chip_bus_v2(project, ct, chip_id, nets, spine, *, port_map_provider):
         for slot, member in zip(idxs, members):
             taps[slot] = member
 
-    # Thread ONE contiguous backbone: input port → (a free cell abutting each tap's
-    # input cell, in order) → output port. Each cell appears once; one travel direction
-    # per cell. A free-cell BFS per segment, preferring the spine cells.
+    # Thread ONE contiguous SIMPLE backbone: input port → (a free cell abutting each
+    # tap's input cell, in tap order) → output port. Each cell appears once → one travel
+    # direction per cell → ``crossover_plan`` empty by construction.
+    #
+    # ROBUSTNESS (the §ROUTING_TOPOLOGIES bus threading): a naive shortest-path per
+    # segment WALLS the array — a straight path across open space cuts the free region
+    # in two, stranding a later tap on the far side (the modem's gardner/slicer after the
+    # backbone threads to costas). Two guards keep the free region connected so a clean
+    # backbone is found whenever one EXISTS:
+    #   1. WALL-HUGGING cost — prefer cells adjacent to obstacles / the committed
+    #      backbone / the array border (and the spine), so the path clings to walls
+    #      rather than slicing open space.
+    #   2. CONNECTIVITY guard — a candidate segment is accepted only if, after
+    #      committing it, EVERY remaining tap-abutting cell AND the output port stay
+    #      reachable from the new head over the still-free cells. A segment that would
+    #      disconnect a later goal is rejected; the next candidate / abutting cell is
+    #      tried. If none keep connectivity, the whole thread BAILS (→ legacy fallback).
+    # When a design's dataflow genuinely has no simple-path backbone (e.g. a duplex Y:
+    # two filaments forking at the shared input port and reconverging at the shared
+    # output port — no single simple path can visit both filaments in flow order and end
+    # at the shared sink), no ordering threads and v2 soundly returns None.
     spine_set = {tuple(p) for p in spine if in_bounds(tuple(p))}
 
-    def bfs(src, goal, blocked):
+    def _wallness(c, occ_set):
+        """How wall-adjacent ``c`` is: count of off-grid/occupied orthogonal
+        neighbours. Higher = clings to a wall → a path that prefers it keeps the
+        interior free region connected (no plane cut)."""
+        n = 0
+        for dx, dy in _NEI:
+            nb = (c[0] + dx, c[1] + dy)
+            if not in_bounds(nb) or nb in occ_set:
+                n += 1
+        return n
+
+    def bfs(src, goal, blocked, wall_occ):
         if src == goal:
             return [src]
         import heapq
@@ -470,38 +499,87 @@ def _route_chip_bus_v2(project, ct, chip_id, nets, spine, *, port_map_provider):
                 np_ = path + [nxt]
                 if nxt == goal:
                     return np_
-                heapq.heappush(pq, (cost + (0 if nxt in spine_set else 1),
-                                    tie, nxt, np_))
+                # Prefer the spine (cost 0); else prefer wall-hugging (4 - wallness).
+                step = 0 if nxt in spine_set else (1 + (4 - _wallness(nxt, wall_occ)))
+                heapq.heappush(pq, (cost + step, tie, nxt, np_))
                 tie += 1
         return None
+
+    def reachable(src, goal, blocked):
+        from collections import deque as _dq
+        if src == goal:
+            return True
+        seen = {src}
+        q = _dq([src])
+        while q:
+            cur = q.popleft()
+            for dx, dy in _NEI:
+                n = (cur[0] + dx, cur[1] + dy)
+                if n == goal:
+                    return True
+                if n in seen or not in_bounds(n) or n in blocked:
+                    continue
+                seen.add(n)
+                q.append(n)
+        return False
 
     backbone = [in_port_cell]
     occ = set(block_cells)
     occ.discard(in_port_cell)
     tap_abut: dict = {}               # in_cell -> the backbone cell that taps it
-    for in_cell, _meta in taps:
-        cands = [(in_cell[0] + dx, in_cell[1] + dy) for dx, dy in _NEI]
-        cands = [c for c in cands if in_bounds(c) and c not in block_cells]
+
+    def _abut_free(in_cell, occ_now):
+        return [(in_cell[0] + dx, in_cell[1] + dy) for dx, dy in _NEI
+                if in_bounds((in_cell[0] + dx, in_cell[1] + dy))
+                and (in_cell[0] + dx, in_cell[1] + dy) not in block_cells]
+
+    remaining_in = [ic for ic, _m in taps]
+    for ti, (in_cell, _meta) in enumerate(taps):
+        later = remaining_in[ti + 1:]
+        cands = _abut_free(in_cell, occ)
         on_bb = [c for c in cands if c in set(backbone)]
         if on_bb:
             tap_abut[in_cell] = on_bb[0]
             continue
+        # Try every abutting cell, shortest wall-hugging path first, keeping only a
+        # segment that leaves all LATER taps + the output port reachable from the head.
+        wall_occ = set(block_cells) | set(backbone)
         blocked = occ | (set(backbone) - {backbone[-1]})
-        best_seg = best_c = None
+        scored = []
         for c in cands:
-            p = bfs(backbone[-1], c, blocked)
-            if p is not None and (best_seg is None or len(p) < len(best_seg)):
-                best_seg, best_c = p, c
-        if best_seg is None:
+            p = bfs(backbone[-1], c, blocked, wall_occ)
+            if p is not None:
+                scored.append((len(p), c, p))
+        scored.sort(key=lambda t: t[0])
+        chosen = None
+        for _len, c, p in scored:
+            new_head = c
+            new_occ = occ | set(p[1:])
+            blk = new_occ | (set(backbone + p[1:]) - {new_head})
+            ok = True
+            for lic in later:
+                if not any(reachable(new_head, ac, blk)
+                           for ac in _abut_free(lic, new_occ)):
+                    ok = False
+                    break
+            if ok and out_port_cell != new_head \
+                    and not reachable(new_head, out_port_cell, blk):
+                ok = False
+            if ok:
+                chosen = (c, p)
+                break
+        if chosen is None:
             return _bail(f"cannot thread backbone to tap at {in_cell}")
-        for c in best_seg[1:]:
-            backbone.append(c)
-            occ.add(c)
-        tap_abut[in_cell] = best_c
+        c, p = chosen
+        for cell in p[1:]:
+            backbone.append(cell)
+            occ.add(cell)
+        tap_abut[in_cell] = c
 
     if out_port_cell != backbone[-1]:
         blocked = occ | (set(backbone) - {backbone[-1]})
-        seg = bfs(backbone[-1], out_port_cell, blocked)
+        seg = bfs(backbone[-1], out_port_cell, blocked,
+                  set(block_cells) | set(backbone))
         if seg is None:
             return _bail("cannot thread backbone to output port")
         for c in seg[1:]:

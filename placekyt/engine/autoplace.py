@@ -80,13 +80,18 @@ class AutoPlacer:
         # route mode is BUS (``use_bus``), which also requires the port stay a free
         # tap. >1 filament always triggers multi regardless of this flag.
         self._multi_filament = False
-        # Strategy hint: BUS topology — lay ALL blocks (every filament) along ONE shared
-        # serpentine snake in global flow order, off the port, so the single bus backbone
-        # the router threads visits every block as an ordered tap. Co-designed with
-        # bus_router._route_chip_bus_v2 (doc/ROUTING_TOPOLOGIES.md). When set it OVERRIDES
-        # the per-filament-region multi pack: the two filaments interleave on one snake
-        # (per-filament flow order is preserved by the global topological order).
-        self._bus_snake = False
+        # Strategy hint: COMPACT pack — lay ALL blocks (every filament) tightly in global
+        # flow order, off the port, filling from the input-port corner and abutting where
+        # possible, leaving ``channel_reserve`` free rows between block rows so the router
+        # has routing channels. Topology-AGNOSTIC (doc/ROUTING_TOPOLOGIES.md): the router
+        # (block-to-block / bus v2 / ring) realizes the chosen topology over this layout,
+        # and the place<->route loop (engine/pnr.py) bumps ``channel_reserve`` / perturbs
+        # on a routing failure. Replaces the old serpentine "bus-snake" pre-bake (deleted).
+        self._compact = False
+        # Free rows the compact pack leaves below each block row (routing channels). The
+        # P&R loop raises this to open channels when routing congests; 1 is the tight
+        # default (the modem's 8 blocks fit on a 10x12 with room to route at margin 1).
+        self._channel_reserve = 1
 
     # -- provider adapter -----------------------------------------------------
     def _provider(self, fn, blk):
@@ -382,55 +387,88 @@ class AutoPlacer:
         # — folds included — keeps the egress corridor clear; in single mode a feedback
         # fold legitimately uses the last column). Set per-run below.
         self._in_multi_pack = False
-        if self._bus_snake:
-            # BUS topology (co-design): lay EVERY block — all filaments — along ONE
-            # serpentine snake in global flow order, off the port. The per-filament
-            # signal-flow order is already baked into ``order`` (topological), so
-            # interleaving the two filaments on one snake keeps each filament internally
-            # ordered while the single backbone the router threads visits every block as
-            # a tap in order. Co-designed with bus_router._route_chip_bus_v2.
-            #
-            # KEEP BOTH CHIP PORTS REACHABLE + THE SNAKE THREADABLE (the §ROUTING_-
-            # TOPOLOGIES bus-snake gate, root-cause fix): the chip input AND output ports
-            # both sit on the TOP row (row 0) of this array (x16_in@(0,0), x16_out@(9,0)).
-            # If a block body lands on the port row it seals a port into a dead pocket
-            # (the matched filter walling x16_out at (9,0)). So we lay the snake ONE ROW
-            # BELOW the port row and start ONE COLUMN OFF the input-port column, leaving
-            # the WHOLE port row free as the shared ingress/egress LANE: the backbone
-            # enters at the input port, drops into the snake, taps every block in flow
-            # order, and the terminal egress runs back along the clear port row to the
-            # output port. Row 0 free ⇒ both ports stay in ONE connected free component
-            # (``_plan_ports_reachable`` passes) AND the v2 threader always finds a clean
-            # egress to the output-port corner.
-            self._lead_block = None          # nothing anchors on the port
-            self._in_multi_pack = True       # keep the egress corridor clear for folds
-            self._pack_bus_snake(order, positions, orientations, out_pos, spine,
-                                 chip)
-        elif not multi:
+        if not multi:
             # SINGLE-FILAMENT, block-to-block: the lead input-fed block anchors its
             # input cell ON the port (preferred — lowest latency). One serpentine run.
+            # (Byte-identical to the proven coherent-RX path — unchanged.)
             self._lead_block = self._lead_input_fed(order, names)
             self._pack_run(order, positions, orientations, out_pos, spine, chip,
                            band_top=self._row)
         else:
-            # MULTI-FILAMENT / bus: NO block on the port. The chip input port is a
-            # SINGLE cell that fans out in ONE committed bus direction (a cell has one
-            # fwd_face, §1.3), so EVERY filament's input cell must be reachable along
-            # that one shared corridor off the port — they cannot each get an
-            # independent direction. We therefore seat all filament HEADS side-by-side
-            # on the port's bus ROW going east (the port stays a free tap at column 0;
-            # the bus travels east and each head taps it at its own broker), with the
-            # NARROWEST head nearest the port so a wider head's body never walls the
-            # lane to a farther head. Each filament's BODY then snakes DOWN into its
-            # OWN band-region below the head row, keeping the filaments separable.
+            # MULTI-FILAMENT / bus: COMPACT pack — lay EVERY block, all filaments, tightly
+            # in global flow order, OFF the port (the port stays a free bus tap), filling
+            # from the input-port corner and abutting where possible, leaving
+            # ``channel_reserve`` free rows between block rows so the router has routing
+            # channels. Topology-AGNOSTIC: the router (block-to-block / bus v2 / ring)
+            # realizes the chosen topology over this layout, and the place<->route loop
+            # (engine/pnr.py) bumps channel_reserve / perturbs on a routing failure. The
+            # per-filament flow order is preserved by the global topological ``order``.
             self._lead_block = None          # nothing anchors on the port
-            self._in_multi_pack = True       # reserve the egress corridor for all folds
-            self._pack_filaments(filaments, positions, orientations, out_pos,
-                                 spine, chip)
+            self._in_multi_pack = True       # keep the egress corridor clear for folds
+            self._pack_compact(order, positions, orientations, out_pos, spine, chip)
 
         return PlacePlan(positions=positions, order=order,
                          orientations=orientations, spine=spine,
                          backward_edges=backward)
+
+    # -- compact pack (topology-agnostic; the iterative-P&R placer) ------------
+    def _pack_compact(self, order, positions, orientations, out_pos, spine, chip):
+        """Pack ALL blocks tightly in global flow ``order``, OFF the port, leaving
+        ``self._channel_reserve`` free rows between block rows as routing channels.
+
+        Topology-agnostic (doc/ROUTING_TOPOLOGIES.md): fill row-by-row from the input-
+        port corner; place each block at the current row cursor (abutting the previous
+        block in the row), wrap to the next row + the channel reserve when a block would
+        overflow the array width. The chip input/output ports sit on the top row (row 0
+        of this array); we keep the WHOLE top row free as the shared ingress/egress lane
+        and start the first block row at ``self._row + 1``, so both ports stay reachable
+        and the router has the port row to weave the bus in/out. Orientation comes from
+        the flyline-minimising orienter; a folded block gets the wall inset so its bus-
+        facing edge keeps a free neighbour for its broker tap. The ``spine`` is a loose
+        dataflow-ordered hint (the router's threader realises the real backbone).
+
+        The place<->route loop perturbs by raising ``self._channel_reserve`` (open more
+        channels) or, per-block, nudging a single-cell block to a bend — all monotone in
+        looseness, so a looser pack always exists (worst case = sparse, always routable).
+        """
+        blk_of = self._blk_of
+        reserve = max(0, int(self._channel_reserve))
+        left = max(0, self._start_x)        # first block column (off the port column)
+        # Start one row below the port row so the whole port row stays a free I/O lane.
+        row_top = self._row + 1
+        x = left
+        row_h = 0
+
+        for n in order:
+            blk = blk_of[n]
+            kind = self._orient_for(blk, True, n, out_pos, x, row_top)
+            w, h = self._oriented_wh(blk, kind)
+            # Wrap to a new row + channel reserve when this block would overflow width.
+            if positions and (x + w) > self._width:
+                row_top = row_top + row_h + reserve
+                x = left
+                row_h = 0
+                # Re-orient for the fresh row position (the orienter scores against the
+                # driver's now-known output cell).
+                kind = self._orient_for(blk, True, n, out_pos, x, row_top)
+                w, h = self._oriented_wh(blk, kind)
+            ax, aty = x, row_top
+            # Keep a folded block's bus-facing edge off the array wall (free neighbour
+            # for its broker tap) — reuse the proven inset; no-op for unwalled placements.
+            if self._driver_of.get(n) is not None:
+                ax, aty = self._wall_inset(blk, kind, ax, aty, w, h)
+            orientations[n] = kind
+            positions[n] = (chip, ax, aty)
+            row_h = max(row_h, (aty - row_top) + h)
+            # Record the block's OUTPUT cell so the next block scores its flyline + the
+            # router knows where to tap from.
+            op = self._io_offsets(blk, kind)
+            if op is not None and op[1] is not None:
+                out_pos[n] = (ax + op[1][0], aty + op[1][1])
+            # Loose dataflow spine hint: the free cell just east of the block on its row.
+            sx = min(self._width - 1, ax + w)
+            spine.append((sx, row_top))
+            x = ax + w + self._gap          # next block abuts after a small gap
 
     # -- multi-filament packing (shared-port, off-port heads) -----------------
     def _pack_filaments(self, filaments, positions, orientations, out_pos, spine,
@@ -1320,13 +1358,19 @@ class AutoPlacer:
         self._multi_filament = bool(on)
         return self
 
-    def with_bus_snake(self, on: bool = True):
-        """Force the BUS-SNAKE strategy: lay EVERY block (all filaments) along ONE
-        serpentine snake in global flow order, off the port. Co-designed with the v2
-        backbone router so the single bus the router threads visits every block as an
-        ordered tap. Set by the caller when the routing topology is BUS. Returns self
-        (chainable)."""
-        self._bus_snake = bool(on)
+    def with_compact(self, on: bool = True):
+        """Force the COMPACT pack: lay EVERY block (all filaments) tightly in global flow
+        order, off the port, leaving routing channels (``channel_reserve`` free rows).
+        Topology-agnostic — the router realises the chosen topology over this layout and
+        the place<->route loop perturbs on failure. Returns self (chainable)."""
+        self._compact = bool(on)
+        return self
+
+    def with_channel_reserve(self, rows: int):
+        """Set the number of free rows the compact pack leaves between block rows (the
+        routing-channel reserve). The place<->route loop raises this to open channels
+        when routing congests. Returns self (chainable)."""
+        self._channel_reserve = max(0, int(rows))
         return self
 
     def with_feedback(self, provider):

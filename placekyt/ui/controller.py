@@ -570,50 +570,21 @@ class AppController(QObject):
         # threads ONE directed backbone of broker taps over that placement; a single
         # filament keeps the lead-on-port block-to-block path.
         force_multi = (use_bus == "always")
+        channel_reserve = int(getattr(self, "_pnr_channel_reserve", 1))
 
-        def _mk_placer(bus_snake, band_margin):
-            """Build an AutoPlacer with the given bus-snake / band-margin strategy
-            (the shared provider wiring). ``bus_snake`` lays ALL filaments along ONE
-            serpentine (the co-designed bus backbone); ``band_margin`` controls the
-            inter-band slack (0 packs the snake tight enough to fit a tall design)."""
-            p = (AutoPlacer(self.project, footprint, anchor=anchor,
-                            width=w, height=h, band_margin=band_margin)
-                 .with_port_maps(port_maps)
-                 .with_chip_ports(self._chip_port_cell)
-                 .with_feedback(self._block_has_internal_feedback))
-            if bus_snake:
-                return p.with_bus_snake(True)
-            return p.with_multi_filament(force_multi)
-
-        # BUS topology (``use_bus="always"``): PREFER the co-designed bus-snake layout
-        # (all filaments on ONE serpentine, off-port, so the bus v2 router threads a
-        # single directed backbone of ordered taps). ``band_margin=0`` packs it tight
-        # enough to fit a 10×12 grid. Use the snake ONLY if every block footprint stays
-        # ON-GRID *and* it keeps the chip I/O ports REACHABLE from the free-cell region
-        # (a sealed port has no bus path to it — the router would silently fall back).
-        # Otherwise fall back to the proven on-grid MULTI-FILAMENT placement (two
-        # stacked filament regions), which keeps tall designs (110B front end) on the
-        # path that the placer's own >1-filament detection already covers.
-        placer = None
-        used_bus_snake = False
-        if use_bus == "always":
-            # Prefer a LOOSER band pack (margin 1 → a free routing lane between bands
-            # the backbone can weave through), falling back to the tight margin-0 pack
-            # only if the looser one overflows the grid. Both must keep the ports
-            # reachable (row 0 free, the bus-snake contract).
-            for bm in (1, 0):
-                snake = _mk_placer(bus_snake=True, band_margin=bm)
-                snake_plan = snake.plan(chip)
-                if self._plan_on_grid(snake_plan, w, h, footprint, port_maps) \
-                        and self._plan_ports_reachable(snake_plan, chip, w, h,
-                                                       footprint, port_maps) \
-                        and not getattr(snake, "_bus_snake_sc_deadlock", False):
-                    placer, plan = snake, snake_plan
-                    used_bus_snake = True
-                    break
-        if placer is None:
-            placer = _mk_placer(bus_snake=False, band_margin=1)
-            plan = placer.plan(chip)
+        # Topology-agnostic COMPACT pack: lay every block tightly in dataflow order, off
+        # the port, leaving routing channels (the iterative-P&R placer; the place<->route
+        # loop in engine/pnr.py bumps ``channel_reserve`` on a routing failure). The
+        # single-filament case keeps the proven lead-on-port serpentine inside the placer.
+        placer = (AutoPlacer(self.project, footprint, anchor=anchor, width=w, height=h)
+                  .with_port_maps(port_maps)
+                  .with_chip_ports(self._chip_port_cell)
+                  .with_feedback(self._block_has_internal_feedback)
+                  .with_multi_filament(force_multi)
+                  .with_compact(force_multi)
+                  .with_channel_reserve(channel_reserve))
+        plan = placer.plan(chip)
+        used_bus_snake = False  # bus-snake pre-bake removed; compact pack is topology-agnostic
         # The INPUT-FED lead block (first in flow order, anchored at the port) must
         # land its INPUT/landing CELL on the port — not its min corner. The port
         # injects AT its own cell, and a multi-input block (e.g. Costas xi@R0/xq@R1
@@ -1248,12 +1219,9 @@ class AppController(QObject):
         # threader rides verbatim. Otherwise (the multi-filament fallback) use the generic
         # spine, so the legacy per-net router gets the hint it expects (a bus-snake spine
         # over a non-snake placement would mis-bias it — the net6 fallback regression).
-        bus_snake = (topology in ("bus", "ring")) \
-            and self._placement_is_bus_snake(0)
-
         def spine(chip):
             try:
-                return self._derive_spine(chip, bus_snake=bus_snake)
+                return self._derive_spine(chip)
             except Exception:  # noqa: BLE001 — spine is a HINT; the router copes
                 return []
 
@@ -1261,57 +1229,12 @@ class AppController(QObject):
                              spine_provider=spine, port_map_provider=port_maps,
                              topology=topology)
 
-    def _placement_is_bus_snake(self, chip: int) -> bool:
-        """True if the LIVE block placement on ``chip`` matches the bus-snake plan (the
-        snake gate accepted it), so the bus-snake spine is the right backbone. False when
-        the multi-filament fallback was used — then the generic spine fits the layout."""
-        from engine.autoplace import AutoPlacer
-
-        def footprint(bt, lib, params=None):
-            return self.catalog.port_map(bt, params=params, library=lib).footprint
-
-        def port_maps(bt, lib, params=None):
-            return self.catalog.port_map(bt, params=params, library=lib)
-
-        w, h = self._chip_dims(chip)
-        anchor = self._input_port_anchor(chip)
-        try:
-            for bm in (1, 0):
-                p = (AutoPlacer(self.project, footprint, anchor=anchor, width=w,
-                                height=h, band_margin=bm)
-                     .with_port_maps(port_maps).with_chip_ports(self._chip_port_cell)
-                     .with_feedback(self._block_has_internal_feedback)
-                     .with_bus_snake(True))
-                plan = p.plan(chip)
-                if getattr(p, "_bus_snake_sc_deadlock", False):
-                    continue
-                if not (self._plan_on_grid(plan, w, h, footprint, port_maps)
-                        and self._plan_ports_reachable(plan, chip, w, h, footprint,
-                                                       port_maps)):
-                    continue
-                # the live anchors must equal the snake plan's (within this band margin)
-                for name, (_c, px, py) in plan.positions.items():
-                    blk = self.project.block(name)
-                    if blk is None or blk.placement is None:
-                        return False
-                    bb = blk.placement.bounding_box()
-                    cx, cy = (bb[0], bb[1]) if bb else (
-                        blk.placement.cells[0].x, blk.placement.cells[0].y)
-                    if (cx, cy) != (px, py):
-                        return False
-                return True
-        except Exception:  # noqa: BLE001
-            return False
-        return False
-
-    def _derive_spine(self, chip: int, *, bus_snake: bool = False):
-        """Re-derive the placement spine (serpentine bus waypoints) for ``chip`` from
-        the current block geometry, so the bus router prefers the snake the placer
-        laid. Pure (no project mutation): runs the AutoPlacer's plan and returns its
-        ``spine`` without moving anything. ``bus_snake`` runs the BUS-SNAKE placer (the
-        layout used in bus topology) so the spine is the SAME lane serpentine the placed
-        blocks ride — not the generic per-band spine (which would mismatch the placement
-        and leave the v2 threader nothing clean to cling to)."""
+    def _derive_spine(self, chip: int):
+        """Re-derive the placement spine (dataflow-ordered bus hint) for ``chip`` from
+        the current block geometry, so the bus router prefers the layout the compact
+        placer laid. Pure (no project mutation): runs the AutoPlacer's plan and returns
+        its ``spine`` without moving anything. The spine is a LOOSE hint — the v2
+        threader realises the real backbone over the placement's free channels."""
         from engine.autoplace import AutoPlacer
 
         def footprint(block_type, library, params=None):
@@ -1326,9 +1249,9 @@ class AppController(QObject):
                              width=w, height=h)
                   .with_port_maps(port_maps)
                   .with_chip_ports(self._chip_port_cell)
-                  .with_feedback(self._block_has_internal_feedback))
-        if bus_snake:
-            placer.with_bus_snake(True)
+                  .with_feedback(self._block_has_internal_feedback)
+                  .with_multi_filament(True).with_compact(True)
+                  .with_channel_reserve(int(getattr(self, "_pnr_channel_reserve", 1))))
         return placer.plan(chip).spine
 
     def add_logical_connection(self, source, target, *, name: str | None = None,

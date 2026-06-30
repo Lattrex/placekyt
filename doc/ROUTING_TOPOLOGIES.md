@@ -108,11 +108,47 @@ ONE backbone and everything rides it.
 - Single-cell blocks that both receive and drive on one cell keep input-face != output-face.
 - Every kept route is a real path; any failure is NAMED, never a silent wrong build.
 
+## Implementation status (2026-06-30)
+
+The BUS topology is wired end to end:
+
+- **Topology selection** — `controller._select_topology()` returns `"bus"` when >1
+  filament feeds the chip input port, else `"block"` (single-filament → block-to-block).
+  Threaded through `auto_route_all` → `_run_router` → `_bus_route` → `route_all_bus`.
+- **`route_all_bus(topology=…)`** — for `"bus"`/`"ring"` it tries the single-backbone v2
+  router (`_route_chip_bus_v2`) FIRST, and uses it ONLY if it routes EVERY net AND the
+  DRC gate passes them all; otherwise it DISCARDS v2 and falls through to the legacy
+  per-net loop UNCHANGED (a partial v2 never displaces the proven path). Default
+  `topology="block"` keeps every existing direct caller byte-identical.
+- **`_route_chip_bus_v2`** — routes all nets on one shared bus with
+  `forbid_broker_transit=True` (a new, default-False option on `_route_chip_bus` /
+  `_bus_bfs`): NO foreign net may TRANSIT a broker cell, so a broker is never also a
+  conflicting through-transit (the one-cell-two-roles corruption). Plain transit cells
+  are still shared (same direction, via `bus_dir`). This makes `crossover_plan` empty
+  and `broker_through_face` conflict-free *by construction* for any design it routes.
+
+### Known limitation (BPSK modem auto TX corr)
+
+The co-designed `with_bus_snake` placement (lay ALL filaments along ONE serpentine so
+the placement IS the backbone) currently (a) OVERFLOWS the 10×12 grid for the modem
+(the single serpentine of the tall RX folds needs ~13 rows — fixable only with a
+height-aware compact packer, which lives in the placer) and (b) when forced to fit
+(`band_margin=0`) produces a scattered, oddly-oriented layout the bus cannot thread.
+The on-grid MULTI-FILAMENT placement (two stacked filament regions) packs the modem
+densely enough that NO net ordering routes every net WITHOUT some foreign broker transit
+(exhaustively checked: best is 9/11 under the no-foreign-transit constraint). So for the
+modem v2 returns `None` and the router falls back to the legacy loop, leaving auto TX
+passband corr at the pre-existing ~0.024. Reaching corr > 0.95 (the acceptance below)
+requires a **height-aware, clean-serpentine bus-snake placer** so the single backbone
+threads trivially with zero foreign broker transit — a placer change, out of scope of
+this router work. The explicit-placement duplex remains the value-exact TX gate.
+
 ## Acceptance (the rebuild is done when)
 
 - BPSK modem (`examples/bpsk_modem/bpsk_modem.grc`), auto-place + Bus route + build:
   auto TX passband corr > 0.95 vs the proper passband reference
   (`_tx_signal(sps=4) × cos(2π·0.125·n)`); RX recovers bits BER 0; all nets routed.
+  **(TX corr NOT yet met — see Known limitation above.)**
 - The full auto-P&R / router / duplex / coherent-RX regression suite stays green.
 - The three topologies each have a focused test (bus multi-filament ordering, ring loop,
   block-to-block abutment minimisation).

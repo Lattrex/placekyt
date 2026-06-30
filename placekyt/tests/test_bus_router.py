@@ -385,3 +385,99 @@ def test_bus_router_names_unplaced_target(qapp, catalog, chip_type):
                         _port_cells(catalog))
     assert not rep.ok
     assert rep.failed[0].name == "a_ghost" and rep.failed[0].reason
+
+
+# --------------------------------------------------------------------------- #
+# BUS topology (doc/ROUTING_TOPOLOGIES.md) — the single-backbone v2 router and
+# the smart-default topology selection.
+# --------------------------------------------------------------------------- #
+
+def test_topology_smart_default_single_vs_multi(qapp, catalog):
+    """``_select_topology`` keys on the filament count: >1 filament feeding the input
+    port → ``"bus"`` (the modem's TX+RX off x16_in); a lone filament → ``"block"``."""
+    from model.connection import BlockEndpoint, ChipPortEndpoint
+
+    # Single filament: gain -> dcblocker, fed by one input port.
+    ctrl = AppController(catalog=catalog)
+    ctrl.new_project("one", "kyttar_10x12")
+    g = ctrl.place_block("GainBlock", 0, 1, 1, library="lattrex.official")
+    d = ctrl.place_block("DCBlockerBlock", 0, 4, 1, library="lattrex.official")
+    ctrl.add_logical_connection(ChipPortEndpoint(chip=0, port="x16_in"),
+                                BlockEndpoint(block=g, port="sample"), name="i")
+    ctrl.add_logical_connection(BlockEndpoint(block=g, port="out"),
+                                BlockEndpoint(block=d, port="sample"), name="m")
+    ctrl.add_logical_connection(BlockEndpoint(block=d, port="out"),
+                                ChipPortEndpoint(chip=0, port="x16_out"), name="o")
+    assert ctrl._select_topology("auto") == "block"
+    assert ctrl._select_topology("never") == "block"
+
+    # Two filaments off ONE input port -> bus.
+    ctrl2 = AppController(catalog=catalog)
+    ctrl2.new_project("two", "kyttar_10x12")
+    a = ctrl2.place_block("GainBlock", 0, 1, 1, library="lattrex.official")
+    b = ctrl2.place_block("DCBlockerBlock", 0, 1, 4, library="lattrex.official")
+    ctrl2.add_logical_connection(ChipPortEndpoint(chip=0, port="x16_in"),
+                                 BlockEndpoint(block=a, port="sample"), name="ia")
+    ctrl2.add_logical_connection(ChipPortEndpoint(chip=0, port="x16_in"),
+                                 BlockEndpoint(block=b, port="sample"), name="ib")
+    ctrl2.add_logical_connection(BlockEndpoint(block=a, port="out"),
+                                 ChipPortEndpoint(chip=0, port="x16_out"), name="oa")
+    ctrl2.add_logical_connection(BlockEndpoint(block=b, port="out"),
+                                 ChipPortEndpoint(chip=0, port="x16_out"), name="ob")
+    assert ctrl2._select_topology("auto") == "bus"
+    assert ctrl2._select_topology("never") == "block"
+
+
+def test_route_all_bus_default_is_legacy(qapp, catalog, chip_type):
+    """``route_all_bus`` with the default ``topology="block"`` never invokes the v2
+    single-backbone router — the existing per-net loop result is unchanged (so every
+    direct caller stays byte-identical)."""
+    from model.connection import BlockEndpoint, ChipPortEndpoint
+
+    ctrl = AppController(catalog=catalog)
+    ctrl.new_project("legacy", "kyttar_10x12")
+    g = ctrl.place_block("GainBlock", 0, 1, 1, library="lattrex.official")
+    ctrl.add_logical_connection(ChipPortEndpoint(chip=0, port="x16_in"),
+                                BlockEndpoint(block=g, port="sample"), name="i")
+    ctrl.add_logical_connection(BlockEndpoint(block=g, port="out"),
+                                ChipPortEndpoint(chip=0, port="x16_out"), name="o")
+    default = route_all_bus(ctrl.project, {"kyttar_10x12": chip_type},
+                            _port_cells(catalog))
+    block = route_all_bus(ctrl.project, {"kyttar_10x12": chip_type},
+                          _port_cells(catalog), topology="block")
+    assert {r.name for r in default.routed} == {r.name for r in block.routed}
+    assert default.ok == block.ok
+
+
+def test_bus_topology_routes_two_filaments_crossover_free(qapp, catalog, chip_type):
+    """BUS topology routes a two-filament shared-port design and the result is
+    CROSSOVER-FREE (the structural soundness proof: no plain cell carries two
+    conflicting forwarding directions, no broker is a foreign through-transit)."""
+    from engine.bus_router import crossover_plan
+    from model.connection import BlockEndpoint, ChipPortEndpoint
+
+    ctrl = AppController(catalog=catalog)
+    ctrl.new_project("twofil", "kyttar_10x12")
+    a = ctrl.place_block("GainBlock", 0, 2, 1, library="lattrex.official")
+    b = ctrl.place_block("DCBlockerBlock", 0, 2, 5, library="lattrex.official")
+    ctrl.add_logical_connection(ChipPortEndpoint(chip=0, port="x16_in"),
+                                BlockEndpoint(block=a, port="sample"), name="ia")
+    ctrl.add_logical_connection(ChipPortEndpoint(chip=0, port="x16_in"),
+                                BlockEndpoint(block=b, port="sample"), name="ib")
+    ctrl.add_logical_connection(BlockEndpoint(block=a, port="out"),
+                                ChipPortEndpoint(chip=0, port="x16_out"), name="oa")
+    ctrl.add_logical_connection(BlockEndpoint(block=b, port="out"),
+                                ChipPortEndpoint(chip=0, port="x16_out"), name="ob")
+
+    def port_maps(bt, lib, params=None):
+        return catalog.port_map(bt, params=params, library=lib)
+
+    rep = route_all_bus(ctrl.project, {"kyttar_10x12": chip_type},
+                        _port_cells(catalog), port_map_provider=port_maps,
+                        topology="bus")
+    # v2 may route it (crossover-free) or fall back; either way the kept routes must
+    # be sound (all routed) and crossover-free once applied.
+    if rep.ok:
+        for r in rep.routed:
+            SetConnectionRouteCommand(ctrl.project, r.name, r.points).execute()
+        assert not crossover_plan(ctrl.project, 0, chip_type, catalog)

@@ -110,7 +110,8 @@ class BrokerTap:
 
 
 def route_all_bus(project, chip_types, port_cell_provider,
-                  spine_provider=None, port_map_provider=None) -> AutoRouteReport:
+                  spine_provider=None, port_map_provider=None,
+                  topology="block") -> AutoRouteReport:
     """Route every UNROUTED net on one chip over a shared bus with broker taps.
 
     ``port_cell_provider(block_type, library) -> {port: (cell_id, direction)}`` and
@@ -118,6 +119,18 @@ def route_all_bus(project, chip_types, port_cell_provider,
     for endpoint geometry). ``spine_provider(chip) -> [(x, y), ...]`` (optional)
     supplies the placement spine (the serpentine snake) as the preferred bus
     backbone; without it the router threads the bus itself.
+
+    ``topology`` selects the routing model (doc/ROUTING_TOPOLOGIES.md):
+      * ``"bus"`` / ``"ring"`` — try the single-backbone v2 router
+        (:func:`_route_chip_bus_v2`) FIRST: ONE contiguous directed backbone from the
+        chip input port to the output port, every block tapping off it as an ordered
+        broker. It is used ONLY if it routes EVERY net on the chip AND the DRC gate
+        leaves them all ok; otherwise its result is DISCARDED and the legacy per-net
+        bus loop runs unchanged (a partial v2 never displaces the proven path).
+      * ``"block"`` (DEFAULT) — skip v2; only the legacy per-net loop runs (single-
+        filament / block-to-block designs, where forcing a backbone would over-
+        constrain). The default keeps every existing caller byte-identical; the
+        controller passes the smart-default ``"bus"`` for multi-filament designs.
 
     Returns an :class:`AutoRouteReport`. Brokers are NOT returned here — they are
     derived from the resulting routes by :func:`broker_plan` (the build reads the
@@ -159,6 +172,19 @@ def route_all_bus(project, chip_types, port_cell_provider,
                 results.append(RouteResult(n[0], False, reason="no chip type"))
             continue
         spine = list(spine_provider(chip_id)) if spine_provider else []
+        # SINGLE-BACKBONE v2 first (bus/ring): try the contiguous-backbone router. It
+        # is kept ONLY if it routes EVERY net AND the DRC gate passes them all — a
+        # partial/failing v2 is DISCARDED so the legacy per-net loop below stays
+        # byte-identical on fallback (the proven path is never displaced).
+        if topology in ("bus", "ring"):
+            v2 = _route_chip_bus_v2(project, ct, chip_id, nets, spine,
+                                    port_map_provider=port_map_provider)
+            if v2 is not None and len(v2) == len(nets) \
+                    and all(r.ok for r in v2):
+                gated = _drc_gate(v2, chip_types)
+                if all(r.ok for r in gated):
+                    results.extend(gated)
+                    continue
         # Route ORDER matters under single-fwd_face contention (the bus is a directed
         # backbone; later nets should COALESCE onto it, not fight it). No single order
         # is optimal for every layout (the design's CP-SAT does a joint solve), so we
@@ -290,6 +316,123 @@ def route_all_bus(project, chip_types, port_cell_provider,
     return AutoRouteReport(results)
 
 
+def _route_chip_bus_v2(project, ct, chip_id, nets, spine, *, port_map_provider):
+    """Single-backbone BUS router (doc/ROUTING_TOPOLOGIES.md).
+
+    The bus model is ONE shared directed backbone from the chip INPUT port to the
+    OUTPUT port that every block taps off; the ONLY ordering rule is that within a
+    filament its blocks appear in signal-flow order along the backbone. The corruption
+    the old per-net router hit was a cell that is BOTH a broker (delivering one
+    filament's word) AND a FOREIGN filament's through-transit in a CONFLICTING
+    direction (one cell, one ``fwd_face``).
+
+    This router makes that impossible STRUCTURALLY: it routes EVERY net on one shared
+    bus (the proven :func:`_route_chip_bus`) but with ``forbid_broker_transit=True``, so
+    NO foreign net ever transits a broker cell — plain transit cells are still shared
+    (same direction, via ``bus_dir``), only broker cells are private to their own
+    delivery. With no foreign broker transit a broker is never a conflicting through-
+    transit → ``crossover_plan`` is empty and ``broker_through_face`` never reconciles
+    two directions. Nets are tagged by filament (so the ordering keeps a filament's nets
+    consecutive and its source-before-target order); a few principled net orderings are
+    tried (a broker laid early is a no-transit obstacle for later nets) and the first
+    that routes EVERY net is kept.
+
+    ``port_map_provider`` is part of the v2 contract signature (reserved for geometry
+    callbacks); the current implementation derives everything from the resolved ``nets``
+    + the project. Returns a list of :class:`RouteResult` (one per net, all ``ok``) when
+    the whole chip routes WITHOUT any foreign broker transit, or ``None`` (a precondition
+    fails, or no ordering routes every net under that constraint — the dense-placement
+    case) so the caller DISCARDS it and falls back to the legacy per-net loop.
+    """
+    _ = port_map_provider  # reserved (v2 contract signature)
+    import os as _os
+    _DBG = _os.environ.get("BUS_V2_DEBUG")
+
+    def _bail(msg):
+        if _DBG:
+            print("[bus_v2 bail]", msg)
+        return None
+
+    # Need the input/output ports present (a shared-port bus design).
+    have_in = any(n[5] for n in nets)
+    have_out = any(n[6] for n in nets)
+    if not (have_in and have_out):
+        return _bail("no shared input+output port pair")
+
+    # Placed blocks on this chip + filament partition (pure graph, read-only).
+    from .autoplace import AutoPlacer
+    blocks = {b.name: b for b in project.blocks
+              if b.placement is not None and b.placement.chip == chip_id
+              and b.placement.cells}
+    if not blocks:
+        return _bail("no placed blocks")
+    placer = AutoPlacer(project, lambda *a: (0, 0))
+    names = set(blocks.keys())
+    order, _backward = placer._flow_order(list(blocks.values()), names)
+    filaments = placer._filaments(order, names)
+    if len(filaments) <= 1:
+        # A lone filament has no cross-filament transit to separate — let the legacy
+        # loop handle it (its proven single-filament path; v2 adds nothing here).
+        return _bail("single filament — legacy path")
+    fil_of = {n: fi for fi, mem in enumerate(filaments) for n in mem}
+
+    # Assign each net to a filament: the filament of its BLOCK endpoint (port nets) or
+    # of its source/target blocks (block->block nets — both are in the same filament by
+    # construction; a cross-filament block->block net would be a malformed design).
+    def net_filament(conn, src_is_port, dst_is_port):
+        if not src_is_port and isinstance(conn.source, BlockEndpoint):
+            f = fil_of.get(conn.source.block)
+            if f is not None:
+                return f
+        if not dst_is_port and isinstance(conn.target, BlockEndpoint):
+            return fil_of.get(conn.target.block)
+        return None
+
+    # Per-net filament tag (so the ordering can keep each filament's nets together and
+    # the source-before-target rule holds within a filament).
+    net_fil = {}
+    for n in nets:
+        (_name, _s, _sf, _d, _df, src_is_port, dst_is_port, conn) = n
+        f = net_filament(conn, src_is_port, dst_is_port)
+        if f is None:
+            return _bail(f"net {_name} has no filament")
+        net_fil[_name] = f
+
+    # Route ALL nets on ONE shared bus, but with ``forbid_broker_transit=True`` so NO
+    # foreign net ever TRANSITS a broker cell (the one-cell-two-roles corruption the
+    # bus topology forbids). Plain transit cells are still shared (same direction, via
+    # ``bus_dir``) — the bus IS shared, only broker cells are private to their own
+    # filament's delivery. We try a few principled net orderings (a broker laid by an
+    # early net becomes a no-transit obstacle for later ones, so order matters) and keep
+    # the first that routes EVERY net. The DRC gate (caller) re-verifies soundness.
+    def _cls(src_is_port, dst_is_port, mode):
+        if mode == "egress":
+            return 0 if dst_is_port else (1 if src_is_port else 2)
+        return 1 if (src_is_port or dst_is_port) else 0
+
+    def _key(n, mode):
+        _name, s, _sf, d, _df, sp, dp, _conn = n
+        span = -(abs(s[0] - d[0]) + abs(s[1] - d[1]))
+        return (net_fil[_name], _cls(sp, dp, mode), d,
+                0 if not sp else 1, span)
+
+    best = None
+    for mode in ("egress", "blocks"):
+        ordered = sorted(nets, key=lambda n: _key(n, mode))
+        res = _route_chip_bus(project, ct, chip_id, ordered, spine,
+                              sc_cells=None, forbid_broker_transit=True)
+        nok = sum(1 for r in res if r.ok)
+        if best is None or nok > best[0]:
+            best = (nok, res)
+        if nok == len(nets):
+            break
+    if best is None or best[0] < len(nets):
+        return _bail(
+            "could not route every net without foreign broker transit: "
+            f"{[r.name for r in (best[1] if best else []) if not r.ok]}")
+    return best[1]
+
+
 def _drc_gate(results, chip_types):
     """Run the bus DRC (:mod:`engine.bus_drc`) over the SUCCESSFULLY-routed nets and
     DEMOTE any net implicated in a face-conflict / deadlock to a NAMED failure (P3.4:
@@ -316,8 +459,14 @@ def _drc_gate(results, chip_types):
     return out
 
 
-def _route_chip_bus(project, ct, chip_id, nets, spine, *, sc_cells=None):
+def _route_chip_bus(project, ct, chip_id, nets, spine, *, sc_cells=None,
+                    forbid_broker_transit=False):
     """Construct the bus on one chip and route each net source→bus→broker.
+
+    ``forbid_broker_transit`` (the BUS / v2 topology) forbids ANY net from TRANSITING
+    a foreign broker cell — the exact one-cell-two-roles corruption (a broker that also
+    forwards a different filament's word in a conflicting direction) the bus topology
+    eliminates by construction. Default False keeps the legacy behaviour byte-identical.
 
     Strategy (constructive, matching §7.3's backbone-first heuristic):
       1. Obstacles = block cells + transit cells (a word never transits a live block
@@ -459,7 +608,8 @@ def _route_chip_bus(project, ct, chip_id, nets, spine, *, sc_cells=None):
 
         path = _bus_bfs(s, sface, goal, occ, bus, spine_set, in_bounds,
                         src_is_port, bus_dir=bus_dir, brokers=brokers,
-                        forbid_first=forbid_first)
+                        forbid_first=forbid_first,
+                        forbid_broker_transit=forbid_broker_transit)
         if path is None and goal_is_broker:
             # The chosen broker is walled (its only approaches are committed the wrong
             # way). Try the OTHER free neighbours of the target as broker taps before
@@ -470,7 +620,8 @@ def _route_chip_bus(project, ct, chip_id, nets, spine, *, sc_cells=None):
                     continue
                 path = _bus_bfs(s, sface, alt, occ, bus, spine_set, in_bounds,
                                 src_is_port, bus_dir=bus_dir, brokers=brokers,
-                                forbid_first=forbid_first)
+                                forbid_first=forbid_first,
+                                forbid_broker_transit=forbid_broker_transit)
                 if path is not None:
                     goal = alt
                     break
@@ -675,7 +826,8 @@ def _broker_abutting(cell, in_face, brokers, src, forbid_out=None,
 
 
 def _bus_bfs(src, sface, goal, occ, bus, spine_set, in_bounds, src_is_port,
-             *, bus_dir=None, brokers=None, forbid_first=None):
+             *, bus_dir=None, brokers=None, forbid_first=None,
+             forbid_broker_transit=False):
     """Shortest free-cell path src→goal, PREFERRING bus then spine cells, and only
     SHARING a bus cell when leaving it in its already-committed direction.
 
@@ -778,9 +930,13 @@ def _bus_bfs(src, sface, goal, occ, bus, spine_set, in_bounds, src_is_port,
             # A foreign broker (not this net's own goal) may be TRANSITED but not
             # landed on; transiting it is already constrained by its bus_dir above.
             if nxt in brokers and nxt != goal:
+                if forbid_broker_transit:
+                    # BUS (v2) mode: NO foreign net may transit a broker — that is the
+                    # exact one-cell-two-roles (deliver + conflicting through-transit)
+                    # corruption the bus topology forbids by construction. Route around.
+                    continue
                 # allow only if we then continue on its bus direction (handled by
                 # can_leave(nxt, ...) on the next expansion); permit entry here.
-                pass
             nd = dcur + cost(nxt) + 1     # +1 per hop to bound length
             if nd < dist.get(nxt, 1 << 30):
                 dist[nxt] = nd

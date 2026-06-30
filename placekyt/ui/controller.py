@@ -566,7 +566,19 @@ class AppController(QObject):
         # when routing is BUS-mode — the bus needs the port to stay a free tap. (A
         # design with >1 filament feeding the port is multi-filament regardless; the
         # placer detects that itself.) "auto"/"never" leave the filament count to
-        # decide, preserving the single-filament lead-on-port path.
+        # decide, preserving the single-filament lead-on-port path. The bus v2 router
+        # threads ONE directed backbone of broker taps over that placement; a single
+        # filament keeps the lead-on-port block-to-block path.
+        #
+        # NOTE: ``with_bus_snake`` (lay ALL filaments along ONE serpentine) is the
+        # co-designed ideal, but for real multi-filament designs on a 10x12 array it
+        # currently overflows the grid (a single serpentine of the modem's tall folds
+        # exceeds 12 rows → off-grid cells). Until the bus-snake packer is height-aware
+        # we keep the proven on-grid multi-filament regions (which the placer already
+        # selects for >1 filament); ``use_bus="always"`` forces it for the explicit
+        # bus request. We deliberately DON'T widen this to the smart-default topology:
+        # the placer's own >1-filament detection already covers it, and changing the
+        # ``auto`` placement strategy regressed multi-region demos (110B front end).
         force_multi = (use_bus == "always")
         placer = (AutoPlacer(self.project, footprint, anchor=anchor,
                              width=w, height=h)
@@ -1000,8 +1012,9 @@ class AppController(QObject):
             for cmd in pre:
                 cmd.execute()              # apply so the router sees new geometry
 
+        topology = self._select_topology(use_bus)
         report = self._run_router(router, port_cells, chip_types, use_cpsat,
-                                  use_bus, port_maps)
+                                  use_bus, port_maps, topology)
         # A chip INPUT-port → block net injects at the edge cell and needs NO
         # physical route (DRC + the build treat it as a direct port injection).
         # The router emits a vestigial 1-cell route (the input cell itself), which
@@ -1038,7 +1051,7 @@ class AppController(QObject):
         return report
 
     def _run_router(self, heuristic_router, port_cells, chip_types, use_cpsat,
-                    use_bus="auto", port_maps=None):
+                    use_bus="auto", port_maps=None, topology="block"):
         """Pick the router and return the AutoRouteReport.
 
         Order: heuristic BFS → (CP-SAT if it left failures + ``use_cpsat`` allows) →
@@ -1049,7 +1062,7 @@ class AppController(QObject):
         from engine.cpsat_router import route_all_cpsat, CpSatUnavailable
 
         if use_bus == "always":
-            return self._bus_route(port_cells, chip_types, port_maps)
+            return self._bus_route(port_cells, chip_types, port_maps, topology)
         if use_cpsat == "always":
             report = route_all_cpsat(self.project, chip_types, port_cells)
         else:
@@ -1066,14 +1079,48 @@ class AppController(QObject):
             return report
         # CP-SAT/heuristic can't demux DIFFERENT-sink streams — escalate to the
         # bus/broker router, which can. Keep its result only if it routes more.
-        bus = self._bus_route(port_cells, chip_types, port_maps)
+        bus = self._bus_route(port_cells, chip_types, port_maps, topology)
         if len(bus.routed) > len(report.routed):
             return bus
         return report
 
-    def _bus_route(self, port_cells, chip_types, port_maps):
+    def _select_topology(self, use_bus) -> str:
+        """Pick the routing topology (doc/ROUTING_TOPOLOGIES.md) for the current
+        design. Smart default: a design where >1 FILAMENT feeds the chip input port
+        wants a single shared BACKBONE (the modem's TX + RX off x16_in) → ``"bus"``;
+        a lone filament wants tight block-to-block abutment → ``"block"``.
+
+        ``use_bus="never"`` forces ``"block"`` (no backbone). ``"always"`` /
+        ``"auto"`` defer to the filament count. Counting reuses the placer's filament
+        partition over the current connection graph (read-only)."""
+        if use_bus == "never":
+            return "block"
+        try:
+            n = self._count_input_filaments()
+        except Exception:  # noqa: BLE001 — degrade to block-to-block, never crash
+            return "block"
+        return "bus" if n > 1 else "block"
+
+    def _count_input_filaments(self) -> int:
+        """How many distinct FILAMENTS feed the chip input port(s) — the count the
+        topology default keys on. Reuses :class:`AutoPlacer._filaments` /
+        ``_flow_order`` (pure graph) so the count matches the placer exactly."""
+        from engine.autoplace import AutoPlacer
+
+        placer = AutoPlacer(self.project, lambda *a: (0, 0))
+        blocks = [b for b in self.project.blocks
+                  if b.placement is not None and b.placement.cells]
+        names = {b.name for b in blocks}
+        if not blocks:
+            return 0
+        order, _backward = placer._flow_order(blocks, names)
+        return len(placer._filaments(order, names))
+
+    def _bus_route(self, port_cells, chip_types, port_maps, topology="block"):
         """Run the §1.2 bus/broker router, supplying the placement spine derived
-        from the current geometry (the serpentine the placer would lay)."""
+        from the current geometry (the serpentine the placer would lay). ``topology``
+        selects the BUS single-backbone v2 path vs the legacy per-net loop
+        (doc/ROUTING_TOPOLOGIES.md)."""
         from engine.bus_router import route_all_bus
 
         def spine(chip):
@@ -1083,7 +1130,8 @@ class AppController(QObject):
                 return []
 
         return route_all_bus(self.project, chip_types, port_cells,
-                             spine_provider=spine, port_map_provider=port_maps)
+                             spine_provider=spine, port_map_provider=port_maps,
+                             topology=topology)
 
     def _derive_spine(self, chip: int):
         """Re-derive the placement spine (serpentine bus waypoints) for ``chip`` from

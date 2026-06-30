@@ -80,6 +80,13 @@ class AutoPlacer:
         # route mode is BUS (``use_bus``), which also requires the port stay a free
         # tap. >1 filament always triggers multi regardless of this flag.
         self._multi_filament = False
+        # Strategy hint: BUS topology — lay ALL blocks (every filament) along ONE shared
+        # serpentine snake in global flow order, off the port, so the single bus backbone
+        # the router threads visits every block as an ordered tap. Co-designed with
+        # bus_router._route_chip_bus_v2 (doc/ROUTING_TOPOLOGIES.md). When set it OVERRIDES
+        # the per-filament-region multi pack: the two filaments interleave on one snake
+        # (per-filament flow order is preserved by the global topological order).
+        self._bus_snake = False
 
     # -- provider adapter -----------------------------------------------------
     def _provider(self, fn, blk):
@@ -375,7 +382,18 @@ class AutoPlacer:
         # — folds included — keeps the egress corridor clear; in single mode a feedback
         # fold legitimately uses the last column). Set per-run below.
         self._in_multi_pack = False
-        if not multi:
+        if self._bus_snake:
+            # BUS topology (co-design): lay EVERY block — all filaments — along ONE
+            # serpentine snake in global flow order, starting one column OFF the port
+            # (the port stays a free bus tap). The per-filament signal-flow order is
+            # already baked into ``order`` (topological), so interleaving the two
+            # filaments on one snake keeps each filament internally ordered while the
+            # single backbone the router threads visits every block as a tap in order.
+            self._lead_block = None          # nothing anchors on the port
+            self._in_multi_pack = True       # keep the egress corridor clear for folds
+            self._pack_run(order, positions, orientations, out_pos, spine, chip,
+                           band_top=self._row)
+        elif not multi:
             # SINGLE-FILAMENT, block-to-block: the lead input-fed block anchors its
             # input cell ON the port (preferred — lowest latency). One serpentine run.
             self._lead_block = self._lead_input_fed(order, names)
@@ -943,6 +961,15 @@ class AutoPlacer:
         A design that already has >1 filament feeding the port is multi-filament
         regardless of this flag. Returns self (chainable)."""
         self._multi_filament = bool(on)
+        return self
+
+    def with_bus_snake(self, on: bool = True):
+        """Force the BUS-SNAKE strategy: lay EVERY block (all filaments) along ONE
+        serpentine snake in global flow order, off the port. Co-designed with the v2
+        backbone router so the single bus the router threads visits every block as an
+        ordered tap. Set by the caller when the routing topology is BUS. Returns self
+        (chainable)."""
+        self._bus_snake = bool(on)
         return self
 
     def with_feedback(self, provider):

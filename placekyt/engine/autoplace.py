@@ -443,15 +443,24 @@ class AutoPlacer:
                 head_row_cap = min(head_row_cap, oc[0])
 
         # 1) Heads on the port row, left to right, off the port (>= start_x + 1).
+        # A SINGLE-CELL head seated on the port row between the port (or a previous head)
+        # on the WEST and the next head abutting on the EAST is BOXED into the corner: its
+        # only open faces are the off-grid north edge of the port row and the one south
+        # cell, and the flow-orienter commits that south cell as the head's EMIT face — so
+        # the bus router's INPUT broker is forced onto the EAST cell, which the neighbour's
+        # corridor also uses, tangling the two host-injected input streams (the modem's TX
+        # mapper vs RX matched filter). DROP A FREE ROW below such a boxed single-cell head
+        # (seat it at ``self._row + 1`` rather than the port row) so it gains free
+        # neighbours on its WEST/EAST/SOUTH faces and the router can give it its OWN broker
+        # whose fwd_face points INTO it (a clean ride-straight delivery, no foreign-broker
+        # divert). A multi-cell head's body already exposes free broker neighbours, so it
+        # stays on the row. The dropped head is still reached by the bus turning down.
         hx = self._start_x + 1
         head_band_h = 0
         for members in ordered:
             head = members[0]
             blk = blk_of[head]
-            # Heads are freely oriented to put their input on the west (bus) edge; a
-            # feedback fold keeps its authored faces (orienter returns identity).
             kind = self._orient_for(blk, True, head, out_pos, hx, self._row)
-            orientations[head] = kind
             w, h = self._oriented_wh(blk, kind)
             if hx + w > head_row_cap:        # would reach the output-port column
                 # No room left on the head row before the output-port column. Fall
@@ -460,12 +469,17 @@ class AutoPlacer:
                 # it — every block must be placed.
                 positions[head] = None       # marker: place with the tail run below
                 continue
-            positions[head] = (chip, hx, self._row)
+            # A boxed single-cell head drops one row so it isn't walled into a shared
+            # broker; it still sits in the head band (its row+1 just adds to head_band_h).
+            boxed_single = (w * h) == 1 and len(ordered) > 1
+            row = self._row + 1 if boxed_single else self._row
+            orientations[head] = kind
+            positions[head] = (chip, hx, row)
             op = self._io_offsets(blk, kind)
             if op is not None and op[1] is not None:
-                out_pos[head] = (hx + op[1][0], self._row + op[1][1])
-            head_band_h = max(head_band_h, h)
-            spine.append((min(self._width - 1, hx + w), self._row))
+                out_pos[head] = (hx + op[1][0], row + op[1][1])
+            head_band_h = max(head_band_h, (row - self._row) + h)
+            spine.append((min(self._width - 1, hx + w), row))
             # Heads ABUT on the row (gap 0): the bus fans from the port and threads the
             # free cells around/below them, tapping each at its own broker — a gap would
             # only widen the head row and push a wide head past the output-port column.

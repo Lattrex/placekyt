@@ -204,6 +204,35 @@ def route_all_bus(project, chip_types, port_cell_provider,
                 return 2
             return 1
 
+        # Static block-cell occupancy (block bodies + transit cells), so the ordering
+        # can score how CONSTRAINED each net's target is (how many free cells abut its
+        # input). The most-constrained target should claim its broker first — otherwise
+        # a roomier sibling (the modem's TX mapper, 4 free faces) can grab the ONE free
+        # broker cell its tighter neighbour (the RX matched filter, 2 free faces) also
+        # needs, leaving that neighbour unroutable (the net6 vs net8 corner fight).
+        occ_static = set()
+        for blk in project.blocks:
+            pl = blk.placement
+            if pl is None or pl.chip != chip_id:
+                continue
+            occ_static.update((c.x, c.y) for c in pl.cells)
+            occ_static.update((t.x, t.y)
+                              for t in getattr(pl, "transit_cells", []))
+
+        def _free_target_neighbors(n):
+            """Count free cells abutting net ``n``'s TARGET input cell (block targets
+            only) — a small count means a tightly-packed sink that must route first."""
+            _name, s, _sf, d, _df, _sp, dst_is_port, _conn = n
+            if dst_is_port or not isinstance(_conn.target, BlockEndpoint):
+                return 99
+            cnt = 0
+            for dx, dy in _NEI:
+                c = (d[0] + dx, d[1] + dy)
+                if 0 <= c[0] < ct.width and 0 <= c[1] < ct.height \
+                        and c not in occ_static and c != s:
+                    cnt += 1
+            return cnt
+
         def _key(n, mode):
             _name, s, _sf, d, _df, src_is_port, dst_is_port, _conn = n
             span = -(abs(s[0] - d[0]) + abs(s[1] - d[1]))
@@ -212,10 +241,16 @@ def route_all_bus(project, chip_types, port_cell_provider,
                 # is committed before its output net regardless of egress/block class.
                 return (_haz_rank(n), _cls(src_is_port, dst_is_port, "egress"), d,
                         0 if not src_is_port else 1, span)
+            if mode == "constrained":
+                # Most-constrained TARGET first (fewest free abutting cells), so a tight
+                # sink claims its only broker before a roomier sibling can take it.
+                return (_cls(src_is_port, dst_is_port, "egress"),
+                        _free_target_neighbors(n), d,
+                        0 if not src_is_port else 1, span)
             return (_cls(src_is_port, dst_is_port, mode), d,
                     0 if not src_is_port else 1, span)
 
-        modes = ("egress", "blocks")
+        modes = ("egress", "blocks", "constrained")
         if sc_cells:
             modes = modes + ("hazard",)
         best = None
@@ -324,6 +359,13 @@ def _route_chip_bus(project, ct, chip_id, nets, spine, *, sc_cells=None):
     # leave a shared cell the same way; they peel off at their own brokers.
     bus_dir: dict = {}
     brokers: set = set()              # cells programmed as a broker (their fwd is bus)
+    # Each broker delivers into ONE target input cell (the cell it abuts + flips toward).
+    # A broker may only be REUSED for a net whose target is the SAME cell (a true FAN-IN,
+    # e.g. the Costas phase cell's xi + xq). Two nets to DIFFERENT target cells must NOT
+    # share a broker: a single cell has ONE fwd_face (§1.3), so it cannot flip toward two
+    # different neighbours — the modem's TX-mapper and RX-matched-filter input nets both
+    # abut one free cell and would otherwise coalesce onto it, colliding (net8 0-corr).
+    broker_target: dict = {}          # broker (x, y) -> target input cell it serves
     out: list[RouteResult] = []
 
     # Single-cell bus-fed hazard cells (§5.3): one cell both RECEIVES (broker) and
@@ -388,10 +430,18 @@ def _route_chip_bus(project, ct, chip_id, nets, spine, *, sc_cells=None):
             # input feed and the output drive use DIFFERENT links (§5.3).
             if d in sc_cells and isinstance(conn.target, BlockEndpoint):
                 forbid_broker = hazard_out_face.get(d)
-            reuse = _broker_abutting(d, dface, brokers, s, forbid_broker)
+            reuse = _broker_abutting(d, dface, brokers, s, forbid_broker,
+                                     broker_target)
+            # A PORT→block INPUT net (the host injects the burst) should NOT broker off
+            # a cell already carrying ANOTHER input stream's corridor: the host word
+            # would have to ride that shared corridor and DIVERT at the foreign broker,
+            # landing one operand at the wrong cell (the modem's TX-mapper net riding the
+            # RX corridor to a shared broker → corrupted symbols). Prefer a FRESH broker
+            # cell (off the existing bus) so each input stream gets its own clean tap.
+            avoid_bus = src_is_port
             goal = reuse if reuse is not None else \
                 _free_neighbor(d, dface, occ, bus, spine_set, in_bounds, s,
-                               forbid_broker)
+                               forbid_broker, broker_target, avoid_bus=avoid_bus)
             goal_is_block = True
             goal_is_broker = True
             if goal is None:
@@ -415,7 +465,7 @@ def _route_chip_bus(project, ct, chip_id, nets, spine, *, sc_cells=None):
             # way). Try the OTHER free neighbours of the target as broker taps before
             # giving up — a packed fan-in may need a different abutment face.
             for alt in _free_neighbors_all(d, dface, occ, in_bounds, s,
-                                           forbid_broker):
+                                           forbid_broker, broker_target):
                 if alt == goal:
                     continue
                 path = _bus_bfs(s, sface, alt, occ, bus, spine_set, in_bounds,
@@ -475,6 +525,7 @@ def _route_chip_bus(project, ct, chip_id, nets, spine, *, sc_cells=None):
         bus.add(path[-1])
         if goal_is_broker:
             brokers.add(path[-1])
+            broker_target[path[-1]] = d   # the target input cell this broker serves
             # The broker forwards transiting (HOP<31) words on its BUS face = the
             # direction of travel INTO it. A later net transiting this broker must
             # continue that way (matches the broker's restore face). Record it so the
@@ -529,7 +580,7 @@ def _broker_forbidden(in_face, forbid_out):
 
 
 def _free_neighbor(cell, in_face, occ, bus, spine_set, in_bounds, src,
-                   forbid_out=None):
+                   forbid_out=None, broker_target=None, avoid_bus=False):
     """A free cell abutting ``cell`` (the target input) to host the broker.
 
     A delivery may arrive on any face EXCEPT the target's own emit (``in_face``) face
@@ -539,7 +590,15 @@ def _free_neighbor(cell, in_face, occ, bus, spine_set, in_bounds, src,
     hazard case) it instead prefers a QUIET free neighbour OFF the bus/spine and the
     calmest corner, so the input feed never competes with through-traffic on the
     hazard cell's single link.
-    """
+
+    ``avoid_bus`` (a PORT→block input net) INVERTS the coalesce preference: a fresh
+    cell OFF the existing bus is preferred so two host-injected input streams don't
+    share one broker corridor (which would force one to divert at the other's broker,
+    landing the operand at the wrong cell — the modem's TX-mapper-on-RX-corridor bug).
+
+    A cell already serving as a broker for a DIFFERENT target (per ``broker_target``)
+    is excluded: it has ONE fwd_face flipping toward its own target and cannot also
+    deliver into this cell (the two distinct-sink streams would collide on it)."""
     forbid = _broker_forbidden(in_face, forbid_out)
     cands = []
     for code, (dx, dy) in _FWD_DELTA.items():
@@ -548,7 +607,13 @@ def _free_neighbor(cell, in_face, occ, bus, spine_set, in_bounds, src,
         n = (cell[0] + dx, cell[1] + dy)
         if not in_bounds(n) or n in occ or n == src or n == cell:
             continue
-        if forbid_out is not None:
+        if broker_target is not None and broker_target.get(n) not in (None, cell):
+            continue  # already a broker delivering to a different target
+        if avoid_bus:
+            # PORT input net: PREFER a fresh cell off the bus/spine (0), then spine (1),
+            # then a busy bus cell last (2) — the opposite of the coalescing default.
+            rank = (2 if n in bus else (1 if n in spine_set else 0), 0)
+        elif forbid_out is not None:
             base = 2 if n in bus else (1 if n in spine_set else 0)
             adj = sum(1 for ddx, ddy in _NEI
                       if (n[0] + ddx, n[1] + ddy) in bus
@@ -563,10 +628,13 @@ def _free_neighbor(cell, in_face, occ, bus, spine_set, in_bounds, src,
     return cands[0][1]
 
 
-def _free_neighbors_all(cell, in_face, occ, in_bounds, src, forbid_out=None):
+def _free_neighbors_all(cell, in_face, occ, in_bounds, src, forbid_out=None,
+                        broker_target=None):
     """All free neighbours of ``cell`` that may host a broker (any face except the
     target's own emit face, and a single-cell hazard cell's committed output face), in
-    no particular order — the fallback set when the preferred broker tap is walled."""
+    no particular order — the fallback set when the preferred broker tap is walled. A
+    cell already brokering a DIFFERENT target (``broker_target``) is excluded (it has one
+    fwd_face toward its own target; two distinct sinks cannot share it)."""
     forbid = _broker_forbidden(in_face, forbid_out)
     res = []
     for c, (dx, dy) in _FWD_DELTA.items():
@@ -574,22 +642,34 @@ def _free_neighbors_all(cell, in_face, occ, in_bounds, src, forbid_out=None):
             continue
         n = (cell[0] + dx, cell[1] + dy)
         if in_bounds(n) and n not in occ and n != src and n != cell:
+            if broker_target is not None and broker_target.get(n) not in (None, cell):
+                continue
             res.append(n)
     return res
 
 
-def _broker_abutting(cell, in_face, brokers, src, forbid_out=None):
+def _broker_abutting(cell, in_face, brokers, src, forbid_out=None,
+                     broker_target=None):
     """An EXISTING broker cell abutting the target input ``cell`` (a FAN-IN reuse:
     a second net into the same input cell rides the broker already there, which then
     grows a deliver entry per net). Returns that broker cell or None. Excludes the
     target's own emit face, a single-cell hazard cell's committed output face, and the
-    source cell."""
+    source cell.
+
+    A broker may be reused ONLY when it already serves the SAME target input ``cell`` (a
+    true fan-in — two streams into one cell, e.g. the Costas phase cell's xi + xq). A
+    broker abutting ``cell`` but DELIVERING to a different neighbour cell (``broker_target``
+    says so) must NOT be reused: a single broker cell has ONE fwd_face (§1.3) and cannot
+    flip toward two different targets, so two distinct sinks sharing it would collide (the
+    modem's TX-mapper vs RX-matched-filter input nets, which both abut one free cell)."""
     forbid = _broker_forbidden(in_face, forbid_out)
     for c, (dx, dy) in _FWD_DELTA.items():
         if (dx, dy) in forbid:
             continue
         n = (cell[0] + dx, cell[1] + dy)
         if n in brokers and n != src and n != cell:
+            if broker_target is not None and broker_target.get(n) not in (None, cell):
+                continue  # this broker delivers elsewhere — not a same-cell fan-in
             return n
     return None
 

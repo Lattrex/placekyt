@@ -1033,16 +1033,24 @@ def _apply_brokers(cell_map, gr_placement, blocks, connections, project,
             continue
         # Single-net source (the ordinary one-operand delivery, unchanged).
         conn_name, distance, b_entry = nets[0]
+        # The source must WRITE to the broker burst reg the broker's delivery for THIS
+        # net READS — which is NOT always R0: when the broker also serves OTHER
+        # deliveries (a fan-in / a shared tap cell), this net's operand is assigned burst
+        # reg ``BROKER_BURST_REG + conn_burst_reg[conn]`` (oi in the broker's delivery
+        # list), and the broker relays it via ``MOVE R0, R<that reg>``. Patching the
+        # source to R0 unconditionally makes the broker read an EMPTY reg → relay 0 (the
+        # compact-modem mapper→upsampler 0-output bug). Use this net's own burst reg.
+        dest_reg = BROKER_BURST_REG + int(conn_burst_reg.get(conn_name, 0))
         # If the source block declares a MID-block output cell (the Costas rotate
         # writes yi→pd_pi internally AND yi_tap→the bus), patch ONLY the output
         # WRITE (the last WRITE — emitted after the internal handoffs) so the
         # internal feedback WRITEs keep their @1 hops; else patch the cell's
         # exit WRITE + JUMP together.
         if _output_cell_carries_handoffs(gb):
-            _patch_last_write_handoff(cfg, distance, dest=BROKER_BURST_REG)
+            _patch_last_write_handoff(cfg, distance, dest=dest_reg)
             _patch_last_jump_handoff(cfg, distance, entry=b_entry)
         else:
-            _patch_cell_handoff(cfg, distance, dest=BROKER_BURST_REG,
+            _patch_cell_handoff(cfg, distance, dest=dest_reg,
                                 entry=b_entry)
 
     # Hand the resolved broker entries + burst-reg map back so the build can resolve

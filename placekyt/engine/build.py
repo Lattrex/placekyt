@@ -840,18 +840,27 @@ def _broker_program(deliveries, bus_face: int):
             index[key] = len(groups)
             groups.append([dv])
 
-    # Each operand of a complex group lands in its OWN burst reg (R0, R1, ...) so the
-    # source's distinct WRITEs don't clobber one another. Face data words pack ABOVE
-    # the highest burst reg used so they never collide with a landing reg.
-    max_operands = max((len(g) for g in groups), default=1)
-    data_base = max_operands                  # bus_face + faces start past the regs
+    # EVERY operand across ALL deliveries lands in its OWN register, allocated GLOBALLY
+    # starting at R1 — NEVER R0 (R0 is the accumulator / WRITE source; the relay
+    # ``MOVE R0, R<op>`` and the auto-landing both clobber it, so two deliveries sharing
+    # R0 wipe each other → the broker relays 0). The per-DELIVERY operand index used to
+    # restart at 0 each group, so two independent deliveries both used R0 (the dead
+    # compact-modem mapper→upsampler chain). We assign each operand a unique register
+    # ``op_reg = 1 + running_index`` and the source's WRITE addresses THAT register. Face
+    # data words (bus_face + per-group deliver faces) pack ABOVE the highest operand reg.
+    total_operands = sum(len(g) for g in groups)
+    data_base = 1 + total_operands             # bus_face + faces start past the operand regs
     data = [DataWord("bus_face", int(bus_face) & 0x3, address=data_base)]
-    burst_ports = [Port(f"burst{r}", register=r) for r in range(max_operands)]
+    # One input Port per operand at its global register (R1, R2, ...). The template refers
+    # to them by a stable name ``op<gi>_<oi>``; ``burst_reg_by_conn`` records the absolute
+    # register so the source patch (``_apply_brokers``) WRITEs to the matching one.
+    burst_ports = []
     entries = []
     tmpl_parts = []
     by_conn: dict = {}
     burst_reg_by_conn: dict = {}
     g_face_addr = data_base + 1
+    op_index = 0                               # running global operand index (→ reg 1+)
     for gi, group in enumerate(groups):
         label = f"deliver{gi}"
         fname = f"face{gi}"
@@ -861,12 +870,16 @@ def _broker_program(deliveries, bus_face: int):
         g_face_addr += 1
         entries.append(EntryPoint(label))
         lines = [f"{label}:", f"    MOVE [FACE], R{{data:{fname}}}"]
-        # Relay each operand to its consumer register; WRITE always sends R0, so MOVE
-        # each landed operand into R0 first. Distinct burst regs keep them separate.
-        for oi, dv in enumerate(group):
-            lines.append(f"    MOVE R0, R{{in:burst{oi}}}")
+        # Relay each operand: WRITE always sends R0, so MOVE the landed operand (in its
+        # own R>=1) into R0 first, then WRITE. Distinct global regs keep deliveries apart.
+        for dv in group:
+            op_reg = 1 + op_index
+            op_index += 1
+            pname = f"op{gi}_{op_reg}"
+            burst_ports.append(Port(pname, register=op_reg))
+            lines.append(f"    MOVE R0, R{{in:{pname}}}")
             lines.append(f"    WRITE @1, {int(dv.in_reg)}")
-            burst_reg_by_conn[dv.conn] = oi      # which source WRITE -> which reg
+            burst_reg_by_conn[dv.conn] = op_reg   # ABSOLUTE reg the source WRITEs to
         # ONE trigger after ALL operands (the complex-sample contract). Every
         # delivery in a group targets the same cell/entry, so use the first.
         lines.append(f"    JUMP @1, {int(group[0].in_entry)}")
@@ -1007,9 +1020,21 @@ def _apply_brokers(cell_map, gr_placement, blocks, connections, project,
         cfg = cell_map.get_cell(*pb.exit_cell)
         if cfg is None:
             continue
-        # Distance from the source exit cell to the broker = physical waypoints-1.
-        distance = max(0, len(pts) - 1)
+        # Distance from the source exit cell to the broker. ``pts`` is the physical
+        # route. Two route conventions reach this point and the hop count differs:
+        #   * LEGACY/drawn route — ``pts[0]`` IS the source's own exit cell, so the
+        #     word's hops to the broker = ``len(pts) - 1`` (waypoints after the exit).
+        #   * BUS-v2 backbone route — the source block sits BESIDE the bus and taps in,
+        #     so ``pts`` is the BUS SEGMENT and ``pts[0]`` is the TAP cell one hop
+        #     DOWNSTREAM of the exit (the exit is NOT in the route). The word still must
+        #     hop exit→tap, so the true distance is ``len(pts)`` (that leading hop plus
+        #     the in-route hops). Undercounting it by one made the source WRITE/JUMP land
+        #     ONE cell short of the broker (the auto-P&R modem's 0-output TX bug).
+        # Normalise by prepending the exit cell when it isn't already the route head, so
+        # the count is uniformly ``len(full)-1`` for both conventions.
         ex = tuple(pb.exit_cell)
+        full = pts if pts[0] == ex else [ex] + list(pts)
+        distance = max(0, len(full) - 1)
         by_src_cell.setdefault(ex, []).append(
             (conn.name, distance, conn_entry[conn.name]))
         src_meta[ex] = (gb, cfg)

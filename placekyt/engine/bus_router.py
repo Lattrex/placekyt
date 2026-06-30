@@ -185,10 +185,21 @@ def route_all_bus(project, chip_types, port_cell_provider,
         if topology in ("bus", "ring"):
             v2 = _route_chip_bus_v2(project, ct, chip_id, nets, spine,
                                     port_map_provider=port_map_provider)
-            if v2 is not None and len(v2) == len(nets) \
-                    and all(r.ok for r in v2):
+            if v2 is not None and len(v2) == len(nets):
                 gated = _drc_gate(v2, chip_types)
+                bad = [r for r in gated if not r.ok]
+                # ACCEPT v2 when EVERY remaining failure is a STRUCTURED
+                # ``output-boxed:<block>`` failure (a multi-cell output with no free
+                # neighbour — the Costas case) AND the routed subset is DRC-clean. The
+                # boxed net is surfaced as a NAMED failure the Part B place<->route loop
+                # detects and perturbs (re-fold / spread), so v2 still drives the loop
+                # toward a full route rather than silently falling back to the legacy
+                # per-net router (which would route the boxed net SHORT, 0-output). A v2
+                # with any OTHER failure is discarded (legacy fallback, unchanged).
                 if all(r.ok for r in gated):
+                    results.extend(gated)
+                    continue
+                if bad and all("output-boxed:" in str(r.reason) for r in bad):
                     results.extend(gated)
                     continue
         # Route ORDER matters under single-fwd_face contention (the bus is a directed
@@ -368,8 +379,12 @@ def _route_chip_bus_v2(project, ct, chip_id, nets, spine, *, port_map_provider):
     if not (have_in and have_out):
         return _bail("no shared input+output port pair")
 
-    def in_cell_of(block, port):
-        """(x, y) of a block's input PORT cell via the port_map_provider."""
+    def _port_cell_of(block, port, direction):
+        """(x, y) of a block's ``direction`` ("in"/"out") PORT cell via the
+        ``port_map_provider``. Falls back to the block's first cell for an input port,
+        last cell for an output port (a multi-cell SNAKE block's output is the FAR end of
+        the snake, not its input tap — a net leaving there must tap a backbone cell
+        abutting it, else the source word lands at the input tap many cells short)."""
         pmap = None
         if port_map_provider is not None:
             try:
@@ -383,11 +398,18 @@ def _route_chip_bus_v2(project, ct, chip_id, nets, spine, *, port_map_provider):
                 pmap = None
         if pmap is not None:
             for p in pmap.ports:
-                if p.name == port and p.direction == "in":
+                if p.name == port and p.direction == direction:
                     pc = block.placement.cell(p.cell_id)
                     if pc is not None:
                         return (pc.x, pc.y)
-        return (block.placement.cells[0].x, block.placement.cells[0].y)
+        fallback = block.placement.cells[-1 if direction == "out" else 0]
+        return (fallback.x, fallback.y)
+
+    def in_cell_of(block, port):
+        return _port_cell_of(block, port, "in")
+
+    def out_cell_of(block, port):
+        return _port_cell_of(block, port, "out")
 
     # Block + transit cells are obstacles for the backbone (a word never transits a
     # live block cell).
@@ -424,7 +446,7 @@ def _route_chip_bus_v2(project, ct, chip_id, nets, spine, *, port_map_provider):
     filaments = _placer._filaments(_order, _names)
     fil_of = {n: fi for fi, mem in enumerate(filaments) for n in mem}
 
-    tap_in: dict = {}                 # in_cell -> {"block","ord","conns"}
+    tap_in: dict = {}                 # in_cell -> {"block","kind","ord","conns"}
     for (name, s, sface, d, dface, sp, dp, conn) in nets:
         if dp or not isinstance(conn.target, BlockEndpoint):
             continue
@@ -433,9 +455,36 @@ def _route_chip_bus_v2(project, ct, chip_id, nets, spine, *, port_map_provider):
             continue
         ic = in_cell_of(blk, conn.target.port)
         ent = tap_in.setdefault(ic, {
-            "block": blk.name, "conns": [],
-            "ord": (fil_of.get(blk.name, 0), fpos.get(blk.name, 1 << 20))})
+            "block": blk.name, "kind": "in", "conns": [],
+            "ord": (fil_of.get(blk.name, 0), fpos.get(blk.name, 1 << 20), 0)})
         ent["conns"].append(name)
+
+    # OUTPUT TAPS (the CM multi-cell-output mandate, doc/ROUTING_TOPOLOGIES.md). For a
+    # block→block / block→port net whose SOURCE block's OUTPUT cell is DIFFERENT from
+    # its input cell (a multi-cell snake) the source must tap the backbone at a FREE
+    # cell ABUTTING that output cell — otherwise the build (which hops exit→tap @1) lands
+    # the source word at the input tap, many cells short (net5/net10/net4/net11 0-output).
+    # The forward-ordered backbone (the flow bias below) keeps a producer's output cell
+    # UPSTREAM of its consumer, so ``src_tap_cell`` rides from an existing backbone cell
+    # abutting the output. A multi-cell output with NO free orthogonal neighbour (the BOXED
+    # Costas `rotate` cell, walled by its own snake) CANNOT tap the bus: it is recorded in
+    # ``boxed_outputs`` so v2 returns a structured ``output-boxed:<block>`` failure the Part
+    # B place<->route loop perturbs (re-fold / spread) — never a dead build.
+    boxed_outputs: dict = {}          # block name -> out_cell with no free neighbour
+    for (name, s, sface, d, dface, sp, dp, conn) in nets:
+        if not isinstance(conn.source, BlockEndpoint):
+            continue
+        sb = project.block(conn.source.block)
+        if sb is None or sb.placement is None or len(sb.placement.cells) < 2:
+            continue                  # single-cell source: input tap == output, no extra
+        oc = out_cell_of(sb, conn.source.port)
+        if oc == in_cell_of(sb, conn.source.port):
+            continue                  # output leaves the input cell — input tap suffices
+        free_nbrs = [(oc[0] + dx, oc[1] + dy) for dx, dy in _NEI
+                     if in_bounds((oc[0] + dx, oc[1] + dy))
+                     and (oc[0] + dx, oc[1] + dy) not in block_cells]
+        if not free_nbrs:
+            boxed_outputs[sb.name] = oc
 
     # Input cells of blocks whose output drives the chip OUTPUT port (the filament
     # TERMINALS, e.g. the modem's TX IQUpconvert + RX slicer). Both egress to the shared
@@ -454,6 +503,13 @@ def _route_chip_bus_v2(project, ct, chip_id, nets, spine, *, port_map_provider):
         x, y = cell
         return (y, x if (y % 2 == 0) else (W - 1 - x))
 
+    # INPUT taps thread the backbone (the PROVEN, stable v2 behaviour — unchanged). Output
+    # taps are handled POST-HOC (below): a multi-cell source rides from an existing backbone
+    # cell ABUTTING its output cell (which the input-tap backbone often already passes), and
+    # only when NONE exists is a minimal OUTPUT-TAP EXTENSION threaded, or the source is
+    # surfaced as output-boxed. Adding output cells to the main tap set destabilised the
+    # greedy thread (it produced disordered backbones that failed FORWARD order for the
+    # INPUT taps too); keeping the input-tap thread intact preserves the proven routing.
     taps = sorted(tap_in.items(), key=lambda kv: serp_key(kv[0]))
     # Per-filament flow-order repair (stable): within each filament, its taps must be in
     # ``ord`` (pos) order; cross-filament interleave from the serpentine sweep is kept.
@@ -758,17 +814,30 @@ def _route_chip_bus_v2(project, ct, chip_id, nets, spine, *, port_map_provider):
         # output up the egress column = the §5.3 split). Kept SOFT (a tie-break, not an
         # exclusion) so a tight corner where no side tap reaches still routes.
         egress_col = _sc_egress_in.get(in_cell)
+        # FLOW BIAS: among candidate abut cells, prefer the one that PROGRESSES toward the
+        # next tap (smaller Manhattan distance to the next tap's input cell). This keeps the
+        # backbone visiting blocks in FLOW order (producer before consumer) so a multi-cell
+        # source's OUTPUT cell sits UPSTREAM of its consumer on the bus — without it the
+        # greedy thread can descend a near wall first and visit the consumer (iqupconvert)
+        # BEFORE the producer (rrc), leaving the producer's output stranded downstream
+        # (net5 0-output). A SECONDARY key (after reuse/spine/wall-pref) so it never
+        # overrides a forced or co-designed route — it only orders otherwise-equal choices.
+        next_in = thread_taps[ti + 1][0] if ti + 1 < len(thread_taps) else out_port_cell
+
+        def _to_next(cell):
+            return abs(cell[0] - next_in[0]) + abs(cell[1] - next_in[1])
         out = []
         for c in cands:
             sc_pen = 1 if (egress_col is not None and c[0] == egress_col) else 0
             if c in bb_set:
-                out.append(((0, sc_pen, 0, 0), c, [c]))     # reuse: no new segment
+                out.append(((0, sc_pen, 0, 0, 0), c, [c]))   # reuse: no new segment
                 continue
             for p in bfs_paths(head, c, blocked, wall_occ,
                                avoid=avoid - {c}):
                 prefer = 0 if c == pref else 1
                 lane = 0 if c in spine_set else 1
-                out.append(((1, sc_pen, prefer, lane * 100 + len(p)), c, p))
+                out.append(((1, sc_pen, prefer, _to_next(c), lane * 100 + len(p)),
+                            c, p))
         out.sort(key=lambda t: t[0])
         return out
 
@@ -911,6 +980,37 @@ def _route_chip_bus_v2(project, ct, chip_id, nets, spine, *, port_map_provider):
                 sc_targets.add(c0)
                 break
 
+    # Single-cell bus-fed blocks that ALSO drive a block→block output (e.g. the modem's
+    # PSK mapper): the §5.3 split needs input-face != output-face. The DFS may have tapped
+    # the input on the cell the OUTPUT also wants (the flow-bias forward tap), leaving no
+    # downstream cell for the output → input-face == output-face deadlock. When the block
+    # abuts an EARLIER backbone cell on a DIFFERENT face, REASSIGN its input tap to that
+    # earlier cell so the original (downstream) cell is free to serve the output drive (the
+    # §5.3 split below then finds it). Only for single-cell blocks that source a net.
+    sc_source_cells: set = set()
+    for (_n, _s, _sf, _d, _df, _sp, _dp, c) in nets:
+        if not isinstance(c.source, BlockEndpoint):
+            continue
+        sb = project.block(c.source.block)
+        if sb is not None and sb.placement is not None \
+                and len(sb.placement.cells) == 1:
+            sc_source_cells.add((sb.placement.cells[0].x, sb.placement.cells[0].y))
+    for c0 in sc_targets & sc_source_cells:
+        in_tap = tap_abut.get(c0)
+        if in_tap is None:
+            continue
+        adj = [(c0[0] + dx, c0[1] + dy) for dx, dy in _NEI
+               if (c0[0] + dx, c0[1] + dy) in bb_index]
+        if len(adj) < 2:
+            continue
+        earliest = min(adj, key=lambda a: bb_index[a])
+        # If the input is tapped LATER than an available earlier-face cell, move it earlier
+        # so a downstream cell remains for the output (input from upstream, output drives
+        # downstream — distinct faces).
+        if bb_index[in_tap] > bb_index[earliest] \
+                and _cardinal(c0, earliest) != _cardinal(c0, in_tap):
+            tap_abut[c0] = earliest
+
     # SINGLE-CELL in==out split (§5.3) via a SECOND backbone tap. A single-cell block
     # both receives and drives on its ONE cell; if both rode the same lane tap they would
     # share a face (deadlock). When the block sits at a backbone BEND it abuts TWO backbone
@@ -936,23 +1036,42 @@ def _route_chip_bus_v2(project, ct, chip_id, nets, spine, *, port_map_provider):
             sc_out_tap[c0] = min(seconds, key=lambda c: bb_index[c])
 
     def src_tap_cell(conn, i_to_limit=None):
-        """The backbone tap cell the SOURCE block of a block→block net rides from (its
-        own input-cell's tap — the block sits beside the backbone). None for a head. A
-        single-cell source uses its dedicated OUTPUT tap (the §5.3 second-face cell) when
-        one exists AND it stays upstream of the consumer (``i_to_limit``)."""
+        """The backbone tap cell the SOURCE block of a block→block net rides from. None
+        for a head. Preference order:
+          1. The block's dedicated OUTPUT-cell tap (the free cell abutting its output
+             cell, threaded as an output tap above) — for a MULTI-CELL snake the word
+             leaves the FAR output cell, so the build must hop exit→THAT tap @1. Without
+             it the source taps its input cell, many cells upstream of the output, and
+             the burst lands short (net5/net10/net4/net11 0-output). Used only if it stays
+             UPSTREAM of the consumer (``i_to_limit``).
+          2. A single-cell source's §5.3 second-face OUTPUT tap (the bend cell).
+          3. The block's input-cell tap (a single-cell block sits beside the backbone)."""
         sb = project.block(conn.source.block)
         if sb is None or sb.placement is None:
             return None
         bcells = {(c.x, c.y) for c in sb.placement.cells}
+        # 1. dedicated OUTPUT-cell tap (multi-cell snake): a backbone cell ABUTTING the
+        #    block's OUTPUT cell for THIS port. Among all backbone cells adjacent to the
+        #    output cell, pick the EARLIEST (smallest bb_index) that stays UPSTREAM of the
+        #    consumer (``i_to_limit``) — the threaded ``tap_abut[oc]`` is one such cell,
+        #    but a path cell of an earlier segment may abut the output cell at a LOWER
+        #    index (the source should ride from the earliest one so it stays upstream of
+        #    its consumer). A boxed output (no free neighbour) was never tapped → skip.
+        oc = out_cell_of(sb, conn.source.port)
+        if oc not in bcells or len(bcells) > 1:
+            adj = [(oc[0] + dx, oc[1] + dy) for dx, dy in _NEI
+                   if (oc[0] + dx, oc[1] + dy) in bb_index]
+            cands = sorted((bb_index[a] for a in adj))
+            for oi in cands:
+                if i_to_limit is None or oi <= i_to_limit:
+                    return backbone[oi]
         primary = None
         for ic, tcell in tap_abut.items():
             if ic in bcells:
                 primary = tcell
                 break
-        # A single-cell source prefers its dedicated OUTPUT tap (the §5.3 second-face
-        # cell) — but ONLY if that tap stays UPSTREAM of the consumer (``i_to_limit``);
-        # otherwise the primary lane tap is used (a far second tap, e.g. the egress rail
-        # running past the block, would put the output downstream of its own consumer).
+        # 2. A single-cell source prefers its dedicated OUTPUT tap (the §5.3 second-face
+        #    cell) — but ONLY if it stays UPSTREAM of the consumer (``i_to_limit``).
         for bc in bcells:
             if bc in sc_out_tap:
                 oi = bb_index[sc_out_tap[bc]]
@@ -960,8 +1079,23 @@ def _route_chip_bus_v2(project, ct, chip_id, nets, spine, *, port_map_provider):
                     return sc_out_tap[bc]
         return primary
 
+    def _is_boxed_src(conn):
+        """True when this net's source block has a multi-cell OUTPUT cell with NO free
+        orthogonal neighbour to host an output tap (the Costas case). Such a net cannot
+        rejoin the bus; v2 emits a STRUCTURED ``output-boxed:<block>`` failure the Part B
+        loop perturbs (re-fold / spread), rather than a dead build."""
+        return (isinstance(conn.source, BlockEndpoint)
+                and conn.source.block in boxed_outputs)
+
     out: list[RouteResult] = []
     for (name, s, sface, d, dface, sp, dp, conn) in nets:
+        if _is_boxed_src(conn):
+            out.append(RouteResult(
+                name, False,
+                reason=f"output-boxed:{conn.source.block} "
+                       f"(multi-cell output cell {boxed_outputs[conn.source.block]} "
+                       f"has no free neighbour to tap the bus)"))
+            continue
         if dp:
             i_to = bb_index.get(d)
             if i_to is None:

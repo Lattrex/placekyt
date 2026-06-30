@@ -170,9 +170,18 @@ class AutoPlacer:
                     and conn.target.block in names:
                 input_fed.add(conn.target.block)
         cur_x = {b.name: b.placement.cells[0].x for b in blocks}
+        # DETERMINISTIC tie-break: the project's block INDEX (import / creation order),
+        # which for an imported GRC flowgraph IS signal-flow order. Using the current X
+        # made flow order DEPEND on the live placement, so a re-place after a prior place
+        # (auto_place → auto_pnr) re-derived a DIFFERENT, sometimes-degenerate layout (the
+        # iqupconvert-to-the-bottom re-place). The stable index keeps auto_place idempotent
+        # under repeated invocation; current X is kept only as a secondary tie-break for
+        # blocks with no graph order (e.g. manually-placed islands).
+        order_index = {b.name: i for i, b in enumerate(self._project.blocks)}
 
         def rank(n):
-            return (0 if n in input_fed else 1, cur_x.get(n, 0), n)
+            return (0 if n in input_fed else 1, order_index.get(n, 1 << 20),
+                    cur_x.get(n, 0), n)
 
         ready = sorted((n for n in names if indeg[n] == 0), key=rank)
         order: list = []

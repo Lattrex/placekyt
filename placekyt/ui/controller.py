@@ -1130,6 +1130,192 @@ class AppController(QObject):
             if cc is None or cc == chip:
                 conn.route = AUTO_ROUTE
 
+    def _boxed_output_blocks(self, report) -> list:
+        """Block names a route report flagged as ``output-boxed:<block>`` (a multi-cell
+        source OUTPUT cell with no free neighbour to tap the bus), in report order. Also
+        catches any still-unrouted net whose source is a multi-cell block (a buried
+        output the loop should perturb)."""
+        from model.connection import BlockEndpoint
+        names: list = []
+        for r in report.results:
+            if r.ok:
+                continue
+            reason = str(getattr(r, "reason", "") or "")
+            blk = None
+            if "output-boxed:" in reason:
+                blk = reason.split("output-boxed:", 1)[1].split()[0]
+            else:
+                conn = self.project.connection(r.name)
+                if conn is not None and isinstance(conn.source, BlockEndpoint):
+                    sb = self.project.block(conn.source.block)
+                    if sb is not None and sb.placement is not None \
+                            and len(sb.placement.cells) > 1:
+                        blk = conn.source.block
+            if blk and blk not in names:
+                names.append(blk)
+        return names
+
+    def _perturb_boxed_outputs(self, chip, cts, use_bus, ct, report):
+        """PART B — re-fold / spread a block whose multi-cell OUTPUT is BOXED so its
+        output cell gains a free neighbour to tap the bus, then re-route. Monotone: a
+        perturbation is kept only if it STRICTLY increases the routed-net count (and
+        never introduces a build-time §5.3 single-cell deadlock); otherwise it is
+        reverted. Returns the best route report (the live project holds its placement +
+        routes). Iterates while progress is made (a layout may box >1 output)."""
+        import copy
+        from commands import OrientBlockCommand
+        from engine.bus_router import crossover_plan
+
+        def _routed(rep):
+            return sum(1 for r in rep.results if r.ok)
+
+        def _route_now():
+            self._clear_chip_routes(chip)
+            return self.auto_route_all(cts, use_bus=use_bus, auto_orient=False,
+                                       register=False)
+
+        def _clean_build(rep):
+            """A candidate is accepted only if it routes AND its build is DRC-clean of
+            the §5.3 single-cell in==out deadlock (the route-level DRC does NOT catch the
+            BUILD-time deadlock — a naive output tap regressed the duplex build into one).
+            Reject a perturbation that would deadlock, falling back to the prior layout."""
+            if not rep.ok:
+                return False
+            try:
+                if ct is not None and len(
+                        crossover_plan(self.project, chip, ct, self.catalog)) != 0:
+                    return False
+                res = self.build()
+                bad = [e for e in getattr(res, "errors", [])
+                       if getattr(e, "category", "") in
+                       ("single_cell_inout_deadlock", "deadlock", "face_conflict")]
+                return not bad
+            except Exception:  # noqa: BLE001
+                return False
+
+        best_rep = report
+        best_n = _routed(report)
+        # Bounded outer loop: each pass fixes at most one boxed block; cap by block count.
+        for _pass in range(len(self.project.blocks) + 1):
+            boxed = self._boxed_output_blocks(best_rep)
+            if not boxed or best_rep.ok:
+                break
+            progressed = False
+            for blk_name in boxed:
+                blk = self.project.block(blk_name)
+                if blk is None or blk.placement is None:
+                    continue
+                saved = copy.deepcopy(blk.placement)
+                fixed = False
+                # 1. RE-FOLD: try each D4 orientation; keep the first that strictly
+                #    increases routed count and builds clean.
+                for kind in ("mirror_v", "mirror_h", "cw", "ccw"):
+                    self.project._set_block_placement(
+                        blk_name, copy.deepcopy(saved))
+                    try:
+                        OrientBlockCommand(self.project, blk_name, kind).execute()
+                    except Exception:  # noqa: BLE001
+                        continue
+                    if self._collides(chip, blk_name):
+                        continue
+                    rep = _route_now()
+                    if _routed(rep) > best_n and _clean_build(rep):
+                        best_rep, best_n = rep, _routed(rep)
+                        fixed = progressed = True
+                        break
+                if fixed:
+                    continue
+                # 2. SPREAD: push the blocks neighbouring the boxed output cell out by one
+                #    cell to open a free channel adjacent to it, then re-route.
+                self.project._set_block_placement(blk_name, copy.deepcopy(saved))
+                if self._spread_for_output(chip, blk_name):
+                    rep = _route_now()
+                    if _routed(rep) > best_n and _clean_build(rep):
+                        best_rep, best_n = rep, _routed(rep)
+                        progressed = True
+                        continue
+                # 3. Neither helped — restore this block and move on (named failure kept).
+                #    Routes are re-derived by the single final re-route below.
+                self.project._set_block_placement(blk_name, copy.deepcopy(saved))
+            if not progressed:
+                break
+        # Re-route the live (best) placement once so the project carries the routes for
+        # whatever placement is now live (a rejected trial restored its block but left the
+        # routes stale). The live placement is the one that produced best_n, so this
+        # reproduces best_rep.
+        self._clear_chip_routes(chip)
+        final = self.auto_route_all(cts, use_bus=use_bus, auto_orient=False,
+                                    register=False)
+        return final if _routed(final) >= best_n else best_rep
+
+    def _collides(self, chip, blk_name) -> bool:
+        """True if ``blk_name``'s cells (incl. transit cells) overlap another placed
+        block / leave the grid on ``chip`` (an orientation that doesn't fit in place)."""
+        blk = self.project.block(blk_name)
+        if blk is None or blk.placement is None:
+            return True
+        w, h = self._chip_dims(chip)
+        mine = blk.placement.occupied_positions()
+        if any(not (0 <= x < w and 0 <= y < h) for (x, y) in mine):
+            return True
+        for other in self.project.blocks:
+            if other.name == blk_name or other.placement is None \
+                    or other.placement.chip != chip:
+                continue
+            if mine & other.placement.occupied_positions():
+                return True
+        return False
+
+    def _spread_for_output(self, chip, blk_name) -> bool:
+        """Push blocks occupying the free-orthogonal-neighbour cells of ``blk_name``'s
+        OUTPUT cell out of the way (down/right by one) so the output gains a free tap
+        cell. Returns True if it opened a neighbour (a re-route is then worth trying).
+        Conservative: only shifts a neighbour block that can move without leaving the
+        grid or colliding; otherwise returns False (the loop keeps the named failure)."""
+        import copy as _copy
+        blk = self.project.block(blk_name)
+        if blk is None or blk.placement is None:
+            return False
+        oc = self._block_output_cell(blk)
+        w, h = self._chip_dims(chip)
+        occ_block: dict = {}
+        for b in self.project.blocks:
+            if b.placement is None or b.placement.chip != chip:
+                continue
+            for c in b.placement.cells:
+                occ_block[(c.x, c.y)] = b.name
+        # Which neighbour cells of the output are occupied by OTHER blocks (candidates to
+        # push). If a neighbour is free already we wouldn't be boxed; if it's our OWN cell
+        # we can't free it by spreading (re-fold handles that). So only foreign neighbours
+        # are pushable.
+        moved = False
+        for dx, dy in ((1, 0), (0, 1), (-1, 0), (0, -1)):
+            nb = (oc[0] + dx, oc[1] + dy)
+            if not (0 <= nb[0] < w and 0 <= nb[1] < h):
+                continue
+            owner = occ_block.get(nb)
+            if owner is None or owner == blk_name:
+                continue
+            ob = self.project.block(owner)
+            saved = _copy.deepcopy(ob.placement)
+            # Try shifting the neighbour block by +1 in y then +1 in x.
+            for sdx, sdy in ((0, 1), (1, 0)):
+                npl = _copy.deepcopy(saved)
+                for c in npl.cells:
+                    c.x += sdx
+                    c.y += sdy
+                for t in getattr(npl, "transit_cells", []):
+                    t.x += sdx
+                    t.y += sdy
+                self.project._set_block_placement(owner, npl)
+                if not self._collides(chip, owner):
+                    moved = True
+                    break
+                self.project._set_block_placement(owner, _copy.deepcopy(saved))
+            if moved:
+                break
+        return moved
+
     def auto_pnr(self, chip_types: dict | None = None, *, chip: int = 0,
                  use_bus: str = "always", register: bool = True):
         """Iterative place-and-route (the OpenROAD-style place<->route loop, §PNR).
@@ -1165,6 +1351,16 @@ class AppController(QObject):
             self.auto_place(chip=chip, use_bus=use_bus, register=False)
             report = self.auto_route_all(cts, use_bus=use_bus, auto_orient=False,
                                          register=False)
+            # PART B — perturb a BOXED multi-cell output (the §ROUTING_TOPOLOGIES CM
+            # mandate). The bus router surfaces a net whose multi-cell source OUTPUT cell
+            # has no free neighbour to tap the bus as an ``output-boxed:<block>`` NAMED
+            # failure (the Costas `rotate` cell buried in its own snake). RE-FOLD that
+            # block (try each D4 orientation) so its output cell lands on the perimeter
+            # with a free neighbour, then SPREAD its neighbours if no orientation exposes
+            # it; re-route and keep the perturbation only if it strictly increases the
+            # routed count (monotone — never regress). This makes a buried output "just
+            # work" without a named terminal failure.
+            report = self._perturb_boxed_outputs(chip, cts, use_bus, ct, report)
             ok = report.ok
             clean = True
             if ok and ct is not None:

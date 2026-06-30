@@ -99,12 +99,12 @@ def imported(qapp):
     assert res.ok, f"import failed, unknown blocks: {res.unknown}"
     assert len(ctrl.project.blocks) == 8
 
-    # GUI default route strategy: bus everywhere, no flow-orient re-pass (the
-    # strategy-aware placer already oriented every block — mirrors
-    # ui.main_window._import_grc and test_bpsk_modem_grc_import).
+    # GUI default route strategy: full auto-P&R (the place<->route loop). The modem's
+    # Costas `rotate` OUTPUT cell is BOXED in the compact placement (no free neighbour to
+    # tap the bus), so net1 only routes after the loop re-folds Costas — via auto_pnr, not
+    # a single auto_route_all pass.
     ctrl.auto_place(use_bus="always")
-    rep = ctrl.auto_route_all({"kyttar_10x12": chip_type},
-                              use_bus="always", auto_orient=False)
+    rep = ctrl.auto_pnr({"kyttar_10x12": chip_type}, use_bus="always")
     # 11 routed nets: the importer SPLITS the complex MF→Costas link into its I and
     # Q nets (yi→xi, yq→xq) — a complex placeKYT block has two scalar input regs that
     # must BOTH be fed (GNURadio collapses the I/Q pair into one port), so the duplex

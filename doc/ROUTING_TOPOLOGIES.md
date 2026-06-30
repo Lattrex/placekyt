@@ -258,6 +258,56 @@ explicit-placement duplex (`test_live_duplex_stream_id`,
 `test_auto_pnr_tx_passband` keeps its envelope/symbol gates (it does NOT assert the > 0.95
 sample corr — honestly not reachable on the auto path for THIS array width).
 
+### Multi-cell block OUTPUT taps + boxed-output place↔route perturbation (2026-06-30)
+
+The CM mandate: **for BUS/RING every block must tap the bus at BOTH its input cell AND its
+output cell, and it must JUST WORK — no named terminal failure.** A SINGLE-cell block has
+input == output, so its one tap suffices. A MULTI-cell SNAKE block leaves its word at its
+FAR output cell, many cells from its input tap; the build hops `exit→tap @1`, so the source
+must tap a backbone cell ABUTTING the output cell or the burst lands at the input tap, many
+cells short (the auto-placed modem's net5/net10/net4/net11 0-output bug). Three pieces:
+
+* **Router output tap (`_route_chip_bus_v2`).** A new `out_cell_of(block, port)` mirrors
+  `in_cell_of`. The INPUT-tap backbone thread is kept verbatim (proven, stable — adding
+  output cells to the tap set destabilised the greedy thread and broke INPUT order too). A
+  **FLOW BIAS** in the candidate ranking (`_to_next`, a secondary key under reuse/spine)
+  makes the backbone visit blocks in flow order so a producer's output cell sits UPSTREAM of
+  its consumer. `src_tap_cell` then rides a multi-cell source from the EARLIEST backbone cell
+  ABUTTING its output cell (upstream of the consumer) — the input-tap backbone usually
+  already passes one. A single-cell block that also SOURCES a net and whose flow-bias input
+  tap collides with its output-drive face is re-tapped at its earliest different-face
+  backbone cell, leaving a downstream cell for the output (the §5.3 split — fixes the mapper
+  E-in/E-out deadlock the flow bias would otherwise create).
+* **Output-boxed structured failure.** A multi-cell output cell with NO free orthogonal
+  neighbour (the Costas `rotate` cell, walled by its own snake) CANNOT tap the bus.
+  `_route_chip_bus_v2` emits a `RouteResult(ok=False, reason="output-boxed:<block> …")`.
+  `route_all_bus` ACCEPTS a v2 result whose ONLY failures are `output-boxed:` (the routed
+  subset must be DRC-clean) and surfaces them — so the loop can perturb, instead of
+  discarding v2 to the legacy router (which would route the boxed net SHORT, 0-output).
+* **Place↔route perturbation (`controller._perturb_boxed_outputs`, PART B).** When a route
+  report carries an `output-boxed:<block>` failure, the loop RE-FOLDS that block (tries each
+  D4 orientation `mirror_v/mirror_h/cw/ccw`) so its output cell lands on the perimeter with a
+  free neighbour, re-routes, and keeps the orientation only if it STRICTLY increases the
+  routed count AND **builds DRC-clean** (Part C — the route-level DRC does NOT catch the
+  BUILD-time §5.3 single-cell deadlock, so each candidate is gated by an actual `build()`
+  rejecting `single_cell_inout_deadlock` / `deadlock` / `face_conflict`). If no orientation
+  exposes the output, it SPREADS — pushes a neighbouring block out by one cell to open a free
+  tap channel adjacent to the buried output — then re-routes. Non-improving perturbations are
+  reverted (monotone; never regress). For the modem `mirror_v` on Costas exposes `rotate` and
+  routes net1.
+
+The placer's flow-order tie-break was also made **deterministic** (block import index, which
+for an imported GRC IS flow order, replacing the live-X tie-break) so `auto_place` is
+idempotent under repeated invocation — `auto_place(use_bus="always")` then `auto_pnr(...)` no
+longer re-derives a degenerate layout (iqupconvert-to-the-bottom) from the moved blocks.
+
+**Result:** the compact auto-placed BPSK modem now routes ALL 11 nets via `auto_pnr`
+(Costas re-folded), `crossover_plan` empty, DRC-clean build, and **recovers bits / emits a
+passband end-to-end** — `test_auto_pnr_tx_passband` (4/4) and
+`test_modem_grc_import_duplex_e2e` TX+RX (BER 0) PASS. The GUI bus import path
+(`main_window._import_grc`) now runs `auto_pnr` for bus/ring so the boxed output JUST WORKS.
+This supersedes the prior "Remaining (out of scope) … NO recovered output" note above.
+
 ## Acceptance (the rebuild is done when)
 
 - BPSK modem (`examples/bpsk_modem/bpsk_modem.grc`), auto-place + Bus route + build:

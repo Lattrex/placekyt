@@ -308,8 +308,10 @@ def test_loopback_grc_imports_real_blocks():
         f"expected 11 nets, got {len(ctrl.project.connections)}"
     ctrl.auto_place(use_bus="always")
     ct = load_chip_type(str(CT_PATH))
-    rep = ctrl.auto_route_all({"kyttar_10x12": ct}, use_bus="always",
-                              auto_orient=False)
+    # Full place<->route loop (auto_pnr): the modem's Costas `rotate` OUTPUT cell is BOXED
+    # in the compact placement (no free neighbour to tap the bus), so net1 only routes
+    # after the loop re-folds Costas — the GUI bus import path runs auto_pnr.
+    rep = ctrl.auto_pnr({"kyttar_10x12": ct}, use_bus="always")
     assert rep.ok and len(rep.routed) == 11, \
         f"routed {len(rep.routed)}/11, failed {[(r.name, r.reason) for r in rep.failed]}"
 

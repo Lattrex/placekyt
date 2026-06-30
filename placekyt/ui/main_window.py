@@ -1257,15 +1257,17 @@ class MainWindow(QMainWindow):
         try:
             self.controller.auto_place(use_bus=opts["use_bus"])
             if opts["route"]:                     # full place-and-route
-                # For BUS routing the strategy-aware placer has already oriented
-                # every block coherently (multi-filament: input cells on the
-                # shared bus row, each filament in its own region). The flow-
-                # orient re-pass would re-rotate blocks and strand a broker tap
-                # (the multi-filament net10 "no free broker cell" regression), so
-                # skip it for bus mode; keep it for block-to-block routing.
-                auto_orient = opts["use_bus"] != "always"
-                report = self.controller.auto_route_all(
-                    use_bus=opts["use_bus"], auto_orient=auto_orient)
+                # For BUS routing run the FULL place<->route loop (auto_pnr): it routes,
+                # and when a multi-cell block's OUTPUT cell is BOXED (no free neighbour to
+                # tap the bus — the Costas `rotate` cell), it re-folds / spreads that block
+                # and re-routes so the modem routes EVERY net. A single auto_route_all pass
+                # would leave the boxed net as a named failure. For block-to-block routing
+                # (no bus) keep the single-pass auto_route_all with the flow-orient re-pass.
+                if opts["use_bus"] in ("always", "bus", "ring"):
+                    report = self.controller.auto_pnr(use_bus=opts["use_bus"])
+                else:
+                    report = self.controller.auto_route_all(
+                        use_bus=opts["use_bus"], auto_orient=True)
             else:                                 # rough: place + flow-orient only
                 self.controller.auto_orient_for_flow()
         except Exception as exc:  # noqa: BLE001

@@ -64,7 +64,11 @@ def _app():
 
 
 def _auto_modem(_app):
-    """Import + auto-place + auto-route (GUI default auto_orient=True) + build."""
+    """Import + full auto-P&R (place<->route loop with the boxed-output perturbation) +
+    build. The modem's Costas `rotate` OUTPUT cell is BOXED in the compact placement (no
+    free neighbour to tap the bus), so net1 only routes after the place<->route loop
+    re-folds Costas — i.e. via :meth:`auto_pnr`, the flow this test (auto_pnr_tx_passband)
+    is named for, NOT a single ``auto_route_all`` pass."""
     from ui.controller import AppController
 
     cat = BlockCatalog.from_gr_kyttar()
@@ -72,7 +76,7 @@ def _auto_modem(_app):
     ctrl.import_grc(GRC_MODEM, chip_type="kyttar_10x12")
     ctrl.auto_place(use_bus="always")
     ct = load_chip_type(str(CHIP_YAML))
-    rep = ctrl.auto_route_all({"kyttar_10x12": ct}, use_bus="always")
+    rep = ctrl.auto_pnr({"kyttar_10x12": ct}, use_bus="always")
     res = ctrl.build()
     return ctrl, cat, ct, rep, res
 

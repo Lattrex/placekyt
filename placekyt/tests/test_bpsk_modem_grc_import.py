@@ -235,8 +235,9 @@ def test_autoplace_then_route_status(catalog):
     assert len(ctrl.project.blocks) == 8
 
     ctrl.auto_place(0, use_bus="always")
-    rep = ctrl.auto_route_all({"kyttar_10x12": chip_type}, auto_orient=False,
-                              use_bus="always")
+    # Full place<->route loop: a BOXED multi-cell output (Costas `rotate`) is re-folded
+    # and routed (a single auto_route_all pass would leave it a named failure).
+    rep = ctrl.auto_pnr({"kyttar_10x12": chip_type}, use_bus="always")
     routed = sorted(r.name for r in rep.routed)
     failed = [(r.name, r.reason) for r in rep.failed]
     print(f"\n[bpsk_modem auto-route] ok={rep.ok} "
@@ -265,9 +266,10 @@ def test_gui_import_path_routes_all_10(catalog):
     ctrl.import_grc(str(GRC_MODEM), chip_type="kyttar_10x12")
     use_bus = "always"                       # the GUI default route strategy
     ctrl.auto_place(use_bus=use_bus)
-    rep = ctrl.auto_route_all({"kyttar_10x12": chip_type},
-                              use_bus=use_bus,
-                              auto_orient=(use_bus != "always"))
+    # The GUI bus import runs the FULL place<->route loop (auto_pnr) so a BOXED multi-cell
+    # output (the Costas `rotate` cell) is re-folded and routed — mirrors
+    # ui.main_window._import_grc.
+    rep = ctrl.auto_pnr({"kyttar_10x12": chip_type}, use_bus=use_bus)
     failed = [(r.name, r.reason) for r in rep.failed]
     assert rep.ok and len(rep.routed) == 11, \
         f"GUI import path routed {len(rep.routed)}/11, failed: {failed}"

@@ -439,7 +439,17 @@ class AutoPlacer:
         x = left
         row_h = 0
 
-        for n in order:
+        # Pack each FILAMENT's blocks CONTIGUOUSLY (its own flow run), filaments back-to-
+        # back. The global topological ``order`` interleaves filaments, which can split a
+        # filament's adjacent blocks across a WIDE block of the other filament (the
+        # modem's 5-wide matched filter landing between the TX mapper and upsampler →
+        # strands the backbone). Filament-contiguous keeps each chain's blocks adjacent
+        # (mapper→upsampler→rrc→upc, then mf→costas→gardner→slicer) — the proven compact
+        # shape — so the router threads one short backbone per filament off the port.
+        names = set(blk_of.keys())
+        pack_order = [n for fil in self._filaments(order, names) for n in fil]
+
+        for n in pack_order:
             blk = blk_of[n]
             kind = self._orient_for(blk, True, n, out_pos, x, row_top)
             w, h = self._oriented_wh(blk, kind)

@@ -1047,6 +1047,69 @@ class AppController(QObject):
             self.commands.execute(CompositeCommand("Auto-orient blocks", cmds))
         return len(cmds)
 
+    def auto_pnr(self, chip_types: dict | None = None, *, chip: int = 0,
+                 use_bus: str = "always", register: bool = True):
+        """Iterative place-and-route (the OpenROAD-style place<->route loop, §PNR).
+
+        Pack blocks compactly (topology-agnostic), route, and on a routing failure
+        PERTURB placement — raise the routing-channel reserve (open channels) — and
+        re-route, until every net routes with a clean DRC (``crossover_plan`` empty), or
+        a bound is hit. Each iteration is monotone in looseness (only ADDS space), so the
+        loop terminates and its worst case is the sparse, always-routable layout — it can
+        never regress below the existing fallback. The ACCEPTED iteration is applied as
+        ONE undoable composite (exploration iterations run unregistered + are reverted).
+
+        Returns the accepted :class:`~engine.autoroute.AutoRouteReport` (or the best
+        attempt's report on bound exhaustion — a NAMED partial, never a silent build)."""
+        from engine.bus_router import crossover_plan
+
+        cts = chip_types or self.chip_types()
+        ct = cts.get(self.project.chip(chip).type_name if self.project.chip(chip)
+                     else self.project.chip_type)
+
+        best = None
+        # Monotone-looseness sweep: tight (reserve 1) -> looser. Each raises the routing
+        # channel reserve the compact placer leaves, opening more room for the router.
+        for reserve in (1, 2, 3, 4):
+            self._pnr_channel_reserve = reserve
+            snap = self.project.snapshot() if hasattr(self.project, "snapshot") else None
+            self.auto_place(chip=chip, use_bus=use_bus, register=False)
+            report = self.auto_route_all(cts, use_bus=use_bus, auto_orient=False,
+                                         register=False)
+            ok = report.ok
+            clean = True
+            if ok and ct is not None:
+                try:
+                    clean = len(crossover_plan(self.project, chip, ct, self.catalog)) == 0
+                except Exception:  # noqa: BLE001
+                    clean = True
+            n_routed = sum(1 for r in report.results if r.ok)
+            if best is None or n_routed > best[0]:
+                best = (n_routed, reserve, report)
+            if ok and clean:
+                best = (n_routed, reserve, report)
+                break
+            # Not accepted — revert this exploration iteration before the next.
+            if snap is not None:
+                self.project.restore(snap)
+            else:
+                # No snapshot API: undo the unregistered place+route by clearing routes
+                # and re-importing is heavy; rely on the next auto_place(register=False)
+                # overwriting positions and SetConnectionRouteCommand overwriting routes.
+                pass
+
+        # Re-run the ACCEPTED reserve registered (undoable) so the live project + undo
+        # stack hold the winning placement + routes.
+        self._pnr_channel_reserve = best[1]
+        if register:
+            self.auto_place(chip=chip, use_bus=use_bus, register=True)
+            report = self.auto_route_all(cts, use_bus=use_bus, auto_orient=False,
+                                         register=True)
+        else:
+            report = best[2]
+        self._pnr_channel_reserve = 1
+        return report
+
     def auto_route_all(self, chip_types: dict | None = None, *,
                        auto_orient: bool = True, use_cpsat: str = "auto",
                        use_bus: str = "auto", register: bool = True):

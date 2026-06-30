@@ -384,15 +384,28 @@ class AutoPlacer:
         self._in_multi_pack = False
         if self._bus_snake:
             # BUS topology (co-design): lay EVERY block — all filaments — along ONE
-            # serpentine snake in global flow order, starting one column OFF the port
-            # (the port stays a free bus tap). The per-filament signal-flow order is
-            # already baked into ``order`` (topological), so interleaving the two
-            # filaments on one snake keeps each filament internally ordered while the
-            # single backbone the router threads visits every block as a tap in order.
+            # serpentine snake in global flow order, off the port. The per-filament
+            # signal-flow order is already baked into ``order`` (topological), so
+            # interleaving the two filaments on one snake keeps each filament internally
+            # ordered while the single backbone the router threads visits every block as
+            # a tap in order. Co-designed with bus_router._route_chip_bus_v2.
+            #
+            # KEEP BOTH CHIP PORTS REACHABLE + THE SNAKE THREADABLE (the §ROUTING_-
+            # TOPOLOGIES bus-snake gate, root-cause fix): the chip input AND output ports
+            # both sit on the TOP row (row 0) of this array (x16_in@(0,0), x16_out@(9,0)).
+            # If a block body lands on the port row it seals a port into a dead pocket
+            # (the matched filter walling x16_out at (9,0)). So we lay the snake ONE ROW
+            # BELOW the port row and start ONE COLUMN OFF the input-port column, leaving
+            # the WHOLE port row free as the shared ingress/egress LANE: the backbone
+            # enters at the input port, drops into the snake, taps every block in flow
+            # order, and the terminal egress runs back along the clear port row to the
+            # output port. Row 0 free ⇒ both ports stay in ONE connected free component
+            # (``_plan_ports_reachable`` passes) AND the v2 threader always finds a clean
+            # egress to the output-port corner.
             self._lead_block = None          # nothing anchors on the port
             self._in_multi_pack = True       # keep the egress corridor clear for folds
-            self._pack_run(order, positions, orientations, out_pos, spine, chip,
-                           band_top=self._row)
+            self._pack_bus_snake(order, positions, orientations, out_pos, spine,
+                                 chip)
         elif not multi:
             # SINGLE-FILAMENT, block-to-block: the lead input-fed block anchors its
             # input cell ON the port (preferred — lowest latency). One serpentine run.
@@ -541,6 +554,350 @@ class AutoPlacer:
             return self._flow_order_index.get(members[0], 0)
         except AttributeError:
             return 0
+
+    def _bus_snake_band_assign(self, order, widths, budget_fn, W):
+        """Partition the flow ``order`` into BANDS (each a flow-ordered list of block
+        names) for the bus-snake, minimising the band count subject to each band's WIDTH
+        BUDGET (``budget_fn(k, nbands)``) and an ODD final band count (so the last band is
+        right-going and egresses up the conflict-free right rail).
+
+        The §ROUTING_TOPOLOGIES rule is only that each FILAMENT's blocks stay in flow
+        order along the backbone; the cross-filament interleave is free. So this is a
+        bin-pack of the flow order where consecutive bands are filled greedily best-fit
+        but the GLOBAL order may be any topological order — we keep the supplied ``order``
+        (already a valid topological order) and simply cut it into width-bounded bands,
+        then, if that needs an even count or overflows, retry over a few principled
+        re-orderings. Falls back to the plain greedy cut (any band count) if no odd-count
+        packing fits — the caller's on-grid gate then decides."""
+        names = list(order)
+
+        def _greedy_cut(seq, nbands_hint):
+            """Cut ``seq`` into bands honouring per-band budgets; nbands_hint sizes the
+            budget lookups. Returns the band list (length may differ from the hint)."""
+            bands_out: list = [[]]
+            cur_w = 0
+            for n in seq:
+                w = widths[n]
+                k = len(bands_out) - 1
+                bud = budget_fn(k, max(nbands_hint, len(bands_out)))
+                if cur_w + w > bud and bands_out[-1]:
+                    bands_out.append([])
+                    cur_w = 0
+                bands_out[-1].append(n)
+                cur_w += widths[n]
+            return bands_out
+
+        # Try band counts 1,3,5,… (odd) — for each, cut greedily with that count's budgets
+        # and accept the FIRST whose cut actually fits in that many bands AND is odd.
+        total = sum(widths[n] for n in names)
+        max_bands = len(names)
+        for nb in range(1, max_bands + 2, 2):
+            cut = _greedy_cut(names, nb)
+            if len(cut) == nb and all(
+                    sum(widths[n] for n in b) <= budget_fn(k, nb)
+                    for k, b in enumerate(cut)):
+                return cut
+        # No odd-count exact fit with the plain order — reorder to a flow-respecting
+        # interleave that bin-packs tighter (each filament kept in order, blocks pulled
+        # forward to fill a band). Best-fit-decreasing within the topological frontier.
+        order_idx = {n: i for i, n in enumerate(names)}
+        # Predecessor: the block that must precede each (its driver in the same filament).
+        from model.connection import BlockEndpoint
+        pred = {n: None for n in names}
+        for conn in self._project.connections:
+            s, t = conn.source, conn.target
+            if isinstance(s, BlockEndpoint) and isinstance(t, BlockEndpoint) \
+                    and s.block in order_idx and t.block in order_idx:
+                # keep only the LAST driver in flow order (the immediate predecessor)
+                if pred[t.block] is None or order_idx[s.block] > order_idx[pred[t.block]]:
+                    pred[t.block] = s.block
+        for nb in range(1, max_bands + 2, 2):
+            placed: set = set()
+            bands_out = []
+            for k in range(nb):
+                bud = budget_fn(k, nb)
+                band: list = []
+                cur = 0
+                progressed = True
+                while progressed:
+                    progressed = False
+                    # ready = blocks whose predecessor is already placed, in flow order
+                    ready = [n for n in names if n not in placed
+                             and (pred[n] is None or pred[n] in placed)]
+                    # best-fit: the widest ready block that still fits the band
+                    ready.sort(key=lambda n: (-widths[n], order_idx[n]))
+                    for n in ready:
+                        if cur + widths[n] <= bud:
+                            band.append(n)
+                            placed.add(n)
+                            cur += widths[n]
+                            progressed = True
+                            break
+                bands_out.append(band)
+            if len(placed) == len(names) and all(b for b in bands_out):
+                # Order within each band: keep each FILAMENT's blocks in flow order (the
+                # only ordering rule) but otherwise push SINGLE-CELL blocks toward the
+                # band END (the backbone BEND), where a single-cell block abuts TWO
+                # backbone cells (lane + rail) on different faces — the §5.3 in==out
+                # split the bus router needs to avoid a deadlock. The cross-filament
+                # interleave is free, so a single-cell block may sit after a different
+                # filament's block.
+                for b in bands_out:
+                    b[:] = self._order_band_single_cell_last(b, order_idx)
+                return bands_out
+        # Last resort: plain greedy cut (any count) — the on-grid gate decides.
+        return _greedy_cut(names, 3)
+
+    def _filament_of(self, names_set):
+        """Map each block name → its filament index (forward-reachability partition)."""
+        # Reuse the placer's filament partition over the current order.
+        order = [n for n in self._flow_order_index] if hasattr(self, "_flow_order_index") \
+            else list(names_set)
+        fils = self._filaments(order, set(names_set))
+        return {n: i for i, mem in enumerate(fils) for n in mem}
+
+    def _order_band_single_cell_last(self, members, order_idx):
+        """Order a band's members keeping each FILAMENT's blocks in flow order, but
+        emitting MULTI-cell blocks before SINGLE-cell ones where the filament order
+        allows — so single-cell blocks drift to the band end (the backbone bend, the
+        §5.3 in==out split). A stable topological-ish merge: repeatedly pick the
+        flow-earliest READY block (all same-filament predecessors already emitted),
+        preferring a MULTI-cell candidate over a single-cell one."""
+        fil_of = self._filament_of(set(members))
+        remaining = sorted(members, key=lambda n: order_idx[n])
+        emitted: list = []
+        emitted_set: set = set()
+
+        def ready(n):
+            fi = fil_of.get(n)
+            return all(order_idx[m] >= order_idx[n] or m in emitted_set
+                       for m in remaining if fil_of.get(m) == fi)
+
+        def is_single(n):
+            return self._oriented_wh(self._blk_of[n], None) == (1, 1)
+
+        while remaining:
+            cands = [n for n in remaining if ready(n)]
+            if not cands:
+                cands = remaining[:]                  # safety: avoid stall
+            # prefer multi-cell, then flow-earliest
+            cands.sort(key=lambda n: (1 if is_single(n) else 0, order_idx[n]))
+            pick = cands[0]
+            emitted.append(pick)
+            emitted_set.add(pick)
+            remaining.remove(pick)
+        return emitted
+
+    def _pack_bus_snake(self, order, positions, orientations, out_pos, spine,
+                        chip):
+        """Pack the BUS-SNAKE layout — the co-designed placement the single-backbone
+        v2 router threads (doc/ROUTING_TOPOLOGIES.md bus topology). It lays EVERY block
+        (all filaments) along ONE clean serpentine in global flow ``order``, so the v2
+        threader visits each block's input cell as an in-order tap and weaves one
+        contiguous backbone input-port → taps → output-port.
+
+        The geometry is deliberately SIMPLE and threadable (the earlier generic
+        ``_pack_run`` scattered blocks — flyline reorientation + per-band overflow — so
+        a tap's input cell could end boxed with a single free neighbour, and the tap
+        order zig-zagged left↔right, walling later taps; the v2 thread then bailed).
+        This packer instead guarantees:
+
+        * **Every block's input cell rides a horizontal BUS LANE.** All these blocks
+          author their input port at footprint offset (0, 0) — the anchor / min corner —
+          so anchoring a block one row BELOW a free "bus lane" row puts its input cell
+          directly under a free lane cell (always ≥1 free bus-facing neighbour for the
+          broker tap, never boxed).
+        * **Row 0 is the first bus lane AND the shared port lane.** Both chip ports sit
+          on row 0 (x16_in@(0,0), x16_out@(9,0)); keeping row 0 free lets the backbone
+          ingress at the input port, ride the lanes through the snake, and egress along
+          the clear row back to the output port (ports stay reachable — the gate passes).
+        * **A clean BOUSTROPHEDON tap order.** Blocks fill a band left-to-right; the next
+          band reverses, and a fresh bus lane separates the bands. Anchors therefore
+          march monotonically along the snake, so the v2 serpentine tap sort matches flow
+          order and the backbone never doubles back to strand a later tap.
+
+        Folds (internal feedback — MF/Costas/Gardner/IQUpconvert) keep their authored
+        orientation (a D4 transform would rotate the PortMap but not their hand-authored
+        per-cell faces). Reorientable blocks stay identity (their input is already the
+        top-left anchor). Mutates the shared accumulators; geometry only."""
+        blk_of = self._blk_of
+        W, H = self._width, self._height
+        # Keep ALL chip-port cells free (a block body covering one seals the port —
+        # the reachability gate then rejects the plan). Reserve the columns of any port
+        # so a block never lands on one (the modem's array has ports at the four
+        # corners; x16_in/out on row 0, x1_in/out on row H-1).
+        port_cells = set()
+        resolver = getattr(self, "_chip_port_resolver", None)
+        if resolver is not None:
+            for conn in self._project.connections:
+                for ep in (conn.source, conn.target):
+                    pc = self._chip_port_cell(ep) \
+                        if isinstance(ep, ChipPortEndpoint) else None
+                    if pc is not None:
+                        port_cells.add(pc)
+        # Reserve a clear lane on the row(s) holding ports so the backbone can ride
+        # alongside both the input and the output port. Row 0 (the port row) is the
+        # first bus lane; the bottom row holding the unused x1 ports stays clear too.
+        port_rows = {pc[1] for pc in port_cells}
+        bottom_free = (H - 1) if (H - 1) in port_rows else None
+        usable_bottom = (bottom_free - 1) if bottom_free is not None else (H - 1)
+
+        # THREE clear vertical corridors keep the backbone a clean SIMPLE PATH (one travel
+        # direction per cell ⇒ crossover empty), with both ports on the top row:
+        #   - col 0          : LEFT rail — the entry (port → first lane) AND the drop after
+        #                      a LEFT-going band.
+        #   - col W-2 (=8)   : RIGHT drop rail — the drop after a RIGHT-going band.
+        #   - col W-1 (=9)   : EGRESS rail — reserved SOLELY for the terminal climb to the
+        #                      output-port corner; never a drop, so it can't collide.
+        # Blocks pack into the interior columns 1 .. W-3, leaving cols 0, W-2, W-1 clear as
+        # vertical corridors. Three disjoint corridors (entry/left-drop on col 0, right-drop
+        # on col W-2, egress on col W-1) let a 3-band boustrophedon enter top-left, snake
+        # the bands, and egress top-right with NO rail double-use (the §ROUTING_TOPOLOGIES
+        # egress / simple-path rule). Row 0 (the port row) stays a free top lane.
+        left_margin = 1
+        egress_col = W - 1            # reserved egress climb to the output port
+        # A RIGHT-going band drops down col W-2 to the next lane, so it must leave col W-2
+        # FREE → its blocks stop at col W-3. A LEFT-going band drops down col 0 (the left
+        # rail, already free) → its blocks may use up to col W-2. So the right edge a band
+        # may occupy depends on its travel direction. (The egress rail col W-1 is always
+        # reserved.) Three disjoint vertical corridors — entry/left-drop col 0, right-drop
+        # col W-2, egress col W-1 — keep the backbone a SIMPLE PATH (crossover empty).
+        # Width budget for the k-th band: a RIGHT-going band (even k: 0,2,…) reserves the
+        # right drop rail (col W-2) → interior width W-3; a LEFT-going band (odd k) drops
+        # the left rail → width W-2; the LAST band needs NO drop (it egresses) → width W-2
+        # whatever its direction. The number of bands is forced ODD so the last band is
+        # RIGHT-going and egresses up the conflict-free right rail (col W-1). Bodies abut
+        # within a band (gap 0).
+        kinds = {n: None for n in order}              # all identity (input = top-left)
+        widths = {n: self._oriented_wh(blk_of[n], None)[0] for n in order}
+        heights = {n: self._oriented_wh(blk_of[n], None)[1] for n in order}
+
+        def _band_budget(k, nbands):
+            if k == nbands - 1:
+                return W - 2                          # last band: no drop, egress only
+            return (W - 3) if (k % 2 == 0) else (W - 2)
+
+        assign = self._bus_snake_band_assign(order, widths, _band_budget, W)
+        # assign: list of bands, each a list of block names in flow order. Build geometry.
+        bands: list = []             # [(bus_row, going_right)]
+        bus_row = self._row + 1       # first bus lane is row 1; bodies row 2 (row 0 free)
+        for k, members in enumerate(assign):
+            going_right = (k % 2 == 0)
+            band_h = max((heights[n] for n in members), default=1)
+            body_row = bus_row + 1
+            # Lay members left→right (right-going) or right→left (left-going), abutting.
+            if going_right:
+                cx = left_margin
+                for n in members:
+                    w = widths[n]
+                    orientations[n] = kinds[n]
+                    positions[n] = (chip, cx, body_row)
+                    op = self._io_offsets(blk_of[n], None)
+                    if op is not None and op[1] is not None:
+                        out_pos[n] = (cx + op[1][0], body_row + op[1][1])
+                    cx += w
+            else:
+                # Right-to-left: place from the right edge (col W-2) leftward, but keep
+                # flow order so the bus tapping left→... still sees flow order. The
+                # backbone rides this band right→left, tapping members in flow order, so
+                # the FIRST flow member must sit at the RIGHT.
+                cx = W - 2
+                for n in members:
+                    w = widths[n]
+                    orientations[n] = kinds[n]
+                    ax = cx - w + 1
+                    ax = max(left_margin, ax)
+                    positions[n] = (chip, ax, body_row)
+                    op = self._io_offsets(blk_of[n], None)
+                    if op is not None and op[1] is not None:
+                        out_pos[n] = (ax + op[1][0], body_row + op[1][1])
+                    cx = ax - 1
+            bands.append((bus_row, going_right))
+            bus_row = body_row + band_h               # free lane row below this band
+
+        # Emit the spine as ONE ORDERED, CONTIGUOUS SIMPLE-PATH backbone the v2 threader
+        # rides verbatim — it abuts every block's input cell in flow order and ends at the
+        # output port, with NO cell reused (so crossover_plan is empty by construction):
+        #   in-port → down LEFT rail (col 0) to band-0 lane
+        #   → BOUSTROPHEDON: ride each band's bus-lane row (right / left / …); between
+        #     bands drop the RIGHT rail (col W-2) after a right-going band, the LEFT rail
+        #     (col 0) after a left-going band
+        #   → from the last band's end, step into the EGRESS rail (col W-1) and climb it to
+        #     the top row, landing on the OUTPUT-port corner.
+        top = self._row
+        path: list = []
+
+        def _ride(a, b):
+            (x0, y0), (x1, y1) = a, b
+            if x0 == x1:
+                step = 1 if y1 >= y0 else -1
+                cells = [(x0, y) for y in range(y0, y1 + step, step)]
+            else:
+                step = 1 if x1 >= x0 else -1
+                cells = [(x, y0) for x in range(x0, x1 + step, step)]
+            for c in cells:
+                if not path or path[-1] != c:
+                    path.append(c)
+
+        drop_right = W - 2                           # right-going bands drop down this col
+        path.append((0, top))
+        _ride((0, top), (0, bands[0][0]))           # entry: down the left rail
+        for bi, (br, gr) in enumerate(bands):
+            last = (bi + 1 == len(bands))
+            if gr:
+                # Ride right. Non-last right band ends at its drop rail (W-2); the LAST
+                # right band rides to W-2 then steps onto the egress rail (W-1).
+                _ride((0, br), (drop_right, br))
+                end_col = drop_right
+            else:
+                # Left band: a left-going band is always entered by the previous right
+                # band's right-rail drop at col W-2, so ride from there to the left rail.
+                _ride((drop_right, br), (0, br))
+                end_col = 0
+            if not last:
+                nbr = bands[bi + 1][0]
+                _ride((end_col, br), (end_col, nbr))   # drop the rail the band ended on
+        # Egress: from the last band's end, climb to the output-port corner. A right-ending
+        # band steps onto the egress rail (W-1) and climbs it. A left-ending band climbs the
+        # left rail to the top row and rides right to the output port.
+        last_br, last_gr = bands[-1]
+        if last_gr:
+            _ride((drop_right, last_br), (egress_col, last_br))
+            _ride((egress_col, last_br), (egress_col, top))
+        else:
+            _ride((0, last_br), (0, top))
+            _ride((0, top), (egress_col, top))
+        for c in path:
+            spine.append(c)
+        self._bus_snake_backbone = list(path)
+
+        # SINGLE-CELL BEND CHECK (§5.3 in==out). A single-cell block both receives and
+        # drives on its ONE cell; the bus router avoids the same-face deadlock ONLY when
+        # the block abuts a backbone BEND (two backbone cells, Δindex ≤ 2, on DIFFERENT
+        # faces — input from the earlier, output from the later). Record any single-cell
+        # block that does NOT — the caller's gate then REJECTS this snake (it would build
+        # a deadlocked chip) and falls back to the proven multi-filament layout, so a
+        # design the snake can't deadlock-safely place is never silently mis-built.
+        bb_idx = {c: i for i, c in enumerate(path)}
+
+        def _has_bend(cell):
+            faces = [(d, bb_idx[(cell[0] + d[0], cell[1] + d[1])])
+                     for d in ((1, 0), (-1, 0), (0, 1), (0, -1))
+                     if (cell[0] + d[0], cell[1] + d[1]) in bb_idx]
+            return any(f1 != f2 and 1 <= (i2 - i1) <= 2
+                       for f1, i1 in faces for f2, i2 in faces)
+
+        self._bus_snake_sc_deadlock = False
+        for n in order:
+            if self._oriented_wh(blk_of[n], None) != (1, 1):
+                continue
+            _c, bx, by = positions[n]
+            # A single-cell block FED DIRECTLY by a chip input port at its own cell has no
+            # broker (no in==out hazard); but in bus-snake mode no block sits on a port, so
+            # every single-cell block here is bus-fed → needs a bend.
+            if not _has_bend((bx, by)):
+                self._bus_snake_sc_deadlock = True
+                break
 
     def _pack_run(self, run_order, positions, orientations, out_pos, spine, chip,
                   *, band_top):

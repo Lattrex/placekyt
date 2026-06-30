@@ -52,6 +52,12 @@ _NEI = ((1, 0), (-1, 0), (0, 1), (0, -1))
 _FACE_CODE = {"south": 0, "east": 1, "west": 2, "north": 3}
 
 
+def _cardinal(frm, to):
+    """The (dx, dy) unit cardinal from ``frm`` to an adjacent cell ``to``, or None."""
+    dx, dy = to[0] - frm[0], to[1] - frm[1]
+    return (dx, dy) if (abs(dx) + abs(dy) == 1) else None
+
+
 def _face_code(face):
     """Normalize a face (model.enums.Face / cell_map.Face IntEnum / int) → int code
     (S=0,E=1,W=2,N=3), or None."""
@@ -527,29 +533,124 @@ def _route_chip_bus_v2(project, ct, chip_id, nets, spine, *, port_map_provider):
     occ = set(block_cells)
     occ.discard(in_port_cell)
     tap_abut: dict = {}               # in_cell -> the backbone cell that taps it
+    # The egress corridor: the column the OUTPUT port sits on, kept clear of mid-snake
+    # backbone so the terminal climb to the port is never walled off (only its FREE cells
+    # — block/port cells aren't reservable). Empty unless the port is a clean edge column.
+    _EGRESS_COL = {(out_port_cell[0], ry) for ry in range(H)
+                   if (out_port_cell[0], ry) not in block_cells
+                   and (out_port_cell[0], ry) != in_port_cell}
 
     def _abut_free(in_cell, occ_now):
         return [(in_cell[0] + dx, in_cell[1] + dy) for dx, dy in _NEI
                 if in_bounds((in_cell[0] + dx, in_cell[1] + dy))
                 and (in_cell[0] + dx, in_cell[1] + dy) not in block_cells]
 
+    if _DBG:
+        print("[bus_v2] tap order:", [(ic, m["block"]) for ic, m in taps])
+        print("[bus_v2] in_port", in_port_cell, "out_port", out_port_cell)
+
+    # EXPLICIT-BACKBONE FAST PATH (the bus-snake co-design): when the placement supplies
+    # an ORDERED, CONTIGUOUS spine path (the bus-snake placer hands the exact serpentine,
+    # doc/ROUTING_TOPOLOGIES.md), ride it VERBATIM rather than re-deriving a backbone by a
+    # myopic greedy per-tap thread (which can wall itself in this 2-D maze). The spine is
+    # accepted only if it is a clean SIMPLE PATH (orthogonal steps, no repeats, no block
+    # cell) from the input port to the output port that ABUTS every tap's input cell — so
+    # crossover stays empty by construction (each cell once, one travel direction). On any
+    # mismatch we fall through to the robust greedy thread (unchanged).
+    def _ordered_spine_backbone():
+        seq = [tuple(p) for p in spine]
+        path: list = []
+        for c in seq:                                  # dedupe consecutive repeats
+            if not in_bounds(c):
+                return None
+            if not path or path[-1] != c:
+                path.append(c)
+        if len(path) < 2 or path[0] != in_port_cell or path[-1] != out_port_cell:
+            return None
+        seen = set()
+        for i, c in enumerate(path):
+            if c in seen:                              # not simple
+                return None
+            seen.add(c)
+            if c in block_cells and c not in (in_port_cell, out_port_cell):
+                return None
+            if i > 0:
+                px, py = path[i - 1]
+                if abs(px - c[0]) + abs(py - c[1]) != 1:   # not orthogonally contiguous
+                    return None
+        idx = {c: i for i, c in enumerate(path)}
+        abut: dict = {}
+        for in_cell, _m in taps:
+            on = [a for a in _abut_free(in_cell, occ) if a in idx]
+            if not on:
+                return None
+            # Tap at the EARLIEST backbone cell abutting this input — the block's input
+            # cell may also touch a LATER backbone cell (e.g. the egress rail running past
+            # it), and tapping there would put the block's source downstream of its own
+            # consumer. The earliest abut is the lane the snake taps it from on the way IN.
+            abut[in_cell] = min(on, key=lambda a: idx[a])
+        return path, abut
+
+    osb = _ordered_spine_backbone()
+    use_explicit = osb is not None
+    if use_explicit:
+        backbone, tap_abut = list(osb[0]), dict(osb[1])
+        if _DBG:
+            print(f"[bus_v2] using explicit spine backbone ({len(backbone)} cells)")
+
+    # Per-tap PREFERRED abut cell from the placer's ordered spine (even when the full
+    # spine isn't a perfect simple path): the spine cell directly adjacent to each input
+    # cell. The greedy thread prefers it so the backbone clings to the intended snake lane
+    # (not an arbitrary equal-cost neighbour), making the clean co-designed thread succeed.
+    _spine_seq = [tuple(p) for p in spine if in_bounds(tuple(p))]
+    _spine_pos = {}
+    for _i, _c in enumerate(_spine_seq):
+        _spine_pos.setdefault(_c, _i)
+    pref_abut: dict = {}
+    for _ic, _m in taps:
+        _adj = [a for a in _abut_free(_ic, occ) if a in _spine_pos]
+        if _adj:
+            # The spine cell adjacent to this input that appears EARLIEST on the ordered
+            # spine (the lane the snake taps this block from on its forward sweep).
+            pref_abut[_ic] = min(_adj, key=lambda a: _spine_pos[a])
+
     remaining_in = [ic for ic, _m in taps]
-    for ti, (in_cell, _meta) in enumerate(taps):
+    for ti, (in_cell, _meta) in enumerate([] if use_explicit else taps):
         later = remaining_in[ti + 1:]
         cands = _abut_free(in_cell, occ)
+        if _DBG:
+            print(f"[bus_v2] tap#{ti} in={in_cell} head={backbone[-1]} cands={cands}")
         on_bb = [c for c in cands if c in set(backbone)]
         if on_bb:
+            # Reuse an existing backbone cell, preferring the placer's PREFERRED tap lane
+            # cell for this block, then any spine cell, then a stray.
+            pref = pref_abut.get(in_cell)
+            on_bb.sort(key=lambda c: (0 if c == pref else 1,
+                                      0 if c in spine_set else 1))
             tap_abut[in_cell] = on_bb[0]
             continue
-        # Try every abutting cell, shortest wall-hugging path first, keeping only a
-        # segment that leaves all LATER taps + the output port reachable from the head.
+        # Try every abutting cell, keeping only a segment that leaves all LATER taps +
+        # the output port reachable from the head. PREFER an abut cell on the placer's
+        # BUS LANE (spine) — the co-designed snake puts a free lane cell beside every
+        # block's input, so tapping from the lane keeps the backbone on the clean lane
+        # (riding row 0 / the inter-band lanes) instead of dropping into a block's
+        # interior pocket and walling later taps. Among equal-laneness, shortest
+        # wall-hugging path first.
         wall_occ = set(block_cells) | set(backbone)
+        # RESERVE THE EGRESS CORRIDOR: keep the output-port column free of INTERMEDIATE
+        # backbone segments (the snake's tap-to-tap thread), so a mid-snake drop never
+        # consumes the only clear climb to the output port (the "cannot reach out_port"
+        # dead-end). The final egress (below the tap loop) is free to use it. Don't
+        # reserve a cell that is itself an abut candidate for THIS tap.
         blocked = occ | (set(backbone) - {backbone[-1]})
+        pref = pref_abut.get(in_cell)
         scored = []
         for c in cands:
             p = bfs(backbone[-1], c, blocked, wall_occ)
             if p is not None:
-                scored.append((len(p), c, p))
+                prefer = 0 if c == pref else 1       # the placer's intended tap lane cell
+                lane = 0 if c in spine_set else 1
+                scored.append(((prefer, lane, len(p)), c, p))
         scored.sort(key=lambda t: t[0])
         chosen = None
         for _len, c, p in scored:
@@ -561,14 +662,22 @@ def _route_chip_bus_v2(project, ct, chip_id, nets, spine, *, port_map_provider):
                 if not any(reachable(new_head, ac, blk)
                            for ac in _abut_free(lic, new_occ)):
                     ok = False
+                    if _DBG:
+                        print(f"[bus_v2]   cand {c} strands later tap {lic}")
                     break
             if ok and out_port_cell != new_head \
                     and not reachable(new_head, out_port_cell, blk):
                 ok = False
+                if _DBG:
+                    print(f"[bus_v2]   cand {c} cannot reach out_port {out_port_cell}")
             if ok:
                 chosen = (c, p)
                 break
         if chosen is None:
+            if _DBG:
+                print(f"[bus_v2] FAIL tap {in_cell} head={backbone[-1]} "
+                      f"cands={cands} scored={[(c,len(p)) for _l,c,p in scored]} "
+                      f"later={later}")
             return _bail(f"cannot thread backbone to tap at {in_cell}")
         c, p = chosen
         for cell in p[1:]:
@@ -587,18 +696,69 @@ def _route_chip_bus_v2(project, ct, chip_id, nets, spine, *, port_map_provider):
             occ.add(c)
 
     bb_index = {c: i for i, c in enumerate(backbone)}
+    # Single-cell bus-fed target INPUT cells (the §5.3 in==out hazard): a single-cell
+    # block whose input is delivered by a broker (not a direct port injection at its own
+    # cell). It needs a SECOND backbone tap (a bend) so input-face != output-face.
+    sc_targets: set = set()
+    for blk in project.blocks:
+        pl = blk.placement
+        if pl is None or pl.chip != chip_id or len(pl.cells) != 1:
+            continue
+        c0 = (pl.cells[0].x, pl.cells[0].y)
+        # bus-fed: some net targets it and is NOT a direct port→own-cell injection
+        for (_n, s, _sf, d, _df, sp_, _dp, _c) in nets:
+            if d == c0 and not (sp_ and s == d):
+                sc_targets.add(c0)
+                break
 
-    def src_tap_cell(conn):
+    # SINGLE-CELL in==out split (§5.3) via a SECOND backbone tap. A single-cell block
+    # both receives and drives on its ONE cell; if both rode the same lane tap they would
+    # share a face (deadlock). When the block sits at a backbone BEND it abuts TWO backbone
+    # cells on DIFFERENT faces — deliver its INPUT from the earlier one (kept as its tap)
+    # and emit its OUTPUT from the later one, so the build sees input-face != output-face.
+    # Computed only for single-cell blocks that actually abut a second backbone cell.
+    sc_out_tap: dict = {}            # block cell -> the OUTPUT (second) backbone tap
+    for c0 in sc_targets:
+        in_tap = tap_abut.get(c0)
+        if in_tap is None:
+            continue
+        in_i = bb_index[in_tap]
+        # A NEARBY downstream backbone cell on a DIFFERENT face (the inside corner of a
+        # bend, Δindex small) — the block's OUTPUT tap. "Nearby" so it stays upstream of
+        # the block's consumer; a far cell (the egress rail running past the block) is
+        # NOT used (that would put the output downstream of its own consumer).
+        seconds = [(c0[0] + dx, c0[1] + dy) for dx, dy in _NEI
+                   if (c0[0] + dx, c0[1] + dy) in bb_index
+                   and (c0[0] + dx, c0[1] + dy) != in_tap
+                   and _cardinal(c0, (c0[0] + dx, c0[1] + dy)) != _cardinal(c0, in_tap)
+                   and 1 <= bb_index[(c0[0] + dx, c0[1] + dy)] - in_i <= 2]
+        if seconds:
+            sc_out_tap[c0] = min(seconds, key=lambda c: bb_index[c])
+
+    def src_tap_cell(conn, i_to_limit=None):
         """The backbone tap cell the SOURCE block of a block→block net rides from (its
-        own input-cell's tap — the block sits beside the backbone). None for a head."""
+        own input-cell's tap — the block sits beside the backbone). None for a head. A
+        single-cell source uses its dedicated OUTPUT tap (the §5.3 second-face cell) when
+        one exists AND it stays upstream of the consumer (``i_to_limit``)."""
         sb = project.block(conn.source.block)
         if sb is None or sb.placement is None:
             return None
         bcells = {(c.x, c.y) for c in sb.placement.cells}
+        primary = None
         for ic, tcell in tap_abut.items():
             if ic in bcells:
-                return tcell
-        return None
+                primary = tcell
+                break
+        # A single-cell source prefers its dedicated OUTPUT tap (the §5.3 second-face
+        # cell) — but ONLY if that tap stays UPSTREAM of the consumer (``i_to_limit``);
+        # otherwise the primary lane tap is used (a far second tap, e.g. the egress rail
+        # running past the block, would put the output downstream of its own consumer).
+        for bc in bcells:
+            if bc in sc_out_tap:
+                oi = bb_index[sc_out_tap[bc]]
+                if i_to_limit is None or oi <= i_to_limit:
+                    return sc_out_tap[bc]
+        return primary
 
     out: list[RouteResult] = []
     for (name, s, sface, d, dface, sp, dp, conn) in nets:
@@ -608,7 +768,7 @@ def _route_chip_bus_v2(project, ct, chip_id, nets, spine, *, port_map_provider):
                 return _bail(f"egress net {name}: output port not on backbone")
             i_from = 0
             if isinstance(conn.source, BlockEndpoint):
-                st = src_tap_cell(conn)
+                st = src_tap_cell(conn, i_to)
                 i_from = bb_index.get(st, 0)
             out.append(RouteResult(name, True, points=list(backbone[i_from:i_to + 1])))
             continue
@@ -626,13 +786,17 @@ def _route_chip_bus_v2(project, ct, chip_id, nets, spine, *, port_map_provider):
         if sp:
             i_from = bb_index.get(in_port_cell, 0)
         else:
-            st = src_tap_cell(conn)
+            st = src_tap_cell(conn, i_to)
             i_from = bb_index.get(st)
             if i_from is None:
                 i_from = bb_index.get(in_port_cell, 0)
         if i_from > i_to:
+            if _DBG:
+                print(f"[bus_v2] net {name} i_from={i_from} ({src_tap_cell(conn)}) "
+                      f"i_to={i_to} (tap {tap}, ic {ic}) src={conn.source} tgt={conn.target}")
             return _bail(f"net {name}: source tap downstream of target on backbone")
-        out.append(RouteResult(name, True, points=list(backbone[i_from:i_to + 1])))
+        pts = list(backbone[i_from:i_to + 1])
+        out.append(RouteResult(name, True, points=pts))
     return out
 
 

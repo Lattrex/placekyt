@@ -595,13 +595,22 @@ class AppController(QObject):
         # stacked filament regions), which keeps tall designs (110B front end) on the
         # path that the placer's own >1-filament detection already covers.
         placer = None
+        used_bus_snake = False
         if use_bus == "always":
-            snake = _mk_placer(bus_snake=True, band_margin=0)
-            snake_plan = snake.plan(chip)
-            if self._plan_on_grid(snake_plan, w, h, footprint, port_maps) \
-                    and self._plan_ports_reachable(snake_plan, chip, w, h,
-                                                   footprint, port_maps):
-                placer, plan = snake, snake_plan
+            # Prefer a LOOSER band pack (margin 1 → a free routing lane between bands
+            # the backbone can weave through), falling back to the tight margin-0 pack
+            # only if the looser one overflows the grid. Both must keep the ports
+            # reachable (row 0 free, the bus-snake contract).
+            for bm in (1, 0):
+                snake = _mk_placer(bus_snake=True, band_margin=bm)
+                snake_plan = snake.plan(chip)
+                if self._plan_on_grid(snake_plan, w, h, footprint, port_maps) \
+                        and self._plan_ports_reachable(snake_plan, chip, w, h,
+                                                       footprint, port_maps) \
+                        and not getattr(snake, "_bus_snake_sc_deadlock", False):
+                    placer, plan = snake, snake_plan
+                    used_bus_snake = True
+                    break
         if placer is None:
             placer = _mk_placer(bus_snake=False, band_margin=1)
             plan = placer.plan(chip)
@@ -653,7 +662,13 @@ class AppController(QObject):
         # different one toward the egress/bus), so the bus router's adaptive split
         # succeeds NATURALLY. This runs AFTER the main pack so it sees final
         # positions; it never moves the lead input-fed block.
-        cmds.extend(self._abut_single_cell_terminals(chip, plan, lead))
+        # The abut-first re-seat would BREAK the bus-snake layout (it re-seats single-cell
+        # terminals next to their drivers, off the co-designed lane the v2 backbone rides),
+        # so it is skipped in bus-snake mode — the snake places single-cell blocks WITH an
+        # input-face != output-face split itself (the backbone dips under them), and a moved
+        # terminal would desync the spine the router threads.
+        if not used_bus_snake:
+            cmds.extend(self._abut_single_cell_terminals(chip, plan, lead))
         if cmds and register:
             self.commands.add_executed(
                 CompositeCommand("Auto-place blocks", cmds,
@@ -1106,6 +1121,8 @@ class AppController(QObject):
                             port_map_provider=port_maps)
         router.with_feedback(self._block_has_internal_feedback)
 
+        topology = self._select_topology(use_bus)
+
         pre: list = []
         if auto_orient:
             # Auto-orient (P3.2): flow-order each block (output faces the
@@ -1116,7 +1133,6 @@ class AppController(QObject):
             for cmd in pre:
                 cmd.execute()              # apply so the router sees new geometry
 
-        topology = self._select_topology(use_bus)
         report = self._run_router(router, port_cells, chip_types, use_cpsat,
                                   use_bus, port_maps, topology)
         # A chip INPUT-port → block net injects at the edge cell and needs NO
@@ -1227,9 +1243,17 @@ class AppController(QObject):
         (doc/ROUTING_TOPOLOGIES.md)."""
         from engine.bus_router import route_all_bus
 
+        # In BUS topology, when the LIVE placement matches the bus-snake layout, derive
+        # the spine from the SAME bus-snake placer — its lane rows are the backbone the v2
+        # threader rides verbatim. Otherwise (the multi-filament fallback) use the generic
+        # spine, so the legacy per-net router gets the hint it expects (a bus-snake spine
+        # over a non-snake placement would mis-bias it — the net6 fallback regression).
+        bus_snake = (topology in ("bus", "ring")) \
+            and self._placement_is_bus_snake(0)
+
         def spine(chip):
             try:
-                return self._derive_spine(chip)
+                return self._derive_spine(chip, bus_snake=bus_snake)
             except Exception:  # noqa: BLE001 — spine is a HINT; the router copes
                 return []
 
@@ -1237,11 +1261,57 @@ class AppController(QObject):
                              spine_provider=spine, port_map_provider=port_maps,
                              topology=topology)
 
-    def _derive_spine(self, chip: int):
+    def _placement_is_bus_snake(self, chip: int) -> bool:
+        """True if the LIVE block placement on ``chip`` matches the bus-snake plan (the
+        snake gate accepted it), so the bus-snake spine is the right backbone. False when
+        the multi-filament fallback was used — then the generic spine fits the layout."""
+        from engine.autoplace import AutoPlacer
+
+        def footprint(bt, lib, params=None):
+            return self.catalog.port_map(bt, params=params, library=lib).footprint
+
+        def port_maps(bt, lib, params=None):
+            return self.catalog.port_map(bt, params=params, library=lib)
+
+        w, h = self._chip_dims(chip)
+        anchor = self._input_port_anchor(chip)
+        try:
+            for bm in (1, 0):
+                p = (AutoPlacer(self.project, footprint, anchor=anchor, width=w,
+                                height=h, band_margin=bm)
+                     .with_port_maps(port_maps).with_chip_ports(self._chip_port_cell)
+                     .with_feedback(self._block_has_internal_feedback)
+                     .with_bus_snake(True))
+                plan = p.plan(chip)
+                if getattr(p, "_bus_snake_sc_deadlock", False):
+                    continue
+                if not (self._plan_on_grid(plan, w, h, footprint, port_maps)
+                        and self._plan_ports_reachable(plan, chip, w, h, footprint,
+                                                       port_maps)):
+                    continue
+                # the live anchors must equal the snake plan's (within this band margin)
+                for name, (_c, px, py) in plan.positions.items():
+                    blk = self.project.block(name)
+                    if blk is None or blk.placement is None:
+                        return False
+                    bb = blk.placement.bounding_box()
+                    cx, cy = (bb[0], bb[1]) if bb else (
+                        blk.placement.cells[0].x, blk.placement.cells[0].y)
+                    if (cx, cy) != (px, py):
+                        return False
+                return True
+        except Exception:  # noqa: BLE001
+            return False
+        return False
+
+    def _derive_spine(self, chip: int, *, bus_snake: bool = False):
         """Re-derive the placement spine (serpentine bus waypoints) for ``chip`` from
         the current block geometry, so the bus router prefers the snake the placer
         laid. Pure (no project mutation): runs the AutoPlacer's plan and returns its
-        ``spine`` without moving anything."""
+        ``spine`` without moving anything. ``bus_snake`` runs the BUS-SNAKE placer (the
+        layout used in bus topology) so the spine is the SAME lane serpentine the placed
+        blocks ride — not the generic per-band spine (which would mismatch the placement
+        and leave the v2 threader nothing clean to cling to)."""
         from engine.autoplace import AutoPlacer
 
         def footprint(block_type, library, params=None):
@@ -1257,6 +1327,8 @@ class AppController(QObject):
                   .with_port_maps(port_maps)
                   .with_chip_ports(self._chip_port_cell)
                   .with_feedback(self._block_has_internal_feedback))
+        if bus_snake:
+            placer.with_bus_snake(True)
         return placer.plan(chip).spine
 
     def add_logical_connection(self, source, target, *, name: str | None = None,

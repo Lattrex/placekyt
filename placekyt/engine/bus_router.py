@@ -344,7 +344,6 @@ def _route_chip_bus_v2(project, ct, chip_id, nets, spine, *, port_map_provider):
     fails, or no ordering routes every net under that constraint — the dense-placement
     case) so the caller DISCARDS it and falls back to the legacy per-net loop.
     """
-    _ = port_map_provider  # reserved (v2 contract signature)
     import os as _os
     _DBG = _os.environ.get("BUS_V2_DEBUG")
 
@@ -353,84 +352,210 @@ def _route_chip_bus_v2(project, ct, chip_id, nets, spine, *, port_map_provider):
             print("[bus_v2 bail]", msg)
         return None
 
-    # Need the input/output ports present (a shared-port bus design).
+    W, H = ct.width, ct.height
+
+    def in_bounds(c):
+        return 0 <= c[0] < W and 0 <= c[1] < H
+
     have_in = any(n[5] for n in nets)
     have_out = any(n[6] for n in nets)
     if not (have_in and have_out):
         return _bail("no shared input+output port pair")
 
-    # Placed blocks on this chip + filament partition (pure graph, read-only).
+    def in_cell_of(block, port):
+        """(x, y) of a block's input PORT cell via the port_map_provider."""
+        pmap = None
+        if port_map_provider is not None:
+            try:
+                pmap = port_map_provider(block.type, block.library, block.params)
+            except TypeError:
+                try:
+                    pmap = port_map_provider(block.type, block.library)
+                except Exception:  # noqa: BLE001
+                    pmap = None
+            except Exception:  # noqa: BLE001
+                pmap = None
+        if pmap is not None:
+            for p in pmap.ports:
+                if p.name == port and p.direction == "in":
+                    pc = block.placement.cell(p.cell_id)
+                    if pc is not None:
+                        return (pc.x, pc.y)
+        return (block.placement.cells[0].x, block.placement.cells[0].y)
+
+    # Block + transit cells are obstacles for the backbone (a word never transits a
+    # live block cell).
+    block_cells: set = set()
+    for blk in project.blocks:
+        pl = blk.placement
+        if pl is None or pl.chip != chip_id:
+            continue
+        block_cells.update((c.x, c.y) for c in pl.cells)
+        block_cells.update((t.x, t.y) for t in getattr(pl, "transit_cells", []))
+
+    # Backbone endpoints: input-port and output-port edge cells.
+    in_port_cell = out_port_cell = None
+    for (_n, s, _sf, d, _df, sp, dp, _c) in nets:
+        if sp and in_port_cell is None:
+            in_port_cell = s
+        if dp and out_port_cell is None:
+            out_port_cell = d
+    if in_port_cell is None or out_port_cell is None:
+        return _bail("missing input or output port cell")
+
+    # Tap cell per target INPUT cell (fan-in nets share a tap). Order them along the
+    # backbone by a SERPENTINE sweep of the input cells (so consecutive taps are
+    # spatially adjacent → a short threadable backbone), then repair so each filament's
+    # taps stay in flow order. Flow order from the connection graph (read-only).
     from .autoplace import AutoPlacer
-    blocks = {b.name: b for b in project.blocks
+    _placer = AutoPlacer(project, lambda *a: (0, 0))
+    _names = {b.name for b in project.blocks
               if b.placement is not None and b.placement.chip == chip_id
               and b.placement.cells}
-    if not blocks:
-        return _bail("no placed blocks")
-    placer = AutoPlacer(project, lambda *a: (0, 0))
-    names = set(blocks.keys())
-    order, _backward = placer._flow_order(list(blocks.values()), names)
-    filaments = placer._filaments(order, names)
-    if len(filaments) <= 1:
-        # A lone filament has no cross-filament transit to separate — let the legacy
-        # loop handle it (its proven single-filament path; v2 adds nothing here).
-        return _bail("single filament — legacy path")
+    _order, _ = _placer._flow_order(
+        [b for b in project.blocks if b.name in _names], _names)
+    fpos = {n: i for i, n in enumerate(_order)}
+    filaments = _placer._filaments(_order, _names)
     fil_of = {n: fi for fi, mem in enumerate(filaments) for n in mem}
 
-    # Assign each net to a filament: the filament of its BLOCK endpoint (port nets) or
-    # of its source/target blocks (block->block nets — both are in the same filament by
-    # construction; a cross-filament block->block net would be a malformed design).
-    def net_filament(conn, src_is_port, dst_is_port):
-        if not src_is_port and isinstance(conn.source, BlockEndpoint):
-            f = fil_of.get(conn.source.block)
-            if f is not None:
-                return f
-        if not dst_is_port and isinstance(conn.target, BlockEndpoint):
-            return fil_of.get(conn.target.block)
+    tap_in: dict = {}                 # in_cell -> {"block","ord","conns"}
+    for (name, s, sface, d, dface, sp, dp, conn) in nets:
+        if dp or not isinstance(conn.target, BlockEndpoint):
+            continue
+        blk = project.block(conn.target.block)
+        if blk is None or blk.placement is None or not blk.placement.cells:
+            continue
+        ic = in_cell_of(blk, conn.target.port)
+        ent = tap_in.setdefault(ic, {
+            "block": blk.name, "conns": [],
+            "ord": (fil_of.get(blk.name, 0), fpos.get(blk.name, 1 << 20))})
+        ent["conns"].append(name)
+
+    def serp_key(cell):
+        x, y = cell
+        return (y, x if (y % 2 == 0) else (W - 1 - x))
+
+    taps = sorted(tap_in.items(), key=lambda kv: serp_key(kv[0]))
+    # Per-filament flow-order repair (stable): within each filament, its taps must be in
+    # ``ord`` (pos) order; cross-filament interleave from the serpentine sweep is kept.
+    by_fil: dict = {}
+    for i, (cell, meta) in enumerate(taps):
+        by_fil.setdefault(meta["ord"][0], []).append(i)
+    for _f, idxs in by_fil.items():
+        members = sorted((taps[i] for i in idxs), key=lambda kv: kv[1]["ord"][1])
+        for slot, member in zip(idxs, members):
+            taps[slot] = member
+
+    # Thread ONE contiguous backbone: input port → (a free cell abutting each tap's
+    # input cell, in order) → output port. Each cell appears once; one travel direction
+    # per cell. A free-cell BFS per segment, preferring the spine cells.
+    spine_set = {tuple(p) for p in spine if in_bounds(tuple(p))}
+
+    def bfs(src, goal, blocked):
+        if src == goal:
+            return [src]
+        import heapq
+        seen = {src}
+        pq = [(0, 0, src, [src])]
+        tie = 1
+        while pq:
+            cost, _, cur, path = heapq.heappop(pq)
+            for dx, dy in _NEI:
+                nxt = (cur[0] + dx, cur[1] + dy)
+                if nxt in seen or not in_bounds(nxt):
+                    continue
+                if nxt != goal and nxt in blocked:
+                    continue
+                seen.add(nxt)
+                np_ = path + [nxt]
+                if nxt == goal:
+                    return np_
+                heapq.heappush(pq, (cost + (0 if nxt in spine_set else 1),
+                                    tie, nxt, np_))
+                tie += 1
         return None
 
-    # Per-net filament tag (so the ordering can keep each filament's nets together and
-    # the source-before-target rule holds within a filament).
-    net_fil = {}
-    for n in nets:
-        (_name, _s, _sf, _d, _df, src_is_port, dst_is_port, conn) = n
-        f = net_filament(conn, src_is_port, dst_is_port)
-        if f is None:
-            return _bail(f"net {_name} has no filament")
-        net_fil[_name] = f
+    backbone = [in_port_cell]
+    occ = set(block_cells)
+    occ.discard(in_port_cell)
+    tap_abut: dict = {}               # in_cell -> the backbone cell that taps it
+    for in_cell, _meta in taps:
+        cands = [(in_cell[0] + dx, in_cell[1] + dy) for dx, dy in _NEI]
+        cands = [c for c in cands if in_bounds(c) and c not in block_cells]
+        on_bb = [c for c in cands if c in set(backbone)]
+        if on_bb:
+            tap_abut[in_cell] = on_bb[0]
+            continue
+        blocked = occ | (set(backbone) - {backbone[-1]})
+        best_seg = best_c = None
+        for c in cands:
+            p = bfs(backbone[-1], c, blocked)
+            if p is not None and (best_seg is None or len(p) < len(best_seg)):
+                best_seg, best_c = p, c
+        if best_seg is None:
+            return _bail(f"cannot thread backbone to tap at {in_cell}")
+        for c in best_seg[1:]:
+            backbone.append(c)
+            occ.add(c)
+        tap_abut[in_cell] = best_c
 
-    # Route ALL nets on ONE shared bus, but with ``forbid_broker_transit=True`` so NO
-    # foreign net ever TRANSITS a broker cell (the one-cell-two-roles corruption the
-    # bus topology forbids). Plain transit cells are still shared (same direction, via
-    # ``bus_dir``) — the bus IS shared, only broker cells are private to their own
-    # filament's delivery. We try a few principled net orderings (a broker laid by an
-    # early net becomes a no-transit obstacle for later ones, so order matters) and keep
-    # the first that routes EVERY net. The DRC gate (caller) re-verifies soundness.
-    def _cls(src_is_port, dst_is_port, mode):
-        if mode == "egress":
-            return 0 if dst_is_port else (1 if src_is_port else 2)
-        return 1 if (src_is_port or dst_is_port) else 0
+    if out_port_cell != backbone[-1]:
+        blocked = occ | (set(backbone) - {backbone[-1]})
+        seg = bfs(backbone[-1], out_port_cell, blocked)
+        if seg is None:
+            return _bail("cannot thread backbone to output port")
+        for c in seg[1:]:
+            backbone.append(c)
+            occ.add(c)
 
-    def _key(n, mode):
-        _name, s, _sf, d, _df, sp, dp, _conn = n
-        span = -(abs(s[0] - d[0]) + abs(s[1] - d[1]))
-        return (net_fil[_name], _cls(sp, dp, mode), d,
-                0 if not sp else 1, span)
+    bb_index = {c: i for i, c in enumerate(backbone)}
 
-    best = None
-    for mode in ("egress", "blocks"):
-        ordered = sorted(nets, key=lambda n: _key(n, mode))
-        res = _route_chip_bus(project, ct, chip_id, ordered, spine,
-                              sc_cells=None, forbid_broker_transit=True)
-        nok = sum(1 for r in res if r.ok)
-        if best is None or nok > best[0]:
-            best = (nok, res)
-        if nok == len(nets):
-            break
-    if best is None or best[0] < len(nets):
-        return _bail(
-            "could not route every net without foreign broker transit: "
-            f"{[r.name for r in (best[1] if best else []) if not r.ok]}")
-    return best[1]
+    def src_tap_cell(conn):
+        """The backbone tap cell the SOURCE block of a block→block net rides from (its
+        own input-cell's tap — the block sits beside the backbone). None for a head."""
+        sb = project.block(conn.source.block)
+        if sb is None or sb.placement is None:
+            return None
+        bcells = {(c.x, c.y) for c in sb.placement.cells}
+        for ic, tcell in tap_abut.items():
+            if ic in bcells:
+                return tcell
+        return None
+
+    out: list[RouteResult] = []
+    for (name, s, sface, d, dface, sp, dp, conn) in nets:
+        if dp:
+            i_to = bb_index.get(d)
+            if i_to is None:
+                return _bail(f"egress net {name}: output port not on backbone")
+            i_from = 0
+            if isinstance(conn.source, BlockEndpoint):
+                st = src_tap_cell(conn)
+                i_from = bb_index.get(st, 0)
+            out.append(RouteResult(name, True, points=list(backbone[i_from:i_to + 1])))
+            continue
+        if sp and s == d:
+            out.append(RouteResult(name, True, points=[d]))   # vestigial (dropped)
+            continue
+        if not isinstance(conn.target, BlockEndpoint):
+            return _bail(f"net {name}: non-block, non-port target")
+        blk = project.block(conn.target.block)
+        ic = in_cell_of(blk, conn.target.port)
+        tap = tap_abut.get(ic)
+        i_to = bb_index.get(tap)
+        if i_to is None:
+            return _bail(f"net {name}: target tap not on backbone")
+        if sp:
+            i_from = bb_index.get(in_port_cell, 0)
+        else:
+            st = src_tap_cell(conn)
+            i_from = bb_index.get(st)
+            if i_from is None:
+                i_from = bb_index.get(in_port_cell, 0)
+        if i_from > i_to:
+            return _bail(f"net {name}: source tap downstream of target on backbone")
+        out.append(RouteResult(name, True, points=list(backbone[i_from:i_to + 1])))
+    return out
 
 
 def _drc_gate(results, chip_types):

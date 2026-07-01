@@ -7,45 +7,83 @@ from ._base import KyttarBlock, BlockInterface, assemble_to_words, float_to_q15,
 
 class GardnerTimingRecovery(KyttarBlock):
     """
-    Gardner symbol-timing recovery — production 3-cell implementation.
+    Gardner symbol-timing recovery — production 4-cell implementation of GNU
+    Radio's ``digital.symbol_sync`` control loop (TED_GARDNER).
 
-    A REAL timing-recovery loop (the older fixed-rate-decimator version could not
-    move the sampling instant). A 2-samples/symbol input drives a Gardner timing
-    error detector + PI loop filter + an NCO-controlled interpolating resampler
-    that actually advances/retards where it samples. Validated on-chip bit-exact
-    (the 3-cell loop matches its Q15 reference 20/20) and recovers symbol timing
-    BER=0 across fractional offsets 0.3-0.7 — see
-    the internal reference implementation (algorithm) and
-    ``proto_gardner_chip.py`` (on-chip cells).
+    A REAL timing-recovery loop that advances/retards WHERE it samples (the older
+    fixed-rate-decimator version could not). A 2-samples/symbol input drives a
+    Gardner timing-error detector + a 2nd-order PI loop filter + a Q14-NCO
+    interpolating resampler. The loop is faithful to GR ``symbol_sync``:
 
-    Cells (forward chain on one row, period feedback returns via the row below)::
+      * PI gains derive from GR's ``loop_bw=0.045`` + ``damping=1.0`` (verified
+        against ``digital.symbol_sync_ff(...).alpha()/.beta()`` = 0.08607 /
+        0.0019362), applied as power-of-two ``MULQ`` scalings on the error.
+      * The interpolator period is CLAMPED to nominal +- ``max_dev`` (GR default
+        1.5 full samples => 0.75 half-sample), which is also the integrator
+        anti-windup.
+
+    Over a LONG continuous RX stream the loop PLATEAUS at the nominal period and
+    recovers BER 0 (fractional offsets 0.3-0.7, >=720-symbol streams, and the full
+    coupled MF->Costas->Gardner->Slicer chain). The previous kp/ki PI DID NOT
+    CONVERGE — its period collapsed monotonically and the sampler slipped after
+    ~180 symbols; see ``process_reference`` for the three fixed-point details that
+    make it converge on 16-bit hardware (wide error product to dodge int16
+    overflow, a full-width integrator, and matching the chip's TRUNCATING MULQ +
+    a half-LSB rounding bias on the integral term to keep the loop DC-neutral).
+
+    Cells (compact 2x2 fold; the period feedback returns via the relay)::
 
         resampler ──► ted ──► loop_filter
             ▲                      │
-            └─── period feedback ──┘
+            └──── period_relay ◄───┘   (PI filter; writes inst_next back as data)
 
-      * resampler: holds a 2-sample delay line + a Q14 phase accumulator (1.0 =
-        0x4000 so it stays positive for the phase>=period sign test); on each
-        input it advances phase and, when phase>=period, emits ONE interpolated
-        strobe (value + a parity tag, 0=center / 0x4000=mid). A MID strobe resets
-        the period to nominal locally; the CENTER's corrected period arrives from
-        the loop filter (one-execution feedback delay). Phase carries across
-        inputs (the remainder is kept), so a shrunk period advances the sampling
-        instant — the real timing recovery.
-      * ted: Gardner error e = (center - center_prev) * mid on a CENTER strobe
-        (branches on the parity tag); passes the center sample through.
-      * loop_filter: PI controller — integ += ki*e (clamped); corr = kp*e + integ;
-        period = nominal - (corr>>1); feeds `period` BACK to the resampler and
-        emits the recovered center sample.
+      * resampler: 2-sample delay line + a Q14 phase accumulator (1.0 = 0x4000);
+        each input advances phase and, when phase>=inst_active, emits ONE linearly
+        interpolated strobe (value + a parity tag, 0=center / 0x4000=mid). On the
+        strobe it ADOPTS ``inst_next`` (the deferred period fed back by the relay
+        after the previous strobe). No mid-reset — both strobes use the loop period.
+      * ted: on a CENTER, forms the WIDE Gardner error high-word
+        ``ewhi = MULHI(mid, (s>>1)-(cprev>>1))`` (the ``>>1`` keeps the BPSK sample
+        difference inside int16); passes the center sample through.
+      * loop_filter: emits the recovered center forward (to the slicer/bus) AND
+        hands ``ewhi`` to the period_relay (dual-face emit).
+      * period_relay: the GR PI filter. ``iavg += round(ewhi>>8)`` clamped to
+        +-max_dev; ``inst = one_q14 + iavg + (ewhi>>2)``; writes ``inst`` back into
+        the resampler's ``inst_next`` as pure data (the Costas-dphase feedback
+        model — closes the loop through a data path, not a trigger).
 
     Interface: a real 2-sps input stream; the output is the recovered
     symbol-rate (center) sample stream (slice its sign for BPSK bits).
-
-    Gains kp=3, ki=1 (raw, applied via a rounded Q15 multiply) for the validated
-    loop bandwidth; the period/phase scale is Q14.
     """
     CATEGORY = "recovery"
     TAGS = ["gardner", "timing_recovery", "ted", "symbol_sync", "recovery"]
+
+    # --- GR digital.symbol_sync control-loop constants (loop_bw=0.045, damping=1.0).
+    # GR derives alpha/beta from loop_bw+damping; verified against
+    # ``digital.symbol_sync_ff(...).alpha()/.beta()`` = 0.08607 / 0.0019362. Rather
+    # than carry those Q15 gains through two rounding multiplies (which quantise the
+    # per-symbol correction to zero and let a DC bias wind the loop down), we apply
+    # the loop filter directly on the WIDE error high-word ``ewhi`` via two power-of-two
+    # scalings whose amounts reproduce GR's alpha/beta after the +-max_dev clamp.
+    # ``ewhi = MULHI(mid, (s>>1)-(cprev>>1))`` = (mid*(s-cprev)) >> 17.
+    #   integral:      iavg += ewhi >> _SB_INTEG    (=> effective integral gain)
+    #   proportional:  inst  = avg + ewhi >> _SB_PROP
+    # On chip each ``>> n`` is a SINGLE, SIGN-CORRECT ``MULQ(x, 2^(15-n))`` (the ISA
+    # SHR is LOGICAL, so a raw shift would corrupt negatives; MULQ rounds and preserves
+    # sign in one instruction). The Q15 multipliers are ``_MULQ_INTEG`` / ``_MULQ_PROP``.
+    # Values calibrated so avg PLATEAUS at nominal (16384) over >=720-symbol streams
+    # with BER 0 across seeds and fractional offsets 0.3-0.7 (see process_reference).
+    _SB_INTEG = 8      # integral-term shift on ewhi   (>>8)
+    _SB_PROP = 2       # proportional-term shift on ewhi (>>2)
+    _MULQ_INTEG = 1 << (15 - 8)   # 128  : MULQ(ewhi,128)  == ewhi >> 8
+    _MULQ_PROP = 1 << (15 - 2)    # 8192 : MULQ(ewhi,8192) == ewhi >> 2
+    _MULQ_HALF = 1 << 14          # 16384: MULQ(x,16384)   == x >> 1 (sample halving)
+    # Half-LSB rounding bias for the integral MULQ (the ISA MULQ floors): adding this
+    # before ``MULQ(ewhi,128)`` turns the floor into round-to-nearest, removing the
+    # -0.5-LSB DC that would otherwise wind the integrator down. = 2^(8-1) (half of 2^8).
+    _INTEG_RBIAS = 1 << (8 - 1)   # 128
+    # GR max_dev = 1.5 full samples => 0.75 half-sample => 0.75 * 16384 (Q14).
+    _MAXDEV = 12288    # 0.75 sample in Q14; period clamped to 16384 +- _MAXDEV
 
     # Complex/real 2-sps input lands at R0 of the resampler landing cell; the
     # recovered center sample is the output.
@@ -68,8 +106,11 @@ class GardnerTimingRecovery(KyttarBlock):
         """
         Args:
             name: Block name.
-            kp: Proportional loop-filter gain (raw Q15-multiply scale). Default 3.
-            ki: Integral loop-filter gain. Default 1. (kp=3, ki=1 is validated.)
+            kp, ki: DEPRECATED. The loop filter now derives its proportional/integral
+                gains from GR's ``loop_bw=0.045`` + ``damping=1.0`` (the
+                ``digital.symbol_sync`` control loop) as fixed shift amounts
+                (``_SB_PROP`` / ``_SB_INTEG``), NOT raw kp/ki multiplies. These
+                arguments are accepted for backward compatibility but IGNORED.
         """
         super().__init__(name, kp=kp, ki=ki)
         self._kp = int(kp)
@@ -86,18 +127,26 @@ class GardnerTimingRecovery(KyttarBlock):
         return self._interface
 
     def build_cell_programs(self) -> Dict[str, CellProgram]:
-        """The 3 proven cells (ported verbatim from proto_gardner_chip.py)."""
-        kp, ki = self._kp, self._ki
+        """The 4 cells implementing the GR symbol_sync control loop (see
+        ``process_reference`` for the algorithm this is bit-exact with)."""
 
-        # --- C1 resampler: Q14 NCO + 2-sample delay line + interp + parity. ---
+        # --- C1 resampler: Q14 NCO + 2-sample delay line + interp + parity. -----
+        # Fires ONE strobe per 1.0-sample advance (2 per symbol). The instantaneous
+        # HALF-period ``inst_active`` (Q14) is compared against ``phase``; on a strobe
+        # it ADOPTS ``inst_next`` (the deferred feedback the relay wrote after the
+        # previous strobe — the Costas-dphase feedback model). There is NO
+        # mid-reset-to-nominal: both strobes use the loop's period. This is the fix
+        # for the long-stream drift/collapse.
         resampler = CellProgram(
             inputs=[Port("xi", register=0)],
             outputs=[Port("val"), Port("par"), Port("trig")],
             entries=[EntryPoint("default")],
             data=[DataWord("inc", 1 << 14, address=1),
                   DataWord("one_q14", 1 << 14, address=2)],
-            state=[StateVar("phase"), StateVar("xp"), StateVar("xp2"),
-                   StateVar("period", initial_value=1 << 14),
+            state=[StateVar("phase", initial_value=(1 << 14) >> 1),  # warm 0.5
+                   StateVar("xp"), StateVar("xp2"),
+                   StateVar("inst_active", initial_value=1 << 14),
+                   StateVar("inst_next", initial_value=1 << 14),
                    StateVar("parity"), StateVar("diff")],
             assembly_template="""\
 start:
@@ -105,19 +154,16 @@ start:
     MOVE R{state:xp}, R{in:xi}
     ADD R{state:phase}, R{data:inc}
     MOVE R{state:phase}, R0
-    SUB R{state:phase}, R{state:period}
+    SUB R{state:phase}, R{state:inst_active}
     BR.N done
     MOVE R{state:phase}, R0
+    MOVE R{state:inst_active}, R{state:inst_next}
     SUB R{state:xp}, R{state:xp2}
     MOVE R{state:diff}, R0
     SHL R{state:phase}, #1
     MULQ R0, R{state:diff}
     ADD R0, R{state:xp2}
     {write:val}
-    CMP R{state:parity}, R{data:one_q14}
-    BR.NZ emitpar
-    MOVE R{state:period}, R{data:one_q14}
-emitpar:
     MOVE R0, R{state:parity}
     {write:par}
     XOR R{state:parity}, R{data:one_q14}
@@ -128,13 +174,26 @@ done:
 """,
         )
 
-        # --- C2 ted: Gardner error on a center strobe; pass center through. ---
+        # --- C2 ted: Gardner error on a CENTER strobe; pass the center through. ---
+        # par==0 => CENTER, par==0x4000 => MID (the resampler's parity tag). On a
+        # MID it just latches ``half`` (the mid sample) and terminates. On a CENTER
+        # it forms the WIDE Gardner error high-word:
+        #     dc_half = (s>>1) - cph                    # cph = (prev center)>>1
+        #     ewhi    = MULHI(half, dc_half)            # signed high word of product
+        # The ``>>1`` keeps the BPSK sample DIFFERENCE inside int16 (a full-scale
+        # ``s - cprev`` OVERFLOWS int16 and corrupts the error — the true root cause of
+        # the old long-stream drift). It is done as ``MULQ(s, 16384)`` = s/2: ONE
+        # instruction, SIGN-CORRECT (the ISA SHR is LOGICAL, so a raw shift would
+        # mangle negative samples). We keep the previous center's halved value ``cph``
+        # as state so only one halving is done per center. Forwards ``ewhi`` (to the PI
+        # relay) and ``s`` (to the loop_filter `out`).
         ted = CellProgram(
             inputs=[Port("val", register=0), Port("par", register=1)],
             outputs=[Port("e_out"), Port("c_out"), Port("trig")],
             entries=[EntryPoint("default")],
-            data=[DataWord("one_q14", 1 << 14, address=2)],
-            state=[StateVar("cprev"), StateVar("half"), StateVar("e"),
+            data=[DataWord("one_q14", 1 << 14, address=2),
+                  DataWord("mulq_half", self._MULQ_HALF, address=3)],
+            state=[StateVar("cph"), StateVar("half"), StateVar("csh"),
                    StateVar("cs")],
             assembly_template="""\
 start:
@@ -144,12 +203,11 @@ start:
     {jump:trig}
 center:
     MOVE R{state:cs}, R{in:val}
-    MOVE R{state:e}, R{state:cs}
-    SUB R{state:e}, R{state:cprev}
-    MOVE R{state:e}, R0
-    MULQ R{state:e}, R{state:half}
-    MOVE R{state:e}, R0
-    MOVE R{state:cprev}, R{state:cs}
+    MULQ R{state:cs}, R{data:mulq_half}
+    MOVE R{state:csh}, R0
+    SUB R0, R{state:cph}
+    MULHI R0, R{state:half}
+    MOVE R{state:cph}, R{state:csh}
     {write:e_out}
     MOVE R0, R{state:cs}
     {write:c_out}
@@ -202,59 +260,58 @@ start:
 """,
         )
 
-        # --- C4 period_relay: the PI loop filter + the deadlock-breaking relay.
+        # --- C4 period_relay: the GR PI loop filter + the deadlock-breaking relay.
         #
-        # Triggered by the loop_filter on each CENTER (``fb_trig``); receives the
-        # Gardner error `e`. Runs the PI controller EXACTLY as the reference
-        # (process_reference / proto_gardner):
-        #     integ += ki*e ; integ = clamp(integ, -256, +256)
-        #     corr  = kp*e + integ
-        #     period = one_q14 - (corr>>1) ; period = max(1, period)
-        # then WRITES `period` (pure data, NO trigger) NORTH into the resampler's
-        # `period` state — the Costas dphase feedback model. The integ ±256 clamp and
-        # the period >=1 floor are ESSENTIAL: without them tiny per-center errors
-        # wind the integrator up unbounded, period saturates negative, and the
-        # resampler's ``phase >= period`` test fires every input (no 2:1 decimation,
-        # never settles). They live HERE (not the loop_filter) because the loop_filter
-        # is register-tight and the relay sits exactly on the period feedback path.
-        # The relay is a PROGRAMMED cell (not a plain transit cell): it reads the
-        # period correction AS DATA and re-emits it, so the timing feedback loop is
-        # closed through a data path rather than a trigger path.
+        # Triggered by the loop_filter on each CENTER (``fb_trig``); receives the WIDE
+        # Gardner error high-word ``ewhi``. Runs GR's symbol_sync control loop:
+        #     iavg += SAR(ewhi, _SB_INTEG)                       # integral (WIDE accum)
+        #     iavg  = clamp(iavg, -_MAXDEV, +_MAXDEV)            # +- max_dev on avg
+        #     avg   = one_q14 + iavg
+        #     inst  = avg + SAR(ewhi, _SB_PROP)                  # + proportional
+        # then WRITES ``inst`` (pure data, NO trigger) into the resampler's ``inst_next``
+        # state — the Costas-dphase feedback model (read by the NEXT strobe). Keeping
+        # the integrator ``iavg`` at FULL width (never requantised) and deriving the
+        # period as ``one_q14 + iavg`` is what stops the drift: a per-symbol Q15
+        # ``beta*e`` would round to zero and let a DC bias wind the loop down.
+        # SAR = arithmetic right shift via the sign-extension-mask idiom (the ISA SHR
+        # is logical): SHR then OR the top-n-bit mask when the value is negative.
+        # The +- _MAXDEV clamp on iavg == GR's max_dev clamp on the interpolator period
+        # (also the anti-windup); the small proportional term needs no separate clamp.
+        # Each ``ewhi >> n`` is ONE sign-correct ``MULQ(ewhi, 2^(15-n))`` (see the class
+        # constants) — far cheaper and safer than a logical-SHR sign-extension idiom.
+        MAXDEV = self._MAXDEV
+        ONEQ = 1 << 14
         period_relay = CellProgram(
             inputs=[Port("e_in", register=0)],
             outputs=[Port("pout")],
             entries=[EntryPoint("relay")],
-            data=[DataWord("kp", kp, address=1),
-                  DataWord("ki", ki, address=2),
-                  DataWord("one_q14", 1 << 14, address=3),
-                  DataWord("ilim", 256, address=4),
-                  DataWord("nilim", (-256) & 0xFFFF, address=5),
-                  DataWord("signbit", 0x8000, address=6)],
-            state=[StateVar("integ"), StateVar("es"), StateVar("sg")],
+            data=[DataWord("one_q14", ONEQ, address=1),
+                  DataWord("mulq_integ", self._MULQ_INTEG, address=2),
+                  DataWord("mulq_prop", self._MULQ_PROP, address=3),
+                  DataWord("pdev", MAXDEV, address=4),
+                  DataWord("ndev", (-MAXDEV) & 0xFFFF, address=5),
+                  DataWord("rbias", self._INTEG_RBIAS, address=6)],
+            state=[StateVar("iavg"), StateVar("es")],
             assembly_template="""\
 relay:
     MOVE R{state:es}, R{in:e_in}
-    MULQ R{state:es}, R{data:ki}
-    ADD R{state:integ}, R0
-    MOVE R{state:integ}, R0
-    CMP R{state:integ}, R{data:ilim}
+    MOVE R0, R{state:es}
+    ADD R0, R{data:rbias}
+    MULQ R0, R{data:mulq_integ}
+    ADD R0, R{state:iavg}
+    MOVE R{state:iavg}, R0
+    CMP R{state:iavg}, R{data:pdev}
     BR.N ihi
-    MOVE R{state:integ}, R{data:ilim}
+    MOVE R{state:iavg}, R{data:pdev}
 ihi:
-    CMP R{state:integ}, R{data:nilim}
+    CMP R{state:iavg}, R{data:ndev}
     BR.NN ilo
-    MOVE R{state:integ}, R{data:nilim}
+    MOVE R{state:iavg}, R{data:ndev}
 ilo:
-    MULQ R{state:es}, R{data:kp}
-    ADD R0, R{state:integ}
-    MOVE R{state:es}, R0
-    AND R0, R{data:signbit}
-    MOVE R{state:sg}, R0
-    SHR R{state:es}, #1
-    OR R0, R{state:sg}
-    MOVE R{state:es}, R0
-    MOVE R0, R{data:one_q14}
-    SUB R0, R{state:es}
+    MOVE R0, R{state:es}
+    MULQ R0, R{data:mulq_prop}
+    ADD R0, R{state:iavg}
+    ADD R0, R{data:one_q14}
     {write:pout}
 """,
         )
@@ -263,11 +320,12 @@ ilo:
                 "period_relay": period_relay}
 
     def internal_connections(self) -> List[Tuple[int, str, int, str]]:
-        """Forward data handoffs + the period FEEDBACK (loop_filter -> resampler).
+        """Forward data handoffs + the period FEEDBACK (relay -> resampler).
 
         The resampler tags each strobe (val + par); the TED branches center/mid on
-        par. The loop filter feeds the corrected `period` back to the resampler's
-        period state (the loop closure, routed via the row-below return path).
+        par and forms the wide Gardner error. The relay runs the PI filter and feeds
+        the corrected instantaneous period back to the resampler's ``inst_next``
+        state (the loop closure).
         """
         return [
             ("resampler", "val", "ted", "val"),
@@ -275,13 +333,13 @@ ilo:
             ("ted", "e_out", "loop_filter", "e_in"),
             ("ted", "c_out", "loop_filter", "cval"),
             # FEEDBACK (via the relay PI filter): the loop_filter hands the Gardner
-            # error `e` to the `period_relay` (forward, WEST); the relay runs the PI
-            # controller and writes the corrected `period` as a pure data WRITE into
-            # the resampler's `period` state (backward, NORTH). Closing the loop
-            # through a data WRITE (not a trigger) keeps the feedback independent of
-            # the forward path (see its program).
+            # error high-word ``ewhi`` to the `period_relay` (forward, WEST); the relay
+            # runs the PI controller and writes the corrected instantaneous period as a
+            # pure data WRITE into the resampler's ``inst_next`` state (backward,
+            # NORTH). Closing the loop through a data WRITE (not a trigger) keeps the
+            # feedback independent of the forward path (see its program).
             ("loop_filter", "e_fb", "period_relay", "e_in"),
-            ("period_relay", "pout", "resampler", "period"),
+            ("period_relay", "pout", "resampler", "inst_next"),
         ]
 
     def internal_jumps(self) -> List[Tuple[int, str, int, str]]:
@@ -354,13 +412,33 @@ ilo:
         return 2
 
     def process_reference(self, input_samples: np.ndarray) -> np.ndarray:
-        """Reference Q15 Gardner loop modelling the on-chip cells EXACTLY (matches
-        the chip bit-exact; recovers timing BER=0 frac 0.3-0.7).
+        """Reference Q15/Q14 Gardner loop modelling the on-chip cells EXACTLY
+        (bit-exact with the chip; recovers timing BER=0 frac 0.3-0.7 over LONG
+        continuous streams — the loop PLATEAUS at the nominal period, it does NOT
+        collapse).
+
+        This is the GR ``digital.symbol_sync`` control loop (see the class
+        docstring): a 2nd-order PI whose gains ``alpha`` (proportional) and
+        ``beta`` (integral) derive from GR's ``loop_bw=0.045`` + ``damping=1.0``,
+        with the interpolator period clamped to nominal +/- ``max_dev`` (0.75
+        half-sample = GR's 1.5 full-sample). The three fixed-point details that
+        make it converge on 16-bit hardware:
+
+          * ``inst`` (instantaneous HALF-period, Q14, 16384 = 1.0 sample) is fed
+            back to the resampler and used for BOTH the mid and center strobe.
+            There is NO mid-reset-to-nominal (the old design's collapse driver).
+          * The Gardner error uses a WIDE (32-bit) product ``ewhi = MULHI(mid,
+            dc_half)`` where ``dc_half = (s>>1) - (cprev>>1)`` — the ``>>1``
+            keeps the BPSK sample DIFFERENCE inside int16 (a full-scale ``s -
+            cprev`` OVERFLOWS int16 and corrupts the error, the true root cause of
+            the drift). MULHI gives the signed high word, no decomposition bias.
+          * The integrator ``iavg`` is kept at FULL width and the period is
+            derived as ``avg = nominal + iavg`` (clamped). Quantising a per-symbol
+            ``beta*e`` to Q15 before integrating rounds it to zero and lets a tiny
+            DC bias wind the loop down — accumulating in a wide register avoids it.
 
         ``input_samples`` is a real (or complex; the real part is used) 2-sps
         stream. Returns the recovered symbol-center samples as Q15 int16.
-        Persistent phase carries across inputs; one strobe/input; a MID strobe
-        resets period locally, a CENTER's corrected period is deferred one strobe.
         """
         def s16(v):
             return v - 0x10000 if v & 0x8000 else v
@@ -369,7 +447,14 @@ ilo:
             return v & 0xFFFF
 
         def mqr(a, b):
-            return (s16(a) * s16(b) + (1 << 14)) >> 15
+            # The ISA MULQ TRUNCATES (arithmetic floor >>15), it does NOT round.
+            # Matching this exactly is REQUIRED for chip<->reference bit-exactness: a
+            # +1/2-LSB rounding bias here is amplified by the timing FEEDBACK loop into
+            # a slow integrator drift (the coupled MF->Costas->Gardner chain slips).
+            return (s16(a) * s16(b)) >> 15
+
+        def mulhi(a, b):
+            return (s16(a) * s16(b)) >> 16     # signed high word (ISA MULHI, floor)
 
         arr = np.asarray(input_samples)
         if np.iscomplexobj(arr):
@@ -379,42 +464,55 @@ ilo:
         else:
             sq = [int(x) & 0xFFFF for x in arr]
 
-        kp, ki = self._kp, self._ki
+        ONE = 1 << 14           # nominal half-period (1.0 sample) in Q14
         out = []
-        integ = 0
+        iavg = 0                # WIDE integrator (raw, not requantised)
+        avg = ONE
+        inst_active = ONE       # period used for the CURRENT strobe
+        inst_next = ONE         # deferred period (lands on the NEXT strobe)
         cprev = 0
-        half = 0
-        phase = 0
-        period = 1 << 14
+        midv = 0
+        phase = ONE >> 1        # warm start: 0.5 half-period pre-accumulated
         xp = 0
         xp2 = 0
         parity = 0
-        pend = None
         for v in sq:
             xi = s16(v)
             xp2 = xp
             xp = xi
-            phase += 1 << 14
-            if phase >= period:
-                phase -= period
-                frac = (phase << 1) & 0xFFFF
-                s = xp2 + mqr(u16(frac), u16((xp - xp2) & 0xFFFF))
-                if pend is not None:
-                    period = pend
-                    pend = None
-                if parity == 0:    # CENTER
-                    e = mqr(u16((s - cprev) & 0xFFFF), u16(half & 0xFFFF))
+            phase += ONE
+            if phase >= inst_active:
+                phase -= inst_active
+                inst_active = inst_next        # apply the deferred feedback
+                frac = u16(phase << 1)
+                s = xp2 + mqr(frac, u16((xp - xp2) & 0xFFFF))
+                if parity == 0:                # CENTER
+                    # dc_half = (s>>1) - (cprev>>1), via sign-correct MULQ halving.
+                    dch = u16((mqr(u16(s & 0xFFFF), self._MULQ_HALF)
+                               - mqr(u16(cprev & 0xFFFF), self._MULQ_HALF)) & 0xFFFF)
+                    ewhi = mulhi(u16(midv & 0xFFFF), dch)
                     cprev = s
                     out.append(s16(u16(s)))
-                    integ += mqr(u16(ki), u16(e & 0xFFFF))
-                    integ = max(-256, min(256, integ))
-                    corr = mqr(u16(kp), u16(e & 0xFFFF)) + integ
-                    pend = (1 << 14) - (corr >> 1)
-                    if pend < 1:
-                        pend = 1
-                else:              # MID
-                    half = s
-                    period = 1 << 14
+                    # integral term ewhi>>8 via MULQ; proportional ewhi>>2 via MULQ.
+                    # The ISA MULQ TRUNCATES (floor), so the integral term carries a
+                    # systematic -0.5-LSB bias that a pure PI integrator accumulates
+                    # into a slow drift (fine for a fixed offset, but the coupled
+                    # MF->Costas->Gardner chain then slips). Pre-adding the half-LSB
+                    # ``_INTEG_RBIAS`` before the MULQ makes it ROUND-to-nearest, which
+                    # keeps the integrator DC-neutral (iavg bounded ~|10| over 2000+
+                    # symbols). The proportional term is transient (not integrated) so
+                    # its truncation is harmless and left as-is.
+                    iavg += mqr(u16((ewhi + self._INTEG_RBIAS) & 0xFFFF),
+                                self._MULQ_INTEG)
+                    iavg = max(-self._MAXDEV, min(self._MAXDEV, iavg))
+                    avg = ONE + iavg
+                    # instantaneous period = avg + proportional term. The +-max_dev
+                    # clamp on ``iavg`` (== GR's clamp on the integrated period) is the
+                    # anti-windup; the small proportional term does not need its own
+                    # clamp (verified BER 0 without it).
+                    inst_next = avg + mqr(u16(ewhi & 0xFFFF), self._MULQ_PROP)
+                else:                          # MID
+                    midv = s                   # capture mid sample; no feedback
                 parity ^= 1
         return np.array(out, dtype=np.int16)
 

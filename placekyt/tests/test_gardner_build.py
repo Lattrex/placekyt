@@ -127,7 +127,7 @@ def test_output_egress_preserves_period_feedback(qapp, catalog, chip_type):
                       if p.name == "e_in")
     from gr_kyttar.placement.resolver import CellProgramResolver
     rs_period = CellProgramResolver()._allocate_state(
-        cps["resampler"].state, list(range(3, 31)))["period"]
+        cps["resampler"].state, list(range(3, 31)))["inst_next"]
 
     # Place Gardner + a downstream sink; broker-route gardner.out → sink and confirm
     # both feedback WRITEs survive in the built programs.

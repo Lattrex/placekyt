@@ -106,6 +106,17 @@ class BatchSession:
         self._cv = threading.Condition()
         self._result = None
         self.done = False
+        # RUN GENERATION: this session is process-global and OUTLIVES a single
+        # flowgraph run (the source/sink blocks are re-instantiated each Run, but
+        # the session persists in ``_SESSIONS``). ``done`` alone is NOT enough to
+        # gate ``take_result``: after run N's sink drains the result, ``done`` stays
+        # True, so run N+1's sink would immediately re-take the ALREADY-CONSUMED
+        # (empty) result and emit nothing — a FLAT plot on every repeated Run whose
+        # sink polls before the source's fresh dispatch (a dispatch-order race). We
+        # therefore version each dispatch: the sink waits for a NEWER generation
+        # than it last drained, so it always blocks for THIS run's fresh burst.
+        self._seq = 0        # bumped on every dispatch (a new burst is available)
+        self._taken_seq = 0  # the last generation take_result() has drained
         # GRC-sync: per-flowgraph block params advertised by the marker DSP blocks
         # in this same GR process (keyed by the placeKYT block NAME the importer
         # would assign — see ``register_params``). Sent alongside the batch so the
@@ -118,6 +129,9 @@ class BatchSession:
         with self._cv:
             self._result = None
             self.done = False
+            # Leave _seq/_taken_seq intact: a reset marks "no result pending", not
+            # "re-deliver the last one". A subsequent dispatch bumps _seq so the
+            # sink still sees a fresh generation.
             self._cv.notify_all()
 
     def register_params(self, placekyt_type, params):
@@ -213,17 +227,26 @@ class BatchSession:
         with self._cv:
             self._result = result
             self.done = True
+            self._seq += 1          # a NEW burst generation is available to drain
             self._cv.notify_all()
         return result
 
     def take_result(self, timeout=None):
-        """Block until the source has dispatched, then return the recovered words
-        (and clear them so they're emitted once). Returns None on timeout."""
+        """Block until the source has dispatched a burst THIS run hasn't drained,
+        then return the recovered words (once). Returns None on timeout.
+
+        Gated on the dispatch GENERATION (``_seq``), not just ``done``: because the
+        session is process-global and survives across Runs, a stale ``done=True``
+        from the previous run must NOT satisfy this run's sink. The sink waits for
+        ``_seq > _taken_seq`` — i.e. a dispatch NEWER than the last one it drained —
+        so a repeated Run always blocks for its own fresh burst instead of
+        re-taking the previous (already-consumed) result and plotting flat."""
         with self._cv:
-            if not self.done:
+            if self._seq <= self._taken_seq:
                 self._cv.wait(timeout)
-            if not self.done:
+            if self._seq <= self._taken_seq:
                 return None
+            self._taken_seq = self._seq
             r = self._result
             self._result = np.array([], dtype=np.float32)
             return r

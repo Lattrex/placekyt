@@ -412,6 +412,14 @@ class SimController(QObject):
         stream_targets = _stream_targets_fn(
             self.app.project, self.app.registry, self.app.catalog, self._sim_chip,
             build_result=result)
+        # PACKET-BOUNDARY LOOP-MEMORY RESET: resolve the per-batch state resets from
+        # the SAME build result (mirrors stream_targets). The build derived them from
+        # the placed design's ``reset_per_batch`` StateVars; the SimServer cold-starts
+        # each at the top of every process_batch so repeated GRC "Run" presses on this
+        # persistently-hosted chip each recover a fresh packet from a cold receiver
+        # (Costas/Gardner/matched-filter loops) instead of the previous packet's lock.
+        from engine.port_config import batch_reset_writes as _batch_reset_writes_fn
+        reset_writes = _batch_reset_writes_fn(result, self._sim_chip)
         # OBSERVABILITY: report what the server resolved at start-up. An EMPTY map
         # is why a duplex run injects at the entry=0/hop=30 single-stream fallback
         # and gets 0 words — it means no x16_in→block input net carried a stream_id
@@ -488,6 +496,7 @@ class SimController(QObject):
             default_entries=default_entries,
             default_hops=default_hops,
             stream_targets=stream_targets,
+            batch_reset_writes=reset_writes,
             on_grc_params=_grc_params,
             debug_hooks=self._batch_debug)
         bound = self._gr_server.start()

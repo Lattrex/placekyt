@@ -107,7 +107,8 @@ class SimServer:
     def __init__(self, chip, *, host: str = "127.0.0.1", port: int = 0,
                  on_activity=None, on_reset=None, on_before_batch=None,
                  default_entries=None, on_grc_params=None, debug_hooks=None,
-                 default_hops=None, stream_targets=None):
+                 default_hops=None, stream_targets=None,
+                 batch_reset_writes=None):
         self._chip = chip
         self._host = host
         self._req_port = port
@@ -153,6 +154,18 @@ class SimServer:
         # how two GR sources sharing x16_in (TX mapper + RX matched filter) each
         # reach the right block without the GR source knowing any placement value.
         self._stream_targets: dict[str, dict] = dict(stream_targets or {})
+        # Per-batch (packet-boundary) state resets, resolved by the build from the
+        # placed design's ``reset_per_batch`` StateVars (engine.build.
+        # _resolve_batch_reset_writes → ChipBuild.batch_reset_writes → port_config.
+        # batch_reset_writes). A list of ``(x, y, addr, value)``: the cell grid
+        # position, register address, and cold-start value. Applied at the START of
+        # every process_batch (each RPC = one explicit packet boundary — NOT per
+        # sample, which would break the loop within a packet) so a persistently-hosted
+        # receiver's loop MEMORY (Costas phase/freq, Gardner timing accumulators, the
+        # matched-filter delay lines) cold-starts for each fresh packet, and repeated
+        # GRC "Run" presses each recover the new packet from scratch instead of
+        # inheriting the previous packet's converged lock.
+        self._batch_reset_writes: list = list(batch_reset_writes or [])
         # Optional: called when a client requests a chip reset (new flowgraph
         # run). The host rebuilds a fresh chip and calls set_chip(); on_reset
         # returns the new chip (or None to keep the current one).
@@ -172,6 +185,32 @@ class SimServer:
         # the other tags' words buffered for their own reader (so two streams can
         # share one output port without one stealing the other's words).
         self._tag_buf: dict[int, list[int]] = {}
+
+    def _apply_batch_reset(self) -> None:
+        """Cold-start every flagged loop-state register on the hosted chip.
+
+        SIMULATION-ONLY backdoor poke: writes each resolved ``(x, y, addr, value)``
+        directly into cell memory via ``chip.write_cell_memory(cell_id, addr, value)``
+        (the same simkyt cell-memory API the debug/inspector path reads via
+        ``read_cell_memory``). This is the packet-boundary reset — applied once per
+        process_batch, NOT per sample.
+
+        REAL-CHIP PATH (DEFERRED): on silicon there is no memory backdoor. The SAME
+        declarative reset spec (the placed StateVars' ``reset_per_batch`` flags,
+        resolved to (cell, addr, value)) would instead drive a single-register WRITE
+        sequence down the bus to each target cell (or a full reset + reprogram) at a
+        packet boundary. The spec is the shared source of truth; only the delivery
+        mechanism differs. That path is not built here (this bridge hosts the sim).
+        """
+        if not self._batch_reset_writes:
+            return
+        chip = self._chip
+        cell_id_at = getattr(chip, "cell_id_at", None)
+        write = getattr(chip, "write_cell_memory", None)
+        if cell_id_at is None or write is None:
+            return  # host chip lacks the backdoor API — nothing to do
+        for (x, y, addr, value) in self._batch_reset_writes:
+            write(cell_id_at(int(x), int(y)), int(addr), int(value) & 0xFFFF)
 
     def start(self) -> int:
         """Bind + listen, spawn the serve thread, return the bound port."""
@@ -339,6 +378,13 @@ class SimServer:
                 grc_params = header.get("grc_params")
                 if grc_params and self._on_grc_params is not None:
                     self._on_grc_params(dict(grc_params))
+                # PACKET-BOUNDARY LOOP-MEMORY RESET (each process_batch = one fresh
+                # packet). Cold-start every flagged loop-state register BEFORE injecting
+                # the burst, so a persistently-hosted receiver doesn't carry the previous
+                # packet's converged Costas/Gardner/matched-filter lock into the new
+                # packet (which corrupts its first samples). Done ONCE per RPC — never
+                # per sample (that would break the loop mid-packet).
+                self._apply_batch_reset()
                 data = np.asarray(payload, dtype="<f4")
                 a0, a1 = header.get("data_addrs", [0, 1])
                 in_name = header.get("in_port", "x16_in")

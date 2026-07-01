@@ -163,6 +163,25 @@ def stream_targets(project, registry, catalog, chip_id: int = 0,
     return targets
 
 
+def batch_reset_writes(build_result, chip_id: int = 0) -> list:
+    """The chip's per-batch (packet-boundary) state resets from a BuildResult:
+    a list of ``(x, y, addr, value)``.
+
+    Mirrors :func:`stream_targets`' resolve-from-the-build pattern so the host
+    (SimController) wires the reset list into the SimServer the same way it wires
+    stream_targets. The list is resolved by the build from the placed design's
+    ``reset_per_batch`` StateVars (``engine.build._resolve_batch_reset_writes``)
+    and lives on ``ChipBuild.batch_reset_writes``. Empty when no block flags any
+    reset state, or when the build didn't produce this chip.
+    """
+    if build_result is None:
+        return []
+    cb = getattr(build_result, "chips", {}).get(chip_id)
+    if cb is None:
+        return []
+    return list(getattr(cb, "batch_reset_writes", []) or [])
+
+
 def _chain_out_tags(project, chip_id, in_port_name):
     """``{input-block name: out_tag}`` — for each block fed directly by the input
     port, the ``out_tag`` of the ``…→x16_out`` net its forward chain ends at.

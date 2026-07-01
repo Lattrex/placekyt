@@ -138,7 +138,13 @@ class ComplexCostasLoopBlock(KyttarBlock):
             entries=[EntryPoint("default")],
             data=[DataWord("quarter", 16384, address=3),
                   DataWord("half", 32768, address=4)],
-            state=[StateVar("phase"), StateVar("xis"), StateVar("xqs")],
+            # LOOP MEMORY: ``phase`` is the NCO phase accumulator — it holds the
+            # carrier lock (the derotation angle). A fresh packet must start at phase 0
+            # (cold), else the new packet's first samples are derotated by the PREVIOUS
+            # packet's converged phase and the bits invert/corrupt until the loop
+            # re-pulls. ``xis``/``xqs`` are per-sample scratch (written before read).
+            state=[StateVar("phase", reset_per_batch=True),
+                   StateVar("xis"), StateVar("xqs")],
             assembly_template="""\
 start:
     MOVE R{state:xis}, R{in:xi}
@@ -315,7 +321,13 @@ start:
             data=[DataWord("zero", 0, address=2),
                   DataWord("alpha", alpha, address=3),
                   DataWord("beta", beta, address=4)],
-            state=[StateVar("freq"), StateVar("err"), StateVar("yqs")],
+            # LOOP MEMORY: ``freq`` is the PI loop-filter integrator — the tracked
+            # carrier-frequency offset. It MUST cold-start at 0 for a fresh packet
+            # (else the new packet inherits the old frequency estimate and the phase
+            # winds off before the loop re-converges). ``alpha``/``beta`` are the loop
+            # GAINS (DataWords, NOT reset). ``err``/``yqs`` are per-sample scratch.
+            state=[StateVar("freq", reset_per_batch=True),
+                   StateVar("err"), StateVar("yqs")],
             assembly_template="""\
 start:
     MOVE R{state:yqs}, R{in:yq}

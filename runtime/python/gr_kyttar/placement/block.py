@@ -31,6 +31,18 @@ class StateVar:
     name: str
     register: Optional[int] = None  # None = auto-allocate
     initial_value: int = 0
+    # Declarative per-batch (packet-boundary) reset. When True, the build resolves
+    # this state register to a concrete (chip, x, y, addr, value) reset write and
+    # exposes it on the BuildResult; the host re-initialises it at the START of
+    # every process_batch (each RPC = one explicit packet boundary). This is how a
+    # PERSISTENTLY-HOSTED receiver's loop MEMORY (Gardner timing accumulators,
+    # Costas NCO phase/freq, the matched-filter delay lines) is returned to a cold
+    # start for a fresh packet — WITHOUT resetting/reprogramming the whole chip.
+    # Flag ONLY loop-memory registers here; NEVER coefficients or user init.
+    reset_per_batch: bool = False
+    # The value to write on a per-batch reset. None ⇒ use ``initial_value`` (the
+    # cold-start value), which is the correct target for every loop-memory reset.
+    reset_value: Optional[int] = None
 
 
 @dataclass(frozen=True)

@@ -68,6 +68,17 @@ class ChipBuild:
     # corridor straight to the block resolves to the block cell+entry; one diverted at
     # a broker resolves to that broker's deliver entry. ``hop`` is the raw 5-bit field.
     input_landings: dict = field(default_factory=dict)
+    # Per-batch (packet-boundary) state resets, resolved from the PLACED design's
+    # StateVars flagged ``reset_per_batch``: a list of ``(x, y, addr, value)`` — the
+    # cell grid position, the register address, and the cold-start value. The host
+    # backdoor-writes each of these into the cell memory at the START of every
+    # process_batch (each RPC = one packet boundary), returning a persistently-hosted
+    # receiver's loop MEMORY (Costas phase/freq, Gardner timing accumulators, the
+    # matched-filter delay lines) to a cold start for a fresh packet — WITHOUT
+    # resetting/reprogramming the whole chip. Resolved from the ACTUAL placed cells +
+    # v2 register allocation (so it works for the auto-P&R modem, not just a hand
+    # build). Empty when no block flags any reset state.
+    batch_reset_writes: list = field(default_factory=list)
 
 
 @dataclass
@@ -321,6 +332,11 @@ class BuildEngine:
         # (coefficients, etc.) from executable instructions (§3.3).
         classes = _classify_cells(blocks_here, gr_blocks)
 
+        # Per-batch state resets (packet-boundary loop-memory cold start): resolve
+        # every ``reset_per_batch`` StateVar of every placed block to a concrete
+        # (x, y, addr, value) write the host applies at the top of each process_batch.
+        batch_reset_writes = _resolve_batch_reset_writes(blocks_here, gr_blocks)
+
         gen = BitstreamGenerator(self._chip_type_path(type_name))
         gen.load_cell_map(cell_map)
         bitstream = gen.generate()
@@ -331,6 +347,7 @@ class BuildEngine:
             cell_count=cell_map.cell_count(),
             cells=_extract_cell_memory(cell_map, ownership, classes),
             input_landings=input_landings,
+            batch_reset_writes=batch_reset_writes,
         )
 
         # STRAY-EMISSION DRC (P3.4): a WRITE/JUMP that lands on an EMPTY/unowned
@@ -2202,6 +2219,57 @@ def _apply_instr_overrides(cell_map, blocks: list) -> dict:
                     continue
                 cfg.memory[addr] = _patch_instr(int(word), ov)
     return ownership
+
+
+def _resolve_batch_reset_writes(blocks: list, gr_blocks: dict) -> list:
+    """Resolve every ``reset_per_batch`` StateVar to a concrete ``(x, y, addr,
+    value)`` reset write, from the PLACED design.
+
+    For each placed block with a v2 CellProgram, walk its cells; for the cell's
+    program, allocate its state registers the SAME way :meth:`resolve` does
+    (``compute_state_registers``, which mirrors the built memory image), and for
+    every StateVar flagged ``reset_per_batch`` emit a ``(x, y, register, value)``
+    tuple. ``value`` is the StateVar's ``reset_value`` when set, else its
+    ``initial_value`` (the cold-start value the build already loads into memory).
+
+    The host (SimServer.process_batch) backdoor-writes these into the hosted chip
+    at the START of every batch (each RPC = one packet boundary) so a persistently-
+    hosted receiver's loop memory cold-starts for each fresh packet. Resolved from
+    the actual placed cells + register allocation, so it works for the auto-P&R
+    layout (rotated/relocated blocks included) — not just a hand build.
+    """
+    from gr_kyttar.placement.resolver import CellProgramResolver
+
+    resolver = CellProgramResolver()
+    writes: list = []
+    for blk in blocks:
+        gr_block = gr_blocks.get(blk.name)
+        if gr_block is None or blk.placement is None:
+            continue
+        try:
+            cell_programs = gr_block.build_cell_programs()
+        except Exception:  # noqa: BLE001 — non-v2 block; nothing to reset
+            continue
+        for pc in blk.placement.cells:
+            cp = cell_programs.get(pc.cell_id)
+            if cp is None or not getattr(cp, "assembly_template", ""):
+                continue
+            flagged = [sv for sv in getattr(cp, "state", [])
+                       if getattr(sv, "reset_per_batch", False)]
+            if not flagged:
+                continue
+            try:
+                state_regs = resolver.compute_state_registers(cp)
+            except Exception:  # noqa: BLE001 — allocation failure ⇒ skip this cell
+                continue
+            for sv in flagged:
+                addr = state_regs.get(sv.name)
+                if addr is None:
+                    continue
+                val = (sv.reset_value if sv.reset_value is not None
+                       else sv.initial_value)
+                writes.append((int(pc.x), int(pc.y), int(addr), int(val) & 0xFFFF))
+    return writes
 
 
 def _classify_cells(blocks: list, gr_blocks: dict) -> dict:

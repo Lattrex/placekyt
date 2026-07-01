@@ -143,11 +143,24 @@ class GardnerTimingRecovery(KyttarBlock):
             entries=[EntryPoint("default")],
             data=[DataWord("inc", 1 << 14, address=1),
                   DataWord("one_q14", 1 << 14, address=2)],
-            state=[StateVar("phase", initial_value=(1 << 14) >> 1),  # warm 0.5
-                   StateVar("xp"), StateVar("xp2"),
-                   StateVar("inst_active", initial_value=1 << 14),
-                   StateVar("inst_next", initial_value=1 << 14),
-                   StateVar("parity"), StateVar("diff")],
+            # LOOP MEMORY (reset_per_batch): the NCO phase accumulator, the 2-sample
+            # delay line (xp/xp2), the instantaneous half-period feedback registers
+            # (inst_active/inst_next), and the strobe parity — all carry the previous
+            # packet's converged timing lock. A fresh packet MUST start cold (the same
+            # cold values as their initial_value: phase warm-0.5, periods nominal, rest
+            # 0), else the new packet's first samples arrive into a mis-locked
+            # resampler and the recovered symbols slip. ``diff`` is per-sample scratch
+            # (written before read each pass), so it need not be flagged.
+            state=[StateVar("phase", initial_value=(1 << 14) >> 1,  # warm 0.5
+                            reset_per_batch=True),
+                   StateVar("xp", reset_per_batch=True),
+                   StateVar("xp2", reset_per_batch=True),
+                   StateVar("inst_active", initial_value=1 << 14,
+                            reset_per_batch=True),
+                   StateVar("inst_next", initial_value=1 << 14,
+                            reset_per_batch=True),
+                   StateVar("parity", reset_per_batch=True),
+                   StateVar("diff")],
             assembly_template="""\
 start:
     MOVE R{state:xp2}, R{state:xp}
@@ -193,8 +206,13 @@ done:
             entries=[EntryPoint("default")],
             data=[DataWord("one_q14", 1 << 14, address=2),
                   DataWord("mulq_half", self._MULQ_HALF, address=3)],
-            state=[StateVar("cph"), StateVar("half"), StateVar("csh"),
-                   StateVar("cs")],
+            # LOOP MEMORY: ``cph`` is the PREVIOUS center's halved value and ``half``
+            # is the mid sample carried ACROSS strobes into the next center's Gardner
+            # error — both bridge packets and must cold-start at 0 for a fresh packet.
+            # ``csh``/``cs`` are within-pass scratch (written before read each center).
+            state=[StateVar("cph", reset_per_batch=True),
+                   StateVar("half", reset_per_batch=True),
+                   StateVar("csh"), StateVar("cs")],
             assembly_template="""\
 start:
     CMP R{in:par}, R{data:one_q14}
@@ -291,7 +309,11 @@ start:
                   DataWord("pdev", MAXDEV, address=4),
                   DataWord("ndev", (-MAXDEV) & 0xFFFF, address=5),
                   DataWord("rbias", self._INTEG_RBIAS, address=6)],
-            state=[StateVar("iavg"), StateVar("es")],
+            # LOOP MEMORY: ``iavg`` is the PI integrator — the accumulated timing
+            # correction, the heart of the converged lock. It MUST cold-start at 0 for
+            # a fresh packet (else the new packet inherits the old period bias and
+            # slips). ``es`` is per-trigger scratch (written before read each center).
+            state=[StateVar("iavg", reset_per_batch=True), StateVar("es")],
             assembly_template="""\
 relay:
     MOVE R{state:es}, R{in:e_in}

@@ -241,7 +241,15 @@ start:
             data = [DataWord(f"c{i}", cell_coeffs[i], address=i + 1)
                     for i in range(n_taps)]
 
-            state = [StateVar(f"d{i}") for i in range(n_taps)]
+            # The FIR DELAY LINE d0..d{n_taps-1} IS loop memory: it is the running
+            # sample history the matched filter convolves against. On a persistently-
+            # hosted receiver it still holds the TAIL of the previous packet, so a
+            # fresh packet's first ~17 outputs are contaminated by stale samples (an
+            # ISI/energy transient) that mis-locks the downstream Costas/Gardner. Reset
+            # each delay tap to 0 (cold) at a packet boundary. The COEFFICIENTS (c0..)
+            # are DataWords, NOT reset. ``old_save``/``cs`` are per-sample scratch
+            # (written before read each pass), so they are not flagged.
+            state = [StateVar(f"d{i}", reset_per_batch=True) for i in range(n_taps)]
             if not is_last:
                 state.append(StateVar("old_save"))
             # SERIALIZED single chain: head -> q0..q4 -> i0..i4 -> Costas. EVERY cell

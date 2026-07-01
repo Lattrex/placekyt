@@ -1064,6 +1064,43 @@ class SimController(QObject):
         self.trace_model.clear()
         self._last_server_refresh = 0.0
         self._hosted_design_version = cur_ver   # remember what we just hosted
+        # RE-RESOLVE the per-stream injection targets + per-batch loop-memory resets
+        # from the FRESH build and push them into the running server. WITHOUT this, a
+        # server started BEFORE the design was imported/routed captured an EMPTY
+        # stream_targets ({}) at start-up; this dirty-rebuild re-hosts the now-routed
+        # chip but the server would keep serving the stale/empty map → every batch
+        # falls through to the entry=0/hop=30/out_tag=None single-stream fallback and
+        # emits 0 words (the "turn the server on, THEN import" flat-run bug). Recomputing
+        # here makes the START-SERVER-vs-IMPORT ORDER not matter: whichever happens
+        # first, the first post-import batch re-resolves against the current design.
+        if self._gr_server is not None:
+            try:
+                from engine.port_config import (
+                    stream_targets as _st_fn, batch_reset_writes as _brw_fn)
+                self._gr_server._stream_targets = dict(_st_fn(
+                    self.app.project, self.app.registry, self.app.catalog,
+                    getattr(self, "_sim_chip", 0), build_result=result) or {})
+                self._gr_server._batch_reset_writes = list(_brw_fn(
+                    result, getattr(self, "_sim_chip", 0)) or [])
+                # Refresh the input-port default entry/hop too (the single-stream
+                # fallback path), so a design with no stream_id still injects right.
+                cfg2 = self._input_port_config(getattr(self, "_sim_chip", 0))
+                if cfg2 is not None:
+                    _pn, _kw = cfg2
+                    if "entry_addr" in _kw:
+                        self._gr_server._default_entries[_pn] = int(_kw["entry_addr"])
+                    if "hop_count" in _kw:
+                        self._gr_server._default_hops[_pn] = int(_kw["hop_count"])
+                import sys as _sys2
+                _sys2.stderr.write(
+                    "[placeKYT server] re-resolved stream_targets after rebuild: "
+                    f"{ {k: (v['entry_addr'], v['hop_count'], v['out_tag']) for k, v in self._gr_server._stream_targets.items()} }\n")
+                _sys2.stderr.flush()
+            except Exception as _exc:  # noqa: BLE001 — never break the batch
+                import sys as _sys2
+                _sys2.stderr.write(
+                    f"[placeKYT server] stream_targets re-resolve failed: {_exc}\n")
+                _sys2.stderr.flush()
         # Tell the GUI (queued) to FULL-render the canvas so the displayed cells
         # match this freshly-built chip — clears any routing cells left over from a
         # route the user edited since the server started (the "phantom blue boxes").

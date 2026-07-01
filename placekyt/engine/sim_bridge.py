@@ -54,6 +54,18 @@ def _float_to_q15(f: float) -> int:
     return int(round(f * 32768)) & 0xFFFF
 
 
+def _float_to_raw_i16(f: float) -> int:
+    """float → uint16 by rounding to the nearest INTEGER (clamped to int16),
+    NOT Q15-scaled. Used to inject a `raw` REAL stream's integer-valued operands
+    (a 0/1 TX bit) as their own value — bit 1 → 0x0001 — so the TX-INPUT trace
+    reads on the same scale as the raw RX-OUTPUT bit trace. A NON-raw real stream
+    (fractional analog samples, e.g. a FIR) and the complex I/Q path both keep
+    Q15, where a sample is a fractional signal value."""
+    v = int(round(float(f)))
+    v = max(-32768, min(32767, v))
+    return v & 0xFFFF
+
+
 def _recv_exactly(conn: socket.socket, n: int) -> bytes:
     """Read exactly ``n`` bytes or raise ConnectionError on early EOF."""
     buf = bytearray()
@@ -475,7 +487,19 @@ class SimServer:
                             xi = _float_to_q15(float(data[2 * k]))
                             xq = _float_to_q15(float(data[2 * k + 1]))
                         else:
-                            xi = _float_to_q15(float(data[k]))
+                            # REAL burst, ONE operand per sample. `raw` selects the
+                            # INPUT encoding, mirroring how it selects the OUTPUT
+                            # encoding: a `raw` stream carries INTEGER words (a 0/1
+                            # TX bit), so it injects UNSCALED — bit 1 → 0x0001 — and
+                            # the TX-INPUT trace reads on the same scale as the
+                            # RX-OUTPUT bit trace (both raw 0x0001, not Q15 0x7FFF).
+                            # The PSK mapper masks its input to the LSB, so raw vs
+                            # Q15 give the SAME bit — BER is unaffected. A NON-raw
+                            # real stream (e.g. a FIR fed fractional analog samples)
+                            # still injects Q15 — 0.95 must stay a Q15 fraction, not
+                            # round to the integer 1 (~0 in Q15).
+                            xi = (_float_to_raw_i16(float(data[k])) if raw
+                                  else _float_to_q15(float(data[k])))
                             xq = None
                         self._chip.inject_data_physical([xi], target_hop_cnt=hop,
                                                         target_addr=int(a0))

@@ -94,6 +94,65 @@ class TestWaveformView:
         v.set_streams({(0, "x16_in"): [(0.0, 0x4000), (1.0, 0xC000)]})
         assert v.amplitude_of(0) == (-0x4000, 0x4000)  # signed min/max
 
+    def test_autoscale_to_visible_window(self, qapp):
+        """FIX 1: with auto-scale-to-view ON (default) the analog amplitude range
+        covers only the VISIBLE window, so an off-screen startup transient can't
+        flatten the on-screen data. Toggling it OFF restores the full-trace scale."""
+        # Big early transient (t=0..5, |value| large) then small later data
+        # (t=100..110, |value| small). Values are uint16 Q15 words.
+        big_hi, big_lo = 0x5000, 0xB000        # +0.625 / -0.625 (the transient)
+        small_hi, small_lo = 0x0200, 0xFE00    # +512/32768 / -512/32768
+        v = WaveformView()
+        v.set_streams({(0, "x16_in"): [
+            (0.0, big_hi), (2.0, big_lo), (5.0, small_hi),
+            (100.0, small_hi), (105.0, small_lo), (110.0, small_hi)]})
+        # View the LATER window (the small data), the transient off-screen left.
+        v._t0, v._t1 = 95.0, 115.0
+        lo, hi = v._pane_value_range([0])
+        # The visible range must reflect the SMALL data, not the transient.
+        assert hi < 0.1 and lo > -0.1, (lo, hi)
+        assert hi == pytest.approx(_q15(small_hi), abs=1e-6)
+        assert lo == pytest.approx(_q15(small_lo), abs=1e-6)
+        # Toggle OFF → the full-trace scale returns (spans the big transient).
+        v.set_autoscale_view(0, False)
+        assert v.autoscale_view_of(0) is False
+        lo2, hi2 = v._pane_value_range([0])
+        assert hi2 == pytest.approx(_q15(big_hi), abs=1e-6)
+        assert lo2 == pytest.approx(_q15(big_lo), abs=1e-6)
+        # Back ON → visible-window scale again (recomputed live from _t0/_t1).
+        v.set_autoscale_view(0, True)
+        lo3, hi3 = v._pane_value_range([0])
+        assert hi3 == pytest.approx(_q15(small_hi), abs=1e-6)
+        assert lo3 == pytest.approx(_q15(small_lo), abs=1e-6)
+
+    def test_autoscale_empty_window_falls_back(self, qapp):
+        """FIX 1 fallback: when the visible window has NO samples for the stream,
+        the range must not blow up / divide by zero — it holds the left-edge value
+        (or falls back to a symmetric [-1,1] when nothing is held)."""
+        v = WaveformView()
+        v.set_streams({(0, "x16_in"): [(0.0, 0x2000), (10.0, 0x2000)]})
+        # Window entirely AFTER the last sample: no in-window samples, but the
+        # held value at the left edge (0x2000) keeps the scale sane.
+        v._t0, v._t1 = 500.0, 600.0
+        lo, hi = v._pane_value_range([0])
+        assert lo <= _q15(0x2000) <= hi
+        # Window entirely BEFORE the first sample (nothing held) → [-1, 1] fallback.
+        v._t0, v._t1 = -100.0, -50.0
+        lo2, hi2 = v._pane_value_range([0])
+        assert (lo2, hi2) == pytest.approx((-1.0, 1.0))
+
+    def test_autoscale_persists_in_signal_list(self, qapp):
+        """The auto-scale-to-view toggle round-trips through to_signal_list /
+        from_signal_list (persisted per stream, like radix)."""
+        v = WaveformView()
+        v.set_streams({(0, "x16_in"): [(0.0, 0x2000)]})
+        v.set_autoscale_view(0, False)
+        items = v.to_signal_list()
+        assert items[0]["autoscale_view"] is False
+        v2 = WaveformView()
+        v2.from_signal_list(items, resolve=lambda src: [(0.0, 0x2000)])
+        assert v2.autoscale_view_of(0) is False
+
     def test_measurement_dt(self, qapp):
         v = WaveformView()
         v.set_streams({(0, "x16_in"): [(0.0, 1), (100.0, 2)]})

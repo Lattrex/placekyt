@@ -135,13 +135,22 @@ class TraceModel:
         self.transactions: list[Transaction] = []
         self.cursor_ns: float = 0.0
         self._by_cell: dict[tuple[int, int, int], list[Transaction]] | None = None
+        # (chip, cx, cy, time_ns) -> the WRITE dest of the data_arrival that lands
+        # at that cell/time. An OUTPUT port_capture event carries NO dest (simkyt
+        # doesn't record it on the capture), but the co-located data_arrival that
+        # FEEDS the capture does — so an output port can be demuxed by tag too.
+        self._capture_dest: dict[tuple[int, int, int, float], int] | None = None
 
     # -- ingest ---------------------------------------------------------------
+
+    def _invalidate(self) -> None:
+        self._by_cell = None
+        self._capture_dest = None
 
     def clear(self) -> None:
         self.transactions = []
         self.cursor_ns = 0.0
-        self._by_cell = None
+        self._invalidate()
 
     def ingest(self, chip: int, raw_events, width: int) -> None:
         """Add one chip's raw trace events. Re-sorts the global stream by time
@@ -150,14 +159,14 @@ class TraceModel:
             self.transactions.append(_normalize(ev, chip, width))
         # Stable sort by time keeps same-timestamp ordering as inserted.
         self.transactions.sort(key=lambda t: t.time_ns)
-        self._by_cell = None
+        self._invalidate()
 
     def trim_to(self, max_events: int) -> None:
         """Keep only the most-recent ``max_events`` transactions (a scrolling
         window for live streaming). Drops the oldest; invalidates indexes."""
         if len(self.transactions) > max_events:
             self.transactions = self.transactions[-max_events:]
-            self._by_cell = None
+            self._invalidate()
 
     def append_live(self, chip: int, raw_events, width: int) -> None:
         """Fast append for the LIVE path: the chip's drained events are already
@@ -176,7 +185,7 @@ class TraceModel:
             self.transactions.sort(key=lambda t: t.time_ns)
         else:
             self.transactions.extend(new)
-        self._by_cell = None
+        self._invalidate()
 
     # -- indexes (lazy) -------------------------------------------------------
 
@@ -187,6 +196,19 @@ class TraceModel:
         for t in self.transactions:
             idx.setdefault((t.chip, t.cx, t.cy), []).append(t)
         self._by_cell = idx
+
+    def _ensure_capture_dest(self) -> None:
+        """Build the ``(chip, cx, cy, time_ns) -> dest`` map from data_arrival
+        events so an OUTPUT port_capture (which carries no dest of its own) can be
+        tagged by the WRITE that fed it. A capture and the data_arrival that lands
+        its value at the egress cell share the same cell + sim-time."""
+        if self._capture_dest is not None:
+            return
+        idx: dict[tuple[int, int, int, float], int] = {}
+        for t in self.transactions:
+            if t.kind == KIND_DATA and t.dest is not None:
+                idx[(t.chip, t.cx, t.cy, t.time_ns)] = int(t.dest)
+        self._capture_dest = idx
 
     def by_cell(self, chip: int, x: int, y: int) -> list[Transaction]:
         self._ensure_index()
@@ -216,12 +238,13 @@ class TraceModel:
 
         A chip port is a TIME-MULTIPLEXED bus — several logical streams can share
         it (e.g. an input port carries xi and xq; an output port can carry two
-        tagged nets). Each port event carries its ``dest`` (the WRITE destination
-        register for an output capture / the target address for an input
-        injection) which IS the per-stream tag. Bucketing by it lets the waveform
-        viewer plot ONE stream at a time instead of all interleaved words. A
-        ``dest`` of ``None`` (single-stream port, untagged) buckets under
-        ``tag=None`` so the port still appears."""
+        tagged nets). Each port event is tagged by its stream (see ``_port_tag``):
+        an INPUT injection by its target-address ``dest``, an OUTPUT capture by the
+        WRITE ``dest`` of the data_arrival that fed it. Bucketing by it lets the
+        waveform viewer plot ONE stream at a time instead of all interleaved words.
+        A tag of ``None`` (single-stream port, untagged) buckets under ``tag=None``
+        so the port still appears."""
+        self._ensure_capture_dest()
         streams: dict[tuple[int, str, int | None], list[tuple[float, int]]] = {}
         for t in self.transactions:
             if t.kind in (KIND_PORT_OUT, KIND_PORT_IN) and t.port is not None:
@@ -230,17 +253,26 @@ class TraceModel:
                     (t.time_ns, val))
         return streams
 
-    @staticmethod
-    def _port_tag(t) -> int | None:
-        """The per-stream tag of a port event: the WRITE ``dest`` register for an
-        output capture, else the JUMP ``entry_address`` for an input injection
-        (which stream the inject triggered). ``None`` when neither is recorded —
-        a single untagged stream. NOTE: simkyt's trace does not record a data
-        injection's target ADDRESS, so two input streams that differ only by
-        target address (e.g. an I/Q port's xi @0 vs xq @1, same entry) share a
-        tag here and are not separable from the trace alone."""
+    def _port_tag(self, t) -> int | None:
+        """The per-stream tag of a port event.
+
+        INPUT injection: its own ``dest`` (the target data address the word was
+        written to — e.g. an I/Q port's xi @0 vs xq @1), else the JUMP
+        ``entry_address`` that triggered the inject.
+
+        OUTPUT capture: the capture event itself carries NO dest (simkyt doesn't
+        record it), so we look up the WRITE ``dest`` of the co-located
+        data_arrival (same cell + sim-time) that landed the value at the egress
+        cell — that IS the output net's tag (e.g. RX-bits vs TX-passband on one
+        shared output port). ``None`` when no tag is recoverable — a single
+        untagged stream."""
         if t.dest is not None:
             return t.dest
+        if t.kind == KIND_PORT_OUT:
+            self._ensure_capture_dest()
+            d = self._capture_dest.get((t.chip, t.cx, t.cy, t.time_ns))
+            if d is not None:
+                return d
         ea = t.detail.get("entry_address")
         return int(ea) if ea is not None else None
 

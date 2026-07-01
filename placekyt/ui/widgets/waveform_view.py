@@ -156,6 +156,11 @@ class WaveformView(QWidget):
             "amp_scale": 1.0,
             "group": idx,                         # own row (overlay = shared id)
             "initial": None,                      # value before the first sample
+            # Auto-scale the analog amplitude to the VISIBLE window (default ON):
+            # the min/max mapping the trace to the row is computed over only the
+            # samples inside [_t0, _t1], so an off-screen startup transient can't
+            # flatten the on-screen data. OFF → the full-trace min/max (fixed).
+            "autoscale_view": True,
         }
 
     def set_streams(self, streams: dict, *, keep_radix: bool = True) -> None:
@@ -308,6 +313,7 @@ class WaveformView(QWidget):
                 "group": int(s.get("group", 0)),
                 "initial": (None if s.get("initial") is None
                             else int(s["initial"])),
+                "autoscale_view": bool(s.get("autoscale_view", True)),
             })
         return out
 
@@ -339,6 +345,7 @@ class WaveformView(QWidget):
                 "group": int(it.get("group", 0)),
                 "initial": (0 if src.get("type") == "port"
                             else it.get("initial")),
+                "autoscale_view": bool(it.get("autoscale_view", True)),
             })
         self._fit_time_window()
         self._update_content_height()
@@ -395,6 +402,23 @@ class WaveformView(QWidget):
         pos = (max(rest) + 1) if rest else len(self._streams)
         self._streams.insert(pos, s)
         self._selected = self._streams.index(s)
+
+    def set_autoscale_view(self, row: int, on: bool) -> None:
+        """Toggle 'auto-scale to view' for a trace's PANE. When ON, the analog
+        amplitude scale is recomputed over only the visible window (so an
+        off-screen transient can't flatten on-screen data); when OFF it uses the
+        full-trace min/max. Applied to every member of the row's pane so a shared
+        analog pane scales as one. Persisted like radix (via streams_changed)."""
+        if not (0 <= row < len(self._streams)):
+            return
+        for i in self._group_of(row):
+            self._streams[i]["autoscale_view"] = bool(on)
+        self.update()
+        self.streams_changed.emit()
+
+    def autoscale_view_of(self, row: int) -> bool:
+        return (bool(self._streams[row].get("autoscale_view", True))
+                if 0 <= row < len(self._streams) else True)
 
     def radix_of(self, row: int) -> str:
         return self._streams[row]["radix"] if 0 <= row < len(self._streams) else ""
@@ -717,16 +741,38 @@ class WaveformView(QWidget):
         p.drawLine(int(row.left()), int(row.bottom()),
                    int(row.right()), int(row.bottom()))
 
+    def _range_samples(self, s) -> list:
+        """The samples used to compute a stream's amplitude range. When the
+        pane's ``autoscale_view`` is ON (default) the range is taken over ONLY
+        the samples inside the visible window [_t0, _t1] (plus the held value at
+        the left edge, so a trace that only transitions off-screen still shows
+        its on-screen level) — an off-screen startup transient can't flatten the
+        visible data. OFF → all of the trace's (lead) samples (a fixed scale)."""
+        lead = self._lead_samples(s)
+        if not s.get("autoscale_view", True):
+            return lead
+        window = [(t, v) for t, v in lead if self._t0 <= t <= self._t1]
+        # Prepend the value HELD at the window's left edge so a trace whose last
+        # transition is before _t0 (flat across the window) still ranges over its
+        # visible level, not nothing.
+        held = self._value_at(lead, self._t0)
+        if held is not None:
+            window = [(self._t0, held)] + window
+        return window
+
     def _pane_value_range(self, grp) -> tuple[float, float]:
         """The combined Q15 [min, max] across all ANALOG members of a pane, used
-        to map the data to the full row height (lowest sample → bottom). Falls
-        back to the full [-1, 1] range when the pane is flat/empty."""
+        to map the data to the full row height (lowest sample → bottom). With
+        auto-scale-to-view ON (default) the range covers only the VISIBLE window
+        so an off-screen transient can't flatten it; with it OFF the range is the
+        full trace. Falls back to the full [-1, 1] range when the pane is
+        flat/empty (or the window has no samples) — never divides by zero."""
         lo = hi = None
         for i in grp:
             s = self._streams[i]
             if s["radix"] != RADIX_ANALOG:
                 continue
-            for _t, v in self._lead_samples(s):   # include the leading value
+            for _t, v in self._range_samples(s):
                 q = _q15(v)
                 lo = q if lo is None else min(lo, q)
                 hi = q if hi is None else max(hi, q)
@@ -1065,6 +1111,12 @@ class WaveformView(QWidget):
                 act.setChecked(radix == cur)
                 act.triggered.connect(
                     lambda _c=False, rw=row, rx=radix: self.set_radix(rw, rx))
+            if self._streams[row]["radix"] == RADIX_ANALOG:
+                asv = menu.addAction("Auto-scale to view")
+                asv.setCheckable(True)
+                asv.setChecked(self.autoscale_view_of(row))
+                asv.toggled.connect(
+                    lambda on, rw=row: self.set_autoscale_view(rw, on))
             menu.addAction("Change Colour…", lambda: self._pick_color(row))
             menu.addSeparator()
             menu.addAction("Delete Trace", lambda: self.remove_stream(row))
@@ -1120,9 +1172,12 @@ class WaveformView(QWidget):
         if target is not None and src not in target[0]:
             grp = [g - 1 if g > src else g for g in target[0]]
             if stack:
-                # Share the group id + the pane's single amplitude scale (#158).
+                # Share the group id + the pane's single amplitude scale (#158)
+                # and its auto-scale-to-view mode (the pane scales as one).
                 s["group"] = self._streams[grp[0]]["group"]
                 s["amp_scale"] = self._streams[grp[0]].get("amp_scale", 1.0)
+                s["autoscale_view"] = self._streams[grp[0]].get(
+                    "autoscale_view", True)
                 self._streams.insert(grp[-1] + 1, s)      # contiguous in group
             else:
                 # Reorder: drop as its own pane just before/after the target row.

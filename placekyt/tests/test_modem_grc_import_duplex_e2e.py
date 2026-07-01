@@ -257,6 +257,104 @@ def test_tx_returns_passband(driven):
         f"TX stream returned no passband samples — targets={driven['targets']}"
 
 
+# ---------------------------------------------------------------------------
+# FIX 2 (raw bit injection) + FIX 3 (per-tag output demux) gates.
+#
+# These re-host the built chip WITH TRACING enabled and drive both streams, so
+# the trace can be ingested into a TraceModel and inspected. FIX 2 asserts the
+# TX bit=1 injects RAW as 0x0001 (not Q15 0x7FFF) while RX still recovers BER 0;
+# FIX 3 asserts BOTH x16_in and x16_out demux into one stream per tag.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def traced(imported):
+    """Host the built chip WITH tracing on, drive rx then tx, and return the
+    recovered bits/BER, the TX injected values, and the ingested TraceModel."""
+    import simkyt
+
+    from engine.trace_model import TraceModel
+
+    _ctrl, bres, targets = imported
+
+    random.seed(5)
+    rx_bits = [random.randint(0, 1) for _ in range(120)]
+    sig, syms = M._tx_signal(rx_bits, timing_offset=0.45, amp=0.9)
+    kk = np.arange(len(sig))
+    iq = (np.asarray(sig) * np.exp(1j * 2 * np.pi * 0.008 * kk)).astype(np.complex64)
+    rx_payload = np.empty(2 * len(iq), dtype=np.float32)
+    rx_payload[0::2] = iq.real
+    rx_payload[1::2] = iq.imag
+
+    tx_bits = [0, 1, 1, 0, 1, 0, 0, 1]
+    tx_payload = np.asarray(tx_bits, dtype=np.float32)
+
+    chip = simkyt.Chip.from_yaml(str(CT_PATH))
+    chip.load_bitstream_physical(bres.words(0))
+    chip.enable_trace(4_000_000)
+
+    srv = SimServer(chip, stream_targets=targets)
+    p = srv.start()
+    try:
+        c = _client(p)
+        _rx_h, rx_out = _batch(c, stream_id="rx", payload=rx_payload,
+                               complex_=True, raw=True)
+        _tx_h, _tx_out = _batch(c, stream_id="tx", payload=tx_payload,
+                                complex_=False, raw=True)
+        c.close()
+        events = chip.get_trace()
+    finally:
+        srv.stop()
+
+    rx = [int(round(v)) & 1 for v in (rx_out if rx_out is not None else [])]
+    rx_ref = [0 if s > 0 else 1 for s in syms]
+    e, m, lag = M._ber_with_lag(rx, rx_ref)
+
+    tm = TraceModel()
+    tm.ingest(0, events, 10)
+    # The last len(tx_bits) x16_in injections are the tx burst (rx ran first).
+    inj = sorted((t.time_ns, t.data) for t in tm.transactions
+                 if t.kind == "port_injection" and t.port == "x16_in")
+    tx_inj = [d for _t, d in inj[-len(tx_bits):]]
+    return {"ber": (e, m, lag), "tx_bits": tx_bits, "tx_inj": tx_inj, "tm": tm}
+
+
+def test_fix2_tx_bit_injects_raw_and_ber0(traced):
+    """FIX 2: the REAL burst path injects the TX bit RAW — bit 1 → 0x0001 (not the
+    Q15 0x7FFF) — while RX still recovers BER 0 (the PSK mapper masks the LSB, so
+    raw vs Q15 give the same bit)."""
+    e, m, lag = traced["ber"]
+    assert m and e == 0, f"RX BER={e}/{m} (lag={lag}) — FIX 2 must not regress it"
+    # bit==1 injects as 0x0001, bit==0 as 0x0000 (raw, not Q15-scaled).
+    for bit, val in zip(traced["tx_bits"], traced["tx_inj"]):
+        assert val == (0x0001 if bit else 0x0000), \
+            f"TX bit {bit} injected as 0x{val:04X} (expected raw)"
+    assert any(b == 1 for b in traced["tx_bits"])  # the 0x0001 case is exercised
+
+
+def test_fix3_both_ports_demux_by_tag(traced):
+    """FIX 3: BOTH the x16 INPUT and OUTPUT ports demux into one stream per tag.
+    x16_out (RX-bits tag 5 + TX-passband tag 10) previously collapsed to a single
+    untagged trace because the port_capture event carries no dest — now the tag is
+    recovered from the co-located data_arrival, so both output nets split."""
+    tm = traced["tm"]
+    in_tags = tm.port_tags(0, "x16_in")
+    out_tags = tm.port_tags(0, "x16_out")
+    # OUTPUT: the two modem output nets split by their WRITE dest tags 5 and 10.
+    assert set(out_tags) == {M.RX_TAG, M.TX_TAG}, \
+        f"x16_out tags={out_tags} (expected {{{M.RX_TAG}, {M.TX_TAG}}})"
+    # INPUT: the RX I/Q operands split by target address (0 and 1). (RX-I and
+    # TX-bits both target address 0 and share entry 0, so they are genuinely
+    # indistinguishable from the trace — the recorded tags are {0, 1}.)
+    assert set(in_tags) == {0, 1}, f"x16_in tags={in_tags} (expected {{0, 1}})"
+    # Every reported tag has samples (no empty phantom streams).
+    by_tag = tm.port_streams_by_tag()
+    for tag in out_tags:
+        assert by_tag[(0, "x16_out", tag)], f"x16_out tag {tag} empty"
+    for tag in in_tags:
+        assert by_tag[(0, "x16_in", tag)], f"x16_in tag {tag} empty"
+
+
 if __name__ == "__main__":
     app = QApplication.instance() or QApplication([])
     from ui.controller import AppController

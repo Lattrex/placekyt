@@ -52,6 +52,14 @@ _LIVE_CHIP_CAP = 100_000    # chip-side cap between refreshes (drained each tick
 # exceed a whole burst's events (≈64 events/sample) between refreshes — sized for
 # a large batch without a mid-burst recording halt.
 _SERVER_CHIP_CAP = 5_000_000
+# A GRC batch is retained WHOLE (no rolling trim) so the user can see the burst
+# start-to-end. But it must still be BOUNDED: without a cap the TraceModel grows
+# without limit ACROSS successive Runs (run 1: 1.6k txns, run 2: 327k, run 3:
+# 473k, …) and every subsequent refresh — even a 0-event idle tick — re-touches
+# that whole model on the GUI thread (~215 ms each), stacking into a multi-second
+# freeze. This caps a single batch's retained trace at a generous-but-bounded
+# size so one burst stays fully visible without the cross-run blow-up.
+_SERVER_BATCH_TRACE_MAX = 400_000
 _LIVE_REFRESH_HZ = 8        # cap debug refreshes/sec during streaming
 
 
@@ -558,6 +566,19 @@ class SimController(QObject):
             new_events = list(self.engine.chip.get_trace())
         except Exception:  # noqa: BLE001
             new_events = []
+        # NOTHING NEW → DO NOTHING. The server fires an activity signal per sample
+        # and again on completion, so after a batch finishes the GUI receives a
+        # long tail of refreshes that drain 0 events. If we still ran the emits
+        # below, each one re-renders the ENTIRE retained TraceModel (waveform /
+        # transaction log / timeline) on the GUI thread — ~215 ms against a
+        # ~470k-txn batch — and ~180 such idle ticks stack into a ~30 s lockup
+        # (the reported "subsequent-run freeze"). An empty drain adds no
+        # transactions, changes no cell state, and moves no cursor, so there is
+        # nothing to repaint: bail before touching any view. ``force`` (the final
+        # settle on Stop) still falls through so the last window is guaranteed to
+        # render even if it drained nothing new.
+        if not new_events and not force:
+            return
         # At high sample rates a single refresh can drain tens of thousands of
         # events (≈64 per sample). Normalising all of them only to trim most away
         # is the dominant cost — keep just the most-recent window's worth of RAW
@@ -619,6 +640,16 @@ class SimController(QObject):
         tm.append_live(chip, trimmed, self._width)
         if not retain_all:
             tm.trim_to(self._live_trace_max)
+        else:
+            # Retain the WHOLE burst but keep it BOUNDED (see
+            # _SERVER_BATCH_TRACE_MAX): a large cap that shows a full batch
+            # start-to-end yet stops the TraceModel growing without limit across
+            # successive Runs (which made every later refresh — including idle
+            # 0-event ticks — re-touch a huge model on the GUI thread and freeze
+            # it). A fresh batch also clears the model up front (in
+            # _rehost_server_chip_threadsafe / _rebuild_if_dirty_threadsafe), so
+            # this cap only guards a single pathologically-long burst.
+            tm.trim_to(_SERVER_BATCH_TRACE_MAX)
         tm.set_cursor(tm.latest_ns())
         self.engine.clear_trace()
         self._trace_scan_reset()
@@ -1039,12 +1070,28 @@ class SimController(QObject):
         # every edit and never cleared by a build, so it survives that race.
         cur_ver = getattr(self.app.project, "design_version", 0)
         if self._hosted_design_version is not None and cur_ver == self._hosted_design_version:
+            # Design unchanged — fast path (no rebuild). BUT still start this
+            # batch from a CLEAN retained trace: a plain GRC re-Run (no edit, no
+            # reset RPC) neither rebuilds nor rehosts, so without this the
+            # retained batch trace ACCUMULATES across runs (run 1: 1.6k txns,
+            # run 2: +325k, run 3: +146k, …). Every later refresh then re-touches
+            # that ever-growing model on the GUI thread and the GUI locks up for
+            # tens of seconds ("subsequent-run freeze"). The chip itself is
+            # re-cold-started per batch by the server (inject + reset loop-memory),
+            # so the previous run's trace is stale anyway — drop it so each Run
+            # shows only its own burst. Mirrors the clear on the reset/rebuild
+            # paths; safe on the server thread (the GUI reads via queued signals).
+            self.trace_model.clear()
+            self._last_server_refresh = 0.0
             return None, None                      # design unchanged — fast path
-        import sys
-        print(f"[placeKYT server] design edited since last run (v{self._hosted_design_version}"
-              f"→v{cur_ver}) — REBUILDING from the current design before this batch",
+        import sys, time as _t
+        print(f"[placeKYT PERF] design edited since last run (v{self._hosted_design_version}"
+              f"→v{cur_ver}) — REBUILDING (this is the SLOW per-run rebuild if it keeps firing)",
               file=sys.stderr, flush=True)
+        _t0 = _t.perf_counter()
         result = self.app.build()                  # rebuild from current routes
+        print(f"[placeKYT PERF]   app.build() took {(_t.perf_counter()-_t0)*1000:.0f} ms",
+              file=sys.stderr, flush=True)
         if not result.ok:
             errs = "; ".join(str(e) for e in result.errors) or "build failed"
             print(f"[placeKYT server] rebuild FAILED (edited design): {errs}",

@@ -43,7 +43,7 @@ from collections import deque
 CHANNEL_ENTRY_ADDRESSES = [1, 11, 21]
 
 
-class sink(gr.sync_block):
+class sink(gr.basic_block):
     """
     Kyttar Sink - Exit point from Kyttar chip via OUTPUT PORT.
 
@@ -70,13 +70,24 @@ class sink(gr.sync_block):
         # device_id) batches the burst through the placeKYT-hosted chip; this sink
         # drains the recovered words from the shared session and emits them. Its GR
         # input is the marker-chain pass-through (ignored); its OUTPUT is the
-        # recovered stream. Decimating, so a basic_block would be ideal — but a
-        # sync_block works here because we emit whatever is ready each call and
-        # signal WORK_DONE once drained.
+        # recovered stream.
+        #
+        # DECOUPLED I/O (why basic_block, NOT sync_block): the recovered word count
+        # is INDEPENDENT of the marker-chain input length — a decimating RX emits
+        # FEWER words than its samples (239 samples -> 120 bits) while the packing TX
+        # emits MORE (64 bits -> 256 passband words). A ``sync_block`` locks output to
+        # input 1:1 AND is scheduled only while input is available, so once the finite
+        # marker chain hits EOF it is called ONE final time with ``noutput_items``
+        # capped at the remaining input — it CANNOT drain a result longer than its
+        # input, and the TX plot only ever saw 64 of 256 words. A ``basic_block``
+        # whose ``forecast`` declares ZERO required input keeps being scheduled after
+        # input EOF and produces the WHOLE result regardless of input length (the
+        # exact model ``rx_batch`` already uses). We consume any input explicitly and
+        # ignore it — the words come from the batch session.
         self._server_mode = int(server_port) > 0
         # Input is FLOAT in both modes (the marker chain is float). In server mode
         # the GR input is ignored — the recovered words come from the batch session.
-        gr.sync_block.__init__(
+        gr.basic_block.__init__(
             self,
             name="Kyttar Sink",
             in_sig=[np.float32],
@@ -132,13 +143,25 @@ class sink(gr.sync_block):
         """Called when flowgraph stops."""
         return True
 
-    def work(self, input_items, output_items):
-        """Process samples - run simulation and read from chip output port.
+    def forecast(self, noutput_items, ninputs):
+        """Declare ZERO required input per output item.
 
-        CRITICAL: No samples may be lost. read_port() drains ALL available
-        samples from the simulator, so we buffer any excess and return them
-        in subsequent work() calls. This ensures every input sample produces
-        exactly one output sample in the correct order.
+        The recovered stream is decoupled from the marker-chain input (it arrives
+        out-of-band via the batch session), so we never need input to produce
+        output. Returning 0 keeps the scheduler calling ``general_work`` even after
+        the finite marker chain hits EOF — which is exactly what lets us drain a
+        result LONGER than the input (the TX 64->256 case). ``ninputs`` is the
+        number of input ports (1)."""
+        return [0] * ninputs
+
+    def general_work(self, input_items, output_items):
+        """Process samples - drain the batch result into the GR output stream.
+
+        DECOUPLED from input: we consume whatever marker-chain input is present
+        (and ignore it) and emit the recovered words from the batch session. As a
+        basic_block with a zero-input forecast we keep getting scheduled after the
+        finite marker chain ends, so the WHOLE result drains regardless of how many
+        input samples the pass-through chain carried.
 
         Multi-channel mode: Samples arrive with channel tags (via entry address).
         We maintain per-channel FIFOs and pair samples in order (I0, Q0, I1, Q1...).
@@ -146,6 +169,10 @@ class sink(gr.sync_block):
         inp = input_items[0]
         out = output_items[0]
         n_samples = len(inp)
+        # A basic_block MUST consume its input explicitly; the marker-chain samples
+        # are a pass-through we do not use (the recovered words come out-of-band).
+        if n_samples:
+            self.consume(0, n_samples)
 
         # === SERVER-BATCH MODE ===
         # simKYT processed the burst ONCE (one process_batch RPC); these are the GENUINE
@@ -198,6 +225,8 @@ class sink(gr.sync_block):
             return 0
 
         # NO server configured: harmless no-op (output zeros). No chip, no
-        # heavy imports, never raises.
-        out[:] = 0.0
-        return n_samples
+        # heavy imports, never raises. Input was already consumed above; emit an
+        # equal count of zeros bounded by the output buffer.
+        n = min(len(out), n_samples)
+        out[:n] = 0.0
+        return n

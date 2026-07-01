@@ -372,6 +372,7 @@ blocks:
     name: '"TX passband (real)"'
     nconnections: '1'
     ylabel: amplitude
+    size: stim.tx_pb_points(n_bits)
   states:
     bus_sink: false
     bus_source: false
@@ -401,6 +402,7 @@ blocks:
     name: '"Recovered bits"'
     nconnections: '1'
     ylabel: bit
+    size: stim.rx_bits_points(n_syms)
   states:
     bus_sink: false
     bus_source: false

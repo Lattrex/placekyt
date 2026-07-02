@@ -629,7 +629,13 @@ class WaveformView(QWidget):
     def _t_to_x(self, t: float) -> float:
         r = self._plot_rect()
         span = self._t1 - self._t0 or 1.0
-        return r.left() + (t - self._t0) / span * r.width()
+        x = r.left() + (t - self._t0) / span * r.width()
+        # Qt's QPainter draw* take 32-bit ints; a sample far outside the visible
+        # window (e.g. a not-yet-rebased huge absolute time_ns) maps to an x beyond
+        # int32 and raises OverflowError, aborting the whole paintEvent (blank
+        # waveform). Clamp to a wide but int32-safe range so an off-screen point
+        # can never crash the paint — it just draws at the far margin.
+        return -1e7 if x < -1e7 else (1e7 if x > 1e7 else x)
 
     def _x_to_t(self, x: float) -> float:
         r = self._plot_rect()
@@ -811,7 +817,7 @@ class WaveformView(QWidget):
         p.setPen(QPen(QColor(color), 1.5))
         prev_x = prev_y = None
         for t, v in samples:
-            x = self._t_to_x(t)
+            x = self._t_to_x(t)   # int32-safe (clamped in _t_to_x)
             y = ymid - (_q15(v) - vmid) * ppu
             y = max(ytop, min(ybot, y))  # clamp within the row
             if prev_x is not None:

@@ -545,9 +545,6 @@ class SimController(QObject):
         # batch wiping the 1st. Runs on the server thread → just set the flag
         # (consumed on the GUI thread), like the other reset paths.
         def _new_run():
-            import sys as _s
-            _s.stderr.write("[WAVE2 ctrl] on_new_run → _pending_trace_reset=True\n")
-            _s.stderr.flush()
             self._pending_trace_reset = True
             self._last_server_refresh = 0.0
 
@@ -621,10 +618,6 @@ class SimController(QObject):
         # the 0-event early-return so a reset is honoured even if this particular
         # refresh drains nothing new (the model still drops the previous burst).
         if self._pending_trace_reset:
-            import sys as _s
-            _s.stderr.write(f"[WAVE2 ctrl] CONSUME reset (force={force}) → "
-                            f"clearing model (had {len(self.trace_model.transactions)} txns)\n")
-            _s.stderr.flush()
             self._pending_trace_reset = False
             self.trace_model.clear()
             self.trace_model.set_cursor(self.trace_model.latest_ns())
@@ -725,11 +718,6 @@ class SimController(QObject):
             # this cap only guards a single pathologically-long burst.
             tm.trim_to(_SERVER_BATCH_TRACE_MAX)
         tm.set_cursor(tm.latest_ns())
-        import sys as _s
-        _bt = tm.port_streams_by_tag()
-        _s.stderr.write(f"[WAVE2 ctrl] refresh(force={force}): drained {len(new_events)} "
-                        f"→ model now { {k: len(v) for k, v in _bt.items()} }\n")
-        _s.stderr.flush()
         self.engine.clear_trace()
         self._trace_scan_reset()
         self.trace_updated.emit(tm)

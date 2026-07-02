@@ -122,14 +122,17 @@ class SimServer:
                  default_hops=None, stream_targets=None,
                  batch_reset_writes=None, on_new_run=None):
         self._chip = chip
-        # Optional: called ONCE at the start of each client CONNECTION. Each GRC
-        # "Run" restarts the flowgraph → a fresh socket connection → one call.
-        # The streams WITHIN one Run (e.g. rx + tx of a duplex modem) share that
-        # one connection, so this fires per-RUN, not per-batch. The host uses it
-        # to reset the waveform trace at a Run boundary — so a Run's streams
-        # ACCUMULATE in the viewer (both rx and tx visible) instead of the 2nd
-        # batch wiping the 1st (the reported "only one stream / flicker" bug).
+        # Optional: called at the start of a new GRC "Run" — detected by STREAM
+        # CYCLING, not by socket connection. Evidence (WAVE2 log) showed each GRC
+        # Run opens a SEPARATE connection PER STREAM (tx on one socket, rx on
+        # another), so a per-connection signal fired twice per Run and its async
+        # trace-reset raced the per-batch refreshes (wiping a finished Run). The
+        # robust invariant: within ONE Run each stream_id appears exactly ONCE
+        # (tx once, rx once); when a stream_id we've ALREADY seen this Run arrives
+        # again, that batch begins a NEW Run. We fire on_new_run then, so the host
+        # resets the trace exactly once per Run and the Run's streams accumulate.
         self._on_new_run = on_new_run
+        self._run_seen_streams: set = set()   # stream_ids seen in the current Run
         self._host = host
         self._req_port = port
         self._on_activity = on_activity
@@ -294,29 +297,11 @@ class SimServer:
                     pass
 
     def _handle_client(self, conn: socket.socket) -> None:
-        import sys as _s
-        _s.stderr.write(f"[WAVE2 bridge] NEW CONNECTION from {conn.getpeername()!r} "
-                        f"→ firing on_new_run={self._on_new_run is not None}\n")
-        _s.stderr.flush()
-        # A fresh connection = a new GRC "Run" (each Run restarts the flowgraph).
-        # Signal it ONCE so the host can reset the waveform trace at the Run
-        # boundary; the streams within this Run then accumulate.
-        if self._on_new_run is not None:
-            try:
-                self._on_new_run()
-            except Exception:  # noqa: BLE001 — never break the session
-                pass
         while self._running:
             try:
                 header, payload = recv_message(conn)
             except (ConnectionError, OSError):
-                import sys as _s2
-                _s2.stderr.write("[WAVE2 bridge] connection CLOSED\n"); _s2.stderr.flush()
                 return
-            import sys as _s3
-            _s3.stderr.write(f"[WAVE2 bridge] recv op={header.get('op')!r} "
-                             f"stream_id={header.get('stream_id')!r}\n")
-            _s3.stderr.flush()
             reply, out_payload = self._dispatch(header, payload)
             send_message(conn, reply, out_payload)
 
@@ -396,6 +381,24 @@ class SimServer:
                 #   (opt, per-sample event cap). payload: [xi0,xq0,xi1,xq1,...].
                 # reply payload: the full recovered output stream (float32).
                 #
+                # NEW-RUN DETECTION by STREAM CYCLING (see __init__): a Run sends
+                # each stream_id exactly once (tx once, rx once). A stream_id we've
+                # already seen this Run means a NEW Run has started with this
+                # batch → fire on_new_run (host resets the trace ONCE per Run) and
+                # start a fresh seen-set. Fires BEFORE the batch runs, so the
+                # reset is consumed before this batch's events are drained; the
+                # Run's remaining streams then accumulate onto the clean trace.
+                _sid = header.get("stream_id")
+                _run_key = _sid if _sid is not None else "__single__"
+                if _run_key in self._run_seen_streams:
+                    self._run_seen_streams = {_run_key}
+                    if self._on_new_run is not None:
+                        try:
+                            self._on_new_run()
+                        except Exception:  # noqa: BLE001 — never break the run
+                            pass
+                else:
+                    self._run_seen_streams.add(_run_key)
                 # FRESH-BUILD GUARD: rebuild the hosted chip from the CURRENT
                 # project if it was edited since the last build, so this batch
                 # runs the design as it stands NOW (not the stale build hosted at

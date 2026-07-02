@@ -343,10 +343,20 @@ def test_fix3_both_ports_demux_by_tag(traced):
     # OUTPUT: the two modem output nets split by their WRITE dest tags 5 and 10.
     assert set(out_tags) == {M.RX_TAG, M.TX_TAG}, \
         f"x16_out tags={out_tags} (expected {{{M.RX_TAG}, {M.TX_TAG}}})"
-    # INPUT: the RX I/Q operands split by target address (0 and 1). (RX-I and
-    # TX-bits both target address 0 and share entry 0, so they are genuinely
-    # indistinguishable from the trace — the recorded tags are {0, 1}.)
-    assert set(in_tags) == {0, 1}, f"x16_in tags={in_tags} (expected {{0, 1}})"
+    # INPUT: streams are keyed by (target_hop, dest) TOGETHER — both fields drive
+    # how the hardware routes an injected word, so both determine stream identity.
+    # The three input streams are the RX-I operand, the RX-Q operand, and the TX
+    # bit stream. RX-Q and TX-bits both land at dest address 1, but their HOPS
+    # differ (they route to different cells along the shared port), so keying by
+    # dest alone WOULD have collapsed them onto one trace (analog samples overlaid
+    # on digital bits). Keying by (hop, dest) keeps all three distinct.
+    assert all(isinstance(t, tuple) and len(t) == 2 for t in in_tags), \
+        f"x16_in tags should be (hop, dest) tuples, got {in_tags}"
+    # Three distinct streams, and the addr-1 pair is separated by hop.
+    assert len(set(in_tags)) == 3, f"x16_in tags={in_tags} (expected 3 streams)"
+    addr1 = {t for t in in_tags if t[1] == 1}
+    assert len(addr1) == 2, \
+        f"the two dest-1 streams (RX-Q, TX-bits) must stay split by hop: {addr1}"
     # Every reported tag has samples (no empty phantom streams).
     by_tag = tm.port_streams_by_tag()
     for tag in out_tags:

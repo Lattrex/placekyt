@@ -141,6 +141,25 @@ class TestWaveformView:
         lo2, hi2 = v._pane_value_range([0])
         assert (lo2, hi2) == pytest.approx((-1.0, 1.0))
 
+    def test_empty_ptag_trace_no_false_flat_zero(self, qapp):
+        """A demuxed (ptag) port trace with an EMPTY samples list must NOT
+        synthesize a flat-0 line (initial=None, not 0). This is the fix for the
+        'flat line at 0.0000 + degenerate axis (negative time, infinite zoom)'
+        symptom: a ptag trace survives set_streams({}) and can be momentarily
+        emptied by a reset/split-drain refresh. With initial=0 it painted a false
+        flat-0 and collapsed the axis; with initial=None it is invisible until
+        real samples return."""
+        v = WaveformView()
+        v.add_port_stream(0, "x16_out", 5, [])   # seeded but no samples yet
+        s = next(st for st in v._streams if st["key"] == ("ptag", 0, "x16_out", 5))
+        assert s["initial"] is None, "empty ptag trace must not carry a synthetic 0"
+        # An all-empty view has no data bounds → the window can't go degenerate on
+        # a phantom 0 sample.
+        assert v._data_bounds() is None
+        # Real samples arriving later render normally.
+        v.add_port_stream(0, "x16_out", 5, [(10.0, 0x4000), (20.0, 0x4200)])
+        assert v._data_bounds() is not None
+
     def test_autoscale_persists_in_signal_list(self, qapp):
         """The auto-scale-to-view toggle round-trips through to_signal_list /
         from_signal_list (persisted per stream, like radix)."""

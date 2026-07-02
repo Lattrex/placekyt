@@ -109,7 +109,7 @@ class SimController(QObject):
     # The GNURadio bridge server advanced the chip (a remote run_until_output) —
     # the debug views should refresh from the live chip. Emitted from the server
     # thread; receivers run on the GUI thread via Qt's queued connection.
-    server_activity = Signal(bool)   # arg: full_capture (True for a one-shot batch)
+    server_activity = Signal(bool, bool)   # args: (full_capture, force)
     # Per-batch simKYT throughput on THIS machine: {"samples": N, "seconds": s,
     # "samples_per_sec": r}. Surfaced in the status bar so the user can estimate how
     # long a given burst will take (simKYT is an event-accurate async-ASIC sim, NOT
@@ -490,7 +490,15 @@ class SimController(QObject):
             # BATCH finished → full_capture so the whole bounded burst is traceable
             # (start to end). Streaming activity (no samples) keeps the rolling
             # window. Also surface the throughput metric when present.
-            self.server_activity.emit(samples is not None)
+            # A BATCH-COMPLETE refresh (samples is not None) FORCES past the
+            # refresh throttle: it's a semantic burst boundary, not per-sample
+            # chatter, and it must always render the settled trace. Without the
+            # force, a short 2nd stream (tx after rx in a duplex run) can land
+            # inside the ~125ms throttle window and be dropped — leaving the
+            # viewer showing only the first stream (the reported "missing output /
+            # only rx" intermittent bug). The full_capture flag = same condition.
+            batch_complete = samples is not None
+            self.server_activity.emit(batch_complete, batch_complete)
             if samples_per_sec is not None:
                 self.server_throughput.emit({
                     "samples": samples, "seconds": seconds,
@@ -519,7 +527,11 @@ class SimController(QObject):
             # and the user sees only the tail. Continuous streaming never calls
             # _on_sample (it uses write_port/run_until_output), so it stays
             # bounded — see test_live_trace_is_bounded_and_cycles.
-            self.server_activity.emit(True)
+            # Per-sample refresh: full_capture=True but force=False — it MUST stay
+            # throttled. Forcing every per-sample refresh would re-touch the whole
+            # retained trace on the GUI thread every sample and reintroduce the
+            # ~30s subsequent-run freeze. Only the batch-complete refresh forces.
+            self.server_activity.emit(True, False)
             if paused:
                 self.state_changed.emit("paused")
 

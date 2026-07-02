@@ -963,12 +963,15 @@ class MainWindow(QMainWindow):
             self.sim.stop_gnuradio_server()
             self.statusBar().showMessage("GNURadio server stopped", 3000)
 
-    def _on_server_activity(self, full_capture: bool = False) -> None:
+    def _on_server_activity(self, full_capture: bool = False,
+                            force: bool = False) -> None:
         """The GNURadio server advanced the chip — refresh the live debug views
         (canvas overlay, handshakes, transaction log/waveform/scrubber). A one-shot
         BATCH (``full_capture``) keeps the WHOLE burst trace so start AND end
-        conditions are visible, instead of the rolling streaming window."""
-        self.sim.refresh_debug_from_chip(full_capture=full_capture)
+        conditions are visible, instead of the rolling streaming window. ``force``
+        (set for a batch-COMPLETE refresh) bypasses the refresh throttle so a
+        short second stream's settled trace is never dropped."""
+        self.sim.refresh_debug_from_chip(full_capture=full_capture, force=force)
 
     def _on_server_throughput(self, info) -> None:
         """A GNURadio batch finished — show simKYT's sample throughput on THIS

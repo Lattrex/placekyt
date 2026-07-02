@@ -253,7 +253,16 @@ class WaveformView(QWidget):
                 self.update()
                 return
         st = self._new_settings(len(self._streams))
-        st["initial"] = 0
+        # A demuxed (ptag) trace SURVIVES set_streams({}) (that only drops plain
+        # "port" traces), so during a mid-run reset / split-drain window its
+        # samples can be momentarily emptied by update_port_tag_samples. With
+        # initial=0, _lead_samples would synthesize a (t0, 0) point and _paint_
+        # analog would draw it flat across the row — a FALSE flat-0 line, and if
+        # it's the only analog data present _data_bounds returns None and the
+        # time/value axes collapse to a degenerate range (the reported "flat line,
+        # negative time, infinite zoom-out"). initial=None → _lead_samples returns
+        # [] on empty → the trace is simply invisible until real samples return.
+        st["initial"] = None
         self._streams.append({
             "label": label or (f"chip{chip}.{port}"
                                + ("" if tag is None else f" [tag {tag}]")),

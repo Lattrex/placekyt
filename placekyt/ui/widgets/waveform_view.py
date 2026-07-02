@@ -291,18 +291,11 @@ class WaveformView(QWidget):
         """Refresh every DEMUXED port trace's samples via
         ``fetch(chip, port, tag) -> [(t,v)]`` (called on each live refresh so a
         demuxed port trace keeps up with the run, like register traces)."""
-        import sys as _sys
         for s in self._streams:
             src = s.get("source", {})
             if src.get("type") == "port_tag":
-                fetched = fetch(src["chip"], src["port"], src["tag"]) or []
-                _prev = len(s.get("samples", []))
-                s["samples"] = sorted(fetched)
-                _sys.stderr.write(
-                    f"[WAVE view] update_port_tag ({src['chip']},{src['port']},"
-                    f"{src['tag']}): fetched {len(fetched)} samples "
-                    f"(was {_prev})\n")
-                _sys.stderr.flush()
+                s["samples"] = sorted(
+                    fetch(src["chip"], src["port"], src["tag"]) or [])
 
     def register_sources(self) -> list[tuple]:
         """``(chip,x,y,addr)`` of every register trace (so the host can fetch

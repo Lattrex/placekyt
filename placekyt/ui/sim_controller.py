@@ -539,11 +539,21 @@ class SimController(QObject):
             breakpoint_check=_bp_check, on_sample=_on_sample)
         self._batch_debug.set_delay(self._batch_debug_delay_for_speed())
 
+        # on_new_run fires ONCE per GRC "Run" (a fresh client connection). Reset
+        # the waveform trace HERE (Run boundary), not per-batch — so the streams
+        # within one Run (rx + tx) ACCUMULATE in the viewer instead of the 2nd
+        # batch wiping the 1st. Runs on the server thread → just set the flag
+        # (consumed on the GUI thread), like the other reset paths.
+        def _new_run():
+            self._pending_trace_reset = True
+            self._last_server_refresh = 0.0
+
         self._gr_server = SimServer(
             self.engine.chip, host=host, port=port,
             on_activity=_activity,
             on_reset=self._rehost_server_chip_threadsafe,
             on_before_batch=self._rebuild_if_dirty_threadsafe,
+            on_new_run=_new_run,
             default_entries=default_entries,
             default_hops=default_hops,
             stream_targets=stream_targets,
@@ -708,18 +718,6 @@ class SimController(QObject):
             # this cap only guards a single pathologically-long burst.
             tm.trim_to(_SERVER_BATCH_TRACE_MAX)
         tm.set_cursor(tm.latest_ns())
-        # WAVE PROBE: what did the chip drain, and what does the model now hold?
-        import sys as _wsys
-        try:
-            _bt = tm.port_streams_by_tag()
-            _wsys.stderr.write(
-                f"[WAVE ctrl] refresh: force={force} full_capture={full_capture} "
-                f"drained {len(new_events)} raw events → model has "
-                f"{len(tm.transactions)} txns, "
-                f"port_tag streams { {k: len(v) for k, v in _bt.items()} }\n")
-            _wsys.stderr.flush()
-        except Exception as _e:  # noqa: BLE001
-            _wsys.stderr.write(f"[WAVE ctrl] probe error: {_e}\n"); _wsys.stderr.flush()
         self.engine.clear_trace()
         self._trace_scan_reset()
         self.trace_updated.emit(tm)
@@ -1098,17 +1096,16 @@ class SimController(QObject):
         if not result.ok or self.engine is None:
             return None
         self.engine.reset()                       # blank chip
-        self.engine.load(result.words(0), trace=True,
-                         max_records=_LIVE_CHIP_CAP)
+        # Full server-burst cap (5M), not the 100k live cap — else a big RX burst
+        # overflows the chip trace mid-run and the waveform is truncated.
+        _cap = _SERVER_CHIP_CAP if self._server_batch_retain_all else _LIVE_CHIP_CAP
+        self.engine.load(result.words(0), trace=True, max_records=_cap)
         cfg = self._input_port_config(getattr(self, "_sim_chip", 0))
         if cfg is not None:
             port_name, kw = cfg
             self.engine.configure_input_port(port_name, **kw)
-        # Request a trace reset (consumed on the GUI thread by the next
-        # refresh_debug_from_chip) so the new run's fresh events aren't sorted
-        # behind / trimmed by the previous run's. We are on the SERVER thread
-        # here, so we must NOT clear the TraceModel directly (that races the
-        # GUI-thread append — the intermittent-display bug); flag it instead.
+        # An explicit 'reset' RPC IS a fresh run → reset the trace (consumed on
+        # the GUI thread; never clear directly here — that races the append).
         self._pending_trace_reset = True
         self._last_server_refresh = 0.0
         # This rebuild used the current design → record its version so the
@@ -1142,20 +1139,12 @@ class SimController(QObject):
         # every edit and never cleared by a build, so it survives that race.
         cur_ver = getattr(self.app.project, "design_version", 0)
         if self._hosted_design_version is not None and cur_ver == self._hosted_design_version:
-            # Design unchanged — fast path (no rebuild). BUT still start this
-            # batch from a CLEAN retained trace: a plain GRC re-Run (no edit, no
-            # reset RPC) neither rebuilds nor rehosts, so without this the
-            # retained batch trace ACCUMULATES across runs (run 1: 1.6k txns,
-            # run 2: +325k, run 3: +146k, …). Every later refresh then re-touches
-            # that ever-growing model on the GUI thread and the GUI locks up for
-            # tens of seconds ("subsequent-run freeze"). The chip itself is
-            # re-cold-started per batch by the server (inject + reset loop-memory),
-            # so the previous run's trace is stale anyway — drop it so each Run
-            # shows only its own burst. We are on the SERVER thread → REQUEST the
-            # reset (consumed on the GUI thread), never clear the TraceModel here
-            # (that races the GUI-thread append — the intermittent-display bug).
-            self._pending_trace_reset = True
-            self._last_server_refresh = 0.0
+            # Design unchanged — fast path (no rebuild). Do NOT reset the trace
+            # here: this hook fires per BATCH, and a duplex Run is two batches
+            # (rx + tx) on ONE connection. Resetting per batch made the 2nd batch
+            # WIPE the 1st (only one stream ever visible — the reported flicker).
+            # The trace reset now happens ONCE per Run in the on_new_run handler
+            # (a fresh client connection), so a Run's streams ACCUMULATE.
             return None, None                      # design unchanged — fast path
         import sys, time as _t
         print(f"[placeKYT PERF] design edited since last run (v{self._hosted_design_version}"
@@ -1173,17 +1162,22 @@ class SimController(QObject):
         print(f"[placeKYT server] rebuilt OK — re-hosting {len(result.words(0))} "
               "words for this run", file=sys.stderr, flush=True)
         # Re-host the freshly built bitstream on a clean chip + re-configure the
-        # input port, exactly like the reset path. Clear the trace window so the
-        # new run's low-timestamp events aren't sorted behind the previous run's.
+        # input port. Size the chip trace for a FULL server burst (_SERVER_CHIP_CAP,
+        # 5M) — NOT the small _LIVE_CHIP_CAP (100k). A single RX matched-filter
+        # burst emits tens of thousands of events; at 100k the chip trace hits its
+        # HARD cap mid-burst and STOPS recording, so the waveform showed only a
+        # truncated fraction of the output (e.g. 61/120 words — the "fewer captured
+        # values" symptom in the WAVE evidence).
         self.engine.reset()
-        self.engine.load(result.words(0), trace=True, max_records=_LIVE_CHIP_CAP)
+        _cap = _SERVER_CHIP_CAP if self._server_batch_retain_all else _LIVE_CHIP_CAP
+        self.engine.load(result.words(0), trace=True, max_records=_cap)
         cfg = self._input_port_config(getattr(self, "_sim_chip", 0))
         if cfg is not None:
             port_name, kw = cfg
             self.engine.configure_input_port(port_name, **kw)
-        # SERVER thread → request the trace reset (the GUI thread clears it in the
-        # next refresh_debug_from_chip); never clear the TraceModel here.
-        self._pending_trace_reset = True
+        # Do NOT reset the trace here (this rebuild fires on the FIRST batch of a
+        # Run; the on_new_run handler already reset at the Run's connection start).
+        # Resetting here too would wipe an earlier batch of the SAME Run.
         self._last_server_refresh = 0.0
         self._hosted_design_version = cur_ver   # remember what we just hosted
         # RE-RESOLVE the per-stream injection targets + per-batch loop-memory resets

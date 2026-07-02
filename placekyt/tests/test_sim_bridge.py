@@ -223,6 +223,40 @@ def test_on_activity_fires_on_run():
         srv.stop()
     assert hits  # on_activity fired
 
+
+def test_on_new_run_fires_once_per_connection_not_per_batch():
+    """on_new_run must fire ONCE per client CONNECTION (= one GRC "Run"), NOT per
+    batch. A duplex Run sends TWO process_batch RPCs (rx + tx) on ONE connection;
+    if on_new_run fired per batch, the trace reset would wipe the first stream
+    before the second (the reported "only one stream visible" bug). This guards
+    that the two batches of one connection see exactly ONE new-run signal, and a
+    fresh connection (next Run) signals again."""
+    runs = []
+    srv = SimServer(BatchFakeChip(), default_entries={"x16_in": 17},
+                    on_new_run=lambda: runs.append(1))
+    p = srv.start()
+    try:
+        # First connection = Run 1: two batches (rx then tx) on the SAME socket.
+        c = _client(p)
+        for _ in range(2):
+            send_message(c, {"op": "process_batch", "port": "x16_out",
+                             "in_port": "x16_in"},
+                         np.array([1.0, 0.0], dtype=np.float32))
+            recv_message(c)
+        c.close()
+        # Second connection = Run 2.
+        c2 = _client(p)
+        send_message(c2, {"op": "process_batch", "port": "x16_out",
+                          "in_port": "x16_in"},
+                     np.array([1.0, 0.0], dtype=np.float32))
+        recv_message(c2)
+        c2.close()
+    finally:
+        srv.stop()
+    # Exactly ONE new-run per connection: 2 connections → 2 signals (NOT 3 batches).
+    assert len(runs) == 2, f"on_new_run fired {len(runs)}× (expected 2, one per connection)"
+
+
 def test_unknown_op_errors():
     srv = SimServer(FakeChip())
     p = srv.start()

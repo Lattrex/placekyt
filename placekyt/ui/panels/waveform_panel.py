@@ -135,12 +135,8 @@ class WaveformPanel(QWidget):
     # -- model ----------------------------------------------------------------
 
     def set_trace_model(self, model) -> None:
-        import sys as _sys
-        def _wlog(msg):
-            _sys.stderr.write(f"[WAVE panel] {msg}\n"); _sys.stderr.flush()
         self._model = model
         if model is None:
-            _wlog("set_trace_model(None) → clear streams")
             self.view.set_streams({})
             self._seeded_port_tags = {}
             self.set_cursor(None)
@@ -150,13 +146,6 @@ class WaveformPanel(QWidget):
         # Split such a port into one DEMUXED trace per tag for the default view;
         # single-channel ports stay as a single plain-port trace.
         by_tag = model.port_streams_by_tag()
-        # WAVE PROBE: what does the model actually hold right now?
-        _pstreams = model.port_streams()
-        _wlog("set_trace_model: model has "
-              f"{len(_pstreams)} plain-port streams "
-              f"{ {k: len(v) for k, v in _pstreams.items()} } | "
-              f"{len(by_tag)} (port,tag) streams "
-              f"{ {k: len(v) for k, v in by_tag.items()} }")
         tags_per_port: dict[tuple[int, str], list] = {}
         for (chip, port, tag) in by_tag:
             tags_per_port.setdefault((chip, port), []).append(tag)
@@ -168,9 +157,6 @@ class WaveformPanel(QWidget):
                 multiplexed.add((chip, port))
             else:
                 plain[(chip, port)] = samples
-        _wlog(f"  classify: plain={sorted(plain.keys())} "
-              f"multiplexed={sorted(multiplexed)} "
-              f"tags_per_port={ {k: sorted(v, key=lambda d:(d is None,d)) for k,v in tags_per_port.items()} }")
         # Plain ports → single traces (replaces prior plain-port traces each call).
         self.view.set_streams(plain)
 
@@ -197,21 +183,15 @@ class WaveformPanel(QWidget):
                   s["source"].get("tag"))
                  for s in self.view._streams
                  if s.get("source", {}).get("type") == "port_tag"}
-        _wlog(f"  seed: already-shown ptag={sorted(shown)} "
-              f"seeded_record={ {k: sorted(v, key=lambda d:(d is None,d)) for k,v in self._seeded_port_tags.items()} }")
         for (chip, port) in sorted(multiplexed):
             cur_tags = frozenset(tags_per_port[(chip, port)])
             seeded = self._seeded_port_tags.get((chip, port), frozenset())
             new_tags = cur_tags - seeded
             if not new_tags:
-                _wlog(f"  seed: ({chip},{port}) no new tags (cur={sorted(cur_tags,key=lambda d:(d is None,d))})")
                 continue
             for tag in sorted(new_tags, key=lambda d: (d is None, d)):
                 if (chip, port, tag) not in shown:
-                    _wlog(f"  seed: ADD ptag ({chip},{port},{tag})")
                     self.add_port_trace(chip, port, tag)
-                else:
-                    _wlog(f"  seed: skip ({chip},{port},{tag}) already shown")
             # Record the FULL current tag-set as seeded (so removed tags aren't
             # re-added, and only genuinely-new tags trigger a future add).
             self._seeded_port_tags[(chip, port)] = seeded | cur_tags
@@ -220,9 +200,6 @@ class WaveformPanel(QWidget):
         self.view.update_register_samples(model.register_stream)
         self.view.update_port_tag_samples(self._port_tag_stream)
         self.set_cursor(model.cursor_ns)
-        # WAVE PROBE: final view state — every trace and its sample count.
-        _summ = [(s.get("key"), len(s.get("samples", []))) for s in self.view._streams]
-        _wlog(f"  RESULT: {len(self.view._streams)} traces: {_summ} | cursor_ns={model.cursor_ns}")
 
     def set_initial_register_fetch(self, fetch) -> None:
         """Provide ``fetch(chip,x,y,addr) -> initial value | None`` so register

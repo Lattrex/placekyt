@@ -120,8 +120,16 @@ class SimServer:
                  on_activity=None, on_reset=None, on_before_batch=None,
                  default_entries=None, on_grc_params=None, debug_hooks=None,
                  default_hops=None, stream_targets=None,
-                 batch_reset_writes=None):
+                 batch_reset_writes=None, on_new_run=None):
         self._chip = chip
+        # Optional: called ONCE at the start of each client CONNECTION. Each GRC
+        # "Run" restarts the flowgraph → a fresh socket connection → one call.
+        # The streams WITHIN one Run (e.g. rx + tx of a duplex modem) share that
+        # one connection, so this fires per-RUN, not per-batch. The host uses it
+        # to reset the waveform trace at a Run boundary — so a Run's streams
+        # ACCUMULATE in the viewer (both rx and tx visible) instead of the 2nd
+        # batch wiping the 1st (the reported "only one stream / flicker" bug).
+        self._on_new_run = on_new_run
         self._host = host
         self._req_port = port
         self._on_activity = on_activity
@@ -286,6 +294,14 @@ class SimServer:
                     pass
 
     def _handle_client(self, conn: socket.socket) -> None:
+        # A fresh connection = a new GRC "Run" (each Run restarts the flowgraph).
+        # Signal it ONCE so the host can reset the waveform trace at the Run
+        # boundary; the streams within this Run then accumulate.
+        if self._on_new_run is not None:
+            try:
+                self._on_new_run()
+            except Exception:  # noqa: BLE001 — never break the session
+                pass
         while self._running:
             try:
                 header, payload = recv_message(conn)

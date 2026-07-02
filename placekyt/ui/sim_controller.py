@@ -204,6 +204,15 @@ class SimController(QObject):
         # partial / TX-only / delayed-then-late traces). A bool assignment is
         # atomic under the GIL, so no lock is needed for this one-way flag.
         self._pending_trace_reset = False
+        # PER-RUN TIME REBASE: the chip's sim clock keeps CLIMBING across GRC Runs
+        # (it is never reset to 0 between Runs — only the trace model is cleared).
+        # Without rebasing, each Run's events land at an ever-larger absolute
+        # time_ns, so successive Runs march off to the right of the waveform axis
+        # (5M ns, 10M ns, 22M ns …) with huge empty gaps. On a new Run we set this
+        # origin to None; the first drained event's timestamp becomes the origin,
+        # and every event's time_ns has it subtracted — so each Run's traces start
+        # near 0 and both streams overlay on a short window (like GRC's own sink).
+        self._trace_time_origin: float | None = None
         # Host-side SRAM panel devices, registered in-fabric with the engine
         # (#193): run() self-pumps them. {panel_id: SramPanelDevice}; the chip
         # output ports feeding registered panels (for ack-pending checks).
@@ -620,6 +629,9 @@ class SimController(QObject):
         if self._pending_trace_reset:
             self._pending_trace_reset = False
             self.trace_model.clear()
+            # New Run → forget the time origin; the first event drained below
+            # (re)establishes it so this Run's trace starts near 0.
+            self._trace_time_origin = None
             self.trace_model.set_cursor(self.trace_model.latest_ns())
             self.trace_updated.emit(self.trace_model)
 
@@ -646,6 +658,21 @@ class SimController(QObject):
         # render even if it drained nothing new.
         if not new_events and not force:
             return
+        # PER-RUN TIME REBASE (server/batch mode only): the chip's sim clock climbs
+        # across Runs, so subtract this Run's start-time from every event so the
+        # Run's traces start near 0 (both streams overlay on a short window like
+        # GRC's sink) instead of marching off to ever-larger absolute times. The
+        # origin is the FIRST event's time_ns after a new-Run reset; established
+        # once, then applied to every subsequent event of the Run. Only for the
+        # bounded batch path — an interactive stream keeps real time.
+        if self._server_batch_retain_all and new_events:
+            if self._trace_time_origin is None:
+                self._trace_time_origin = min(
+                    float(ev.get("time_ns", 0.0)) for ev in new_events)
+            _org = self._trace_time_origin
+            if _org:
+                for ev in new_events:
+                    ev["time_ns"] = float(ev.get("time_ns", 0.0)) - _org
         # At high sample rates a single refresh can drain tens of thousands of
         # events (≈64 per sample). Normalising all of them only to trim most away
         # is the dominant cost — keep just the most-recent window's worth of RAW

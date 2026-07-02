@@ -65,6 +65,8 @@ class _RetentionHarness:
         # GUI-thread single-writer trace-reset flag (consumed by
         # refresh_debug_from_chip); no server-thread clear in this stub.
         self._pending_trace_reset = False
+        # Per-Run time-rebase origin (set on the first event after a reset).
+        self._trace_time_origin = None
         # signals the method emits — stub them out
         for name in ("cell_states", "cell_faces", "handshakes", "trace_updated",
                      "cell_state_refreshed"):
@@ -107,6 +109,35 @@ def test_server_cap_exceeds_live_cap():
     """The server-mode chip-side trace cap must be far larger than the streaming
     cap so a whole burst isn't silently dropped mid-batch (hard cap, not a ring)."""
     assert sc._SERVER_CHIP_CAP > sc._LIVE_CHIP_CAP
+
+
+def test_server_batch_rebases_time_to_run_start():
+    """PER-RUN TIME REBASE: the chip's sim clock climbs across Runs, so a Run's
+    events arrive at a large absolute time_ns. In server/batch mode the trace must
+    be REBASED so each Run starts near 0 (both streams overlay on a short window)
+    instead of marching off to ever-larger times (the reported huge-gap / off-axis
+    behaviour). Drive a Run whose events start at a big offset and assert the model
+    starts at 0."""
+    OFF = 22_000_000.0     # a late Run (chip clock has climbed to ~22M ns)
+    h = _RetentionHarness([_fake_event(OFF + i) for i in range(N)])
+    h._server_batch_retain_all = True   # server/batch mode (rebase active)
+    h._trace_time_origin = None         # new Run → origin re-established below
+    h.refresh_debug_from_chip(force=True, full_capture=True)
+    times = [t.time_ns for t in h.trace_model.transactions]
+    assert times[0] == 0.0, \
+        f"a Run's trace must be rebased to start at 0 (got {times[0]})"
+    assert times[-1] == float(N - 1), "rebased span must equal the Run's real span"
+
+
+def test_streaming_does_not_rebase_time():
+    """The rebase is server/batch-only: a continuous interactive stream keeps REAL
+    time (no _server_batch_retain_all), so its absolute timestamps are preserved."""
+    OFF = 1_000_000.0
+    h = _RetentionHarness([_fake_event(OFF + i) for i in range(10)])
+    # _server_batch_retain_all defaults False → streaming → no rebase.
+    h.refresh_debug_from_chip(force=True)   # streaming (full_capture=False)
+    times = [t.time_ns for t in h.trace_model.transactions]
+    assert times[0] == OFF, "streaming must NOT rebase (keeps real time)"
 
 
 def test_batch_refresh_signals_full_capture_from_the_first_sample():

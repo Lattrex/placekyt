@@ -207,6 +207,116 @@ def test_route_drop_plots_its_channels(qapp):
     # here because an offscreen modal would block the test.)
 
 
+def test_incremental_tags_all_seed(qapp):
+    """A run whose tags arrive across successive refreshes (TX tag first, then RX)
+    must end up with a demuxed trace for BOTH — not frozen on whatever the first
+    refresh happened to contain. Reproduces the 'only got the output / only some
+    tags' intermittent auto-population bug: the seed keys on tag CONTENT, so the
+    later-arriving tag gets seeded when it appears."""
+    panel = WaveformPanel()
+    m = TraceModel()
+    # First refresh: x16_out carries ONLY tag 10 (TX) so far, plus the multiplexed
+    # x16_in (xi/xq) already present.
+    m.ingest(0, _events([
+        (10, "x16_in", 0, 0x4000, "port_injection"),
+        (12, "x16_in", 1, 0x1000, "port_injection"),
+        (30, "x16_out", 10, 0x00AA, "port_capture"),
+    ]), width=10)
+    panel.set_trace_model(m)
+    # x16_out has ONE tag so far → stays a plain trace (not multiplexed yet).
+    keys1 = {s["key"] for s in panel.view._streams}
+    assert ("ptag", 0, "x16_in", 0) in keys1
+    assert ("ptag", 0, "x16_in", 1) in keys1
+    # Second refresh (same run, model cleared+re-ingested in place): x16_out now
+    # ALSO carries tag 5 (RX) → it becomes multiplexed and BOTH its tags must seed.
+    m.clear()
+    m.ingest(0, _events([
+        (10, "x16_in", 0, 0x4000, "port_injection"),
+        (12, "x16_in", 1, 0x1000, "port_injection"),
+        (30, "x16_out", 10, 0x00AA, "port_capture"),
+        (32, "x16_out", 5, 0x0001, "port_capture"),
+    ]), width=10)
+    panel.set_trace_model(m)
+    keys2 = {s["key"] for s in panel.view._streams}
+    assert ("ptag", 0, "x16_out", 10) in keys2, keys2
+    assert ("ptag", 0, "x16_out", 5) in keys2, keys2
+
+
+def test_repeated_run_no_duplicate_stacking(qapp):
+    """Re-feeding the SAME model many times (as the live server does, many
+    trace_updated emits per run) must NOT stack duplicate demuxed traces. Each
+    tag stays exactly one trace. Reproduces the 'traces stacked on top of each
+    other' symptom."""
+    panel = WaveformPanel()
+    m = TraceModel()
+    rows = _events([
+        (10, "x16_in", 0, 0x4000, "port_injection"),
+        (12, "x16_in", 1, 0x1000, "port_injection"),
+        (20, "x16_in", 0, 0x4200, "port_injection"),
+        (22, "x16_in", 1, 0x1100, "port_injection"),
+    ])
+    m.ingest(0, rows, width=10)
+    for _ in range(10):                       # 10 live refreshes of the same model
+        panel.set_trace_model(m)
+    ptags = [s["key"] for s in panel.view._streams if s["key"][0] == "ptag"]
+    assert ptags.count(("ptag", 0, "x16_in", 0)) == 1, ptags
+    assert ptags.count(("ptag", 0, "x16_in", 1)) == 1, ptags
+    assert len(ptags) == 2, ptags
+
+
+def test_fresh_run_reseeds_after_reset(qapp):
+    """A genuinely new run (model emptied by an in-place reset, then a new burst)
+    re-seeds the default demuxed traces — even though it's the SAME model object.
+    Reproduces the 'traces wiped / not pulled up on a later run' symptom (the old
+    identity-based one-shot never re-seeded because the object never changed)."""
+    panel = WaveformPanel()
+    m = TraceModel()
+    m.ingest(0, _events([
+        (10, "x16_in", 0, 0x4000, "port_injection"),
+        (12, "x16_in", 1, 0x1000, "port_injection"),
+    ]), width=10)
+    panel.set_trace_model(m)
+    assert any(s["key"] == ("ptag", 0, "x16_in", 0) for s in panel.view._streams)
+    # New run: the server clears the model in place, one empty refresh arrives,
+    # then the new burst. The empty refresh must reset the seed record so the
+    # next burst re-seeds.
+    m.clear()
+    panel.set_trace_model(m)                  # empty refresh (fresh run detected)
+    m.ingest(0, _events([
+        (10, "x16_in", 0, 0x5000, "port_injection"),
+        (12, "x16_in", 1, 0x2000, "port_injection"),
+    ]), width=10)
+    panel.set_trace_model(m)
+    keys = {s["key"] for s in panel.view._streams}
+    assert ("ptag", 0, "x16_in", 0) in keys, keys
+    assert ("ptag", 0, "x16_in", 1) in keys, keys
+
+
+def test_user_removed_tag_not_forced_back_within_run(qapp):
+    """If the user removes a demuxed trace mid-run, a later refresh of the SAME
+    run must NOT force it back (otherwise the viewer fights the user). It only
+    returns after a genuine new run."""
+    panel = WaveformPanel()
+    m = TraceModel()
+    m.ingest(0, _events([
+        (10, "x16_in", 0, 0x4000, "port_injection"),
+        (12, "x16_in", 1, 0x1000, "port_injection"),
+    ]), width=10)
+    panel.set_trace_model(m)
+    # User removes the tag-1 trace.
+    panel.view._streams = [s for s in panel.view._streams
+                           if s["key"] != ("ptag", 0, "x16_in", 1)]
+    # A later refresh in the same run must not re-add it.
+    m.clear()
+    m.ingest(0, _events([
+        (10, "x16_in", 0, 0x4001, "port_injection"),
+        (12, "x16_in", 1, 0x1001, "port_injection"),
+    ]), width=10)
+    panel.set_trace_model(m)
+    keys = {s["key"] for s in panel.view._streams}
+    assert ("ptag", 0, "x16_in", 1) not in keys, "removed tag was forced back"
+
+
 if __name__ == "__main__":
     app = QApplication.instance() or QApplication([])
     test_port_streams_by_tag_demux()

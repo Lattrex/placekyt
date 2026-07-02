@@ -34,6 +34,17 @@ class WaveformPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._model = None
+        # The set of multiplexed (chip, port) → sorted-tag-tuple the panel has
+        # already auto-seeded default demuxed traces for. Keyed by tag CONTENT,
+        # not model-object identity: the TraceModel is cleared IN PLACE across
+        # runs (same object), and a run's tags arrive incrementally, so identity
+        # is useless for deciding "is this a new run / did new tags appear?".
+        # When the current model's multiplexed tag-set for a port differs from
+        # what we seeded, we (idempotently) seed the NEW tags. This is the fix for
+        # the intermittent auto-population (only-output / only-some-tags / traces
+        # shuffled or wiped between runs of the SAME setup).
+        self._seeded_port_tags: dict[tuple[int, str], frozenset] = {}
+        self._default_split_done = False
         self._initial_reg_fetch = None  # (chip,x,y,addr) -> initial value | None
 
         outer = QVBoxLayout(self)
@@ -124,14 +135,10 @@ class WaveformPanel(QWidget):
     # -- model ----------------------------------------------------------------
 
     def set_trace_model(self, model) -> None:
-        # A brand-new model (fresh run / project) → re-apply the default per-tag
-        # split once for it (the flag below makes the split a one-shot per model
-        # so a user-removed channel isn't forced back on every live refresh).
-        if model is not self._model:
-            self._default_split_done = False
         self._model = model
         if model is None:
             self.view.set_streams({})
+            self._seeded_port_tags = {}
             self.set_cursor(None)
             return
         # A MULTIPLEXED port (several tagged channels, e.g. x16_in carrying xi+xq)
@@ -152,20 +159,43 @@ class WaveformPanel(QWidget):
                 plain[(chip, port)] = samples
         # Plain ports → single traces (replaces prior plain-port traces each call).
         self.view.set_streams(plain)
-        # Multiplexed ports → one persistent demuxed trace per tag (idempotent;
-        # update_port_tag_samples below keeps them live). Only auto-added once —
-        # if the user removed one, it isn't forced back.
+
+        # NEW-RUN DETECTION: the TraceModel is cleared IN PLACE (same object) at
+        # the start of each run, so we can't use object identity. Instead, if the
+        # model now has NO port data at all (a fresh reset that hasn't captured a
+        # burst yet), forget what we seeded so the next burst re-seeds cleanly.
+        if not by_tag and not model.port_streams():
+            self._seeded_port_tags = {}
+
+        # IDEMPOTENT, TAG-CONTENT-KEYED DEFAULT SPLIT. Auto-seed one demuxed trace
+        # per tag for each multiplexed port — but ONLY for tags not already seeded
+        # for that port in THIS run. This fixes the intermittent auto-population:
+        #  * a run whose tags arrive incrementally (e.g. TX tag first, then RX)
+        #    now seeds the RX tag when it appears, instead of freezing on whatever
+        #    the first refresh happened to contain (the "only output / only some
+        #    tags" symptom);
+        #  * re-seeding is keyed on tag CONTENT and de-duped against traces already
+        #    shown, so a channel is never stacked twice (the "stacked on top of
+        #    each other" symptom);
+        #  * a user-removed tag is NOT forced back within the same run (it stays in
+        #    _seeded_port_tags), but a genuinely new run (detected above) re-seeds.
         shown = {(s["source"].get("chip"), s["source"].get("port"),
                   s["source"].get("tag"))
                  for s in self.view._streams
                  if s.get("source", {}).get("type") == "port_tag"}
-        if not getattr(self, "_default_split_done", False):
-            for (chip, port) in sorted(multiplexed):
-                for tag in sorted(tags_per_port[(chip, port)],
-                                  key=lambda d: (d is None, d)):
-                    if (chip, port, tag) not in shown:
-                        self.add_port_trace(chip, port, tag)
-            self._default_split_done = True
+        for (chip, port) in sorted(multiplexed):
+            cur_tags = frozenset(tags_per_port[(chip, port)])
+            seeded = self._seeded_port_tags.get((chip, port), frozenset())
+            new_tags = cur_tags - seeded
+            if not new_tags:
+                continue
+            for tag in sorted(new_tags, key=lambda d: (d is None, d)):
+                if (chip, port, tag) not in shown:
+                    self.add_port_trace(chip, port, tag)
+            # Record the FULL current tag-set as seeded (so removed tags aren't
+            # re-added, and only genuinely-new tags trigger a future add).
+            self._seeded_port_tags[(chip, port)] = seeded | cur_tags
+
         # Refresh register + demuxed-port traces from the model (keep live).
         self.view.update_register_samples(model.register_stream)
         self.view.update_port_tag_samples(self._port_tag_stream)

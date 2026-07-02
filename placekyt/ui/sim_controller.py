@@ -708,6 +708,18 @@ class SimController(QObject):
             # this cap only guards a single pathologically-long burst.
             tm.trim_to(_SERVER_BATCH_TRACE_MAX)
         tm.set_cursor(tm.latest_ns())
+        # WAVE PROBE: what did the chip drain, and what does the model now hold?
+        import sys as _wsys
+        try:
+            _bt = tm.port_streams_by_tag()
+            _wsys.stderr.write(
+                f"[WAVE ctrl] refresh: force={force} full_capture={full_capture} "
+                f"drained {len(new_events)} raw events → model has "
+                f"{len(tm.transactions)} txns, "
+                f"port_tag streams { {k: len(v) for k, v in _bt.items()} }\n")
+            _wsys.stderr.flush()
+        except Exception as _e:  # noqa: BLE001
+            _wsys.stderr.write(f"[WAVE ctrl] probe error: {_e}\n"); _wsys.stderr.flush()
         self.engine.clear_trace()
         self._trace_scan_reset()
         self.trace_updated.emit(tm)

@@ -209,6 +209,16 @@ class SimServer:
         # share one output port without one stealing the other's words).
         self._tag_buf: dict[int, list[int]] = {}
 
+    def _clear_chip_trace(self) -> None:
+        """Drop the hosted chip's trace buffer (keep tracing enabled). Called at a
+        Run boundary on the server thread so the new Run's trace starts empty — see
+        the callers in process_batch / _process_batch_duplex. Best-effort: a chip
+        without tracing enabled simply no-ops."""
+        try:
+            self._chip.clear_trace()
+        except Exception:  # noqa: BLE001 — tracing not enabled / unsupported
+            pass
+
     def _apply_batch_reset(self) -> None:
         """Cold-start every flagged loop-state register on the hosted chip.
 
@@ -397,6 +407,11 @@ class SimServer:
                             self._on_new_run()
                         except Exception:  # noqa: BLE001 — never break the run
                             pass
+                    # Clear the chip trace on the server thread at the Run boundary
+                    # so this Run's drain sees ONLY this Run's events (see the note
+                    # in _process_batch_duplex — prevents the "blank on rerun" bug
+                    # where a stale previous-Run event anchors the time rebase).
+                    self._clear_chip_trace()
                 else:
                     self._run_seen_streams.add(_run_key)
                 # FRESH-BUILD GUARD: rebuild the hosted chip from the CURRENT
@@ -674,6 +689,16 @@ class SimServer:
                 self._on_new_run()
             except Exception:  # noqa: BLE001
                 pass
+        # DROP the chip's trace buffer at the Run boundary, on the SERVER thread,
+        # BEFORE this Run injects anything. The host's per-refresh clear_trace runs
+        # on the GUI thread and can lag behind a fast Stop→Run, leaving the previous
+        # Run's events in the chip trace when this Run starts. The host then drains
+        # Run N-1 + Run N together and anchors the per-Run time rebase on Run N-1's
+        # start, pushing Run N's events ~1e6 ns off the visible window → EVERY trace
+        # renders blank on the rerun (the reported "empty on every subsequent run").
+        # Clearing here — race-free, the server owns the chip and no batch has run —
+        # guarantees this Run's drain contains ONLY this Run's events.
+        self._clear_chip_trace()
         # Fresh-build guard + loop-memory reset, ONCE for the whole duplex run.
         if self._on_before_batch is not None:
             new_chip, err = self._on_before_batch()

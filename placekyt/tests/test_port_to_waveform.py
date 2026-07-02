@@ -35,6 +35,32 @@ def _events(rows):
              "cell_id": 0} for (t, p, d, v, k) in rows]
 
 
+def test_input_streams_separated_by_hop_and_dest():
+    """A shared INPUT port's streams are keyed by (target_hop, dest) TOGETHER, not
+    dest alone — so two streams that collide on one dest address but differ by hop
+    (e.g. rx-xq @hop22/addr1 vs tx-bit @hop29/addr1, on x16_in) are DISTINCT
+    traces, exactly as the hardware routes them. Guards the duplex input-trace
+    overlap bug (both showed on ONE psksym trace)."""
+    from engine.trace_model import TraceModel
+    evs = [
+        # rx: xi @hop22/addr0, xq @hop22/addr1
+        {"time_ns": 10, "kind": "port_injection", "port_name": "x16_in",
+         "dest": 0, "target_hop": 22, "data": 100, "cell_id": 0},
+        {"time_ns": 12, "kind": "port_injection", "port_name": "x16_in",
+         "dest": 1, "target_hop": 22, "data": 101, "cell_id": 0},
+        # tx: bit @hop29/addr1 — SAME dest=1 as rx-xq, but DIFFERENT hop.
+        {"time_ns": 14, "kind": "port_injection", "port_name": "x16_in",
+         "dest": 1, "target_hop": 29, "data": 1, "cell_id": 0},
+    ]
+    m = TraceModel()
+    m.ingest(0, evs, width=10)
+    keys = {k for k in m.port_streams_by_tag() if k[1] == "x16_in"}
+    # THREE distinct input streams, not two — the hop separates the addr-1 collision.
+    assert keys == {(0, "x16_in", (22, 0)),
+                    (0, "x16_in", (22, 1)),
+                    (0, "x16_in", (29, 1))}, keys
+
+
 def test_port_streams_by_tag_demux():
     m = TraceModel()
     # x16_in carries two interleaved channels (tag 0 = xi, tag 1 = xq).

@@ -105,6 +105,18 @@ _PROMOTED = {"time_ns", "cell_id", "kind", "face", "word", "data", "pc",
              "hop_cnt", "dest", "port_name", "data_raw"}
 
 
+def _tag_sort_key(d):
+    """Total order over per-stream tags, which may be None (untagged), an int
+    (output tag / dest-only input), or a (hop, dest) tuple (input stream). Sorts
+    None last; ints before tuples; each group by natural order — so a mixed set
+    (output ints + input tuples) never raises on comparison."""
+    if d is None:
+        return (2,)
+    if isinstance(d, tuple):
+        return (1,) + tuple(int(x) for x in d)
+    return (0, int(d))
+
+
 def _normalize(ev: dict, chip: int, width: int) -> Transaction:
     cid = ev.get("cell_id")
     if cid is None:
@@ -253,12 +265,16 @@ class TraceModel:
                     (t.time_ns, val))
         return streams
 
-    def _port_tag(self, t) -> int | None:
+    def _port_tag(self, t):
         """The per-stream tag of a port event.
 
-        INPUT injection: its own ``dest`` (the target data address the word was
-        written to — e.g. an I/Q port's xi @0 vs xq @1), else the JUMP
-        ``entry_address`` that triggered the inject.
+        INPUT injection: keyed by ``(target_hop, dest)`` — BOTH the hop count (which
+        cell along the shared input port the word routes to) and the dest (which
+        register) together determine stream identity, exactly as the hardware
+        routes it. Two streams sharing one input port can collide on ``dest`` alone
+        (e.g. rx-xq @hop22/addr1 vs tx-bit @hop29/addr1) but are DISTINCT by hop.
+        When the hop isn't recorded (older trace), falls back to ``dest`` alone.
+        Else the JUMP ``entry_address`` that triggered the inject.
 
         OUTPUT capture: the capture event itself carries NO dest (simkyt doesn't
         record it), so we look up the WRITE ``dest`` of the co-located
@@ -266,6 +282,11 @@ class TraceModel:
         cell — that IS the output net's tag (e.g. RX-bits vs TX-passband on one
         shared output port). ``None`` when no tag is recoverable — a single
         untagged stream."""
+        if t.kind == KIND_PORT_IN and t.dest is not None:
+            hop = t.detail.get("target_hop")
+            if hop is not None:
+                return (int(hop), int(t.dest))   # (hop, dest) = stream identity
+            return t.dest                        # older trace: dest only
         if t.dest is not None:
             return t.dest
         if t.kind == KIND_PORT_OUT:
@@ -282,7 +303,7 @@ class TraceModel:
         picker when a port is dragged to the waveform viewer."""
         tags = {key[2] for key in self.port_streams_by_tag()
                 if key[0] == chip and key[1] == port}
-        return sorted(tags, key=lambda d: (d is None, d))
+        return sorted(tags, key=_tag_sort_key)
 
     def register_stream(self, chip: int, x: int, y: int,
                         addr: int) -> list[tuple[float, int]]:

@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from engine.trace_model import _tag_sort_key
 from ui.widgets.waveform_view import WaveformRuler, WaveformView
 
 
@@ -189,7 +190,7 @@ class WaveformPanel(QWidget):
             new_tags = cur_tags - seeded
             if not new_tags:
                 continue
-            for tag in sorted(new_tags, key=lambda d: (d is None, d)):
+            for tag in sorted(new_tags, key=_tag_sort_key):
                 if (chip, port, tag) not in shown:
                     self.add_port_trace(chip, port, tag)
             # Record the FULL current tag-set as seeded (so removed tags aren't
@@ -239,7 +240,14 @@ class WaveformPanel(QWidget):
                 name = None
         if tag is None:
             return name or "all words"
-        return f"{name} (tag {tag})" if name else f"tag {tag}"
+        # An input stream tag is a (hop, dest) pair; render it as "hop H addr A"
+        # so a shared-input-port duplex shows e.g. rx-xi "hop 22 addr 0", rx-xq
+        # "hop 22 addr 1", tx-bit "hop 29 addr 1" — distinct + human-readable.
+        if isinstance(tag, tuple) and len(tag) == 2:
+            desc = f"hop {tag[0]} addr {tag[1]}"
+        else:
+            desc = f"tag {tag}"
+        return f"{name} ({desc})" if name else desc
 
     def _port_tag_stream(self, chip, port, tag):
         if self._model is None:

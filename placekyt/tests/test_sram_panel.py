@@ -156,7 +156,7 @@ class _FakeChip:
         self.injected.append((port, samples, entry))
 
 
-class TestMycelisimPortApi:
+class TestSimkytPortApi:
     """The simkyt API additions that the host panel relies on
     (read_port_words_timed / read_port_jumps). Proven against a real chip:
     a cell emits a WRITE out a port and the host drains it with value + dest +

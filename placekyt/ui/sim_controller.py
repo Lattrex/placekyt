@@ -361,10 +361,19 @@ class SimController(QObject):
             return self._gr_server.bound_port
 
         result = self.app.build()
-        if not result.ok:
+        project = self.app.project
+        # FOOLPROOF: enabling the server BEFORE importing a design must still bind
+        # the port. On an empty project (no chip yet) the build fails only because
+        # there is nothing to place — NOT a real design error. Host a placeholder
+        # chip of the default type so GRC can connect to :58950 right now; the
+        # first batch after the user imports triggers _rebuild_if_dirty_threadsafe,
+        # which rebuilds the now-routed chip and re-resolves stream_targets. This
+        # makes the enable-server-then-import order produce the SAME result as
+        # import-then-enable (order independence — the user's requirement).
+        empty_project = len(project.chips) == 0
+        if not result.ok and not empty_project:
             self.state_changed.emit(f"error: {len(result.errors)} DRC error(s)")
             return None
-        project = self.app.project
         if len(project.chips) > 1:
             self.state_changed.emit("error: GNURadio server is single-chip only")
             return None
@@ -377,6 +386,12 @@ class SimController(QObject):
         chip0 = project.chip(0)
         type_name = (chip0.type_name if chip0 and chip0.type_name
                      else project.chip_type)
+        if not type_name:
+            # Empty-project placeholder (server enabled before import): no chip
+            # exists yet, so host the registry's default type. The real design
+            # replaces it on the first post-import batch (dirty-rebuild).
+            known = self.app.registry.names()
+            type_name = "kyttar_10x12" if "kyttar_10x12" in known else known[0]
         entry = self.app.registry.require(type_name)
         self._width = entry.chip_type.width
         self._multi = False
@@ -393,7 +408,11 @@ class SimController(QObject):
         # only when the live design_version moves past it (i.e. an edit happened).
         self._hosted_design_version = getattr(self.app.project, "design_version", 0)
         self._sim_chip = chip0.id if chip0 else 0
-        cfg = self._input_port_config(self._sim_chip)
+        # Empty-project placeholder: there is no design to resolve injection
+        # targets for yet. Skip port-config + stream_targets resolution (they
+        # would fail on the absent chip type) — the first post-import batch's
+        # dirty-rebuild re-resolves EVERYTHING against the real design.
+        cfg = None if empty_project else self._input_port_config(self._sim_chip)
         default_entries: dict[str, int] = {}
         default_hops: dict[str, int] = {}
         if cfg is not None:
@@ -417,9 +436,9 @@ class SimController(QObject):
         # their own block over the bridge. Single-stream nets (no stream_id) are
         # skipped here and use the default_entries/default_hops path above.
         from engine.port_config import stream_targets as _stream_targets_fn
-        stream_targets = _stream_targets_fn(
+        stream_targets = ({} if empty_project else _stream_targets_fn(
             self.app.project, self.app.registry, self.app.catalog, self._sim_chip,
-            build_result=result)
+            build_result=result))
         # PACKET-BOUNDARY LOOP-MEMORY RESET: resolve the per-batch state resets from
         # the SAME build result (mirrors stream_targets). The build derived them from
         # the placed design's ``reset_per_batch`` StateVars; the SimServer cold-starts
@@ -427,7 +446,8 @@ class SimController(QObject):
         # persistently-hosted chip each recover a fresh packet from a cold receiver
         # (Costas/Gardner/matched-filter loops) instead of the previous packet's lock.
         from engine.port_config import batch_reset_writes as _batch_reset_writes_fn
-        reset_writes = _batch_reset_writes_fn(result, self._sim_chip)
+        reset_writes = ([] if empty_project
+                        else _batch_reset_writes_fn(result, self._sim_chip))
         # OBSERVABILITY: report what the server resolved at start-up. An EMPTY map
         # is why a duplex run injects at the entry=0/hop=30 single-stream fallback
         # and gets 0 words — it means no x16_in→block input net carried a stream_id

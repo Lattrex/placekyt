@@ -109,6 +109,68 @@ class BatchSessionTests(unittest.TestCase):
         self.assertIsNot(rx, tx)
         self.assertIs(rx, self.bs.get_session("dev", "rx"))
 
+    def test_duplex_rendezvous_sends_one_combined_rpc(self):
+        """The DuplexRendezvous coordinates BOTH stream sources into ONE
+        process_batch_duplex RPC carrying both streams (so they run interleaved on
+        the server), and splits the reply back per stream. Two source threads
+        submit tx + rx; a tiny fake server verifies a single duplex RPC arrived
+        with both streams and replies per-stream words."""
+        import json
+        import socket
+        import struct
+        import threading as _th
+
+        HDR = struct.Struct(">I")
+        received = {}
+
+        def _fake_server(sock):
+            conn, _ = sock.accept()
+            hlen = HDR.unpack(conn.recv(4))[0]
+            header = json.loads(conn.recv(hlen).decode())
+            n = int(header.get("n", 0))
+            if n:
+                need = n * 4
+                buf = b""
+                while len(buf) < need:
+                    buf += conn.recv(need - len(buf))
+            received["header"] = header
+            # Reply: 2 words for tx, 3 for rx (lengths + concatenated payload).
+            out = np.array([10, 11, 20, 21, 22], dtype="<f4")
+            rhdr = {"ok": True, "lengths": [2, 3],
+                    "stream_ids": ["tx", "rx"], "n": int(out.size)}
+            hb = json.dumps(rhdr).encode()
+            conn.sendall(HDR.pack(len(hb))); conn.sendall(hb)
+            conn.sendall(out.tobytes())
+            conn.close()
+
+        srv = socket.socket(); srv.bind(("127.0.0.1", 0)); srv.listen(1)
+        host, port = srv.getsockname()
+        t = _th.Thread(target=_fake_server, args=(srv,), daemon=True); t.start()
+
+        rv = self.bs.get_rendezvous("dev-duplex")
+        results = {}
+
+        def _submit(sid, samples, cplx):
+            results[sid] = rv.submit(host, port, sid, samples,
+                                     complex_=cplx, raw=True, collect_window=0.3)
+
+        tx_t = _th.Thread(target=_submit, args=("tx", np.array([1.0, 0.0]), False))
+        rx_t = _th.Thread(target=_submit,
+                          args=("rx", np.array([0.5 + 0j, 0.5 + 0j, 0.5 + 0j]), True))
+        tx_t.start(); rx_t.start()
+        tx_t.join(timeout=5); rx_t.join(timeout=5)
+        t.join(timeout=5)
+        srv.close()
+
+        # ONE combined RPC carrying BOTH streams.
+        self.assertIn("header", received)
+        self.assertEqual(received["header"]["op"], "process_batch_duplex")
+        sids = {s["stream_id"] for s in received["header"]["streams"]}
+        self.assertEqual(sids, {"tx", "rx"})
+        # Each stream got ITS OWN words back (split by lengths).
+        self.assertEqual(list(results["tx"]), [10.0, 11.0])
+        self.assertEqual(list(results["rx"]), [20.0, 21.0, 22.0])
+
 
 if __name__ == "__main__":
     unittest.main()

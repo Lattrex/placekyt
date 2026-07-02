@@ -608,6 +608,8 @@ class SimServer:
                          "samples_per_sec": sps, "aborted": aborted,
                          "out_tag": out_tag, "stream_id": stream_id},
                         np.asarray(out_vals, dtype="<f4"))
+            if op == "process_batch_duplex":
+                return self._process_batch_duplex(header, payload)
             if op == "output_available":
                 return {"ok": True, "available":
                         int(self._chip.output_available(port))}, None
@@ -643,3 +645,149 @@ class SimServer:
             return {"ok": False, "error": f"unknown op {op!r}"}, None
         except Exception as exc:  # noqa: BLE001 — surface to the client
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}, None
+
+    def _process_batch_duplex(self, header: dict, payload):
+        """TRUE FULL-DUPLEX batch: run TWO+ streams CONCURRENTLY on the shared
+        input port, INTERLEAVED sample-by-sample, so both chains advance on the
+        array at the same sim-time and the shared output port emits both streams'
+        words interleaved (demuxed by out_tag). This is what a full-duplex modem
+        actually is — NOT the previous behaviour where each stream's whole burst
+        ran to completion before the next started (tx-then-rx, 1.7M ns apart).
+
+        header:
+          streams: [{stream_id, complex(bool), raw(bool), n_samples}]  — in order.
+        payload: every stream's float32 samples concatenated in stream order; a
+          complex stream contributes 2*n_samples floats (xi,xq interleaved), a
+          real stream n_samples floats.
+
+        reply payload: every stream's recovered words concatenated in stream order
+          (float32); reply header ``lengths`` gives each stream's word count so the
+          client can split them. Each stream's out_tag demuxes its own words.
+        """
+        streams_hdr = list(header.get("streams") or [])
+        if not streams_hdr:
+            return {"ok": False, "error": "process_batch_duplex: no streams"}, None
+        # A duplex batch IS one whole Run (all streams in one RPC) → signal a new
+        # Run once so the host resets the waveform trace for it.
+        if self._on_new_run is not None:
+            try:
+                self._on_new_run()
+            except Exception:  # noqa: BLE001
+                pass
+        # Fresh-build guard + loop-memory reset, ONCE for the whole duplex run.
+        if self._on_before_batch is not None:
+            new_chip, err = self._on_before_batch()
+            if err is not None:
+                return {"ok": False, "error": str(err)}, None
+            if new_chip is not None:
+                self._chip = new_chip
+        grc_params = header.get("grc_params")
+        if grc_params and self._on_grc_params is not None:
+            self._on_grc_params(dict(grc_params))
+        self._apply_batch_reset()
+
+        data = np.asarray(payload, dtype="<f4") if payload is not None else np.array([])
+        # Resolve each stream's injection landing + slice its samples out of the
+        # concatenated payload.
+        streams = []
+        off = 0
+        for sh in streams_hdr:
+            sid = sh.get("stream_id")
+            is_complex = bool(sh.get("complex", True))
+            raw = bool(sh.get("raw", False))
+            n = int(sh.get("n_samples", 0))
+            width = 2 * n if is_complex else n
+            seg = data[off:off + width]
+            off += width
+            # Server is the source of truth for a KNOWN stream's placement.
+            entry = int(self._default_entries.get("x16_in", 0)) & 0xFF
+            hop = int(self._default_hops.get("x16_in", 30)) & 0x1F
+            a0, a1, out_tag, in_name = 0, 1, None, "x16_in"
+            if sid and sid in self._stream_targets:
+                tgt = self._stream_targets[sid]
+                entry = int(tgt["entry_addr"]) & 0xFF
+                hop = int(tgt["hop_count"]) & 0x1F
+                das = list(tgt.get("data_addrs") or [])
+                if das:
+                    a0 = das[0]
+                    a1 = das[1] if len(das) > 1 else a0 + 1
+                in_name = tgt.get("in_port", in_name)
+                out_tag = tgt.get("out_tag")
+            streams.append({
+                "sid": sid, "complex": is_complex, "raw": raw, "n": n,
+                "seg": seg, "entry": entry, "hop": hop, "a0": a0, "a1": a1,
+                "out_tag": out_tag, "out": [], "port": header.get("port", "x16_out"),
+            })
+
+        mx = int(header.get("max_events_per", 40000))
+        n_max = max((s["n"] for s in streams), default=0)
+        _t0 = time.perf_counter()
+        # ROUND-ROBIN by sample index: at each step k, drive stream 0's sample k,
+        # then stream 1's sample k, … so all chains advance together. A stream that
+        # has run out of samples is skipped. Output is drained after EACH stream's
+        # step and demuxed by out_tag into that stream's bucket (other tags parked
+        # in _tag_buf and swept up whenever their owning stream drains).
+        for k in range(n_max):
+            for s in streams:
+                if k >= s["n"]:
+                    continue
+                seg = s["seg"]
+                hop, a0, a1, entry = s["hop"], s["a0"], s["a1"], s["entry"]
+                if s["complex"]:
+                    xi = _float_to_q15(float(seg[2 * k]))
+                    xq = _float_to_q15(float(seg[2 * k + 1]))
+                else:
+                    xi = (_float_to_raw_i16(float(seg[k])) if s["raw"]
+                          else _float_to_q15(float(seg[k])))
+                    xq = None
+                self._chip.inject_data_physical([xi], target_hop_cnt=hop,
+                                                target_addr=int(a0))
+                self._chip.run(max_events=3000)
+                if xq is not None:
+                    self._chip.inject_data_physical([xq], target_hop_cnt=hop,
+                                                    target_addr=int(a1))
+                    self._chip.run(max_events=3000)
+                self._chip.inject_jump_physical(target_hop_cnt=hop, entry_addr=entry)
+                self._chip.run(max_events=mx)
+                # Drain + demux by tag into EACH stream's bucket.
+                for (v, d, _t) in self._chip.read_port_words_timed(s["port"]):
+                    dst = None
+                    for s2 in streams:
+                        if s2["out_tag"] is not None and int(d) == int(s2["out_tag"]):
+                            dst = s2
+                            break
+                    if dst is not None:
+                        dst["out"].append(float(int(v) & 0xFFFF) if dst["raw"]
+                                          else _q15_to_float(int(v)))
+                    else:
+                        self._tag_buf.setdefault(int(d), []).append(int(v))
+        # Sweep any parked words that belong to a stream (late/ordering).
+        for s in streams:
+            if s["out_tag"] is not None:
+                for v in self._tag_buf.pop(int(s["out_tag"]), []):
+                    s["out"].append(float(int(v) & 0xFFFF) if s["raw"]
+                                    else _q15_to_float(int(v)))
+
+        _dt = max(1e-9, time.perf_counter() - _t0)
+        out_all = []
+        lengths = []
+        for s in streams:
+            out_all.extend(s["out"])
+            lengths.append(len(s["out"]))
+        if os.environ.get("KYTTAR_SERVER_QUIET") != "1":
+            import sys as _sys
+            summary = ", ".join(
+                f"{s['sid']}:{s['n']}in->{len(s['out'])}out(tag{s['out_tag']})"
+                for s in streams)
+            _sys.stderr.write(f"[placeKYT duplex] INTERLEAVED {summary}\n")
+            _sys.stderr.flush()
+        if self._on_activity is not None:
+            try:
+                self._on_activity(samples=n_max, seconds=_dt,
+                                  samples_per_sec=n_max / _dt)
+            except TypeError:
+                self._on_activity()
+        return ({"ok": True, "samples": n_max, "seconds": _dt,
+                 "lengths": lengths,
+                 "stream_ids": [s["sid"] for s in streams]},
+                np.asarray(out_all, dtype="<f4"))

@@ -164,7 +164,7 @@ class source(gr.sync_block):
         process_batch RPC; stash the recovered words for the matching sink."""
         if self._dispatched or not self._inbuf:
             return
-        from ._batch_session import get_session
+        from ._batch_session import get_rendezvous, get_session
         sess = get_session(self._device_id, self._stream_id)
         # OUTPUT representation: a COMPLEX-input block is a bit-packing receiver
         # (Costas/Gardner/slicer) whose recovered bit lives in the word LSB — it
@@ -172,12 +172,29 @@ class source(gr.sync_block):
         # REAL/float-input DSP block (gain, FIR, ...) emits a Q15 VALUE the sink
         # should rescale to float. So tie raw to complex: raw for the receiver
         # path, Q15-float for the value path.
-        out = sess.dispatch(self._server_host, self._server_port, self._inbuf,
-                            in_port=self._port_name, complex=self._complex_in,
-                            raw=self._complex_in, stream_id=self._stream_id)
+        if self._stream_id:
+            # DUPLEX: rendezvous with the other stream's source so BOTH bursts run
+            # INTERLEAVED on the shared input port in ONE process_batch_duplex RPC
+            # (not tx-whole-burst-then-rx, which put the streams ~1.7M ns apart on
+            # the chip clock). The rendezvous collects each stream, dispatches once,
+            # and returns THIS stream's recovered words; we stash them in the
+            # per-stream session so this stream's sink drains them as usual.
+            rv = get_rendezvous(self._device_id)
+            out = rv.submit(self._server_host, self._server_port, self._stream_id,
+                            self._inbuf, complex_=self._complex_in,
+                            raw=self._complex_in)
+            with sess._cv:            # deliver to this stream's sink
+                sess._result = out
+                sess._seq += 1
+                sess._cv.notify_all()
+        else:
+            out = sess.dispatch(self._server_host, self._server_port, self._inbuf,
+                                in_port=self._port_name, complex=self._complex_in,
+                                raw=self._complex_in, stream_id=self._stream_id)
         self._dispatched = True
         print(f"[kyttar.source] SERVER-BATCH: sent {len(self._inbuf)} samples "
-              f"-> {len(out)} recovered (one process_batch RPC)", flush=True)
+              f"-> {len(out)} recovered ({'duplex' if self._stream_id else 'single'} RPC)",
+              flush=True)
 
     def work(self, input_items, output_items):
         """Process samples - write to chip input port with TRUE PIPELINING.

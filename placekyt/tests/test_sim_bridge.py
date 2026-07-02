@@ -81,6 +81,82 @@ class BatchFakeChip:
         return out
 
 
+class DuplexFakeChip:
+    """Chip stand-in for process_batch_duplex. Records the ORDER of injections
+    (by target_addr) so a test can prove the two streams were INTERLEAVED, not
+    run one-then-the-other. Each JUMP emits ONE tagged output word whose dest =
+    the entry_addr of the jump (so stream tx@entry=10 → tag 10, rx@entry=5 →
+    tag 5 — the test resolves out_tag to match)."""
+    def __init__(self):
+        self.inject_order = []     # list of target_addr, in injection order
+        self._pending_tag = None
+        self._words = []           # (value, dest, t)
+        self._t = 0
+
+    def inject_data_physical(self, vals, target_hop_cnt, target_addr):
+        self.inject_order.append(int(target_addr))
+        self._pending_val = int(vals[0]) & 0xFFFF
+
+    def inject_jump_physical(self, target_hop_cnt, entry_addr):
+        self._pending_tag = int(entry_addr)
+
+    def run(self, max_events):
+        if self._pending_tag is not None:
+            self._words.append((getattr(self, "_pending_val", 0) & 0xFFFF,
+                                self._pending_tag, self._t))
+            self._t += 1
+            self._pending_tag = None
+
+    def read_port_words_timed(self, port):
+        out = list(self._words); self._words = []
+        return out
+
+
+def test_process_batch_duplex_interleaves_streams():
+    """process_batch_duplex must run the streams INTERLEAVED sample-by-sample
+    (tx sample 0, rx sample 0, tx 1, rx 1, …) — NOT tx-whole-burst then
+    rx-whole-burst. This is the real full-duplex behaviour: both chains advance
+    on the shared array at the same sim-time. We give tx data_addr 5 and rx
+    data_addr 7 so the recorded injection ORDER reveals the interleave, and give
+    each stream its own out_tag so both streams' words come back demuxed."""
+    chip = DuplexFakeChip()
+    # entry == out_tag here so the fake's per-jump tag matches the resolved out_tag.
+    targets = {
+        "tx": {"entry_addr": 10, "hop_count": 29, "data_addrs": [5], "out_tag": 10,
+               "in_port": "x16_in"},
+        "rx": {"entry_addr": 5, "hop_count": 22, "data_addrs": [7], "out_tag": 5,
+               "in_port": "x16_in"},
+    }
+    srv = SimServer(chip, stream_targets=targets)
+    p = srv.start()
+    try:
+        c = _client(p)
+        # tx: 3 REAL raw samples; rx: 3 REAL samples. Concatenated payload.
+        tx = np.array([1.0, 0.0, 1.0], dtype=np.float32)
+        rx = np.array([0.5, 0.5, 0.5], dtype=np.float32)
+        payload = np.concatenate([tx, rx]).astype(np.float32)
+        send_message(c, {"op": "process_batch_duplex", "port": "x16_out",
+                         "streams": [
+                             {"stream_id": "tx", "complex": False, "raw": True,
+                              "n_samples": 3},
+                             {"stream_id": "rx", "complex": False, "raw": True,
+                              "n_samples": 3},
+                         ]}, payload)
+        reply, out = recv_message(c)
+        c.close()
+    finally:
+        srv.stop()
+    assert reply["ok"], reply
+    # INTERLEAVE PROOF: injection order must alternate tx(addr 5), rx(addr 7), …
+    # NOT [5,5,5,7,7,7] (which would be sequential burst-then-burst).
+    assert chip.inject_order == [5, 7, 5, 7, 5, 7], \
+        f"streams not interleaved: {chip.inject_order}"
+    # Both streams recovered their own words (lengths reported per stream).
+    assert reply["lengths"] == [3, 3], reply["lengths"]
+    assert reply["stream_ids"] == ["tx", "rx"]
+    assert len(out) == 6
+
+
 def _client(port):
     c = socket.socket()
     c.connect(("127.0.0.1", port))

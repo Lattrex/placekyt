@@ -30,6 +30,7 @@ import numpy as np
 _HDR = struct.Struct(">I")
 _LOCK = threading.Lock()
 _SESSIONS = {}   # (device_id, stream_id) -> BatchSession
+_RENDEZVOUS = {}  # device_id -> DuplexRendezvous
 
 
 def _default_block_name(placekyt_type):
@@ -57,6 +58,118 @@ def get_session(device_id, stream_id=""):
             s = BatchSession(device_id)
             _SESSIONS[key] = s
         return s
+
+
+def get_rendezvous(device_id):
+    """One DuplexRendezvous per chip device — coordinates the TX/RX sources of a
+    full-duplex flowgraph so they run INTERLEAVED on the shared input port in ONE
+    process_batch_duplex RPC (not tx-whole-burst-then-rx, which put the two
+    streams ~1.7M ns apart on the chip clock — see engine/sim_bridge duplex op)."""
+    with _LOCK:
+        r = _RENDEZVOUS.get(device_id)
+        if r is None:
+            r = DuplexRendezvous(device_id)
+            _RENDEZVOUS[device_id] = r
+        return r
+
+
+class DuplexRendezvous:
+    """Collects each source's burst for one Run, then dispatches ONE combined
+    process_batch_duplex so the streams run interleaved. Each source calls
+    :meth:`submit` with its stream_id + samples; the FIRST caller waits a short
+    window for the others, then (as leader) dispatches all collected streams and
+    stores each stream's recovered words for :meth:`take_result`.
+
+    Keyed by device_id (shared across streams), distinct from the per-stream
+    BatchSession (which still carries results to each sink)."""
+
+    def __init__(self, device_id):
+        self.device_id = device_id
+        self._cv = threading.Condition()
+        self._pending = {}       # stream_id -> submission dict (this Run)
+        self._results = {}       # stream_id -> recovered words (np.float32)
+        self._gen = 0            # bumped each dispatched Run
+        self._taken = {}         # stream_id -> last gen that stream drained
+        self._dispatching = False
+
+    def submit(self, host, port, stream_id, samples, complex_, raw,
+               collect_window=0.4):
+        """Register this stream's burst for the current Run. The leader (first in)
+        waits ``collect_window`` s for peers, then dispatches the combined duplex
+        RPC. Returns this stream's recovered words."""
+        with self._cv:
+            self._pending[str(stream_id)] = {
+                "stream_id": str(stream_id), "samples": np.asarray(samples),
+                "complex": bool(complex_), "raw": bool(raw),
+            }
+            leader = not self._dispatching
+            if leader:
+                self._dispatching = True
+        if leader:
+            # Give peer sources a moment to submit, then dispatch everything.
+            import time as _t
+            _t.sleep(collect_window)
+            self._dispatch_all(host, port)
+        # Wait for THIS run's results (leader has them; peers wait for the leader).
+        with self._cv:
+            g = self._taken.get(str(stream_id), 0)
+            while self._gen <= g or str(stream_id) not in self._results:
+                if not self._cv.wait(timeout=10.0):
+                    break
+                g = self._taken.get(str(stream_id), 0)
+            self._taken[str(stream_id)] = self._gen
+            return self._results.get(str(stream_id), np.array([], dtype=np.float32))
+
+    def _dispatch_all(self, host, port):
+        """Build + send ONE process_batch_duplex from all pending streams; split
+        the reply per stream into ``self._results``."""
+        with self._cv:
+            subs = list(self._pending.values())
+            self._pending = {}
+        # Build header stream list + concatenated payload (stream order preserved).
+        streams_hdr = []
+        parts = []
+        for s in subs:
+            arr = np.asarray(s["samples"])
+            if s["complex"]:
+                iqc = arr.astype(np.complex64)
+                seg = np.empty(2 * len(iqc), dtype=np.float32)
+                seg[0::2] = iqc.real
+                seg[1::2] = iqc.imag
+                n = len(iqc)
+            else:
+                seg = np.real(arr).astype(np.float32)
+                n = len(seg)
+            parts.append(seg)
+            streams_hdr.append({"stream_id": s["stream_id"],
+                                "complex": s["complex"], "raw": s["raw"],
+                                "n_samples": int(n)})
+        payload = (np.concatenate(parts).astype(np.float32) if parts
+                   else np.array([], dtype=np.float32))
+        header = {"op": "process_batch_duplex", "port": "x16_out",
+                  "in_port": "x16_in", "streams": streams_hdr}
+        conn = socket.create_connection((host, int(port)))
+        try:
+            _send_message(conn, header, payload)
+            reply, out = _recv_message(conn)
+        finally:
+            conn.close()
+        if not reply.get("ok"):
+            raise RuntimeError(f"placeKYT SimServer error: {reply.get('error')}")
+        # Split the concatenated reply back per stream by the reported lengths.
+        lengths = list(reply.get("lengths") or [])
+        ids = list(reply.get("stream_ids") or [s["stream_id"] for s in streams_hdr])
+        out = (out if out is not None else np.array([], dtype=np.float32))
+        results = {}
+        off = 0
+        for sid, ln in zip(ids, lengths):
+            results[str(sid)] = np.asarray(out[off:off + ln], dtype=np.float32)
+            off += ln
+        with self._cv:
+            self._results = results
+            self._gen += 1
+            self._dispatching = False
+            self._cv.notify_all()
 
 
 def _recv_exactly(conn, n):

@@ -617,6 +617,24 @@ class SimController(QObject):
             return
         self._last_server_refresh = now
         chip = getattr(self, "_sim_chip", 0)
+        # Gated diagnostic (KYTTAR_TRACE_DEBUG=1) for the "empty on rerun" report:
+        # prints the decisive state of every server refresh so a Stop→Run cycle
+        # reveals exactly where run-2's trace is dropped (reset consumed but drain
+        # empty, chip trace already cleared, time origin, etc.).
+        import os as _os
+        if _os.environ.get("KYTTAR_TRACE_DEBUG") == "1":
+            import sys as _sys
+            try:
+                _n_chip = len(self.engine.chip.get_trace())
+            except Exception:  # noqa: BLE001
+                _n_chip = -1
+            _sys.stderr.write(
+                f"[TRACE_DBG] refresh force={force} full_capture={full_capture} "
+                f"pending_reset={self._pending_trace_reset} "
+                f"chip_trace_events={_n_chip} "
+                f"model_ports={len(self.trace_model.port_streams())} "
+                f"time_origin={self._trace_time_origin}\n")
+            _sys.stderr.flush()
 
         # SINGLE-WRITER: consume a pending trace reset HERE, on the GUI thread,
         # before draining/appending. A server-thread batch callback set the flag

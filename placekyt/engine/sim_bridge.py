@@ -294,6 +294,10 @@ class SimServer:
                     pass
 
     def _handle_client(self, conn: socket.socket) -> None:
+        import sys as _s
+        _s.stderr.write(f"[WAVE2 bridge] NEW CONNECTION from {conn.getpeername()!r} "
+                        f"→ firing on_new_run={self._on_new_run is not None}\n")
+        _s.stderr.flush()
         # A fresh connection = a new GRC "Run" (each Run restarts the flowgraph).
         # Signal it ONCE so the host can reset the waveform trace at the Run
         # boundary; the streams within this Run then accumulate.
@@ -306,7 +310,13 @@ class SimServer:
             try:
                 header, payload = recv_message(conn)
             except (ConnectionError, OSError):
+                import sys as _s2
+                _s2.stderr.write("[WAVE2 bridge] connection CLOSED\n"); _s2.stderr.flush()
                 return
+            import sys as _s3
+            _s3.stderr.write(f"[WAVE2 bridge] recv op={header.get('op')!r} "
+                             f"stream_id={header.get('stream_id')!r}\n")
+            _s3.stderr.flush()
             reply, out_payload = self._dispatch(header, payload)
             send_message(conn, reply, out_payload)
 

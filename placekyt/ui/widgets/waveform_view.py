@@ -291,11 +291,24 @@ class WaveformView(QWidget):
         """Refresh every DEMUXED port trace's samples via
         ``fetch(chip, port, tag) -> [(t,v)]`` (called on each live refresh so a
         demuxed port trace keeps up with the run, like register traces)."""
+        changed = False
         for s in self._streams:
             src = s.get("source", {})
             if src.get("type") == "port_tag":
                 s["samples"] = sorted(
                     fetch(src["chip"], src["port"], src["tag"]) or [])
+                changed = True
+        # RE-FIT the visible time window to the refreshed data. Without this, a
+        # DEMUXED port trace that already exists (so no add_port_trace / set_streams
+        # runs to fit) keeps the PREVIOUS Run's window: on a GRC Stop→Run the new
+        # Run's samples are re-based to a fresh 0-origin (per-Run time rebase), so
+        # the stale window no longer frames them and EVERY trace renders blank even
+        # though the model is fully populated (the reported "empty on every rerun"
+        # — confirmed: model held both output tags at t=0..2.45M, but the view
+        # still showed Run 1's window). Registers refresh the same way (no fit),
+        # but port-tag traces are the live GRC-run output, so fit here.
+        if changed:
+            self._fit_time_window()
 
     def register_sources(self) -> list[tuple]:
         """``(chip,x,y,addr)`` of every register trace (so the host can fetch

@@ -62,6 +62,9 @@ class _RetentionHarness:
         # (set by the batch path), not this field — kept only for the chip-cap.
         self._server_batch_retain_all = False
         self._last_server_refresh = 0.0
+        # GUI-thread single-writer trace-reset flag (consumed by
+        # refresh_debug_from_chip); no server-thread clear in this stub.
+        self._pending_trace_reset = False
         # signals the method emits — stub them out
         for name in ("cell_states", "cell_faces", "handshakes", "trace_updated",
                      "cell_state_refreshed"):

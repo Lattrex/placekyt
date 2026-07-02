@@ -193,6 +193,17 @@ class SimController(QObject):
         # the per-sample refreshes trimmed to the rolling window and only the tail
         # survived — the reported bug.)
         self._server_batch_retain_all = False
+        # SINGLE-WRITER TRACE OWNERSHIP: the TraceModel is mutated ONLY on the GUI
+        # thread (in refresh_debug_from_chip). The server-thread batch callbacks
+        # (_rebuild_if_dirty_threadsafe / _rehost_server_chip_threadsafe) must NOT
+        # touch it — they only REQUEST a reset by setting this flag. The next
+        # refresh_debug_from_chip (GUI thread) consumes the flag and clears the
+        # model there, so the clear and the subsequent append can never interleave
+        # across threads. This is the fix for the long-standing intermittent
+        # waveform display (server-thread clear() racing the GUI-thread append →
+        # partial / TX-only / delayed-then-late traces). A bool assignment is
+        # atomic under the GIL, so no lock is needed for this one-way flag.
+        self._pending_trace_reset = False
         # Host-side SRAM panel devices, registered in-fabric with the engine
         # (#193): run() self-pumps them. {panel_id: SramPanelDevice}; the chip
         # output ports feeding registered panels (for ack-pending checks).
@@ -575,6 +586,20 @@ class SimController(QObject):
             return
         self._last_server_refresh = now
         chip = getattr(self, "_sim_chip", 0)
+
+        # SINGLE-WRITER: consume a pending trace reset HERE, on the GUI thread,
+        # before draining/appending. A server-thread batch callback set the flag
+        # (it must not clear the TraceModel itself — that races this append and
+        # was the long-standing intermittent-display bug: partial / TX-only /
+        # delayed traces). Clearing here, in the same method that appends, means
+        # the clear and the append cannot interleave across threads. Done before
+        # the 0-event early-return so a reset is honoured even if this particular
+        # refresh drains nothing new (the model still drops the previous burst).
+        if self._pending_trace_reset:
+            self._pending_trace_reset = False
+            self.trace_model.clear()
+            self.trace_model.set_cursor(self.trace_model.latest_ns())
+            self.trace_updated.emit(self.trace_model)
 
         # INCREMENTAL window: the chip's max_records is a HARD CAP (it stops
         # recording when full, NOT a ring buffer), so we drain it each refresh —
@@ -1055,9 +1080,12 @@ class SimController(QObject):
         if cfg is not None:
             port_name, kw = cfg
             self.engine.configure_input_port(port_name, **kw)
-        # Clear the GUI-side rolling window + refresh throttle so the new run's
-        # fresh events aren't sorted behind / trimmed by the previous run's.
-        self.trace_model.clear()
+        # Request a trace reset (consumed on the GUI thread by the next
+        # refresh_debug_from_chip) so the new run's fresh events aren't sorted
+        # behind / trimmed by the previous run's. We are on the SERVER thread
+        # here, so we must NOT clear the TraceModel directly (that races the
+        # GUI-thread append — the intermittent-display bug); flag it instead.
+        self._pending_trace_reset = True
         self._last_server_refresh = 0.0
         # This rebuild used the current design → record its version so the
         # pre-batch dirty check doesn't redundantly rebuild on the next batch.
@@ -1099,9 +1127,10 @@ class SimController(QObject):
             # tens of seconds ("subsequent-run freeze"). The chip itself is
             # re-cold-started per batch by the server (inject + reset loop-memory),
             # so the previous run's trace is stale anyway — drop it so each Run
-            # shows only its own burst. Mirrors the clear on the reset/rebuild
-            # paths; safe on the server thread (the GUI reads via queued signals).
-            self.trace_model.clear()
+            # shows only its own burst. We are on the SERVER thread → REQUEST the
+            # reset (consumed on the GUI thread), never clear the TraceModel here
+            # (that races the GUI-thread append — the intermittent-display bug).
+            self._pending_trace_reset = True
             self._last_server_refresh = 0.0
             return None, None                      # design unchanged — fast path
         import sys, time as _t
@@ -1128,7 +1157,9 @@ class SimController(QObject):
         if cfg is not None:
             port_name, kw = cfg
             self.engine.configure_input_port(port_name, **kw)
-        self.trace_model.clear()
+        # SERVER thread → request the trace reset (the GUI thread clears it in the
+        # next refresh_debug_from_chip); never clear the TraceModel here.
+        self._pending_trace_reset = True
         self._last_server_refresh = 0.0
         self._hosted_design_version = cur_ver   # remember what we just hosted
         # RE-RESOLVE the per-stream injection targets + per-batch loop-memory resets

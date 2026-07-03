@@ -240,6 +240,12 @@ class TestSimMenu:
         w.canvas.apply_handshakes({"cells": [(0, 5, 0, "S")], "ports": []})
         assert all(c._flash.get("S") == 1.0 for c in top_items), \
             "every tied-top overlay must flash so the visible one lights"
+        # LIVE ARROW: the flashed transit face must also re-point each cell's arrow
+        # to that direction (the single-letter "S" must map to Face.SOUTH — using
+        # Face.from_str here silently no-ops, the 'arrows never follow' bug).
+        from model.enums import Face
+        assert all(c.face == Face.SOUTH for c in top_items), \
+            "the flashed transit face must re-point the cell's live arrow"
 
     def test_flash_decays_and_clears(self, controller):
         from ui.canvas.cell_item import CellItem

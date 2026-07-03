@@ -1150,16 +1150,19 @@ class ChipCanvas(QGraphicsView):
                 item.update()
 
     def _repoint_live_arrow(self, item, face_str: str) -> None:
-        """Point ``item``'s arrow at ``face_str`` (N/S/E/W) for the current word,
-        remembering the original so clear_sim_states restores it. Called from the
-        per-word flash so a cell's arrow tracks the live data direction — the same
-        mechanism as apply_cell_faces, but driven by the transit event's exit face
-        (which is per-word, so it catches direction changes the batch-level
-        cell_faces query misses)."""
-        from model.enums import Face
-        try:
-            new_face = Face.from_str(face_str)
-        except Exception:  # noqa: BLE001
+        """Point ``item``'s arrow at ``face_str`` (single-letter N/S/E/W, as the
+        flash steps carry) for the current word, remembering the original so
+        clear_sim_states restores it. Driven by the per-word transit exit face so
+        the arrow tracks live data direction — catching direction changes the
+        batch-level cell_faces query misses.
+
+        NB: the trace uses single-letter face codes; Face.from_str expects the
+        full word ("north"), so we map the LETTER directly (via the inverse of
+        _FACE_LETTERS) — using from_str here silently no-ops (the 'arrows never
+        follow the live direction' bug)."""
+        _letter_to_face = {v: k for k, v in _FACE_LETTERS.items()}
+        new_face = _letter_to_face.get(face_str)
+        if new_face is None:
             return
         if not hasattr(self, "_live_face_orig"):
             self._live_face_orig = {}

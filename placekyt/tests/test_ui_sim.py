@@ -224,6 +224,19 @@ class TestSimMenu:
             w.canvas._decay_flashes()
         assert not cell._flash  # fully decayed
 
+    def test_finish_animation_drains_queue_at_run_end(self, controller):
+        """When the run ends, finish_animation flushes ALL remaining queued flash
+        steps at once so the animation completes promptly (no words trickling out
+        for seconds after the sim stopped)."""
+        w = self._window(controller)
+        # Queue a backlog of per-word steps WITHOUT letting the timer drain them.
+        steps = [{"cells": [(0, i % 9 + 1, 0, "E")], "ports": []}
+                 for i in range(30)]
+        w.canvas._flash_queue.extend(steps)
+        assert len(w.canvas._flash_queue) == 30
+        w.canvas.finish_animation()
+        assert w.canvas._flash_queue == [], "run-end must flush the flash queue"
+
     def test_port_flashes_on_data_flow(self, controller):
         w = self._window(controller)
         port = next(p for p in w.canvas.port_items() if p.name == "x16_out")

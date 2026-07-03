@@ -1860,6 +1860,13 @@ class MainWindow(QMainWindow):
         self.act_run.setText("Pause" if state == "running" else "Run")
         if state in ("done", "idle") or state.startswith("error"):
             self._status_canvas.setText("Canvas: Edit")
+            # Run ENDED → flush any remaining queued flashes at once so the fabric
+            # animation completes promptly instead of trickling on after the sim
+            # stopped (the 'flashes keep flying around after it's done' symptom).
+            try:
+                self.canvas.finish_animation()
+            except Exception:  # noqa: BLE001
+                pass
 
     def _on_sim_metrics(self, m: dict) -> None:
         self._status_sim.setText(

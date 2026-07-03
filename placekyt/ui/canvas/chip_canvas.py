@@ -1267,20 +1267,35 @@ class ChipCanvas(QGraphicsView):
         if not self._flash_timer.isActive():
             self._flash_timer.start()
 
-    def _decay_flashes(self) -> None:
-        # (#194) First release queued per-word steps so consecutive words light
-        # sequentially — ONE step per tick normally. If the backlog is large (a
-        # fast run produced many words between frames), release several per tick
-        # so playback keeps pace with the run without lagging arbitrarily; small
-        # bursts (e.g. the SRAM demo's 6 packets) still roll one word per tick.
+    def finish_animation(self) -> None:
+        """The run has ENDED — flush every remaining queued flash step in one
+        final burst so the animation completes PROMPTLY instead of dribbling
+        words out for seconds after the sim already stopped (the reported
+        'flashes keep flying around after the run is done'). The flashes then
+        decay over the next few ticks and the timer stops. In LOCKSTEP mode the
+        chip only advances as the animation consumes it, so at run-end the queue
+        is already near-empty and this is a no-op — but a fast (non-lockstep) run
+        can leave a backlog, and this drains it at once."""
         if self._flash_queue:
-            # Slow speeds cap to a fixed number of words per tick (so individual
-            # transactions are visible); fast/default uses adaptive catch-up so
-            # playback never lags arbitrarily behind a fast run.
-            if self._flash_per_tick > 0:
-                n = self._flash_per_tick
-            else:
-                n = max(1, len(self._flash_queue) // 8)
+            steps, self._flash_queue = self._flash_queue, []
+            for step in steps:
+                self._flash_step(step)
+        # Ensure the decay timer is running so the just-lit flashes fade out and
+        # the timer stops itself once everything has decayed.
+        if any(it._flash for it in self.cell_items()):
+            self._ensure_flash_timer()
+
+    def _decay_flashes(self) -> None:
+        # Release queued per-word steps so consecutive words light SEQUENTIALLY —
+        # a rolling wave, one word-movement per tick at the slow end. The release
+        # rate is the animation speed (set by the slider via set_flash_per_tick);
+        # 0 means "one step per tick" (the faithful default). We deliberately do
+        # NOT do aggressive len//N catch-up here anymore: that dumped a big
+        # backlog all at once (the 'bunch of flashes flying around' look) and let
+        # the animation run on well past the sim. With lockstep the queue stays
+        # small; a fast non-lockstep run drains at run-end via finish_animation.
+        if self._flash_queue:
+            n = self._flash_per_tick if self._flash_per_tick > 0 else 1
             for _ in range(n):
                 if not self._flash_queue:
                     break

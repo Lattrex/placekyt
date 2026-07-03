@@ -155,10 +155,11 @@ def test_batch_refresh_signals_full_capture_from_the_first_sample():
     # server_activity is Signal(bool, bool) = (full_capture, force).
     # _activity: emit(batch_complete, batch_complete) → full_capture True for a
     #   finished batch AND force True (bypass throttle so a short 2nd stream lands).
-    # _on_sample: emit(True, False) → full_capture True (retain every mid-batch
-    #   refresh) but NOT forced (per-sample must stay throttled → no GUI freeze).
-    # The per-sample path's FIRST arg (full_capture) must be True.
-    assert any("server_activity.emit(True, False)" in e for e in emits), \
+    # _on_sample: emit(True, force) → full_capture ALWAYS True (retain every
+    #   mid-batch refresh); the force arg is False normally (throttled → no GUI
+    #   freeze) but True in lockstep (every animated sample must refresh). Either
+    #   way the FIRST arg (full_capture) is True.
+    assert any("server_activity.emit(True," in e for e in emits), \
         "the per-sample batch refresh must signal full_capture=True (first-run retention)"
     # No batch-path refresh may signal full_capture=False (would drop the batch
     # start). The only False literals allowed are the SECOND (force) arg.

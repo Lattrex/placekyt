@@ -138,8 +138,14 @@ class ChipCanvas(QGraphicsView):
         self._flash_queue: list = []
         # Per-word flash steps released per decay tick (#194 / speed control):
         # a positive value caps playback to that many words per tick (slow-motion
-        # at low speeds); 0 = adaptive catch-up (len//8). Set by the speed slider.
+        # at low speeds); 0 ⇒ one step per tick. Set by the speed slider.
         self._flash_per_tick = 0
+        # LOCKSTEP: an optional callback fired (on the GUI thread) the moment the
+        # flash queue drains to empty — i.e. the current sample's events have all
+        # been animated. The controller wires this to BatchDebugHooks.frame_done()
+        # so the chip advances one sample per animated frame-group (true lockstep;
+        # a stall then shows live). None ⇒ free-running animation (no gating).
+        self._on_flash_drained = None
 
         self._scale = 1.0
         self._project: Project | None = None
@@ -1177,6 +1183,7 @@ class ChipCanvas(QGraphicsView):
         light sequentially, not all-at-once. Falls back to the flat
         ``{"cells":…, "ports":…}`` form (one step) for old callers."""
         if not transfers:
+            self._notify_flash_drained()   # nothing to show → release lockstep
             return
         if isinstance(transfers, dict) and "steps" in transfers:
             steps = [s for s in transfers["steps"]
@@ -1189,14 +1196,33 @@ class ChipCanvas(QGraphicsView):
             steps = [{"cells": cell_xfers, "ports": port_xfers}] \
                 if (cell_xfers or port_xfers) else []
         if not steps:
+            self._notify_flash_drained()   # empty sample → release lockstep now
             return
         # Flash the FIRST step immediately (so a flash is observable right after
         # apply_handshakes, and a single-word frame behaves as before); the rest
         # are queued and the timer rolls them out one word per tick (#194).
         self._flash_step(steps[0])
         if len(steps) > 1:
+            # More than one step: the timer drains the rest and fires the drained
+            # callback when the queue empties (see _decay_flashes).
             self._flash_queue.extend(steps[1:])
-        self._ensure_flash_timer()
+            self._ensure_flash_timer()
+        else:
+            # Single step shown immediately → this sample is fully animated now;
+            # release the lockstep gate. Still ensure the timer runs so the flash
+            # decays and clears.
+            self._notify_flash_drained()
+            self._ensure_flash_timer()
+
+    def _notify_flash_drained(self) -> None:
+        """Fire the lockstep frame-done callback (if registered). Called when a
+        sample's flashes are fully shown — including the empty/single-step case
+        where the queue never becomes non-empty."""
+        if self._on_flash_drained:
+            try:
+                self._on_flash_drained()
+            except Exception:  # noqa: BLE001
+                pass
 
     def _flash_step(self, step) -> None:
         """Flash one per-word step: the cell exit faces + ports that transacted
@@ -1252,10 +1278,15 @@ class ChipCanvas(QGraphicsView):
         self._ensure_flash_timer()
 
     def set_flash_per_tick(self, n: int) -> None:
-        """Set how many per-word flash steps are released per decay tick (0 =
-        adaptive catch-up). Driven by the speed slider so the slow end shows
-        individual transactions one-at-a-time."""
+        """Set how many per-word flash steps are released per decay tick (0 ⇒ one
+        per tick). Driven by the speed slider so the slow end shows individual
+        transactions one-at-a-time."""
         self._flash_per_tick = max(0, int(n))
+
+    def set_flash_drained_callback(self, cb) -> None:
+        """Register a callback fired (GUI thread) when the flash queue drains to
+        empty — the lockstep frame-done signal. None disables gating."""
+        self._on_flash_drained = cb
 
     def _ensure_flash_timer(self) -> None:
         if self._flash_timer is None:
@@ -1294,12 +1325,17 @@ class ChipCanvas(QGraphicsView):
         # backlog all at once (the 'bunch of flashes flying around' look) and let
         # the animation run on well past the sim. With lockstep the queue stays
         # small; a fast non-lockstep run drains at run-end via finish_animation.
+        had_queue = bool(self._flash_queue)
         if self._flash_queue:
             n = self._flash_per_tick if self._flash_per_tick > 0 else 1
             for _ in range(n):
                 if not self._flash_queue:
                     break
                 self._flash_step(self._flash_queue.pop(0))
+        # LOCKSTEP frame-done: the moment the queue drains (this sample's events
+        # are all shown), release the chip to compute the next sample.
+        if had_queue and not self._flash_queue:
+            self._notify_flash_drained()
 
         still = bool(self._flash_queue)
         for it in self.cell_items():

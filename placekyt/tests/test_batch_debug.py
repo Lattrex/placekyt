@@ -133,3 +133,59 @@ def test_faulty_breakpoint_check_never_wedges():
     rec = []
     _drive(hooks, 3, recorder=rec)     # must not raise, must not hang
     assert rec == [0, 1, 2]
+
+
+def test_lockstep_blocks_each_sample_until_frame_done():
+    """In lockstep after_sample BLOCKS until frame_done(), so the loop advances
+    exactly ONE sample per frame_done() — the chip steps in sync with the GUI
+    animation (the debug instrument). after_sample(k) blocks BEFORE the driver
+    records k, so each frame_done releases the previously-run sample's record."""
+    hooks = BatchDebugHooks()
+    hooks.set_lockstep(True)
+    rec = []
+    t = threading.Thread(target=_drive, args=(hooks, 3), kwargs={"recorder": rec})
+    t.start()
+    time.sleep(0.15)
+    # after_sample(0) is blocking on the frame gate → nothing recorded yet.
+    assert rec == [], f"lockstep must block in after_sample, got {rec}"
+    hooks.frame_done()                 # animation showed sample 0 → release it
+    time.sleep(0.15)
+    assert rec == [0], f"one frame_done releases one sample, got {rec}"
+    hooks.frame_done()
+    time.sleep(0.15)
+    assert rec == [0, 1], f"got {rec}"
+    hooks.frame_done()                 # release sample 2; loop then ends
+    t.join(timeout=2)
+    assert not t.is_alive()
+    assert rec == [0, 1, 2]
+
+
+def test_lockstep_off_releases_waiter():
+    """Disabling lockstep mid-run (e.g. the user unchecks animation) releases any
+    blocked waiter so the burst never wedges."""
+    hooks = BatchDebugHooks()
+    hooks.set_lockstep(True)
+    rec = []
+    t = threading.Thread(target=_drive, args=(hooks, 3), kwargs={"recorder": rec})
+    t.start()
+    time.sleep(0.15)
+    assert rec == []                   # blocked in after_sample waiting for frame_done
+    hooks.set_lockstep(False)          # unlock → runs flat out
+    t.join(timeout=2)
+    assert not t.is_alive()
+    assert rec == [0, 1, 2]
+
+
+def test_lockstep_stop_aborts_while_waiting():
+    """A stop() while the lockstep loop is blocked aborts the burst (no hang)."""
+    hooks = BatchDebugHooks()
+    hooks.set_lockstep(True)
+    rec = []
+    t = threading.Thread(target=_drive, args=(hooks, 5), kwargs={"recorder": rec})
+    t.start()
+    time.sleep(0.15)
+    assert rec == []                   # blocked in after_sample(0)
+    hooks.stop()
+    t.join(timeout=2)
+    assert not t.is_alive()
+    assert rec == ["aborted"]

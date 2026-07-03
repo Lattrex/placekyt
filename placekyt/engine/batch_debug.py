@@ -58,6 +58,15 @@ class BatchDebugHooks:
         self._step = False
         self._stop_flag = False
         self._delay_s = 0.0
+        # LOCKSTEP: when on, after_sample BLOCKS after each sample until the GUI
+        # signals it has finished animating that sample's events (frame_done()).
+        # This makes the CHIP advance only as fast as the animation consumes it —
+        # true lockstep — so a stall is visible live (the fabric ceases to flow
+        # and the waveform stalls at the same instant the chip is stuck). A
+        # separate Condition so a frame_done() can't be lost against the pause CV.
+        self._lockstep = False
+        self._frame_cv = threading.Condition()
+        self._frame_ready = False
 
     # -- GUI-thread setters ---------------------------------------------------
 
@@ -84,10 +93,33 @@ class BatchDebugHooks:
         with self._cv:
             self._stop_flag = True
             self._cv.notify_all()
+        # Also wake a lockstep waiter (blocked on the separate frame CV) so a stop
+        # while the loop is waiting for the animation aborts promptly (no hang).
+        with self._frame_cv:
+            self._frame_cv.notify_all()
 
     def set_delay(self, seconds: float) -> None:
         with self._cv:
             self._delay_s = max(0.0, float(seconds))
+
+    def set_lockstep(self, on: bool) -> None:
+        """Enable/disable lockstep pacing (the GUI drives the chip one sample per
+        animated frame-group). Toggling OFF releases any waiter so the burst is
+        not wedged if the user disables animation mid-run."""
+        with self._frame_cv:
+            self._lockstep = bool(on)
+            if not on:
+                self._frame_ready = True
+                self._frame_cv.notify_all()
+
+    def frame_done(self) -> None:
+        """GUI signals it has finished animating the current sample's events —
+        release the server thread to compute the next sample. Idempotent: a spare
+        signal just pre-arms the next wait (harmless; the chip is paced by the
+        SLOWER of the two, which is what lockstep means)."""
+        with self._frame_cv:
+            self._frame_ready = True
+            self._frame_cv.notify_all()
 
     @property
     def is_paused(self) -> bool:
@@ -142,6 +174,23 @@ class BatchDebugHooks:
         # Speed pacing (slow-motion), outside the lock. Re-check stop after.
         if delay > 0.0:
             time.sleep(delay)
+            with self._cv:
+                if self._stop_flag:
+                    raise BatchAborted()
+
+        # LOCKSTEP: block until the GUI has finished animating THIS sample's
+        # events (frame_done()), so the chip advances only as fast as the fabric
+        # animation shows it. on_sample above already marshalled this sample's
+        # events to the GUI; we now wait for the animation to consume them. A
+        # bounded timeout keeps the burst from wedging permanently if the GUI
+        # never acks (e.g. window closed) — it degrades to free-running, never a
+        # hang. Re-check stop on wake.
+        if self._lockstep:
+            with self._frame_cv:
+                while not self._frame_ready and not self._stop_flag:
+                    if not self._frame_cv.wait(timeout=5.0):
+                        break  # GUI silent for 5 s → don't wedge; free-run
+                self._frame_ready = False
             with self._cv:
                 if self._stop_flag:
                     raise BatchAborted()

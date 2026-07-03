@@ -429,6 +429,11 @@ class MainWindow(QMainWindow):
         self.sim.cell_states.connect(self.canvas.apply_cell_states)
         self.sim.cell_faces.connect(self.canvas.apply_cell_faces)
         self.sim.handshakes.connect(self.canvas.apply_handshakes)
+        # LOCKSTEP: when the canvas finishes animating a sample's flashes it
+        # calls back here to release the GRC server's per-sample loop for the
+        # next sample — so (with animation on) the chip steps in lockstep with
+        # what's shown, and a stall is visible live. Runs on the GUI thread.
+        self.canvas.set_flash_drained_callback(self.sim.batch_frame_done)
         # Auto-load the running stimulus into the Disassembly panel (#195) +
         # live-highlight each injected word as it enters the chip (#196) +
         # stimulus-line breakpoints (#197).

@@ -240,6 +240,19 @@ class SimController(QObject):
         full-speed with no visual emission; ON ⇒ lockstep animated run. Changing
         it mid-run takes effect on the next frame/refresh."""
         self._animate_cells = bool(on)
+        # LOCKSTEP: when a GRC batch run is hosted, gate the server's per-sample
+        # loop on the animation so the chip steps in lockstep with what's shown.
+        # OFF ⇒ release any waiter so a mid-run toggle doesn't wedge the burst.
+        if self._batch_debug is not None:
+            self._batch_debug.set_lockstep(self._animate_cells)
+
+    def batch_frame_done(self) -> None:
+        """Called on the GUI thread (wired from the canvas flash-drained hook)
+        when the current sample's fabric animation has finished — release the
+        server's per-sample loop to compute the next sample. No-op unless a GRC
+        batch is hosted with lockstep active."""
+        if self._batch_debug is not None:
+            self._batch_debug.frame_done()
 
     def set_stimulus(self, stimulus, name: str | None = None) -> None:
         """Use a stimulus BITSTREAM (list of raw 16-bit words) for the next run,
@@ -555,17 +568,26 @@ class SimController(QObject):
             # and the user sees only the tail. Continuous streaming never calls
             # _on_sample (it uses write_port/run_until_output), so it stays
             # bounded — see test_live_trace_is_bounded_and_cycles.
-            # Per-sample refresh: full_capture=True but force=False — it MUST stay
-            # throttled. Forcing every per-sample refresh would re-touch the whole
-            # retained trace on the GUI thread every sample and reintroduce the
-            # ~30s subsequent-run freeze. Only the batch-complete refresh forces.
-            self.server_activity.emit(True, False)
+            # Per-sample refresh: full_capture=True. force is normally False so
+            # the refresh stays THROTTLED (forcing every sample would re-touch the
+            # whole retained trace each sample → the ~30s freeze). BUT in LOCKSTEP
+            # mode every sample must animate (the chip is blocked waiting for that
+            # sample's frame_done), so we FORCE the refresh — otherwise a throttled
+            # sample never calls apply_handshakes, frame_done never fires, and the
+            # chip stalls on the 5s lockstep timeout. Lockstep implies the chip is
+            # paced slowly anyway, so per-sample forced refreshes are affordable.
+            force = bool(self._animate_cells)
+            self.server_activity.emit(True, force)
             if paused:
                 self.state_changed.emit("paused")
 
         self._batch_debug = BatchDebugHooks(
             breakpoint_check=_bp_check, on_sample=_on_sample)
         self._batch_debug.set_delay(self._batch_debug_delay_for_speed())
+        # Lockstep the chip to the animation iff cell animation is on (see
+        # set_animate_cells). main_window wires the canvas flash-drained callback
+        # to self.batch_frame_done so each animated sample releases the next.
+        self._batch_debug.set_lockstep(self._animate_cells)
 
         # on_new_run fires ONCE per GRC "Run" (a fresh client connection). Reset
         # the waveform trace HERE (Run boundary), not per-batch — so the streams

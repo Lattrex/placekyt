@@ -232,6 +232,11 @@ def test_steps_from_events_includes_exec_and_arrival():
         {"kind": "instr_arrival", "cell_id": 5, "time_ns": 3.0,
          "face": "N", "exit_face": "E"},
         {"kind": "output_ready", "cell_id": 7, "time_ns": 4.0, "face": "S"},
+        # A word CONSUMED here (execute_locally, HOP_CNT==31): NO exit_face. It
+        # must NOT take the arrival face ("W") — that would point the arrow
+        # BACKWARD at the source. It becomes "exec" (whole-cell glow, no arrow).
+        {"kind": "instr_arrival", "cell_id": 8, "time_ns": 5.0,
+         "face": "W", "action": "execute_locally"},
     ]
     steps = s._steps_from_events(events, 0)
     all_cells = [c for st in steps for c in st["cells"]]
@@ -243,6 +248,11 @@ def test_steps_from_events_includes_exec_and_arrival():
     assert (0, 5, 0, "E") in all_cells, f"instr_arrival dropped: {all_cells}"
     # output_ready → exit face 'S'
     assert (0, 7, 0, "S") in all_cells, f"output_ready dropped: {all_cells}"
+    # consumed instr_arrival (no exit_face) → "exec", NEVER the arrival face "W".
+    assert (0, 8, 0, "exec") in all_cells, \
+        f"consumed word must be 'exec', not the arrival face: {all_cells}"
+    assert (0, 8, 0, "W") not in all_cells, \
+        "a consumed word must NEVER set the arrow to its arrival face (backward)"
 
 
 def test_animation_off_emits_no_visuals_but_still_runs():

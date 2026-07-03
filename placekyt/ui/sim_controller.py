@@ -874,10 +874,15 @@ class SimController(QObject):
         it only kept ``output_ready`` events carrying a ``face``):
           * ``output_ready`` → a word LEFT the cell on its exit ``face`` (the
             directional transit flash + arrow).
-          * ``data_arrival`` / ``instr_arrival`` → a word/instr transited THROUGH
-            the cell; use its ``exit_face`` (the forward direction) so the flash
-            points the way the word is going. This catches transit cells that
-            arrival-forward in the same instant without a separate output_ready.
+          * ``data_arrival`` / ``instr_arrival`` → use its ``exit_face`` (the
+            FORWARD direction) so the flash points the way the word is going —
+            this catches transit cells that arrival-forward in one instant.
+            ``exit_face`` is inherent cell state and is set on every FORWARD; it is
+            ABSENT only when the word is consumed here (``action==execute_locally``,
+            HOP_CNT==31). In that case there is NO output direction — we mark it
+            ``"exec"`` (whole-cell glow, no arrow) rather than fall back to the
+            ARRIVAL face, which would point the arrow BACKWARD toward the source
+            (the reported "arrow points at where the data came from" bug).
           * ``exec_tick`` → the cell's PC advanced (it EXECUTED). No face; marked
             with the sentinel face ``"exec"`` so the canvas shows a whole-cell
             execute glow (distinct from a directional transit).
@@ -895,11 +900,13 @@ class SimController(QObject):
             if kind == "output_ready" and cid is not None and ev.get("face"):
                 cell = (chip, cid % self._width, cid // self._width, ev["face"])
             elif kind in ("data_arrival", "instr_arrival") and cid is not None:
-                # Forward direction (where the word goes next); fall back to the
-                # arrival face so a consumed word still lights its cell.
-                face = ev.get("exit_face") or ev.get("face")
-                if face:
-                    cell = (chip, cid % self._width, cid // self._width, face)
+                # The word's FORWARD direction. NEVER the arrival face: a word that
+                # is consumed here (execute_locally) has no exit_face, and pointing
+                # the arrow back at where it came from is wrong — mark it "exec"
+                # (whole-cell glow, no directional arrow) instead.
+                exitf = ev.get("exit_face")
+                face = exitf if exitf else "exec"
+                cell = (chip, cid % self._width, cid // self._width, face)
             elif kind == "exec_tick" and cid is not None:
                 cell = (chip, cid % self._width, cid // self._width, "exec")
             elif kind in ("port_injection", "port_capture"):

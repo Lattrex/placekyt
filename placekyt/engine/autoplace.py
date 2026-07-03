@@ -487,6 +487,26 @@ class AutoPlacer:
             blk = blk_of[n]
             kind = self._orient_for(blk, True, n, out_pos, x, row_top)
             w, h = self._oriented_wh(blk, kind)
+            # FIT-DRIVEN ROTATION (D3): the flyline scorer leaves feedback blocks at
+            # identity, but a TALL folded feedback block (the 6-row ComplexMixer) can
+            # overflow the array height in its current band. Rotation is COMPUTE-SAFE —
+            # the build's ``_apply_orientation_face_words`` rotates the block's in-program
+            # ``MOVE [FACE], const`` words together with its cells, so a rotated feedback
+            # block computes bit-exactly (VERIFIED corr 1.0 through simKYT for ComplexMixer
+            # AND Gardner; the old "rotating Gardner breaks RX" was a since-fixed build
+            # bug). So when identity does NOT fit under this band but a 90° turn WOULD
+            # (h>w, the turn is shorter and still within width), rotate cw. Reactive +
+            # monotone: only ever SHRINKS a would-overflow block's height, never touches
+            # one that already fits — so it cannot destabilise a working layout (the
+            # coherent-RX/modem regressions confirm this). NOTE: this alone does not make
+            # an arbitrarily large design fit (a rotated block can then overflow WIDTH);
+            # co-optimising rotation with band-packing for very dense multi-tall-block
+            # designs (the full SSB-Weaver) is deeper placer work, tracked separately.
+            if (kind is None and self._has_internal_feedback(blk)
+                    and h > w and row_top + h > self._height
+                    and row_top + w <= self._height and w <= right - left):
+                kind = "cw"
+                w, h = self._oriented_wh(blk, kind)
             # A SINGLE-CELL terminal that drives the chip OUTPUT port (the slicer) is the
             # §5.3 in==out hazard: its bus input and its egress contend on its ONE cell.
             # The bus router can only split input-face != output-face if it abuts the
@@ -1245,14 +1265,19 @@ class AutoPlacer:
         # port; otherwise ESTIMATE it as the next anchor in the travel direction.
         consumer_in = self._out_port_of.get(name)
 
-        # A block with INTERNAL feedback/forwarding (a Costas/Gardner-style loop,
-        # the complex matched filter) hardcodes per-cell FACES in its assembly — a
-        # dual-face emit / feedback return rests at a SPECIFIC direction the build's
-        # feedback tracer follows. A D4 transform rotates the PortMap faces but NOT
-        # that hand-authored direction-specific program, so reorienting such a block
-        # silently breaks its loop (the RX recovers nothing). Restrict its search to
-        # IDENTITY — its layout was authored to fold I/O on its bus edge already, so
-        # we never need to rotate it (verified: rotating Gardner cw breaks RX BER).
+        # A block with INTERNAL feedback/forwarding (a Costas/Gardner-style loop, the
+        # complex matched filter, the ComplexMixer/IQUpconvert NCO fold) hardcodes
+        # per-cell FACES in its assembly. Its authored layout already folds I/O on its
+        # bus edge, and FLYLINE-driven reorientation only destabilises a working layout
+        # (a rotated Costas lands off-grid). So the flyline scorer leaves feedback blocks
+        # at IDENTITY. NOTE this is NOT because rotation breaks them — the build's
+        # ``_apply_orientation_face_words`` rotates their in-program ``MOVE [FACE]``
+        # constants together with the cells, so a rotated feedback block computes
+        # bit-exactly (VERIFIED corr 1.0 through simKYT for ComplexMixer + Gardner; the
+        # old "rotating Gardner breaks RX" was a since-fixed build bug). A FIT-DRIVEN
+        # rotation (rotate ONLY when identity would overflow the array height) is applied
+        # separately in the packer (``_fit_orient``), which is safe precisely because the
+        # rotation preserves compute — see ``_pack_compact``.
         if self._has_internal_feedback(blk):
             return None
         # The bus continues in the travel direction, so absent an exact consumer

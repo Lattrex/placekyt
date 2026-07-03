@@ -365,3 +365,76 @@ def test_placement_legality_detects_off_grid(catalog, chip_type):
     MoveBlockCommand(ctrl.project, a, 50, 0).execute()   # shove far off-grid
     ok, problems = ctrl._placement_legality(0)
     assert not ok and any("off the" in p for p in problems)
+
+
+# --------------------------------------------------------------------------- #
+# Rotation of internal-feedback blocks is COMPUTE-SAFE (the build rotates their
+# in-program `MOVE [FACE], const` words with the cells). This pins the fact that
+# the fit-driven rotation in the packer cannot corrupt a feedback block.
+# --------------------------------------------------------------------------- #
+
+def test_rotated_feedback_block_computes_identically(catalog, chip_type):
+    """A cw/ccw-rotated ComplexMixer computes BIT-IDENTICALLY to the unrotated one
+    through simKYT — so the placer may rotate a tall feedback block to fit."""
+    import numpy as np
+    import simkyt
+    from commands import TransformBlockCommand
+
+    fs, fsh, N = 32000.0, -3000.0, 40
+    n = np.arange(N)
+    xin = 0.6 * np.cos(2 * np.pi * 5000 / fs * n)
+
+    def f2q(v):
+        q = int(round(v * 32768)); return max(-32768, min(32767, q)) & 0xFFFF
+
+    def s16(v):
+        return v - 0x10000 if v & 0x8000 else v
+
+    def run(kind):
+        ctrl = AppController(catalog=catalog)
+        ctrl.new_project("m", "kyttar_10x12")
+        b = ctrl.place_block("ComplexMixerBlock", 0, 2, 2,
+                             library="lattrex.official",
+                             params={"sample_rate": fs, "frequency": fsh})
+        if kind:
+            TransformBlockCommand(ctrl.project, b, kind).execute()
+        ctrl.add_logical_connection(ChipPortEndpoint(chip=0, port="x16_in"),
+                                    BlockEndpoint(block=b, port="xi"), name="i")
+        ctrl.add_logical_connection(BlockEndpoint(block=b, port="yi"),
+                                    ChipPortEndpoint(chip=0, port="x16_out"),
+                                    name="o")
+        rep = ctrl.auto_route_all({"kyttar_10x12": chip_type}, auto_orient=False)
+        assert rep.ok, [(r.name, r.reason) for r in rep.failed]
+        bres = BuildEngine(catalog, str(CT_PATH)).build(
+            ctrl.project, {"kyttar_10x12": chip_type})
+        assert bres.ok
+        entry, ins = catalog.resolved_io("ComplexMixerBlock",
+                                         {"sample_rate": fs, "frequency": fsh})
+        land = ctrl.project.block(b).placement.cells[0]
+        port = chip_type.port("x16_in")
+        hop = max(0, 31 - (abs(land.x - port.cell_x)
+                           + abs(land.y - port.cell_y) + 1))
+        chip = simkyt.Chip.from_yaml(str(CT_PATH))
+        chip.load_bitstream_physical(bres.words(0))
+        chip.set_port_entry_address("x16_in", entry)
+        out = []
+        for v in xin:
+            chip.inject_data_physical([f2q(v)], target_hop_cnt=hop,
+                                      target_addr=ins[0])
+            chip.run(max_events=6000)
+            chip.inject_jump_physical(target_hop_cnt=hop, entry_addr=entry)
+            chip.run(max_events=120000)
+            while chip.output_available("x16_out"):
+                w = chip.read_port_i16("x16_out").view("uint16").tolist()
+                out += [s16(int(x) & 0xFFFF) for x in w]
+                chip.release_output_ack("x16_out")
+                chip.run(max_events=6000)
+        return np.array(out, float)
+
+    ref = run(None)
+    for kind in ("cw", "ccw"):
+        got = run(kind)
+        m = min(len(ref), len(got))
+        assert m > 10
+        corr = np.corrcoef(ref[:m], got[:m])[0, 1]
+        assert corr > 0.999, f"rotated({kind}) ComplexMixer diverged, corr={corr}"

@@ -103,16 +103,24 @@ def _route_cells_excluding_block(ctrl, block_name):
     return transit, in_adjacent, out_adjacent
 
 
-def _run_batch_capture(ctrl):
+def _run_batch_capture(ctrl, animate=True):
     """Host the built design on a real SimServer (the GUI server-batch path),
     drive a process_batch burst, and capture every handshake + cell_faces payload
     the SimController emits during the debug refresh. Returns
-    (handshake_payloads, face_payloads, output)."""
+    (handshake_payloads, face_payloads, output).
+
+    ``animate`` toggles the Enable-cell-animation state — the batch still runs and
+    produces output either way, but with animation OFF no handshake/face visuals
+    are emitted (the fast path)."""
     from PySide6.QtCore import Qt
     from engine.sim_bridge import send_message, recv_message
 
     app = _qapp()
     sim = SimController(ctrl)
+    # These tests assert the ANIMATED refresh (per-word handshake steps + live
+    # faces). Cell animation is OFF by default (the fast path emits no visuals),
+    # so enable it to exercise the animated path under test.
+    sim.set_animate_cells(bool(animate))
     hs_payloads: list = []
     face_payloads: list = []
     sim.handshakes.connect(lambda hs: hs_payloads.append(hs))
@@ -204,3 +212,18 @@ def test_batch_run_emits_live_faces_for_routing_cells():
         f"no live face for input-port-adjacent routing cell {in_adj}")
     assert out_adj in faced_xy, (
         f"no live face for output-port-adjacent routing cell {out_adj}")
+
+
+def test_animation_off_emits_no_visuals_but_still_runs():
+    """With cell animation OFF (the default), a batch run still produces output,
+    but the SimController emits NO handshake / cell_faces visuals — the fast path
+    with zero fabric-animation overhead."""
+    ctrl, _ct, _bn = _build_gain_chain()
+    hs_payloads, face_payloads, out = _run_batch_capture(ctrl, animate=False)
+    assert out, "the batch produced no output (chain did not run)"
+    assert not hs_payloads, (
+        "animation OFF must emit NO handshake steps (got "
+        f"{len(hs_payloads)} payloads)")
+    assert not face_payloads, (
+        "animation OFF must emit NO cell_faces (got "
+        f"{len(face_payloads)} payloads)")

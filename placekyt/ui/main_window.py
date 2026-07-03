@@ -283,7 +283,24 @@ class MainWindow(QMainWindow):
         tb.addWidget(self.step_mode)
         tb.addAction(self.act_sim_reset)
         tb.addSeparator()
-        tb.addWidget(_QLabel(" Speed "))
+        # ENABLE CELL ANIMATION (OFF by default). When OFF the run is full-speed
+        # with NO fabric animation (the speed slider is greyed out and the chip
+        # runs flat out). When ON the run steps in LOCKSTEP with the animation so
+        # every executing cell / transit / face change is shown as it happens (a
+        # debug instrument). The slider then paces that lockstep run.
+        from PySide6.QtWidgets import QCheckBox
+        self.animate_check = QCheckBox("Enable cell animation")
+        self.animate_check.setChecked(self.sim.animate_cells())
+        self.animate_check.setToolTip(
+            "OFF: run at full speed with no cell animation (least overhead).\n"
+            "ON: step the chip in lockstep with the animation so you can watch "
+            "each transaction fire and move across the fabric — the speed slider "
+            "paces it. Use this to spot stalls/deadlocks: the flow visibly stops "
+            "where the fabric is stuck.")
+        self.animate_check.toggled.connect(self._on_animate_toggled)
+        tb.addWidget(self.animate_check)
+        self._speed_label = _QLabel(" Speed ")
+        tb.addWidget(self._speed_label)
         self.speed_slider = QSlider(Qt.Horizontal)
         self.speed_slider.setMinimum(0)
         self.speed_slider.setMaximum(len(SPEED_BATCHES) - 1)
@@ -293,8 +310,9 @@ class MainWindow(QMainWindow):
         self.speed_slider.setTickInterval(1)
         self.speed_slider.setPageStep(1)
         self.speed_slider.setToolTip(
-            "Simulation speed — slide LEFT for slow-motion (watch individual "
-            "transactions fire one at a time), RIGHT for fast.")
+            "Animation speed — slide LEFT for slow-motion (watch individual "
+            "transactions fire one at a time), RIGHT for fast. Only active when "
+            "'Enable cell animation' is checked.")
         self.speed_slider.valueChanged.connect(self.sim.set_speed_index)
         tb.addWidget(self.speed_slider)
         # The flash playback rate follows the speed so the slow end shows one
@@ -302,6 +320,8 @@ class MainWindow(QMainWindow):
         self.sim.flash_rate.connect(self.canvas.set_flash_per_tick)
         # Apply the initial speed step (interval + flash rate) up front.
         self.sim.set_speed_index(DEFAULT_SPEED)
+        # Reflect the initial checkbox state (slider greyed out when OFF).
+        self._on_animate_toggled(self.animate_check.isChecked())
         # Mirror the run/step/reset actions into the Simulation menu.
         for act in (self.act_run, self.act_step, self.act_sim_reset):
             self._sim_menu.addAction(act)
@@ -322,6 +342,24 @@ class MainWindow(QMainWindow):
         self.scrubber.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         tl.addWidget(self.scrubber)
         self.addToolBar(tl)
+
+    def _on_animate_toggled(self, on: bool) -> None:
+        """Enable-cell-animation checkbox toggled. Push the state into the sim
+        controller and grey out the speed slider + its label when OFF (the slider
+        only paces the animated lockstep run; with no animation it does nothing).
+        When turning OFF mid-run, clear any lingering fabric visuals immediately."""
+        self.sim.set_animate_cells(bool(on))
+        for w in (getattr(self, "speed_slider", None),
+                  getattr(self, "_speed_label", None)):
+            if w is not None:
+                w.setEnabled(bool(on))
+        if not on:
+            # Drop any in-flight flashes/overlay so nothing lingers after the
+            # user disables animation.
+            try:
+                self.canvas.clear_sim_states()
+            except Exception:  # noqa: BLE001
+                pass
 
     # -- status bar -----------------------------------------------------------
 

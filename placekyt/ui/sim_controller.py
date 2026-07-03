@@ -221,6 +221,25 @@ class SimController(QObject):
         # Live trace window size (events kept in the rolling debug view) — user
         # configurable (Simulation → Live Window Size).
         self._live_trace_max = _LIVE_TRACE_MAX
+        # CELL ANIMATION (the "Enable cell animation" toolbar checkbox). OFF by
+        # default: the chip runs FLAT OUT and NO per-frame cell-state / face /
+        # handshake visuals are emitted (zero GUI overhead) — the fast path. When
+        # ON, the run steps in LOCKSTEP with the canvas animation clock so every
+        # executing cell, transit, and face change is shown faithfully as it
+        # happens (a debug instrument: a stall shows as the fabric ceasing to
+        # flow, live). The speed slider only matters (and is only enabled) when
+        # this is ON. See set_animate_cells / animate_cells.
+        self._animate_cells = False
+
+    def animate_cells(self) -> bool:
+        """Whether cell-execution/transit animation is enabled (toolbar checkbox)."""
+        return self._animate_cells
+
+    def set_animate_cells(self, on: bool) -> None:
+        """Enable/disable cell animation (the toolbar checkbox). OFF ⇒ the run is
+        full-speed with no visual emission; ON ⇒ lockstep animated run. Changing
+        it mid-run takes effect on the next frame/refresh."""
+        self._animate_cells = bool(on)
 
     def set_stimulus(self, stimulus, name: str | None = None) -> None:
         """Use a stimulus BITSTREAM (list of raw 16-bit words) for the next run,
@@ -713,38 +732,44 @@ class SimController(QObject):
             cap = self._live_trace_max
             trimmed = new_events[-cap:] if len(new_events) > cap else new_events
 
-        # Cell-state overlay + handshakes from THIS batch of new events.
-        states = self._states_from_events(new_events, chip)
-        self.cell_states.emit(states)
-        # Live output FACE for EVERY cell active this batch — block AND
-        # routing/transit/broker cells alike. Without this the canvas arrows stay
-        # frozen at the static build-resolved direction during a GRC batch run, so
-        # the port-adjacent routing cells never reflect the live forwarding
-        # direction (the reported "no face-arrow flipping" / "stuck in one
-        # direction" bug). The interactive timer path emits this every frame via
-        # _emit_single_chip_frame; the batch path must too.
-        active_xy = [(x, y) for (c, x, y) in states if c == chip]
-        if active_xy:
-            try:
-                faces = self.engine.cell_faces(self._width, cells=active_xy)
-                self.cell_faces.emit(
-                    {(chip, x, y): f for (x, y), f in faces.items()})
-            except Exception:  # noqa: BLE001 — engine without live-face read
-                pass
-        # Per-WORD handshake steps (NOT a single flat all-cells flash). Bucketed
-        # by sim-time so each word transiting the fabric — through the input-port
-        # routing cells, the block, and the output-port routing cells — flashes
-        # ONE AT A TIME (a rolling wave), exactly like the interactive path. The
-        # earlier flat form emitted every cell in one instant which, combined with
-        # the refresh throttle, collapsed to a single brief glow and read as "no
-        # activity" on the transit cells. The flat cells/ports union is kept for
-        # backward-compatible callers.
-        steps = self._steps_from_events(new_events, chip)
-        self.handshakes.emit({
-            "steps": steps,
-            "cells": [c for s in steps for c in s["cells"]],
-            "ports": [p for s in steps for p in s["ports"]],
-        })
+        # CELL ANIMATION (cell-state overlay + live faces + per-word transit
+        # flashes) ONLY when enabled. When OFF the GRC run is a flat-out compute
+        # pass: the trace/waveform still updates (below), but the canvas fabric
+        # visuals — the bulk of the per-refresh GUI cost — are skipped. See
+        # set_animate_cells.
+        if self._animate_cells:
+            # Cell-state overlay + handshakes from THIS batch of new events.
+            states = self._states_from_events(new_events, chip)
+            self.cell_states.emit(states)
+            # Live output FACE for EVERY cell active this batch — block AND
+            # routing/transit/broker cells alike. Without this the canvas arrows stay
+            # frozen at the static build-resolved direction during a GRC batch run, so
+            # the port-adjacent routing cells never reflect the live forwarding
+            # direction (the reported "no face-arrow flipping" / "stuck in one
+            # direction" bug). The interactive timer path emits this every frame via
+            # _emit_single_chip_frame; the batch path must too.
+            active_xy = [(x, y) for (c, x, y) in states if c == chip]
+            if active_xy:
+                try:
+                    faces = self.engine.cell_faces(self._width, cells=active_xy)
+                    self.cell_faces.emit(
+                        {(chip, x, y): f for (x, y), f in faces.items()})
+                except Exception:  # noqa: BLE001 — engine without live-face read
+                    pass
+            # Per-WORD handshake steps (NOT a single flat all-cells flash). Bucketed
+            # by sim-time so each word transiting the fabric — through the input-port
+            # routing cells, the block, and the output-port routing cells — flashes
+            # ONE AT A TIME (a rolling wave), exactly like the interactive path. The
+            # earlier flat form emitted every cell in one instant which, combined with
+            # the refresh throttle, collapsed to a single brief glow and read as "no
+            # activity" on the transit cells. The flat cells/ports union is kept for
+            # backward-compatible callers.
+            steps = self._steps_from_events(new_events, chip)
+            self.handshakes.emit({
+                "steps": steps,
+                "cells": [c for s in steps for c in s["cells"]],
+                "ports": [p for s in steps for p in s["ports"]],
+            })
 
         # Append the new events to the rolling TraceModel window, trim, clear the
         # chip trace (resets the hard cap so recording continues).
@@ -992,30 +1017,37 @@ class SimController(QObject):
 
     def _emit_single_chip_frame(self) -> None:
         chip = getattr(self, "_sim_chip", 0)
-        local = self.engine.cell_states(self._width)
-        states = {(chip, x, y): s for (x, y), s in local.items()}
-        self.cell_states.emit(states)
-        # Live output faces for the cells active this frame (the crossover and
-        # any MOVE [FACE] cell re-point at runtime → the arrow should follow).
-        faces = self.engine.cell_faces(self._width, cells=list(local.keys()))
-        self.cell_faces.emit({(chip, x, y): f for (x, y), f in faces.items()})
-        hs = self.engine.handshakes(self._width)
-        # Per-word steps (#194): each step is the cells+ports that transacted at
-        # one sim-time. The canvas plays them back one-at-a-time (rolling wave)
-        # rather than flashing the whole batch at once. Keep the flat cells/ports
-        # union for backward compatibility.
-        steps = [
-            {
-                "cells": [(chip, x, y, f) for (x, y, f) in s.get("cells", [])],
-                "ports": [(chip, p) for p in s.get("ports", [])],
-            }
-            for s in hs.get("steps", [])
-        ]
-        self.handshakes.emit({
-            "steps": steps,
-            "cells": [(chip, x, y, f) for (x, y, f) in hs["cells"]],
-            "ports": [(chip, p) for p in hs["ports"]],
-        })
+        # VISUAL EMISSION (cell-state colours, live face arrows, per-word transit
+        # flashes) ONLY when cell animation is enabled. When OFF the run is a
+        # flat-out compute pass: deriving/emitting these every frame is the bulk
+        # of the GUI overhead, and with nothing to show it is pure waste — skip it
+        # entirely (the metrics / injection / output drain below still run so the
+        # run completes and the final trace/waveform render).
+        if self._animate_cells:
+            local = self.engine.cell_states(self._width)
+            states = {(chip, x, y): s for (x, y), s in local.items()}
+            self.cell_states.emit(states)
+            # Live output faces for the cells active this frame (the crossover and
+            # any MOVE [FACE] cell re-point at runtime → the arrow should follow).
+            faces = self.engine.cell_faces(self._width, cells=list(local.keys()))
+            self.cell_faces.emit({(chip, x, y): f for (x, y), f in faces.items()})
+            hs = self.engine.handshakes(self._width)
+            # Per-word steps (#194): each step is the cells+ports that transacted at
+            # one sim-time. The canvas plays them back one-at-a-time (rolling wave)
+            # rather than flashing the whole batch at once. Keep the flat cells/ports
+            # union for backward compatibility.
+            steps = [
+                {
+                    "cells": [(chip, x, y, f) for (x, y, f) in s.get("cells", [])],
+                    "ports": [(chip, p) for p in s.get("ports", [])],
+                }
+                for s in hs.get("steps", [])
+            ]
+            self.handshakes.emit({
+                "steps": steps,
+                "cells": [(chip, x, y, f) for (x, y, f) in hs["cells"]],
+                "ports": [(chip, p) for p in hs["ports"]],
+            })
         self.metrics.emit({"events": self._events,
                            "time_ns": getattr(self.engine.chip,
                                               "simulation_time", 0.0)})

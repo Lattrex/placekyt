@@ -294,3 +294,71 @@ def test_multicell_block_packed_without_overlap(qapp, catalog, chip_type):
     res = BuildEngine(catalog, str(CT_PATH)).build(
         ctrl.project, {"kyttar_10x12": chip_type})
     assert res.ok, [str(e) for e in res.errors]
+
+
+# --------------------------------------------------------------------------- #
+# Placement legality gate (D1/D2): the placer must NEVER commit an off-grid or
+# overlapping placement. It repacks-or-fails LOUDLY (PlacementError) instead of
+# returning ok while the router later trips over an "off the array grid" endpoint.
+# --------------------------------------------------------------------------- #
+
+def test_overflowing_design_raises_placement_error(catalog, chip_type):
+    """A design too tall to pack legally on the 10x12 array must raise
+    PlacementError (a NAMED failure), NOT silently place cells off-grid."""
+    from engine.errors import PlacementError
+
+    ctrl = AppController(catalog=catalog)
+    ctrl.new_project("overflow", "kyttar_10x12")
+    # Two ComplexMixers (11 cells, 6 rows tall each) + LowPass filters stacked in
+    # bus mode overflow the 12-row array height as packed (the SSB-Weaver failure).
+    a = ctrl.place_block("ComplexMixerBlock", 0, 1, 1, library="lattrex.official",
+                         params={"sample_rate": 32000.0, "frequency": -1500.0})
+    b = ctrl.place_block("ComplexMixerBlock", 0, 1, 6, library="lattrex.official",
+                         params={"sample_rate": 32000.0, "frequency": -6000.0})
+    lps = []
+    for i in range(4):
+        lps.append(ctrl.place_block(
+            "LowPassFilter", 0, 7, 1 + 2 * i, library="lattrex.official",
+            params={"gain": 1.0, "samp_rate": 32000.0, "cutoff_freq": 1200.0,
+                    "transition_width": 2500.0}))
+    ctrl.add_logical_connection(ChipPortEndpoint(chip=0, port="x16_in"),
+                                BlockEndpoint(block=a, port="xi"), name="in_a")
+    ctrl.add_logical_connection(BlockEndpoint(block=a, port="yi"),
+                                BlockEndpoint(block=b, port="xi"), name="ab")
+    with pytest.raises(PlacementError) as ei:
+        ctrl.auto_place(0, use_bus="always")
+    # the error must NAME concrete off-grid/overlap problems
+    assert ei.value.problems, "PlacementError must carry the specific problems"
+    assert any("off the" in p or "overlap" in p for p in ei.value.problems)
+
+
+def test_placement_legality_detects_overlap(catalog, chip_type):
+    """_placement_legality flags two blocks sharing a cell (D2)."""
+    ctrl = AppController(catalog=catalog)
+    ctrl.new_project("ovl", "kyttar_10x12")
+    a = ctrl.place_block("GainBlock", 0, 3, 3, library="lattrex.official",
+                         params={"gain": 0.5})
+    b = ctrl.place_block("GainBlock", 0, 6, 6, library="lattrex.official",
+                         params={"gain": 0.5})
+    ok, problems = ctrl._placement_legality(0)
+    assert ok and not problems           # disjoint placement is legal
+    # Force an overlap by moving b onto a's cell, then re-check.
+    from commands import MoveBlockCommand
+    acell = ctrl.project.block(a).placement.cells[0]
+    bcell = ctrl.project.block(b).placement.cells[0]
+    MoveBlockCommand(ctrl.project, b, acell.x - bcell.x,
+                     acell.y - bcell.y).execute()
+    ok2, problems2 = ctrl._placement_legality(0)
+    assert not ok2 and any("overlap" in p for p in problems2)
+
+
+def test_placement_legality_detects_off_grid(catalog, chip_type):
+    """_placement_legality flags a cell pushed off the array (D1)."""
+    ctrl = AppController(catalog=catalog)
+    ctrl.new_project("og", "kyttar_10x12")
+    a = ctrl.place_block("GainBlock", 0, 3, 3, library="lattrex.official",
+                         params={"gain": 0.5})
+    from commands import MoveBlockCommand
+    MoveBlockCommand(ctrl.project, a, 50, 0).execute()   # shove far off-grid
+    ok, problems = ctrl._placement_legality(0)
+    assert not ok and any("off the" in p for p in problems)

@@ -640,6 +640,25 @@ class AppController(QObject):
         # terminal would desync the spine the router threads.
         if not used_bus_snake:
             cmds.extend(self._abut_single_cell_terminals(chip, plan, lead))
+        # LEGALITY GATE (D1/D2): the placer must NEVER commit an off-grid or
+        # overlapping placement (the router would otherwise only catch it later as
+        # an "endpoint off the array grid"). Validate the REAL applied cells; on any
+        # violation, roll back every move/orient we just executed and fail loudly so
+        # the caller (the pnr place<->route loop) can repack looser or report.
+        ok, problems = self._placement_legality(chip)
+        if not ok:
+            for c in reversed(cmds):
+                try:
+                    c.undo()
+                except Exception:  # noqa: BLE001 — best-effort rollback
+                    pass
+            from engine.errors import PlacementError
+            raise PlacementError(
+                "auto-placement is illegal (" + str(len(problems))
+                + " problem(s)); the design does not fit the array as packed: "
+                + "; ".join(problems[:6])
+                + ("; ..." if len(problems) > 6 else ""),
+                problems=problems)
         if cmds and register:
             self.commands.add_executed(
                 CompositeCommand("Auto-place blocks", cmds,
@@ -683,6 +702,36 @@ class AppController(QObject):
                 if not (0 <= cx < w and 0 <= cy < h):
                     return False
         return True
+
+    def _placement_legality(self, chip: int):
+        """Validate the CURRENT (already-applied) placement of every block on
+        ``chip``: no cell may fall off the array, and no two blocks may share a
+        cell. Returns ``(ok, problems)`` where ``problems`` is a list of
+        human-readable strings (empty when ``ok``). Checks the REAL placed cells
+        (post-orient, post-abut), not the plan — the placer is only trustworthy if
+        what it actually committed is legal.
+        """
+        w, h = self._chip_dims(chip)
+        problems: list[str] = []
+        owner: dict[tuple, str] = {}
+        for b in self.project.blocks:
+            pl = b.placement
+            if pl is None or pl.chip != chip or not pl.cells:
+                continue
+            for c in pl.cells:
+                if not (0 <= c.x < w and 0 <= c.y < h):
+                    problems.append(
+                        f"block '{b.name}' cell ({c.x},{c.y}) is off the "
+                        f"{w}x{h} array")
+                    continue
+                prev = owner.get((c.x, c.y))
+                if prev is not None and prev != b.name:
+                    problems.append(
+                        f"blocks '{prev}' and '{b.name}' overlap at "
+                        f"cell ({c.x},{c.y})")
+                else:
+                    owner[(c.x, c.y)] = b.name
+        return (not problems), problems
 
     def _plan_ports_reachable(self, plan, chip, w, h, footprint,
                               port_maps) -> bool:
@@ -1337,6 +1386,7 @@ class AppController(QObject):
                      else self.project.chip_type)
 
         best = None
+        place_fail = None   # last PlacementError, if a reserve packs illegally
         # Monotone-looseness sweep: tight (reserve 1) -> looser. Each raises the routing
         # channel reserve the compact placer leaves, opening more room for the router.
         for reserve in (1, 2, 3, 4):
@@ -1348,7 +1398,18 @@ class AppController(QObject):
             # point at the OLD cells — a wrong, DRC-failing build. Clearing makes every
             # iteration route the CURRENT placement from scratch (no snapshot API).
             self._clear_chip_routes(chip)
-            self.auto_place(chip=chip, use_bus=use_bus, register=False)
+            from engine.errors import PlacementError
+            try:
+                self.auto_place(chip=chip, use_bus=use_bus, register=False)
+            except PlacementError as pe:
+                # This reserve packs illegally (off-grid / overlap). It's a failed
+                # iteration, not a crash — record it and try a looser reserve. If EVERY
+                # reserve fails placement, ``best`` stays None and we surface a NAMED
+                # placement failure below (never a silent build).
+                place_fail = pe
+                if snap is not None:
+                    self.project.restore(snap)
+                continue
             report = self.auto_route_all(cts, use_bus=use_bus, auto_orient=False,
                                          register=False)
             # PART B — perturb a BOXED multi-cell output (the §ROUTING_TOPOLOGIES CM
@@ -1390,6 +1451,18 @@ class AppController(QObject):
                 # and re-importing is heavy; rely on the next auto_place(register=False)
                 # overwriting positions and SetConnectionRouteCommand overwriting routes.
                 pass
+
+        # Every reserve failed to PLACE legally (the design does not fit the array as
+        # packed, at any looseness) — surface the NAMED placement failure, never a
+        # silent build. The pnr loop's monotone looseness is exhausted; the caller
+        # must shrink the design, split across chips, or (D3) a tighter orientation.
+        if best is None:
+            self._pnr_channel_reserve = 1
+            if place_fail is not None:
+                raise place_fail
+            raise PlacementError(
+                "auto-P&R could not place the design on the array at any "
+                "routing-channel reserve")
 
         # Re-run the ACCEPTED reserve registered (undoable) so the live project + undo
         # stack hold the winning placement + routes.

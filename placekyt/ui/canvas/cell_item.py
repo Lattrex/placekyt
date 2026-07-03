@@ -111,6 +111,7 @@ _SIM_FILLS = {
 
 # Handshake-flash: a bright edge on the face a packet exits (data transfer).
 _FLASH_COLOR = QColor(255, 80, 80)  # red — a transfer just happened on this face
+_EXEC_FLASH_COLOR = QColor(80, 255, 120)  # green — the cell EXECUTED (PC advanced)
 
 # Face → unit direction vector (scene coords: +x east, +y south).
 _FACE_VEC = {
@@ -206,7 +207,9 @@ class CellItem(QGraphicsItem):
             self.update()
 
     def flash_face(self, face: str) -> None:
-        """A packet just exited on ``face`` — light that edge fully (decays)."""
+        """A packet just exited on ``face`` (N/S/E/W) — light that edge fully
+        (decays). The sentinel ``"exec"`` marks the cell EXECUTING (PC advanced);
+        it lights a whole-cell glow with no directional bar (see _draw_flash)."""
         self._flash[face] = 1.0
         self.update()
 
@@ -276,20 +279,32 @@ class CellItem(QGraphicsItem):
             painter.drawRect(rect.adjusted(1.5, 1.5, -1.5, -1.5))
 
     def _draw_flash(self, painter: QPainter, rect: QRectF) -> None:
-        """Show a data transfer: a whole-cell glow (visible on any fill,
-        including empty/transit cells) plus a bright bar on the exit face."""
-        peak = max(self._flash.values()) if self._flash else 0.0
+        """Show activity: a whole-cell glow (visible on any fill, including
+        empty/transit cells) plus a bright bar on the exit face. The ``"exec"``
+        sentinel key is a whole-cell GREEN glow (the cell executed) with NO
+        directional bar — so an executing block cell reads differently from a word
+        transiting through."""
+        # Split the directional (transit) flashes from the exec (whole-cell) one.
+        exec_i = self._flash.get("exec", 0.0)
+        dir_faces = {f: v for f, v in self._flash.items() if f != "exec"}
+        peak = max(dir_faces.values()) if dir_faces else 0.0
         painter.setPen(Qt.NoPen)
-        # Whole-cell glow — strong enough to stand out over the persistent
+        # Transit glow (red) — strong enough to stand out over the persistent
         # cell-state overlay (blue 'active'), so transit data flow is obvious.
         if peak > 0:
             glow = QColor(_FLASH_COLOR)
             glow.setAlphaF(max(0.0, min(0.85, peak * 0.85)))
             painter.setBrush(QBrush(glow))
             painter.drawRect(rect)
-        # Bright bar on each flashed exit face.
+        # Execute glow (green) — the cell's PC advanced this instant.
+        if exec_i > 0:
+            eglow = QColor(_EXEC_FLASH_COLOR)
+            eglow.setAlphaF(max(0.0, min(0.8, exec_i * 0.8)))
+            painter.setBrush(QBrush(eglow))
+            painter.drawRect(rect)
+        # Bright bar on each flashed exit face (transit direction only).
         thick = max(3.0, rect.width() * 0.18)
-        for face, intensity in self._flash.items():
+        for face, intensity in dir_faces.items():
             if intensity <= 0:
                 continue
             color = QColor(_FLASH_COLOR)

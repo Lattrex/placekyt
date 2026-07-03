@@ -214,6 +214,37 @@ def test_batch_run_emits_live_faces_for_routing_cells():
         f"no live face for output-port-adjacent routing cell {out_adj}")
 
 
+def test_steps_from_events_includes_exec_and_arrival():
+    """_steps_from_events must NOT drop cells that only have exec_tick /
+    data_arrival / instr_arrival events (the 'busy multiplexed-bus cells and
+    executing cells don't flash' bug). exec cells carry the 'exec' sentinel face;
+    arrival cells carry their forward (exit) face."""
+    # _steps_from_events is a pure helper needing only self._width — call it on a
+    # minimal stand-in so the test stays fast (no chip/server).
+    class _S:
+        _width = 10
+        _steps_from_events = SimController._steps_from_events
+    s = _S()
+    events = [
+        {"kind": "exec_tick", "cell_id": 34, "time_ns": 1.0},
+        {"kind": "data_arrival", "cell_id": 12, "time_ns": 2.0,
+         "face": "W", "exit_face": "S"},
+        {"kind": "instr_arrival", "cell_id": 5, "time_ns": 3.0,
+         "face": "N", "exit_face": "E"},
+        {"kind": "output_ready", "cell_id": 7, "time_ns": 4.0, "face": "S"},
+    ]
+    steps = s._steps_from_events(events, 0)
+    all_cells = [c for st in steps for c in st["cells"]]
+    # exec_tick → (0, 34%10, 34//10, "exec")
+    assert (0, 4, 3, "exec") in all_cells, f"exec_tick dropped: {all_cells}"
+    # data_arrival → forward face 'S'
+    assert (0, 2, 1, "S") in all_cells, f"data_arrival dropped: {all_cells}"
+    # instr_arrival → forward face 'E'
+    assert (0, 5, 0, "E") in all_cells, f"instr_arrival dropped: {all_cells}"
+    # output_ready → exit face 'S'
+    assert (0, 7, 0, "S") in all_cells, f"output_ready dropped: {all_cells}"
+
+
 def test_animation_off_emits_no_visuals_but_still_runs():
     """With cell animation OFF (the default), a batch run still produces output,
     but the SimController emits NO handshake / cell_faces visuals — the fast path

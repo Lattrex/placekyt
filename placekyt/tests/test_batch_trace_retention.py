@@ -67,6 +67,9 @@ class _RetentionHarness:
         self._pending_trace_reset = False
         # Per-Run time-rebase origin (set on the first event after a reset).
         self._trace_time_origin = None
+        # Exercise the full (animated) refresh body — these tests are about trace
+        # RETENTION, independent of the cell-animation gate.
+        self._animate_cells = True
         # signals the method emits — stub them out
         for name in ("cell_states", "cell_faces", "handshakes", "trace_updated",
                      "cell_state_refreshed"):

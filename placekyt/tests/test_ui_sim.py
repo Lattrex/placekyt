@@ -161,6 +161,7 @@ class TestSimMenu:
 
     def test_run_overlays_living_chip(self, controller):
         w = self._window(controller)
+        w.sim.set_animate_cells(True)  # cell-state overlay only emits when animating
         _run_to_done(w.sim)
         exec_cells = [(c.cx, c.cy) for c in w.canvas.cell_items()
                       if c.sim_state == "executing"]
@@ -177,6 +178,7 @@ class TestSimMenu:
     def test_handshake_flash_lights_faces(self, controller):
         # Data transfers flash cell exit faces AND chip ports.
         w = self._window(controller)
+        w.sim.set_animate_cells(True)  # fabric flashes only emit when animation is on
         cells, ports = [], []
         w.sim.handshakes.connect(
             lambda hs: (cells.extend(hs["cells"]), ports.extend(hs["ports"])))
@@ -357,6 +359,7 @@ class TestSimPolish:
         from ui.canvas.cell_item import CellItem
 
         w = self._window(controller)
+        w.sim.set_animate_cells(True)  # fabric flashes only emit when animation is on
         w.sim.set_speed_index(0)
         w.sim.start()
         # Step frames until a row-0 transit cell lights, then confirm the flash
@@ -883,6 +886,7 @@ class TestLiveCellFace:
         w = MainWindow(controller=controller)
         controller.open_project(str(self.KYT))
         w._after_project_loaded()
+        w.sim.set_animate_cells(True)  # live faces only emit when animating
         seen = []
         w.sim.cell_faces.connect(lambda f: seen.append(f.get((0, 8, 6))))
         w.sim.start()

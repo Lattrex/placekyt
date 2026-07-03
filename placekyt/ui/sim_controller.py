@@ -736,8 +736,9 @@ class SimController(QObject):
         # flashes) ONLY when enabled. When OFF the GRC run is a flat-out compute
         # pass: the trace/waveform still updates (below), but the canvas fabric
         # visuals — the bulk of the per-refresh GUI cost — are skipped. See
-        # set_animate_cells.
-        if self._animate_cells:
+        # set_animate_cells. (getattr keeps the trace path robust if a partial
+        # test harness stubs this method without the flag.)
+        if getattr(self, "_animate_cells", False):
             # Cell-state overlay + handshakes from THIS batch of new events.
             states = self._states_from_events(new_events, chip)
             self.cell_states.emit(states)
@@ -818,25 +819,43 @@ class SimController(QObject):
         bucketed by ``time_ns`` (mirrors ``engine.handshakes``).
 
         Returns ``[{"cells": [(chip, x, y, face), …], "ports": [(chip, port), …]},
-        …]`` in time order — one step per sim-time = one word transacted across
-        the fabric. The canvas plays the steps back one-at-a-time so a word's
-        passage through the input-port routing cells, the block, and the
-        output-port routing cells lights as a rolling wave (per-word blink),
-        rather than every cell flashing at once. A cell transfer is an
-        ``output_ready`` carrying a ``face`` (true for routing/transit/broker
-        cells AND block cells — they all forward via a face); a port transfer is a
-        ``port_injection``/``port_capture``."""
+        …]`` in time order — one step per sim-time. The canvas plays the steps
+        back one-at-a-time so a word's passage through the fabric lights as a
+        rolling wave, and executing block cells flash as they run.
+
+        Every cell-level event contributes so NOTHING is dropped under heavy /
+        multiplexed-bus activity (the earlier "busy bus cells don't flash" bug —
+        it only kept ``output_ready`` events carrying a ``face``):
+          * ``output_ready`` → a word LEFT the cell on its exit ``face`` (the
+            directional transit flash + arrow).
+          * ``data_arrival`` / ``instr_arrival`` → a word/instr transited THROUGH
+            the cell; use its ``exit_face`` (the forward direction) so the flash
+            points the way the word is going. This catches transit cells that
+            arrival-forward in the same instant without a separate output_ready.
+          * ``exec_tick`` → the cell's PC advanced (it EXECUTED). No face; marked
+            with the sentinel face ``"exec"`` so the canvas shows a whole-cell
+            execute glow (distinct from a directional transit).
+        A cell is emitted once per (time, cell, face) so the same cell arriving +
+        forwarding one word in one instant doesn't double-light the same edge.
+        A port transfer is a ``port_injection`` / ``port_capture``."""
         buckets: dict[float, dict] = {}
         order: list[float] = []
+        seen: dict[float, set] = {}
         for ev in events:
             kind = ev.get("kind")
             t = ev.get("time_ns", 0.0)
             cell = port = None
-            if kind == "output_ready":
-                cid = ev.get("cell_id")
-                face = ev.get("face")
-                if cid is not None and face:
+            cid = ev.get("cell_id")
+            if kind == "output_ready" and cid is not None and ev.get("face"):
+                cell = (chip, cid % self._width, cid // self._width, ev["face"])
+            elif kind in ("data_arrival", "instr_arrival") and cid is not None:
+                # Forward direction (where the word goes next); fall back to the
+                # arrival face so a consumed word still lights its cell.
+                face = ev.get("exit_face") or ev.get("face")
+                if face:
                     cell = (chip, cid % self._width, cid // self._width, face)
+            elif kind == "exec_tick" and cid is not None:
+                cell = (chip, cid % self._width, cid // self._width, "exec")
             elif kind in ("port_injection", "port_capture"):
                 pn = ev.get("port_name")
                 if pn:
@@ -848,7 +867,9 @@ class SimController(QObject):
                 b = {"cells": [], "ports": []}
                 buckets[t] = b
                 order.append(t)
-            if cell is not None:
+                seen[t] = set()
+            if cell is not None and cell not in seen[t]:
+                seen[t].add(cell)
                 b["cells"].append(cell)
             if port is not None:
                 b["ports"].append(port)

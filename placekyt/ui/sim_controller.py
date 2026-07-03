@@ -21,19 +21,31 @@ from engine.simulator import SimulationEngine
 # flash catch-up). Each entry: (events_per_tick, tick_ms, flash_steps_per_tick).
 # flash_steps_per_tick == 0 → adaptive catch-up (len//8); a positive value caps
 # playback to that many per-word steps per tick so individual words are visible.
+# LOGARITHMIC speed ladder. Each tuple is
+#   (events_per_tick, tick_ms, flash_steps_per_tick).
+# The scale is GEOMETRIC (~3–5x per step), not linear: the slow end needs fine
+# resolution to step-watch one transaction at a time, while the fast end must
+# jump by big multiples to fast-forward through a long run in seconds (a debug
+# tool can't take minutes to reach the interesting point).
+#
+# In LOCKSTEP (animation on), the chip is paced by how fast the animation drains
+# each sample's flash queue — i.e. flash_steps_per_tick, NOT events_per_tick — so
+# the high end sets a LARGE flash_steps_per_tick to release the frame gate fast
+# (top step effectively drains a whole sample per frame). In the non-animated /
+# interactive path, events_per_tick is the chip's batch size per frame.
 SPEED_STEPS = [
-    (1,    800, 1),    # 0: slowest — ~1 transaction visible at a time
-    (1,    400, 1),    # 1
-    (1,    200, 1),    # 2
-    (2,    132, 1),    # 3
-    (5,    100, 1),    # 4
-    (20,    66, 2),    # 5
-    (100,   40, 4),    # 6
-    (500,   33, 0),    # 7: adaptive catch-up from here up
-    (2000,  33, 0),    # 8 (default)
-    (8000,  33, 0),    # 9: fastest
+    (1,      800,  1),      # 0: slowest — one transaction at a time
+    (2,      400,  1),      # 1
+    (5,      200,  1),      # 2
+    (15,     120,  2),      # 3
+    (50,      80,  4),      # 4
+    (200,     50,  12),     # 5
+    (1000,    33,  40),     # 6
+    (5000,    33,  200),    # 7
+    (25000,   33,  1000),   # 8 (default) — fast, still animates the wave
+    (150000,  16,  100000), # 9: fastest — fast-forward (drain whole samples/frame)
 ]
-DEFAULT_SPEED = 8  # → 2000 events/tick (matches the prior default)
+DEFAULT_SPEED = 8
 
 # Back-compat: some callers/tests reference the events-per-tick ladder.
 SPEED_BATCHES = [s[0] for s in SPEED_STEPS]
@@ -244,7 +256,7 @@ class SimController(QObject):
         # loop on the animation so the chip steps in lockstep with what's shown.
         # OFF ⇒ release any waiter so a mid-run toggle doesn't wedge the burst.
         if self._batch_debug is not None:
-            self._batch_debug.set_lockstep(self._animate_cells)
+            self._batch_debug.set_lockstep(self._lockstep_active())
 
     def batch_frame_done(self) -> None:
         """Called on the GUI thread (wired from the canvas flash-drained hook)
@@ -295,6 +307,18 @@ class SimController(QObject):
         # speed step to a per-sample delay so slow = slow-motion, fast = no wait.
         if self._batch_debug is not None:
             self._batch_debug.set_delay(self._batch_debug_delay_for_speed())
+            # TOP SPEED = FAST-FORWARD: at the max slider step, drop strict
+            # lockstep so the chip is not gated per-sample on the animation (which
+            # bottlenecks a long run to minutes). The animation still plays a
+            # coarse wave, but the run reaches the end quickly — what you want when
+            # fast-forwarding to the interesting point. Below the top, keep true
+            # lockstep so a stall stays visible.
+            self._batch_debug.set_lockstep(self._lockstep_active())
+
+    def _lockstep_active(self) -> bool:
+        """True when the chip should step in strict lockstep with the animation:
+        cell animation ON and NOT at the top (fast-forward) speed step."""
+        return self._animate_cells and self._speed_index < len(SPEED_STEPS) - 1
 
     def _batch_debug_delay_for_speed(self) -> float:
         """Per-sample delay (seconds) for the current speed index in a GRC batch
@@ -576,7 +600,7 @@ class SimController(QObject):
             # sample never calls apply_handshakes, frame_done never fires, and the
             # chip stalls on the 5s lockstep timeout. Lockstep implies the chip is
             # paced slowly anyway, so per-sample forced refreshes are affordable.
-            force = bool(self._animate_cells)
+            force = self._lockstep_active()
             self.server_activity.emit(True, force)
             if paused:
                 self.state_changed.emit("paused")
@@ -587,7 +611,7 @@ class SimController(QObject):
         # Lockstep the chip to the animation iff cell animation is on (see
         # set_animate_cells). main_window wires the canvas flash-drained callback
         # to self.batch_frame_done so each animated sample releases the next.
-        self._batch_debug.set_lockstep(self._animate_cells)
+        self._batch_debug.set_lockstep(self._lockstep_active())
 
         # on_new_run fires ONCE per GRC "Run" (a fresh client connection). Reset
         # the waveform trace HERE (Run boundary), not per-batch — so the streams

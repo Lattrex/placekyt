@@ -212,6 +212,35 @@ class TestSimMenu:
         base = min(at_5_0, key=lambda c: c.zValue())
         assert not base._flash
 
+    def test_flash_lights_all_tied_top_overlays_on_multiplexed_cell(self, controller):
+        # A MULTIPLEXED bus cell has SEVERAL route-overlay TRANSIT items stacked at
+        # the SAME top Z (one per route sharing the lane). Flashing only one could
+        # light a HIDDEN overlay while the visible one stays dark — the reported
+        # "multiplexed transit cells never animate". Every item tied at the top Z
+        # must flash so the visible one lights whichever it is.
+        from ui.canvas.cell_item import CellItem
+
+        w = self._window(controller)
+        # Simulate a multiplexed cell: two overlay items at the same top Z at one
+        # position. (In a real bus design the router creates these; here we add a
+        # second overlay to an existing waypoint to make the test self-contained.)
+        at = [c for c in w.canvas.cell_items()
+              if isinstance(c, CellItem) and (c.cx, c.cy) == (5, 0)]
+        assert at, "expected a routing overlay at (5,0)"
+        topz = max(c.zValue() for c in at)
+        top_items = [c for c in at if c.zValue() == topz]
+        if len(top_items) < 2:
+            # Add a second overlay at the same position + Z (a second bus route).
+            twin = CellItem(5, 0, kind=top_items[0].kind, face=top_items[0].face)
+            twin.chip_id = getattr(top_items[0], "chip_id", 0)
+            twin.setPos(top_items[0].pos())
+            twin.setZValue(topz)
+            w.canvas._scene.addItem(twin)
+            top_items.append(twin)
+        w.canvas.apply_handshakes({"cells": [(0, 5, 0, "S")], "ports": []})
+        assert all(c._flash.get("S") == 1.0 for c in top_items), \
+            "every tied-top overlay must flash so the visible one lights"
+
     def test_flash_decays_and_clears(self, controller):
         from ui.canvas.cell_item import CellItem
 
@@ -301,10 +330,13 @@ class TestSimPolish:
         assert tick_ms >= 200                            # clearly slow-motion
         assert w.sim._flash_per_tick == flash == 1
         assert w.canvas._flash_per_tick == 1             # propagated to canvas
-        # Fast end uses adaptive catch-up (flash rate 0).
+        # Fast end (logarithmic ladder): the top step drains MANY flash steps per
+        # tick (fast-forward), so flash_per_tick is large — not 0/1.
+        top_flash = SPEED_STEPS[-1][2]
+        assert top_flash > 100                           # fast-forward drain rate
         w.speed_slider.setValue(len(SPEED_STEPS) - 1)
-        assert w.sim._flash_per_tick == 0
-        assert w.canvas._flash_per_tick == 0
+        assert w.sim._flash_per_tick == top_flash
+        assert w.canvas._flash_per_tick == top_flash
 
     def test_step_advances_and_counts_events(self, controller):
         w = self._window(controller)
@@ -900,10 +932,13 @@ class TestLiveCellFace:
         controller.open_project(str(self.KYT))
         w._after_project_loaded()
         w.sim.set_animate_cells(True)  # live faces only emit when animating
+        w.sim.set_speed_index(0)       # slowest: few events/tick so the crossover's
+                                       # south phase AND east phase are each observed
+                                       # (a big batch would skip over the south phase)
         seen = []
         w.sim.cell_faces.connect(lambda f: seen.append(f.get((0, 8, 6))))
         w.sim.start()
-        for _ in range(8000):
+        for _ in range(20000):
             if not w.sim._running:
                 break
             w.sim._run_batch()

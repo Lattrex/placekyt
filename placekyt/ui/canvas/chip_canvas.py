@@ -1149,6 +1149,25 @@ class ChipCanvas(QGraphicsView):
                 item.face = new_face
                 item.update()
 
+    def _repoint_live_arrow(self, item, face_str: str) -> None:
+        """Point ``item``'s arrow at ``face_str`` (N/S/E/W) for the current word,
+        remembering the original so clear_sim_states restores it. Called from the
+        per-word flash so a cell's arrow tracks the live data direction — the same
+        mechanism as apply_cell_faces, but driven by the transit event's exit face
+        (which is per-word, so it catches direction changes the batch-level
+        cell_faces query misses)."""
+        from model.enums import Face
+        try:
+            new_face = Face.from_str(face_str)
+        except Exception:  # noqa: BLE001
+            return
+        if not hasattr(self, "_live_face_orig"):
+            self._live_face_orig = {}
+        if item.face != new_face:
+            self._live_face_orig.setdefault(id(item), (item, item.face))
+            item.face = new_face
+            item.update()
+
     def apply_breakpoints(self, bp_set) -> None:
         """Mark every cell that has a breakpoint (DEBUG §3.6). ``bp_set`` is an
         ``engine.breakpoints.BreakpointSet``; a cell is marked if it has any
@@ -1233,16 +1252,39 @@ class ChipCanvas(QGraphicsView):
         cell_xfers = step.get("cells", [])
         port_xfers = step.get("ports", [])
         if cell_xfers:
-            index: dict[tuple[int, int, int], CellItem] = {}
+            # Index ALL CellItems at each position by their top zValue. A
+            # MULTIPLEXED bus cell has SEVERAL stacked route-overlay TRANSIT items
+            # at the SAME top Z (one per route sharing the lane) — flashing only
+            # one could light a HIDDEN overlay while the visible one stays dark
+            # (the reported "multiplexed transit cells never animate"). So we
+            # flash EVERY item tied at the top Z; the visible one lights whichever
+            # it is. The base EMPTY cell (Z=0) is still excluded.
+            index: dict[tuple[int, int, int], list[CellItem]] = {}
+            topz: dict[tuple[int, int, int], float] = {}
             for it in self.cell_items():
                 key = (getattr(it, "chip_id", 0) or 0, it.cx, it.cy)
-                cur = index.get(key)
-                if cur is None or it.zValue() >= cur.zValue():
-                    index[key] = it
+                z = it.zValue()
+                cur = topz.get(key)
+                if cur is None or z > cur:
+                    topz[key] = z
+                    index[key] = [it]
+                elif z == cur:
+                    index[key].append(it)
             for (chip, x, y, face) in cell_xfers:
-                item = index.get((chip, x, y))
-                if item is not None:
+                items = index.get((chip, x, y))
+                if not items:
+                    continue
+                for item in items:
                     item.flash_face(face)
+                    # LIVE ARROW: a directional transit (a real face, not the
+                    # "exec" whole-cell glow) also re-points the cell's ARROW to
+                    # the way the word just went — so a cell that changes its
+                    # output face at runtime (a router/crossover, or a bus lane
+                    # carrying different streams) visibly turns instead of showing
+                    # a frozen build-time direction. Originals are remembered so
+                    # clear_sim_states restores them at run end.
+                    if face in ("N", "S", "E", "W"):
+                        self._repoint_live_arrow(item, face)
         if port_xfers:
             pindex = {(p.chip_id, p.name): p for p in self.port_items()}
             for (chip, port_name) in port_xfers:

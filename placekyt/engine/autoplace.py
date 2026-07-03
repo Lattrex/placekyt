@@ -519,9 +519,27 @@ class AutoPlacer:
             # Wrap to a new row + channel reserve when this block would overflow the pack
             # width (capped just west of the reserved egress column, ``_compact_right``).
             if positions and (x + w) > right:
-                row_top = row_top + row_h + reserve
-                x = left
-                row_h = 0
+                next_top = row_top + row_h + reserve
+                # HEIGHT-AWARE WRAP (D3): if the fresh band would push this block off the
+                # BOTTOM of the array, do NOT open it with the full channel reserve — drop
+                # the reserve first (tighter), and if it STILL overflows, keep it in the
+                # CURRENT band abutting to the right (a taller band is legal; the D1 gate
+                # catches a genuinely infeasible design). Tall feedback blocks (the 6-row
+                # ComplexMixer) are rotation-locked, so vertical room is the scarce axis —
+                # spend width before height. Monotone: never places LOWER than the naive
+                # wrap, so it can only help fit, never regress a design that already fit.
+                if next_top + h > self._height:
+                    tight_top = row_top + row_h        # no channel reserve
+                    if tight_top + h <= self._height and tight_top != row_top:
+                        next_top = tight_top
+                    elif (x <= right - 1) and (row_top + h <= self._height):
+                        # Keep it in the current band (grow the band) rather than march
+                        # off the bottom — width is cheaper than height here.
+                        next_top = row_top
+                if next_top != row_top:
+                    row_top = next_top
+                    x = left
+                    row_h = 0
                 # Re-orient for the fresh row position (the orienter scores against the
                 # driver's now-known output cell).
                 kind = self._orient_for(blk, True, n, out_pos, x, row_top)

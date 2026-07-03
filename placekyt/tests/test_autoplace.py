@@ -309,22 +309,25 @@ def test_overflowing_design_raises_placement_error(catalog, chip_type):
 
     ctrl = AppController(catalog=catalog)
     ctrl.new_project("overflow", "kyttar_10x12")
-    # Two ComplexMixers (11 cells, 6 rows tall each) + LowPass filters stacked in
-    # bus mode overflow the 12-row array height as packed (the SSB-Weaver failure).
-    a = ctrl.place_block("ComplexMixerBlock", 0, 1, 1, library="lattrex.official",
-                         params={"sample_rate": 32000.0, "frequency": -1500.0})
-    b = ctrl.place_block("ComplexMixerBlock", 0, 1, 6, library="lattrex.official",
-                         params={"sample_rate": 32000.0, "frequency": -6000.0})
-    lps = []
-    for i in range(4):
-        lps.append(ctrl.place_block(
-            "LowPassFilter", 0, 7, 1 + 2 * i, library="lattrex.official",
-            params={"gain": 1.0, "samp_rate": 32000.0, "cutoff_freq": 1200.0,
-                    "transition_width": 2500.0}))
-    ctrl.add_logical_connection(ChipPortEndpoint(chip=0, port="x16_in"),
-                                BlockEndpoint(block=a, port="xi"), name="in_a")
-    ctrl.add_logical_connection(BlockEndpoint(block=a, port="yi"),
-                                BlockEndpoint(block=b, port="xi"), name="ab")
+    # A chain of un-rotatable 6-row-tall ComplexMixers that genuinely CANNOT fit the
+    # 12-row array however it is packed (six at 6 rows + 2 wide each => far more tall
+    # block area than 10x12 holds, and they are rotation-locked internal-feedback
+    # blocks so height is the hard axis). The packer must FAIL LOUDLY with named
+    # off-grid problems, not silently place cells outside the array.
+    prev = None
+    for i in range(6):
+        m = ctrl.place_block(
+            "ComplexMixerBlock", 0, 1, 1, library="lattrex.official",
+            params={"sample_rate": 32000.0, "frequency": -1500.0 * (i + 1)})
+        if prev is None:
+            ctrl.add_logical_connection(
+                ChipPortEndpoint(chip=0, port="x16_in"),
+                BlockEndpoint(block=m, port="xi"), name="in_a")
+        else:
+            ctrl.add_logical_connection(
+                BlockEndpoint(block=prev, port="yi"),
+                BlockEndpoint(block=m, port="xi"), name=f"c{i}")
+        prev = m
     with pytest.raises(PlacementError) as ei:
         ctrl.auto_place(0, use_bus="always")
     # the error must NAME concrete off-grid/overlap problems

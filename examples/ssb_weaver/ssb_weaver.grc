@@ -191,29 +191,6 @@ blocks:
     rotation: 0
     state: enabled
 
-- name: tx_lo_a
-  id: kyttar_nco
-  parameters:
-    affinity: ''
-    alias: ''
-    amplitude: 0.9
-    comment: ''
-    device_id: '"kyttar_0"'
-    frequency: 1500.0
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    offset: '0'
-    phase: '0'
-    sample_rate: 32000.0
-    waveform: "cos"
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [700, 40]
-    rotation: 0
-    state: enabled
-
 - name: tx_mi
   id: kyttar_multiply
   parameters:
@@ -300,29 +277,6 @@ blocks:
     rotation: 0
     state: enabled
 
-- name: tx_lo_c
-  id: kyttar_nco
-  parameters:
-    affinity: ''
-    alias: ''
-    amplitude: 0.9
-    comment: ''
-    device_id: '"kyttar_0"'
-    frequency: 6000.0
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    offset: '0'
-    phase: '0'
-    sample_rate: 32000.0
-    waveform: "cos"
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [1180, 40]
-    rotation: 0
-    state: enabled
-
 - name: tx_ui
   id: kyttar_multiply
   parameters:
@@ -374,29 +328,6 @@ blocks:
     bus_source: false
     bus_structure: null
     coordinate: [1500, 200]
-    rotation: 0
-    state: enabled
-
-- name: rx_lo_c
-  id: kyttar_nco
-  parameters:
-    affinity: ''
-    alias: ''
-    amplitude: 0.9
-    comment: ''
-    device_id: '"kyttar_0"'
-    frequency: 6000.0
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    offset: '0'
-    phase: '0'
-    sample_rate: 32000.0
-    waveform: "cos"
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [1620, 40]
     rotation: 0
     state: enabled
 
@@ -486,29 +417,6 @@ blocks:
     rotation: 0
     state: enabled
 
-- name: rx_lo_a
-  id: kyttar_nco
-  parameters:
-    affinity: ''
-    alias: ''
-    amplitude: 0.9
-    comment: ''
-    device_id: '"kyttar_0"'
-    frequency: 1500.0
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    offset: '0'
-    phase: '0'
-    sample_rate: 32000.0
-    waveform: "cos"
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [2040, 40]
-    rotation: 0
-    state: enabled
-
 - name: rx_ui
   id: kyttar_multiply
   parameters:
@@ -560,6 +468,52 @@ blocks:
     bus_source: false
     bus_structure: null
     coordinate: [2360, 200]
+    rotation: 0
+    state: enabled
+
+- name: lo_a
+  id: kyttar_nco
+  parameters:
+    affinity: ''
+    alias: ''
+    amplitude: 0.9
+    comment: ''
+    device_id: '"kyttar_0"'
+    frequency: 1500.0
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    offset: '0'
+    phase: '0'
+    sample_rate: 32000.0
+    waveform: "cos"
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1180, 40]
+    rotation: 0
+    state: enabled
+
+- name: lo_c
+  id: kyttar_nco
+  parameters:
+    affinity: ''
+    alias: ''
+    amplitude: 0.9
+    comment: ''
+    device_id: '"kyttar_0"'
+    frequency: 6000.0
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    offset: '0'
+    phase: '0'
+    sample_rate: 32000.0
+    waveform: "cos"
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1620, 40]
     rotation: 0
     state: enabled
 
@@ -699,26 +653,26 @@ connections:
 - [thr, '0', in_sink, '0']
 - [msrc, '0', tx_mi, '0']
 - [msrc, '0', tx_mq, '0']
-- [tx_lo_a, '0', tx_mi, '1']
-- [tx_lo_a, '1', tx_mq, '1']
+- [lo_a, '0', tx_mi, '1']
+- [lo_a, '1', tx_mq, '1']
+- [lo_a, '0', rx_ui, '1']
+- [lo_a, '1', rx_uq, '1']
+- [lo_c, '0', tx_ui, '1']
+- [lo_c, '1', tx_uq, '1']
+- [lo_c, '0', rx_mi, '1']
+- [lo_c, '1', rx_mq, '1']
 - [tx_mi, '0', tx_lpi, '0']
 - [tx_mq, '0', tx_lpq, '0']
 - [tx_lpi, '0', tx_ui, '0']
-- [tx_lo_c, '0', tx_ui, '1']
 - [tx_lpq, '0', tx_uq, '0']
-- [tx_lo_c, '1', tx_uq, '1']
 - [tx_ui, '0', tx_ssb, '0']
 - [tx_uq, '0', tx_ssb, '1']
 - [tx_ssb, '0', rx_mi, '0']
 - [tx_ssb, '0', rx_mq, '0']
-- [rx_lo_c, '0', rx_mi, '1']
-- [rx_lo_c, '1', rx_mq, '1']
 - [rx_mi, '0', rx_lpi, '0']
 - [rx_mq, '0', rx_lpq, '0']
 - [rx_lpi, '0', rx_ui, '0']
-- [rx_lo_a, '0', rx_ui, '1']
 - [rx_lpq, '0', rx_uq, '0']
-- [rx_lo_a, '1', rx_uq, '1']
 - [rx_ui, '0', rx_aud, '0']
 - [rx_uq, '0', rx_aud, '1']
 - [rx_aud, '0', g4, '0']

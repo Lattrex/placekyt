@@ -172,26 +172,31 @@ def main():
     }, 560, 200))
 
     # === TX half: NCO(fa) mixers -> 2x LPF -> NCO(fc) mixers -> Subtract (SSB) ===
-    out.append(nco("tx_lo_a", FA, 700, 40))     # cos(wa)=yi, sin(wa)=yq
+    # (oscillators are the SHARED lo_a / lo_c below — the Weaver has 2 frequencies)
     out.append(mul("tx_mi", 900, 140))           # I = m * cos(wa)
     out.append(mul("tx_mq", 900, 300))           # Q = m * sin(wa)
     out.append(lpf("tx_lpi", 1060, 140))
     out.append(lpf("tx_lpq", 1060, 300))
-    out.append(nco("tx_lo_c", FC, 1180, 40))     # cos(wc)=yi, sin(wc)=yq
     out.append(mul("tx_ui", 1320, 140))          # uI = I' * cos(wc)
     out.append(mul("tx_uq", 1320, 300))          # uQ = Q' * sin(wc)
     out.append(sub("tx_ssb", 1500, 200))         # SSB = uI - uQ
 
     # === RX half: NCO(fc) mixers -> 2x LPF -> NCO(fa) mixers -> Subtract ===
-    out.append(nco("rx_lo_c", FC, 1620, 40))
     out.append(mul("rx_mi", 1760, 140))
     out.append(mul("rx_mq", 1760, 300))
     out.append(lpf("rx_lpi", 1920, 140))
     out.append(lpf("rx_lpq", 1920, 300))
-    out.append(nco("rx_lo_a", FA, 2040, 40))
     out.append(mul("rx_ui", 2180, 140))
     out.append(mul("rx_uq", 2180, 300))
     out.append(sub("rx_aud", 2360, 200))         # recovered audio (pre-gain)
+
+    # === SHARED oscillators — the Weaver uses only TWO distinct frequencies (fa, fc),
+    # so ONE fa-NCO + ONE fc-NCO drive ALL the mixers (the 10-cell NCO is heavy; sharing
+    # halves the oscillator cost, 4 NCOs -> 2). Each NCO's cos (port 0) fans out to the
+    # TWO cos-mixers of that frequency, and sin (port 1) to the two sin-mixers. Placed
+    # centrally so the fan-out reaches both TX and RX halves. ===
+    out.append(nco("lo_a", FA, 1180, 40))        # fa: TX down-mix + RX up-mix
+    out.append(nco("lo_c", FC, 1620, 40))        # fc: TX up-mix + RX down-mix
 
     # --- x4 Weaver gain (recovered audio scale) ---
     out.append(blk("g4", "kyttar_gain", {
@@ -245,28 +250,30 @@ def main():
         ("thr", 0, "in_sink", 0),       # input-audio scope
         ("msrc", 0, "tx_mi", 0),        # x16_in -> I mixer (real)
         ("msrc", 0, "tx_mq", 0),        # x16_in -> Q mixer (real)
-        # TX half: mixers take (audio, LO rail)
-        ("tx_lo_a", 0, "tx_mi", 1),     # NCO fa cos (yi) -> I mixer
-        ("tx_lo_a", 1, "tx_mq", 1),     # NCO fa sin (yq) -> Q mixer
+        # SHARED fa-NCO: cos (0) -> TX down-mix I AND RX up-mix I; sin (1) -> both Q.
+        ("lo_a", 0, "tx_mi", 1),        # fa cos -> TX I mixer
+        ("lo_a", 1, "tx_mq", 1),        # fa sin -> TX Q mixer
+        ("lo_a", 0, "rx_ui", 1),        # fa cos -> RX up-mix I
+        ("lo_a", 1, "rx_uq", 1),        # fa sin -> RX up-mix Q
+        # SHARED fc-NCO: cos (0) -> TX up-mix I AND RX down-mix I; sin (1) -> both Q.
+        ("lo_c", 0, "tx_ui", 1),        # fc cos -> TX up-mix I
+        ("lo_c", 1, "tx_uq", 1),        # fc sin -> TX up-mix Q
+        ("lo_c", 0, "rx_mi", 1),        # fc cos -> RX down-mix I
+        ("lo_c", 1, "rx_mq", 1),        # fc sin -> RX down-mix Q
+        # TX dataflow
         ("tx_mi", 0, "tx_lpi", 0),
         ("tx_mq", 0, "tx_lpq", 0),
         ("tx_lpi", 0, "tx_ui", 0),
-        ("tx_lo_c", 0, "tx_ui", 1),     # NCO fc cos -> upmix I
         ("tx_lpq", 0, "tx_uq", 0),
-        ("tx_lo_c", 1, "tx_uq", 1),     # NCO fc sin -> upmix Q
         ("tx_ui", 0, "tx_ssb", 0),      # SSB = uI - uQ
         ("tx_uq", 0, "tx_ssb", 1),
-        # RX half
+        # RX dataflow
         ("tx_ssb", 0, "rx_mi", 0),
         ("tx_ssb", 0, "rx_mq", 0),
-        ("rx_lo_c", 0, "rx_mi", 1),
-        ("rx_lo_c", 1, "rx_mq", 1),
         ("rx_mi", 0, "rx_lpi", 0),
         ("rx_mq", 0, "rx_lpq", 0),
         ("rx_lpi", 0, "rx_ui", 0),
-        ("rx_lo_a", 0, "rx_ui", 1),
         ("rx_lpq", 0, "rx_uq", 0),
-        ("rx_lo_a", 1, "rx_uq", 1),
         ("rx_ui", 0, "rx_aud", 0),
         ("rx_uq", 0, "rx_aud", 1),
         ("rx_aud", 0, "g4", 0),

@@ -596,13 +596,13 @@ class AppController(QObject):
         plan = placer.plan(chip)
         if not self._plan_is_legal(plan, chip, w, h, footprint, port_maps):
             try:
-                # Routing channels: add slack in ONE axis (a free column between block
-                # columns => vertical routing lanes) escalating with the reserve. Uniform
-                # (both-axis) slack over-constrains CP-SAT (it can't pack inflated boxes);
-                # x-only slack keeps the model solvable while giving the router lanes.
-                plan = plan_cpsat(placer, chip,
-                                  slack_x=max(0, channel_reserve - 1), slack_y=0,
-                                  max_time_s=20.0)
+                # Compact wirelength-min packing (slack 0). Routing channels via a
+                # uniform per-block slack are NOT used: a +1 ring around these tall
+                # blocks is provably infeasible on 10x12 (inflated area > 120 cells),
+                # and the wirelength objective keeps blocks close anyway. Making the
+                # DENSE compact layout routable (free-neighbour taps / a maze router)
+                # is the follow-up router work — see dev_docs/PNR_DEFECTS.
+                plan = plan_cpsat(placer, chip, channel_slack=0, max_time_s=20.0)
                 # CP-SAT emits ABSOLUTE min-corner positions (ports kept free — no
                 # lead-on-port), so clear the serpentine placer's lead-block marker: the
                 # apply step below must translate EVERY block by its min corner, not

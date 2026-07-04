@@ -118,22 +118,28 @@ def plan_cpsat(placer, chip: int, *, max_time_s: float = 10.0,
         hv = model.NewIntVar(1, H, f"h_{b.name}")
         xv = model.NewIntVar(0, W, f"x_{b.name}")
         yv = model.NewIntVar(0, H, f"y_{b.name}")
-        icx = model.NewIntVar(0, W, f"icx_{b.name}")
-        icy = model.NewIntVar(0, H, f"icy_{b.name}")
-        ocx = model.NewIntVar(0, W, f"ocx_{b.name}")
-        ocy = model.NewIntVar(0, H, f"ocy_{b.name}")
+        # The I/O-cell vars + their per-orientation enforcement are ONLY needed for the
+        # wirelength objective (slack 0). At slack>0 we solve a LEAN feasibility model
+        # (packing only) — building these bloats it enough to stall even feasibility.
+        want_io = (max(channel_slack, slack_x or 0, slack_y or 0) == 0)
+        if want_io:
+            icx = model.NewIntVar(0, W, f"icx_{b.name}")
+            icy = model.NewIntVar(0, H, f"icy_{b.name}")
+            ocx = model.NewIntVar(0, W, f"ocx_{b.name}")
+            ocy = model.NewIntVar(0, H, f"ocy_{b.name}")
         for j, (k, w, h, io) in enumerate(cands):
             lit = model.NewBoolVar(f"o_{b.name}_{j}")
             lits.append((lit, k, w, h, io))
             model.Add(wv == w).OnlyEnforceIf(lit)
             model.Add(hv == h).OnlyEnforceIf(lit)
-            # I/O cell = min-corner + this orientation's offsets (fallback: corner).
-            iox, ioy = (io[0] if io and io[0] else (0, 0))
-            oox, ooy = (io[1] if io and io[1] else (0, 0))
-            model.Add(icx == xv + iox).OnlyEnforceIf(lit)
-            model.Add(icy == yv + ioy).OnlyEnforceIf(lit)
-            model.Add(ocx == xv + oox).OnlyEnforceIf(lit)
-            model.Add(ocy == yv + ooy).OnlyEnforceIf(lit)
+            if want_io:
+                # I/O cell = min-corner + this orientation's offsets (else corner).
+                iox, ioy = (io[0] if io and io[0] else (0, 0))
+                oox, ooy = (io[1] if io and io[1] else (0, 0))
+                model.Add(icx == xv + iox).OnlyEnforceIf(lit)
+                model.Add(icy == yv + ioy).OnlyEnforceIf(lit)
+                model.Add(ocx == xv + oox).OnlyEnforceIf(lit)
+                model.Add(ocy == yv + ooy).OnlyEnforceIf(lit)
         model.AddExactlyOne(l for l, *_ in lits)
         # In-bounds (+ channel slack on the far edges, clamped to the array).
         model.Add(xv + wv <= W)
@@ -157,8 +163,9 @@ def plan_cpsat(placer, chip: int, *, max_time_s: float = 10.0,
         bx[b.name], by[b.name] = xv, yv
         wv_, hv_ = wv, hv
         kind_of[b.name] = lits
-        in_cx[b.name], in_cy[b.name] = icx, icy
-        out_cx[b.name], out_cy[b.name] = ocx, ocy
+        if want_io:
+            in_cx[b.name], in_cy[b.name] = icx, icy
+            out_cx[b.name], out_cy[b.name] = ocx, ocy
 
     model.AddNoOverlap2D(x_intervals, y_intervals)
 
@@ -193,26 +200,28 @@ def plan_cpsat(placer, chip: int, *, max_time_s: float = 10.0,
         terms.append(dx)
         terms.append(dy)
 
+    # The wirelength objective (and the I/O-cell vars it needs) only exist at slack 0 —
+    # a slack>0 model is solved for a LEGAL packing only (feasibility unblocks the
+    # router; the objective would make an inflated model too slow to even satisfy).
+    slack_max = max(channel_slack, slack_x or 0, slack_y or 0)
     CAP = W + H
-    for b in blocks:
-        drv = placer._driver_of.get(b.name)
-        if drv is not None and drv in in_cx:
-            # driver output cell -> this block input cell
-            manhattan(out_cx[drv], out_cy[drv], in_cx[b.name], in_cy[b.name], CAP)
-        # port-fed head: chip input port cell -> this block input cell
-        pin = placer._in_port_of.get(b.name)
-        if pin is not None:
-            manhattan(model.NewConstant(int(pin[0])), model.NewConstant(int(pin[1])),
-                      in_cx[b.name], in_cy[b.name], CAP)
-        # terminal: this block output cell -> chip output port cell
-        pout = placer._out_port_of.get(b.name)
-        if pout is not None:
-            manhattan(out_cx[b.name], out_cy[b.name],
-                      model.NewConstant(int(pout[0])),
-                      model.NewConstant(int(pout[1])), CAP)
-
-    if terms:
-        model.Minimize(sum(terms))
+    if slack_max == 0:
+        for b in blocks:
+            drv = placer._driver_of.get(b.name)
+            if drv is not None and drv in in_cx:
+                manhattan(out_cx[drv], out_cy[drv], in_cx[b.name], in_cy[b.name], CAP)
+            pin = placer._in_port_of.get(b.name)
+            if pin is not None:
+                manhattan(model.NewConstant(int(pin[0])),
+                          model.NewConstant(int(pin[1])),
+                          in_cx[b.name], in_cy[b.name], CAP)
+            pout = placer._out_port_of.get(b.name)
+            if pout is not None:
+                manhattan(out_cx[b.name], out_cy[b.name],
+                          model.NewConstant(int(pout[0])),
+                          model.NewConstant(int(pout[1])), CAP)
+        if terms:
+            model.Minimize(sum(terms))
 
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = float(max_time_s)
@@ -235,11 +244,15 @@ def plan_cpsat(placer, chip: int, *, max_time_s: float = 10.0,
         positions[b.name] = (chip, px, py)
         orientations[b.name] = chosen
 
-    # A loose spine hint (flow-ordered block output cells) for the router's threader.
+    # A loose spine hint (flow-ordered block min corners; the router's threader only
+    # needs an ordered set of interior waypoints). Uses out-cell when available (slack
+    # 0), else the block corner (lean feasibility model).
     spine = []
     for n in order:
         if n in out_cx:
             spine.append((int(solver.Value(out_cx[n])), int(solver.Value(out_cy[n]))))
+        elif n in bx:
+            spine.append((int(solver.Value(bx[n])), int(solver.Value(by[n]))))
 
     return PlacePlan(positions=positions, order=order, orientations=orientations,
                      spine=spine, backward_edges=backward)

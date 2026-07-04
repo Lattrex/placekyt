@@ -1310,7 +1310,20 @@ class MainWindow(QMainWindow):
                 # would leave the boxed net as a named failure. For block-to-block routing
                 # (no bus) keep the single-pass auto_route_all with the flow-orient re-pass.
                 if opts["use_bus"] in ("always", "bus", "ring"):
-                    report = self.controller.auto_pnr(use_bus=opts["use_bus"])
+                    # GRACEFUL TERMINATION: a hard/unroutable design (e.g. the SSB Weaver)
+                    # makes auto_pnr grind through up to 9 CP-SAT attempts (~minutes). Run
+                    # it under a cancellable progress dialog: the user can bail out at any
+                    # attempt boundary, and even if they don't, the controller's time
+                    # budget caps the wall clock. Without this the GUI hard-freezes and the
+                    # only recovery is to kill placeKYT.
+                    report = self._auto_pnr_with_progress(opts["use_bus"])
+                    if report is None:            # user cancelled — leave placement as-is
+                        self._after_project_loaded()
+                        self.statusBar().showMessage(
+                            "Auto-routing cancelled — blocks placed, draw routes "
+                            "manually or re-run Route All.", 8000)
+                        self._watch_grc_source(path)
+                        return
                 else:
                     report = self.controller.auto_route_all(
                         use_bus=opts["use_bus"], auto_orient=True)
@@ -1338,6 +1351,46 @@ class MainWindow(QMainWindow):
                 f"{msg}\n\nUnmapped blocks (skipped): {names}")
         else:
             self.statusBar().showMessage(msg, 6000)
+
+    def _auto_pnr_with_progress(self, use_bus: str):
+        """Run ``controller.auto_pnr`` under a cancellable modal progress dialog.
+
+        auto_pnr's place<->route sweep can take up to ~9 CP-SAT attempts on a hard design;
+        run synchronously on the GUI thread that reads as a hard freeze. We keep the model
+        mutation on the GUI thread (the undo stack + project model are not thread-safe) but
+        pump the Qt event loop at each attempt boundary so the dialog paints + its Cancel
+        button responds. CP-SAT solves inside an attempt still hold the thread (C extension,
+        GIL) — cancellation therefore latches at the NEXT attempt boundary, which the
+        controller's per-attempt time budget bounds. Returns the AutoRouteReport, or None
+        if the user cancelled."""
+        from PySide6.QtWidgets import QProgressDialog, QApplication
+        from PySide6.QtCore import Qt
+
+        dlg = QProgressDialog("Placing & routing…", "Cancel", 0, 9, self)
+        dlg.setWindowTitle("Auto place & route")
+        dlg.setWindowModality(Qt.WindowModal)
+        dlg.setMinimumDuration(0)          # show immediately (long op)
+        dlg.setAutoClose(False)
+        dlg.setAutoReset(False)
+        dlg.setValue(0)
+        QApplication.processEvents()
+
+        def _progress(done: int, total: int, msg: str) -> None:
+            dlg.setMaximum(total)
+            dlg.setValue(done)
+            dlg.setLabelText(msg)
+            QApplication.processEvents()   # paint + capture a Cancel click
+
+        try:
+            report = self.controller.auto_pnr(
+                use_bus=use_bus,
+                should_cancel=dlg.wasCanceled,
+                progress=_progress)
+        finally:
+            dlg.close()
+        if dlg.wasCanceled():
+            return None
+        return report
 
     def _ask_import_options(self):
         """Dialog: full place-and-route vs rough placement. Returns

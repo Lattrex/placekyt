@@ -1431,7 +1431,9 @@ class AppController(QObject):
         return moved
 
     def auto_pnr(self, chip_types: dict | None = None, *, chip: int = 0,
-                 use_bus: str = "always", register: bool = True):
+                 use_bus: str = "always", register: bool = True,
+                 time_budget_s: float = 45.0, should_cancel=None,
+                 progress=None):
         """Iterative place-and-route (the OpenROAD-style place<->route loop, §PNR).
 
         Pack blocks compactly (topology-agnostic), route, and on a routing failure
@@ -1442,9 +1444,28 @@ class AppController(QObject):
         never regress below the existing fallback. The ACCEPTED iteration is applied as
         ONE undoable composite (exploration iterations run unregistered + are reverted).
 
+        ``time_budget_s`` is a GLOBAL wall-clock cap on the whole (up to 9-attempt) sweep.
+        A hard design (the compact CP-SAT pack + several CP-SAT solves) would otherwise
+        grind for minutes; when called on the GUI thread that reads as a FREEZE. Once the
+        budget is spent, the sweep STOPS EARLY and accepts the best partial found so far
+        (a NAMED partial route), so the caller returns promptly with a clear result rather
+        than locking up. A full route found before the budget still wins immediately.
         Returns the accepted :class:`~engine.autoroute.AutoRouteReport` (or the best
-        attempt's report on bound exhaustion — a NAMED partial, never a silent build)."""
+        attempt's report on bound/budget exhaustion — a NAMED partial, never a silent
+        build).
+
+        ``should_cancel`` (optional, no-arg callable -> bool) lets the CALLER abort the
+        sweep between attempts — the GUI passes a QProgressDialog's ``wasCanceled`` so the
+        user can bail out of a hard design without waiting for the time budget. When it
+        returns True the sweep stops and returns the best partial found so far (raising
+        PlacementError only if nothing placed yet), exactly like the budget path. It is
+        polled ONLY between attempts (never mid-CP-SAT), so cancellation is graceful, not a
+        kill. ``progress`` (optional, callable(done:int, total:int, msg:str)) is invoked at
+        each attempt boundary so the GUI can advance a progress bar + keep the event loop
+        alive without threading the model mutation."""
         from engine.bus_router import crossover_plan
+        import time as _time
+        _t0 = _time.monotonic()
 
         cts = chip_types or self.chip_types()
         ct = cts.get(self.project.chip(chip).type_name if self.project.chip(chip)
@@ -1463,7 +1484,24 @@ class AppController(QObject):
                     + [(2, s) for s in range(3)]
                     + [(3, s) for s in range(3)]
                     + [(4, s) for s in range(2)])
-        for reserve, seed in attempts:
+        for attempt_i, (reserve, seed) in enumerate(attempts):
+            # Progress + event-loop pump so the GUI's cancellable dialog stays live and the
+            # window does not read as frozen while attempts grind. Runs BEFORE the budget/
+            # cancel checks so the bar reaches 100% (or the cancel latches) promptly.
+            if progress is not None:
+                progress(attempt_i, len(attempts),
+                         f"place & route (attempt {attempt_i + 1}/{len(attempts)})")
+            # GLOBAL TIME BUDGET + USER CANCEL (graceful termination): stop the sweep once
+            # the wall-clock budget is spent OR the user cancels, so a hard/unroutable
+            # design does not grind through all 9 CP-SAT attempts and freeze the GUI.
+            # Always run the FIRST attempt (so we never return empty); after that, bail as
+            # soon as the budget is exceeded / cancel is requested and accept the best
+            # partial found so far. Polled BETWEEN attempts only — cancellation is graceful
+            # (finish the current attempt's model state cleanly), never a mid-solve kill.
+            if attempt_i > 0 and (
+                    (_time.monotonic() - _t0) > time_budget_s
+                    or (should_cancel is not None and should_cancel())):
+                break
             self._pnr_channel_reserve = reserve
             self._pnr_seed = seed
             snap = self.project.snapshot() if hasattr(self.project, "snapshot") else None

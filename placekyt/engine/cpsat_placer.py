@@ -51,7 +51,8 @@ _ALL_KINDS = (None, "cw", "ccw", "mirror_h", "mirror_v")
 def plan_cpsat(placer, chip: int, *, max_time_s: float = 10.0,
                channel_slack: int = 0, slack_x: int | None = None,
                slack_y: int | None = None, tap_reserve: bool = False,
-               wirelength: bool = False, random_seed: int | None = None) -> PlacePlan:
+               wirelength: bool = False, random_seed: int | None = None,
+               abutment_first: bool = False) -> PlacePlan:
     """Compute a wirelength-minimising placement for the blocks on ``chip`` using
     CP-SAT. ``placer`` is a configured :class:`~engine.autoplace.AutoPlacer` (its
     footprint / port-map / chip-port / feedback providers are reused). Raises
@@ -60,7 +61,17 @@ def plan_cpsat(placer, chip: int, *, max_time_s: float = 10.0,
 
     ``channel_slack`` inflates each block's bounding box by that many cells on the
     right/bottom so the solver keeps a routing gap around blocks (the place<->route
-    loop raises it on a routing failure)."""
+    loop raises it on a routing failure).
+
+    ``abutment_first`` (compact FIXED designs): make DIRECT ABUTMENT the primary goal.
+    For each driver->consumer edge a boolean ``abut`` is true iff their output/input
+    cells are orthogonally ADJACENT (Manhattan distance 1); the objective MAXIMISES the
+    abutted-edge count first (wirelength stays a small secondary tie-break). The solver
+    then chains blocks into abutted filaments — data flows cell-to-cell with NO routing
+    cell (the router's ``is_abutment`` path), and the compact chains leave free broker
+    neighbours for the genuine fan-ins. This is the efficient layout for a FIXED
+    transceiver (Weaver/AM/FM); the bus topology is for dynamic reconfiguration.
+    ``tap_reserve`` is ignored in this mode (abutment replaces the reservation)."""
     cp_model = _cp_model()
     W, H = placer._width, placer._height
 
@@ -335,14 +346,25 @@ def plan_cpsat(placer, chip: int, *, max_time_s: float = 10.0,
     # port->head terms (the ports are fixed cells). Plus a light compaction pull toward
     # the input-port corner so a sparse array still packs near the source.
     terms = []
+    abut_bools = []   # per-edge "output/input cells are adjacent" (abutment_first)
 
-    def manhattan(ax, ay, bx_, by_, cap):
+    def manhattan(ax, ay, bx_, by_, cap, *, edge=False):
         dx = model.NewIntVar(0, cap, "")
         dy = model.NewIntVar(0, cap, "")
         model.AddAbsEquality(dx, ax - bx_)
         model.AddAbsEquality(dy, ay - by_)
         terms.append(dx)
         terms.append(dy)
+        # For a block->block dataflow edge, a boolean that is TRUE iff the driver's
+        # output cell and the consumer's input cell are orthogonally ADJACENT (Manhattan
+        # distance exactly 1) — i.e. the pair can ABUT (route-free @1 handoff).
+        if edge:
+            dsum = model.NewIntVar(0, 2 * cap, "")
+            model.Add(dsum == dx + dy)
+            ab = model.NewBoolVar("")
+            model.Add(dsum == 1).OnlyEnforceIf(ab)
+            model.Add(dsum != 1).OnlyEnforceIf(ab.Not())
+            abut_bools.append(ab)
 
     # The wirelength objective (and the I/O-cell vars it needs) only exist at slack 0 —
     # a slack>0 model is solved for a LEGAL packing only (feasibility unblocks the
@@ -353,7 +375,8 @@ def plan_cpsat(placer, chip: int, *, max_time_s: float = 10.0,
         for b in blocks:
             drv = placer._driver_of.get(b.name)
             if drv is not None and drv in in_cx:
-                manhattan(out_cx[drv], out_cy[drv], in_cx[b.name], in_cy[b.name], CAP)
+                manhattan(out_cx[drv], out_cy[drv], in_cx[b.name], in_cy[b.name], CAP,
+                          edge=True)
             pin = placer._in_port_of.get(b.name)
             if pin is not None:
                 manhattan(model.NewConstant(int(pin[0])),
@@ -364,7 +387,14 @@ def plan_cpsat(placer, chip: int, *, max_time_s: float = 10.0,
                 manhattan(out_cx[b.name], out_cy[b.name],
                           model.NewConstant(int(pout[0])),
                           model.NewConstant(int(pout[1])), CAP)
-        if terms:
+        # ABUTMENT-FIRST: maximise the number of abutted (route-free) dataflow edges as
+        # the PRIMARY objective; total wirelength stays a small secondary tie-break so
+        # the non-abutting nets still route short. Weight the abut count far above the
+        # wirelength sum (each abutment saves a whole corridor, worth >> one cell of wire).
+        if abutment_first and abut_bools:
+            ABUT_W = 2 * (W + H)   # one abutment outweighs any single wire term
+            model.Maximize(ABUT_W * sum(abut_bools) - sum(terms))
+        elif terms:
             model.Minimize(sum(terms))
 
     solver = cp_model.CpSolver()

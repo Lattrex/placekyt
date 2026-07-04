@@ -622,9 +622,17 @@ class AppController(QObject):
                 # unroutable packs). The compact reserve-1 pack gets the full budget; the
                 # seeded looser attempts a moderate one.
                 tlimit = 15.0 if seed is not None else 25.0
+                # ABUTMENT-FIRST (compact fixed designs): make direct block-to-block
+                # abutment the primary placement goal so linear dataflow chains route
+                # cell-to-cell with NO routing cells, leaving free broker neighbours for
+                # the genuine fan-ins. Set by auto_pnr for the "block" topology (default);
+                # bus/ring leave it off (dynamic-reconfig backbone). The abut objective
+                # lives in the wirelength block, so force wirelength on when it's active.
+                abut = bool(getattr(self, "_pnr_abutment_first", False))
                 plan = plan_cpsat(placer, chip, channel_slack=0,
-                                  slack_x=sx, slack_y=sy, wirelength=wl,
-                                  tap_reserve=tr, random_seed=seed,
+                                  slack_x=sx, slack_y=sy, wirelength=wl or abut,
+                                  tap_reserve=(False if abut else tr),
+                                  abutment_first=abut, random_seed=seed,
                                   max_time_s=tlimit)
                 # CP-SAT emits ABSOLUTE min-corner positions (ports kept free — no
                 # lead-on-port), so clear the serpentine placer's lead-block marker: the
@@ -1473,6 +1481,13 @@ class AppController(QObject):
 
         best = None
         place_fail = None   # last PlacementError, if a reserve packs illegally
+        # ABUTMENT-FIRST placement is the DEFAULT for the block-to-block topology (compact
+        # FIXED designs — Weaver/AM/FM): the placer chains dataflow blocks adjacent so most
+        # nets abut (route-free) and the fan-ins keep free broker neighbours. The bus/ring
+        # topologies (dynamic reconfig) keep the wirelength-only pack + backbone. auto_place
+        # reads this flag when it invokes the CP-SAT placer.
+        topology = self._select_topology(use_bus)
+        self._pnr_abutment_first = (topology == "block")
         # Integrated place<->route sweep. Each attempt is a (reserve, seed): the reserve
         # picks the CP-SAT slack/tap config (tight compact -> looser channels + I/O taps),
         # the seed diversifies the layout among equal-cost packings (a compact pack routes

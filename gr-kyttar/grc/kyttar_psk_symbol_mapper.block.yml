@@ -15,8 +15,15 @@ parameters:
 - id: modulation
   label: Modulation
   dtype: enum
+  # BPSK maps to a REAL constellation (±1 on the I axis, Q=0) — a single real output
+  # rail on-chip. QPSK/8-PSK are genuinely complex (I and Q both vary). The output port
+  # dtype follows the modulation via out_type so a BPSK TX chain (upsampler/RRC/upconvert
+  # all real) type-checks, while QPSK stays complex. (Hardcoding complex broke the BPSK
+  # modem .grc: mapper(complex) → upsampler(real) mismatched.)
   options: ['"bpsk"', '"qpsk"', '"8psk"']
   option_labels: [BPSK, QPSK, 8-PSK]
+  option_attributes:
+    out_type: [float, complex, complex]
   default: '"bpsk"'
 
 inputs:
@@ -27,7 +34,7 @@ inputs:
 outputs:
 - label: out
   domain: stream
-  dtype: complex
+  dtype: ${ modulation.out_type }
 
 documentation: |-
   🧪 PROOF-OF-CONCEPT: this block works in a demo but has NOT been through

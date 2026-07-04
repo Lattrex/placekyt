@@ -23,9 +23,15 @@ parameters:
   default: '4000'
 
 inputs:
+# REAL in-phase rail. On-chip the block reads xi@R0 and xq@R1 as two SCALAR reals and
+# computes out = xi·cos − xq·sin. GNU Radio has no "two-real-into-one-symbol" port, and a
+# BPSK TX drives only I (xq=R1 defaults to 0 → out = I·cos, the correct BPSK passband),
+# so the GRC contract is a single REAL xi input. (Declaring complex was wrong — the block
+# never takes an interleaved I/Q buffer; it takes real rails. A QPSK/full-I/Q TX that
+# needs the Q rail wires it via the mapper's two real outputs, not a complex port here.)
 - label: xi
   domain: stream
-  dtype: complex
+  dtype: float
 
 outputs:
 - label: out

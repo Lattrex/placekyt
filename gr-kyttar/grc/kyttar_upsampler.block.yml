@@ -17,15 +17,31 @@ parameters:
   dtype: int
   default: '4'
 
+# Stream type. The upsampler is a dtype-AGNOSTIC zero-stuffer (it just repeats a
+# sample then inserts sps-1 zeros), so its GRC port dtype must match how the chain
+# uses it: REAL for a BPSK symbol stream (mapper emits I only, Q=0), COMPLEX for
+# QPSK/8-PSK (true I/Q symbols). An enum (not a bool) sets the port dtype directly
+# from io_type — same pattern as kyttar_source's Input Type. Default float: the
+# BPSK TX chain (the shipped demo) carries real symbols, and declaring complex here
+# was the metadata bug that made the modem .grc raise float/complex type mismatches.
+- id: io_type
+  label: Stream Type
+  dtype: enum
+  default: float
+  options: [float, complex]
+  option_labels: ['Real (float)', 'I/Q (complex)']
+  option_attributes:
+    io_type: [float, complex]
+
 inputs:
 - label: x
   domain: stream
-  dtype: complex
+  dtype: ${ io_type }
 
 outputs:
 - label: out
   domain: stream
-  dtype: complex
+  dtype: ${ io_type }
 
 asserts:
 - ${ 1 <= sps <= 8 }

@@ -303,19 +303,18 @@ def test_multicell_block_packed_without_overlap(qapp, catalog, chip_type):
 # --------------------------------------------------------------------------- #
 
 def test_overflowing_design_raises_placement_error(catalog, chip_type):
-    """A design too tall to pack legally on the 10x12 array must raise
-    PlacementError (a NAMED failure), NOT silently place cells off-grid."""
+    """A design whose blocks genuinely EXCEED the array's cell budget must raise
+    PlacementError (a NAMED failure) rather than silently place cells off-grid.
+    Neither the serpentine packer nor the CP-SAT rescue can fit it, so the loud
+    failure is the correct terminal outcome."""
     from engine.errors import PlacementError
 
     ctrl = AppController(catalog=catalog)
     ctrl.new_project("overflow", "kyttar_10x12")
-    # A chain of un-rotatable 6-row-tall ComplexMixers that genuinely CANNOT fit the
-    # 12-row array however it is packed (six at 6 rows + 2 wide each => far more tall
-    # block area than 10x12 holds, and they are rotation-locked internal-feedback
-    # blocks so height is the hard axis). The packer must FAIL LOUDLY with named
-    # off-grid problems, not silently place cells outside the array.
+    # 12 ComplexMixers x 11 cells = 132 cells > the 120-cell 10x12 array. No placement
+    # exists, so the placer MUST fail loudly (not emit off-grid cells).
     prev = None
-    for i in range(6):
+    for i in range(12):
         m = ctrl.place_block(
             "ComplexMixerBlock", 0, 1, 1, library="lattrex.official",
             params={"sample_rate": 32000.0, "frequency": -1500.0 * (i + 1)})

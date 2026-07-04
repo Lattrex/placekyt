@@ -596,13 +596,36 @@ class AppController(QObject):
         plan = placer.plan(chip)
         if not self._plan_is_legal(plan, chip, w, h, footprint, port_maps):
             try:
-                # Compact wirelength-min packing (slack 0). Routing channels via a
-                # uniform per-block slack are NOT used: a +1 ring around these tall
-                # blocks is provably infeasible on 10x12 (inflated area > 120 cells),
-                # and the wirelength objective keeps blocks close anyway. Making the
-                # DENSE compact layout routable (free-neighbour taps / a maze router)
-                # is the follow-up router work — see dev_docs/PNR_DEFECTS.
-                plan = plan_cpsat(placer, chip, channel_slack=0, max_time_s=20.0)
+                # Compact wirelength-min packing. The auto-P&R loop raises
+                # ``channel_reserve`` on a routing failure; map it to CP-SAT slack so a
+                # dense pack the maze router can't route opens ROUTING CHANNELS between
+                # blocks. A uniform +1 ring is infeasible on 10x12 (inflated tall-block
+                # area > 120), but ONE-AXIS slack fits (proven: slack_x=1 OR slack_y=1
+                # feasible, both together not) — so reserve 2 -> x-slack, 3 -> y-slack,
+                # 4 -> (fallback) x-slack again. reserve 1 = the compact slack-0 pack.
+                cr = int(getattr(self, "_pnr_channel_reserve", 1))
+                # The auto-P&R loop raises ``channel_reserve`` on a routing failure; map
+                # it to a (slack_x, slack_y, tap_reserve) CP-SAT config. reserve 1 = the
+                # compact wirelength pack; higher reserves open ONE-AXIS routing channels
+                # (both-axis slack is infeasible on 10x12) and reserve I/O broker taps so
+                # the maze router always has a tap + corridor. The loop keeps whichever
+                # config routes the most nets (each config is tried + route-scored).
+                sx, sy, tr = {
+                    1: (0, 0, False),
+                    2: (1, 0, "out"),
+                    3: (1, 0, "out+fanin"),   # expose fan-in input cells (IQUpconvert)
+                    4: (0, 1, "out+fanin"),
+                }.get(cr, (0, 0, False))
+                wl = (max(sx, sy) > 0) or bool(tr)
+                seed = getattr(self, "_pnr_seed", None)
+                # A good CP-SAT layout needs a real budget (short budgets give scattered,
+                # unroutable packs). The compact reserve-1 pack gets the full budget; the
+                # seeded looser attempts a moderate one.
+                tlimit = 15.0 if seed is not None else 25.0
+                plan = plan_cpsat(placer, chip, channel_slack=0,
+                                  slack_x=sx, slack_y=sy, wirelength=wl,
+                                  tap_reserve=tr, random_seed=seed,
+                                  max_time_s=tlimit)
                 # CP-SAT emits ABSOLUTE min-corner positions (ports kept free — no
                 # lead-on-port), so clear the serpentine placer's lead-block marker: the
                 # apply step below must translate EVERY block by its min corner, not
@@ -1429,10 +1452,20 @@ class AppController(QObject):
 
         best = None
         place_fail = None   # last PlacementError, if a reserve packs illegally
-        # Monotone-looseness sweep: tight (reserve 1) -> looser. Each raises the routing
-        # channel reserve the compact placer leaves, opening more room for the router.
-        for reserve in (1, 2, 3, 4):
+        # Integrated place<->route sweep. Each attempt is a (reserve, seed): the reserve
+        # picks the CP-SAT slack/tap config (tight compact -> looser channels + I/O taps),
+        # the seed diversifies the layout among equal-cost packings (a compact pack routes
+        # variably — some layouts box an I/O cell). We KEEP the first attempt that fully
+        # routes with a clean DRC; else the best partial. reserve 1 is the compact pack
+        # (a single seed suffices — the wirelength optimum is stable); the looser
+        # reserves' feasibility models vary a lot, so we try several seeds each.
+        attempts = ([(1, None)]
+                    + [(2, s) for s in range(3)]
+                    + [(3, s) for s in range(3)]
+                    + [(4, s) for s in range(2)])
+        for reserve, seed in attempts:
             self._pnr_channel_reserve = reserve
+            self._pnr_seed = seed
             snap = self.project.snapshot() if hasattr(self.project, "snapshot") else None
             # Clear any routes left by the PREVIOUS iteration BEFORE re-placing +
             # re-routing. ``auto_route_all`` only routes UNROUTED nets, so a stale route
@@ -1500,6 +1533,7 @@ class AppController(QObject):
         # must shrink the design, split across chips, or (D3) a tighter orientation.
         if best is None:
             self._pnr_channel_reserve = 1
+            self._pnr_seed = None
             if place_fail is not None:
                 raise place_fail
             raise PlacementError(
@@ -1518,6 +1552,7 @@ class AppController(QObject):
         else:
             report = best[2]
         self._pnr_channel_reserve = 1
+        self._pnr_seed = None
         return report
 
     def auto_route_all(self, chip_types: dict | None = None, *,
@@ -1626,7 +1661,15 @@ class AppController(QObject):
         from engine.cpsat_router import route_all_cpsat, CpSatUnavailable
 
         if use_bus == "always":
-            return self._bus_route(port_cells, chip_types, port_maps, topology)
+            report = self._bus_route(port_cells, chip_types, port_maps, topology)
+            # The bus/broker router grows ONE shared backbone; it CANNOT route a
+            # compact 2-D pack (the CP-SAT Weaver) — it starves on broker taps /
+            # corridors. Escalate any residual failures to the MAZE router, which
+            # routes any legal placement node-disjoint. Keep it only if it routes more.
+            if report.ok:
+                return report
+            maze = self._maze_route(port_cells, chip_types, port_maps)
+            return maze if len(maze.routed) > len(report.routed) else report
         if use_cpsat == "always":
             report = route_all_cpsat(self.project, chip_types, port_cells)
         else:
@@ -1645,8 +1688,13 @@ class AppController(QObject):
         # bus/broker router, which can. Keep its result only if it routes more.
         bus = self._bus_route(port_cells, chip_types, port_maps, topology)
         if len(bus.routed) > len(report.routed):
-            return bus
-        return report
+            report = bus
+        if report.ok:
+            return report
+        # STILL failures (a compact 2-D pack the backbone can't route) — final
+        # escalation to the maze router (routes any legal placement node-disjoint).
+        maze = self._maze_route(port_cells, chip_types, port_maps)
+        return maze if len(maze.routed) > len(report.routed) else report
 
     def _select_topology(self, use_bus) -> str:
         """Pick the routing topology (doc/ROUTING_TOPOLOGIES.md) for the current
@@ -1701,6 +1749,17 @@ class AppController(QObject):
         return route_all_bus(self.project, chip_types, port_cells,
                              spine_provider=spine, port_map_provider=port_maps,
                              topology=topology)
+
+    def _maze_route(self, port_cells, chip_types, port_maps):
+        """Run the maze router (:func:`engine.maze_router.route_all_maze`) — per-net
+        A* + rip-up-reroute over the free-cell grid. It routes ANY legal placement
+        (including the compact CP-SAT pack the bus backbone can't) node-disjoint, so
+        the single-``fwd_face`` rule is trivially sound and the build's broker/
+        crossover derivation works unchanged."""
+        from engine.maze_router import route_all_maze
+
+        return route_all_maze(self.project, chip_types, port_cells,
+                              port_map_provider=port_maps)
 
     def _derive_spine(self, chip: int):
         """Re-derive the placement spine (dataflow-ordered bus hint) for ``chip`` from

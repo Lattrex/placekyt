@@ -10,6 +10,7 @@ GUI QFileSystemWatcher just calls it.
 """
 import os
 import tempfile
+from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -18,7 +19,8 @@ import yaml
 
 from ui.controller import AppController
 
-GRC = "/home/system/placekyt/examples/gain/gain.grc"
+REPO = Path(__file__).resolve().parents[2]            # repo root
+GRC = str(REPO / "examples" / "gain" / "gain.grc")
 pytestmark = pytest.mark.skipif(not os.path.exists(GRC), reason="gain.grc absent")
 
 

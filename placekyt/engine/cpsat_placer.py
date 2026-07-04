@@ -50,7 +50,8 @@ _ALL_KINDS = (None, "cw", "ccw", "mirror_h", "mirror_v")
 
 def plan_cpsat(placer, chip: int, *, max_time_s: float = 10.0,
                channel_slack: int = 0, slack_x: int | None = None,
-               slack_y: int | None = None) -> PlacePlan:
+               slack_y: int | None = None, tap_reserve: bool = False,
+               wirelength: bool = False, random_seed: int | None = None) -> PlacePlan:
     """Compute a wirelength-minimising placement for the blocks on ``chip`` using
     CP-SAT. ``placer`` is a configured :class:`~engine.autoplace.AutoPlacer` (its
     footprint / port-map / chip-port / feedback providers are reused). Raises
@@ -151,7 +152,7 @@ def plan_cpsat(placer, chip: int, *, max_time_s: float = 10.0,
         # The I/O-cell vars + their per-orientation enforcement are ONLY needed for the
         # wirelength objective (slack 0). At slack>0 we solve a LEAN feasibility model
         # (packing only) — building these bloats it enough to stall even feasibility.
-        want_io = (max(channel_slack, slack_x or 0, slack_y or 0) == 0)
+        want_io = wirelength or (max(channel_slack, slack_x or 0, slack_y or 0) == 0)
         if want_io:
             icx = model.NewIntVar(0, W, f"icx_{b.name}")
             icy = model.NewIntVar(0, H, f"icy_{b.name}")
@@ -241,23 +242,76 @@ def plan_cpsat(placer, chip: int, *, max_time_s: float = 10.0,
                 model.Add(cyv >= y2 + h).OnlyEnforceIf([lit, Bd])
             model.AddBoolOr([L, R, A, Bd])
 
-    # Tap reservation (experimental) — OFF: forcing a free input-neighbour per target
-    # contradicts the router's ABUTMENT case (an abutting driver body IS the tap), so it
-    # made the pack infeasible. The compact slack-0 pack is used as-is; routability of
-    # the dense layout is addressed in the router, not here.
-    tap_reserve = False and (max(channel_slack, slack_x or 0, slack_y or 0) == 0)
-    if tap_reserve:
-        # Reserve the INPUT tap only — the router's failure is "no free broker cell
-        # abutting the target INPUT". An output egresses via the source cell's own face
-        # (handled differently), so reserving both taps double-books cells between
-        # abutting blocks and over-constrains the pack (proven infeasible). Only a
-        # block that is an actual net TARGET (has an incoming edge) needs an input tap.
+    # TAP RESERVATION — reserve a FREE broker/egress site outward of each net-endpoint
+    # I/O cell so the maze router always has a tap. The maze router routes a source→
+    # broker corridor and delivers into the target; a boxed I/O cell (buried in its own
+    # snake with no free neighbour) is exactly what makes it fail "no corridor from the
+    # source to the tap" / "no free broker cell". Reserving the OUTPUT tap (a free cell
+    # outward of each source's output cell) AND the INPUT tap (outward of each target's
+    # input cell) guarantees the router a corridor endpoint on both sides.
+    #
+    # Enabled ONLY when ``tap_reserve`` is requested (the maze-router place<->route
+    # path). It costs ~2 cells/block vs a full ring; the maze router's ABUTMENT handling
+    # means an abutting driver body is still a legal tap, so the reservation is a
+    # PREFERENCE realised as a keep-out only where it stays feasible (the solver relaxes
+    # to a compact pack via the reserve sweep if the keep-out is infeasible at reserve 1).
+    if tap_reserve and max(channel_slack, slack_x or 0, slack_y or 0) == 0:
         targets = {t for _, t in ((placer._driver_of.get(b.name), b.name)
                                   for b in blocks) if _ is not None}
+        sources = {s for s in (placer._driver_of.get(b.name) for b in blocks)
+                   if s is not None}
+        # FAN-IN targets (≥2 incoming edges, e.g. IQUpconvert xi+xq / ComplexToFloat
+        # re+im) genuinely NEED a free input tap: their two drivers can't BOTH abut one
+        # cell, so at least one delivers via a broker (a free abutting cell). Reserving a
+        # tap for JUST the fan-in inputs (a small set) is far more likely feasible than a
+        # per-block ring. ``tap_reserve == "fanin"`` reserves only those.
+        indeg: dict = {}
         for b in blocks:
-            if b.name in targets:
-                itx, ity, _otx, _oty = tap_cells[b.name]
+            drv = placer._driver_of.get(b.name)
+            if drv is not None:
+                indeg[b.name] = indeg.get(b.name, 0) + 1
+        # a block may be fed by MULTIPLE nets from one driver (complex xi/xq) — count the
+        # logical connections into it instead for a true fan-in signal.
+        try:
+            from model.connection import BlockEndpoint as _BE
+            conn_indeg: dict = {}
+            for conn in placer._project.connections:
+                if isinstance(conn.target, _BE):
+                    conn_indeg[conn.target.block] = \
+                        conn_indeg.get(conn.target.block, 0) + 1
+            fanin = {n for n, c in conn_indeg.items() if c >= 2}
+        except Exception:  # noqa: BLE001
+            fanin = set(indeg)
+        reserve_in = tap_reserve in (True, "both", "in", "fanin", "out+fanin")
+        reserve_out = tap_reserve in (True, "both", "out", "out+fanin")
+        fanin_only = tap_reserve in ("fanin", "out+fanin")
+        for b in blocks:
+            itx, ity, otx, oty = tap_cells[b.name]
+            want_in = (b.name in fanin) if fanin_only else (b.name in targets)
+            if reserve_in and want_in:
                 _forbid_inside(itx, ity, f"it_{b.name}")
+            if reserve_out and (b.name in sources
+                                or placer._out_port_of.get(b.name) is not None):
+                _forbid_inside(otx, oty, f"ot_{b.name}")
+
+        # Keep the INWARD-neighbour cell of every USED chip I/O port FREE (a port tap):
+        # a block boxing the cell just inside the port walls ingress/egress off the port
+        # (the IQUpconvert-boxes-x16_out case). Reserving these ≤4 cells is cheap and fixes
+        # the recurring egress/ingress "no corridor to the port" failures.
+        used_ports = set()
+        for ep in list(placer._in_port_of.values()) \
+                + list(placer._out_port_of.values()):
+            if ep is not None:
+                used_ports.add(tuple(ep))
+        for (pcx, pcy) in used_ports:
+            # the inward neighbours (all on-grid orthogonal cells) — reserve the ones
+            # that lie inside the array so at least one stays a free approach lane.
+            for ddx, ddy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                nb = (pcx + ddx, pcy + ddy)
+                if 0 <= nb[0] < W and 0 <= nb[1] < H:
+                    _forbid_inside(model.NewConstant(nb[0]),
+                                   model.NewConstant(nb[1]), f"pa_{nb[0]}_{nb[1]}")
+                    break  # one free approach lane per port is enough
 
     # Keep chip port cells free: no block box may cover a port cell. Per block per
     # port cell, the box lies entirely left/right/above/below the port cell.
@@ -295,7 +349,7 @@ def plan_cpsat(placer, chip: int, *, max_time_s: float = 10.0,
     # router; the objective would make an inflated model too slow to even satisfy).
     slack_max = max(channel_slack, slack_x or 0, slack_y or 0)
     CAP = W + H
-    if slack_max == 0:
+    if slack_max == 0 or wirelength:
         for b in blocks:
             drv = placer._driver_of.get(b.name)
             if drv is not None and drv in in_cx:
@@ -316,6 +370,12 @@ def plan_cpsat(placer, chip: int, *, max_time_s: float = 10.0,
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = float(max_time_s)
     solver.parameters.num_search_workers = 8
+    if random_seed is not None:
+        # Diversify the solution across attempts (integrated place<->route retries a few
+        # seeds and keeps the first fully-routable layout). A different seed + a single
+        # worker explores a different optimum among the many equal-wirelength packings.
+        solver.parameters.random_seed = int(random_seed)
+        solver.parameters.num_search_workers = 1
     status = solver.Solve(model)
     if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
         raise CpSatPlacerUnavailable(

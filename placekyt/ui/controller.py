@@ -583,7 +583,34 @@ class AppController(QObject):
                   .with_multi_filament(force_multi)
                   .with_compact(force_multi)
                   .with_channel_reserve(channel_reserve))
+        # Placement strategy. The serpentine packer produces the PROVEN layouts for the
+        # designs it can fit (its lead-on-port / bus-corridor conventions are what the
+        # router expects), so it stays the DEFAULT. But it wastes ~half the array on band
+        # channels and reports "does not fit" on designs occupying <60% of the cells (the
+        # SSB Weaver). The CP-SAT placer (engine/cpsat_placer) is a REAL 2D packer
+        # (AddNoOverlap2D, in-bounds, ports free, wirelength-min) that fits those — so it
+        # is the RESCUE path: use it only when the serpentine plan is ILLEGAL (off-grid /
+        # overlap), never displacing a working serpentine layout. ``channel_slack`` gives
+        # the router breathing room between the packed blocks.
+        from engine.cpsat_placer import plan_cpsat, CpSatPlacerUnavailable
         plan = placer.plan(chip)
+        if not self._plan_is_legal(plan, chip, w, h, footprint, port_maps):
+            try:
+                # Routing channels: add slack in ONE axis (a free column between block
+                # columns => vertical routing lanes) escalating with the reserve. Uniform
+                # (both-axis) slack over-constrains CP-SAT (it can't pack inflated boxes);
+                # x-only slack keeps the model solvable while giving the router lanes.
+                plan = plan_cpsat(placer, chip,
+                                  slack_x=max(0, channel_reserve - 1), slack_y=0,
+                                  max_time_s=20.0)
+                # CP-SAT emits ABSOLUTE min-corner positions (ports kept free — no
+                # lead-on-port), so clear the serpentine placer's lead-block marker: the
+                # apply step below must translate EVERY block by its min corner, not
+                # anchor a "lead" block's input cell on the port (which would shift the
+                # CP-SAT layout off its solved position).
+                placer._lead_block = None
+            except CpSatPlacerUnavailable:
+                pass  # keep the (illegal) serpentine plan; the D1 gate will name it
         used_bus_snake = False  # bus-snake pre-bake removed; compact pack is topology-agnostic
         # The INPUT-FED lead block (first in flow order, anchored at the port) must
         # land its INPUT/landing CELL on the port — not its min corner. The port
@@ -701,6 +728,21 @@ class AppController(QObject):
             for (cx, cy) in cells:
                 if not (0 <= cx < w and 0 <= cy < h):
                     return False
+        return True
+
+    def _plan_is_legal(self, plan, chip, w, h, footprint, port_maps) -> bool:
+        """True if the PLAN's block footprints are all on-grid AND non-overlapping —
+        checked WITHOUT mutating the project (via ``_plan_cell_footprints``). Used to
+        decide whether the serpentine plan is usable or the CP-SAT rescue placer is
+        needed. (``_placement_legality`` is the stronger check on the APPLIED cells.)"""
+        occ = set()
+        for _name, cells in self._plan_cell_footprints(plan, footprint, port_maps):
+            for (cx, cy) in cells:
+                if not (0 <= cx < w and 0 <= cy < h):
+                    return False
+                if (cx, cy) in occ:
+                    return False
+                occ.add((cx, cy))
         return True
 
     def _placement_legality(self, chip: int):

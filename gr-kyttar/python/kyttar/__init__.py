@@ -68,6 +68,8 @@ from .dsp_markers import (complex_rrc_matched_filter, complex_costas_loop,
                           psk_symbol_mapper, upsampler, rrc_pulse_shaper,
                           iq_upconvert, complex_to_float)
 from .gain import gain
+from .multiply import multiply
+from .add import add, subtract
 from .fir_filter import fir_filter
 from .low_pass_filter import low_pass_filter
 from .high_pass_filter import high_pass_filter
@@ -111,6 +113,9 @@ __all__ = [
     "mux",
     # DSP blocks
     "gain",
+    "multiply",
+    "add",
+    "subtract",
     "fir_filter",
     "low_pass_filter",
     "high_pass_filter",

@@ -85,6 +85,35 @@ def plan_cpsat(placer, chip: int, *, max_time_s: float = 10.0,
 
     # Per block: the candidate orientations with their oriented (w, h) AND the input /
     # output cell offsets (dx, dy) from the block's min corner — used for wirelength.
+    # Face code (S=0,E=1,W=2,N=3) -> outward unit step (dx,dy), screen coords (y down).
+    _FACE_STEP = {0: (0, 1), 1: (1, 0), 2: (-1, 0), 3: (0, -1)}
+    _FACE_NAME = {"south": 0, "s": 0, "east": 1, "e": 1, "west": 2, "w": 2,
+                  "north": 3, "n": 3}
+
+    def _face_code(f):
+        """Normalise a face (enum, int, or name str S/E/W/N) to code 0..3, or None."""
+        if f is None:
+            return None
+        v = getattr(f, "value", None)
+        if isinstance(v, int):
+            return v
+        if isinstance(f, int):
+            return f
+        return _FACE_NAME.get(str(getattr(f, "name", f)).lower())
+
+    def _io_faces(b, k):
+        """The (input_face, output_face) of the FIRST in/out port after orientation
+        ``k`` (face codes S/E/W/N), or (None, None). The router taps a broker on the
+        cell OUTWARD of the I/O cell along this face, so a placement that keeps that
+        cell free is routable."""
+        pm = placer._oriented_port_map(b, k)
+        if pm is None:
+            return (None, None)
+        ins, outs = pm.inputs(), pm.outputs()
+        fi = ins[0].face if ins else None
+        fo = outs[0].face if outs else None
+        return (_face_code(fi), _face_code(fo))
+
     def candidates(b):
         kinds = (_FEEDBACK_KINDS if placer._has_internal_feedback(b) else _ALL_KINDS)
         out = []
@@ -92,19 +121,20 @@ def plan_cpsat(placer, chip: int, *, max_time_s: float = 10.0,
         for k in kinds:
             w, h = placer._oriented_wh(b, k)
             io = placer._io_offsets(b, k)   # ((ix,iy),(ox,oy)) or None
-            # De-dup orientations that give the SAME box AND io (identity vs a mirror
-            # that doesn't change the footprint) to shrink the model.
-            key = (w, h, io)
+            faces = _io_faces(b, k)         # (in_face, out_face)
+            # De-dup orientations that give the SAME box AND io + faces.
+            key = (w, h, io, faces)
             if key in seen_wh:
                 continue
             seen_wh[key] = True
-            out.append((k, w, h, io))
+            out.append((k, w, h, io, faces))
         return out
 
     model = cp_model.CpModel()
     x_intervals, y_intervals = [], []
     bx, by = {}, {}          # block -> min-corner IntVar
     kind_of = {}             # block -> selected-kind expression pieces
+    tap_cells = {}           # block -> (in_tap_x, in_tap_y, out_tap_x, out_tap_y)
     # For wirelength we need each block's chosen input/output cell coords. Model them
     # as IntVars tied to (bx,by) + the offset of the SELECTED orientation.
     in_cx, in_cy, out_cx, out_cy = {}, {}, {}, {}
@@ -127,20 +157,40 @@ def plan_cpsat(placer, chip: int, *, max_time_s: float = 10.0,
             icy = model.NewIntVar(0, H, f"icy_{b.name}")
             ocx = model.NewIntVar(0, W, f"ocx_{b.name}")
             ocy = model.NewIntVar(0, H, f"ocy_{b.name}")
-        for j, (k, w, h, io) in enumerate(cands):
+        # TAP cells (the router's broker-tap sites): the cell OUTWARD of the input I/O
+        # cell along its face, and likewise for the output. Reserving these as 1x1
+        # keep-outs in the no-overlap set guarantees each net has a free abutting cell to
+        # broker/egress through — the exact thing the bus router needs — at a cost of
+        # ~2 cells per block instead of a full (infeasible) ring. Their positions follow
+        # the selected orientation. tap_reserve toggles the feature (slack-0 default on).
+        itx = model.NewIntVar(0, W, f"itx_{b.name}")
+        ity = model.NewIntVar(0, H, f"ity_{b.name}")
+        otx = model.NewIntVar(0, W, f"otx_{b.name}")
+        oty = model.NewIntVar(0, H, f"oty_{b.name}")
+        for j, (k, w, h, io, faces) in enumerate(cands):
             lit = model.NewBoolVar(f"o_{b.name}_{j}")
-            lits.append((lit, k, w, h, io))
+            lits.append((lit, k, w, h, io, faces))
             model.Add(wv == w).OnlyEnforceIf(lit)
             model.Add(hv == h).OnlyEnforceIf(lit)
+            iox, ioy = (io[0] if io and io[0] else (0, 0))
+            oox, ooy = (io[1] if io and io[1] else (0, 0))
             if want_io:
                 # I/O cell = min-corner + this orientation's offsets (else corner).
-                iox, ioy = (io[0] if io and io[0] else (0, 0))
-                oox, ooy = (io[1] if io and io[1] else (0, 0))
                 model.Add(icx == xv + iox).OnlyEnforceIf(lit)
                 model.Add(icy == yv + ioy).OnlyEnforceIf(lit)
                 model.Add(ocx == xv + oox).OnlyEnforceIf(lit)
                 model.Add(ocy == yv + ooy).OnlyEnforceIf(lit)
+            # Tap cell = I/O cell + outward face step (clamped in-bounds by the tap
+            # interval's own [0,W]/[0,H] domain; an off-grid tap just isn't reserved).
+            fin, fout = faces
+            idx, idy = _FACE_STEP.get(fin, (0, 0))
+            odx, ody = _FACE_STEP.get(fout, (0, 0))
+            model.Add(itx == xv + iox + idx).OnlyEnforceIf(lit)
+            model.Add(ity == yv + ioy + idy).OnlyEnforceIf(lit)
+            model.Add(otx == xv + oox + odx).OnlyEnforceIf(lit)
+            model.Add(oty == yv + ooy + ody).OnlyEnforceIf(lit)
         model.AddExactlyOne(l for l, *_ in lits)
+        tap_cells[b.name] = (itx, ity, otx, oty)
         # In-bounds (+ channel slack on the far edges, clamped to the array).
         model.Add(xv + wv <= W)
         model.Add(yv + hv <= H)
@@ -169,6 +219,46 @@ def plan_cpsat(placer, chip: int, *, max_time_s: float = 10.0,
 
     model.AddNoOverlap2D(x_intervals, y_intervals)
 
+    # TAP KEEP-OUT: every block's input + output TAP cell must be FREE of block bodies
+    # (a broker/egress site for the router). Build a SECOND no-overlap set = the REAL
+    # block boxes (w x h, no slack) + each tap as a 1x1 interval; then no block covers a
+    # tap. Taps may coincide with each OTHER (a shared corridor cell) so they are NOT
+    # mutually exclusive — model that by giving every tap the SAME interval group only
+    # against blocks. AddNoOverlap2D can't express "A vs B but not B vs C", so instead we
+    # forbid each tap from lying inside each block box directly (a compact disjunction).
+    def _forbid_inside(cxv, cyv, tagn):
+        for b2 in blocks:
+            x2, y2 = bx[b2.name], by[b2.name]
+            L = model.NewBoolVar(f"tk_l_{tagn}_{b2.name}")
+            R = model.NewBoolVar(f"tk_r_{tagn}_{b2.name}")
+            A = model.NewBoolVar(f"tk_a_{tagn}_{b2.name}")
+            Bd = model.NewBoolVar(f"tk_b_{tagn}_{b2.name}")
+            for (lit, k, w, h, io, faces) in kind_of[b2.name]:
+                # tap strictly left of / above the box, or box left-of/above the tap.
+                model.Add(cxv < x2).OnlyEnforceIf([lit, L])
+                model.Add(cyv < y2).OnlyEnforceIf([lit, A])
+                model.Add(cxv >= x2 + w).OnlyEnforceIf([lit, R])
+                model.Add(cyv >= y2 + h).OnlyEnforceIf([lit, Bd])
+            model.AddBoolOr([L, R, A, Bd])
+
+    # Tap reservation (experimental) — OFF: forcing a free input-neighbour per target
+    # contradicts the router's ABUTMENT case (an abutting driver body IS the tap), so it
+    # made the pack infeasible. The compact slack-0 pack is used as-is; routability of
+    # the dense layout is addressed in the router, not here.
+    tap_reserve = False and (max(channel_slack, slack_x or 0, slack_y or 0) == 0)
+    if tap_reserve:
+        # Reserve the INPUT tap only — the router's failure is "no free broker cell
+        # abutting the target INPUT". An output egresses via the source cell's own face
+        # (handled differently), so reserving both taps double-books cells between
+        # abutting blocks and over-constrains the pack (proven infeasible). Only a
+        # block that is an actual net TARGET (has an incoming edge) needs an input tap.
+        targets = {t for _, t in ((placer._driver_of.get(b.name), b.name)
+                                  for b in blocks) if _ is not None}
+        for b in blocks:
+            if b.name in targets:
+                itx, ity, _otx, _oty = tap_cells[b.name]
+                _forbid_inside(itx, ity, f"it_{b.name}")
+
     # Keep chip port cells free: no block box may cover a port cell. Per block per
     # port cell, the box lies entirely left/right/above/below the port cell.
     for b in blocks:
@@ -179,7 +269,7 @@ def plan_cpsat(placer, chip: int, *, max_time_s: float = 10.0,
             above = model.NewBoolVar(f"pf_a_{b.name}_{pcx}_{pcy}")
             below = model.NewBoolVar(f"pf_b_{b.name}_{pcx}_{pcy}")
             # left/above use the per-orientation width/height via the active lit.
-            for (lit, k, w, h, io) in kind_of[b.name]:
+            for (lit, k, w, h, io, faces) in kind_of[b.name]:
                 model.Add(xv + w <= pcx).OnlyEnforceIf([lit, left])
                 model.Add(yv + h <= pcy).OnlyEnforceIf([lit, above])
             model.Add(xv >= pcx + 1).OnlyEnforceIf(right)
@@ -237,7 +327,7 @@ def plan_cpsat(placer, chip: int, *, max_time_s: float = 10.0,
         px, py = int(solver.Value(xv)), int(solver.Value(yv))
         # recover the chosen orientation
         chosen = None
-        for (lit, k, w, h, io) in kind_of[b.name]:
+        for (lit, k, w, h, io, faces) in kind_of[b.name]:
             if solver.Value(lit):
                 chosen = k
                 break

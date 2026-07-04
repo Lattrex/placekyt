@@ -198,3 +198,27 @@ class iq_upconvert(_PassThrough):
         self._advertise_grc_params(device_id, "IQUpconvertBlock",
                                    {"sample_rate": sample_rate,
                                     "frequency": frequency})
+
+
+class complex_to_float(_PassThrough):
+    """Complex -> Float split — GR marker (maps to ComplexToFloatBlock).
+
+    ONE complex baseband stream in -> TWO real streams out (out_re = I, out_im = Q).
+    On the chip this is the identity datapath that de-interleaves the I/Q pair onto
+    two rails so downstream REAL blocks (e.g. two Low Pass Filters) can process each
+    axis. GR marker only; the real DSP runs on the placeKYT chip."""
+
+    def __init__(self, device_id="kyttar_0"):
+        super().__init__("Kyttar Complex To Float", n_in=1, n_out=2,
+                         in_dtype=np.complex64, out_dtype=np.float32)
+        self.device_id = device_id
+        self._advertise_grc_params(device_id, "ComplexToFloatBlock", {})
+
+    def work(self, input_items, output_items):
+        # out0 = real(in), out1 = imag(in) — a faithful complex->2xfloat split so
+        # a GR run of the flowgraph shows the two rails (the chip does the same).
+        x = input_items[0]
+        n = min(len(output_items[0]), len(output_items[1]), len(x))
+        output_items[0][:n] = x[:n].real
+        output_items[1][:n] = x[:n].imag
+        return n

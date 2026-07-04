@@ -66,7 +66,7 @@ from .chip_batch import chip_batch
 from .dsp_markers import (complex_rrc_matched_filter, complex_costas_loop,
                           gardner_timing_recovery, bpsk_slicer,
                           psk_symbol_mapper, upsampler, rrc_pulse_shaper,
-                          iq_upconvert)
+                          iq_upconvert, complex_to_float)
 from .gain import gain
 from .fir_filter import fir_filter
 from .low_pass_filter import low_pass_filter

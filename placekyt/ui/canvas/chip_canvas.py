@@ -294,18 +294,12 @@ class ChipCanvas(QGraphicsView):
 
         for conn in self._project.connections:
             if not conn.is_routed:
-                # A chip INPUT-port net injects DIRECTLY at the port edge cell — it
-                # has no physical route by design (the build treats it as a direct
-                # port injection; DRC accepts it unrouted). Drawing a fly line for
-                # it falsely reads as "not connected", so skip it. Check BOTH
-                # endpoints: the input port is normally the source, but a net may
-                # carry it as either endpoint, and a one-sided check left a phantom
-                # fly line on the other orientation (seen as a "fly line at 0,0").
-                if self._is_direct_input_port_net(conn):
-                    continue
-                # An UNROUTED connection (a logical net / ``route=auto`` / no
-                # route yet) draws as a dashed gray FLY LINE between its endpoint
-                # anchors — captured wiring the Phase-3 router will materialise.
+                # A chip INPUT-port net injects at the port edge cell (no physical
+                # route by design). Previously NO fly line was drawn for it — which
+                # left the input port -> first cell connection INVISIBLE, so a manual
+                # router couldn't see where the port feeds. Draw it now, anchored to
+                # the first cell's INPUT (wide) side, so the entry point is clear.
+                # (The fly line is dashed guidance; it does NOT imply "unrouted".)
                 self._render_fly_line(conn)
                 continue
             chip_id = self._route_chip_of(conn)
@@ -646,9 +640,16 @@ class ChipCanvas(QGraphicsView):
         """Scene point for a block-port endpoint of a logical net (P2.3 flylines).
 
         Resolves the BlockEndpoint's port to the placed cell that carries it (via
-        the PortMap ``port_cell_provider``) and returns the midpoint of that
-        cell's OUTER face. Falls back to the block's bounding-box centre when the
-        port→cell map is unavailable or the cell isn't placed."""
+        the PortMap ``port_cell_provider``) and anchors the fly line to the SIDE of
+        that cell that matches the port DIRECTION, so a manual router can tell input
+        from output at a glance:
+          * an OUTPUT port anchors at the cell's OUTPUT face — the POINT of the cell
+            arrow (data leaves there);
+          * an INPUT port anchors at the OPPOSITE side — the WIDE/back of the arrow
+            (data enters there). Otherwise every fly line lands on the arrow point
+            and it is impossible to tell which end is the input.
+        Falls back to the block's bounding-box centre when the port→cell map is
+        unavailable or the cell isn't placed."""
         from PySide6.QtCore import QPointF
 
         if self._project is None:
@@ -659,13 +660,15 @@ class ChipCanvas(QGraphicsView):
             return None
         origin = self._chip_origin(blk.placement.chip)
 
-        # Resolve the port → cell_id via the PortMap, then find that placed cell.
+        # Resolve the port → cell_id (+ direction) via the PortMap, then find the cell.
         target_cell = None
+        direction = None
         if self.port_cell_provider is not None and name is not None:
             pmap = self._port_cells_for(blk)
             entry = pmap.get(name)
             if entry is not None:
                 cell_id = entry[0]
+                direction = entry[1] if len(entry) > 1 else None
                 target_cell = blk.placement.cell(cell_id)
 
         if target_cell is not None:
@@ -673,6 +676,10 @@ class ChipCanvas(QGraphicsView):
             cy = origin[1] + target_cell.y * CELL_PX + CELL_PX / 2
             from .port_item import _FACE_OUT
             dx, dy = _FACE_OUT.get(target_cell.face, (0, 0))
+            # cell.face is the OUTPUT direction (the arrow POINT). An OUTPUT port
+            # anchors on that side; an INPUT port anchors on the OPPOSITE (wide) side.
+            if str(direction).lower() in ("in", "input"):
+                dx, dy = -dx, -dy
             return QPointF(cx + dx * CELL_PX / 2, cy + dy * CELL_PX / 2)
 
         # Fallback: block bounding-box centre.

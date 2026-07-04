@@ -1,18 +1,28 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Generate ssb_weaver.grc — the FULL on-chip SSB Weaver transceiver flowgraph.
+"""Generate ssb_weaver.grc — the FULL on-chip SSB Weaver transceiver flowgraph,
+built from REAL Kyttar blocks exactly as the textbook Weaver diagram prescribes.
 
-Emits a GNU Radio Companion .grc (YAML flowgraph) built from the REAL Kyttar DSP
-blocks so it IMPORTS into placeKYT (File -> Import GNURadio Flowgraph): the 10-block
-Weaver chain places + auto-P&R-routes, and source/sink map to chip ports x16_in /
-x16_out. The SAME flowgraph runs linked to a placeKYT-hosted chip (Simulation ->
-Run as GNURadio Server), streaming an audio burst through and plotting input-audio
-vs recovered-audio.
+The Weaver ("third method") SSB generator is FOUR real multipliers + an adder per
+half — there are NO complex multipliers anywhere on the signal-flow diagram. Every
+wire carries a real signal. So the chip chain is, per half:
 
-Weaver chain (real audio in -> recovered audio out), USB, fa=1500 fc=6000 @ 32 kHz:
-  audio -> ComplexMixer(-fa) -> ComplexToFloat -> [LPF I, LPF Q] -> IQUpconvert(fc)
-        -> SSB -> ComplexMixer(-fc) -> ComplexToFloat -> [LPF I, LPF Q]
-        -> IQUpconvert(fa) -> Gain(x4) -> recovered audio
+    m(t) ─┬─ ×cos(w0)  → LowPass ─ ×cos(wc+w0) ─┐
+          │                                      (−) → SSB
+          └─ ×sin(w0)  → LowPass ─ ×sin(wc+w0) ─┘   (I·cos − Q·sin)
+
+built from: NCO (emits cos on yi + sin on yq), Multiply (m × cos / m × sin),
+LowPassFilter, Subtract (the I·cos − Q·sin combine), Gain. NO ComplexMixer, NO
+ComplexToFloat, NO complex IQUpconvert — those wrongly modeled a real signal flow
+with complex blocks and created a reconvergent I/Q fan-in the router couldn't thread.
+The real-block chain is two clean real filaments joined by a subtract.
+
+Verified: the Q15 real-block chain is bit-identical to the proven complex-block
+reference (corr 0.9999) — see dev_docs/weaver_real_ref.py.
+
+Weaver plan (USB, fa=1500 Hz audio-band centre, fc=6000 Hz carrier @ 32 kHz):
+  TX: NCO(fa) mixers → 2×LowPass → NCO(fc) mixers → Subtract  (= SSB)
+  RX: NCO(fc) mixers → 2×LowPass → NCO(fa) mixers → Subtract → Gain×4  (= audio)
 
 Run: <venv>/python examples/ssb_weaver/gen_grc.py   (writes ssb_weaver.grc alongside)
 """
@@ -23,6 +33,7 @@ FA = 1500.0        # Weaver audio-band centre
 FC = 6000.0        # carrier
 CUT = 1200.0       # Weaver LPF cutoff (half the audio bandwidth)
 TW = 2500.0        # LPF transition width (tap count)
+AMP = 0.9          # NCO oscillator amplitude (Q15)
 
 HDR = """options:
   parameters:
@@ -32,12 +43,12 @@ HDR = """options:
     cmake_opt: ''
     comment: ''
     copyright: ''
-    description: "FULL on-chip SSB Weaver TRANSCEIVER (real blocks -> imports into\\
-      \\ placeKYT). audio -> ComplexMixer(-fa) -> ComplexToFloat -> 2x LowPass ->\\
-      \\ IQUpconvert(fc) [SSB] -> ComplexMixer(-fc) -> ComplexToFloat -> 2x LowPass\\
-      \\ -> IQUpconvert(fa) -> Gain -> recovered audio. Import here to auto-P&R the\\
-      \\ 10-block chain onto the chip and SEE where the router struggles; or Run as\\
-      \\ GNURadio Server in placeKYT + Execute here to stream audio through the chip."
+    description: "FULL on-chip SSB Weaver TRANSCEIVER built from REAL blocks (4 real\\
+      \\ multipliers + a subtract per half, exactly the Weaver diagram). audio ->\\
+      \\ NCO(fa) mixers -> 2x LowPass -> NCO(fc) mixers -> Subtract [SSB] -> NCO(fc)\\
+      \\ mixers -> 2x LowPass -> NCO(fa) mixers -> Subtract -> Gain -> recovered\\
+      \\ audio. Imports into placeKYT: two clean real filaments, no complex-block\\
+      \\ fan-in. Run as GNURadio Server in placeKYT + Execute here to stream audio."
     gen_cmake: 'On'
     gen_linking: dynamic
     generate_options: qt_gui
@@ -53,7 +64,7 @@ HDR = """options:
     run_options: prompt
     sizing_mode: fixed
     thread_safe_setters: ''
-    title: "SSB Weaver transceiver (on-chip) — audio in vs recovered audio"
+    title: "SSB Weaver transceiver (on-chip, real blocks) — audio in vs recovered"
     window_size: (1600,1000)
   states:
     bus_sink: false
@@ -89,26 +100,28 @@ def lpf(name, x, y):
     }, x, y)
 
 
-def mixer(name, freq, x, y):
-    return blk(name, "kyttar_complex_mixer", {
-        "affinity": "''", "alias": "''", "comment": "''",
+def nco(name, freq, x, y):
+    return blk(name, "kyttar_nco", {
+        "affinity": "''", "alias": "''", "amplitude": repr(AMP), "comment": "''",
         "device_id": "'\"kyttar_0\"'", "frequency": repr(freq),
-        "maxoutbuf": "'0'", "minoutbuf": "'0'", "sample_rate": repr(FS),
+        "maxoutbuf": "'0'", "minoutbuf": "'0'", "offset": "'0'", "phase": "'0'",
+        "sample_rate": repr(FS), "waveform": '"cos"',
     }, x, y)
 
 
-def upc(name, freq, x, y):
-    return blk(name, "kyttar_iq_upconvert", {
-        "affinity": "''", "alias": "''", "comment": "''",
-        "device_id": "'\"kyttar_0\"'", "frequency": repr(freq),
-        "maxoutbuf": "'0'", "minoutbuf": "'0'", "sample_rate": repr(FS),
-    }, x, y)
-
-
-def c2f(name, x, y):
-    return blk(name, "kyttar_complex_to_float", {
+def mul(name, x, y):
+    return blk(name, "kyttar_multiply", {
         "affinity": "''", "alias": "''", "comment": "''",
         "device_id": "'\"kyttar_0\"'", "maxoutbuf": "'0'", "minoutbuf": "'0'",
+        "num_inputs": "'2'",
+    }, x, y)
+
+
+def sub(name, x, y):
+    return blk(name, "kyttar_subtract", {
+        "affinity": "''", "alias": "''", "comment": "''",
+        "device_id": "'\"kyttar_0\"'", "maxoutbuf": "'0'", "minoutbuf": "'0'",
+        "num_inputs": "'2'",
     }, x, y)
 
 
@@ -148,7 +161,7 @@ def main():
         "type": "float", "vlen": "'1'",
     }, 400, 208))
 
-    # --- chip source: real audio -> x16_in (as the mixer's real input) ---
+    # --- chip source: real audio -> x16_in ---
     out.append(blk("msrc", "kyttar_source", {
         "affinity": "''", "alias": "''", "burst_len": "n_samp",
         "comment": "'audio -> chip x16_in (batch)'", "complex_in": "float",
@@ -158,24 +171,34 @@ def main():
         "stream_id": "''",
     }, 560, 200))
 
-    # --- TX half: mixer(-fa) -> split -> LPF I/Q -> upconvert(fc) [SSB] ---
-    out.append(mixer("tx_mix", -FA, 720, 180))
-    out.append(c2f("tx_split", 900, 188))
-    out.append(lpf("tx_lpi", 1040, 140))
-    out.append(lpf("tx_lpq", 1040, 260))
-    out.append(upc("tx_up", FC, 1220, 188))
-    # --- RX half: mixer(-fc) -> split -> LPF I/Q -> upconvert(fa) ---
-    out.append(mixer("rx_mix", -FC, 1400, 180))
-    out.append(c2f("rx_split", 1580, 188))
-    out.append(lpf("rx_lpi", 1720, 140))
-    out.append(lpf("rx_lpq", 1720, 260))
-    out.append(upc("rx_up", FA, 1900, 188))
+    # === TX half: NCO(fa) mixers -> 2x LPF -> NCO(fc) mixers -> Subtract (SSB) ===
+    out.append(nco("tx_lo_a", FA, 700, 40))     # cos(wa)=yi, sin(wa)=yq
+    out.append(mul("tx_mi", 900, 140))           # I = m * cos(wa)
+    out.append(mul("tx_mq", 900, 300))           # Q = m * sin(wa)
+    out.append(lpf("tx_lpi", 1060, 140))
+    out.append(lpf("tx_lpq", 1060, 300))
+    out.append(nco("tx_lo_c", FC, 1180, 40))     # cos(wc)=yi, sin(wc)=yq
+    out.append(mul("tx_ui", 1320, 140))          # uI = I' * cos(wc)
+    out.append(mul("tx_uq", 1320, 300))          # uQ = Q' * sin(wc)
+    out.append(sub("tx_ssb", 1500, 200))         # SSB = uI - uQ
+
+    # === RX half: NCO(fc) mixers -> 2x LPF -> NCO(fa) mixers -> Subtract ===
+    out.append(nco("rx_lo_c", FC, 1620, 40))
+    out.append(mul("rx_mi", 1760, 140))
+    out.append(mul("rx_mq", 1760, 300))
+    out.append(lpf("rx_lpi", 1920, 140))
+    out.append(lpf("rx_lpq", 1920, 300))
+    out.append(nco("rx_lo_a", FA, 2040, 40))
+    out.append(mul("rx_ui", 2180, 140))
+    out.append(mul("rx_uq", 2180, 300))
+    out.append(sub("rx_aud", 2360, 200))         # recovered audio (pre-gain)
+
     # --- x4 Weaver gain (recovered audio scale) ---
     out.append(blk("g4", "kyttar_gain", {
         "affinity": "''", "alias": "''", "comment": "'Weaver 1/4 -> x4'",
         "device_id": "'\"kyttar_0\"'", "gain": "'4'",
         "maxoutbuf": "'0'", "minoutbuf": "'0'",
-    }, 2080, 188))
+    }, 2540, 200))
 
     # --- chip sink: recovered audio <- x16_out ---
     out.append(blk("msink", "kyttar_sink", {
@@ -183,7 +206,7 @@ def main():
         "device_id": "'\"kyttar_0\"'", "num_channels": "'1'",
         "port_name": "'\"x16_out\"'", "server_host": "'\"127.0.0.1\"'",
         "server_port": "server_port", "stream_id": "''",
-    }, 2260, 200))
+    }, 2720, 200))
 
     # --- waveform sinks: input audio (top) vs recovered audio (bottom) ---
     out.append(blk("in_sink", "qtgui_time_sink_x", {
@@ -198,7 +221,7 @@ def main():
         "tr_tag": "''", "type": "float", "update_time": "'0.10'",
         "width1": "'1'", "ylabel": "'Amplitude'", "ymax": "'1'", "ymin": "'-1'",
         "yunit": "''", "grid_color1": "'blue'", "alpha1": "'1.0'",
-    }, 720, 40))
+    }, 560, 40))
     out.append(blk("out_sink", "qtgui_time_sink_x", {
         "affinity": "''", "alias": "''", "autoscale": "'True'",
         "axislabels": "'True'", "bw": "samp_rate", "comment": "''",
@@ -212,7 +235,7 @@ def main():
         "update_time": "'0.10'", "width1": "'1'", "ylabel": "'Amplitude'",
         "ymax": "'1'", "ymin": "'-1'", "yunit": "''", "grid_color1": "'green'",
         "alpha1": "'1.0'",
-    }, 2260, 40))
+    }, 2720, 40))
 
     # --- connections ---
     conns = [
@@ -220,21 +243,33 @@ def main():
         ("audio", 0, "thr", 0),
         ("thr", 0, "msrc", 0),          # audio -> chip source
         ("thr", 0, "in_sink", 0),       # input-audio scope
-        ("msrc", 0, "tx_mix", 0),       # x16_in -> TX mixer (real xi)
-        # TX half
-        ("tx_mix", 0, "tx_split", 0),
-        ("tx_split", 0, "tx_lpi", 0),   # I rail -> LPF
-        ("tx_split", 1, "tx_lpq", 0),   # Q rail -> LPF
-        ("tx_lpi", 0, "tx_up", 0),      # I -> upconvert (as its complex xi)
-        ("tx_lpq", 0, "tx_up", 1),      # Q -> upconvert (xq)
-        ("tx_up", 0, "rx_mix", 0),      # SSB -> RX mixer
+        ("msrc", 0, "tx_mi", 0),        # x16_in -> I mixer (real)
+        ("msrc", 0, "tx_mq", 0),        # x16_in -> Q mixer (real)
+        # TX half: mixers take (audio, LO rail)
+        ("tx_lo_a", 0, "tx_mi", 1),     # NCO fa cos (yi) -> I mixer
+        ("tx_lo_a", 1, "tx_mq", 1),     # NCO fa sin (yq) -> Q mixer
+        ("tx_mi", 0, "tx_lpi", 0),
+        ("tx_mq", 0, "tx_lpq", 0),
+        ("tx_lpi", 0, "tx_ui", 0),
+        ("tx_lo_c", 0, "tx_ui", 1),     # NCO fc cos -> upmix I
+        ("tx_lpq", 0, "tx_uq", 0),
+        ("tx_lo_c", 1, "tx_uq", 1),     # NCO fc sin -> upmix Q
+        ("tx_ui", 0, "tx_ssb", 0),      # SSB = uI - uQ
+        ("tx_uq", 0, "tx_ssb", 1),
         # RX half
-        ("rx_mix", 0, "rx_split", 0),
-        ("rx_split", 0, "rx_lpi", 0),
-        ("rx_split", 1, "rx_lpq", 0),
-        ("rx_lpi", 0, "rx_up", 0),
-        ("rx_lpq", 0, "rx_up", 1),
-        ("rx_up", 0, "g4", 0),
+        ("tx_ssb", 0, "rx_mi", 0),
+        ("tx_ssb", 0, "rx_mq", 0),
+        ("rx_lo_c", 0, "rx_mi", 1),
+        ("rx_lo_c", 1, "rx_mq", 1),
+        ("rx_mi", 0, "rx_lpi", 0),
+        ("rx_mq", 0, "rx_lpq", 0),
+        ("rx_lpi", 0, "rx_ui", 0),
+        ("rx_lo_a", 0, "rx_ui", 1),
+        ("rx_lpq", 0, "rx_uq", 0),
+        ("rx_lo_a", 1, "rx_uq", 1),
+        ("rx_ui", 0, "rx_aud", 0),
+        ("rx_uq", 0, "rx_aud", 1),
+        ("rx_aud", 0, "g4", 0),
         ("g4", 0, "msink", 0),          # recovered audio -> x16_out
         ("msink", 0, "out_sink", 0),    # recovered-audio scope
     ]

@@ -54,12 +54,17 @@ parameters:
     dtype: string
     default: '"cos"'
 
-inputs:
-  - label: trigger
-    dtype: complex
-
+# The NCO is a SIGNAL SOURCE — like GNU Radio's analog.sig_source_f it has no
+# stream input (it free-runs from its phase accumulator). On the Kyttar chip the
+# oscillator emits TWO real rails from one cell: cos on yi, sin on yq (the I and Q
+# of exp(jθ)). Exposing them as two float outputs lets real blocks tap each rail
+# directly (e.g. an SSB Weaver's cos-mixer and sin-mixer), instead of forcing a
+# complex port that a real Multiply can't consume. (On-chip the cell is trigger-
+# advanced by the sample stream; that is a build-level concern, not a GR stream in.)
 outputs:
-  - label: out
-    dtype: complex
+  - label: cos
+    dtype: float
+  - label: sin
+    dtype: float
 
 file_format: 1

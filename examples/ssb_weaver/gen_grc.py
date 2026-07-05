@@ -117,6 +117,41 @@ def mul(name, x, y):
     }, x, y)
 
 
+def cmix(name, freq, x, y):
+    """A fused oscillator-mixer (kyttar_complex_mixer, 11 cells): real signal in (xi; xq
+    defaults 0) -> yi = signal*cos(θ), yq = signal*sin(θ), θ += freq. Its TWO outputs ARE
+    both Weaver rails (cos=yi, sin=yq), each to a distinct consumer — so ONE cmix replaces
+    a whole {shared NCO + 2 Multiply} DOWN-mix cluster with no dead NCO / no carrier
+    fan-out.  Used for the two DOWN-mixes (which need BOTH rails)."""
+    return blk(name, "kyttar_complex_mixer", {
+        "affinity": "''", "alias": "''", "comment": "''",
+        "device_id": "'\"kyttar_0\"'", "frequency": repr(freq),
+        "maxoutbuf": "'0'", "minoutbuf": "'0'", "sample_rate": repr(FS),
+    }, x, y)
+
+
+def iqup(name, freq, x, y):
+    """A LEAN fused oscillator-mixer (kyttar_iq_upconvert, 6 cells): out = xi·cos − xq·sin.
+    Used for the UP-mixes, which need only ONE rail each:
+      * feed signal on xi -> out = sig·cos   (the COS rail)
+      * feed signal on xq -> out = −sig·sin  (the −SIN rail)
+    6 cells vs the ComplexMixer's 11 — this is what makes the Weaver FIT one chip (80 cells
+    vs 100). The −sin means the final Weaver combine is an ADD, not a subtract."""
+    return blk(name, "kyttar_iq_upconvert", {
+        "affinity": "''", "alias": "''", "comment": "''",
+        "device_id": "'\"kyttar_0\"'", "frequency": repr(freq),
+        "maxoutbuf": "'0'", "minoutbuf": "'0'", "sample_rate": repr(FS),
+    }, x, y)
+
+
+def add(name, x, y):
+    return blk(name, "kyttar_add", {
+        "affinity": "''", "alias": "''", "comment": "''",
+        "device_id": "'\"kyttar_0\"'", "maxoutbuf": "'0'", "minoutbuf": "'0'",
+        "num_inputs": "'2'",
+    }, x, y)
+
+
 def sub(name, x, y):
     return blk(name, "kyttar_subtract", {
         "affinity": "''", "alias": "''", "comment": "''",
@@ -171,32 +206,34 @@ def main():
         "stream_id": "''",
     }, 560, 200))
 
-    # === TX half: NCO(fa) mixers -> 2x LPF -> NCO(fc) mixers -> Subtract (SSB) ===
-    # (oscillators are the SHARED lo_a / lo_c below — the Weaver has 2 frequencies)
-    out.append(mul("tx_mi", 900, 140))           # I = m * cos(wa)
-    out.append(mul("tx_mq", 900, 300))           # Q = m * sin(wa)
-    out.append(lpf("tx_lpi", 1060, 140))
-    out.append(lpf("tx_lpq", 1060, 300))
-    out.append(mul("tx_ui", 1320, 140))          # uI = I' * cos(wc)
-    out.append(mul("tx_uq", 1320, 300))          # uQ = Q' * sin(wc)
-    out.append(sub("tx_ssb", 1500, 200))         # SSB = uI - uQ
+    # === FUSED-OSCILLATOR WEAVER (no shared NCO, no carrier fan-out) ===
+    # This chip is clockless: a standalone NCO drawn as a source gets no trigger and is
+    # DEAD (see dev_docs/OSCILLATOR_TOPOLOGY_ANALYSIS.md). So each mixer carries its OWN
+    # oscillator. kyttar_complex_mixer emits BOTH rails (yi=sig*cos, yq=sig*sin) as two
+    # separate output ports, so the DOWN-mix (which needs both rails from one signal) is
+    # ONE mixer; each UP-mix (which needs one rail from one signal) is one mixer using a
+    # single output. All fa-mixers start phase 0 at sample 0 (coherent); likewise all
+    # fc-mixers. Replicating the cheap phase-accumulator per mixer costs cells (plentiful)
+    # but removes the fan-out (wires, scarce) — the fabric-native trade.
 
-    # === RX half: NCO(fc) mixers -> 2x LPF -> NCO(fa) mixers -> Subtract ===
-    out.append(mul("rx_mi", 1760, 140))
-    out.append(mul("rx_mq", 1760, 300))
+    # === TX half: cmix(fa) [both rails] -> 2x LPF -> iqup(fc) x2 [one rail each] -> Add ===
+    # Down-mix = 11-cell ComplexMixer (needs both rails).  Up-mixes = lean 6-cell
+    # IQUpconvert (one rail each): xi->cos rail, xq->(-sin) rail.  Because the sin rail is
+    # NEGATED, the Weaver combine is an ADD (uI + (-Q'sin)), not a subtract.
+    out.append(cmix("tx_ma", FA, 900, 200))      # audio -> yi=a*cos(fa), yq=a*sin(fa)
+    out.append(lpf("tx_lpi", 1060, 140))         # I' = LPF(a*cos)
+    out.append(lpf("tx_lpq", 1060, 300))         # Q' = LPF(a*sin)
+    out.append(iqup("tx_uic", FC, 1320, 140))    # uI  = I' * cos(fc)   (xi in)
+    out.append(iqup("tx_uqc", FC, 1320, 300))    # -uQ = -Q' * sin(fc)  (xq in)
+    out.append(add("tx_ssb", 1500, 200))         # SSB = uI + (-Q'sin)
+
+    # === RX half: cmix(fc) [both rails] -> 2x LPF -> iqup(fa) x2 [one rail each] -> Add ==
+    out.append(cmix("rx_mc", FC, 1760, 200))     # ssb -> yi=ssb*cos(fc), yq=ssb*sin(fc)
     out.append(lpf("rx_lpi", 1920, 140))
     out.append(lpf("rx_lpq", 1920, 300))
-    out.append(mul("rx_ui", 2180, 140))
-    out.append(mul("rx_uq", 2180, 300))
-    out.append(sub("rx_aud", 2360, 200))         # recovered audio (pre-gain)
-
-    # === SHARED oscillators — the Weaver uses only TWO distinct frequencies (fa, fc),
-    # so ONE fa-NCO + ONE fc-NCO drive ALL the mixers (the 10-cell NCO is heavy; sharing
-    # halves the oscillator cost, 4 NCOs -> 2). Each NCO's cos (port 0) fans out to the
-    # TWO cos-mixers of that frequency, and sin (port 1) to the two sin-mixers. Placed
-    # centrally so the fan-out reaches both TX and RX halves. ===
-    out.append(nco("lo_a", FA, 1180, 40))        # fa: TX down-mix + RX up-mix
-    out.append(nco("lo_c", FC, 1620, 40))        # fc: TX up-mix + RX down-mix
+    out.append(iqup("rx_uia", FA, 2180, 140))    # rI  = I' * cos(fa)   (xi in)
+    out.append(iqup("rx_uqa", FA, 2180, 300))    # -rQ = -Q' * sin(fa)  (xq in)
+    out.append(add("rx_aud", 2360, 200))         # recovered audio (pre-gain)
 
     # --- x4 Weaver gain (recovered audio scale) ---
     out.append(blk("g4", "kyttar_gain", {
@@ -248,34 +285,22 @@ def main():
         ("audio", 0, "thr", 0),
         ("thr", 0, "msrc", 0),          # audio -> chip source
         ("thr", 0, "in_sink", 0),       # input-audio scope
-        ("msrc", 0, "tx_mi", 0),        # x16_in -> I mixer (real)
-        ("msrc", 0, "tx_mq", 0),        # x16_in -> Q mixer (real)
-        # SHARED fa-NCO: cos (0) -> TX down-mix I AND RX up-mix I; sin (1) -> both Q.
-        ("lo_a", 0, "tx_mi", 1),        # fa cos -> TX I mixer
-        ("lo_a", 1, "tx_mq", 1),        # fa sin -> TX Q mixer
-        ("lo_a", 0, "rx_ui", 1),        # fa cos -> RX up-mix I
-        ("lo_a", 1, "rx_uq", 1),        # fa sin -> RX up-mix Q
-        # SHARED fc-NCO: cos (0) -> TX up-mix I AND RX down-mix I; sin (1) -> both Q.
-        ("lo_c", 0, "tx_ui", 1),        # fc cos -> TX up-mix I
-        ("lo_c", 1, "tx_uq", 1),        # fc sin -> TX up-mix Q
-        ("lo_c", 0, "rx_mi", 1),        # fc cos -> RX down-mix I
-        ("lo_c", 1, "rx_mq", 1),        # fc sin -> RX down-mix Q
-        # TX dataflow
-        ("tx_mi", 0, "tx_lpi", 0),
-        ("tx_mq", 0, "tx_lpq", 0),
-        ("tx_lpi", 0, "tx_ui", 0),
-        ("tx_lpq", 0, "tx_uq", 0),
-        ("tx_ui", 0, "tx_ssb", 0),      # SSB = uI - uQ
-        ("tx_uq", 0, "tx_ssb", 1),
-        # RX dataflow
-        ("tx_ssb", 0, "rx_mi", 0),
-        ("tx_ssb", 0, "rx_mq", 0),
-        ("rx_mi", 0, "rx_lpi", 0),
-        ("rx_mq", 0, "rx_lpq", 0),
-        ("rx_lpi", 0, "rx_ui", 0),
-        ("rx_lpq", 0, "rx_uq", 0),
-        ("rx_ui", 0, "rx_aud", 0),
-        ("rx_uq", 0, "rx_aud", 1),
+        # --- TX: down-mix cmix(fa) emits BOTH rails (yi=port0 cos, yq=port1 sin) ---
+        ("msrc", 0, "tx_ma", 0),        # audio -> fused fa-mixer (xi)
+        ("tx_ma", 0, "tx_lpi", 0),      # yi = a*cos(fa) -> LPF I
+        ("tx_ma", 1, "tx_lpq", 0),      # yq = a*sin(fa) -> LPF Q
+        ("tx_lpi", 0, "tx_uic", 0),     # I' -> fc cos-mixer xi  -> uI = I'*cos(fc)
+        ("tx_lpq", 0, "tx_uqc", 1),     # Q' -> fc sin-mixer xq  -> -Q'*sin(fc)
+        ("tx_uic", 0, "tx_ssb", 0),     # uI
+        ("tx_uqc", 0, "tx_ssb", 1),     # -Q'*sin  ;  SSB = uI + (-Q'sin)  (ADD)
+        # --- RX: down-mix cmix(fc) emits BOTH rails ---
+        ("tx_ssb", 0, "rx_mc", 0),      # ssb -> fused fc-mixer
+        ("rx_mc", 0, "rx_lpi", 0),      # yi = ssb*cos(fc) -> LPF I
+        ("rx_mc", 1, "rx_lpq", 0),      # yq = ssb*sin(fc) -> LPF Q
+        ("rx_lpi", 0, "rx_uia", 0),     # I' -> fa cos-mixer xi  -> rI = I'*cos(fa)
+        ("rx_lpq", 0, "rx_uqa", 1),     # Q' -> fa sin-mixer xq  -> -Q'*sin(fa)
+        ("rx_uia", 0, "rx_aud", 0),     # rI
+        ("rx_uqa", 0, "rx_aud", 1),     # -Q'*sin  ;  audio = rI + (-Q'sin)  (ADD)
         ("rx_aud", 0, "g4", 0),
         ("g4", 0, "msink", 0),          # recovered audio -> x16_out
         ("msink", 0, "out_sink", 0),    # recovered-audio scope

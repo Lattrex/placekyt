@@ -23,15 +23,20 @@ parameters:
   default: '4000'
 
 inputs:
-# REAL in-phase rail. On-chip the block reads xi@R0 and xq@R1 as two SCALAR reals and
-# computes out = xi·cos − xq·sin. GNU Radio has no "two-real-into-one-symbol" port, and a
-# BPSK TX drives only I (xq=R1 defaults to 0 → out = I·cos, the correct BPSK passband),
-# so the GRC contract is a single REAL xi input. (Declaring complex was wrong — the block
-# never takes an interleaved I/Q buffer; it takes real rails. A QPSK/full-I/Q TX that
-# needs the Q rail wires it via the mapper's two real outputs, not a complex port here.)
+# REAL rails. On-chip the block reads xi@R0 and xq@R1 as two SCALAR reals and computes
+# out = xi·cos − xq·sin.  Both rails are exposed as OPTIONAL real inputs:
+#   * xi only (xq unconnected, =0)  ->  out = xi·cos   (a COS-rail oscillator-mixer)
+#   * xq only (xi unconnected, =0)  ->  out = −xq·sin  (a −SIN-rail oscillator-mixer)
+# This lets the SSB Weaver use ONE 6-cell IQUpconvert per up-mix rail (vs an 11-cell
+# ComplexMixer), and a BPSK/QPSK TX still drives xi (and optionally xq) as before.
 - label: xi
   domain: stream
   dtype: float
+  optional: true
+- label: xq
+  domain: stream
+  dtype: float
+  optional: true
 
 outputs:
 - label: out

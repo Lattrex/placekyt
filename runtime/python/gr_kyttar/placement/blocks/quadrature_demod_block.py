@@ -79,7 +79,9 @@ class QuadratureDemodBlock(KyttarBlock):
     _interface = BlockInterface(
         entry_address=1, input_registers=[0, 1], output_registers=[0])
 
-    _CELL_IDS = ["conjmult", "cordic_init"] + [f"cordic{i}" for i in range(14)] + ["cordic_quad", "cordic_gain"]
+    _CELL_IDS = (["conjmult", "cordic_init"]
+                 + [f"cordic{ab}{i}" for i in range(14) for ab in ("A", "B")]
+                 + ["cordic_quad", "cordic_gain"])
 
     def __init__(self, name: str, gain: float = 1.0):
         super().__init__(name, gain=gain)
@@ -109,7 +111,8 @@ class QuadratureDemodBlock(KyttarBlock):
 
     @property
     def cell_count(self) -> int:
-        return 18
+        # conjmult + cordic_init + 2*NITER (A/B per iteration) + cordic_quad + cordic_gain
+        return 2 + 2 * self.NITER + 2
 
     @property
     def interface(self) -> BlockInterface:
@@ -220,51 +223,109 @@ ayp:
 """,
         )
 
-        # (3..3+NITER-1) cordic_iter[i] — one CORDIC vectoring step:
-        #   if Y>0: Xn=X+(Y>>i); Yn=Y-(X>>i); a+=ATAN[i]
-        #   else:   Xn=X-(Y>>i); Yn=Y+(X>>i); a-=ATAN[i]
-        # Snapshot X (Xs) first so the Y update uses the OLD X.  Relay flags.
+        # (3..) each CORDIC iteration = TWO cells (cordicA[i], cordicB[i]).  A single step
+        # is ~33 instr — PROVEN over the 31-word budget by the resolver (instr+data<=31) even
+        # with emit-from-R0, because the accumulator ISA taxes every value with a
+        # MOVE-through-R0.  Split so each half fits:
+        #   cordicA[i]: read X,Y; compute xsh=X>>i and SIGNED ysh; update X (+/-ysh); relay Y
+        #     and a; pass sxsh = +xsh if Y>0 else -xsh (sign folded in).  Emits 4 words
+        #     (X',Y,a,sxsh) -> ~24 instr, fits.
+        #   cordicB[i]: read X',Y,a,sxsh; Y -= sxsh (branchless: Y>0->Y-xsh, Y<=0->Y+xsh);
+        #     a += satc where satc has the SAME sign as the branch — derived from sign(sxsh)?
+        #     No: sxsh can be 0.  So B also needs the branch sign.  Instead A folds the atc
+        #     sign too by passing satc as a 5th word — but that pushes A to 5 emits.  RESOLVE:
+        #     A does the a-update ITSELF (a += atc or -= atc, cheap: 2 instr) and emits the
+        #     UPDATED a; then B only touches Y.  A emits 4 (X',Y,a',sxsh); B emits 3 (X',Y',a').
+        # ARITHMETIC-SHIFT: X>=0 always -> plain SHR; the Y<0 arm sign-fills ysh via OR mask.
         for i in range(self.NITER):
-            cid = f"cordic{i}"
-            sh = i  # shift amount
-            body = (
+            sh = i  # shift amount (per-cell constant)
+            smask = (0xFFFF << (16 - sh)) & 0xFFFF if sh > 0 else 0  # ASR sign-fill mask
+            # ---- cordicA[i]: UNSIGNED shifts + neg flag (NO negations).  Emits Xo,Yo,ao
+            # (relay) + xsh(=X>>i) + ysh(=ASR(Y,i)) + neg(=1 if Y<=0 else 0).  All the
+            # sign logic is deferred to cordicB, so A does no `0-x` negations (saves ~9
+            # instr) -> ~22 instr, fits.  X>=0 always so xsh is a plain SHR; ysh is ASR
+            # (sign-fill OR only when Y<0).
+            if sh == 0:
+                ysh_asr = "    MOVE R{state:ysh}, R{in:Y}\n"                  # i==0: ysh = Y
+            else:
+                # ysh = ASR(Y,i): logical SHR then OR sign bits ONLY when Y is STRICTLY
+                # negative (Y<0).  Gate on Y's real sign bit, NOT `neg` (which is 1 for
+                # Y<=0): for Y==0 the shift is 0 and MUST stay 0 (no sign-fill), else the
+                # OR would corrupt it to a large negative value.  ysgn = signbit(Y).
+                ysh_asr = (
+                    "    SHR R{in:Y}, #15\n    MOVE R{state:ysgn}, R0\n"       # ysgn = Y<0 ? 1:0
+                    f"    SHR R{{in:Y}}, #{sh}\n    MOVE R{{state:ysh}}, R0\n"
+                    "    CMP R{state:ysgn}, R{data:zero}\n    BR.Z yshdone\n"
+                    "    MOVE R0, R{state:ysh}\n    OR R0, R{data:smask}\n    MOVE R{state:ysh}, R0\n"
+                    "yshdone:\n"
+                )
+            a_body = (
                 "start:\n"
-                "    MOVE R{state:xs}, R{in:X}\n"
-                "    MOVE R{state:ys}, R{in:Y}\n"
-                "    MOVE R{state:aa}, R{in:a}\n"
-                "    MOVE R{state:fl}, R{in:flags}\n"
-                "    CMP R{state:ys}, R{data:zero}\n"
-                "    BR.NP yneg\n"
-                # Y>0 branch: X += Y>>i ; Y -= Xs>>i ; a += atc
-                f"    MOVE R0, R{{state:ys}}\n    SHR R0, #{sh}\n    ADD R{{state:xs}}, R0\n"
-                f"    MOVE R0, R{{in:X}}\n    SHR R0, #{sh}\n    MOVE R{{state:t}}, R0\n"
-                "    MOVE R0, R{state:ys}\n    SUB R0, R{state:t}\n    MOVE R{state:ys}, R0\n"
-                "    ADD R{state:aa}, R{data:atc}\n"
-                "    BR.NN emit\n"
-                "yneg:\n"
-                # Y<=0 branch: X -= Y>>i ; Y += Xs>>i ; a -= atc
-                f"    MOVE R0, R{{state:ys}}\n    SHR R0, #{sh}\n    MOVE R{{state:t}}, R0\n"
-                "    MOVE R0, R{state:xs}\n    SUB R0, R{state:t}\n    MOVE R{state:xs}, R0\n"
-                f"    MOVE R0, R{{in:X}}\n    SHR R0, #{sh}\n    ADD R{{state:ys}}, R0\n"
-                "    MOVE R0, R{state:aa}\n    SUB R0, R{data:atc}\n    MOVE R{state:aa}, R0\n"
+                # neg = 1 if Y<=0 else 0.  Y<0 -> signbit=1; Y==0 -> handle as neg (Y<=0).
+                # Compute via: if Y>0 neg=0 else neg=1.
+                "    CMP R{in:Y}, R{data:zero}\n"
+                "    MOVE R{state:neg}, R{data:one}\n"      # assume Y<=0
+                "    BR.NP negset\n"
+                "    MOVE R{state:neg}, R{data:zero}\n"     # Y>0 -> neg=0
+                "negset:\n"
+                f"    SHR R{{in:X}}, #{sh}\n    MOVE R{{state:xsh}}, R0\n"   # xsh = X>>i (X>=0)
+                + ysh_asr +
                 "emit:\n"
-                "    MOVE R0, R{state:xs}\n    {write:X}\n"
-                "    MOVE R0, R{state:ys}\n    {write:Y}\n"
-                "    MOVE R0, R{state:aa}\n    {write:a}\n"
-                "    MOVE R0, R{state:fl}\n    {write:flags_o}\n"
+                "    MOVE R0, R{in:X}\n    {write:Xo}\n"      # SHR wrote R0, in:X reg intact
+                "    MOVE R0, R{in:Y}\n    {write:Yo}\n"
+                "    MOVE R0, R{in:a}\n    {write:ao}\n"
+                "    MOVE R0, R{state:xsh}\n    {write:xsh}\n"
+                "    MOVE R0, R{state:ysh}\n    {write:ysh}\n"
+                "    MOVE R0, R{state:neg}\n    {write:neg}\n"
                 "    {jump:trig}\n"
             )
-            cells[cid] = CellProgram(
+            cells[f"cordicA{i}"] = CellProgram(
                 inputs=[Port("X", register=0), Port("Y", register=1),
-                        Port("a", register=2), Port("flags", register=3)],
-                outputs=[Port("X"), Port("Y"), Port("a"), Port("flags_o"),
-                         Port("trig")],
+                        Port("a", register=2)],
+                outputs=[Port("Xo"), Port("Yo"), Port("ao"), Port("xsh"),
+                         Port("ysh"), Port("neg"), Port("trig")],
                 entries=[EntryPoint("default")],
-                data=[DataWord("zero", 0, address=4),
-                      DataWord("atc", atan_c[i], address=5)],
-                state=[StateVar("xs"), StateVar("ys"), StateVar("aa"),
-                       StateVar("fl"), StateVar("t")],
-                assembly_template=body,
+                data=[DataWord("zero", 0, address=3), DataWord("one", 1, address=4),
+                      DataWord("smask", _s16(smask), address=5)],
+                state=[StateVar("neg"), StateVar("xsh"), StateVar("ysh"),
+                       StateVar("ysgn")],
+                assembly_template=a_body,
+            )
+            # ---- cordicB[i]: branch on neg, do all 3 updates with correct sign ----
+            #   neg==0 (Y>0):  X+=ysh ; Y-=xsh ; a+=atc
+            #   neg==1 (Y<=0): X-=ysh ; Y+=xsh ; a-=atc
+            b_body = (
+                "start:\n"
+                "    MOVE R{state:xx}, R{in:Xo}\n"
+                "    MOVE R{state:ys}, R{in:Yo}\n"
+                "    MOVE R{state:aa}, R{in:ao}\n"
+                "    CMP R{in:neg}, R{data:zero}\n"
+                "    BR.NP bneg\n"
+                # neg==0 (Y>0)
+                "    ADD R{state:xx}, R{in:ysh}\n    MOVE R{state:xx}, R0\n"
+                "    SUB R{state:ys}, R{in:xsh}\n    MOVE R{state:ys}, R0\n"
+                "    ADD R{state:aa}, R{data:atc}\n    MOVE R{state:aa}, R0\n"
+                "    BR.NN emit\n"
+                "bneg:\n"
+                # neg==1 (Y<=0)
+                "    SUB R{state:xx}, R{in:ysh}\n    MOVE R{state:xx}, R0\n"
+                "    ADD R{state:ys}, R{in:xsh}\n    MOVE R{state:ys}, R0\n"
+                "    SUB R{state:aa}, R{data:atc}\n    MOVE R{state:aa}, R0\n"
+                "emit:\n"
+                "    MOVE R0, R{state:xx}\n    {write:X}\n"
+                "    MOVE R0, R{state:ys}\n    {write:Y}\n"
+                "    MOVE R0, R{state:aa}\n    {write:a}\n"
+                "    {jump:trig}\n"
+            )
+            cells[f"cordicB{i}"] = CellProgram(
+                inputs=[Port("Xo", register=0), Port("Yo", register=1),
+                        Port("ao", register=2), Port("xsh", register=3),
+                        Port("ysh", register=4), Port("neg", register=5)],
+                outputs=[Port("X"), Port("Y"), Port("a"), Port("trig")],
+                entries=[EntryPoint("default")],
+                data=[DataWord("zero", 0, address=6), DataWord("atc", atan_c[i], address=7)],
+                state=[StateVar("xx"), StateVar("ys"), StateVar("aa")],
+                assembly_template=b_body,
             )
 
         # (last-2) cordic_quad — unpack flags, quadrant fixups: sx<0 -> a=32768-a; sy<0 -> a=-a.
@@ -328,26 +389,27 @@ start:
         return cells
 
     def _chain(self):
-        return (["conjmult", "cordic_init"] + [f"cordic{i}" for i in range(self.NITER)]
-                + ["cordic_quad", "cordic_gain"])
+        # conjmult -> cordic_init -> [A0,B0, ... A13,B13] -> cordic_quad -> cordic_gain.
+        chain = ["conjmult", "cordic_init"]
+        for i in range(self.NITER):
+            chain += [f"cordicA{i}", f"cordicB{i}"]
+        chain += ["cordic_quad", "cordic_gain"]
+        return chain
 
     def internal_connections(self):
         C = [("conjmult", "dr", "cordic_init", "dr"),
              ("conjmult", "di", "cordic_init", "di")]
-        # cordic_init -> cordic0 -> ... -> cordicN-1 -> cordic_quad
+        # cordic_init -> A0 (X,Y,a); A[i]->B[i] (X,Yo,a,sxsh); B[i]->A[i+1] (X,Y,a).
+        # flags bypasses the whole CORDIC chain (cordic_init -> cordic_quad).
         prev = "cordic_init"
         for i in range(self.NITER):
-            cur = f"cordic{i}"
-            C += [(prev, "X", cur, "X"), (prev, "Y", cur, "Y"),
-                  (prev, "a", cur, "a"),
-                  (prev, ("flags" if prev == "cordic_init" else "flags_o"),
-                   cur, "flags")]
-            prev = cur
-        C += [(prev, "X", "cordic_quad", "a")]  # placeholder overwritten below
-        # cordicN-1 -> cordic_quad needs a + flags
-        C = C[:-1]
+            A, B = f"cordicA{i}", f"cordicB{i}"
+            C += [(prev, "X", A, "X"), (prev, "Y", A, "Y"), (prev, "a", A, "a")]
+            C += [(A, "Xo", B, "Xo"), (A, "Yo", B, "Yo"), (A, "ao", B, "ao"),
+                  (A, "xsh", B, "xsh"), (A, "ysh", B, "ysh"), (A, "neg", B, "neg")]
+            prev = B
         C += [(prev, "a", "cordic_quad", "a"),
-              (prev, "flags_o", "cordic_quad", "flags"),
+              ("cordic_init", "flags", "cordic_quad", "flags"),
               ("cordic_quad", "ang", "cordic_gain", "ang")]
         return C
 
@@ -375,8 +437,14 @@ start:
 
     # -------------------------------------------------------------- reference
     def _cordic_atan2(self, y, x):
-        """CORDIC vectoring atan2(y,x) as signed Q15 fraction of pi (op-for-op with
-        the on-chip cordic cells).  Returns 0 for (0,0)."""
+        """CORDIC vectoring atan2(y,x) as signed Q15 fraction of pi (op-for-op with the
+        on-chip cordic cells, INCLUDING the logical-SHR / ASR-emulation).  Returns 0 for
+        (0,0).
+
+        The on-chip SHR is LOGICAL (fill with 0).  In the Y>0 branch both shifted operands
+        (X,Y) are >=0 so logical == arithmetic.  In the Y<=0 branch Y is negative, so the
+        cell emulates ASR (`SHR` then `OR sign-mask`); this reference mirrors that exactly
+        with :meth:`_asr16` so the built DUT is BIT-EXACT to it."""
         if x == 0 and y == 0:
             return 0
         atan_c = self._atan_consts()
@@ -385,13 +453,16 @@ start:
         X = abs(x); Y = abs(y); a = 0
         for i in range(self.NITER):
             xs = X
+            xsh = (xs & 0xFFFF) >> i          # X always >=0 -> logical exact
             if Y > 0:
-                X = X + (Y >> i)
-                Y = Y - (xs >> i)
+                ysh = (Y & 0xFFFF) >> i        # Y>=0 -> logical exact
+                X = X + ysh
+                Y = Y - xsh
                 a = a + atan_c[i]
             else:
-                X = X - (Y >> i)
-                Y = Y + (xs >> i)
+                ysh = self._asr16(Y, i)        # Y<0 -> arithmetic (emulated on chip)
+                X = X - ysh
+                Y = Y + xsh
                 a = a - atan_c[i]
         a = _s16(a & 0xFFFF)
         if sx < 0:
@@ -399,6 +470,17 @@ start:
         if sy < 0:
             a = -a
         return a
+
+    @staticmethod
+    def _asr16(v, n):
+        """Arithmetic shift right of a signed 16-bit value by n (0..15), matching the
+        on-chip logical-SHR + sign-mask-OR emulation."""
+        if n == 0:
+            return _s16(v)
+        r = (v & 0xFFFF) >> n
+        if v < 0:
+            r |= (0xFFFF << (16 - n)) & 0xFFFF
+        return _s16(r)
 
     def _sample_q15(self, pv_i, pv_q, xi, xq):
         dr = ((xi * pv_i) >> 15) + ((xq * pv_q) >> 15)

@@ -79,8 +79,7 @@ class QuadratureDemodBlock(KyttarBlock):
     _interface = BlockInterface(
         entry_address=1, input_registers=[0, 1], output_registers=[0])
 
-    _CELL_IDS = ["conjmult", "fold_abs", "fold_mm", "norm_sh1", "norm_sh2", "norm_idx",
-                 "recip_lut", "recip_t", "atan_lut", "atan_out"]
+    _CELL_IDS = ["conjmult", "cordic_init"] + [f"cordic{i}" for i in range(14)] + ["cordic_quad", "cordic_gain"]
 
     def __init__(self, name: str, gain: float = 1.0):
         super().__init__(name, gain=gain)
@@ -110,7 +109,7 @@ class QuadratureDemodBlock(KyttarBlock):
 
     @property
     def cell_count(self) -> int:
-        return 10
+        return 18
 
     @property
     def interface(self) -> BlockInterface:
@@ -134,28 +133,26 @@ class QuadratureDemodBlock(KyttarBlock):
                 for k in range(self.TABLE_SIZE)]
 
     # ------------------------------------------------------------ cells
-    def build_cell_programs(self) -> Dict[str, CellProgram]:
-        rinv = self._rinv_table()
-        atbl = self._atan_table()
+    NITER = 14  # CORDIC vectoring iterations -> ~8 LSB atan2 (no tables)
 
-        # (1) conjmult — landing cell.  Holds prev sample (pv_i, pv_q), computes the
-        # conjugate product dr,di, updates prev, emits dr,di.
-        conjmult = CellProgram(
+    def _atan_consts(self):
+        """arctan(2^-i)/pi in Q15 (one per CORDIC iteration; a per-cell constant)."""
+        return [float_to_q15(math.atan(2.0 ** -i) / math.pi) for i in range(self.NITER)]
+
+    def build_cell_programs(self) -> Dict[str, CellProgram]:
+        atan_c = self._atan_consts()
+        cells = {}
+
+        # (1) conjmult — dr,di = Re/Im(x*conj(xprev)); update prev.  (Unchanged, bit-exact.)
+        cells["conjmult"] = CellProgram(
             inputs=[Port("xi", register=0), Port("xq", register=1)],
             outputs=[Port("dr"), Port("di"), Port("trig")],
             entries=[EntryPoint("default")],
-            # EXPLICIT state registers R2..R6 — the inputs land xi@R0 (the ALU
-            # accumulator!) / xq@R1, and with no `data` the resolver would auto-
-            # allocate state from R0 upward, aliasing pv_i onto R0 (clobbered by
-            # every ALU op) and pv_q onto R1 (=xq).  Pin state above the inputs.
             state=[StateVar("pv_i", initial_value=0, register=2),
                    StateVar("pv_q", initial_value=0, register=3),
                    StateVar("cur_i", register=4), StateVar("cur_q", register=5),
                    StateVar("acc", register=6)],
             data=[],
-            # dr = (xi*pv_i + xq*pv_q)>>15 ; di = (xq*pv_i - xi*pv_q)>>15.
-            # Snapshot the inputs FIRST (MULQ clobbers R0 and the input regs survive,
-            # but we need xi,xq twice each), then compute, emit, update prev.
             assembly_template="""\
 start:
     MOVE R{state:cur_i}, R{in:xi}
@@ -180,29 +177,25 @@ start:
 """,
         )
 
-        # (2) fold_abs — ax=|dr|, ay=|di|; sdr=(dr<0), sdi=(di<0) as 0/1 flags.
-        fold_abs = CellProgram(
+        # (2) cordic_init — zero-guard + abs + pack sign flags (flags = sx<0 | (sy<0)<<1).
+        # Emits X=|dr|, Y=|di|, a=0, flags.  (If both zero, X=Y=0 -> CORDIC stays 0.)
+        cells["cordic_init"] = CellProgram(
             inputs=[Port("dr", register=0), Port("di", register=1)],
-            outputs=[Port("ax"), Port("ay"), Port("sdr"), Port("sdi"),
-                     Port("trig")],
+            outputs=[Port("X"), Port("Y"), Port("a"), Port("flags"), Port("trig")],
             entries=[EntryPoint("default")],
-            data=[DataWord("zero", 0, address=2)],
-            # dr lands in R0 (the accumulator) — SNAPSHOT dr,di into state FIRST, else
-            # the sign-bit SHR on R0 clobbers dr before ax=|dr| reads it.  Work from
-            # the snapshots (dd,ii) thereafter.
-            state=[StateVar("dd"), StateVar("ii")],
-            # Snapshot dr,di into dd,ii; emit signs; then ABS in-place (dd=|dd|,
-            # ii=|ii|) and emit as ax,ay.
+            data=[DataWord("zero", 0, address=2), DataWord("one", 1, address=3)],
+            state=[StateVar("dd"), StateVar("ii"), StateVar("fl")],
             assembly_template="""\
 start:
     MOVE R{state:dd}, R{in:dr}
     MOVE R{state:ii}, R{in:di}
     MOVE R0, R{state:dd}
     SHR R0, #15
-    {write:sdr}
+    MOVE R{state:fl}, R0
     MOVE R0, R{state:ii}
     SHR R0, #15
-    {write:sdi}
+    SHL R0, #1
+    ADD R{state:fl}, R0
     CMP R{state:dd}, R{data:zero}
     BR.NN axp
     MOVE R0, R{data:zero}
@@ -216,294 +209,115 @@ axp:
     MOVE R{state:ii}, R0
 ayp:
     MOVE R0, R{state:dd}
-    {write:ax}
+    {write:X}
     MOVE R0, R{state:ii}
-    {write:ay}
-    {jump:trig}
-""",
-        )
-
-        # (3) fold_mm — num=min(ax,ay), den=max, swap=(ay>ax) as 0/1; relay signs.
-        fold_mm = CellProgram(
-            inputs=[Port("ax", register=0), Port("ay", register=1),
-                    Port("sdr", register=2), Port("sdi", register=3)],
-            outputs=[Port("num"), Port("den"), Port("swap"),
-                     Port("sdr_o"), Port("sdi_o"), Port("trig")],
-            entries=[EntryPoint("default")],
-            data=[DataWord("zero", 0, address=4), DataWord("one", 1, address=5)],
-            state=[StateVar("nmin"), StateVar("dmax"), StateVar("sw")],
-            # Branch only sets nmin/dmax/sw; a single shared tail emits everything.
-            assembly_template="""\
-start:
-    MOVE R{state:nmin}, R{in:ay}
-    MOVE R{state:dmax}, R{in:ax}
-    MOVE R{state:sw}, R{data:zero}
-    CMP R{in:ax}, R{in:ay}
-    BR.NN emit
-    MOVE R{state:nmin}, R{in:ax}
-    MOVE R{state:dmax}, R{in:ay}
-    MOVE R{state:sw}, R{data:one}
-emit:
-    MOVE R0, R{state:nmin}
-    {write:num}
-    MOVE R0, R{state:dmax}
-    {write:den}
-    MOVE R0, R{state:sw}
-    {write:swap}
-    MOVE R0, R{in:sdr}
-    {write:sdr_o}
-    MOVE R0, R{in:sdi}
-    {write:sdi_o}
-    {jump:trig}
-""",
-        )
-
-        # (4) norm_sh1 — coarse normalise (<<8, <<4) on den and num together;
-        # relay swap/sdr/sdi.
-        norm_sh1 = CellProgram(
-            inputs=[Port("num", register=0), Port("den", register=1)],
-            outputs=[Port("d"), Port("n"), Port("trig")],
-            entries=[EntryPoint("default")],
-            data=[DataWord("c80", 0x0080, address=2),
-                  DataWord("c800", 0x0800, address=3)],
-            state=[StateVar("d"), StateVar("n")],
-            # Capture num@R0 FIRST — R0 is the accumulator, so `MOVE d,den` (which
-            # routes through R0) would clobber num before `MOVE n,num` reads it.
-            assembly_template="""\
-start:
-    MOVE R{state:n}, R{in:num}
-    MOVE R{state:d}, R{in:den}
-    CMP R{state:d}, R{data:c80}
-    BR.NN s8
-    SHL R{state:d}, #8
-    MOVE R{state:d}, R0
-    SHL R{state:n}, #8
-    MOVE R{state:n}, R0
-s8:
-    CMP R{state:d}, R{data:c800}
-    BR.NN s4
-    SHL R{state:d}, #4
-    MOVE R{state:d}, R0
-    SHL R{state:n}, #4
-    MOVE R{state:n}, R0
-s4:
-    MOVE R0, R{state:d}
-    {write:d}
-    MOVE R0, R{state:n}
-    {write:n}
-    {jump:trig}
-""",
-        )
-
-        # (5) norm_sh2 — fine normalise (<<2, <<1) on d and n together; relay signs.
-        norm_sh2 = CellProgram(
-            inputs=[Port("d", register=0), Port("n", register=1)],
-            outputs=[Port("d_o"), Port("n_o"), Port("trig")],
-            entries=[EntryPoint("default")],
-            data=[DataWord("c2000", 0x2000, address=2),
-                  DataWord("c4000", 0x4000, address=3)],
-            state=[StateVar("dd"), StateVar("nn")],
-            assembly_template="""\
-start:
-    MOVE R{state:dd}, R{in:d}
-    MOVE R{state:nn}, R{in:n}
-    CMP R{state:dd}, R{data:c2000}
-    BR.NN s2
-    SHL R{state:dd}, #2
-    MOVE R{state:dd}, R0
-    SHL R{state:nn}, #2
-    MOVE R{state:nn}, R0
-s2:
-    CMP R{state:dd}, R{data:c4000}
-    BR.NN s1
-    SHL R{state:dd}, #1
-    MOVE R{state:dd}, R0
-    SHL R{state:nn}, #1
-    MOVE R{state:nn}, R0
-s1:
-    MOVE R0, R{state:dd}
-    {write:d_o}
-    MOVE R0, R{state:nn}
-    {write:n_o}
-    {jump:trig}
-""",
-        )
-
-        # (5) norm_idx — from normalised d: ridx=(d-16384)>>r_ishift,
-        # rfrac=((d-16384)&r_fmask)<<r_fshift; relay n + swap/sdr/sdi.
-        norm_idx = CellProgram(
-            inputs=[Port("d", register=0), Port("n", register=1),
-                    Port("swap", register=2), Port("sdr", register=3),
-                    Port("sdi", register=4)],
-            outputs=[Port("n_o"), Port("ridx"), Port("rfrac"),
-                     Port("swap_o"), Port("sdr_o"), Port("sdi_o"), Port("trig")],
-            entries=[EntryPoint("default")],
-            data=[DataWord("c16384", 16384, address=5),
-                  DataWord("fmask", self._r_fmask, address=6)],
-            state=[StateVar("dd")],
-            assembly_template="""\
-start:
-    MOVE R0, R{in:n}
-    {write:n_o}
-    MOVE R{state:dd}, R{in:d}
-    SUB R{state:dd}, R{data:c16384}
-    MOVE R{state:dd}, R0
-    MOVE R0, R{state:dd}
-    SHR R0, #%(rish)d
-    {write:ridx}
-    MOVE R0, R{state:dd}
-    AND R0, R{data:fmask}
-    MOVE R0, R0
-    SHL R0, #%(rfsh)d
-    {write:rfrac}
-    MOVE R0, R{in:swap}
-    {write:swap_o}
-    MOVE R0, R{in:sdr}
-    {write:sdr_o}
-    MOVE R0, R{in:sdi}
-    {write:sdi_o}
-    {jump:trig}
-""" % {"rish": self._r_ishift, "rfsh": self._r_fshift},
-        )
-
-        NT = len(rinv)
-        # (5) recip_lut — inv = P + ((Q-P)*rfrac)>>15 from rinv LUT (addr 1..NT);
-        # relay n, swap/sdr/sdi.
-        recip_lut = CellProgram(
-            inputs=[Port("ridx", register=0), Port("rfrac", register=1)],
-            outputs=[Port("inv"), Port("trig")],
-            entries=[EntryPoint("default")],
-            data=[DataWord(f"r{k}", v, address=2 + k) for k, v in enumerate(rinv)]
-            + [DataWord("one", 1, address=2 + NT),
-               DataWord("tbase", 2, address=3 + NT)],
-            state=[StateVar("adr"), StateVar("P"), StateVar("Q")],
-            assembly_template="""\
-start:
-    MOVE R{state:adr}, R{in:ridx}
-    ADD R{state:adr}, R{data:tbase}
-    MOVE R{state:adr}, R0
-    LOAD R{state:adr}
-    MOVE R{state:P}, R0
-    ADD R{state:adr}, R{data:one}
-    MOVE R{state:adr}, R0
-    LOAD R{state:adr}
-    MOVE R{state:Q}, R0
-    SUB R{state:Q}, R{state:P}
-    MOVE R{state:Q}, R0
-    MOVE R0, R{state:P}
-    MACQ R{state:Q}, R{in:rfrac}
-    {write:inv}
-    {jump:trig}
-""",
-        )
-
-        # (6) recip_t — t=(n*inv)>>14 (=MULQ<<1); aidx=t>>a_ishift,
-        # afrac=(t & a_fmask) << a_fshift.
-        recip_t = CellProgram(
-            inputs=[Port("inv", register=0), Port("n", register=1),
-                    Port("swap", register=2), Port("sdr", register=3),
-                    Port("sdi", register=4)],
-            outputs=[Port("aidx"), Port("afrac"), Port("swap_o"),
-                     Port("sdr_o"), Port("sdi_o"), Port("trig")],
-            entries=[EntryPoint("default")],
-            data=[DataWord("afmask", self._a_fmask, address=5)],
-            state=[StateVar("t"), StateVar("tmp")],
-            assembly_template="""\
-start:
-    MOVE R{state:t}, R{in:n}
-    MULQ R{state:t}, R{in:inv}
-    SHL R0, #1
-    MOVE R{state:t}, R0
-    MOVE R{state:tmp}, R{state:t}
-    SHR R{state:tmp}, #%(aish)d
-    MOVE R0, R{state:tmp}
-    {write:aidx}
-    MOVE R{state:tmp}, R{state:t}
-    AND R{state:tmp}, R{data:afmask}
-    MOVE R{state:tmp}, R0
-    SHL R{state:tmp}, #%(afsh)d
-    MOVE R0, R{state:tmp}
-    {write:afrac}
-    MOVE R0, R{in:swap}
-    {write:swap_o}
-    MOVE R0, R{in:sdr}
-    {write:sdr_o}
-    MOVE R0, R{in:sdi}
-    {write:sdi_o}
-    {jump:trig}
-""" % {"aish": self._a_ishift, "afsh": self._a_fshift},
-        )
-
-        AT = len(atbl)
-        # (7) atan_lut — a = P + ((Q-P)*afrac)>>15 from atan LUT (addr 1..AT);
-        # relay swap/sdr/sdi.
-        atan_lut = CellProgram(
-            inputs=[Port("aidx", register=0), Port("afrac", register=1)],
-            outputs=[Port("a"), Port("trig")],
-            entries=[EntryPoint("default")],
-            data=[DataWord(f"a{k}", v, address=2 + k) for k, v in enumerate(atbl)]
-            + [DataWord("one", 1, address=2 + AT),
-               DataWord("tbase", 2, address=3 + AT)],
-            state=[StateVar("adr"), StateVar("P"), StateVar("Q")],
-            assembly_template="""\
-start:
-    MOVE R{state:adr}, R{in:aidx}
-    ADD R{state:adr}, R{data:tbase}
-    MOVE R{state:adr}, R0
-    LOAD R{state:adr}
-    MOVE R{state:P}, R0
-    ADD R{state:adr}, R{data:one}
-    MOVE R{state:adr}, R0
-    LOAD R{state:adr}
-    MOVE R{state:Q}, R0
-    SUB R{state:Q}, R{state:P}
-    MOVE R{state:Q}, R0
-    MOVE R0, R{state:P}
-    MACQ R{state:Q}, R{in:afrac}
+    {write:Y}
+    MOVE R0, R{data:zero}
     {write:a}
+    MOVE R0, R{state:fl}
+    {write:flags}
     {jump:trig}
 """,
         )
 
-        # (8) atan_out — quadrant fixups (swap: 16384-a; sdr: 32768-a==-a mod; sdi: -a)
-        # -> ang=arg/pi (Q15); then y=(ang*kp)>>15 << p (saturating doublings); emit.
-        # Saturating doublings for the <<p output scale.  The LAST op leaves the
-        # result in R0 (which {write:out} sends), so the final MOVE-back is omitted.
+        # (3..3+NITER-1) cordic_iter[i] — one CORDIC vectoring step:
+        #   if Y>0: Xn=X+(Y>>i); Yn=Y-(X>>i); a+=ATAN[i]
+        #   else:   Xn=X-(Y>>i); Yn=Y+(X>>i); a-=ATAN[i]
+        # Snapshot X (Xs) first so the Y update uses the OLD X.  Relay flags.
+        for i in range(self.NITER):
+            cid = f"cordic{i}"
+            sh = i  # shift amount
+            body = (
+                "start:\n"
+                "    MOVE R{state:xs}, R{in:X}\n"
+                "    MOVE R{state:ys}, R{in:Y}\n"
+                "    MOVE R{state:aa}, R{in:a}\n"
+                "    MOVE R{state:fl}, R{in:flags}\n"
+                "    CMP R{state:ys}, R{data:zero}\n"
+                "    BR.NP yneg\n"
+                # Y>0 branch: X += Y>>i ; Y -= Xs>>i ; a += atc
+                f"    MOVE R0, R{{state:ys}}\n    SHR R0, #{sh}\n    ADD R{{state:xs}}, R0\n"
+                f"    MOVE R0, R{{in:X}}\n    SHR R0, #{sh}\n    MOVE R{{state:t}}, R0\n"
+                "    MOVE R0, R{state:ys}\n    SUB R0, R{state:t}\n    MOVE R{state:ys}, R0\n"
+                "    ADD R{state:aa}, R{data:atc}\n"
+                "    BR.NN emit\n"
+                "yneg:\n"
+                # Y<=0 branch: X -= Y>>i ; Y += Xs>>i ; a -= atc
+                f"    MOVE R0, R{{state:ys}}\n    SHR R0, #{sh}\n    MOVE R{{state:t}}, R0\n"
+                "    MOVE R0, R{state:xs}\n    SUB R0, R{state:t}\n    MOVE R{state:xs}, R0\n"
+                f"    MOVE R0, R{{in:X}}\n    SHR R0, #{sh}\n    ADD R{{state:ys}}, R0\n"
+                "    MOVE R0, R{state:aa}\n    SUB R0, R{data:atc}\n    MOVE R{state:aa}, R0\n"
+                "emit:\n"
+                "    MOVE R0, R{state:xs}\n    {write:X}\n"
+                "    MOVE R0, R{state:ys}\n    {write:Y}\n"
+                "    MOVE R0, R{state:aa}\n    {write:a}\n"
+                "    MOVE R0, R{state:fl}\n    {write:flags_o}\n"
+                "    {jump:trig}\n"
+            )
+            cells[cid] = CellProgram(
+                inputs=[Port("X", register=0), Port("Y", register=1),
+                        Port("a", register=2), Port("flags", register=3)],
+                outputs=[Port("X"), Port("Y"), Port("a"), Port("flags_o"),
+                         Port("trig")],
+                entries=[EntryPoint("default")],
+                data=[DataWord("zero", 0, address=4),
+                      DataWord("atc", atan_c[i], address=5)],
+                state=[StateVar("xs"), StateVar("ys"), StateVar("aa"),
+                       StateVar("fl"), StateVar("t")],
+                assembly_template=body,
+            )
+
+        # (last-2) cordic_quad — unpack flags, quadrant fixups: sx<0 -> a=32768-a; sy<0 -> a=-a.
+        cells["cordic_quad"] = CellProgram(
+            inputs=[Port("a", register=0), Port("flags", register=1)],
+            outputs=[Port("ang"), Port("trig")],
+            entries=[EntryPoint("default")],
+            data=[DataWord("zero", 0, address=2), DataWord("one", 1, address=3),
+                  DataWord("c32768", 0x8000, address=4)],
+            state=[StateVar("aa"), StateVar("fl"), StateVar("b")],
+            assembly_template="""\
+start:
+    MOVE R{state:aa}, R{in:a}
+    MOVE R{state:fl}, R{in:flags}
+    MOVE R{state:b}, R{state:fl}
+    AND R{state:b}, R{data:one}
+    CMP R0, R{data:zero}
+    BR.Z nsx
+    MOVE R0, R{data:c32768}
+    SUB R0, R{state:aa}
+    MOVE R{state:aa}, R0
+nsx:
+    MOVE R{state:b}, R{state:fl}
+    SHR R{state:b}, #1
+    MOVE R{state:b}, R0
+    AND R{state:b}, R{data:one}
+    CMP R0, R{data:zero}
+    BR.Z nsy
+    MOVE R0, R{data:zero}
+    SUB R0, R{state:aa}
+    MOVE R{state:aa}, R0
+nsy:
+    MOVE R0, R{state:aa}
+    {write:ang}
+    {jump:trig}
+""",
+        )
+
+        # (last) cordic_gain — y = (ang*kp)>>15 << p (saturating); emit.
         shl_block = ""
-        for i in range(self._out_shift):
+        for j in range(self._out_shift):
             shl_block += "    ADD R{state:a}, R{state:a}\n"
-            if i < self._out_shift - 1:
+            if j < self._out_shift - 1:
                 shl_block += "    MOVE R{state:a}, R0\n"
-        atan_out = CellProgram(
-            inputs=[Port("a", register=0), Port("swap", register=1),
-                    Port("sdr", register=2), Port("sdi", register=3)],
+        cells["cordic_gain"] = CellProgram(
+            inputs=[Port("ang", register=0)],
             outputs=[Port("out"), Port("trig")],
             entries=[EntryPoint("default")],
-            data=[DataWord("zero", 0, address=4), DataWord("c16384", 16384, address=5),
-                  DataWord("kp", self._kp_q15, address=6)],
+            data=[DataWord("kp", self._kp_q15, address=1)],
             state=[StateVar("a")],
-            # Work in-place in `a`; the gain MULQ+saturating doublings reuse `a`.
             assembly_template="""\
 start:
-    MOVE R{state:a}, R{in:a}
-    CMP R{in:swap}, R{data:zero}
-    BR.Z nsw
-    MOVE R0, R{data:c16384}
-    SUB R0, R{state:a}
-    MOVE R{state:a}, R0
-nsw:
-    CMP R{in:sdr}, R{data:zero}
-    BR.Z nsd
-    MOVE R0, R{data:zero}
-    SUB R0, R{state:a}
-    MOVE R{state:a}, R0
-nsd:
-    CMP R{in:sdi}, R{data:zero}
-    BR.Z nsi
-    MOVE R0, R{data:zero}
-    SUB R0, R{state:a}
-    MOVE R{state:a}, R0
-nsi:
+    MOVE R{state:a}, R{in:ang}
     MULQ R{state:a}, R{data:kp}
     MOVE R{state:a}, R0
 """ + shl_block + """\
@@ -511,146 +325,112 @@ nsi:
     {jump:trig}
 """,
         )
+        return cells
 
-        return {"conjmult": conjmult, "fold_abs": fold_abs, "fold_mm": fold_mm,
-                "norm_sh1": norm_sh1, "norm_sh2": norm_sh2, "norm_idx": norm_idx, "recip_lut": recip_lut, "recip_t": recip_t,
-                "atan_lut": atan_lut, "atan_out": atan_out}
+    def _chain(self):
+        return (["conjmult", "cordic_init"] + [f"cordic{i}" for i in range(self.NITER)]
+                + ["cordic_quad", "cordic_gain"])
 
-    def internal_connections(self) -> List[Tuple[str, str, str, str]]:
-        return [
-            ("conjmult", "dr", "fold_abs", "dr"),
-            ("conjmult", "di", "fold_abs", "di"),
-            ("fold_abs", "ax", "fold_mm", "ax"),
-            ("fold_abs", "ay", "fold_mm", "ay"),
-            ("fold_abs", "sdr", "fold_mm", "sdr"),
-            ("fold_abs", "sdi", "fold_mm", "sdi"),
-            ("fold_mm", "num", "norm_sh1", "num"),
-            ("fold_mm", "den", "norm_sh1", "den"),
-            ("fold_mm", "swap", "norm_idx", "swap"),
-            ("fold_mm", "sdr_o", "norm_idx", "sdr"),
-            ("fold_mm", "sdi_o", "norm_idx", "sdi"),
-            ("norm_sh1", "d", "norm_sh2", "d"),
-            ("norm_sh1", "n", "norm_sh2", "n"),
-            ("norm_sh2", "d_o", "norm_idx", "d"),
-            ("norm_sh2", "n_o", "norm_idx", "n"),
-            ("norm_idx", "n_o", "recip_t", "n"),
-            ("norm_idx", "ridx", "recip_lut", "ridx"),
-            ("norm_idx", "rfrac", "recip_lut", "rfrac"),
-            ("norm_idx", "swap_o", "recip_t", "swap"),
-            ("norm_idx", "sdr_o", "recip_t", "sdr"),
-            ("norm_idx", "sdi_o", "recip_t", "sdi"),
-            ("recip_lut", "inv", "recip_t", "inv"),
-            ("recip_t", "aidx", "atan_lut", "aidx"),
-            ("recip_t", "afrac", "atan_lut", "afrac"),
-            ("recip_t", "swap_o", "atan_out", "swap"),
-            ("recip_t", "sdr_o", "atan_out", "sdr"),
-            ("recip_t", "sdi_o", "atan_out", "sdi"),
-            ("atan_lut", "a", "atan_out", "a"),
-        ]
+    def internal_connections(self):
+        C = [("conjmult", "dr", "cordic_init", "dr"),
+             ("conjmult", "di", "cordic_init", "di")]
+        # cordic_init -> cordic0 -> ... -> cordicN-1 -> cordic_quad
+        prev = "cordic_init"
+        for i in range(self.NITER):
+            cur = f"cordic{i}"
+            C += [(prev, "X", cur, "X"), (prev, "Y", cur, "Y"),
+                  (prev, "a", cur, "a"),
+                  (prev, ("flags" if prev == "cordic_init" else "flags_o"),
+                   cur, "flags")]
+            prev = cur
+        C += [(prev, "X", "cordic_quad", "a")]  # placeholder overwritten below
+        # cordicN-1 -> cordic_quad needs a + flags
+        C = C[:-1]
+        C += [(prev, "a", "cordic_quad", "a"),
+              (prev, "flags_o", "cordic_quad", "flags"),
+              ("cordic_quad", "ang", "cordic_gain", "ang")]
+        return C
 
-    def internal_jumps(self) -> List[Tuple[str, str, str, str]]:
-        chain = ["conjmult", "fold_abs", "fold_mm", "norm_sh1", "norm_sh2", "norm_idx", "recip_lut",
-                 "recip_t", "atan_lut", "atan_out"]
+    def internal_jumps(self):
+        chain = self._chain()
         return [(chain[i], "trig", chain[i + 1], "default")
                 for i in range(len(chain) - 1)]
 
-    def output_cell_ids(self) -> List[str]:
-        return ["atan_out"]
+    def output_cell_ids(self):
+        return ["cordic_gain"]
 
-    def default_layout(self) -> Dict[Any, Tuple[int, int, str]]:
-        # Two-row serpentine: row 0 EAST (conjmult..norm_idx turns SOUTH), row 1 WEST.
-        top = ["conjmult", "fold_abs", "fold_mm", "norm_sh1", "norm_sh2", "norm_idx"]
-        bot = ["recip_lut", "recip_t", "atan_lut", "atan_out"]
+    def default_layout(self):
+        chain = self._chain()
+        # Serpentine <=8 across: fill row 0 L->R, row 1 R->L, row 2 L->R.
         layout = {}
-        for i, cid in enumerate(top):
-            face = "south" if cid == "norm_idx" else "east"
-            layout[cid] = (i, 0, face)
-        for k, cid in enumerate(bot):
-            layout[cid] = (5 - k, 1, "west")
+        width = 8
+        for idx, cid in enumerate(chain):
+            row = idx // width
+            col = idx % width
+            if row % 2 == 1:
+                col = width - 1 - col
+            face = "east" if row % 2 == 0 else "west"
+            layout[cid] = (col, row, face)
         return layout
 
     # -------------------------------------------------------------- reference
-    def process_reference(self, input_samples) -> np.ndarray:
-        """Real ``gain·arg(x[n]·conj(x[n-1]))`` via the on-chip divide-free LUT
-        atan2 + Q15 output scale, op-for-op.  ``input_samples`` is complex."""
-        rinv = self._rinv_table()
-        atbl = self._atan_table()
+    def _cordic_atan2(self, y, x):
+        """CORDIC vectoring atan2(y,x) as signed Q15 fraction of pi (op-for-op with
+        the on-chip cordic cells).  Returns 0 for (0,0)."""
+        if x == 0 and y == 0:
+            return 0
+        atan_c = self._atan_consts()
+        sx = 1 if x >= 0 else -1
+        sy = 1 if y >= 0 else -1
+        X = abs(x); Y = abs(y); a = 0
+        for i in range(self.NITER):
+            xs = X
+            if Y > 0:
+                X = X + (Y >> i)
+                Y = Y - (xs >> i)
+                a = a + atan_c[i]
+            else:
+                X = X - (Y >> i)
+                Y = Y + (xs >> i)
+                a = a - atan_c[i]
+        a = _s16(a & 0xFFFF)
+        if sx < 0:
+            a = _s16((0x8000 - a) & 0xFFFF)
+        if sy < 0:
+            a = -a
+        return a
+
+    def _sample_q15(self, pv_i, pv_q, xi, xq):
+        dr = ((xi * pv_i) >> 15) + ((xq * pv_q) >> 15)
+        di = ((xq * pv_i) >> 15) - ((xi * pv_q) >> 15)
+        ang = self._cordic_atan2(di, dr)
         Kp = _s16(self._kp_q15)
-        p = self._out_shift
+        y = (ang * Kp) >> 15
+        return int(np.clip(y << self._out_shift, -32768, 32767))
+
+    def process_reference(self, input_samples) -> np.ndarray:
+        """Real gain*arg(x[n]*conj(x[n-1])) via the on-chip CORDIC atan2, op-for-op."""
         x = np.asarray(input_samples, dtype=np.complex128).reshape(-1)
         out = np.zeros(len(x), dtype=np.float64)
         pv_i = pv_q = 0
         for k in range(len(x)):
             xi = int(np.clip(round(x[k].real * 32768.0), -32768, 32767))
             xq = int(np.clip(round(x[k].imag * 32768.0), -32768, 32767))
-            ang = self._atan2_q15(pv_i, pv_q, xi, xq, rinv, atbl)
-            y = (ang * Kp) >> 15
-            y = int(np.clip(y << p, -32768, 32767))
-            out[k] = y / 32768.0
+            out[k] = self._sample_q15(pv_i, pv_q, xi, xq) / 32768.0
             pv_i, pv_q = xi, xq
         return out
 
     def process_reference_q15(self, input_samples) -> List[int]:
         """Bit-exact on-chip predictor: one signed Q15 word per input sample."""
-        rinv = self._rinv_table()
-        atbl = self._atan_table()
-        Kp = _s16(self._kp_q15)
-        p = self._out_shift
         x = np.asarray(input_samples, dtype=np.complex128).reshape(-1)
-        out: List[int] = []
+        out = []
         pv_i = pv_q = 0
         for k in range(len(x)):
             xi = int(np.clip(round(x[k].real * 32768.0), -32768, 32767))
             xq = int(np.clip(round(x[k].imag * 32768.0), -32768, 32767))
-            ang = self._atan2_q15(pv_i, pv_q, xi, xq, rinv, atbl)
-            y = (ang * Kp) >> 15
-            y = int(np.clip(y << p, -32768, 32767)) & 0xFFFF
-            out.append(y)
+            out.append(self._sample_q15(pv_i, pv_q, xi, xq) & 0xFFFF)
             pv_i, pv_q = xi, xq
         return out
-
-    def _atan2_q15(self, pv_i, pv_q, xi, xq, rinv, atbl) -> int:
-        """arg(x·conj(xprev)) as a signed Q15 FRACTION OF π — the exact chip datapath
-        (conj-mult, octant fold, binary normalise, half-reciprocal LUT divide, atan
-        LUT, quadrant fix-ups)."""
-        # The chip does two SEPARATE Q15 MULQs (each truncates >>15) then adds/
-        # subtracts — NOT one shift of the combined product.  Model that exactly so
-        # the reference is bit-identical (a single combined >>15 differs by 1 LSB).
-        dr = ((xi * pv_i) >> 15) + ((xq * pv_q) >> 15)
-        di = ((xq * pv_i) >> 15) - ((xi * pv_q) >> 15)
-        ay, ax = abs(di), abs(dr)
-        if ax == 0 and ay == 0:
-            return 0
-        swap = ay > ax
-        num = ax if swap else ay
-        den = ay if swap else ax
-        d, sh = den, 0
-        if d < 0x0080:
-            d <<= 8; sh += 8
-        if d < 0x0800:
-            d <<= 4; sh += 4
-        if d < 0x2000:
-            d <<= 2; sh += 2
-        if d < 0x4000:
-            d <<= 1; sh += 1
-        n = num << sh
-        N = self.TABLE_SIZE - 1
-        k = (d - 16384) >> self._r_ishift
-        frac = ((d - 16384) & self._r_fmask) << self._r_fshift
-        inv = rinv[k] + (((rinv[min(k + 1, N)] - rinv[k]) * frac) >> 15)
-        t = (n * inv) >> 14
-        if t > 32768:
-            t = 32768
-        idx = t >> self._a_ishift
-        tf = (t & self._a_fmask) << self._a_fshift
-        a = atbl[idx] + (((atbl[min(idx + 1, N)] - atbl[idx]) * tf) >> 15)
-        if swap:
-            a = 16384 - a
-        if dr < 0:
-            a = 32768 - a
-        if di < 0:
-            a = -a
-        return a
 
     def reset(self):
         pass

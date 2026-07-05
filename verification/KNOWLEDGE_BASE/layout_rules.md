@@ -180,3 +180,48 @@ asserts the input-near-driver invariant survives the full place+route flow.
 - [ ] Verified: the block actually **routes and produces output** in a real
       place+route+build+sim — not just that it builds. A block that builds but
       doesn't route looks identical to a working one until you run it.
+
+---
+
+## Oscillators & fan-out — translate GNU Radio graphs, don't transliterate them
+
+**This chip is CLOCKLESS.** Every cell executes only when a neighbour sends it a JUMP;
+there is no internal clock and no self-incrementing counter. Three consequences that trip
+up every analog demo (AM, SSB, anything with a local oscillator):
+
+1. **There are NO free-running sources.** An NCO here is NOT a source — its own contract is
+   "one input TRIGGER → one output sample". It has input registers so something can JUMP it
+   per sample. A GNU Radio `analog.sig_source`/NCO drawn as a source is host-clock-pulled;
+   when that graph is imported, the NCO ends up with **no input connection → nothing triggers
+   it → it never emits → the whole chain is dead**. placeKYT places it faithfully (no input
+   port ⇒ nothing to route). The FLOWGRAPH is wrong for the fabric, not the tool.
+
+   **Fix: FUSE the oscillator into its consumer.** Use a mixer-with-built-in-oscillator
+   (`kyttar_complex_mixer` → yi=sig·cos, yq=sig·sin as two ports; or `kyttar_iq_upconvert` →
+   `xi·cos − xq·sin`, one real rail per input). The arriving sample is BOTH the trigger AND
+   the data, and the mixer runs its own carrier. No standalone NCO.
+
+2. **A cell's output goes to exactly ONE consumer** (writing to two clobbers). So a SHARED
+   oscillator feeding N mixers is expensive fan-out the router must broker. **REPLICATE the
+   cheap phase-accumulator per consumer instead of sharing it.** Cells are plentiful (120);
+   wires/fan-out are the scarce resource. Two mixers at the same freq, each started at phase
+   0 from sample 0, stay coherent — no shared carrier needed.
+
+3. **Match the FUNCTION to the fabric, not GR's literal block.** (Same lesson as
+   QuadratureDemod: `atan2`-then-difference IS a MAC-only discriminator.) A `sig_source →
+   multiply` pair is a host-clock idiom; on-chip it's one fused oscillator-mixer.
+
+**Worked examples (all in `examples/`, analysis in `dev_docs/OSCILLATOR_TOPOLOGY_ANALYSIS.md`):**
+- **FM** — the model to emulate: VCO (input-driven phase accumulator) + discriminator (MAC,
+  no oscillator). No shared oscillator anywhere → tiny (12 cells), routes trivially.
+- **AM (DSB)** — `audio → iq_upconvert@fc → iq_upconvert@fc → LowPass → Gain`. Each mixer
+  self-carriers; 4 blocks, routes 5/5.
+- **SSB Weaver** — down-mix = 1 ComplexMixer (both rails); each up-mix = 1 lean IQUpconvert
+  (one rail: `xi`→cos, `xq`→−sin, so the combine is an ADD). 77 cells, no NCO, no fan-out.
+  (SSB is *inherently* 4 mixers + 2 filters/half — "big" is the algorithm, not the fabric.)
+
+**Block-choice cheat sheet for a carrier multiply:**
+- Need BOTH cos & sin rails from one signal → `kyttar_complex_mixer` (11 cells, 2 out ports).
+- Need ONE rail → `kyttar_iq_upconvert` (6 cells): `xi`→`sig·cos`, `xq`→`−sig·sin`. Prefer
+  this where you can — it's ~half the cells, which is what makes dense chains (SSB) fit.
+- Never import a graph with a standalone `kyttar_nco` feeding mixers and expect it to run.

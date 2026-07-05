@@ -2,18 +2,27 @@
 
 # SSB Weaver transceiver (on-chip) — debug demo
 
-A **full SSB (Weaver / third-method) transceiver** built from real Kyttar DSP blocks,
-so the whole 10-block chain places + auto-P&R-routes on the chip:
+A **full SSB (Weaver / third-method) transceiver** built from real Kyttar DSP blocks, using
+the **fabric-native fused-oscillator topology** (no shared NCO, no carrier fan-out):
 
 ```
-audio → ComplexMixer(−fa) → ComplexToFloat → ┬ LowPass I ┐
-                                             └ LowPass Q ┘ → IQUpconvert(fc) → SSB
-     → ComplexMixer(−fc) → ComplexToFloat → ┬ LowPass I ┐
-                                            └ LowPass Q ┘ → IQUpconvert(fa) → Gain ×4 → audio
+audio → cmix(fa) ─┬ yi=cos ─ LowPass I ─ iqup(fc) xi → cos-rail ┐
+                  └ yq=sin ─ LowPass Q ─ iqup(fc) xq → −sin-rail ┘→ Add → SSB
+     → cmix(fc) ─┬ yi=cos ─ LowPass I ─ iqup(fa) xi → cos-rail ┐
+                 └ yq=sin ─ LowPass Q ─ iqup(fa) xq → −sin-rail ┘→ Add → Gain ×4 → audio
 ```
+
+**Why this shape (the important part).** This chip is clockless — there is no free-running
+oscillator; a standalone NCO drawn as a source gets no trigger and is DEAD on-chip. So each
+mixer carries its OWN oscillator: the DOWN-mix is one `ComplexMixer` (emits both cos+sin
+rails as two ports), and each UP-mix is a lean 6-cell `IQUpconvert` producing one rail
+(`xi`→`sig·cos`, `xq`→`−sig·sin`; the negation makes the Weaver combine an **Add**). No
+shared NCO → no dead trigger; no shared carrier → no fan-out. This is **77 cells / 120**
+(the earlier all-`ComplexMixer` version was 100). See
+`dev_docs/OSCILLATOR_TOPOLOGY_ANALYSIS.md`.
 
 (USB; `fa=1500 Hz` audio-band centre, `fc=6000 Hz` carrier, `fs=32 kHz`, LPF cutoff
-1200 Hz. The Weaver math is verified in `dev_docs/weaver_proto.py`, corr 0.998.)
+1200 Hz. The fused-mixer Weaver DSP is verified at **corr 0.976**.)
 
 ## Files
 

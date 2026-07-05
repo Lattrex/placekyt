@@ -8,6 +8,49 @@ anything that generalizes across block classes into `invariants.md`.
 
 ---
 
+## FrequencyModulatorBlock — FM modulator / VCO vs GR frequency_modulator_fc 2026-07-04
+
+- **Status:** PASS / DONE vs GNU Radio `analog.frequency_modulator_fc`, 19 tests
+  (bit-exact substrate + GR correlation + 5 mutation gates + 4-point sensitivity
+  sweep + accum-first ordering). Real-in / complex-out, 10 cells.
+- **The VCO is the NCO with ONE changed cell.** `FrequencyModulatorBlock` SUBCLASSES
+  `NCOBlock` and overrides ONLY the phase cell (the cos/sin quarter-wave table
+  pipeline — fold/even/odd/interp ×2 + emit — is inherited verbatim). The NCO phase
+  cell adds a CONSTANT `freq_word`; the VCO phase cell adds the RUNTIME INPUT scaled
+  by `kscale = sensitivity/pi` (Q15 MULQ). Cleanest way to add a new block: reuse a
+  proven multi-cell datapath, change the single differing cell. GOTCHA: the NCO's
+  cell builders are NESTED functions inside `build_cell_programs`, so you can't
+  override one method — call `super().build_cell_programs()` then REPLACE
+  `cells["phase"]`.
+- **kscale derivation (Q15 input → 16-bit phase-word).** GR advances `dphi =
+  sensitivity·x` radians; on-chip `2π ≡ 65536`, and the input arrives as Q15
+  (`x_q15 = x·32768`), so `dphi_word = x_q15·sensitivity/π`. The multiplier is
+  `kscale = sensitivity/π` via MULQ. For `kscale ≤ 1.0` (Q15) the block requires
+  `|sensitivity| ≤ π` — a HARDWARE DEVIATION documented loudly (comment + docstring
+  + manifest `HW-DEVIATION:`) and RAISED on out-of-range (INV-0). GR takes any
+  sensitivity; real modems use `sensitivity = 2π·f_dev/fs ≪ π`.
+- **GR ACCUMULATES FIRST, then emits.** `out[0] = exp(j·sensitivity·x[0])`, NOT phase
+  0. My first reference lagged one sample (emitted at phase 0, then incremented) →
+  corr still 1.0 but a per-sample offset. Fix: scale+add the input BEFORE the two
+  fold WRITEs. A dedicated `test_fm_phase_accumulates_first` asserts Q[0]≠0 for a
+  nonzero drive (a lag bug leaves Q[0]==0). Phase-cell WRITE order: emit ph_sin at
+  the NEW phase, ADD quarter → ph_cos, then SUB quarter to restore state (WRITE
+  always sends R0, so R0 must hold the value at each WRITE).
+- **Metric = CORRELATION vs GR (not per-sample amplitude).** The DUT is BIT-EXACT to
+  `process_reference_q15`, but vs GR the per-sample max error grows to ~100 LSB over
+  a run — this is the 16-bit phase-word DRIFT (each `sensitivity·x` advance is
+  quantised to 2π/65536 rad; GR uses a float64 accumulator). That drift is a
+  documented substrate limit, so DSP-equivalence is measured by correlation (≥0.999,
+  ~1.0), which isolates that the FM tone has the right SHAPE. The table-interp floor
+  (~11 LSB) is inherited unchanged from the NCO.
+- **New harness: `run_block_dut_real_to_complex`.** The existing complex driver
+  hardwires a TWO-operand xi/xq sample; an FM modulator ingests ONE real word per
+  trigger (`WRITE x → R0` + `JUMP`) and emits complex `yi,yq`. Added a real-in /
+  complex-out driver (reuses `ComplexDUTResult`) — the correct fit for VCO-class
+  blocks (real control → complex out).
+
+---
+
 ## SoftDemodulatorBlock — BPSK soft demapper vs GR soft decoder 2026-06-25
 
 - **Status:** PASS / DONE vs GNU Radio `digital.constellation_soft_decoder_cf`

@@ -22,6 +22,7 @@ BUILTIN_BLOCKS = {
     'BandRejectFilter': 'band_reject_filter_block',
     'AGCBlock': 'agc_block',
     'NCOBlock': 'nco_block',
+    'FrequencyModulatorBlock': 'frequency_modulator_block',
     'ComplexMixerBlock': 'complex_mixer_block',
     'IQUpconvertBlock': 'iq_upconvert_block',
     'SquelchBlock': 'squelch_block',

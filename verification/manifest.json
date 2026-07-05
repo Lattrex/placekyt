@@ -377,9 +377,23 @@
       "kyttar_block": "QuadratureDemod",
       "grc_block": "analog.quadrature_demod_cf",
       "tier": 3,
-      "status": "planned",
+      "status": "in_progress",
       "metric": "amplitude",
+      "params": {
+        "gain": 1.0
+      },
       "notes": "NEW: FM demod (atan2 of conjugate product). Common, high value."
+    },
+    {
+      "kyttar_block": "FrequencyModulatorBlock",
+      "grc_block": "analog.frequency_modulator_fc",
+      "tier": 3,
+      "status": "done",
+      "metric": "correlation",
+      "params": {
+        "sensitivity": 1.0
+      },
+      "notes": "FM modulator (VCO). Real audio in -> unit-circle complex out; phase+=sensitivity*x, out=exp(j*phase). Subclasses NCOBlock, overriding only the phase cell (input-driven kscale=sensitivity/pi accumulator). 10 cells. BIT-EXACT vs on-chip Q15 ref; corr 1.0 vs GR frequency_modulator_fc. HW-DEVIATION: |sensitivity|<=pi (Q15 phase-scale). Table floor ~11 LSB (NCO). process_reference: accumulate-FIRST then emit (matches GR)."
     },
     {
       "kyttar_block": "FreqXlatingFIR",

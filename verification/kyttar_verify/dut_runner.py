@@ -501,6 +501,147 @@ def run_block_dut_complex(
         hop_count=hop, in_regs=(a0, a1))
 
 
+def run_block_dut_real_to_complex(
+    block_type: str,
+    inputs,
+    *,
+    params: dict | None = None,
+    chip_yaml: str,
+    library: str = "lattrex.official",
+    in_port: str | None = None,
+    out_port: str | None = None,
+    place_xy: tuple[int, int] = (1, 1),
+    words_per_sample: int = 2,
+    data_run: int = 6000,
+    jump_run: int = 200000,
+    drain_run: int = 8000,
+) -> ComplexDUTResult:
+    """Build a REAL-input, COMPLEX-output block (e.g. the FM modulator / VCO
+    ``analog.frequency_modulator_fc``) wired ``x16_in`` -> block -> ``x16_out`` and
+    run a REAL stimulus through it on simKYT.
+
+    Unlike :func:`run_block_dut_complex` (two-operand xi/xq sample), a real->complex
+    block ingests ONE real word per trigger: ``WRITE x -> in_regs[0]`` + one
+    ``JUMP entry``. The output cell emits ``yi`` then ``yq`` per trigger (the same
+    complex-egress convention as the NCO), drained + de-interleaved into I/Q.
+
+    Args:
+        block_type: catalog block type (e.g. ``"FrequencyModulatorBlock"``).
+        inputs: real stimulus — a list/array of floats in [-1, 1], or uint16 Q15
+            words (auto-detected: ints in [0, 0xFFFF] are treated as Q15 words).
+        in_port: the block's single real input port name; first ``in`` port if None.
+        out_port: the block's PRIMARY output port name; first ``out`` port if None.
+        words_per_sample: output words per trigger (2 for a complex yi/yq output).
+        Others: as :func:`run_block_dut_complex`.
+
+    Returns:
+        :class:`ComplexDUTResult` (``in_regs`` is the single resolved input reg).
+    """
+    import numpy as np  # noqa: PLC0415
+    import simkyt  # noqa: PLC0415
+
+    (app, BlockCatalog, load_chip_type, BuildEngine, AppController,
+     ChipPortEndpoint, BlockEndpoint) = _engine()
+
+    # Normalize the real stimulus to Q15 words (accept floats OR uint16 words).
+    arr = list(inputs)
+    q15_in: list[int] = []
+    for v in arr:
+        if isinstance(v, (int,)) and not isinstance(v, bool) and 0 <= v <= 0xFFFF:
+            q15_in.append(int(v) & 0xFFFF)
+        else:
+            q15_in.append(_to_q15(float(v)))
+
+    cat = BlockCatalog.from_gr_kyttar()
+    ct = load_chip_type(chip_yaml)
+    ct_key = getattr(ct, "name", None) or "kyttar_10x12"
+
+    ctrl = AppController(catalog=cat)
+    ctrl.new_project("dut_r2c", ct_key)
+    px, py = place_xy
+    blk = ctrl.place_block(block_type, 0, px, py, library=library,
+                           params=params or {})
+
+    pm = cat.port_map(block_type, params or {}, library=library)
+    if in_port is None:
+        ins_p = [p.name for p in pm.ports if p.direction == "in"]
+        if not ins_p:
+            return ComplexDUTResult(False, reason="block declares no input port")
+        in_port = ins_p[0]
+    if out_port is None:
+        outs_p = [p.name for p in pm.ports if p.direction == "out"]
+        if not outs_p:
+            return ComplexDUTResult(False, reason="block declares no output port")
+        out_port = outs_p[0]
+
+    ctrl.add_logical_connection(
+        ChipPortEndpoint(chip=0, port="x16_in"),
+        BlockEndpoint(block=blk, port=in_port), name="in_x")
+    ctrl.add_logical_connection(
+        BlockEndpoint(block=blk, port=out_port),
+        ChipPortEndpoint(chip=0, port="x16_out"), name="blk_out")
+
+    rep = ctrl.auto_route_all({ct_key: ct})
+    if not rep.ok:
+        return ComplexDUTResult(False, reason="route failed: "
+                                + "; ".join(f"{r.name}:{r.reason}"
+                                            for r in rep.failed))
+
+    bres = BuildEngine(cat, chip_yaml).build(ctrl.project, {ct_key: ct})
+    if not bres.ok:
+        return ComplexDUTResult(False, reason="build failed: "
+                                + "; ".join(str(e) for e in bres.errors))
+
+    words = bres.words(0)
+    entry, ins = cat.resolved_io(block_type, params or {}, library=library)
+    if len(ins) < 1:
+        return ComplexDUTResult(False, reason="block resolved 0 input registers")
+    a0 = int(ins[0])
+
+    port = ct.port("x16_in")
+    blk_obj = ctrl.project.block(blk)
+    landing = (blk_obj.placement.cells[0]
+               if blk_obj and blk_obj.placement and blk_obj.placement.cells
+               else None)
+    if landing is not None:
+        dist = abs(landing.x - port.cell_x) + abs(landing.y - port.cell_y) + 1
+    else:
+        dist = abs(px - port.cell_x) + abs(py - port.cell_y) + 1
+    hop = max(0, 31 - dist)
+
+    chip = simkyt.Chip.from_yaml(chip_yaml)
+    chip.load_bitstream_physical(words)
+    chip.set_port_entry_address("x16_in", entry)
+
+    per_sample: list[list[int]] = []
+    for w_in in q15_in:
+        # ONE real sample = WRITE x -> a0, then JUMP entry.
+        chip.inject_data_physical([w_in], target_hop_cnt=hop, target_addr=a0)
+        chip.run(max_events=data_run)
+        chip.inject_jump_physical(target_hop_cnt=hop, entry_addr=entry)
+        chip.run(max_events=jump_run)
+        got: list[int] = []
+        while chip.output_available("x16_out"):
+            ww = chip.read_port_i16("x16_out").view("uint16").tolist()
+            got.extend(int(x) & 0xFFFF for x in ww)
+            chip.release_output_ack("x16_out")
+            chip.run(max_events=drain_run)
+        per_sample.append(got)
+
+    wps = words_per_sample
+    i_ch: list = []
+    q_ch: list = []
+    for g in per_sample:
+        i_ch.append(g[0] if len(g) >= 1 else None)
+        if wps >= 2:
+            q_ch.append(g[1] if len(g) >= 2 else None)
+
+    return ComplexDUTResult(
+        True, outputs_q15=per_sample, i_q15=i_ch, q_q15=q_ch,
+        words_per_sample=wps, n_words=len(words), entry_addr=entry,
+        hop_count=hop, in_regs=(a0,))
+
+
 def run_block_dut_nstream(
     block_type: str,
     streams,

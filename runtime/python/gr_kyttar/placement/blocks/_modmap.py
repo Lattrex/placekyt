@@ -23,6 +23,7 @@ BUILTIN_BLOCKS = {
     'AGCBlock': 'agc_block',
     'NCOBlock': 'nco_block',
     'FrequencyModulatorBlock': 'frequency_modulator_block',
+    'QuadratureDemodBlock': 'quadrature_demod_block',
     'ComplexMixerBlock': 'complex_mixer_block',
     'IQUpconvertBlock': 'iq_upconvert_block',
     'SquelchBlock': 'squelch_block',

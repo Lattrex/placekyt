@@ -189,57 +189,17 @@ blocks:
     rotation: 0
     state: enabled
 
-- name: lo
-  id: kyttar_nco
+- name: tx_mix
+  id: kyttar_iq_upconvert
   parameters:
     affinity: ''
     alias: ''
-    amplitude: 0.9
     comment: ''
     device_id: '"kyttar_0"'
     frequency: 6000.0
     maxoutbuf: '0'
     minoutbuf: '0'
-    offset: '0'
-    phase: '0'
     sample_rate: 32000.0
-    waveform: "cos"
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [760, 40]
-    rotation: 0
-    state: enabled
-
-- name: sin_nc
-  id: blocks_null_sink
-  parameters:
-    affinity: ''
-    alias: ''
-    bus_structure_sink: '[[0,],]'
-    comment: 'carrier sin unused (DSB uses cos only)'
-    num_inputs: '1'
-    type: float
-    vlen: '1'
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [960, 60]
-    rotation: 0
-    state: enabled
-
-- name: tx_mix
-  id: kyttar_multiply
-  parameters:
-    affinity: ''
-    alias: ''
-    comment: ''
-    device_id: '"kyttar_0"'
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    num_inputs: '2'
   states:
     bus_sink: false
     bus_source: false
@@ -249,15 +209,16 @@ blocks:
     state: enabled
 
 - name: rx_mix
-  id: kyttar_multiply
+  id: kyttar_iq_upconvert
   parameters:
     affinity: ''
     alias: ''
     comment: ''
     device_id: '"kyttar_0"'
+    frequency: 6000.0
     maxoutbuf: '0'
     minoutbuf: '0'
-    num_inputs: '2'
+    sample_rate: 32000.0
   states:
     bus_sink: false
     bus_source: false
@@ -426,10 +387,7 @@ connections:
 - [thr, '0', msrc, '0']
 - [thr, '0', in_sink, '0']
 - [msrc, '0', tx_mix, '0']
-- [lo, '0', tx_mix, '1']
 - [tx_mix, '0', rx_mix, '0']
-- [lo, '0', rx_mix, '1']
-- [lo, '1', sin_nc, '0']
 - [rx_mix, '0', rx_lpf, '0']
 - [rx_lpf, '0', g2, '0']
 - [g2, '0', msink, '0']

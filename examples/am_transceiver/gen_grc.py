@@ -4,16 +4,27 @@
 
 DSB-AM (suppressed-carrier, coherent) is the textbook product-modulator/detector:
 
-    TX:  s = audio * cos(wc t)              [Multiply(audio, NCO.cos)]
-    RX:  y = s * cos(wc t) -> LowPass       [Multiply(s, NCO.cos), LowPass]
+    TX:  s = audio * cos(wc t)              [oscillator-mixer @ fc]
+    RX:  y = s * cos(wc t) -> LowPass       [oscillator-mixer @ fc, LowPass]
          = audio*cos^2 = audio*(1+cos 2wc)/2  -LPF->  audio/2   (then Gain x2)
 
-Every wire is real; no complex blocks. ONE NCO (carrier fc) fans its cos rail to BOTH
-mixers (TX modulator + RX product detector). Verified: the Q15 chain recovers the audio
-at corr 1.0 (dev_docs/am_ref.py). A tiny linear chain -> auto-P&R (abutment-first)
-routes it easily.
+FABRIC-NATIVE OSCILLATOR TOPOLOGY (the important part).  This chip has NO free-running
+oscillator: every cell fires only when a neighbour JUMPs it (there is no internal clock).
+A standalone NCO here is NOT a source — it needs one trigger per output sample.  A GNU
+Radio sig_source/NCO drawn as a source therefore ends up with NO input connection and is
+DEAD on-chip (nothing triggers it → no carrier).  The fix used here: FUSE the oscillator
+INTO the mixer.  ``kyttar_iq_upconvert`` is an oscillator-mixer — it takes a REAL signal
+input (which is BOTH the trigger AND the data) and multiplies by its OWN internal cos:
+``out = xi·cos(θ); θ += freq_word``.  So each audio sample triggers its own carrier step.
+No separate NCO, no carrier FAN-OUT (the real reason the NCO-shared version bloats), no
+trigger routing — just a clean linear filament that auto-P&R routes trivially.
 
-Chain: audio -> Mult(cos) -> [passband] -> Mult(cos) -> LowPass -> Gain x2 -> audio
+Both mixers run the SAME fc oscillator, started at phase 0 from sample 0, so TX and RX
+carriers are coherent (product detection works).  We REPLICATE the cheap phase-accumulator
+per mixer rather than SHARE one via fan-out — cells are plentiful; wires are scarce.
+Verified: the Q15 chain recovers the audio at corr 1.0 (IQUpconvert×2 + LowPass).
+
+Chain: audio -> oscMix@fc -> [passband] -> oscMix@fc -> LowPass -> Gain x2 -> audio
 Run: <venv>/python examples/am_transceiver/gen_grc.py   (writes am_transceiver.grc)
 """
 import os
@@ -111,28 +122,17 @@ def main():
         "server_host": "'\"127.0.0.1\"'", "server_port": "server_port",
         "stream_id": "''"}, 560, 200))
 
-    # shared carrier NCO (cos fans to both mixers)
-    out.append(blk("lo", "kyttar_nco", {
-        "affinity": "''", "alias": "''", "amplitude": repr(AMP), "comment": "''",
-        "device_id": "'\"kyttar_0\"'", "frequency": repr(FC), "maxoutbuf": "'0'",
-        "minoutbuf": "'0'", "offset": "'0'", "phase": "'0'", "sample_rate": repr(FS),
-        "waveform": '"cos"'}, 760, 40))
-
-    def mul(name, x, y):
-        return blk(name, "kyttar_multiply", {
+    # FUSED oscillator-mixers: each carries its OWN fc oscillator (no shared NCO, no
+    # carrier fan-out).  kyttar_iq_upconvert: real xi in -> out = xi·cos(θ), θ += freq_word.
+    # The arriving sample IS the trigger.  Both start at phase 0 from sample 0 -> coherent.
+    def oscmix(name, x, y):
+        return blk(name, "kyttar_iq_upconvert", {
             "affinity": "''", "alias": "''", "comment": "''",
-            "device_id": "'\"kyttar_0\"'", "maxoutbuf": "'0'", "minoutbuf": "'0'",
-            "num_inputs": "'2'"}, x, y)
+            "device_id": "'\"kyttar_0\"'", "frequency": repr(FC), "maxoutbuf": "'0'",
+            "minoutbuf": "'0'", "sample_rate": repr(FS)}, x, y)
 
-    # DSB-AM uses only the carrier's COS rail; the NCO's SIN output is unused. Tie it to
-    # a null sink so the GRC flowgraph has no unconnected port (a host-side no-op; the
-    # placeKYT chip build ignores it).
-    out.append(blk("sin_nc", "blocks_null_sink", {
-        "affinity": "''", "alias": "''", "bus_structure_sink": "'[[0,],]'",
-        "comment": "'carrier sin unused (DSB uses cos only)'", "num_inputs": "'1'",
-        "type": "float", "vlen": "'1'"}, 960, 60))
-    out.append(mul("tx_mix", 760, 200))     # s = audio * cos
-    out.append(mul("rx_mix", 960, 200))     # y = s * cos
+    out.append(oscmix("tx_mix", 760, 200))     # s = audio * cos(fc)   (fused osc)
+    out.append(oscmix("rx_mix", 960, 200))     # y = s * cos(fc)        (fused osc)
     out.append(blk("rx_lpf", "kyttar_low_pass_filter", {
         "affinity": "''", "alias": "''", "beta": "'6.76'", "comment": "''",
         "cutoff_freq": repr(CUT), "decimation": "'1'", "device_id": "'\"kyttar_0\"'",
@@ -168,12 +168,9 @@ def main():
         ("tone", 0, "audio", 0), ("tone2", 0, "audio", 1),
         ("audio", 0, "thr", 0),
         ("thr", 0, "msrc", 0), ("thr", 0, "in_sink", 0),
-        ("msrc", 0, "tx_mix", 0),       # audio -> TX mixer
-        ("lo", 0, "tx_mix", 1),         # carrier cos -> TX mixer
-        ("tx_mix", 0, "rx_mix", 0),     # passband -> RX mixer
-        ("lo", 0, "rx_mix", 1),         # carrier cos -> RX mixer (shared)
-        ("lo", 1, "sin_nc", 0),         # carrier sin unused -> null sink
-        ("rx_mix", 0, "rx_lpf", 0),
+        ("msrc", 0, "tx_mix", 0),       # audio -> TX oscillator-mixer (self-carrier)
+        ("tx_mix", 0, "rx_mix", 0),     # passband -> RX oscillator-mixer (self-carrier)
+        ("rx_mix", 0, "rx_lpf", 0),     # product detect -> LowPass (recover baseband)
         ("rx_lpf", 0, "g2", 0),
         ("g2", 0, "msink", 0),
         ("msink", 0, "out_sink", 0),

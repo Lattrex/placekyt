@@ -1,0 +1,45 @@
+id: kyttar_quadrature_demod
+label: Quadrature Demod (FM)
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar Quadrature Demodulator — the FM discriminator, a drop-in for GNU Radio's
+  analog.quadrature_demod_cf(gain).
+
+  GR computes out[n] = gain * arg(x[n]*conj(x[n-1])) (a literal atan2). This block uses
+  the STANDARD 16-bit-DSP FM DISCRIMINATOR — the divide-free derivative form every real
+  FM RX uses:
+      out[n] = gain * di[n],   di[n] = Im(x[n]*conj(x[n-1])) = I[n]*Q[n-1] - Q[n]*I[n-1]
+
+  di is atan2's first-order-equivalent (d/dt*atan2 = (I*Q'-Q*I')/(I^2+Q^2)); the two
+  agree for the limited/AGC'd signal a real FM RX operates in. 2 cells, all MAC/mul/sub
+  (fabric-native). DUT bit-exact to its Q15 reference; corr vs GR 0.99999..0.997 across
+  FM deviation (a correlation contract, not bit-exact atan2). No shared oscillator.
+
+  Runs on the Kyttar chip. Place between a KyttarSource and KyttarSink; the device_id
+  must match your KyttarDevice.
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.quadrature_demod(device_id=${device_id}, gain=${gain})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+  - id: gain
+    label: Gain
+    dtype: real
+    default: '1.0'
+
+inputs:
+  - label: in
+    dtype: complex
+
+outputs:
+  - label: out
+    dtype: float
+
+file_format: 1

@@ -1,0 +1,45 @@
+id: kyttar_frequency_modulator
+label: Frequency Modulator (VCO)
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar Frequency Modulator — a drop-in for GNU Radio's
+  analog.frequency_modulator_fc(sensitivity).
+
+  A voltage-controlled oscillator: a REAL input drives the instantaneous phase of a
+  unit-amplitude complex exponential.
+      phase += sensitivity * x[n]      (radians)
+      out[n] = cos(phase) + j*sin(phase)
+
+  GR accumulates FIRST then emits, so out[0] = exp(j*sensitivity*x[0]). This block is
+  FABRIC-NATIVE: the arriving audio sample IS the trigger for the phase step — there is
+  no separate oscillator/NCO to drive. 10 cells. corr 1.0 vs GR frequency_modulator_fc.
+  HW note: |sensitivity| <= pi (the Q15 phase-scale kscale = sensitivity/pi).
+
+  Runs on the Kyttar chip. Place between a KyttarSource and downstream block; the
+  device_id must match your KyttarDevice.
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.frequency_modulator(device_id=${device_id}, sensitivity=${sensitivity})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+  - id: sensitivity
+    label: Sensitivity (rad/sample per unit input)
+    dtype: real
+    default: '1.0'
+
+inputs:
+  - label: in
+    dtype: float
+
+outputs:
+  - label: out
+    dtype: complex
+
+file_format: 1

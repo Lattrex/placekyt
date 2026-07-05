@@ -1,0 +1,351 @@
+options:
+  parameters:
+    author: Kyttar
+    catch_exceptions: 'True'
+    category: '[GRC Hier Blocks]'
+    cmake_opt: ''
+    comment: ''
+    copyright: ''
+    description: "FM transceiver from REAL Kyttar blocks. audio -> FrequencyModulator\
+      \ (VCO) -> [complex FM] -> QuadratureDemod (discriminator) -> recovered audio.\
+      \ Neither block needs a shared oscillator, so there is NO dead-NCO/fan-out\
+      \ problem — a straight filament that auto-P&R-routes trivially. corr 0.9998."
+    gen_cmake: 'On'
+    gen_linking: dynamic
+    generate_options: qt_gui
+    hier_block_src_path: '.:'
+    id: fm_transceiver
+    max_nouts: '0'
+    output_language: python
+    placement: (0,0)
+    qt_qss_theme: ''
+    realtime_scheduling: ''
+    run: 'True'
+    run_command: '{python} -u {filename}'
+    run_options: prompt
+    sizing_mode: fixed
+    thread_safe_setters: ''
+    title: "FM transceiver (on-chip, real blocks) — audio in vs recovered"
+    window_size: (1600,1000)
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [8, 8]
+    rotation: 0
+    state: enabled
+
+blocks:
+
+- name: samp_rate
+  id: variable
+  parameters:
+    comment: ''
+    value: 32000.0
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [200, 12]
+    rotation: 0
+    state: enabled
+
+- name: n_samp
+  id: variable
+  parameters:
+    comment: audio burst length
+    value: '2048'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [320, 12]
+    rotation: 0
+    state: enabled
+
+- name: server_port
+  id: variable
+  parameters:
+    comment: placeKYT GNURadio-server port
+    value: '58950'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [440, 12]
+    rotation: 0
+    state: enabled
+
+- name: tone
+  id: analog_sig_source_x
+  parameters:
+    affinity: ''
+    alias: ''
+    amp: '0.5'
+    comment: ''
+    freq: '800'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    offset: '0'
+    phase: '0'
+    samp_rate: samp_rate
+    showports: 'False'
+    type: float
+    waveform: analog.GR_SIN_WAVE
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [40, 140]
+    rotation: 0
+    state: enabled
+
+- name: tone2
+  id: analog_sig_source_x
+  parameters:
+    affinity: ''
+    alias: ''
+    amp: '0.3'
+    comment: ''
+    freq: '1500'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    offset: '0'
+    phase: '0'
+    samp_rate: samp_rate
+    showports: 'False'
+    type: float
+    waveform: analog.GR_SIN_WAVE
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [40, 260]
+    rotation: 0
+    state: enabled
+
+- name: audio
+  id: blocks_add_xx
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'input audio (2 tones)'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_inputs: '2'
+    type: float
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [240, 200]
+    rotation: 0
+    state: enabled
+
+- name: thr
+  id: blocks_throttle2
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    ignoretag: 'True'
+    limit: auto
+    maximum: '0.1'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    samples_per_second: samp_rate
+    type: float
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [400, 208]
+    rotation: 0
+    state: enabled
+
+- name: msrc
+  id: kyttar_source
+  parameters:
+    affinity: ''
+    alias: ''
+    burst_len: n_samp
+    comment: 'audio -> chip x16_in'
+    complex_in: float
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_channels: '1'
+    port_name: '"x16_in"'
+    server_host: '"127.0.0.1"'
+    server_port: server_port
+    stream_id: ''
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [560, 200]
+    rotation: 0
+    state: enabled
+
+- name: vco
+  id: kyttar_frequency_modulator
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'audio -> exp(j*phase)'
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    sensitivity: 0.8
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [760, 200]
+    rotation: 0
+    state: enabled
+
+- name: demod
+  id: kyttar_quadrature_demod
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'gain*di (FM discriminator)'
+    device_id: '"kyttar_0"'
+    gain: 1.25
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [960, 200]
+    rotation: 0
+    state: enabled
+
+- name: msink
+  id: kyttar_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'recovered audio <- x16_out'
+    device_id: '"kyttar_0"'
+    num_channels: '1'
+    port_name: '"x16_out"'
+    server_host: '"127.0.0.1"'
+    server_port: server_port
+    stream_id: ''
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1160, 200]
+    rotation: 0
+    state: enabled
+
+- name: in_sink
+  id: qtgui_time_sink_x
+  parameters:
+    affinity: ''
+    alias: ''
+    autoscale: 'True'
+    axislabels: 'True'
+    bw: samp_rate
+    comment: ''
+    ctrlpanel: 'False'
+    entags: 'True'
+    grid: 'True'
+    gui_hint: ''
+    label1: 'input audio'
+    legend: 'True'
+    marker1: '-1'
+    name: "in_sink"
+    nconnections: '1'
+    size: n_samp
+    srate: samp_rate
+    stemplot: 'False'
+    style1: '1'
+    tr_chan: '0'
+    tr_delay: '0'
+    tr_level: '0'
+    tr_mode: qtgui.TRIG_MODE_FREE
+    tr_slope: qtgui.TRIG_SLOPE_POS
+    tr_tag: ''
+    type: float
+    update_time: '0.10'
+    width1: '1'
+    ylabel: 'Amplitude'
+    ymax: '1'
+    ymin: '-1'
+    yunit: ''
+    grid_color1: 'blue'
+    alpha1: '1.0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [560, 40]
+    rotation: 0
+    state: enabled
+
+- name: out_sink
+  id: qtgui_time_sink_x
+  parameters:
+    affinity: ''
+    alias: ''
+    autoscale: 'True'
+    axislabels: 'True'
+    bw: samp_rate
+    comment: ''
+    ctrlpanel: 'False'
+    entags: 'True'
+    grid: 'True'
+    gui_hint: ''
+    label1: 'recovered audio'
+    legend: 'True'
+    marker1: '-1'
+    name: "out_sink"
+    nconnections: '1'
+    size: n_samp
+    srate: samp_rate
+    stemplot: 'False'
+    style1: '1'
+    tr_chan: '0'
+    tr_delay: '0'
+    tr_level: '0'
+    tr_mode: qtgui.TRIG_MODE_FREE
+    tr_slope: qtgui.TRIG_SLOPE_POS
+    tr_tag: ''
+    type: float
+    update_time: '0.10'
+    width1: '1'
+    ylabel: 'Amplitude'
+    ymax: '1'
+    ymin: '-1'
+    yunit: ''
+    grid_color1: 'green'
+    alpha1: '1.0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1160, 40]
+    rotation: 0
+    state: enabled
+
+connections:
+- [tone, '0', audio, '0']
+- [tone2, '0', audio, '1']
+- [audio, '0', thr, '0']
+- [thr, '0', msrc, '0']
+- [thr, '0', in_sink, '0']
+- [msrc, '0', vco, '0']
+- [vco, '0', demod, '0']
+- [demod, '0', msink, '0']
+- [msink, '0', out_sink, '0']
+
+metadata:
+  file_format: 1
+  grc_version: 3.10.12.0

@@ -377,12 +377,12 @@
       "kyttar_block": "QuadratureDemod",
       "grc_block": "analog.quadrature_demod_cf",
       "tier": 3,
-      "status": "in_progress",
-      "metric": "amplitude",
+      "status": "done",
+      "metric": "correlation",
       "params": {
         "gain": 1.0
       },
-      "notes": "NEW: FM demod (atan2 of conjugate product). Common, high value."
+      "notes": "FM demod. Uses the standard 16-bit-DSP DISCRIMINATOR out=gain*(I*dQ-Q*dI)=gain*di (di=Im(x*conj(x_prev)), already computed by conjmult) -- NOT a literal atan2. 2 cells, all MAC/mul/sub. DUT BIT-EXACT to on-chip Q15 ref (0 mismatch). ALGORITHM-DEVIATION vs GR (which calls atan2): CORRELATION gate, corr 0.99999(low-fdev)..0.997(hi) -- the discriminator is atan2's 1st-order-equivalent derivative form, exact for the limited/AGC'd signal a real FM RX uses. CM-approved 2026-07-05. (A literal on-chip atan2/CORDIC would need ~47 cells -- wrong algorithm; see lessons_log.)"
     },
     {
       "kyttar_block": "FrequencyModulatorBlock",

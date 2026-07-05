@@ -8,6 +8,40 @@ anything that generalizes across block classes into `invariants.md`.
 
 ---
 
+## QuadratureDemodBlock — FM demod vs GR quadrature_demod_cf 2026-07-05
+
+- **Status:** PASS / DONE vs GNU Radio `analog.quadrature_demod_cf`. 2 cells. DUT
+  bit-exact to `process_reference_q15` (0 mismatch); metric vs GR is a CORRELATION
+  gate (≥0.999), not bit-exact — see below.
+- **MATCH THE FUNCTION, NOT GR'S LITERAL OP.** GR computes `gain·atan2(Im d, Re d)`
+  where `d = x[n]·conj(x[n-1])`. Implementing `atan2` on-chip (CORDIC) needs ~47
+  cells on this accumulator ISA — a third of the array — because the MOVE-through-R0
+  tax means CORDIC's tightly-coupled X/Y/a can't fit one iteration per cell. THAT WAS
+  THE WRONG ALGORITHM. FM demod does not need absolute phase; it needs *rate of change*
+  of phase, which has a direct MAC form: the **standard FM discriminator**
+  `out = gain·(I·dQ − Q·dI) = gain·di`, and `di = Im(x·conj(x[n-1]))` is ALREADY the
+  imaginary part the `conjmult` cell computes. → 2 cells, all MAC/mul/sub (the fabric's
+  strengths). Before grinding a multi-cell transcendental, ASK: "does the GR block's
+  MATH need this, or just its OUTPUT?" `atan2`-then-difference **is** a MAC-only
+  discriminator (`d/dt·atan2(Q,I) = (I·Q'−Q·I')/(I²+Q²)`; numerator = `di`).
+- **CORRELATION-GATE CONTRACT (RULE #0 deviation, CM-approved).** GR's block literally
+  calls `atan2`; the discriminator is its first-order-equivalent derivative form. They
+  AGREE for the constant-|x| (limited / AGC'd) signal a real FM RX operates on
+  (`di = sin(Δphase) ≈ Δphase`). Verified corr vs GR: **0.99999** at low deviation
+  (Δphase ≤ ~0.33 rad) → **0.997** at high deviation (~1.3 rad/sample), degrading
+  gracefully as `sin()` compresses vs the linear angle. The block documents the
+  algorithm deviation loudly (docstring) and the metric is `correlation`. Any FM RX
+  hard-limits/AGCs ahead of this block, which is exactly the regime it matches GR in.
+- **`di` reuses conjmult.** `conjmult` already emits `di = cur_q·pv_i − cur_i·pv_q`
+  (two Q15 MULQ truncations then SUB) and holds the previous sample. The `gain` cell is
+  the same `2^p·Kp` saturating-scale pattern as the NCO/VCO output stage. `x[-1]=0` →
+  `di[0]=0`, matching GR's `out[0]=gain·arg(0)=0`.
+- **Cautionary note:** the CORDIC atan2 (proven bit-exact to true `atan2` at 5.5 LSB,
+  neg-flag 2-cell fold) is real and works, but is 45+ cells — kept only as a reference
+  for a block that GENUINELY needs `atan2` and can afford the area, or after an ISA
+  revision (a direct ALU destination would collapse it to ~18 cells). For FM demod it
+  was massive overkill.
+
 ## FrequencyModulatorBlock — FM modulator / VCO vs GR frequency_modulator_fc 2026-07-04
 
 - **Status:** PASS / DONE vs GNU Radio `analog.frequency_modulator_fc`, 19 tests

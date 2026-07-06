@@ -31,6 +31,7 @@ BUILTIN_BLOCKS = {
     'QuadratureDemodBlock': 'quadrature_demod_block',
     'ComplexMixerBlock': 'complex_mixer_block',
     'IQUpconvertBlock': 'iq_upconvert_block',
+    'DualFloatToComplexBlock': 'dual_float_to_complex_block',
     'SquelchBlock': 'squelch_block',
     'IIRBiquadBlock': 'iir_biquad_block',
     'CostasLoopBlock': 'costas_loop_block',

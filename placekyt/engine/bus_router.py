@@ -39,7 +39,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass
 
-from model.connection import BlockEndpoint, ChipPortEndpoint
+from model.connection import ABUTMENT_ROUTE, BlockEndpoint, ChipPortEndpoint
 from model.enums import Face
 
 from .autoroute import (AutoRouteReport, AutoRouter, RouteResult, _FACE_STEP,
@@ -1197,7 +1197,9 @@ def _route_chip_bus(project, ct, chip_id, nets, spine, *, sc_cells=None,
         occ.update((c.x, c.y) for c in pl.cells)
         occ.update((t.x, t.y) for t in getattr(pl, "transit_cells", []))
     for conn in project.connections:
-        if conn.is_routed and _conn_chip(project, conn) == chip_id:
+        if (conn.is_routed and not conn.is_abutment
+                and _conn_chip(project, conn) == chip_id):
+            # ABUTMENT nets have no corridor cells — they occupy nothing.
             occ.update((p.x, p.y) for p in conn.route)
 
     spine_set = {tuple(p) for p in spine if in_bounds(tuple(p))}
@@ -2095,8 +2097,12 @@ def abutment_pts(project, conn, catalog, ports):
     type, so a block→output-port abutment is supported too.
 
     This is what makes a packed, fully-abutted layout build + run without needing
-    a filler routing cell between every pair of blocks."""
-    if conn.route:                              # has a drawn route → not this path
+    a filler routing cell between every pair of blocks.
+
+    Called both for a NO-route net (legacy coincidental-adjacency path) and for an
+    explicit ``ABUTMENT_ROUTE`` net (an intended, router-declared abutment from the
+    logical netlist) — both synthesise the same 2-cell handoff."""
+    if conn.route and conn.route != ABUTMENT_ROUTE:  # a drawn waypoint route → not this
         return None
     if not isinstance(conn.source, BlockEndpoint):
         return None
@@ -2140,6 +2146,12 @@ def _phys_pts(project, conn, catalog):
     Returns ``[(x, y), ...]`` — the route from the source exit cell to the broker
     (block→block), or the unmodified path (chip-port / panel targets — never stripped,
     a port egress legitimately ends on its edge cell; direct abutment — keep the cell)."""
+    # ABUTMENT sentinel: no waypoint list to read — synthesise the [src_out, tgt_in]
+    # @1 handoff from the placements (abutment is always block→block; the source's
+    # output cell abuts the target's input cell). Centralised here so every _phys_pts
+    # caller (build faces, hops, brokers) gets the corridor-free path.
+    if conn.route == ABUTMENT_ROUTE:
+        return abutment_pts(project, conn, catalog, {})
     pts = [(p.x, p.y) for p in conn.route]
     if len(pts) < 2 or not isinstance(conn.target, BlockEndpoint):
         return pts

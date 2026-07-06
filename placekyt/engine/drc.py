@@ -30,6 +30,7 @@ from enum import Enum
 from model.board import Board
 from model.chip_type import ChipType
 from model.connection import (
+    ABUTMENT_ROUTE,
     AUTO_ROUTE,
     BlockEndpoint,
     ChipPortEndpoint,
@@ -267,6 +268,13 @@ def _check_connections(project, chip_types, result: DRCResult) -> None:
                 "as unrouted in this version. Draw an explicit route.",
                 chip=chip_id,
             ))
+            continue
+
+        # ABUTMENT: a real, intended block→block edge whose I/O cells are adjacent —
+        # NO corridor waypoints (the build synthesises the @1 handoff via
+        # ``abutment_pts``). It IS routed (not a fly line), and there are no waypoints
+        # to gap/bounds/hop-check, so it passes trivially.
+        if conn.route == ABUTMENT_ROUTE:
             continue
 
         points = conn.route  # list[RoutePoint]

@@ -119,6 +119,12 @@ class RouteResult:
     # is a point where the word RE-LAUNCHES with a fresh 31-hop budget (the universal
     # routing-cell ``relay`` entry). Empty for the common ≤31-hop route.
     relays: list[tuple[int, int]] | None = None
+    # True when this net is realized by direct I/O-cell ABUTMENT (no corridor): the
+    # source output cell abuts the target input cell and the build synthesises the @1
+    # handoff. ``points`` is None for these — the controller records ABUTMENT_ROUTE
+    # (a real routed state, NOT an unrouted fly line). Distinct from a chip-input
+    # vestigial route (also points≈None but stays logical).
+    abutment: bool = False
 
 
 @dataclass

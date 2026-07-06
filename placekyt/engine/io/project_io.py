@@ -26,6 +26,7 @@ from ruamel.yaml.comments import CommentedMap, CommentedSeq
 from model.block import Block
 from model.chip import ChipInstance
 from model.connection import (
+    ABUTMENT_ROUTE,
     AUTO_ROUTE,
     NET_DATA_TRIGGER,
     BlockEndpoint,
@@ -355,7 +356,10 @@ def _route_from_node(node: Any, *, source: str):
     if isinstance(node, str):
         if node == AUTO_ROUTE:
             return AUTO_ROUTE
-        raise SchemaError(f"{source}: route string must be {AUTO_ROUTE!r}.")
+        if node == ABUTMENT_ROUTE:
+            return ABUTMENT_ROUTE
+        raise SchemaError(
+            f"{source}: route string must be {AUTO_ROUTE!r} or {ABUTMENT_ROUTE!r}.")
     points = []
     for i, p in enumerate(node):
         p = require_mapping(p, f"{source}[{i}]")
@@ -696,6 +700,8 @@ def _connection_to_node(c: Connection, existing: Any = None) -> CommentedMap:
     node["to"] = _endpoint_to_node(c.target)
     if c.route == AUTO_ROUTE:
         node["route"] = AUTO_ROUTE
+    elif c.route == ABUTMENT_ROUTE:
+        node["route"] = ABUTMENT_ROUTE
     elif isinstance(c.route, list) and c.route:
         node["route"] = _seq(_flow_map({"x": p.x, "y": p.y}) for p in c.route)
     else:

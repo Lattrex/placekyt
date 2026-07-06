@@ -55,6 +55,15 @@ class RoutePoint:
 # route; treated as a fly line in Phase 1), or ``None`` (unrouted fly line).
 AUTO_ROUTE = "auto"
 
+# ABUTMENT: an intended block→block edge whose source OUTPUT cell directly abuts
+# the target INPUT cell — the build synthesises the @1 handoff (``abutment_pts``),
+# so there are NO corridor waypoints, yet the net IS routed (not a fly line). This
+# is a REAL, intended connection: the router only declares abutment for a net that
+# exists in the logical netlist (``maze_router.is_abutment``), so — unlike the old
+# manual-place era where a coincidental adjacency could not be trusted — an ABUTMENT
+# route is unambiguously a wanted, valid, corridor-free connection.
+ABUTMENT_ROUTE = "abutment"
+
 
 # An inter-block edge is realized on the fabric as a WRITE (data handoff), a JUMP
 # (trigger), or BOTH (a triggered data handoff) — the auto-P&R design notes §4. This is
@@ -125,12 +134,22 @@ class Connection:
 
     @property
     def is_routed(self) -> bool:
-        """True only when an explicit, non-empty waypoint route is present."""
-        return isinstance(self.route, list) and len(self.route) > 0
+        """True when the net has a physical realization: an explicit non-empty
+        waypoint route, OR the corridor-free :data:`ABUTMENT_ROUTE` (adjacent I/O
+        cells; the build synthesises the @1 handoff). ``None`` / :data:`AUTO_ROUTE`
+        are unrouted fly lines."""
+        return ((isinstance(self.route, list) and len(self.route) > 0)
+                or self.route == ABUTMENT_ROUTE)
 
     @property
     def is_auto(self) -> bool:
         return self.route == AUTO_ROUTE
+
+    @property
+    def is_abutment(self) -> bool:
+        """True when this net is realized by direct I/O-cell abutment (no corridor
+        waypoints); the build uses ``abutment_pts`` to synthesise the @1 handoff."""
+        return self.route == ABUTMENT_ROUTE
 
     @property
     def emits_write(self) -> bool:

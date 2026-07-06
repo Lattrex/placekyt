@@ -388,7 +388,7 @@ def _route_chip_maze(project, ct, chip_id, nets):
     out: list[RouteResult] = []
     for n in nets:
         if n.name in abut_names:
-            out.append(RouteResult(n.name, True, points=None))
+            out.append(RouteResult(n.name, True, points=None, abutment=True))
             continue
         path = result_paths.get(n.name)
         if path is None:

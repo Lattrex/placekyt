@@ -1176,6 +1176,7 @@ class AppController(QObject):
         idempotent; see :meth:`auto_pnr`)."""
         import copy
         from engine.bus_router import _conn_chip
+        from model.connection import ABUTMENT_ROUTE
         placements = {}
         for b in self.project.blocks:
             if b.placement is not None and b.placement.chip == chip:
@@ -1187,7 +1188,10 @@ class AppController(QObject):
             except Exception:  # noqa: BLE001
                 cc = None
             if (cc is None or cc == chip) and conn.is_routed:
-                routes[conn.name] = [(p.x, p.y) for p in conn.route]
+                # An ABUTMENT net has no waypoints — snapshot the sentinel so the
+                # re-apply restores it as a routed (corridor-free) net, not a fly line.
+                routes[conn.name] = (ABUTMENT_ROUTE if conn.is_abutment
+                                     else [(p.x, p.y) for p in conn.route])
         return {"placements": placements, "routes": routes}
 
     def _apply_chip_layout(self, chip: int, snapshot: dict) -> None:
@@ -1197,6 +1201,7 @@ class AppController(QObject):
         import copy
         from commands import CompositeCommand, SetConnectionRouteCommand
         from commands.base import Command
+        from model.connection import ABUTMENT_ROUTE
 
         placements = snapshot.get("placements", {})
         routes = snapshot.get("routes", {})
@@ -1223,7 +1228,10 @@ class AppController(QObject):
 
         self._clear_chip_routes(chip)
         cmds = [_SetPlacement(self.project, n, pl) for n, pl in placements.items()]
-        cmds += [SetConnectionRouteCommand(self.project, n, pts)
+        cmds += [SetConnectionRouteCommand(
+                    self.project, n,
+                    None if pts == ABUTMENT_ROUTE else pts,
+                    abutment=(pts == ABUTMENT_ROUTE))
                  for n, pts in routes.items()]
         if cmds:
             self.commands.execute(
@@ -1681,7 +1689,8 @@ class AppController(QObject):
                     and len(r.points or []) <= 1)
 
         cmds = list(pre) + [
-            SetConnectionRouteCommand(self.project, r.name, r.points)
+            SetConnectionRouteCommand(self.project, r.name, r.points,
+                                      abutment=bool(getattr(r, "abutment", False)))
             for r in report.routed if not _vestigial_input_route(r)]
         # The pre-orient commands were executed above to inform routing; undo them
         # now so the single CompositeCommand re-applies everything atomically (one

@@ -62,24 +62,32 @@ class SetConnectionRouteCommand(Command):
     route. Used by auto-route (Phase 3) to materialise a logical net into a drawn
     path, reversibly."""
 
-    def __init__(self, project: Project, name: str, points):
+    def __init__(self, project: Project, name: str, points, *, abutment: bool = False):
         self.project = project
         self.name = name
-        # ``points`` is a list of (x, y) or None to clear back to a logical net.
+        # ``points`` is a list of (x, y), or None to clear back to a logical net.
+        # ``abutment`` records the corridor-free ABUTMENT_ROUTE sentinel (a REAL
+        # routed state: adjacent I/O cells, the @1 handoff synthesised at build) when
+        # ``points`` is empty. The router never sets both; points win if it does.
         self.points = points
+        self.abutment = abutment
         self._prev = None
 
     def execute(self) -> None:
-        from model.connection import RoutePoint
+        from model.connection import ABUTMENT_ROUTE, RoutePoint
 
         conn = self.project.connection(self.name)
         if conn is None:
             raise KeyError(f"no connection named {self.name!r}")
         self._prev = conn.route
-        conn.route = ([RoutePoint(x, y) for (x, y) in self.points]
-                      if self.points else None)
-        # Re-render: a now-ROUTED connection drops its fly line; a cleared route
-        # (points=None) gains one (#271 — fly line iff unrouted).
+        if self.points:
+            conn.route = [RoutePoint(x, y) for (x, y) in self.points]
+        elif self.abutment:
+            conn.route = ABUTMENT_ROUTE
+        else:
+            conn.route = None
+        # Re-render: a now-ROUTED connection (waypoints OR abutment) drops its fly
+        # line; a cleared route gains one (#271 — fly line iff unrouted).
         self.project.event_bus.emit("connection_route_changed", name=self.name)
 
     def undo(self) -> None:
@@ -95,7 +103,10 @@ class SetConnectionRouteCommand(Command):
     def to_trace(self) -> dict:
         pts = ([[int(x), int(y)] for (x, y) in self.points]
                if self.points else None)
-        return {"op": "set_route", "args": {"name": self.name, "points": pts}}
+        args = {"name": self.name, "points": pts}
+        if self.abutment and not self.points:
+            args["abutment"] = True
+        return {"op": "set_route", "args": args}
 
 
 class RemoveConnectionCommand(Command):

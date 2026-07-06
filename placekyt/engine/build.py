@@ -685,6 +685,10 @@ def _route_distance(conn) -> int:
 
     if not conn.is_routed:
         return 0
+    # ABUTMENT: source output cell directly abuts the target input cell — a single
+    # @1 hop (no corridor waypoints to count).
+    if conn.is_abutment:
+        return 1
     distance = max(0, len(conn.route) - 1)
     if isinstance(conn.target, ChipPortEndpoint) and conn.target.port.endswith("_out"):
         distance += 1
@@ -771,9 +775,18 @@ def _apply_routes(cell_map, gr_placement, blocks, connections, chip_type,
         # ABUTMENT — synthesise [src_out_cell, tgt_in_cell] when the source's output
         # cell is adjacent to the target — so a packed layout works without a filler
         # routing cell. Anything else (unrouted, non-adjacent) is skipped.
-        if conn.is_routed:
+        if conn.is_abutment:
+            # Explicit ABUTMENT route (adjacent I/O cells, no corridor): synthesise
+            # the [src_out_cell, tgt_in_cell] @1 handoff. (An ABUTMENT net is now
+            # is_routed=True, so it must be dispatched here BEFORE _phys_pts, which
+            # would iterate the sentinel string.)
+            pts = abutment_pts(project, conn, catalog, ports)
+        elif conn.is_routed:
             pts = _phys_pts(project, conn, catalog)
         else:
+            # Legacy fallback: an UNROUTED net whose cells happen to abut (pre-sentinel
+            # behaviour). Kept so hand-built layouts without an explicit ABUTMENT route
+            # still work.
             pts = abutment_pts(project, conn, catalog, ports)
         if not pts:
             continue

@@ -1,0 +1,417 @@
+options:
+  parameters:
+    author: Lattrex
+    catch_exceptions: 'True'
+    category: '[GRC Hier Blocks]'
+    cmake_opt: ''
+    comment: ''
+    copyright: ''
+    description: "Standalone all-flavors float<->complex converter test flowgraph.\
+      \ ONE linear chain that threads EVERY float/complex dtype interaction the\
+      \ placeKYT importer must handle, so the coverage is visible in ONE importable\
+      \ .grc that runs both headless and in the placeKYT GUI:\n  1. TWO real streams\
+      \ (srcI, srcQ) -> blocks_float_to_complex (2-real) -> a physical\
+      \ DualFloatToComplex LOCK-rendezvous block -> a complex mixer.\n  2. complex\
+      \ mixer -> blocks_complex_to_float (BOTH rails): out_i and out_q each drive a\
+      \ real gain.\n  3. the out_i real rail -> blocks_float_to_complex (SINGLE real,\
+      \ Q = null_source) -> a second complex mixer (xq treated as 0).\n  4. the\
+      \ second complex mixer -> blocks_complex_to_real (drop Q) -> a real gain ->\
+      \ sink.\nEvery float<->complex boundary is resolved by a stock GR converter so\
+      \ the graph is grcc-clean; the placeKYT importer CONSUMES the logical\
+      \ converters (single-real f2c, complex_to_real, complex_to_float) as zero\
+      \ cells and inserts ONE physical DualFloatToComplex cell for the 2-real f2c."
+    gen_cmake: 'On'
+    gen_linking: dynamic
+    generate_options: qt_gui
+    hier_block_src_path: '.:'
+    id: converter_flavors
+    max_nouts: '0'
+    output_language: python
+    placement: (0,0)
+    qt_qss_theme: ''
+    realtime_scheduling: ''
+    run: 'True'
+    run_command: '{python} -u {filename}'
+    run_options: prompt
+    sizing_mode: fixed
+    thread_safe_setters: ''
+    title: Float<->Complex converter flavors (all combinations, one chain)
+    window_size: (1600,1000)
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [8, 8]
+    rotation: 0
+    state: enabled
+
+blocks:
+- name: samp_rate
+  id: variable
+  parameters:
+    comment: ''
+    value: '32000'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [200, 12]
+    rotation: 0
+    state: enabled
+- name: n_samp
+  id: variable
+  parameters:
+    comment: ''
+    value: '256'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [320, 12]
+    rotation: 0
+    state: enabled
+# --- GR feeders/consumer (dropped by the placeKYT importer; grcc needs the src
+#     input + sink output wired to real GR endpoints) ---------------------------
+- name: feedI
+  id: analog_sig_source_x
+  parameters:
+    amp: '0.5'
+    comment: I feeder
+    freq: '1000'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    offset: '0'
+    phase: '0'
+    samp_rate: samp_rate
+    type: float
+    waveform: analog.GR_COS_WAVE
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [40, 40]
+    rotation: 0
+    state: enabled
+- name: feedQ
+  id: analog_sig_source_x
+  parameters:
+    amp: '0.5'
+    comment: Q feeder
+    freq: '250'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    offset: '0'
+    phase: '0'
+    samp_rate: samp_rate
+    type: float
+    waveform: analog.GR_SIN_WAVE
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [40, 320]
+    rotation: 0
+    state: enabled
+- name: consumer
+  id: blocks_null_sink
+  parameters:
+    bus_structure_sink: ''
+    comment: dev-null for the chip output
+    num_inputs: '1'
+    type: float
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [2080, 176]
+    rotation: 0
+    state: enabled
+- name: qsink
+  id: kyttar_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: Q rail observed -> chip x16_out (stream 'q_obs')
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_channels: '1'
+    port_name: '"x16_out"'
+    server_host: '"127.0.0.1"'
+    server_port: '0'
+    stream_id: '"q_obs"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1140, 300]
+    rotation: 0
+    state: enabled
+- name: qconsumer
+  id: blocks_null_sink
+  parameters:
+    bus_structure_sink: ''
+    comment: dev-null for the Q-rail observation
+    num_inputs: '1'
+    type: float
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1320, 300]
+    rotation: 0
+    state: enabled
+# --- (1) TWO real producers -> 2-real float_to_complex -> DualFloatToComplex ---
+- name: srcI
+  id: kyttar_source
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: I stream -> chip x16_in (stream 'i')
+    complex_in: float
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_channels: '1'
+    port_name: '"x16_in"'
+    server_host: '"127.0.0.1"'
+    server_port: '0'
+    stream_id: '"i"'
+    burst_len: n_samp
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [40, 120]
+    rotation: 0
+    state: enabled
+- name: srcQ
+  id: kyttar_source
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: Q stream -> chip x16_in (stream 'q')
+    complex_in: float
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_channels: '1'
+    port_name: '"x16_in"'
+    server_host: '"127.0.0.1"'
+    server_port: '0'
+    stream_id: '"q"'
+    burst_len: n_samp
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [40, 240]
+    rotation: 0
+    state: enabled
+- name: f2c_dual
+  id: blocks_float_to_complex
+  parameters:
+    comment: 2-real -> DualFloatToComplex (LOCK rendezvous)
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [280, 168]
+    rotation: 0
+    state: enabled
+- name: mix1
+  id: kyttar_complex_mixer
+  parameters:
+    affinity: ''
+    alias: ''
+    amplitude: '1.0'
+    comment: complex DSP stage 1
+    device_id: '"kyttar_0"'
+    frequency: '-1500'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    offset: '0.0'
+    phase: '0.0'
+    sample_rate: '32000'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [500, 176]
+    rotation: 0
+    state: enabled
+# --- (2) complex_to_float BOTH rails: out_i -> gain, out_q -> gain ------------
+- name: c2f
+  id: blocks_complex_to_float
+  parameters:
+    comment: complex_to_float (both rails)
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [720, 176]
+    rotation: 0
+    state: enabled
+- name: gain_i
+  id: kyttar_gain
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: I rail gain
+    device_id: '"kyttar_0"'
+    gain: '1'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [920, 120]
+    rotation: 0
+    state: enabled
+- name: gain_q
+  id: kyttar_gain
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: Q rail gain
+    device_id: '"kyttar_0"'
+    gain: '1'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [920, 240]
+    rotation: 0
+    state: enabled
+# --- (3) single-real float_to_complex (Q = null_source) -> complex mixer ------
+- name: nullq
+  id: blocks_null_source
+  parameters:
+    bus_structure_source: ''
+    comment: Q = 0 for the single-real f2c
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_outputs: '1'
+    type: float
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [920, 340]
+    rotation: 0
+    state: enabled
+- name: f2c_single
+  id: blocks_float_to_complex
+  parameters:
+    comment: single-real f2c (Q = null_source -> xq = 0)
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1120, 168]
+    rotation: 0
+    state: enabled
+- name: mix2
+  id: kyttar_complex_mixer
+  parameters:
+    affinity: ''
+    alias: ''
+    amplitude: '1.0'
+    comment: complex DSP stage 2
+    device_id: '"kyttar_0"'
+    frequency: '1500'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    offset: '0.0'
+    phase: '0.0'
+    sample_rate: '32000'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1320, 176]
+    rotation: 0
+    state: enabled
+# --- (4) complex_to_real (drop Q) -> gain -> sink ----------------------------
+- name: c2r
+  id: blocks_complex_to_real
+  parameters:
+    comment: complex_to_real (drop Q)
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1540, 184]
+    rotation: 0
+    state: enabled
+- name: gain_out
+  id: kyttar_gain
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: output gain
+    device_id: '"kyttar_0"'
+    gain: '1'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1720, 176]
+    rotation: 0
+    state: enabled
+- name: snk
+  id: kyttar_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: chip x16_out (stream 'out')
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_channels: '1'
+    port_name: '"x16_out"'
+    server_host: '"127.0.0.1"'
+    server_port: '0'
+    stream_id: '"out"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1900, 176]
+    rotation: 0
+    state: enabled
+
+connections:
+- [feedI, '0', srcI, '0']
+- [feedQ, '0', srcQ, '0']
+- [snk, '0', consumer, '0']
+- [srcI, '0', f2c_dual, '0']
+- [srcQ, '0', f2c_dual, '1']
+- [f2c_dual, '0', mix1, '0']
+- [mix1, '0', c2f, '0']
+- [c2f, '0', gain_i, '0']
+- [c2f, '1', gain_q, '0']
+- [gain_i, '0', f2c_single, '0']
+- [gain_q, '0', qsink, '0']
+- [qsink, '0', qconsumer, '0']
+- [nullq, '0', f2c_single, '1']
+- [f2c_single, '0', mix2, '0']
+- [mix2, '0', c2r, '0']
+- [c2r, '0', gain_out, '0']
+- [gain_out, '0', snk, '0']
+
+metadata:
+  file_format: 1
+  grc_version: 3.10.0

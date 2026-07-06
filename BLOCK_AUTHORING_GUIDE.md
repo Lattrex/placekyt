@@ -250,6 +250,37 @@ Loops (PLLs, timing loops, IIR state) are fully supported, but:
 The shipped `CostasLoopBlock` and the Gardner timing loop are concrete, tested
 examples of this.
 
+### Complex-output blocks — budget the output cell for FAN-OUT
+
+If your block emits a **complex** output — one cell producing TWO real rails
+(`yi`/`yq`, an I/Q pair) — there is one rule that will bite you later if you skip
+it. A complex rail pair has two on-chip delivery shapes and the build picks between
+them automatically:
+
+- **Complex packet** (both rails → the *same* downstream cell, e.g. mixer → a
+  Costas loop): `WRITE yi; WRITE yq; JUMP` — two operands into the target's R0/R1,
+  one trigger, target fires once. **This is what you author.** Keep the template
+  exactly this way.
+- **Fan-out** (rails → *two different* downstream blocks, e.g. `mixer.yi → LowPass_I`,
+  `mixer.yq → LowPass_Q`): each rail needs its own trigger. The build **re-sequences
+  your program automatically** into `WRITE yi; JUMP; WRITE yq; JUMP`, steering each
+  pair to its own destination. You do **not** author two triggers.
+
+The catch: the fan-out form has one **extra JUMP**, so the output cell needs a free
+word for it. Therefore:
+
+> **Leave at least one free word in a complex output cell, and add a
+> block-verification test that asserts the fan-out form (2 WRITEs + 2 JUMPs) fits in
+> 32 words.** A cell packed to 32/32 cannot fan out. Catch this at *block-verify*
+> time — never let a user discover it as an opaque chip-build failure. See
+> **INV-17** in the invariants.
+
+Do **not** invent a "complex-to-float split" *block* to steer the rails. A complex
+pair is already two words multiplexed on the bus (I in R0, Q in R1); which
+downstream reads which rail is a build/routing decision, not a placed cell. The
+shipped `ComplexMixerBlock` is the reference: single-`{jump:trig}` template, and the
+build handles both delivery shapes.
+
 ---
 
 ## 4. Test your block
@@ -330,6 +361,7 @@ Pair it with a small Python shim in `gr-kyttar/python/kyttar/` (see the existing
 - [ ] Implement `cell_count`, `interface`, `build_cell_programs()`, `process_reference()`.
 - [ ] Declare inputs / outputs / state / data; reference them via `{in:}` `{data:}` `{state:}` `{write:}` `{jump:}` — no literal registers or hops for inter-cell traffic.
 - [ ] Multi-cell? Add `internal_connections()` (+ `internal_jumps()` if you trigger between cells). Close feedback through **data**, not triggers.
+- [ ] **Complex output** (a cell emitting `yi`/`yq`)? Keep the single-`{jump:trig}` packet template, leave ≥1 free word in the output cell, and add a test asserting the fan-out form fits 32 words (**INV-17**).
 - [ ] Set `CATEGORY` / `TAGS` for the panel.
 - [ ] Add a test comparing simKYT output to `process_reference()` within ±1–2 LSB.
 - [ ] *(optional)* Add a `.block.yml` + Python shim under `gr-kyttar/` for GNU Radio Companion.

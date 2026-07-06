@@ -515,3 +515,55 @@ in both.)
 pure Python because GR is absent at runtime — the firdes filters ([[INV-13]]
 headroom still governs the datapath), and any future windowed/designed-tap block.
 
+---
+
+## INV-17 — A COMPLEX-OUTPUT cell must budget for the FAN-OUT program form
+
+**Symptom:** a complex block (a cell emitting TWO real rails `yi`/`yq` from one
+output cell — the ComplexMixer's `mixer` cell, an NCO, any I/Q source) works when
+its output feeds ONE downstream complex block, but when the two rails are wired to
+TWO DIFFERENT downstream blocks (the SSB Weaver's `mixer.yi → LowPass_I`,
+`mixer.yq → LowPass_Q`) the chip produces HALF the streams — one filter gets the
+data (poor corr), the other gets **nothing** (0 output). Disassembling the output
+cell shows both rail WRITEs collapsed to the SAME dest + a SINGLE JUMP.
+
+**Root cause — two DELIVERY SHAPES, one output cell.** A complex output rail pair
+has two legitimate on-chip forms:
+  * **COMPLEX PACKET** (rails → the SAME downstream cell, e.g. mixer→Costas): emit
+    `WRITE yi; WRITE yq; JUMP` — two operands into the target's R0/R1, ONE trigger
+    so the target fires ONCE per sample with both rails fresh. This is the default
+    and is correct; do NOT change it.
+  * **FAN-OUT** (rails → TWO DIFFERENT downstream cells): each rail needs its OWN
+    trigger — `WRITE yi; JUMP trig_i; WRITE yq; JUMP trig_q`, each WRITE+JUMP pair
+    steered to its own broker — so each downstream block fires independently.
+The build performs the FAN-OUT transform automatically (a general `_apply_brokers`
+pass, keyed on the two rails resolving to DISTINCT broker cells). But the transform
+adds an EXTRA JUMP to the output cell's program, so the cell needs one free word for
+it. If the cell is at its full memory budget, the fan-out won't fit.
+
+**The protocol for AUTHORS of complex-output blocks (do this, always):**
+  1. Keep the template as the COMPLEX PACKET form (`WRITE yi; WRITE yq; JUMP`).
+     The build re-sequences it to the fan-out form only when needed — you do NOT
+     author two triggers.
+  2. **BUDGET the output cell for the fan-out form.** Leave at least ONE free word
+     in the output cell so the build can insert the second JUMP. A cell packed to
+     32/32 words CANNOT fan out.
+  3. **Add a BLOCK-VERIFICATION memory test** that asserts the output cell's program
+     + the extra fan-out JUMP fits in 32 words. This catches an over-full complex
+     output cell at BLOCK-VERIFY time — where it belongs — so a user NEVER hits an
+     overflow at chip-build time (which would be an opaque, terrible failure). Build
+     time may then SAFELY assume the room exists because verification guaranteed it.
+
+**Fix / status:** the general fan-out transform lives in `engine/build.py`
+`_apply_brokers` (proven: mixer→2×LowPass hits corr ~1.0; complex→complex packet
+path is byte-identical to before — mixer→Costas still BER 0). The ComplexToFloat
+"split" BLOCK is a dead end — a complex pair is ALREADY two words multiplexed on the
+bus (I in R0, Q in R1); a downstream block that wants only the I rail just reads R0.
+Steering is a build/routing job (which register each downstream WRITE targets), NOT
+a physical block. (If GRC ergonomics ever need a visible "split" node, it must be a
+LOGICAL-ONLY adapter that DISSOLVES at import — 0 cells on hardware — never a placed
+block.) See [[project_fanout_two_targets_build_bug]].
+
+**Applies to:** ComplexMixer, NCO, IQUpconvert, and EVERY block whose output cell
+emits an I/Q rail pair — i.e. any block a future agent writes with a complex output.
+

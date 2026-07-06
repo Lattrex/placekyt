@@ -1053,28 +1053,45 @@ def _apply_brokers(cell_map, gr_placement, blocks, connections, project,
         full = pts if pts[0] == ex else [ex] + list(pts)
         distance = max(0, len(full) - 1)
         by_src_cell.setdefault(ex, []).append(
-            (conn.name, distance, conn_entry[conn.name]))
+            (conn.name, distance, conn_entry[conn.name], tuple(pts[-1])))
         src_meta[ex] = (gb, cfg)
 
     for ex, nets in by_src_cell.items():
         gb, cfg = src_meta[ex]
-        # A COMPLEX-SAMPLE source: 2+ brokered nets from one exit cell that the broker
-        # COALESCED into a single deliver entry (same b_entry). Patch each operand's
-        # WRITE to its own broker burst reg (R0, R1, ... — by source program order)
-        # and the single JUMP to the coalesced entry. The hop is shared (one route).
-        entries = {e for (_c, _d, e) in nets}
-        if len(nets) > 1 and len(entries) == 1:
+        # A COMPLEX output cell (yi/yq from ONE cell) has TWO delivery SHAPES depending
+        # on where the rails go (INV-17). The discriminator is the BROKER CELL each net
+        # taps, NOT its entry ADDRESS (two DIFFERENT brokers can resolve their sole
+        # delivery to the SAME entry addr, e.g. both 25 — so entry-equality would
+        # misclassify a fan-out as a packet).
+        broker_cells = {n[3] for n in nets}
+        # COMPLEX PACKET: 2+ nets into ONE broker (coalesced to a single deliver entry).
+        # Each operand WRITEs its own broker burst reg (R1, R2, … by source program
+        # order) and ONE JUMP fires the target once with both rails fresh. This is the
+        # mixer→Costas / complex→complex path — unchanged.
+        if len(nets) > 1 and len(broker_cells) == 1:
             distance = nets[0][1]
             b_entry = nets[0][2]
-            # Order operands by the broker's burst-reg assignment (which preserves
-            # the connection / source-WRITE order), then patch the Nth WRITE -> reg N.
             ordered = sorted(nets, key=lambda n: conn_burst_reg.get(n[0], 0))
             burst_regs = [BROKER_BURST_REG + conn_burst_reg.get(c, i)
-                          for i, (c, _d, _e) in enumerate(ordered)]
+                          for i, (c, _d, _e, _bc) in enumerate(ordered)]
             _patch_complex_source_handoff(cfg, distance, burst_regs, b_entry)
             continue
+        # FAN-OUT: 2+ rails from one complex output cell to DIFFERENT brokers (2 distinct
+        # downstream blocks — the SSB Weaver's mixer.yi→LowPass_I, mixer.yq→LowPass_Q).
+        # Each rail needs its OWN trigger, so re-sequence the cell's two WRITEs + the
+        # (single, authored) JUMP into `WRITE yi; WRITE yq; JUMP→A; JUMP→B`, steering the
+        # Nth rail's WRITE+JUMP to the Nth net's own (hop, burst_reg, entry). Nets are in
+        # SOURCE PROGRAM ORDER (connections created in output-port order). Each net is its
+        # broker's sole delivery, so its burst reg = BROKER_BURST_REG. The template is
+        # UNCHANGED (INV-17): the packet form is the default; this runs only for the
+        # 2-different-targets case. Block verification guarantees the extra JUMP fits.
+        if len(nets) > 1 and len(broker_cells) > 1:
+            specs = [(d, BROKER_BURST_REG + int(conn_burst_reg.get(c, 0)), e)
+                     for (c, d, e, _bc) in nets]
+            _patch_fanout_source_handoff(cfg, specs)
+            continue
         # Single-net source (the ordinary one-operand delivery, unchanged).
-        conn_name, distance, b_entry = nets[0]
+        conn_name, distance, b_entry, _bc = nets[0]
         # The source must WRITE to the broker burst reg the broker's delivery for THIS
         # net READS — which is NOT always R0: when the broker also serves OTHER
         # deliveries (a fan-in / a shared tap cell), this net's operand is assigned burst
@@ -1959,6 +1976,68 @@ def _patch_last_write_handoff(cfg, hop, dest=None) -> None:
     if dest is not None:
         word = (word & ~0x1F) | (int(dest) & 0x1F)
     cfg.memory[addr] = word & 0xFFFF
+
+
+def _patch_fanout_source_handoff(cfg, specs) -> None:
+    """Re-sequence a COMPLEX output cell (``WRITE yi; WRITE yq; JUMP``) into the
+    FAN-OUT form (``WRITE yi; WRITE yq; JUMP→A; JUMP→B``) so its two rails reach TWO
+    DIFFERENT downstream blocks (INV-17).
+
+    ``specs`` is ``[(hop, dest_reg, entry), …]`` in SOURCE PROGRAM ORDER (rail 0 =
+    the first WRITE = yi). The Nth WRITE is steered to spec N's ``(hop, dest_reg)``.
+    The cell has ONE authored JUMP; we repurpose it for the LAST rail and add ONE
+    extra JUMP (in the cell's single free program word) for the first rail. Both
+    WRITEs deliver their data BEFORE either JUMP fires, and the two rails go to
+    DIFFERENT broker cells (distinct hops), so neither clobbers the other and the
+    JUMP ORDER is irrelevant — each downstream fires independently once its operand
+    is present. Only the fan-out (2-different-targets) case reaches here; the
+    complex-packet path is untouched.
+
+    Budget: the extra JUMP needs one free word. INV-17 requires every complex-output
+    block to be VERIFIED to have that word, so this never overflows at build time; as
+    a defensive backstop we still raise if no free program word exists (never silent).
+    """
+    write_addrs = sorted(a for a, w in cfg.memory.items()
+                         if _is_instruction_addr(cfg, a) and (w & 0xF000) == _WRITE)
+    jump_addrs = sorted(a for a, w in cfg.memory.items()
+                        if _is_instruction_addr(cfg, a) and (w & 0xF000) == _JUMP)
+    if len(specs) < 2 or len(write_addrs) < 2 or not jump_addrs:
+        return  # not the shape we transform — leave it to the single-net path
+
+    def _set_write(addr, hop, dest):
+        w = (cfg.memory[addr] & ~(0x1F << 5)) | (encode_hop_cnt(hop) << 5)
+        w = (w & ~0x1F) | (int(dest) & 0x1F)
+        cfg.memory[addr] = w & 0xFFFF
+
+    def _make_jump(hop, entry):
+        return (_JUMP | (encode_hop_cnt(hop) << 5) | (int(entry) & 0x1F)) & 0xFFFF
+
+    # Steer each rail's WRITE (in program order) to its own broker burst reg + hop.
+    for i, (hop, dest_reg, _entry) in enumerate(specs):
+        if i < len(write_addrs):
+            _set_write(write_addrs[i], hop, dest_reg)
+
+    # The authored JUMP fires the LAST rail; a NEW JUMP (in the free program word,
+    # which sits ABOVE the authored JUMP) fires the FIRST rail. Both operands are
+    # already written, so firing the first rail's trigger after the last rail's is
+    # harmless. Generalises to N rails: authored JUMP = last, extra JUMPs = the rest.
+    last_hop, _lr, last_entry = specs[-1]
+    old_jump = jump_addrs[-1]
+    cfg.memory[old_jump] = _make_jump(last_hop, last_entry)
+
+    # Place one extra JUMP per remaining rail in free program words above ``old_jump``.
+    free = [a for a in range(old_jump + 1, 32)
+            if (cfg.memory.get(a, 0) & 0xFFFF) == 0]
+    need = len(specs) - 1
+    if len(free) < need:
+        raise BuildError(
+            f"complex output cell '{getattr(cfg, 'block_name', '?')}' cannot fan out: "
+            f"needs {need} free program word(s) for the extra rail JUMP(s) but has "
+            f"{len(free)} — the block's output cell is over-full. INV-17: a complex-"
+            f"output block MUST leave room for the fan-out form and be VERIFIED for it "
+            f"at block-verification time, so this never surfaces at chip build.")
+    for slot, (hop, _dr, entry) in zip(free, specs[:-1]):
+        cfg.memory[slot] = _make_jump(hop, entry)
 
 
 def _patch_complex_source_handoff(cfg, hop, burst_regs, entry) -> None:

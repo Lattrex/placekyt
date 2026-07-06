@@ -1,0 +1,72 @@
+id: kyttar_complex_low_pass_filter
+label: Complex Low Pass Filter
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar Complex Low Pass Filter — drop-in for GNU Radio's fir_filter_ccf fed taps
+  from firdes.low_pass. Complex (I/Q) baseband in, complex out: ONE shared real tap
+  set filters BOTH rails (exactly fir_filter_ccf). Collapses the
+  complex_to_float -> 2x fir_filter_fff -> float_to_complex idiom into ONE block, so
+  a ComplexMixer -> ComplexLowPass -> IQUpconvert chain is pure complex packets.
+
+  This block runs on the Kyttar chip. Place it between a KyttarSource and
+  KyttarSink block; the device_id must match your KyttarDevice.
+
+  HARDWARE NOTE: a wide (multi-cell) complex filter needs Sum|h| <= 1. A firdes
+  low_pass at gain=1.0 slightly exceeds it, so the default gain here is 0.9 (the
+  placeKYT block raises a clear error if a multi-cell filter has Sum|h| > 1).
+  Correlation is gain-invariant.
+
+  Parameters (mirroring GNU Radio's Low Pass Filter verbatim):
+    Device ID, Gain, Sample Rate, Cutoff Freq, Transition Width, Window, Beta.
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.complex_low_pass_filter(device_id=${device_id}, gain=${gain}, samp_rate=${samp_rate},
+    cutoff_freq=${cutoff_freq}, transition_width=${transition_width}, window=${window}, beta=${beta})
+  callbacks:
+    - set_cutoff_freq(${cutoff_freq})
+    - set_transition_width(${transition_width})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+  - id: gain
+    label: Gain
+    dtype: real
+    default: '0.9'
+  - id: samp_rate
+    label: Sample Rate
+    dtype: real
+    default: samp_rate
+  - id: cutoff_freq
+    label: Cutoff Freq
+    dtype: real
+    default: '4000'
+  - id: transition_width
+    label: Transition Width
+    dtype: real
+    default: '2000'
+  - id: window
+    label: Window
+    dtype: string
+    default: '"hamming"'
+    options: ['"hamming"', '"hann"', '"blackman"', '"rectangular"', '"blackman_harris"', '"kaiser"']
+    option_labels: [Hamming, Hann, Blackman, Rectangular, Blackman-harris, Kaiser]
+  - id: beta
+    label: Beta
+    dtype: real
+    default: '6.76'
+
+inputs:
+  - label: in
+    dtype: complex
+
+outputs:
+  - label: out
+    dtype: complex
+
+file_format: 1

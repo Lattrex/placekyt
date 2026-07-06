@@ -75,6 +75,10 @@ from .low_pass_filter import low_pass_filter
 from .high_pass_filter import high_pass_filter
 from .band_pass_filter import band_pass_filter
 from .band_reject_filter import band_reject_filter
+from .complex_low_pass_filter import complex_low_pass_filter
+from .complex_high_pass_filter import complex_high_pass_filter
+from .complex_band_pass_filter import complex_band_pass_filter
+from .complex_band_reject_filter import complex_band_reject_filter
 from .dc_blocker import dc_blocker
 from .agc import agc
 from .nco import nco
@@ -121,6 +125,10 @@ __all__ = [
     "high_pass_filter",
     "band_pass_filter",
     "band_reject_filter",
+    "complex_low_pass_filter",
+    "complex_high_pass_filter",
+    "complex_band_pass_filter",
+    "complex_band_reject_filter",
     "dc_blocker",
     "agc",
     "nco",

@@ -34,13 +34,20 @@ class complex_mixer(_PassThrough):
         device_id: str = "kyttar_0",
         sample_rate: float = 32000.0,
         frequency: float = 2000.0,
+        amplitude: float = 1.0,
+        offset: float = 0.0,
+        phase: float = 0.0,
     ):
         super().__init__(name="Kyttar Complex Mixer", n_in=1, n_out=1)
         self._device_id = device_id
         self._sample_rate = sample_rate
         self._frequency = frequency
+        self._amplitude = amplitude
+        self._offset = offset
+        self._phase = phase
         self._advertise_grc_params(device_id, "ComplexMixerBlock", {
-            "sample_rate": sample_rate, "frequency": frequency})
+            "sample_rate": sample_rate, "frequency": frequency,
+            "amplitude": amplitude, "offset": offset, "phase": phase})
 
     def set_frequency(self, frequency: float):
         self._frequency = frequency

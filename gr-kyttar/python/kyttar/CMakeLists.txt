@@ -21,6 +21,10 @@ GR_PYTHON_INSTALL(
     high_pass_filter.py
     band_pass_filter.py
     band_reject_filter.py
+    complex_low_pass_filter.py
+    complex_high_pass_filter.py
+    complex_band_pass_filter.py
+    complex_band_reject_filter.py
     dc_blocker.py
     agc.py
     nco.py

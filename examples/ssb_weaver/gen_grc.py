@@ -1,28 +1,30 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Generate ssb_weaver.grc — the FULL on-chip SSB Weaver transceiver flowgraph,
-built from REAL Kyttar blocks exactly as the textbook Weaver diagram prescribes.
+"""Generate ssb_weaver.grc — the FULL on-chip SSB Weaver transceiver flowgraph on
+the COMPLEX-FIR datapath (the topology that fits ONE 10x12 die).
 
-The Weaver ("third method") SSB generator is FOUR real multipliers + an adder per
-half — there are NO complex multipliers anywhere on the signal-flow diagram. Every
-wire carries a real signal. So the chip chain is, per half:
+The Weaver ("third method") SSB, per half, is a down-mix into a complex baseband, a
+low-pass on BOTH rails, and an up-mix that recombines (I·cos − Q·sin). On the fabric
+that is THREE blocks — no split, no fan-in:
 
-    m(t) ─┬─ ×cos(w0)  → LowPass ─ ×cos(wc+w0) ─┐
-          │                                      (−) → SSB
-          └─ ×sin(w0)  → LowPass ─ ×sin(wc+w0) ─┘   (I·cos − Q·sin)
+    audio ─ ComplexMixer(fa) ─ ComplexLowPass ─ IQUpconvert(fc) ─ SSB
+             (complex packet)   (complex in/out)  (I'·cos − Q'·sin)
 
-built from: NCO (emits cos on yi + sin on yq), Multiply (m × cos / m × sin),
-LowPassFilter, Subtract (the I·cos − Q·sin combine), Gain. NO ComplexMixer, NO
-ComplexToFloat, NO complex IQUpconvert — those wrongly modeled a real signal flow
-with complex blocks and created a reconvergent I/Q fan-in the router couldn't thread.
-The real-block chain is two clean real filaments joined by a subtract.
+ComplexLowPass (kyttar_complex_low_pass_filter = GNU Radio fir_filter_ccf) filters
+both I/Q rails with ONE shared tap set, so the classic Weaver's complex→2-real-LPF
+FAN-OUT and 2-real→1 recombine FAN-IN both disappear. Each half is a straight
+complex filament; every hop is a same-source complex packet the placeKYT importer
+expands into its I/Q rail pair. Result: the WHOLE 6-block transceiver auto-places,
+routes and builds on ONE 10x12 chip (78/120 cells, all 11 nets) — the 10-block
+real-rail Weaver could not. See examples/ssb_weaver/weaver_builder_cfir.py.
 
-Verified: the Q15 real-block chain is bit-identical to the proven complex-block
-reference (corr 0.9999) — see dev_docs/weaver_real_ref.py.
+Verified: the Q15 complex-FIR chain recovers the audio at corr 0.986 on the real
+substrate (== the Q15 reference at 0.9999) — see verification/tests/test_ssb_weaver_cfir.py.
+The complex FIR is bit-exact to fir_filter_ccf (verification/tests/test_complex_fir.py).
 
 Weaver plan (USB, fa=1500 Hz audio-band centre, fc=6000 Hz carrier @ 32 kHz):
-  TX: NCO(fa) mixers → 2×LowPass → NCO(fc) mixers → Subtract  (= SSB)
-  RX: NCO(fc) mixers → 2×LowPass → NCO(fa) mixers → Subtract → Gain×4  (= audio)
+  TX: ComplexMixer(fa) → ComplexLowPass → IQUpconvert(fc)          (= SSB)
+  RX: ComplexMixer(fc) → ComplexLowPass → IQUpconvert(fa) → Gain×4 (= audio)
 
 Run: <venv>/python examples/ssb_weaver/gen_grc.py   (writes ssb_weaver.grc alongside)
 """
@@ -90,6 +92,18 @@ def blk(name, bid, params, x, y):
     return "\n".join(lines)
 
 
+def clpf(name, x, y):
+    """A COMPLEX low-pass filter (kyttar_complex_low_pass_filter): ONE block that
+    filters BOTH I/Q rails with the SAME firdes.low_pass taps (= fir_filter_ccf).
+    gain=0.9 keeps Sum|h|<=1 so the multi-cell filter fits the cell budget."""
+    return blk(name, "kyttar_complex_low_pass_filter", {
+        "affinity": "''", "alias": "''", "beta": "'6.76'", "comment": "''",
+        "cutoff_freq": repr(CUT), "device_id": "'\"kyttar_0\"'", "gain": "'0.9'",
+        "maxoutbuf": "'0'", "minoutbuf": "'0'", "samp_rate": "samp_rate",
+        "transition_width": repr(TW), "window": "'\"hamming\"'",
+    }, x, y)
+
+
 def lpf(name, x, y):
     return blk(name, "kyttar_low_pass_filter", {
         "affinity": "''", "alias": "''", "beta": "'6.76'", "comment": "''",
@@ -117,16 +131,17 @@ def mul(name, x, y):
     }, x, y)
 
 
-def cmix(name, freq, x, y):
-    """A fused oscillator-mixer (kyttar_complex_mixer, 11 cells): real signal in (xi; xq
-    defaults 0) -> yi = signal*cos(θ), yq = signal*sin(θ), θ += freq. Its TWO outputs ARE
-    both Weaver rails (cos=yi, sin=yq), each to a distinct consumer — so ONE cmix replaces
-    a whole {shared NCO + 2 Multiply} DOWN-mix cluster with no dead NCO / no carrier
-    fan-out.  Used for the two DOWN-mixes (which need BOTH rails)."""
+def cmix(name, freq, phase, x, y):
+    """A fused oscillator down-mixer (kyttar_complex_mixer, 11 cells): real signal in
+    (xi; xq defaults 0) -> yi = signal*cos(θ), yq = signal*sin(θ). ``freq`` is the
+    Weaver LO (negative for a down-shift), ``phase`` the calibrated initial phase
+    that pre-rotates the carrier to track the causal-FIR envelope group delay (so
+    Weaver image cancellation holds) — see weaver_builder_cfir.calibrate_phase_steps_cfir."""
     return blk(name, "kyttar_complex_mixer", {
-        "affinity": "''", "alias": "''", "comment": "''",
-        "device_id": "'\"kyttar_0\"'", "frequency": repr(freq),
-        "maxoutbuf": "'0'", "minoutbuf": "'0'", "sample_rate": repr(FS),
+        "affinity": "''", "alias": "''", "amplitude": "'1.0'", "comment": "''",
+        "device_id": "'\"kyttar_0\"'", "frequency": repr(freq), "offset": "'0.0'",
+        "maxoutbuf": "'0'", "minoutbuf": "'0'", "phase": repr(phase),
+        "sample_rate": repr(FS),
     }, x, y)
 
 
@@ -160,8 +175,32 @@ def sub(name, x, y):
     }, x, y)
 
 
+def _weaver_phases():
+    """The calibrated ComplexMixer initial phases (radians) for the two down-mixes,
+    computed by the PROVEN weaver_builder_cfir calibration against the Q15 reference
+    chain. These pre-rotate each carrier to track the causal complex-FIR envelope
+    group delay so Weaver image cancellation holds (corr ~0.986). Baked into the .grc
+    so the flowgraph recovers audio when opened — no manual tuning."""
+    import math as _math
+    import sys as _sys
+    from pathlib import Path as _Path
+    _root = _Path(__file__).resolve().parents[2]
+    for _p in (str(_root / "placekyt"), str(_root / "runtime" / "python"),
+               str(_Path(__file__).resolve().parent)):
+        if _p not in _sys.path:
+            _sys.path.insert(0, _p)
+    from weaver_builder import WeaverPlan
+    from weaver_builder_cfir import calibrate_phase_steps_cfir
+    plan = WeaverPlan(tw=TW, lpf_gain=0.9)
+    kfa, kfc, _c, _s = calibrate_phase_steps_cfir(plan)
+    ph_fa = 2 * _math.pi * (-FA) / FS * (1 + kfa)
+    ph_fc = 2 * _math.pi * (-FC) / FS * (1 + kfc)
+    return ph_fa, ph_fc
+
+
 def main():
     out = [HDR]
+    PH_FA, PH_FC = _weaver_phases()
     # --- variables ---
     out.append(blk("samp_rate", "variable",
                    {"comment": "''", "value": repr(FS)}, 200, 12))
@@ -216,24 +255,23 @@ def main():
     # fc-mixers. Replicating the cheap phase-accumulator per mixer costs cells (plentiful)
     # but removes the fan-out (wires, scarce) — the fabric-native trade.
 
-    # === TX half: cmix(fa) [both rails] -> 2x LPF -> iqup(fc) x2 [one rail each] -> Add ===
-    # Down-mix = 11-cell ComplexMixer (needs both rails).  Up-mixes = lean 6-cell
-    # IQUpconvert (one rail each): xi->cos rail, xq->(-sin) rail.  Because the sin rail is
-    # NEGATED, the Weaver combine is an ADD (uI + (-Q'sin)), not a subtract.
-    out.append(cmix("tx_ma", FA, 900, 200))      # audio -> yi=a*cos(fa), yq=a*sin(fa)
-    out.append(lpf("tx_lpi", 1060, 140))         # I' = LPF(a*cos)
-    out.append(lpf("tx_lpq", 1060, 300))         # Q' = LPF(a*sin)
-    out.append(iqup("tx_uic", FC, 1320, 140))    # uI  = I' * cos(fc)   (xi in)
-    out.append(iqup("tx_uqc", FC, 1320, 300))    # -uQ = -Q' * sin(fc)  (xq in)
-    out.append(add("tx_ssb", 1500, 200))         # SSB = uI + (-Q'sin)
+    # === COMPLEX-FIR WEAVER (pure complex packets, one filter block per half) ===
+    # ComplexLowPass filters BOTH rails of the mixer's complex packet in ONE block
+    # (= fir_filter_ccf), so the classic Weaver's complex-to-2-real-LPF FAN-OUT and
+    # the 2-real-to-1 recombine FAN-IN both vanish. Each half is a straight complex
+    # filament: cmix (complex out) -> clpf (complex in/out) -> iqup (complex in, real
+    # out; out = I*cos - Q*sin). No split, no add. This is the topology that fits ONE
+    # 10x12 die (78/120 cells) — see examples/ssb_weaver/weaver_builder_cfir.py.
 
-    # === RX half: cmix(fc) [both rails] -> 2x LPF -> iqup(fa) x2 [one rail each] -> Add ==
-    out.append(cmix("rx_mc", FC, 1760, 200))     # ssb -> yi=ssb*cos(fc), yq=ssb*sin(fc)
-    out.append(lpf("rx_lpi", 1920, 140))
-    out.append(lpf("rx_lpq", 1920, 300))
-    out.append(iqup("rx_uia", FA, 2180, 140))    # rI  = I' * cos(fa)   (xi in)
-    out.append(iqup("rx_uqa", FA, 2180, 300))    # -rQ = -Q' * sin(fa)  (xq in)
-    out.append(add("rx_aud", 2360, 200))         # recovered audio (pre-gain)
+    # === TX half: cmix(-fa) -> ComplexLowPass -> iqup(fc) [= I*cos(fc) - Q*sin(fc)] ===
+    out.append(cmix("tx_ma", -FA, PH_FA, 900, 200))  # audio -> yi=a*cos(fa), yq=a*sin(fa)
+    out.append(clpf("tx_lp", 1120, 200))         # complex LPF of (I,Q)
+    out.append(iqup("tx_up", FC, 1360, 200))     # SSB = I'*cos(fc) - Q'*sin(fc)
+
+    # === RX half: cmix(-fc) -> ComplexLowPass -> iqup(fa) [= I*cos(fa) - Q*sin(fa)] ===
+    out.append(cmix("rx_mc", -FC, PH_FC, 1760, 200))  # ssb -> yi=ssb*cos(fc), yq=ssb*sin(fc)
+    out.append(clpf("rx_lp", 1980, 200))
+    out.append(iqup("rx_up", FA, 2220, 200))     # recovered audio (pre-gain)
 
     # --- x4 Weaver gain (recovered audio scale) ---
     out.append(blk("g4", "kyttar_gain", {
@@ -285,23 +323,17 @@ def main():
         ("audio", 0, "thr", 0),
         ("thr", 0, "msrc", 0),          # audio -> chip source
         ("thr", 0, "in_sink", 0),       # input-audio scope
-        # --- TX: down-mix cmix(fa) emits BOTH rails (yi=port0 cos, yq=port1 sin) ---
+        # --- TX: cmix(fa) [complex packet] -> ComplexLowPass -> iqup(fc) [SSB] ---
+        # Each edge is a SINGLE complex wire; placeKYT's importer expands a complex
+        # net between two complex blocks into BOTH rails (yi->xi, yq->xq).
         ("msrc", 0, "tx_ma", 0),        # audio -> fused fa-mixer (xi)
-        ("tx_ma", 0, "tx_lpi", 0),      # yi = a*cos(fa) -> LPF I
-        ("tx_ma", 1, "tx_lpq", 0),      # yq = a*sin(fa) -> LPF Q
-        ("tx_lpi", 0, "tx_uic", 0),     # I' -> fc cos-mixer xi  -> uI = I'*cos(fc)
-        ("tx_lpq", 0, "tx_uqc", 1),     # Q' -> fc sin-mixer xq  -> -Q'*sin(fc)
-        ("tx_uic", 0, "tx_ssb", 0),     # uI
-        ("tx_uqc", 0, "tx_ssb", 1),     # -Q'*sin  ;  SSB = uI + (-Q'sin)  (ADD)
-        # --- RX: down-mix cmix(fc) emits BOTH rails ---
-        ("tx_ssb", 0, "rx_mc", 0),      # ssb -> fused fc-mixer
-        ("rx_mc", 0, "rx_lpi", 0),      # yi = ssb*cos(fc) -> LPF I
-        ("rx_mc", 1, "rx_lpq", 0),      # yq = ssb*sin(fc) -> LPF Q
-        ("rx_lpi", 0, "rx_uia", 0),     # I' -> fa cos-mixer xi  -> rI = I'*cos(fa)
-        ("rx_lpq", 0, "rx_uqa", 1),     # Q' -> fa sin-mixer xq  -> -Q'*sin(fa)
-        ("rx_uia", 0, "rx_aud", 0),     # rI
-        ("rx_uqa", 0, "rx_aud", 1),     # -Q'*sin  ;  audio = rI + (-Q'sin)  (ADD)
-        ("rx_aud", 0, "g4", 0),
+        ("tx_ma", 0, "tx_lp", 0),       # (I,Q) packet -> complex LPF
+        ("tx_lp", 0, "tx_up", 0),       # filtered (I',Q') -> iqup: SSB = I'cos - Q'sin
+        # --- RX: cmix(fc) [complex packet] -> ComplexLowPass -> iqup(fa) [audio] ---
+        ("tx_up", 0, "rx_mc", 0),       # ssb -> fused fc-mixer
+        ("rx_mc", 0, "rx_lp", 0),       # (I,Q) packet -> complex LPF
+        ("rx_lp", 0, "rx_up", 0),       # filtered -> iqup: audio = I'cos(fa) - Q'sin(fa)
+        ("rx_up", 0, "g4", 0),
         ("g4", 0, "msink", 0),          # recovered audio -> x16_out
         ("msink", 0, "out_sink", 0),    # recovered-audio scope
     ]

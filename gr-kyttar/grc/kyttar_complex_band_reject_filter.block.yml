@@ -1,0 +1,69 @@
+id: kyttar_complex_band_reject_filter
+label: Complex Band Reject Filter
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar Complex Band Reject (notch) Filter — drop-in for fir_filter_ccf fed
+  firdes.band_reject taps. Complex (I/Q) in, complex out; ONE shared real tap set on
+  both rails. Runs on the Kyttar chip (place between KyttarSource and KyttarSink).
+
+  HARDWARE NOTE: a wide (multi-cell) complex filter needs Sum|h| <= 1; a band_reject
+  at gain=1.0 exceeds it (the DC passband dominates), so the default gain is 0.4
+  (the placeKYT block raises a clear error if a multi-cell filter has Sum|h| > 1).
+  Correlation is gain-invariant.
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.complex_band_reject_filter(device_id=${device_id}, gain=${gain}, samp_rate=${samp_rate},
+    low_cutoff_freq=${low_cutoff_freq}, high_cutoff_freq=${high_cutoff_freq},
+    transition_width=${transition_width}, window=${window}, beta=${beta})
+  callbacks:
+    - set_low_cutoff_freq(${low_cutoff_freq})
+    - set_high_cutoff_freq(${high_cutoff_freq})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+  - id: gain
+    label: Gain
+    dtype: real
+    default: '0.4'
+  - id: samp_rate
+    label: Sample Rate
+    dtype: real
+    default: samp_rate
+  - id: low_cutoff_freq
+    label: Low Cutoff Freq
+    dtype: real
+    default: '4000'
+  - id: high_cutoff_freq
+    label: High Cutoff Freq
+    dtype: real
+    default: '8000'
+  - id: transition_width
+    label: Transition Width
+    dtype: real
+    default: '2000'
+  - id: window
+    label: Window
+    dtype: string
+    default: '"hamming"'
+    options: ['"hamming"', '"hann"', '"blackman"', '"rectangular"', '"blackman_harris"', '"kaiser"']
+    option_labels: [Hamming, Hann, Blackman, Rectangular, Blackman-harris, Kaiser]
+  - id: beta
+    label: Beta
+    dtype: real
+    default: '6.76'
+
+inputs:
+  - label: in
+    dtype: complex
+
+outputs:
+  - label: out
+    dtype: complex
+
+file_format: 1

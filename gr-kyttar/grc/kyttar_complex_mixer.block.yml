@@ -26,7 +26,7 @@ documentation: |-
 templates:
   imports: from gnuradio import kyttar
   make: kyttar.complex_mixer(device_id=${device_id}, sample_rate=${sample_rate},
-    frequency=${frequency})
+    frequency=${frequency}, amplitude=${amplitude}, offset=${offset}, phase=${phase})
   callbacks:
     - set_frequency(${frequency})
 
@@ -43,6 +43,18 @@ parameters:
     label: Frequency
     dtype: real
     default: '2000'
+  - id: amplitude
+    label: Amplitude
+    dtype: real
+    default: '1.0'
+  - id: offset
+    label: Offset
+    dtype: real
+    default: '0.0'
+  - id: phase
+    label: Initial Phase (rad)
+    dtype: real
+    default: '0.0'
 
 inputs:
   - label: in

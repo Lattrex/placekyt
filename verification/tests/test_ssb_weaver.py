@@ -203,7 +203,7 @@ def test_single_chip_build_reports_placement_limit():
     assert "route failed" in res.reason or "build failed" in res.reason
     assert any(k in res.reason for k in
                ("off the array grid", "face_conflict", "no bus path",
-                "no free"))
+                "no free", "no corridor"))
 
 
 # --- report the achieved figures (for the dashboard / the caller) ------------

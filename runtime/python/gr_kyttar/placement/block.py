@@ -167,6 +167,12 @@ class CellProgram:
     state: List[StateVar] = field(default_factory=list)
     data: List[DataWord] = field(default_factory=list)
     assembly_template: str = ""  # Non-empty = new-style block
+    # Cold-start LOCK config (arbiter rendezvous). When set, the build/bitstream
+    # generator boots this cell already LOCKED to this face (LOCK=1, LOCK_FACE=this),
+    # so an event-driven rendezvous (DualFloatToComplex) listens to the right face
+    # from sample 0 with NO external "arm" step. None ⇒ the cell boots unlocked.
+    # Face code: 0=S, 1=E, 2=W, 3=N (cell_map.Face).
+    initial_lock_face: Optional[int] = None
 
     def set_memory(self, addr: int, value: int):
         """Set a memory word."""

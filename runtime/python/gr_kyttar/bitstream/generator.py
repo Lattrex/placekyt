@@ -90,6 +90,9 @@ class CellProgram:
     fwd_face: int = FACE_SOUTH  # Default: forward south
     memory: Dict[int, int] = field(default_factory=dict)  # addr -> value
     entry_addr: Optional[int] = None  # Entry point for JUMP triggers
+    # Cold-start arbiter LOCK face (0=S,1=E,2=W,3=N), or None. When set, the cell is
+    # programmed already LOCKED to this face (LOCK=1, LOCK_FACE=this) via WRITE.CFG.
+    initial_lock_face: Optional[int] = None
 
 
 @dataclass
@@ -166,6 +169,7 @@ class BitstreamGenerator:
                 fwd_face=fwd_face,
                 memory=dict(config.memory),
                 entry_addr=config.entry_addr,
+                initial_lock_face=getattr(config, "initial_lock_face", None),
             )
             self.cell_programs[(col, row)] = prog
 
@@ -490,6 +494,26 @@ class BitstreamGenerator:
                         f"Write memory"
                     )
                     myc.add_data_word(value, col, row, f"MEM[{addr}] = 0x{value:04X}")
+
+                # Cold-start arbiter LOCK (rendezvous): after the cell's program +
+                # data are loaded, WRITE.CFG LOCK_FACE then LOCK=1 so it boots
+                # already listening to its declared input face — no external arm.
+                # CONFIG addrs: LOCK_FACE=3, LOCK=4 (WRITE.CFG dest space).
+                if prog.initial_lock_face is not None:
+                    lf = int(prog.initial_lock_face) & 0x3
+                    # LOCK_FACE = face
+                    wi = encode_write(hop_cnt, 3, config=True)
+                    words.append(wi); words.append(lf & 0x3)
+                    myc.add_write_instruction(wi, col, row, 3, hop_cnt,
+                                              "Cold-start LOCK_FACE")
+                    myc.add_data_word(lf & 0x3, col, row,
+                                      f"CONFIG: LOCK_FACE={lf}")
+                    # LOCK = 1
+                    wi = encode_write(hop_cnt, 4, config=True)
+                    words.append(wi); words.append(1)
+                    myc.add_write_instruction(wi, col, row, 4, hop_cnt,
+                                              "Cold-start LOCK=1")
+                    myc.add_data_word(1, col, row, "CONFIG: LOCK=1")
 
         return Bitstream(
             words=words,

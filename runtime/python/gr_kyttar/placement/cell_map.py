@@ -39,6 +39,11 @@ class CellConfig:
     entry_addr: Optional[int] = None  # Entry point for JUMP execution
     block_name: str = ""  # For debugging/visualization
     cell_index: int = 0  # Position within block (0 = first/entry)
+    # Cold-start arbiter LOCK: when set (0=S,1=E,2=W,3=N), the bitstream generator
+    # programs this cell already LOCKED to this face (LOCK=1, LOCK_FACE=this) so an
+    # event-driven rendezvous (DualFloatToComplex) listens to the right input face
+    # from sample 0 — no external "arm" step. None ⇒ the cell boots unlocked.
+    initial_lock_face: Optional[int] = None
 
     def set_memory(self, addr: int, value: int):
         """Set a memory word."""

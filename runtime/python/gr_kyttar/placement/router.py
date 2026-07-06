@@ -219,6 +219,10 @@ class Router:
                 config.entry_addr = prog.entry_addr
                 if prog.fwd_face is not None:
                     config.fwd_face = Face(prog.fwd_face)
+                # Cold-start arbiter LOCK (DualFloatToComplex rendezvous): the cell
+                # boots already locked to its I face so it pairs I/Q deterministically
+                # with no external arm.
+                config.initial_lock_face = getattr(prog, "initial_lock_face", None)
 
             cell_map.set_cell(col, row, config)
 

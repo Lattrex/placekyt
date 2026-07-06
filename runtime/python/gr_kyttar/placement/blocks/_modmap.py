@@ -16,6 +16,7 @@ BUILTIN_BLOCKS = {
     'ComplexToImagBlock': 'complex_real_imag_block',
     'FIRFilterBlock': 'fir_filter_block',
     'ComplexFIRFilterBlock': 'complex_fir_filter_block',
+    'ComplexLowPassFilter': 'complex_low_pass_filter_block',
     'DCBlockerBlock': 'dc_blocker_block',
     'LowPassFilter': 'low_pass_filter_block',
     'HighPassFilter': 'high_pass_filter_block',

@@ -204,11 +204,16 @@ def _splice_converters(conns, grc_blocks):
             continue
         if gid in _C2F_IDS:
             # complex upstream (port '0') -> each float downstream, transparently.
+            # The converter's OUTPUT port picks the rail: 0 = real (I), 1 = imag (Q).
+            # complex_to_real has only output 0 (the I rail). We pass the converter
+            # output index as the spliced SOURCE port; _resolve_port maps it into the
+            # upstream complex block's named output ports (out_i @ index 0, out_q @ 1),
+            # so the I consumer gets out_i and the Q consumer gets out_q.
             c_prod = ins.get("0", [])
             if c_prod:
-                (csrc, csp) = c_prod[0]
-                for (d, dp, _sp) in _consumers_of(name):
-                    kept.append([csrc, csp, d, dp])
+                (csrc, _csp) = c_prod[0]
+                for (d, dp, conv_out_port) in _consumers_of(name):
+                    kept.append([csrc, conv_out_port, d, dp])
                 spliced_out.add(name)
             continue
 

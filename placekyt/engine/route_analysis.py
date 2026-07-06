@@ -26,6 +26,22 @@ from collections import defaultdict
 from model.connection import BlockEndpoint, ChipPortEndpoint
 
 
+def _route_points(conn):
+    """The waypoint RoutePoints of ``conn``, or ``[]`` for a corridor-free route.
+
+    An ABUTMENT connection is routed but has NO waypoint list (its ``route`` is the
+    sentinel string, not RoutePoints) — the two I/O cells touch and the build
+    synthesises the @1 handoff. Coverage/cell-transit analysis over waypoints is
+    therefore empty for it; its ENDPOINT cells are picked up via block-endpoint
+    resolution instead (see ``connections_terminating_at_cell``). Returning ``[]``
+    here lets every ``for rp in conn.route`` loop iterate safely without touching
+    the sentinel string."""
+    route = conn.route
+    if isinstance(route, list):
+        return route
+    return []
+
+
 def route_chip_of(project, conn) -> int:
     """The chip a connection's coordinates live on (the source's chip, §2.1)."""
     src = conn.source
@@ -52,7 +68,7 @@ def cell_coverage(project, chip_id: int) -> dict[tuple[int, int], set[str]]:
             continue
         if route_chip_of(project, conn) != chip_id:
             continue
-        for rp in conn.route:
+        for rp in _route_points(conn):
             cov[(rp.x, rp.y)].add(conn.name)
     return dict(cov)
 
@@ -66,7 +82,7 @@ def connections_through_cell(project, chip_id: int, x: int, y: int) -> list[str]
             continue
         if route_chip_of(project, conn) != chip_id:
             continue
-        if any(rp.x == x and rp.y == y for rp in conn.route):
+        if any(rp.x == x and rp.y == y for rp in _route_points(conn)):
             names.append(conn.name)
     return names
 
@@ -125,8 +141,9 @@ def connections_terminating_at_cell(
             continue
         matched = False
         # 1. Routed nets: a route endpoint lands on the cell.
-        if conn.is_routed and conn.route:
-            ends = (conn.route[0], conn.route[-1])
+        rpts = _route_points(conn)
+        if rpts:
+            ends = (rpts[0], rpts[-1])
             if any(rp.x == x and rp.y == y for rp in ends):
                 matched = True
         # 2. Either net: a block I/O endpoint resolves to the cell (catches
@@ -165,7 +182,7 @@ def exclusive_route_cells(project, conn) -> list[tuple[int, int]]:
         block_cells.update((t.x, t.y) for t in pl.transit_cells)
     out: list[tuple[int, int]] = []
     seen: set[tuple[int, int]] = set()
-    for rp in conn.route:
+    for rp in _route_points(conn):
         key = (rp.x, rp.y)
         if key in seen or key in block_cells:
             continue
@@ -182,7 +199,7 @@ def is_bus_shared(project, conn) -> bool:
         return False
     chip_id = route_chip_of(project, conn)
     cov = cell_coverage(project, chip_id)
-    for rp in conn.route:
+    for rp in _route_points(conn):
         if cov.get((rp.x, rp.y), set()) - {conn.name}:
             return True
     return False

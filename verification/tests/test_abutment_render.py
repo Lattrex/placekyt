@@ -81,3 +81,47 @@ def test_abutment_nets_render_solid_not_missing():
     # Every connection in the project drew exactly one ConnectionItem.
     assert set(by_name) >= {c.name for c in proj.connections}, (
         "some connections did not render at all")
+
+
+def test_abutment_route_analysis_no_crash_and_highlights():
+    """route_analysis (which drives click-to-highlight) must not choke on the
+    ABUTMENT sentinel string, and selecting an abutment net's I/O cell must return
+    that net so the canvas highlights it — the earlier 'str has no attribute x'
+    crash killed both the highlight and any selection on those cells."""
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    from engine.catalog import BlockCatalog
+    from engine.io.project_io import load_project
+    from engine.route_analysis import (
+        cell_coverage, connections_terminating_at_cell, connections_through_cell,
+        exclusive_route_cells, is_bus_shared)
+
+    cat = BlockCatalog.from_gr_kyttar()
+    proj = load_project(str(KYT))
+
+    def prov(bt, lib, params=None):
+        out = {}
+        try:
+            pm = cat.port_map(bt, params, library=lib)
+            for pp in pm.ports:
+                out[pp.name] = (pp.cell_id, pp.direction)
+        except Exception:  # noqa: BLE001
+            pass
+        return out
+
+    # No crash over the whole fabric or any per-connection analysis fn.
+    for x in range(10):
+        for y in range(12):
+            connections_through_cell(proj, 0, x, y)
+            connections_terminating_at_cell(proj, 0, x, y, prov)
+    cell_coverage(proj, 0)
+    for c in proj.connections:
+        is_bus_shared(proj, c)
+        exclusive_route_cells(proj, c)
+
+    # Selecting either end of an abutment net highlights it. net3 = dual.out (3,0)
+    # -> complexmixer.xi (4,0) — both cells must list net3.
+    ab = next(c for c in proj.connections if c.route == "abutment")
+    assert ab.name == "net3", ab.name   # fixture-stable
+    assert "net3" in connections_terminating_at_cell(proj, 0, 3, 0, prov)
+    assert "net3" in connections_terminating_at_cell(proj, 0, 4, 0, prov)

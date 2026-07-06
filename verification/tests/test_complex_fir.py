@@ -45,6 +45,12 @@ from gr_kyttar.placement.blocks.complex_fir_filter_block import (  # noqa: E402
     ComplexFIRFilterBlock)
 from gr_kyttar.placement.blocks.complex_low_pass_filter_block import (  # noqa: E402
     ComplexLowPassFilter)
+from gr_kyttar.placement.blocks.complex_high_pass_filter_block import (  # noqa: E402
+    ComplexHighPassFilter)
+from gr_kyttar.placement.blocks.complex_band_pass_filter_block import (  # noqa: E402
+    ComplexBandPassFilter)
+from gr_kyttar.placement.blocks.complex_band_reject_filter_block import (  # noqa: E402
+    ComplexBandRejectFilter)
 from gr_kyttar.placement.blocks import _firdes  # noqa: E402
 
 CHIP_YAML = str(_PLACEKYT / "resources" / "chips" / "kyttar_10x12.yaml")
@@ -138,6 +144,42 @@ def test_complex_lowpass_matches_grc():
         dut.i_q15, dut.q_q15, gr.i, gr.q,
         metric=Metric.AMPLITUDE, delay=0, op_count=len(taps))
     print("\ncomplex LPF vs GR:", res.summary())
+    assert res.passed, res.summary()
+
+
+# =============================================================================
+# The band-shape wrappers (High/Band-pass, Band-reject) vs fir_filter_ccf
+# =============================================================================
+# GNU Radio wraps ONE generic FIR core (fir_filter_ccf) with firdes-tap wrappers
+# for each band shape; we mirror that. Gains keep Σ|h|<=1 so the multi-cell FIR
+# fits (a band filter at gain=1.0 can exceed the budget — see the guard test).
+
+_BAND_CASES = [
+    ("ComplexHighPassFilter", ComplexHighPassFilter,
+     dict(gain=0.5, samp_rate=32000.0, cutoff_freq=4000.0,
+          transition_width=3000.0)),
+    ("ComplexBandPassFilter", ComplexBandPassFilter,
+     dict(gain=0.6, samp_rate=32000.0, low_cutoff_freq=3000.0,
+          high_cutoff_freq=8000.0, transition_width=3000.0)),
+    ("ComplexBandRejectFilter", ComplexBandRejectFilter,
+     dict(gain=0.4, samp_rate=32000.0, low_cutoff_freq=3000.0,
+          high_cutoff_freq=8000.0, transition_width=3000.0)),
+]
+
+
+@pytest.mark.parametrize("name,cls,params", _BAND_CASES,
+                         ids=[c[0] for c in _BAND_CASES])
+def test_complex_band_filter_matches_grc(name, cls, params):
+    """Each complex band-shape wrapper's firdes taps run on both I/Q rails match
+    GNU Radio fir_filter_ccf fed the same taps."""
+    taps = list(cls("ref", **params).design_taps)
+    stim = _complex_stim(seed=13, n=48, amp=0.4)
+    dut = _run_dut(name, stim, params)
+    gr = _gr_complex_fir(stim, taps)
+    res = compare_complex_against_grc(
+        dut.i_q15, dut.q_q15, gr.i, gr.q,
+        metric=Metric.AMPLITUDE, delay=0, op_count=len(taps))
+    print(f"\n{name} vs GR:", res.summary())
     assert res.passed, res.summary()
 
 

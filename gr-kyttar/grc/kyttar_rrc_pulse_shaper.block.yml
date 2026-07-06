@@ -4,7 +4,7 @@ category: '[Kyttar]'
 
 templates:
   imports: from gnuradio import kyttar
-  make: kyttar.rrc_pulse_shaper(${device_id}, ${alpha}, ${span})
+  make: kyttar.rrc_pulse_shaper(${device_id}, ${alpha}, ${span}, io_type=${io_type})
 
 parameters:
 - id: device_id

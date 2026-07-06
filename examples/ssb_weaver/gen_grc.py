@@ -239,7 +239,7 @@ def main():
     out.append(blk("tx_src", "kyttar_source", {
         "affinity": "''", "alias": "''", "burst_len": "n_samp",
         "comment": "'audio -> chip x16_in (TX chain, stream tx)'",
-        "complex_in": "float",
+        "complex_in": "complex",
         "device_id": "'\"kyttar_0\"'", "maxoutbuf": "'0'", "minoutbuf": "'0'",
         "num_channels": "'1'", "port_name": "'\"x16_in\"'",
         "server_host": "'\"127.0.0.1\"'", "server_port": "server_port",
@@ -284,7 +284,7 @@ def main():
     out.append(blk("rx_src", "kyttar_source", {
         "affinity": "''", "alias": "''", "burst_len": "n_samp",
         "comment": "'SSB passband -> chip x16_in (RX chain, stream rx)'",
-        "complex_in": "float",
+        "complex_in": "complex",
         "device_id": "'\"kyttar_0\"'", "maxoutbuf": "'0'", "minoutbuf": "'0'",
         "num_channels": "'1'", "port_name": "'\"x16_in\"'",
         "server_host": "'\"127.0.0.1\"'", "server_port": "server_port",

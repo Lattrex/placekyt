@@ -4,7 +4,7 @@ category: '[Kyttar]'
 
 templates:
   imports: from gnuradio import kyttar
-  make: kyttar.upsampler(${device_id}, ${sps})
+  make: kyttar.upsampler(${device_id}, ${sps}, io_type=${io_type})
 
 parameters:
 - id: device_id

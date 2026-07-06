@@ -12,6 +12,8 @@ Copyright 2026 Kyttar Computer Project.
 SPDX-License-Identifier: GPL-3.0-or-later
 """
 
+import numpy as np
+
 from .dsp_markers import _PassThrough
 
 
@@ -38,7 +40,13 @@ class complex_mixer(_PassThrough):
         offset: float = 0.0,
         phase: float = 0.0,
     ):
-        super().__init__(name="Kyttar Complex Mixer", n_in=1, n_out=1)
+        # COMPLEX -> COMPLEX, matching the verified GNU Radio equivalent
+        # multiply_cc(signal, sig_source_c) (see verification/tests/test_complex_mixer.py).
+        # The shim previously omitted the dtypes and defaulted to float, which
+        # disagreed with the block's own .block.yml (complex) and made a real GRC
+        # flowgraph reject the wiring — caught by test_grc_block_port_dtypes.
+        super().__init__(name="Kyttar Complex Mixer", n_in=1, n_out=1,
+                         in_dtype=np.complex64, out_dtype=np.complex64)
         self._device_id = device_id
         self._sample_rate = sample_rate
         self._frequency = frequency

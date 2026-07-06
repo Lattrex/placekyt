@@ -155,11 +155,15 @@ class upsampler(_PassThrough):
     then sps-1 zeros). In the modem TX chain it carries the COMPLEX baseband symbol
     (one gr_complex stream in/out) between the mapper and the RRC pulse shaper."""
 
-    def __init__(self, device_id="kyttar_0", sps=4):
+    def __init__(self, device_id="kyttar_0", sps=4, io_type="float"):
+        # io_type selects the stream dtype and MUST equal the .block.yml ``io_type``
+        # default + ${io_type} port dtype. Default FLOAT (BPSK real symbol stream).
+        dt = np.complex64 if str(io_type) == "complex" else np.float32
         super().__init__("Kyttar Upsampler", n_in=1, n_out=1,
-                         in_dtype=np.complex64, out_dtype=np.complex64)
+                         in_dtype=dt, out_dtype=dt)
         self.device_id = device_id
         self.sps = sps
+        self.io_type = io_type
         self._advertise_grc_params(device_id, "UpsamplerBlock", {"sps": sps})
 
 
@@ -170,12 +174,19 @@ class rrc_pulse_shaper(_PassThrough):
     pulse-shapes the upsampled complex symbol before the I/Q upconvert). The real
     DSP runs on the chip; this only carries the graph."""
 
-    def __init__(self, device_id="kyttar_0", alpha=0.35, span=8):
+    def __init__(self, device_id="kyttar_0", alpha=0.35, span=8,
+                 io_type="float"):
+        # io_type selects the stream dtype and MUST equal the .block.yml ``io_type``
+        # default + its ${io_type} port dtype (the gate resolves ${io_type} to this
+        # default and asserts they match). Default FLOAT: the shipped BPSK TX chain
+        # carries real symbols (the complex RX matched filter is a SEPARATE block).
+        dt = np.complex64 if str(io_type) == "complex" else np.float32
         super().__init__("Kyttar RRC Pulse Shaper", n_in=1, n_out=1,
-                         in_dtype=np.complex64, out_dtype=np.complex64)
+                         in_dtype=dt, out_dtype=dt)
         self.device_id = device_id
         self.alpha = alpha
         self.span = span
+        self.io_type = io_type
         # placeKYT uses `beta` for the roll-off (GRC marker calls it `alpha`).
         self._advertise_grc_params(device_id, "RRCPulseShaperBlock",
                                    {"beta": alpha, "span": span})

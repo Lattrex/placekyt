@@ -40,6 +40,24 @@ _NON_DSP = {
 _SOURCE_IDS = {"kyttar_source"}
 _SINK_IDS = {"kyttar_sink"}
 
+# LOGICAL-ONLY dtype converters (stock GNU Radio blocks). These make a real GRC
+# flowgraph type-check where a float stream meets a complex block; they are NEVER
+# placed as cells — the importer SPLICES them out, wiring the converter's upstream
+# straight to its downstream with the right rail semantics
+# (dev_docs/LOGICAL_CONVERTERS_AND_DUAL_F2C_RENDEZVOUS.md):
+#   * float_to_complex, 1 real (Q = null_source): wire the I upstream -> the
+#     downstream complex block's xi (xq stays 0). No cell. [SSB's case]
+#     (2 independent real producers -> a DualFloatToComplex block, added §later.)
+#   * complex_to_real / complex_to_float: the upstream complex block's output cell
+#     shapes the WRITE/JUMP emission (1 rail -> 1 WRITE-JUMP dropping Q, or 2 rails
+#     -> fan-out). Transparent on the wire.
+#   * null_source / null_sink: zero-driver / dev-null markers; consumed, never placed.
+_F2C_IDS = {"blocks_float_to_complex"}
+_C2F_IDS = {"blocks_complex_to_real", "blocks_complex_to_float"}
+_NULL_SRC_IDS = {"blocks_null_source", "analog_null_source"}
+_NULL_SINK_IDS = {"blocks_null_sink"}
+_CONVERTER_IDS = _F2C_IDS | _C2F_IDS | _NULL_SRC_IDS | _NULL_SINK_IDS
+
 # Explicit GRC-id → placeKYT-type overrides where snake→Pascal+Block doesn't match.
 _TYPE_OVERRIDES = {
     "kyttar_soft_demodulator": "SoftDemodulatorBlock",
@@ -125,6 +143,89 @@ def grc_block_params(path, catalog) -> dict:
     return out
 
 
+def _splice_converters(conns, grc_blocks):
+    """Rewrite the GRC connection list to REMOVE logical-only dtype converters,
+    wiring each converter's real upstream straight to its real downstream.
+
+    Handles (dev_docs/LOGICAL_CONVERTERS_AND_DUAL_F2C_RENDEZVOUS.md):
+      * ``float_to_complex`` whose Q input (port 1) is a ``null_source`` (or is
+        unconnected) — the SINGLE-real case: wire the I upstream (port 0 producer)
+        straight to the converter's downstream (the complex block's xi). No cell.
+      * ``complex_to_real`` / ``complex_to_float`` — the complex upstream wires
+        straight to the float downstream(s); the upstream block's output cell
+        shapes the rail emission (INV-17).
+      * ``null_source`` / ``null_sink`` edges — dropped entirely.
+
+    A ``float_to_complex`` fed by TWO independent real producers (no null_source on
+    Q) is left in place so the block pass maps it to a DualFloatToComplex cell.
+    """
+    def _id(name):
+        return (grc_blocks.get(name, {}) or {}).get("id", "")
+
+    # Index edges by source and by dest for transitive splicing.
+    edges = [(e[0], str(e[1]), e[2], str(e[3])) for e in conns if len(e) >= 4]
+    conv_names = {n for n in grc_blocks if _id(n) in _CONVERTER_IDS}
+    if not conv_names:
+        return conns
+
+    def _producers_into(name):
+        """Edges feeding ``name``, keyed by dest port -> (src, src_port)."""
+        out = {}
+        for s, sp, d, dp in edges:
+            if d == name:
+                out.setdefault(dp, []).append((s, sp))
+        return out
+
+    def _consumers_of(name):
+        return [(d, dp, sp) for s, sp, d, dp in edges if s == name]
+
+    kept = []
+    spliced_out = set()  # converter names fully consumed
+    for name in conv_names:
+        gid = _id(name)
+        if gid in _NULL_SRC_IDS or gid in _NULL_SINK_IDS:
+            spliced_out.add(name)
+            continue
+        ins = _producers_into(name)
+        if gid in _F2C_IDS:
+            # I = port '0' producer; Q = port '1' producer (or a null_source).
+            i_prod = ins.get("0", [])
+            q_prod = ins.get("1", [])
+            q_is_null = (not q_prod) or all(
+                _id(s) in _NULL_SRC_IDS for s, _ in q_prod)
+            if i_prod and q_is_null:
+                # SINGLE-real: wire the I producer -> each downstream (the complex
+                # block's xi input). The complex block treats xq as 0.
+                (isrc, isp) = i_prod[0]
+                for (d, dp, _sp) in _consumers_of(name):
+                    kept.append([isrc, isp, d, dp])
+                spliced_out.add(name)
+            # else: 2 real producers -> leave in place (DualFloatToComplex path).
+            continue
+        if gid in _C2F_IDS:
+            # complex upstream (port '0') -> each float downstream, transparently.
+            c_prod = ins.get("0", [])
+            if c_prod:
+                (csrc, csp) = c_prod[0]
+                for (d, dp, _sp) in _consumers_of(name):
+                    kept.append([csrc, csp, d, dp])
+                spliced_out.add(name)
+            continue
+
+    if not spliced_out and not kept:
+        return conns
+    # Rebuild: drop every edge touching a spliced-out converter, add the rewrites.
+    result = []
+    for e in conns:
+        if len(e) < 4:
+            continue
+        if e[0] in spliced_out or e[2] in spliced_out:
+            continue
+        result.append(list(e))
+    result.extend(kept)
+    return result
+
+
 def import_grc(path, catalog, chip_type: str = "kyttar_10x12",
                *, project_name: str | None = None) -> GrcImportResult:
     """Parse a .grc file and build a placeKYT project of placeKYT blocks + logical
@@ -141,6 +242,10 @@ def import_grc(path, catalog, chip_type: str = "kyttar_10x12",
     data = yaml.safe_load(p.read_text()) or {}
     grc_blocks = {b["name"]: b for b in data.get("blocks", []) if "name" in b}
     conns = data.get("connections", []) or []
+    # Splice out LOGICAL-ONLY dtype converters: rewrite the connection list so a
+    # converter's upstream wires straight to its downstream (the converter is never
+    # placed). See _splice_converters.
+    conns = _splice_converters(conns, grc_blocks)
 
     name = project_name or data.get("options", {}).get(
         "parameters", {}).get("title") or p.stem

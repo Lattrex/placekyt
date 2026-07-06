@@ -235,15 +235,16 @@ def main():
         "type": "float", "vlen": "'1'",
     }, 400, 208))
 
-    # --- chip source: real audio -> x16_in ---
-    out.append(blk("msrc", "kyttar_source", {
+    # --- TX chip source: real audio -> x16_in, stream 'tx' (the TRANSMITTER input) ---
+    out.append(blk("tx_src", "kyttar_source", {
         "affinity": "''", "alias": "''", "burst_len": "n_samp",
-        "comment": "'audio -> chip x16_in (batch)'", "complex_in": "float",
+        "comment": "'audio -> chip x16_in (TX chain, stream tx)'",
+        "complex_in": "float",
         "device_id": "'\"kyttar_0\"'", "maxoutbuf": "'0'", "minoutbuf": "'0'",
         "num_channels": "'1'", "port_name": "'\"x16_in\"'",
         "server_host": "'\"127.0.0.1\"'", "server_port": "server_port",
-        "stream_id": "''",
-    }, 560, 200))
+        "stream_id": "'\"tx\"'",
+    }, 560, 180))
 
     # === FUSED-OSCILLATOR WEAVER (no shared NCO, no carrier fan-out) ===
     # This chip is clockless: a standalone NCO drawn as a source gets no trigger and is
@@ -263,30 +264,53 @@ def main():
     # out; out = I*cos - Q*sin). No split, no add. This is the topology that fits ONE
     # 10x12 die (78/120 cells) — see examples/ssb_weaver/weaver_builder_cfir.py.
 
-    # === TX half: cmix(-fa) -> ComplexLowPass -> iqup(fc) [= I*cos(fc) - Q*sin(fc)] ===
-    out.append(cmix("tx_ma", -FA, PH_FA, 900, 200))  # audio -> yi=a*cos(fa), yq=a*sin(fa)
-    out.append(clpf("tx_lp", 1120, 200))         # complex LPF of (I,Q)
-    out.append(iqup("tx_up", FC, 1360, 200))     # SSB = I'*cos(fc) - Q'*sin(fc)
+    # === TX chain (transmitter): cmix(-fa) -> ComplexLowPass -> iqup(fc) [= SSB] ===
+    out.append(cmix("tx_ma", -FA, PH_FA, 900, 180))  # audio -> yi=a*cos(fa), yq=a*sin(fa)
+    out.append(clpf("tx_lp", 1120, 180))         # complex LPF of (I,Q)
+    out.append(iqup("tx_up", FC, 1360, 180))     # SSB = I'*cos(fc) - Q'*sin(fc)
 
-    # === RX half: cmix(-fc) -> ComplexLowPass -> iqup(fa) [= I*cos(fa) - Q*sin(fa)] ===
-    out.append(cmix("rx_mc", -FC, PH_FC, 1760, 200))  # ssb -> yi=ssb*cos(fc), yq=ssb*sin(fc)
-    out.append(clpf("rx_lp", 1980, 200))
-    out.append(iqup("rx_up", FA, 2220, 200))     # recovered audio (pre-gain)
+    # --- TX chip sink: SSB passband <- x16_out, stream 'tx' (the TRANSMITTER output) ---
+    out.append(blk("tx_sink", "kyttar_sink", {
+        "affinity": "''", "alias": "''",
+        "comment": "'SSB passband <- x16_out (TX chain, stream tx)'",
+        "device_id": "'\"kyttar_0\"'", "num_channels": "'1'",
+        "port_name": "'\"x16_out\"'", "server_host": "'\"127.0.0.1\"'",
+        "server_port": "server_port", "stream_id": "'\"tx\"'",
+    }, 1580, 180))
 
-    # --- x4 Weaver gain (recovered audio scale) ---
+    # === RX chip source: SSB passband -> x16_in, stream 'rx' (the RECEIVER input) ===
+    # Fed by the TX chain's passband output (tx_sink) — an over-the-air loopback
+    # through TWO INDEPENDENT chip chains (exactly the BPSK duplex model).
+    out.append(blk("rx_src", "kyttar_source", {
+        "affinity": "''", "alias": "''", "burst_len": "n_samp",
+        "comment": "'SSB passband -> chip x16_in (RX chain, stream rx)'",
+        "complex_in": "float",
+        "device_id": "'\"kyttar_0\"'", "maxoutbuf": "'0'", "minoutbuf": "'0'",
+        "num_channels": "'1'", "port_name": "'\"x16_in\"'",
+        "server_host": "'\"127.0.0.1\"'", "server_port": "server_port",
+        "stream_id": "'\"rx\"'",
+    }, 1760, 340))
+
+    # === RX chain (receiver): cmix(-fc) -> ComplexLowPass -> iqup(fa) [= audio] ===
+    out.append(cmix("rx_mc", -FC, PH_FC, 1980, 340))  # ssb -> yi=ssb*cos(fc), yq=ssb*sin(fc)
+    out.append(clpf("rx_lp", 2200, 340))
+    out.append(iqup("rx_up", FA, 2440, 340))     # recovered audio (pre-gain)
+
+    # --- x4 Weaver gain (recovered audio scale) — RX chain ---
     out.append(blk("g4", "kyttar_gain", {
         "affinity": "''", "alias": "''", "comment": "'Weaver 1/4 -> x4'",
         "device_id": "'\"kyttar_0\"'", "gain": "'4'",
         "maxoutbuf": "'0'", "minoutbuf": "'0'",
-    }, 2540, 200))
+    }, 2760, 340))
 
-    # --- chip sink: recovered audio <- x16_out ---
-    out.append(blk("msink", "kyttar_sink", {
-        "affinity": "''", "alias": "''", "comment": "'recovered audio <- x16_out'",
+    # --- RX chip sink: recovered audio <- x16_out, stream 'rx' (RECEIVER output) ---
+    out.append(blk("rx_sink", "kyttar_sink", {
+        "affinity": "''", "alias": "''",
+        "comment": "'recovered audio <- x16_out (RX chain, stream rx)'",
         "device_id": "'\"kyttar_0\"'", "num_channels": "'1'",
         "port_name": "'\"x16_out\"'", "server_host": "'\"127.0.0.1\"'",
-        "server_port": "server_port", "stream_id": "''",
-    }, 2720, 200))
+        "server_port": "server_port", "stream_id": "'\"rx\"'",
+    }, 2940, 340))
 
     # --- waveform sinks: input audio (top) vs recovered audio (bottom) ---
     out.append(blk("in_sink", "qtgui_time_sink_x", {
@@ -315,27 +339,49 @@ def main():
         "update_time": "'0.10'", "width1": "'1'", "ylabel": "'Amplitude'",
         "ymax": "'1'", "ymin": "'-1'", "yunit": "''", "grid_color1": "'green'",
         "alpha1": "'1.0'",
-    }, 2720, 40))
+    }, 2940, 200))
+    # TX passband scope (the transmitted SSB signal off the chip's TX chain)
+    out.append(blk("pb_sink", "qtgui_time_sink_x", {
+        "affinity": "''", "alias": "''", "autoscale": "'True'",
+        "axislabels": "'True'", "bw": "samp_rate", "comment": "''",
+        "ctrlpanel": "'False'", "entags": "'True'", "grid": "'True'",
+        "gui_hint": "''", "label1": "'SSB passband'", "legend": "'True'",
+        "marker1": "'-1'", "name": '"TX passband (SSB, chip out)"',
+        "nconnections": "'1'", "size": "n_samp", "srate": "samp_rate",
+        "stemplot": "'False'", "style1": "'1'", "tr_chan": "'0'",
+        "tr_delay": "'0'", "tr_level": "'0'", "tr_mode": "qtgui.TRIG_MODE_FREE",
+        "tr_slope": "qtgui.TRIG_SLOPE_POS", "tr_tag": "''", "type": "float",
+        "update_time": "'0.10'", "width1": "'1'", "ylabel": "'Amplitude'",
+        "ymax": "'1'", "ymin": "'-1'", "yunit": "''", "grid_color1": "'red'",
+        "alpha1": "'1.0'",
+    }, 1580, 40))
 
-    # --- connections ---
+    # --- connections: TWO INDEPENDENT chip chains, shared x16_in/x16_out by tag ---
+    # This is the BPSK-duplex model: a TX chain (audio -> SSB passband) and a SEPARATE
+    # RX chain (SSB passband -> recovered audio) each live on the SAME array, sharing
+    # x16_in / x16_out demultiplexed by stream_id ("tx"/"rx"). The chip DSP blocks sit
+    # BETWEEN each chain's kyttar_source and kyttar_sink; the source/sink ARE the port
+    # taps. The TX passband output (tx_sink) feeds the RX input (rx_src) — an
+    # over-the-air loopback through two independent chains, NOT a single on-chip wire.
     conns = [
         ("tone", 0, "audio", 0), ("tone2", 0, "audio", 1),
         ("audio", 0, "thr", 0),
-        ("thr", 0, "msrc", 0),          # audio -> chip source
         ("thr", 0, "in_sink", 0),       # input-audio scope
-        # --- TX: cmix(fa) [complex packet] -> ComplexLowPass -> iqup(fc) [SSB] ---
-        # Each edge is a SINGLE complex wire; placeKYT's importer expands a complex
-        # net between two complex blocks into BOTH rails (yi->xi, yq->xq).
-        ("msrc", 0, "tx_ma", 0),        # audio -> fused fa-mixer (xi)
+        # ============================ TX chain (stream 'tx') ============================
+        ("thr", 0, "tx_src", 0),        # audio -> chip x16_in (tag tx)
+        ("tx_src", 0, "tx_ma", 0),      # audio -> fused fa-mixer (xi)
         ("tx_ma", 0, "tx_lp", 0),       # (I,Q) packet -> complex LPF
         ("tx_lp", 0, "tx_up", 0),       # filtered (I',Q') -> iqup: SSB = I'cos - Q'sin
-        # --- RX: cmix(fc) [complex packet] -> ComplexLowPass -> iqup(fa) [audio] ---
-        ("tx_up", 0, "rx_mc", 0),       # ssb -> fused fc-mixer
+        ("tx_up", 0, "tx_sink", 0),     # SSB passband -> chip x16_out (tag tx)
+        ("tx_sink", 0, "pb_sink", 0),   # transmitted-passband scope
+        # ============================ RX chain (stream 'rx') ============================
+        ("tx_sink", 0, "rx_src", 0),    # TX passband -> RX chip x16_in (tag rx) [OTA loopback]
+        ("rx_src", 0, "rx_mc", 0),      # ssb -> fused fc-mixer
         ("rx_mc", 0, "rx_lp", 0),       # (I,Q) packet -> complex LPF
         ("rx_lp", 0, "rx_up", 0),       # filtered -> iqup: audio = I'cos(fa) - Q'sin(fa)
         ("rx_up", 0, "g4", 0),
-        ("g4", 0, "msink", 0),          # recovered audio -> x16_out
-        ("msink", 0, "out_sink", 0),    # recovered-audio scope
+        ("g4", 0, "rx_sink", 0),        # recovered audio -> chip x16_out (tag rx)
+        ("rx_sink", 0, "out_sink", 0),  # recovered-audio scope
     ]
     out.append("connections:")
     for s, sp, d, dp in conns:

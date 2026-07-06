@@ -328,6 +328,10 @@ def _connection_from_node(node: Any, *, source: str) -> Connection:
     )
     code_rate = node.get("code_rate")
     out_tag = node.get("out_tag")
+    # ``stream_id`` (e.g. "tx"/"rx") tags a shared-port duplex net so the live bridge
+    # injects/demuxes each chain by tag (engine.port_config.stream_targets). Optional —
+    # absent means a single-stream net, so pre-duplex .kyt files load unchanged.
+    stream_id = node.get("stream_id")
     # ``kind`` is optional — absent means the default ``data+trigger`` (WRITE+JUMP),
     # so pre-Phase-2 .kyt files load unchanged.
     kind = node.get("kind")
@@ -340,6 +344,7 @@ def _connection_from_node(node: Any, *, source: str) -> Connection:
         code_rate=(float(code_rate) if code_rate is not None else None),
         iq_format=iq_format,
         out_tag=(int(out_tag) if out_tag is not None else None),
+        stream_id=(str(stream_id) if stream_id is not None else None),
         kind=(str(kind) if kind is not None else NET_DATA_TRIGGER),
     )
 
@@ -699,6 +704,8 @@ def _connection_to_node(c: Connection, existing: Any = None) -> CommentedMap:
     _set_optional(node, "code_rate", c.code_rate)
     _set_optional(node, "iq_format", c.iq_format.value if c.iq_format else None)
     _set_optional(node, "out_tag", c.out_tag)
+    # A shared-port duplex net's stream tag ("tx"/"rx"); absent for single-stream nets.
+    _set_optional(node, "stream_id", c.stream_id)
     # Only emit ``kind`` when non-default, so existing .kyt files stay byte-clean.
     _set_optional(node, "kind",
                   c.kind if c.kind != NET_DATA_TRIGGER else None)

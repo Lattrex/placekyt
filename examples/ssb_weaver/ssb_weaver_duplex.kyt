@@ -1,0 +1,265 @@
+project:
+  format_version: 1
+  name: SSB Weaver transceiver (on-chip, real blocks) — audio in vs recovered
+  version: '1.0'
+chip_type: kyttar_10x12
+chips:
+- id: 0
+  label: Chip 0
+  position: {x: 0.0, y: 0.0}
+blocks:
+- name: complexmixer
+  type: ComplexMixerBlock
+  library: lattrex.official
+  params:
+    sample_rate: 32000.0
+    frequency: -1500.0
+    amplitude: 1.0
+    offset: 0.0
+    phase: -9.130253649495335
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: phase, x: 0, y: 2, face: south}
+    - {cell_id: sin_fold, x: 0, y: 3, face: south}
+    - {cell_id: sin_even, x: 0, y: 4, face: south}
+    - {cell_id: sin_odd, x: 0, y: 5, face: south}
+    - {cell_id: sin_interp, x: 0, y: 6, face: south}
+    - {cell_id: relay, x: 0, y: 7, face: east}
+    - {cell_id: cos_fold, x: 1, y: 7, face: north}
+    - {cell_id: cos_even, x: 1, y: 6, face: north}
+    - {cell_id: cos_odd, x: 1, y: 5, face: north}
+    - {cell_id: cos_interp, x: 1, y: 4, face: north}
+    - {cell_id: mixer, x: 1, y: 3, face: east}
+- name: complexlowpassfilter
+  type: ComplexLowPassFilter
+  library: lattrex.official
+  params:
+    gain: 0.9
+    samp_rate: 32000.0
+    cutoff_freq: 1200.0
+    transition_width: 2500.0
+    window: hamming
+    beta: 6.76
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 2, y: 4, face: east}
+    - {cell_id: 1, x: 3, y: 4, face: east}
+    - {cell_id: 2, x: 4, y: 4, face: east}
+    - {cell_id: 3, x: 5, y: 4, face: south}
+    - {cell_id: 4, x: 5, y: 5, face: west}
+    - {cell_id: 5, x: 4, y: 5, face: west}
+    - {cell_id: 6, x: 3, y: 5, face: west}
+    - {cell_id: 7, x: 2, y: 5, face: south}
+    - {cell_id: 8, x: 2, y: 6, face: east}
+    - {cell_id: 9, x: 3, y: 6, face: east}
+    - {cell_id: 10, x: 4, y: 6, face: east}
+    - {cell_id: 11, x: 5, y: 6, face: south}
+    - {cell_id: 12, x: 5, y: 7, face: west}
+    - {cell_id: 13, x: 4, y: 7, face: west}
+    - {cell_id: 14, x: 3, y: 7, face: west}
+    - {cell_id: 15, x: 2, y: 7, face: west}
+    orientation:
+    - ccw
+    - mirror_v
+- name: iqupconvert
+  type: IQUpconvertBlock
+  library: lattrex.official
+  params:
+    sample_rate: 32000.0
+    frequency: 6000.0
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: phase, x: 1, y: 9, face: east}
+    - {cell_id: sin_fold, x: 2, y: 9, face: east}
+    - {cell_id: cos_fold, x: 3, y: 9, face: east}
+    - {cell_id: table_sin, x: 4, y: 9, face: south}
+    - {cell_id: table_cos, x: 4, y: 10, face: west}
+    - {cell_id: upmix, x: 3, y: 10, face: west}
+    transit_cells:
+    - {x: 2, y: 10, face: west}
+    - {x: 1, y: 10, face: north}
+- name: complexmixer_2
+  type: ComplexMixerBlock
+  library: lattrex.official
+  params:
+    sample_rate: 32000.0
+    frequency: -6000.0
+    amplitude: 1.0
+    offset: 0.0
+    phase: -20.02765316663493
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: phase, x: 4, y: 11, face: east}
+    - {cell_id: sin_fold, x: 5, y: 11, face: east}
+    - {cell_id: sin_even, x: 6, y: 11, face: east}
+    - {cell_id: sin_odd, x: 7, y: 11, face: east}
+    - {cell_id: sin_interp, x: 8, y: 11, face: east}
+    - {cell_id: relay, x: 9, y: 11, face: north}
+    - {cell_id: cos_fold, x: 9, y: 10, face: west}
+    - {cell_id: cos_even, x: 8, y: 10, face: west}
+    - {cell_id: cos_odd, x: 7, y: 10, face: west}
+    - {cell_id: cos_interp, x: 6, y: 10, face: west}
+    - {cell_id: mixer, x: 5, y: 10, face: north}
+    orientation:
+    - ccw
+- name: complexlowpassfilter_2
+  type: ComplexLowPassFilter
+  library: lattrex.official
+  params:
+    gain: 0.9
+    samp_rate: 32000.0
+    cutoff_freq: 1200.0
+    transition_width: 2500.0
+    window: hamming
+    beta: 6.76
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 6, y: 9, face: east}
+    - {cell_id: 1, x: 7, y: 9, face: east}
+    - {cell_id: 2, x: 8, y: 9, face: east}
+    - {cell_id: 3, x: 9, y: 9, face: north}
+    - {cell_id: 4, x: 9, y: 8, face: west}
+    - {cell_id: 5, x: 8, y: 8, face: west}
+    - {cell_id: 6, x: 7, y: 8, face: west}
+    - {cell_id: 7, x: 6, y: 8, face: north}
+    - {cell_id: 8, x: 6, y: 7, face: east}
+    - {cell_id: 9, x: 7, y: 7, face: east}
+    - {cell_id: 10, x: 8, y: 7, face: east}
+    - {cell_id: 11, x: 9, y: 7, face: north}
+    - {cell_id: 12, x: 9, y: 6, face: west}
+    - {cell_id: 13, x: 8, y: 6, face: west}
+    - {cell_id: 14, x: 7, y: 6, face: west}
+    - {cell_id: 15, x: 6, y: 6, face: west}
+    orientation:
+    - ccw
+- name: iqupconvert_2
+  type: IQUpconvertBlock
+  library: lattrex.official
+  params:
+    sample_rate: 32000.0
+    frequency: 1500.0
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: phase, x: 6, y: 5, face: east}
+    - {cell_id: sin_fold, x: 7, y: 5, face: east}
+    - {cell_id: cos_fold, x: 8, y: 5, face: east}
+    - {cell_id: table_sin, x: 9, y: 5, face: north}
+    - {cell_id: table_cos, x: 9, y: 4, face: west}
+    - {cell_id: upmix, x: 8, y: 4, face: west}
+    transit_cells:
+    - {x: 7, y: 4, face: west}
+    - {x: 6, y: 4, face: south}
+    orientation:
+    - ccw
+    - mirror_h
+    - ccw
+    - cw
+    - cw
+- name: gain
+  type: GainBlock
+  library: lattrex.official
+  params:
+    gain: 4.0
+    gain_range: 15
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 9, y: 1, face: north}
+    orientation:
+    - mirror_h
+    - cw
+connections:
+- name: net1
+  from: {chip_port: {chip: 0, port: x16_in}}
+  to: {block: complexmixer, port: xi}
+  route:
+  - {x: 0, y: 0}
+  - {x: 0, y: 1}
+  - {x: 0, y: 2}
+  stream_id: tx
+- name: net2
+  from: {block: complexmixer, port: yi}
+  to: {block: complexlowpassfilter, port: xi}
+  route:
+  - {x: 1, y: 3}
+  - {x: 2, y: 3}
+  - {x: 2, y: 4}
+- name: net3
+  from: {block: complexlowpassfilter, port: out_i}
+  to: {block: iqupconvert, port: xi}
+  route:
+  - {x: 2, y: 7}
+  - {x: 2, y: 8}
+  - {x: 1, y: 8}
+  - {x: 1, y: 9}
+- name: net5
+  from: {block: complexmixer_2, port: yi}
+  to: {block: complexlowpassfilter_2, port: xi}
+  route:
+  - {x: 5, y: 10}
+  - {x: 5, y: 9}
+  - {x: 6, y: 9}
+- name: net6
+  from: {block: complexlowpassfilter_2, port: out_i}
+  to: {block: iqupconvert_2, port: xi}
+  route:
+  - {x: 6, y: 6}
+  - {x: 6, y: 5}
+- name: net7
+  from: {block: iqupconvert_2, port: out}
+  to: {block: gain, port: sample}
+  route:
+  - {x: 8, y: 4}
+  - {x: 8, y: 3}
+  - {x: 8, y: 2}
+  - {x: 9, y: 2}
+  - {x: 9, y: 1}
+- name: net8
+  from: {block: gain, port: out}
+  to: {chip_port: {chip: 0, port: x16_out}}
+  route:
+  - {x: 9, y: 1}
+  - {x: 9, y: 0}
+  stream_id: rx
+- name: net9
+  from: {block: complexmixer, port: yq}
+  to: {block: complexlowpassfilter, port: xq}
+  route:
+  - {x: 1, y: 3}
+  - {x: 2, y: 3}
+  - {x: 2, y: 4}
+- name: net10
+  from: {block: complexlowpassfilter, port: out_q}
+  to: {block: iqupconvert, port: xq}
+  route:
+  - {x: 2, y: 7}
+  - {x: 2, y: 8}
+  - {x: 1, y: 8}
+  - {x: 1, y: 9}
+- name: net11
+  from: {block: complexmixer_2, port: yq}
+  to: {block: complexlowpassfilter_2, port: xq}
+  route:
+  - {x: 5, y: 10}
+  - {x: 5, y: 9}
+  - {x: 6, y: 9}
+- name: net12
+  from: {block: complexlowpassfilter_2, port: out_q}
+  to: {block: iqupconvert_2, port: xq}
+  route:
+  - {x: 6, y: 6}
+  - {x: 6, y: 5}
+- name: tx_out
+  from: {block: iqupconvert, port: out}
+  to: {chip_port: {chip: 0, port: x16_out}}
+  stream_id: tx
+- name: rx_in
+  from: {chip_port: {chip: 0, port: x16_in}}
+  to: {block: complexmixer_2, port: xi}
+  stream_id: rx

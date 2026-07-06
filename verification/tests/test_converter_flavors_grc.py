@@ -81,8 +81,12 @@ def test_file_exists():
 
 @pytest.mark.skipif(shutil.which("grcc") is None, reason="grcc not available")
 def test_grcc_clean():
-    """grcc compiles the flowgraph with ZERO errors (emits a .py). This is the
-    user-visible 'no red errors in GRC' bar — proven against the real toolchain."""
+    """grcc compiles the flowgraph with ZERO errors AND the generated Python is
+    syntactically valid. This is the user-visible 'no red errors in GRC' bar — proven
+    against the real toolchain. The syntax check guards the codegen edge case where a
+    multi-line ``description`` leaked unquoted into the module body (IndentationError
+    on Execute); the emitted .py must parse."""
+    import ast
     out = tempfile.mkdtemp(prefix="cf_grcc_")
     try:
         r = subprocess.run(["grcc", str(GRC), "-o", out],
@@ -91,6 +95,13 @@ def test_grcc_clean():
         assert produced, (
             "grcc produced no .py — compilation failed:\n"
             + (r.stdout or "") + (r.stderr or ""))
+        for py in produced:
+            src = py.read_text()
+            try:
+                ast.parse(src)
+            except SyntaxError as e:  # e.g. a multi-line description breaking codegen
+                raise AssertionError(
+                    f"grcc emitted invalid Python ({py.name}): {e}") from e
     finally:
         shutil.rmtree(out, ignore_errors=True)
 

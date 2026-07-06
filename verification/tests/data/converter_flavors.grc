@@ -7,19 +7,21 @@ options:
     comment: ''
     copyright: ''
     description: "Standalone all-flavors float<->complex converter test flowgraph.\
-      \ ONE linear chain that threads EVERY float/complex dtype interaction the\
-      \ placeKYT importer must handle, so the coverage is visible in ONE importable\
-      \ .grc that runs both headless and in the placeKYT GUI:\n  1. TWO real streams\
-      \ (srcI, srcQ) -> blocks_float_to_complex (2-real) -> a physical\
-      \ DualFloatToComplex LOCK-rendezvous block -> a complex mixer.\n  2. complex\
-      \ mixer -> blocks_complex_to_float (BOTH rails): out_i and out_q each drive a\
-      \ real gain.\n  3. the out_i real rail -> blocks_float_to_complex (SINGLE real,\
-      \ Q = null_source) -> a second complex mixer (xq treated as 0).\n  4. the\
-      \ second complex mixer -> blocks_complex_to_real (drop Q) -> a real gain ->\
-      \ sink.\nEvery float<->complex boundary is resolved by a stock GR converter so\
-      \ the graph is grcc-clean; the placeKYT importer CONSUMES the logical\
-      \ converters (single-real f2c, complex_to_real, complex_to_float) as zero\
-      \ cells and inserts ONE physical DualFloatToComplex cell for the 2-real f2c."
+      \ ONE linear chain threading EVERY float/complex dtype interaction the placeKYT\
+      \ importer handles, so the coverage is visible in one importable .grc that runs\
+      \ headless and in the placeKYT GUI. Flavors, in order along the chain: (1) two\
+      \ real streams (srcI, srcQ) -> blocks_float_to_complex (2-real) -> a physical\
+      \ DualFloatToComplex LOCK-rendezvous block -> a complex mixer; (2) complex mixer\
+      \ -> blocks_complex_to_float (both rails) -> out_i and out_q each drive a real\
+      \ gain; (3) the out_i real rail -> blocks_float_to_complex (single real, Q =\
+      \ null_source) -> a second complex mixer (xq treated as 0); (4) the second\
+      \ complex mixer -> blocks_complex_to_real (drop Q) -> a real gain -> sink. Every\
+      \ float<->complex boundary is resolved by a stock GR converter so the graph is\
+      \ grcc-clean; the placeKYT importer CONSUMES the logical converters (single-real\
+      \ f2c, complex_to_real, complex_to_float) as zero cells and inserts one physical\
+      \ DualFloatToComplex cell for the 2-real f2c. NOTE: this graph exercises the\
+      \ placeKYT import path; the kyttar source/sink talk to a placeKYT server, so it\
+      \ is not meant to run as a standalone GNU Radio flowgraph."
     gen_cmake: 'On'
     gen_linking: dynamic
     generate_options: qt_gui

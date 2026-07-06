@@ -281,6 +281,22 @@ downstream reads which rail is a build/routing decision, not a placed cell. The
 shipped `ComplexMixerBlock` is the reference: single-`{jump:trig}` template, and the
 build handles both delivery shapes.
 
+### Filtering a complex stream — use ComplexFIRFilterBlock, not two real FIRs
+
+If you need to **filter** a complex I/Q stream, subclass `ComplexFIRFilterBlock`
+(or reuse a shipped firdes wrapper: `ComplexLowPassFilter`, `ComplexHighPassFilter`,
+`ComplexBandPassFilter`, `ComplexBandRejectFilter`) rather than splitting the pair
+into two real `LowPassFilter`s. It applies ONE shared real tap set to both rails
+inside one block (GNU Radio's `fir_filter_ccf`), so the whole chain stays
+same-source complex packets — no fan-out, no reconvergent fan-in. That is what let
+the SSB Weaver (`examples/ssb_weaver/weaver_builder_cfir.py`) fit ONE 10×12 die.
+
+> **A multi-cell complex FIR requires `Σ|h| ≤ 1`** (the last cell runs a saturating
+> restore per rail; two of them overflow 32 words). The block raises a clear error
+> rather than silently rescaling — pass `gain ≤ ~0.9` for a multi-cell filter.
+> Build compact fixed chains with `auto_pnr(use_bus="never")` (abutment-first) so a
+> long filter snake's output stays reachable by the downstream broker.
+
 ---
 
 ## 4. Test your block

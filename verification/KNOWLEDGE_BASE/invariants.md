@@ -567,3 +567,29 @@ block.) See [[project_fanout_two_targets_build_bug]].
 **Applies to:** ComplexMixer, NCO, IQUpconvert, and EVERY block whose output cell
 emits an I/Q rail pair — i.e. any block a future agent writes with a complex output.
 
+
+## INV-18 — A complex FILTER stage is ONE block (fir_filter_ccf), not a split + 2 FIRs
+
+**Rule:** to filter a complex I/Q stream on the fabric, use `ComplexFIRFilterBlock`
+(or a firdes wrapper: `ComplexLowPassFilter` / `ComplexHighPassFilter` /
+`ComplexBandPassFilter` / `ComplexBandRejectFilter`) — complex in, complex out, ONE
+shared real tap set = GNU Radio `fir_filter_ccf`. Do NOT wire a complex source into
+two real `LowPassFilter`s (one per rail) and recombine; that is the split-fan-out /
+reconvergent-fan-in shape [[INV-17]] guards, and it wastes cells + can leave a filter
+starved. The complex FIR keeps the whole chain as same-source complex PACKETS
+(mixer→filter→upconvert), which is what let the SSB Weaver fit ONE 10x12 die.
+
+**Datapath (for whoever extends it):** each cell carries TWO delay segments (`di{i}`
+I-history + `dq{i}` Q-history) SHARING the coeff words `c{i}`, runs the MULQ/MACQ chain
+twice, forwards BOTH partial sums + BOTH shifted-out samples to the next cell; last
+cell emits the pair with ONE trigger. Coeffs start at R2 (`xi`=R0, `xq`=R1 are the
+fixed landing regs). One shared `osave` temp forwards each rail's oldest sample.
+
+**HARD CONSTRAINT:** a MULTI-cell complex FIR needs `Σ|h| ≤ 1` (`head_shift==0`) — the
+last cell runs a saturating-restore emit PER RAIL and two of them overflow 32 words.
+The block RAISES a clear ValueError instead of silently rescaling (matches GR magnitude
+— RULE #0). A low-pass at `gain≤1` is Σ|h|≤1 by construction; band filters at gain=1.0
+often exceed it, so pass a smaller gain (0.4–0.9) — correlation is gain-invariant.
+Gated by placekyt/tests/test_complex_fir_budget.py + verification/tests/test_complex_fir.py
+(GNU-Radio parity, 12 tests). See [[project_complex_fir_family]].
+

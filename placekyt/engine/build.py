@@ -295,6 +295,17 @@ class BuildEngine:
                                     conns_here, gr_blocks, self.catalog,
                                     feedback_blocks=feedback_blocks)
 
+        # RE-ASSERT the block's AUTHORED internal-forward face on any cell that is a
+        # SOURCE of an internal_connections handoff (a mid-block cell forwarding to
+        # the next cell of its OWN block — e.g. a multi-cell FIR's cell m → cell m+1).
+        # An INCOMING inter-block route/abutment whose TARGET is that same cell (a
+        # block whose landing cell is also an internal forwarder — the complex FIR's
+        # cell0 receives the mixer's packet AND forwards to cell1) can overwrite the
+        # cell's fwd_face with the route direction, killing the internal wavefront.
+        # The block's authored PlacedCell.face (already orientation-rotated) is the
+        # correct internal direction, so restore it LAST for those cells only.
+        _reassert_internal_forward_faces(cell_map, blocks_here, gr_blocks)
+
         # Inter-chip hop resolution: a block on THIS chip routing to a chip
         # output port that is wired to ANOTHER chip's input port should hand off
         # all the way into the downstream block on that chip. The hop count is
@@ -578,6 +589,54 @@ def _patch_cell_handoff(cfg, hop, dest=None, entry=None) -> None:
         cfg.memory[addr] = word & 0xFFFF
 
 
+def _target_port_index(catalog, target_block, port_name) -> int:
+    """Index of ``port_name`` among the target block's INPUT ports (0 for the first
+    input, 1 for the second, …). Falls back to 0. Used to steer each rail of an
+    abutted complex packet (yi→input 0, yq→input 1) to the right target register."""
+    try:
+        pm = catalog.port_map(target_block.type, target_block.params,
+                              library=target_block.library)
+        ins = [p.name for p in pm.ports if p.direction == "in"]
+        if port_name in ins:
+            return ins.index(port_name)
+    except Exception:  # noqa: BLE001 — no port map → first register
+        pass
+    return 0
+
+
+def _cell_write_count(cfg) -> int:
+    """Number of WRITE instructions in a cell's program (data words excluded)."""
+    n = 0
+    for addr, word in cfg.memory.items():
+        if _is_instruction_addr(cfg, addr) and (word & 0xF000) == _WRITE:
+            n += 1
+    return n
+
+
+def _patch_complex_abutment_handoff(cfg, hop, rail_idx, dest, entry=None) -> None:
+    """Patch an abutted COMPLEX-PACKET source cell: set the @hop on every WRITE and
+    the JUMP (so the whole packet + trigger reach the abutting target), but set the
+    DEST register ONLY on the ``rail_idx``-th WRITE — so the I rail lands in the
+    target's xi and the Q rail in its xq (two nets from one source cell, each
+    handled once, never clobbering R0). The JUMP entry is set on the single JUMP."""
+    hop_cnt = encode_hop_cnt(hop)
+    write_i = 0
+    for addr, word in list(cfg.memory.items()):
+        if not _is_instruction_addr(cfg, addr):
+            continue
+        opcode = word & 0xF000
+        if opcode not in (_WRITE, _JUMP):
+            continue
+        word = (word & ~(0x1F << 5)) | (hop_cnt << 5)   # @hop on all WRITE/JUMP
+        if opcode == _WRITE:
+            if write_i == rail_idx and dest is not None:
+                word = (word & ~0x1F) | (int(dest) & 0x1F)
+            write_i += 1
+        elif opcode == _JUMP and entry is not None:
+            word = (word & ~0x1F) | (int(entry) & 0x1F)
+        cfg.memory[addr] = word & 0xFFFF
+
+
 def _output_cell_carries_handoffs(gr_block) -> bool:
     """True if the block's OUTPUT exit cell ALSO emits internal handoff WRITEs (so
     the output WRITE must be patched ALONE, not every WRITE in the cell).
@@ -779,13 +838,24 @@ def _apply_routes(cell_map, gr_placement, blocks, connections, chip_type,
             # connection's output TAG (default 0), so chains that share one output
             # port stay distinguishable on the wire (the captured OutWord.tag).
             dest = entry = 0
+            # rail_idx / n_target_ins: when the target is a COMPLEX block (xi/xq =
+            # two input regs) fed by an abutted complex PACKET (yi+yq from one source
+            # cell over two nets), each rail must land in ITS OWN register — yi→xi(reg0),
+            # yq→xq(reg1). Resolve the target register from THIS connection's target
+            # PORT (not always t_ins[0]) and patch only the matching source WRITE.
+            rail_idx = 0
+            n_target_ins = 1
             if isinstance(tgt, BlockEndpoint):
                 tb = next((b for b in blocks if b.name == tgt.block), None)
                 if tb is not None:
                     t_entry, t_ins = catalog.resolved_io(
                         tb.type, tb.params, library=tb.library)
                     entry = t_entry
-                    dest = t_ins[0] if t_ins else 0
+                    n_target_ins = len(t_ins) if t_ins else 1
+                    rail_idx = _target_port_index(catalog, tb, tgt.port)
+                    dest = (t_ins[rail_idx]
+                            if t_ins and rail_idx < len(t_ins)
+                            else (t_ins[0] if t_ins else 0))
             elif conn.out_tag is not None:   # chip-output-port target with a tag
                 dest = conn.out_tag
             # If the source block declares a MID-block output cell (its output
@@ -802,6 +872,14 @@ def _apply_routes(cell_map, gr_placement, blocks, connections, chip_type,
             if _output_cell_carries_handoffs(gb):
                 _patch_last_write_handoff(cfg, phys_dist, dest=dest)
                 _patch_last_jump_handoff(cfg, phys_dist, entry=entry)
+            elif n_target_ins > 1 and _cell_write_count(cfg) > 1:
+                # COMPLEX PACKET over abutment: the source cell emits ≥2 output
+                # WRITEs (yi, yq) to a ≥2-register target. Steer THIS rail's WRITE
+                # (the rail_idx-th WRITE) to its own target register; set the hop on
+                # all WRITEs/JUMP (abutted → @phys_dist) but the DEST only on the
+                # matching WRITE, so the two rails don't clobber each other in R0.
+                _patch_complex_abutment_handoff(cfg, phys_dist, rail_idx, dest,
+                                                entry=entry)
             else:
                 _patch_cell_handoff(cfg, phys_dist, dest=dest,
                                     entry=entry)
@@ -1732,6 +1810,50 @@ def _apply_block_cell_faces(cell_map, blocks: list) -> None:
         if blk.placement is None:
             continue
         for pc in blk.placement.cells:
+            face = getattr(pc, "face", None)
+            if face is None:
+                continue
+            cfg = cell_map.get_cell(pc.x, pc.y)
+            if cfg is None:
+                continue
+            code = _PORT_FACE_CODE.get(getattr(face, "value", face))
+            if code is None and hasattr(face, "name"):
+                code = {"SOUTH": 0, "EAST": 1, "WEST": 2,
+                        "NORTH": 3}.get(face.name)
+            if code is not None:
+                cfg.fwd_face = _CM_FACE(code)
+
+
+def _reassert_internal_forward_faces(cell_map, blocks: list, gr_blocks: dict) -> None:
+    """Restore the AUTHORED per-cell face on cells that FORWARD internally to the
+    next cell of their own block, so an incoming inter-block route can't hijack the
+    internal wavefront direction (the multi-cell complex-FIR landing cell both
+    receives a packet AND forwards to its cell m+1). Only cells that are the SOURCE
+    of an ``internal_connections`` handoff are touched — pure output/egress cells,
+    whose fwd_face legitimately follows the route, are left alone."""
+    from model.connection import BlockEndpoint  # noqa: F401 — parity with siblings
+
+    for blk in blocks:
+        if blk.placement is None or not blk.placement.cells:
+            continue
+        gb = gr_blocks.get(blk.name)
+        if gb is None:
+            continue
+        try:
+            internal = list(gb.internal_connections() or [])
+        except Exception:  # noqa: BLE001 — no internal handoffs → nothing to guard
+            continue
+        if not internal:
+            continue
+        # Cell ids that SOURCE an internal handoff (index into placement.cells,
+        # which the layout/build keep in cell-id order).
+        fwd_src_ids = {int(s) for (s, _sp, _d, _dp) in internal
+                       if isinstance(s, int)}
+        cells = blk.placement.cells
+        for cid in fwd_src_ids:
+            if cid < 0 or cid >= len(cells):
+                continue
+            pc = cells[cid]
             face = getattr(pc, "face", None)
             if face is None:
                 continue

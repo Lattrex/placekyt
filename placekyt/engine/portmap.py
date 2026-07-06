@@ -215,6 +215,42 @@ def _derive_bus_edge(
 
 # -- builder -------------------------------------------------------------------
 
+def _structure_probe(catalog, type_name, params, library):
+    """A clone of the block whose coefficients are scaled down until
+    ``build_cell_programs()`` succeeds — used ONLY to recover PORT NAMES when the
+    real block raises a magnitude-dependent budget guard (a multi-cell complex FIR
+    with Sum|h|>1). Ports are magnitude-invariant, so the scaled clone's structure
+    equals the real block's. Returns None if the block isn't coefficient-scalable.
+
+    Works on the ComplexFIR family (a ``_coefficients`` list attribute). Halving the
+    coefficients halves Sum|h| without changing tap COUNT (so the cell fold, and
+    thus the ports, are identical); a few halvings bring any filter to Sum|h|<=1."""
+    probe = catalog.instantiate(type_name, "__probe_struct__", params,
+                                library=library)
+    coeffs = getattr(probe, "_coefficients", None)
+    if not coeffs:
+        return None
+    scaled = list(coeffs)
+    for _ in range(8):
+        scaled = [c * 0.5 for c in scaled]
+        probe._coefficients = scaled
+        # Re-derive the Q15 coeffs + head_shift the FIR datapath reads.
+        try:
+            probe._coeff_q15 = [
+                (int(round(max(-1.0, min(1.0, c)) * 32767)) & 0xFFFF) for c in scaled]
+            import math as _m
+            s = sum(abs(c) for c in scaled)
+            probe._head_shift = max(0, int(_m.ceil(_m.log2(s))) if s > 1 else 0)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            probe.build_cell_programs()
+            return probe
+        except Exception:  # noqa: BLE001 — still too hot; halve again
+            continue
+    return None
+
+
 def build_port_map(
     catalog, type_name: str, params: dict[str, Any] | None = None,
     *, library: str | None = None,
@@ -240,6 +276,19 @@ def build_port_map(
         cell_programs = block.build_cell_programs() or {}
     except Exception:  # noqa: BLE001
         cell_programs = {}
+        # Some blocks raise from build_cell_programs() on a PARAM-dependent budget
+        # guard (e.g. a multi-cell complex FIR with Sum|h|>1 overflows the last
+        # cell). Port STRUCTURE is invariant to that magnitude, so retry on a
+        # coefficient-scaled clone purely to recover the port names — the router
+        # needs the ports even for a block the user must retune before it builds.
+        # The scaled clone is discarded; only its port structure is read.
+        try:
+            probe = _structure_probe(catalog, type_name, params, library)
+            if probe is not None:
+                cell_programs = probe.build_cell_programs() or {}
+                block = probe  # read internal_connections/outputs from the clone too
+        except Exception:  # noqa: BLE001 — probe is best-effort
+            cell_programs = {}
 
     internal = list(getattr(block, "internal_connections", lambda: [])() or [])
     internal += list(getattr(block, "internal_jumps", lambda: [])() or [])

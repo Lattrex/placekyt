@@ -7,9 +7,13 @@ handoff. Before this gate the canvas drew nothing for it (it is is_routed=True s
 fly line, but conn.route is the ABUTMENT sentinel string, not a waypoint list, so
 the routed-line path had nothing to draw) — the link looked like it was "not wired".
 
-This test loads converter_flavors.kyt (whose 4 inter-block links are abutments) and
-asserts EVERY connection renders as a ConnectionItem and none of the abutment nets
-are missing or drawn as a (dashed, unrouted) fly line.
+This test loads a dedicated, minimal fixture (``abutment_demo.kyt``: two 1-cell
+GainBlocks placed ADJACENT so ``g0.out`` at (2,0) abuts ``g1.in`` at (3,0), joined
+by an :data:`~model.connection.ABUTMENT_ROUTE` net ``net_abut``) and asserts EVERY
+connection renders as a ConnectionItem and the abutment net is drawn as a SOLID link,
+never a (dashed, unrouted) fly line. The fixture is deliberately DECOUPLED from any
+DSP demo (whose auto-P&R placement — and hence which nets abut — can change): it is a
+stable, hand-built 2-block abutment whose geometry is fixed forever.
 
 Run::
 
@@ -30,7 +34,7 @@ for p in (str(_ROOT / "placekyt"), str(_ROOT / "runtime" / "python")):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-KYT = _ROOT / "verification" / "tests" / "data" / "converter_flavors.kyt"
+KYT = _ROOT / "verification" / "tests" / "data" / "abutment_demo.kyt"
 CHIP_YAML = str(_ROOT / "placekyt" / "resources" / "chips" / "kyttar_10x12.yaml")
 
 
@@ -119,9 +123,9 @@ def test_abutment_route_analysis_no_crash_and_highlights():
         is_bus_shared(proj, c)
         exclusive_route_cells(proj, c)
 
-    # Selecting either end of an abutment net highlights it. net3 = dual.out (3,0)
-    # -> complexmixer.xi (4,0) — both cells must list net3.
+    # Selecting either end of an abutment net highlights it. net_abut = g0.out (2,0)
+    # -> g1.sample (3,0) — both cells must list net_abut.
     ab = next(c for c in proj.connections if c.route == "abutment")
-    assert ab.name == "net3", ab.name   # fixture-stable
-    assert "net3" in connections_terminating_at_cell(proj, 0, 3, 0, prov)
-    assert "net3" in connections_terminating_at_cell(proj, 0, 4, 0, prov)
+    assert ab.name == "net_abut", ab.name   # fixture-stable
+    assert "net_abut" in connections_terminating_at_cell(proj, 0, 2, 0, prov)
+    assert "net_abut" in connections_terminating_at_cell(proj, 0, 3, 0, prov)

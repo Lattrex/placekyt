@@ -1,0 +1,42 @@
+project:
+  format_version: 1
+  name: Untitled
+  version: '1.0'
+chip_type: kyttar_10x12
+chips:
+- id: 0
+  type: kyttar_10x12
+  position: {x: 0, y: 0}
+blocks:
+- name: g0
+  type: GainBlock
+  library: lattrex.official
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 2, y: 0, face: east}
+- name: g1
+  type: GainBlock
+  library: lattrex.official
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 3, y: 0, face: south}
+connections:
+- name: net_in
+  from: {chip_port: {chip: 0, port: x16_in}}
+  to: {block: g0, port: sample}
+  route:
+  - {x: 0, y: 0}
+  - {x: 1, y: 0}
+  - {x: 2, y: 0}
+- name: net_abut
+  from: {block: g0, port: out}
+  to: {block: g1, port: sample}
+  route: abutment
+- name: net_out
+  from: {block: g1, port: out}
+  to: {chip_port: {chip: 0, port: x16_out}}
+  route:
+  - {x: 3, y: 0}
+  - {x: 3, y: 11}

@@ -305,6 +305,15 @@ class ChipCanvas(QGraphicsView):
             chip_id = self._route_chip_of(conn)
             origin = self._chip_origin(chip_id)
             occupied = block_cells.get(chip_id, set())
+            # ABUTMENT: the source output cell directly abuts the target input cell —
+            # a REAL routed connection with NO corridor waypoints (the build
+            # synthesises the @1 handoff). conn.route is the sentinel string, not a
+            # waypoint list, so draw a short SOLID connector between the two touching
+            # I/O cells (distinct from the dashed "unrouted" fly line) — otherwise the
+            # link is invisible and reads as "not wired".
+            if conn.is_abutment:
+                self._render_abutment_link(conn, chip_id, origin)
+                continue
             pts = [(p.x, p.y) for p in conn.route]
             end = None
             if isinstance(conn.target, ChipPortEndpoint):
@@ -364,6 +373,24 @@ class ChipCanvas(QGraphicsView):
             if isinstance(ep, ChipPortEndpoint) and ep.port.endswith("_in"):
                 return True
         return False
+
+    def _render_abutment_link(self, conn, chip_id, origin) -> None:
+        """Draw an ABUTMENT connection as a SOLID link between the source output
+        cell and its (adjacent) target input cell.
+
+        An abutment net is a REAL routed connection with no corridor waypoints — its
+        two I/O cells physically touch and the source delivers @1 straight into the
+        input. Without this it draws NOTHING and reads as "not wired". We anchor a
+        solid connection line between the two block-port anchors (the same anchors a
+        fly line uses), so it renders like any realised link — just short and
+        corridor-free — instead of vanishing."""
+        start = self._endpoint_anchor(conn.source)
+        end = self._endpoint_anchor(conn.target)
+        if start is None or end is None:
+            # Endpoints not anchorable yet (unplaced) — nothing to draw.
+            return
+        self._scene.addItem(
+            ConnectionItem.solid_link(start, end, name=conn.name))
 
     def _render_fly_line(self, conn) -> None:
         """Draw an unrouted connection as a dashed fly line between its endpoint

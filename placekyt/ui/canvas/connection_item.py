@@ -93,6 +93,21 @@ class ConnectionItem(QGraphicsItem):
             item.setAcceptHoverEvents(True)
         return item
 
+    @classmethod
+    def solid_link(cls, start: QPointF, end: QPointF, *, name: str | None = None,
+                   parent: QGraphicsItem | None = None) -> "ConnectionItem":
+        """A SOLID (routed) line between two raw SCENE points — used for an ABUTMENT
+        connection, whose two I/O cells physically touch so there are no corridor
+        waypoints, yet the net IS routed (the build synthesises the @1 handoff). Drawn
+        green + selectable like any realised route, distinct from the dashed
+        (unrouted) fly line."""
+        item = cls([], (0.0, 0.0), name=name, fly=False, parent=parent)
+        item._pts = [start, end]
+        if name is not None:
+            item.setFlag(QGraphicsItem.ItemIsSelectable, True)
+            item.setAcceptHoverEvents(True)
+        return item
+
     @property
     def is_fly(self) -> bool:
         """True for a logical-net fly line (unrouted), False for a routed line."""

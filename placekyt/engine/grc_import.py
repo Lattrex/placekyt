@@ -157,7 +157,12 @@ def _splice_converters(conns, grc_blocks):
       * ``null_source`` / ``null_sink`` edges — dropped entirely.
 
     A ``float_to_complex`` fed by TWO independent real producers (no null_source on
-    Q) is left in place so the block pass maps it to a DualFloatToComplex cell.
+    Q) is NOT spliced: it is kept in the connection list AND its name is returned in
+    ``dual_f2c`` so the block pass places a ``DualFloatToComplexBlock`` for it (the
+    physical LOCK rendezvous — dev_docs §4). Its port-0 (I) and port-1 (Q) producers
+    wire to the block's ``i`` / ``q`` inputs; its output wires downstream via ``out``.
+
+    Returns ``(rewritten_conns, dual_f2c_names)``.
     """
     def _id(name):
         return (grc_blocks.get(name, {}) or {}).get("id", "")
@@ -165,8 +170,9 @@ def _splice_converters(conns, grc_blocks):
     # Index edges by source and by dest for transitive splicing.
     edges = [(e[0], str(e[1]), e[2], str(e[3])) for e in conns if len(e) >= 4]
     conv_names = {n for n in grc_blocks if _id(n) in _CONVERTER_IDS}
+    dual_f2c: set = set()   # f2c names that become a DualFloatToComplex block
     if not conv_names:
-        return conns
+        return conns, dual_f2c
 
     def _producers_into(name):
         """Edges feeding ``name``, keyed by dest port -> (src, src_port)."""
@@ -200,7 +206,11 @@ def _splice_converters(conns, grc_blocks):
                 for (d, dp, _sp) in _consumers_of(name):
                     kept.append([isrc, isp, d, dp])
                 spliced_out.add(name)
-            # else: 2 real producers -> leave in place (DualFloatToComplex path).
+            elif i_prod and q_prod:
+                # TWO real producers -> a physical DualFloatToComplex block. Keep the
+                # f2c in the connection list (its port-0/1 inputs and output edges
+                # stay) and flag it so the block pass places the block for it.
+                dual_f2c.add(name)
             continue
         if gid in _C2F_IDS:
             # complex upstream (port '0') -> each float downstream, transparently.
@@ -218,7 +228,7 @@ def _splice_converters(conns, grc_blocks):
             continue
 
     if not spliced_out and not kept:
-        return conns
+        return conns, dual_f2c
     # Rebuild: drop every edge touching a spliced-out converter, add the rewrites.
     result = []
     for e in conns:
@@ -228,7 +238,7 @@ def _splice_converters(conns, grc_blocks):
             continue
         result.append(list(e))
     result.extend(kept)
-    return result
+    return result, dual_f2c
 
 
 def import_grc(path, catalog, chip_type: str = "kyttar_10x12",
@@ -250,7 +260,7 @@ def import_grc(path, catalog, chip_type: str = "kyttar_10x12",
     # Splice out LOGICAL-ONLY dtype converters: rewrite the connection list so a
     # converter's upstream wires straight to its downstream (the converter is never
     # placed). See _splice_converters.
-    conns = _splice_converters(conns, grc_blocks)
+    conns, dual_f2c_names = _splice_converters(conns, grc_blocks)
 
     name = project_name or data.get("options", {}).get(
         "parameters", {}).get("title") or p.stem
@@ -282,11 +292,17 @@ def import_grc(path, catalog, chip_type: str = "kyttar_10x12",
             ssid = str(gb.get("parameters", {}).get("stream_id", "") or "").strip()
             sink_stream[gname] = ssid.strip("'\"")
             continue
-        if gid in _NON_DSP:
+        if gname in dual_f2c_names:
+            # A float_to_complex fed by TWO real producers: place the physical
+            # DualFloatToComplex LOCK rendezvous (its port-0/1 inputs -> i/q, output
+            # -> out). Its edges were kept by _splice_converters.
+            btype = "DualFloatToComplexBlock"
+        elif gid in _NON_DSP:
             role[gname] = "drop"
             dropped.append(gid)
             continue
-        btype = _grc_id_to_type(gid, catalog)
+        else:
+            btype = _grc_id_to_type(gid, catalog)
         if btype is None:
             role[gname] = "drop"
             if gid.startswith("kyttar_"):

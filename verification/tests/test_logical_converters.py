@@ -171,6 +171,36 @@ def test_complex_to_float_both_rails():
     assert i_rail and q_rail and i_rail != q_rail, nets
 
 
+# --- flavor 4 (#429): TWO real producers -> a DualFloatToComplex BLOCK ---------
+def test_two_real_float_to_complex_places_dual_block():
+    """A float_to_complex fed by TWO independent real streams (no null_source on Q)
+    is auto-inserted as a physical DualFloatToComplexBlock: its port-0 (I) producer
+    wires to `i`, its port-1 (Q) producer wires to `q`, and its output wires
+    downstream. Contrast the single-real case, which places NO cell."""
+    grc = _HDR + (
+        _src("srcI", "float", "i", 100, 60)
+        + _src("srcQ", "float", "q", 100, 160)
+        + "- name: f2c\n  id: blocks_float_to_complex\n  parameters: {num_streams: '2',"
+          " vlen: '1'}\n  states: {coordinate: [300,110], rotation: 0, state: enabled}\n"
+        + _mixer("mix", 500, 110) + _sink("snk", "tx", 700, 110)
+        + "connections:\n- [srcI, '0', f2c, '0']\n- [srcQ, '0', f2c, '1']\n"
+          "- [f2c, '0', mix, '0']\n- [mix, '0', snk, '0']\n") + _FOOT
+    res = _import(grc)
+    assert res.ok and not res.unknown, res.unknown
+    types = sorted(b.type for b in res.project.blocks)
+    # the f2c became a DualFloatToComplex block; the mixer stays. No extra cells.
+    assert types == ["ComplexMixerBlock", "DualFloatToComplexBlock"], types
+    nets = _nets(res)
+    # find the dual block's instance name
+    dual = next(b.name for b in res.project.blocks
+                if b.type == "DualFloatToComplexBlock")
+    # I producer -> dual.i (port 0), Q producer -> dual.q (port 1).
+    assert ("PORT:x16_in", f"{dual}.i") in nets, nets
+    assert ("PORT:x16_in", f"{dual}.q") in nets, nets
+    # dual output -> the mixer downstream.
+    assert (f"{dual}.out", "complexmixer.xi") in nets, nets
+
+
 # --- NEGATIVE gate: a converter that is NOT consumed would place an extra cell -
 def test_converter_never_adds_a_cell():
     """The cell-count invariant across all flavors: importing WITH the converters

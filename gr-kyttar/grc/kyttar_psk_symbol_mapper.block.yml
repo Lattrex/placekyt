@@ -23,7 +23,7 @@ parameters:
   options: ['"bpsk"', '"qpsk"', '"8psk"']
   option_labels: [BPSK, QPSK, 8-PSK]
   option_attributes:
-    out_type: [float, complex, complex]
+    out_type: [complex, complex, complex]
   default: '"bpsk"'
 
 inputs:

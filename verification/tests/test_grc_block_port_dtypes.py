@@ -59,14 +59,12 @@ _VERIFIED_EQUIV = {
     "kyttar_complex_mixer": (["complex"], ["complex"]),
     # fir_filter_ccf: complex -> complex                       [test_complex_fir.py / INV-18]
     "kyttar_complex_low_pass_filter": (["complex"], ["complex"]),
-    # I/Q upconvert exposes TWO OPTIONAL REAL rails (xi@R0, xq@R1) -> real passband:
-    # out = xi*cos - xq*sin. This is the HARDWARE contract (two scalar reals) AND what
-    # lets a real GNU Radio flowgraph wire a float signal straight into the mixer (a
-    # BPSK/AM TX drives xi alone). A single-complex declaration made every float-fed
-    # demo (modem/AM/SSB) fail to LOAD in GRC (float != complex). The verified GR
-    # equivalent multiply_cc(bb, sig_source_c) -> complex_to_real is a documentation
-    # note, not the port contract.                            [test_iq_upconvert.py]
-    "kyttar_iq_upconvert": (["float", "float"], ["float"]),
+    # I/Q upconvert = ONE complex baseband -> real passband, exactly GNU Radio's
+    # multiply_cc(bb, sig_source_c(cos)) -> complex_to_real. COMPLEX-ONLY: a real
+    # signal upconverts via a float->complex block in front. (The old dual-purpose
+    # "one real rail OR complex" declaration was the source of the dtype/port/broker
+    # bugs.)                                                   [test_iq_upconvert.py]
+    "kyttar_iq_upconvert": (["complex"], ["float"]),
     # gain: float -> float                                     [test_gain.py]
     "kyttar_gain": (["float"], ["float"]),
 }

@@ -23,20 +23,14 @@ parameters:
   default: '4000'
 
 inputs:
-# REAL rails. On-chip the block reads xi@R0 and xq@R1 as two SCALAR reals and computes
-# out = xi·cos − xq·sin.  Both rails are exposed as OPTIONAL real inputs:
-#   * xi only (xq unconnected, =0)  ->  out = xi·cos   (a COS-rail oscillator-mixer)
-#   * xq only (xi unconnected, =0)  ->  out = −xq·sin  (a −SIN-rail oscillator-mixer)
-# This lets the SSB Weaver use ONE 6-cell IQUpconvert per up-mix rail (vs an 11-cell
-# ComplexMixer), and a BPSK/QPSK TX still drives xi (and optionally xq) as before.
-- label: xi
+# ONE COMPLEX baseband input -> real passband output — exactly GNU Radio's
+# multiply_cc(baseband, sig_source_c(cos)) -> complex_to_real. On-chip the block
+# reads I@R0, Q@R1 from the complex packet. This block is COMPLEX-ONLY; to upconvert
+# a REAL signal, put a float->complex block in front. (The old dual-purpose "one real
+# rail OR complex" declaration was the source of the dtype/port/broker bugs.)
+- label: in
   domain: stream
-  dtype: float
-  optional: true
-- label: xq
-  domain: stream
-  dtype: float
-  optional: true
+  dtype: complex
 
 outputs:
 - label: out

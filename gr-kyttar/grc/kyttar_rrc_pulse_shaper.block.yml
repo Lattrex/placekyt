@@ -32,7 +32,7 @@ parameters:
 - id: io_type
   label: Stream Type
   dtype: enum
-  default: float
+  default: complex
   options: [float, complex]
   option_labels: ['Real (float)', 'I/Q (complex)']
   option_attributes:

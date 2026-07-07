@@ -1879,7 +1879,9 @@ class AppController(QObject):
         from engine.maze_router import route_all_maze
 
         return route_all_maze(self.project, chip_types, port_cells,
-                              port_map_provider=port_maps)
+                              port_map_provider=port_maps,
+                              distinct_face_provider=(
+                                  self._block_needs_distinct_input_faces))
 
     def _derive_spine(self, chip: int):
         """Re-derive the placement spine (dataflow-ordered bus hint) for ``chip`` from

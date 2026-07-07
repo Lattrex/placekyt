@@ -510,15 +510,29 @@ def plan_cpsat(placer, chip: int, *, max_time_s: float = 10.0,
                     model.Add(ny > cy).OnlyEnforceIf(gy)
                     model.Add(ny <= cy).OnlyEnforceIf(gy.Not())
                     return (lx, gx, ly, gy)
-                s0 = _sgn(out_cx[d0], out_cy[d0], f"{b.name}_d0")
-                s1 = _sgn(out_cx[d1], out_cy[d1], f"{b.name}_d1")
-                dneqs = []
-                for k, (a0b, a1b) in enumerate(zip(s0, s1)):
-                    ne = model.NewBoolVar(f"df_{b.name}_ne{k}")
-                    model.Add(a0b != a1b).OnlyEnforceIf(ne)
-                    model.Add(a0b == a1b).OnlyEnforceIf(ne.Not())
-                    dneqs.append(ne)
-                model.AddBoolOr(dneqs)   # two drivers cannot share a face
+                # The face-list to keep pairwise-distinct on this cell: the two input
+                # drivers PLUS (when present) the block's OUTPUT consumer. The dual needs
+                # THREE distinct faces (i, q, out) on its one cell — constraining only the
+                # two inputs still let the output collide with an input (the §5.3
+                # single_cell_inout_deadlock). Add the consumer so all three differ.
+                faces_pts = [(_sgn(out_cx[d0], out_cy[d0], f"{b.name}_d0"), d0),
+                             (_sgn(out_cx[d1], out_cy[d1], f"{b.name}_d1"), d1)]
+                _con = _consumer_of.get(b.name)
+                if _con is not None and _con in in_cx:
+                    faces_pts.append(
+                        (_sgn(in_cx[_con], in_cy[_con], f"{b.name}_con"), _con))
+                # every PAIR of these landing faces must differ in >=1 sign bit.
+                for _i in range(len(faces_pts)):
+                    for _j in range(_i + 1, len(faces_pts)):
+                        sa = faces_pts[_i][0]
+                        sb = faces_pts[_j][0]
+                        dneqs = []
+                        for k, (a0b, a1b) in enumerate(zip(sa, sb)):
+                            ne = model.NewBoolVar(f"df_{b.name}_{_i}{_j}_ne{k}")
+                            model.Add(a0b != a1b).OnlyEnforceIf(ne)
+                            model.Add(a0b == a1b).OnlyEnforceIf(ne.Not())
+                            dneqs.append(ne)
+                        model.AddBoolOr(dneqs)   # these two faces cannot coincide
 
         # ABUTMENT-FIRST: maximise the number of abutted (route-free) dataflow edges as
         # the PRIMARY objective; total wirelength stays a small secondary tie-break so

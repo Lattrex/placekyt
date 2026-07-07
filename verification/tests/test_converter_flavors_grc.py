@@ -168,19 +168,18 @@ def test_routes_and_builds_with_rendezvous_onchip():
     assert words, "empty bitstream"
     chip = simkyt.Chip.from_yaml(CHIP_YAML)
     chip.load_bitstream_physical(words)
-    # The DualFloatToComplex rendezvous is the SINGLE-ENTRY PHASE TOGGLE: its `recv`
-    # entry compares the phase register then branches (CMP + Branch{NotZero}) to pick
-    # I vs Q. Find that program in the built fabric. (The old design keyed on a LOCK_FACE
-    # write — removed: LOCK-by-face can't distinguish two rails that arrive on the SAME
-    # face under auto-P&R.)
+    # The DualFloatToComplex rendezvous is LOCK-BY-FACE: it writes LOCK_FACE (CONFIG 3 =
+    # dest 35) to switch the accepted face between got_i/got_q, and boots pre-locked (no
+    # arm). Find that program in the built fabric. (The phase-toggle Cmp+Branch design was
+    # reverted — a same-face counter can't pair two independent async streams.)
     found = False
     for cid in range(120):
         mem = [chip.read_cell_memory(cid, a) for a in range(32)]
         dis = simkyt.Program.from_words("c", mem, 0).disassemble()
-        if "Cmp" in dis and "Branch" in dis and "invert: true" in dis:
+        if "dest: 35" in dis and "Write" in dis and "Jump" in dis and "Cmp" not in dis:
             found = True
             break
-    assert found, "built fabric is missing the DualFloatToComplex phase-toggle rendezvous"
+    assert found, "built fabric is missing the DualFloatToComplex LOCK-by-face rendezvous"
 
 
 def test_runs_live_recovers_input():

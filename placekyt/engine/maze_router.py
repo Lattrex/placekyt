@@ -76,16 +76,40 @@ def _step_face(a, b):
 
 
 def route_all_maze(project, chip_types, port_cell_provider,
-                   port_map_provider=None) -> AutoRouteReport:
+                   port_map_provider=None, distinct_face_provider=None
+                   ) -> AutoRouteReport:
     """Route every UNROUTED net on each chip with the maze router.
 
     Signature MIRRORS :func:`bus_router.route_all_bus` so the controller can select
     it interchangeably. ``port_cell_provider`` / ``port_map_provider`` are the same
-    callbacks :class:`AutoRouter` takes (reused here for endpoint geometry). Returns
-    an :class:`AutoRouteReport`; a net that cannot route (even after rip-up) is a
-    NAMED failure, never fabricated or silently dropped.
+    callbacks :class:`AutoRouter` takes (reused here for endpoint geometry).
+    ``distinct_face_provider(block_type, library[, params]) -> bool`` (optional, no hard
+    catalog dependency) reports whether a target block REQUIRES its inputs on DISTINCT
+    faces (the DualFloatToComplex LOCK rendezvous); such a target's fan-in is NOT
+    broker-shared — each input gets its own broker on a different face. Returns an
+    :class:`AutoRouteReport`; a net that cannot route (even after rip-up) is a NAMED
+    failure, never fabricated or silently dropped.
     """
     helper = AutoRouter(project, chip_types, port_cell_provider, port_map_provider)
+
+    # Cells of blocks that require DISTINCT input faces (per-chip target cells). Computed
+    # once from the flag provider; the router forbids sharing/reusing a face for these.
+    distinct_face_cells: dict[int, set] = {}
+    if distinct_face_provider is not None:
+        for blk in project.blocks:
+            pl = blk.placement
+            if pl is None or not pl.cells:
+                continue
+            try:
+                need = bool(distinct_face_provider(
+                    blk.type, blk.library, getattr(blk, "params", None)))
+            except TypeError:
+                need = bool(distinct_face_provider(blk.type, blk.library))
+            except Exception:  # noqa: BLE001
+                need = False
+            if need:
+                distinct_face_cells.setdefault(pl.chip, set()).add(
+                    (pl.cells[0].x, pl.cells[0].y))
     results: list[RouteResult] = []
 
     # Resolve every net's endpoint geometry up front; group by chip. Sound failures
@@ -120,7 +144,9 @@ def route_all_maze(project, chip_types, port_cell_provider,
             for n in nets:
                 results.append(RouteResult(n.name, False, reason="no chip type"))
             continue
-        results.extend(_route_chip_maze(project, ct, chip_id, nets))
+        results.extend(_route_chip_maze(
+            project, ct, chip_id, nets,
+            distinct_face_cells=distinct_face_cells.get(chip_id, set())))
 
     # Preserve the project's connection order in the report.
     order = {c.name: i for i, c in enumerate(project.connections)}
@@ -149,9 +175,17 @@ class _Net:
         return abs(self.src[0] - self.dst[0]) + abs(self.src[1] - self.dst[1])
 
 
-def _route_chip_maze(project, ct, chip_id, nets):
+def _route_chip_maze(project, ct, chip_id, nets, *, distinct_face_cells=None):
     """Route every net on one chip node-disjoint, with fan-in broker sharing and
-    bounded rip-up-reroute. Returns a list of :class:`RouteResult` (one per net)."""
+    bounded rip-up-reroute. Returns a list of :class:`RouteResult` (one per net).
+
+    ``distinct_face_cells`` (target input cells of blocks that require DISTINCT input
+    faces — the DualFloatToComplex LOCK rendezvous): such a target's fan-in is NOT
+    broker-shared. Each of its input nets gets its OWN broker on a DIFFERENT face, and an
+    abutting input claims a face the sibling then avoids — so the two independent streams
+    arrive on distinct faces (the lock can pair them). A route that can't seat a distinct
+    face FAILS (named), and the place<->route loop repacks."""
+    distinct_face_cells = set(distinct_face_cells or ())
     W, H = ct.width, ct.height
 
     def in_bounds(c):
@@ -226,9 +260,16 @@ def _route_chip_maze(project, ct, chip_id, nets):
     # Targets are assigned MOST-CONSTRAINED first (fewest broker candidates), and a
     # broker is chosen to leave the MAX free neighbours for other targets (so tight
     # neighbours don't starve each other). No two groups get the same broker cell.
-    broker_of: dict = {}       # target input cell -> reserved broker cell
+    broker_of: dict = {}       # target input cell -> reserved broker cell (shared fan-in)
+    net_broker_of: dict = {}   # net NAME -> reserved broker cell (distinct-face fan-in)
     reserved: set = set()      # all reserved broker cells
     broker_fail: dict = {}     # target input cell -> reason (no broker)
+
+    def _face_of_neighbour(cell, nb):
+        """Face code the target ``cell`` receives on from an orthogonally adjacent ``nb``
+        (the direction cell->nb). S=0,E=1,W=2,N=3."""
+        dx, dy = nb[0] - cell[0], nb[1] - cell[1]
+        return {(0, 1): 0, (1, 0): 1, (-1, 0): 2, (0, -1): 3}.get((dx, dy))
 
     block_target_groups = [g for g in ordered_groups
                            if isinstance(g[0].conn.target, BlockEndpoint)
@@ -236,8 +277,47 @@ def _route_chip_maze(project, ct, chip_id, nets):
     # order most-constrained first
     block_target_groups.sort(
         key=lambda g: _free_broker_count(g[0].dst, g[0].dface))
+
+    def _free_after(b):
+        # how many free cells remain adjacent to OTHER unassigned targets if we take b —
+        # prefer a broker that keeps neighbours' options open (fewest own free-neighbour
+        # count = corner cell, least disruptive).
+        return sum(1 for dx, dy in _NEI
+                   if in_bounds((b[0] + dx, b[1] + dy))
+                   and (b[0] + dx, b[1] + dy) not in block_cells
+                   and (b[0] + dx, b[1] + dy) not in reserved)
+
     for g in block_target_groups:
         tgt = g[0].dst
+        if tgt in distinct_face_cells:
+            # DISTINCT-FACE fan-in (the DualFloatToComplex LOCK rendezvous): each input net
+            # gets its OWN broker on a DIFFERENT face — never shared. An ABUTTING input to
+            # this target already claims its abut face; forbid the others from it. Reserve
+            # per-net, most-constrained already ordered; fail (named) if two can't get
+            # distinct faces so the place<->route loop repacks.
+            used_faces: set = set()
+            # First, account for any abutting inputs to this target (they claim a face).
+            for m in nets:
+                if m.dst == tgt and is_abutment(m):
+                    f = _face_of_neighbour(tgt, m.src)
+                    if f is not None:
+                        used_faces.add(f)
+            for m in g:
+                if m.name in net_broker_of or is_abutment(m):
+                    continue     # abutment nets claim their face directly (no broker)
+                cands = [c for c in _broker_cells(
+                            tgt, g[0].dface, {c: 0 for c in reserved},
+                            in_bounds, None, block_cells)
+                         if _face_of_neighbour(tgt, c) not in used_faces]
+                if not cands:
+                    broker_fail[tgt] = ("no free DISTINCT-face broker for a face-locking "
+                                        "block's input (place/route needs a repack)")
+                    continue
+                broker = min(cands, key=_free_after)
+                net_broker_of[m.name] = broker
+                reserved.add(broker)
+                used_faces.add(_face_of_neighbour(tgt, broker))
+            continue
         if tgt in broker_of:
             continue
         cands = _broker_cells(tgt, g[0].dface, {c: 0 for c in reserved},
@@ -245,16 +325,6 @@ def _route_chip_maze(project, ct, chip_id, nets):
         if not cands:
             broker_fail[tgt] = "no free broker cell abutting the target input"
             continue
-
-        def _free_after(b):
-            # how many free cells remain adjacent to OTHER unassigned targets if we
-            # take b — prefer a broker that keeps neighbours' options open (fewest own
-            # free-neighbour count = corner cell, least disruptive).
-            adj = sum(1 for dx, dy in _NEI
-                      if in_bounds((b[0] + dx, b[1] + dy))
-                      and (b[0] + dx, b[1] + dy) not in block_cells
-                      and (b[0] + dx, b[1] + dy) not in reserved)
-            return adj
         broker = min(cands, key=_free_after)
         broker_of[tgt] = broker
         reserved.add(broker)
@@ -285,6 +355,10 @@ def _route_chip_maze(project, ct, chip_id, nets):
     fail_reason: dict = {}
 
     def _target_broker(n):
+        # distinct-face targets reserve a broker PER NET (never shared); others share one
+        # broker per target cell.
+        if n.name in net_broker_of:
+            return net_broker_of[n.name]
         return broker_of.get(n.dst)
 
     def route_corridor(n, cell_use, cell_used_dir):

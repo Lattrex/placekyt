@@ -134,14 +134,18 @@ class bpsk_slicer(_PassThrough):
 class psk_symbol_mapper(_PassThrough):
     """PSK symbol mapper — GR marker (maps to PSKSymbolMapperBlock).
 
-    TX front end: input bit(s) -> complex PSK constellation symbol. One float in
-    (the bit), a SINGLE complex out (the I/Q symbol). The real DSP runs on the
-    chip."""
+    TX front end: input bit(s) -> PSK constellation symbol. One float in (the bit),
+    a SINGLE symbol out. BPSK maps to a REAL constellation (+/-1 on I, Q=0), so its
+    output is a REAL (float) rail; QPSK/8-PSK are genuinely complex (I and Q both
+    vary). The output dtype follows ``modulation`` so a BPSK TX chain (mapper ->
+    upsampler -> RRC -> upconvert) is all-float and QPSK/8-PSK stay complex — this
+    matches the .block.yml ``modulation.out_type`` and the real hardware."""
 
     def __init__(self, device_id="kyttar_0", modulation="bpsk"):
-        # bit in (float), complex symbol out
+        # bit in (float); symbol out is REAL for BPSK, COMPLEX for QPSK/8-PSK.
+        out_dt = np.float32 if str(modulation).strip('"') == "bpsk" else np.complex64
         super().__init__("Kyttar PSK Symbol Mapper", n_in=1, n_out=1,
-                         in_dtype=np.float32, out_dtype=np.complex64)
+                         in_dtype=np.float32, out_dtype=out_dt)
         self.device_id = device_id
         self.modulation = modulation
         self._advertise_grc_params(device_id, "PSKSymbolMapperBlock",
@@ -156,8 +160,10 @@ class upsampler(_PassThrough):
     (one gr_complex stream in/out) between the mapper and the RRC pulse shaper."""
 
     def __init__(self, device_id="kyttar_0", sps=4, io_type="float"):
-        # io_type selects the stream dtype and MUST equal the .block.yml ``io_type``
-        # default + ${io_type} port dtype. Default FLOAT (BPSK real symbol stream).
+        # The upsampler is a dtype-AGNOSTIC zero-stuffer; io_type selects its stream
+        # dtype and MUST equal the .block.yml ``io_type`` default + ${io_type} port
+        # dtype. Default FLOAT: the BPSK TX chain carries a REAL symbol stream
+        # (mapper is float-out for BPSK). Set complex for a QPSK/8-PSK I/Q chain.
         dt = np.complex64 if str(io_type) == "complex" else np.float32
         super().__init__("Kyttar Upsampler", n_in=1, n_out=1,
                          in_dtype=dt, out_dtype=dt)
@@ -174,12 +180,10 @@ class rrc_pulse_shaper(_PassThrough):
     pulse-shapes the upsampled complex symbol before the I/Q upconvert). The real
     DSP runs on the chip; this only carries the graph."""
 
-    def __init__(self, device_id="kyttar_0", alpha=0.35, span=8,
-                 io_type="float"):
+    def __init__(self, device_id="kyttar_0", alpha=0.35, span=8, io_type="float"):
         # io_type selects the stream dtype and MUST equal the .block.yml ``io_type``
-        # default + its ${io_type} port dtype (the gate resolves ${io_type} to this
-        # default and asserts they match). Default FLOAT: the shipped BPSK TX chain
-        # carries real symbols (the complex RX matched filter is a SEPARATE block).
+        # default + ${io_type} port dtype. Default FLOAT: the BPSK TX chain carries a
+        # REAL symbol stream. Set complex for a QPSK/8-PSK I/Q chain.
         dt = np.complex64 if str(io_type) == "complex" else np.float32
         super().__init__("Kyttar RRC Pulse Shaper", n_in=1, n_out=1,
                          in_dtype=dt, out_dtype=dt)
@@ -195,19 +199,16 @@ class rrc_pulse_shaper(_PassThrough):
 class iq_upconvert(_PassThrough):
     """I/Q upconvert — GR marker (maps to IQUpconvertBlock).
 
-    A SINGLE complex baseband stream -> real passband sample (out).
-    s = I*cos(phase) - Q*sin(phase), free-running NCO."""
+    TWO REAL rails in (xi@R0, xq@R1) -> real passband out: out = xi*cos - xq*sin
+    (free-running NCO). On-chip the block reads two scalar reals; a BPSK/AM TX
+    drives xi alone (xq=0 -> out = xi*cos, an oscillator-mixer). Declaring two FLOAT
+    inputs (matching the .block.yml xi/xq rails) is what lets a real GNU Radio
+    flowgraph wire a float signal straight into the mixer AND run without an itemsize
+    mismatch. A complex I/Q baseband reaches it via the float->complex converter."""
 
     def __init__(self, device_id="kyttar_0", sample_rate=32000.0,
                  frequency=4000.0):
-        # TWO REAL rails in (xi@R0, xq@R1), real passband out. On-chip the block
-        # reads two scalar reals and computes out = xi*cos - xq*sin; a BPSK/AM TX
-        # drives xi alone (xq=0 -> out = xi*cos, an oscillator-mixer). Declaring two
-        # FLOAT inputs (not one complex) is what lets a real GNU Radio flowgraph wire
-        # a float signal straight into the mixer — the .block.yml exposes xi/xq as two
-        # optional float rails to match. (A single-complex declaration made every
-        # float-fed demo — modem/AM/SSB — fail to load with a float!=complex port
-        # mismatch.)
+        # two real rails in (xi, xq), real passband out
         super().__init__("Kyttar I/Q Upconvert", n_in=2, n_out=1,
                          in_dtype=np.float32, out_dtype=np.float32)
         self.device_id = device_id

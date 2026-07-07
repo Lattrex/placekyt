@@ -169,12 +169,18 @@ def test_grc_places_on_one_chip():
             assert 0 <= cell.x < W and 0 <= cell.y < H, (bl.type, cell)
 
 
-# --- (b2) the shipped HAND-PLACED .kyt builds clean + both streams run -------
+# --- (b2) the shipped HAND-PLACED .kyt builds clean + both streams EGRESS -----
 def test_shipped_kyt_builds_and_runs_both_streams():
     """The shipped ``ssb_weaver.kyt`` (hand-placed + hand-routed, all 13 nets) BUILDS
-    with no DRC errors and RUNS: both the TX (SSB passband, tag 10) and RX (recovered
-    audio, tag 5) streams egress on the shared x16_out. This is the runnable demo
-    artifact — it does NOT need auto-route (unlike the .grc import path)."""
+    with no DRC errors and both the TX (tag 10) and RX (tag 5) streams EGRESS words on
+    the shared x16_out. This is the runnable demo artifact (no auto-route needed).
+
+    NOTE — this gate checks the two streams FIRE + egress (words flow, tags resolve),
+    NOT that the DSP is numerically correct. On the CURRENT hand-placed layout the
+    datapath is not right yet (TX passband corr ~0.14 vs the ssb_demo_stim reference,
+    RX egresses all zeros) — a hand-placement orientation/face/route issue, tracked in
+    the recovery xfail below. The DSP itself is proven correct at corr 0.986 by
+    ``weaver_builder_cfir`` (the software block chain)."""
     import math
     import simkyt
     from engine.catalog import BlockCatalog

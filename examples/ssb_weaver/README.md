@@ -40,25 +40,34 @@ The Weaver DSP is verified on-chip at **corr 0.986** — `weaver_builder_cfir.py
 
 ## Status
 
-- **GRC-clean.** The `.grc` loads + generates in GNU Radio Companion with **zero type
-  conflicts** — the audio/passband → complex-mixer edges use the spliced
-  `float_to_complex` converters (the real→complex-in-front pattern). Open it in
-  `gnuradio-companion` and it's in a good working state.
+- **GRC-clean, two independent batch streams.** The `.grc` loads + generates in GNU
+  Radio Companion with **zero type conflicts**. TX and RX each have their OWN batch
+  stimulus (TX: audio tones; RX: the SSB passband from `ssb_demo_stim`) — NOT a
+  `tx_sink → rx_src` daisy chain (that imported as a bogus `x16_out → x16_in` net that
+  could never route — the persistent stray flyline). On import there are now **zero
+  port→port nets** and the phantom flyline is gone for good.
 - **Imports + places.** placeKYT imports it as **7 chip blocks** (2 ComplexMixer +
   2 ComplexLowPass + 2 IQUpconvert + 1 Gain) across the `tx`/`rx` streams and **places
   all 7 on one 10x12 die**.
 - **Auto-route is incomplete** (⚠️). The auto-router threads ~8/14 nets; the remaining
   ones are the complex-packet **fan-in** nets into the mixers/upconverts (both `xi`+`xq`
-  into one cell). This is a **router** limitation on the compact placement, not a dtype
-  or density problem — **route those nets by hand** (draw the routes / use Route All and
-  fix the flylines), then build + host.
+  into one cell). Route those by hand (draw the routes / Route All), then build + host.
 - **DSP proven on silicon.** `weaver_builder_cfir.py` runs each block on the real simKYT
-  substrate and recovers the audio at **corr 0.986 / SNR 15.6 dB** — the datapath is
-  correct; only the auto-router's fan-in threading is the gap.
+  substrate and recovers the audio at **corr 0.986 / SNR 15.6 dB** — the block chain is
+  correct.
 
-Gate: `verification/tests/test_ssb_weaver_grc.py` — import (dtype-clean) + placement pass;
-the full auto-route/build is an `xfail` (route-by-hand), the batch-recovery test skips
-until the build exists.
+### ⚠️ Hand-placed `.kyt` datapath is NOT correct yet
+The shipped `ssb_weaver.kyt` **builds clean and both streams fire + egress** (TX tag 10,
+RX tag 5), but the on-chip DSP is not right on the current hand-layout: the TX passband
+correlates only **~0.14** with the `ssb_demo_stim` reference, and the RX egresses **all
+zeros**. The blocks build/route/emit words, but the data isn't flowing correctly through
+the placed cells — a hand-placement **orientation / face / route-endpoint** issue (NOT a
+dtype/stimulus problem; the software block chain is corr 0.986). Diagnostic to chase when
+re-placing: the RX input lands at cell **(0,5)** but `complexmixer_2`'s input cell is
+**(1,5)**; check each block's I/O-cell orientation and that every route's endpoints
+connect the intended output→input cells. Gate: `verification/tests/test_ssb_weaver_grc.py`
+— import (dtype-clean) + placement + `.kyt` build/egress PASS; full auto-route/build and
+audio-recovery are `xfail`/skip until the hand-layout datapath is corrected.
 
 ## Run it (after routing the fan-in nets by hand)
 

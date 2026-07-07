@@ -1498,3 +1498,13 @@ class AutoPlacer:
         program, breaking the loop. Returns self (chainable)."""
         self._feedback_provider = provider
         return self
+
+    def with_distinct_face_predicate(self, provider):
+        """Inject a ``distinct(block_type, library[, params]) -> bool`` provider that
+        reports whether a block REQUIRES its two inputs on TWO DISTINCT faces (the
+        DualFloatToComplex LOCK rendezvous — the ONLY block that distinguishes two
+        independent async streams by arrival face). The CP-SAT placer adds a constraint
+        forcing such a block's two input drivers onto different faces of its cell, so a
+        face lock can tell the streams apart. Returns self (chainable)."""
+        self._distinct_face_provider = provider
+        return self

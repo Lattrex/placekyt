@@ -1,25 +1,30 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""DualFloatToComplexBlock — structural on-chip proof of the phase-toggle rendezvous.
+"""DualFloatToComplexBlock — structural on-chip proof of the LOCK-by-face rendezvous.
 
 The physical block for the TWO-independent-real-producer float_to_complex case
-(dev_docs/LOGICAL_CONVERTERS_AND_DUAL_F2C_RENDEZVOUS.md §4): a 1-cell SINGLE-ENTRY
-PHASE-TOGGLE rendezvous that pairs two independent real streams into ONE complex
-sample, matched-pairs-only regardless of interleaving. Both producers JUMP one
-`recv` entry; a persistent `phase` register alternates 0->1->0 (I then Q+emit). This
-replaced the LOCK-by-face design, which cannot work under auto-P&R (both rails reach
-the cell from the SAME face, so a face lock cannot distinguish them).
+(dev_docs/LOGICAL_CONVERTERS_AND_DUAL_F2C_RENDEZVOUS.md §4): a 1-cell LOCK-BY-FACE
+rendezvous that pairs two independent, ASYNCHRONOUSLY-timed real streams into ONE
+complex sample, matched-pairs-only regardless of interleaving. The two producers
+arrive on TWO DISTINCT faces; the cell uses the arbiter LOCK (LOCK/LOCK_FACE) to
+accept ONLY the I face, latch I, then accept ONLY the Q face, latch Q + emit. The
+face IS the stream identity — a slow/bursty producer on the other face is ignored
+until it is that face's turn, so async re-ordering can never mis-pair.
+
+(A same-face phase-toggle counter was tried and is BROKEN — merging both rails onto
+one serialized face destroys the stream identity; see project_dual_f2c_lock_by_face.)
 
 This test proves the block is REAL and builds correctly:
   * the catalog discovers it,
   * it places + routes + BUILDS on a 10x12 chip, and
-  * the built cell's program IS the phase-toggle rendezvous — its `recv` entry
-    compares the phase register and branches on non-zero (CMP + Branch invert) to
-    pick the I vs Q arm, and its output handoff is a normal brokered WRITE+JUMP
-    (no RAW_OUTPUT_HOPS), so it egresses through auto-P&R like any block.
+  * the built cell's program IS the LOCK-by-face rendezvous — it writes LOCK_FACE
+    (CONFIG 3, dest 35) and LOCK (CONFIG 4, dest 36) to gate the arbiter by face, and
+    its output handoff is a normal brokered WRITE+JUMP (no RAW_OUTPUT_HOPS), so it
+    egresses through auto-P&R like any block.
 
 The FUNCTIONAL end-to-end proof (complex in -> converters -> chip out, corr 1.0) is
-in test_converter_flavors_grc.py's live-run path. The adversarial-interleave proof
-(2 producers -> matched pairs only, with mutation gates) is tracked separately.
+in test_converter_flavors_grc.py's live-run path. The adversarial ASYNC-interleave
+proof (2 producers on 2 faces -> matched pairs only, with mutation gates) is in
+proto_dual_f2c_rendezvous.py.
 
 Run::
 
@@ -61,7 +66,7 @@ def test_catalog_discovers_block():
     assert cat.get("DualFloatToComplexBlock", LIB) is not None
 
 
-def test_builds_on_chip_with_phase_toggle_rendezvous():
+def test_builds_on_chip_with_lock_rendezvous():
     import simkyt
     BlockCatalog, load_chip_type, AppController, CPE, BE = _engine()
     cat = BlockCatalog.from_gr_kyttar()
@@ -73,27 +78,27 @@ def test_builds_on_chip_with_phase_toggle_rendezvous():
     d = ctrl.place_block("DualFloatToComplexBlock", 0, 5, 5, library=LIB, params={})
     ctrl.add_logical_connection(CPE(chip=0, port="x16_in"),
                                 BE(block=d, port="i"), name="ni")
-    ctrl.add_logical_connection(BE(block=d, port="out"),
+    ctrl.add_logical_connection(BE(block=d, port="yi"),
                                 CPE(chip=0, port="x16_out"), name="no")
     rep = ctrl.auto_pnr({ctk: ct}, use_bus="never")
     assert rep.ok, "DualFloatToComplex must route on one chip"
     bres = ctrl.build()
     assert bres.ok, "build failed: " + "; ".join(str(e) for e in bres.errors)
 
-    # The built cell's program IS the phase-toggle rendezvous: its `recv` entry does
-    # CMP phase, zero ; BR.NZ _q (a Cmp + a Branch{invert:true}) to pick the I/Q arm,
-    # and it emits a normal brokered handoff (a WRITE + a JUMP the build patched) — NOT
-    # the old LOCK_FACE (dest 35) / LOCK (dest 36) config writes.
+    # The built cell's program IS the LOCK-by-face rendezvous: it writes LOCK_FACE
+    # (CONFIG 3 = dest 35) and LOCK (CONFIG 4 = dest 36) to gate the arbiter by face,
+    # and it emits a normal brokered handoff (WRITE + JUMP the build patched). The
+    # phase-toggle (Cmp + Branch{invert}) is GONE — a same-face counter can't pair
+    # async streams.
     blk = ctrl.project.block(d)
     c0 = blk.placement.cells[0]
     mem = bres.chips[0].cells[(c0.x, c0.y)]["memory"]
     dis = simkyt.Program.from_words("d", list(mem), 0).disassemble()
-    assert "Cmp" in dis, f"phase-toggle rendezvous missing its Cmp:\n{dis}"
-    assert "invert: true" in dis, f"phase-toggle missing its BR.NZ branch:\n{dis}"
+    assert "dest: 35" in dis, f"LOCK rendezvous missing its LOCK_FACE write:\n{dis}"
+    assert "dest: 36" in dis, f"LOCK rendezvous missing its LOCK write:\n{dis}"
     assert "Write" in dis and "Jump" in dis, f"missing output handoff:\n{dis}"
-    # The old LOCK-based design is GONE (face lock can't pair same-face rails).
-    assert "dest: 35" not in dis and "dest: 36" not in dis, (
-        f"unexpected LOCK config writes — should be phase-toggle now:\n{dis}")
+    # The broken phase-toggle is GONE.
+    assert "Cmp" not in dis, f"unexpected phase-toggle Cmp — should be LOCK now:\n{dis}"
 
 
 # --------------------------------------------------------------------------- #

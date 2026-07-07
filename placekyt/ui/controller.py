@@ -580,6 +580,8 @@ class AppController(QObject):
                   .with_port_maps(port_maps)
                   .with_chip_ports(self._chip_port_cell)
                   .with_feedback(self._block_has_internal_feedback)
+                  .with_distinct_face_predicate(
+                      self._block_needs_distinct_input_faces)
                   .with_multi_filament(force_multi)
                   .with_compact(force_multi)
                   .with_channel_reserve(channel_reserve))
@@ -762,10 +764,13 @@ class AppController(QObject):
         return True
 
     def _plan_is_legal(self, plan, chip, w, h, footprint, port_maps) -> bool:
-        """True if the PLAN's block footprints are all on-grid AND non-overlapping —
-        checked WITHOUT mutating the project (via ``_plan_cell_footprints``). Used to
-        decide whether the serpentine plan is usable or the CP-SAT rescue placer is
-        needed. (``_placement_legality`` is the stronger check on the APPLIED cells.)"""
+        """True if the PLAN's block footprints are all on-grid AND non-overlapping AND
+        every distinct-face block's two input drivers land on DIFFERENT faces — checked
+        WITHOUT mutating the project (via ``_plan_cell_footprints``). Used to decide
+        whether the serpentine plan is usable or the CP-SAT rescue placer is needed
+        (only CP-SAT models the distinct-face constraint, so a serpentine plan that
+        violates it must be rejected here to trigger the rescue). (``_placement_legality``
+        is the stronger check on the APPLIED cells.)"""
         occ = set()
         for _name, cells in self._plan_cell_footprints(plan, footprint, port_maps):
             for (cx, cy) in cells:
@@ -774,6 +779,36 @@ class AppController(QObject):
                 if (cx, cy) in occ:
                     return False
                 occ.add((cx, cy))
+        if not self._plan_distinct_faces_ok(plan, chip, footprint, port_maps):
+            return False
+        return True
+
+    def _plan_distinct_faces_ok(self, plan, chip, footprint, port_maps) -> bool:
+        """False if the design contains a block declaring ``NEEDS_DISTINCT_INPUT_FACES``
+        (the DualFloatToComplex LOCK rendezvous) that is fed by TWO independent block
+        drivers. The serpentine/compact packer lays blocks in a single dataflow ROW, so
+        it CANNOT guarantee the two drivers land on different faces of the rendezvous cell
+        — and only CP-SAT models the distinct-face constraint. So treat any such design as
+        needing the CP-SAT path: report the serpentine plan ILLEGAL to force the rescue.
+        (A dual fed by <2 block drivers — e.g. a single real feed, xq=0 — needs no lock and
+        is exempt.)"""
+        # Which blocks are fed by how many distinct block drivers.
+        drivers: dict = {}
+        for c in self.project.connections:
+            s, t = c.source, c.target
+            if hasattr(s, "block") and hasattr(t, "block"):
+                drivers.setdefault(t.block, [])
+                if s.block not in drivers[t.block]:
+                    drivers[t.block].append(s.block)
+        for b in self.project.blocks:
+            pl = b.placement
+            if pl is None or pl.chip != chip:
+                continue
+            if not self._block_needs_distinct_input_faces(
+                    b.type, b.library, getattr(b, "params", None)):
+                continue
+            if len(drivers.get(b.name, [])) >= 2:
+                return False   # force CP-SAT: only it can place the 2 drivers on 2 faces
         return True
 
     def _placement_legality(self, chip: int):
@@ -1093,6 +1128,29 @@ class AppController(QObject):
             ic = list(getattr(blk, "internal_connections", lambda: [])() or [])
             ij = list(getattr(blk, "internal_jumps", lambda: [])() or [])
             result = bool(ic or ij)
+        except Exception:  # noqa: BLE001
+            result = False
+        cache[key] = result
+        return result
+
+    def _block_needs_distinct_input_faces(self, block_type, library, params=None):
+        """True if a block declares ``NEEDS_DISTINCT_INPUT_FACES`` — its two inputs are
+        independent async streams that can ONLY be distinguished by arrival FACE (the
+        DualFloatToComplex LOCK rendezvous). The placer must land its two input nets on
+        two DIFFERENT faces (else a face lock cannot tell the streams apart), and the
+        build DRC rejects same-face landing. No other block sets this. Cached per
+        (type, library) — the answer doesn't depend on params."""
+        cache = getattr(self, "_distinct_face_cache", None)
+        if cache is None:
+            cache = self._distinct_face_cache = {}
+        key = (block_type, library)
+        if key in cache:
+            return cache[key]
+        result = False
+        try:
+            blk = self.catalog.instantiate(block_type, "__df_probe__", params,
+                                           library=library)
+            result = bool(getattr(blk, "NEEDS_DISTINCT_INPUT_FACES", False))
         except Exception:  # noqa: BLE001
             result = False
         cache[key] = result

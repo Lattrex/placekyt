@@ -454,6 +454,72 @@ def plan_cpsat(placer, chip: int, *, max_time_s: float = 10.0,
                 neqs.append(ne)
             model.AddBoolOr(neqs)   # sign patterns differ => faces cannot coincide
 
+        # DISTINCT INPUT FACES (DualFloatToComplex LOCK rendezvous). A block that
+        # declares NEEDS_DISTINCT_INPUT_FACES pairs two INDEPENDENT, async real streams
+        # into a complex sample by LOCKING to one arrival FACE at a time — the face IS
+        # the stream identity. If the placer lets both input drivers land on the SAME
+        # face (as the compact pack did — both rails brokered through one neighbour), the
+        # face lock cannot tell I from Q and the rendezvous stalls forever. So force the
+        # block's TWO input drivers onto DIFFERENT faces of its (single) input cell: the
+        # same "sign patterns differ" trick used for the single-cell in!=out rule above,
+        # but between the two DRIVERS rather than driver-vs-consumer. Only the dual sets
+        # the flag; every other complex block receives a pre-paired yi/yq packet and is
+        # exempt. Requires the I/O-cell vars (slack-0 / wirelength branch).
+        _distinct_pred = getattr(placer, "_distinct_face_provider", None)
+        if _distinct_pred is not None:
+            # driver blocks feeding each target, in the order the project lists them.
+            _drivers_of: dict = {}
+            for _c in placer._project.connections:
+                _s, _t = _c.source, _c.target
+                if hasattr(_s, "block") and hasattr(_t, "block") \
+                        and _s.block in names and _t.block in names:
+                    _drivers_of.setdefault(_t.block, []).append(_s.block)
+            for b in blocks:
+                pl = b.placement
+                if pl is None or len(pl.cells) != 1:
+                    continue                          # dual is single-cell
+                if b.name not in in_cx:
+                    continue
+                try:
+                    need = bool(placer._provider(_distinct_pred, b))
+                except Exception:  # noqa: BLE001
+                    need = False
+                if not need:
+                    continue
+                # its two input drivers (dedup, keep order); need >=2 distinct producers.
+                drvs = []
+                for d in _drivers_of.get(b.name, []):
+                    if d not in drvs and d in out_cx:
+                        drvs.append(d)
+                if len(drvs) < 2:
+                    continue                          # single/logical feed: no lock needed
+                d0, d1 = drvs[0], drvs[1]
+                cx, cy = in_cx[b.name], in_cy[b.name]
+
+                def _sgn(nx, ny, tag):
+                    lx = model.NewBoolVar(f"df_{tag}_lx")
+                    gx = model.NewBoolVar(f"df_{tag}_gx")
+                    ly = model.NewBoolVar(f"df_{tag}_ly")
+                    gy = model.NewBoolVar(f"df_{tag}_gy")
+                    model.Add(nx < cx).OnlyEnforceIf(lx)
+                    model.Add(nx >= cx).OnlyEnforceIf(lx.Not())
+                    model.Add(nx > cx).OnlyEnforceIf(gx)
+                    model.Add(nx <= cx).OnlyEnforceIf(gx.Not())
+                    model.Add(ny < cy).OnlyEnforceIf(ly)
+                    model.Add(ny >= cy).OnlyEnforceIf(ly.Not())
+                    model.Add(ny > cy).OnlyEnforceIf(gy)
+                    model.Add(ny <= cy).OnlyEnforceIf(gy.Not())
+                    return (lx, gx, ly, gy)
+                s0 = _sgn(out_cx[d0], out_cy[d0], f"{b.name}_d0")
+                s1 = _sgn(out_cx[d1], out_cy[d1], f"{b.name}_d1")
+                dneqs = []
+                for k, (a0b, a1b) in enumerate(zip(s0, s1)):
+                    ne = model.NewBoolVar(f"df_{b.name}_ne{k}")
+                    model.Add(a0b != a1b).OnlyEnforceIf(ne)
+                    model.Add(a0b == a1b).OnlyEnforceIf(ne.Not())
+                    dneqs.append(ne)
+                model.AddBoolOr(dneqs)   # two drivers cannot share a face
+
         # ABUTMENT-FIRST: maximise the number of abutted (route-free) dataflow edges as
         # the PRIMARY objective; total wirelength stays a small secondary tie-break so
         # the non-abutting nets still route short. Weight the abut count far above the

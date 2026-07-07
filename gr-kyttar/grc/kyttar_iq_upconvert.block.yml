@@ -23,18 +23,20 @@ parameters:
   default: '4000'
 
 inputs:
-# ONE complex baseband input -> real passband output, matching the actual
-# kyttar.iq_upconvert block (io_signature complex64 -> float32) and its VERIFIED
-# GNU Radio equivalent multiply_cc(baseband, sig_source_c) -> complex_to_real
-# (see verification/tests/test_iq_upconvert.py). On-chip the block reads I@R0 and
-# Q@R1; placeKYT's importer splits this single complex net into the xi/xq rail
-# pair when it lands the block on the array. The previous two-float-rail
-# declaration disagreed with the real block and made a GRC flowgraph reject the
-# wiring ("Source IO type 'complex' does not match sink IO type 'float'") — caught
-# by test_grc_block_port_dtypes.
-- label: in
+# REAL rails. On-chip the block reads xi@R0 and xq@R1 as two SCALAR reals and computes
+# out = xi·cos − xq·sin.  Both rails are exposed as OPTIONAL real inputs:
+#   * xi only (xq unconnected, =0)  ->  out = xi·cos   (a COS-rail oscillator-mixer)
+#   * xq only (xi unconnected, =0)  ->  out = −xq·sin  (a −SIN-rail oscillator-mixer)
+# This lets the SSB Weaver use ONE 6-cell IQUpconvert per up-mix rail (vs an 11-cell
+# ComplexMixer), and a BPSK/QPSK TX still drives xi (and optionally xq) as before.
+- label: xi
   domain: stream
-  dtype: complex
+  dtype: float
+  optional: true
+- label: xq
+  domain: stream
+  dtype: float
+  optional: true
 
 outputs:
 - label: out

@@ -59,9 +59,14 @@ _VERIFIED_EQUIV = {
     "kyttar_complex_mixer": (["complex"], ["complex"]),
     # fir_filter_ccf: complex -> complex                       [test_complex_fir.py / INV-18]
     "kyttar_complex_low_pass_filter": (["complex"], ["complex"]),
-    # multiply_cc(bb, sig_source_c) -> complex_to_real: complex -> float
-    #                                                          [test_iq_upconvert.py]
-    "kyttar_iq_upconvert": (["complex"], ["float"]),
+    # I/Q upconvert exposes TWO OPTIONAL REAL rails (xi@R0, xq@R1) -> real passband:
+    # out = xi*cos - xq*sin. This is the HARDWARE contract (two scalar reals) AND what
+    # lets a real GNU Radio flowgraph wire a float signal straight into the mixer (a
+    # BPSK/AM TX drives xi alone). A single-complex declaration made every float-fed
+    # demo (modem/AM/SSB) fail to LOAD in GRC (float != complex). The verified GR
+    # equivalent multiply_cc(bb, sig_source_c) -> complex_to_real is a documentation
+    # note, not the port contract.                            [test_iq_upconvert.py]
+    "kyttar_iq_upconvert": (["float", "float"], ["float"]),
     # gain: float -> float                                     [test_gain.py]
     "kyttar_gain": (["float"], ["float"]),
 }
@@ -131,7 +136,9 @@ except Exception as e:
 isig, osig = blk.input_signature(), blk.output_signature()
 ins = [isig.sizeof_stream_item(i) for i in range(isig.max_streams())] if isig.max_streams() > 0 else []
 outs = [osig.sizeof_stream_item(i) for i in range(osig.max_streams())] if osig.max_streams() > 0 else []
-print("OK " + repr(ins) + " " + repr(outs))
+# Emit each list SPACE-FREE so the parent can split on a single space even for a
+# multi-port block (repr([4, 4]) contains a space that would break split()).
+print("OK " + repr(ins).replace(" ", "") + " " + repr(outs).replace(" ", ""))
 """
     out = subprocess.run([_GR_PYTHON, "-c", prog], capture_output=True, text=True,
                          timeout=60)

@@ -200,9 +200,16 @@ class iq_upconvert(_PassThrough):
 
     def __init__(self, device_id="kyttar_0", sample_rate=32000.0,
                  frequency=4000.0):
-        # complex in, real passband out
-        super().__init__("Kyttar I/Q Upconvert", n_in=1, n_out=1,
-                         in_dtype=np.complex64, out_dtype=np.float32)
+        # TWO REAL rails in (xi@R0, xq@R1), real passband out. On-chip the block
+        # reads two scalar reals and computes out = xi*cos - xq*sin; a BPSK/AM TX
+        # drives xi alone (xq=0 -> out = xi*cos, an oscillator-mixer). Declaring two
+        # FLOAT inputs (not one complex) is what lets a real GNU Radio flowgraph wire
+        # a float signal straight into the mixer — the .block.yml exposes xi/xq as two
+        # optional float rails to match. (A single-complex declaration made every
+        # float-fed demo — modem/AM/SSB — fail to load with a float!=complex port
+        # mismatch.)
+        super().__init__("Kyttar I/Q Upconvert", n_in=2, n_out=1,
+                         in_dtype=np.float32, out_dtype=np.float32)
         self.device_id = device_id
         self.sample_rate = sample_rate
         self.frequency = frequency

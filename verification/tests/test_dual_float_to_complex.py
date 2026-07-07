@@ -1,22 +1,25 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""DualFloatToComplexBlock — structural on-chip proof of the LOCK rendezvous.
+"""DualFloatToComplexBlock — structural on-chip proof of the phase-toggle rendezvous.
 
 The physical block for the TWO-independent-real-producer float_to_complex case
-(dev_docs/LOGICAL_CONVERTERS_AND_DUAL_F2C_RENDEZVOUS.md §4): a 1-cell arbiter-LOCK
-rendezvous that pairs two independent real streams (I on one face, Q on another)
-into ONE complex packet, matched-pairs-only regardless of interleaving.
+(dev_docs/LOGICAL_CONVERTERS_AND_DUAL_F2C_RENDEZVOUS.md §4): a 1-cell SINGLE-ENTRY
+PHASE-TOGGLE rendezvous that pairs two independent real streams into ONE complex
+sample, matched-pairs-only regardless of interleaving. Both producers JUMP one
+`recv` entry; a persistent `phase` register alternates 0->1->0 (I then Q+emit). This
+replaced the LOCK-by-face design, which cannot work under auto-P&R (both rails reach
+the cell from the SAME face, so a face lock cannot distinguish them).
 
 This test proves the block is REAL and builds correctly:
   * the catalog discovers it,
   * it places + routes + BUILDS on a 10x12 chip, and
-  * the built cell's program IS the rendezvous — it contains the LOCK_FACE (CONFIG
-    addr 3, mem dest 35) and LOCK (addr 4, dest 36) config writes that arm the
-    lock, flip it I->Q, and re-arm.
+  * the built cell's program IS the phase-toggle rendezvous — its `recv` entry
+    compares the phase register and branches on non-zero (CMP + Branch invert) to
+    pick the I vs Q arm, and its output handoff is a normal brokered WRITE+JUMP
+    (no RAW_OUTPUT_HOPS), so it egresses through auto-P&R like any block.
 
-The FUNCTIONAL adversarial-interleave proof (2 producers on 2 faces -> matched
-pairs only, with mutation gates) needs a bespoke 2-producer routed topology and is
-tracked separately — the block-DUT harness sends matched packets through ONE
-port/face, so it cannot exercise the adversarial 2-face case.
+The FUNCTIONAL end-to-end proof (complex in -> converters -> chip out, corr 1.0) is
+in test_converter_flavors_grc.py's live-run path. The adversarial-interleave proof
+(2 producers -> matched pairs only, with mutation gates) is tracked separately.
 
 Run::
 
@@ -58,7 +61,7 @@ def test_catalog_discovers_block():
     assert cat.get("DualFloatToComplexBlock", LIB) is not None
 
 
-def test_builds_on_chip_with_lock_rendezvous():
+def test_builds_on_chip_with_phase_toggle_rendezvous():
     import simkyt
     BlockCatalog, load_chip_type, AppController, CPE, BE = _engine()
     cat = BlockCatalog.from_gr_kyttar()
@@ -77,12 +80,17 @@ def test_builds_on_chip_with_lock_rendezvous():
     bres = ctrl.build()
     assert bres.ok, "build failed: " + "; ".join(str(e) for e in bres.errors)
 
-    # The built cell's program IS the rendezvous: LOCK_FACE (dest 35) is written
-    # three times (arm face_i, got_i -> face_q, got_q re-arm face_i) and LOCK
-    # (dest 36) once.
+    # The built cell's program IS the phase-toggle rendezvous: its `recv` entry does
+    # CMP phase, zero ; BR.NZ _q (a Cmp + a Branch{invert:true}) to pick the I/Q arm,
+    # and it emits a normal brokered handoff (a WRITE + a JUMP the build patched) — NOT
+    # the old LOCK_FACE (dest 35) / LOCK (dest 36) config writes.
     blk = ctrl.project.block(d)
     c0 = blk.placement.cells[0]
     mem = bres.chips[0].cells[(c0.x, c0.y)]["memory"]
     dis = simkyt.Program.from_words("d", list(mem), 0).disassemble()
-    assert dis.count("dest: 35") == 3, f"expected 3 LOCK_FACE writes:\n{dis}"
-    assert dis.count("dest: 36") == 1, f"expected 1 LOCK-enable write:\n{dis}"
+    assert "Cmp" in dis, f"phase-toggle rendezvous missing its Cmp:\n{dis}"
+    assert "invert: true" in dis, f"phase-toggle missing its BR.NZ branch:\n{dis}"
+    assert "Write" in dis and "Jump" in dis, f"missing output handoff:\n{dis}"
+    # The old LOCK-based design is GONE (face lock can't pair same-face rails).
+    assert "dest: 35" not in dis and "dest: 36" not in dis, (
+        f"unexpected LOCK config writes — should be phase-toggle now:\n{dis}")

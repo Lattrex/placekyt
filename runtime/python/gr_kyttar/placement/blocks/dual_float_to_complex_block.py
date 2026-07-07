@@ -8,27 +8,35 @@ from ._base import KyttarBlock, BlockInterface
 
 class DualFloatToComplexBlock(KyttarBlock):
     """Dual float -> complex rendezvous (1 cell) — pairs TWO independent real
-    streams into ONE complex packet using the arbiter LOCK.
+    streams into ONE complex sample with a SINGLE-ENTRY PHASE TOGGLE.
 
     GNU Radio equivalent: ``blocks.float_to_complex`` fed by two DISTINCT real
     streams (I on input 0, Q on input 1) -> a single complex stream. On this
     clockless array the two producers fire at INDEPENDENT times, so the cell must
-    consume them as strictly MATCHED PAIRS. It does so with the ISA arbiter lock
-    (``LOCK`` / ``LOCK_FACE`` — CONFIG 4 / 3), which forces the cell to accept an
-    input from only ONE face at a time (PROGRAMMING_GUIDE §Configuration registers,
-    "multi-input synchronization … regardless of timing"). The lock is CONFIG state
-    that persists across HALT, so the cell can wait locked to one face.
+    consume them as strictly MATCHED PAIRS.
 
-    Rendezvous (the cell is ALWAYS locked to exactly one face, advancing I->Q->I):
+    Both producers JUMP the ONE ``recv`` entry; a persistent ``phase`` register
+    alternates 0->1->0 to decide which word is I and which is Q:
 
-        arm   (default): LOCK_FACE = face_i ; LOCK = 1 ; HALT   (accept only I)
-        got_i (face_i):  latch I ; LOCK_FACE = face_q ; HALT    (accept only Q)
-        got_q (face_q):  latch Q ; emit (xi=I, xq=Q) packet downstream ;
-                         LOCK_FACE = face_i ; HALT               (re-arm for next I)
+        recv (phase 0): latch I ; phase := 1 ; HALT       (wait for the Q of this pair)
+        recv (phase 1): latch Q ; emit the recovered rail ; phase := 0 ; HALT
 
-    Because the cell only ever fires the downstream complex block from ``got_q``,
-    with a fresh I latched moments before, it CANNOT emit an unpaired or duplicated
-    sample no matter how the two producers interleave.
+    This COUNTS the two triggers of each pair rather than distinguishing them by
+    arrival FACE — the earlier LOCK-by-face design FAILED under auto-P&R because the
+    two backbone taps abut ONE neighbour, so both I and Q reach this cell from the SAME
+    face and a face lock cannot tell them apart. The phase counter is face-agnostic and
+    needs NO external "arm": ``phase`` boots 0 (cold-start memory), so the first word is
+    I. It is a ``reset_per_batch`` StateVar so a persistently-hosted server cold-starts
+    ``phase`` to 0 at each packet boundary (a mid-packet re-Run can't desync the pairing).
+
+    The cell latches BOTH xi and xq (the pairing is the whole point) but emits ONE ``out``
+    value — the recovered REAL rail (xi) — via the SAME declarative ``{write:out}`` /
+    ``{jump:out}`` handoff a GainBlock uses, so the build BROKERS + hop-patches it like any
+    block (no RAW_OUTPUT_HOPS). In every wired chain the DualFloatToComplex feeds a
+    ``complex_to_real`` (logical, drops Q) before a real consumer, so xi is exactly what
+    survives. (A dual feeding a genuine 2-input complex block would need a 2-rail packet —
+    the mixer's ``{write:xi_fwd}``/``{write:xq_fwd}`` pattern; that is the FOLLOW-UP
+    importer work, not this chain.)
 
     NOTE: this block is ONLY needed for TWO independent real producers. A single
     real stream feeding a complex block (real audio -> mixer, Q=0) is a LOGICAL-ONLY
@@ -37,20 +45,16 @@ class DualFloatToComplexBlock(KyttarBlock):
     dev_docs/LOGICAL_CONVERTERS_AND_DUAL_F2C_RENDEZVOUS.md.
 
     Parameters:
-      * ``face_i`` / ``face_q``: the faces the I and Q producers arrive on
-        ('south'|'east'|'west'|'north'). MUST be distinct — the router lands the
-        I route on one face and the Q route on the other.
-      * ``hop`` / ``dest_i`` / ``dest_q`` / ``entry``: the downstream complex block's
-        hop, xi/xq registers, and entry (authored by the build's handoff patch).
+      * ``face_i`` / ``face_q``: retained for API compatibility but no longer used by
+        the phase-toggle rendezvous (the pairing is by trigger COUNT, not face).
+      * ``hop`` / ``dest_i`` / ``dest_q`` / ``entry``: retained for API compatibility;
+        the output handoff is now declarative + brokered, not authored.
 
-    Interface: entries ``arm`` (default), ``got_i``, ``got_q``. I lands in R0, Q in
-    R0 (each on its own trigger); latched to state xi/xq before emit.
+    Interface: ONE entry ``recv`` (both I and Q producers target it). The input word
+    lands in R0; ``phase`` picks I vs Q; both latch to state xi/xq; xi is emitted.
     """
     CATEGORY = "type_conversion"
     TAGS = ["float_to_complex", "rendezvous", "lock", "type_conversion", "complex"]
-    # This block authors its own output WRITE/JUMP hops (the downstream complex
-    # packet) — the build must NOT default them to @1 abutment.
-    RAW_OUTPUT_HOPS = True
 
     _FACE = {"south": 0, "east": 1, "west": 2, "north": 3}
 
@@ -69,44 +73,57 @@ class DualFloatToComplexBlock(KyttarBlock):
 
     @property
     def interface(self) -> BlockInterface:
-        # Default entry is `arm` (address 1); the I/Q producers target got_i/got_q.
+        # Single entry `recv` (address 1): BOTH the I and the Q producer JUMP here; the
+        # phase-toggle inside decides which is which. Input lands in R0.
         return BlockInterface(entry_address=1, input_registers=[0],
                               output_registers=[0])
 
     def build_cell_programs(self) -> Dict[int, CellProgram]:
-        fi = self._FACE.get(self._face_i, 2)   # west
-        fq = self._FACE.get(self._face_q, 0)   # south
-        one = 1
-        # The rendezvous. `arm` is fired ONCE at startup to lock to face_i; from then
-        # on the cell self-re-arms at the end of got_q. LOCK/LOCK_FACE persist across
-        # HALT (CONFIG state), so each HALT waits on exactly the locked face.
+        # SINGLE-ENTRY PHASE-TOGGLE rendezvous (event-driven; no external "arm"), with a
+        # DECLARATIVE single `out` handoff (like GainBlock's {write:out}/{jump:out}) so
+        # the build BROKERS + hop-patches it normally — no RAW_OUTPUT_HOPS.
+        #
+        # Both producers JUMP the one `recv` entry; a persistent `phase` register
+        # alternates 0->1->0. This COUNTS the two triggers of each pair rather than
+        # distinguishing them by arrival FACE — the earlier LOCK-by-face design FAILED
+        # under auto-P&R because the two backbone taps abut ONE neighbour, so both I and
+        # Q reach this cell from the SAME face and a face lock cannot tell them apart. The
+        # phase counter is face-agnostic and needs NO arm: `phase` boots 0 (cold-start
+        # memory) so the first word is I, the second Q+emit. `phase` is reset_per_batch
+        # so a persistently-hosted server cold-starts it per packet.
+        #
+        # It latches BOTH xi and xq (the pairing is the whole point) but emits ONE `out`
+        # value = the recovered REAL rail (xi). In every wired chain the DualFloatToComplex
+        # feeds a `complex_to_real` (logical, drops Q) before any real consumer, so xi is
+        # exactly what survives — delivering it as a normal single `out` lets the build
+        # broker it like any block. (A dual feeding a genuine 2-input complex block would
+        # need a 2-rail packet — the mixer's {write:xi_fwd}/{write:xq_fwd} pattern; that's
+        # the FOLLOW-UP importer work, not this chain.)
         tmpl = (
-            "arm:\n"
-            "    MOVE [LOCK_FACE], R{data:face_i}\n"
-            "    MOVE [LOCK], R{data:lock_on}\n"
+            "recv:\n"
+            "    CMP R{state:phase}, R{data:zero}\n"
+            "    BR.NZ _q\n"
+            # phase 0: this word is I. latch it, flip to phase 1, wait for Q.
+            "    MOVE R{state:xi}, R{in:i}\n"
+            "    MOVE R{state:phase}, R{data:one}\n"
             "    HALT\n"
-            "got_i:\n"
-            "    MOVE R{state:xi}, R{in:i}\n"       # latch I
-            "    MOVE [LOCK_FACE], R{data:face_q}\n"  # now accept only Q
-            "    HALT\n"
-            "got_q:\n"
-            "    MOVE R{state:xq}, R{in:q}\n"       # latch Q (paired with the latched I)
+            "_q:\n"
+            # phase 1: this word is Q. latch it (pairing proven), emit xi, reset phase.
+            "    MOVE R{state:xq}, R{in:q}\n"
             "    MOVE R0, R{state:xi}\n"
-            f"    WRITE @{self._hop}, {self._dest_i}\n"   # xi -> downstream R0
-            "    MOVE R0, R{state:xq}\n"
-            f"    WRITE @{self._hop}, {self._dest_q}\n"   # xq -> downstream R1
-            f"    JUMP @{self._hop}, {self._entry}\n"     # fire the complex block ONCE
-            "    MOVE [LOCK_FACE], R{data:face_i}\n"      # re-arm: accept only I again
+            "    {write:out}\n"                          # recovered I -> downstream (brokered)
+            "    {jump:out}\n"                           # trigger the downstream ONCE
+            "    MOVE R{state:phase}, R{data:zero}\n"    # back to phase 0 (next I)
             "    HALT\n"
         )
         return {0: CellProgram(
             inputs=[Port("i", register=0), Port("q", register=0)],
             outputs=[Port("out")],
-            entries=[EntryPoint("arm"), EntryPoint("got_i"), EntryPoint("got_q")],
-            data=[DataWord("face_i", fi, address=1, is_face=True),
-                  DataWord("face_q", fq, address=2, is_face=True),
-                  DataWord("lock_on", one, address=3)],
-            state=[StateVar("xi"), StateVar("xq")],
+            entries=[EntryPoint("recv")],
+            data=[DataWord("zero", 0, address=1),
+                  DataWord("one", 1, address=2)],
+            state=[StateVar("xi"), StateVar("xq"),
+                   StateVar("phase", reset_per_batch=True)],
             assembly_template=tmpl,
         )}
 

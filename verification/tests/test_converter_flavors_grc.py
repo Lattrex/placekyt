@@ -3,26 +3,28 @@
 
 ``verification/tests/data/converter_flavors.grc`` is ONE importable GNU Radio
 flowgraph that threads EVERY float/complex dtype interaction the placeKYT importer
-must handle, in a single linear chain (dev_docs §7, CM: "all of the complex/float
-interactions in a single simple test that is an importable GRC flow graph … run in
-placeKYT both visually and headless"):
+must handle, in a single DRIVABLE identity chain (dev_docs §7, CM: "all of the
+complex/float interactions in a single simple test that is an importable GRC flow
+graph … run in placeKYT both visually and headless"):
 
-  1. TWO real streams  -> blocks_float_to_complex (2-real)  -> a physical
-     DualFloatToComplex LOCK-rendezvous block  -> a complex mixer.
-  2. complex mixer -> blocks_complex_to_float (BOTH rails): out_i and out_q each
-     drive a real gain (the Q rail is observed on a second chip-output stream).
-  3. the out_i real rail -> blocks_float_to_complex (SINGLE real, Q = null_source)
-     -> a second complex mixer (xq = 0, no cell — logical-only).
-  4. the second complex mixer -> blocks_complex_to_real (drop Q) -> a real gain -> sink.
+  complex source (x16_in) -> complex mixer (pass-through) -> blocks_complex_to_float
+  (split I/Q) -> two real gains -> blocks_float_to_complex (recombine the two on-chip
+  real rails via the physical DualFloatToComplex phase-toggle block) ->
+  blocks_complex_to_real (drop Q) -> real gain -> sink (x16_out).
+
+The mixer is pass-through (freq 0), so with the same signal on I and Q the chip
+output == input — a true identity round-trip through every converter flavor.
 
 This test proves, mechanically (not by reasoning about GNU Radio):
   * ``grcc`` compiles the .grc with ZERO errors (the user-visible GRC bar) — it is a
     real, valid GNU Radio flowgraph.  [skipped if grcc is unavailable]
-  * placeKYT IMPORTS it with the correct placement (2 mixers + 1 DualFloatToComplex
-    + 3 gains = 6 cells; the logical converters add ZERO cells) and the exact rail
+  * placeKYT IMPORTS it with the correct placement (1 mixer + 1 DualFloatToComplex
+    + 3 gains = 5 cells; the logical converters add ZERO cells) and the exact rail
     wiring for every flavor.
-  * it AUTO-P&Rs (all nets route) and BUILDS a bitstream, whose fabric carries the
-    DualFloatToComplex LOCK rendezvous (a dest-35 LOCK_FACE + dest-36 LOCK write).
+  * it AUTO-P&Rs (all nets route) and BUILDS a bitstream whose fabric carries the
+    DualFloatToComplex phase-toggle rendezvous.
+  * it RUNS LIVE over the SimServer batch bridge (the GUI "Run as Server → Execute"
+    path): a complex burst driven in recovers at x16_out, correlation 1.0.
 
 Run::
 
@@ -141,7 +143,7 @@ def test_imports_all_flavors_correct_cells_and_wiring():
 
 def test_routes_and_builds_with_rendezvous_onchip():
     """Auto-P&R routes every net and the build produces a bitstream whose fabric
-    carries the DualFloatToComplex LOCK rendezvous.
+    carries the DualFloatToComplex PHASE-TOGGLE rendezvous.
 
     Deterministic now (was ~50% flaky): the CP-SAT abutment-first placer enforces a
     single-cell block's input-face != output-face, so it never emits a layout that
@@ -164,13 +166,90 @@ def test_routes_and_builds_with_rendezvous_onchip():
     assert words, "empty bitstream"
     chip = simkyt.Chip.from_yaml(CHIP_YAML)
     chip.load_bitstream_physical(words)
-    # The DualFloatToComplex rendezvous cell writes LOCK_FACE (dest 35) and LOCK
-    # (dest 36) — search the built fabric for that program.
+    # The DualFloatToComplex rendezvous is the SINGLE-ENTRY PHASE TOGGLE: its `recv`
+    # entry compares the phase register then branches (CMP + Branch{NotZero}) to pick
+    # I vs Q. Find that program in the built fabric. (The old design keyed on a LOCK_FACE
+    # write — removed: LOCK-by-face can't distinguish two rails that arrive on the SAME
+    # face under auto-P&R.)
     found = False
     for cid in range(120):
         mem = [chip.read_cell_memory(cid, a) for a in range(32)]
         dis = simkyt.Program.from_words("c", mem, 0).disassemble()
-        if "dest: 35" in dis and "dest: 36" in dis:
+        if "Cmp" in dis and "Branch" in dis and "invert: true" in dis:
             found = True
             break
-    assert found, "built fabric is missing the DualFloatToComplex LOCK rendezvous"
+    assert found, "built fabric is missing the DualFloatToComplex phase-toggle rendezvous"
+
+
+def test_runs_live_recovers_input():
+    """THE LIVE PROOF (source -> chip -> plot): drive a complex burst through the
+    hosted chip over the SimServer batch bridge — the exact "Run as GNURadio Server →
+    Execute" path — and recover it at x16_out. With the SAME signal on the I and Q
+    rails and a pass-through mixer, the chip output is an IDENTITY of the input
+    (correlation 1.0), so every converter in the chain provably FUNCTIONS end to end:
+    complex_to_float split, the two on-chip real rails, the DualFloatToComplex phase-
+    toggle recombine, complex_to_real drop-Q, and the egress gain.
+
+    This locks in the two fixes that made the live chain flow: (a) the bridge injects
+    at the BUILD's corridor-accurate input landing (the ComplexMixer's phase cell,
+    reached via a broker one hop past the corridor end — a manhattan hop lands short),
+    and (b) the DualFloatToComplex emits a normal brokered {write:out}/{jump:out}
+    handoff so auto-P&R hop-patches its egress like any block."""
+    import socket
+    import numpy as np
+    import simkyt
+    from engine.io.chip_type_io import load_chip_type
+    from engine.port_config import input_port_config, batch_reset_writes
+    from engine.sim_bridge import SimServer, send_message, recv_message
+    from ui.controller import AppController
+
+    _BC, cat, res = _import()
+    ct = load_chip_type(CHIP_YAML)
+    ctrl = AppController(catalog=cat)
+    ctrl.project = res.project
+    assert ctrl.auto_pnr({CHIP: ct}).ok
+    bres = ctrl.build()
+    assert bres.ok, "build failed: " + "; ".join(str(e) for e in bres.errors)
+
+    # The bridge's injection landing MUST come from the BUILT corridor (not a manhattan
+    # estimate) — that is the fix that makes the multi-cell ComplexMixer head fire.
+    pc = input_port_config(ctrl.project, ctrl.registry, ctrl.catalog, 0,
+                           build_result=bres)
+    assert pc is not None
+    in_name, cfg = pc
+
+    chip = simkyt.Chip.from_yaml(CHIP_YAML)
+    chip.load_bitstream_physical(bres.chips[0].words)
+    srv = SimServer(chip,
+                    default_entries={in_name: int(cfg["entry_addr"])},
+                    default_hops={in_name: int(cfg["hop_count"])},
+                    batch_reset_writes=batch_reset_writes(bres, 0))
+    port = srv.start()
+    try:
+        c = socket.socket()
+        c.connect(("127.0.0.1", port))
+        N = 48
+        t = np.arange(N)
+        sig = (0.4 * np.cos(2 * np.pi * t / 13)).astype(np.float32)
+        # SAME signal on I and Q -> the recovered rail is that signal regardless of
+        # which rail the phase-toggle labels "I" (a clean identity round-trip).
+        payload = np.empty(2 * N, dtype=np.float32)
+        payload[0::2] = sig
+        payload[1::2] = sig
+        da = int(cfg["data_addr"])
+        send_message(c, {"op": "process_batch", "port": "x16_out",
+                         "in_port": in_name, "complex": True, "raw": False,
+                         "data_addrs": [da, da + 1]}, payload)
+        _hdr, out = recv_message(c)
+        c.close()
+    finally:
+        srv.stop()
+
+    assert out is not None and len(out) >= N, (
+        f"live run produced no egress ({0 if out is None else len(out)} words) — "
+        "the converter chain did not flow through to x16_out")
+    o = np.asarray(out, dtype=float)[:N]
+    corr = float(np.corrcoef(o, sig[:N])[0, 1])
+    assert corr > 0.99, (
+        f"chip output does not recover the input (corr={corr:.4f}); the converter "
+        "chain ran but the recovered signal is wrong")

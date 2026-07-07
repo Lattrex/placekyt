@@ -16,15 +16,35 @@ from __future__ import annotations
 from model.connection import BlockEndpoint, ChipPortEndpoint
 
 
-def input_port_config(project, registry, catalog, chip_id: int = 0):
+def _built_landing(build_result, chip_id, conn_name):
+    """The build's corridor-accurate ``{cell, entry, hop, data_addrs}`` landing for
+    ``conn_name`` on ``chip_id``, or ``None`` if the design isn't built / the net has
+    no recorded landing. ``BuildResult.chips`` is keyed by chip id; each ChipBuild's
+    ``input_landings`` is keyed by connection name (see build._resolve_input_landings)."""
+    cb = getattr(build_result, "chips", {}).get(chip_id) if build_result else None
+    if cb is None:
+        return None
+    return (getattr(cb, "input_landings", {}) or {}).get(conn_name)
+
+
+def input_port_config(project, registry, catalog, chip_id: int = 0,
+                      build_result=None):
     """``(port_name, {entry_addr, hop_count, data_addr})`` for the block fed by
     ``chip_id``'s input port, or ``None``.
 
     The fed block is the target of an explicit ``x16_in → block`` route on this
     chip, or — when there's no such route — the block whose first cell sits on
     (or nearest to) the input-port cell (the common "block at the port" case).
-    ``hop_count = 30 - distance(port_cell, block_anchor)``; entry / input
-    register come from the block's resolved v2 layout.
+
+    ``build_result`` (optional): when the design has been BUILT, the ``ChipBuild``'s
+    ``input_landings`` carries the CORRIDOR-ACCURATE injection landing (cell / entry /
+    hop / data-addrs) — the hop the routed corridor + broker actually delivers to.
+    Prefer it: a Manhattan estimate (``30 - straight-line distance``) is WRONG whenever
+    the corridor snakes or a broker delivers into a NON-corner input cell of a
+    multi-cell block (e.g. the ComplexMixer's ``phase`` cell reached via a broker one
+    hop past the corridor end). Using the manhattan hop there consumes the JUMP a cell
+    short, the block never fires, and the whole chain produces NO output. Falls back to
+    the manhattan model only when unbuilt.
     """
     chip = project.chip(chip_id)
     type_name = (chip.type_name if chip and chip.type_name
@@ -36,13 +56,28 @@ def input_port_config(project, registry, catalog, chip_id: int = 0):
 
     # 1. An explicit x16_in → block route on this chip.
     target = None
+    target_conn = None
     for conn in project.connections:
         if (isinstance(conn.source, ChipPortEndpoint)
                 and conn.source.chip == chip_id
                 and conn.source.port == in_port.name
                 and isinstance(conn.target, BlockEndpoint)):
             target = project.block(conn.target.block)
+            target_conn = conn
             break
+
+    # BUILT corridor-accurate landing (preferred): the build walked this net's physical
+    # corridor against the realized faces and recorded the exact cell/entry/hop/data —
+    # the single source of truth the server MUST inject at. Use it verbatim when present.
+    if build_result is not None and target_conn is not None:
+        land = _built_landing(build_result, chip_id, target_conn.name)
+        if land is not None:
+            das = land.get("data_addrs") or [0]
+            return (in_port.name, {
+                "entry_addr": int(land["entry"]),
+                "hop_count": int(land["hop"]) & 0x1F,
+                "data_addr": int(das[0]),
+            })
     # 2. Else the block on this chip nearest the input-port cell.
     if target is None:
         best = None

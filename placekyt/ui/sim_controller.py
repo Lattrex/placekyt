@@ -488,7 +488,8 @@ class SimController(QObject):
         # targets for yet. Skip port-config + stream_targets resolution (they
         # would fail on the absent chip type) — the first post-import batch's
         # dirty-rebuild re-resolves EVERYTHING against the real design.
-        cfg = None if empty_project else self._input_port_config(self._sim_chip)
+        cfg = (None if empty_project
+               else self._input_port_config(self._sim_chip, build_result=result))
         default_entries: dict[str, int] = {}
         default_hops: dict[str, int] = {}
         if cfg is not None:
@@ -1639,13 +1640,20 @@ class SimController(QObject):
 
     # -- helpers --------------------------------------------------------------
 
-    def _input_port_config(self, chip_id: int = 0):
+    def _input_port_config(self, chip_id: int = 0, build_result=None):
         """(port_name, {entry_addr, hop_count, data_addr}) for the block fed by
         ``chip_id``'s input port, or None. Delegates to the Qt-free helper so the
-        GUI sim and the CLI build derive identical port config."""
+        GUI sim and the CLI build derive identical port config.
+
+        Passing ``build_result`` makes the helper prefer the BUILT corridor-accurate
+        landing (cell/entry/hop the routed corridor+broker actually delivers to) over
+        a manhattan straight-line estimate — required so a chip-input net that lands on
+        a multi-cell block's non-corner input cell (via a broker one hop past the
+        corridor end) injects at the RIGHT cell instead of a cell short (0 output)."""
         from engine.port_config import input_port_config
         return input_port_config(
-            self.app.project, self.app.registry, self.app.catalog, chip_id)
+            self.app.project, self.app.registry, self.app.catalog, chip_id,
+            build_result=build_result)
 
     def _output_target(self):
         """(chip_id, port_name) of the design's final output port, or None."""

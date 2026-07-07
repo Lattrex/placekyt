@@ -654,6 +654,32 @@ def _patch_complex_abutment_handoff(cfg, hop, rail_idx, dest, entry=None) -> Non
         cfg.memory[addr] = word & 0xFFFF
 
 
+def _patch_complex_output_port_handoff(cfg, hop, base_tag, entry=0) -> None:
+    """Patch a COMPLEX-OUTPUT source cell whose two rails (yi, yq) exit the CHIP
+    OUTPUT PORT: set the @hop on every WRITE and the JUMP, and give each WRITE its OWN
+    dest TAG — the k-th output WRITE gets ``base_tag + k`` (yi→base_tag, yq→base_tag+1).
+
+    This is the OUTPUT-side analogue of the complex INPUT (xi→a0, xq→a1): the port
+    demux keys on the WRITE's dest field, so distinct tags keep I and Q as SEPARATE
+    captured streams instead of one interleaved [I0,Q0,I1,Q1,…] tag. The waveform then
+    plots two clean traces (cos φ, sin φ) rather than a jagged interleaved band."""
+    hop_cnt = encode_hop_cnt(hop)
+    write_i = 0
+    for addr, word in list(cfg.memory.items()):
+        if not _is_instruction_addr(cfg, addr):
+            continue
+        opcode = word & 0xF000
+        if opcode not in (_WRITE, _JUMP):
+            continue
+        word = (word & ~(0x1F << 5)) | (hop_cnt << 5)   # @hop on all WRITE/JUMP
+        if opcode == _WRITE:
+            word = (word & ~0x1F) | ((int(base_tag) + write_i) & 0x1F)
+            write_i += 1
+        elif opcode == _JUMP:
+            word = (word & ~0x1F) | (int(entry) & 0x1F)
+        cfg.memory[addr] = word & 0xFFFF
+
+
 def _output_cell_carries_handoffs(gr_block) -> bool:
     """True if the block's OUTPUT exit cell ALSO emits internal handoff WRITEs (so
     the output WRITE must be patched ALONE, not every WRITE in the cell).
@@ -888,6 +914,18 @@ def _apply_routes(cell_map, gr_placement, blocks, connections, chip_type,
                             else (t_ins[0] if t_ins else 0))
             elif conn.out_tag is not None:   # chip-output-port target with a tag
                 dest = conn.out_tag
+            # Is the SOURCE a complex-output cell (yi+yq, two output rails)? Its exit
+            # cell emits ≥2 output WRITEs. When it drives the OUTPUT PORT, the two rails
+            # must exit with DISTINCT tags (yi→out_tag, yq→out_tag+1) — see below.
+            # NOTE: resolved_io returns (entry, INPUT regs); OUTPUT-reg count comes from
+            # the block SPEC's output_registers.
+            src_is_complex_out = False
+            try:
+                _sb = next(b for b in blocks if b.name == src.block)
+                _spec = catalog.get(_sb.type, library=_sb.library)
+                src_is_complex_out = bool(_spec) and len(_spec.output_registers) > 1
+            except Exception:  # noqa: BLE001
+                pass
             # If the source block declares a MID-block output cell (its output
             # leaves a non-last cell that ALSO carries internal handoffs — e.g. the
             # Costas rotate cell writes yi→pd_pi AND yi_tap→the port), patch ONLY
@@ -902,6 +940,14 @@ def _apply_routes(cell_map, gr_placement, blocks, connections, chip_type,
             if _output_cell_carries_handoffs(gb):
                 _patch_last_write_handoff(cfg, phys_dist, dest=dest)
                 _patch_last_jump_handoff(cfg, phys_dist, entry=entry)
+            elif (not isinstance(tgt, BlockEndpoint) and src_is_complex_out
+                  and _cell_write_count(cfg) > 1):
+                # COMPLEX EGRESS to the OUTPUT PORT: the source emits yi+yq (≥2 output
+                # WRITEs) straight to x16_out. Give each rail its OWN dest tag
+                # (yi→out_tag, yq→out_tag+1) so the port demux keeps I and Q as
+                # SEPARATE captured streams (mirrors complex INPUT xi→a0, xq→a1), and
+                # the waveform plots two clean traces instead of one interleaved band.
+                _patch_complex_output_port_handoff(cfg, phys_dist, dest, entry=0)
             elif n_target_ins > 1 and _cell_write_count(cfg) > 1:
                 # COMPLEX PACKET over abutment: the source cell emits ≥2 output
                 # WRITEs (yi, yq) to a ≥2-register target. Steer THIS rail's WRITE

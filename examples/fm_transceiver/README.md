@@ -54,7 +54,12 @@ auto-P&Rs + builds on ONE chip, and runs LIVE end to end over the SimServer batc
 bridge as a true duplex transceiver:
 
 - **TX** produces the complex FM passband `exp(j·phi)` — the I rail tracks `cos(phi)`
-  and Q tracks `sin(phi)` at corr **1.0** vs the reference.
+  and Q tracks `sin(phi)` at corr **1.0** vs the reference. Being complex-output, the
+  VCO egresses its I and Q rails on **two distinct dest tags** (`out_tag`, `out_tag+1`)
+  — the output-side mirror of the complex input (xi→a0, xq→a1). The placeKYT waveform
+  therefore shows **two clean traces** (I = cos φ, Q = sin φ), and the GR complex sink
+  reassembles the interleaved I/Q. (If you ever see one jagged interleaved band, that's
+  the old single-tag behavior — the two rails must be separate tags.)
 - **RX** recovers the transmitted audio — corr **0.99999** (quadrature discriminator).
 
 Both streams run on the SAME shared chip, demuxed by `stream_id`. Gate:

@@ -166,6 +166,48 @@ def _run_stream(port, stream_id, payload, is_complex):
     return out
 
 
+def test_tx_complex_egress_uses_two_distinct_tags():
+    """The complex-output TX VCO egresses its I and Q rails on DISTINCT dest tags
+    (out_tag, out_tag+1) — the output-side mirror of the complex input (xi→a0,
+    xq→a1). This is what lets the placeKYT waveform split them into two clean traces
+    instead of one interleaved [I0,Q0,…] band, and the bridge reassemble I/Q."""
+    import simkyt
+    from engine.io.chip_type_io import load_chip_type
+    from engine.port_config import stream_targets
+    from ui.controller import AppController
+    from collections import Counter
+
+    cat, res = _import()
+    ct = load_chip_type(CHIP_YAML)
+    ctrl = AppController(catalog=cat)
+    ctrl.project = res.project
+    assert ctrl.auto_pnr({CHIP: ct}).ok
+    bres = ctrl.build()
+    assert bres.ok
+    tgts = stream_targets(ctrl.project, ctrl.registry, ctrl.catalog, 0,
+                          build_result=bres)
+    assert tgts["tx"].get("complex_out") is True, "TX chain must be complex-output"
+    base = int(tgts["tx"]["out_tag"])
+
+    chip = simkyt.Chip.from_yaml(CHIP_YAML)
+    chip.load_bitstream_physical(bres.chips[0].words)
+    tx = tgts["tx"]
+    hop, entry, a0 = tx["hop_count"], tx["entry_addr"], tx["data_addrs"][0]
+    aud = _audio(32).astype(np.float32)
+    tags = Counter()
+    for k in range(32):
+        xi = int(round(max(-1.0, min(0.99997, float(aud[k]))) * 32768)) & 0xFFFF
+        chip.inject_data_physical([xi], target_hop_cnt=hop, target_addr=int(a0))
+        chip.run(max_events=3000)
+        chip.inject_jump_physical(target_hop_cnt=hop, entry_addr=entry)
+        chip.run(max_events=6000)
+        for (_v, d, _t) in chip.read_port_words_timed("x16_out"):
+            tags[int(d)] += 1
+    assert set(tags) == {base, base + 1}, (
+        f"complex egress must use two tags {base}/{base + 1}, saw {dict(tags)}")
+    assert tags[base] == tags[base + 1], ("I and Q rail counts differ", dict(tags))
+
+
 def test_tx_stream_produces_fm_passband():
     """LIVE TX: drive audio into the 'tx' stream; the chip's VCO emits the COMPLEX FM
     passband ``exp(j*phi)`` (phi integrating sensitivity*audio). The VCO is a

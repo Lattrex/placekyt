@@ -207,12 +207,23 @@ def stream_targets(project, registry, catalog, chip_id: int = 0,
                 data_addrs = [_target_port_reg(catalog, blk, conn.target.port, in_regs)]
             else:
                 data_addrs = list(in_regs) if in_regs else [0]
+        out_tag, term_block = out_tag_of_block.get(blk.name, (None, None))
+        # Is the chain's terminal (output-driving) block a COMPLEX-output cell? Then
+        # its I and Q rails egress on TWO consecutive tags (out_tag, out_tag+1) — the
+        # host reassembles them into an interleaved I/Q stream (mirrors complex input).
+        complex_out = False
+        if term_block is not None:
+            tb = project.block(term_block)
+            if tb is not None:
+                spec = catalog.get(tb.type, library=tb.library)
+                complex_out = bool(spec) and len(spec.output_registers) > 1
         targets[str(sid)] = {
             "entry_addr": entry_addr,
             "hop_count": hop_count,
             "data_addrs": data_addrs,
             "in_port": in_port.name,
-            "out_tag": out_tag_of_block.get(blk.name),
+            "out_tag": out_tag,
+            "complex_out": complex_out,
         }
     return targets
 
@@ -237,8 +248,10 @@ def batch_reset_writes(build_result, chip_id: int = 0) -> list:
 
 
 def _chain_out_tags(project, chip_id, in_port_name):
-    """``{input-block name: out_tag}`` — for each block fed directly by the input
-    port, the ``out_tag`` of the ``…→x16_out`` net its forward chain ends at.
+    """``{input-block name: (out_tag, terminal_block_name)}`` — for each block fed
+    directly by the input port, the ``out_tag`` of the ``…→x16_out`` net its forward
+    chain ends at, plus the NAME of the block driving that output net (so the caller
+    can tell if the chain's egress is complex — two rails on two consecutive tags).
 
     Walks the block→block forward graph from each input block to the block whose
     output targets a chip output port, and reads that net's ``out_tag``. Linear
@@ -257,7 +270,7 @@ def _chain_out_tags(project, chip_id, in_port_name):
               and str(t.port).endswith("_out")):
             out_net_tag[s.block] = getattr(conn, "out_tag", None)
 
-    result: dict[str, int] = {}
+    result: dict[str, tuple] = {}
     for conn in project.connections:
         if not (isinstance(conn.source, ChipPortEndpoint)
                 and conn.source.chip == chip_id
@@ -268,6 +281,7 @@ def _chain_out_tags(project, chip_id, in_port_name):
         seen = set()
         frontier = [conn.target.block]
         tag = None
+        term = None
         while frontier:
             b = frontier.pop(0)
             if b in seen:
@@ -275,9 +289,10 @@ def _chain_out_tags(project, chip_id, in_port_name):
             seen.add(b)
             if b in out_net_tag:
                 tag = out_net_tag[b]
+                term = b
                 break
             frontier.extend(fwd.get(b, []))
-        result[conn.target.block] = tag
+        result[conn.target.block] = (tag, term)
     return result
 
 

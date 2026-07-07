@@ -468,6 +468,7 @@ class SimServer:
                 # this stream's recovered words off the shared output port.
                 stream_id = header.get("stream_id")
                 out_tag = None
+                out_complex = False
                 if stream_id and stream_id in self._stream_targets:
                     tgt = self._stream_targets[stream_id]
                     entry = int(tgt["entry_addr"]) & 0xFF
@@ -478,6 +479,11 @@ class SimServer:
                         a1 = das[1] if len(das) > 1 else a0 + 1
                     in_name = tgt.get("in_port", in_name)
                     out_tag = tgt.get("out_tag")
+                    # COMPLEX EGRESS: the chain ends in a complex-output cell whose I
+                    # and Q rails exit on tags (out_tag, out_tag+1). Collect BOTH and
+                    # interleave [I0,Q0,I1,Q1,…] so the GR complex sink reassembles the
+                    # I/Q stream (the output-side mirror of the complex INPUT path).
+                    out_complex = bool(tgt.get("complex_out"))
                 else:
                     hop_override = None
                 # PLACEMENT-DEPENDENT injection hop (INV-1): use the input port's
@@ -563,7 +569,24 @@ class SimServer:
                         self._chip.inject_jump_physical(target_hop_cnt=hop,
                                                         entry_addr=entry)
                         self._chip.run(max_events=mx)
-                        if out_tag is not None:
+                        if out_tag is not None and out_complex:
+                            # COMPLEX EGRESS: the I rail is tagged out_tag, the Q rail
+                            # out_tag+1. Collect this sample's I and Q (in (v,d) order)
+                            # and emit them INTERLEAVED [I,Q] so the GR complex sink
+                            # reassembles the I/Q stream. Any foreign tag is parked.
+                            i_tag, q_tag = int(out_tag), int(out_tag) + 1
+                            si = sq = None
+                            for (v, d, _t) in self._chip.read_port_words_timed(port):
+                                if int(d) == i_tag:
+                                    si = float(int(v) & 0xFFFF) if raw else _q15_to_float(int(v))
+                                elif int(d) == q_tag:
+                                    sq = float(int(v) & 0xFFFF) if raw else _q15_to_float(int(v))
+                                else:
+                                    self._tag_buf.setdefault(int(d), []).append(int(v))
+                            if si is not None:
+                                out_vals.append(si)
+                                out_vals.append(sq if sq is not None else 0.0)
+                        elif out_tag is not None:
                             # SHARED-OUTPUT-PORT DEMUX: drain the chip's tagged
                             # output WORDS (value, dest, t) and keep only those
                             # whose dest == this stream's out_tag; OTHER tags are

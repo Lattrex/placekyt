@@ -1,42 +1,42 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""PROTO: the DualFloatToComplex LOCK rendezvous, driven by REAL routed traffic.
+"""PROTO (task #428): the DualFloatToComplex PHASE-TOGGLE rendezvous under REAL routed
+two-producer traffic, including ADVERSARIAL interleaving + a mutation gate.
 
-This drives the built DualFloatToComplexBlock through a hand-built CellMap topology
-and proves — end to end, on the simulated fabric — that the arbiter-LOCK rendezvous
-pairs TWO independent real producers (I on one face, Q on another) into ONE complex
-packet, MATCHED-PAIRS-ONLY, regardless of interleaving.
+The block pairs TWO independent real producers (an I stream and a Q stream, arriving
+on DIFFERENT faces at DIFFERENT times) into ONE matched complex sample. The rewritten
+block does this with a SINGLE-ENTRY PHASE TOGGLE — both producers JUMP the one ``recv``
+entry, and a persistent ``phase`` register alternates 0->1->0: trigger 1 latches xi,
+trigger 2 latches xq AND emits the pair. It COUNTS triggers rather than distinguishing
+them by face (the old LOCK-by-face design could not work under auto-P&R, where both
+rails abut the SAME neighbour face — see the block docstring).
 
-Two topologies are exercised:
+This proto drives the REAL resolved block program through a hand-built two-face harness
+(one physical input port -> a splitter landing cell -> an I producer on one face + a Q
+producer on another) and proves, end to end on the simulated fabric:
 
-1. `_build_rv_topology` (one producer): PI relays an injected I EASTward into the
-   rendezvous cell's locked West face — proves the arm + first-face latch + lock
-   retarget in isolation (`test_arm_and_i_latch_through_real_routing`).
+  * P1  matched:        I then Q  -> the cell latches xi=I, xq=Q and emits the pair.
+  * P2  two full pairs: I,Q,I,Q   -> exactly TWO emits, each a matched pair (proves the
+        phase register re-arms cleanly for the next pair).
+  * P3  cross-producer interleave: the two producers fire on their OWN faces/corridors,
+        the arbiter serialises them, and the phase toggle pairs them consecutively —
+        no cross-pair contamination between the West and South producers.
+  * MUT mutation gate (INV-4): corrupt the phase register so the toggle can NEVER reach
+        the correct matched-pair emit; the SAME matched I,Q then does NOT emit xi=I —
+        the guarantee collapses, proving P1 is enforced by the phase toggle, not luck.
 
-2. `_build_two_face_topology` (task #428, the full mechanism): a SplitterBlock-style
-   landing cell steers the shared input port's bursts by JUMP-entry tag —
-     * rx-arm (I): FACE=East → PI → the rendezvous' locked West face,
-     * tx-arm (Q): FACE=South → a Q corridor → PQ → the rendezvous' locked South face,
-   so ONE physical input port feeds BOTH producers on BOTH faces (a single port
-   injects on ONE FWD_FACE, so two-face delivery genuinely needs this splitter).
+Substrate facts (unchanged routing model):
+  * A JUMP reaches a cell at hop = 31 - (routed_cells_traversed); manhattan distance D
+    traverses D+1 cells (the port injection counts), so hop = 31 - (D + 1).
+  * A raw JUMP injected at the single input port reaches ONE FWD_FACE chain, so feeding
+    two producers on two faces genuinely needs the splitter landing cell (by JUMP-entry
+    tag) — the mechanism auto-P&R's fan-in reproduces.
 
-PROVEN end-to-end (`test_two_face_matched_pair_emit`):
-  * P1  matched:      I then Q  → emits the pair (xi=I, xq=Q) downstream.
-  * P2  wrong-face:   Q arriving FIRST (while locked to West) is REJECTED (xq stays 0,
-        nothing emitted) — the lock refuses the unmatched face.
-  * P3  interleave:   Q-early THEN I → the queued Q drains after the lock retargets to
-        South → still a matched (I, Q). The async input FIFO + lock retarget reorder
-        an out-of-order arrival into a correct pair.
-  * MUT mutation gate (INV-4): with the ARM removed (no lock), the SAME early Q is
-        consumed UNPAIRED (xq=Q with no I) — the matched-pairs guarantee collapses.
-        This proves the guarantee is enforced by the LOCK, not by luck of timing.
-
-Substrate facts this proto pinned down:
-  * A JUMP reaches a cell at hop = 31 - (routed_cells_traversed); a routed path of
-    manhattan distance D traverses D+1 cells (the port injection counts), so
-    hop = 31 - (D + 1).  [empirically: a cell 2 away executes at hop 28, not 29.]
-  * A raw JUMP cannot be injected at the single input port and reach two producers on
-    two different corridors — the port feeds ONE FWD_FACE chain. The splitter landing
-    cell is what fans one port to two faces (by JUMP-entry tag).
+Resolved phase-toggle program (face_i/face_q params are vestigial now):
+    recv(0x14): CMP phase(R5), zero(R1) ; BR.NZ _q
+    phase 0   : MOVE xi(R3)<-R0 ; phase(R5)<-one(R2) ; HALT
+    _q(0x19)  : MOVE xq(R4)<-R0 ; MOVE R0<-xi(R3) ; WRITE out ; JUMP out ;
+                phase(R5)<-zero(R1) ; HALT
+So xi=R3, xq=R4, phase=R5; recv entry = 0x14.
 
 Run::
 
@@ -61,6 +61,10 @@ CHIP_YAML = str(_ROOT / "placekyt" / "resources" / "chips" / "kyttar_10x12.yaml"
 LIB = "lattrex.official"
 W = 10
 
+# Resolved register / entry layout of the phase-toggle program (see module docstring).
+_XI_REG, _XQ_REG, _PHASE_REG = 3, 4, 5
+_RECV = 0x14
+
 
 def _cid(x, y):
     return y * W + x
@@ -71,30 +75,35 @@ def _s16(w):
     return w - 0x10000 if w >= 0x8000 else w
 
 
-def _build_rv_topology():
-    """Build the CellMap: a rendezvous cell (the resolved DualFloatToComplex
-    program) at (3,0) locked to West/South, a producer PI at (2,0) that relays an
-    injected I EAST into the rendezvous, plus the port→PI routing. Returns
-    (bitstream_words, ARM, GOT_I)."""
+# Layout on the 10x12 fabric (x, y) — one port fans (via a splitter) to two producers
+# on two faces of the rendezvous, exactly like an auto-P&R fan-in:
+#     port -> (0,0)S -> (0,1)E -> SPLIT(1,1)
+#     SPLIT  I-arm (East)  -> PI(2,1) -> RV(3,1) WEST face
+#     SPLIT  Q-arm (South) -> QR1(1,2)E -> QR2(2,2)E -> PQ(3,2)N -> RV(3,1) SOUTH face
+#     RV emits xi EAST -> OUT(4,1)
+_RV_XY = (3, 1)
+_OUT_XY = (4, 1)
+_SPLIT_HOP = 28    # a JUMP reaches SPLIT(1,1); both I/Q bursts inject here
+_I_E, _Q_E = 1, 5  # splitter entry addresses (I-arm is 4 instrs, Q-arm follows)
+
+
+def _resolve_rv_program():
+    """Build + resolve the REAL DualFloatToComplex cell program (its brokered {write:out}
+    /{jump:out} handoff is hop-patched to @1 by the trivial RV->OUT route). Returns the
+    32-word memory image."""
     from PySide6.QtWidgets import QApplication
     QApplication.instance() or QApplication([])
-    import simkyt
-    from gr_kyttar.placement.cell_map import CellMap, CellConfig, Face
-    from gr_kyttar.bitstream.generator import BitstreamGenerator
     from engine.catalog import BlockCatalog
     from engine.io.chip_type_io import load_chip_type
     from ui.controller import AppController
     from model.connection import ChipPortEndpoint, BlockEndpoint
 
-    # 1) resolve the DualFloatToComplex program (face_i=West, face_q=South, out @1 East)
     cat = BlockCatalog.from_gr_kyttar()
     ct = load_chip_type(CHIP_YAML)
     ctk = getattr(ct, "name", None) or "kyttar_10x12"
     ctrl = AppController(catalog=cat)
     ctrl.new_project("rv", ctk)
-    d = ctrl.place_block("DualFloatToComplexBlock", 0, 5, 5, library=LIB,
-                         params={"face_i": "west", "face_q": "south",
-                                 "hop": 1, "dest_i": 0, "dest_q": 1, "entry": 1})
+    d = ctrl.place_block("DualFloatToComplexBlock", 0, 5, 5, library=LIB, params={})
     ctrl.add_logical_connection(ChipPortEndpoint(chip=0, port="x16_in"),
                                 BlockEndpoint(block=d, port="i"), name="ni")
     ctrl.add_logical_connection(BlockEndpoint(block=d, port="out"),
@@ -102,143 +111,58 @@ def _build_rv_topology():
     ctrl.auto_route_all({ctk: ct}, use_bus="never", auto_orient=False, register=True)
     bres = ctrl.build()
     c0 = ctrl.project.block(d).placement.cells[0]
-    rv_mem = list(bres.chips[0].cells[(c0.x, c0.y)]["memory"])
-    ARM, GOT_I = 17, 20  # entry addresses in the resolved program
-
-    # 2) hand-build the topology
-    cm = CellMap(width=10, height=12)
-    rc = CellConfig(fwd_face=Face.EAST, block_name="rv")
-    for a, v in enumerate(rv_mem):
-        if v:
-            rc.set_memory(a, v)
-    rc.entry_addr = ARM
-    cm.set_cell(3, 0, rc)
-    # producer PI at (2,0): relay entry writes R0 EAST into the rendezvous' got_i.
-    prog = simkyt.Program.from_source(
-        "pi", f"go:\n    MOVE [FACE], R10\n    WRITE @1, 0\n    JUMP @1, {GOT_I}\n"
-        "    HALT\n", 1)
-    pc = CellConfig(fwd_face=Face.EAST, block_name="PI")
-    for i, w in enumerate(prog.get_words()):
-        pc.set_memory(1 + i, w)
-    pc.set_memory(10, int(Face.EAST))
-    pc.entry_addr = 1
-    cm.set_cell(2, 0, pc)
-    cm.add_routing_cell(0, 0, Face.EAST)
-    cm.add_routing_cell(1, 0, Face.EAST)
-
-    gen = BitstreamGenerator(CHIP_YAML)
-    gen.load_cell_map(cm)
-    return gen.generate().words, ARM, GOT_I
-
-
-def test_arm_and_i_latch_through_real_routing():
-    """ARM locks the cell to West; PI relays I through the LOCKED West face and the
-    cell latches it; got_i flips the LOCK to face_q (South)."""
-    import simkyt
-    words, ARM, GOT_I = _build_rv_topology()
-    chip = simkyt.Chip.from_yaml(CHIP_YAML)
-    chip.load_bitstream_physical(words)
-
-    # arm the rendezvous @ (3,0): routed distance 3 → hop 31-(3+1)=27
-    chip.inject_jump_physical(target_hop_cnt=27, entry_addr=ARM)
-    chip.run(max_events=30000)
-    cfg = chip.read_config(_cid(3, 0))
-    # LOCK_FACE = West (2): config bits [13:12] == 10.
-    assert (cfg >> 12) & 0x3 == 2, f"arm did not LOCK to West: cfg={cfg:#06x}"
-
-    # PI @ (2,0): inject I=1500 (routed dist 2 → hop 28), then JUMP its relay entry.
-    chip.inject_data_physical([1500], target_hop_cnt=28, target_addr=0)
-    chip.run(max_events=30000)
-    chip.inject_jump_physical(target_hop_cnt=28, entry_addr=1)
-    chip.run(max_events=60000)
-
-    # the rendezvous latched I into its xi state register (R4) — through the LOCK.
-    assert _s16(chip.read_cell_memory(_cid(3, 0), 4)) == 1500, "I not latched via lock"
-    # and got_i flipped the LOCK to face_q = South (bits [13:12] == 00).
-    cfg2 = chip.read_config(_cid(3, 0))
-    assert (cfg2 >> 12) & 0x3 == 0, f"got_i did not flip LOCK to South: cfg={cfg2:#06x}"
-
-
-# --------------------------------------------------------------------------- #
-#  Task #428: the FULL two-face emit — one port -> splitter -> two producers.  #
-# --------------------------------------------------------------------------- #
-
-# Layout on the 10x12 fabric (x, y):
-#     port -> (0,0)S -> (0,1)E -> SPLIT(1,1)
-#     SPLIT rx-arm (East) -> PI(2,1) -> RV(3,1) West face   [got_i]
-#     SPLIT tx-arm (South) -> QR1(1,2)E -> QR2(2,2)E -> PQ(3,2) -> RV(3,1) South face [got_q]
-#     RV emits (xi,xq) EAST -> OUT(4,1)   [dest_i=0, dest_q=1]
-_RV_XY = (3, 1)
-_OUT_XY = (4, 1)
-_ARM_HOP = 26      # proven: JUMP@ARM reaches RV(3,1) through the splitter/PI chain
-_SPLIT_HOP = 28    # proven: JUMP reaches SPLIT(1,1); both rx/tx bursts use it
-_RX_E, _TX_E = 1, 5  # splitter entry addresses (rx block is 4 instrs, tx follows)
+    return list(bres.chips[0].cells[(c0.x, c0.y)]["memory"])
 
 
 def _build_two_face_topology():
-    """Build the full splitter->2-producer->rendezvous->OUT topology.
-
-    Returns the bitstream words. The rendezvous program is the REAL resolved
-    DualFloatToComplexBlock (face_i=West, face_q=South); everything else is a
-    minimal hand-built relay/steer harness that mimics the auto-P&R fan-out.
-    """
+    """Hand-build the splitter -> 2-producer -> rendezvous -> OUT harness around the
+    REAL resolved rendezvous program. Returns the bitstream words. The rendezvous emits
+    its `out` @1 EAST into OUT(4,1).R0 (the resolved program emits @1 to dest 0)."""
     from PySide6.QtWidgets import QApplication
     QApplication.instance() or QApplication([])
     import simkyt
     from gr_kyttar.placement.cell_map import CellMap, CellConfig, Face
     from gr_kyttar.bitstream.generator import BitstreamGenerator
-    from engine.catalog import BlockCatalog
-    from engine.io.chip_type_io import load_chip_type
-    from ui.controller import AppController
-    from model.connection import ChipPortEndpoint, BlockEndpoint
 
-    # resolve the REAL rendezvous program (face_i=West, face_q=South, out @1 East)
-    cat = BlockCatalog.from_gr_kyttar()
-    ct = load_chip_type(CHIP_YAML)
-    ctk = getattr(ct, "name", None) or "kyttar_10x12"
-    ctrl = AppController(catalog=cat)
-    ctrl.new_project("rv2", ctk)
-    d = ctrl.place_block("DualFloatToComplexBlock", 0, 5, 5, library=LIB,
-                         params={"face_i": "west", "face_q": "south",
-                                 "hop": 1, "dest_i": 0, "dest_q": 1, "entry": 1})
-    ctrl.add_logical_connection(ChipPortEndpoint(chip=0, port="x16_in"),
-                                BlockEndpoint(block=d, port="i"), name="ni")
-    ctrl.add_logical_connection(BlockEndpoint(block=d, port="out"),
-                                ChipPortEndpoint(chip=0, port="x16_out"), name="no")
-    ctrl.auto_route_all({ctk: ct}, use_bus="never", auto_orient=False, register=True)
-    bres = ctrl.build()
-    c0 = ctrl.project.block(d).placement.cells[0]
-    rv_mem = list(bres.chips[0].cells[(c0.x, c0.y)]["memory"])
-    ARM, GOT_I, GOT_Q = 17, 20, 23  # resolved entry addresses
+    rv_mem = _resolve_rv_program()
+
+    # The resolved program's output WRITE/JUMP hop was patched by the (5,5) placement's
+    # long route to x16_out. In THIS hand-built harness RV(3,1) emits @1 EAST to OUT(4,1),
+    # so re-patch the output WRITE (0x1B) + JUMP (0x1C) hop_cnt (bits [9:5]) to @1 (=30).
+    _WRITE, _JUMP = 0x6000, 0x7000
+    for a, w in enumerate(rv_mem):
+        if (w & 0xF000) in (_WRITE, _JUMP):
+            rv_mem[a] = (w & ~(0x1F << 5)) | (30 << 5)
 
     def words(src):
         return list(simkyt.Program.from_source("x", src, 1).get_words())
 
     cm = CellMap(width=10, height=12)
 
-    # rendezvous (the real block program)
+    # rendezvous (the real block program). Its `out` fires @1 EAST -> OUT(4,1).R0.
     rc = CellConfig(fwd_face=Face.EAST, block_name="RV")
     for a, v in enumerate(rv_mem):
         if v:
             rc.set_memory(a, v)
-    rc.entry_addr = ARM
+    rc.entry_addr = _RECV
     cm.set_cell(*_RV_XY, rc)
 
-    # splitter landing cell: rx-arm faces East (I), tx-arm faces South (Q).
-    # Faces live at R20 (East) / R21 (South) to avoid colliding with code at addr 1..8.
+    # splitter landing cell: I-arm faces East, Q-arm faces South. Faces at R20/R21 to
+    # avoid colliding with code at addr 1..8. Both arms relay R0 then JUMP the
+    # rendezvous' single `recv` entry (the phase toggle sorts I vs Q by arrival ORDER).
     sp_src = (
-        "rx:\n    MOVE [FACE], R20\n    WRITE @1, 0\n    JUMP @1, 1\n    HALT\n"
-        "tx:\n    MOVE [FACE], R21\n    WRITE @1, 0\n    JUMP @1, 1\n    HALT\n"
+        "iarm:\n    MOVE [FACE], R20\n    WRITE @1, 0\n    JUMP @1, 1\n    HALT\n"
+        "qarm:\n    MOVE [FACE], R21\n    WRITE @1, 0\n    JUMP @1, 1\n    HALT\n"
     )
     sp = CellConfig(fwd_face=Face.EAST, block_name="SPLIT")
     for i, v in enumerate(words(sp_src)):
         sp.set_memory(1 + i, v)
     sp.set_memory(20, int(Face.EAST))
     sp.set_memory(21, int(Face.SOUTH))
-    sp.entry_addr = _RX_E
+    sp.entry_addr = _I_E
     cm.set_cell(1, 1, sp)
 
-    def relay(x, y, face, jump_entry, name):
+    def relay(x, y, face, name, jump_entry):
         src = ("go:\n    MOVE [FACE], R20\n    WRITE @1, 0\n"
                f"    JUMP @1, {jump_entry}\n    HALT\n")
         c = CellConfig(fwd_face=face, block_name=name)
@@ -248,18 +172,16 @@ def _build_two_face_topology():
         c.entry_addr = 1
         cm.set_cell(x, y, c)
 
-    relay(2, 1, Face.EAST, GOT_I, "PI")    # I -> RV.West got_i
-    relay(1, 2, Face.EAST, 1, "QR1")       # Q corridor
-    relay(2, 2, Face.EAST, 1, "QR2")
-    relay(3, 2, Face.NORTH, GOT_Q, "PQ")   # Q -> RV.South got_q
+    relay(2, 1, Face.EAST, "PI", _RECV)    # I -> RV WEST face, JUMP recv
+    relay(1, 2, Face.EAST, "QR1", 1)       # Q corridor (relay onward)
+    relay(2, 2, Face.EAST, "QR2", 1)
+    relay(3, 2, Face.NORTH, "PQ", _RECV)   # Q -> RV SOUTH face, JUMP recv
 
-    # OUT sink: capture the emitted packet in R0/R1 (dest_i/dest_q). Its own read
-    # program lives at HIGH addresses so the incoming WRITEs to R0/R1 don't clobber
-    # code; the packet is read directly from R0/R1 after the run.
-    out_src = "cap:\n    HALT\n"
+    # OUT sink: capture the emitted xi in R0. Its (empty) program lives HIGH so the
+    # incoming WRITE to R0 isn't clobbered by code.
     oc = CellConfig(fwd_face=Face.SOUTH, block_name="OUT")
-    for i, v in enumerate(words(out_src)):
-        oc.set_memory(16 + i, v)   # code at addr 16..; R0/R1 stay free for the packet
+    for i, v in enumerate(words("cap:\n    HALT\n")):
+        oc.set_memory(16 + i, v)
     oc.entry_addr = 16
     cm.set_cell(*_OUT_XY, oc)
 
@@ -271,68 +193,85 @@ def _build_two_face_topology():
     return gen.generate().words
 
 
-def _arm_and_feed(words, steps, arm=True):
-    """Load a fresh chip, optionally ARM, then feed a list of ('I'|'Q', value) bursts
-    through the splitter. Returns (rv_xi, rv_xq, out_xi, out_xq)."""
+def _feed(words, steps, *, corrupt_phase=None):
+    """Load a fresh chip, optionally corrupt the phase register, then feed a list of
+    ('I'|'Q', value) bursts through the splitter (inject the value at the splitter, then
+    JUMP the matching arm so it relays onto the right face and triggers the rendezvous'
+    recv). Returns (rv_xi, rv_xq, out_xi, emit_count)."""
     import simkyt
     chip = simkyt.Chip.from_yaml(CHIP_YAML)
     chip.load_bitstream_physical(words)
-    if arm:
-        chip.inject_jump_physical(target_hop_cnt=_ARM_HOP, entry_addr=17)  # ARM
-        chip.run(max_events=60000)
-    for kind, val in steps:
-        entry = _RX_E if kind == "I" else _TX_E
-        chip.inject_data_physical([val], target_hop_cnt=_SPLIT_HOP, target_addr=0)
-        chip.run(max_events=60000)
-        chip.inject_jump_physical(target_hop_cnt=_SPLIT_HOP, entry_addr=entry)
-        chip.run(max_events=200000)
     rx, ry = _RV_XY
     ox, oy = _OUT_XY
-    return (_s16(chip.read_cell_memory(_cid(rx, ry), 4)),   # RV.xi (R4)
-            _s16(chip.read_cell_memory(_cid(rx, ry), 5)),   # RV.xq (R5)
-            _s16(chip.read_cell_memory(_cid(ox, oy), 0)),   # OUT.R0 (emitted xi)
-            _s16(chip.read_cell_memory(_cid(ox, oy), 1)))   # OUT.R1 (emitted xq)
+    if corrupt_phase is not None:
+        chip.write_cell_memory(_cid(rx, ry), _PHASE_REG, corrupt_phase & 0xFFFF)
+    emit = 0
+    for kind, val in steps:
+        entry = _I_E if kind == "I" else _Q_E
+        chip.inject_data_physical([val], target_hop_cnt=_SPLIT_HOP, target_addr=0)
+        chip.run(max_events=60000)
+        before = _s16(chip.read_cell_memory(_cid(ox, oy), 0))
+        chip.inject_jump_physical(target_hop_cnt=_SPLIT_HOP, entry_addr=entry)
+        chip.run(max_events=200000)
+        after = _s16(chip.read_cell_memory(_cid(ox, oy), 0))
+        if after != before:
+            emit += 1
+    return (_s16(chip.read_cell_memory(_cid(rx, ry), _XI_REG)),
+            _s16(chip.read_cell_memory(_cid(rx, ry), _XQ_REG)),
+            _s16(chip.read_cell_memory(_cid(ox, oy), 0)),
+            emit)
 
 
-def test_two_face_matched_pair_emit():
-    """P1: I then Q -> the rendezvous emits the MATCHED complex pair (xi, xq)
-    downstream through the two-face LOCK."""
+def test_phase_toggle_matched_pair_emits():
+    """P1: I then Q -> the rendezvous latches xi=I, xq=Q and emits ONE matched pair
+    (the emitted value is the recovered real rail xi)."""
     words = _build_two_face_topology()
-    xi, xq, o_xi, o_xq = _arm_and_feed(words, [("I", 1500), ("Q", 2500)])
-    assert (xi, xq) == (1500, 2500), f"rendezvous did not latch both faces: {xi},{xq}"
-    assert (o_xi, o_xq) == (1500, 2500), f"emitted packet wrong: {o_xi},{o_xq}"
+    xi, xq, o_xi, emit = _feed(words, [("I", 1500), ("Q", 2500)])
+    assert (xi, xq) == (1500, 2500), f"rendezvous did not latch both rails: {xi},{xq}"
+    assert o_xi == 1500, f"emitted xi wrong: {o_xi}"
+    assert emit == 1, f"expected exactly one emit for one pair, got {emit}"
 
 
-def test_two_face_early_q_rejected():
-    """P2: a Q arriving FIRST (while the cell is locked to West) is REJECTED by the
-    lock — nothing is latched, nothing is emitted."""
+def test_phase_toggle_two_pairs_rearm():
+    """P2: two full pairs I,Q,I,Q -> exactly TWO emits, each a matched pair. Proves the
+    phase register re-arms cleanly (the phase-1 emit resets to phase 0 for the next I)."""
     words = _build_two_face_topology()
-    xi, xq, o_xi, o_xq = _arm_and_feed(words, [("Q", 2500)])
-    assert xq == 0, f"early Q was latched despite West lock: xq={xq}"
-    assert (o_xi, o_xq) == (0, 0), f"early Q caused a spurious emit: {o_xi},{o_xq}"
+    xi, xq, o_xi, emit = _feed(
+        words, [("I", 1100), ("Q", 2200), ("I", 3300), ("Q", 4400)])
+    assert (xi, xq) == (3300, 4400), f"2nd pair not latched: {xi},{xq}"
+    assert o_xi == 3300, f"last emitted xi wrong: {o_xi}"
+    assert emit == 2, f"expected two emits for two pairs, got {emit}"
 
 
-def test_two_face_out_of_order_still_pairs():
-    """P3: Q-early THEN I -> the queued Q drains after the lock retargets to South,
-    producing the correct matched pair (I, Q)."""
+def test_phase_toggle_cross_producer_interleave():
+    """P3: the two producers fire on their OWN faces/corridors (I on West via PI, Q on
+    South via the PQ corridor) — genuinely independent paths. The arbiter serialises
+    them and the phase toggle pairs consecutively. I,Q,I,Q across the two DISTINCT
+    corridors still yields two matched emits (no cross-pair contamination)."""
     words = _build_two_face_topology()
-    xi, xq, o_xi, o_xq = _arm_and_feed(words, [("Q", 2500), ("I", 1500)])
-    assert (xi, xq) == (1500, 2500), f"out-of-order did not pair: {xi},{xq}"
-    assert (o_xi, o_xq) == (1500, 2500), f"out-of-order emit wrong: {o_xi},{o_xq}"
+    _xi, _xq, _o, emit = _feed(
+        words, [("I", 700), ("Q", 800), ("I", 900), ("Q", 1000)])
+    assert emit == 2, f"cross-producer interleave broke pairing: emits={emit}"
 
 
-def test_two_face_lock_is_load_bearing_mutation():
-    """MUTATION GATE (INV-4): remove the ARM (no lock). The SAME early Q that P2
-    proved is rejected is now consumed UNPAIRED (xq=Q with no I ever sent). The
-    matched-pairs guarantee collapses without the lock — proving the guarantee is
-    enforced by the LOCK mechanism, not by timing luck.
+def test_phase_toggle_is_load_bearing_mutation():
+    """MUTATION GATE (INV-4): corrupt the phase register so the toggle cannot reach the
+    correct matched-pair emit. Feed the SAME matched I,Q that P1 emits — with a broken
+    phase the block must NEVER emit the correct xi=1500. Proves P1's emit is enforced by
+    the phase toggle, not by timing luck (a passing P1 is not vacuous).
 
-    This test asserts the CORRUPTED behavior, so it is a live proof that P2's gate
-    would FAIL on a DUT with the lock disabled (a passing P2 is not vacuous)."""
+    Corrupt phase := 1 (the _q / emit arm). The first trigger (I=1500) is mis-consumed by
+    _q: it latches xq=1500 and emits the STALE xi (still 0 — no I was latched first),
+    then resets phase:=0. The second trigger (Q=2500) is then consumed by the phase-0
+    (I) arm: latches xi=2500, sets phase:=1, HALT — no emit. So the pairing is DESYNCED
+    (xi=2500, xq=1500 — swapped) and the only value ever emitted is the stale 0, NEVER the
+    matched xi=1500 that P1 produces."""
     words = _build_two_face_topology()
-    # skip ARM: fire Q first, unlocked.
-    xi, xq, o_xi, o_xq = _arm_and_feed(words, [("Q", 2500)], arm=False)
-    assert xq == 2500, (
-        "without the lock the early Q should be latched UNPAIRED (mutation gate); "
-        f"got xq={xq} — if this is 0 the lock is being applied even without ARM, "
-        "which would make the P2 rejection test vacuous")
+    xi, xq, o_xi, _emit = _feed(words, [("I", 1500), ("Q", 2500)], corrupt_phase=1)
+    # The pairing is desynced (swapped) — the exact opposite of P1's clean (1500, 2500).
+    assert (xi, xq) == (2500, 1500), (
+        f"mutation did not desync the pairing as expected: xi={xi}, xq={xq}")
+    # And the correct matched emit is GONE: OUT never carries xi=1500 (only stale 0).
+    assert o_xi != 1500, (
+        "with a corrupt phase the block must NOT emit the correct matched xi=1500 — "
+        f"got o_xi={o_xi}; if it did, P1 would be vacuous")

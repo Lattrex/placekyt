@@ -94,3 +94,114 @@ def test_builds_on_chip_with_phase_toggle_rendezvous():
     # The old LOCK-based design is GONE (face lock can't pair same-face rails).
     assert "dest: 35" not in dis and "dest: 36" not in dis, (
         f"unexpected LOCK config writes — should be phase-toggle now:\n{dis}")
+
+
+# --------------------------------------------------------------------------- #
+#  Task #429: the importer auto-inserts the DualFloatToComplex block from a    #
+#  RAW 2-real `float_to_complex` .grc — no special demo scaffolding.           #
+# --------------------------------------------------------------------------- #
+
+_TWO_REAL_GRC = """options:
+  parameters: {id: min_dual, generate_options: qt_gui}
+  states: {coordinate: [8, 8], rotation: 0, state: enabled}
+blocks:
+- name: si
+  id: kyttar_source
+  parameters: {device_id: '"kyttar_0"', complex_in: 'False'}
+  states: {coordinate: [100, 100], rotation: 0, state: enabled}
+- name: sq
+  id: kyttar_source
+  parameters: {device_id: '"kyttar_0"', complex_in: 'False'}
+  states: {coordinate: [100, 200], rotation: 0, state: enabled}
+- name: f2c
+  id: blocks_float_to_complex
+  parameters: {}
+  states: {coordinate: [300, 140], rotation: 0, state: enabled}
+- name: snk
+  id: kyttar_sink
+  parameters: {device_id: '"kyttar_0"'}
+  states: {coordinate: [500, 140], rotation: 0, state: enabled}
+connections:
+- [si, '0', f2c, '0']
+- [sq, '0', f2c, '1']
+- [f2c, '0', snk, '0']
+"""
+
+# The SINGLE-real (mutation) variant: the Q input (port 1) is a null_source, so the f2c
+# is a LOGICAL-ONLY converter — the importer must splice it to ZERO cells, NOT place a
+# DualFloatToComplex. If a dual is placed here, the 2-real detection is over-eager.
+_SINGLE_REAL_GRC = """options:
+  parameters: {id: min_single, generate_options: qt_gui}
+  states: {coordinate: [8, 8], rotation: 0, state: enabled}
+blocks:
+- name: si
+  id: kyttar_source
+  parameters: {device_id: '"kyttar_0"', complex_in: 'False'}
+  states: {coordinate: [100, 100], rotation: 0, state: enabled}
+- name: nq
+  id: blocks_null_source
+  parameters: {}
+  states: {coordinate: [100, 200], rotation: 0, state: enabled}
+- name: f2c
+  id: blocks_float_to_complex
+  parameters: {}
+  states: {coordinate: [300, 140], rotation: 0, state: enabled}
+- name: snk
+  id: kyttar_sink
+  parameters: {device_id: '"kyttar_0"'}
+  states: {coordinate: [500, 140], rotation: 0, state: enabled}
+connections:
+- [si, '0', f2c, '0']
+- [nq, '0', f2c, '1']
+- [f2c, '0', snk, '0']
+"""
+
+
+def _import_grc_text(text):
+    import tempfile
+    from engine.catalog import BlockCatalog
+    from engine.grc_import import import_grc
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    cat = BlockCatalog.from_gr_kyttar()
+    with tempfile.NamedTemporaryFile("w", suffix=".grc", delete=False) as tf:
+        tf.write(text)
+        path = tf.name
+    try:
+        return cat, import_grc(path, cat, chip_type="kyttar_10x12")
+    finally:
+        os.unlink(path)
+
+
+def test_importer_auto_inserts_dual_from_two_real_f2c():
+    """A RAW `float_to_complex` fed by TWO independent real producers (no null_source on
+    Q) auto-inserts EXACTLY ONE DualFloatToComplexBlock — no cell for the (logical) f2c
+    itself — then auto-P&Rs and BUILDS. This is the general importer path (task #429):
+    it does NOT require the converter_flavors scaffolding, just a bare 2-real f2c."""
+    _BlockCatalog, load_chip_type, AppController, _CPE, _BE = _engine()
+    cat, res = _import_grc_text(_TWO_REAL_GRC)
+    assert res.ok and not res.unknown, res.unknown
+    types = sorted(b.type for b in res.project.blocks)
+    assert types == ["DualFloatToComplexBlock"], (
+        f"a 2-real f2c must place exactly ONE DualFloatToComplex (the f2c adds no cell "
+        f"of its own); got {types}")
+    ct = load_chip_type(CHIP_YAML)
+    ctk = getattr(ct, "name", None) or "kyttar_10x12"
+    ctrl = AppController(catalog=cat)
+    ctrl.project = res.project
+    assert ctrl.auto_pnr({ctk: ct}).ok, "2-real f2c did not route under auto-P&R"
+    bres = ctrl.build()
+    assert bres.ok, "build failed: " + "; ".join(str(e) for e in bres.errors)
+
+
+def test_importer_single_real_f2c_places_no_dual():
+    """MUTATION / boundary gate (INV-4): a `float_to_complex` whose Q input is a
+    null_source is a LOGICAL-ONLY converter — the importer must splice it to ZERO cells,
+    NOT place a DualFloatToComplex. This proves the 2-real detection is not over-eager
+    (it keys on TWO real producers, not merely on the f2c block existing)."""
+    _BlockCatalog, _load_chip_type, _AppController, _CPE, _BE = _engine()
+    _cat, res = _import_grc_text(_SINGLE_REAL_GRC)
+    assert res.ok and not res.unknown, res.unknown
+    types = [b.type for b in res.project.blocks]
+    assert "DualFloatToComplexBlock" not in types, (
+        f"single-real (null_source Q) f2c must NOT place a dual; got {types}")

@@ -197,8 +197,12 @@ def test_two_real_float_to_complex_places_dual_block():
     # I producer -> dual.i (port 0), Q producer -> dual.q (port 1).
     assert ("PORT:x16_in", f"{dual}.i") in nets, nets
     assert ("PORT:x16_in", f"{dual}.q") in nets, nets
-    # dual output -> the mixer downstream.
-    assert (f"{dual}.out", "complexmixer.xi") in nets, nets
+    # dual output -> the mixer downstream, as a 2-rail COMPLEX PACKET: the recovered I
+    # rail (yi) -> mixer.xi AND the recovered Q rail (yq) -> mixer.xq. The dual emits
+    # both rails (like ComplexMixer) so a GENUINE 2-input complex consumer keeps Q — it
+    # is NOT dropped (the pre-#438 single-`out` dual would have lost the imaginary rail).
+    assert (f"{dual}.yi", "complexmixer.xi") in nets, nets
+    assert (f"{dual}.yq", "complexmixer.xq") in nets, nets
 
 
 # --- NEGATIVE gate: a converter that is NOT consumed would place an extra cell -

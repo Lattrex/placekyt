@@ -29,14 +29,15 @@ class DualFloatToComplexBlock(KyttarBlock):
     I. It is a ``reset_per_batch`` StateVar so a persistently-hosted server cold-starts
     ``phase`` to 0 at each packet boundary (a mid-packet re-Run can't desync the pairing).
 
-    The cell latches BOTH xi and xq (the pairing is the whole point) but emits ONE ``out``
-    value — the recovered REAL rail (xi) — via the SAME declarative ``{write:out}`` /
-    ``{jump:out}`` handoff a GainBlock uses, so the build BROKERS + hop-patches it like any
-    block (no RAW_OUTPUT_HOPS). In every wired chain the DualFloatToComplex feeds a
-    ``complex_to_real`` (logical, drops Q) before a real consumer, so xi is exactly what
-    survives. (A dual feeding a genuine 2-input complex block would need a 2-rail packet —
-    the mixer's ``{write:xi_fwd}``/``{write:xq_fwd}`` pattern; that is the FOLLOW-UP
-    importer work, not this chain.)
+    The cell latches BOTH xi and xq (the pairing is the whole point) and emits a COMPLEX
+    packet — the two rails ``yi`` (=xi) and ``yq`` (=xq) plus a ``trig`` — via declarative
+    ``{write:yi}`` / ``{write:yq}`` / ``{jump:trig}`` (the ComplexMixer's exact output
+    shape). The build BROKERS + hop-patches it like any complex source (no
+    RAW_OUTPUT_HOPS). Because ``yi``/``yq`` are a same-cell I/Q pair, the importer's I/Q
+    split (``_iq_sibling``) auto-wires yi→consumer.xi AND yq→consumer.xq to a genuine
+    2-input complex downstream, so the imaginary rail is NOT lost. When the downstream is
+    REAL (fed through a logical ``complex_to_real`` that drops Q), only the yi rail is
+    wired and yq is simply not consumed — the identity converter chain's case.
 
     NOTE: this block is ONLY needed for TWO independent real producers. A single
     real stream feeding a complex block (real audio -> mixer, Q=0) is a LOGICAL-ONLY
@@ -51,7 +52,8 @@ class DualFloatToComplexBlock(KyttarBlock):
         the output handoff is now declarative + brokered, not authored.
 
     Interface: ONE entry ``recv`` (both I and Q producers target it). The input word
-    lands in R0; ``phase`` picks I vs Q; both latch to state xi/xq; xi is emitted.
+    lands in R0; ``phase`` picks I vs Q; both latch to state xi/xq; on the Q trigger the
+    matched pair is emitted as a 2-rail complex packet (yi=xi, yq=xq).
     """
     CATEGORY = "type_conversion"
     TAGS = ["float_to_complex", "rendezvous", "lock", "type_conversion", "complex"]
@@ -79,9 +81,10 @@ class DualFloatToComplexBlock(KyttarBlock):
                               output_registers=[0])
 
     def build_cell_programs(self) -> Dict[int, CellProgram]:
-        # SINGLE-ENTRY PHASE-TOGGLE rendezvous (event-driven; no external "arm"), with a
-        # DECLARATIVE single `out` handoff (like GainBlock's {write:out}/{jump:out}) so
-        # the build BROKERS + hop-patches it normally — no RAW_OUTPUT_HOPS.
+        # SINGLE-ENTRY PHASE-TOGGLE rendezvous (event-driven; no external "arm"), emitting
+        # a COMPLEX PACKET via declarative {write:yi}/{write:yq}/{jump:trig} (the
+        # ComplexMixer's output shape) so the build BROKERS + hop-patches it — no
+        # RAW_OUTPUT_HOPS.
         #
         # Both producers JUMP the one `recv` entry; a persistent `phase` register
         # alternates 0->1->0. This COUNTS the two triggers of each pair rather than
@@ -92,13 +95,10 @@ class DualFloatToComplexBlock(KyttarBlock):
         # memory) so the first word is I, the second Q+emit. `phase` is reset_per_batch
         # so a persistently-hosted server cold-starts it per packet.
         #
-        # It latches BOTH xi and xq (the pairing is the whole point) but emits ONE `out`
-        # value = the recovered REAL rail (xi). In every wired chain the DualFloatToComplex
-        # feeds a `complex_to_real` (logical, drops Q) before any real consumer, so xi is
-        # exactly what survives — delivering it as a normal single `out` lets the build
-        # broker it like any block. (A dual feeding a genuine 2-input complex block would
-        # need a 2-rail packet — the mixer's {write:xi_fwd}/{write:xq_fwd} pattern; that's
-        # the FOLLOW-UP importer work, not this chain.)
+        # On the Q trigger it emits the paired complex sample as TWO rails yi=xi, yq=xq
+        # (+ one trigger). `yi`/`yq` are a same-cell I/Q pair, so the importer's I/Q split
+        # auto-wires yi->consumer.xi AND yq->consumer.xq to a 2-input complex downstream;
+        # a REAL downstream (via a logical complex_to_real) consumes only yi.
         tmpl = (
             "recv:\n"
             "    CMP R{state:phase}, R{data:zero}\n"
@@ -108,17 +108,19 @@ class DualFloatToComplexBlock(KyttarBlock):
             "    MOVE R{state:phase}, R{data:one}\n"
             "    HALT\n"
             "_q:\n"
-            # phase 1: this word is Q. latch it (pairing proven), emit xi, reset phase.
+            # phase 1: this word is Q. latch it (pairing proven), emit the (yi,yq) packet.
             "    MOVE R{state:xq}, R{in:q}\n"
             "    MOVE R0, R{state:xi}\n"
-            "    {write:out}\n"                          # recovered I -> downstream (brokered)
-            "    {jump:out}\n"                           # trigger the downstream ONCE
+            "    {write:yi}\n"                           # recovered I rail -> consumer.xi
+            "    MOVE R0, R{state:xq}\n"
+            "    {write:yq}\n"                           # recovered Q rail -> consumer.xq
+            "    {jump:trig}\n"                          # trigger the downstream ONCE
             "    MOVE R{state:phase}, R{data:zero}\n"    # back to phase 0 (next I)
             "    HALT\n"
         )
         return {0: CellProgram(
             inputs=[Port("i", register=0), Port("q", register=0)],
-            outputs=[Port("out")],
+            outputs=[Port("yi"), Port("yq"), Port("trig")],
             entries=[EntryPoint("recv")],
             data=[DataWord("zero", 0, address=1),
                   DataWord("one", 1, address=2)],

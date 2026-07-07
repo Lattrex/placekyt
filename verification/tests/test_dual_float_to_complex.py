@@ -205,3 +205,127 @@ def test_importer_single_real_f2c_places_no_dual():
     types = [b.type for b in res.project.blocks]
     assert "DualFloatToComplexBlock" not in types, (
         f"single-real (null_source Q) f2c must NOT place a dual; got {types}")
+
+
+# --------------------------------------------------------------------------- #
+#  Task #438: the dual emits a 2-rail COMPLEX PACKET (yi + yq) so a GENUINE    #
+#  2-input complex consumer receives BOTH rails — the Q rail is NOT lost.      #
+# --------------------------------------------------------------------------- #
+
+# Two independent real producers -> float_to_complex (-> DualFloatToComplex) ->
+# a GENUINE 2-input complex block (complex mixer, pass-through) -> complex_to_float
+# split -> two real sinks. The dual feeds the mixer's xi AND xq; the mixer is a real
+# 2-input complex consumer (not a Q-dropping complex_to_real), so BOTH the recovered
+# I and Q rails must be delivered — this is the case the single-`out` dual could not
+# serve (it lost Q).
+_DUAL_TO_COMPLEX_GRC = """options:
+  parameters: {id: dual_to_cplx, generate_options: qt_gui}
+  states: {coordinate: [8, 8], rotation: 0, state: enabled}
+blocks:
+- name: si
+  id: kyttar_source
+  parameters: {device_id: '"kyttar_0"', complex_in: 'False'}
+  states: {coordinate: [100, 100], rotation: 0, state: enabled}
+- name: sq
+  id: kyttar_source
+  parameters: {device_id: '"kyttar_0"', complex_in: 'False'}
+  states: {coordinate: [100, 200], rotation: 0, state: enabled}
+- name: f2c
+  id: blocks_float_to_complex
+  parameters: {}
+  states: {coordinate: [300, 140], rotation: 0, state: enabled}
+- name: mix
+  id: kyttar_complex_mixer
+  parameters: {frequency: '0', sample_rate: '48000'}
+  states: {coordinate: [460, 140], rotation: 0, state: enabled}
+- name: c2f
+  id: blocks_complex_to_float
+  parameters: {}
+  states: {coordinate: [640, 140], rotation: 0, state: enabled}
+- name: snki
+  id: kyttar_sink
+  parameters: {device_id: '"kyttar_0"'}
+  states: {coordinate: [820, 100], rotation: 0, state: enabled}
+- name: snkq
+  id: kyttar_sink
+  parameters: {device_id: '"kyttar_0"'}
+  states: {coordinate: [820, 200], rotation: 0, state: enabled}
+connections:
+- [si, '0', f2c, '0']
+- [sq, '0', f2c, '1']
+- [f2c, '0', mix, '0']
+- [mix, '0', c2f, '0']
+- [c2f, '0', snki, '0']
+- [c2f, '1', snkq, '0']
+"""
+
+
+def test_dual_delivers_both_rails_to_complex_consumer():
+    """A DualFloatToComplex feeding a GENUINE 2-input complex block wires BOTH rails:
+    dual.yi -> mixer.xi AND dual.yq -> mixer.xq. This is the whole point of the 2-rail
+    complex-packet emit (#438) — the imaginary rail is NOT dropped. The importer's I/Q
+    split synthesises the Q net because yi/yq (dual out) and xi/xq (mixer in) are each
+    an on-cell I/Q pair. Then it must auto-P&R and BUILD (both rails route)."""
+    _BlockCatalog, load_chip_type, AppController, _CPE, _BE = _engine()
+    cat, res = _import_grc_text(_DUAL_TO_COMPLEX_GRC)
+    assert res.ok and not res.unknown, res.unknown
+    dual = next((b.name for b in res.project.blocks
+                 if b.type == "DualFloatToComplexBlock"), None)
+    mix = next((b.name for b in res.project.blocks
+                if b.type == "ComplexMixerBlock"), None)
+    assert dual and mix, [b.type for b in res.project.blocks]
+
+    def _ep(e):
+        return getattr(e, "port", None), getattr(e, "block", None)
+
+    nets = {(c.source.block, c.source.port, c.target.block, c.target.port)
+            for c in res.project.connections
+            if hasattr(c.source, "block") and hasattr(c.target, "block")}
+    # BOTH rails of the dual reach the mixer's two complex input regs.
+    assert (dual, "yi", mix, "xi") in nets, (
+        f"the recovered I rail (yi) must feed mixer.xi; nets={sorted(nets)}")
+    assert (dual, "yq", mix, "xq") in nets, (
+        f"the recovered Q rail (yq) must feed mixer.xq — the 2-rail emit's whole "
+        f"purpose is that Q is NOT lost; nets={sorted(nets)}")
+
+    ct = load_chip_type(CHIP_YAML)
+    ctk = getattr(ct, "name", None) or "kyttar_10x12"
+    ctrl = AppController(catalog=cat)
+    ctrl.project = res.project
+    assert ctrl.auto_pnr({ctk: ct}).ok, "dual->complex chain did not route (both rails)"
+    bres = ctrl.build()
+    assert bres.ok, "build failed: " + "; ".join(str(e) for e in bres.errors)
+
+
+def test_dual_program_emits_two_output_writes():
+    """STRUCTURAL proof the built dual emits a 2-rail complex PACKET, not a single rail:
+    its `recv` program's emit arm has TWO Write instructions (yi then yq) plus the
+    trigger Jump. A single-`out` dual (the pre-#438 design) had ONE Write and would drop
+    Q at a genuine complex consumer. Counting the Writes in the phase-toggle cell is the
+    load-bearing distinction."""
+    import simkyt
+    BlockCatalog, load_chip_type, AppController, CPE, BE = _engine()
+    cat = BlockCatalog.from_gr_kyttar()
+    ct = load_chip_type(CHIP_YAML)
+    ctk = getattr(ct, "name", None) or "kyttar_10x12"
+    ctrl = AppController(catalog=cat)
+    ctrl.new_project("d2c2", ctk)
+    d = ctrl.place_block("DualFloatToComplexBlock", 0, 5, 5, library=LIB, params={})
+    # Two real chip-input feeds (i, q) and a complex-consuming egress is not needed for
+    # the structural count; wire i/q in and the yi rail out so the block places+builds.
+    ctrl.add_logical_connection(CPE(chip=0, port="x16_in"),
+                                BE(block=d, port="i"), name="ni")
+    ctrl.add_logical_connection(BE(block=d, port="yi"),
+                                CPE(chip=0, port="x16_out"), name="no")
+    assert ctrl.auto_pnr({ctk: ct}, use_bus="never").ok
+    bres = ctrl.build()
+    assert bres.ok, "build failed: " + "; ".join(str(e) for e in bres.errors)
+
+    blk = ctrl.project.block(d)
+    c0 = blk.placement.cells[0]
+    mem = bres.chips[0].cells[(c0.x, c0.y)]["memory"]
+    dis = simkyt.Program.from_words("d", list(mem), 0).disassemble()
+    n_write = dis.count("Write")
+    assert n_write >= 2, (
+        f"the 2-rail dual must emit TWO Writes (yi + yq); got {n_write}:\n{dis}")
+    assert "Jump" in dis, f"missing the downstream trigger Jump:\n{dis}"

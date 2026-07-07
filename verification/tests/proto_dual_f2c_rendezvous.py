@@ -61,9 +61,19 @@ CHIP_YAML = str(_ROOT / "placekyt" / "resources" / "chips" / "kyttar_10x12.yaml"
 LIB = "lattrex.official"
 W = 10
 
-# Resolved register / entry layout of the phase-toggle program (see module docstring).
+# Resolved register layout of the phase-toggle program (xi/xq/phase; see module
+# docstring). The `recv` ENTRY address is derived at build time (the `Cmp` instruction's
+# address) so the proto is robust to the program's placement shifting.
 _XI_REG, _XQ_REG, _PHASE_REG = 3, 4, 5
-_RECV = 0x14
+
+
+def _recv_entry(mem):
+    """The `recv` entry address = the address of the phase CMP (opcode 0xE; src_a =
+    bits[9:5] = the phase register R5, src_b = bits[4:0] = the zero constant R1)."""
+    for a, w in enumerate(mem):
+        if (w & 0xF000) == 0xE000 and ((w >> 5) & 0x1F) == _PHASE_REG:
+            return a
+    raise AssertionError("could not find the phase-toggle recv (Cmp) entry")
 
 
 def _cid(x, y):
@@ -127,24 +137,35 @@ def _build_two_face_topology():
     rv_mem = _resolve_rv_program()
 
     # The resolved program's output WRITE/JUMP hop was patched by the (5,5) placement's
-    # long route to x16_out. In THIS hand-built harness RV(3,1) emits @1 EAST to OUT(4,1),
-    # so re-patch the output WRITE (0x1B) + JUMP (0x1C) hop_cnt (bits [9:5]) to @1 (=30).
+    # long route to x16_out. In THIS hand-built harness RV(3,1) emits its complex packet
+    # (yi WRITE + yq WRITE + trig JUMP) @1 EAST to OUT(4,1), so re-patch EVERY output
+    # WRITE/JUMP hop_cnt (bits [9:5]) to @1 (=30). Both output WRITEs resolve to dest 0;
+    # steer the SECOND (yq) WRITE to dest 1 so OUT.R0=yi(=xi) and OUT.R1=yq(=xq) — both
+    # rails are then separately observable at the sink, proving the FULL complex packet.
+    recv = _recv_entry(rv_mem)
     _WRITE, _JUMP = 0x6000, 0x7000
+    _seen_write = 0
     for a, w in enumerate(rv_mem):
-        if (w & 0xF000) in (_WRITE, _JUMP):
-            rv_mem[a] = (w & ~(0x1F << 5)) | (30 << 5)
+        op = w & 0xF000
+        if op in (_WRITE, _JUMP):
+            w = (w & ~(0x1F << 5)) | (30 << 5)          # hop -> @1
+            if op == _WRITE:
+                _seen_write += 1
+                if _seen_write == 2:                     # the yq rail -> dest 1
+                    w = (w & ~0x1F) | 1
+            rv_mem[a] = w
 
     def words(src):
         return list(simkyt.Program.from_source("x", src, 1).get_words())
 
     cm = CellMap(width=10, height=12)
 
-    # rendezvous (the real block program). Its `out` fires @1 EAST -> OUT(4,1).R0.
+    # rendezvous (the real block program). Its packet fires @1 EAST -> OUT(4,1).
     rc = CellConfig(fwd_face=Face.EAST, block_name="RV")
     for a, v in enumerate(rv_mem):
         if v:
             rc.set_memory(a, v)
-    rc.entry_addr = _RECV
+    rc.entry_addr = recv
     cm.set_cell(*_RV_XY, rc)
 
     # splitter landing cell: I-arm faces East, Q-arm faces South. Faces at R20/R21 to
@@ -172,10 +193,10 @@ def _build_two_face_topology():
         c.entry_addr = 1
         cm.set_cell(x, y, c)
 
-    relay(2, 1, Face.EAST, "PI", _RECV)    # I -> RV WEST face, JUMP recv
+    relay(2, 1, Face.EAST, "PI", recv)     # I -> RV WEST face, JUMP recv
     relay(1, 2, Face.EAST, "QR1", 1)       # Q corridor (relay onward)
     relay(2, 2, Face.EAST, "QR2", 1)
-    relay(3, 2, Face.NORTH, "PQ", _RECV)   # Q -> RV SOUTH face, JUMP recv
+    relay(3, 2, Face.NORTH, "PQ", recv)    # Q -> RV SOUTH face, JUMP recv
 
     # OUT sink: capture the emitted xi in R0. Its (empty) program lives HIGH so the
     # incoming WRITE to R0 isn't clobbered by code.
@@ -197,7 +218,8 @@ def _feed(words, steps, *, corrupt_phase=None):
     """Load a fresh chip, optionally corrupt the phase register, then feed a list of
     ('I'|'Q', value) bursts through the splitter (inject the value at the splitter, then
     JUMP the matching arm so it relays onto the right face and triggers the rendezvous'
-    recv). Returns (rv_xi, rv_xq, out_xi, emit_count)."""
+    recv). The emitted complex packet lands in OUT.R0 (yi=xi) and OUT.R1 (yq=xq).
+    Returns (rv_xi, rv_xq, out_yi, out_yq, emit_count)."""
     import simkyt
     chip = simkyt.Chip.from_yaml(CHIP_YAML)
     chip.load_bitstream_physical(words)
@@ -210,36 +232,43 @@ def _feed(words, steps, *, corrupt_phase=None):
         entry = _I_E if kind == "I" else _Q_E
         chip.inject_data_physical([val], target_hop_cnt=_SPLIT_HOP, target_addr=0)
         chip.run(max_events=60000)
-        before = _s16(chip.read_cell_memory(_cid(ox, oy), 0))
+        # A packet emit fires the trig JUMP into OUT — detect it via the OUT cell's
+        # exec, observed as ANY change in either captured rail (R0=yi or R1=yq).
+        b0 = _s16(chip.read_cell_memory(_cid(ox, oy), 0))
+        b1 = _s16(chip.read_cell_memory(_cid(ox, oy), 1))
         chip.inject_jump_physical(target_hop_cnt=_SPLIT_HOP, entry_addr=entry)
         chip.run(max_events=200000)
-        after = _s16(chip.read_cell_memory(_cid(ox, oy), 0))
-        if after != before:
+        a0 = _s16(chip.read_cell_memory(_cid(ox, oy), 0))
+        a1 = _s16(chip.read_cell_memory(_cid(ox, oy), 1))
+        if (a0, a1) != (b0, b1):
             emit += 1
     return (_s16(chip.read_cell_memory(_cid(rx, ry), _XI_REG)),
             _s16(chip.read_cell_memory(_cid(rx, ry), _XQ_REG)),
             _s16(chip.read_cell_memory(_cid(ox, oy), 0)),
+            _s16(chip.read_cell_memory(_cid(ox, oy), 1)),
             emit)
 
 
 def test_phase_toggle_matched_pair_emits():
-    """P1: I then Q -> the rendezvous latches xi=I, xq=Q and emits ONE matched pair
-    (the emitted value is the recovered real rail xi)."""
+    """P1: I then Q -> the rendezvous latches xi=I, xq=Q and emits ONE matched COMPLEX
+    packet: OUT.yi = I AND OUT.yq = Q (both rails delivered, the Q rail is NOT lost)."""
     words = _build_two_face_topology()
-    xi, xq, o_xi, emit = _feed(words, [("I", 1500), ("Q", 2500)])
+    xi, xq, o_yi, o_yq, emit = _feed(words, [("I", 1500), ("Q", 2500)])
     assert (xi, xq) == (1500, 2500), f"rendezvous did not latch both rails: {xi},{xq}"
-    assert o_xi == 1500, f"emitted xi wrong: {o_xi}"
+    assert (o_yi, o_yq) == (1500, 2500), (
+        f"emitted complex packet wrong (Q rail lost?): yi={o_yi}, yq={o_yq}")
     assert emit == 1, f"expected exactly one emit for one pair, got {emit}"
 
 
 def test_phase_toggle_two_pairs_rearm():
-    """P2: two full pairs I,Q,I,Q -> exactly TWO emits, each a matched pair. Proves the
-    phase register re-arms cleanly (the phase-1 emit resets to phase 0 for the next I)."""
+    """P2: two full pairs I,Q,I,Q -> exactly TWO emits, each a matched COMPLEX packet.
+    Proves the phase register re-arms cleanly (the phase-1 emit resets to phase 0)."""
     words = _build_two_face_topology()
-    xi, xq, o_xi, emit = _feed(
+    xi, xq, o_yi, o_yq, emit = _feed(
         words, [("I", 1100), ("Q", 2200), ("I", 3300), ("Q", 4400)])
     assert (xi, xq) == (3300, 4400), f"2nd pair not latched: {xi},{xq}"
-    assert o_xi == 3300, f"last emitted xi wrong: {o_xi}"
+    assert (o_yi, o_yq) == (3300, 4400), (
+        f"last emitted packet wrong: yi={o_yi}, yq={o_yq}")
     assert emit == 2, f"expected two emits for two pairs, got {emit}"
 
 
@@ -247,31 +276,33 @@ def test_phase_toggle_cross_producer_interleave():
     """P3: the two producers fire on their OWN faces/corridors (I on West via PI, Q on
     South via the PQ corridor) — genuinely independent paths. The arbiter serialises
     them and the phase toggle pairs consecutively. I,Q,I,Q across the two DISTINCT
-    corridors still yields two matched emits (no cross-pair contamination)."""
+    corridors still yields two matched complex emits (no cross-pair contamination)."""
     words = _build_two_face_topology()
-    _xi, _xq, _o, emit = _feed(
+    xi, xq, o_yi, o_yq, emit = _feed(
         words, [("I", 700), ("Q", 800), ("I", 900), ("Q", 1000)])
     assert emit == 2, f"cross-producer interleave broke pairing: emits={emit}"
+    assert (o_yi, o_yq) == (900, 1000), (
+        f"last cross-producer pair mismatched: yi={o_yi}, yq={o_yq}")
 
 
 def test_phase_toggle_is_load_bearing_mutation():
     """MUTATION GATE (INV-4): corrupt the phase register so the toggle cannot reach the
     correct matched-pair emit. Feed the SAME matched I,Q that P1 emits — with a broken
-    phase the block must NEVER emit the correct xi=1500. Proves P1's emit is enforced by
-    the phase toggle, not by timing luck (a passing P1 is not vacuous).
+    phase the block must NEVER emit the correct (yi,yq)=(1500,2500). Proves P1's emit is
+    enforced by the phase toggle, not by timing luck (a passing P1 is not vacuous).
 
     Corrupt phase := 1 (the _q / emit arm). The first trigger (I=1500) is mis-consumed by
-    _q: it latches xq=1500 and emits the STALE xi (still 0 — no I was latched first),
-    then resets phase:=0. The second trigger (Q=2500) is then consumed by the phase-0
-    (I) arm: latches xi=2500, sets phase:=1, HALT — no emit. So the pairing is DESYNCED
-    (xi=2500, xq=1500 — swapped) and the only value ever emitted is the stale 0, NEVER the
-    matched xi=1500 that P1 produces."""
+    _q: it latches xq=1500 and emits the STALE packet (yi=0), then resets phase:=0. The
+    second trigger (Q=2500) is consumed by the phase-0 (I) arm: latches xi=2500, sets
+    phase:=1, HALT — no emit. So the pairing is DESYNCED (xi=2500, xq=1500 — swapped) and
+    the emitted packet is never the matched (1500,2500) that P1 produces."""
     words = _build_two_face_topology()
-    xi, xq, o_xi, _emit = _feed(words, [("I", 1500), ("Q", 2500)], corrupt_phase=1)
+    xi, xq, o_yi, o_yq, _emit = _feed(
+        words, [("I", 1500), ("Q", 2500)], corrupt_phase=1)
     # The pairing is desynced (swapped) — the exact opposite of P1's clean (1500, 2500).
     assert (xi, xq) == (2500, 1500), (
         f"mutation did not desync the pairing as expected: xi={xi}, xq={xq}")
-    # And the correct matched emit is GONE: OUT never carries xi=1500 (only stale 0).
-    assert o_xi != 1500, (
-        "with a corrupt phase the block must NOT emit the correct matched xi=1500 — "
-        f"got o_xi={o_xi}; if it did, P1 would be vacuous")
+    # And the correct matched packet is GONE: OUT never carries (yi,yq)=(1500,2500).
+    assert (o_yi, o_yq) != (1500, 2500), (
+        "with a corrupt phase the block must NOT emit the correct matched packet "
+        f"(1500,2500) — got ({o_yi},{o_yq}); if it did, P1 would be vacuous")

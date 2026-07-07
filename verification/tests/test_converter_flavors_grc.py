@@ -133,8 +133,10 @@ def test_imports_all_flavors_correct_cells_and_wiring():
     # (3) 2-real f2c RECOMBINE: the two on-chip gains feed DualFloatToComplex.i / .q.
     assert any(t == f"{dual}.i" for (s, t) in nets), nets
     assert any(t == f"{dual}.q" for (s, t) in nets), nets
-    # ... and its complex output feeds a downstream complex consumer (c2r drop-Q).
-    assert any(s == f"{dual}.out" for (s, t) in nets), nets
+    # ... and its complex output (the recovered I rail `yi`) feeds the downstream. The
+    # dual emits a complex packet (yi/yq); here the downstream is REAL (via a logical
+    # complex_to_real that drops Q), so only the yi rail is wired (yq has no consumer).
+    assert any(s == f"{dual}.yi" for (s, t) in nets), nets
     # (4) complex_to_real drop-Q: the recovered I rail drives a gain to the port.
     assert any(t == "PORT:x16_out" for (s, t) in nets), nets
     # single-real f2c is exercised implicitly by the chain being grcc-clean +

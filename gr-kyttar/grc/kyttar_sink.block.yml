@@ -29,7 +29,8 @@ templates:
   imports: from gnuradio import kyttar
   make: kyttar.sink(device_id=${device_id}, port_name=${port_name},
     num_channels=${num_channels}, server_port=${server_port},
-    server_repeat=${server_repeat}, hold_secs=${hold_secs}, stream_id=${stream_id})
+    server_repeat=${server_repeat}, hold_secs=${hold_secs}, stream_id=${stream_id},
+    in_type=${in_type.make_val})
 
 parameters:
   - id: device_id
@@ -69,10 +70,26 @@ parameters:
     label: Stream ID
     dtype: string
     default: ''
+  # INPUT stream type. Like the source's Input Type: an ENUM (not a bool) so the
+  # GRC stream dtype is set DIRECTLY from the selected option's io_type. Set to
+  # 'complex' when the chain feeding this sink ends in a complex-output block (e.g.
+  # the FM VCO / an I/Q mixer): the chip egresses the I and Q rails interleaved and
+  # this sink drains them. Default 'float' (a real recovered stream — bits, audio).
+  # The batch drain itself is dtype-agnostic; this only sets the GRC port type so
+  # the upstream connection type-checks.
+  - id: in_type
+    label: Input Type
+    dtype: enum
+    default: float
+    options: [float, complex]
+    option_labels: ['Real (float)', 'I/Q (complex)']
+    option_attributes:
+      io_type: [float, complex]
+      make_val: ['False', 'True']
 
 inputs:
   - label: in
-    dtype: float
+    dtype: ${ in_type.io_type }
 
 outputs:
   - label: out

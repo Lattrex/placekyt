@@ -67,6 +67,11 @@ _VERIFIED_EQUIV = {
     "kyttar_iq_upconvert": (["complex"], ["float"]),
     # gain: float -> float                                     [test_gain.py]
     "kyttar_gain": (["float"], ["float"]),
+    # frequency_modulator_fc (FM VCO): real audio -> complex FM  [test_frequency_modulator.py]
+    "kyttar_frequency_modulator": (["float"], ["complex"]),
+    # quadrature_demod_cf (FM discriminator): complex FM -> real audio
+    #                                                          [test_quadrature_demod.py]
+    "kyttar_quadrature_demod": (["complex"], ["float"]),
 }
 
 
@@ -162,6 +167,8 @@ _DSP_MAKES = {
     "kyttar_rrc_pulse_shaper": "kyttar.rrc_pulse_shaper()",
     "kyttar_complex_to_float": "kyttar.complex_to_float()",
     "kyttar_upsampler": "kyttar.upsampler()",
+    "kyttar_frequency_modulator": "kyttar.frequency_modulator()",
+    "kyttar_quadrature_demod": "kyttar.quadrature_demod()",
 }
 
 

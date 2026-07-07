@@ -65,6 +65,7 @@ class sink(gr.basic_block):
         server_repeat: bool = False,
         hold_secs: float = 5.0,
         stream_id: str = "",
+        in_type: bool = False,
     ):
         # SERVER-BATCH MODE (server_port > 0): the matching kyttar_source (same
         # device_id) batches the burst through the placeKYT-hosted chip; this sink
@@ -85,12 +86,17 @@ class sink(gr.basic_block):
         # exact model ``rx_batch`` already uses). We consume any input explicitly and
         # ignore it — the words come from the batch session.
         self._server_mode = int(server_port) > 0
-        # Input is FLOAT in both modes (the marker chain is float). In server mode
-        # the GR input is ignored — the recovered words come from the batch session.
+        # INPUT type mirrors the upstream marker chain: FLOAT for a real chain (bits,
+        # audio) or COMPLEX when the chain ends in a complex-output block (the FM VCO,
+        # an I/Q mixer) — GRC requires this sink's input port dtype to equal the
+        # upstream output type or it reports a mismatch. The recovered stream is
+        # drained out-of-band from the batch session and is always emitted as float32
+        # (interleaved I/Q for a complex chain), so the OUTPUT stays float regardless.
+        in_dtype = np.complex64 if in_type else np.float32
         gr.basic_block.__init__(
             self,
             name="Kyttar Sink",
-            in_sig=[np.float32],
+            in_sig=[in_dtype],
             out_sig=[np.float32],
         )
 

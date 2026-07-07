@@ -243,3 +243,65 @@ class complex_to_float(_PassThrough):
         output_items[0][:n] = x[:n].real
         output_items[1][:n] = x[:n].imag
         return n
+
+
+class frequency_modulator(_PassThrough):
+    """FM modulator (VCO) — GR marker (maps to FrequencyModulatorBlock).
+
+    Drop-in for GNU Radio ``analog.frequency_modulator_fc(sensitivity)``: ONE real
+    input (the message) -> ONE COMPLEX output ``exp(j·phi)``, ``phi += sensitivity·x``.
+    float in -> complex out, matching the verified block (see
+    verification/tests/test_frequency_modulator.py). The real DSP runs on the chip;
+    this carries the graph."""
+
+    def __init__(self, device_id="kyttar_0", sensitivity=1.0):
+        super().__init__("Kyttar Frequency Modulator", n_in=1, n_out=1,
+                         in_dtype=np.float32, out_dtype=np.complex64)
+        self.device_id = device_id
+        self.sensitivity = sensitivity
+        self._advertise_grc_params(device_id, "FrequencyModulatorBlock",
+                                   {"sensitivity": sensitivity})
+
+    def work(self, input_items, output_items):
+        # A faithful float->complex FM so a GR run of the flowgraph shows the passband
+        # (the chip does the same). Integrate phase, emit exp(j*phi).
+        x = input_items[0]
+        n = min(len(output_items[0]), len(x))
+        phi = getattr(self, "_phi", 0.0)
+        dphi = float(self.sensitivity) * x[:n].astype(np.float64)
+        phase = phi + np.cumsum(dphi)
+        output_items[0][:n] = np.exp(1j * phase).astype(np.complex64)
+        self._phi = float(phase[-1]) if n else phi
+        return n
+
+
+class quadrature_demod(_PassThrough):
+    """FM demodulator (quadrature discriminator) — GR marker (maps to
+    QuadratureDemodBlock).
+
+    Drop-in for GNU Radio ``analog.quadrature_demod_cf(gain)``: ONE COMPLEX input ->
+    ONE real output ``gain·arg(x[n]·conj(x[n-1]))`` (the FM discriminator). complex in
+    -> float out, matching the verified block (see
+    verification/tests/test_quadrature_demod.py)."""
+
+    def __init__(self, device_id="kyttar_0", gain=1.0):
+        super().__init__("Kyttar Quadrature Demod", n_in=1, n_out=1,
+                         in_dtype=np.complex64, out_dtype=np.float32)
+        self.device_id = device_id
+        self.gain = gain
+        self._advertise_grc_params(device_id, "QuadratureDemodBlock",
+                                   {"gain": gain})
+
+    def work(self, input_items, output_items):
+        # Faithful complex->float FM discriminator: gain*arg(x[n]*conj(x[n-1])).
+        x = input_items[0]
+        n = min(len(output_items[0]), len(x))
+        prev = getattr(self, "_prev", np.complex64(0))
+        xp = np.empty(n, dtype=np.complex64)
+        if n:
+            xp[0] = prev
+            xp[1:] = x[:n - 1]
+            prod = x[:n] * np.conj(xp)
+            output_items[0][:n] = (float(self.gain) * np.angle(prod)).astype(np.float32)
+            self._prev = x[n - 1]
+        return n

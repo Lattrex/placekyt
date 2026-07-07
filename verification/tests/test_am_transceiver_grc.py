@@ -145,7 +145,6 @@ _DUPLEX_XFAIL = pytest.mark.xfail(
            "coherence (RX) — see project_am_transceiver_duplex_blockers")
 
 
-@_DUPLEX_XFAIL
 def test_tx_stream_produces_am_passband():
     """LIVE TX: drive audio into the 'tx' stream; the chip's oscillator-mixer emits
     the suppressed-carrier DSB-AM passband ``audio*cos(2*pi*fc*t)``."""
@@ -165,7 +164,6 @@ def test_tx_stream_produces_am_passband():
         f"TX passband does not match audio*cos(fc) (|corr|={corr:.4f})")
 
 
-@_DUPLEX_XFAIL
 def test_rx_stream_recovers_audio():
     """LIVE RX: drive the AM passband into the 'rx' stream; the coherent product
     detector (oscMix + LowPass + Gain x2) recovers the transmitted audio."""
@@ -185,7 +183,6 @@ def test_rx_stream_recovers_audio():
         f"RX chain does not recover the transmitted audio (|corr|={corr:.4f})")
 
 
-@_DUPLEX_XFAIL
 def test_full_duplex_both_streams_on_shared_chip():
     """Both streams run on the SAME hosted chip (shared x16_in/x16_out, demuxed by
     stream_id): TX yields the passband AND RX recovers the audio, back to back."""

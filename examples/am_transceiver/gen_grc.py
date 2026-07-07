@@ -135,7 +135,19 @@ def main():
         "minoutbuf": "'0'", "num_channels": "'1'", "port_name": "'\"x16_in\"'",
         "server_host": "'\"127.0.0.1\"'", "server_port": "server_port",
         "stream_id": "'\"tx\"'"}, 240, 120))
-    out.append(oscmix("tx_mix", "'AM modulate: s = audio*cos(fc)'", 440, 120))
+    # audio -> complex baseband (I = audio, Q = 0). The float->complex + null_source
+    # is the GR-idiomatic real->complex converter; placeKYT SPLICES it (audio wires
+    # straight to the mixer's I, Q treated as 0), so on-chip the complex-only mixer
+    # gets audio+0j. This is the correct way to feed a real signal to iq_upconvert.
+    out.append(blk("tx_f2c", "blocks_float_to_complex", {
+        "affinity": "''", "alias": "''", "comment": "'audio -> I (Q=0)'",
+        "maxoutbuf": "'0'", "minoutbuf": "'0'", "vlen": "'1'"}, 380, 120))
+    out.append(blk("tx_q0", "blocks_null_source", {
+        "affinity": "''", "alias": "''", "bus_structure_source": "'[[0,],]'",
+        "comment": "'Q = 0 (DSB-AM: no quadrature)'", "maxoutbuf": "'0'",
+        "minoutbuf": "'0'", "num_outputs": "'1'", "sizeof_stream_item": "'gr.sizeof_float'"},
+        380, 200))
+    out.append(oscmix("tx_mix", "'AM modulate: s = Re{(audio+0j)e^jwt} = audio*cos(fc)'", 540, 120))
     out.append(blk("tx_sink", "kyttar_sink", {
         "affinity": "''", "alias": "''",
         "comment": "AM passband <- chip x16_out (stream 'tx')",
@@ -160,8 +172,16 @@ def main():
         "minoutbuf": "'0'", "num_channels": "'1'", "port_name": "'\"x16_in\"'",
         "server_host": "'\"127.0.0.1\"'", "server_port": "server_port",
         "stream_id": "'\"rx\"'"}, 240, 320))
-    out.append(oscmix("rx_mix", "'AM demod: y = s*cos(fc) (coherent product detect)'",
-                      440, 320))
+    # passband -> complex baseband (I = passband, Q = 0), same GR-idiomatic converter.
+    out.append(blk("rx_f2c", "blocks_float_to_complex", {
+        "affinity": "''", "alias": "''", "comment": "'passband -> I (Q=0)'",
+        "maxoutbuf": "'0'", "minoutbuf": "'0'", "vlen": "'1'"}, 380, 320))
+    out.append(blk("rx_q0", "blocks_null_source", {
+        "affinity": "''", "alias": "''", "bus_structure_source": "'[[0,],]'",
+        "comment": "'Q = 0'", "maxoutbuf": "'0'", "minoutbuf": "'0'",
+        "num_outputs": "'1'", "sizeof_stream_item": "'gr.sizeof_float'"}, 380, 400))
+    out.append(oscmix("rx_mix", "'AM demod: y = Re{s*e^jwt} product detect'",
+                      540, 320))
     out.append(blk("rx_lpf", "kyttar_low_pass_filter", {
         "affinity": "''", "alias": "''", "beta": "'6.76'",
         "comment": "'recover baseband, reject 2*fc'",
@@ -183,14 +203,18 @@ def main():
         "'recovered audio (RX)'", "'green'", "stim.points(n_samp)"), 1240, 240))
 
     conns = [
-        # TX chain
+        # TX chain: audio -> [float_to_complex (I=audio, Q=0)] -> iq_upconvert -> passband
         ("tx_audio", 0, "tx_src", 0),
-        ("tx_src", 0, "tx_mix", 0),
+        ("tx_src", 0, "tx_f2c", 0),      # audio -> I
+        ("tx_q0", 0, "tx_f2c", 1),       # 0 -> Q
+        ("tx_f2c", 0, "tx_mix", 0),      # complex baseband -> mixer
         ("tx_mix", 0, "tx_sink", 0),
         ("tx_sink", 0, "tx_passband", 0),
-        # RX chain
+        # RX chain: passband -> [float_to_complex (I=pb, Q=0)] -> iq_upconvert -> LPF -> gain
         ("am_rf", 0, "rx_src", 0),
-        ("rx_src", 0, "rx_mix", 0),
+        ("rx_src", 0, "rx_f2c", 0),      # passband -> I
+        ("rx_q0", 0, "rx_f2c", 1),       # 0 -> Q
+        ("rx_f2c", 0, "rx_mix", 0),      # complex baseband -> mixer
         ("rx_mix", 0, "rx_lpf", 0),
         ("rx_lpf", 0, "rx_gain", 0),
         ("rx_gain", 0, "rx_sink", 0),

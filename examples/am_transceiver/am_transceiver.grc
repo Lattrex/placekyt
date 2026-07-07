@@ -132,12 +132,48 @@ blocks:
     rotation: 0
     state: enabled
 
+- name: tx_f2c
+  id: blocks_float_to_complex
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'audio -> I (Q=0)'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [380, 120]
+    rotation: 0
+    state: enabled
+
+- name: tx_q0
+  id: blocks_null_source
+  parameters:
+    affinity: ''
+    alias: ''
+    bus_structure_source: '[[0,],]'
+    comment: 'Q = 0 (DSB-AM: no quadrature)'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_outputs: '1'
+    sizeof_stream_item: 'gr.sizeof_float'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [380, 200]
+    rotation: 0
+    state: enabled
+
 - name: tx_mix
   id: kyttar_iq_upconvert
   parameters:
     affinity: ''
     alias: ''
-    comment: 'AM modulate: s = audio*cos(fc)'
+    comment: 'AM modulate: s = Re{(audio+0j)e^jwt} = audio*cos(fc)'
     device_id: '"kyttar_0"'
     frequency: 6000.0
     maxoutbuf: '0'
@@ -147,7 +183,7 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [440, 120]
+    coordinate: [540, 120]
     rotation: 0
     state: enabled
 
@@ -259,12 +295,48 @@ blocks:
     rotation: 0
     state: enabled
 
+- name: rx_f2c
+  id: blocks_float_to_complex
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'passband -> I (Q=0)'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [380, 320]
+    rotation: 0
+    state: enabled
+
+- name: rx_q0
+  id: blocks_null_source
+  parameters:
+    affinity: ''
+    alias: ''
+    bus_structure_source: '[[0,],]'
+    comment: 'Q = 0'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_outputs: '1'
+    sizeof_stream_item: 'gr.sizeof_float'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [380, 400]
+    rotation: 0
+    state: enabled
+
 - name: rx_mix
   id: kyttar_iq_upconvert
   parameters:
     affinity: ''
     alias: ''
-    comment: 'AM demod: y = s*cos(fc) (coherent product detect)'
+    comment: 'AM demod: y = Re{s*e^jwt} product detect'
     device_id: '"kyttar_0"'
     frequency: 6000.0
     maxoutbuf: '0'
@@ -274,7 +346,7 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [440, 320]
+    coordinate: [540, 320]
     rotation: 0
     state: enabled
 
@@ -388,11 +460,15 @@ blocks:
 
 connections:
 - [tx_audio, '0', tx_src, '0']
-- [tx_src, '0', tx_mix, '0']
+- [tx_src, '0', tx_f2c, '0']
+- [tx_q0, '0', tx_f2c, '1']
+- [tx_f2c, '0', tx_mix, '0']
 - [tx_mix, '0', tx_sink, '0']
 - [tx_sink, '0', tx_passband, '0']
 - [am_rf, '0', rx_src, '0']
-- [rx_src, '0', rx_mix, '0']
+- [rx_src, '0', rx_f2c, '0']
+- [rx_q0, '0', rx_f2c, '1']
+- [rx_f2c, '0', rx_mix, '0']
 - [rx_mix, '0', rx_lpf, '0']
 - [rx_lpf, '0', rx_gain, '0']
 - [rx_gain, '0', rx_sink, '0']

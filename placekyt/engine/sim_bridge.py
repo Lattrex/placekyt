@@ -361,7 +361,12 @@ class SimServer:
                 # xq@R1). This is the I/Q analogue of write_port; the per-word dest
                 # + hop tagging is exactly the tagged-injection mechanism (#207).
                 data = np.asarray(payload, dtype="<f4")
-                a0, a1 = header.get("data_addrs", [0, 1])
+                # data_addrs may carry ONE address (a real/float stream feeding a
+                # single-word landing) or TWO (an I/Q packet into a 2-input cell).
+                # Never unpack blindly — a 1-element list would ValueError.
+                _das = list(header.get("data_addrs", [0, 1]))
+                a0 = _das[0] if _das else 0
+                a1 = _das[1] if len(_das) > 1 else a0 + 1
                 # Use the client's jump_entry if given; else fall back to this
                 # port's build-configured entry (so a block with entry != 0 works
                 # without the GRC having to know it).
@@ -442,7 +447,10 @@ class SimServer:
                 # per sample (that would break the loop mid-packet).
                 self._apply_batch_reset()
                 data = np.asarray(payload, dtype="<f4")
-                a0, a1 = header.get("data_addrs", [0, 1])
+                # Robust to a real (1-addr) or I/Q (2-addr) stream — see above.
+                _das = list(header.get("data_addrs", [0, 1]))
+                a0 = _das[0] if _das else 0
+                a1 = _das[1] if len(_das) > 1 else a0 + 1
                 in_name = header.get("in_port", "x16_in")
                 raw_entry = header.get("jump_entry", None)
                 if raw_entry is None or int(raw_entry) <= 0:

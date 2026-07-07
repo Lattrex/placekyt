@@ -157,9 +157,17 @@ class BuildEngine:
         try:
             from .bus_drc import check_project_bus
             for v in check_project_bus(project, chip_types, self.catalog):
-                if getattr(v, "kind", None) == "single_cell_inout":
+                kind = getattr(v, "kind", None)
+                if kind == "single_cell_inout":
                     result.errors.append(drc_error(
                         "single_cell_inout_deadlock", str(v),
+                        chip=0, x=v.cell[0], y=v.cell[1]))
+                elif kind == "dual_input_same_face":
+                    # A face-locking rendezvous (DualFloatToComplex) whose two inputs land
+                    # on ONE face cannot pair its two async streams — NAMED build error,
+                    # never a silent unpairnable build.
+                    result.errors.append(drc_error(
+                        "dual_input_same_face", str(v),
                         chip=0, x=v.cell[0], y=v.cell[1]))
         except Exception:  # noqa: BLE001 — bus DRC is best-effort context
             pass

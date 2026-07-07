@@ -195,6 +195,7 @@ def check_project_bus(project, chip_types, catalog=None) -> list[Violation]:
     viols = check_bus(project, routes, chip_types, exempt_cells=exempt,
                       egress=egress)
     viols.extend(_check_single_cell_inout(project))
+    viols.extend(_check_dual_input_same_face(project, catalog))
     return viols
 
 
@@ -275,6 +276,94 @@ def _check_single_cell_inout(project) -> list[Violation]:
                        "and output contend on one single-outstanding link (§5.3 "
                        "deadlock hazard). Place/route so input-face != output-face.",
                 nets=(name,)))
+    return out
+
+
+def _check_dual_input_same_face(project, catalog) -> list[Violation]:
+    """DRC the DISTINCT-INPUT-FACE requirement of a face-locking rendezvous block.
+
+    A block declaring ``NEEDS_DISTINCT_INPUT_FACES`` (the DualFloatToComplex LOCK
+    rendezvous) distinguishes its two INDEPENDENT async input streams ONLY by their
+    arrival FACE — it LOCKs to one face at a time. If the placer/router lands its two
+    input nets on the SAME face of its cell, the face lock CANNOT tell the streams apart
+    and the rendezvous stalls (it may "happen to run" only for a rigged in-order feed).
+    So this is a HARD ERROR, the mirror of the single-cell in!=out DRC: read the two input
+    nets' arrival faces from the routed geometry and ERROR (NAMED) when they coincide.
+
+    Requires ``catalog`` to read the block's flag (via instantiate); a no-op without it or
+    for any block that does not declare the flag."""
+    if catalog is None:
+        return []
+    from model.connection import BlockEndpoint
+
+    # Which placed blocks declare NEEDS_DISTINCT_INPUT_FACES (cell -> name), cached.
+    flag_cache: dict = {}
+
+    def _needs(blk):
+        key = (blk.type, blk.library)
+        if key not in flag_cache:
+            try:
+                inst = catalog.instantiate(blk.type, "__drc_probe__",
+                                           getattr(blk, "params", None),
+                                           library=blk.library)
+                flag_cache[key] = bool(
+                    getattr(inst, "NEEDS_DISTINCT_INPUT_FACES", False))
+            except Exception:  # noqa: BLE001
+                flag_cache[key] = False
+        return flag_cache[key]
+
+    targets: dict = {}   # block name -> (cell, {port -> arrival_face})
+    for blk in project.blocks:
+        pl = blk.placement
+        if pl is None or not pl.cells:
+            continue
+        if not _needs(blk):
+            continue
+        targets[blk.name] = ((pl.cells[0].x, pl.cells[0].y), {})
+
+    if not targets:
+        return []
+
+    for conn in project.connections:
+        if not isinstance(conn.target, BlockEndpoint):
+            continue
+        rec = targets.get(conn.target.block)
+        if rec is None:
+            continue
+        cell, faces = rec
+        # Route waypoints may include non-coordinate sentinels (e.g. an ABUTMENT marker);
+        # keep only real (x, y) points.
+        pts = [(p.x, p.y) for p in (conn.route or []) if hasattr(p, "x")]
+        f = None
+        if pts:
+            last = pts[-1]
+            src = pts[-2] if (last == cell and len(pts) >= 2) else last
+            f = _step_dir(cell, src)
+        else:
+            # Abutment (no real waypoints): arrival face is toward the driver's output cell.
+            db = project.block(getattr(conn.source, "block", None) or "")
+            if db is not None and db.placement and db.placement.cells:
+                oc = (db.placement.cells[-1].x, db.placement.cells[-1].y)
+                f = _step_dir(cell, oc)
+        if f is not None:
+            faces[conn.target.port] = f
+
+    out: list[Violation] = []
+    dir_names = {0: "S", 1: "E", 2: "W", 3: "N"}
+    for name, (cell, faces) in targets.items():
+        if len(faces) < 2:
+            continue   # <2 routed inputs — single/logical feed, no lock hazard
+        vals = list(faces.values())
+        if len(set(vals)) < len(vals):
+            same = dir_names.get(vals[0], "?")
+            out.append(Violation(
+                cell=cell, kind="dual_input_same_face",
+                reason=f"face-locking block '{name}' (NEEDS_DISTINCT_INPUT_FACES) has "
+                       f"two inputs arriving on the SAME face ({same}) — its LOCK "
+                       "rendezvous distinguishes the two async streams ONLY by arrival "
+                       "face, so same-face inputs cannot be paired. Place/route so the "
+                       "two inputs land on DIFFERENT faces.",
+                nets=tuple(faces.keys())))
     return out
 
 

@@ -190,10 +190,17 @@ def _import_grc_text(text):
 
 
 def test_importer_auto_inserts_dual_from_two_real_f2c():
-    """A RAW `float_to_complex` fed by TWO independent real producers (no null_source on
-    Q) auto-inserts EXACTLY ONE DualFloatToComplexBlock — no cell for the (logical) f2c
-    itself — then auto-P&Rs and BUILDS. This is the general importer path (task #429):
-    it does NOT require the converter_flavors scaffolding, just a bare 2-real f2c."""
+    """A RAW `float_to_complex` fed by TWO real producers (no null_source on Q) auto-inserts
+    EXACTLY ONE DualFloatToComplexBlock — no cell for the (logical) f2c itself — and routes
+    under auto-P&R. This is the general importer path (task #429): it does NOT require the
+    converter_flavors scaffolding, just a bare 2-real f2c.
+
+    NOTE: this synthetic .grc's two `kyttar_source` blocks BOTH map to the ONE chip input
+    port (x16_in), so the dual is fed by a FORKED single port — the two 'streams' are the
+    SAME physical channel and cannot be distinguished by face (the dual_input_same_face DRC
+    correctly rejects a BUILD of this degenerate case). So this test asserts IMPORT +
+    PLACEMENT + ROUTING only; the build-correctness proof for a dual with GENUINELY
+    independent producers is the proto (proto_dual_f2c_rendezvous) + the DRC gate tests."""
     _BlockCatalog, load_chip_type, AppController, _CPE, _BE = _engine()
     cat, res = _import_grc_text(_TWO_REAL_GRC)
     assert res.ok and not res.unknown, res.unknown
@@ -206,8 +213,6 @@ def test_importer_auto_inserts_dual_from_two_real_f2c():
     ctrl = AppController(catalog=cat)
     ctrl.project = res.project
     assert ctrl.auto_pnr({ctk: ct}).ok, "2-real f2c did not route under auto-P&R"
-    bres = ctrl.build()
-    assert bres.ok, "build failed: " + "; ".join(str(e) for e in bres.errors)
 
 
 def test_importer_single_real_f2c_places_no_dual():
@@ -308,9 +313,11 @@ def test_dual_delivers_both_rails_to_complex_consumer():
     ctk = getattr(ct, "name", None) or "kyttar_10x12"
     ctrl = AppController(catalog=cat)
     ctrl.project = res.project
+    # This synthetic .grc forks the ONE chip input port to both dual inputs, so the two
+    # 'streams' are the SAME channel (unpairnable — the dual_input_same_face DRC rejects a
+    # build). Assert IMPORT + WIRING (both rails) + ROUTING; the build-correctness proof for
+    # genuinely-independent producers is the proto + DRC-gate tests.
     assert ctrl.auto_pnr({ctk: ct}).ok, "dual->complex chain did not route (both rails)"
-    bres = ctrl.build()
-    assert bres.ok, "build failed: " + "; ".join(str(e) for e in bres.errors)
 
 
 def test_dual_program_emits_two_output_writes():
@@ -345,3 +352,87 @@ def test_dual_program_emits_two_output_writes():
     assert n_write >= 2, (
         f"the 2-rail dual must emit TWO Writes (yi + yq); got {n_write}:\n{dis}")
     assert "Jump" in dis, f"missing the downstream trigger Jump:\n{dis}"
+
+
+# --------------------------------------------------------------------------- #
+#  Build DRC (#441): a face-locking block whose two inputs land on the SAME    #
+#  face is a HARD ERROR — the LOCK rendezvous distinguishes streams by face.   #
+# --------------------------------------------------------------------------- #
+
+_CONVERTER_FLAVORS_GRC = str(
+    _ROOT / "verification" / "tests" / "data" / "converter_flavors.grc")
+
+
+def _pnr_converter_flavors():
+    """Import + auto-P&R the converter_flavors chain (the dual is fed by TWO genuinely
+    independent on-chip producers — the two gains off the mixer's complex-to-float split).
+    Return (cat, ctrl, dual). The placer's distinct-face constraint lands the gains on
+    DIFFERENT faces of the dual."""
+    from engine.catalog import BlockCatalog
+    from engine.grc_import import import_grc
+    from engine.io.chip_type_io import load_chip_type
+    from ui.controller import AppController
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    cat = BlockCatalog.from_gr_kyttar()
+    res = import_grc(_CONVERTER_FLAVORS_GRC, cat, chip_type="kyttar_10x12")
+    assert res.ok and not res.unknown, res.unknown
+    ct = load_chip_type(CHIP_YAML)
+    ctk = getattr(ct, "name", None) or "kyttar_10x12"
+    ctrl = AppController(catalog=cat)
+    ctrl.project = res.project
+    assert ctrl.auto_pnr({ctk: ct}).ok, "converter_flavors did not route"
+    dual = next(b for b in ctrl.project.blocks
+                if b.type == "DualFloatToComplexBlock")
+    return cat, ctrl, dual
+
+
+def test_drc_passes_on_distinct_input_faces():
+    """POSITIVE (no false positive): on a layout where the dual's two input nets arrive on
+    DIFFERENT faces (i forced from the WEST, q from the SOUTH), the dual_input_same_face
+    DRC is CLEAN. This isolates the DRC from the placer: whether auto-P&R RELIABLY achieves
+    distinct faces for a single-cell dual is a separate (open) placer concern — the CP-SAT
+    distinct-face constraint is best-effort, and this DRC is the hard safety net that
+    catches any residual same-face layout. Here we assert the DRC does not FALSE-fire on a
+    genuinely distinct-face layout."""
+    from engine.bus_drc import _check_dual_input_same_face
+    from model.connection import RoutePoint
+    cat, ctrl, dual = _pnr_converter_flavors()
+    dc = (dual.placement.cells[0].x, dual.placement.cells[0].y)
+    for c in ctrl.project.connections:
+        if getattr(c.target, "block", None) == dual.name:
+            if getattr(c.target, "port", None) == "i":       # arrive from the WEST
+                c.route = [RoutePoint(x=dc[0] - 2, y=dc[1]),
+                           RoutePoint(x=dc[0] - 1, y=dc[1]),
+                           RoutePoint(x=dc[0], y=dc[1])]
+            elif getattr(c.target, "port", None) == "q":     # arrive from the SOUTH
+                c.route = [RoutePoint(x=dc[0], y=dc[1] + 2),
+                           RoutePoint(x=dc[0], y=dc[1] + 1),
+                           RoutePoint(x=dc[0], y=dc[1])]
+    viols = _check_dual_input_same_face(ctrl.project, cat)
+    assert not viols, (
+        "a genuinely distinct-face layout (W + S) must be DRC-clean; got: "
+        + "; ".join(v.reason for v in viols))
+
+
+def test_drc_fires_when_both_inputs_share_a_face():
+    """NEGATIVE / mutation (INV-4): FORCE the dual's two input nets to arrive on the SAME
+    face (both approaching from the WEST). The dual_input_same_face DRC MUST fire — a
+    face lock cannot pair two streams on one face. This proves the DRC is load-bearing
+    (it catches the exact bad layout the placer constraint prevents)."""
+    from engine.bus_drc import _check_dual_input_same_face
+    from model.connection import RoutePoint
+    cat, ctrl, dual = _pnr_converter_flavors()
+    dc = (dual.placement.cells[0].x, dual.placement.cells[0].y)
+    # Rewrite BOTH input routes to approach the dual cell from the WEST (same face).
+    w1, w2 = (dc[0] - 1, dc[1]), (dc[0] - 2, dc[1])
+    for c in ctrl.project.connections:
+        if getattr(c.target, "block", None) == dual.name \
+                and getattr(c.target, "port", None) in ("i", "q"):
+            c.route = [RoutePoint(x=w2[0], y=w2[1]),
+                       RoutePoint(x=w1[0], y=w1[1]),
+                       RoutePoint(x=dc[0], y=dc[1])]
+    viols = _check_dual_input_same_face(ctrl.project, cat)
+    assert any(v.kind == "dual_input_same_face" for v in viols), (
+        "the DRC MUST fire when a face-locking block's two inputs share a face — "
+        f"got {[v.kind for v in viols]}")

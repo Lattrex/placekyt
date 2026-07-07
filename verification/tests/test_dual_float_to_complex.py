@@ -86,19 +86,30 @@ def test_builds_on_chip_with_lock_rendezvous():
     assert bres.ok, "build failed: " + "; ".join(str(e) for e in bres.errors)
 
     # The built cell's program IS the LOCK-by-face rendezvous: it writes LOCK_FACE
-    # (CONFIG 3 = dest 35) and LOCK (CONFIG 4 = dest 36) to gate the arbiter by face,
-    # and it emits a normal brokered handoff (WRITE + JUMP the build patched). The
-    # phase-toggle (Cmp + Branch{invert}) is GONE — a same-face counter can't pair
-    # async streams.
+    # (CONFIG 3 = dest 35) to switch the accepted face between got_i/got_q, and it emits a
+    # normal brokered handoff (WRITE + JUMP the build patched). There is NO in-program LOCK
+    # write (dest 36) and NO arm entry — the cell is booted PRE-LOCKED at cold start via
+    # the bitstream (initial_lock_face), so LOCK=1 is set at boot, not by the program. The
+    # phase-toggle (Cmp + Branch{invert}) is GONE — a same-face counter can't pair async
+    # streams.
     blk = ctrl.project.block(d)
     c0 = blk.placement.cells[0]
     mem = bres.chips[0].cells[(c0.x, c0.y)]["memory"]
     dis = simkyt.Program.from_words("d", list(mem), 0).disassemble()
     assert "dest: 35" in dis, f"LOCK rendezvous missing its LOCK_FACE write:\n{dis}"
-    assert "dest: 36" in dis, f"LOCK rendezvous missing its LOCK write:\n{dis}"
     assert "Write" in dis and "Jump" in dis, f"missing output handoff:\n{dis}"
     # The broken phase-toggle is GONE.
     assert "Cmp" not in dis, f"unexpected phase-toggle Cmp — should be LOCK now:\n{dis}"
+    # The cell BOOTS pre-locked: the built bitstream carries a cold-start LOCK config
+    # (a WRITE.CFG to LOCK_FACE=3 then LOCK=4 in the boot words) — the initial_lock_face.
+    # Load it and confirm the cell's boot CONFIG has the LOCK bit set (no arm needed).
+    chip = simkyt.Chip.from_yaml(CHIP_YAML)
+    chip.load_bitstream_physical(bres.chips[0].words)
+    boot_cfg = chip.read_config(chip.cell_id_at(c0.x, c0.y))
+    # LOCK is CONFIG bit 14 (0x4000) in the packed config word (generator.py encoding).
+    assert boot_cfg & 0x4000, (
+        f"the rendezvous cell must BOOT already LOCKED (no arm) — boot CONFIG "
+        f"0x{boot_cfg:04X} has LOCK clear")
 
 
 # --------------------------------------------------------------------------- #

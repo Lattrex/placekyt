@@ -27,18 +27,20 @@ class DualFloatToComplexBlock(KyttarBlock):
     until it's that face's turn. This is why the block REQUIRES its two inputs on TWO
     DISTINCT faces (``NEEDS_DISTINCT_INPUT_FACES``): the face IS the stream identity.
 
-    Rendezvous (the cell is ALWAYS locked to exactly one face, advancing I->Q->I):
+    Rendezvous (the cell is ALWAYS locked to exactly one face, advancing I->Q->I).
+    There is NO arm step — the cell is LOCKED to face_i from the GET-GO by the cold-start
+    ``initial_lock_face`` (which sets LOCK=1 AND LOCK_FACE=face_i in the boot CONFIG):
 
-        arm   (default): LOCK_FACE = face_i ; LOCK = 1 ; HALT   (accept only I)
+        (cold start): LOCK=1, LOCK_FACE=face_i baked into boot CONFIG (accept only I)
         got_i (face_i):  latch I ; LOCK_FACE = face_q ; HALT    (accept only Q)
         got_q (face_q):  latch Q ; emit (yi=I, yq=Q) complex packet ;
-                         LOCK_FACE = face_i ; HALT               (re-arm for next I)
+                         LOCK_FACE = face_i ; HALT               (re-lock for next I)
 
     Because the cell only ever fires the downstream from ``got_q``, with a fresh I
     latched moments before, it CANNOT emit an unpaired or duplicated sample no matter
-    how the two producers interleave. Cold start is handled by ``initial_lock_face``:
-    the build boots the cell already LOCKED to ``face_i`` (LOCK=1), so the very first
-    word accepted is the I of the first pair — no external ``arm`` JUMP is needed.
+    how the two producers interleave. Arming via a JUMP would be a RACE (a word arriving
+    before the arm-JUMP would be accepted unlocked), so it is NEVER done — the cell is
+    already listening to ONLY the I face when the very first word arrives.
 
     A NOTE on why NOT a phase toggle: a "counter that alternates I,Q,I,Q on ONE face"
     was tried and is BROKEN — it has no way to know which stream a same-face word came
@@ -110,11 +112,17 @@ class DualFloatToComplexBlock(KyttarBlock):
     def build_cell_programs(self) -> Dict[int, CellProgram]:
         fi = self._FACE.get(self._face_i, 2)   # west
         fq = self._FACE.get(self._face_q, 0)   # south
-        # LOCK-by-face rendezvous. `arm` locks to face_i at startup (but cold-start
-        # `initial_lock_face` below boots it pre-locked so `arm` is only a fallback);
-        # from then on the cell self-re-arms at the end of got_q. LOCK/LOCK_FACE persist
-        # across HALT (CONFIG state), so each HALT waits on exactly the locked face — a
-        # slow producer on the OTHER face is ignored until it is that face's turn.
+        # LOCK-by-face rendezvous. There is NO "arm" step — the cell is LOCKED to face_i
+        # from the GET-GO by the cold-start ``initial_lock_face`` (which sets BOTH LOCK=1
+        # AND LOCK_FACE=face_i in the cell's boot CONFIG). Arming via a JUMP would be a
+        # RACE: a word arriving before the arm-JUMP would be accepted on an unlocked face
+        # and mis-paired — the exact failure the LOCK exists to prevent. So the cell is
+        # already listening to ONLY the I face when the first word arrives.
+        #
+        # The rendezvous is just got_i -> got_q -> (emit + re-lock to face_i) -> got_i …
+        # LOCK/LOCK_FACE are CONFIG state that persist across HALT, so each HALT waits on
+        # exactly the locked face — a slow/bursty producer on the OTHER face is IGNORED by
+        # the arbiter until it is that face's turn (async re-ordering can never mis-pair).
         #
         # On the Q trigger it emits the paired complex sample as TWO rails yi=xi, yq=xq
         # (+ one trigger) via declarative {write:yi}/{write:yq}/{jump:trig} (the
@@ -123,10 +131,6 @@ class DualFloatToComplexBlock(KyttarBlock):
         # split auto-wires yi->consumer.xi AND yq->consumer.xq to a 2-input complex
         # downstream; a REAL downstream (via a logical complex_to_real) consumes only yi.
         tmpl = (
-            "arm:\n"
-            "    MOVE [LOCK_FACE], R{data:face_i}\n"
-            "    MOVE [LOCK], R{data:lock_on}\n"
-            "    HALT\n"
             "got_i:\n"
             "    MOVE R{state:xi}, R{in:i}\n"            # latch I (accepted on face_i)
             "    MOVE [LOCK_FACE], R{data:face_q}\n"     # now accept ONLY the Q face
@@ -138,20 +142,20 @@ class DualFloatToComplexBlock(KyttarBlock):
             "    MOVE R0, R{state:xq}\n"
             "    {write:yq}\n"                           # recovered Q rail -> consumer.xq
             "    {jump:trig}\n"                          # trigger the downstream ONCE
-            "    MOVE [LOCK_FACE], R{data:face_i}\n"     # re-arm: accept ONLY the I face
+            "    MOVE [LOCK_FACE], R{data:face_i}\n"     # re-lock: accept ONLY the I face
             "    HALT\n"
         )
         return {0: CellProgram(
             inputs=[Port("i", register=0), Port("q", register=0)],
             outputs=[Port("yi"), Port("yq"), Port("trig")],
-            entries=[EntryPoint("arm"), EntryPoint("got_i"), EntryPoint("got_q")],
+            # ONLY got_i / got_q — NO arm entry (the cell is pre-locked at cold start).
+            entries=[EntryPoint("got_i"), EntryPoint("got_q")],
             data=[DataWord("face_i", fi, address=1, is_face=True),
-                  DataWord("face_q", fq, address=2, is_face=True),
-                  DataWord("lock_on", 1, address=3)],
+                  DataWord("face_q", fq, address=2, is_face=True)],
             state=[StateVar("xi"), StateVar("xq")],
             assembly_template=tmpl,
-            # Cold start: boot the cell already LOCKED to face_i (LOCK=1), so the first
-            # word accepted is the I of the first pair with NO external arm JUMP.
+            # Cold start: boot the cell already LOCKED to face_i (LOCK=1 + LOCK_FACE=face_i)
+            # so the FIRST word is accepted ONLY on the I face — no arm JUMP, no race.
             initial_lock_face=fi,
         )}
 

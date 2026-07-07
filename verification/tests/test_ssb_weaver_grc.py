@@ -42,6 +42,7 @@ for p in (str(_PLACEKYT), str(_RUNTIME), str(_SSB)):
 
 CHIP_YAML = str(_PLACEKYT / "resources" / "chips" / "kyttar_10x12.yaml")
 GRC_PATH = str(_SSB / "ssb_weaver.grc")
+KYT_PATH = str(_SSB / "ssb_weaver.kyt")
 pytestmark = pytest.mark.skipif(
     not (os.path.exists(CHIP_YAML) and os.path.exists(GRC_PATH)),
     reason="chip yaml or ssb_weaver.grc absent")
@@ -166,6 +167,68 @@ def test_grc_places_on_one_chip():
     for bl in placed:
         for cell in bl.placement.cells:
             assert 0 <= cell.x < W and 0 <= cell.y < H, (bl.type, cell)
+
+
+# --- (b2) the shipped HAND-PLACED .kyt builds clean + both streams run -------
+def test_shipped_kyt_builds_and_runs_both_streams():
+    """The shipped ``ssb_weaver.kyt`` (hand-placed + hand-routed, all 13 nets) BUILDS
+    with no DRC errors and RUNS: both the TX (SSB passband, tag 10) and RX (recovered
+    audio, tag 5) streams egress on the shared x16_out. This is the runnable demo
+    artifact — it does NOT need auto-route (unlike the .grc import path)."""
+    import math
+    import simkyt
+    from engine.catalog import BlockCatalog
+    from engine.port_config import stream_targets, batch_reset_writes
+    from engine.sim_bridge import SimServer, recv_message, send_message
+    from ui.controller import AppController
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+
+    if not os.path.exists(KYT_PATH):
+        pytest.skip("ssb_weaver.kyt absent")
+    cat = BlockCatalog.from_gr_kyttar()
+    ctrl = AppController(catalog=cat)
+    ctrl.open_project(KYT_PATH)
+    bres = ctrl.build()
+    assert bres.ok, "shipped .kyt must build clean: " + "; ".join(
+        str(e) for e in bres.errors)
+
+    tgts = stream_targets(ctrl.project, ctrl.registry, ctrl.catalog, 0,
+                          build_result=bres)
+    assert tgts.get("tx", {}).get("out_tag") is not None, "TX stream needs an out_tag"
+    assert tgts.get("rx", {}).get("out_tag") is not None, (
+        "RX stream needs an out_tag (the gain->x16_out net's tag)")
+
+    chip = simkyt.Chip.from_yaml(CHIP_YAML)
+    chip.load_bitstream_physical(bres.chips[0].words)
+    srv = SimServer(chip, stream_targets=tgts,
+                    batch_reset_writes=batch_reset_writes(bres, 0))
+    port = srv.start()
+    N = 256
+    aud = np.array([0.5 * math.cos(2 * math.pi * 800 * k / 32000.0)
+                    + 0.3 * math.cos(2 * math.pi * 1800 * k / 32000.0)
+                    for k in range(N)], dtype=np.float32)
+
+    def _run(sid):
+        c = socket.socket()
+        c.connect(("127.0.0.1", port))
+        try:
+            send_message(c, {"op": "process_batch", "port": "x16_out",
+                             "in_port": "x16_in", "complex": False, "raw": False,
+                             "stream_id": sid}, aud)
+            _h, o = recv_message(c)
+        finally:
+            c.close()
+        return o
+    try:
+        tx = _run("tx")
+        rx = _run("rx")
+    finally:
+        srv.stop()
+    assert tx is not None and len(tx) >= N, (
+        f"TX stream (SSB passband) produced no egress ({0 if tx is None else len(tx)})")
+    assert rx is not None and len(rx) >= N, (
+        f"RX stream (recovered audio) produced no egress ({0 if rx is None else len(rx)})")
 
 
 # --- (c) full auto-ROUTE + build — KNOWN router limitation (xfail) -----------

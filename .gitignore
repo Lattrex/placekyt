@@ -39,3 +39,4 @@ examples/ssb_weaver/ssb_weaver.py
 # Internal development / planning docs (NEVER checked in)
 dev_docs/
 *.devnote.md
+examples/ssb_weaver/ssb_weaver_transceiver.py

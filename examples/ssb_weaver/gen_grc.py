@@ -209,6 +209,9 @@ def main():
     out.append(blk("server_port", "variable",
                    {"comment": "placeKYT GNURadio-server port",
                     "value": "'58950'"}, 440, 12))
+    out.append(blk("import_stim", "import",
+                   {"imports": "from gnuradio.kyttar import ssb_demo_stim as stim"},
+                   560, 12))
 
     # --- host-side audio stimulus: two in-band tones (a simple 'voice') ---
     out.append(blk("tone", "analog_sig_source_x", {
@@ -292,11 +295,19 @@ def main():
     }, 1580, 180))
 
     # === RX chip source: SSB passband -> x16_in, stream 'rx' (the RECEIVER input) ===
-    # Fed by the TX chain's passband output (tx_sink) — an over-the-air loopback
-    # through TWO INDEPENDENT chip chains (exactly the BPSK duplex model).
-    # The TX passband (tx_up = iq_upconvert) is a REAL signal, so rx_src is
-    # complex_in='float'; a float_to_complex (+ null Q) forms the complex baseband
-    # (I=passband, Q=0) the RX ComplexMixer needs — spliced by placeKYT, same pattern.
+    # Its OWN batch stimulus (ssb_rf) — the SAME SSB passband the TX chain emits,
+    # regenerated in ssb_demo_stim from the identical audio. This is the AM/FM/BPSK
+    # transceiver pattern (two INDEPENDENT chip chains sharing the port by tag), NOT a
+    # tx_sink -> rx_src daisy chain (which imported as a bogus x16_out -> x16_in net
+    # that could never route — the stray flyline).
+    out.append(blk("ssb_rf", "blocks_vector_source_x", {
+        "affinity": "''", "alias": "''",
+        "comment": "'RX input: the SSB passband (same audio); finite, no repeat'",
+        "maxoutbuf": "'0'", "minoutbuf": "'0'", "type": "float",
+        "vector": "stim.ssb_passband(n_samp)", "repeat": "'False'"}, 1560, 340))
+    # The TX passband is a REAL signal, so rx_src is complex_in='float'; a
+    # float_to_complex (+ null Q) forms the complex baseband (I=passband, Q=0) the RX
+    # ComplexMixer needs — spliced by placeKYT, same pattern.
     out.append(blk("rx_src", "kyttar_source", {
         "affinity": "''", "alias": "''", "burst_len": "n_samp",
         "comment": "'SSB passband -> chip x16_in (RX chain, stream rx)'",
@@ -385,8 +396,9 @@ def main():
     # RX chain (SSB passband -> recovered audio) each live on the SAME array, sharing
     # x16_in / x16_out demultiplexed by stream_id ("tx"/"rx"). The chip DSP blocks sit
     # BETWEEN each chain's kyttar_source and kyttar_sink; the source/sink ARE the port
-    # taps. The TX passband output (tx_sink) feeds the RX input (rx_src) — an
-    # over-the-air loopback through two independent chains, NOT a single on-chip wire.
+    # taps. Each chain has its OWN batch stimulus (TX: audio tones; RX: the SSB passband
+    # from ssb_demo_stim) — NOT a tx_sink -> rx_src daisy chain (which imported as a
+    # bogus x16_out -> x16_in net that could never route).
     conns = [
         ("tone", 0, "audio", 0), ("tone2", 0, "audio", 1),
         ("audio", 0, "thr", 0),
@@ -401,7 +413,7 @@ def main():
         ("tx_up", 0, "tx_sink", 0),     # SSB passband -> chip x16_out (tag tx)
         ("tx_sink", 0, "pb_sink", 0),   # transmitted-passband scope
         # ============================ RX chain (stream 'rx') ============================
-        ("tx_sink", 0, "rx_src", 0),    # TX passband -> RX chip x16_in (tag rx) [OTA loopback]
+        ("ssb_rf", 0, "rx_src", 0),     # RX's OWN batch stimulus (the SSB passband)
         ("rx_src", 0, "rx_f2c", 0),     # passband -> I (real rail)
         ("rx_q0", 0, "rx_f2c", 1),      # 0 -> Q
         ("rx_f2c", 0, "rx_mc", 0),      # complex baseband (ssb+0j) -> fc-mixer

@@ -78,6 +78,18 @@ blocks:
     rotation: 0
     state: enabled
 
+- name: import_stim
+  id: import
+  parameters:
+    imports: from gnuradio.kyttar import ssb_demo_stim as stim
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [560, 12]
+    rotation: 0
+    state: enabled
+
 - name: tone
   id: analog_sig_source_x
   parameters:
@@ -309,6 +321,25 @@ blocks:
     bus_source: false
     bus_structure: null
     coordinate: [1580, 180]
+    rotation: 0
+    state: enabled
+
+- name: ssb_rf
+  id: blocks_vector_source_x
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'RX input: the SSB passband (same audio); finite, no repeat'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    type: float
+    vector: stim.ssb_passband(n_samp)
+    repeat: 'False'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1560, 340]
     rotation: 0
     state: enabled
 
@@ -623,7 +654,7 @@ connections:
 - [tx_lp, '0', tx_up, '0']
 - [tx_up, '0', tx_sink, '0']
 - [tx_sink, '0', pb_sink, '0']
-- [tx_sink, '0', rx_src, '0']
+- [ssb_rf, '0', rx_src, '0']
 - [rx_src, '0', rx_f2c, '0']
 - [rx_q0, '0', rx_f2c, '1']
 - [rx_f2c, '0', rx_mc, '0']

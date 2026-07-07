@@ -330,6 +330,14 @@ class BuildEngine:
         # program's entries fire only at HOP_CNT==31, never for transiting traffic).
         _apply_routing_cell_programs(cell_map)
 
+        # Reconcile a face-locking rendezvous block's LOCK faces (DualFloatToComplex) to
+        # the ROUTED geometry: after all corridor faces/brokers are set, patch its
+        # face_i/face_q DataWords + cold-start LOCK to the faces its i/q input nets
+        # actually arrive on (the placer only guarantees they DIFFER; the router picks
+        # which). Without this the LOCK gates the wrong faces and the rendezvous stalls.
+        _apply_rendezvous_input_faces(cell_map, blocks_here, conns_here, project,
+                                      self.catalog, gr_blocks)
+
         # Resolve each PORT→block input net's HOST-injection landing from the BUILT
         # corridor (faces + broker entries) — so the live bridge steers a shared-port
         # stream to the cell/entry/hop the routed corridor actually delivers to, not a
@@ -2006,6 +2014,112 @@ def _apply_rotate_tap_face(cell_map, gr_placement, blocks, gr_blocks) -> None:
                     and tap.address in cfg.memory:
                 cfg.memory[tap.address] = (
                     (cfg.memory[tap.address] & ~0x3) | fwd) & 0xFFFF
+
+
+def _apply_rendezvous_input_faces(cell_map, blocks, connections, project,
+                                  catalog, gr_blocks) -> None:
+    """Reconcile a face-locking rendezvous block's LOCK faces to the ROUTED geometry.
+
+    A block declaring ``NEEDS_DISTINCT_INPUT_FACES`` (the DualFloatToComplex) LOCKs to
+    one arrival FACE at a time to pair two independent async streams — the face IS the
+    stream identity. Its program authors ``face_i`` / ``face_q`` ``is_face`` DataWords
+    (and boots pre-locked via ``initial_lock_face``) with PLACEHOLDER faces, but the
+    router decides the ACTUAL arrival geometry (the placer only guarantees the two land
+    on DIFFERENT faces). So here, AFTER routes/brokers have set every corridor's faces,
+    patch the built cell's ``face_i`` word to the face the ``i`` net actually arrives on,
+    ``face_q`` to the ``q`` net's face, and the cold-start LOCK config to ``face_i`` —
+    else the LOCK gates the wrong faces and the rendezvous stalls (0 egress).
+
+    The arrival face is the direction FROM the rendezvous cell back toward the net's last
+    physical waypoint (the word travels waypoint->cell, entering from the opposite side).
+    For an ABUTTED input (no route waypoints) it is the direction toward the driver's
+    output cell. Runs for every ``NEEDS_DISTINCT_INPUT_FACES`` block on the chip; no-op
+    for any other block."""
+    from model.connection import BlockEndpoint
+    from .bus_router import _phys_pts
+
+    for blk in blocks:
+        gb = gr_blocks.get(blk.name)
+        if gb is None or blk.placement is None or not blk.placement.cells:
+            continue
+        if not bool(getattr(gb, "NEEDS_DISTINCT_INPUT_FACES", False)):
+            continue
+        cell0 = blk.placement.cells[0]
+        cx, cy = cell0.x, cell0.y
+        cfg = cell_map.get_cell(cx, cy)
+        if cfg is None:
+            continue
+        try:
+            cps = gb.build_cell_programs()
+        except Exception:  # noqa: BLE001
+            continue
+        cp = cps.get(cell0.cell_id if hasattr(cell0, "cell_id") else 0)
+        if cp is None:
+            cp = next(iter(cps.values()), None)
+        if cp is None:
+            continue
+        # face DataWords by name -> resolved address in the built memory.
+        fword = {getattr(d, "name", None): d.address
+                 for d in getattr(cp, "data", [])
+                 if getattr(d, "is_face", False) and d.address is not None}
+
+        def _arrival_face(port_name):
+            """The face the net targeting ``port_name`` arrives on at the cell."""
+            conn = next((c for c in connections
+                         if isinstance(c.target, BlockEndpoint)
+                         and c.target.block == blk.name
+                         and c.target.port == port_name), None)
+            if conn is None:
+                return None
+            pts = _phys_pts(project, conn, catalog) if conn.is_routed else []
+            pts = [p for p in pts if isinstance(p, (tuple, list)) and len(p) == 2]
+            if pts:
+                last = tuple(pts[-1])
+                if last == (cx, cy) and len(pts) >= 2:
+                    last = tuple(pts[-2])   # step back off the cell itself
+                return _step_face(cx, cy, last[0], last[1])
+            # Abutted: face toward the driver's output cell.
+            src = getattr(conn.source, "block", None)
+            if src is None:
+                return None
+            db = project.block(src)
+            if db is None or db.placement is None or not db.placement.cells:
+                return None
+            oc = _output_cell(db, catalog)
+            if oc is None:
+                return None
+            return _step_face(cx, cy, oc[0], oc[1])
+
+        fi = _arrival_face("i")
+        fq = _arrival_face("q")
+        # Patch the built memory face words + cold-start LOCK. Only overwrite the 2-bit
+        # face field; leave the rest of the word untouched.
+        if fi is not None and "face_i" in fword and fword["face_i"] in cfg.memory:
+            a = fword["face_i"]
+            cfg.memory[a] = (cfg.memory[a] & ~0x3) | (fi & 0x3)
+        if fq is not None and "face_q" in fword and fword["face_q"] in cfg.memory:
+            a = fword["face_q"]
+            cfg.memory[a] = (cfg.memory[a] & ~0x3) | (fq & 0x3)
+        # Cold-start LOCK boots to face_i (the first word of each pair is I).
+        if fi is not None:
+            cfg.initial_lock_face = fi & 0x3
+
+
+def _output_cell(blk, catalog):
+    """The (x,y) of a block's OUTPUT cell (its first output port's cell), or the last
+    placed cell. Used to derive an abutted rendezvous input's arrival face."""
+    try:
+        from .bus_router import _source_output_cell
+        oc = _source_output_cell(blk, None, catalog)
+        if oc is not None:
+            return oc
+    except Exception:  # noqa: BLE001
+        pass
+    cells = getattr(blk.placement, "cells", None) or []
+    if not cells:
+        return None
+    c = cells[-1]
+    return (c.x, c.y)
 
 
 def _default_unrouted_exit_hops(cell_map, gr_placement, blocks: list,

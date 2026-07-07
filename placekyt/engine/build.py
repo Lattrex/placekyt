@@ -269,7 +269,7 @@ class BuildEngine:
         # source exit toward the target) and OVERRIDES the source exit toward the
         # broker for bus-routed nets. Plain corridor/abutment nets (route ends ON
         # the target) have no broker and are untouched.
-        broker_conn_entry, broker_conn_burst = _apply_brokers(
+        broker_conn_entry, broker_conn_burst, fanout_abut_conns = _apply_brokers(
             cell_map, gr_placement, blocks_here, conns_here,
             project, chip_id, chip_type, gr_blocks, self.catalog)
 
@@ -301,7 +301,8 @@ class BuildEngine:
 
         _default_unrouted_exit_hops(cell_map, gr_placement, blocks_here,
                                     conns_here, gr_blocks, self.catalog,
-                                    feedback_blocks=feedback_blocks)
+                                    feedback_blocks=feedback_blocks,
+                                    skip_conns=fanout_abut_conns)
 
         # RE-ASSERT the block's AUTHORED internal-forward face on any cell that is a
         # SOURCE of an internal_connections handoff (a mid-block cell forwarding to
@@ -1053,7 +1054,7 @@ def _apply_brokers(cell_map, gr_placement, blocks, connections, project,
 
     taps = broker_plan(project, chip_id, chip_type, catalog)
     if not taps:
-        return {}, {}
+        return {}, {}, set()
     # Cells where a FOREIGN net merely TRANSITS this broker (the auto-router packed
     # two corridors onto one broker cell). The broker's restore/bus face MUST serve
     # that foreign through-direction or the foreign stream is silently mis-faced and
@@ -1122,6 +1123,38 @@ def _apply_brokers(cell_map, gr_placement, blocks, connections, project,
     broker_cells = set(taps.keys())
     by_src_cell: dict = {}     # (x,y) exit cell -> list of (conn, distance, b_entry)
     src_meta: dict = {}        # (x,y) exit cell -> (gb, cfg)
+    # ABUTTED output rails per source exit cell: a COMPLEX output cell can fan out with
+    # ONE rail routed (through a broker) and the OTHER abutting a different target
+    # (mixer.yi ROUTED to gain_I, mixer.yq ABUTMENT to gain_Q). The abutted rail is NOT
+    # in by_src_cell (no broker), so without this the fan-out is misclassified as a
+    # single-net source and the abutted rail's trigger is dropped. Collect abutted output
+    # nets here so the fan-out re-sequencing (below) can steer BOTH rails.
+    abut_by_src_cell: dict = {}   # (x,y) exit cell -> list of (conn, dest_reg, entry)
+    fanout_abut_conns: set = set()  # abutted conns consumed into a mixed fan-out here
+    for conn in connections:
+        if not getattr(conn, "is_abutment", False):
+            continue
+        if not isinstance(conn.source, BlockEndpoint) or conn.source.block not in placed:
+            continue
+        pb = gr_placement.placed_blocks.get(conn.source.block)
+        gb = gr_blocks.get(conn.source.block)
+        if pb is None or (gb is not None and getattr(gb, "RAW_OUTPUT_HOPS", False)):
+            continue
+        # Resolve the abutted rail's target register + entry (yq -> consumer.xq etc.).
+        a_dest = a_entry = 0
+        if isinstance(conn.target, BlockEndpoint):
+            tb = next((b for b in blocks if b.name == conn.target.block), None)
+            if tb is not None:
+                t_entry, t_ins = catalog.resolved_io(
+                    tb.type, tb.params, library=tb.library)
+                a_entry = t_entry
+                _ri = _target_port_index(catalog, tb, conn.target.port)
+                a_dest = (t_ins[_ri] if t_ins and _ri < len(t_ins)
+                          else (t_ins[0] if t_ins else 0))
+        elif conn.out_tag is not None:
+            a_dest = conn.out_tag
+        abut_by_src_cell.setdefault(tuple(pb.exit_cell), []).append(
+            (conn.name, a_dest, a_entry))
     for conn in connections:
         if not conn.is_routed:
             continue
@@ -1163,7 +1196,43 @@ def _apply_brokers(cell_map, gr_placement, blocks, connections, project,
             (conn.name, distance, conn_entry[conn.name], tuple(pts[-1])))
         src_meta[ex] = (gb, cfg)
 
-    for ex, nets in by_src_cell.items():
+    # source cells whose ONLY output nets are ALL abutment (no routed rail reaches the
+    # loop below) — handle their mixed/pure-abutment fan-out here too. Union the routed
+    # exit cells with the abutted ones.
+    _conn_order = {c.name: i for i, c in enumerate(connections)}
+    for ex in set(by_src_cell) | set(abut_by_src_cell):
+        nets = by_src_cell.get(ex, [])
+        abut_rails = abut_by_src_cell.get(ex, [])
+        # MIXED FAN-OUT: this complex output cell drives ≥2 DIFFERENT targets where at
+        # least one rail ABUTS and at least one ROUTES (mixer.yi→broker→gain_I +
+        # mixer.yq→abut→gain_Q). Re-sequence ALL rails (a trigger each) in SOURCE PROGRAM
+        # ORDER: a routed rail delivers to its broker burst reg @broker-distance/entry; an
+        # abutted rail delivers to its target's OWN input reg @1/target-entry.
+        if abut_rails and (len(nets) + len(abut_rails)) > 1:
+            _meta = src_meta.get(ex)
+            if _meta is not None:
+                cfg = _meta[1]
+            else:
+                cfg = cell_map.get_cell(*ex)
+            if cfg is None:
+                continue
+            # (conn_name, hop, dest_reg, entry) per rail, ordered by connection index so
+            # the Nth WRITE (yi, yq, …) gets the Nth target. Abutted rail hop = @1 (30).
+            merged = []
+            for (c, d, e, _bc) in nets:
+                merged.append((c, d, BROKER_BURST_REG + int(conn_burst_reg.get(c, 0)), e))
+            for (c, dest, entry) in abut_rails:
+                merged.append((c, _HOP1_CNT, int(dest), int(entry)))
+            merged.sort(key=lambda t: _conn_order.get(t[0], 1 << 30))
+            _patch_fanout_source_handoff(cfg, [(h, dr, en) for (_c, h, dr, en) in merged])
+            # These abutted rails are now re-sequenced HERE (with their own trigger);
+            # _default_unrouted_exit_hops must NOT re-patch them (it would clobber the
+            # fan-out sequencing back to a single handoff).
+            for (c, _dest, _entry) in abut_rails:
+                fanout_abut_conns.add(c)
+            continue
+        if not nets:
+            continue
         gb, cfg = src_meta[ex]
         # A COMPLEX output cell (yi/yq from ONE cell) has TWO delivery SHAPES depending
         # on where the rails go (INV-17). The discriminator is the BROKER CELL each net
@@ -1224,7 +1293,7 @@ def _apply_brokers(cell_map, gr_placement, blocks, connections, project,
     # via the BuildResult): a port net whose corridor is DIVERTED at a broker cell
     # (the modem's tx mapper net at (1,1), which the rx corridor pins EAST) must be
     # injected to LAND at that broker's deliver entry — not ridden straight through.
-    return dict(conn_entry), dict(conn_burst_reg)
+    return dict(conn_entry), dict(conn_burst_reg), fanout_abut_conns
 
 
 def _resolve_input_landings(cell_map, blocks, connections, project, chip_id,
@@ -2132,7 +2201,8 @@ def _output_cell(blk, catalog):
 
 def _default_unrouted_exit_hops(cell_map, gr_placement, blocks: list,
                                 connections: list, gr_blocks: dict,
-                                catalog, feedback_blocks: dict | None = None
+                                catalog, feedback_blocks: dict | None = None,
+                                skip_conns: set | None = None
                                 ) -> None:
     """Default the EXIT WRITE/JUMP of an unrouted block to ``@1`` (abutment).
 

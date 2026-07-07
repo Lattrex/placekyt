@@ -1623,6 +1623,19 @@ class AppController(QObject):
                     clean = len(crossover_plan(self.project, chip, ct, self.catalog)) == 0
                 except Exception:  # noqa: BLE001
                     clean = True
+            # Reject a layout that ROUTES but trips the face-locking DRC (a
+            # NEEDS_DISTINCT_INPUT_FACES block whose two inputs land on ONE face) — the
+            # build would hard-fail it. The CP-SAT distinct-face constraint is best-effort
+            # (nondeterministic), so this acceptance gate makes the sweep TRY THE NEXT SEED
+            # until it gets a distinct-face layout, rather than accepting one that dies at
+            # build. (Only meaningful when the design has such a block; a no-op otherwise.)
+            if ok and clean:
+                try:
+                    from engine.bus_drc import _check_dual_input_same_face
+                    if _check_dual_input_same_face(self.project, self.catalog):
+                        clean = False
+                except Exception:  # noqa: BLE001
+                    pass
             n_routed = sum(1 for r in report.results if r.ok)
             # Capture this iteration's CONCRETE result (placement geometry + routes) so
             # the accepted one can be re-applied deterministically as registered commands.

@@ -20,19 +20,17 @@ blocks:
   placement:
     chip: 0
     cells:
-    - {cell_id: phase, x: 1, y: 6, face: east}
-    - {cell_id: sin_fold, x: 2, y: 6, face: east}
-    - {cell_id: sin_even, x: 3, y: 6, face: east}
-    - {cell_id: sin_odd, x: 4, y: 6, face: east}
-    - {cell_id: sin_interp, x: 5, y: 6, face: east}
-    - {cell_id: relay, x: 6, y: 6, face: north}
-    - {cell_id: cos_fold, x: 6, y: 5, face: west}
-    - {cell_id: cos_even, x: 5, y: 5, face: west}
-    - {cell_id: cos_odd, x: 4, y: 5, face: west}
-    - {cell_id: cos_interp, x: 3, y: 5, face: west}
-    - {cell_id: mixer, x: 2, y: 5, face: north}
-    orientation:
-    - ccw
+    - {cell_id: phase, x: 1, y: 1, face: south}
+    - {cell_id: sin_fold, x: 1, y: 2, face: south}
+    - {cell_id: sin_even, x: 1, y: 3, face: south}
+    - {cell_id: sin_odd, x: 1, y: 4, face: south}
+    - {cell_id: sin_interp, x: 1, y: 5, face: south}
+    - {cell_id: relay, x: 1, y: 6, face: east}
+    - {cell_id: cos_fold, x: 2, y: 6, face: north}
+    - {cell_id: cos_even, x: 2, y: 5, face: north}
+    - {cell_id: cos_odd, x: 2, y: 4, face: north}
+    - {cell_id: cos_interp, x: 2, y: 3, face: north}
+    - {cell_id: mixer, x: 2, y: 2, face: east}
 - name: gain
   type: GainBlock
   library: lattrex.official
@@ -42,10 +40,7 @@ blocks:
   placement:
     chip: 0
     cells:
-    - {cell_id: 0, x: 4, y: 4, face: south}
-    orientation:
-    - cw
-    - mirror_h
+    - {cell_id: 0, x: 4, y: 1, face: east}
 - name: gain_2
   type: GainBlock
   library: lattrex.official
@@ -55,9 +50,7 @@ blocks:
   placement:
     chip: 0
     cells:
-    - {cell_id: 0, x: 2, y: 4, face: west}
-    orientation:
-    - mirror_h
+    - {cell_id: 0, x: 6, y: 1, face: east}
 - name: dualfloattocomplex
   type: DualFloatToComplexBlock
   library: lattrex.official
@@ -71,35 +64,7 @@ blocks:
   placement:
     chip: 0
     cells:
-    - {cell_id: 0, x: 4, y: 3, face: south}
-    orientation:
-    - cw
-    - mirror_h
-- name: complexmixer_2
-  type: ComplexMixerBlock
-  library: lattrex.official
-  params:
-    sample_rate: 32000.0
-    frequency: 0.0
-    amplitude: 1.0
-    offset: 0.0
-    phase: 0.0
-  placement:
-    chip: 0
-    cells:
-    - {cell_id: phase, x: 4, y: 2, face: east}
-    - {cell_id: sin_fold, x: 5, y: 2, face: east}
-    - {cell_id: sin_even, x: 6, y: 2, face: east}
-    - {cell_id: sin_odd, x: 7, y: 2, face: east}
-    - {cell_id: sin_interp, x: 8, y: 2, face: east}
-    - {cell_id: relay, x: 9, y: 2, face: north}
-    - {cell_id: cos_fold, x: 9, y: 1, face: west}
-    - {cell_id: cos_even, x: 8, y: 1, face: west}
-    - {cell_id: cos_odd, x: 7, y: 1, face: west}
-    - {cell_id: cos_interp, x: 6, y: 1, face: west}
-    - {cell_id: mixer, x: 5, y: 1, face: north}
-    orientation:
-    - ccw
+    - {cell_id: 0, x: 8, y: 1, face: east}
 - name: gain_3
   type: GainBlock
   library: lattrex.official
@@ -109,97 +74,62 @@ blocks:
   placement:
     chip: 0
     cells:
-    - {cell_id: 0, x: 5, y: 0, face: north}
-    orientation:
-    - ccw
+    - {cell_id: 0, x: 8, y: 3, face: east}
 connections:
 - name: net1
   from: {chip_port: {chip: 0, port: x16_in}}
   to: {block: complexmixer, port: xi}
   route:
   - {x: 0, y: 0}
-  - {x: 0, y: 1}
-  - {x: 0, y: 2}
-  - {x: 0, y: 3}
-  - {x: 0, y: 4}
-  - {x: 0, y: 5}
-  - {x: 0, y: 6}
+  - {x: 1, y: 0}
+  - {x: 2, y: 0}
+  - {x: 2, y: 1}
 - name: net2
   from: {block: gain, port: out}
   to: {block: dualfloattocomplex, port: i}
   route:
-  - {x: 4, y: 4}
-  - {x: 3, y: 4}
-  - {x: 3, y: 3}
+  - {x: 4, y: 1}
+  - {x: 4, y: 2}
+  - {x: 5, y: 2}
+  - {x: 6, y: 2}
+  - {x: 7, y: 2}
+  - {x: 7, y: 1}
 - name: net3
   from: {block: gain_2, port: out}
   to: {block: dualfloattocomplex, port: q}
   route:
-  - {x: 2, y: 4}
-  - {x: 2, y: 3}
-  - {x: 3, y: 3}
+  - {x: 6, y: 1}
+  - {x: 7, y: 1}
 - name: net4
-  from: {block: dualfloattocomplex, port: out}
-  to: {block: complexmixer_2, port: xi}
-  route:
-  - {x: 4, y: 3}
-  - {x: 3, y: 3}
-  - {x: 3, y: 2}
-- name: net5
   from: {block: gain_3, port: out}
   to: {chip_port: {chip: 0, port: x16_out}}
   route:
-  - {x: 5, y: 0}
-  - {x: 6, y: 0}
-  - {x: 7, y: 0}
-  - {x: 8, y: 0}
+  - {x: 8, y: 3}
+  - {x: 9, y: 3}
+  - {x: 9, y: 2}
+  - {x: 9, y: 1}
   - {x: 9, y: 0}
-- name: net6
-  from: {block: complexmixer_2, port: yi}
-  to: {block: gain_3, port: sample}
-  route:
-  - {x: 5, y: 1}
-  - {x: 4, y: 1}
-  - {x: 4, y: 0}
-- name: net7
+- name: net5
   from: {block: complexmixer, port: yi}
   to: {block: gain, port: sample}
   route:
-  - {x: 2, y: 5}
-  - {x: 1, y: 5}
-  - {x: 1, y: 4}
-  - {x: 1, y: 3}
-  - {x: 2, y: 3}
-  - {x: 3, y: 3}
+  - {x: 2, y: 2}
   - {x: 3, y: 2}
   - {x: 3, y: 1}
-  - {x: 2, y: 1}
-  - {x: 1, y: 1}
-  - {x: 0, y: 1}
-  - {x: 0, y: 2}
-  - {x: 0, y: 3}
-  - {x: 0, y: 4}
-  - {x: 0, y: 5}
-  - {x: 0, y: 6}
-  - {x: 0, y: 7}
-  - {x: 1, y: 7}
-  - {x: 2, y: 7}
-  - {x: 3, y: 7}
-  - {x: 4, y: 7}
-  - {x: 5, y: 7}
-  - {x: 6, y: 7}
-  - {x: 7, y: 7}
-  - {x: 7, y: 6}
-  - {x: 7, y: 5}
-  - {x: 7, y: 4}
-  - {x: 6, y: 4}
-  - {x: 5, y: 4}
-- name: net8
+- name: net6
   from: {block: complexmixer, port: yq}
   to: {block: gain_2, port: sample}
   route:
-  - {x: 2, y: 5}
-  - {x: 1, y: 5}
-  - {x: 1, y: 4}
-  - {x: 1, y: 3}
-  - {x: 2, y: 3}
+  - {x: 2, y: 2}
+  - {x: 3, y: 2}
+  - {x: 3, y: 1}
+  - {x: 3, y: 0}
+  - {x: 4, y: 0}
+  - {x: 5, y: 0}
+  - {x: 5, y: 1}
+- name: net7
+  from: {block: dualfloattocomplex, port: out}
+  to: {block: gain_3, port: sample}
+  route:
+  - {x: 8, y: 1}
+  - {x: 8, y: 2}

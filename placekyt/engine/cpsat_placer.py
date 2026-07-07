@@ -387,6 +387,73 @@ def plan_cpsat(placer, chip: int, *, max_time_s: float = 10.0,
                 manhattan(out_cx[b.name], out_cy[b.name],
                           model.NewConstant(int(pout[0])),
                           model.NewConstant(int(pout[1])), CAP)
+        # SINGLE-CELL IN != OUT FACE (§5.3 deadlock prevention). A one-cell block that
+        # both RECEIVES from an upstream BLOCK and DRIVES a downstream BLOCK has its
+        # input arrive and its output leave through the SAME physical cell. Daisy-chaining
+        # is fine — data comes in one face and out a DIFFERENT face — but if the placer
+        # puts the driver and the consumer on the SAME side of the cell, the input arrives
+        # on the very face the output drives, and both contend on one single-outstanding
+        # link → the single_cell_inout_deadlock the build DRC (bus_drc._check_single_cell_
+        # inout) rejects. The router honours the geometry, so PLACEMENT must keep the two
+        # neighbours on different sides. Forbid driver-cell and consumer-cell from sharing
+        # the same side of the single cell: encode the sign of (neighbour - cell) on each
+        # axis and require the (dx_sign, dy_sign) arrival vector != the drive vector.
+        # (Only meaningful with the I/O-cell vars, i.e. this slack-0 / wirelength branch.)
+        _consumer_of = {}
+        for _c in placer._project.connections:
+            _s, _t = _c.source, _c.target
+            if hasattr(_s, "block") and hasattr(_t, "block") \
+                    and _s.block in names and _t.block in names:
+                _consumer_of.setdefault(_s.block, _t.block)
+        for b in blocks:
+            pl = b.placement
+            if pl is None or len(pl.cells) != 1:
+                continue                              # multi-cell: in/out are distinct cells
+            drv = placer._driver_of.get(b.name)       # upstream BLOCK (not a chip port)
+            con = _consumer_of.get(b.name)            # downstream BLOCK
+            if drv is None or con is None:
+                continue                              # a port-fed or terminal cell is exempt
+            if drv not in out_cx or con not in in_cx or b.name not in in_cx:
+                continue
+            cx, cy = in_cx[b.name], in_cy[b.name]     # == out_cx/out_cy (one cell)
+            # The DRC face is the ORTHOGONAL step from the cell to the input broker (arrival)
+            # vs to the output's first waypoint (drive) — both single-axis steps; a deadlock
+            # is arrival-face == drive-face. Encode each neighbour's SIGN on both axes
+            # (lt/gt = strictly less/greater than the cell coord); a face is the (sign_x,
+            # sign_y) pair (exactly one axis non-zero for an adjacent cell). Two neighbours
+            # share a face iff BOTH sign pairs match. Require they DIFFER on at least one of
+            # the four sign bits — this allows N-vs-W (an L bend: signs (0,-1) vs (-1,0)
+            # differ) and opposite sides (a straight daisy-chain), forbidding only the
+            # genuine same-face case. Applied as a hard rule ONLY for the abutted geometry
+            # (the driver/consumer cell IS the broker); for a brokered non-abutted neighbour
+            # the router still has face freedom, so we keep this a placement PREFERENCE
+            # there by not forcing it (the build-clean acceptance gate in auto_pnr catches
+            # any residual). Since abutment-first drives most of these edges to abut, the
+            # hard rule below removes the flakiness at its source.
+            def _sign_bits(nx, ny, tag):
+                lx = model.NewBoolVar(f"scl_{tag}_lx")
+                gx = model.NewBoolVar(f"scl_{tag}_gx")
+                ly = model.NewBoolVar(f"scl_{tag}_ly")
+                gy = model.NewBoolVar(f"scl_{tag}_gy")
+                model.Add(nx < cx).OnlyEnforceIf(lx)
+                model.Add(nx >= cx).OnlyEnforceIf(lx.Not())
+                model.Add(nx > cx).OnlyEnforceIf(gx)
+                model.Add(nx <= cx).OnlyEnforceIf(gx.Not())
+                model.Add(ny < cy).OnlyEnforceIf(ly)
+                model.Add(ny >= cy).OnlyEnforceIf(ly.Not())
+                model.Add(ny > cy).OnlyEnforceIf(gy)
+                model.Add(ny <= cy).OnlyEnforceIf(gy.Not())
+                return (lx, gx, ly, gy)
+            a = _sign_bits(out_cx[drv], out_cy[drv], f"{b.name}_in")
+            d = _sign_bits(in_cx[con], in_cy[con], f"{b.name}_out")
+            neqs = []
+            for k, (ab, db) in enumerate(zip(a, d)):
+                ne = model.NewBoolVar(f"scl_{b.name}_ne{k}")
+                model.Add(ab != db).OnlyEnforceIf(ne)
+                model.Add(ab == db).OnlyEnforceIf(ne.Not())
+                neqs.append(ne)
+            model.AddBoolOr(neqs)   # sign patterns differ => faces cannot coincide
+
         # ABUTMENT-FIRST: maximise the number of abutted (route-free) dataflow edges as
         # the PRIMARY objective; total wirelength stays a small secondary tie-break so
         # the non-abutting nets still route short. Weight the abut count far above the

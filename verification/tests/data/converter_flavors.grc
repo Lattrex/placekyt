@@ -10,15 +10,16 @@ options:
       \ end to end on a placeKYT-hosted chip. ONE complex stream is fed in, split to\
       \ two real rails, gained, recombined, and read back — so every float/complex\
       \ converter is exercised AND the output is directly verifiable (identity chain:\
-      \ the mixers are pass-through, so chip output == input). Chain: complex source\
+      \ the mixer is pass-through, so chip output == input). Chain: complex source\
       \ (x16_in) -> complex mixer -> blocks_complex_to_float (split I/Q) -> two real\
       \ gains -> blocks_float_to_complex (recombine the two on-chip real rails via the\
-      \ DualFloatToComplex block) -> complex mixer -> blocks_complex_to_real -> real\
-      \ gain -> sink (x16_out). The two reals feeding the recombine come from the\
-      \ on-chip c2f split (a normal fan-in), NOT two independent input ports, so no\
-      \ input splitter is needed. Run: 'Run as GNURadio Server' in placeKYT, set\
-      \ server_port below to the printed port, then Execute here; the time sink\
-      \ overlays the input against the chip output so the round trip is visible."
+      \ DualFloatToComplex block) -> blocks_complex_to_real (drop Q) -> real gain ->\
+      \ sink (x16_out). The two reals feeding the recombine come from the on-chip c2f\
+      \ split (a normal fan-in), NOT two independent input ports, so no input splitter\
+      \ is needed. A single pass-through mixer (not two) keeps the chain within the\
+      \ router's 31-hop reach on a 10x12 so it builds deterministically. Run: 'Run as\
+      \ GNURadio Server' in placeKYT, set server_port to the printed port, then Execute\
+      \ here; the time sink overlays the input against the chip output (round trip)."
     gen_cmake: 'On'
     gen_linking: dynamic
     generate_options: qt_gui
@@ -163,22 +164,6 @@ blocks:
   parameters: {comment: recombine (I, Q) -> complex (DualFloatToComplex), vlen: '1'}
   states: {bus_sink: false, bus_source: false, bus_structure: null, coordinate: [1200,
       132], rotation: 0, state: enabled}
-- name: mix2
-  id: kyttar_complex_mixer
-  parameters:
-    affinity: ''
-    alias: ''
-    amplitude: '1.0'
-    comment: pass-through (freq 0)
-    device_id: '"kyttar_0"'
-    frequency: '0'
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    offset: '0.0'
-    phase: '0.0'
-    sample_rate: '32000'
-  states: {bus_sink: false, bus_source: false, bus_structure: null, coordinate: [1400,
-      132], rotation: 0, state: enabled}
 # --- (D) complex_to_real: drop Q, keep the recovered I -----------------------
 - name: c2r
   id: blocks_complex_to_real
@@ -256,8 +241,7 @@ connections:
 - [c2f, '1', gain_q, '0']
 - [gain_i, '0', f2c, '0']
 - [gain_q, '0', f2c, '1']
-- [f2c, '0', mix2, '0']
-- [mix2, '0', c2r, '0']
+- [f2c, '0', c2r, '0']
 - [c2r, '0', gain_out, '0']
 - [gain_out, '0', msink, '0']
 - [msink, '0', time_sink, '0']

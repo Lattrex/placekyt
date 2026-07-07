@@ -1,28 +1,34 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 
-# SSB Weaver transceiver (on-chip) — debug demo
+# SSB Weaver transceiver (on-chip)
 
-A **full SSB (Weaver / third-method) transceiver** built from real Kyttar DSP blocks, using
-the **fabric-native fused-oscillator topology** (no shared NCO, no carrier fan-out):
+A **full SSB (Weaver / third-method) transceiver** built from real Kyttar DSP blocks. Like
+the AM/FM/BPSK demos it is a TRUE transceiver: a SEPARATE transmit chain and a SEPARATE
+receive chain SHARE ONE chip, demuxed by `stream_id` (`tx`/`rx`). It uses the **complex-FIR
+topology** — each half is a straight complex filament, no split/recombine fan-out:
 
 ```
-audio → cmix(fa) ─┬ yi=cos ─ LowPass I ─ iqup(fc) xi → cos-rail ┐
-                  └ yq=sin ─ LowPass Q ─ iqup(fc) xq → −sin-rail ┘→ Add → SSB
-     → cmix(fc) ─┬ yi=cos ─ LowPass I ─ iqup(fa) xi → cos-rail ┐
-                 └ yq=sin ─ LowPass Q ─ iqup(fa) xq → −sin-rail ┘→ Add → Gain ×4 → audio
+TX (stream 'tx'):  audio ─▶ ComplexMixer(-fa) ─▶ ComplexLowPass ─▶ IQUpconvert(fc) ─▶ SSB passband
+RX (stream 'rx'):  SSB ─▶ ComplexMixer(-fc) ─▶ ComplexLowPass ─▶ IQUpconvert(fa) ─▶ Gain×4 ─▶ audio
 ```
 
-**Why this shape (the important part).** This chip is clockless — there is no free-running
-oscillator; a standalone NCO drawn as a source gets no trigger and is DEAD on-chip. So each
-mixer carries its OWN oscillator: the DOWN-mix is one `ComplexMixer` (emits both cos+sin
-rails as two ports), and each UP-mix is a lean 6-cell `IQUpconvert` producing one rail
-(`xi`→`sig·cos`, `xq`→`−sig·sin`; the negation makes the Weaver combine an **Add**). No
-shared NCO → no dead trigger; no shared carrier → no fan-out. This is **77 cells / 120**
-(the earlier all-`ComplexMixer` version was 100). See
-`dev_docs/OSCILLATOR_TOPOLOGY_ANALYSIS.md`.
+- `ComplexMixer` = GNU Radio `multiply_cc(signal, sig_source_c)` — the full complex product
+  (fused oscillator, no shared NCO). It takes a **complex** baseband, so the real audio (and
+  the real RX passband) go through a `float_to_complex` (+ a `null_source` Q rail) — the
+  GR-idiomatic real→complex converter, which placeKYT **splices** on import (audio → mixer
+  `xi`, Q=0). Feeding a real signal straight into a `complex_in='complex'` source is a dtype
+  conflict; this is the AM/FM real→complex-in-front pattern.
+- `ComplexLowPass` = `fir_filter_ccf` filters BOTH rails of the complex packet in ONE block,
+  so the classic Weaver's complex→2-real-LPF fan-out and 2-real→1 recombine both vanish.
+- `IQUpconvert` = complex baseband → real passband (`out = I·cos − Q·sin`), the SSB combine.
 
-(USB; `fa=1500 Hz` audio-band centre, `fc=6000 Hz` carrier, `fs=32 kHz`, LPF cutoff
-1200 Hz. The fused-mixer Weaver DSP is verified at **corr 0.976**.)
+**Why this shape.** This chip is clockless — a standalone NCO drawn as a source gets no
+trigger and is DEAD on-chip. Each mixer carries its OWN oscillator (the fused-oscillator
+trade: cheap per-mixer phase accumulators, no scarce carrier fan-out). The complex-FIR
+version is the topology that fits ONE 10x12 die. See `dev_docs/OSCILLATOR_TOPOLOGY_ANALYSIS.md`.
+
+(USB; `fa=1500 Hz` audio-band centre, `fc=6000 Hz` carrier, `fs=32 kHz`, LPF cutoff 1200 Hz.
+The Weaver DSP is verified on-chip at **corr 0.986** — `weaver_builder_cfir.py`.)
 
 ## Files
 
@@ -32,25 +38,31 @@ shared NCO → no dead trigger; no shared carrier → no fan-out. This is **77 c
 | `gen_grc.py` | Regenerates `ssb_weaver.grc` (edit frequencies/filter width here). |
 | `weaver_builder.py` | Headless builder + on-chip verifier (per-block simKYT proof, corr 0.986). |
 
-## ⚠️ Known issue — this is a DEBUG demo
+## Status
 
-The 10-block Weaver chain **places legally on one chip** (CP-SAT packer, ~64/120 cells)
-but the router does **not** yet route all 15 nets: the reconvergent I/Q fan-in into
-`IQUpconvert` (both xi + xq into one cell) and some corridors fail
-(*"no free broker cell abutting the target input"* / *"no corridor from source to the
-tap"*). Even at wider filters (more free cells) some nets don't thread — so this is a
-**router** limitation on the compact placement, not a density problem.
+- **GRC-clean.** The `.grc` loads + generates in GNU Radio Companion with **zero type
+  conflicts** — the audio/passband → complex-mixer edges use the spliced
+  `float_to_complex` converters (the real→complex-in-front pattern). Open it in
+  `gnuradio-companion` and it's in a good working state.
+- **Imports + places.** placeKYT imports it as **7 chip blocks** (2 ComplexMixer +
+  2 ComplexLowPass + 2 IQUpconvert + 1 Gain) across the `tx`/`rx` streams and **places
+  all 7 on one 10x12 die**.
+- **Auto-route is incomplete** (⚠️). The auto-router threads ~8/14 nets; the remaining
+  ones are the complex-packet **fan-in** nets into the mixers/upconverts (both `xi`+`xq`
+  into one cell). This is a **router** limitation on the compact placement, not a dtype
+  or density problem — **route those nets by hand** (draw the routes / use Route All and
+  fix the flylines), then build + host.
+- **DSP proven on silicon.** `weaver_builder_cfir.py` runs each block on the real simKYT
+  substrate and recovers the audio at **corr 0.986 / SNR 15.6 dB** — the datapath is
+  correct; only the auto-router's fan-in threading is the gap.
 
-**Import this flowgraph to SEE the router struggle:** after import, run **Route All**
-(or auto-P&R) and inspect which nets fail and where — the flylines that never become
-physical routes are exactly the fan-in/fan-out taps the router can't place a broker for.
+Gate: `verification/tests/test_ssb_weaver_grc.py` — import (dtype-clean) + placement pass;
+the full auto-route/build is an `xfail` (route-by-hand), the batch-recovery test skips
+until the build exists.
 
-## Run it (once the router routes it)
+## Run it (after routing the fan-in nets by hand)
 
 1. **Host the chip.** placeKYT → **File → Import GNURadio Flowgraph…** → `ssb_weaver.grc`,
-   then **Simulation → Run as GNURadio Server** (port **58950**).
+   route the remaining nets, then **Simulation → Run as GNURadio Server** (port **58950**).
 2. **Drive it.** `gnuradio-companion ssb_weaver.grc`, set `server_port`, press **▶ Run**.
    Two scopes plot the **input audio** (two tones) vs the **recovered audio** from the chip.
-
-The DSP itself is proven correct on silicon — `weaver_builder.py` runs each block on the
-real simKYT substrate and recovers the audio at **corr 0.986 / SNR 15.6 dB**.

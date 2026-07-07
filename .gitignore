@@ -34,6 +34,7 @@ htmlcov/
 .mypy_cache/
 examples/bpsk_transceiver_loopback/bpsk_loopback.py
 examples/fm_transceiver/fm_transceiver.py
+examples/ssb_weaver/ssb_weaver.py
 
 # Internal development / planning docs (NEVER checked in)
 dev_docs/

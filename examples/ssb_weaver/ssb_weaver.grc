@@ -174,7 +174,7 @@ blocks:
     alias: ''
     burst_len: n_samp
     comment: 'audio -> chip x16_in (TX chain, stream tx)'
-    complex_in: complex
+    complex_in: float
     device_id: '"kyttar_0"'
     maxoutbuf: '0'
     minoutbuf: '0'
@@ -188,6 +188,43 @@ blocks:
     bus_source: false
     bus_structure: null
     coordinate: [560, 180]
+    rotation: 0
+    state: enabled
+
+- name: tx_f2c
+  id: blocks_float_to_complex
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'audio -> I (Q=0)'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [720, 180]
+    rotation: 0
+    state: enabled
+
+- name: tx_q0
+  id: blocks_null_source
+  parameters:
+    affinity: ''
+    alias: ''
+    type: 'float'
+    bus_structure_source: '[[0,],]'
+    comment: 'Q = 0'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_outputs: '1'
+    sizeof_stream_item: 'gr.sizeof_float'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [720, 260]
     rotation: 0
     state: enabled
 
@@ -282,7 +319,7 @@ blocks:
     alias: ''
     burst_len: n_samp
     comment: 'SSB passband -> chip x16_in (RX chain, stream rx)'
-    complex_in: complex
+    complex_in: float
     device_id: '"kyttar_0"'
     maxoutbuf: '0'
     minoutbuf: '0'
@@ -296,6 +333,43 @@ blocks:
     bus_source: false
     bus_structure: null
     coordinate: [1760, 340]
+    rotation: 0
+    state: enabled
+
+- name: rx_f2c
+  id: blocks_float_to_complex
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'passband -> I (Q=0)'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1920, 340]
+    rotation: 0
+    state: enabled
+
+- name: rx_q0
+  id: blocks_null_source
+  parameters:
+    affinity: ''
+    alias: ''
+    type: 'float'
+    bus_structure_source: '[[0,],]'
+    comment: 'Q = 0'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_outputs: '1'
+    sizeof_stream_item: 'gr.sizeof_float'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1920, 420]
     rotation: 0
     state: enabled
 
@@ -542,13 +616,17 @@ connections:
 - [audio, '0', thr, '0']
 - [thr, '0', in_sink, '0']
 - [thr, '0', tx_src, '0']
-- [tx_src, '0', tx_ma, '0']
+- [tx_src, '0', tx_f2c, '0']
+- [tx_q0, '0', tx_f2c, '1']
+- [tx_f2c, '0', tx_ma, '0']
 - [tx_ma, '0', tx_lp, '0']
 - [tx_lp, '0', tx_up, '0']
 - [tx_up, '0', tx_sink, '0']
 - [tx_sink, '0', pb_sink, '0']
 - [tx_sink, '0', rx_src, '0']
-- [rx_src, '0', rx_mc, '0']
+- [rx_src, '0', rx_f2c, '0']
+- [rx_q0, '0', rx_f2c, '1']
+- [rx_f2c, '0', rx_mc, '0']
 - [rx_mc, '0', rx_lp, '0']
 - [rx_lp, '0', rx_up, '0']
 - [rx_up, '0', g4, '0']

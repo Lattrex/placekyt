@@ -272,6 +272,7 @@ def import_grc(path, catalog, chip_type: str = "kyttar_10x12",
     block_map: dict = {}         # grc name → placeKYT block name
     role: dict = {}              # grc name → "block" | "source" | "sink" | "drop"
     src_stream: dict = {}        # grc source name → its stream_id param (or "")
+    src_complex: dict = {}       # grc source name → injects a complex (I/Q) sample?
     sink_stream: dict = {}       # grc sink name → its stream_id param (or "")
     _INSTANCE_TYPE.clear()       # grc name → placeKYT type (for port resolution)
     unknown, dropped = [], []
@@ -286,6 +287,12 @@ def import_grc(path, catalog, chip_type: str = "kyttar_10x12",
             sid = str(gb.get("parameters", {}).get("stream_id", "") or "").strip()
             sid = sid.strip("'\"")
             src_stream[gname] = sid
+            # Does this source inject a COMPLEX (I/Q) sample or a single real float?
+            # ``complex_in: complex`` ⇒ interleaved xi+xq packet (deliver all input
+            # regs of the complex target block); ``complex_in: float`` (or absent)
+            # ⇒ ONE real operand into a single rail (deliver only that rail's reg).
+            ci = str(gb.get("parameters", {}).get("complex_in", "") or "").strip()
+            src_complex[gname] = ci.strip("'\"").lower() == "complex"
             continue
         if gid in _SINK_IDS:
             role[gname] = "sink"
@@ -361,6 +368,11 @@ def import_grc(path, catalog, chip_type: str = "kyttar_10x12",
         # (source role + block target), so the live bridge keys this stream's
         # injection. Other nets stay single-stream (stream_id None).
         sid = src_stream.get(sname) if srole == "source" else None
+        # Carry the source's complex-ness onto the chip-input→block net so the
+        # build/port_config size host-injection data_addrs correctly: a complex
+        # source delivers all of the target complex block's input regs; a float
+        # source delivers only the single rail its net targets.
+        scpx = src_complex.get(sname) if srole == "source" else None
         # SHARED-OUTPUT-PORT DEMUX: a block→sink net whose sink names a stream_id
         # gets a DISTINCT out_tag (a stable small int per stream_id) so the two
         # chains sharing x16_out are separable on the wire — the build sets the
@@ -374,7 +386,7 @@ def import_grc(path, catalog, chip_type: str = "kyttar_10x12",
                 out_tag = _stream_tag(ssid)
         project.connections.append(Connection(
             f"net{net_idx}", source=src, target=dst, route=None,
-            stream_id=(sid or None), out_tag=out_tag))
+            stream_id=(sid or None), out_tag=out_tag, src_complex=scpx))
         if isinstance(src, BlockEndpoint) and isinstance(dst, BlockEndpoint):
             wired_pairs.add((src.block, src.port, dst.block, dst.port))
             split_candidates.append((sname, dname, src, dst))

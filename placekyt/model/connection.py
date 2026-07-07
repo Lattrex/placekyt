@@ -126,6 +126,17 @@ class Connection:
     # so existing projects are unchanged. The auto-router reads this to decide
     # what the source emits and how the channel is assigned at the destination.
     kind: str = NET_DATA_TRIGGER
+    # Whether the SOURCE of this net injects a full COMPLEX (I/Q) sample. Set by
+    # the GRC importer for chip-INPUT-port nets from the source's ``complex_in``
+    # param: ``True`` ⇒ the host injects an interleaved xi+xq packet (all input
+    # regs of the complex target block are delivered); ``False`` ⇒ the host injects
+    # ONE real operand (the AM up-converter's ``xi`` rail; xq stays 0), so only the
+    # single rail register targeted by ``target.port`` is delivered. ``None`` ⇒
+    # unknown / not a host-injected port net (preserves legacy full-operand
+    # behavior for block→block complex handoffs). The build/port_config read this
+    # to size the host-injection ``data_addrs`` per net (a float source into a
+    # complex block must NOT report both burst regs — that mis-delivers, corr=nan).
+    src_complex: bool | None = None
 
     def __post_init__(self) -> None:
         if self.kind not in _NET_KINDS:

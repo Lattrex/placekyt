@@ -1904,7 +1904,10 @@ def broker_plan(project, chip_id, chip_type, catalog):
         # ``_broker_program`` (same in_cell) into the multi-operand group. A common
         # ``src_cell`` sentinel keys them as one group even though the source is the port.
         port_complex_regs = None
-        if isinstance(conn.source, ChipPortEndpoint):
+        if isinstance(conn.source, ChipPortEndpoint) and conn.src_complex is not False:
+            # Only a COMPLEX source injects the full xi+xq packet (N WRITEs + 1 JUMP).
+            # A FLOAT source (AM up-converter's ``xi`` rail) injects ONE operand — keep
+            # the single delivery so the broker relays exactly what the host writes.
             _e2, _regs = catalog.resolved_io(tgt.type, tgt.params,
                                              library=tgt.library)
             if _regs and len(_regs) > 1:

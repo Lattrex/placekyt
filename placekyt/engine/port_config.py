@@ -16,6 +16,20 @@ from __future__ import annotations
 from model.connection import BlockEndpoint, ChipPortEndpoint
 
 
+def _target_port_reg(catalog, block, port, in_regs):
+    """The single input register a named target ``port`` maps to (via the block's
+    PortMap), for a float-source net that delivers ONE operand to that rail. Falls
+    back to the block's first input reg if the port can't be resolved to a register."""
+    try:
+        pmap = catalog.port_map(block.type, block.params, library=block.library)
+        for p in pmap.ports:
+            if p.name == port and p.direction == "in" and p.register is not None:
+                return int(p.register)
+    except Exception:  # noqa: BLE001
+        pass
+    return int(in_regs[0]) if in_regs else 0
+
+
 def _built_landing(build_result, chip_id, conn_name):
     """The build's corridor-accurate ``{cell, entry, hop, data_addrs}`` landing for
     ``conn_name`` on ``chip_id``, or ``None`` if the design isn't built / the net has
@@ -187,7 +201,12 @@ def stream_targets(project, registry, catalog, chip_id: int = 0,
                 blk.type, blk.params, library=blk.library)
             entry_addr = int(entry)
             hop_count = 30 - dist
-            data_addrs = list(in_regs) if in_regs else [0]
+            # A FLOAT source into a complex block delivers ONLY the single rail its
+            # net targets (xq stays 0); only a COMPLEX source delivers all input regs.
+            if in_regs and len(in_regs) > 1 and getattr(conn, "src_complex", None) is False:
+                data_addrs = [_target_port_reg(catalog, blk, conn.target.port, in_regs)]
+            else:
+                data_addrs = list(in_regs) if in_regs else [0]
         targets[str(sid)] = {
             "entry_addr": entry_addr,
             "hop_count": hop_count,

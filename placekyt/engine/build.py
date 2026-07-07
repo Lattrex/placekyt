@@ -1296,6 +1296,21 @@ def _apply_brokers(cell_map, gr_placement, blocks, connections, project,
     return dict(conn_entry), dict(conn_burst_reg), fanout_abut_conns
 
 
+def _target_port_reg(catalog, block, port, in_regs):
+    """The single input register a named target ``port`` maps to (via the block's
+    PortMap) — for a FLOAT-source net that delivers ONE operand to that rail (e.g.
+    the AM up-converter's ``xi`` → R0; xq stays 0). Falls back to the block's first
+    input reg if the port can't be resolved to a register."""
+    try:
+        pmap = catalog.port_map(block.type, block.params, library=block.library)
+        for p in pmap.ports:
+            if p.name == port and p.direction == "in" and p.register is not None:
+                return int(p.register)
+    except Exception:  # noqa: BLE001
+        pass
+    return int(in_regs[0]) if in_regs else 0
+
+
 def _resolve_input_landings(cell_map, blocks, connections, project, chip_id,
                             chip_type, gr_placement, catalog,
                             broker_conn_entry, broker_conn_burst) -> dict:
@@ -1381,9 +1396,16 @@ def _resolve_input_landings(cell_map, blocks, connections, project, chip_id,
             entry, in_regs = catalog.resolved_io(
                 blk.type, blk.params, library=blk.library)
             idx = len(full) - 1                  # block input cell's corridor index
+            # A COMPLEX source injects all input regs (xi+xq); a FLOAT source (AM
+            # up-converter's ``xi`` rail) injects ONE operand into the single rail its
+            # net targets — reporting both regs would mis-deliver (out=const, corr=nan).
+            if in_regs and len(in_regs) > 1 and conn.src_complex is False:
+                data_addrs = [_target_port_reg(catalog, blk, conn.target.port, in_regs)]
+            else:
+                data_addrs = list(in_regs) if in_regs else [0]
             landings[conn.name] = {
                 "cell": in_cell, "entry": int(entry), "hop": (30 - idx) & 0x1F,
-                "data_addrs": list(in_regs) if in_regs else [0]}
+                "data_addrs": data_addrs}
         else:
             # Diverted at full[divert] — land at that broker's deliver entry for THIS
             # net (it flips toward the block + relays). The operand lands in the broker
@@ -1401,15 +1423,17 @@ def _resolve_input_landings(cell_map, blocks, connections, project, chip_id,
                     "data_addrs": list(in_regs) if in_regs else [0]}
                 continue
             from .bus_router import BROKER_BURST_REG
-            # A COMPLEX block (>1 input reg) fed from the port through a broker delivers
-            # ALL its operands: the host injects N operands then ONE trigger, the broker
-            # relays N WRITEs + 1 JUMP (broker_plan expands it into a multi-operand group).
-            # Report ALL burst regs (R0..R{N-1}) so the host writes every operand — a
-            # single reg would deliver only xi and the complex block never computes (the
-            # duplex RX "MF gets xi but never xq" data-loss).
+            # A COMPLEX block (>1 input reg) fed from the port through a broker MAY
+            # deliver ALL its operands: a COMPLEX source injects N operands then ONE
+            # trigger and the broker relays N WRITEs + 1 JUMP (broker_plan expands it
+            # into a multi-operand group) — so xi AND xq land (the duplex RX MF).
+            # But a FLOAT source (AM up-converter: net targets only the ``xi`` rail,
+            # xq stays 0) injects ONE operand: reporting both burst regs mis-delivers
+            # (the host writes one operand where the broker expects two → out=const,
+            # corr=nan). Size data_addrs by whether the SOURCE is complex.
             _entry2, _in_regs = catalog.resolved_io(
                 blk.type, blk.params, library=blk.library)
-            if _in_regs and len(_in_regs) > 1:
+            if _in_regs and len(_in_regs) > 1 and conn.src_complex is not False:
                 data_addrs = [BROKER_BURST_REG + i for i in range(len(_in_regs))]
             else:
                 data_addrs = [BROKER_BURST_REG

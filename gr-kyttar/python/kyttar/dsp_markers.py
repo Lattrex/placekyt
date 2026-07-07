@@ -208,8 +208,15 @@ class iq_upconvert(_PassThrough):
 
     def __init__(self, device_id="kyttar_0", sample_rate=32000.0,
                  frequency=4000.0):
-        # two real rails in (xi, xq), real passband out
-        super().__init__("Kyttar I/Q Upconvert", n_in=2, n_out=1,
+        # ONE connected REAL rail (xi) -> real passband out. The .block.yml exposes
+        # xi AND xq as two OPTIONAL float rails for the schematic, but a BPSK/AM TX
+        # drives only xi (xq=0), so the runtime marker presents a SINGLE float input
+        # — GNU Radio requires every DECLARED (non-optional) input port to be
+        # connected, and declaring two here would reject the common one-rail wiring
+        # ("insufficient connected input ports"). The marker doesn't compute; one
+        # input carries the graph. (A true I/Q feed reaches the mixer as the single
+        # complex baseband via the float->complex converter, still one wire.)
+        super().__init__("Kyttar I/Q Upconvert", n_in=1, n_out=1,
                          in_dtype=np.float32, out_dtype=np.float32)
         self.device_id = device_id
         self.sample_rate = sample_rate

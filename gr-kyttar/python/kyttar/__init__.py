@@ -66,7 +66,8 @@ from .chip_batch import chip_batch
 from .dsp_markers import (complex_rrc_matched_filter, complex_costas_loop,
                           gardner_timing_recovery, bpsk_slicer,
                           psk_symbol_mapper, upsampler, rrc_pulse_shaper,
-                          iq_upconvert, complex_to_float)
+                          iq_upconvert, complex_to_float,
+                          frequency_modulator, quadrature_demod)
 from .gain import gain
 from .multiply import multiply
 from .add import add, subtract
@@ -112,6 +113,8 @@ __all__ = [
     "upsampler",
     "rrc_pulse_shaper",
     "iq_upconvert",
+    "frequency_modulator",
+    "quadrature_demod",
     # Routing primitives
     "demux",
     "mux",

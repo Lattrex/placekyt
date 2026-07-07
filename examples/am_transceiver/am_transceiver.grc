@@ -154,6 +154,7 @@ blocks:
   parameters:
     affinity: ''
     alias: ''
+    type: 'float'
     bus_structure_source: '[[0,],]'
     comment: 'Q = 0 (DSB-AM: no quadrature)'
     maxoutbuf: '0'
@@ -317,6 +318,7 @@ blocks:
   parameters:
     affinity: ''
     alias: ''
+    type: 'float'
     bus_structure_source: '[[0,],]'
     comment: 'Q = 0'
     maxoutbuf: '0'

@@ -143,7 +143,7 @@ def main():
         "affinity": "''", "alias": "''", "comment": "'audio -> I (Q=0)'",
         "maxoutbuf": "'0'", "minoutbuf": "'0'", "vlen": "'1'"}, 380, 120))
     out.append(blk("tx_q0", "blocks_null_source", {
-        "affinity": "''", "alias": "''", "bus_structure_source": "'[[0,],]'",
+        "affinity": "''", "alias": "''", "type": "'float'", "bus_structure_source": "'[[0,],]'",
         "comment": "'Q = 0 (DSB-AM: no quadrature)'", "maxoutbuf": "'0'",
         "minoutbuf": "'0'", "num_outputs": "'1'", "sizeof_stream_item": "'gr.sizeof_float'"},
         380, 200))
@@ -177,7 +177,7 @@ def main():
         "affinity": "''", "alias": "''", "comment": "'passband -> I (Q=0)'",
         "maxoutbuf": "'0'", "minoutbuf": "'0'", "vlen": "'1'"}, 380, 320))
     out.append(blk("rx_q0", "blocks_null_source", {
-        "affinity": "''", "alias": "''", "bus_structure_source": "'[[0,],]'",
+        "affinity": "''", "alias": "''", "type": "'float'", "bus_structure_source": "'[[0,],]'",
         "comment": "'Q = 0'", "maxoutbuf": "'0'", "minoutbuf": "'0'",
         "num_outputs": "'1'", "sizeof_stream_item": "'gr.sizeof_float'"}, 380, 400))
     out.append(oscmix("rx_mix", "'AM demod: y = Re{s*e^jwt} product detect'",

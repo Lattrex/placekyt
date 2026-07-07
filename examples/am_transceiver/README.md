@@ -12,10 +12,13 @@ TX (stream 'tx'):  audio ─▶ oscMix(fc) ────────────�
 RX (stream 'rx'):  AM passband ─▶ oscMix(fc) ─▶ LowPass ─▶ ×2 ─▶ recovered audio
 ```
 
-- **TX (modulator)**: `s = audio · cos(2π·fc·t)` — an oscillator-mixer
-  (`kyttar_iq_upconvert`) forms the suppressed-carrier DSB-AM passband.
-- **RX (demodulator)**: `y = s · cos(2π·fc·t)` then `LowPass` — the coherent
-  product detector (`audio·cos² = audio·(1+cos 2fc)/2 → LPF → audio/2`), then `×2`.
+- **TX (modulator)**: `s = audio · cos(2π·fc·t)`. The audio goes through a
+  `float_to_complex` (audio → I, Q = 0, the GR-idiomatic real→complex converter),
+  then the complex-only `kyttar_iq_upconvert` forms the suppressed-carrier DSB-AM
+  passband: `s = Re{(audio + 0j)·e^{jωt}} = audio·cos(2π·fc·t)`.
+- **RX (demodulator)**: same `float_to_complex` in front, then `iq_upconvert`,
+  `LowPass`, `×2` — the coherent product detector
+  (`audio·cos² = audio·(1+cos 2fc)/2 → LPF → audio/2`, then `×2`).
 
 Both chains use the shared `x16_in` / `x16_out` ports; the placeKYT server resolves
 each `stream_id` to its own chain's landing cell and demuxes the two output streams
@@ -37,16 +40,18 @@ sample 0, so TX/RX carriers are coherent.
 | `am_transceiver.grc` | The GNU Radio flowgraph — **import into placeKYT** (File → Import GNURadio Flowgraph…) to auto-P&R it. Open in `gnuradio-companion` to drive the hosted chip. |
 | `gen_grc.py` | Regenerates `am_transceiver.grc` (edit fc/cutoff here). |
 
-## Status
-Imports into placeKYT as **4 chip blocks** (2 oscillator-mixers + LowPass + Gain),
-and **auto-P&R + build succeed** with both streams wired to the shared ports. A
-single-chain AM path runs live end-to-end (|corr| ≈ 0.95).
+## Status — WORKING
+Imports into placeKYT as **4 chip blocks** (2 oscillator-mixers + LowPass + Gain;
+the two `float_to_complex` + `null_source` converters are logical-only and spliced
+away on import), auto-P&Rs + builds on ONE chip, and runs LIVE end to end over the
+SimServer batch bridge as a true duplex transceiver:
 
-**Known limitation (in progress):** the full DUPLEX live run is not yet correct on
-this compact placement — the two mixer input corridors share an input-corridor cell
-whose forwarding face can't serve both a broker and a straight transit at once (TX
-misdelivers), and the RX product-detector's free-running NCO needs carrier coherence
-(RX corr ~0.5). The `verification/tests/test_am_transceiver_grc.py` live-recovery
-tests are `xfail(strict)` on exactly these two blockers and flip green the moment the
-placer/router + coherence fix lands. See the
-`project_am_transceiver_duplex_blockers` note.
+- **TX** produces the DSB-AM passband `audio·cos(2π·fc·t)` — corr **1.0** vs the
+  reference (accounting for the NCO's phase pre-increment).
+- **RX** recovers the transmitted audio — corr **0.998** (after the on-chip LowPass
+  group delay).
+
+Both streams run on the SAME shared chip, demuxed by `stream_id`. Gate:
+`verification/tests/test_am_transceiver_grc.py` (5/5 pass). Run it like the BPSK
+modem: host the chip (Run as GNURadio Server), then drive it from GRC and compare the
+input-audio and recovered-audio scopes.

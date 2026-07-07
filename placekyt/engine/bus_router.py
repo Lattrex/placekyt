@@ -486,6 +486,30 @@ def _route_chip_bus_v2(project, ct, chip_id, nets, spine, *, port_map_provider):
         if not free_nbrs:
             boxed_outputs[sb.name] = oc
 
+    # MULTI-CELL EGRESS TERMINALS (the AM/duplex TX IQUpconvert case). A multi-cell block
+    # whose OUTPUT cell sits MID-block (``output_cell_id`` — e.g. `upmix`) and drives the
+    # chip OUTPUT port directly has NO downstream consumer tap to pull the backbone near its
+    # output cell, and its input-tap thread never abuts the buried output cell. So
+    # ``src_tap_cell`` finds no adjacent backbone cell and the egress falls back to the
+    # INPUT-port cell (a 0-output, over-long route). Handle it like the single-cell egress
+    # terminal: thread a DEDICATED egress segment (backbone head → a free cell ABUTTING the
+    # output cell → output port) AFTER the main DFS, so the egress rides a SHORT tail slice
+    # from a backbone cell abutting the true output cell — not the whole serpentine.
+    # Map: output cell -> (block name, source port) for each such terminal.
+    mc_egress_out: dict = {}
+    for (name, s, sface, d, dface, sp, dp, conn) in nets:
+        if not dp or not isinstance(conn.source, BlockEndpoint):
+            continue
+        sb = project.block(conn.source.block)
+        if sb is None or sb.placement is None or len(sb.placement.cells) < 2:
+            continue
+        if sb.name in boxed_outputs:
+            continue
+        oc = out_cell_of(sb, conn.source.port)
+        if oc == in_cell_of(sb, conn.source.port):
+            continue
+        mc_egress_out[oc] = (sb.name, conn.source.port)
+
     # Input cells of blocks whose output drives the chip OUTPUT port (the filament
     # TERMINALS, e.g. the modem's TX IQUpconvert + RX slicer). Both egress to the shared
     # out_port, so they should tap the backbone LATE (near the port) — otherwise a terminal
@@ -954,6 +978,41 @@ def _route_chip_bus_v2(project, ct, chip_id, nets, spine, *, port_map_provider):
         if not done:
             return _bail(f"cannot thread egress-terminal bend at {et}")
 
+    # MULTI-CELL EGRESS TERMINALS: after the input taps are threaded, append a DEDICATED
+    # egress segment per multi-cell terminal (backbone head → a free cell ABUTTING its
+    # output cell → output port). This puts an output-tap cell (abutting the buried output
+    # cell) NEAR the end of the backbone, so ``src_tap_cell`` rides a SHORT tail slice from
+    # it to the port instead of the whole serpentine. Threaded before the final port thread
+    # so the last one leaves the head at (or near) the output port. Kept ROBUST: if a
+    # terminal's bend can't route it is skipped (``src_tap_cell`` then falls back — never a
+    # crash), and multiple terminals chain head→oc_abut→...→port in turn.
+    for oc, (_bname, _bport) in mc_egress_out.items():
+        head = backbone[-1]
+        bbset = set(backbone)
+        oc_nbrs = [(oc[0] + dx, oc[1] + dy) for dx, dy in _NEI
+                   if in_bounds((oc[0] + dx, oc[1] + dy))
+                   and (oc[0] + dx, oc[1] + dy) not in (bbset | block_cells)]
+        wall = set(block_cells) | bbset
+        placed = False
+        for oc_abut in oc_nbrs:
+            seg_in = bfs(head, oc_abut, occ | (bbset - {head}), wall)
+            if seg_in is None:
+                continue
+            occ2 = occ | set(seg_in[1:])
+            bb2 = bbset | set(seg_in[1:])
+            seg_out = bfs(oc_abut, out_port_cell, occ2 | (bb2 - {oc_abut}), wall | bb2)
+            if seg_out is None:
+                continue
+            for c in seg_in[1:]:
+                backbone.append(c); occ.add(c)
+            for c in seg_out[1:]:
+                backbone.append(c); occ.add(c)
+            placed = True
+            break
+        if _DBG and not placed:
+            print(f"[bus_v2] multi-cell egress terminal at {oc} could not thread bend "
+                  f"head={head} oc_nbrs={oc_nbrs}")
+
     if out_port_cell != backbone[-1]:
         blocked = occ | (set(backbone) - {backbone[-1]})
         seg = bfs(backbone[-1], out_port_cell, blocked,
@@ -1061,10 +1120,27 @@ def _route_chip_bus_v2(project, ct, chip_id, nets, spine, *, port_map_provider):
         if oc not in bcells or len(bcells) > 1:
             adj = [(oc[0] + dx, oc[1] + dy) for dx, dy in _NEI
                    if (oc[0] + dx, oc[1] + dy) in bb_index]
-            cands = sorted((bb_index[a] for a in adj))
+            # For a multi-cell EGRESS TERMINAL (drives the chip output port directly) the
+            # egress should ride from the DEDICATED tail tap threaded ABUTTING its output
+            # cell near the port — pick the LATEST adjacent backbone cell ≤ i_to (the port)
+            # so the egress is a SHORT tail slice, not the whole serpentine from an early
+            # abutting cell. For a block→block source, keep the EARLIEST (stay upstream of
+            # the consumer).
+            is_egress_terminal = (isinstance(conn.target, ChipPortEndpoint)
+                                  and oc in mc_egress_out)
+            cands = sorted((bb_index[a] for a in adj),
+                           reverse=is_egress_terminal)
             for oi in cands:
                 if i_to_limit is None or oi <= i_to_limit:
                     return backbone[oi]
+            # A multi-cell egress terminal with NO backbone tap adjacent to its OUTPUT cell
+            # (≤ i_to) cannot ride the egress from its true output cell. Falling back to the
+            # input-cell tap (branch 3) would start the egress far upstream of the output —
+            # the word never reaches the port (0-output). Return None so the caller marks the
+            # net a NAMED failure, escalating the whole design to the maze router, which
+            # routes the output cell → port directly (short, node-disjoint).
+            if is_egress_terminal:
+                return None
         primary = None
         for ic, tcell in tap_abut.items():
             if ic in bcells:
@@ -1103,8 +1179,31 @@ def _route_chip_bus_v2(project, ct, chip_id, nets, spine, *, port_map_provider):
             i_from = 0
             if isinstance(conn.source, BlockEndpoint):
                 st = src_tap_cell(conn, i_to)
+                if st is None:
+                    # Multi-cell egress terminal whose output cell has no reachable tap on
+                    # this backbone — NOT the wrong input-port fallback (0-output). A NAMED
+                    # failure escalates the whole design to the maze router, which routes the
+                    # output cell → port directly and short.
+                    out.append(RouteResult(
+                        name, False,
+                        reason=f"egress net {name}: source block "
+                               f"{conn.source.block} output cell not tappable on the bus"))
+                    continue
                 i_from = bb_index.get(st, 0)
-            out.append(RouteResult(name, True, points=list(backbone[i_from:i_to + 1])))
+            pts = list(backbone[i_from:i_to + 1])
+            # HOP BUDGET (§1.3): a backbone slice whose delivered distance exceeds the
+            # 31-hop budget cannot reach the port — mark it a NAMED failure so the design
+            # escalates to the maze router (independent, node-disjoint) rather than a build
+            # that trips the hop DRC. For a block-sourced egress the word hops exit→tap then
+            # rides the slice and exits the port, i.e. ``len(pts)`` physical hops (matches
+            # the build's ``hop_overflow`` count).
+            if isinstance(conn.source, BlockEndpoint) and len(pts) > _MAX_HOPS:
+                out.append(RouteResult(
+                    name, False,
+                    reason=f"egress net {name}: bus slice is {len(pts)} hops "
+                           f"(max {_MAX_HOPS}) — escalate to maze"))
+                continue
+            out.append(RouteResult(name, True, points=pts))
             continue
         if sp and s == d:
             out.append(RouteResult(name, True, points=[d]))   # vestigial (dropped)

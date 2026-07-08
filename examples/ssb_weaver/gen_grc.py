@@ -264,7 +264,7 @@ def main():
 
     # === FUSED-OSCILLATOR WEAVER (no shared NCO, no carrier fan-out) ===
     # This chip is clockless: a standalone NCO drawn as a source gets no trigger and is
-    # DEAD (see dev_docs/OSCILLATOR_TOPOLOGY_ANALYSIS.md). So each mixer carries its OWN
+    # DEAD on-chip. So each mixer carries its OWN
     # oscillator. kyttar_complex_mixer emits BOTH rails (yi=sig*cos, yq=sig*sin) as two
     # separate output ports, so the DOWN-mix (which needs both rails from one signal) is
     # ONE mixer; each UP-mix (which needs one rail from one signal) is one mixer using a

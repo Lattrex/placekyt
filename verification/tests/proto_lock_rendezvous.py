@@ -2,7 +2,7 @@
 """PROTO / substrate probe: the LOCK/LOCK_FACE rendezvous primitives.
 
 Confirms (mechanically, on simKYT) the ISA facts the DualFloatToComplex block
-(dev_docs/LOGICAL_CONVERTERS_AND_DUAL_F2C_RENDEZVOUS.md §4) is built on:
+is built on:
 
   * `MOVE [LOCK_FACE], Rn` / `MOVE [LOCK], Rn` assemble to CONFIG-register writes
     (CONFIG addr 3 = LOCK_FACE at memory-mapped dest 35; addr 4 = LOCK at dest 36).

@@ -46,7 +46,7 @@ class DualFloatToComplexBlock(KyttarBlock):
     was tried and is BROKEN — it has no way to know which stream a same-face word came
     from, so any async re-ordering (I,I,Q,...) desyncs it permanently. Merging both
     rails onto one serialized face DESTROYS the stream identity; only distinct faces +
-    LOCK preserve it. (Design doc §7 / dev_docs, and CM 2026-07-07.)
+    LOCK preserve it.
 
     OUTPUT: on the Q trigger it emits the paired complex sample as a 2-rail packet —
     ``yi`` (=xi) and ``yq`` (=xq) plus a ``trig`` — via declarative ``{write:yi}`` /
@@ -63,8 +63,7 @@ class DualFloatToComplexBlock(KyttarBlock):
     from one upstream complex block OR from this dual), so it needs no face distinction.
     A single real stream feeding a complex block (real audio -> mixer, Q=0) is a
     LOGICAL-ONLY ``float_to_complex`` in GRC — the importer wires the float straight to
-    the complex block's xi (xq=0), no cell. See
-    dev_docs/LOGICAL_CONVERTERS_AND_DUAL_F2C_RENDEZVOUS.md.
+    the complex block's xi (xq=0), no cell.
 
     Parameters:
       * ``face_i`` / ``face_q``: the faces the I and Q producers arrive on

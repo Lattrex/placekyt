@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Standalone proof of every float<->complex converter flavor (GRC import path).
 
-The logical dtype converters (dev_docs/LOGICAL_CONVERTERS_AND_DUAL_F2C_RENDEZVOUS.md)
+The logical dtype converters
 let a REAL GNU Radio flowgraph type-check where a float stream meets a complex
 block, WITHOUT the converter ever becoming a placeKYT cell. This test proves, for
 every flavor, that:

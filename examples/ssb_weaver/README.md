@@ -25,7 +25,7 @@ RX (stream 'rx'):  SSB ─▶ ComplexMixer(-fc) ─▶ ComplexLowPass ─▶ IQU
 **Why this shape.** This chip is clockless — a standalone NCO drawn as a source gets no
 trigger and is DEAD on-chip. Each mixer carries its OWN oscillator (the fused-oscillator
 trade: cheap per-mixer phase accumulators, no scarce carrier fan-out). The complex-FIR
-version is the topology that fits ONE 10x12 die. See `dev_docs/OSCILLATOR_TOPOLOGY_ANALYSIS.md`.
+version is the topology that fits ONE 10x12 die.
 
 (USB; `fa=1500 Hz` audio-band centre, `fc=6000 Hz` carrier, `fs=32 kHz`, LPF cutoff 1200 Hz.
 The Weaver DSP is verified on-chip at **corr 0.986** — `weaver_builder_cfir.py`.)

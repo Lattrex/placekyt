@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """DualFloatToComplexBlock — structural on-chip proof of the LOCK-by-face rendezvous.
 
-The physical block for the TWO-independent-real-producer float_to_complex case
-(dev_docs/LOGICAL_CONVERTERS_AND_DUAL_F2C_RENDEZVOUS.md §4): a 1-cell LOCK-BY-FACE
+The physical block for the TWO-independent-real-producer float_to_complex case:
+a 1-cell LOCK-BY-FACE
 rendezvous that pairs two independent, ASYNCHRONOUSLY-timed real streams into ONE
 complex sample, matched-pairs-only regardless of interleaving. The two producers
 arrive on TWO DISTINCT faces; the cell uses the arbiter LOCK (LOCK/LOCK_FACE) to

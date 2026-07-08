@@ -3,7 +3,7 @@
 
 ``verification/tests/data/converter_flavors.grc`` is ONE importable GNU Radio
 flowgraph that threads EVERY float/complex dtype interaction the placeKYT importer
-must handle, in a single DRIVABLE identity chain (dev_docs §7, CM: "all of the
+must handle, in a single DRIVABLE identity chain (CM: "all of the
 complex/float interactions in a single simple test that is an importable GRC flow
 graph … run in placeKYT both visually and headless"):
 

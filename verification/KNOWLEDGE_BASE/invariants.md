@@ -562,7 +562,7 @@ bus (I in R0, Q in R1); a downstream block that wants only the I rail just reads
 Steering is a build/routing job (which register each downstream WRITE targets), NOT
 a physical block. (If GRC ergonomics ever need a visible "split" node, it must be a
 LOGICAL-ONLY adapter that DISSOLVES at import — 0 cells on hardware — never a placed
-block.) See [[project_fanout_two_targets_build_bug]].
+block.)
 
 **Applies to:** ComplexMixer, NCO, IQUpconvert, and EVERY block whose output cell
 emits an I/Q rail pair — i.e. any block a future agent writes with a complex output.
@@ -591,5 +591,5 @@ The block RAISES a clear ValueError instead of silently rescaling (matches GR ma
 — RULE #0). A low-pass at `gain≤1` is Σ|h|≤1 by construction; band filters at gain=1.0
 often exceed it, so pass a smaller gain (0.4–0.9) — correlation is gain-invariant.
 Gated by placekyt/tests/test_complex_fir_budget.py + verification/tests/test_complex_fir.py
-(GNU-Radio parity, 12 tests). See [[project_complex_fir_family]].
+(GNU-Radio parity, 12 tests).
 

@@ -211,7 +211,7 @@ up every analog demo (AM, SSB, anything with a local oscillator):
    QuadratureDemod: `atan2`-then-difference IS a MAC-only discriminator.) A `sig_source →
    multiply` pair is a host-clock idiom; on-chip it's one fused oscillator-mixer.
 
-**Worked examples (all in `examples/`, analysis in `dev_docs/OSCILLATOR_TOPOLOGY_ANALYSIS.md`):**
+**Worked examples (all in `examples/`):**
 - **FM** — the model to emulate: VCO (input-driven phase accumulator) + discriminator (MAC,
   no oscillator). No shared oscillator anywhere → tiny (12 cells), routes trivially.
 - **AM (DSB)** — `audio → iq_upconvert@fc → iq_upconvert@fc → LowPass → Gain`. Each mixer

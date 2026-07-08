@@ -43,8 +43,7 @@ _SINK_IDS = {"kyttar_sink"}
 # LOGICAL-ONLY dtype converters (stock GNU Radio blocks). These make a real GRC
 # flowgraph type-check where a float stream meets a complex block; they are NEVER
 # placed as cells — the importer SPLICES them out, wiring the converter's upstream
-# straight to its downstream with the right rail semantics
-# (dev_docs/LOGICAL_CONVERTERS_AND_DUAL_F2C_RENDEZVOUS.md):
+# straight to its downstream with the right rail semantics:
 #   * float_to_complex, 1 real (Q = null_source): wire the I upstream -> the
 #     downstream complex block's xi (xq stays 0). No cell. [SSB's case]
 #     (2 independent real producers -> a DualFloatToComplex block, added §later.)
@@ -147,7 +146,7 @@ def _splice_converters(conns, grc_blocks):
     """Rewrite the GRC connection list to REMOVE logical-only dtype converters,
     wiring each converter's real upstream straight to its real downstream.
 
-    Handles (dev_docs/LOGICAL_CONVERTERS_AND_DUAL_F2C_RENDEZVOUS.md):
+    Handles:
       * ``float_to_complex`` whose Q input (port 1) is a ``null_source`` (or is
         unconnected) — the SINGLE-real case: wire the I upstream (port 0 producer)
         straight to the converter's downstream (the complex block's xi). No cell.
@@ -159,7 +158,7 @@ def _splice_converters(conns, grc_blocks):
     A ``float_to_complex`` fed by TWO independent real producers (no null_source on
     Q) is NOT spliced: it is kept in the connection list AND its name is returned in
     ``dual_f2c`` so the block pass places a ``DualFloatToComplexBlock`` for it (the
-    physical LOCK rendezvous — dev_docs §4). Its port-0 (I) and port-1 (Q) producers
+    physical LOCK rendezvous). Its port-0 (I) and port-1 (Q) producers
     wire to the block's ``i`` / ``q`` inputs; its output wires downstream via ``out``.
 
     Returns ``(rewritten_conns, dual_f2c_names)``.

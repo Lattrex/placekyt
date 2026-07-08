@@ -31,6 +31,62 @@ from .enums import Face
 # preserved so integer ids round-trip unquoted through YAML.
 CellId = Union[int, str]
 
+# --- D4 orientation canonicalisation -----------------------------------------
+# The block-transform ops form the dihedral group D4 (8 elements): any sequence of
+# cw/ccw/mirror_h/mirror_v reduces to ONE of them. Left un-reduced, a user nudging a
+# block's orientation builds a degenerate stack (e.g. ['mirror_v','cw','ccw','mirror_v']
+# = identity) that the build re-applies op-by-op to the in-program FACE constants — a
+# latent mis-face bug. We canonicalise the stored ``orientation`` to a minimal op list
+# with the IDENTICAL net effect (verified on all 4 faces) after every transform, so the
+# stored history is always the shortest equivalent sequence.
+_D4_OPS = ("cw", "ccw", "mirror_h", "mirror_v")
+
+
+def _apply_op(face: Face, kind: str) -> Face:
+    return {"cw": face.rotated_cw, "ccw": face.rotated_ccw,
+            "mirror_h": face.mirrored_h, "mirror_v": face.mirrored_v}[kind]
+
+
+def _net_face_perm(kinds) -> tuple:
+    """The net face permutation of a kind-sequence, as a hashable tuple keyed by
+    (S,E,W,N) → resulting face value."""
+    order = (Face.SOUTH, Face.EAST, Face.WEST, Face.NORTH)
+    out = list(order)
+    for k in kinds:
+        out = [_apply_op(f, k) for f in out]
+    return tuple(f.value for f in out)
+
+
+# Canonical D4 element -> its SHORTEST op list. Enumerate all op sequences up to
+# length 3 (D4's diameter over these 4 generators is ≤ 3) and keep, per distinct net
+# face permutation, the fewest-ops candidate (ties broken lexicographically for
+# determinism). Lookup by the net face permutation makes canonicalisation O(1), exact,
+# and genuinely minimal (both mirror axes + both rotation senses are candidates).
+def _build_canon_table() -> dict:
+    import itertools
+    table: dict = {}
+    for n in range(0, 4):
+        for seq in itertools.product(_D4_OPS, repeat=n):
+            seq = list(seq)
+            perm = _net_face_perm(seq)
+            cur = table.get(perm)
+            if cur is None or (len(seq), seq) < (len(cur), cur):
+                table[perm] = seq
+    return table
+
+
+_CANON_TABLE = _build_canon_table()
+
+
+def canonicalize_orientation(kinds) -> list[str]:
+    """Reduce a D4 op-sequence to its shortest equivalent (identical net effect on
+    every face). Returns ``[]`` for a net-identity sequence. Any unknown op leaves the
+    list unchanged (defensive — never silently drop an op we can't model)."""
+    kinds = list(kinds or [])
+    if any(k not in _D4_OPS for k in kinds):
+        return kinds
+    return list(_CANON_TABLE.get(_net_face_perm(kinds), kinds))
+
 
 @dataclass
 class PlacedCell:
@@ -228,5 +284,9 @@ class Placement:
         # Record the transform so the build can apply the SAME D4 map to the
         # block's in-program face constants (the cell `.face` above is the
         # resting/layout face; a `MOVE [FACE], const` inside the program names an
-        # absolute direction that must rotate identically).
+        # absolute direction that must rotate identically). Canonicalise the stored
+        # history to its shortest D4-equivalent so a redundant nudge sequence (e.g.
+        # mirror→rotate→un-rotate→un-mirror = identity) collapses instead of leaving a
+        # degenerate stack the build re-applies op-by-op (bug B).
         self.orientation.append(kind)
+        self.orientation[:] = canonicalize_orientation(self.orientation)

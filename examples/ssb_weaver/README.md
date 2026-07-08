@@ -54,9 +54,10 @@ that you **open directly**.
 > The auto-route path is a known limitation, tracked as `xfail` in
 > `verification/tests/test_ssb_weaver_grc.py`.
 
-The on-chip DSP is verified: the hand-placed chip emits the SSB passband at **corr 0.98**
-vs the `ssb_demo_stim` reference (and the block chain is proven at corr 0.986 by
-`weaver_builder_cfir.py`).
+The on-chip DSP is verified **end to end**: the hand-placed chip emits the SSB passband
+(TX) at **corr 0.98** vs the `ssb_demo_stim` reference, and the RX chain **recovers the
+audio at corr ~0.97** (the block chain is proven at corr 0.986 by `weaver_builder_cfir.py`).
+Both streams are gated in `verification/tests/test_ssb_weaver_grc.py`.
 
 ## Run it
 

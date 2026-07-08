@@ -65,6 +65,12 @@ placeKYT-hosted chip from a flowgraph for stimulus and measurement.
 placeKYT installs from source today (Linux + Python 3.12; other platforms and
 one-file installers are on the roadmap — see **[INSTALL.md](INSTALL.md)**).
 
+> **Tested on Ubuntu 24.04 LTS.** Other Linux distributions should work with
+> minor tweaks (mainly the package-manager names in step 1 of
+> [INSTALL.md](INSTALL.md)). The `simkyt` simulator ships as a prebuilt
+> **Linux · x86-64 · CPython 3.12** extension; other platforms/Python versions
+> are on the roadmap (see [INSTALL.md](INSTALL.md)).
+
 ```bash
 # 1. clone
 git clone https://github.com/Lattrex/placekyt.git
@@ -82,8 +88,10 @@ python3 -m venv .venv
 Then start with the simplest demo, [`examples/gain/`](examples/gain/) — a single
 gain block, the best place to learn the placeKYT UI and the GNU Radio ↔ placeKYT
 workflow end to end. From there, [`examples/coherent_bpsk_rx/`](examples/coherent_bpsk_rx/)
-shows the same flow on a full coherent BPSK receiver. See [`INSTALL.md`](INSTALL.md)
-for the complete GNU Radio + demo walkthrough.
+shows the same flow on a full coherent BPSK receiver, and the
+[**`examples/`**](examples/) directory has the complete set (AM, FM, and SSB
+transceivers, plus a full BPSK modem) — each with its own README. See
+[`INSTALL.md`](INSTALL.md) for the complete GNU Radio + demo walkthrough.
 
 To build a design headlessly and check it against a golden output:
 
@@ -102,7 +110,7 @@ To build a design headlessly and check it against a golden output:
 - **[BLOCK_AUTHORING_GUIDE.md](BLOCK_AUTHORING_GUIDE.md)** — a step-by-step guide to writing your **own** DSP block (single-cell, multi-cell, feedback) and exposing it in GNU Radio Companion. Start here once you want to go beyond the bundled blocks.
 - **[AGENTS.md](AGENTS.md)** — the front door for an **automated agent**: the default mission (build and verify the next block in `verification/manifest.json`), the per-block loop, and the definition of done. Tool-neutral.
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** — how to contribute, run the tests, and a note on the simKYT simulator and Lattrex branding.
-- **[gr-kyttar/examples/README.md](gr-kyttar/examples/README.md)** — the bundled GNU Radio demos.
+- **[examples/README.md](examples/README.md)** — an index of all the bundled demos (gain, coherent BPSK RX, and the AM/FM/SSB/BPSK transceivers), each with its own walkthrough.
 
 ---
 

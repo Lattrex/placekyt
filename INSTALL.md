@@ -24,6 +24,13 @@ placeKYT has three pieces that install together:
 For this release, install from source on **Linux (x86-64) with Python 3.12**.
 Other platforms and one-file installers are on the roadmap (see §6).
 
+> **Tested on Ubuntu 24.04 LTS.** This is the reference platform — every command
+> below is verified there. Other Linux distributions should work with minor
+> tweaks: the main difference is the package manager in §1 (`dnf`/`pacman`/… in
+> place of `apt`, and your distro's names for the same packages). Everything after
+> §1 — the venv, the pip installs, `install.sh`, and the demos — is
+> distribution-independent.
+
 ---
 
 ## 1. System packages (one apt command)
@@ -130,9 +137,12 @@ python3 -c "from gnuradio import kyttar; print('kyttar blocks ready')"
 # -> kyttar blocks ready
 ```
 
-All the demos live in one place: the top-level **`examples/`** directory. Each
-subdirectory holds the flowgraph (`.grc`), the placeKYT host design (`.kyt`), and a
-README. We'll use [`examples/coherent_bpsk_rx/`](examples/coherent_bpsk_rx/).
+All the demos live in one place: the top-level **[`examples/`](examples/)**
+directory — see [`examples/README.md`](examples/README.md) for the full list
+(gain, coherent BPSK RX, and the AM/FM/SSB/BPSK transceivers), each with its own
+walkthrough. Each subdirectory holds the flowgraph (`.grc`), often a placeKYT host
+design (`.kyt`), and a README. We'll use
+[`examples/coherent_bpsk_rx/`](examples/coherent_bpsk_rx/).
 
 ### 3b. Host the receiver chip in placeKYT
 

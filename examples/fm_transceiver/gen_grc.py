@@ -109,8 +109,10 @@ def main():
 
     # ---- variables + stimulus import --------------------------------------
     out.append(blk("samp_rate", "variable", {"comment": "''", "value": repr(FS)}, 200, 12))
+    out.append(blk("f_dev", "variable",
+                   {"comment": "FM peak deviation (Hz)", "value": repr(FDEV)}, 320, 12))
     out.append(blk("n_samp", "variable",
-                   {"comment": "audio burst length", "value": "'2048'"}, 320, 12))
+                   {"comment": "audio burst length", "value": "'2048'"}, 440, 12))
     out.append(blk("server_port", "variable",
                    {"comment": "placeKYT GNURadio-server port", "value": "'58950'"},
                    440, 12))
@@ -134,7 +136,9 @@ def main():
         "stream_id": "'\"tx\"'"}, 240, 120))
     out.append(blk("tx_vco", "kyttar_frequency_modulator", {
         "affinity": "''", "alias": "''",
-        "comment": "'FM modulate: phi += sensitivity*audio; out = exp(j*phi)'",
+        # sensitivity = 2*pi*f_dev/samp_rate (rad/sample per unit input). Given as a
+        # literal because the placeKYT importer resolves literals, not expressions.
+        "comment": "'FM modulate (sensitivity = 2*pi*f_dev/fs): phi += sensitivity*audio'",
         "device_id": "'\"kyttar_0\"'", "sensitivity": repr(SENS),
         "maxoutbuf": "'0'", "minoutbuf": "'0'"}, 440, 120))
     out.append(blk("tx_sink", "kyttar_sink", {
@@ -162,7 +166,8 @@ def main():
         "stream_id": "'\"rx\"'"}, 240, 320))
     out.append(blk("rx_demod", "kyttar_quadrature_demod", {
         "affinity": "''", "alias": "''",
-        "comment": "'FM demod: y = gain*arg(x[n]*conj(x[n-1]))'",
+        # gain = samp_rate/(2*pi*f_dev) = 1/sensitivity. Literal for the same reason.
+        "comment": "'FM demod (gain = fs/(2*pi*f_dev) = 1/sensitivity): y = gain*arg(x[n]*conj(x[n-1]))'",
         "device_id": "'\"kyttar_0\"'", "gain": repr(GAIN),
         "maxoutbuf": "'0'", "minoutbuf": "'0'"}, 440, 320))
     out.append(blk("rx_sink", "kyttar_sink", {

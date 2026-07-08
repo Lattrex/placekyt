@@ -6,11 +6,11 @@ options:
     cmake_opt: ''
     comment: ''
     copyright: ''
-    description: FM TRANSCEIVER from REAL Kyttar blocks. SEPARATE TX chain (audio
-      -> frequency_modulator -> FM passband, stream 'tx') and SEPARATE RX chain (complex
-      FM I/Q -> quadrature_demod -> recovered audio, stream 'rx') sharing ONE chip
-      by stream_id, like the AM transceiver. Verified |corr| ~ 1.0. Imports + auto-P&R-routes
-      into placeKYT.
+    description: "FM TRANSCEIVER from REAL Kyttar blocks. SEPARATE TX chain\
+      \ (audio -> frequency_modulator -> FM passband, stream 'tx') and SEPARATE\
+      \ RX chain (complex FM I/Q -> quadrature_demod -> recovered audio, stream\
+      \ 'rx') sharing ONE chip by stream_id, like the AM transceiver. Verified\
+      \ |corr| ~ 1.0. Imports + auto-P&R-routes into placeKYT."
     gen_cmake: 'On'
     gen_linking: dynamic
     generate_options: qt_gui
@@ -26,7 +26,7 @@ options:
     run_options: prompt
     sizing_mode: fixed
     thread_safe_setters: ''
-    title: "FM transceiver (on-chip, real blocks) \u2014 TX modulate + RX demodulate"
+    title: "FM transceiver (on-chip, real blocks) — TX modulate + RX demodulate"
     window_size: (1600,1000)
   states:
     bus_sink: false
@@ -37,6 +37,33 @@ options:
     state: enabled
 
 blocks:
+
+- name: samp_rate
+  id: variable
+  parameters:
+    comment: ''
+    value: 32000.0
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [200, 12]
+    rotation: 0
+    state: enabled
+
+- name: f_dev
+  id: variable
+  parameters:
+    comment: FM peak deviation (Hz)
+    value: 1500.0
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [320, 12]
+    rotation: 0
+    state: enabled
+
 - name: n_samp
   id: variable
   parameters:
@@ -46,21 +73,10 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [320, 12]
+    coordinate: [440, 12]
     rotation: 0
     state: enabled
-- name: samp_rate
-  id: variable
-  parameters:
-    comment: ''
-    value: '32000.0'
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [200, 12]
-    rotation: 0
-    state: enabled
+
 - name: server_port
   id: variable
   parameters:
@@ -73,32 +89,10 @@ blocks:
     coordinate: [440, 12]
     rotation: 0
     state: enabled
-- name: fm_rf
-  id: blocks_vector_source_x
-  parameters:
-    affinity: ''
-    alias: ''
-    comment: 'RX input: the complex FM passband (same audio+sensitivity); I/Q, no
-      repeat'
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    repeat: 'False'
-    tags: '[]'
-    type: complex
-    vector: stim.fm_iq(n_samp)
-    vlen: '1'
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [40, 320]
-    rotation: 0
-    state: enabled
+
 - name: import_stim
   id: import
   parameters:
-    alias: ''
-    comment: ''
     imports: from gnuradio.kyttar import fm_demo_stim as stim
   states:
     bus_sink: false
@@ -107,166 +101,7 @@ blocks:
     coordinate: [560, 12]
     rotation: 0
     state: enabled
-- name: rx_audio
-  id: qtgui_time_sink_x
-  parameters:
-    affinity: ''
-    alias: ''
-    alpha1: '1.0'
-    alpha10: '1.0'
-    alpha2: '1.0'
-    alpha3: '1.0'
-    alpha4: '1.0'
-    alpha5: '1.0'
-    alpha6: '1.0'
-    alpha7: '1.0'
-    alpha8: '1.0'
-    alpha9: '1.0'
-    autoscale: 'True'
-    axislabels: 'True'
-    color1: blue
-    color10: dark blue
-    color2: red
-    color3: green
-    color4: black
-    color5: cyan
-    color6: magenta
-    color7: yellow
-    color8: dark red
-    color9: dark green
-    comment: ''
-    ctrlpanel: 'False'
-    entags: 'True'
-    grid: 'True'
-    gui_hint: ''
-    label1: recovered audio (RX)
-    label10: Signal 10
-    label2: Signal 2
-    label3: Signal 3
-    label4: Signal 4
-    label5: Signal 5
-    label6: Signal 6
-    label7: Signal 7
-    label8: Signal 8
-    label9: Signal 9
-    legend: 'True'
-    marker1: '-1'
-    marker10: '-1'
-    marker2: '-1'
-    marker3: '-1'
-    marker4: '-1'
-    marker5: '-1'
-    marker6: '-1'
-    marker7: '-1'
-    marker8: '-1'
-    marker9: '-1'
-    name: recovered audio (RX)
-    nconnections: '1'
-    size: stim.points(n_samp)
-    srate: samp_rate
-    stemplot: 'False'
-    style1: '1'
-    style10: '1'
-    style2: '1'
-    style3: '1'
-    style4: '1'
-    style5: '1'
-    style6: '1'
-    style7: '1'
-    style8: '1'
-    style9: '1'
-    tr_chan: '0'
-    tr_delay: '0'
-    tr_level: '0'
-    tr_mode: qtgui.TRIG_MODE_FREE
-    tr_slope: qtgui.TRIG_SLOPE_POS
-    tr_tag: ''
-    type: float
-    update_time: '0.10'
-    width1: '1'
-    width10: '1'
-    width2: '1'
-    width3: '1'
-    width4: '1'
-    width5: '1'
-    width6: '1'
-    width7: '1'
-    width8: '1'
-    width9: '1'
-    ylabel: Amplitude
-    ymax: '1'
-    ymin: '-1'
-    yunit: ''
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [1072, 416.0]
-    rotation: 0
-    state: enabled
-- name: rx_demod
-  id: kyttar_quadrature_demod
-  parameters:
-    affinity: ''
-    alias: ''
-    comment: 'FM demod: y = gain*arg(x[n]*conj(x[n-1]))'
-    device_id: '"kyttar_0"'
-    gain: '3.3953054526271007'
-    maxoutbuf: '0'
-    minoutbuf: '0'
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [472, 336.0]
-    rotation: 0
-    state: enabled
-- name: rx_sink
-  id: kyttar_sink
-  parameters:
-    affinity: ''
-    alias: ''
-    comment: recovered audio <- chip x16_out (stream 'rx')
-    device_id: '"kyttar_0"'
-    hold_secs: '5.0'
-    in_type: float
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    num_channels: '1'
-    port_name: '"x16_out"'
-    server_port: server_port
-    server_repeat: 'False'
-    stream_id: '"rx"'
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [712, 404.0]
-    rotation: 0
-    state: enabled
-- name: rx_src
-  id: kyttar_source
-  parameters:
-    affinity: ''
-    alias: ''
-    burst_len: n_samp
-    comment: complex FM I/Q -> chip x16_in (shared duplex port, stream 'rx')
-    complex_in: complex
-    device_id: '"kyttar_0"'
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    num_channels: '1'
-    port_name: '"x16_in"'
-    server_host: '"127.0.0.1"'
-    server_port: server_port
-    stream_id: '"rx"'
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [256, 412.0]
-    rotation: 0
-    state: enabled
+
 - name: tx_audio
   id: blocks_vector_source_x
   parameters:
@@ -275,138 +110,17 @@ blocks:
     comment: TX audio (two tones) -> chip (stream 'tx'); finite, no repeat
     maxoutbuf: '0'
     minoutbuf: '0'
-    repeat: 'False'
-    tags: '[]'
     type: float
     vector: stim.tx_audio(n_samp)
-    vlen: '1'
+    repeat: 'False'
   states:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [24, 144.0]
+    coordinate: [40, 120]
     rotation: 0
     state: enabled
-- name: tx_passband
-  id: qtgui_time_sink_x
-  parameters:
-    affinity: ''
-    alias: ''
-    alpha1: '1.0'
-    alpha10: '1.0'
-    alpha2: '1.0'
-    alpha3: '1.0'
-    alpha4: '1.0'
-    alpha5: '1.0'
-    alpha6: '1.0'
-    alpha7: '1.0'
-    alpha8: '1.0'
-    alpha9: '1.0'
-    autoscale: 'True'
-    axislabels: 'True'
-    color1: blue
-    color10: dark blue
-    color2: red
-    color3: green
-    color4: black
-    color5: cyan
-    color6: magenta
-    color7: yellow
-    color8: dark red
-    color9: dark green
-    comment: ''
-    ctrlpanel: 'False'
-    entags: 'True'
-    grid: 'True'
-    gui_hint: ''
-    label1: FM passband (TX)
-    label10: Signal 10
-    label2: Signal 2
-    label3: Signal 3
-    label4: Signal 4
-    label5: Signal 5
-    label6: Signal 6
-    label7: Signal 7
-    label8: Signal 8
-    label9: Signal 9
-    legend: 'True'
-    marker1: '-1'
-    marker10: '-1'
-    marker2: '-1'
-    marker3: '-1'
-    marker4: '-1'
-    marker5: '-1'
-    marker6: '-1'
-    marker7: '-1'
-    marker8: '-1'
-    marker9: '-1'
-    name: FM passband (TX)
-    nconnections: '1'
-    size: stim.points(n_samp)
-    srate: samp_rate
-    stemplot: 'False'
-    style1: '1'
-    style10: '1'
-    style2: '1'
-    style3: '1'
-    style4: '1'
-    style5: '1'
-    style6: '1'
-    style7: '1'
-    style8: '1'
-    style9: '1'
-    tr_chan: '0'
-    tr_delay: '0'
-    tr_level: '0'
-    tr_mode: qtgui.TRIG_MODE_FREE
-    tr_slope: qtgui.TRIG_SLOPE_POS
-    tr_tag: ''
-    type: float
-    update_time: '0.10'
-    width1: '1'
-    width10: '1'
-    width2: '1'
-    width3: '1'
-    width4: '1'
-    width5: '1'
-    width6: '1'
-    width7: '1'
-    width8: '1'
-    width9: '1'
-    ylabel: Amplitude
-    ymax: '1'
-    ymin: '-1'
-    yunit: ''
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [1160, 176.0]
-    rotation: 0
-    state: enabled
-- name: tx_sink
-  id: kyttar_sink
-  parameters:
-    affinity: ''
-    alias: ''
-    comment: FM passband (I/Q interleaved) <- chip x16_out (stream 'tx')
-    device_id: '"kyttar_0"'
-    hold_secs: '5.0'
-    in_type: complex
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    num_channels: '1'
-    port_name: '"x16_out"'
-    server_port: server_port
-    server_repeat: 'False'
-    stream_id: '"tx"'
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [824, 188.0]
-    rotation: 0
-    state: enabled
+
 - name: tx_src
   id: kyttar_source
   parameters:
@@ -427,36 +141,229 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [256, 188.0]
+    coordinate: [240, 120]
     rotation: 0
     state: enabled
+
 - name: tx_vco
   id: kyttar_frequency_modulator
   parameters:
     affinity: ''
     alias: ''
-    comment: 'FM modulate: phi += sensitivity*audio; out = exp(j*phi)'
+    comment: 'FM modulate (sensitivity = 2*pi*f_dev/fs): phi += sensitivity*audio'
     device_id: '"kyttar_0"'
+    sensitivity: 0.2945243112740431
     maxoutbuf: '0'
     minoutbuf: '0'
-    sensitivity: '0.2945243112740431'
   states:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [472, 160.0]
+    coordinate: [440, 120]
+    rotation: 0
+    state: enabled
+
+- name: tx_sink
+  id: kyttar_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: FM passband (I/Q interleaved) <- chip x16_out (stream 'tx')
+    device_id: '"kyttar_0"'
+    in_type: complex
+    num_channels: '1'
+    port_name: '"x16_out"'
+    server_host: '"127.0.0.1"'
+    server_port: server_port
+    stream_id: '"tx"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [640, 120]
+    rotation: 0
+    state: enabled
+
+- name: tx_passband
+  id: qtgui_time_sink_x
+  parameters:
+    affinity: ''
+    alias: ''
+    autoscale: 'True'
+    axislabels: 'True'
+    bw: samp_rate
+    comment: ''
+    ctrlpanel: 'False'
+    entags: 'True'
+    grid: 'True'
+    gui_hint: ''
+    label1: 'FM passband (TX)'
+    legend: 'True'
+    marker1: '-1'
+    name: 'FM passband (TX)'
+    nconnections: '1'
+    size: stim.points(n_samp)
+    srate: samp_rate
+    stemplot: 'False'
+    style1: '1'
+    tr_chan: '0'
+    tr_delay: '0'
+    tr_level: '0'
+    tr_mode: qtgui.TRIG_MODE_FREE
+    tr_slope: qtgui.TRIG_SLOPE_POS
+    tr_tag: ''
+    type: float
+    update_time: '0.10'
+    width1: '1'
+    ylabel: 'Amplitude'
+    ymax: '1'
+    ymin: '-1'
+    yunit: ''
+    grid_color1: 'blue'
+    alpha1: '1.0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [840, 40]
+    rotation: 0
+    state: enabled
+
+- name: fm_rf
+  id: blocks_vector_source_x
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'RX input: the complex FM passband (same audio+sensitivity); I/Q, no repeat'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    type: complex
+    vector: stim.fm_iq(n_samp)
+    repeat: 'False'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [40, 320]
+    rotation: 0
+    state: enabled
+
+- name: rx_src
+  id: kyttar_source
+  parameters:
+    affinity: ''
+    alias: ''
+    burst_len: n_samp
+    comment: complex FM I/Q -> chip x16_in (shared duplex port, stream 'rx')
+    complex_in: complex
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_channels: '1'
+    port_name: '"x16_in"'
+    server_host: '"127.0.0.1"'
+    server_port: server_port
+    stream_id: '"rx"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [240, 320]
+    rotation: 0
+    state: enabled
+
+- name: rx_demod
+  id: kyttar_quadrature_demod
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'FM demod (gain = fs/(2*pi*f_dev) = 1/sensitivity): y = gain*arg(x[n]*conj(x[n-1]))'
+    device_id: '"kyttar_0"'
+    gain: 3.3953054526271007
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [440, 320]
+    rotation: 0
+    state: enabled
+
+- name: rx_sink
+  id: kyttar_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: recovered audio <- chip x16_out (stream 'rx')
+    device_id: '"kyttar_0"'
+    num_channels: '1'
+    port_name: '"x16_out"'
+    server_host: '"127.0.0.1"'
+    server_port: server_port
+    stream_id: '"rx"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [640, 320]
+    rotation: 0
+    state: enabled
+
+- name: rx_audio
+  id: qtgui_time_sink_x
+  parameters:
+    affinity: ''
+    alias: ''
+    autoscale: 'True'
+    axislabels: 'True'
+    bw: samp_rate
+    comment: ''
+    ctrlpanel: 'False'
+    entags: 'True'
+    grid: 'True'
+    gui_hint: ''
+    label1: 'recovered audio (RX)'
+    legend: 'True'
+    marker1: '-1'
+    name: 'recovered audio (RX)'
+    nconnections: '1'
+    size: stim.points(n_samp)
+    srate: samp_rate
+    stemplot: 'False'
+    style1: '1'
+    tr_chan: '0'
+    tr_delay: '0'
+    tr_level: '0'
+    tr_mode: qtgui.TRIG_MODE_FREE
+    tr_slope: qtgui.TRIG_SLOPE_POS
+    tr_tag: ''
+    type: float
+    update_time: '0.10'
+    width1: '1'
+    ylabel: 'Amplitude'
+    ymax: '1'
+    ymin: '-1'
+    yunit: ''
+    grid_color1: 'green'
+    alpha1: '1.0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [840, 240]
     rotation: 0
     state: enabled
 
 connections:
-- [fm_rf, '0', rx_src, '0']
-- [rx_demod, '0', rx_sink, '0']
-- [rx_sink, '0', rx_audio, '0']
-- [rx_src, '0', rx_demod, '0']
 - [tx_audio, '0', tx_src, '0']
-- [tx_sink, '0', tx_passband, '0']
 - [tx_src, '0', tx_vco, '0']
 - [tx_vco, '0', tx_sink, '0']
+- [tx_sink, '0', tx_passband, '0']
+- [fm_rf, '0', rx_src, '0']
+- [rx_src, '0', rx_demod, '0']
+- [rx_demod, '0', rx_sink, '0']
+- [rx_sink, '0', rx_audio, '0']
 
 metadata:
   file_format: 1

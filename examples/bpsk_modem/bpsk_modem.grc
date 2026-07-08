@@ -45,7 +45,7 @@ blocks:
   id: variable
   parameters:
     comment: TX carrier frequency
-    value: '4000'
+    value: '8000'
   states:
     bus_sink: false
     bus_source: false
@@ -571,10 +571,10 @@ blocks:
     alias: ''
     comment: "I/Q upconvert to real passband \u2014 placed on chip"
     device_id: '"kyttar_0"'
-    frequency: carrier
+    frequency: '8000'
     maxoutbuf: '0'
     minoutbuf: '0'
-    sample_rate: samp_rate
+    sample_rate: '32000'
   states:
     bus_sink: false
     bus_source: false

@@ -42,8 +42,10 @@ import os
 
 FS = 32000.0
 FC = 6000.0        # AM carrier
-CUT = 3000.0       # RX low-pass cutoff (recover baseband, reject 2*fc)
-TW = 2000.0
+CUT = 2000.0       # RX low-pass cutoff: passes the 800/1500 Hz voice band,
+                   # rejects the 2*fc product image. fc/msg_bw = 3 (comfortable
+                   # AM voice proportions).
+TW = 1000.0        # LPF transition band (2000->3000 Hz), narrower than the passband
 
 HDR = """options:
   parameters:

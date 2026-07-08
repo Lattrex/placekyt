@@ -32,7 +32,8 @@ standalone NCO drawn as a source gets NO trigger on-chip and is DEAD. The fix is
 the data, and the mixer runs its own carrier. Both mixers start at phase 0 from
 sample 0, so TX/RX carriers are coherent.
 
-`fc = 6000 Hz`, `fs = 32 kHz`, RX cutoff 3000 Hz.
+`fc = 6000 Hz`, `fs = 32 kHz`, audio tones 800/1500 Hz, RX cutoff 2000 Hz
+(fc/message-BW = 3).
 
 ## Files
 | File | What it is |

@@ -468,6 +468,84 @@
         "beta": 6.76
       },
       "notes": "Verified vs GNU Radio firdes.band_reject + fir_filter_fff (30 tests; full verification suite 245; placekyt 937/16-skip). Band-stop/notch; same pattern as the other firdes filters: SUBCLASSES FIRFilterBlock with taps from the shared blocks/_firdes.py (GR absent in the runtime .venv). Takes low_cutoff_freq + high_cutoff_freq (Hz); normalized to unity gain at DC (fmax accumulates taps[n], like low_pass). Taps linear-phase SYMMETRIC (delay=0). Params mirror GRC's Band Reject Filter VERBATIM. Q15-quantized taps BIT-EXACT to firdes for ALL six windows (x3 configs) -> on-chip filter IS the firdes filter (INV-16); float ~1 ULP. The notch has a LARGE centre tap so Sum|h|>2 -> COEFFICIENT HEADROOM S=2 (the highest of the four firdes filters; default 39-tap fs32k/4k-8k/tw2k = 9 cells, the FIR's last cell caps its segment to fit the S=2 saturating-shift restore, EXERCISING the FIR's S>=2 budget path end-to-end). Two-tier: DUT vs GR firdes->fir_filter_fff (AMPLITUDE, headroom floor) AND DUT vs process_reference_q15 (EXACT). Mutations (inverted, wrong-band, +1 delay, empty) all FAIL. GRC: kyttar_band_reject_filter.block.yml label 'Band Reject Filter' + kyttar.band_reject_filter wrapper. COMPLETES the four firdes convenience filters (Decision B)."
+    },
+    {
+      "kyttar_block": "ComplexFIRFilterBlock",
+      "grc_block": "filter.fir_filter_ccf",
+      "tier": 2,
+      "status": "done",
+      "metric": "amplitude",
+      "params": {
+        "coefficients": "[firdes.low_pass taps]"
+      },
+      "notes": "Complex FIR (I/Q in, I/Q out) with ONE shared real tap set filtering each rail independently -- exactly GNU Radio filter.fir_filter_ccf. Collapses the complex_to_float -> 2x fir_filter_fff -> float_to_complex idiom into a single block so a ComplexMixer -> ComplexLowPass -> IQUpconvert chain is pure same-source complex packets (no fan-out, no reconvergent fan-in). SUBCLASSES the verified FIRFilterBlock, running its Q15 coefficient-headroom/saturation/multi-cell-fold datapath on both rails; bit-exact to fir_filter_ccf fed the same taps. Verified vs GR fir_filter_ccf across the SSB Weaver tap counts (3/9/31 taps -> 1/5/16 cells); reported quality is the WORSE I/Q rail (conservative). Multi-cell REQUIRES Sigma|h|<=1 (gain<=~0.9) else a clear ValueError. Mutations (swapped I/Q, negated Q, wrong taps, 1-sample offset) all FAIL (INV-4)."
+    },
+    {
+      "kyttar_block": "ComplexLowPassFilter",
+      "grc_block": "filter.fir_filter_ccf (firdes.low_pass)",
+      "tier": 2,
+      "status": "done",
+      "metric": "amplitude",
+      "params": {
+        "gain": 0.9,
+        "samp_rate": 32000.0,
+        "cutoff_freq": 1200.0,
+        "transition_width": 2500.0
+      },
+      "notes": "Complex Low Pass Filter -- the SSB Weaver baseband LPF. firdes.low_pass taps run on both I/Q rails, matched to GR fir_filter_ccf fed the same firdes taps. SUBCLASSES ComplexFIRFilterBlock (which subclasses FIRFilterBlock); params mirror GRC's Low Pass Filter (gain, samp_rate, cutoff_freq, transition_width, window, beta). Q15 taps bit-exact to firdes (INV-16). Verified 31-tap fs32k/co1.2k/tw2.5k; reported quality is the worse I/Q rail. Mutations FAIL."
+    },
+    {
+      "kyttar_block": "ComplexHighPassFilter",
+      "grc_block": "filter.fir_filter_ccf (firdes.high_pass)",
+      "tier": 2,
+      "status": "done",
+      "metric": "amplitude",
+      "params": {
+        "gain": 0.5,
+        "samp_rate": 32000.0,
+        "cutoff_freq": 4000.0,
+        "transition_width": 3000.0
+      },
+      "notes": "Complex High Pass Filter -- firdes.high_pass taps on both I/Q rails, matched to GR fir_filter_ccf. SUBCLASSES ComplexFIRFilterBlock; params mirror GRC's High Pass Filter. Q15 taps bit-exact to firdes. Reported quality is the worse I/Q rail; mutations FAIL. Part of the complex firdes convenience-filter family (mirrors the real Low/High/Band-pass/Band-reject set for the complex datapath)."
+    },
+    {
+      "kyttar_block": "ComplexBandPassFilter",
+      "grc_block": "filter.fir_filter_ccf (firdes.band_pass)",
+      "tier": 2,
+      "status": "done",
+      "metric": "amplitude",
+      "params": {
+        "gain": 0.6,
+        "samp_rate": 32000.0,
+        "low_cutoff_freq": 3000.0,
+        "high_cutoff_freq": 8000.0,
+        "transition_width": 3000.0
+      },
+      "notes": "Complex Band Pass Filter -- firdes.band_pass taps on both I/Q rails, matched to GR fir_filter_ccf. SUBCLASSES ComplexFIRFilterBlock; params mirror GRC's Band Pass Filter (two cutoffs). Q15 taps bit-exact to firdes. Reported quality is the worse I/Q rail; mutations FAIL. Gain kept so Sigma|h|<=1 for the multi-cell fold."
+    },
+    {
+      "kyttar_block": "ComplexBandRejectFilter",
+      "grc_block": "filter.fir_filter_ccf (firdes.band_reject)",
+      "tier": 2,
+      "status": "done",
+      "metric": "amplitude",
+      "params": {
+        "gain": 0.4,
+        "samp_rate": 32000.0,
+        "low_cutoff_freq": 3000.0,
+        "high_cutoff_freq": 8000.0,
+        "transition_width": 3000.0
+      },
+      "notes": "Complex Band Reject Filter -- firdes.band_reject taps on both I/Q rails, matched to GR fir_filter_ccf. SUBCLASSES ComplexFIRFilterBlock; params mirror GRC's Band Reject Filter (two cutoffs). Q15 taps bit-exact to firdes. Reported quality is the worse I/Q rail; mutations FAIL. Completes the complex firdes convenience-filter family."
+    },
+    {
+      "kyttar_block": "DualFloatToComplexBlock",
+      "grc_block": "blocks.float_to_complex",
+      "tier": 2,
+      "status": "done",
+      "metric": "exact",
+      "params": {},
+      "notes": "The PHYSICAL float_to_complex for the case a single logical FloatToComplex CAN'T cover: TWO INDEPENDENT real producers (I from one source, Q from another) feeding a complex block. A single-real float_to_complex (Q = null_source) is a logical no-op the importer splices out with no cell; but two independent, ASYNCHRONOUSLY-timed real streams must be paired sample-for-sample into one complex sample, which needs a real cell. This 1-cell block uses the arbiter LOCK/LOCK_FACE (CONFIG regs) to rendezvous the two rails by ARRIVAL FACE -- face = stream identity -- so matched I/Q pairs form regardless of interleaving. The importer AUTO-INSERTS it when it sees a raw float_to_complex fed by two real producers (no null_source on Q). Verified: catalog discovery + builds/routes on one chip + LOCK-rendezvous bitstream (LOCK_FACE write, boot-locked cfg) + importer auto-insertion from a raw 2-real .grc + out-of-order 2-face interleave emits matched pairs. Functional end-to-end equivalence (complex in -> converters -> chip out, corr 1.0) is proven in the converter-flavors live-run gate. Structural/rendezvous adapter -- no err/tol quality metric (it carries samples, it doesn't transform them)."
     }
   ]
 }

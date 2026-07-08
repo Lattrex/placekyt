@@ -3,7 +3,7 @@
 
 # Kyttar block library — status
 
-**31 verified · 0 in progress · 39 targeted.** Each Kyttar block is verified as a drop-in equivalent of its GNU Radio Companion counterpart (same parameters, output matching within Q15 quantization). “Quality” is the measured error of the verified block versus the GNU Radio reference.
+**37 verified · 0 in progress · 45 targeted.** Each Kyttar block is verified as a drop-in equivalent of its GNU Radio Companion counterpart (same parameters, output matching within Q15 quantization). “Quality” is the measured error of the verified block versus the GNU Radio reference.
 
 > **Reading the quality column.** `err N / tol M LSB` — the worst-case sample error (`N`) against the derived pass threshold (`M`), in Q15 **LSBs** (1 LSB = 1/32768 of full scale ≈ 3.05e-5); pass requires `N ≤ M`. `−X dB SNR` — the **NMSE**: the error power is `X` dB below the signal power (more negative = quieter; Q15's floor is ≈ −90 dB). Decision blocks report **BER** instead. To estimate a chain's total noise, convert each block's dB to linear power (`10^(dB/10)`), sum, and convert back (`10·log10`) — the noisiest stage dominates.
 
@@ -38,6 +38,12 @@
 | **AGCBlock** | `analog.agc_ff` | 2 · stateful/loop | ✅ done | err 40 / tol 80 LSB · -57 dB SNR | mut |
 | **SquelchBlock** | `analog.pwr_squelch_ff` | 2 · stateful/loop | ✅ done | err 0 / tol 4 LSB | mut |
 | **PSKSymbolMapperBlock** | `digital.chunks_to_symbols` | 2 · stateful/loop | ✅ done | err 0 / tol 0 LSB | mut |
+| **ComplexFIRFilterBlock** | `filter.fir_filter_ccf` | 2 · stateful/loop | ✅ done | err 20 / tol 32 LSB · -45 dB SNR | rand×1 sweep×3 mut |
+| **ComplexLowPassFilter** | `filter.fir_filter_ccf (firdes.low_pass)` | 2 · stateful/loop | ✅ done | err 19 / tol 32 LSB · -39 dB SNR | rand×1 mut |
+| **ComplexHighPassFilter** | `filter.fir_filter_ccf (firdes.high_pass)` | 2 · stateful/loop | ✅ done | err 12 / tol 26 LSB · -51 dB SNR | rand×1 sweep×4 mut |
+| **ComplexBandPassFilter** | `filter.fir_filter_ccf (firdes.band_pass)` | 2 · stateful/loop | ✅ done | err 15 / tol 26 LSB · -46 dB SNR | rand×1 sweep×4 mut |
+| **ComplexBandRejectFilter** | `filter.fir_filter_ccf (firdes.band_reject)` | 2 · stateful/loop | ✅ done | err 16 / tol 26 LSB · -45 dB SNR | rand×1 sweep×4 mut |
+| **DualFloatToComplexBlock** | `blocks.float_to_complex` | 2 · stateful/loop | ✅ done | — | — |
 | **ComplexRRCMatchedFilterBlock** | `filter.fir_filter_ccf (rrc taps)` | 2 · stateful/loop | ⬜ planned · 🧪 proof-of-concept | — | — |
 | **ComplexCostasLoopBlock** | `digital.costas_loop_cc` | 2 · stateful/loop | ⬜ planned · 🧪 proof-of-concept | — | — |
 | **GardnerTimingRecovery** | `digital.symbol_sync_cc` | 2 · stateful/loop | ⬜ planned · 🧪 proof-of-concept | — | — |

@@ -40,7 +40,7 @@ for p in (str(_PLACEKYT), str(_VERIFY), str(_RUNTIME)):
 
 from kyttar_verify import (  # noqa: E402
     run_block_dut_complex, run_gnuradio_ref_complex,
-    compare_complex_against_grc, Metric)
+    compare_complex_against_grc, write_report, Metric)
 from gr_kyttar.placement.blocks.complex_fir_filter_block import (  # noqa: E402
     ComplexFIRFilterBlock)
 from gr_kyttar.placement.blocks.complex_low_pass_filter_block import (  # noqa: E402
@@ -244,3 +244,56 @@ def test_multicell_sum_gt_one_rejected():
     assert hot._head_shift > 0
     with pytest.raises(ValueError, match=r"Σ|head_shift|overflow"):
         hot.build_cell_programs()
+
+
+# =============================================================================
+# Dashboard reports — persist the measured quality of each complex-filter block
+# (the same compares as the match tests above, captured for verification/STATUS.md).
+# A complex block filters I and Q on shared taps; we report the WORSE of the two
+# rails so the quality number is conservative (never rosier than either channel).
+# =============================================================================
+
+def _worse_rail(res):
+    """The per-rail CompareResult with the larger absolute error (write_report
+    takes a flat rail result; the complex result wraps one per I/Q rail)."""
+    return res.i if res.i.max_abs_err >= res.q.max_abs_err else res.q
+
+
+def test_emit_report_complex_fir():
+    taps = _firdes.low_pass(0.9, 32000.0, 1200.0, 2500.0, "hamming", 6.76)  # 31-tap SSB LPF
+    stim = _complex_stim(seed=7, n=48, amp=0.5)
+    dut = _run_dut("ComplexFIRFilterBlock", stim, {"coefficients": taps})
+    gr = _gr_complex_fir(stim, taps)
+    res = compare_complex_against_grc(
+        dut.i_q15, dut.q_q15, gr.i, gr.q,
+        metric=Metric.AMPLITUDE, delay=0, op_count=len(taps))
+    assert res.passed, res.summary()
+    write_report("ComplexFIRFilterBlock", _worse_rail(res), coverage={
+        "random": 1, "param_sweep": 3, "mutation": True, "ntaps": len(taps)})
+
+
+def test_emit_report_complex_lowpass():
+    taps = _lpf_taps()
+    stim = _complex_stim(seed=11, n=48, amp=0.5)
+    dut = _run_dut("ComplexLowPassFilter", stim, _LPF_PARAMS)
+    gr = _gr_complex_fir(stim, taps)
+    res = compare_complex_against_grc(
+        dut.i_q15, dut.q_q15, gr.i, gr.q,
+        metric=Metric.AMPLITUDE, delay=0, op_count=len(taps))
+    assert res.passed, res.summary()
+    write_report("ComplexLowPassFilter", _worse_rail(res), coverage={
+        "random": 1, "mutation": True, "ntaps": len(taps)})
+
+
+@pytest.mark.parametrize("name,cls,params", _BAND_CASES, ids=[c[0] for c in _BAND_CASES])
+def test_emit_report_complex_band(name, cls, params):
+    taps = list(cls("ref", **params).design_taps)
+    stim = _complex_stim(seed=13, n=48, amp=0.4)
+    dut = _run_dut(name, stim, params)
+    gr = _gr_complex_fir(stim, taps)
+    res = compare_complex_against_grc(
+        dut.i_q15, dut.q_q15, gr.i, gr.q,
+        metric=Metric.AMPLITUDE, delay=0, op_count=len(taps))
+    assert res.passed, res.summary()
+    write_report(name, _worse_rail(res), coverage={
+        "random": 1, "param_sweep": 4, "mutation": True, "ntaps": len(taps)})

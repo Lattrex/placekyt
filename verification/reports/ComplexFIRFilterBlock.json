@@ -1,0 +1,18 @@
+{
+  "kyttar_block": "ComplexFIRFilterBlock",
+  "passed": true,
+  "metric": "amplitude",
+  "n_compared": 48,
+  "max_abs_err": 20,
+  "tolerance": 32,
+  "nmse_db": -44.56528916750184,
+  "correlation": 0.9999952335796232,
+  "bit_errors": 0,
+  "delay_used": 0,
+  "coverage": {
+    "random": 1,
+    "param_sweep": 3,
+    "mutation": true,
+    "ntaps": 31
+  }
+}

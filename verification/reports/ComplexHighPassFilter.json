@@ -1,0 +1,18 @@
+{
+  "kyttar_block": "ComplexHighPassFilter",
+  "passed": true,
+  "metric": "amplitude",
+  "n_compared": 48,
+  "max_abs_err": 12,
+  "tolerance": 26,
+  "nmse_db": -51.37684607668469,
+  "correlation": 0.9999993152642365,
+  "bit_errors": 0,
+  "delay_used": 0,
+  "coverage": {
+    "random": 1,
+    "param_sweep": 4,
+    "mutation": true,
+    "ntaps": 25
+  }
+}

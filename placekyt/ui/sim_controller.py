@@ -74,19 +74,6 @@ _SERVER_CHIP_CAP = 5_000_000
 _SERVER_BATCH_TRACE_MAX = 400_000
 _LIVE_REFRESH_HZ = 8        # cap debug refreshes/sec during streaming
 
-# CHUNKED BATCH INGEST (GUI-freeze fix). A batch-complete refresh drains the whole
-# burst (can be hundreds of thousands of events) and normalises/appends every one
-# SYNCHRONOUSLY on the GUI thread — blocking the Qt event loop for 5–15 s (no
-# repaint, no input). The fix processes a LARGE full_capture drain in bounded
-# SLICES across successive QTimer.singleShot(0, …) ticks, so the event loop runs
-# BETWEEN slices and the window stays responsive while the batch is ingested. Qt
-# models/canvas are GUI-thread-only, so this is single-threaded (no worker
-# thread). CHUNK_SIZE is sized so one slice (normalise + append + emit) is well
-# under ~30–50 ms. We chunk only when full_capture is set AND the drain exceeds
-# CHUNK_SIZE AND we're NOT in lockstep animation (that path stays synchronous so
-# frame_done releases the chip per sample — see refresh_debug_from_chip).
-_CHUNK_SIZE = 4000
-
 
 class SimController(QObject):
     """Owns a running simulation and emits overlay/status updates."""
@@ -229,15 +216,6 @@ class SimController(QObject):
         # partial / TX-only / delayed-then-late traces). A bool assignment is
         # atomic under the GIL, so no lock is needed for this one-way flag.
         self._pending_trace_reset = False
-        # CHUNKED BATCH INGEST job state (GUI-freeze fix). A large full_capture
-        # drain is processed in bounded slices across QTimer.singleShot(0, …)
-        # ticks so the event loop runs between slices. Only ONE job runs at a
-        # time (single-writer GUI-thread discipline). If a new full_capture
-        # refresh arrives while a job is in flight, it is QUEUED and run after the
-        # current job finishes (never re-draining the chip for the same batch).
-        # See refresh_debug_from_chip / _run_chunk_slice.
-        self._chunk_job = None            # in-progress slice state, or None
-        self._chunk_pending = False       # a full_capture refresh is queued
         # PER-RUN TIME REBASE: the chip's sim clock keeps CLIMBING across GRC Runs
         # (it is never reset to 0 between Runs — only the trace model is cleared).
         # Without rebasing, each Run's events land at an ever-larger absolute
@@ -698,16 +676,6 @@ class SimController(QObject):
         final refresh regardless of the throttle."""
         if self.engine is None:
             return
-        # RE-ENTRANCY: a chunked ingest of a previous batch is still draining its
-        # slices across QTimer ticks. Do NOT drain the chip again mid-job (that
-        # would interleave two batches into the single-writer TraceModel and lose
-        # the reset discipline). Instead remember that a fresh refresh is owed;
-        # when the current job finishes it re-invokes this method to drain whatever
-        # accumulated. A `force` (final Stop settle) is honoured the same way — it
-        # runs once the in-flight job completes.
-        if getattr(self, "_chunk_job", None) is not None:
-            self._chunk_pending = True
-            return
         import time
         now = time.monotonic()
         if not force and (now - getattr(self, "_last_server_refresh", 0.0)
@@ -811,54 +779,15 @@ class SimController(QObject):
             cap = self._live_trace_max
             trimmed = new_events[-cap:] if len(new_events) > cap else new_events
 
-        # DRAIN-ONCE: the chip trace was read above; clear it NOW so the chip
-        # resumes recording fresh events regardless of how the drained batch is
-        # ingested (one shot below, or in slices across QTimer ticks). This MUST
-        # happen exactly once per drain — never per slice.
-        self.engine.clear_trace()
-        self._trace_scan_reset()
-
-        # CHUNKED PATH (GUI-freeze fix). Only for a LARGE bounded batch, and only
-        # when NOT in lockstep animation (that path must stay synchronous so
-        # apply_handshakes → frame_done releases the chip per sample). Process the
-        # drained events in bounded slices across QTimer ticks so the event loop —
-        # and thus window repaint/input — runs between slices. The final
-        # TraceModel/cursor/emit state is IDENTICAL to the synchronous path for the
-        # same batch (see _run_chunk_slice / _finish_chunk_job).
-        if (retain_all and len(trimmed) > _CHUNK_SIZE
-                and not self._lockstep_active()):
-            self._chunk_job = {
-                "events": trimmed,
-                "index": 0,
-                "chip": chip,
-                "retain_all": retain_all,
-            }
-            self._run_chunk_slice()
-            return
-
-        # SYNCHRONOUS PATH (small batch, streaming, or lockstep animation): ingest
-        # the whole drain in one shot (verbatim prior behaviour).
-        self._apply_refresh_slice(trimmed, chip, animate=True)
-        self._finalize_refresh(retain_all)
-
-    def _apply_refresh_slice(self, events, chip, *, animate: bool) -> None:
-        """Ingest ONE slice of drained events: emit the cell-animation overlay for
-        this slice (if enabled), then normalise + append the events to the
-        TraceModel. Shared by the synchronous and chunked paths — a single call
-        with the whole batch (synchronous) or one call per slice (chunked) produce
-        the SAME final TraceModel contents (append_live is order-preserving and the
-        slices are contiguous, time-ordered subsets)."""
         # CELL ANIMATION (cell-state overlay + live faces + per-word transit
         # flashes) ONLY when enabled. When OFF the GRC run is a flat-out compute
         # pass: the trace/waveform still updates (below), but the canvas fabric
         # visuals — the bulk of the per-refresh GUI cost — are skipped. See
         # set_animate_cells. (getattr keeps the trace path robust if a partial
-        # test harness stubs this method without the flag.) The chunked path never
-        # animates (it's gated on NOT lockstep), so ``animate`` lets a slice skip
-        # the overlay work while the synchronous path keeps it verbatim.
-        if animate and getattr(self, "_animate_cells", False):
+        # test harness stubs this method without the flag.)
+        if getattr(self, "_animate_cells", False):
             # Cell-state overlay + handshakes from THIS batch of new events.
-            states = self._states_from_events(events, chip)
+            states = self._states_from_events(new_events, chip)
             self.cell_states.emit(states)
             # Live output FACE for EVERY cell active this batch — block AND
             # routing/transit/broker cells alike. Without this the canvas arrows stay
@@ -883,22 +812,17 @@ class SimController(QObject):
             # the refresh throttle, collapsed to a single brief glow and read as "no
             # activity" on the transit cells. The flat cells/ports union is kept for
             # backward-compatible callers.
-            steps = self._steps_from_events(events, chip)
+            steps = self._steps_from_events(new_events, chip)
             self.handshakes.emit({
                 "steps": steps,
                 "cells": [c for s in steps for c in s["cells"]],
                 "ports": [p for s in steps for p in s["ports"]],
             })
 
-        # Append this slice's events to the rolling TraceModel window (append_live
-        # is order-preserving, so per-slice appends match one whole-batch append).
-        self.trace_model.append_live(chip, events, self._width)
-
-    def _finalize_refresh(self, retain_all: bool) -> None:
-        """Trim, set the cursor, and emit the debug-view refresh signals. Called
-        ONCE per drain — after the single synchronous append OR after the last
-        chunk slice — so the emitted final state is identical either way."""
+        # Append the new events to the rolling TraceModel window, trim, clear the
+        # chip trace (resets the hard cap so recording continues).
         tm = self.trace_model
+        tm.append_live(chip, trimmed, self._width)
         if not retain_all:
             tm.trim_to(self._live_trace_max)
         else:
@@ -912,39 +836,10 @@ class SimController(QObject):
             # this cap only guards a single pathologically-long burst.
             tm.trim_to(_SERVER_BATCH_TRACE_MAX)
         tm.set_cursor(tm.latest_ns())
+        self.engine.clear_trace()
+        self._trace_scan_reset()
         self.trace_updated.emit(tm)
         self.cell_state_refreshed.emit()
-
-    def _run_chunk_slice(self) -> None:
-        """Process ONE bounded slice of the in-flight chunked batch, then schedule
-        the next slice on the next event-loop turn (QTimer.singleShot(0, …)) so the
-        GUI repaints/handles input between slices. After the last slice, finalise
-        (identical to the synchronous path) and honour any refresh that arrived
-        while the job was running."""
-        job = self._chunk_job
-        if job is None:
-            return
-        events = job["events"]
-        start = job["index"]
-        end = min(start + _CHUNK_SIZE, len(events))
-        # Chunked path is gated on NOT lockstep, so no per-slice cell animation.
-        self._apply_refresh_slice(events[start:end], job["chip"], animate=False)
-        # Emit a progressive refresh per slice so the waveform grows visibly while
-        # the batch ingests (the window is responsive between slices). The final
-        # slice's emit carries the complete, trimmed model — identical to the
-        # synchronous path's single emit.
-        job["index"] = end
-        if end >= len(events):
-            self._chunk_job = None
-            self._finalize_refresh(job["retain_all"])
-            # A refresh (or force settle) arrived mid-job → drain it now.
-            if self._chunk_pending:
-                self._chunk_pending = False
-                self.refresh_debug_from_chip(force=True)
-            return
-        # Progressive intermediate refresh so the waveform grows as it ingests.
-        self._finalize_refresh(job["retain_all"])
-        QTimer.singleShot(0, self._run_chunk_slice)
 
     def _states_from_events(self, events, chip):
         """Derive the cell-state overlay (executing/active) from a batch of trace

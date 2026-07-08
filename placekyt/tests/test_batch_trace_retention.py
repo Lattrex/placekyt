@@ -48,8 +48,6 @@ class _RetentionHarness:
 
     # borrow the real methods under test
     refresh_debug_from_chip = sc.SimController.refresh_debug_from_chip
-    _apply_refresh_slice = sc.SimController._apply_refresh_slice
-    _finalize_refresh = sc.SimController._finalize_refresh
     _states_from_events = sc.SimController._states_from_events
     _steps_from_events = sc.SimController._steps_from_events
     _trace_scan_reset = sc.SimController._trace_scan_reset

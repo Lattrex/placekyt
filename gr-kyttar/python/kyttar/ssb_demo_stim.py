@@ -4,47 +4,35 @@ am_demo_stim / fm_demo_stim) so the .grc has no fragile inline epy source AND �
 crucially — so the RX chain has its OWN batch stimulus instead of being daisy-
 chained off the TX sink.
 
+SELF-CONTAINED: imports ONLY math + numpy (like am/fm stim). It does NOT import
+gr_kyttar / weaver_builder — those live in the placeKYT venv, NOT in the system
+GNU Radio Python that runs GRC, so importing them here would break the flowgraph.
+The SSB passband is a float64 Weaver (third-method) reference, faithful enough for
+the RX to recover the audio.
+
 TWO independent chains share ONE chip, demuxed by stream_id (the AM/FM/BPSK
 transceiver pattern):
 
   * TX (modulator, stream_id 'tx'): audio -> tx_src -> ComplexMixer(-fa) ->
-    ComplexLowPass -> IQUpconvert(fc) -> tx_sink. Forms the SSB (Weaver / third-
-    method) passband and streams it back on x16_out (tag 'tx').
-
+    ComplexLowPass -> IQUpconvert(fc) -> tx_sink  ==> SSB passband on x16_out.
   * RX (demodulator, stream_id 'rx'): ssb_rf -> rx_src -> ComplexMixer(-fc) ->
-    ComplexLowPass -> IQUpconvert(fa) -> Gain x4 -> rx_sink. Recovers the audio
-    on x16_out (tag 'rx').
+    ComplexLowPass -> IQUpconvert(fa) -> Gain x4 -> rx_sink  ==> recovered audio.
 
 The RX input burst (``ssb_passband``) is the SAME SSB passband the TX chain
-produces — regenerated HERE from the identical audio through the verified Weaver
-TX block references — so the RX chain independently recovers the transmitted audio.
-This is a TRUE end-to-end transceiver: two independent chip chains sharing the port
-by tag, NOT a TX-sink -> RX-source daisy chain (which imported as a bogus
-x16_out -> x16_in net that could never route).
+produces — regenerated HERE from the identical audio — so the RX chain
+independently recovers the transmitted audio. A TRUE transceiver: two independent
+chip chains sharing the port by tag, NOT a tx_sink -> rx_src daisy chain (that
+imported as a bogus x16_out -> x16_in net that could never route).
 """
 
 import math
-import os
-import sys
-from pathlib import Path
 
 import numpy as np
-
-# The Weaver TX physics + verified block references live in the example's builder.
-_SSB_DIR = Path(__file__).resolve()
-# gr-kyttar/python/kyttar/ssb_demo_stim.py -> repo root -> examples/ssb_weaver
-for _up in _SSB_DIR.parents:
-    _cand = _up / "examples" / "ssb_weaver"
-    if _cand.is_dir():
-        if str(_cand) not in sys.path:
-            sys.path.insert(0, str(_cand))
-        break
-
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 FS = 32000.0        # sample rate (Hz)
 FA = 1500.0         # Weaver audio-band centre (Hz)
 FC = 6000.0         # carrier (Hz)
+FCUT = 1200.0       # baseband low-pass cutoff (Hz)
 
 
 def _tones(n, fs=FS):
@@ -59,50 +47,36 @@ def tx_audio(n_samp, fs=FS):
     return _tones(int(n_samp), fs).tolist()
 
 
-def _plan():
-    from weaver_builder import WeaverPlan
-    return WeaverPlan()
+def _lpf(x, fs=FS, fcut=FCUT):
+    """A simple real/complex low-pass (moving-average-of-length matched to fcut) —
+    a faithful Weaver baseband filter in pure numpy. Works on complex arrays too."""
+    # FIR window ~ one period of the cutoff; odd length, Hamming-weighted sinc.
+    ntaps = int(2 * round(fs / fcut)) | 1
+    n = np.arange(ntaps) - (ntaps - 1) / 2
+    h = np.sinc(2 * fcut / fs * n) * np.hamming(ntaps)
+    h = h / h.sum()
+    return np.convolve(x, h, mode="same")
 
 
-def _ssb_passband_real(n):
-    """The REAL SSB (USB) passband the Weaver TX emits for the audio: run the audio
-    through the VERIFIED Weaver TX block references (ComplexMixer(-fa) ->
-    ComplexLowPass -> IQUpconvert(fc)). This is the exact signal the on-chip TX
-    chain produces, so the RX recovers the transmitted audio."""
-    import math as _m
+def ssb_passband(n_samp, fs=FS, fa=FA, fc=FC):
+    """The SSB (USB, third-method / Weaver) passband — the RX chain's input burst
+    (stream 'rx'). Real vector. Faithful float64 Weaver TX:
 
-    from gr_kyttar.placement.blocks.complex_mixer_block import ComplexMixerBlock
-    from gr_kyttar.placement.blocks.iq_upconvert_block import IQUpconvertBlock
-    from weaver_builder_cfir import _clpf, calibrate_phase_steps_cfir
+        b   = audio * exp(-j*wa*t)          # down-mix to complex baseband
+        bl  = LPF(b)                        # keep one sideband's image band
+        ssb = Re{ bl * exp(+j*wc*t) }       # up-mix; real part = USB passband
 
-    def _q2f(w):
-        return float(w) / 32768.0
-
-    plan = _plan()
-    m = _tones(int(n))
-    # Phase-compensation step counts (calibrated once against the Q15 reference).
-    kfa, _kfc, _c, _s = calibrate_phase_steps_cfir(plan, m)
-    fs, fa, fc = plan.fs, plan.fa, plan.fc
-    ph_fa = 2 * _m.pi * (-fa) / fs * (1 + kfa)
-    # TX down-mix (real audio -> complex I/Q), complex LPF, up-mix to SSB (real) —
-    # EXACTLY the TX half of weaver_reference_cfir (the (a,b) Q15 pairs are rebuilt
-    # into a complex array before the complex LPF, as that reference does).
-    bpair = ComplexMixerBlock("txmix", sample_rate=fs, frequency=-fa,
-                              phase=ph_fa).process_reference_q15(
-        [complex(float(x), 0.0) for x in m])
-    biq = np.array([complex(_q2f(a), _q2f(b)) for a, b in bpair])
-    txl = _clpf(plan).process_reference(biq)
-    ssb = IQUpconvertBlock("txup", sample_rate=fs,
-                           frequency=fc).process_reference(txl)
-    return np.array([_q2f(w) for w in ssb], dtype=np.float64)
-
-
-def ssb_passband(n_samp, fs=FS):
-    """The SSB passband — the RX chain's input burst (stream 'rx'). A REAL vector
-    (the RX source is complex_in='float'; a float_to_complex + null Q form the
-    complex baseband the RX ComplexMixer needs). This is exactly what the TX chain
-    emits, regenerated so the RX demodulator recovers the transmitted audio."""
-    return _ssb_passband_real(int(n_samp)).tolist()
+    This is exactly what the on-chip Weaver TX emits, so the RX demodulator
+    (ComplexMixer(-fc) -> LPF -> IQUpconvert(fa)) recovers the transmitted audio."""
+    n = int(n_samp)
+    t = np.arange(n) / fs
+    m = _tones(n, fs)
+    b = m * np.exp(-1j * 2 * np.pi * fa * t)          # complex baseband
+    bl = _lpf(b, fs, FCUT)
+    ssb = np.real(bl * np.exp(1j * 2 * np.pi * fc * t))
+    # Normalise to a comfortable Q15 range (peak ~0.8).
+    pk = float(np.max(np.abs(ssb))) or 1.0
+    return (ssb * (0.8 / pk)).astype(np.float64).tolist()
 
 
 # A qtgui time_sink in FREE-trigger mode only flushes a completed frame once a

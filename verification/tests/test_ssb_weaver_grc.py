@@ -175,12 +175,13 @@ def test_shipped_kyt_builds_and_runs_both_streams():
     with no DRC errors and both the TX (tag 10) and RX (tag 5) streams EGRESS words on
     the shared x16_out. This is the runnable demo artifact (no auto-route needed).
 
-    NOTE — this gate checks the two streams FIRE + egress (words flow, tags resolve),
-    NOT that the DSP is numerically correct. On the CURRENT hand-placed layout the
-    datapath is not right yet (TX passband corr ~0.14 vs the ssb_demo_stim reference,
-    RX egresses all zeros) — a hand-placement orientation/face/route issue, tracked in
-    the recovery xfail below. The DSP itself is proven correct at corr 0.986 by
-    ``weaver_builder_cfir`` (the software block chain)."""
+    NOTE — this gate checks the two streams FIRE + egress (words flow, tags resolve)
+    AND that the TX SSB passband matches the reference. The RX recovery (which was
+    broken by a broker-landing register bug — the diverted RX net was reported with
+    ``data_addrs=[0,1]`` but the broker relay reads its operands from R1/R2) is gated
+    separately by ``test_shipped_kyt_rx_recovers_audio`` below. The DSP itself is
+    proven correct at corr 0.986 by ``weaver_builder_cfir`` (the software block
+    chain)."""
     import math
     import simkyt
     from engine.catalog import BlockCatalog
@@ -258,6 +259,88 @@ def _best_corr(out, ref, max_lag=40):
         if len(a) > 32 and a.std() > 0 and b.std() > 0:
             best = max(best, abs(float(np.corrcoef(a, b)[0, 1])))
     return best
+
+
+def test_shipped_kyt_rx_recovers_audio():
+    """REGRESSION GATE: driving the RX stream (SSB passband in -> demodulated audio
+    out) through the shipped ``ssb_weaver.kyt`` SimServer must recover NON-ZERO audio
+    correlated with the transmitted tones.
+
+    Guards against the broker-landing register bug: the RX input net is DIVERTED to a
+    broker cell (0,0) whose relay reads its two operands from R1/R2 (``_broker_program``
+    allocates operand regs starting at R1; R0 is the WRITE scratch). ``_resolve_input_
+    landings`` previously reported ``data_addrs=[0,1]`` for a complex diverted net, so
+    the host injected the real sample into R0 (which the relay clobbers) and the broker
+    relayed 0 -> the whole RX chain saw zeros (RX_STD 0.0). The landing must instead
+    report the broker's ACTUAL operand regs (R1/R2). If this goes flat again, RX_STD
+    collapses to ~0 and this gate fails."""
+    import importlib.util
+
+    import simkyt
+    from engine.catalog import BlockCatalog
+    from engine.port_config import stream_targets, batch_reset_writes
+    from engine.sim_bridge import SimServer, recv_message, send_message
+    from ui.controller import AppController
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+
+    if not os.path.exists(KYT_PATH):
+        pytest.skip("ssb_weaver.kyt absent")
+    cat = BlockCatalog.from_gr_kyttar()
+    ctrl = AppController(catalog=cat)
+    ctrl.open_project(KYT_PATH)
+    bres = ctrl.build()
+    assert bres.ok, "shipped .kyt must build clean: " + "; ".join(
+        str(e) for e in bres.errors)
+
+    # The RX input net (net9) is diverted to the broker at (0,0); its landing must
+    # report the broker's real operand regs, NOT [0,1].
+    land = bres.chips[0].input_landings.get("net9")
+    assert land is not None, "net9 (RX input) must resolve a landing"
+    assert land["data_addrs"] != [0, 1], (
+        f"RX net landing reports data_addrs={land['data_addrs']} — a complex net "
+        "diverted through a broker must land at the broker's operand regs (R1/R2), "
+        "not R0/R1 (R0 is the relay's WRITE scratch and is clobbered)")
+
+    tgts = stream_targets(ctrl.project, ctrl.registry, ctrl.catalog, 0,
+                          build_result=bres)
+    chip = simkyt.Chip.from_yaml(CHIP_YAML)
+    chip.load_bitstream_physical(bres.chips[0].words)
+    srv = SimServer(chip, stream_targets=tgts,
+                    batch_reset_writes=batch_reset_writes(bres, 0))
+    port = srv.start()
+
+    _stim_p = (Path(__file__).resolve().parents[2] / "gr-kyttar" / "python"
+               / "kyttar" / "ssb_demo_stim.py")
+    _spec = importlib.util.spec_from_file_location("ssb_demo_stim", str(_stim_p))
+    _stim = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_stim)
+
+    N = 256
+    ssb = np.asarray(_stim.ssb_passband(N), dtype=np.float32)
+    try:
+        c = socket.socket()
+        c.connect(("127.0.0.1", port))
+        try:
+            send_message(c, {"op": "process_batch", "port": "x16_out",
+                             "in_port": "x16_in", "complex": False, "raw": False,
+                             "stream_id": "rx"}, ssb)
+            _h, out = recv_message(c)
+        finally:
+            c.close()
+    finally:
+        srv.stop()
+
+    rx = np.asarray(out, dtype=float) if out is not None else np.array([])
+    assert len(rx) >= N, f"RX stream produced no egress ({len(rx)} words)"
+    assert rx.std() > 0.05, (
+        f"RX egress is (near) flat (std={rx.std():.6f}) — the demodulated audio "
+        "collapsed to zeros; the broker-landing register bug has regressed")
+    aud = np.asarray(_stim.tx_audio(N), dtype=float)
+    corr = _best_corr(rx, aud, max_lag=60)
+    assert corr > 0.5, (
+        f"recovered RX audio does not correlate with the transmitted tones "
+        f"(|corr|={corr:.4f}) — expected the SSB round-trip to recover the audio")
 
 
 # --- (c) full auto-ROUTE + build — KNOWN router limitation (xfail) -----------

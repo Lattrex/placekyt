@@ -1477,13 +1477,24 @@ def _resolve_input_landings(cell_map, blocks, connections, project, chip_id,
             # xq stays 0) injects ONE operand: reporting both burst regs mis-delivers
             # (the host writes one operand where the broker expects two → out=const,
             # corr=nan). Size data_addrs by whether the SOURCE is complex.
+            #
+            # CRITICAL: the operand base is NOT BROKER_BURST_REG (R0). ``_broker_program``
+            # allocates every operand its OWN register starting at R1 (``op_reg = 1 +
+            # op_index``) — R0 is only the WRITE scratch (``MOVE R0, R<op>`` clobbers it
+            # each relay). The broker relay for this net READS from those op regs, so the
+            # host MUST inject into them, not R0. ``broker_conn_burst[conn]`` records the
+            # LAST operand reg of the group (the dict is overwritten per operand, so the
+            # final value is the highest of the N consecutive op regs). The N operands of
+            # a coalesced complex delivery are relayed back-to-back → they occupy the N
+            # consecutive regs ENDING at that value: [last-(N-1), ..., last].
             _entry2, _in_regs = catalog.resolved_io(
                 blk.type, blk.params, library=blk.library)
+            last = BROKER_BURST_REG + int(broker_conn_burst.get(conn.name, 0))
             if _in_regs and len(_in_regs) > 1 and conn.src_complex is not False:
-                data_addrs = [BROKER_BURST_REG + i for i in range(len(_in_regs))]
+                n = len(_in_regs)
+                data_addrs = [last - (n - 1) + i for i in range(n)]
             else:
-                data_addrs = [BROKER_BURST_REG
-                              + int(broker_conn_burst.get(conn.name, 0))]
+                data_addrs = [last]
             landings[conn.name] = {
                 "cell": full[divert], "entry": int(b_entry),
                 "hop": (30 - divert) & 0x1F, "data_addrs": data_addrs}

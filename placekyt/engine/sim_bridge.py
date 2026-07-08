@@ -200,6 +200,11 @@ class SimServer:
         # indicator. Qt-free contract (the host marshals to the GUI thread).
         self._on_grc_params = on_grc_params
         self._sock: socket.socket | None = None
+        # The socket of the client whose request is currently being served. The
+        # per-sample batch loop polls it (non-blocking) so a mid-batch client
+        # disconnect (GRC Stop / flowgraph close) ABORTS the burst promptly
+        # instead of running to completion — the sim should stop when GRC stops.
+        self._active_conn: socket.socket | None = None
         self._thread: threading.Thread | None = None
         self._running = False
         self.bound_port: int | None = None
@@ -307,13 +312,42 @@ class SimServer:
                     pass
 
     def _handle_client(self, conn: socket.socket) -> None:
-        while self._running:
+        self._active_conn = conn
+        try:
+            while self._running:
+                try:
+                    header, payload = recv_message(conn)
+                except (ConnectionError, OSError):
+                    return
+                reply, out_payload = self._dispatch(header, payload)
+                try:
+                    send_message(conn, reply, out_payload)
+                except (ConnectionError, OSError):
+                    return
+        finally:
+            self._active_conn = None
+
+    def _client_alive(self) -> bool:
+        """Non-blocking check that the serving client socket is still open. A
+        closed connection reads EOF (empty peek) → the client (GRC) went away, so
+        the batch should abort. Any transient error is treated as ALIVE (never
+        abort a healthy burst on a spurious check). Called periodically by the
+        per-sample batch loop — bounded, cheap (one MSG_PEEK recv)."""
+        conn = self._active_conn
+        if conn is None:
+            return True
+        try:
+            conn.setblocking(False)
             try:
-                header, payload = recv_message(conn)
-            except (ConnectionError, OSError):
-                return
-            reply, out_payload = self._dispatch(header, payload)
-            send_message(conn, reply, out_payload)
+                data = conn.recv(1, socket.MSG_PEEK)
+            finally:
+                conn.setblocking(True)
+            # EOF (b"") on a stream socket = the peer closed the connection.
+            return data != b""
+        except BlockingIOError:
+            return True          # no data pending, but the socket is open
+        except OSError:
+            return True          # transient — do not abort a healthy burst
 
     def _dispatch(self, header: dict, payload):
         op = header.get("op")
@@ -617,9 +651,20 @@ class SimServer:
                         # behavior). Raises BatchAborted if the user stops.
                         if self._debug_hooks is not None:
                             self._debug_hooks.after_sample(self._chip, k, port)
+                        # GRC STOP / client disconnect: poll the serving socket
+                        # every 32 samples (bounded, cheap) and abort the burst
+                        # if the client went away — the placeKYT sim must stop
+                        # when the GRC flowgraph stops, not run the whole burst.
+                        if (k & 0x1F) == 0 and not self._client_alive():
+                            raise BatchAborted()
                 except BatchAborted:
                     aborted = True
                     nrun = k + 1   # samples actually driven before the stop
+                    # One-shot stop consumed: clear it so the NEXT GRC Run on this
+                    # persistently-hosted chip starts clean (does not inherit the
+                    # latched stop and abort immediately).
+                    if self._debug_hooks is not None:
+                        self._debug_hooks.clear_stop()
                 # Throughput metric: how fast simKYT processes I/Q samples on THIS
                 # machine. simkyt is an event-accurate async-ASIC sim, not a
                 # real-time DSP source — this tells the user roughly how long a given

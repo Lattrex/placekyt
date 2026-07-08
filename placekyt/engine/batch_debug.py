@@ -98,6 +98,19 @@ class BatchDebugHooks:
         with self._frame_cv:
             self._frame_cv.notify_all()
 
+    def clear_stop(self) -> None:
+        """Reset the one-shot stop flag so the NEXT batch runs. Called by
+        process_batch after it catches BatchAborted (server thread) — the stop
+        aborts exactly the in-flight burst; a subsequent GRC Run on the same
+        persistently-hosted chip must not inherit the latched stop and abort
+        immediately. Also clears any pending single-step/pause so the fresh run
+        starts clean."""
+        with self._cv:
+            self._stop_flag = False
+            self._step = False
+            self._paused = False
+            self._cv.notify_all()
+
     def set_delay(self, seconds: float) -> None:
         with self._cv:
             self._delay_s = max(0.0, float(seconds))

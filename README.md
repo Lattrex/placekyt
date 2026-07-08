@@ -10,6 +10,9 @@ Lattrex; see CONTRIBUTING.md for the brand-usage note.
 
 **The place-and-route + simulation IDE for the Kyttar asynchronous cell array.**
 
+> **Say it:** *Kyttar* is **guitar** with a "k" — *KIT-tar*. The **KYT** in
+> *placeKYT* is pronounced like **kit**.
+
 placeKYT is a visual design environment for the Kyttar processor — a 2-D grid of
 identical, clockless compute cells that pass data to their neighbours like
 nutrients through a network. You place DSP blocks on the array, route the

@@ -22,13 +22,18 @@ New to placeKYT? Start with **[`gain/`](gain/)**, then
 | **[bpsk_modem/](bpsk_modem/)** | A full-duplex BPSK **modem** — a transmit chain and a coherent receive chain sharing one chip, demuxed by `stream_id`. The transceiver pattern on a digital link. | 6 (TX+RX) | `.grc` |
 | **[am_transceiver/](am_transceiver/)** | A double-sideband **AM** transceiver: a coherent product modulator and detector sharing one chip. The simplest analog transceiver. | 8 (TX+RX) | `.grc` |
 | **[fm_transceiver/](fm_transceiver/)** | An **FM** transceiver: a VCO modulator (`FrequencyModulator`) and a quadrature discriminator (`QuadratureDemod`) sharing one chip. | 6 (TX+RX) | `.grc` |
-| **[ssb_weaver/](ssb_weaver/)** | A single-sideband **SSB** transceiver built the Weaver (third-method) way, using the complex-FIR filter blocks. The most involved analog demo. | 11 (TX+RX) | `.kyt` or `.grc` |
+| **[ssb_weaver/](ssb_weaver/)** | A single-sideband **SSB** transceiver built the Weaver (third-method) way, using the complex-FIR filter blocks. The most involved analog demo — **hand-placed: open the `.kyt` directly, don't import the `.grc`** (see its README). | 11 (TX+RX) | `.kyt` only |
 
 **Open `.kyt`** — the demo ships a pre-placed, pre-routed design you can open
 directly (**File → Open**) and explore on the canvas without importing anything.
 **Open `.grc`** — you import the flowgraph (**File → Import GNURadio
 Flowgraph…**) and placeKYT auto-places and routes it. Either way, you then **Run
 as GNURadio Server** and drive it from `gnuradio-companion`.
+
+> The **SSB Weaver** is the one exception: it's a dense, hand-placed design that
+> the auto-router can't fully route, so you **must open its `.kyt` directly**
+> (importing the `.grc` will leave nets unrouted and the build will fail). Its
+> README explains why. Every other demo places and routes from the `.grc`.
 
 ## The common workflow (every demo)
 

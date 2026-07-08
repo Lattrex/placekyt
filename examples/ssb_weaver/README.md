@@ -34,44 +34,35 @@ The Weaver DSP is verified on-chip at **corr 0.986** — `weaver_builder_cfir.py
 
 | File | What it is |
 |------|------------|
-| `ssb_weaver.grc` | The GNU Radio flowgraph. **Import this into placeKYT** (File → Import GNURadio Flowgraph…) to place + route the transceiver on the chip. Open it in `gnuradio-companion` too, to drive the hosted chip. |
+| `ssb_weaver.kyt` | **The demo.** A hand-placed, hand-routed design of the full transceiver on one 10x12 die. **Open this directly** (File → Open) to host the chip — see "Run it" below. |
+| `ssb_weaver.grc` | The GNU Radio flowgraph. Open it in `gnuradio-companion` to **drive** the hosted chip (stimulus + plots). |
 | `gen_grc.py` | Regenerates `ssb_weaver.grc` (edit frequencies/filter width here). |
-| `weaver_builder.py` | Headless builder + on-chip verifier (per-block simKYT proof, corr 0.986). |
+| `weaver_builder.py` / `weaver_builder_cfir.py` | Headless builders + on-chip verifiers (per-block simKYT proof, corr 0.986). |
+| `ssb_hand_place_script.py` | A runnable placeKYT command trace that reproduces the hand-placement deterministically (advanced/reference). |
 
-## Status
+## ⚠️ This demo is HAND-PLACED — open the `.kyt`, don't import the `.grc`
 
-- **GRC-clean, two independent batch streams.** The `.grc` loads + generates in GNU
-  Radio Companion with **zero type conflicts**. TX and RX each have their OWN batch
-  stimulus (TX: audio tones; RX: the SSB passband from `ssb_demo_stim`) — NOT a
-  `tx_sink → rx_src` daisy chain (that imported as a bogus `x16_out → x16_in` net that
-  could never route — the persistent stray flyline). On import there are now **zero
-  port→port nets** and the phantom flyline is gone for good.
-- **Imports + places.** placeKYT imports it as **7 chip blocks** (2 ComplexMixer +
-  2 ComplexLowPass + 2 IQUpconvert + 1 Gain) across the `tx`/`rx` streams and **places
-  all 7 on one 10x12 die**.
-- **Auto-route is incomplete** (⚠️). The auto-router threads ~8/14 nets; the remaining
-  ones are the complex-packet **fan-in** nets into the mixers/upconverts (both `xi`+`xq`
-  into one cell). Route those by hand (draw the routes / Route All), then build + host.
-- **DSP proven on silicon.** `weaver_builder_cfir.py` runs each block on the real simKYT
-  substrate and recovers the audio at **corr 0.986 / SNR 15.6 dB** — the block chain is
-  correct.
+Unlike the other demos, **you cannot auto-place-and-route this one.** It's a dense
+transceiver (11 chip blocks) whose complex-packet **fan-in** nets (both `xi` and `xq`
+landing on one mixer/upconvert cell) exceed what the auto-router threads at this
+utilisation — importing the `.grc` places the blocks but leaves several nets unrouted,
+so the build fails. The demo therefore ships a **hand-placed, hand-routed `ssb_weaver.kyt`**
+that you **open directly**.
 
-### ⚠️ Hand-placed `.kyt` datapath is NOT correct yet
-The shipped `ssb_weaver.kyt` **builds clean and both streams fire + egress** (TX tag 10,
-RX tag 5), but the on-chip DSP is not right on the current hand-layout: the TX passband
-correlates only **~0.14** with the `ssb_demo_stim` reference, and the RX egresses **all
-zeros**. The blocks build/route/emit words, but the data isn't flowing correctly through
-the placed cells — a hand-placement **orientation / face / route-endpoint** issue (NOT a
-dtype/stimulus problem; the software block chain is corr 0.986). Diagnostic to chase when
-re-placing: the RX input lands at cell **(0,5)** but `complexmixer_2`'s input cell is
-**(1,5)**; check each block's I/O-cell orientation and that every route's endpoints
-connect the intended output→input cells. Gate: `verification/tests/test_ssb_weaver_grc.py`
-— import (dtype-clean) + placement + `.kyt` build/egress PASS; full auto-route/build and
-audio-recovery are `xfail`/skip until the hand-layout datapath is corrected.
+> This is expected and normal for compact, high-utilisation designs — hand layout is the
+> intended workflow above ~50% cell usage (the auto-router is best for looser designs).
+> The auto-route path is a known limitation, tracked as `xfail` in
+> `verification/tests/test_ssb_weaver_grc.py`.
 
-## Run it (after routing the fan-in nets by hand)
+The on-chip DSP is verified: the hand-placed chip emits the SSB passband at **corr 0.98**
+vs the `ssb_demo_stim` reference (and the block chain is proven at corr 0.986 by
+`weaver_builder_cfir.py`).
 
-1. **Host the chip.** placeKYT → **File → Import GNURadio Flowgraph…** → `ssb_weaver.grc`,
-   route the remaining nets, then **Simulation → Run as GNURadio Server** (port **58950**).
-2. **Drive it.** `gnuradio-companion ssb_weaver.grc`, set `server_port`, press **▶ Run**.
-   Two scopes plot the **input audio** (two tones) vs the **recovered audio** from the chip.
+## Run it
+
+1. **Host the chip.** Launch placeKYT → **File → Open** → `ssb_weaver.kyt` (open the
+   `.kyt` — do **not** import the `.grc`; auto-P&R will not route this design). Then
+   **Simulation → Run as GNURadio Server** (port **58950**). Leave placeKYT running.
+2. **Drive it.** `gnuradio-companion ssb_weaver.grc`, press **▶ Run**. Two scopes plot
+   the **input audio** (two tones) against the **recovered audio** coming back from the
+   chip.

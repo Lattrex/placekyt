@@ -6,11 +6,11 @@ options:
     cmake_opt: ''
     comment: ''
     copyright: ''
-    description: "DSB-AM TRANSCEIVER from REAL Kyttar blocks. SEPARATE TX chain\
-      \ (audio -> oscMix(fc) -> AM passband, stream 'tx') and SEPARATE RX chain\
-      \ (AM passband -> oscMix(fc) -> LowPass -> Gain -> recovered audio, stream\
-      \ 'rx') sharing ONE chip by stream_id, like the BPSK modem. Verified\
-      \ |corr| ~ 1.0. Imports + auto-P&R-routes into placeKYT."
+    description: DSB-AM TRANSCEIVER from REAL Kyttar blocks. SEPARATE TX chain (audio
+      -> oscMix(fc) -> AM passband, stream 'tx') and SEPARATE RX chain (AM passband
+      -> oscMix(fc) -> LowPass -> Gain -> recovered audio, stream 'rx') sharing ONE
+      chip by stream_id, like the BPSK modem. Verified |corr| ~ 1.0. Imports + auto-P&R-routes
+      into placeKYT.
     gen_cmake: 'On'
     gen_linking: dynamic
     generate_options: qt_gui
@@ -26,7 +26,7 @@ options:
     run_options: prompt
     sizing_mode: fixed
     thread_safe_setters: ''
-    title: "DSB-AM transceiver (on-chip, real blocks) — TX modulate + RX demodulate"
+    title: "DSB-AM transceiver (on-chip, real blocks) \u2014 TX modulate + RX demodulate"
     window_size: (1600,1000)
   states:
     bus_sink: false
@@ -37,20 +37,6 @@ options:
     state: enabled
 
 blocks:
-
-- name: samp_rate
-  id: variable
-  parameters:
-    comment: ''
-    value: 32000.0
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [200, 12]
-    rotation: 0
-    state: enabled
-
 - name: n_samp
   id: variable
   parameters:
@@ -63,7 +49,18 @@ blocks:
     coordinate: [320, 12]
     rotation: 0
     state: enabled
-
+- name: samp_rate
+  id: variable
+  parameters:
+    comment: ''
+    value: '32000.0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [200, 12]
+    rotation: 0
+    state: enabled
 - name: server_port
   id: variable
   parameters:
@@ -76,10 +73,31 @@ blocks:
     coordinate: [440, 12]
     rotation: 0
     state: enabled
-
+- name: am_rf
+  id: blocks_vector_source_x
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'RX input: the AM passband (same audio+carrier); finite, no repeat'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    repeat: 'False'
+    tags: '[]'
+    type: float
+    vector: stim.am_passband(n_samp)
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [40, 320]
+    rotation: 0
+    state: enabled
 - name: import_stim
   id: import
   parameters:
+    alias: ''
+    comment: ''
     imports: from gnuradio.kyttar import am_demo_stim as stim
   states:
     bus_sink: false
@@ -88,148 +106,74 @@ blocks:
     coordinate: [560, 12]
     rotation: 0
     state: enabled
-
-- name: tx_audio
-  id: blocks_vector_source_x
-  parameters:
-    affinity: ''
-    alias: ''
-    comment: TX audio (two tones) -> chip (stream 'tx'); finite, no repeat
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    type: float
-    vector: stim.tx_audio(n_samp)
-    repeat: 'False'
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [40, 120]
-    rotation: 0
-    state: enabled
-
-- name: tx_src
-  id: kyttar_source
-  parameters:
-    affinity: ''
-    alias: ''
-    burst_len: n_samp
-    comment: TX audio -> chip x16_in (shared duplex port, stream 'tx')
-    complex_in: float
-    device_id: '"kyttar_0"'
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    num_channels: '1'
-    port_name: '"x16_in"'
-    server_host: '"127.0.0.1"'
-    server_port: server_port
-    stream_id: '"tx"'
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [240, 120]
-    rotation: 0
-    state: enabled
-
-- name: tx_f2c
-  id: blocks_float_to_complex
-  parameters:
-    affinity: ''
-    alias: ''
-    comment: 'audio -> I (Q=0)'
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    vlen: '1'
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [380, 120]
-    rotation: 0
-    state: enabled
-
-- name: tx_q0
-  id: blocks_null_source
-  parameters:
-    affinity: ''
-    alias: ''
-    type: 'float'
-    bus_structure_source: '[[0,],]'
-    comment: 'Q = 0 (DSB-AM: no quadrature)'
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    num_outputs: '1'
-    sizeof_stream_item: 'gr.sizeof_float'
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [380, 200]
-    rotation: 0
-    state: enabled
-
-- name: tx_mix
-  id: kyttar_iq_upconvert
-  parameters:
-    affinity: ''
-    alias: ''
-    comment: 'AM modulate: s = Re{(audio+0j)e^jwt} = audio*cos(fc)'
-    device_id: '"kyttar_0"'
-    frequency: 6000.0
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    sample_rate: 32000.0
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [540, 120]
-    rotation: 0
-    state: enabled
-
-- name: tx_sink
-  id: kyttar_sink
-  parameters:
-    affinity: ''
-    alias: ''
-    comment: AM passband <- chip x16_out (stream 'tx')
-    device_id: '"kyttar_0"'
-    num_channels: '1'
-    port_name: '"x16_out"'
-    server_host: '"127.0.0.1"'
-    server_port: server_port
-    stream_id: '"tx"'
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [640, 120]
-    rotation: 0
-    state: enabled
-
-- name: tx_passband
+- name: rx_audio
   id: qtgui_time_sink_x
   parameters:
     affinity: ''
     alias: ''
+    alpha1: '1.0'
+    alpha10: '1.0'
+    alpha2: '1.0'
+    alpha3: '1.0'
+    alpha4: '1.0'
+    alpha5: '1.0'
+    alpha6: '1.0'
+    alpha7: '1.0'
+    alpha8: '1.0'
+    alpha9: '1.0'
     autoscale: 'True'
     axislabels: 'True'
-    bw: samp_rate
+    color1: blue
+    color10: dark blue
+    color2: red
+    color3: green
+    color4: black
+    color5: cyan
+    color6: magenta
+    color7: yellow
+    color8: dark red
+    color9: dark green
     comment: ''
     ctrlpanel: 'False'
     entags: 'True'
     grid: 'True'
     gui_hint: ''
-    label1: 'AM passband (TX)'
+    label1: recovered audio (RX)
+    label10: Signal 10
+    label2: Signal 2
+    label3: Signal 3
+    label4: Signal 4
+    label5: Signal 5
+    label6: Signal 6
+    label7: Signal 7
+    label8: Signal 8
+    label9: Signal 9
     legend: 'True'
     marker1: '-1'
-    name: 'AM passband (TX)'
+    marker10: '-1'
+    marker2: '-1'
+    marker3: '-1'
+    marker4: '-1'
+    marker5: '-1'
+    marker6: '-1'
+    marker7: '-1'
+    marker8: '-1'
+    marker9: '-1'
+    name: recovered audio (RX)
     nconnections: '1'
     size: stim.points(n_samp)
     srate: samp_rate
     stemplot: 'False'
     style1: '1'
+    style10: '1'
+    style2: '1'
+    style3: '1'
+    style4: '1'
+    style5: '1'
+    style6: '1'
+    style7: '1'
+    style8: '1'
+    style9: '1'
     tr_chan: '0'
     tr_delay: '0'
     tr_level: '0'
@@ -239,39 +183,141 @@ blocks:
     type: float
     update_time: '0.10'
     width1: '1'
-    ylabel: 'Amplitude'
+    width10: '1'
+    width2: '1'
+    width3: '1'
+    width4: '1'
+    width5: '1'
+    width6: '1'
+    width7: '1'
+    width8: '1'
+    width9: '1'
+    ylabel: Amplitude
     ymax: '1'
     ymin: '-1'
     yunit: ''
-    grid_color1: 'blue'
-    alpha1: '1.0'
   states:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [840, 40]
+    coordinate: [1368, 328.0]
     rotation: 0
     state: enabled
-
-- name: am_rf
-  id: blocks_vector_source_x
+- name: rx_f2c
+  id: blocks_float_to_complex
   parameters:
     affinity: ''
     alias: ''
-    comment: 'RX input: the AM passband (same audio+carrier); finite, no repeat'
+    comment: passband -> I (Q=0)
     maxoutbuf: '0'
     minoutbuf: '0'
-    type: float
-    vector: stim.am_passband(n_samp)
-    repeat: 'False'
+    vlen: '1'
   states:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [40, 320]
+    coordinate: [488, 456.0]
     rotation: 0
     state: enabled
-
+- name: rx_gain
+  id: kyttar_gain
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: DSB 1/2 -> x2
+    device_id: '"kyttar_0"'
+    gain: '2'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [904, 336.0]
+    rotation: 0
+    state: enabled
+- name: rx_lpf
+  id: kyttar_low_pass_filter
+  parameters:
+    affinity: ''
+    alias: ''
+    beta: '6.76'
+    comment: recover baseband, reject 2*fc
+    cutoff_freq: '3000.0'
+    device_id: '"kyttar_0"'
+    gain: '1'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    samp_rate: '32000.0'
+    transition_width: '2000.0'
+    window: hamming
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [760, 420.0]
+    rotation: 0
+    state: enabled
+- name: rx_mix
+  id: kyttar_iq_upconvert
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'AM demod: y = Re{s*e^jwt} product detect'
+    device_id: '"kyttar_0"'
+    frequency: '6000.0'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    sample_rate: '32000.0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [592, 328.0]
+    rotation: 0
+    state: enabled
+- name: rx_q0
+  id: blocks_null_source
+  parameters:
+    affinity: ''
+    alias: ''
+    bus_structure_source: '[[0,],]'
+    comment: Q = 0
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_outputs: '1'
+    type: float
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [320, 672.0]
+    rotation: 0
+    state: enabled
+- name: rx_sink
+  id: kyttar_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: recovered audio <- chip x16_out (stream 'rx')
+    device_id: '"kyttar_0"'
+    hold_secs: '5.0'
+    in_type: float
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_channels: '1'
+    port_name: '"x16_out"'
+    server_port: server_port
+    server_repeat: 'False'
+    stream_id: '"rx"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1048, 412.0]
+    rotation: 0
+    state: enabled
 - name: rx_src
   id: kyttar_source
   parameters:
@@ -292,16 +338,35 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [240, 320]
+    coordinate: [232, 452.0]
     rotation: 0
     state: enabled
-
-- name: rx_f2c
+- name: tx_audio
+  id: blocks_vector_source_x
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: TX audio (two tones) -> chip (stream 'tx'); finite, no repeat
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    repeat: 'False'
+    tags: '[]'
+    type: float
+    vector: stim.tx_audio(n_samp)
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [24, 152.0]
+    rotation: 0
+    state: enabled
+- name: tx_f2c
   id: blocks_float_to_complex
   parameters:
     affinity: ''
     alias: ''
-    comment: 'passband -> I (Q=0)'
+    comment: audio -> I (Q=0)
     maxoutbuf: '0'
     minoutbuf: '0'
     vlen: '1'
@@ -309,134 +374,95 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [380, 320]
+    coordinate: [640, 216.0]
     rotation: 0
     state: enabled
-
-- name: rx_q0
-  id: blocks_null_source
-  parameters:
-    affinity: ''
-    alias: ''
-    type: 'float'
-    bus_structure_source: '[[0,],]'
-    comment: 'Q = 0'
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    num_outputs: '1'
-    sizeof_stream_item: 'gr.sizeof_float'
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [380, 400]
-    rotation: 0
-    state: enabled
-
-- name: rx_mix
+- name: tx_mix
   id: kyttar_iq_upconvert
   parameters:
     affinity: ''
     alias: ''
-    comment: 'AM demod: y = Re{s*e^jwt} product detect'
+    comment: 'AM modulate: s = Re{(audio+0j)e^jwt} = audio*cos(fc)'
     device_id: '"kyttar_0"'
-    frequency: 6000.0
+    frequency: '6000.0'
     maxoutbuf: '0'
     minoutbuf: '0'
-    sample_rate: 32000.0
+    sample_rate: '32000.0'
   states:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [540, 320]
+    coordinate: [808, 128.0]
     rotation: 0
     state: enabled
-
-- name: rx_lpf
-  id: kyttar_low_pass_filter
-  parameters:
-    affinity: ''
-    alias: ''
-    beta: '6.76'
-    comment: 'recover baseband, reject 2*fc'
-    cutoff_freq: 3000.0
-    decimation: '1'
-    device_id: '"kyttar_0"'
-    gain: '1'
-    interpolation: '1'
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    samp_rate: 32000.0
-    transition_width: 2000.0
-    window: "hamming"
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [640, 320]
-    rotation: 0
-    state: enabled
-
-- name: rx_gain
-  id: kyttar_gain
-  parameters:
-    affinity: ''
-    alias: ''
-    comment: 'DSB 1/2 -> x2'
-    device_id: '"kyttar_0"'
-    gain: '2'
-    maxoutbuf: '0'
-    minoutbuf: '0'
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [840, 320]
-    rotation: 0
-    state: enabled
-
-- name: rx_sink
-  id: kyttar_sink
-  parameters:
-    affinity: ''
-    alias: ''
-    comment: recovered audio <- chip x16_out (stream 'rx')
-    device_id: '"kyttar_0"'
-    num_channels: '1'
-    port_name: '"x16_out"'
-    server_host: '"127.0.0.1"'
-    server_port: server_port
-    stream_id: '"rx"'
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [1040, 320]
-    rotation: 0
-    state: enabled
-
-- name: rx_audio
+- name: tx_passband
   id: qtgui_time_sink_x
   parameters:
     affinity: ''
     alias: ''
+    alpha1: '1.0'
+    alpha10: '1.0'
+    alpha2: '1.0'
+    alpha3: '1.0'
+    alpha4: '1.0'
+    alpha5: '1.0'
+    alpha6: '1.0'
+    alpha7: '1.0'
+    alpha8: '1.0'
+    alpha9: '1.0'
     autoscale: 'True'
     axislabels: 'True'
-    bw: samp_rate
+    color1: blue
+    color10: dark blue
+    color2: red
+    color3: green
+    color4: black
+    color5: cyan
+    color6: magenta
+    color7: yellow
+    color8: dark red
+    color9: dark green
     comment: ''
     ctrlpanel: 'False'
     entags: 'True'
     grid: 'True'
     gui_hint: ''
-    label1: 'recovered audio (RX)'
+    label1: AM passband (TX)
+    label10: Signal 10
+    label2: Signal 2
+    label3: Signal 3
+    label4: Signal 4
+    label5: Signal 5
+    label6: Signal 6
+    label7: Signal 7
+    label8: Signal 8
+    label9: Signal 9
     legend: 'True'
     marker1: '-1'
-    name: 'recovered audio (RX)'
+    marker10: '-1'
+    marker2: '-1'
+    marker3: '-1'
+    marker4: '-1'
+    marker5: '-1'
+    marker6: '-1'
+    marker7: '-1'
+    marker8: '-1'
+    marker9: '-1'
+    name: AM passband (TX)
     nconnections: '1'
     size: stim.points(n_samp)
     srate: samp_rate
     stemplot: 'False'
     style1: '1'
+    style10: '1'
+    style2: '1'
+    style3: '1'
+    style4: '1'
+    style5: '1'
+    style6: '1'
+    style7: '1'
+    style8: '1'
+    style9: '1'
     tr_chan: '0'
     tr_delay: '0'
     tr_level: '0'
@@ -446,35 +472,107 @@ blocks:
     type: float
     update_time: '0.10'
     width1: '1'
-    ylabel: 'Amplitude'
+    width10: '1'
+    width2: '1'
+    width3: '1'
+    width4: '1'
+    width5: '1'
+    width6: '1'
+    width7: '1'
+    width8: '1'
+    width9: '1'
+    ylabel: Amplitude
     ymax: '1'
     ymin: '-1'
     yunit: ''
-    grid_color1: 'green'
-    alpha1: '1.0'
   states:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [1240, 240]
+    coordinate: [1392, 168.0]
+    rotation: 0
+    state: enabled
+- name: tx_q0
+  id: blocks_null_source
+  parameters:
+    affinity: ''
+    alias: ''
+    bus_structure_source: '[[0,],]'
+    comment: 'Q = 0 (DSB-AM: no quadrature)'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_outputs: '1'
+    type: float
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [368, 312.0]
+    rotation: 0
+    state: enabled
+- name: tx_sink
+  id: kyttar_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: AM passband <- chip x16_out (stream 'tx')
+    device_id: '"kyttar_0"'
+    hold_secs: '5.0'
+    in_type: float
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_channels: '1'
+    port_name: '"x16_out"'
+    server_port: server_port
+    server_repeat: 'False'
+    stream_id: '"tx"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1048, 164.0]
+    rotation: 0
+    state: enabled
+- name: tx_src
+  id: kyttar_source
+  parameters:
+    affinity: ''
+    alias: ''
+    burst_len: n_samp
+    comment: TX audio -> chip x16_in (shared duplex port, stream 'tx')
+    complex_in: float
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_channels: '1'
+    port_name: '"x16_in"'
+    server_host: '"127.0.0.1"'
+    server_port: server_port
+    stream_id: '"tx"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [312, 100.0]
     rotation: 0
     state: enabled
 
 connections:
+- [am_rf, '0', rx_src, '0']
+- [rx_f2c, '0', rx_mix, '0']
+- [rx_gain, '0', rx_sink, '0']
+- [rx_lpf, '0', rx_gain, '0']
+- [rx_mix, '0', rx_lpf, '0']
+- [rx_q0, '0', rx_f2c, '1']
+- [rx_sink, '0', rx_audio, '0']
+- [rx_src, '0', rx_f2c, '0']
 - [tx_audio, '0', tx_src, '0']
-- [tx_src, '0', tx_f2c, '0']
-- [tx_q0, '0', tx_f2c, '1']
 - [tx_f2c, '0', tx_mix, '0']
 - [tx_mix, '0', tx_sink, '0']
+- [tx_q0, '0', tx_f2c, '1']
 - [tx_sink, '0', tx_passband, '0']
-- [am_rf, '0', rx_src, '0']
-- [rx_src, '0', rx_f2c, '0']
-- [rx_q0, '0', rx_f2c, '1']
-- [rx_f2c, '0', rx_mix, '0']
-- [rx_mix, '0', rx_lpf, '0']
-- [rx_lpf, '0', rx_gain, '0']
-- [rx_gain, '0', rx_sink, '0']
-- [rx_sink, '0', rx_audio, '0']
+- [tx_src, '0', tx_f2c, '0']
 
 metadata:
   file_format: 1

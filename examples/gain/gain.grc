@@ -6,12 +6,12 @@ options:
     cmake_opt: ''
     comment: ''
     copyright: ''
-    description: "MINIMAL Kyttar Gain demo (GRC-first socket-streaming workflow).\
-      \ A slow sine stimulus -> kyttar_source (x16_in) -> kyttar_gain (0.5) ->\
-      \ kyttar_sink (x16_out) -> QT time sink. Run as GNURadio Server in placeKYT,\
-      \ set server_port below to the printed port, then Execute here. The time sink\
-      \ shows the INPUT sine (top trace) versus the chip OUTPUT (input * 0.5),\
-      \ so the user SEES the gain take effect."
+    description: MINIMAL Kyttar Gain demo (GRC-first socket-streaming workflow). A
+      slow sine stimulus -> kyttar_source (x16_in) -> kyttar_gain (0.5) -> kyttar_sink
+      (x16_out) -> QT time sink. Run as GNURadio Server in placeKYT, set server_port
+      below to the printed port, then Execute here. The time sink shows the INPUT
+      sine (top trace) versus the chip OUTPUT (input * 0.5), so the user SEES the
+      gain take effect.
     gen_cmake: 'On'
     gen_linking: dynamic
     generate_options: qt_gui
@@ -27,7 +27,7 @@ options:
     run_options: prompt
     sizing_mode: fixed
     thread_safe_setters: ''
-    title: "Kyttar Gain demo — input vs gained output (gain=0.5)"
+    title: "Kyttar Gain demo \u2014 input vs gained output (gain=0.5)"
     window_size: (1200,800)
   states:
     bus_sink: false
@@ -62,28 +62,44 @@ blocks:
     coordinate: [40, 160]
     rotation: 0
     state: enabled
-- name: src
-  id: blocks_vector_source_x
+- name: gain
+  id: kyttar_gain
   parameters:
     affinity: ''
     alias: ''
-    comment: "bounded slow-sine burst (one fixed-length vector) into the chip —\
-      \ REPEAT so the flowgraph never reaches EOF; the Kyttar Source accumulates\
-      \ exactly one burst, dispatches it ONCE via process_batch, then the Sink\
-      \ re-emits the gained result for a stable live plot."
+    comment: gain = 0.5 (placed on chip)
+    device_id: '"kyttar_0"'
+    gain: '0.5'
     maxoutbuf: '0'
     minoutbuf: '0'
-    repeat: 'True'
-    tags: '[]'
-    type: float
-    vector: '[0.8*float(__import__(''math'').sin(2*3.141592653589793*2*n/burst_len))
-      for n in range(burst_len)]'
-    vlen: '1'
   states:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [40, 320]
+    coordinate: [600, 528.0]
+    rotation: 0
+    state: enabled
+- name: msink
+  id: kyttar_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: gained output <- placeKYT chip x16_out
+    device_id: '"kyttar_0"'
+    hold_secs: '8.0'
+    in_type: float
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_channels: '1'
+    port_name: '"x16_out"'
+    server_port: server_port
+    server_repeat: 'False'
+    stream_id: ''
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [816, 452.0]
     rotation: 0
     state: enabled
 - name: msrc
@@ -101,49 +117,36 @@ blocks:
     port_name: '"x16_in"'
     server_host: '"127.0.0.1"'
     server_port: server_port
+    stream_id: ''
   states:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [328, 312]
+    coordinate: [288, 484.0]
     rotation: 0
     state: enabled
-- name: gain
-  id: kyttar_gain
+- name: src
+  id: blocks_vector_source_x
   parameters:
     affinity: ''
     alias: ''
-    comment: gain = 0.5 (placed on chip)
-    device_id: '"kyttar_0"'
-    gain: '0.5'
+    comment: "bounded slow-sine burst (one fixed-length vector) into the chip \u2014\
+      \ REPEAT so the flowgraph never reaches EOF; the Kyttar Source accumulates exactly\
+      \ one burst, dispatches it ONCE via process_batch, then the Sink re-emits the\
+      \ gained result for a stable live plot."
     maxoutbuf: '0'
     minoutbuf: '0'
+    repeat: 'True'
+    tags: '[]'
+    type: float
+    vector: '[0.8*float(__import__(''math'').sin(2*3.141592653589793*2*n/burst_len))
+      for n in range(burst_len)]'
+    vlen: '1'
   states:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [560, 320]
-    rotation: 0
-    state: enabled
-- name: msink
-  id: kyttar_sink
-  parameters:
-    affinity: ''
-    alias: ''
-    comment: gained output <- placeKYT chip x16_out
-    device_id: '"kyttar_0"'
-    hold_secs: '8.0'
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    num_channels: '1'
-    port_name: '"x16_out"'
-    server_port: server_port
-    server_repeat: 'False'
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [760, 328]
+    coordinate: [64, 264.0]
     rotation: 0
     state: enabled
 - name: time_sink
@@ -240,16 +243,16 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [1000, 240]
+    coordinate: [1176, 240.0]
     rotation: 0
     state: enabled
 
 connections:
-- [src, '0', msrc, '0']
-- [src, '0', time_sink, '0']
-- [msrc, '0', gain, '0']
 - [gain, '0', msink, '0']
 - [msink, '0', time_sink, '1']
+- [msrc, '0', gain, '0']
+- [src, '0', msrc, '0']
+- [src, '0', time_sink, '0']
 
 metadata:
   file_format: 1

@@ -248,6 +248,14 @@ git pull
 cd gr-kyttar && ./install.sh && cd ..
 ```
 
+**One-liner (steps 2 + 3).** After a `git pull`, this refreshes the venv side and
+re-installs the GNU Radio blocks in a single command from the repo root (the
+`>/dev/null` just hides pip's chatter):
+
+```bash
+.venv/bin/pip install -e runtime/python >/dev/null && cd gr-kyttar && ./install.sh && cd ..
+```
+
 > **Step 3 is not optional if you use the GNU Radio integration.** The Kyttar
 > GNU Radio blocks are *copied into* GNU Radio's own `site-packages` by
 > `install.sh` — they do **not** run from the repo. A `git pull` updates the repo

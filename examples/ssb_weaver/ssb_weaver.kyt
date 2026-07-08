@@ -96,19 +96,17 @@ blocks:
   placement:
     chip: 0
     cells:
-    - {cell_id: phase, x: 1, y: 5, face: east}
-    - {cell_id: sin_fold, x: 2, y: 5, face: east}
-    - {cell_id: sin_even, x: 3, y: 5, face: east}
-    - {cell_id: sin_odd, x: 4, y: 5, face: east}
-    - {cell_id: sin_interp, x: 5, y: 5, face: east}
-    - {cell_id: relay, x: 6, y: 5, face: north}
-    - {cell_id: cos_fold, x: 6, y: 4, face: west}
-    - {cell_id: cos_even, x: 5, y: 4, face: west}
-    - {cell_id: cos_odd, x: 4, y: 4, face: west}
-    - {cell_id: cos_interp, x: 3, y: 4, face: west}
-    - {cell_id: mixer, x: 2, y: 4, face: north}
-    orientation:
-    - ccw
+    - {cell_id: phase, x: 0, y: 1, face: south}
+    - {cell_id: sin_fold, x: 0, y: 2, face: south}
+    - {cell_id: sin_even, x: 0, y: 3, face: south}
+    - {cell_id: sin_odd, x: 0, y: 4, face: south}
+    - {cell_id: sin_interp, x: 0, y: 5, face: south}
+    - {cell_id: relay, x: 0, y: 6, face: east}
+    - {cell_id: cos_fold, x: 1, y: 6, face: north}
+    - {cell_id: cos_even, x: 1, y: 5, face: north}
+    - {cell_id: cos_odd, x: 1, y: 4, face: north}
+    - {cell_id: cos_interp, x: 1, y: 3, face: north}
+    - {cell_id: mixer, x: 1, y: 2, face: east}
 - name: complexlowpassfilter_2
   type: ComplexLowPassFilter
   library: lattrex.official
@@ -122,24 +120,24 @@ blocks:
   placement:
     chip: 0
     cells:
-    - {cell_id: 0, x: 2, y: 3, face: north}
-    - {cell_id: 1, x: 2, y: 2, face: north}
-    - {cell_id: 2, x: 2, y: 1, face: north}
-    - {cell_id: 3, x: 2, y: 0, face: east}
-    - {cell_id: 4, x: 3, y: 0, face: south}
-    - {cell_id: 5, x: 3, y: 1, face: south}
-    - {cell_id: 6, x: 3, y: 2, face: south}
-    - {cell_id: 7, x: 3, y: 3, face: east}
-    - {cell_id: 8, x: 4, y: 3, face: north}
-    - {cell_id: 9, x: 4, y: 2, face: north}
-    - {cell_id: 10, x: 4, y: 1, face: north}
-    - {cell_id: 11, x: 4, y: 0, face: east}
-    - {cell_id: 12, x: 5, y: 0, face: south}
-    - {cell_id: 13, x: 5, y: 1, face: south}
-    - {cell_id: 14, x: 5, y: 2, face: south}
-    - {cell_id: 15, x: 5, y: 3, face: south}
+    - {cell_id: 0, x: 3, y: 6, face: east}
+    - {cell_id: 1, x: 4, y: 6, face: east}
+    - {cell_id: 2, x: 5, y: 6, face: east}
+    - {cell_id: 3, x: 6, y: 6, face: north}
+    - {cell_id: 4, x: 6, y: 5, face: west}
+    - {cell_id: 5, x: 5, y: 5, face: west}
+    - {cell_id: 6, x: 4, y: 5, face: west}
+    - {cell_id: 7, x: 3, y: 5, face: north}
+    - {cell_id: 8, x: 3, y: 4, face: east}
+    - {cell_id: 9, x: 4, y: 4, face: east}
+    - {cell_id: 10, x: 5, y: 4, face: east}
+    - {cell_id: 11, x: 6, y: 4, face: north}
+    - {cell_id: 12, x: 6, y: 3, face: west}
+    - {cell_id: 13, x: 5, y: 3, face: west}
+    - {cell_id: 14, x: 4, y: 3, face: west}
+    - {cell_id: 15, x: 3, y: 3, face: west}
     orientation:
-    - mirror_v
+    - ccw
 - name: iqupconvert_2
   type: IQUpconvertBlock
   library: lattrex.official
@@ -149,17 +147,17 @@ blocks:
   placement:
     chip: 0
     cells:
-    - {cell_id: phase, x: 6, y: 3, face: north}
-    - {cell_id: sin_fold, x: 6, y: 2, face: north}
-    - {cell_id: cos_fold, x: 6, y: 1, face: north}
-    - {cell_id: table_sin, x: 6, y: 0, face: east}
-    - {cell_id: table_cos, x: 7, y: 0, face: south}
-    - {cell_id: upmix, x: 7, y: 1, face: south}
+    - {cell_id: phase, x: 5, y: 2, face: east}
+    - {cell_id: sin_fold, x: 6, y: 2, face: east}
+    - {cell_id: cos_fold, x: 7, y: 2, face: east}
+    - {cell_id: table_sin, x: 8, y: 2, face: north}
+    - {cell_id: table_cos, x: 8, y: 1, face: west}
+    - {cell_id: upmix, x: 7, y: 1, face: west}
     transit_cells:
-    - {x: 7, y: 2, face: south}
-    - {x: 7, y: 3, face: west}
+    - {x: 6, y: 1, face: west}
+    - {x: 5, y: 1, face: south}
     orientation:
-    - ccw
+    - mirror_v
 - name: gain
   type: GainBlock
   library: lattrex.official
@@ -171,9 +169,7 @@ blocks:
     cells:
     - {cell_id: 0, x: 8, y: 0, face: east}
     orientation:
-    - mirror_h
-    - cw
-    - cw
+    - mirror_v
 connections:
 - name: net1
   from: {block: complexmixer, port: yi}
@@ -201,88 +197,97 @@ connections:
   - {x: 9, y: 1}
   - {x: 9, y: 0}
   out_tag: 10
-- name: net5
+- name: net4
   from: {block: complexmixer_2, port: yi}
   to: {block: complexlowpassfilter_2, port: xi}
   route:
-  - {x: 2, y: 4}
+  - {x: 1, y: 2}
+  - {x: 2, y: 2}
   - {x: 2, y: 3}
-- name: net6
+  - {x: 2, y: 4}
+  - {x: 2, y: 5}
+  - {x: 2, y: 6}
+  - {x: 3, y: 6}
+- name: net5
   from: {block: complexlowpassfilter_2, port: out_i}
   to: {block: iqupconvert_2, port: xi}
   route:
-  - {x: 5, y: 3}
-  - {x: 6, y: 3}
-- name: net7
+  - {x: 3, y: 3}
+  - {x: 3, y: 2}
+  - {x: 4, y: 2}
+  - {x: 5, y: 2}
+- name: net6
   from: {block: iqupconvert_2, port: out}
   to: {block: gain, port: sample}
   route:
   - {x: 7, y: 1}
-  - {x: 8, y: 1}
+  - {x: 7, y: 0}
   - {x: 8, y: 0}
-- name: net9
-  from: {chip_port: {chip: 0, port: x16_in}}
-  to: {block: complexmixer, port: xi}
-  route:
-  - {x: 0, y: 0}
-  - {x: 0, y: 1}
-  - {x: 0, y: 2}
-  - {x: 0, y: 3}
-  - {x: 0, y: 4}
-  - {x: 0, y: 5}
-  - {x: 0, y: 6}
-  - {x: 0, y: 7}
-  - {x: 0, y: 8}
-  - {x: 0, y: 9}
-  - {x: 1, y: 9}
-  - {x: 2, y: 9}
-  - {x: 3, y: 9}
-  - {x: 4, y: 9}
-  - {x: 5, y: 9}
-  - {x: 5, y: 10}
-  stream_id: tx
-- name: net10
-  from: {chip_port: {chip: 0, port: x16_in}}
-  to: {block: complexmixer_2, port: xi}
-  route:
-  - {x: 0, y: 0}
-  - {x: 0, y: 1}
-  - {x: 0, y: 2}
-  - {x: 0, y: 3}
-  - {x: 0, y: 4}
-  - {x: 0, y: 5}
-  - {x: 1, y: 5}
-  stream_id: rx
-- name: net11
-  from: {block: complexmixer, port: yq}
-  to: {block: complexlowpassfilter, port: xq}
-  route:
-  - {x: 4, y: 11}
-  - {x: 5, y: 11}
-  - {x: 6, y: 11}
-- name: net12
-  from: {block: complexlowpassfilter, port: out_q}
-  to: {block: iqupconvert, port: xq}
-  route:
-  - {x: 6, y: 8}
-  - {x: 6, y: 7}
-  - {x: 7, y: 7}
-- name: net13
-  from: {block: complexmixer_2, port: yq}
-  to: {block: complexlowpassfilter_2, port: xq}
-  route:
-  - {x: 2, y: 4}
-  - {x: 2, y: 3}
-- name: net14
-  from: {block: complexlowpassfilter_2, port: out_q}
-  to: {block: iqupconvert_2, port: xq}
-  route:
-  - {x: 5, y: 3}
-  - {x: 6, y: 3}
-- name: gain_to_x16_out
+- name: net7
   from: {block: gain, port: out}
   to: {chip_port: {chip: 0, port: x16_out}}
   route:
   - {x: 8, y: 0}
   - {x: 9, y: 0}
   out_tag: 5
+- name: net8
+  from: {chip_port: {chip: 0, port: x16_in}}
+  to: {block: complexmixer, port: xi}
+  route:
+  - {x: 0, y: 0}
+  - {x: 1, y: 0}
+  - {x: 2, y: 0}
+  - {x: 2, y: 1}
+  - {x: 2, y: 2}
+  - {x: 2, y: 3}
+  - {x: 2, y: 4}
+  - {x: 2, y: 5}
+  - {x: 2, y: 6}
+  - {x: 2, y: 7}
+  - {x: 2, y: 8}
+  - {x: 2, y: 9}
+  - {x: 3, y: 9}
+  - {x: 4, y: 9}
+  - {x: 5, y: 9}
+  - {x: 5, y: 10}
+  stream_id: tx
+- name: net9
+  from: {chip_port: {chip: 0, port: x16_in}}
+  to: {block: complexmixer_2, port: xi}
+  route:
+  - {x: 0, y: 0}
+  - {x: 0, y: 1}
+  stream_id: rx
+- name: net10
+  from: {block: complexmixer, port: yq}
+  to: {block: complexlowpassfilter, port: xq}
+  route:
+  - {x: 4, y: 11}
+  - {x: 5, y: 11}
+  - {x: 6, y: 11}
+- name: net11
+  from: {block: complexlowpassfilter, port: out_q}
+  to: {block: iqupconvert, port: xq}
+  route:
+  - {x: 6, y: 8}
+  - {x: 6, y: 7}
+  - {x: 7, y: 7}
+- name: net12
+  from: {block: complexmixer_2, port: yq}
+  to: {block: complexlowpassfilter_2, port: xq}
+  route:
+  - {x: 1, y: 2}
+  - {x: 2, y: 2}
+  - {x: 2, y: 3}
+  - {x: 2, y: 4}
+  - {x: 2, y: 5}
+  - {x: 2, y: 6}
+  - {x: 3, y: 6}
+- name: net13
+  from: {block: complexlowpassfilter_2, port: out_q}
+  to: {block: iqupconvert_2, port: xq}
+  route:
+  - {x: 3, y: 3}
+  - {x: 3, y: 2}
+  - {x: 4, y: 2}
+  - {x: 5, y: 2}

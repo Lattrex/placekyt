@@ -860,6 +860,19 @@ class SimController(QObject):
             drained = list(self.engine.chip.get_trace())
         except Exception:  # noqa: BLE001
             drained = []
+        # VOLUME CONTROL: exec_tick events (the per-cell PC trail) are the BULK of
+        # a batch's trace — a single AM burst emits ~750k transactions, the vast
+        # majority exec_ticks — but the LIVE GRC waveform never plots them: it
+        # plots port_capture / port_injection / data_arrival. exec_ticks feed ONLY
+        # the cell-animation overlay (_states_from_events / _steps_from_events) and
+        # the interactive debug PC-trail. So when cell animation is OFF, DROP them
+        # at drain time: without this the GUI drains, time-rebases, buffers, and
+        # chunk-ingests hundreds of thousands of events it will never draw — the
+        # model treadmills at its cap (append 20k / trim 20k every tick) and the
+        # waveform "scrolls forever". Animation ON keeps them (the overlay needs
+        # the PC trail); that path is separately paced by lockstep + the back-off.
+        if drained and not getattr(self, "_animate_cells", False):
+            drained = [ev for ev in drained if ev.get("kind") != "exec_tick"]
         pending = getattr(self, "_pending_batch_events", None)
         if pending is None:
             pending = self._pending_batch_events = []
@@ -1157,6 +1170,13 @@ class SimController(QObject):
         if self._batch_debug is not None:
             self._batch_debug.stop()
         self._timer.stop()
+        # Drop any queued pull residual: once the user hits Stop, the waveform must
+        # halt at once. Without this the ~30 Hz pull timer keeps grinding through
+        # whatever is still buffered in _pending_batch_events (a big batch can leave
+        # hundreds of thousands of events queued), so the trace would keep
+        # "scrolling forever" long after the chip batch was aborted — the reported
+        # "toggling animation / Stop doesn't stop the data" symptom.
+        self._pending_batch_events = []
         self._running = False
         self._paused = False
         self.state_changed.emit("idle")

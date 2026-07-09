@@ -46,7 +46,13 @@ from ui import sim_controller as sc
 # behaviour is exercised directly with a synthetic drainable chip.
 # ---------------------------------------------------------------------------
 def _fake_event(t_ns):
-    return {"kind": "exec_tick", "cell_id": 0, "time_ns": float(t_ns)}
+    # A PLOTTED event kind (data_arrival), NOT exec_tick: the live GRC drain path
+    # drops exec_tick events when cell animation is OFF (they feed only the
+    # animation overlay / debug PC-trail, never the waveform) — using a plotted
+    # kind here exercises the ingest/chunking machinery with events that actually
+    # reach the TraceModel, faithful to what a real batch delivers to the viewer.
+    return {"kind": "data_arrival", "cell_id": 0, "time_ns": float(t_ns),
+            "dest": 1, "data": 0}
 
 
 class _Chip:
@@ -226,6 +232,45 @@ def test_animation_on_keeps_backoff_while_draining(monkeypatch):
     h_off._animate_cells = False
     assert _one_throttled_refresh(h_off) == CAP, \
         "animation OFF must bypass the back-off while draining (fast, cheap flush)"
+
+
+def test_exec_ticks_dropped_at_drain_when_animation_off(monkeypatch):
+    """The live GRC drain path must DROP exec_tick events when animation is OFF.
+
+    exec_ticks (the per-cell PC trail) are the BULK of a batch's trace but the live
+    waveform never plots them (it plots port_capture / port_injection / data_arrival)
+    — they feed only the animation overlay + debug PC-trail. Draining hundreds of
+    thousands of them into the GUI made the model treadmill at its cap and the
+    waveform 'scroll forever'. With animation OFF they must be filtered at drain
+    time so only plotted events reach the pending buffer + model. With animation ON
+    they must be KEPT (the overlay needs the PC trail)."""
+    monkeypatch.setattr(sc, "_PULL_MAX_EVENTS_PER_TICK", 10_000)
+
+    def _mixed():
+        # 100 plotted data_arrivals interleaved with 400 exec_ticks (the realistic
+        # ratio: exec ticks dominate).
+        evs = []
+        for i in range(100):
+            evs.append({"kind": "data_arrival", "cell_id": 0,
+                        "time_ns": float(i), "dest": 1, "data": 0})
+            for j in range(4):
+                evs.append({"kind": "exec_tick", "cell_id": 0,
+                            "time_ns": float(i) + 0.1 * j})
+        return evs
+
+    # Animation OFF: exec_ticks dropped -> only the 100 data_arrivals land.
+    h_off = _Harness(_mixed())
+    h_off._animate_cells = False
+    h_off.unthrottled_refresh(force=True, final=True, full_capture=True)
+    assert len(h_off.trace_model.transactions) == 100, \
+        "exec_ticks must be dropped at drain when animation is OFF"
+
+    # Animation ON: everything retained (overlay needs the PC trail).
+    h_on = _Harness(_mixed())
+    h_on._animate_cells = True
+    h_on.unthrottled_refresh(force=True, final=True, full_capture=True)
+    assert len(h_on.trace_model.transactions) == 500, \
+        "exec_ticks must be KEPT at drain when animation is ON"
 
 
 def test_streaming_path_unchanged_window_trim():

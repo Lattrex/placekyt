@@ -207,3 +207,78 @@ def test_full_duplex_both_streams_on_shared_chip():
     tx_corr = _best_corr(tx_out[:N], _passband(N)[:N])
     rx_corr = _best_corr(rx_out[:N], _audio(N)[:N])
     assert tx_corr > 0.95 and rx_corr > 0.90, (tx_corr, rx_corr)
+
+
+def test_output_port_recovers_two_tags_placement_independent():
+    """The shared x16_out port must demux into TWO distinct waveform traces (the
+    'tx' passband tag and the 'rx' audio tag), NOT one merged trace.
+
+    The output tag was recovered by matching each tag-less port_capture to a
+    co-located data_arrival by (cell, sim-time) — PLACEMENT-FRAGILE: on some
+    auto-P&R placements the capture and its feeding WRITE don't co-locate, so every
+    capture resolved to tag None and both streams merged onto one None trace (the
+    reported 'only one row'). The SimServer now records (port, sim-time) -> WRITE
+    dest in _capture_tags as it drains the egress each batch; the host stamps that
+    onto the captures. This test proves recovery works EVEN WHEN the co-location
+    heuristic is disabled — i.e. it is genuinely placement-independent."""
+    import simkyt
+    from engine.io.chip_type_io import load_chip_type
+    from engine.port_config import stream_targets, batch_reset_writes
+    from engine.sim_bridge import SimServer, send_message, recv_message
+    from engine.trace_model import TraceModel
+    from ui.controller import AppController
+
+    cat, res = _import()
+    ct = load_chip_type(CHIP_YAML)
+    ctrl = AppController(catalog=cat)
+    ctrl.project = res.project
+    assert ctrl.auto_pnr({CHIP: ct}).ok
+    bres = ctrl.build()
+    assert bres.ok
+    tgts = stream_targets(ctrl.project, ctrl.registry, ctrl.catalog, 0,
+                          build_result=bres)
+    chip = simkyt.Chip.from_yaml(CHIP_YAML)
+    chip.load_bitstream_physical(bres.chips[0].words)
+    chip.enable_trace(2_000_000)
+    # Keep BOTH streams' captures + _capture_tags (don't clear at the Run boundary).
+    orig_clear = SimServer._clear_chip_trace
+    SimServer._clear_chip_trace = lambda self: None
+    srv = SimServer(chip, stream_targets=tgts,
+                    batch_reset_writes=batch_reset_writes(bres, 0))
+    port = srv.start()
+    try:
+        for sid, sig in (("tx", _audio(24)), ("rx", _passband(24))):
+            c = socket.socket(); c.connect(("127.0.0.1", port))
+            send_message(c, {"op": "process_batch", "port": "x16_out",
+                             "in_port": "x16_in", "complex": False, "raw": False,
+                             "stream_id": sid}, list(sig))
+            recv_message(c); c.close()
+        raw = list(chip.get_trace())
+        cap_tags = dict(srv._capture_tags)
+    finally:
+        srv.stop()
+        SimServer._clear_chip_trace = orig_clear
+
+    if not any(e.get("kind") == "port_capture" for e in raw):
+        pytest.skip("this P&R produced no output captures (separate flakiness)")
+
+    # The server captured the two stream tags.
+    seen_tags = set(cap_tags.values())
+    assert seen_tags == {5, 10}, f"server _capture_tags saw {seen_tags}, want {{5,10}}"
+
+    # HOST STAMP (as refresh_debug_from_chip does): stamp dest onto captures.
+    for ev in raw:
+        if ev.get("kind") == "port_capture" and ev.get("dest") is None:
+            d = cap_tags.get((ev.get("port_name"), float(ev.get("time_ns", 0.0))))
+            if d is not None:
+                ev["dest"] = int(d)
+
+    tm = TraceModel()
+    # DISABLE the placement-fragile co-location heuristic so this proves the STAMP
+    # alone demuxes the port (placement-independent).
+    tm._ensure_capture_dest = lambda: setattr(tm, "_capture_dest", {})
+    tm.append_live(0, raw, 10)
+    out_tags = {k[2] for k in tm.port_streams_by_tag() if k[1] == "x16_out"}
+    assert out_tags == {5, 10}, (
+        f"x16_out must demux into two tags {{5,10}}, got {out_tags} "
+        "(merged/None = the reported single-row bug)")

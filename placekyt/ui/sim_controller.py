@@ -892,6 +892,25 @@ class SimController(QObject):
         pending = getattr(self, "_pending_batch_events", None)
         if pending is None:
             pending = self._pending_batch_events = []
+        # OUTPUT-CAPTURE TAG STAMP (placement-independent): an output port_capture
+        # event carries no dest, and recovering its stream tag by matching a
+        # co-located data_arrival by cell+time is PLACEMENT-FRAGILE — on some
+        # auto-P&R placements the capture and its feeding WRITE don't co-locate, so
+        # every capture resolved to tag None and a duplex port's two streams (e.g.
+        # AM tx-passband + rx-audio) merged onto ONE None trace. The SERVER already
+        # knows the true tag: as it drains the egress port per batch it records
+        # (port, sim-time) -> WRITE dest in _capture_tags. Stamp it onto the capture
+        # here — BEFORE the time rebase below mutates time_ns — so TraceModel._port_tag
+        # reads the dest directly and the port demuxes correctly regardless of layout.
+        _srv = getattr(self, "_gr_server", None)
+        _cap_tags = getattr(_srv, "_capture_tags", None) if _srv is not None else None
+        if drained and _cap_tags:
+            for ev in drained:
+                if ev.get("kind") == "port_capture" and ev.get("dest") is None:
+                    d = _cap_tags.get((ev.get("port_name"),
+                                       float(ev.get("time_ns", 0.0))))
+                    if d is not None:
+                        ev["dest"] = int(d)
         if drained:
             # PER-RUN TIME REBASE (server/batch mode only), applied AT DRAIN
             # TIME so the origin is the Run's true first event even when ingest

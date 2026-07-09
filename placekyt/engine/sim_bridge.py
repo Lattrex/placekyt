@@ -214,12 +214,23 @@ class SimServer:
         # the other tags' words buffered for their own reader (so two streams can
         # share one output port without one stealing the other's words).
         self._tag_buf: dict[int, list[int]] = {}
+        # OUTPUT CAPTURE TAG MAP: (port_name, chip sim-time_ns) -> WRITE dest of the
+        # word captured at the egress port at that time. Populated in the drain loop
+        # (which reads value+dest+time via read_port_words_timed), so the host can
+        # stamp each port_capture trace event with its stream tag DIRECTLY instead of
+        # the placement-fragile "match a co-located data_arrival by cell+time"
+        # heuristic (which recovered tag=None on some auto-P&R placements → both
+        # streams merged onto one None trace). Cleared at each Run boundary.
+        self._capture_tags: dict[tuple[str, float], int] = {}
 
     def _clear_chip_trace(self) -> None:
         """Drop the hosted chip's trace buffer (keep tracing enabled). Called at a
         Run boundary on the server thread so the new Run's trace starts empty — see
         the callers in process_batch / _process_batch_duplex. Best-effort: a chip
         without tracing enabled simply no-ops."""
+        # The capture-tag map is per-Run (its sim-time keys are only meaningful
+        # against this Run's trace) — drop it with the trace at the Run boundary.
+        self._capture_tags = {}
         try:
             self._chip.clear_trace()
         except Exception:  # noqa: BLE001 — tracing not enabled / unsupported
@@ -625,6 +636,7 @@ class SimServer:
                             i_tag, q_tag = int(out_tag), int(out_tag) + 1
                             si = sq = None
                             for (v, d, _t) in self._chip.read_port_words_timed(port):
+                                self._capture_tags[(port, float(_t))] = int(d)
                                 if int(d) == i_tag:
                                     si = float(int(v) & 0xFFFF) if raw else _q15_to_float(int(v))
                                 elif int(d) == q_tag:
@@ -642,6 +654,7 @@ class SimServer:
                             # process_batch (its own RPC) can still claim them.
                             # Mirrors bpsk_modem_demo._drain_tagged's tag filter.
                             for (v, d, _t) in self._chip.read_port_words_timed(port):
+                                self._capture_tags[(port, float(_t))] = int(d)
                                 if int(d) == int(out_tag):
                                     if raw:
                                         out_vals.append(float(int(v) & 0xFFFF))

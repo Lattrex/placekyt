@@ -150,13 +150,6 @@ class WaveformPanel(QWidget):
         tags_per_port: dict[tuple[int, str], list] = {}
         for (chip, port, tag) in by_tag:
             tags_per_port.setdefault((chip, port), []).append(tag)
-        import os as _os
-        if _os.environ.get("KYTTAR_TAG_DEBUG") == "1":
-            import sys as _s
-            _s.stderr.write("[TAGDBG] set_trace_model tags_per_port=" + repr(
-                {f"{c}.{p}": sorted(t, key=lambda x: (x is None, x))
-                 for (c, p), t in tags_per_port.items()}) + "\n")
-            _s.stderr.flush()
         plain = {}
         multiplexed = set()
         for (chip, port), samples in model.port_streams().items():
@@ -268,11 +261,6 @@ class WaveformPanel(QWidget):
         from PySide6.QtWidgets import QInputDialog, QMessageBox
 
         tags = self._model.port_tags(chip, port) if self._model is not None else []
-        import os as _os
-        if _os.environ.get("KYTTAR_TAG_DEBUG") == "1":
-            import sys as _s
-            _s.stderr.write(f"[TAGDBG] port_dropped chip{chip}.{port} tags={tags}\n")
-            _s.stderr.flush()
         if not tags:
             QMessageBox.information(
                 self, "Add port",

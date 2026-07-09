@@ -63,6 +63,33 @@ bridge as a true duplex transceiver:
 - **RX** recovers the transmitted audio — corr **0.99999** (quadrature discriminator).
 
 Both streams run on the SAME shared chip, demuxed by `stream_id`. Gate:
-`verification/tests/test_fm_transceiver_grc.py` (5/5 pass). Run it like the AM
-transceiver: host the chip (Run as GNURadio Server), then drive it from GRC and
-compare the input-audio and recovered-audio scopes.
+`verification/tests/test_fm_transceiver_grc.py` (6/6 pass).
+
+## Run it
+
+Two terminals, two commands — run both **from the repo root** (`placekyt/`).
+
+**1. Host the chip** (terminal 1) — launch placeKYT (no pre-built `.kyt`, so start
+blank and import):
+
+```bash
+.venv/bin/python placekyt/main.py
+```
+
+In placeKYT: **File → Import GNURadio Flowgraph…** →
+`examples/fm_transceiver/fm_transceiver.grc` (auto-P&Rs onto one chip), then
+**Simulation → Run as GNURadio Server** (port **58950**). Leave placeKYT running.
+
+**2. Drive it** (terminal 2) — open the flowgraph and press **▶ Run** (F6):
+
+```bash
+gnuradio-companion examples/fm_transceiver/fm_transceiver.grc
+```
+
+Compare the input-audio scope against the recovered-audio scope coming back from
+the hosted chip.
+
+> **Watch it work.** Tick **Enable cell animation** on the placeKYT Simulation
+> toolbar before running to see the VCO's I/Q rails egress on two tags and the
+> quadrature discriminator recover the audio. See
+> [`../README.md`](../README.md#watch-the-data-flow--the-cell-animation-button).

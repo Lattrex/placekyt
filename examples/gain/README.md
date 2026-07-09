@@ -21,14 +21,39 @@ and watch it run — all the core user features in one tiny package.
 
 ## Run it
 
-The flow is the same as every Kyttar demo (see [`../README.md`](../README.md)):
+Two terminals, two commands — run both **from the repo root** (`placekyt/`). The
+flow is the same as every Kyttar demo (see [`../README.md`](../README.md)).
 
-1. **Host the chip.** Launch placeKYT, then **File → Open** → `gain.kyt`
-   (or **File → Import GNURadio Flowgraph…** → `gain.grc`). Then
-   **Simulation → Run as GNURadio Server** (binds port **58950**).
-2. **Drive it.** `gnuradio-companion gain.grc`, press **▶ Run**. The output is the
-   input scaled by the gain — the smoke test that the whole GNU Radio ↔ placeKYT
-   pipeline is live.
+**1. Host the chip** (terminal 1) — this opens the pre-built gain design directly:
+
+```bash
+.venv/bin/python placekyt/main.py examples/gain/gain.kyt
+```
+
+Then in placeKYT: **Simulation → Run as GNURadio Server** (binds port **58950**).
+Leave it running.
+
+**2. Drive it** (terminal 2) — open the flowgraph and press **▶ Run** (F6):
+
+```bash
+gnuradio-companion examples/gain/gain.grc
+```
+
+The output is the input scaled by the gain — the smoke test that the whole GNU
+Radio ↔ placeKYT pipeline is live.
+
+> Prefer to place-and-route it yourself instead of opening the pre-built `.kyt`?
+> Launch placeKYT with no argument (`.venv/bin/python placekyt/main.py`) and
+> **File → Import GNURadio Flowgraph…** → `examples/gain/gain.grc` — placeKYT
+> auto-places and routes it. Either way you then **Run as GNURadio Server**.
+
+> **See the data move.** On the **Simulation toolbar**, tick **Enable cell
+> animation** before you run: the gain cell **glows green as it executes** and a
+> per-word arrow follows each sample from the input port, through the cell, out to
+> the output port. It's off by default (flat-out, no overhead); the **Speed**
+> slider beside it paces the animation. On a one-cell design it's the simplest
+> possible picture of the host-and-drive model — well worth turning on here first.
+> Full details are in [`../README.md`](../README.md#watch-the-data-flow--the-cell-animation-button).
 
 ## What to explore here
 
@@ -50,12 +75,17 @@ Because it's a single block, this is the ideal design to learn the placeKYT UI o
   *Auto place & route* — resync automatically; *Re-anchor only* — resize in place
   and surface any DRC violations).
 
-  > Detection happens **on Run**, not on Save. The Kyttar GRC blocks are passive
-  > markers that only advertise their parameters when the flowgraph runs and
-  > dispatches a batch — there is no channel for GNU Radio to notify placeKYT at
-  > save time. So after editing a parameter, **re-run** the flowgraph and the
-  > indicator appears. (The full sample trace is retained start-to-end from the
-  > first run — you do not need to nudge the speed slider to see it.)
+  > **Save, then Run — otherwise placeKYT never sees the change.** GNU Radio
+  > Companion's **▶ Run** regenerates and executes the flowgraph from the
+  > **saved `.grc` file**, so an edit you haven't saved yet simply isn't in the
+  > run. And the Kyttar GRC blocks are passive markers that only advertise their
+  > parameters when the flowgraph runs and dispatches a batch — there is no
+  > channel for GNU Radio to notify placeKYT at save time. So the sequence is:
+  > **edit the parameter → Save (Ctrl+S) → Run**. After that the out-of-sync
+  > indicator appears in placeKYT. Skip the Save and you'll re-run the *old* value
+  > and wonder why nothing changed. (The full sample trace is retained
+  > start-to-end from the first run — you do not need to nudge the Speed slider to
+  > see it.)
 
 > **How the sync detection is wired (end to end).** Each Kyttar GRC DSP block
 > (`gain`, `fir_filter`, `dc_blocker`, `decimator`, `iir_biquad`,
@@ -78,5 +108,5 @@ Because it's a single block, this is the ideal design to learn the placeKYT UI o
 > crash) — robust per-instance keying needs the GRC instance id, which a
 > `gr.sync_block` does not expose to its own Python instance.
 
-Once this makes sense, the [coherent BPSK receiver](../coherent_bpsk_rx/) shows the
-same workflow on a real multi-block receiver.
+Once this makes sense, the flagship [BPSK modem](../bpsk_modem/) shows the same
+workflow on a full transmit-and-receive digital link — the best next demo to study.

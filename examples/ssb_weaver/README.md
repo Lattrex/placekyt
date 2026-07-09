@@ -61,9 +61,29 @@ Both streams are gated in `verification/tests/test_ssb_weaver_grc.py`.
 
 ## Run it
 
-1. **Host the chip.** Launch placeKYT → **File → Open** → `ssb_weaver.kyt` (open the
-   `.kyt` — do **not** import the `.grc`; auto-P&R will not route this design). Then
-   **Simulation → Run as GNURadio Server** (port **58950**). Leave placeKYT running.
-2. **Drive it.** `gnuradio-companion ssb_weaver.grc`, press **▶ Run**. Two scopes plot
-   the **input audio** (two tones) against the **recovered audio** coming back from the
-   chip.
+Two terminals, two commands — run both **from the repo root** (`placekyt/`).
+
+**1. Host the chip** (terminal 1) — open the hand-placed design directly. **Do NOT
+import the `.grc`** for this demo — it's dense and hand-routed, and auto-P&R will not
+route it (see above). Opening the `.kyt` is the whole point here:
+
+```bash
+.venv/bin/python placekyt/main.py examples/ssb_weaver/ssb_weaver.kyt
+```
+
+Then in placeKYT: **Simulation → Run as GNURadio Server** (port **58950**). Leave
+placeKYT running.
+
+**2. Drive it** (terminal 2) — open the flowgraph and press **▶ Run** (F6):
+
+```bash
+gnuradio-companion examples/ssb_weaver/ssb_weaver.grc
+```
+
+Two scopes plot the **input audio** (two tones) against the **recovered audio**
+coming back from the chip.
+
+> **Watch it work.** Tick **Enable cell animation** on the placeKYT Simulation
+> toolbar before running to see this dense hand-routed Weaver transceiver flow — the
+> most involved layout of all the demos. See
+> [`../README.md`](../README.md#watch-the-data-flow--the-cell-animation-button).

@@ -34,13 +34,32 @@ routes it on import (there is no pre-built `.kyt` to open directly).
 
 ## Run it
 
-1. **Host the chip.** Launch placeKYT, **File → Import GNURadio Flowgraph…** →
-   `bpsk_modem.grc`. placeKYT places and routes both chains onto one cell array.
-   Then **Simulation → Run as GNURadio Server** (binds port **58950**). Leave
-   placeKYT running.
-2. **Drive it.** `gnuradio-companion bpsk_modem.grc`, press **▶ Run**. You'll see
-   the TX passband (the modulated BPSK) and the RX side's recovered bits, both
-   coming back from the one hosted chip.
+Two terminals, two commands — run both **from the repo root** (`placekyt/`).
+
+**1. Host the chip** (terminal 1) — launch placeKYT (there's no pre-built `.kyt`,
+so start it blank and import the flowgraph):
+
+```bash
+.venv/bin/python placekyt/main.py
+```
+
+In placeKYT: **File → Import GNURadio Flowgraph…** → `examples/bpsk_modem/bpsk_modem.grc`
+(placeKYT places and routes both chains onto one cell array), then **Simulation →
+Run as GNURadio Server** (binds port **58950**). Leave placeKYT running.
+
+**2. Drive it** (terminal 2) — open the flowgraph and press **▶ Run** (F6):
+
+```bash
+gnuradio-companion examples/bpsk_modem/bpsk_modem.grc
+```
+
+You'll see the TX passband (the modulated BPSK) and the RX side's recovered bits,
+both coming back from the one hosted chip.
+
+> **Watch it work.** Tick **Enable cell animation** on the placeKYT Simulation
+> toolbar before you run to see both chains light up at once — TX modulating on one
+> part of the array, RX recovering on another, all on the same die. See
+> [`../README.md`](../README.md#watch-the-data-flow--the-cell-animation-button).
 
 See [`../README.md`](../README.md) for the workflow shared by every demo, and
 [`../../INSTALL.md`](../../INSTALL.md) for the full setup.

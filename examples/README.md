@@ -8,18 +8,22 @@ a walkthrough. They all run the same way — you **host the chip in placeKYT** a
 **drive it from GNU Radio Companion** — so once you've done one, you've done them
 all.
 
-New to placeKYT? Start with **[`gain/`](gain/)**, then
-**[`coherent_bpsk_rx/`](coherent_bpsk_rx/)**. The full setup-to-demo walkthrough
+New to placeKYT? Start with **[`gain/`](gain/)**, then the flagship
+**[`bpsk_modem/`](bpsk_modem/)**. The full setup-to-demo walkthrough
 (installing GNU Radio, the Kyttar blocks, and the two-terminal run) is in
 **[`../INSTALL.md`](../INSTALL.md)**.
+
+Every demo's README is **click-and-run**: it gives you the two exact commands
+(host the chip, drive it) as copy-paste code blocks. Open a README, copy the
+first command into a terminal, copy the second into another, and you're running.
 
 ## The demos
 
 | Demo | What it is | Blocks | Open |
 |------|------------|:------:|------|
 | **[gain/](gain/)** | **Start here.** The simplest possible design — one gain block (multiply by a constant). The best place to learn the placeKYT UI and the GNU Radio ↔ placeKYT workflow end to end. | 1 | `.kyt` or `.grc` |
-| **[coherent_bpsk_rx/](coherent_bpsk_rx/)** | The headline demo: a complete coherent BPSK **receiver** — RRC matched filter → Costas carrier recovery → Gardner timing recovery → BPSK slicer. The input carries a carrier **and** a timing offset; the chip recovers the bits at **BER 0**. Includes a headless `batch_check.py`. | 4 | `.grc` or `.kyt` |
-| **[bpsk_modem/](bpsk_modem/)** | A full-duplex BPSK **modem** — a transmit chain and a coherent receive chain sharing one chip, demuxed by `stream_id`. The transceiver pattern on a digital link. | 6 (TX+RX) | `.grc` |
+| **[bpsk_modem/](bpsk_modem/)** | **The flagship.** A full-duplex BPSK **modem** — a transmit chain **and** a complete coherent receive chain sharing one chip, demuxed by `stream_id`. It contains everything the coherent receiver does *plus* the transmit side, so it's the one to study: the full digital link on a single Kyttar array. | 6 (TX+RX) | `.grc` |
+| **[coherent_bpsk_rx/](coherent_bpsk_rx/)** | The coherent BPSK **receiver** on its own — RRC matched filter → Costas carrier recovery → Gardner timing recovery → BPSK slicer. The input carries a carrier **and** a timing offset; the chip recovers the bits at **BER 0**. An extra, receiver-only view of the same recovery chain the modem uses. Includes a headless `batch_check.py`. | 4 | `.grc` or `.kyt` |
 | **[am_transceiver/](am_transceiver/)** | A double-sideband **AM** transceiver: a coherent product modulator and detector sharing one chip. The simplest analog transceiver. | 8 (TX+RX) | `.grc` |
 | **[fm_transceiver/](fm_transceiver/)** | An **FM** transceiver: a VCO modulator (`FrequencyModulator`) and a quadrature discriminator (`QuadratureDemod`) sharing one chip. | 6 (TX+RX) | `.grc` |
 | **[ssb_weaver/](ssb_weaver/)** | A single-sideband **SSB** transceiver built the Weaver (third-method) way, using the complex-FIR filter blocks. The most involved analog demo — **hand-placed: open the `.kyt` directly, don't import the `.grc`** (see its README). | 11 (TX+RX) | `.kyt` only |
@@ -37,17 +41,52 @@ as GNURadio Server** and drive it from `gnuradio-companion`.
 
 ## The common workflow (every demo)
 
-1. **Host the chip.** Launch placeKYT (`.venv/bin/python placekyt/main.py`), then
-   either **File → Open** the demo's `.kyt` or **File → Import GNURadio
-   Flowgraph…** the demo's `.grc`. Then **Simulation → Run as GNURadio Server** —
-   the status bar shows the bound port (default **58950**). Leave placeKYT running.
-2. **Drive it.** In a second terminal, `gnuradio-companion <demo>.grc`, and press
-   **▶ Run** (F6). A plot window opens showing the demo's input against the output
-   coming back from the placeKYT-hosted chip.
+Every demo runs the same two-terminal way. Run both commands **from the repo
+root** (`placekyt/`), with the venv already set up (see [`../INSTALL.md`](../INSTALL.md)).
+Each demo's README repeats these two commands filled in for that demo — so you can
+copy-paste straight from there.
+
+**1. Host the chip** (terminal 1) — launch placeKYT. For a demo that ships a `.kyt`,
+pass it and placeKYT opens it directly; otherwise launch placeKYT and **File →
+Import GNURadio Flowgraph…** the demo's `.grc`:
+
+```bash
+.venv/bin/python placekyt/main.py examples/gain/gain.kyt
+```
+
+Then in placeKYT: **Simulation → Run as GNURadio Server** — the status bar shows
+the bound port (default **58950**). Leave placeKYT running.
+
+**2. Drive it** (terminal 2) — open the flowgraph in GNU Radio Companion and press
+**▶ Run** (F6):
+
+```bash
+gnuradio-companion examples/gain/gain.grc
+```
+
+A plot window opens showing the demo's input against the output coming back from
+the placeKYT-hosted chip.
 
 The DSP always runs **on the chip inside placeKYT**; the GNU Radio blocks are the
 front-end that streams stimulus in and plots the result. To change a design, edit
 it in placeKYT (or in the flowgraph and re-import) and re-host.
+
+## Watch the data flow — the cell-animation button
+
+placeKYT can **animate the chip as it runs**, so you can literally see data move
+through the cell array. On the **Simulation toolbar**, tick **Enable cell
+animation**; then run — from the in-tool stimulus or from a GNU Radio drive. Cells
+**glow green as they execute**, and per-word arrows show each value hopping
+cell-to-cell along its route toward the output port. It's the clearest way to *see*
+what a design is doing: where the signal enters, which cells compute, how it snakes
+to the egress port. The **Speed** slider beside the checkbox paces it — the chip
+steps in lockstep with the animation, so a stall or a dead route is visible as it
+happens.
+
+It's **off by default** — leaving it off runs flat-out with no visual overhead, and
+the slider is greyed. Turn it on when you want to understand or debug a layout; turn
+it off for a fast run. Worth trying from the very first demo (`gain/`): one cell
+lighting up as each sample passes through makes the whole host-and-drive model click.
 
 > On **Run**, GNU Radio may pop up a harmless *"x-terminal-emulator is missing"*
 > warning — close it and the flowgraph runs normally. See

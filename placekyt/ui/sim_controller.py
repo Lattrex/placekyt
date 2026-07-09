@@ -327,6 +327,25 @@ class SimController(QObject):
         if self._gr_server is None:
             self._server_pull_timer.stop()
             return
+        import os as _os
+        if _os.environ.get("KYTTAR_PERF_DEBUG") == "1":
+            import sys as _sysP, time as _tP
+            _now = _tP.monotonic()
+            _last = getattr(self, "_dbg_last_tick", None)
+            _gap = (None if _last is None else round((_now - _last) * 1000))
+            self._dbg_last_tick = _now
+            _t0 = _tP.perf_counter()
+            self.refresh_debug_from_chip(full_capture=self._server_batch_retain_all)
+            _dt = round((_tP.perf_counter() - _t0) * 1000)
+            _tm = self.trace_model
+            _sysP.stderr.write(
+                f"[PERF] pull_tick gap={_gap}ms refresh={_dt}ms "
+                f"model_txns={len(getattr(_tm,'transactions',[]))} "
+                f"pending={len(getattr(self,'_pending_batch_events',[]))} "
+                f"last_cost={round(getattr(self,'_last_refresh_cost',0)*1000)}ms "
+                f"animate={self._animate_cells}\n")
+            _sysP.stderr.flush()
+            return
         self.refresh_debug_from_chip(full_capture=self._server_batch_retain_all)
 
     def set_stimulus(self, stimulus, name: str | None = None) -> None:

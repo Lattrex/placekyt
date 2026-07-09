@@ -189,6 +189,45 @@ def test_run_boundary_reset_drops_stale_residual(monkeypatch):
     assert h._trace_time_origin is None
 
 
+def test_animation_on_keeps_backoff_while_draining(monkeypatch):
+    """With animation ON, a queued residual must NOT bypass the adaptive back-off.
+
+    Reproduces the reported animation-ON runaway ("the trace is forever, it keeps
+    processing the batch over and over"): with animation ON every refresh also does
+    the expensive canvas work, and successive finite GRC batches keep topping up the
+    residual faster than those heavy flushes drain it — so it never empties. If the
+    back-off is bypassed just because a residual exists, the throttle that keeps
+    heavy refreshes from pinning the GUI is defeated and the live view never settles.
+    A residual + animation OFF DOES bypass (cheap flushes should drain fast)."""
+    import time
+    monkeypatch.setattr(sc, "_PULL_MAX_EVENTS_PER_TICK", CAP)
+
+    def _one_throttled_refresh(h):
+        # A residual is queued; a heavy last refresh cost + a very recent refresh
+        # means the adaptive back-off, IF engaged, blocks this (non-forced) call.
+        h._pending_batch_events = [_fake_event(i) for i in range(CAP)]
+        h._last_refresh_cost = 10.0                 # 10s cost -> 30s back-off gap
+        # 1s since the last refresh: clears the base 1/_LIVE_REFRESH_HZ gap (~33ms,
+        # so the animation-OFF bypass fires) but NOT the 30s adaptive back-off (so
+        # the animation-ON path, which keeps the back-off, is still throttled).
+        h._last_server_refresh = time.monotonic() - 1.0
+        before = len(h.trace_model.transactions)
+        h.refresh_debug_from_chip(full_capture=True)
+        return len(h.trace_model.transactions) - before
+
+    # Animation ON: back-off engaged -> the call is throttled, ingests nothing.
+    h_on = _Harness([])
+    h_on._animate_cells = True
+    assert _one_throttled_refresh(h_on) == 0, \
+        "animation ON must honor the back-off while draining (else it runs forever)"
+
+    # Animation OFF: back-off bypassed while draining -> the call ingests its cap.
+    h_off = _Harness([])
+    h_off._animate_cells = False
+    assert _one_throttled_refresh(h_off) == CAP, \
+        "animation OFF must bypass the back-off while draining (fast, cheap flush)"
+
+
 def test_streaming_path_unchanged_window_trim():
     """The pure streaming path (full_capture=False) still keeps only the rolling
     window — bounded for an unbounded stream, exactly as before the fix."""

@@ -784,13 +784,23 @@ class SimController(QObject):
             return
         import time
         now = time.monotonic()
-        # Adaptive back-off keeps a single heavy refresh from starving paint. BUT
-        # when a pull residual is queued (a big batch is draining in chunks), don't
-        # apply the back-off — keep flushing at the timer's cadence so the trace
-        # finishes building in a few hundred ms, not tens of seconds. The residual
-        # itself is chunk-capped (_PULL_MAX_EVENTS_PER_TICK), so each flush is
-        # bounded and paint still interleaves between ticks.
-        _draining = bool(getattr(self, "_pending_batch_events", None))
+        # Adaptive back-off keeps a single heavy refresh from starving paint. When
+        # a pull residual is queued AND the flush is cheap (animation OFF: no canvas
+        # re-render, just the trace append), bypass the back-off so the trace
+        # finishes building in a few hundred ms, not tens of seconds — the residual
+        # is chunk-capped (_PULL_MAX_EVENTS_PER_TICK) so each flush is bounded and
+        # paint still interleaves between ticks.
+        #
+        # BUT with animation ON every refresh also does the expensive canvas work
+        # (cell-state overlay + faces + per-word flashes). Successive finite GRC
+        # batches keep TOPPING UP the residual faster than those heavy flushes can
+        # drain it, so it never empties — if the back-off is bypassed there, the
+        # adaptive throttle that exists precisely to keep heavy refreshes from
+        # pinning the GUI is defeated and the live view runs "forever", never
+        # settling (the reported animation-ON runaway). So: only bypass while
+        # animation is OFF; keep the back-off engaged when animation is ON.
+        _animating = bool(getattr(self, "_animate_cells", False))
+        _draining = bool(getattr(self, "_pending_batch_events", None)) and not _animating
         min_gap = (1.0 / _LIVE_REFRESH_HZ if _draining else
                    max(1.0 / _LIVE_REFRESH_HZ,
                        _REFRESH_BACKOFF * getattr(self, "_last_refresh_cost", 0.0)))

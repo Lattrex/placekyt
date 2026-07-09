@@ -17,8 +17,7 @@ These tests prove the whole path an end user runs:
     "Run as GNURadio Server -> Execute" path): the TX stream produces the DSB-AM
     passband and the RX stream independently recovers the transmitted audio.
 
-Run:
-    cd /home/system/placekyt
+Run (from the repo root):
     QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest \
         verification/tests/test_am_transceiver_grc.py -q
 """

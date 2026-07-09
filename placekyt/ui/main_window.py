@@ -270,19 +270,9 @@ class MainWindow(QMainWindow):
         tb.setObjectName("sim_toolbar")
         self.addToolBar(tb)
         self.act_run = self._action("Run", "F5", self._run_simulation)
-        # STOP: kill the in-progress run immediately (aborts a GRC batch at the
-        # next sample boundary and wakes any lockstep waiter). Enabled only while
-        # a run is active (a GRC server is hosting the chip); see
-        # _refresh_stop_enabled.
-        self.act_sim_stop = self._action("Stop", "Shift+F5", self._stop_simulation)
-        self.act_sim_stop.setEnabled(False)
-        self.act_sim_stop.setToolTip(
-            "Stop the in-progress run immediately. Aborts a GRC batch at the "
-            "next sample boundary (works even when paused / paced / lockstepped).")
         self.act_step = self._action("Step", "F10", self._step_simulation)
         self.act_sim_reset = self._action("Reset Sim", None, self._reset_simulation)
         tb.addAction(self.act_run)
-        tb.addAction(self.act_sim_stop)
         tb.addAction(self.act_step)
         # Step granularity: one event / instruction / handshake.
         self.step_mode = QComboBox()
@@ -332,9 +322,8 @@ class MainWindow(QMainWindow):
         self.sim.set_speed_index(DEFAULT_SPEED)
         # Reflect the initial checkbox state (slider greyed out when OFF).
         self._on_animate_toggled(self.animate_check.isChecked())
-        # Mirror the run/stop/step/reset actions into the Simulation menu.
-        for act in (self.act_run, self.act_sim_stop, self.act_step,
-                    self.act_sim_reset):
+        # Mirror the run/step/reset actions into the Simulation menu.
+        for act in (self.act_run, self.act_step, self.act_sim_reset):
             self._sim_menu.addAction(act)
 
         # Timeline scrubber (DEBUG §3.4): a thin full-width strip on its own row
@@ -1016,7 +1005,6 @@ class MainWindow(QMainWindow):
         else:
             self.sim.stop_gnuradio_server()
             self.statusBar().showMessage("GNURadio server stopped", 3000)
-        self._refresh_stop_enabled()
 
     def _on_server_activity(self, full_capture: bool = False,
                             force: bool = False) -> None:
@@ -1025,16 +1013,8 @@ class MainWindow(QMainWindow):
         BATCH (``full_capture``) keeps the WHOLE burst trace so start AND end
         conditions are visible, instead of the rolling streaming window. ``force``
         (set for a batch-COMPLETE refresh) bypasses the refresh throttle so a
-        short second stream's settled trace is never dropped.
-
-        Each refresh ingests a BOUNDED number of the drained events (so a big
-        batch never freezes one GUI tick). A ``force`` refresh is a burst
-        boundary (batch-complete / Stop settle), so after the bounded refresh we
-        SETTLE any residual to completion — a bounded chunk per iteration, no
-        self-rescheduled timer — guaranteeing the final captured trace is whole."""
+        short second stream's settled trace is never dropped."""
         self.sim.refresh_debug_from_chip(full_capture=full_capture, force=force)
-        if force:
-            self.sim.settle_pending()
 
     def _on_server_throughput(self, info) -> None:
         """A GNURadio batch finished — show simKYT's sample throughput on THIS
@@ -1890,30 +1870,6 @@ class MainWindow(QMainWindow):
             self._status_canvas.setText("Canvas: Edit")
             return
         self.output_panel.set_inputs(self.sim.input_samples)
-        self._refresh_stop_enabled()
-
-    def _stop_simulation(self) -> None:
-        """Stop the in-progress run immediately (the Stop button). During a GRC
-        batch run this aborts the server-side per-sample loop at the next sample
-        boundary (waking any lockstep waiter); the GRC server keeps hosting the
-        chip so a subsequent Run works. For a local interactive run it stops the
-        timer. After the stop, settle any residual so the final trace is whole."""
-        if self.sim.batch_run_active():
-            self.sim.stop_batch()
-            # Settle the bounded-ingest residual so the final captured trace is
-            # complete (bounded per iteration; not a self-rescheduled timer).
-            self.sim.settle_pending()
-            self.statusBar().showMessage("Run stopped", 3000)
-        elif self.sim.running:
-            self.sim.stop()
-        self._refresh_stop_enabled()
-
-    def _refresh_stop_enabled(self) -> None:
-        """The Stop button is active only while a run can be stopped — a GRC
-        server hosting the chip (a batch can arrive/run) or a local interactive
-        run in progress."""
-        can_stop = bool(self.sim.batch_run_active() or self.sim.running)
-        self.act_sim_stop.setEnabled(can_stop)
 
     def _step_simulation(self) -> None:
         # Step by the selected granularity. Start (paused) first if not running.
@@ -1960,7 +1916,6 @@ class MainWindow(QMainWindow):
     def _on_sim_state(self, state: str) -> None:
         self._status_sim.setText(f"Sim: {state}")
         self.act_run.setText("Pause" if state == "running" else "Run")
-        self._refresh_stop_enabled()
         if state in ("done", "idle") or state.startswith("error"):
             self._status_canvas.setText("Canvas: Edit")
             # Run ENDED → flush any remaining queued flashes at once so the fabric

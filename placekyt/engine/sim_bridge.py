@@ -887,6 +887,7 @@ class SimServer:
                     self._chip.run(max_events=mx)
                     # Drain + demux by tag into EACH stream's bucket.
                     for (v, d, _t) in self._chip.read_port_words_timed(s["port"]):
+                        self._capture_tags[(s["port"], float(_t))] = int(d)
                         dst = None
                         for s2 in streams:
                             if s2["out_tag"] is not None and int(d) == int(s2["out_tag"]):

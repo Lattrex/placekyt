@@ -282,3 +282,70 @@ def test_output_port_recovers_two_tags_placement_independent():
     assert out_tags == {5, 10}, (
         f"x16_out must demux into two tags {{5,10}}, got {out_tags} "
         "(merged/None = the reported single-row bug)")
+
+
+def test_output_tags_stamped_via_duplex_path():
+    """The DUPLEX RPC path (process_batch_duplex) — what the live GRC transceiver
+    sink actually uses — must ALSO populate _capture_tags so the two output streams
+    demux. Regression guard: the first tag-stamp fix only covered the single-stream
+    process_batch drains; the duplex drain still resolved every capture to None (the
+    'still one row, all words' report after that fix)."""
+    import simkyt
+    from engine.io.chip_type_io import load_chip_type
+    from engine.port_config import stream_targets, batch_reset_writes
+    from engine.sim_bridge import SimServer, send_message, recv_message
+    from engine.trace_model import TraceModel
+    from ui.controller import AppController
+
+    cat, res = _import()
+    ct = load_chip_type(CHIP_YAML)
+    ctrl = AppController(catalog=cat)
+    ctrl.project = res.project
+    assert ctrl.auto_pnr({CHIP: ct}).ok
+    bres = ctrl.build()
+    assert bres.ok
+    tgts = stream_targets(ctrl.project, ctrl.registry, ctrl.catalog, 0,
+                          build_result=bres)
+    chip = simkyt.Chip.from_yaml(CHIP_YAML)
+    chip.load_bitstream_physical(bres.chips[0].words)
+    chip.enable_trace(2_000_000)
+    orig_clear = SimServer._clear_chip_trace
+    SimServer._clear_chip_trace = lambda self: None
+    srv = SimServer(chip, stream_targets=tgts,
+                    batch_reset_writes=batch_reset_writes(bres, 0))
+    port = srv.start()
+    try:
+        N = 24
+        c = socket.socket(); c.connect(("127.0.0.1", port))
+        send_message(c, {"op": "process_batch_duplex", "port": "x16_out",
+                         "in_port": "x16_in",
+                         "streams": [
+                             {"stream_id": "tx", "complex": False, "raw": False,
+                              "n_samples": N},
+                             {"stream_id": "rx", "complex": False, "raw": False,
+                              "n_samples": N}]},
+                     list(_audio(N)) + list(_passband(N)))
+        recv_message(c); c.close()
+        raw = list(chip.get_trace())
+        cap_tags = dict(srv._capture_tags)
+    finally:
+        srv.stop()
+        SimServer._clear_chip_trace = orig_clear
+
+    if not any(e.get("kind") == "port_capture" for e in raw):
+        pytest.skip("this P&R produced no output captures (separate flakiness)")
+    assert set(cap_tags.values()) == {5, 10}, (
+        f"duplex drain must record both tags in _capture_tags, got "
+        f"{set(cap_tags.values())}")
+
+    for ev in raw:
+        if ev.get("kind") == "port_capture" and ev.get("dest") is None:
+            d = cap_tags.get((ev.get("port_name"), float(ev.get("time_ns", 0.0))))
+            if d is not None:
+                ev["dest"] = int(d)
+    tm = TraceModel()
+    tm._ensure_capture_dest = lambda: setattr(tm, "_capture_dest", {})
+    tm.append_live(0, raw, 10)
+    out_tags = {k[2] for k in tm.port_streams_by_tag() if k[1] == "x16_out"}
+    assert out_tags == {5, 10}, (
+        f"duplex x16_out must demux into {{5,10}}, got {out_tags}")

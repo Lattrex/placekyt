@@ -583,11 +583,6 @@ class SimServer:
                                         else _q15_to_float(int(v)))
                 nsamp = (len(data) // 2) if is_complex else len(data)
                 _t_batch0 = time.perf_counter()
-                if os.environ.get("KYTTAR_PERF_DEBUG") == "1":
-                    import sys as _sysP
-                    _sysP.stderr.write(f"[PERF] process_batch START nsamp={nsamp} "
-                                       f"complex={is_complex}\n")
-                    _sysP.stderr.flush()
                 aborted = False
                 nrun = nsamp
                 # Drive each sample the PROVEN way: inject xi→a0, run; (complex:
@@ -710,12 +705,6 @@ class SimServer:
                         f"out_tag={out_tag} | {nsamp} samples -> {len(out_vals)} "
                         f"words (other-tag buf: {seen_tags})\n")
                     _sys.stderr.flush()
-                if os.environ.get("KYTTAR_PERF_DEBUG") == "1":
-                    import sys as _sysP
-                    _sysP.stderr.write(
-                        f"[PERF] process_batch END nrun={nrun} "
-                        f"wall={round((time.perf_counter()-_t_batch0)*1000)}ms\n")
-                    _sysP.stderr.flush()
                 if self._on_activity is not None:
                     # Pass the metric if the callback accepts it; else ping plainly.
                     try:

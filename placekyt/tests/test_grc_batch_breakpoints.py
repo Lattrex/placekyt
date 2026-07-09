@@ -167,3 +167,37 @@ def test_batch_hooks_pause_step_resume():
     hooks.resume()
     t.join(timeout=5.0)
     assert done["k"] == 5, "resume did not run the batch to completion"
+
+
+def test_batch_paused_predicate_and_run_resumes():
+    """SimController.batch_paused reflects a GRC batch stopped at a breakpoint
+    (running is False on that path), and resume() releases it — so the GUI Run/F5
+    handler can Continue instead of trying to start a new interactive run (the
+    reported 'Run does nothing after a breakpoint' bug)."""
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    from engine.batch_debug import BatchDebugHooks
+    from engine.catalog import BlockCatalog
+    from ui.controller import AppController
+    from ui.sim_controller import SimController
+
+    sim = SimController(AppController(catalog=BlockCatalog.from_gr_kyttar()))
+
+    # No batch hosted → not batch_paused, running False.
+    assert sim.batch_paused is False
+    assert sim.running is False
+
+    # Simulate a hosted, paused batch (breakpoint hit): _gr_server present +
+    # _batch_debug paused. running/_running stays False (server-loop path).
+    sim._gr_server = object()
+    hooks = BatchDebugHooks()
+    hooks.pause()
+    sim._batch_debug = hooks
+    assert hooks.is_paused
+    assert sim.batch_paused is True, "batch_paused must be True at a breakpoint"
+    assert sim.running is False, "a GRC batch does not set the interactive running flag"
+
+    # resume() routes to the hooks and clears the pause.
+    sim.resume()
+    assert hooks.is_paused is False
+    assert sim.batch_paused is False

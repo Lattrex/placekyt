@@ -976,8 +976,10 @@ class MainWindow(QMainWindow):
 
     def _on_breakpoint_hit(self, hit) -> None:
         """A breakpoint fired and paused the run — surface it."""
+        where = "Run/F5 to continue, or Step."
         self.statusBar().showMessage(
-            f"Breakpoint hit: {hit.bp.label()} at {hit.time_ns:.1f} ns", 6000)
+            f"Breakpoint hit: {hit.bp.label()} at {hit.time_ns:.1f} ns — {where}",
+            0)  # persistent until resumed / next message
         self._refresh_scrubber_breakpoints()
         # Select the hit cell so the Inspector shows its state at the hit.
         self.breakpoint_panel.raise_()
@@ -1868,6 +1870,13 @@ class MainWindow(QMainWindow):
 
     def _run_simulation(self) -> None:
         # F5 / Run-Pause toggle: start, or pause/resume a running sim (§3.2).
+        # A GRC-server BATCH stopped at a breakpoint runs on the server loop, not
+        # the interactive timer — sim.running is False — so Run/F5 must RESUME the
+        # batch (release the debug-hook pause) instead of falling through to
+        # start() and trying to launch a new interactive run (which did nothing).
+        if self.sim.batch_paused:
+            self.sim.resume()
+            return
         if self.sim.running:
             self.sim.toggle_pause()
             return

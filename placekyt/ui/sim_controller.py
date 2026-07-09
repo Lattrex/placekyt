@@ -378,6 +378,19 @@ class SimController(QObject):
         return self._paused
 
     @property
+    def batch_paused(self) -> bool:
+        """True when a GRC-server BATCH is blocked (a breakpoint hit or a user
+        pause), waiting on the debug hooks. This is DISTINCT from ``running`` /
+        ``paused`` — a GRC batch runs on the server loop, so ``_running`` is False
+        and the pause state lives in ``_batch_debug``, not ``_paused``. The GUI
+        Run/F5 handler uses this to Resume a batch stopped at a breakpoint instead
+        of trying to start a new interactive run (the reported 'Run does nothing
+        after a breakpoint' bug)."""
+        bd = self._batch_debug
+        return (self._gr_server is not None and bd is not None
+                and bool(getattr(bd, "is_paused", False)))
+
+    @property
     def total_events(self) -> int:
         return self._events
 

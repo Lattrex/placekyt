@@ -860,18 +860,24 @@ class SimController(QObject):
             drained = list(self.engine.chip.get_trace())
         except Exception:  # noqa: BLE001
             drained = []
-        # VOLUME CONTROL: exec_tick events (the per-cell PC trail) are the BULK of
-        # a batch's trace — a single AM burst emits ~750k transactions, the vast
-        # majority exec_ticks — but the LIVE GRC waveform never plots them: it
-        # plots port_capture / port_injection / data_arrival. exec_ticks feed ONLY
-        # the cell-animation overlay (_states_from_events / _steps_from_events) and
-        # the interactive debug PC-trail. So when cell animation is OFF, DROP them
-        # at drain time: without this the GUI drains, time-rebases, buffers, and
-        # chunk-ingests hundreds of thousands of events it will never draw — the
-        # model treadmills at its cap (append 20k / trim 20k every tick) and the
-        # waveform "scrolls forever". Animation ON keeps them (the overlay needs
-        # the PC trail); that path is separately paced by lockstep + the back-off.
-        if drained and not getattr(self, "_animate_cells", False):
+        # VOLUME CONTROL: exec_tick events (the per-cell PC trail) are the BULK of a
+        # batch's trace — a single AM burst emits >1,000,000 transactions, the vast
+        # majority exec_ticks — but they are NEVER retained or plotted. The live GRC
+        # waveform plots port_capture / port_injection / data_arrival; exec_ticks
+        # feed ONLY the cell-animation overlay (_states_from_events /
+        # _steps_from_events), and that overlay reads ONLY the CURRENT refresh's
+        # slice (new_events), never the retained residual. So exec_ticks must NEVER
+        # enter the pending buffer — do it UNCONDITIONALLY, not gated on the live
+        # _animate_cells flag: a burst drained while animation was ON would
+        # otherwise buffer a million PC-trail events that later ticks (animation
+        # since toggled OFF) grind through forever (append 20k / trim 20k at the
+        # 400k cap → the reported "scrolls forever, Stop doesn't stop it"). When
+        # animation is ON we still show the overlay — from this drain's exec_ticks,
+        # used for THIS refresh only, then discarded (see exec_now below).
+        exec_now = []
+        if drained:
+            if getattr(self, "_animate_cells", False):
+                exec_now = [ev for ev in drained if ev.get("kind") == "exec_tick"]
             drained = [ev for ev in drained if ev.get("kind") != "exec_tick"]
         pending = getattr(self, "_pending_batch_events", None)
         if pending is None:
@@ -943,8 +949,13 @@ class SimController(QObject):
         # set_animate_cells. (getattr keeps the trace path robust if a partial
         # test harness stubs this method without the flag.)
         if getattr(self, "_animate_cells", False):
-            # Cell-state overlay + handshakes from THIS batch of new events.
-            states = self._states_from_events(new_events, chip)
+            # Cell-state overlay + handshakes from THIS batch of new events. The
+            # plotted events (new_events) no longer carry exec_ticks — they were
+            # split off at drain time so they never bloat the retained buffer — so
+            # fold this drain's exec_ticks (exec_now, used for this refresh only)
+            # back in here for the overlay's "executing" (green) distinction.
+            anim_events = new_events + exec_now if exec_now else new_events
+            states = self._states_from_events(anim_events, chip)
             self.cell_states.emit(states)
             # Live output FACE for EVERY cell active this batch — block AND
             # routing/transit/broker cells alike. Without this the canvas arrows stay
@@ -969,7 +980,7 @@ class SimController(QObject):
             # the refresh throttle, collapsed to a single brief glow and read as "no
             # activity" on the transit cells. The flat cells/ports union is kept for
             # backward-compatible callers.
-            steps = self._steps_from_events(new_events, chip)
+            steps = self._steps_from_events(anim_events, chip)
             self.handshakes.emit({
                 "steps": steps,
                 "cells": [c for s in steps for c in s["cells"]],

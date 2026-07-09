@@ -18,8 +18,12 @@ from ui import sim_controller as sc
 
 
 def _fake_event(t_ns):
-    # A minimal exec_tick event the TraceModel normaliser accepts.
-    return {"kind": "exec_tick", "cell_id": 0, "time_ns": float(t_ns)}
+    # A PLOTTED event (data_arrival), NOT exec_tick: the live GRC drain path drops
+    # exec_ticks unconditionally (they're never retained/plotted — only the
+    # animation overlay reads the current slice), so retention must be exercised
+    # with an event kind that actually reaches the model, as a real batch delivers.
+    return {"kind": "data_arrival", "cell_id": 0, "time_ns": float(t_ns),
+            "dest": 1, "data": 0}
 
 
 class _Chip:

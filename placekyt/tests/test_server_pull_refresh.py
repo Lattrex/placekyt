@@ -237,13 +237,15 @@ def test_animation_on_keeps_backoff_while_draining(monkeypatch):
 def test_exec_ticks_dropped_at_drain_when_animation_off(monkeypatch):
     """The live GRC drain path must DROP exec_tick events when animation is OFF.
 
-    exec_ticks (the per-cell PC trail) are the BULK of a batch's trace but the live
-    waveform never plots them (it plots port_capture / port_injection / data_arrival)
-    — they feed only the animation overlay + debug PC-trail. Draining hundreds of
-    thousands of them into the GUI made the model treadmill at its cap and the
-    waveform 'scroll forever'. With animation OFF they must be filtered at drain
-    time so only plotted events reach the pending buffer + model. With animation ON
-    they must be KEPT (the overlay needs the PC trail)."""
+    exec_ticks (the per-cell PC trail) are the BULK of a batch's trace (a real AM
+    burst emits >1,000,000, the vast majority exec_ticks) but they are NEVER
+    retained or plotted — the live waveform plots port_capture / port_injection /
+    data_arrival, and the animation overlay reads only the CURRENT refresh's slice.
+    So exec_ticks must NEVER enter the retained buffer / model, UNCONDITIONALLY (not
+    gated on the live animation flag): a burst drained while animation was ON would
+    otherwise buffer a million PC-trail events that later ticks grind through forever
+    ('scrolls forever, Stop doesn't stop it'). Animation ON still SHOWS the overlay,
+    from this drain's exec_ticks, used for the refresh then discarded."""
     monkeypatch.setattr(sc, "_PULL_MAX_EVENTS_PER_TICK", 10_000)
 
     def _mixed():
@@ -258,19 +260,26 @@ def test_exec_ticks_dropped_at_drain_when_animation_off(monkeypatch):
                             "time_ns": float(i) + 0.1 * j})
         return evs
 
-    # Animation OFF: exec_ticks dropped -> only the 100 data_arrivals land.
+    # Animation OFF: exec_ticks dropped -> only the 100 data_arrivals reach the model,
+    # and nothing exec is left in the buffer.
     h_off = _Harness(_mixed())
     h_off._animate_cells = False
     h_off.unthrottled_refresh(force=True, final=True, full_capture=True)
     assert len(h_off.trace_model.transactions) == 100, \
-        "exec_ticks must be dropped at drain when animation is OFF"
+        "only plotted events must reach the model (exec_ticks dropped)"
+    assert h_off._pending_batch_events == []
 
-    # Animation ON: everything retained (overlay needs the PC trail).
+    # Animation ON: exec_ticks STILL never retained (the model/buffer bound the same),
+    # but the overlay emit fires (it saw this drain's exec_ticks).
     h_on = _Harness(_mixed())
     h_on._animate_cells = True
+    h_on.cell_states.count = 0
     h_on.unthrottled_refresh(force=True, final=True, full_capture=True)
-    assert len(h_on.trace_model.transactions) == 500, \
-        "exec_ticks must be KEPT at drain when animation is ON"
+    assert len(h_on.trace_model.transactions) == 100, \
+        "exec_ticks must NOT be retained even when animation is ON (buffer stays bounded)"
+    assert not any(t.kind == "exec_tick" for t in h_on.trace_model.transactions)
+    assert h_on.cell_states.count > 0, \
+        "animation overlay must still fire when animation is ON"
 
 
 def test_streaming_path_unchanged_window_trim():

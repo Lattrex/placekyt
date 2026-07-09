@@ -42,10 +42,13 @@ SPEED_STEPS = [
     (200,     50,  12),     # 5
     (1000,    33,  40),     # 6
     (5000,    33,  200),    # 7
-    (25000,   33,  1000),   # 8 (default) — fast, still animates the wave
-    (150000,  16,  100000), # 9: fastest — fast-forward (drain whole samples/frame)
+    (25000,   33,  1000),   # 8 (fastest) — fast, still animates the wave
 ]
-DEFAULT_SPEED = 8
+# NB: an old top rung (150000 events/frame, whole-sample-per-frame flash) was
+# REMOVED — it was so fast the animation could not drain a sample before the next
+# was computed, so lockstep wedged and the GUI hung until the batch finished. The
+# fastest surviving rung (8) still animates the waveform in step.
+DEFAULT_SPEED = 7
 
 # Back-compat: some callers/tests reference the events-per-tick ladder.
 SPEED_BATCHES = [s[0] for s in SPEED_STEPS]
@@ -376,8 +379,9 @@ class SimController(QObject):
         run. The slow end pauses ~0.3 s/sample (slow-motion, one sample visible);
         the fast end runs with no wait. Derived from the slider's tick interval so
         it tracks the same ladder the interactive animation uses."""
-        # Fastest few steps → no artificial delay (flat-out). Below that, scale
-        # from the tick interval (ms) into a per-sample pause.
+        # Fastest steps → no artificial delay (flat-out); the batch loop still
+        # yields the GIL periodically so the GUI-side pull timer keeps painting
+        # (see process_batch). Below that, scale the tick interval into a pause.
         if self._speed_index >= 7:
             return 0.0
         tick_ms = SPEED_STEPS[self._speed_index][1]

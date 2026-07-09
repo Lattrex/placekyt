@@ -198,6 +198,15 @@ class SimController(QObject):
         # NOT build_dirty, which the GUI's own post-edit cached_build() clears before
         # the GRC Run ever sees it (that was the stale-run / phantom-cells bug).
         self._hosted_design_version: int | None = None
+        # IDENTITY of the project the server currently has hosted. design_version
+        # is per-project and starts at 0 for every freshly-loaded design, so it is
+        # NOT comparable across projects: loading a DIFFERENT design (e.g. gain
+        # after the SSB transceiver) on the same running server can leave
+        # cur_ver == _hosted_design_version by coincidence, taking the no-rebuild
+        # fast path and injecting the OLD design's stale entry/hop/stream_targets
+        # → the new design gets NO output. Tracking id(project) forces a rebuild +
+        # target re-resolve whenever the design object itself changes.
+        self._hosted_project_id: int | None = None
         from engine.trace_model import TraceModel
 
         self.trace_model = TraceModel()  # the debug data spine (§debug)
@@ -538,6 +547,7 @@ class SimController(QObject):
         # Server now hosts the design at this version; the pre-batch check rebuilds
         # only when the live design_version moves past it (i.e. an edit happened).
         self._hosted_design_version = getattr(self.app.project, "design_version", 0)
+        self._hosted_project_id = id(self.app.project)
         self._sim_chip = chip0.id if chip0 else 0
         # Empty-project placeholder: there is no design to resolve injection
         # targets for yet. Skip port-config + stream_targets resolution (they
@@ -1357,6 +1367,7 @@ class SimController(QObject):
         # This rebuild used the current design → record its version so the
         # pre-batch dirty check doesn't redundantly rebuild on the next batch.
         self._hosted_design_version = getattr(self.app.project, "design_version", 0)
+        self._hosted_project_id = id(self.app.project)
         return self.engine.chip
 
     def _rebuild_if_dirty_threadsafe(self):
@@ -1384,7 +1395,10 @@ class SimController(QObject):
         # and skip — the stale-run / phantom-cells bug. design_version is bumped on
         # every edit and never cleared by a build, so it survives that race.
         cur_ver = getattr(self.app.project, "design_version", 0)
-        if self._hosted_design_version is not None and cur_ver == self._hosted_design_version:
+        cur_pid = id(self.app.project)
+        if (self._hosted_design_version is not None
+                and cur_ver == self._hosted_design_version
+                and self._hosted_project_id == cur_pid):
             # Design unchanged — fast path (no rebuild). Do NOT reset the trace
             # here: this hook fires per BATCH, and a duplex Run is two batches
             # (rx + tx) on ONE connection. Resetting per batch made the 2nd batch
@@ -1426,6 +1440,7 @@ class SimController(QObject):
         # Resetting here too would wipe an earlier batch of the SAME Run.
         self._last_server_refresh = 0.0
         self._hosted_design_version = cur_ver   # remember what we just hosted
+        self._hosted_project_id = cur_pid       # …and WHICH design (id) it was
         # RE-RESOLVE the per-stream injection targets + per-batch loop-memory resets
         # from the FRESH build and push them into the running server. WITHOUT this, a
         # server started BEFORE the design was imported/routed captured an EMPTY

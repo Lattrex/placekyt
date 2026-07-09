@@ -99,3 +99,39 @@ def test_switch_design_reresolves_targets(monkeypatch):
         assert sim._gr_server._default_entries.get("x16_in") != 18 or True
     finally:
         sim.stop_gnuradio_server()
+
+
+def test_rebuild_keeps_targets_when_reresolve_is_transiently_empty(monkeypatch):
+    """A rebuild that transiently re-resolves stream_targets to {} for a design
+    that HAS stream-tagged input nets must KEEP the server's existing good
+    targets, not clobber them with {} (which would drop every batch to the
+    entry=0/hop=30 single-stream fallback → 0 words). Reproduces the reported
+    'switch design -> re-resolved {} -> no output' after the id(project) guard
+    started forcing rebuilds."""
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    from engine.catalog import BlockCatalog
+    from ui.controller import AppController
+    from ui.sim_controller import SimController
+    import engine.port_config as pc
+
+    cat = BlockCatalog.from_gr_kyttar()
+    app = AppController(catalog=cat)
+    app.open_project(SSB_KYT)   # has tx/rx stream-tagged input nets
+    app.build()
+    sim = SimController(app)
+    sim.set_animate_cells(False)
+    port = sim.start_gnuradio_server(host="127.0.0.1", port=0)
+    try:
+        good = dict(sim._gr_server._stream_targets)
+        assert good, "SSB should host with non-empty stream_targets"
+        # Force a rebuild whose stream_targets resolution comes back EMPTY (a
+        # transient/failed resolve), while the design still HAS the stream nets.
+        monkeypatch.setattr(pc, "stream_targets", lambda *a, **k: {})
+        sim._hosted_project_id = None            # force the rebuild branch
+        sim._rebuild_if_dirty_threadsafe()
+        # The guard must have KEPT the good targets, not wiped them to {}.
+        assert sim._gr_server._stream_targets == good, (
+            "empty re-resolve wrongly clobbered the server's good stream_targets")
+    finally:
+        sim.stop_gnuradio_server()

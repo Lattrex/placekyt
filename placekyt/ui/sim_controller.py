@@ -1454,11 +1454,36 @@ class SimController(QObject):
             try:
                 from engine.port_config import (
                     stream_targets as _st_fn, batch_reset_writes as _brw_fn)
-                self._gr_server._stream_targets = dict(_st_fn(
+                _new_targets = dict(_st_fn(
                     self.app.project, self.app.registry, self.app.catalog,
                     getattr(self, "_sim_chip", 0), build_result=result) or {})
-                self._gr_server._batch_reset_writes = list(_brw_fn(
-                    result, getattr(self, "_sim_chip", 0)) or [])
+                # TRANSIENT-STATE GUARD: this rebuild re-resolves stream_targets
+                # from the current project/build; if it comes back EMPTY for a
+                # design that DOES have stream-tagged x16_in->block nets, the read
+                # was transient (mid-edit / a not-fully-routed build) — DON'T
+                # clobber the server's existing GOOD targets with {}, or every
+                # later batch falls through to the entry=0/hop=30 single-stream
+                # fallback and emits 0 words (the reported "switch design ->
+                # re-resolved {} -> no output"). Keep the current targets and let
+                # a later settled batch re-resolve. A genuinely stream-less design
+                # (no such nets) correctly resolves to {} and we accept it.
+                from model.connection import (
+                    ChipPortEndpoint as _CPE, BlockEndpoint as _BE)
+                _has_stream_nets = any(
+                    isinstance(c.source, _CPE) and isinstance(c.target, _BE)
+                    and getattr(c, "stream_id", None)
+                    for c in self.app.project.connections)
+                if _new_targets or not _has_stream_nets:
+                    self._gr_server._stream_targets = _new_targets
+                    self._gr_server._batch_reset_writes = list(_brw_fn(
+                        result, getattr(self, "_sim_chip", 0)) or [])
+                else:
+                    import sys as _sysT
+                    _sysT.stderr.write(
+                        "[placeKYT server] rebuild saw EMPTY stream_targets for a "
+                        "stream-tagged design — keeping current targets, will "
+                        "re-resolve on a settled batch\n")
+                    _sysT.stderr.flush()
                 # Refresh the input-port default entry/hop too (the single-stream
                 # fallback path), so a design with no stream_id still injects right.
                 cfg2 = self._input_port_config(getattr(self, "_sim_chip", 0))

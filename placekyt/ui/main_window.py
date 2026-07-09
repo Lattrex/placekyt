@@ -1090,6 +1090,15 @@ class MainWindow(QMainWindow):
         RE-ANCHOR resizes in place + surfaces DRC."""
         from engine import preferences
 
+        import os as _os
+        if _os.environ.get("KYTTAR_REBUILD_DEBUG") == "1":
+            import sys as _sysD
+            _sysD.stderr.write(
+                f"[REBUILD_DBG] _on_grc_params_received: {len(params_by_block or {})} "
+                f"blocks advertised, mode={preferences.grc_param_change_mode()}, "
+                f"proj_pid={id(self.controller.project)} "
+                f"ver={getattr(self.controller.project,'design_version',None)}\n")
+            _sysD.stderr.flush()
         diffs = self.controller.observe_grc_params(params_by_block or {})
         if not diffs:
             return
@@ -1106,6 +1115,14 @@ class MainWindow(QMainWindow):
         """Apply the recorded GRC params to the out-of-sync blocks and re-layout
         (the indicator-click action, and the auto/re-anchor handler). Surfaces
         any resulting DRC violations rather than silently proceeding."""
+        import os as _os
+        if _os.environ.get("KYTTAR_REBUILD_DEBUG") == "1":
+            import sys as _sysD
+            _sysD.stderr.write(
+                f"[REBUILD_DBG] _resync_from_grc FIRED (mode={mode}) — this RE-LAYS-OUT "
+                f"the project (pid before={id(self.controller.project)} "
+                f"ver={getattr(self.controller.project,'design_version',None)})\n")
+            _sysD.stderr.flush()
         try:
             affected, report = self.controller.resync_from_grc(
                 mode=mode, chip_types=self.controller.chip_types())

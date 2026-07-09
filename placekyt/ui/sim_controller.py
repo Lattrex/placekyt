@@ -1405,6 +1405,34 @@ class SimController(QObject):
         # every edit and never cleared by a build, so it survives that race.
         cur_ver = getattr(self.app.project, "design_version", 0)
         cur_pid = id(self.app.project)
+        # TEMP DIAGNOSTIC (KYTTAR_REBUILD_DEBUG=1): dump exactly WHICH project the
+        # server is about to build — id, version, block count/types, and the
+        # stream_ids on x16_in->block nets — so a stale/half-placed project that
+        # rebuilds to a tiny word count with no streams is caught red-handed.
+        import os as _os
+        if _os.environ.get("KYTTAR_REBUILD_DEBUG") == "1":
+            import sys as _sysD
+            try:
+                _proj = self.app.project
+                _blocks = getattr(_proj, "blocks", [])
+                _btypes = [getattr(b, "block_type", getattr(b, "type", "?"))
+                           for b in _blocks]
+                from model.connection import (
+                    ChipPortEndpoint as _CPE, BlockEndpoint as _BE)
+                _sids = [getattr(c, "stream_id", None) for c in _proj.connections
+                         if isinstance(c.source, _CPE) and isinstance(c.target, _BE)]
+                _sysD.stderr.write(
+                    f"[REBUILD_DBG] pre-check: cur_pid={cur_pid} cur_ver={cur_ver} "
+                    f"hosted_pid={self._hosted_project_id} "
+                    f"hosted_ver={self._hosted_design_version} "
+                    f"pnr={getattr(self.app,'pnr_in_progress',None)} "
+                    f"n_blocks={len(_blocks)} stream_ids={_sids} "
+                    f"proj_path={getattr(self.app,'project_path',None)} "
+                    f"grc_src={getattr(self.app,'_grc_source_path',None)} "
+                    f"types={_btypes}\n")
+                _sysD.stderr.flush()
+            except Exception as _e:  # noqa: BLE001
+                _sysD.stderr.write(f"[REBUILD_DBG] dump failed: {_e}\n")
         if (self._hosted_design_version is not None
                 and cur_ver == self._hosted_design_version
                 and self._hosted_project_id == cur_pid):

@@ -53,6 +53,14 @@ class AppController(QObject):
         self.project = Project()
         self.commands = CommandManager(self.project)
         self.project_path: Path | None = None
+        # True WHILE an import / auto-P&R is mutating the project (GUI thread).
+        # The GRC server's per-batch rebuild (server thread) reads self.project;
+        # if a stray batch arrives mid-P&R it would build the HALF-PLACED project
+        # (few cells, no routed stream nets) and re-host that garbage. This flag
+        # lets the rebuild skip and keep serving the last GOOD chip until P&R
+        # settles. Plain bool; set/read across threads but only ever flipped on
+        # the GUI thread, and a stale read just defers one rebuild (safe).
+        self.pnr_in_progress: bool = False
         # GRC↔placeKYT parameter-sync tracker (the GRC-side params last seen for
         # each placed block + the current out-of-sync diff). Reset per project.
         from engine.grc_sync import GrcSyncState
@@ -455,6 +463,11 @@ class AppController(QObject):
         # (recorded alongside the path) is the basename hint for that fallback.
         path = self._resolve_grc_path(path, name)
         result = _import_grc(path, self.catalog, chip_type=ct)
+        # The freshly-imported project is UNROUTED until the caller runs auto_pnr.
+        # Mark P&R in progress so a stray GRC batch (from a still-connected
+        # flowgraph of the PREVIOUS demo) doesn't rebuild+host this half-placed
+        # design on the running server. auto_pnr clears it when the layout settles.
+        self.pnr_in_progress = True
         self.set_project(result.project)
         self.project_path = None
         # Remember the source .grc so the GUI can WATCH it and flag drift the
@@ -1666,6 +1679,7 @@ class AppController(QObject):
         if best is None:
             self._pnr_channel_reserve = 1
             self._pnr_seed = None
+            self.pnr_in_progress = False   # P&R done (failed) — allow rehost
             if place_fail is not None:
                 raise place_fail
             raise PlacementError(
@@ -1685,6 +1699,7 @@ class AppController(QObject):
             report = best[2]
         self._pnr_channel_reserve = 1
         self._pnr_seed = None
+        self.pnr_in_progress = False   # P&R settled — server may rehost now
         return report
 
     def auto_route_all(self, chip_types: dict | None = None, *,

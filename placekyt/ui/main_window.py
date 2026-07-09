@@ -1487,6 +1487,12 @@ class MainWindow(QMainWindow):
             self._error("Save failed", str(exc))
 
     def _after_project_loaded(self) -> None:
+        # The design has fully SETTLED (import + auto-P&R done, or a .kyt opened).
+        # Clear the P&R-in-progress guard so the GRC server's per-batch rebuild
+        # may re-host this now-complete design. While it was set, a stray batch
+        # skipped rebuilding a half-placed project (the "reimport -> 374-word /
+        # {} targets -> no output" bug).
+        self.controller.pnr_in_progress = False
         p = self.controller.project
         self.inspector.set_project(p)
         self.canvas.set_project(p, self.controller.chip_types())

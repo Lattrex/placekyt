@@ -1388,6 +1388,15 @@ class SimController(QObject):
         :meth:`_rehost_server_chip_threadsafe`."""
         if self.engine is None:
             return None, None
+        # DESIGN NOT SETTLED: an import / auto-P&R is mid-flight on the GUI thread
+        # (self.app.project is being placed+routed incrementally). A batch that
+        # arrives now would rebuild the HALF-PLACED project — few cells, no routed
+        # stream nets — and re-host that garbage (the reported "reimport a .grc on
+        # a running server -> 374-word chip, empty stream_targets -> no output").
+        # Keep serving the last GOOD chip; a batch after the design settles
+        # (_after_project_loaded clears the flag) rebuilds cleanly.
+        if getattr(self.app, "pnr_in_progress", False):
+            return None, None
         # Compare the live monotonic design_version to the version the server has
         # hosted. We do NOT use build_dirty here: the GUI's own post-edit
         # cached_build() (inspector/face refresh that fires right after a reroute)

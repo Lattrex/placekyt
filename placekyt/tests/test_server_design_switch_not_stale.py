@@ -135,3 +135,40 @@ def test_rebuild_keeps_targets_when_reresolve_is_transiently_empty(monkeypatch):
             "empty re-resolve wrongly clobbered the server's good stream_targets")
     finally:
         sim.stop_gnuradio_server()
+
+
+def test_rebuild_skipped_while_pnr_in_progress():
+    """While an import / auto-P&R is mid-flight (controller.pnr_in_progress), a
+    stray GRC batch must NOT rebuild+re-host the half-placed project. The rebuild
+    hook returns (None, None) — keep serving the current good chip. Reproduces the
+    'reimport a .grc on a running server -> 374-word chip / empty targets -> no
+    output' bug: a batch caught the project mid-P&R and hosted a partial build."""
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    from engine.catalog import BlockCatalog
+    from ui.controller import AppController
+    from ui.sim_controller import SimController
+
+    cat = BlockCatalog.from_gr_kyttar()
+    app = AppController(catalog=cat)
+    app.open_project(SSB_KYT)
+    app.build()
+    sim = SimController(app)
+    sim.set_animate_cells(False)
+    port = sim.start_gnuradio_server(host="127.0.0.1", port=0)
+    try:
+        good_targets = dict(sim._gr_server._stream_targets)
+        good_chip = sim._gr_server._chip
+        # Simulate an import mid-flight: version moved + a different project id
+        # (so the rebuild WOULD normally fire), but P&R is not settled yet.
+        app.pnr_in_progress = True
+        sim._hosted_project_id = None
+        sim._hosted_design_version = -1
+        chip, err = sim._rebuild_if_dirty_threadsafe()
+        # No rebuild: keep the current chip + targets untouched.
+        assert chip is None and err is None, "rebuild ran during P&R (should skip)"
+        assert sim._gr_server._chip is good_chip, "hosted chip was replaced mid-P&R"
+        assert sim._gr_server._stream_targets == good_targets, (
+            "stream_targets changed mid-P&R")
+    finally:
+        sim.stop_gnuradio_server()

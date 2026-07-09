@@ -234,50 +234,53 @@ def test_animation_on_keeps_backoff_while_draining(monkeypatch):
         "animation OFF must bypass the back-off while draining (fast, cheap flush)"
 
 
-def test_exec_ticks_dropped_at_drain_when_animation_off(monkeypatch):
-    """The live GRC drain path must DROP exec_tick events when animation is OFF.
+def test_animation_only_events_dropped_at_drain(monkeypatch):
+    """The live GRC drain path must retain ONLY what the waveform plots.
 
-    exec_ticks (the per-cell PC trail) are the BULK of a batch's trace (a real AM
-    burst emits >1,000,000, the vast majority exec_ticks) but they are NEVER
-    retained or plotted — the live waveform plots port_capture / port_injection /
-    data_arrival, and the animation overlay reads only the CURRENT refresh's slice.
-    So exec_ticks must NEVER enter the retained buffer / model, UNCONDITIONALLY (not
-    gated on the live animation flag): a burst drained while animation was ON would
-    otherwise buffer a million PC-trail events that later ticks grind through forever
-    ('scrolls forever, Stop doesn't stop it'). Animation ON still SHOWS the overlay,
-    from this drain's exec_ticks, used for the refresh then discarded."""
+    Measured on a 256-sample SSB batch (359,168 chip events): exec_tick 41%,
+    output_ready 30%, instr_arrival 17% — all NEVER plotted (the waveform plots
+    port_capture / port_injection / data_arrival). Retaining that 87% of
+    animation-only fabric detail pegged the TraceModel at its cap and made every
+    ~30 Hz pull tick re-render 200k+ transactions; with the adaptive back-off the
+    residual drained slower than the timer fired, so it never cleared and the view
+    churned the same stuck buffer forever ('scrolls forever'; GRC gone / Stop /
+    animation toggle all irrelevant — it's pure GUI-side). So the animation-only
+    kinds must NEVER enter the retained buffer, UNCONDITIONALLY (a burst drained
+    while animation was ON must not buffer them either). Animation ON still SHOWS
+    the overlay, from this drain's copy, used for the refresh then discarded."""
     monkeypatch.setattr(sc, "_PULL_MAX_EVENTS_PER_TICK", 10_000)
+    ANIM = ("exec_tick", "output_ready", "instr_arrival")
 
     def _mixed():
-        # 100 plotted data_arrivals interleaved with 400 exec_ticks (the realistic
-        # ratio: exec ticks dominate).
+        # 100 plotted data_arrivals interleaved with 300 animation-only events
+        # (100 of each anim kind) — the realistic ratio: anim detail dominates.
         evs = []
         for i in range(100):
             evs.append({"kind": "data_arrival", "cell_id": 0,
                         "time_ns": float(i), "dest": 1, "data": 0})
-            for j in range(4):
-                evs.append({"kind": "exec_tick", "cell_id": 0,
-                            "time_ns": float(i) + 0.1 * j})
+            for j, k in enumerate(ANIM):
+                evs.append({"kind": k, "cell_id": 0,
+                            "time_ns": float(i) + 0.1 * (j + 1)})
         return evs
 
-    # Animation OFF: exec_ticks dropped -> only the 100 data_arrivals reach the model,
-    # and nothing exec is left in the buffer.
+    # Animation OFF: only the 100 plotted data_arrivals reach the model; nothing
+    # animation-only is left in the buffer.
     h_off = _Harness(_mixed())
     h_off._animate_cells = False
     h_off.unthrottled_refresh(force=True, final=True, full_capture=True)
     assert len(h_off.trace_model.transactions) == 100, \
-        "only plotted events must reach the model (exec_ticks dropped)"
+        "only plotted events must reach the model (animation-only kinds dropped)"
     assert h_off._pending_batch_events == []
 
-    # Animation ON: exec_ticks STILL never retained (the model/buffer bound the same),
-    # but the overlay emit fires (it saw this drain's exec_ticks).
+    # Animation ON: animation-only kinds STILL never retained (buffer stays bounded),
+    # but the overlay emit fires (it saw this drain's animation events).
     h_on = _Harness(_mixed())
     h_on._animate_cells = True
     h_on.cell_states.count = 0
     h_on.unthrottled_refresh(force=True, final=True, full_capture=True)
     assert len(h_on.trace_model.transactions) == 100, \
-        "exec_ticks must NOT be retained even when animation is ON (buffer stays bounded)"
-    assert not any(t.kind == "exec_tick" for t in h_on.trace_model.transactions)
+        "animation-only kinds must NOT be retained even when animation is ON"
+    assert not any(t.kind in ANIM for t in h_on.trace_model.transactions)
     assert h_on.cell_states.count > 0, \
         "animation overlay must still fire when animation is ON"
 

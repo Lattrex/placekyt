@@ -860,25 +860,35 @@ class SimController(QObject):
             drained = list(self.engine.chip.get_trace())
         except Exception:  # noqa: BLE001
             drained = []
-        # VOLUME CONTROL: exec_tick events (the per-cell PC trail) are the BULK of a
-        # batch's trace — a single AM burst emits >1,000,000 transactions, the vast
-        # majority exec_ticks — but they are NEVER retained or plotted. The live GRC
-        # waveform plots port_capture / port_injection / data_arrival; exec_ticks
-        # feed ONLY the cell-animation overlay (_states_from_events /
-        # _steps_from_events), and that overlay reads ONLY the CURRENT refresh's
-        # slice (new_events), never the retained residual. So exec_ticks must NEVER
-        # enter the pending buffer — do it UNCONDITIONALLY, not gated on the live
-        # _animate_cells flag: a burst drained while animation was ON would
-        # otherwise buffer a million PC-trail events that later ticks (animation
-        # since toggled OFF) grind through forever (append 20k / trim 20k at the
-        # 400k cap → the reported "scrolls forever, Stop doesn't stop it"). When
-        # animation is ON we still show the overlay — from this drain's exec_ticks,
-        # used for THIS refresh only, then discarded (see exec_now below).
-        exec_now = []
+        # VOLUME CONTROL — retain ONLY what the live waveform actually plots.
+        # Measured on a 256-sample SSB batch (359,168 chip trace events):
+        #     exec_tick    146,688 (41%)   never plotted — animation PC-trail only
+        #     output_ready 105,984 (30%)   never plotted — animation transit flashes
+        #     instr_arrival 60,160 (17%)   never plotted — animation activity only
+        #     data_arrival  45,824 (13%)   RETAINED (tag recovery needs it)
+        #     port_capture/injection  512  the ONLY events the waveform draws
+        # So >87% of the trace is animation-only fabric detail the waveform never
+        # draws, yet it was ALL retained + time-rebased + chunk-ingested into the
+        # TraceModel — which pegs at its cap and every ~30 Hz pull tick re-renders
+        # ~200k+ transactions (~300 ms each). With the adaptive back-off that makes
+        # the residual drain slower than the pull timer can keep up, so it never
+        # clears and the view churns the same stuck buffer forever (the reported
+        # "scrolls forever; GRC gone / Stop / animation toggle don't matter" — it's
+        # all GUI-side, nothing to do with the chip or the client).
+        #
+        # Fix: the ANIMATION-ONLY kinds (exec_tick / output_ready / instr_arrival)
+        # must NEVER enter the retained buffer — the overlay reads only the CURRENT
+        # refresh slice, never the residual. Split them off at drain UNCONDITIONALLY
+        # (a burst drained while animation was ON must not buffer them either). When
+        # animation is ON, keep THIS drain's copy in anim_now for the overlay, used
+        # for this refresh then discarded. data_arrival is KEPT (port-tag recovery
+        # matches a port_capture to its co-located data_arrival's WRITE dest).
+        _ANIM_ONLY = ("exec_tick", "output_ready", "instr_arrival")
+        anim_now = []
         if drained:
             if getattr(self, "_animate_cells", False):
-                exec_now = [ev for ev in drained if ev.get("kind") == "exec_tick"]
-            drained = [ev for ev in drained if ev.get("kind") != "exec_tick"]
+                anim_now = [ev for ev in drained if ev.get("kind") in _ANIM_ONLY]
+            drained = [ev for ev in drained if ev.get("kind") not in _ANIM_ONLY]
         pending = getattr(self, "_pending_batch_events", None)
         if pending is None:
             pending = self._pending_batch_events = []
@@ -950,11 +960,12 @@ class SimController(QObject):
         # test harness stubs this method without the flag.)
         if getattr(self, "_animate_cells", False):
             # Cell-state overlay + handshakes from THIS batch of new events. The
-            # plotted events (new_events) no longer carry exec_ticks — they were
-            # split off at drain time so they never bloat the retained buffer — so
-            # fold this drain's exec_ticks (exec_now, used for this refresh only)
-            # back in here for the overlay's "executing" (green) distinction.
-            anim_events = new_events + exec_now if exec_now else new_events
+            # plotted events (new_events) no longer carry the animation-only kinds
+            # (exec_tick/output_ready/instr_arrival) — they were split off at drain
+            # time so they never bloat the retained buffer — so fold this drain's
+            # copy (anim_now, used for this refresh only) back in here for the
+            # overlay's executing/active states + per-word transit flashes.
+            anim_events = new_events + anim_now if anim_now else new_events
             states = self._states_from_events(anim_events, chip)
             self.cell_states.emit(states)
             # Live output FACE for EVERY cell active this batch — block AND

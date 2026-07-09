@@ -1219,11 +1219,19 @@ class ChipCanvas(QGraphicsView):
             item.clear_flash()
         for p in self.port_items():
             p.clear_flash()
-        # Restore any arrows the live sim re-pointed (MOVE [FACE] cells).
+        # Restore any arrows the live sim re-pointed (MOVE [FACE] cells). The
+        # saved items may belong to a PREVIOUS design's canvas — switching
+        # designs clears the scene, deleting those CellItems' underlying C++
+        # objects, while this dict still holds the (now-dangling) Python
+        # wrappers. Touching one raises "Internal C++ object already deleted".
+        # Skip any deleted item rather than crash Reset Sim.
         for item, orig in getattr(self, "_live_face_orig", {}).values():
-            if item.face != orig:
-                item.face = orig
-                item.update()
+            try:
+                if item.face != orig:
+                    item.face = orig
+                    item.update()
+            except RuntimeError:
+                continue  # CellItem from a prior design — already deleted
         self._live_face_orig = {}
         self._flash_queue.clear()  # drop any un-played per-word flashes (#194)
         if self._flash_timer is not None:

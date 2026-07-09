@@ -200,6 +200,12 @@ class SimServer:
         # indicator. Qt-free contract (the host marshals to the GUI thread).
         self._on_grc_params = on_grc_params
         self._sock: socket.socket | None = None
+        # The socket of the client whose request is currently being served. The
+        # per-sample batch loop polls it (non-blocking, every 32 samples) so a
+        # mid-batch client disconnect (GRC Stop / flowgraph close) ABORTS the
+        # burst promptly instead of running to completion — the sim should stop
+        # when GRC stops.
+        self._active_conn: socket.socket | None = None
         self._thread: threading.Thread | None = None
         self._running = False
         self.bound_port: int | None = None
@@ -307,13 +313,44 @@ class SimServer:
                     pass
 
     def _handle_client(self, conn: socket.socket) -> None:
-        while self._running:
+        self._active_conn = conn
+        try:
+            while self._running:
+                try:
+                    header, payload = recv_message(conn)
+                except (ConnectionError, OSError):
+                    return
+                reply, out_payload = self._dispatch(header, payload)
+                try:
+                    send_message(conn, reply, out_payload)
+                except (ConnectionError, OSError):
+                    # The client vanished mid-reply (e.g. an aborted batch's
+                    # reply to a closed GRC socket) — drop it, serve the next.
+                    return
+        finally:
+            self._active_conn = None
+
+    def _client_alive(self) -> bool:
+        """Non-blocking check that the serving client socket is still open. A
+        closed connection reads EOF (empty peek) → the client (GRC) went away,
+        so the batch should abort. Any transient error is treated as ALIVE
+        (never abort a healthy burst on a spurious check). Called periodically
+        by the per-sample batch loop — bounded, cheap (one MSG_PEEK recv)."""
+        conn = self._active_conn
+        if conn is None:
+            return True
+        try:
+            conn.setblocking(False)
             try:
-                header, payload = recv_message(conn)
-            except (ConnectionError, OSError):
-                return
-            reply, out_payload = self._dispatch(header, payload)
-            send_message(conn, reply, out_payload)
+                data = conn.recv(1, socket.MSG_PEEK)
+            finally:
+                conn.setblocking(True)
+            # EOF (b"") on a stream socket = the peer closed the connection.
+            return data != b""
+        except BlockingIOError:
+            return True          # no data pending, but the socket is open
+        except OSError:
+            return True          # transient — do not abort a healthy burst
 
     def _dispatch(self, header: dict, payload):
         op = header.get("op")
@@ -446,6 +483,12 @@ class SimServer:
                 # packet (which corrupts its first samples). Done ONCE per RPC — never
                 # per sample (that would break the loop mid-packet).
                 self._apply_batch_reset()
+                # Re-arm the debug hooks for THIS batch: a previous abort (Stop /
+                # client disconnect) left the one-shot stop latch set; the hooks
+                # persist for the whole server session, so without clearing it
+                # every later Run would abort at its first sample.
+                if self._debug_hooks is not None:
+                    self._debug_hooks.clear_stop()
                 data = np.asarray(payload, dtype="<f4")
                 # Robust to a real (1-addr) or I/Q (2-addr) stream — see above.
                 _das = list(header.get("data_addrs", [0, 1]))
@@ -617,6 +660,12 @@ class SimServer:
                         # behavior). Raises BatchAborted if the user stops.
                         if self._debug_hooks is not None:
                             self._debug_hooks.after_sample(self._chip, k, port)
+                        # GRC STOP / client disconnect: poll the serving socket
+                        # every 32 samples (bounded, cheap) and abort the burst
+                        # if the client went away — placeKYT must stop when the
+                        # GRC flowgraph stops, not run the whole burst.
+                        if (k & 31) == 31 and not self._client_alive():
+                            raise BatchAborted()
                 except BatchAborted:
                     aborted = True
                     nrun = k + 1   # samples actually driven before the stop
@@ -741,6 +790,9 @@ class SimServer:
         if grc_params and self._on_grc_params is not None:
             self._on_grc_params(dict(grc_params))
         self._apply_batch_reset()
+        # Re-arm the one-shot stop latch for this Run (see process_batch).
+        if self._debug_hooks is not None:
+            self._debug_hooks.clear_stop()
 
         data = np.asarray(payload, dtype="<f4") if payload is not None else np.array([])
         # Resolve each stream's injection landing + slice its samples out of the
@@ -778,45 +830,60 @@ class SimServer:
         mx = int(header.get("max_events_per", 40000))
         n_max = max((s["n"] for s in streams), default=0)
         _t0 = time.perf_counter()
+        aborted = False
         # ROUND-ROBIN by sample index: at each step k, drive stream 0's sample k,
         # then stream 1's sample k, … so all chains advance together. A stream that
         # has run out of samples is skipped. Output is drained after EACH stream's
         # step and demuxed by out_tag into that stream's bucket (other tags parked
-        # in _tag_buf and swept up whenever their owning stream drains).
-        for k in range(n_max):
-            for s in streams:
-                if k >= s["n"]:
-                    continue
-                seg = s["seg"]
-                hop, a0, a1, entry = s["hop"], s["a0"], s["a1"], s["entry"]
-                if s["complex"]:
-                    xi = _float_to_q15(float(seg[2 * k]))
-                    xq = _float_to_q15(float(seg[2 * k + 1]))
-                else:
-                    xi = (_float_to_raw_i16(float(seg[k])) if s["raw"]
-                          else _float_to_q15(float(seg[k])))
-                    xq = None
-                self._chip.inject_data_physical([xi], target_hop_cnt=hop,
-                                                target_addr=int(a0))
-                self._chip.run(max_events=3000)
-                if xq is not None:
-                    self._chip.inject_data_physical([xq], target_hop_cnt=hop,
-                                                    target_addr=int(a1))
-                    self._chip.run(max_events=3000)
-                self._chip.inject_jump_physical(target_hop_cnt=hop, entry_addr=entry)
-                self._chip.run(max_events=mx)
-                # Drain + demux by tag into EACH stream's bucket.
-                for (v, d, _t) in self._chip.read_port_words_timed(s["port"]):
-                    dst = None
-                    for s2 in streams:
-                        if s2["out_tag"] is not None and int(d) == int(s2["out_tag"]):
-                            dst = s2
-                            break
-                    if dst is not None:
-                        dst["out"].append(float(int(v) & 0xFFFF) if dst["raw"]
-                                          else _q15_to_float(int(v)))
+        # in _tag_buf and swept up whenever their owning stream drains). Wrapped so
+        # a debug-hook STOP or a client disconnect (BatchAborted) returns the
+        # samples produced so far instead of running the whole burst.
+        try:
+            for k in range(n_max):
+                for s in streams:
+                    if k >= s["n"]:
+                        continue
+                    seg = s["seg"]
+                    hop, a0, a1, entry = s["hop"], s["a0"], s["a1"], s["entry"]
+                    if s["complex"]:
+                        xi = _float_to_q15(float(seg[2 * k]))
+                        xq = _float_to_q15(float(seg[2 * k + 1]))
                     else:
-                        self._tag_buf.setdefault(int(d), []).append(int(v))
+                        xi = (_float_to_raw_i16(float(seg[k])) if s["raw"]
+                              else _float_to_q15(float(seg[k])))
+                        xq = None
+                    self._chip.inject_data_physical([xi], target_hop_cnt=hop,
+                                                    target_addr=int(a0))
+                    self._chip.run(max_events=3000)
+                    if xq is not None:
+                        self._chip.inject_data_physical([xq], target_hop_cnt=hop,
+                                                        target_addr=int(a1))
+                        self._chip.run(max_events=3000)
+                    self._chip.inject_jump_physical(target_hop_cnt=hop, entry_addr=entry)
+                    self._chip.run(max_events=mx)
+                    # Drain + demux by tag into EACH stream's bucket.
+                    for (v, d, _t) in self._chip.read_port_words_timed(s["port"]):
+                        dst = None
+                        for s2 in streams:
+                            if s2["out_tag"] is not None and int(d) == int(s2["out_tag"]):
+                                dst = s2
+                                break
+                        if dst is not None:
+                            dst["out"].append(float(int(v) & 0xFFFF) if dst["raw"]
+                                              else _q15_to_float(int(v)))
+                        else:
+                            self._tag_buf.setdefault(int(d), []).append(int(v))
+                    # Same first-class debug controls as process_batch: pause /
+                    # step / speed / stop after each stream's sample (and the
+                    # lockstep frame gate when animation is on).
+                    if self._debug_hooks is not None:
+                        self._debug_hooks.after_sample(self._chip, k, s["port"])
+                # GRC STOP / client disconnect: abort the interleaved burst
+                # promptly (see process_batch — same bounded poll cadence).
+                if (k & 31) == 31 and not self._client_alive():
+                    raise BatchAborted()
+        except BatchAborted:
+            aborted = True
         # Sweep any parked words that belong to a stream (late/ordering).
         for s in streams:
             if s["out_tag"] is not None:
@@ -844,6 +911,6 @@ class SimServer:
             except TypeError:
                 self._on_activity()
         return ({"ok": True, "samples": n_max, "seconds": _dt,
-                 "lengths": lengths,
+                 "lengths": lengths, "aborted": aborted,
                  "stream_ids": [s["sid"] for s in streams]},
                 np.asarray(out_all, dtype="<f4"))

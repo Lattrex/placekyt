@@ -98,6 +98,17 @@ class BatchDebugHooks:
         with self._frame_cv:
             self._frame_cv.notify_all()
 
+    def clear_stop(self) -> None:
+        """Re-arm the hooks for a NEW batch. ``stop()`` is a one-shot latch: a
+        previous abort (Stop / client disconnect) leaves ``_stop_flag`` set, and
+        the hooks live for the whole server session — without clearing it every
+        subsequent Run on the persistently-hosted chip would abort at its first
+        sample. The server calls this at the TOP of each batch RPC. A user pause
+        is deliberate state and is NOT cleared here."""
+        with self._cv:
+            self._stop_flag = False
+            self._step = False
+
     def set_delay(self, seconds: float) -> None:
         with self._cv:
             self._delay_s = max(0.0, float(seconds))

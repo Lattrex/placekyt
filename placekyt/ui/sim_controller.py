@@ -74,6 +74,29 @@ _SERVER_CHIP_CAP = 5_000_000
 _SERVER_BATCH_TRACE_MAX = 400_000
 _LIVE_REFRESH_HZ = 8        # cap debug refreshes/sec during streaming
 
+# GUI-side PULL pacing for a GRC batch run (the animation-OFF / full-speed
+# path). The server thread does NO per-sample GUI signaling: per-sample queued
+# emits arrive faster than Qt can drain + repaint them, so the event loop never
+# gets a paint turn and the window freezes (the root cause of the GRC-run
+# freeze — two prior fixes died on exactly this). Instead a QTimer OWNED BY THE
+# GUI THREAD fires at ~30 Hz while the server is hosted and PULLS whatever the
+# chip produced since the last tick. The GUI paces ITSELF — it cannot be
+# flooded — and Qt naturally interleaves repaints between ticks.
+_SERVER_PULL_MS = 33
+# Bound ONE pull-tick's TraceModel ingest: at most this many drained events are
+# normalised + appended per refresh; the residual (already pulled off the chip
+# into the GUI-thread-only _pending_batch_events buffer) carries to the NEXT
+# tick — it is never re-drained, only advanced through. force=True (batch end /
+# server stop) ingests everything so the final settled trace is whole.
+_PULL_MAX_EVENTS_PER_TICK = 20_000
+# Adaptive refresh back-off: after a refresh whose total cost (append + the
+# synchronous trace_updated view re-renders) was T seconds, wait at least
+# _REFRESH_BACKOFF*T before the next non-forced refresh. On a huge retained
+# batch one re-render can take hundreds of ms; the back-off keeps refresh work
+# to a bounded fraction (~1/(1+backoff)) of GUI time so painting always gets a
+# turn — the window stays responsive even late in a giant burst.
+_REFRESH_BACKOFF = 3.0
+
 
 class SimController(QObject):
     """Owns a running simulation and emits overlay/status updates."""
@@ -242,6 +265,20 @@ class SimController(QObject):
         # flow, live). The speed slider only matters (and is only enabled) when
         # this is ON. See set_animate_cells / animate_cells.
         self._animate_cells = False
+        # GUI-side PULL timer for a GRC server run (see _SERVER_PULL_MS): started
+        # by start_gnuradio_server, stopped by stop_gnuradio_server. It lives on
+        # the GUI thread, so each tick is just one more event-loop turn — Qt
+        # interleaves repaints between ticks and the GUI can never be handed
+        # work faster than it chooses to take it.
+        self._server_pull_timer = QTimer(self)
+        self._server_pull_timer.setInterval(_SERVER_PULL_MS)
+        self._server_pull_timer.timeout.connect(self._server_pull_tick)
+        # Drained-but-not-yet-ingested trace events (the pull residual). GUI
+        # thread ONLY — refresh_debug_from_chip is its single reader/writer.
+        # Dropped on a Run-boundary trace reset (it belongs to the old Run).
+        self._pending_batch_events: list = []
+        # Wall-clock cost of the last refresh (drives the adaptive back-off).
+        self._last_refresh_cost = 0.0
 
     def animate_cells(self) -> bool:
         """Whether cell-execution/transit animation is enabled (toolbar checkbox)."""
@@ -265,6 +302,20 @@ class SimController(QObject):
         batch is hosted with lockstep active."""
         if self._batch_debug is not None:
             self._batch_debug.frame_done()
+
+    def _server_pull_tick(self) -> None:
+        """One GUI-thread pull tick while a GRC server is hosted: pull whatever
+        the chip has produced since the last tick and do ONE bounded refresh
+        (delta only — see _PULL_MAX_EVENTS_PER_TICK / _REFRESH_BACKOFF inside
+        refresh_debug_from_chip). This is the animation-OFF live view: the
+        waveform builds progressively while the server thread runs flat out,
+        and because the timer fires on the GUI thread, repaints interleave
+        naturally between ticks — the window cannot be flooded. An idle tick
+        (nothing drained, nothing pending) returns in microseconds."""
+        if self._gr_server is None:
+            self._server_pull_timer.stop()
+            return
+        self.refresh_debug_from_chip(full_capture=self._server_batch_retain_all)
 
     def set_stimulus(self, stimulus, name: str | None = None) -> None:
         """Use a stimulus BITSTREAM (list of raw 16-bit words) for the next run,
@@ -585,24 +636,25 @@ class SimController(QObject):
             return self._batch_breakpoint_hit(chip, sample_index)
 
         def _on_sample(sample_index, paused):
-            # Queued to the GUI thread: refresh the debug views per sample, and
-            # surface a pause so the toolbar state reflects a breakpoint stop.
-            # full_capture=True: a process_batch is a BOUNDED burst, so EVERY
-            # mid-batch refresh must retain the whole trace (not just the final
-            # one) — else the rolling-window trim drops the start of the batch
-            # and the user sees only the tail. Continuous streaming never calls
-            # _on_sample (it uses write_port/run_until_output), so it stays
-            # bounded — see test_live_trace_is_bounded_and_cycles.
-            # Per-sample refresh: full_capture=True. force is normally False so
-            # the refresh stays THROTTLED (forcing every sample would re-touch the
-            # whole retained trace each sample → the ~30s freeze). BUT in LOCKSTEP
-            # mode every sample must animate (the chip is blocked waiting for that
-            # sample's frame_done), so we FORCE the refresh — otherwise a throttled
-            # sample never calls apply_handshakes, frame_done never fires, and the
-            # chip stalls on the 5s lockstep timeout. Lockstep implies the chip is
-            # paced slowly anyway, so per-sample forced refreshes are affordable.
-            force = self._lockstep_active()
-            self.server_activity.emit(True, force)
+            # NO per-sample GUI signaling on the free-running path. The burst
+            # runs on the SERVER thread; a queued per-sample emit lands on the
+            # GUI event queue faster than Qt can drain + repaint, so the event
+            # loop never gets a paint turn and the window freezes for the whole
+            # batch (the verified root cause — two prior fixes failed on this).
+            # Progress is shown instead by the GUI-side pull timer
+            # (_server_pull_tick, ~30 Hz on the GUI thread): the GUI paces
+            # itself and cannot be flooded.
+            #
+            # LOCKSTEP is the one exception: the chip BLOCKS in after_sample
+            # until the GUI finishes animating this sample (frame_done), so at
+            # most ONE queued refresh is ever outstanding — self-paced by
+            # construction, not a flood — and the emit is REQUIRED (and forced
+            # past the throttle): the forced refresh runs apply_handshakes,
+            # whose flash-drained callback fires frame_done and releases the
+            # chip for the next sample. full_capture=True (a process_batch is a
+            # bounded burst whose whole trace is retained).
+            if self._lockstep_active():
+                self.server_activity.emit(True, True)
             if paused:
                 self.state_changed.emit("paused")
 
@@ -636,6 +688,12 @@ class SimController(QObject):
             on_grc_params=_grc_params,
             debug_hooks=self._batch_debug)
         bound = self._gr_server.start()
+        # Start the GUI-side pull timer: the ONLY per-sample-rate GUI work
+        # during a batch run (the server thread emits nothing per sample). Runs
+        # for the whole server session; idle ticks are near-free.
+        self._pending_batch_events = []
+        self._last_refresh_cost = 0.0
+        self._server_pull_timer.start()
         self.state_changed.emit(f"gnuradio-server :{bound}")
         self.server_state.emit(bound)
         return bound
@@ -649,11 +707,15 @@ class SimController(QObject):
             self._gr_server.stop()
             self._gr_server = None
             self._batch_debug = None
+            self._server_pull_timer.stop()
             # One final (unthrottled) refresh so the debug views settle on the
-            # last window of activity — still retain-all (the batch trace stays
-            # fully visible after Stop); clear the flag AFTER so a later
-            # interactive run reverts to the rolling window.
-            self.refresh_debug_from_chip(force=True)
+            # last window of activity — force=True also drains the ENTIRE pull
+            # residual, and full_capture keeps retain-all semantics (the batch
+            # trace stays fully visible after Stop, not window-trimmed); clear
+            # the flag AFTER so a later interactive run reverts to the rolling
+            # window.
+            self.refresh_debug_from_chip(
+                force=True, full_capture=self._server_batch_retain_all)
             self._server_batch_retain_all = False
             self.state_changed.emit("idle")
             self.server_state.emit(None)
@@ -668,18 +730,28 @@ class SimController(QObject):
         conditions of the bounded burst (essential for tracing startup/end batch
         behaviour). The default (streaming) path keeps the O(window) rolling trace.
 
-        THROTTLED: the server fires this constantly under streaming; we coalesce
-        to ~`_LIVE_REFRESH_HZ` so the GUI isn't swamped. The chip's trace is a
-        bounded ring buffer (`_LIVE_TRACE_MAX`), so the rebuilt TraceModel /
-        transaction log / waveform show only the most-recent window — cost stays
-        O(window) no matter how long the stream runs. ``force`` (on stop) does a
-        final refresh regardless of the throttle."""
+        THROTTLED: coalesced to ~`_LIVE_REFRESH_HZ`, PLUS an adaptive back-off —
+        after a refresh whose total cost (append + the synchronous view
+        re-renders triggered by trace_updated) was T seconds, the next
+        non-forced refresh waits at least ``_REFRESH_BACKOFF * T``. That keeps
+        refresh work to a bounded fraction of GUI time even when the retained
+        batch trace has grown huge (one re-render can take 100s of ms), so the
+        event loop always gets paint turns. ``force`` (batch end / stop) does a
+        final refresh regardless of the throttle and drains the whole residual.
+
+        BOUNDED PER CALL (batch mode): the chip is drained into a GUI-side
+        pending buffer (``_pending_batch_events``), and at most
+        ``_PULL_MAX_EVENTS_PER_TICK`` of it is normalised + appended per call;
+        the residual carries to the next pull tick (never re-drained). This is
+        what makes the ~30 Hz pull timer safe on an arbitrarily large burst."""
         if self.engine is None:
             return
         import time
         now = time.monotonic()
+        min_gap = max(1.0 / _LIVE_REFRESH_HZ,
+                      _REFRESH_BACKOFF * getattr(self, "_last_refresh_cost", 0.0))
         if not force and (now - getattr(self, "_last_server_refresh", 0.0)
-                          < 1.0 / _LIVE_REFRESH_HZ):
+                          < min_gap):
             return
         self._last_server_refresh = now
         chip = getattr(self, "_sim_chip", 0)
@@ -713,71 +785,79 @@ class SimController(QObject):
         if self._pending_trace_reset:
             self._pending_trace_reset = False
             self.trace_model.clear()
+            # A Run boundary also obsoletes the pull residual: any drained-but-
+            # not-yet-ingested events belong to the PREVIOUS Run and must not
+            # leak into the fresh (rebased) trace.
+            if getattr(self, "_pending_batch_events", None):
+                self._pending_batch_events = []
             # New Run → forget the time origin; the first event drained below
             # (re)establishes it so this Run's trace starts near 0.
             self._trace_time_origin = None
             self.trace_model.set_cursor(self.trace_model.latest_ns())
             self.trace_updated.emit(self.trace_model)
 
-        # INCREMENTAL window: the chip's max_records is a HARD CAP (it stops
-        # recording when full, NOT a ring buffer), so we drain it each refresh —
-        # ingest the new events into the TraceModel (which keeps the rolling
-        # window), then CLEAR the chip trace so it resumes recording fresh
-        # events. Without this, the trace freezes at the first _LIVE_TRACE_MAX
-        # events and the views look stuck after the initial burst.
+        # DRAIN the chip trace into the GUI-side pending buffer. The chip's
+        # max_records is a HARD CAP (it stops recording when full, NOT a ring
+        # buffer), so we pull EVERYTHING it recorded and clear it immediately —
+        # recording resumes at once, and the drained events now live in
+        # _pending_batch_events (GUI thread only), so nothing is lost and
+        # nothing is ever re-drained.
         try:
-            new_events = list(self.engine.chip.get_trace())
+            drained = list(self.engine.chip.get_trace())
         except Exception:  # noqa: BLE001
-            new_events = []
-        # NOTHING NEW → DO NOTHING. The server fires an activity signal per sample
-        # and again on completion, so after a batch finishes the GUI receives a
-        # long tail of refreshes that drain 0 events. If we still ran the emits
-        # below, each one re-renders the ENTIRE retained TraceModel (waveform /
-        # transaction log / timeline) on the GUI thread — ~215 ms against a
-        # ~470k-txn batch — and ~180 such idle ticks stack into a ~30 s lockup
-        # (the reported "subsequent-run freeze"). An empty drain adds no
-        # transactions, changes no cell state, and moves no cursor, so there is
-        # nothing to repaint: bail before touching any view. ``force`` (the final
-        # settle on Stop) still falls through so the last window is guaranteed to
-        # render even if it drained nothing new.
+            drained = []
+        pending = getattr(self, "_pending_batch_events", None)
+        if pending is None:
+            pending = self._pending_batch_events = []
+        if drained:
+            # PER-RUN TIME REBASE (server/batch mode only), applied AT DRAIN
+            # TIME so the origin is the Run's true first event even when ingest
+            # is spread over many pull ticks: the chip's sim clock climbs across
+            # Runs, so subtract this Run's start-time from every event so the
+            # Run's traces start near 0 (both streams overlay on a short window
+            # like GRC's sink) instead of marching off to ever-larger absolute
+            # times. Only for the bounded batch path — an interactive stream
+            # keeps real time.
+            if self._server_batch_retain_all:
+                if self._trace_time_origin is None:
+                    self._trace_time_origin = min(
+                        float(ev.get("time_ns", 0.0)) for ev in drained)
+                _org = self._trace_time_origin
+                if _org:
+                    for ev in drained:
+                        ev["time_ns"] = float(ev.get("time_ns", 0.0)) - _org
+            pending.extend(drained)
+            self.engine.clear_trace()
+            self._trace_scan_reset()
+        # BOUNDED INGEST — this call's slice of the pending delta:
+        #  * BATCH (full_capture): retain ALL events start-to-end, but ingest at
+        #    most _PULL_MAX_EVENTS_PER_TICK per non-forced call (the pull-timer
+        #    cadence); the residual advances next tick. force (batch end / stop
+        #    settle) ingests everything so the final trace is whole.
+        #  * STREAMING: the model keeps only the rolling window anyway, so drop
+        #    all but the most-recent window's worth NOW (cheap) instead of
+        #    normalising events only to trim them away — cost stays O(window)
+        #    for an unbounded stream, exactly as before.
+        retain_all = full_capture
+        if not retain_all:
+            cap = self._live_trace_max
+            new_events = pending[-cap:] if len(pending) > cap else pending
+            self._pending_batch_events = []
+        elif force or len(pending) <= _PULL_MAX_EVENTS_PER_TICK:
+            new_events = pending
+            self._pending_batch_events = []
+        else:
+            new_events = pending[:_PULL_MAX_EVENTS_PER_TICK]
+            self._pending_batch_events = pending[_PULL_MAX_EVENTS_PER_TICK:]
+        # NOTHING NEW → DO NOTHING. An empty ingest adds no transactions,
+        # changes no cell state, and moves no cursor, so there is nothing to
+        # repaint: bail before touching any view (idle pull ticks after a batch
+        # finishes cost microseconds). ``force`` (the final settle on Stop)
+        # still falls through so the last window is guaranteed to render even
+        # if it drained nothing new.
         if not new_events and not force:
             return
-        # PER-RUN TIME REBASE (server/batch mode only): the chip's sim clock climbs
-        # across Runs, so subtract this Run's start-time from every event so the
-        # Run's traces start near 0 (both streams overlay on a short window like
-        # GRC's sink) instead of marching off to ever-larger absolute times. The
-        # origin is the FIRST event's time_ns after a new-Run reset; established
-        # once, then applied to every subsequent event of the Run. Only for the
-        # bounded batch path — an interactive stream keeps real time.
-        if self._server_batch_retain_all and new_events:
-            if self._trace_time_origin is None:
-                self._trace_time_origin = min(
-                    float(ev.get("time_ns", 0.0)) for ev in new_events)
-            _org = self._trace_time_origin
-            if _org:
-                for ev in new_events:
-                    ev["time_ns"] = float(ev.get("time_ns", 0.0)) - _org
-        # At high sample rates a single refresh can drain tens of thousands of
-        # events (≈64 per sample). Normalising all of them only to trim most away
-        # is the dominant cost — keep just the most-recent window's worth of RAW
-        # events before the expensive normalise/append. (The handshake/cell-state
-        # overlay still scans the full batch, but that's cheap dict work.)
-        # BATCH (full_capture): keep ALL events so the whole bounded burst — start
-        # to end — is traceable. STREAMING: keep only the most-recent window's worth
-        # before the expensive normalise/append (cost stays O(window) for an
-        # unbounded stream).
-        # Retain the ENTIRE trace (no rolling-window trim) when full_capture is
-        # set — a BOUNDED process_batch burst (its final refresh AND every
-        # per-sample mid-batch refresh pass full_capture, so the user sees the
-        # whole burst start-to-end). Continuous/unbounded streaming
-        # (write_port + run_until_output) passes full_capture=False and keeps the
-        # O(window) rolling tail so it stays bounded (no growing Stop-lag).
-        retain_all = full_capture
-        if retain_all:
-            trimmed = new_events
-        else:
-            cap = self._live_trace_max
-            trimmed = new_events[-cap:] if len(new_events) > cap else new_events
+        trimmed = new_events
 
         # CELL ANIMATION (cell-state overlay + live faces + per-word transit
         # flashes) ONLY when enabled. When OFF the GRC run is a flat-out compute
@@ -836,10 +916,13 @@ class SimController(QObject):
             # this cap only guards a single pathologically-long burst.
             tm.trim_to(_SERVER_BATCH_TRACE_MAX)
         tm.set_cursor(tm.latest_ns())
-        self.engine.clear_trace()
-        self._trace_scan_reset()
+        # (The chip trace was already cleared at drain time above.)
         self.trace_updated.emit(tm)
         self.cell_state_refreshed.emit()
+        # Total cost of this refresh, INCLUDING the synchronous view re-renders
+        # the emits above triggered — feeds the adaptive back-off so the next
+        # non-forced refresh waits proportionally longer (paint gets its turn).
+        self._last_refresh_cost = time.monotonic() - now
 
     def _states_from_events(self, events, chip):
         """Derive the cell-state overlay (executing/active) from a batch of trace
@@ -1002,6 +1085,13 @@ class SimController(QObject):
         return values_to_bitstream(values, kw)
 
     def stop(self) -> None:
+        # A GRC batch in flight runs in the server loop, not the interactive
+        # timer — trip the hooks so it aborts at the next sample boundary
+        # (BatchAborted; also wakes a lockstep/pause waiter). The stop latch is
+        # one-shot: the server re-arms it (clear_stop) at the top of the next
+        # batch, so Run-again after a Stop works.
+        if self._batch_debug is not None:
+            self._batch_debug.stop()
         self._timer.stop()
         self._running = False
         self._paused = False

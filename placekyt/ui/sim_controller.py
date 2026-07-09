@@ -217,6 +217,12 @@ class SimController(QObject):
         # trace event is checked for a hit exactly once.
         self.breakpoints = BreakpointSet()
         self._bp_scan: dict[int, int] = {}
+        # GRC-batch breakpoint scan cursors (breakpoint mode): the server thread's
+        # scan of the chip trace (_batch_bp_scan) and the GUI drain's tail cursor
+        # (_gui_trace_scan). Both reset at a Run boundary (see _new_run). Only used
+        # when breakpoints are armed on a hosted GRC run.
+        self._batch_bp_scan: int = 0
+        self._gui_trace_scan: int = 0
         # Hits accumulated this run (for the scrubber's red markers).
         self._bp_hits: list = []
         # Stimulus-line breakpoints (#197): word indices into the injected
@@ -418,21 +424,38 @@ class SimController(QObject):
     def _batch_breakpoint_hit(self, chip, sample_index: int) -> bool:
         """Server-thread breakpoint check for a GRC batch sample. Reuses the same
         BreakpointSet as the interactive run, evaluated against the hosted chip's
-        recent trace events. Returns True if any enabled breakpoint fired on this
-        sample (the batch loop then pauses). Qt-free — touches engine only."""
+        NEW trace events (since the last scan). Returns True if any enabled
+        breakpoint fired (the batch loop then pauses). Qt-free — touches engine
+        only.
+
+        Scans the chip's own trace via get_trace() with a private scan cursor
+        (_batch_bp_scan). The GUI-thread refresh drains the SAME trace but — while
+        breakpoints are active — does NOT clear it (see refresh_debug_from_chip),
+        so this scan sees every event exactly once. The cursor is clear-resilient:
+        if the trace got SHORTER than the cursor (a Run-boundary clear on the
+        server thread, or a rare race), the cursor resets to 0 so no event is
+        skipped. The earlier version called chip.drain_trace()/trace_events(),
+        which don't exist on the hosted chip → it always excepted → breakpoints
+        NEVER fired on the GRC path (they only ever worked on the interactive
+        standalone run). This wires them up."""
         if not self.breakpoints.breakpoints:
             return False
         chip_obj = self._gr_server._chip if self._gr_server is not None else None
         if chip_obj is None:
             return False
         try:
-            sim_chip = getattr(chip_obj, "id", 0) or 0
-            events = chip_obj.drain_trace() if hasattr(chip_obj, "drain_trace") \
-                else chip_obj.trace_events()
-            hit = self.breakpoints.first_hit(sim_chip, list(events), self._width)
-        except Exception:
+            sim_chip = getattr(self, "_sim_chip", 0)
+            events = list(chip_obj.get_trace())
+            start = getattr(self, "_batch_bp_scan", 0)
+            if start > len(events):        # trace was cleared under us — restart
+                start = 0
+            new = events[start:]
+            self._batch_bp_scan = len(events)
+            hit = self.breakpoints.first_hit(sim_chip, new, self._width)
+        except Exception:  # noqa: BLE001 — a faulty scan must never wedge the burst
             return False
         if hit is not None:
+            self._bp_hits.append(hit)
             self.breakpoint_hit.emit(hit)
             return True
         return False
@@ -707,6 +730,10 @@ class SimController(QObject):
         def _new_run():
             self._pending_trace_reset = True
             self._last_server_refresh = 0.0
+            # New Run → the chip trace is cleared server-side; restart both
+            # breakpoint-mode scan cursors so the fresh Run's events aren't skipped.
+            self._batch_bp_scan = 0
+            self._gui_trace_scan = 0
 
         self._gr_server = SimServer(
             self.engine.chip, host=host, port=port,
@@ -856,10 +883,28 @@ class SimController(QObject):
         # recording resumes at once, and the drained events now live in
         # _pending_batch_events (GUI thread only), so nothing is lost and
         # nothing is ever re-drained.
+        # BREAKPOINT MODE: the server thread scans the SAME chip trace to fire
+        # breakpoints (_batch_breakpoint_hit), so we must NOT clear it here (that
+        # would drop events before the scan sees them → missed breakpoints). In
+        # that mode read only the NEW tail via a GUI-side cursor (_gui_trace_scan)
+        # and leave the trace intact; normal runs drain+clear as before (keeps the
+        # chip trace small). get_trace() is non-destructive — only clear_trace()
+        # empties it — so both threads can read concurrently.
+        _bps = getattr(self, "breakpoints", None)
+        _bp_mode = (getattr(self, "_gr_server", None) is not None
+                    and _bps is not None and bool(_bps.breakpoints))
         try:
-            drained = list(self.engine.chip.get_trace())
+            full = list(self.engine.chip.get_trace())
         except Exception:  # noqa: BLE001
-            drained = []
+            full = []
+        if _bp_mode:
+            _gstart = getattr(self, "_gui_trace_scan", 0)
+            if _gstart > len(full):        # trace cleared (Run boundary) — restart
+                _gstart = 0
+            drained = full[_gstart:]
+            self._gui_trace_scan = len(full)
+        else:
+            drained = full
         # VOLUME CONTROL — retain ONLY what the live waveform actually plots.
         # Measured on a 256-sample SSB batch (359,168 chip trace events):
         #     exec_tick    146,688 (41%)   never plotted — animation PC-trail only
@@ -929,8 +974,11 @@ class SimController(QObject):
                     for ev in drained:
                         ev["time_ns"] = float(ev.get("time_ns", 0.0)) - _org
             pending.extend(drained)
-            self.engine.clear_trace()
-            self._trace_scan_reset()
+            # In breakpoint mode we read a tail via _gui_trace_scan and MUST NOT
+            # clear (the server scan needs the events). Otherwise clear as before.
+            if not _bp_mode:
+                self.engine.clear_trace()
+                self._trace_scan_reset()
         # BOUNDED INGEST — this call's slice of the pending delta:
         #  * BATCH (full_capture): retain ALL events start-to-end, but ingest at
         #    most _PULL_MAX_EVENTS_PER_TICK per non-forced call (the pull-timer

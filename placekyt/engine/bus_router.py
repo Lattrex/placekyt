@@ -1177,6 +1177,7 @@ def _route_chip_bus_v2(project, ct, chip_id, nets, spine, *, port_map_provider):
             if i_to is None:
                 return _bail(f"egress net {name}: output port not on backbone")
             i_from = 0
+            src_out_cell = None
             if isinstance(conn.source, BlockEndpoint):
                 st = src_tap_cell(conn, i_to)
                 if st is None:
@@ -1190,7 +1191,24 @@ def _route_chip_bus_v2(project, ct, chip_id, nets, spine, *, port_map_provider):
                                f"{conn.source.block} output cell not tappable on the bus"))
                     continue
                 i_from = bb_index.get(st, 0)
+                # The word LEAVES the source block's OUTPUT cell, then hops @1 to the tap
+                # (``st``) it rides from. When the output cell is NOT itself the tap (a
+                # multi-cell block whose output cell sits OFF the backbone — the tap is a
+                # free neighbour), the route MUST begin at the output cell so it starts at
+                # the true emit cell: the build derives the exit hop from ``route[0]``, and
+                # if ``route[0]`` were the tap (one cell downstream) every waypoint — and the
+                # output-port EDGE cell — would be reached one hop early, executing there
+                # instead of transiting out the port (0 egress). Prepend the output cell so
+                # ``route[0] == exit_cell`` uniformly (when the output cell already sits ON
+                # the slice, ``st == oc`` and no prepend is needed — that is the case that
+                # always worked).
+                sb = project.block(conn.source.block)
+                if sb is not None:
+                    src_out_cell = out_cell_of(sb, conn.source.port)
             pts = list(backbone[i_from:i_to + 1])
+            # ``backbone`` holds (x, y) tuples; keep ``pts`` homogeneous.
+            if src_out_cell is not None and (not pts or tuple(pts[0]) != tuple(src_out_cell)):
+                pts = [tuple(src_out_cell)] + pts
             # HOP BUDGET (§1.3): a backbone slice whose delivered distance exceeds the
             # 31-hop budget cannot reach the port — mark it a NAMED failure so the design
             # escalates to the maze router (independent, node-disjoint) rather than a build

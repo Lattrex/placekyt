@@ -40,3 +40,6 @@ examples/ssb_weaver/ssb_weaver.py
 dev_docs/
 *.devnote.md
 examples/ssb_weaver/ssb_weaver_transceiver.py
+
+# Claude Code agent scratch/worktrees (NEVER checked in)
+.claude/

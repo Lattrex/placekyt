@@ -135,24 +135,41 @@ def test_capped_ingest_converges_to_whole_batch_reference(monkeypatch):
     assert sizes[0] == CAP, "first tick must ingest exactly the cap"
     assert all(b - a <= CAP for a, b in zip(sizes, sizes[1:]))
 
-    # Reference: the same events appended in ONE whole-batch refresh.
+    # Reference: the same events appended in ONE whole-batch refresh (final=True
+    # drains the entire residual at once — the server-stop teardown settle).
     ref = _Harness([_fake_event(i) for i in range(N)])
-    ref.unthrottled_refresh(force=True, full_capture=True)
+    ref.unthrottled_refresh(force=True, final=True, full_capture=True)
     got = [t.time_ns for t in h.trace_model.transactions]
     want = [t.time_ns for t in ref.trace_model.transactions]
     assert len(h.trace_model.transactions) == N
     assert got == want, "incremental ingest must equal the whole-batch trace"
 
 
-def test_force_flush_ingests_entire_residual(monkeypatch):
-    """force=True (batch end / server stop) drains the WHOLE residual in one
-    call — the settled trace is complete no matter how much was pending."""
+def test_force_batch_end_chunks_residual(monkeypatch):
+    """force=True WITHOUT final (a batch-end settle) must CHUNK the residual, not
+    drain it all in one blocking call — a 400k-event batch ingested at once froze
+    the GUI ~10s. It ingests one more cap and leaves the rest for the pull timer."""
     monkeypatch.setattr(sc, "_PULL_MAX_EVENTS_PER_TICK", CAP)
     h = _Harness([_fake_event(i) for i in range(N)])
     h.unthrottled_refresh(full_capture=True)            # one capped tick
     assert len(h.trace_model.transactions) == CAP
     assert len(h._pending_batch_events) == N - CAP
+    # force (batch end) ingests only ONE more cap, not the whole residual.
     h.unthrottled_refresh(force=True, full_capture=True)
+    assert len(h.trace_model.transactions) == 2 * CAP
+    assert len(h._pending_batch_events) == N - 2 * CAP
+
+
+def test_final_flush_ingests_entire_residual(monkeypatch):
+    """final=True (server-stop teardown, timer already stopped) drains the WHOLE
+    residual in one call — the settled trace is complete no matter how much was
+    pending, because nothing else will drain it."""
+    monkeypatch.setattr(sc, "_PULL_MAX_EVENTS_PER_TICK", CAP)
+    h = _Harness([_fake_event(i) for i in range(N)])
+    h.unthrottled_refresh(full_capture=True)            # one capped tick
+    assert len(h.trace_model.transactions) == CAP
+    assert len(h._pending_batch_events) == N - CAP
+    h.unthrottled_refresh(force=True, final=True, full_capture=True)
     assert len(h.trace_model.transactions) == N
     assert h._pending_batch_events == []
 

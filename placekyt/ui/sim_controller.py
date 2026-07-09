@@ -742,19 +742,22 @@ class SimController(QObject):
             self._batch_debug = None
             self._server_pull_timer.stop()
             # One final (unthrottled) refresh so the debug views settle on the
-            # last window of activity — force=True also drains the ENTIRE pull
-            # residual, and full_capture keeps retain-all semantics (the batch
-            # trace stays fully visible after Stop, not window-trimmed); clear
-            # the flag AFTER so a later interactive run reverts to the rolling
-            # window.
+            # last window of activity. final=True drains the ENTIRE pull residual
+            # in this ONE call — the pull timer is now stopped, so nothing else
+            # will drain it (a plain batch-end force chunks the residual and lets
+            # the still-running timer finish it, but here the server is being torn
+            # down). full_capture keeps retain-all semantics; clear the flag AFTER
+            # so a later interactive run reverts to the rolling window.
             self.refresh_debug_from_chip(
-                force=True, full_capture=self._server_batch_retain_all)
+                force=True, final=True,
+                full_capture=self._server_batch_retain_all)
             self._server_batch_retain_all = False
             self.state_changed.emit("idle")
             self.server_state.emit(None)
 
     def refresh_debug_from_chip(self, *, force: bool = False,
-                                full_capture: bool = False) -> None:
+                                full_capture: bool = False,
+                                final: bool = False) -> None:
         """Push the live chip's current state into the debug views (called when
         the GNURadio server advances the chip).
 
@@ -781,8 +784,16 @@ class SimController(QObject):
             return
         import time
         now = time.monotonic()
-        min_gap = max(1.0 / _LIVE_REFRESH_HZ,
-                      _REFRESH_BACKOFF * getattr(self, "_last_refresh_cost", 0.0))
+        # Adaptive back-off keeps a single heavy refresh from starving paint. BUT
+        # when a pull residual is queued (a big batch is draining in chunks), don't
+        # apply the back-off — keep flushing at the timer's cadence so the trace
+        # finishes building in a few hundred ms, not tens of seconds. The residual
+        # itself is chunk-capped (_PULL_MAX_EVENTS_PER_TICK), so each flush is
+        # bounded and paint still interleaves between ticks.
+        _draining = bool(getattr(self, "_pending_batch_events", None))
+        min_gap = (1.0 / _LIVE_REFRESH_HZ if _draining else
+                   max(1.0 / _LIVE_REFRESH_HZ,
+                       _REFRESH_BACKOFF * getattr(self, "_last_refresh_cost", 0.0)))
         if not force and (now - getattr(self, "_last_server_refresh", 0.0)
                           < min_gap):
             return
@@ -876,10 +887,20 @@ class SimController(QObject):
             cap = self._live_trace_max
             new_events = pending[-cap:] if len(pending) > cap else pending
             self._pending_batch_events = []
-        elif force or len(pending) <= _PULL_MAX_EVENTS_PER_TICK:
+        elif final or len(pending) <= _PULL_MAX_EVENTS_PER_TICK:
+            # FINAL teardown settle (server stop): drain EVERYTHING now — the pull
+            # timer is about to stop, so nothing else will drain the residual. Also
+            # the small-backlog fast path.
             new_events = pending
             self._pending_batch_events = []
         else:
+            # BOUNDED even under `force` (batch-end settle). A whole burst's trace
+            # (e.g. 400k events) ingested + rendered in ONE synchronous call blocks
+            # the GUI thread for ~10s (the reported "animation-off 5-10s freeze at
+            # batch end"). Cap the ingest and leave the residual for the still-
+            # running pull timer to drain over the next ticks — the render spreads
+            # across repaints and the window stays responsive. force still
+            # guarantees a render THIS call (falls through the empty-bail below).
             new_events = pending[:_PULL_MAX_EVENTS_PER_TICK]
             self._pending_batch_events = pending[_PULL_MAX_EVENTS_PER_TICK:]
         # NOTHING NEW → DO NOTHING. An empty ingest adds no transactions,

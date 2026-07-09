@@ -937,6 +937,22 @@ def _apply_routes(cell_map, gr_placement, blocks, connections, chip_type,
             # waypoint), so a route drawn onto the target cell still addresses the
             # abutting broker — NOT one cell past it.
             phys_dist = _phys_distance(conn, pts)
+            # EXIT-CELL OFFSET (chip-output egress only): `_phys_distance` counts hops as
+            # if `pts[0]` were the source's EXIT cell. For a multi-cell block whose output
+            # cell is INTERIOR to its footprint, the router's egress corridor begins at the
+            # exit cell's abutting NEIGHBOUR, so `pts[0] != exit_cell` — the exit cell must
+            # fire ONE extra hop to reach `pts[0]`, else the WRITE reaches the output-port
+            # EDGE cell at hop_cnt 31 and EXECUTES there instead of TRANSITING out the port
+            # (dropping egress entirely). Single-cell / edge-cell blocks (e.g. gain) have
+            # `pts[0] == exit_cell`, so this adds nothing. Scoped to `..._out` targets: a
+            # block→block handoff already addresses the abutting broker correctly, so the
+            # offset must NOT apply there. (The FM VCO's `emit` cell is interior — this is
+            # the case that previously dropped egress.)
+            _tgt_is_out_port = (
+                isinstance(tgt, ChipPortEndpoint)
+                and str(getattr(tgt, "port", "")).endswith("_out"))
+            if _tgt_is_out_port and pts and pts[0] != (ex, ey):
+                phys_dist += 1
             if _output_cell_carries_handoffs(gb):
                 _patch_last_write_handoff(cfg, phys_dist, dest=dest)
                 _patch_last_jump_handoff(cfg, phys_dist, entry=entry)

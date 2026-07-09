@@ -172,3 +172,42 @@ def test_rebuild_skipped_while_pnr_in_progress():
             "stream_targets changed mid-P&R")
     finally:
         sim.stop_gnuradio_server()
+
+
+def test_rehost_refreshes_default_entry_hop_for_new_design():
+    """Opening a NEW design via the rehost path (a GRC 'reset' RPC / File-Open on
+    a running server) must refresh the server's single-stream default entry/hop to
+    the NEW design's landing — not keep the previous design's. Reproduces 'run AM
+    then open gain -> gain injects at AM's entry -> 0 output' (log showed gain
+    injecting at entry=15/hop=20 instead of its own 28/30)."""
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    from engine.catalog import BlockCatalog
+    from ui.controller import AppController
+    from ui.sim_controller import SimController
+
+    cat = BlockCatalog.from_gr_kyttar()
+    app = AppController(catalog=cat)
+    # Host SSB first (multi-cell; its input landing differs from gain's).
+    app.open_project(SSB_KYT)
+    app.build()
+    sim = SimController(app)
+    sim.set_animate_cells(False)
+    port = sim.start_gnuradio_server(host="127.0.0.1", port=0)
+    try:
+        # Now open the gain .kyt and re-host it (the rehost path gain takes live).
+        app.open_project(GAIN_KYT)
+        app.pnr_in_progress = False
+        sim._rehost_server_chip()
+        # The server's single-stream fallback entry/hop must now be GAIN's own,
+        # resolved from the freshly-built gain chip — not SSB's stale values.
+        from engine.port_config import input_port_config
+        pc = input_port_config(app.project, app.registry, app.catalog, 0)
+        assert pc is not None, "gain must resolve an input-port config"
+        _pn, kw = pc
+        assert sim._gr_server._default_entries.get("x16_in") == int(kw["entry_addr"]), (
+            "rehost kept the previous design's stale default_entry")
+        assert sim._gr_server._default_hops.get("x16_in") == int(kw["hop_count"]), (
+            "rehost kept the previous design's stale default_hop")
+    finally:
+        sim.stop_gnuradio_server()

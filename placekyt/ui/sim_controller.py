@@ -1368,7 +1368,77 @@ class SimController(QObject):
         # pre-batch dirty check doesn't redundantly rebuild on the next batch.
         self._hosted_design_version = getattr(self.app.project, "design_version", 0)
         self._hosted_project_id = id(self.app.project)
+        # CRITICAL: re-resolve the server's injection targets for THIS design too
+        # (not only in the dirty-rebuild path). Opening a new design via this
+        # rehost otherwise keeps the previous design's entry/hop/stream_targets →
+        # the new design injects at the wrong cell and emits 0 words.
+        self._refresh_server_injection_targets(result)
         return self.engine.chip
+
+    def _refresh_server_injection_targets(self, result) -> None:
+        """Re-resolve the running server's per-stream injection targets AND the
+        single-stream fallback entry/hop from the just-built ``result``, and push
+        them into the live SimServer. MUST run on EVERY re-host of a new design —
+        both the dirty-rebuild (``_rebuild_if_dirty_threadsafe``) and the reset/
+        rehost path (``_rehost_server_chip_threadsafe``). Without it, hosting a
+        new design via the rehost path (e.g. opening a .kyt or a GRC 'reset' RPC)
+        swaps the chip but keeps the PREVIOUS design's ``_default_entries`` /
+        ``_default_hops`` / ``_stream_targets`` — so a stream-less design (gain)
+        injects at the old design's entry/hop and emits 0 words (the reported
+        'run AM then gain -> gain gets no output, entry=15/hop=20 not 28/30')."""
+        if self._gr_server is None:
+            return
+        try:
+            from engine.port_config import (
+                stream_targets as _st_fn, batch_reset_writes as _brw_fn)
+            _new_targets = dict(_st_fn(
+                self.app.project, self.app.registry, self.app.catalog,
+                getattr(self, "_sim_chip", 0), build_result=result) or {})
+            # TRANSIENT-STATE GUARD: if the re-resolve comes back EMPTY for a
+            # design that DOES have stream-tagged x16_in->block nets, the read was
+            # transient (mid-edit / not-fully-routed build) — DON'T clobber the
+            # server's existing GOOD targets with {} (else every batch falls to
+            # the entry=0/hop=30 fallback -> 0 words). A genuinely stream-less
+            # design (no such nets) correctly resolves to {} and we accept it.
+            from model.connection import (
+                ChipPortEndpoint as _CPE, BlockEndpoint as _BE)
+            _has_stream_nets = any(
+                isinstance(c.source, _CPE) and isinstance(c.target, _BE)
+                and getattr(c, "stream_id", None)
+                for c in self.app.project.connections)
+            if _new_targets or not _has_stream_nets:
+                self._gr_server._stream_targets = _new_targets
+                self._gr_server._batch_reset_writes = list(_brw_fn(
+                    result, getattr(self, "_sim_chip", 0)) or [])
+            else:
+                import sys as _sysT
+                _sysT.stderr.write(
+                    "[placeKYT server] re-host saw EMPTY stream_targets for a "
+                    "stream-tagged design — keeping current targets, will "
+                    "re-resolve on a settled batch\n")
+                _sysT.stderr.flush()
+            # The single-stream fallback entry/hop (a design with no stream_id,
+            # e.g. gain). MUST be refreshed so it injects at THIS design's cell,
+            # not the previous design's.
+            cfg2 = self._input_port_config(getattr(self, "_sim_chip", 0))
+            if cfg2 is not None:
+                _pn, _kw = cfg2
+                if "entry_addr" in _kw:
+                    self._gr_server._default_entries[_pn] = int(_kw["entry_addr"])
+                if "hop_count" in _kw:
+                    self._gr_server._default_hops[_pn] = int(_kw["hop_count"])
+            import sys as _sys2
+            _sys2.stderr.write(
+                "[placeKYT server] re-resolved injection targets: "
+                f"stream_targets={ {k: (v['entry_addr'], v['hop_count'], v['out_tag']) for k, v in self._gr_server._stream_targets.items()} } "
+                f"default_entries={dict(self._gr_server._default_entries)} "
+                f"default_hops={dict(self._gr_server._default_hops)}\n")
+            _sys2.stderr.flush()
+        except Exception as _exc:  # noqa: BLE001 — never break the batch
+            import sys as _sys2
+            _sys2.stderr.write(
+                f"[placeKYT server] injection-target re-resolve failed: {_exc}\n")
+            _sys2.stderr.flush()
 
     def _rebuild_if_dirty_threadsafe(self):
         """Called by the SimServer at the TOP of each process_batch (server
@@ -1405,34 +1475,6 @@ class SimController(QObject):
         # every edit and never cleared by a build, so it survives that race.
         cur_ver = getattr(self.app.project, "design_version", 0)
         cur_pid = id(self.app.project)
-        # TEMP DIAGNOSTIC (KYTTAR_REBUILD_DEBUG=1): dump exactly WHICH project the
-        # server is about to build — id, version, block count/types, and the
-        # stream_ids on x16_in->block nets — so a stale/half-placed project that
-        # rebuilds to a tiny word count with no streams is caught red-handed.
-        import os as _os
-        if _os.environ.get("KYTTAR_REBUILD_DEBUG") == "1":
-            import sys as _sysD
-            try:
-                _proj = self.app.project
-                _blocks = getattr(_proj, "blocks", [])
-                _btypes = [getattr(b, "block_type", getattr(b, "type", "?"))
-                           for b in _blocks]
-                from model.connection import (
-                    ChipPortEndpoint as _CPE, BlockEndpoint as _BE)
-                _sids = [getattr(c, "stream_id", None) for c in _proj.connections
-                         if isinstance(c.source, _CPE) and isinstance(c.target, _BE)]
-                _sysD.stderr.write(
-                    f"[REBUILD_DBG] pre-check: cur_pid={cur_pid} cur_ver={cur_ver} "
-                    f"hosted_pid={self._hosted_project_id} "
-                    f"hosted_ver={self._hosted_design_version} "
-                    f"pnr={getattr(self.app,'pnr_in_progress',None)} "
-                    f"n_blocks={len(_blocks)} stream_ids={_sids} "
-                    f"proj_path={getattr(self.app,'project_path',None)} "
-                    f"grc_src={getattr(self.app,'_grc_source_path',None)} "
-                    f"types={_btypes}\n")
-                _sysD.stderr.flush()
-            except Exception as _e:  # noqa: BLE001
-                _sysD.stderr.write(f"[REBUILD_DBG] dump failed: {_e}\n")
         if (self._hosted_design_version is not None
                 and cur_ver == self._hosted_design_version
                 and self._hosted_project_id == cur_pid):
@@ -1487,59 +1529,7 @@ class SimController(QObject):
         # emits 0 words (the "turn the server on, THEN import" flat-run bug). Recomputing
         # here makes the START-SERVER-vs-IMPORT ORDER not matter: whichever happens
         # first, the first post-import batch re-resolves against the current design.
-        if self._gr_server is not None:
-            try:
-                from engine.port_config import (
-                    stream_targets as _st_fn, batch_reset_writes as _brw_fn)
-                _new_targets = dict(_st_fn(
-                    self.app.project, self.app.registry, self.app.catalog,
-                    getattr(self, "_sim_chip", 0), build_result=result) or {})
-                # TRANSIENT-STATE GUARD: this rebuild re-resolves stream_targets
-                # from the current project/build; if it comes back EMPTY for a
-                # design that DOES have stream-tagged x16_in->block nets, the read
-                # was transient (mid-edit / a not-fully-routed build) — DON'T
-                # clobber the server's existing GOOD targets with {}, or every
-                # later batch falls through to the entry=0/hop=30 single-stream
-                # fallback and emits 0 words (the reported "switch design ->
-                # re-resolved {} -> no output"). Keep the current targets and let
-                # a later settled batch re-resolve. A genuinely stream-less design
-                # (no such nets) correctly resolves to {} and we accept it.
-                from model.connection import (
-                    ChipPortEndpoint as _CPE, BlockEndpoint as _BE)
-                _has_stream_nets = any(
-                    isinstance(c.source, _CPE) and isinstance(c.target, _BE)
-                    and getattr(c, "stream_id", None)
-                    for c in self.app.project.connections)
-                if _new_targets or not _has_stream_nets:
-                    self._gr_server._stream_targets = _new_targets
-                    self._gr_server._batch_reset_writes = list(_brw_fn(
-                        result, getattr(self, "_sim_chip", 0)) or [])
-                else:
-                    import sys as _sysT
-                    _sysT.stderr.write(
-                        "[placeKYT server] rebuild saw EMPTY stream_targets for a "
-                        "stream-tagged design — keeping current targets, will "
-                        "re-resolve on a settled batch\n")
-                    _sysT.stderr.flush()
-                # Refresh the input-port default entry/hop too (the single-stream
-                # fallback path), so a design with no stream_id still injects right.
-                cfg2 = self._input_port_config(getattr(self, "_sim_chip", 0))
-                if cfg2 is not None:
-                    _pn, _kw = cfg2
-                    if "entry_addr" in _kw:
-                        self._gr_server._default_entries[_pn] = int(_kw["entry_addr"])
-                    if "hop_count" in _kw:
-                        self._gr_server._default_hops[_pn] = int(_kw["hop_count"])
-                import sys as _sys2
-                _sys2.stderr.write(
-                    "[placeKYT server] re-resolved stream_targets after rebuild: "
-                    f"{ {k: (v['entry_addr'], v['hop_count'], v['out_tag']) for k, v in self._gr_server._stream_targets.items()} }\n")
-                _sys2.stderr.flush()
-            except Exception as _exc:  # noqa: BLE001 — never break the batch
-                import sys as _sys2
-                _sys2.stderr.write(
-                    f"[placeKYT server] stream_targets re-resolve failed: {_exc}\n")
-                _sys2.stderr.flush()
+        self._refresh_server_injection_targets(result)
         # Tell the GUI (queued) to FULL-render the canvas so the displayed cells
         # match this freshly-built chip — clears any routing cells left over from a
         # route the user edited since the server started (the "phantom blue boxes").

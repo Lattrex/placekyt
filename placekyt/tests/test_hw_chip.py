@@ -197,3 +197,134 @@ def test_negative_q15_word_wraps_clean():
     chip.inject_jump_physical(target_hop_cnt=30, entry_addr=1)
     out = chip.read_port_i16("x16_out")
     assert out == [(0xFFFF * 2) & 0xFFFF]  # 0xFFFE
+
+
+# ---------------------------------------------------- controller HW-mode wiring
+# Exercises the SimController's hardware-mode methods (mode toggle, program,
+# reset, guards) against a fake HwChip — the UI mode-toggle logic, no board and
+# no Qt event loop. Mirrors the plan §3 Sim<->Hardware toggle behavior.
+
+class _FakeHwChip:
+    def __init__(self):
+        self.connected = False
+        self.programmed = None
+        self.reset_calls = 0
+
+    def connect(self):
+        self.connected = True
+
+    def close(self):
+        self.connected = False
+
+    def load_bitstream_physical(self, words):
+        self.programmed = list(words)
+
+    def reset(self):
+        self.reset_calls += 1
+
+
+class _CtrlStub:
+    """Minimal stand-in binding the real SimController HW methods, so we test the
+    logic without constructing the full Qt controller."""
+    _hardware_mode = False
+    _hw_chip = None
+    _gr_server = None
+
+    class _App:
+        @staticmethod
+        def build():
+            class _R:
+                ok = True
+                errors = []
+
+                def words(self, i):
+                    return [0x63C0, 0xABCD]
+            return _R()
+
+    class _State:
+        @staticmethod
+        def emit(*a):
+            pass
+
+    app = _App()
+    state_changed = _State()
+
+
+def _bind_ctrl(monkeypatch):
+    pytest.importorskip("PySide6")
+    from ui.sim_controller import SimController
+    import engine.hw_chip as hc
+    monkeypatch.setattr(hc, "HwChip", _FakeHwChip)
+    for name in ("hardware_mode", "_ensure_hw_chip", "hardware_connection_check",
+                 "set_hardware_mode", "hardware_program", "hardware_global_reset",
+                 "_hw_reset_threadsafe"):
+        setattr(_CtrlStub, name, getattr(SimController, name))
+    return _CtrlStub()
+
+
+def test_ctrl_connection_check_and_enter(monkeypatch):
+    s = _bind_ctrl(monkeypatch)
+    ok, _ = s.hardware_connection_check()
+    assert ok
+    ok, _ = s.set_hardware_mode(True)
+    assert ok and s.hardware_mode is True
+
+
+def test_ctrl_program_loads_built_words(monkeypatch):
+    s = _bind_ctrl(monkeypatch)
+    s.set_hardware_mode(True)
+    ok, _ = s.hardware_program()
+    assert ok and s._hw_chip.programmed == [0x63C0, 0xABCD]
+
+
+def test_ctrl_global_reset(monkeypatch):
+    s = _bind_ctrl(monkeypatch)
+    s.set_hardware_mode(True)
+    ok, _ = s.hardware_global_reset()
+    assert ok and s._hw_chip.reset_calls == 1
+
+
+def test_ctrl_hw_reset_callback_returns_same_chip(monkeypatch):
+    s = _bind_ctrl(monkeypatch)
+    s.set_hardware_mode(True)
+    chip = s._hw_chip
+    assert s._hw_reset_threadsafe() is chip
+    assert chip.reset_calls == 1
+
+
+def test_ctrl_leaving_hw_mode_closes_chip(monkeypatch):
+    s = _bind_ctrl(monkeypatch)
+    s.set_hardware_mode(True)
+    s.set_hardware_mode(False)
+    assert s.hardware_mode is False and s._hw_chip is None
+
+
+def test_ctrl_cannot_toggle_while_server_running(monkeypatch):
+    s = _bind_ctrl(monkeypatch)
+    s._gr_server = object()
+    ok, msg = s.set_hardware_mode(True)
+    assert not ok and "server" in msg.lower()
+
+
+def test_ctrl_absent_board_stays_in_sim_mode(monkeypatch):
+    pytest.importorskip("PySide6")
+    from ui.sim_controller import SimController
+    from engine.hw_chip import HwChipError
+    import engine.hw_chip as hc
+
+    class _Dead:
+        connected = False
+
+        def connect(self):
+            raise HwChipError("ZTEX board not found")
+
+    monkeypatch.setattr(hc, "HwChip", _Dead)
+    for name in ("hardware_mode", "_ensure_hw_chip", "hardware_connection_check",
+                 "set_hardware_mode"):
+        setattr(_CtrlStub, name, getattr(SimController, name))
+    s = _CtrlStub()
+    s._hardware_mode = False
+    s._hw_chip = None
+    s._gr_server = None
+    ok, _ = s.set_hardware_mode(True)
+    assert not ok and s.hardware_mode is False and s._hw_chip is None

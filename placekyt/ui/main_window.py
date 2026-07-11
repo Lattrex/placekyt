@@ -244,7 +244,18 @@ class MainWindow(QMainWindow):
         self._sim_menu.addAction(self.act_gr_server)
         self._sim_menu.addAction(
             self._action("Live Window Size…", None, self._set_live_window))
-        mb.addMenu("&Hardware")
+        m_hw = mb.addMenu("&Hardware")
+        self.act_hw_mode = self._action(
+            "Hardware Mode", None, self._toggle_hardware_mode)
+        self.act_hw_mode.setCheckable(True)
+        m_hw.addAction(self.act_hw_mode)
+        m_hw.addSeparator()
+        m_hw.addAction(self._action(
+            "Check Connection", None, self._hw_check_connection))
+        m_hw.addAction(self._action(
+            "Program Bitstream", None, self._hw_program))
+        m_hw.addAction(self._action(
+            "Global Reset", None, self._hw_global_reset))
 
         # Help
         m_help = mb.addMenu("&Help")
@@ -1007,6 +1018,32 @@ class MainWindow(QMainWindow):
         else:
             self.sim.stop_gnuradio_server()
             self.statusBar().showMessage("GNURadio server stopped", 3000)
+
+    # -- Hardware mode --------------------------------------------------------
+
+    def _toggle_hardware_mode(self, checked: bool) -> None:
+        """Switch between simulator and real-hardware backends. Entering HW mode
+        runs an active connection check first; a failed check reverts to Sim mode.
+        The GRC server must be stopped to toggle (the backend can't swap mid-run)."""
+        ok, msg = self.sim.set_hardware_mode(checked)
+        if not ok:
+            # Revert the checkbox to the actual mode.
+            self.act_hw_mode.setChecked(self.sim.hardware_mode)
+            self.statusBar().showMessage(msg, 5000)
+            return
+        self.statusBar().showMessage(msg, 5000)
+
+    def _hw_check_connection(self) -> None:
+        ok, msg = self.sim.hardware_connection_check()
+        self.statusBar().showMessage(msg, 6000 if ok else 0)
+
+    def _hw_program(self) -> None:
+        ok, msg = self.sim.hardware_program()
+        self.statusBar().showMessage(msg, 6000 if ok else 0)
+
+    def _hw_global_reset(self) -> None:
+        ok, msg = self.sim.hardware_global_reset()
+        self.statusBar().showMessage(msg, 4000 if ok else 0)
 
     def _on_server_activity(self, full_capture: bool = False,
                             force: bool = False) -> None:

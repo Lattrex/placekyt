@@ -233,6 +233,15 @@ class SimController(QObject):
         self._last_inject_count = 0
         # GNURadio bridge server (placeKYT hosts the chip; GRC streams to it).
         self._gr_server = None
+        # Hardware mode: when True, start_gnuradio_server hosts a HwChip (real
+        # Kyttar over the devkyt FPGA / USB) instead of the simkyt.Chip. Same
+        # project, same flowgraphs, same wire protocol — just the backend swapped
+        # (see dev_docs/HARDWARE_BACKEND_PLAN.md). The HwChip is created lazily and
+        # kept connected across server start/stop so the board isn't re-opened per
+        # run. run-only: placement editing is disabled in HW mode (no per-batch
+        # rebuild), the design is programmed onto the board once at server start.
+        self._hardware_mode = False
+        self._hw_chip = None
         # Debug hooks for a GRC batch run (breakpoints/speed/step honored in the
         # server-side per-sample loop); created on server start, None otherwise.
         self._batch_debug = None
@@ -527,12 +536,86 @@ class SimController(QObject):
         self._live_trace_max = max(100, int(n))
         self.trace_model.trim_to(self._live_trace_max)
 
+    # -- hardware mode --------------------------------------------------------
+
+    @property
+    def hardware_mode(self) -> bool:
+        return self._hardware_mode
+
+    def _ensure_hw_chip(self):
+        """Lazily create + connect the HwChip. Returns it, or raises on failure."""
+        from engine.hw_chip import HwChip
+        if self._hw_chip is None:
+            self._hw_chip = HwChip()
+        if not self._hw_chip.connected:
+            self._hw_chip.connect()
+        return self._hw_chip
+
+    def hardware_connection_check(self) -> tuple[bool, str]:
+        """Active liveness check: open the board (if needed) and ping the gateware.
+        Returns (ok, message). Never raises — a dead/absent board is a clear msg."""
+        try:
+            self._ensure_hw_chip()
+            return True, "Board connected — gateware responded to ping."
+        except Exception as exc:  # HwChipError / HwTransportError / ImportError
+            self._hw_chip = None
+            return False, f"Hardware not connected: {exc}"
+
+    def set_hardware_mode(self, enabled: bool) -> tuple[bool, str]:
+        """Enter/leave Hardware mode. Entering runs the connection check first; a
+        failed check leaves us in Sim mode. Cannot toggle while a server is running
+        (stop it first). Returns (ok, message)."""
+        if enabled == self._hardware_mode:
+            return True, ""
+        if self._gr_server is not None:
+            return False, "Stop the GNURadio server before switching modes."
+        if enabled:
+            ok, msg = self.hardware_connection_check()
+            if not ok:
+                return False, msg
+            self._hardware_mode = True
+            return True, "Hardware mode ON — the server will host the real chip."
+        self._hardware_mode = False
+        if self._hw_chip is not None:
+            try:
+                self._hw_chip.close()
+            finally:
+                self._hw_chip = None
+        return True, "Hardware mode OFF — back to the simulator."
+
+    def hardware_program(self) -> tuple[bool, str]:
+        """Program the current design's bitstream onto the board (build + load).
+        Used by the explicit 'Program Bitstream' control and at HW-server start."""
+        try:
+            chip = self._ensure_hw_chip()
+        except Exception as exc:
+            return False, f"Hardware not connected: {exc}"
+        result = self.app.build()
+        if not result.ok:
+            return False, f"Build failed: {len(result.errors)} DRC error(s)"
+        try:
+            chip.load_bitstream_physical(list(result.words(0)))
+        except Exception as exc:
+            return False, f"Programming failed: {exc}"
+        return True, "Bitstream programmed onto the board."
+
+    def hardware_global_reset(self) -> tuple[bool, str]:
+        """Issue a global board reset (control packet). Does NOT re-program."""
+        if self._hw_chip is None or not self._hw_chip.connected:
+            return False, "Hardware not connected."
+        try:
+            self._hw_chip.reset()
+        except Exception as exc:
+            return False, f"Reset failed: {exc}"
+        return True, "Global reset issued."
+
     def start_gnuradio_server(self, *, host: str = "127.0.0.1",
                               port: int = 0) -> int | None:
         """Build the project and host its chip over a socket so a GNURadio
-        flowgraph can stream samples through it LIVE (DEBUG bridge). placeKYT's
-        debug views refresh as the remote run advances. Single-chip only for now.
-        Returns the bound port, or None on failure."""
+        flowgraph can stream samples through it LIVE. In Sim mode the hosted chip
+        is a simkyt.Chip (with the debug bridge); in Hardware mode it is a HwChip
+        streaming to the real Kyttar over USB (same wire protocol, same .grc).
+        Single-chip only for now. Returns the bound port, or None on failure."""
         if self._gr_server is not None:
             return self._gr_server.bound_port
 
@@ -729,11 +812,32 @@ class SimController(QObject):
             self._batch_bp_scan = 0
             self._gui_trace_scan = 0
 
+        # Backend selection: Sim mode hosts the simkyt.Chip (with the debug
+        # bridge); Hardware mode hosts a connected HwChip streaming to the real
+        # board. In HW mode we PROGRAM the design onto the board once here, and the
+        # reset/rebuild callbacks are HW-aware: reset() = global board reset (not a
+        # sim-chip rebuild), and there is NO per-batch rebuild (run-only — editing
+        # is disabled in HW mode, so the design can't go dirty mid-run).
+        if self._hardware_mode:
+            try:
+                hw = self._ensure_hw_chip()
+                hw.load_bitstream_physical(list(result.words(0)))
+            except Exception as exc:
+                self.state_changed.emit(f"error: hardware — {exc}")
+                return None
+            hosted_chip = hw
+            on_reset_cb = self._hw_reset_threadsafe
+            on_before_batch_cb = None  # no per-batch rebuild on hardware
+        else:
+            hosted_chip = self.engine.chip
+            on_reset_cb = self._rehost_server_chip_threadsafe
+            on_before_batch_cb = self._rebuild_if_dirty_threadsafe
+
         self._gr_server = SimServer(
-            self.engine.chip, host=host, port=port,
+            hosted_chip, host=host, port=port,
             on_activity=_activity,
-            on_reset=self._rehost_server_chip_threadsafe,
-            on_before_batch=self._rebuild_if_dirty_threadsafe,
+            on_reset=on_reset_cb,
+            on_before_batch=on_before_batch_cb,
             on_new_run=_new_run,
             default_entries=default_entries,
             default_hops=default_hops,
@@ -1489,6 +1593,22 @@ class SimController(QObject):
         self.trace_model.clear()
         self.trace_updated.emit(self.trace_model)
         self.cell_state_refreshed.emit()
+
+    def _hw_reset_threadsafe(self):
+        """Hardware analog of _rehost_server_chip_threadsafe for the 'reset' RPC.
+        On hardware there is no chip to rebuild: issue a global board reset and
+        return the SAME connected HwChip (SimServer re-points to it via set_chip).
+        Qt-free (no signals) — safe on the server thread. Returns the HwChip, or
+        None if the board vanished (SimServer then keeps the current chip)."""
+        chip = self._hw_chip
+        if chip is None or not chip.connected:
+            return None
+        try:
+            chip.reset()
+        except Exception:
+            # A reset failure shouldn't crash the server thread; keep the chip.
+            return None
+        return chip
 
     def _rehost_server_chip_threadsafe(self):
         """Rebuild a fresh, port-configured chip and return it (no Qt signals —

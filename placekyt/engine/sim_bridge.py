@@ -603,29 +603,38 @@ class SimServer:
                 aborted = False
                 nrun = nsamp
 
-                # HARDWARE FAST-PATH: a real (single-operand), non-tagged stream on a
-                # HwChip batches ALL samples' WRITE/DATA/JUMP into a few big USB writes
-                # (decoupled write/drain) instead of one USB round-trip per sample —
-                # ~1000x the throughput. Only for the simple case; complex/tagged fall
-                # through to the proven per-sample loop below. Debug hooks
-                # (breakpoints/step/waveform) are sim-only and meaningless on real
-                # silicon, so the fast-path skips them unconditionally in HW mode.
-                if (not is_complex and out_tag is None
+                # HARDWARE FAST-PATH: a real (single-operand) stream on a HwChip batches
+                # ALL samples' WRITE/DATA/JUMP into a few big USB writes (decoupled
+                # write/drain) instead of one USB round-trip per sample — ~1000x the
+                # throughput. Handles BOTH the single-stream case (out_tag None) AND a
+                # TAGGED/multiplexed stream (out_tag set): the sample WRITE + JUMP use
+                # the stream's resolved (hop, a0/entry) so the chip's addressed cell
+                # fires, and the recovered words are demuxed by the stream's out_tag
+                # (foreign tags — the OTHER stream's words — are parked in _tag_buf for
+                # its own process_batch, exactly like the sim per-sample path). Complex
+                # still falls through. Debug hooks are sim-only, skipped in HW.
+                if (not is_complex
                         and type(self._chip).__name__ == "HwChip"):
                     q = [(_float_to_raw_i16(float(x)) if raw else _float_to_q15(float(x)))
                          for x in data]
-                    recovered = self._chip.stream_samples(
-                        q, target_hop_cnt=hop, target_addr=int(a0), entry_addr=entry)
-                    for v in recovered:
-                        out_vals.append(float(int(v) & 0xFFFF) if raw
-                                        else (int(v) / 32768.0))
+                    tagged = self._chip.stream_samples(
+                        q, target_hop_cnt=hop, target_addr=int(a0), entry_addr=entry,
+                        with_tags=True)
+                    for (v, tag) in tagged:
+                        if out_tag is None or int(tag) == int(out_tag):
+                            out_vals.append(float(int(v) & 0xFFFF) if raw
+                                            else (int(v) / 32768.0))
+                        else:
+                            # another stream's word on the shared output port — park it
+                            self._tag_buf.setdefault(int(tag), []).append(int(v))
                     _dt = time.perf_counter() - _t_batch0
                     sps = (nsamp / _dt) if _dt > 0 else 0.0
                     if os.environ.get("KYTTAR_SERVER_QUIET") != "1":
                         import sys as _sys
                         _sys.stderr.write(
-                            f"[placeKYT batch/HW] {nsamp} samples -> {len(out_vals)} "
-                            f"words in {_dt*1000:.0f}ms = {sps:.0f} samp/s\n")
+                            f"[placeKYT batch/HW] stream={stream_id!r} out_tag={out_tag} "
+                            f"{nsamp} samples -> {len(out_vals)} words in {_dt*1000:.0f}ms "
+                            f"= {sps:.0f} samp/s\n")
                         _sys.stderr.flush()
                     if self._on_activity is not None:
                         try:
@@ -635,7 +644,7 @@ class SimServer:
                             self._on_activity()
                     return ({"ok": True, "samples": nsamp, "seconds": _dt,
                              "samples_per_sec": sps, "aborted": False,
-                             "out_tag": None, "stream_id": stream_id},
+                             "out_tag": out_tag, "stream_id": stream_id},
                             np.asarray(out_vals, dtype="<f4"))
 
                 # Drive each sample the PROVEN way: inject xi→a0, run; (complex:

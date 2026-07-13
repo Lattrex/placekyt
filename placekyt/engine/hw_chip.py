@@ -168,15 +168,21 @@ class HwChip:
         self._flush()
 
     def stream_samples(self, samples, target_hop_cnt: int, target_addr: int,
-                       entry_addr: int) -> List[int]:
+                       entry_addr: int, with_tags: bool = False):
         """FAST-PATH for a whole batch of REAL (single-operand) samples. Encodes ALL
         samples' WRITE/DATA/JUMP words and sends them in a few big USB writes while
         draining output concurrently — the batched, decoupled path that hits the
         board's real throughput (~1M samp/s) instead of one USB round-trip per sample.
 
-        Returns the recovered signed-int16 values in order. The gain/gateway framing
-        is one output WRITE/DATA pair per input JUMP, so results line up 1:1 with input.
-        """
+        The WRITE/DATA carries the sample tagged by (target_hop_cnt, target_addr) — this
+        is the intra-chip input tag routing the sample to a specific cell. The JUMP
+        (target_hop_cnt, entry_addr) triggers that cell. For the multiplexed two-cell
+        chip, a given (target_addr, entry_addr) selects one cell; its output comes back
+        with that cell's own tag.
+
+        with_tags=False (default): returns recovered signed-int16 values in order.
+        with_tags=True: returns (value, out_tag) pairs so the caller can demux by the
+        cell's output tag (the shared-output-port multiplex case)."""
         import time as _time
         self._require_connected()
         wr = _encode_write(target_hop_cnt, target_addr)
@@ -208,7 +214,10 @@ class HwChip:
                 if idle >= 8:  # ~240ms of silence with results missing → stop
                     break
         # collect all buffered outputs in order
-        out = [_as_i16(v) for (v, _d) in self._out_words]
+        if with_tags:
+            out = [(_as_i16(v), d) for (v, d) in self._out_words]
+        else:
+            out = [_as_i16(v) for (v, _d) in self._out_words]
         self._out_words.clear()
         return out
 

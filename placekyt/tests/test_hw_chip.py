@@ -202,6 +202,15 @@ def test_stream_samples_large_batch_all_recovered():
     assert out == [(s * 2) & 0xFFFF for s in samples]
 
 
+def test_stream_samples_with_tags():
+    # with_tags returns (value, out_tag) pairs so the server can demux multiplexed
+    # streams by tag. The fake gateway frames output WRITE dest = 0 (0x63C0).
+    chip = _hw()
+    out = chip.stream_samples([3, 5], target_hop_cnt=30, target_addr=0, entry_addr=1,
+                              with_tags=True)
+    assert out == [(6, 0), (10, 0)]  # (2x value, tag 0)
+
+
 def test_output_available():
     chip = _hw()
     assert chip.output_available("x16_out") == 0

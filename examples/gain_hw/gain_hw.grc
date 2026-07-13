@@ -1,0 +1,280 @@
+options:
+  parameters:
+    author: Lattrex
+    catch_exceptions: 'True'
+    category: '[GRC Hier Blocks]'
+    cmake_opt: ''
+    comment: ''
+    copyright: ''
+    description: HARDWARE Kyttar Gain demo (CONTINUOUS STREAMING). A live sine from
+      sig_source -> throttle -> kyttar_source (x16_in) -> kyttar_gain -> kyttar_sink
+      (x16_out) -> QT time sink. Unlike the batch gain.grc (for the simulator), this
+      streams real-time samples through the REAL chip. The SAME blocks auto-detect
+      streaming vs batch from the placeKYT server, so you do nothing but toggle
+      Hardware Mode in placeKYT, then Execute here. The plot shows input (top) vs the
+      chip's gained output (bottom), live and continuous.
+    gen_cmake: 'On'
+    gen_linking: dynamic
+    generate_options: qt_gui
+    hier_block_src_path: '.:'
+    id: gain_hw
+    max_nouts: '0'
+    output_language: python
+    placement: (0,0)
+    qt_qss_theme: ''
+    realtime_scheduling: ''
+    run: 'True'
+    run_command: '{python} -u {filename}'
+    run_options: prompt
+    sizing_mode: fixed
+    thread_safe_setters: ''
+    title: "Kyttar Gain — HARDWARE streaming (live)"
+    window_size: (1200,800)
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [8, 8]
+    rotation: 0
+    state: enabled
+
+blocks:
+- name: samp_rate
+  id: variable
+  parameters:
+    comment: streaming sample rate into the chip (samples/s)
+    value: '4000'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [200, 80]
+    rotation: 0
+    state: enabled
+- name: server_port
+  id: variable
+  parameters:
+    comment: placeKYT prints this on "Run as GNURadio Server"
+    value: '58950'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [40, 160]
+    rotation: 0
+    state: enabled
+- name: src
+  id: analog_sig_source_x
+  parameters:
+    affinity: ''
+    alias: ''
+    amp: '0.8'
+    comment: CONTINUOUS sine stimulus (real-time streaming, not a bounded burst)
+    freq: '4'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    offset: '0'
+    phase: '0'
+    samp_rate: samp_rate
+    showports: 'False'
+    type: float
+    waveform: analog.GR_SIN_WAVE
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [40, 260.0]
+    rotation: 0
+    state: enabled
+- name: throttle
+  id: blocks_throttle
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: pace the stream to samp_rate so the chip is fed at a real rate
+    ignoretag: 'True'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    samples_per_second: samp_rate
+    type: float
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [288, 268.0]
+    rotation: 0
+    state: enabled
+- name: msrc
+  id: kyttar_source
+  parameters:
+    affinity: ''
+    alias: ''
+    burst_len: '0'
+    comment: "stimulus -> chip x16_in. STREAMING when placeKYT is in Hardware Mode\
+      \ (auto-detected from the server); batch on the simulator. Same block."
+    complex_in: float
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_channels: '1'
+    port_name: '"x16_in"'
+    server_host: '"127.0.0.1"'
+    server_port: server_port
+    stream_id: ''
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [512, 244.0]
+    rotation: 0
+    state: enabled
+- name: gain
+  id: kyttar_gain
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: gain block (placed on chip); coefficient reprogrammable at run time
+    device_id: '"kyttar_0"'
+    gain: '0.5'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [768, 288.0]
+    rotation: 0
+    state: enabled
+- name: msink
+  id: kyttar_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: gained output <- chip x16_out (continuous stream in Hardware Mode)
+    device_id: '"kyttar_0"'
+    hold_secs: '8.0'
+    in_type: float
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_channels: '1'
+    port_name: '"x16_out"'
+    server_port: server_port
+    server_repeat: 'False'
+    stream_id: ''
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1000, 212.0]
+    rotation: 0
+    state: enabled
+- name: time_sink
+  id: qtgui_time_sink_x
+  parameters:
+    affinity: ''
+    alias: ''
+    alpha1: '1.0'
+    alpha10: '1.0'
+    alpha2: '1.0'
+    alpha3: '1.0'
+    alpha4: '1.0'
+    alpha5: '1.0'
+    alpha6: '1.0'
+    alpha7: '1.0'
+    alpha8: '1.0'
+    alpha9: '1.0'
+    autoscale: 'False'
+    axislabels: 'True'
+    color1: blue
+    color10: dark blue
+    color2: red
+    color3: green
+    color4: black
+    color5: cyan
+    color6: magenta
+    color7: yellow
+    color8: dark red
+    color9: dark green
+    comment: input (top) vs gained output (bottom), live and continuous
+    ctrlpanel: 'False'
+    entags: 'True'
+    grid: 'True'
+    gui_hint: ''
+    label1: input
+    label10: Signal 10
+    label2: gained output
+    label3: Signal 3
+    label4: Signal 4
+    label5: Signal 5
+    label6: Signal 6
+    label7: Signal 7
+    label8: Signal 8
+    label9: Signal 9
+    legend: 'True'
+    marker1: '-1'
+    marker10: '-1'
+    marker2: '-1'
+    marker3: '-1'
+    marker4: '-1'
+    marker5: '-1'
+    marker6: '-1'
+    marker7: '-1'
+    marker8: '-1'
+    marker9: '-1'
+    name: '"Kyttar Gain (hardware): input vs output"'
+    nconnections: '2'
+    size: '1024'
+    srate: samp_rate
+    stemplot: 'False'
+    style1: '1'
+    style10: '1'
+    style2: '1'
+    style3: '1'
+    style4: '1'
+    style5: '1'
+    style6: '1'
+    style7: '1'
+    style8: '1'
+    style9: '1'
+    tr_chan: '0'
+    tr_delay: '0'
+    tr_level: '0.0'
+    tr_mode: qtgui.TRIG_MODE_FREE
+    tr_slope: qtgui.TRIG_SLOPE_POS
+    tr_tag: '""'
+    type: float
+    update_time: '0.10'
+    width1: '1'
+    width10: '1'
+    width2: '1'
+    width3: '1'
+    width4: '1'
+    width5: '1'
+    width6: '1'
+    width7: '1'
+    width8: '1'
+    width9: '1'
+    ylabel: amplitude
+    ymax: '1.2'
+    ymin: '-1.2'
+    yunit: '""'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1176, 168.0]
+    rotation: 0
+    state: enabled
+
+connections:
+- [src, '0', throttle, '0']
+- [throttle, '0', msrc, '0']
+- [msrc, '0', gain, '0']
+- [gain, '0', msink, '0']
+- [msink, '0', time_sink, '1']
+- [throttle, '0', time_sink, '0']
+
+metadata:
+  file_format: 1
+  grc_version: 3.10.12.0

@@ -343,11 +343,22 @@ def test_ctrl_leaving_hw_mode_closes_chip(monkeypatch):
     assert s.hardware_mode is False and s._hw_chip is None
 
 
-def test_ctrl_cannot_toggle_while_server_running(monkeypatch):
+def test_ctrl_toggle_while_server_running_restarts_it(monkeypatch):
+    # Toggling Hardware Mode with a server up RESTARTS the server on the new backend
+    # (so the user can Run-as-Server first, then flip to hardware — either order works).
     s = _bind_ctrl(monkeypatch)
-    s._gr_server = object()
+
+    class _FakeServer:
+        bound_port = 58950
+    s._gr_server = _FakeServer()
+
+    restarts = {"stop": 0, "start": None}
+    s.stop_gnuradio_server = lambda: restarts.__setitem__("stop", restarts["stop"] + 1)
+    s.start_gnuradio_server = lambda port=0: restarts.__setitem__("start", port)
+
     ok, msg = s.set_hardware_mode(True)
-    assert not ok and "server" in msg.lower()
+    assert ok and s.hardware_mode is True
+    assert restarts["stop"] == 1 and restarts["start"] == 58950  # restarted, same port
 
 
 def test_ctrl_absent_board_stays_in_sim_mode(monkeypatch):

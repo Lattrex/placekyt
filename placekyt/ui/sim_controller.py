@@ -542,6 +542,11 @@ class SimController(QObject):
     def hardware_mode(self) -> bool:
         return self._hardware_mode
 
+    @property
+    def hardware_connected(self) -> bool:
+        """True if the board is open and responsive right now."""
+        return self._hw_chip is not None and self._hw_chip.connected
+
     def _ensure_hw_chip(self):
         """Lazily create + connect the HwChip. Returns it, or raises on failure."""
         from engine.hw_chip import HwChip
@@ -563,25 +568,39 @@ class SimController(QObject):
 
     def set_hardware_mode(self, enabled: bool) -> tuple[bool, str]:
         """Enter/leave Hardware mode. Entering runs the connection check first; a
-        failed check leaves us in Sim mode. Cannot toggle while a server is running
-        (stop it first). Returns (ok, message)."""
+        failed check leaves us in Sim mode. If a GNURadio server is already running,
+        it is RESTARTED in the new mode (so toggling works in either order — the user
+        can Run-as-Server first, then flip to hardware). Returns (ok, message)."""
         if enabled == self._hardware_mode:
             return True, ""
-        if self._gr_server is not None:
-            return False, "Stop the GNURadio server before switching modes."
+
+        server_was_running = self._gr_server is not None
+        server_port = self._gr_server.bound_port if server_was_running else 0
+
         if enabled:
             ok, msg = self.hardware_connection_check()
             if not ok:
                 return False, msg
             self._hardware_mode = True
-            return True, "Hardware mode ON — the server will host the real chip."
-        self._hardware_mode = False
-        if self._hw_chip is not None:
-            try:
-                self._hw_chip.close()
-            finally:
-                self._hw_chip = None
-        return True, "Hardware mode OFF — back to the simulator."
+            tail = " (server hosting the real chip)" if server_was_running else \
+                   " — the server will host the real chip"
+        else:
+            self._hardware_mode = False
+            if self._hw_chip is not None:
+                try:
+                    self._hw_chip.close()
+                finally:
+                    self._hw_chip = None
+            tail = " (server back on the simulator)" if server_was_running else \
+                   " — back to the simulator"
+
+        # If a server is up, restart it so it re-hosts on the NEW backend. The port
+        # is preserved so the connected GRC client reconnects without reconfiguration.
+        if server_was_running:
+            self.stop_gnuradio_server()
+            self.start_gnuradio_server(port=server_port)
+
+        return True, (f"Hardware mode {'ON' if enabled else 'OFF'}{tail}.")
 
     def hardware_program(self) -> tuple[bool, str]:
         """Program the current design's bitstream onto the board (build + load).

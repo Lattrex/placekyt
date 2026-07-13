@@ -1035,10 +1035,15 @@ class MainWindow(QMainWindow):
         The GRC server must be stopped to toggle (the backend can't swap mid-run)."""
         ok, msg = self.sim.set_hardware_mode(checked)
         if not ok:
-            # Revert the checkbox to the actual mode.
+            # Revert the checkbox to the ACTUAL mode, and reflect the true HW state
+            # (the toggle can be blocked while a server runs — that is NOT a
+            # disconnect, so don't claim "connect failed" if the board is still up).
             self.act_hw_mode.setChecked(self.sim.hardware_mode)
-            self.statusBar().showMessage(msg, 5000)
-            self._set_hw_status("connect failed" if checked else "off", ok=False)
+            self.statusBar().showMessage(msg, 6000)
+            if self.sim.hardware_connected:
+                self._set_hw_status("connected", ok=True)
+            else:
+                self._set_hw_status("not connected", ok=False)
             return
         self.statusBar().showMessage(msg, 5000)
         self._set_hw_status(

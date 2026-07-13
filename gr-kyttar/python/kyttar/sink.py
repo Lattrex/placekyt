@@ -86,6 +86,7 @@ class sink(gr.basic_block):
         # exact model ``rx_batch`` already uses). We consume any input explicitly and
         # ignore it — the words come from the batch session.
         self._server_mode = int(server_port) > 0
+        self._server_port = int(server_port)
         # placeKYT server is always local (same host); used only for the mode query.
         self._server_host = "127.0.0.1"
         # INPUT type mirrors the upstream marker chain: FLOAT for a real chain (bits,

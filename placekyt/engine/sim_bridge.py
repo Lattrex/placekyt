@@ -642,6 +642,23 @@ class SimServer:
                                         else _q15_to_float(int(v)))
                 nsamp = (len(data) // 2) if is_complex else len(data)
                 _t_batch0 = time.perf_counter()
+                # CHIP-TIME THROUGHPUT (the honest silicon rate, independent of this
+                # host's Python/socket speed). `simulation_time` is simKYT's cycle-
+                # accurate clock in ns (WRITE/JUMP 5.8ns, MAC 17.5ns, hop 2ns, …).
+                # The wall-clock `samples_per_sec` below measures how fast THIS
+                # MACHINE runs the sim; this measures how fast the CHIP processes
+                # samples. `_sim_t0` is the sim-time before this burst's first inject;
+                # `_first_out_ns`/`_last_out_ns` are the sim-times of the first/last
+                # output words (from `read_port_words_timed`'s per-word `time_ns`),
+                # so steady-state throughput = (words after fill) / (last-first), and
+                # fill latency = first_out - sim_t0. Best-effort: a chip without the
+                # property (e.g. a HwChip) just reports None.
+                try:
+                    _sim_t0 = float(self._chip.simulation_time)
+                except Exception:  # noqa: BLE001
+                    _sim_t0 = None
+                _first_out_ns: float | None = None
+                _last_out_ns: float | None = None
                 aborted = False
                 nrun = nsamp
 
@@ -736,6 +753,9 @@ class SimServer:
                             si = sq = None
                             for (v, d, _t) in self._chip.read_port_words_timed(port):
                                 self._capture_tags[(port, float(_t))] = int(d)
+                                if _first_out_ns is None:
+                                    _first_out_ns = float(_t)
+                                _last_out_ns = float(_t)
                                 if int(d) == i_tag:
                                     si = float(int(v) & 0xFFFF) if raw else _q15_to_float(int(v))
                                 elif int(d) == q_tag:
@@ -755,6 +775,9 @@ class SimServer:
                             for (v, d, _t) in self._chip.read_port_words_timed(port):
                                 self._capture_tags[(port, float(_t))] = int(d)
                                 if int(d) == int(out_tag):
+                                    if _first_out_ns is None:
+                                        _first_out_ns = float(_t)
+                                    _last_out_ns = float(_t)
                                     if raw:
                                         out_vals.append(float(int(v) & 0xFFFF))
                                     else:
@@ -763,9 +786,20 @@ class SimServer:
                                     self._tag_buf.setdefault(int(d), []).append(
                                         int(v))
                         elif raw:
-                            got = self._chip.read_port_i16(port)
-                            if got is not None and len(got):
-                                out_vals.extend(float(int(v)) for v in got)
+                            # Drain via the TIMED reader (value+dest+sim-time) rather
+                            # than read_port_i16 so each output word carries its chip
+                            # sim-time — needed for the fill-latency + steady-state
+                            # throughput metrics. read_port_i16 returns the word as a
+                            # SIGNED int16, so sign-extend the raw u16 here to keep the
+                            # EXACT same values (a TX passband int16 stays negative;
+                            # the RX bit-packer's 0/1 is unaffected either way).
+                            for (v, _d, _t) in self._chip.read_port_words_timed(port):
+                                if _first_out_ns is None:
+                                    _first_out_ns = float(_t)
+                                _last_out_ns = float(_t)
+                                _iv = int(v) & 0xFFFF
+                                out_vals.append(float(_iv - 0x10000 if _iv >= 0x8000
+                                                      else _iv))
                         else:
                             got = self._chip.read_port(port)
                             if got is not None and len(got):
@@ -793,6 +827,33 @@ class SimServer:
                 # seconds of wall time). Reported in the reply header and to the GUI.
                 _dt = max(1e-9, time.perf_counter() - _t_batch0)
                 sps = nrun / _dt
+                # CHIP-TIME (silicon) THROUGHPUT + LATENCY — the honest numbers,
+                # independent of this host's speed. `sim_time_ns` = total simulated
+                # ns for the burst (simKYT's cycle-accurate clock). `first_out_ns` =
+                # sim-time the FIRST output word exited → fill latency = it minus
+                # `_sim_t0` (how long the pipeline/corridor takes to fill before the
+                # first bit appears). STEADY-STATE throughput = the output words
+                # produced BETWEEN the first and last output ÷ that sim-time span —
+                # measured AFTER fill, so it's the true sustained rate, not skewed by
+                # the startup transient. `chip_samp_per_sec` reports it as INPUT
+                # samples/s (nsamp ÷ total active sim-time) for the headline "how much
+                # bandwidth" figure; the steady-state variant is the defensible one.
+                try:
+                    _sim_t1 = float(self._chip.simulation_time)
+                except Exception:  # noqa: BLE001
+                    _sim_t1 = None
+                _sim_ns = (_sim_t1 - _sim_t0) if (_sim_t1 is not None
+                                                  and _sim_t0 is not None) else None
+                _fill_ns = (_first_out_ns - _sim_t0) if (_first_out_ns is not None
+                                                         and _sim_t0 is not None) else None
+                # Steady-state: output words after the first, over their sim-time span.
+                _ss_sps = None
+                if (_first_out_ns is not None and _last_out_ns is not None
+                        and _last_out_ns > _first_out_ns and len(out_vals) > 1):
+                    _span_s = (_last_out_ns - _first_out_ns) * 1e-9
+                    _ss_sps = (len(out_vals) - 1) / _span_s if _span_s > 0 else None
+                # Input-sample rate over the whole active burst (nsamp ÷ total sim ns).
+                _chip_sps = (nrun / (_sim_ns * 1e-9)) if (_sim_ns and _sim_ns > 0) else None
                 # OBSERVABILITY: one concise line per batch to the server console
                 # (the GUI's terminal). Turns "x16_out is flat, why?" into a precise
                 # readout — which stream, the resolved inject landing (entry/hop/
@@ -818,7 +879,13 @@ class SimServer:
                         self._on_activity()
                 return ({"ok": True, "samples": nrun, "seconds": _dt,
                          "samples_per_sec": sps, "aborted": aborted,
-                         "out_tag": out_tag, "stream_id": stream_id},
+                         "out_tag": out_tag, "stream_id": stream_id,
+                         # Honest silicon-time metrics (None on a HwChip / no output).
+                         "sim_time_ns": _sim_ns,
+                         "fill_latency_ns": _fill_ns,
+                         "chip_samp_per_sec": _chip_sps,
+                         "steady_samp_per_sec": _ss_sps,
+                         "pipelined": bool(header.get("pipelined"))},
                         np.asarray(out_vals, dtype="<f4"))
             if op == "process_batch_duplex":
                 return self._process_batch_duplex(header, payload)

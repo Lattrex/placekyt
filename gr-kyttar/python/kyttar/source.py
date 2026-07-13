@@ -129,6 +129,12 @@ class source(gr.sync_block):
         # streaming (hardware) vs batch (sim) is decided by the SERVER at start();
         # None until queried. No user-facing switch — see start().
         self._streaming = None
+        # max samples shipped per streaming work() call. The server's HW fast-path
+        # batches a whole chunk's WRITE/DATA/JUMP into a few big USB writes (~500k+
+        # samp/s), so a big chunk amortizes the per-RPC socket overhead. Keep it under
+        # the board's ~65k-word (~21k-sample) output FIFO with margin. (Was 64, sized
+        # for the OLD per-sample board loop; that throttled streaming to ~64k samp/s.)
+        self._STREAM_CHUNK = 8192
 
         if self._server_mode:
             print(f"[kyttar.source] SERVER-BATCH mode -> "
@@ -237,16 +243,23 @@ class source(gr.sync_block):
             else:
                 out[:] = np.real(np.asarray(inp, dtype=np.complex64)).astype(np.float32)
 
-            # STREAMING (hardware): ship THIS chunk to the chip now and stash the
+            # STREAMING (hardware): ship a SMALL chunk to the chip now and stash the
             # recovered words for the matching sink. No accumulate/EOF/burst_len —
             # continuous real-time flow, paced by the board's USB handshake.
+            #
+            # CAP the chunk: process_batch runs one inject+trigger+read board round-trip
+            # PER SAMPLE serially, so a big GR work chunk (thousands of samples) would
+            # take many seconds and blow the socket timeout ('stream chunk failed:
+            # timed out'). We consume at most _STREAM_CHUNK samples per work() call and
+            # let GR call us again for the rest — small, fast RPCs that keep flowing.
             if self._streaming:
-                if n_samples:
+                take = min(n_samples, self._STREAM_CHUNK)
+                if take:
                     from ._batch_session import stream_chunk, get_session
                     try:
                         rec = stream_chunk(
                             self._server_host, self._server_port,
-                            np.real(np.asarray(inp, dtype=np.complex64)).astype("<f4"),
+                            np.real(np.asarray(inp[:take], dtype=np.complex64)).astype("<f4"),
                             in_port=self._port_name, complex_=self._complex_in,
                             raw=self._complex_in)
                     except Exception as e:  # noqa: BLE001
@@ -255,7 +268,16 @@ class source(gr.sync_block):
                     if rec is not None and len(rec):
                         sess = get_session(self._device_id, self._stream_id)
                         sess.push_stream(np.asarray(rec, dtype=np.float32))
-                return n_samples
+                # A sync_block must output exactly as many items as it consumed. We
+                # consumed `take` this call — echo those `take` input samples to the
+                # marker-chain output and tell GR we produced `take` (it re-calls for
+                # the rest of the chunk).
+                if take:
+                    out[:take] = np.real(
+                        np.asarray(inp[:take], dtype=np.complex64)).astype(out.dtype) \
+                        if not np.iscomplexobj(out) else \
+                        np.asarray(inp[:take], dtype=np.complex64)
+                return take
 
             if not self._dispatched:
                 self._inbuf.extend(np.asarray(inp, dtype=np.complex64).tolist())

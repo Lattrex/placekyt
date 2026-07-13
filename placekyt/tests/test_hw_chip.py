@@ -184,6 +184,24 @@ def test_multiple_samples_sequential():
     assert [v for (v, _d, _t) in out] == [6, 10, 16]
 
 
+def test_stream_samples_fast_path():
+    # The batched fast-path: many samples in one call, all recovered in order (x2 fake).
+    chip = _hw()
+    samples = [1, 2, 3, 100, 200, 0]
+    out = chip.stream_samples(samples, target_hop_cnt=30, target_addr=0, entry_addr=1)
+    assert out == [2, 4, 6, 200, 400, 0]
+
+
+def test_stream_samples_large_batch_all_recovered():
+    # A batch larger than the internal CHUNK must still recover every sample in order.
+    chip = _hw()
+    n = 10000
+    samples = [i & 0x3FFF for i in range(n)]
+    out = chip.stream_samples(samples, target_hop_cnt=30, target_addr=0, entry_addr=1)
+    assert len(out) == n
+    assert out == [(s * 2) & 0xFFFF for s in samples]
+
+
 def test_output_available():
     chip = _hw()
     assert chip.output_available("x16_out") == 0

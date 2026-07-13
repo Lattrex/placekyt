@@ -72,8 +72,10 @@ class HwChip:
         self._t = transport if transport is not None else FX3Transport()
         # burst assembled between JUMPs: WRITE/DATA words awaiting the triggering JUMP.
         self._pending: List[int] = []
-        # output words read back from the last flush, as (value, dest) pairs, FIFO.
+        # output words read back so far, as (value, dest) pairs, FIFO.
         self._out_words: List[Tuple[int, int]] = []
+        # a split WRITE word carried across a bulk-read boundary (see drain()).
+        self._read_tail: List[int] = []
         self._connected = False
 
     # ------------------------------------------------------------- connection
@@ -144,66 +146,128 @@ class HwChip:
         self._drain_stray()
 
     # ------------------------------------------------------------- injection
+    # DECOUPLED write/read (CM's ping-pong): inject/jump ONLY buffer + send words —
+    # they NEVER block waiting for this sample's output. The output is drained
+    # independently by drain()/read_port*, so writing and reading run concurrently.
+    # This is what unlocks throughput: batch many WRITE/DATA/JUMP into few USB writes,
+    # and drain continuously so the board's output FIFO never fills. (The old code did
+    # one send + a blocking poll-read PER JUMP — a per-sample USB round-trip that
+    # capped the rate at a few thousand samples/s.)
     def inject_data_physical(self, data, target_hop_cnt: int, target_addr: int) -> None:
-        """Buffer a DATA word as a WRITE(hop,addr)+DATA pair (emitted on the next JUMP)."""
+        """Buffer a DATA word as a WRITE(hop,addr)+DATA pair (sent on flush)."""
         self._require_connected()
         for v in data:
             self._pending.append(_encode_write(target_hop_cnt, target_addr))
             self._pending.append(int(v) & 0xFFFF)
 
     def inject_jump_physical(self, target_hop_cnt: int, entry_addr: int) -> None:
-        """Emit the triggering JUMP and FLUSH the buffered burst over USB, then read out.
-
-        On the real chip the JUMP triggers execution; the FPGA's held-ack sequencing paces
-        the output burst back. We read whatever tagged output the FPGA returns for this
-        trigger and stash it for read_port_words_timed / read_port* to drain.
-        """
+        """Append the triggering JUMP and FLUSH the buffered words over USB. Does NOT
+        wait for output — the recovered words are read later by drain()/read_port*."""
         self._require_connected()
         self._pending.append(_encode_jump(target_hop_cnt, entry_addr))
+        self._flush()
+
+    def stream_samples(self, samples, target_hop_cnt: int, target_addr: int,
+                       entry_addr: int) -> List[int]:
+        """FAST-PATH for a whole batch of REAL (single-operand) samples. Encodes ALL
+        samples' WRITE/DATA/JUMP words and sends them in a few big USB writes while
+        draining output concurrently — the batched, decoupled path that hits the
+        board's real throughput (~1M samp/s) instead of one USB round-trip per sample.
+
+        Returns the recovered signed-int16 values in order. The gain/gateway framing
+        is one output WRITE/DATA pair per input JUMP, so results line up 1:1 with input.
+        """
+        import time as _time
+        self._require_connected()
+        wr = _encode_write(target_hop_cnt, target_addr)
+        jmp = _encode_jump(target_hop_cnt, entry_addr)
+        n = len(samples)
+        # chunk so each USB write + its drain stays well under the ~65k output FIFO
+        # (3 words in + 3 words out per sample => keep 3*CHUNK < ~60000).
+        CHUNK = 4000
+        i = 0
+        while i < n:
+            m = min(CHUNK, n - i)
+            words: List[int] = []
+            for v in samples[i:i + m]:
+                words.append(wr)
+                words.append(int(v) & 0xFFFF)
+                words.append(jmp)
+            self._t.send_words(words)
+            i += m
+            # Drain THIS chunk's output fully: expect `m` new DATA words. Keep reading
+            # until we have them or the board goes idle for a stretch (output lags
+            # input, so an empty read mid-chunk is normal — only give up after
+            # several consecutive empties past the expected count).
+            target = i  # total DATA words expected so far == samples sent so far
+            idle = 0
+            deadline = _time.monotonic() + 2.0
+            while len(self._out_words) < target and _time.monotonic() < deadline:
+                got = self.drain(timeout_ms=30)
+                idle = 0 if got else idle + 1
+                if idle >= 8:  # ~240ms of silence with results missing → stop
+                    break
+        # collect all buffered outputs in order
+        out = [_as_i16(v) for (v, _d) in self._out_words]
+        self._out_words.clear()
+        return out
+
+    def _flush(self) -> None:
+        """Send all pending words in ONE USB write (batched), then opportunistically
+        drain whatever output is already available (non-blocking-ish)."""
+        if not self._pending:
+            return
         try:
             self._t.send_words(self._pending)
         except HwTransportError as exc:
             self._pending.clear()
             raise HwChipError(f"burst flush failed: {exc}") from exc
         self._pending.clear()
-        self._read_output_burst()
+        # opportunistic drain so the board's output FIFO doesn't back up mid-stream
+        self.drain(timeout_ms=self._DRAIN_POLL_MS)
 
-    # How many bulk reads to attempt while waiting for a burst to arrive. The FPGA
-    # output is ASYNCHRONOUS: after the JUMP flush the framed burst is in flight over
-    # USB and a single recv can return empty before it lands (a read-timing race — the
-    # gain math is correct, the words just arrive on a later read). So we POLL: each
-    # recv_words blocks up to its timeout and returns [] on timeout, so a bounded retry
-    # loop waits without a wall-clock sleep. We stop as soon as the burst's terminating
-    # JUMP is seen (held-ack guarantees the whole burst precedes the JUMP ack).
-    _BURST_READ_RETRIES = 8
-    _BURST_READ_TIMEOUT_MS = 200
+    # Short poll used for opportunistic draining after a flush (keep output moving so
+    # the ~65k-word FIFO never fills). read_port* also call drain() to collect results.
+    _DRAIN_POLL_MS = 5
 
-    def _read_output_burst(self) -> None:
-        """Poll the FPGA's framed output for the just-flushed JUMP into ``_out_words``.
-
-        Output framing = WRITE(dest)/DATA(value) pairs terminated by a JUMP (Mode-2).
-        Accumulate raw words across retries until the terminating JUMP arrives (or the
-        retries are exhausted), then parse WRITE/DATA pairs out of the accumulated stream.
-        A leftover unpaired WRITE (split read) is carried forward for the next parse.
-        """
-        raw: List[int] = []
-        for _ in range(self._BURST_READ_RETRIES):
-            chunk = self._t.recv_words(4096, timeout_ms=self._BURST_READ_TIMEOUT_MS)
-            if chunk:
-                raw.extend(chunk)
-                # end-of-burst = a JUMP word appeared; the whole burst is now in.
-                if any(((w >> 12) & 0xF) == _OP_JUMP for w in chunk):
-                    break
+    def drain(self, timeout_ms: Optional[int] = None) -> int:
+        """Read available output words from the board and parse WRITE/DATA pairs into
+        ``_out_words``. Non-blocking-ish: one bulk read (recv returns [] on timeout).
+        Returns the number of new DATA words collected. A split WRITE (odd trailing
+        word) is carried to the next drain via ``_read_tail``."""
+        tmo = self._DRAIN_POLL_MS if timeout_ms is None else timeout_ms
+        chunk = self._t.recv_words(32768, timeout_ms=tmo)
+        if not chunk:
+            return 0
+        raw = self._read_tail + chunk
+        self._read_tail = []
         i = 0
+        n = 0
         while i < len(raw):
             w = raw[i]
             op = (w >> 12) & 0xF
-            if op == _OP_WRITE and i + 1 < len(raw):
-                self._out_words.append((raw[i + 1], w & 0x1F))
-                i += 2
+            if op == _OP_WRITE:
+                if i + 1 < len(raw):
+                    self._out_words.append((raw[i + 1], w & 0x1F))
+                    n += 1
+                    i += 2
+                else:
+                    # split WRITE at the buffer boundary — hold it for the next drain
+                    self._read_tail = [w]
+                    break
             else:
-                # JUMP header / unpaired word: structural framing, skip.
+                # JUMP header / stray word: structural framing, skip.
                 i += 1
+        return n
+
+    def _drain_until(self, want: int, max_ms: int = 500) -> None:
+        """Drain repeatedly until at least ``want`` output words are buffered or the
+        time budget is spent (used by read paths that need N results ready)."""
+        import time as _time
+        deadline = _time.monotonic() + max_ms / 1000.0
+        while len(self._out_words) < want and _time.monotonic() < deadline:
+            if self.drain(timeout_ms=20) == 0 and self._out_words:
+                break
 
     # --------------------------------------------------------------- run (no-op)
     def run(self, max_events: Optional[int] = None) -> None:
@@ -214,13 +278,16 @@ class HwChip:
         return None
 
     def run_until_output(self, port_name, count: int, max_events: Optional[int] = None):
-        """Poll the input's already-read output until ``count`` words are available."""
-        # Output is read at flush time; this just reports readiness.
+        """Drain until ``count`` output words are buffered (or the time budget lapses)."""
+        self._drain_until(int(count))
         return None
 
     # ------------------------------------------------------------------ reads
+    # Each read drains available output first, then returns+clears the buffer. Draining
+    # is cheap (one bulk read) and keeps the output FIFO flowing.
     def read_port_words_timed(self, port_name) -> List[Tuple[int, int, float]]:
         """Drain output as (value, dest, t) with a host-monotonic timestamp for ordering."""
+        self.drain()
         out = [(v, d, time.monotonic()) for (v, d) in self._out_words]
         self._out_words.clear()
         return out
@@ -229,6 +296,7 @@ class HwChip:
         """Drain output values as SIGNED int16 (tag ignored). The words come off the
         wire as unsigned 16-bit; reinterpret >0x7FFF as negative so a Q15 negative
         (e.g. 0xE200) reads as -7680, not 57856. Matches simkyt.Chip.read_port_i16."""
+        self.drain()
         out = [_as_i16(v) for (v, _d) in self._out_words]
         self._out_words.clear()
         return out
@@ -238,11 +306,14 @@ class HwChip:
         ('with Q15 conversion'). The SimServer's non-raw path does float(v) on this and
         expects a scaled fraction — returning raw ints here gave garbage (0x2000 -> 8192
         instead of 0.25). So convert here: signed_word / 32768.0."""
+        self.drain()
         out = [_as_i16(v) / 32768.0 for (v, _d) in self._out_words]
         self._out_words.clear()
         return out
 
     def output_available(self, port_name) -> int:
+        if not self._out_words:
+            self.drain()
         return 1 if self._out_words else 0
 
     # ---------------------------------------------- per-sample write paths (rare)
@@ -265,6 +336,7 @@ class HwChip:
         """Global board reset. Caller re-programs via load_bitstream_physical."""
         self._pending.clear()
         self._out_words.clear()
+        self._read_tail.clear()
         if self._t.connected:
             self._t.reset(leave=False)
 

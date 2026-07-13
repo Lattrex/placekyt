@@ -207,8 +207,14 @@ class SimServer:
         # when GRC stops.
         self._active_conn: socket.socket | None = None
         self._thread: threading.Thread | None = None
+        self._client_threads: list[threading.Thread] = []
         self._running = False
         self.bound_port: int | None = None
+        # Serializes chip access across concurrent client connections. Streaming
+        # needs TWO connections at once — the source writing samples and the sink
+        # reading recovered words — but the chip (esp. the real board over one USB
+        # link) is single-outstanding, so every _chip.* touch is under this lock.
+        self._chip_lock = threading.RLock()
         # Per-tag output buffer for shared-port demux: read_port_tagged(tag=X)
         # drains the chip ONCE into these buckets and returns only tag X, leaving
         # the other tags' words buffered for their own reader (so two streams can
@@ -267,7 +273,9 @@ class SimServer:
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._sock.bind((self._host, self._req_port))
-        self._sock.listen(1)
+        # backlog 2: streaming opens TWO concurrent connections (source-write +
+        # sink-read); batch mode still uses one.
+        self._sock.listen(2)
         self.bound_port = self._sock.getsockname()[1]
         self._running = True
         self._thread = threading.Thread(target=self._serve, daemon=True)
@@ -594,6 +602,42 @@ class SimServer:
                 _t_batch0 = time.perf_counter()
                 aborted = False
                 nrun = nsamp
+
+                # HARDWARE FAST-PATH: a real (single-operand), non-tagged stream on a
+                # HwChip batches ALL samples' WRITE/DATA/JUMP into a few big USB writes
+                # (decoupled write/drain) instead of one USB round-trip per sample —
+                # ~1000x the throughput. Only for the simple case; complex/tagged fall
+                # through to the proven per-sample loop below. Debug hooks
+                # (breakpoints/step/waveform) are sim-only and meaningless on real
+                # silicon, so the fast-path skips them unconditionally in HW mode.
+                if (not is_complex and out_tag is None
+                        and type(self._chip).__name__ == "HwChip"):
+                    q = [(_float_to_raw_i16(float(x)) if raw else _float_to_q15(float(x)))
+                         for x in data]
+                    recovered = self._chip.stream_samples(
+                        q, target_hop_cnt=hop, target_addr=int(a0), entry_addr=entry)
+                    for v in recovered:
+                        out_vals.append(float(int(v) & 0xFFFF) if raw
+                                        else (int(v) / 32768.0))
+                    _dt = time.perf_counter() - _t_batch0
+                    sps = (nsamp / _dt) if _dt > 0 else 0.0
+                    if os.environ.get("KYTTAR_SERVER_QUIET") != "1":
+                        import sys as _sys
+                        _sys.stderr.write(
+                            f"[placeKYT batch/HW] {nsamp} samples -> {len(out_vals)} "
+                            f"words in {_dt*1000:.0f}ms = {sps:.0f} samp/s\n")
+                        _sys.stderr.flush()
+                    if self._on_activity is not None:
+                        try:
+                            self._on_activity(samples=nsamp, seconds=_dt,
+                                              samples_per_sec=sps)
+                        except TypeError:
+                            self._on_activity()
+                    return ({"ok": True, "samples": nsamp, "seconds": _dt,
+                             "samples_per_sec": sps, "aborted": False,
+                             "out_tag": None, "stream_id": stream_id},
+                            np.asarray(out_vals, dtype="<f4"))
+
                 # Drive each sample the PROVEN way: inject xi→a0, run; (complex:
                 # xq→a1, run;) JUMP entry, run; then drain the output port. (The
                 # write_port_multi_i16 path stalls the loop after one sample; the

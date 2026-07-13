@@ -148,20 +148,32 @@ class FX3Transport:
         buf = self._control_in(_VR_GPIO, w_value=value, w_index=mask, length=8)
         return buf[0] if buf else 0
 
-    def ping(self, probe_word: int = 0x1234, *, timeout_ms: int = 500) -> bool:
-        """Active liveness check: round-trip a known word through the gateware.
+    def ping(self, *, timeout_ms: int = 500) -> bool:
+        """Cheap, GATEWARE-AGNOSTIC liveness check: re-read the device-info via VR 0x64.
 
-        Recommended check (plan §7): send a word and read it back — proves the FPGA app
-        is loaded + streaming, not just that the FX3 enumerated. The fake-gain/loopback
-        gateware echoes/transforms it. Returns True on any returned word (the caller that
-        needs an exact echo can compare); False on silence/error.
+        Succeeds iff the board is present and the FX3 firmware is answering control
+        transfers — proves enumeration + firmware, WITHOUT assuming anything about what
+        the loaded FPGA app does with a data word. (An earlier version sent a bare word
+        and waited for an echo; that wrongly assumed a loopback gateway — the real
+        fake-gain app only responds to a full WRITE/DATA/JUMP burst, so a data-plane
+        round-trip check must live in the gateware-aware layer, not here. See
+        HwChip.connect.)
         """
-        try:
-            self.send_words([probe_word & 0xFFFF], timeout_ms=timeout_ms)
-            got = self.recv_words(16, timeout_ms=timeout_ms)
-        except HwTransportError:
+        if not self.connected:
             return False
-        return len(got) > 0
+        try:
+            buf = self._control_in(_VR_IFACE_INFO, length=128)
+        except Exception:
+            return False
+        return len(buf) >= 3
+
+    def probe_roundtrip(self, words: Sequence[int], max_read: int = 16,
+                        *, timeout_ms: int = 800) -> List[int]:
+        """Send ``words`` and read whatever the gateware returns. A gateware-AWARE caller
+        (e.g. HwChip) uses this to verify the data plane with a burst it knows how to
+        interpret. Returns the received words (possibly empty)."""
+        self.send_words(words, timeout_ms=timeout_ms)
+        return self.recv_words(max_read, timeout_ms=timeout_ms)
 
     # --------------------------------------------------------------------- teardown
     def close(self) -> None:

@@ -71,16 +71,55 @@ class HwChip:
         self._connected = False
 
     # ------------------------------------------------------------- connection
-    def connect(self) -> None:
-        """Open the USB link and verify the board is live (active ping)."""
+    # A known gain round-trip used as the data-plane liveness check: send
+    # WRITE/DATA(x)/JUMP, expect the framed WRITE/DATA(2x)/JUMP back. This proves the
+    # FPGA app is loaded AND streaming (not merely that the FX3 enumerated). The probe
+    # value is arbitrary but small so 2x can't wrap.
+    _PING_VALUE = 0x0007
+
+    def connect(self, *, verify_dataplane: bool = True) -> None:
+        """Open the USB link and verify the board is live.
+
+        Two-stage check: (1) FX3 firmware liveness (cheap VR 0x64 read); (2) a gain
+        round-trip through the gateware (send a burst, confirm the 2x response). Stage 2
+        is what actually proves the loaded FPGA app is running — it's gateware-aware, so
+        it lives here, not in the transport. Set ``verify_dataplane=False`` to skip stage
+        2 (e.g. bringing up a non-gain gateware).
+        """
         self._t.connect()
         if not self._t.ping():
             self._t.close()
             raise HwChipError(
-                "board enumerated but did not respond to the connection ping "
-                "(gateware not loaded / not streaming?)"
+                "board did not answer control transfers (FX3 firmware not alive?)"
+            )
+        if verify_dataplane and not self._verify_gain_roundtrip():
+            self._t.close()
+            raise HwChipError(
+                "board enumerated but the gain gateway did not echo a 2x burst "
+                "(FPGA app not loaded/streaming, or wrong bitstream flashed?)"
             )
         self._connected = True
+
+    def _verify_gain_roundtrip(self) -> bool:
+        """Send a WRITE/DATA(v)/JUMP burst; return True iff a DATA word == 2*v comes back."""
+        try:
+            self._t.reset(leave=False)
+            words = self._t.probe_roundtrip([
+                _encode_write(30, 0), self._PING_VALUE, _encode_jump(30, 1),
+            ])
+        except HwTransportError:
+            return False
+        expected = (self._PING_VALUE * 2) & 0xFFFF
+        # parse WRITE/DATA pairs, look for the gained value
+        i = 0
+        while i + 1 < len(words):
+            if ((words[i] >> 12) & 0xF) == _OP_WRITE:
+                if words[i + 1] == expected:
+                    return True
+                i += 2
+            else:
+                i += 1
+        return False
 
     @property
     def connected(self) -> bool:
@@ -125,27 +164,41 @@ class HwChip:
         self._pending.clear()
         self._read_output_burst()
 
-    def _read_output_burst(self) -> None:
-        """Read the FPGA's framed output for the just-flushed JUMP into ``_out_words``.
+    # How many bulk reads to attempt while waiting for a burst to arrive. The FPGA
+    # output is ASYNCHRONOUS: after the JUMP flush the framed burst is in flight over
+    # USB and a single recv can return empty before it lands (a read-timing race — the
+    # gain math is correct, the words just arrive on a later read). So we POLL: each
+    # recv_words blocks up to its timeout and returns [] on timeout, so a bounded retry
+    # loop waits without a wall-clock sleep. We stop as soon as the burst's terminating
+    # JUMP is seen (held-ack guarantees the whole burst precedes the JUMP ack).
+    _BURST_READ_RETRIES = 8
+    _BURST_READ_TIMEOUT_MS = 200
 
-        Output framing = WRITE(dest)/DATA(value) pairs (Mode-2). Parse pairs; a lone
-        trailing WRITE (partial read) is held for the next read by re-buffering — but the
-        held-ack gateware emits a complete burst before acking the JUMP, so in practice a
-        full burst arrives. JUMP words in the output stream are structural (end-of-burst)
-        and carry no value.
+    def _read_output_burst(self) -> None:
+        """Poll the FPGA's framed output for the just-flushed JUMP into ``_out_words``.
+
+        Output framing = WRITE(dest)/DATA(value) pairs terminated by a JUMP (Mode-2).
+        Accumulate raw words across retries until the terminating JUMP arrives (or the
+        retries are exhausted), then parse WRITE/DATA pairs out of the accumulated stream.
+        A leftover unpaired WRITE (split read) is carried forward for the next parse.
         """
-        words = self._t.recv_words(4096, timeout_ms=self._t.default_timeout_ms)
+        raw: List[int] = []
+        for _ in range(self._BURST_READ_RETRIES):
+            chunk = self._t.recv_words(4096, timeout_ms=self._BURST_READ_TIMEOUT_MS)
+            if chunk:
+                raw.extend(chunk)
+                # end-of-burst = a JUMP word appeared; the whole burst is now in.
+                if any(((w >> 12) & 0xF) == _OP_JUMP for w in chunk):
+                    break
         i = 0
-        while i < len(words):
-            w = words[i]
+        while i < len(raw):
+            w = raw[i]
             op = (w >> 12) & 0xF
-            if op == _OP_WRITE and i + 1 < len(words):
-                dest = w & 0x1F
-                value = words[i + 1]
-                self._out_words.append((value, dest))
+            if op == _OP_WRITE and i + 1 < len(raw):
+                self._out_words.append((raw[i + 1], w & 0x1F))
                 i += 2
             else:
-                # JUMP header or unpaired word: skip (structural framing).
+                # JUMP header / unpaired word: structural framing, skip.
                 i += 1
 
     # --------------------------------------------------------------- run (no-op)

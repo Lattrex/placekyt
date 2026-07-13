@@ -67,9 +67,13 @@ class FakeGainTransport:
     def close(self):
         self.connected = False
 
-    def ping(self, probe_word=0x1234, timeout_ms=500):
-        # echo-style: a live board returns something
+    def ping(self, timeout_ms=500):
+        # gateware-agnostic firmware liveness (VR 0x64) — always live once connected
         return True
+
+    def probe_roundtrip(self, words, max_read=16, timeout_ms=800):
+        self.send_words(words)
+        return self.recv_words(max_read)
 
     def reset(self, leave=False):
         self.reset_calls += 1
@@ -100,17 +104,45 @@ class FakeGainTransport:
 def _hw():
     chip = HwChip(transport=FakeGainTransport())
     chip.connect()
+    # connect() runs a gain-probe round-trip (send burst + reset) as its data-plane
+    # liveness check; clear the fake's logs so each test starts from a clean post-
+    # connect baseline (the probe's _sent/reset_calls are not what the tests assert on).
+    chip._t._sent.clear()
+    chip._t.reset_calls = 0
+    chip._out_words.clear()
     return chip
 
 
 # ------------------------------------------------------------------ HwChip flow
-def test_connect_requires_ping():
+def test_connect_requires_firmware_ping():
+    """Stage-1 failure: FX3 firmware doesn't answer control transfers."""
     class Dead(FakeGainTransport):
-        def ping(self, probe_word=0x1234, timeout_ms=500):
+        def ping(self, timeout_ms=500):
             return False
     chip = HwChip(transport=Dead())
     with pytest.raises(HwChipError):
         chip.connect()
+
+
+def test_connect_requires_gain_dataplane():
+    """Stage-2 failure: firmware alive but the gateware doesn't echo a 2x burst
+    (e.g. wrong bitstream flashed). connect() must reject it."""
+    class Mute(FakeGainTransport):
+        def probe_roundtrip(self, words, max_read=16, timeout_ms=800):
+            return []  # no response
+    chip = HwChip(transport=Mute())
+    with pytest.raises(HwChipError):
+        chip.connect()
+
+
+def test_connect_can_skip_dataplane_verify():
+    """A non-gain gateware brings up with verify_dataplane=False (firmware ping only)."""
+    class Mute(FakeGainTransport):
+        def probe_roundtrip(self, words, max_read=16, timeout_ms=800):
+            return []
+    chip = HwChip(transport=Mute())
+    chip.connect(verify_dataplane=False)  # must not raise
+    assert chip.connected
 
 
 def test_gain_burst_roundtrip():

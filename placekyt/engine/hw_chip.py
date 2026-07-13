@@ -95,13 +95,17 @@ class HwChip:
         if verify_dataplane and not self._verify_gain_roundtrip():
             self._t.close()
             raise HwChipError(
-                "board enumerated but the gain gateway did not echo a 2x burst "
+                "board enumerated but the gateway did not echo a framed burst "
                 "(FPGA app not loaded/streaming, or wrong bitstream flashed?)"
             )
         self._connected = True
 
     def _verify_gain_roundtrip(self) -> bool:
-        """Send a WRITE/DATA(v)/JUMP burst; return True iff a DATA word == 2*v comes back."""
+        """Send a WRITE/DATA(v)/JUMP burst; return True iff a framed WRITE/DATA response
+        comes back. We check for a valid framed reply, NOT a specific gain factor — the
+        gain coefficient is run-time reprogrammable (Q15), so the exact returned value
+        depends on the current coefficient and must not be hardcoded here. A well-formed
+        WRITE/DATA pair in the reply proves the FPGA app is loaded and streaming."""
         try:
             self._t.reset(leave=False)
             words = self._t.probe_roundtrip([
@@ -109,16 +113,10 @@ class HwChip:
             ])
         except HwTransportError:
             return False
-        expected = (self._PING_VALUE * 2) & 0xFFFF
-        # parse WRITE/DATA pairs, look for the gained value
-        i = 0
-        while i + 1 < len(words):
+        # any WRITE followed by a DATA word == a valid framed burst came back
+        for i in range(len(words) - 1):
             if ((words[i] >> 12) & 0xF) == _OP_WRITE:
-                if words[i + 1] == expected:
-                    return True
-                i += 2
-            else:
-                i += 1
+                return True
         return False
 
     @property

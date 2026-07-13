@@ -367,7 +367,16 @@ class SimServer:
         op = header.get("op")
         try:
             if op == "ping":
-                return {"ok": True}, None
+                # Report the backend MODE so a GRC client self-selects its data flow
+                # WITHOUT any user-facing switch: a hardware backend (HwChip) streams
+                # continuously (real silicon at USB speed); the simulator batches (it's
+                # ~7.6k samples/s, too slow to stream real-time). Inferred from the chip
+                # class name so this module needn't import HwChip. Same .grc, same
+                # blocks — the user only toggles Hardware Mode in placeKYT.
+                mode = ("streaming"
+                        if type(self._chip).__name__ == "HwChip"
+                        else "batch")
+                return {"ok": True, "mode": mode}, None
             if op == "set_grc_params":
                 # A GRC client advertises its flowgraph's per-block params so the
                 # host can detect a parameter drift from the placed design (the

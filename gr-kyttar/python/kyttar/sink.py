@@ -86,6 +86,8 @@ class sink(gr.basic_block):
         # exact model ``rx_batch`` already uses). We consume any input explicitly and
         # ignore it — the words come from the batch session.
         self._server_mode = int(server_port) > 0
+        # placeKYT server is always local (same host); used only for the mode query.
+        self._server_host = "127.0.0.1"
         # INPUT type mirrors the upstream marker chain: FLOAT for a real chain (bits,
         # audio) or COMPLEX when the chain ends in a complex-output block (the FM VCO,
         # an I/Q mixer) — GRC requires this sink's input port dtype to equal the
@@ -112,6 +114,8 @@ class sink(gr.basic_block):
         self._emit_done_at = None            # wall time the burst finished emitting
         self._server_result = None   # the full recovered burst (once it arrives)
         self._server_outq = None     # current emit cursor into the burst
+        # streaming (hardware) vs batch (sim): decided by the server at start().
+        self._streaming = None
 
         # Single-channel mode: simple sample buffer
         # Multi-channel mode: per-channel FIFOs for pairing
@@ -139,10 +143,16 @@ class sink(gr.basic_block):
               "'Run as GNURadio Server']")
 
     def start(self) -> bool:
-        """Called when flowgraph starts. Import-light; never touches heavy libs."""
+        """Called when flowgraph starts. Import-light; never touches heavy libs.
+
+        Queries the server mode (hardware=streaming / sim=batch) so it drains the
+        matching queue. Same .grc either way — no user-facing switch."""
         if self._server_mode:
-            print(f"[kyttar.sink] Starting (server-batch), device='{self._device_id}', "
-                  f"port='{self._port_name}'")
+            from ._batch_session import query_mode
+            mode = query_mode(self._server_host, self._server_port)
+            self._streaming = (mode == "streaming")
+            print(f"[kyttar.sink] Starting ({'STREAMING (hardware)' if self._streaming else 'server-batch (sim)'}), "
+                  f"device='{self._device_id}', port='{self._port_name}'")
         return True
 
     def stop(self) -> bool:
@@ -179,6 +189,18 @@ class sink(gr.basic_block):
         # are a pass-through we do not use (the recovered words come out-of-band).
         if n_samples:
             self.consume(0, n_samples)
+
+        # === STREAMING MODE (hardware) ===
+        # The source pushes recovered words continuously as it streams chunks to the
+        # board; drain whatever is ready into the GR output. Real-time, no hold/EOF.
+        if self._server_mode and self._streaming:
+            from ._batch_session import get_session
+            sess = get_session(self._device_id, self._stream_id)
+            ready = sess.take_stream(len(out))
+            n = len(ready)
+            if n:
+                out[:n] = ready
+            return n
 
         # === SERVER-BATCH MODE ===
         # simKYT processed the burst ONCE (one process_batch RPC); these are the GENUINE

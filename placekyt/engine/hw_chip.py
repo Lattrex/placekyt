@@ -49,6 +49,12 @@ def _encode_jump(hop_cnt: int, addr: int) -> int:
     return (_OP_JUMP << 12) | ((hop_cnt & 0x1F) << 5) | (addr & 0x1F)
 
 
+def _as_i16(word: int) -> int:
+    """Reinterpret an unsigned 16-bit word as signed int16 (Q15 values are signed)."""
+    w = word & 0xFFFF
+    return w - 0x10000 if w & 0x8000 else w
+
+
 class HwChipError(RuntimeError):
     pass
 
@@ -220,14 +226,21 @@ class HwChip:
         return out
 
     def read_port_i16(self, port_name) -> List[int]:
-        """Drain output values as raw i16 (tag ignored)."""
-        out = [v for (v, _d) in self._out_words]
+        """Drain output values as SIGNED int16 (tag ignored). The words come off the
+        wire as unsigned 16-bit; reinterpret >0x7FFF as negative so a Q15 negative
+        (e.g. 0xE200) reads as -7680, not 57856. Matches simkyt.Chip.read_port_i16."""
+        out = [_as_i16(v) for (v, _d) in self._out_words]
         self._out_words.clear()
         return out
 
-    def read_port(self, port_name) -> List[int]:
-        """Drain output values (same as i16 on hardware; SimServer converts)."""
-        return self.read_port_i16(port_name)
+    def read_port(self, port_name) -> List[float]:
+        """Drain output values as Q15-CONVERTED float32, matching simkyt.Chip.read_port
+        ('with Q15 conversion'). The SimServer's non-raw path does float(v) on this and
+        expects a scaled fraction — returning raw ints here gave garbage (0x2000 -> 8192
+        instead of 0.25). So convert here: signed_word / 32768.0."""
+        out = [_as_i16(v) / 32768.0 for (v, _d) in self._out_words]
+        self._out_words.clear()
+        return out
 
     def output_available(self, port_name) -> int:
         return 1 if self._out_words else 0

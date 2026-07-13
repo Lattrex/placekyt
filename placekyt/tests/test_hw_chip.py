@@ -222,13 +222,25 @@ def test_requires_connect():
         chip.inject_data_physical([1], target_hop_cnt=30, target_addr=0)
 
 
-def test_negative_q15_word_wraps_clean():
-    # a Q15 negative like -1 -> 0xFFFF must pack/encode without error
+def test_negative_q15_word_reads_signed():
+    # a Q15 negative comes back as a SIGNED int16, not an unsigned wrap. The fake
+    # x2 gain on 0xFFFF (-1) gives 0xFFFE, which read_port_i16 must report as -2.
     chip = _hw()
     chip.inject_data_physical([0xFFFF], target_hop_cnt=30, target_addr=0)
     chip.inject_jump_physical(target_hop_cnt=30, entry_addr=1)
-    out = chip.read_port_i16("x16_out")
-    assert out == [(0xFFFF * 2) & 0xFFFF]  # 0xFFFE
+    assert chip.read_port_i16("x16_out") == [-2]  # 0xFFFE signed
+
+
+def test_read_port_q15_converts_to_float():
+    # read_port must Q15-convert (word/32768) like simkyt.Chip.read_port — the server's
+    # non-raw path does float(v) on this and expects a scaled fraction.
+    chip = _hw()
+    chip.inject_data_physical([0x4000], target_hop_cnt=30, target_addr=0)  # 0.5
+    chip.inject_jump_physical(target_hop_cnt=30, entry_addr=1)
+    out = chip.read_port("x16_out")   # fake x2: 0.5*2 = 1.0 -> 0xFFFE.../0x8000 range
+    assert len(out) == 1 and isinstance(out[0], float)
+    # 0x4000*2 = 0x8000 = -32768 signed -> -1.0 (the x2 fake overflows; value shape check)
+    assert -1.0 <= out[0] <= 1.0
 
 
 # ---------------------------------------------------- controller HW-mode wiring

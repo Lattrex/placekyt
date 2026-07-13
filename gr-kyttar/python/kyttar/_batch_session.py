@@ -206,6 +206,51 @@ def _send_message(conn, header, payload=None):
         conn.sendall(arr.tobytes())
 
 
+# --- server-mode selection + continuous streaming (hardware) -----------------
+# The MODE is chosen by the SERVER, not the user: a hardware backend streams
+# continuously (real silicon at USB speed), the simulator batches (too slow to
+# stream). The blocks call query_mode() once at start() and pick their data flow
+# accordingly — same .grc, no user-facing switch.
+
+def query_mode(host, port, timeout=2.0):
+    """Ask the placeKYT server which backend it hosts. Returns 'streaming'
+    (hardware) or 'batch' (simulator). Falls back to 'batch' if the server is old
+    or unreachable (safe default = today's behavior)."""
+    try:
+        conn = socket.create_connection((host, int(port)), timeout=timeout)
+        try:
+            _send_message(conn, {"op": "ping"})
+            reply, _ = _recv_message(conn)
+        finally:
+            conn.close()
+        return str(reply.get("mode", "batch"))
+    except Exception:  # noqa: BLE001
+        return "batch"
+
+
+def stream_chunk(host, port, samples, *, in_port="x16_in", out_port="x16_out",
+                 complex_=False, raw=False, jump_entry=None, timeout=5.0):
+    """Push ONE chunk of samples through the chip and return the recovered words.
+
+    Implemented as a small ``process_batch`` per chunk: on hardware the board runs
+    at USB speed so a per-work-call batch IS real-time streaming, and reusing
+    process_batch means the server resolves the design's hop/entry/data-addrs
+    exactly (the same proven path as the sim batch), so the chunk lands on the
+    right cell. Returns recovered words as a float32 array (may be empty)."""
+    arr = np.ascontiguousarray(samples, dtype="<f4")
+    header = {"op": "process_batch", "port": out_port, "in_port": in_port,
+              "complex": bool(complex_), "raw": bool(raw)}
+    if jump_entry is not None:
+        header["jump_entry"] = int(jump_entry)
+    conn = socket.create_connection((host, int(port)), timeout=timeout)
+    try:
+        _send_message(conn, header, arr)
+        _reply, out = _recv_message(conn)
+    finally:
+        conn.close()
+    return out if out is not None else np.array([], dtype=np.float32)
+
+
 class BatchSession:
     """One source↔sink batch handshake for a device_id.
 
@@ -237,6 +282,9 @@ class BatchSession:
         self._params_lock = threading.Lock()
         self.grc_params = {}              # placeKYT block name -> params dict
         self._type_counts = {}            # placeKYT type -> instances advertised
+        # STREAMING (hardware) mode: a continuous FIFO of recovered words the source
+        # pushes each chunk and the sink drains, instead of the one-shot batch result.
+        self._stream_q = np.array([], dtype=np.float32)
 
     def reset(self):
         with self._cv:
@@ -343,6 +391,26 @@ class BatchSession:
             self._seq += 1          # a NEW burst generation is available to drain
             self._cv.notify_all()
         return result
+
+    def push_stream(self, words):
+        """Streaming mode: the source appends a chunk of recovered words for the
+        sink to drain. Non-blocking, unbounded FIFO (chunks are small)."""
+        with self._cv:
+            self._stream_q = np.concatenate(
+                [self._stream_q, np.asarray(words, dtype=np.float32)])
+            self._cv.notify_all()
+
+    def take_stream(self, max_items):
+        """Streaming mode: pop up to ``max_items`` recovered words the source has
+        pushed. Returns a float32 array (possibly empty). Non-blocking — the sink
+        polls each work() and emits whatever is ready."""
+        with self._cv:
+            if not len(self._stream_q):
+                return np.array([], dtype=np.float32)
+            n = min(int(max_items), len(self._stream_q))
+            out = self._stream_q[:n]
+            self._stream_q = self._stream_q[n:]
+            return out
 
     def take_result(self, timeout=None):
         """Block until the source has dispatched a burst THIS run hasn't drained,

@@ -126,6 +126,9 @@ class source(gr.sync_block):
         self._stream_id = str(stream_id or "")
         self._inbuf = []          # server mode: accumulated complex burst
         self._dispatched = False
+        # streaming (hardware) vs batch (sim) is decided by the SERVER at start();
+        # None until queried. No user-facing switch — see start().
+        self._streaming = None
 
         if self._server_mode:
             print(f"[kyttar.source] SERVER-BATCH mode -> "
@@ -140,10 +143,17 @@ class source(gr.sync_block):
               "'Run as GNURadio Server']")
 
     def start(self) -> bool:
-        """Called when flowgraph starts. Import-light; never touches heavy libs."""
+        """Called when flowgraph starts. Import-light; never touches heavy libs.
+
+        Asks the server which mode it hosts: hardware -> continuous streaming, sim
+        -> batch. The user does nothing; toggling Hardware Mode in placeKYT changes
+        the server's backend, which this query reflects. Same .grc either way."""
         if self._server_mode:
-            print(f"[kyttar.source] Starting (server-batch), device='{self._device_id}', "
-                  f"port='{self._port_name}'")
+            from ._batch_session import query_mode
+            mode = query_mode(self._server_host, self._server_port)
+            self._streaming = (mode == "streaming")
+            print(f"[kyttar.source] Starting ({'STREAMING (hardware)' if self._streaming else 'server-batch (sim)'}), "
+                  f"device='{self._device_id}', port='{self._port_name}'")
         return True
 
     def stop(self) -> bool:
@@ -226,6 +236,27 @@ class source(gr.sync_block):
                 out[:] = np.asarray(inp, dtype=np.complex64)
             else:
                 out[:] = np.real(np.asarray(inp, dtype=np.complex64)).astype(np.float32)
+
+            # STREAMING (hardware): ship THIS chunk to the chip now and stash the
+            # recovered words for the matching sink. No accumulate/EOF/burst_len —
+            # continuous real-time flow, paced by the board's USB handshake.
+            if self._streaming:
+                if n_samples:
+                    from ._batch_session import stream_chunk, get_session
+                    try:
+                        rec = stream_chunk(
+                            self._server_host, self._server_port,
+                            np.real(np.asarray(inp, dtype=np.complex64)).astype("<f4"),
+                            in_port=self._port_name, complex_=self._complex_in,
+                            raw=self._complex_in)
+                    except Exception as e:  # noqa: BLE001
+                        print(f"[kyttar.source] stream chunk failed: {e}", flush=True)
+                        rec = None
+                    if rec is not None and len(rec):
+                        sess = get_session(self._device_id, self._stream_id)
+                        sess.push_stream(np.asarray(rec, dtype=np.float32))
+                return n_samples
+
             if not self._dispatched:
                 self._inbuf.extend(np.asarray(inp, dtype=np.complex64).tolist())
                 if self._burst_len > 0 and len(self._inbuf) >= self._burst_len:

@@ -177,6 +177,12 @@ class SimServer:
         # how two GR sources sharing x16_in (TX mapper + RX matched filter) each
         # reach the right block without the GR source knowing any placement value.
         self._stream_targets: dict[str, dict] = dict(stream_targets or {})
+        # LIVE COEFFICIENT WRITE map (hardware): {block_name: (coeff_hop, coeff_dest)}.
+        # A GainBlock's live `gain` slider becomes a coeff WRITE to (hop,dest) on the
+        # board. Empty by default (single-gain / sim); set at server start for the
+        # multiplexed demo. Tracks the last value written so we only write on change.
+        self._coeff_writes: dict[str, tuple] = {}
+        self._coeff_last: dict[str, float] = {}
         # Per-batch (packet-boundary) state resets, resolved by the build from the
         # placed design's ``reset_per_batch`` StateVars (engine.build.
         # _resolve_batch_reset_writes → ChipBuild.batch_reset_writes → port_config.
@@ -288,6 +294,34 @@ class SimServer:
         connections keep working — they just talk to the new chip."""
         self._chip = chip
 
+    def set_coeff_writes(self, mapping: dict) -> None:
+        """Register {block_name: (coeff_hop, coeff_dest)} so a live GainBlock `gain`
+        slider becomes a coefficient WRITE to that cell on the board (HW mode)."""
+        self._coeff_writes = dict(mapping or {})
+        self._coeff_last = {}
+
+    def _apply_live_coeffs(self, params: dict) -> None:
+        """For each block whose `gain` changed, WRITE the new Q15 coefficient to its
+        coeff cell on the board. Only writes on an actual change (idempotent)."""
+        from engine.hw_chip import _encode_write
+        for block, p in params.items():
+            if block not in self._coeff_writes or not isinstance(p, dict):
+                continue
+            if "gain" not in p:
+                continue
+            g = float(p["gain"])
+            if self._coeff_last.get(block) == g:
+                continue
+            self._coeff_last[block] = g
+            hop, dest = self._coeff_writes[block]
+            q15 = _float_to_q15(g)
+            try:
+                # inject the coeff WRITE + DATA (no JUMP — just reprograms the cell)
+                self._chip._t.send_words([_encode_write(int(hop), int(dest)), q15 & 0xFFFF])
+                self._chip.drain(timeout_ms=5)  # keep the FIFO moving
+            except Exception:
+                pass  # never crash the server thread on a slider tweak
+
     def stop(self) -> None:
         """Fully tear down so the SAME port can be re-bound on a restart.
 
@@ -391,8 +425,16 @@ class SimServer:
                 # GRC↔placeKYT sync indicator). Header carries
                 # ``params`` = {placeKYT block name: {param: value}}. Forwarded to
                 # the host; never touches the chip, so it's safe any time.
+                params = dict(header.get("params", {}) or {})
+                # LIVE COEFFICIENT WRITE (hardware): a GainBlock's `gain` slider change
+                # becomes a coefficient WRITE to that block's coeff cell on the board,
+                # so the gain retunes in real time without a reload. Maps block name ->
+                # coeff dest via _coeff_writes (set at server start from the design).
+                if (self._coeff_writes
+                        and type(self._chip).__name__ == "HwChip"):
+                    self._apply_live_coeffs(params)
                 if self._on_grc_params is not None:
-                    self._on_grc_params(dict(header.get("params", {}) or {}))
+                    self._on_grc_params(params)
                 return {"ok": True}, None
             if op == "reset":
                 # A new flowgraph run — rehost a fresh chip if the host supports

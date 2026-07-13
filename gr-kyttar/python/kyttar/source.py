@@ -135,6 +135,10 @@ class source(gr.sync_block):
         # the board's ~65k-word (~21k-sample) output FIFO with margin. (Was 64, sized
         # for the OLD per-sample board loop; that throttled streaming to ~64k samp/s.)
         self._STREAM_CHUNK = 8192
+        # streaming accumulator: batch small GR work() calls into one big RPC so the
+        # scheduler can't fragment us into tiny per-16-sample round-trips.
+        self._stream_acc = []
+        self._stream_acc_n = 0
 
         if self._server_mode:
             print(f"[kyttar.source] SERVER-BATCH mode -> "
@@ -165,14 +169,43 @@ class source(gr.sync_block):
     def stop(self) -> bool:
         """Called when flowgraph stops."""
         if self._server_mode:
-            # Flush the burst if it never hit burst_len (e.g. burst_len=0).
-            # Degrade gracefully if the server is absent/refused — never raise.
-            try:
-                self._server_dispatch()
-            except Exception as e:  # noqa: BLE001
-                print(f"[kyttar.source] server dispatch failed (degrading, no output): {e}",
-                      flush=True)
+            if self._streaming:
+                # flush any remaining accumulated stream samples
+                try:
+                    self._flush_stream_acc()
+                except Exception as e:  # noqa: BLE001
+                    print(f"[kyttar.source] final stream flush failed: {e}", flush=True)
+            else:
+                # Flush the burst if it never hit burst_len (e.g. burst_len=0).
+                # Degrade gracefully if the server is absent/refused — never raise.
+                try:
+                    self._server_dispatch()
+                except Exception as e:  # noqa: BLE001
+                    print(f"[kyttar.source] server dispatch failed (degrading, no output): {e}",
+                          flush=True)
         return True
+
+    def _flush_stream_acc(self):
+        """Send the accumulated streaming samples to the chip in ONE RPC (the server's
+        HW fast-path batches them), and stash the recovered words for the sink."""
+        if self._stream_acc_n <= 0:
+            return
+        import numpy as _np
+        batch = _np.concatenate(self._stream_acc)
+        self._stream_acc = []
+        self._stream_acc_n = 0
+        from ._batch_session import stream_chunk, get_session
+        try:
+            rec = stream_chunk(
+                self._server_host, self._server_port, batch,
+                in_port=self._port_name, complex_=self._complex_in,
+                raw=self._complex_in)
+        except Exception as e:  # noqa: BLE001
+            print(f"[kyttar.source] stream chunk failed: {e}", flush=True)
+            return
+        if rec is not None and len(rec):
+            get_session(self._device_id, self._stream_id).push_stream(
+                _np.asarray(rec, dtype=_np.float32))
 
     # --- server-batch mode ---------------------------------------------------
     def _server_dispatch(self):
@@ -253,30 +286,24 @@ class source(gr.sync_block):
             # timed out'). We consume at most _STREAM_CHUNK samples per work() call and
             # let GR call us again for the rest — small, fast RPCs that keep flowing.
             if self._streaming:
-                take = min(n_samples, self._STREAM_CHUNK)
+                # Consume THIS call's input into an accumulator and only fire a
+                # stream_chunk RPC once we have a worthwhile batch (_STREAM_CHUNK) — or
+                # flush a partial batch if that's all GR will give us. This prevents
+                # GR's scheduler from fragmenting us into tiny 16-sample RPCs (each a
+                # full socket round-trip), which made the rate bounce. Each RPC then
+                # carries a big batch, hitting the server's HW fast-path throughput.
+                take = n_samples
+                real_in = (np.real(np.asarray(inp[:take], dtype=np.complex64))
+                           .astype("<f4"))
+                self._stream_acc.append(real_in)
+                self._stream_acc_n += take
+                if self._stream_acc_n >= self._STREAM_CHUNK:
+                    self._flush_stream_acc()
+                # sync_block: echo the consumed input to the marker-chain output.
                 if take:
-                    from ._batch_session import stream_chunk, get_session
-                    try:
-                        rec = stream_chunk(
-                            self._server_host, self._server_port,
-                            np.real(np.asarray(inp[:take], dtype=np.complex64)).astype("<f4"),
-                            in_port=self._port_name, complex_=self._complex_in,
-                            raw=self._complex_in)
-                    except Exception as e:  # noqa: BLE001
-                        print(f"[kyttar.source] stream chunk failed: {e}", flush=True)
-                        rec = None
-                    if rec is not None and len(rec):
-                        sess = get_session(self._device_id, self._stream_id)
-                        sess.push_stream(np.asarray(rec, dtype=np.float32))
-                # A sync_block must output exactly as many items as it consumed. We
-                # consumed `take` this call — echo those `take` input samples to the
-                # marker-chain output and tell GR we produced `take` (it re-calls for
-                # the rest of the chunk).
-                if take:
-                    out[:take] = np.real(
-                        np.asarray(inp[:take], dtype=np.complex64)).astype(out.dtype) \
-                        if not np.iscomplexobj(out) else \
-                        np.asarray(inp[:take], dtype=np.complex64)
+                    out[:take] = (real_in.astype(out.dtype)
+                                  if not np.iscomplexobj(out)
+                                  else np.asarray(inp[:take], dtype=np.complex64))
                 return take
 
             if not self._dispatched:

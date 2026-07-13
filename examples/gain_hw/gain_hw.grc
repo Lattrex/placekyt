@@ -86,25 +86,6 @@ blocks:
     coordinate: [40, 260.0]
     rotation: 0
     state: enabled
-- name: throttle
-  id: blocks_throttle
-  parameters:
-    affinity: ''
-    alias: ''
-    comment: pace the stream to samp_rate so the chip is fed at a real rate
-    ignoretag: 'True'
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    samples_per_second: samp_rate
-    type: float
-    vlen: '1'
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [288, 268.0]
-    rotation: 0
-    state: enabled
 - name: msrc
   id: kyttar_source
   parameters:
@@ -268,12 +249,11 @@ blocks:
     state: enabled
 
 connections:
-- [src, '0', throttle, '0']
-- [throttle, '0', msrc, '0']
+- [src, '0', msrc, '0']
 - [msrc, '0', gain, '0']
 - [gain, '0', msink, '0']
 - [msink, '0', time_sink, '1']
-- [throttle, '0', time_sink, '0']
+- [src, '0', time_sink, '0']
 
 metadata:
   file_format: 1

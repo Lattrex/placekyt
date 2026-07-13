@@ -35,6 +35,9 @@ class InspectorPanel(QWidget):
     params_changed = Signal(str, dict)
     # (old_name, new_name) — user renamed a block instance.
     block_renamed = Signal(str, str)
+    # (conn_name) — user edited a connection's stream_id / out_tag tag in the
+    # inspector (multiplexed shared-port hand-build). The host rebuilds/re-resolves.
+    connection_tag_changed = Signal(str)
 
     def __init__(self, controller=None, parent=None, program_view=None):
         super().__init__(parent)
@@ -177,10 +180,78 @@ class InspectorPanel(QWidget):
             return
         self._add_row("Source", _ep_label(conn.source))
         self._add_row("Target", _ep_label(conn.target))
-        self._add_row(
-            "Note",
-            "Hop count and destination are set per WRITE/JUMP in the source "
-            "cell's program — select that cell to edit them.")
+        # Stream tags (multiplexed shared-port designs). Normally set by the GRC
+        # importer; editable here so a HAND-BUILT design can tag its streams too:
+        #  - stream_id on an x16_in→block net names the input stream (a,b,tx,rx…)
+        #  - out_tag on a block→x16_out net is the demux tag for that stream's output
+        from model.connection import ChipPortEndpoint
+        src_is_in = (isinstance(conn.source, ChipPortEndpoint)
+                     and str(conn.source.port).endswith("_in"))
+        tgt_is_out = (isinstance(conn.target, ChipPortEndpoint)
+                      and str(conn.target.port).endswith("_out"))
+        if src_is_in:
+            self._add_stream_id_editor(conn_name, conn.stream_id)
+        if tgt_is_out:
+            self._add_out_tag_editor(conn_name, conn.out_tag)
+        if not (src_is_in or tgt_is_out):
+            self._add_row(
+                "Note",
+                "Hop count and destination are set per WRITE/JUMP in the source "
+                "cell's program — select that cell to edit them.")
+
+    def _add_stream_id_editor(self, conn_name: str, value) -> None:
+        """Editable stream_id for an x16_in→block net (shared input port multiplex).
+        Distinct IDs on nets sharing x16_in give each block its own tagged input."""
+        from PySide6.QtWidgets import QLineEdit
+        edit = QLineEdit("" if value is None else str(value))
+        edit.setPlaceholderText("(none — single stream)")
+        edit.setToolTip("Stream ID for this input net. Set distinct IDs on nets sharing "
+                        "x16_in so each block gets its own tagged input stream (like the "
+                        "tx/rx transceiver examples). Empty = single-stream.")
+        edit.editingFinished.connect(
+            lambda e=edit, n=conn_name: self._on_stream_id_edited(n, e))
+        self._form.addRow("Stream ID:", edit)
+        self._rows.append(edit)
+
+    def _add_out_tag_editor(self, conn_name: str, value) -> None:
+        """Editable out_tag for a block→x16_out net — the demux tag for this stream's
+        output words on the shared output port."""
+        from PySide6.QtWidgets import QLineEdit
+        edit = QLineEdit("" if value is None else str(value))
+        edit.setPlaceholderText("(none — untagged)")
+        edit.setToolTip("Output demux tag (integer) for this net. Distinct tags on nets "
+                        "sharing x16_out let each stream's output be demuxed. Empty = "
+                        "untagged.")
+        edit.editingFinished.connect(
+            lambda e=edit, n=conn_name: self._on_out_tag_edited(n, e))
+        self._form.addRow("Out tag:", edit)
+        self._rows.append(edit)
+
+    def _on_stream_id_edited(self, conn_name: str, edit) -> None:
+        if self._project is None:
+            return
+        conn = self._project.connection(conn_name)
+        if conn is None:
+            return
+        conn.stream_id = edit.text().strip() or None
+        self.connection_tag_changed.emit(conn_name)
+
+    def _on_out_tag_edited(self, conn_name: str, edit) -> None:
+        if self._project is None:
+            return
+        conn = self._project.connection(conn_name)
+        if conn is None:
+            return
+        text = edit.text().strip()
+        if not text:
+            conn.out_tag = None
+        else:
+            try:
+                conn.out_tag = int(text, 0)
+            except ValueError:
+                edit.setText("" if conn.out_tag is None else str(conn.out_tag))
+                return
+        self.connection_tag_changed.emit(conn_name)
 
     def _show_program(self, cx, cy, chip) -> None:
         self._prog_owner = None

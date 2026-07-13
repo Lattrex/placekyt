@@ -415,6 +415,7 @@ class MainWindow(QMainWindow):
         self.inspector.instr_override_changed.connect(self._on_instr_override)
         self.inspector.params_changed.connect(self._on_params_changed)
         self.inspector.block_renamed.connect(self._on_block_renamed)
+        self.inspector.connection_tag_changed.connect(self._on_connection_tag_changed)
         self.canvas.route_completed.connect(self._on_route_completed)
         self.canvas.route_progress.connect(self._on_route_progress)
         self.canvas.delete_connection_requested.connect(self._on_delete_connection)
@@ -787,6 +788,15 @@ class MainWindow(QMainWindow):
                 f"Renamed {old_name} → {new_name}", 3000)
         except Exception as exc:  # noqa: BLE001
             self.statusBar().showMessage(f"Rename failed: {exc}", 4000)
+
+    def _on_connection_tag_changed(self, conn_name) -> None:
+        # A hand-edited stream_id / out_tag on a connection: mark the design dirty so
+        # it saves and the next build / server (re)start re-resolves stream_targets.
+        try:
+            self.controller.project.mark_dirty()
+            self.statusBar().showMessage(f"{conn_name}: stream tag updated", 3000)
+        except Exception as exc:  # noqa: BLE001
+            self.statusBar().showMessage(f"Tag edit failed: {exc}", 4000)
 
     def _on_instr_override(self, block_name, cell_id, addr, field, value) -> None:
         try:

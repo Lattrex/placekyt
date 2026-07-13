@@ -57,6 +57,34 @@ is final and a real group tag prepends cleanly later, no rework).
 5. **Live coeff writes.** slider → `set_grc_params` → coefficient WRITE to that block's
    cell (dest per block). Already proven for one block; extend to two.
 
+## Why the hand-built gain_hw.kyt produces 0 output (ROOT CAUSE, 2026-07-13)
+
+Two SEPARATE problems, found by tracing the sim (not guessing):
+
+1. **Missing stream tags (FIXED).** The `.kyt` was hand-built (blocks dropped into the
+   array, not imported from a GRC flowgraph), so its connections had `stream_id=None`
+   / `out_tag=None` — the GRC importer is the only thing that used to set them. Now the
+   **inspector lets you edit Stream ID / Out tag on a selected connection** (commit
+   5553922). Setting a/b + 0/1 makes `stream_targets` resolve two streams.
+
+2. **Shared input corridor fan-out conflict (ROUTER WORK, not fixed here).** Even with
+   tags, the design emits 0 words because the two input routes SHARE cells that can't
+   forward to both blocks:
+       x16_in→gain  : (0,0)(1,0)(2,0)(3,0)(3,1)(4,1)
+       x16_in→gain_1: (0,0)(1,0)(2,0)(3,0)(3,1)(3,2)(4,2)
+   Both ride (0,0)→(3,0)→(3,1), then diverge. Cell (3,1) has ONE fwd_face but must
+   forward to BOTH (4,1) and (3,2). So the build lands the injection at (3,0) — the
+   divert point, NOT the gain cell — and the word never reaches the gain to trigger it.
+   A shared input corridor fanning to >1 block needs a **fan-out BROKER** at the
+   divergence cell (like `_apply_brokers` does for auto-P&R). Hand-drawn routes don't
+   create one. THIS is the router work — and exactly why the loop/ring topology helps
+   (tap off a backbone instead of fanning a shared corridor).
+
+The proven-live two-gain HARDWARE path (fake_kyttar_gain2 + HwChip + server multi-stream
+fast-path + live coeffs) works when each stream is injected with DISTINCT input tags
+(sample dest 1 vs 2, jump entry 1 vs 2). The router must produce those distinct input
+tags (or a fan-out broker) for the auto-flow to match the hardware.
+
 ## What is NOT this session (router agent)
-Loop/ring topology routing, the snake-pattern block-fitting rule, ports-on-same-side
-constraint. This demo only needs the two blocks + the tagging; the router work is separate.
+The fan-out broker for a shared input corridor; loop/ring topology routing; the
+snake-pattern block-fitting rule; ports-on-same-side constraint.

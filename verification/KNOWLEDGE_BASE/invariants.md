@@ -856,3 +856,22 @@ to ports with a `target_hop==0` injection (the raw-word path); the per-sample
 is untouched. This artifact ONLY appears on the raw-word/saturated path — every prior
 demo used per-sample injection (one clean addressed event per sample). Regression:
 `test_trace_model.py::TestRawWordInputCoalescing` (opcode-colliding payloads).
+
+**A-SPEC (the DSP-engineer number).** The honest single-chain spec, measured by
+CRITICAL-PATH depth (not cell count): one output symbol takes ~243 SERIAL instruction-
+times (243 × 27.43 ns ≈ 6.6 µs = the observed 6540 ns/symbol). Instantaneous parallelism
+is only **~2.78×** (mean 2.62 cells firing per 27 ns bin, NOT 24) — so the ~675 instr/
+symbol are mostly SERIAL on the two PI feedback loops + the sequential MF accumulate.
+⇒ **sustained complex input ≈ 0.33 MSa/s/chain** at this node (~0.165 MBaud, ~0.33 MHz
+occupied BW). Node shrink scales ~linearly: ~3.3 MSa/s at 10×, ~6.6 MSa/s at 20×.
+COMMERCIAL REALITY (CM's framing): as a SINGLE serial DSP engine this is SLOW — a
+commodity FPGA/RFSoC/C66x demod core does tens–hundreds of MSa/s complex, i.e. ~100–
+1000× faster per chain; even at 20× shrink one chain trails badly. Parallelism does NOT
+rescue a chain too slow for the target signal (CM: "a million too-slow chains still
+can't demod a fast signal"). So Kyttar is viable ONLY for NARROWBAND many-channel work
+(the skimmer: hundreds of kBaud–low-MBaud channels — PSK31/RTTY/AFSK/voice/low-rate PSK-
+FSK), NOT wideband single-channel. THE LEVER for one-chain speed is SHORTENING THE
+CRITICAL PATH (243 serial instr/symbol), not adding chains: cut the serial spine (the 2
+PI loops + MF accumulate) and spread MF taps across more cells so real parallelism rises
+from 2.78× toward the ~10× the tap count allows. throughput_bench.py + /tmp/critpath.py
+measure it. See [[project_coherent_rx_cannot_pipeline]].

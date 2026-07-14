@@ -124,24 +124,23 @@ def test_connect_requires_firmware_ping():
         chip.connect()
 
 
-def test_connect_requires_gain_dataplane():
-    """Stage-2 failure: firmware alive but the gateware doesn't echo a 2x burst
-    (e.g. wrong bitstream flashed). connect() must reject it."""
+def test_connect_is_firmware_only_not_dataplane():
+    """The connection check is PRESENCE + firmware only — it must NOT push data through
+    the array. A board whose gateware echoes NOTHING (a real DSP design swallows input
+    until steady state) still connects fine; whether it produces output is a runtime
+    concern, not a connection concern."""
     class Mute(FakeGainTransport):
         def probe_roundtrip(self, words, max_read=16, timeout_ms=800):
-            return []  # no response
+            return []  # data plane silent — must NOT fail connect
     chip = HwChip(transport=Mute())
-    with pytest.raises(HwChipError):
-        chip.connect()
+    chip.connect()  # must not raise
+    assert chip.connected
 
 
-def test_connect_can_skip_dataplane_verify():
-    """A non-gain gateware brings up with verify_dataplane=False (firmware ping only)."""
-    class Mute(FakeGainTransport):
-        def probe_roundtrip(self, words, max_read=16, timeout_ms=800):
-            return []
-    chip = HwChip(transport=Mute())
-    chip.connect(verify_dataplane=False)  # must not raise
+def test_connect_accepts_legacy_verify_kw():
+    """connect() still accepts a legacy verify_dataplane kwarg without error."""
+    chip = HwChip(transport=FakeGainTransport())
+    chip.connect(verify_dataplane=False)
     assert chip.connected
 
 

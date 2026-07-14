@@ -79,53 +79,24 @@ class HwChip:
         self._connected = False
 
     # ------------------------------------------------------------- connection
-    # A known gain round-trip used as the data-plane liveness check: send
-    # WRITE/DATA(x)/JUMP, expect the framed WRITE/DATA(2x)/JUMP back. This proves the
-    # FPGA app is loaded AND streaming (not merely that the FX3 enumerated). The probe
-    # value is arbitrary but small so 2x can't wrap.
-    _PING_VALUE = 0x0007
+    def connect(self, **_ignored) -> None:
+        """Open the USB link and verify the board is PRESENT and its firmware responds.
 
-    def connect(self, *, verify_dataplane: bool = True) -> None:
-        """Open the USB link and verify the board is live.
-
-        Two-stage check: (1) FX3 firmware liveness (cheap VR 0x64 read); (2) a gain
-        round-trip through the gateware (send a burst, confirm the 2x response). Stage 2
-        is what actually proves the loaded FPGA app is running — it's gateware-aware, so
-        it lives here, not in the transport. Set ``verify_dataplane=False`` to skip stage
-        2 (e.g. bringing up a non-gain gateware).
+        The connection check is deliberately shallow: it only confirms the board exists
+        and the FX3 answers a control transfer (VR 0x64). It does NOT push data through
+        the array — a data round-trip is not a valid liveness test because most real DSP
+        designs (receivers with AGC/lock loops, decimators, anything with a startup
+        transient) swallow input until steady state and would falsely report "not
+        connected." Whether the loaded design produces output is a runtime concern, not
+        a connection concern. (``**_ignored`` accepts a legacy ``verify_dataplane`` kw.)
         """
         self._t.connect()
         if not self._t.ping():
             self._t.close()
             raise HwChipError(
-                "board did not answer control transfers (FX3 firmware not alive?)"
-            )
-        if verify_dataplane and not self._verify_gain_roundtrip():
-            self._t.close()
-            raise HwChipError(
-                "board enumerated but the gateway did not echo a framed burst "
-                "(FPGA app not loaded/streaming, or wrong bitstream flashed?)"
+                "board not responding (FX3 firmware alive? board plugged in / flashed?)"
             )
         self._connected = True
-
-    def _verify_gain_roundtrip(self) -> bool:
-        """Send a WRITE/DATA(v)/JUMP burst; return True iff a framed WRITE/DATA response
-        comes back. We check for a valid framed reply, NOT a specific gain factor — the
-        gain coefficient is run-time reprogrammable (Q15), so the exact returned value
-        depends on the current coefficient and must not be hardcoded here. A well-formed
-        WRITE/DATA pair in the reply proves the FPGA app is loaded and streaming."""
-        try:
-            self._t.reset(leave=False)
-            words = self._t.probe_roundtrip([
-                _encode_write(30, 0), self._PING_VALUE, _encode_jump(30, 1),
-            ])
-        except HwTransportError:
-            return False
-        # any WRITE followed by a DATA word == a valid framed burst came back
-        for i in range(len(words) - 1):
-            if ((words[i] >> 12) & 0xF) == _OP_WRITE:
-                return True
-        return False
 
     @property
     def connected(self) -> bool:

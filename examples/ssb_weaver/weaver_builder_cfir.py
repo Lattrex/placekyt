@@ -229,13 +229,19 @@ def build_weaver_chip_cfir(chip_yaml: str, plan: WeaverPlan = None,
     lpp = dict(gain=plan.lpf_gain, samp_rate=plan.fs, cutoff_freq=plan.cutoff,
                transition_width=plan.tw)
 
+    # This is a FIXED, compact BATCH transceiver (not a high-rate saturated pipeline),
+    # so the mixers use the 11-cell UNLOCKED variant (pipeline_lock=False) — the extra
+    # serialize-LOCK cell + corridor of the default (saturation-safe) 12-cell mixer would
+    # push this dense 6-block layout past the single-chip routing budget. The serialize-
+    # LOCK is proven separately (verification/kyttar/tests/proto_cmix_pipe.py); it is only
+    # needed for back-to-back saturated drive, which a batch demo never does.
     tx_mix = P("ComplexMixerBlock", 1, 1, sample_rate=plan.fs,
-               frequency=-plan.fa, phase=ph_fa)
+               frequency=-plan.fa, phase=ph_fa, pipeline_lock=False)
     tx_lp = P("ComplexLowPassFilter", 4, 1, **lpp)
     tx_up = P("IQUpconvertBlock", 8, 1, sample_rate=plan.fs, frequency=plan.fc)
 
     rx_mix = P("ComplexMixerBlock", 1, 6, sample_rate=plan.fs,
-               frequency=-plan.fc, phase=ph_fc)
+               frequency=-plan.fc, phase=ph_fc, pipeline_lock=False)
     rx_lp = P("ComplexLowPassFilter", 4, 6, **lpp)
     rx_up = P("IQUpconvertBlock", 8, 6, sample_rate=plan.fs, frequency=plan.fa)
 

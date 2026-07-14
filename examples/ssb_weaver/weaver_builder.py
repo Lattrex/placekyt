@@ -424,7 +424,7 @@ def build_weaver_chip(chip_yaml: str, plan: WeaverPlan = WeaverPlan(),
 
     # Drop the 11 blocks; auto_place re-arranges them. Positions are hints only.
     tx_mix = P("ComplexMixerBlock", 1, 1, sample_rate=plan.fs,
-               frequency=-plan.fa, phase=ph_fa)
+               frequency=-plan.fa, phase=ph_fa, pipeline_lock=False)  # fixed batch demo
     tx_split = P("ComplexToFloatBlock", 5, 1)   # yi->out_re (I), yq->out_im (Q)
     tx_lpi = P("LowPassFilter", 7, 1, gain=plan.lpf_gain, samp_rate=plan.fs,
                cutoff_freq=plan.cutoff, transition_width=plan.tw)
@@ -433,7 +433,7 @@ def build_weaver_chip(chip_yaml: str, plan: WeaverPlan = WeaverPlan(),
     tx_up = P("IQUpconvertBlock", 9, 1, sample_rate=plan.fs, frequency=plan.fc)
 
     rx_mix = P("ComplexMixerBlock", 1, 6, sample_rate=plan.fs,
-               frequency=-plan.fc, phase=ph_fc)
+               frequency=-plan.fc, phase=ph_fc, pipeline_lock=False)  # fixed batch demo
     rx_split = P("ComplexToFloatBlock", 5, 6)
     rx_lpi = P("LowPassFilter", 7, 6, gain=plan.lpf_gain, samp_rate=plan.fs,
                cutoff_freq=plan.cutoff, transition_width=plan.tw)

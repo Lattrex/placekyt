@@ -2376,6 +2376,25 @@ def _default_unrouted_exit_hops(cell_map, gr_placement, blocks: list,
                            preserve_dest_regs=preserve)
 
 
+def _patch_config_write(cfg, hop, cfg_addr) -> bool:
+    """Patch the cell's WRITE.CFG (opcode WRITE + config bit set) to ``@hop`` with
+    dest ``cfg_addr`` — used to (re)assert a CONFIG-only backward write (the
+    ComplexMixer serialize-LOCK unlock cell's ``WRITE.CFG @N, LOCK``) whose dest
+    the router's sink-default may have clobbered. Matches on the config bit alone
+    (not the current dest), so it recovers a rewritten word. Returns True if patched."""
+    hop_cnt = encode_hop_cnt(hop)
+    for addr, word in list(cfg.memory.items()):
+        if not _is_instruction_addr(cfg, addr):
+            continue
+        if (word & 0xF000) != _WRITE or not (word & _WRITE_CONFIG_BIT):
+            continue
+        word = (word & ~(0x1F << 5)) | (hop_cnt << 5)
+        word = (word & ~0x1F) | (int(cfg_addr) & 0x1F)
+        cfg.memory[addr] = word & 0xFFFF
+        return True
+    return False
+
+
 def _patch_last_write_handoff(cfg, hop, dest=None) -> None:
     """Patch ONLY the highest-address WRITE instruction in ``cfg`` to ``hop`` (and
     optional ``dest``). Used when a block's OUTPUT leaves a mid-block cell that
@@ -2667,6 +2686,27 @@ def _apply_internal_feedback(cell_map, gr_placement, blocks, gr_blocks,
                                                    transit_pos)
             if hops is None:
                 continue  # no traceable return path — leave as-is, don't guess
+            cfg = cell_map.get_cell(*src_pos)
+            if cfg is None:
+                continue
+            # A CONFIG-ONLY backward edge (src port ``unlock``) carries NO data — it
+            # only clears the dst cell's arbiter LOCK (the ComplexMixer serialize-LOCK:
+            # a dedicated `unlock` cell whose sole output is a backward ``WRITE.CFG @N,
+            # LOCK``). There is no data WRITE and no dst register to resolve; patch the
+            # WRITE.CFG's hop directly and record the cell so the exit-default preserves
+            # it. This is a pure fan-in interlock, distinct from a data-feedback loop.
+            if _src_port == "unlock":
+                # The unlock cell's SOLE output is the backward WRITE.CFG. The router's
+                # sink-default may have already rewritten its dest (LOCK addr -> 0) and
+                # hop while treating this last-placed cell as a port sink. RESTORE it:
+                # find the cell's WRITE.CFG (opcode WRITE + config bit) and set BOTH the
+                # resolved corridor hop AND dest = _LOCK_CFG_ADDR (the LOCK register),
+                # regardless of the current (possibly clobbered) dest. Then record the
+                # cell so the exit-default preserves it.
+                if _patch_config_write(cfg, hops, _LOCK_CFG_ADDR):
+                    feedback_blocks.setdefault(blk.name, set()).add(
+                        (src_pos, _LOCK_CFG_ADDR))
+                continue
             # Resolve the dst register: a feedback may target an INPUT port (e.g.
             # Costas dphase) OR an internal STATE var (e.g. Gardner `period` — a
             # persistent, init-valued state reg the loop filter overwrites). Try
@@ -2680,9 +2720,6 @@ def _apply_internal_feedback(cell_map, gr_placement, blocks, gr_blocks,
             if dst_reg is None:
                 dst_reg = _resolve_state_reg(dst_cp, dst_port)
             if dst_reg is None:
-                continue
-            cfg = cell_map.get_cell(*src_pos)
-            if cfg is None:
                 continue
             # Patch the src cell's WRITE that targets dst_reg to @hops.
             if _patch_one_handoff(cfg, _WRITE, dst_reg, hops, config=False):

@@ -55,9 +55,20 @@ class ComplexMixerBlock(KyttarBlock):
 
     def __init__(self, name: str, sample_rate: float = 32000.0,
                  frequency: float = 2000.0, amplitude: float = 1.0,
-                 offset: float = 0.0, phase: float = 0.0):
+                 offset: float = 0.0, phase: float = 0.0,
+                 pipeline_lock: bool = False):
         super().__init__(name, sample_rate=sample_rate, frequency=frequency,
                          amplitude=amplitude, offset=offset, phase=phase)
+        # SATURATION SERIALIZE-LOCK (INV-20). This block has a RECONVERGENT fan-in
+        # (phase -> two NCO columns + relay -> mixer). Under back-to-back drive a
+        # second sample's fast-path operands race into mixer's input regs before the
+        # first sample's slow-path operand arrives -> DEADLOCK. Fix: phase LOCKs its
+        # input arbiter after launching a sample; mixer (exit cell) clears the lock
+        # via a backward WRITE.CFG once it has emitted, so ONE sample traverses the
+        # fan-in at a time. The mixer's PROVEN arithmetic is untouched — the lock adds
+        # only 2 face DataWords (at FREE addresses 11/12; the mixer uses only 0-10)
+        # and the unlock tail. Default ON.
+        self._pipeline_lock = bool(pipeline_lock)
         self._sample_rate = float(sample_rate)
         self._frequency = float(frequency)
         self._amplitude = float(amplitude)
@@ -90,7 +101,7 @@ class ComplexMixerBlock(KyttarBlock):
 
     @property
     def cell_count(self) -> int:
-        return 11
+        return 12 if self._pipeline_lock else 11
 
     @property
     def interface(self) -> BlockInterface:
@@ -123,13 +134,36 @@ class ComplexMixerBlock(KyttarBlock):
     def build_cell_programs(self) -> Dict[str, CellProgram]:
         even_tbl, odd_tbl = self._even_odd_tables()
 
+        # SERIALIZE-LOCK tail (INV-20): after phase launches the sample's fan-out, it
+        # LOCKs its input arbiter to the unlock-corridor face (lock_face, an is_face
+        # DataWord = SOUTH so it transforms with orientation) so the NEXT input sample
+        # is HELD (gate-all-but-lock_face) until the mixer clears the lock. JUMP does
+        # NOT halt the issuer, so the lock instructions after {jump:trig} still run.
+        # Free addresses 11/12 (phase uses 0,1,4-8). Off when pipeline_lock=False.
+        # lock_face = the face the UNLOCK word ENTERS phase on. In default_layout the
+        # corridor is unlock -> transit -> phase, with the last transit EAST of phase
+        # emitting WEST into it, so the word enters phase from its EAST side => EAST(1).
+        # Gate-all-but-lock_face holds the next INPUT sample while still admitting the
+        # unlock. is_face so it transforms with orientation. Data words MUST pack
+        # CONTIGUOUSLY after the existing data (freq@4, quarter@5) -> 6/7; a gap would
+        # shrink the state/input allocation window (gap = range(max_data_addr+1, base)).
+        ph_lock_data = ([DataWord("lock_face", 1, address=6, is_face=True),
+                         DataWord("one", 1, address=7)]
+                        if self._pipeline_lock else [])
+        ph_lock_tail = ("""\
+    MOVE R0, R{data:lock_face}
+    MOVE [LOCK_FACE], R0
+    MOVE R0, R{data:one}
+    MOVE [LOCK], R0
+""" if self._pipeline_lock else "")
+
         phase_cell = CellProgram(
             inputs=[Port("xi", register=0), Port("xq", register=1)],
             outputs=[Port("ph_sin"), Port("ph_cos"), Port("xi_fwd"),
                      Port("xq_fwd"), Port("trig")],
             entries=[EntryPoint("default")],
             data=[DataWord("freq", self._freq_word, address=4),
-                  DataWord("quarter", 16384, address=5)],
+                  DataWord("quarter", 16384, address=5)] + ph_lock_data,
             # Initial phase (GR sig_source_c `phase`, radians -> 16-bit word).
             state=[StateVar("phase", initial_value=self._phase0_word),
                    StateVar("xis"), StateVar("xqs")],
@@ -148,7 +182,7 @@ start:
     ADD R{state:phase}, R{data:freq}
     MOVE R{state:phase}, R0
     {jump:trig}
-""",
+""" + ph_lock_tail,
         )
 
         # relay: hold and re-forward the signal mid-pipeline (skip-4 each hop).
@@ -296,6 +330,11 @@ out:
         # Amplitude is folded into the quarter-wave table (_quarter_table), so the
         # mixer needs NO amp MULQ and stays at the original (budget-tight) shape.
         # offset is unsupported (raised in __init__) — no extra op here.
+        # The mixer ARITHMETIC IS UNCHANGED (byte-identical to the GR-verified block —
+        # the input->state copies are load-bearing: an input reg is NOT re-readable
+        # across MULQs, and the mixer has no register room for the unlock anyway). The
+        # serialize-LOCK's unlock lives in a DEDICATED `unlock` cell fired by the
+        # mixer's trig (below), so the mixer's DSP is untouched by pipeline_lock.
         mixer_cell = CellProgram(
             inputs=[Port("cosv", register=0), Port("sinv", register=1),
                     Port("xi", register=2), Port("xq", register=3)],
@@ -328,7 +367,29 @@ start:
 """,
         )
 
-        return {
+        # UNLOCK cell (INV-20 serialize-LOCK): a dedicated INTERNAL cell fired by the
+        # mixer's trig AFTER it emits yi/yq. It does ONLY the backward WRITE.CFG that
+        # clears phase's arbiter LOCK (CONFIG[4]=LOCK -> 0) down the authored corridor,
+        # releasing the NEXT input sample held at phase — so exactly one sample
+        # traverses the reconvergent fan-in at a time. It has the whole register file
+        # for one instruction, so the mixer's DSP is untouched. @N is a fixed authored
+        # corridor hop (unlock -> ... -> phase), set in default_layout; the trig
+        # self-terminates so the build does not loop it. Only present when locked.
+        unlock_cell = CellProgram(
+            inputs=[Port("trig_in", register=0)],
+            outputs=[Port("done")],
+            entries=[EntryPoint("default")],
+            data=[DataWord("zero", 0, address=1)],
+            state=[],
+            assembly_template="""\
+start:
+    MOVE R0, R{data:zero}
+    WRITE.CFG @2, 4
+    {jump:done}
+""",
+        )
+
+        cells = {
             "phase": phase_cell,
             "sin_fold": _fold_cell(), "sin_even": _even_cell(),
             "sin_odd": _odd_cell(), "sin_interp": _interp_cell(),
@@ -337,6 +398,9 @@ start:
             "cos_odd": _odd_cell(), "cos_interp": _interp_cell(),
             "mixer": mixer_cell,
         }
+        if self._pipeline_lock:
+            cells["unlock"] = unlock_cell
+        return cells
 
     def internal_connections(self) -> List[Tuple[str, str, str, str]]:
         conns = [
@@ -361,27 +425,69 @@ start:
             ("sin_interp", "val", "mixer", "sinv"),
             ("cos_interp", "val", "mixer", "cosv"),
         ]
+        if self._pipeline_lock:
+            # mixer's TRIG fires the internal unlock cell (resolved as a named
+            # internal handoff, so the router routes it to unlock's `default` entry
+            # instead of positional-guessing / defaulting it to the output port).
+            conns += [("mixer", "trig", "unlock", "trig_in")]
+            # unlock's `done` self-terminates (no forward handoff); its WRITE.CFG
+            # is a BACKWARD config-only edge to phase (clears the LOCK), resolved by
+            # the build's _apply_internal_feedback (config_only branch) which traces
+            # unlock -> phase along the authored corridor and patches the @N hop.
+            conns += [("unlock", "done", "__terminate__", ""),
+                      ("unlock", "unlock", "phase", "xi")]
         return conns
 
     def internal_jumps(self) -> List[Tuple[str, str, str, str]]:
         chain = ["phase", "sin_fold", "sin_even", "sin_odd", "sin_interp", "relay",
                  "cos_fold", "cos_even", "cos_odd", "cos_interp", "mixer"]
-        return [(chain[i], "trig", chain[i + 1], "default")
-                for i in range(len(chain) - 1)]
+        jumps = [(chain[i], "trig", chain[i + 1], "default")
+                 for i in range(len(chain) - 1)]
+        if self._pipeline_lock:
+            # After emitting yi/yq, the mixer's trig fires the internal `unlock` cell,
+            # which clears phase's LOCK. The unlock's own `done` JUMP self-terminates so
+            # the build does not loop it. mixer's yi/yq egress on the mixer's OUTPUT
+            # face (route-driven); its trig JUMP goes to unlock (abutting, WEST).
+            jumps.append(("mixer", "trig", "unlock", "default"))
+            jumps.append(("unlock", "done", "__terminate__", "default"))
+        return jumps
 
     def output_cell_ids(self) -> List[str]:
         return ["mixer"]
 
     def default_layout(self) -> Dict[Any, Tuple[int, int, str]]:
+        if not self._pipeline_lock:
+            col0 = ["phase", "sin_fold", "sin_even", "sin_odd", "sin_interp", "relay"]
+            col1_bottom_up = ["cos_fold", "cos_even", "cos_odd", "cos_interp", "mixer"]
+            layout = {}
+            for j, cid in enumerate(col0):
+                face = "east" if cid == "relay" else "south"
+                layout[cid] = (0, j, face)
+            for k, cid in enumerate(col1_bottom_up):
+                face = "east" if cid == "mixer" else "north"
+                layout[cid] = (1, 5 - k, face)
+            return layout
+
+        # SERIALIZE-LOCK layout: cos column shifted to col2 so col1 is free for the
+        # mixer -> unlock -> phase corridor. Forward datapath unchanged.
+        #   col:    0            1                 2
+        #   row0:  phase(E)     transit(W)        cos_fold(N)
+        #   row1:  sin_fold(S)  unlock(W)         mixer(W) ... [and cos column up col2]
+        # mixer(2,1) trig -> unlock(1,1) (abuts WEST). unlock's WRITE.CFG @2 travels
+        # unlock(1,1,W) -> transit(1,0,W) -> phase(0,0), landing on phase's WEST face
+        # (= lock_face). The transit cell carries NO program. The mixer's yi/yq egress
+        # on the mixer's routed OUTPUT face (not this corridor).
         col0 = ["phase", "sin_fold", "sin_even", "sin_odd", "sin_interp", "relay"]
-        col1_bottom_up = ["cos_fold", "cos_even", "cos_odd", "cos_interp", "mixer"]
-        layout = {}
+        col2_bottom_up = ["cos_fold", "cos_even", "cos_odd", "cos_interp", "mixer"]
+        layout: Dict[Any, Tuple[int, int, str]] = {}
         for j, cid in enumerate(col0):
-            face = "east" if cid == "relay" else "south"
+            face = "east" if cid in ("phase", "relay") else "south"
             layout[cid] = (0, j, face)
-        for k, cid in enumerate(col1_bottom_up):
-            face = "east" if cid == "mixer" else "north"
-            layout[cid] = (1, 5 - k, face)
+        for k, cid in enumerate(col2_bottom_up):
+            face = "west" if cid == "mixer" else "north"
+            layout[cid] = (2, 5 - k, face)
+        layout["unlock"] = (1, 1, "west")              # mixer(W) fires it; it faces W
+        layout["transit_unlock_0"] = (1, 0, "west")    # unlock(W) -> here -> phase(W)
         return layout
 
     # -------------------------------------------------------------- reference

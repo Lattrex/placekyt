@@ -70,30 +70,48 @@ REAL_1IN = {
     "RRCPulseShaperBlock": ("in", "out", {}),
 }
 
+# TWO-input, single-real-output blocks: (in_ports, out_port, params). Driven with a
+# 2-operand sample. Per-sample reference = run_block_dut_complex (drains flat);
+# pipelined = run_block_dut_pipelined. Covers the complex->real converters (re,im ->
+# scalar) and the N-input arithmetic (a0,a1 -> out).
+REAL_2IN = {
+    "ComplexToRealBlock": (("re", "im"), "out", {}),
+    "ComplexToImagBlock": (("re", "im"), "out", {}),
+    "ComplexToMagSquaredBlock": (("re", "im"), "out", {}),
+    "AddBlock": (("a0", "a1"), "out", {}),
+    "MultiplyBlock": (("a0", "a1"), "out", {}),
+    "SubtractBlock": (("a0", "a1"), "out", {}),
+    # IQUpconvert is complex-in / single-real-out AND carries its OWN LOCK interlock
+    # (the same idiom the Costas/RX fix uses) — the strongest saturation cross-check.
+    "IQUpconvertBlock": (("xi", "xq"), "out", {}),
+}
+
+# RATE-CHANGING blocks (single real in, single real out, N-in-M-out): (in_port,
+# out_port, params). Per-sample ref = run_block_dut_rate (drains each trigger's burst);
+# pipelined = run_block_dut_pipelined (flat egress). The saturated flat stream must
+# equal the per-sample flat stream — a rate block that mis-paces under saturation
+# (drops/duplicates a burst) is caught here.
+RATE_1IN = {
+    "UpsamplerBlock": ("x", "out", {}),        # rate-EXPANDING (fixed factor)
+    "KeepOneInNBlock": ("x", "out", {"n": 2}),  # rate-REDUCING
+}
+
 # Blocks that need bespoke stimulus (documented, reported as skips — no silent gap).
 NEEDS_BESPOKE = {
-    "ComplexCostasLoopBlock": "complex I/Q input; own gate in proto_costas_pipe.py",
-    "GardnerTimingRecovery": "2-sps timing loop; own gate in proto_gardner_race.py",
-    "IQUpconvertBlock": "complex input",
-    "ComplexMixerBlock": "complex input",
-    "ComplexFIRFilterBlock": "complex I/Q input",
-    "ComplexLowPassFilter": "complex input",
-    "ComplexHighPassFilter": "complex input",
-    "ComplexBandPassFilter": "complex input",
-    "ComplexBandRejectFilter": "complex input",
-    "ComplexRRCMatchedFilterBlock": "complex input",
-    "FloatToComplexBlock": "2-real -> complex",
-    "DualFloatToComplexBlock": "2-face rendezvous",
-    "ComplexToFloatBlock": "complex input",
-    "ComplexToRealBlock": "complex input",
-    "ComplexToImagBlock": "complex input",
-    "ComplexToMagSquaredBlock": "complex input",
-    "ConjugateBlock": "complex input",
-    "AddBlock": "multi-input",
-    "MultiplyBlock": "multi-input",
-    "SubtractBlock": "multi-input",
-    "UpsamplerBlock": "rate-expanding (bespoke rate harness)",
-    "KeepOneInNBlock": "rate-reducing (bespoke rate harness)",
+    "ComplexCostasLoopBlock": "complex I/Q loop; own gate proto_costas_pipe.py (BER0)",
+    "CoherentRXBlock": "complex I/Q RX loop; own gate proto_rx_bisect.py (BER0)",
+    "GardnerTimingRecovery": "2-sps timing loop; own gate proto_gardner_race.py",
+    "ComplexMixerBlock": "complex I/Q OUTPUT (yi,yq) — 2-word egress de-interleave",
+    "ComplexFIRFilterBlock": "complex I/Q output",
+    "ComplexLowPassFilter": "complex I/Q output",
+    "ComplexHighPassFilter": "complex I/Q output",
+    "ComplexBandPassFilter": "complex I/Q output",
+    "ComplexBandRejectFilter": "complex I/Q output",
+    "ComplexRRCMatchedFilterBlock": "complex I/Q output",
+    "FloatToComplexBlock": "complex I/Q output",
+    "DualFloatToComplexBlock": "2-face rendezvous (own gate proto_dual_f2c)",
+    "ComplexToFloatBlock": "complex I/Q output (out_re,out_im)",
+    "ConjugateBlock": "complex I/Q output (out_re,out_im)",
     "NCOBlock": "source (no data input)",
     "FrequencyModulatorBlock": "VCO / complex output",
     "PSKSymbolMapperBlock": "bit-stream input",
@@ -135,6 +153,72 @@ def test_pipelined_equals_per_sample(block_type):
         f"{next(i for i in range(n) if pipe.outputs_q15[i] != seq_out[i])}")
 
 
+@pytest.mark.skipif(not _CHIP_OK, reason="chip yaml absent")
+@pytest.mark.parametrize("block_type", sorted(REAL_2IN))
+def test_pipelined_equals_per_sample_2in(block_type):
+    """Same saturation gate for TWO-input, single-real-output blocks (complex->real
+    converters + N-input arithmetic). Per-sample ref = run_block_dut_complex (drives
+    2 operands + JUMP per sample, drains flat); pipelined = run_block_dut_pipelined."""
+    from kyttar_verify.dut_runner import (  # noqa: PLC0415
+        run_block_dut_complex, run_block_dut_pipelined)
+
+    in_ports, out_port, params = REAL_2IN[block_type]
+
+    # Two-operand stimulus: reuse _STIM for BOTH operands (deterministic, exercises
+    # sign/magnitude). run_block_dut_complex takes (i,q) pairs.
+    pairs = [(_STIM[k], _STIM[(k + 3) % len(_STIM)]) for k in range(len(_STIM))]
+
+    seq = run_block_dut_complex(block_type, pairs, params=params, chip_yaml=CHIP_YAML,
+                                in_ports=in_ports, out_port=out_port)
+    assert seq.ok, f"per-sample build/run failed: {seq.reason}"
+    # flatten the per-trigger word lists to a single stream (1 word/sample here)
+    seq_out = [w for g in seq.outputs_q15 for w in g]
+
+    samples = [(_q15(i), _q15(q)) for (i, q) in pairs]
+    pipe = run_block_dut_pipelined(block_type, samples, params=params,
+                                   chip_yaml=CHIP_YAML, in_ports=in_ports,
+                                   out_port=out_port)
+    assert pipe.ok, f"pipelined build/run failed: {pipe.reason}"
+
+    n = len(seq_out)
+    assert len(pipe.outputs_q15) >= n, (
+        f"{block_type}: saturated produced {len(pipe.outputs_q15)} words, per-sample "
+        f"produced {n} — pipeline STALLED (feedback/handshake hazard)")
+    assert pipe.outputs_q15[:n] == seq_out, (
+        f"{block_type}: saturated output diverges from per-sample at index "
+        f"{next(i for i in range(n) if pipe.outputs_q15[i] != seq_out[i])}")
+
+
+@pytest.mark.skipif(not _CHIP_OK, reason="chip yaml absent")
+@pytest.mark.parametrize("block_type", sorted(RATE_1IN))
+def test_pipelined_equals_per_sample_rate(block_type):
+    """Saturation gate for RATE-CHANGING blocks. Per-sample ref = run_block_dut_rate
+    (drains each trigger's output burst); pipelined = run_block_dut_pipelined. The flat
+    saturated stream must equal the flat per-sample stream."""
+    from kyttar_verify.dut_runner import (  # noqa: PLC0415
+        run_block_dut_rate, run_block_dut_pipelined)
+
+    in_port, out_port, params = RATE_1IN[block_type]
+
+    seq = run_block_dut_rate(block_type, _STIM_Q15, params=params, chip_yaml=CHIP_YAML,
+                             in_port=in_port, out_port=out_port)
+    assert seq.ok, f"per-sample build/run failed: {seq.reason}"
+    seq_out = list(seq.outputs_q15)  # already the flat stream
+
+    pipe = run_block_dut_pipelined(block_type, [(w,) for w in _STIM_Q15],
+                                   params=params, chip_yaml=CHIP_YAML,
+                                   in_ports=(in_port,), out_port=out_port)
+    assert pipe.ok, f"pipelined build/run failed: {pipe.reason}"
+
+    n = len(seq_out)
+    assert len(pipe.outputs_q15) >= n, (
+        f"{block_type}: saturated produced {len(pipe.outputs_q15)} words, per-sample "
+        f"produced {n} — pipeline STALLED / mis-paced (rate hazard)")
+    assert pipe.outputs_q15[:n] == seq_out, (
+        f"{block_type}: saturated output diverges from per-sample at index "
+        f"{next(i for i in range(n) if pipe.outputs_q15[i] != seq_out[i])}")
+
+
 def test_bespoke_coverage_is_documented():
     """Every catalog block is EITHER driven here OR listed in NEEDS_BESPOKE with a
     reason — no block silently escapes the saturation gate."""
@@ -142,8 +226,9 @@ def test_bespoke_coverage_is_documented():
 
     cat = BlockCatalog.from_gr_kyttar()
     all_types = {b.type_name for b in cat.all()}
-    covered = set(REAL_1IN) | set(NEEDS_BESPOKE)
+    covered = (set(REAL_1IN) | set(REAL_2IN) | set(RATE_1IN)
+               | set(NEEDS_BESPOKE))
     missing = all_types - covered
     assert not missing, (
-        "blocks with NO saturation coverage and NO bespoke reason (add to REAL_1IN "
-        f"or NEEDS_BESPOKE): {sorted(missing)}")
+        "blocks with NO saturation coverage and NO bespoke reason (add to REAL_1IN, "
+        f"REAL_2IN, RATE_1IN, or NEEDS_BESPOKE): {sorted(missing)}")

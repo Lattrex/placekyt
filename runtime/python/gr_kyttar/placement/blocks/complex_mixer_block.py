@@ -477,11 +477,17 @@ start:
         # unlock(1,1,W) -> transit(1,0,W) -> phase(0,0), landing on phase's WEST face
         # (= lock_face). The transit cell carries NO program. The mixer's yi/yq egress
         # on the mixer's routed OUTPUT face (not this corridor).
+        # NOTE: phase's FACE here is its forward DATAPATH emission (south -> sin_fold,
+        # exactly as the non-lock layout), NOT the lock arbiter face. The LOCK_FACE
+        # (the corridor the unlock arrives on) is a separate CONFIG value (lock_face
+        # DataWord), independent of fwd_face. Setting phase's face to the corridor
+        # direction would send its ph_sin/xi_fwd fan-out into the corridor and stall
+        # the whole datapath (phase re-fires forever, NCO columns never run).
         col0 = ["phase", "sin_fold", "sin_even", "sin_odd", "sin_interp", "relay"]
         col2_bottom_up = ["cos_fold", "cos_even", "cos_odd", "cos_interp", "mixer"]
         layout: Dict[Any, Tuple[int, int, str]] = {}
         for j, cid in enumerate(col0):
-            face = "east" if cid in ("phase", "relay") else "south"
+            face = "east" if cid == "relay" else "south"
             layout[cid] = (0, j, face)
         for k, cid in enumerate(col2_bottom_up):
             face = "west" if cid == "mixer" else "north"

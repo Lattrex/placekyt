@@ -686,3 +686,37 @@ fan-in (ComplexMixer, the ComplexFIR family's I/Q recombine, IQUpconvert already
 lock) needs this serialization to pass `run_block_dut_pipelined`. Check the block's
 `internal_connections`: if two paths of unequal length reconverge on one cell, it needs the
 serialize-LOCK.
+
+**BRING-UP STATUS + two dead-ends found (ComplexMixer attempt, 2026-07-14 — NOT yet fixed,
+block reverted to its committed per-sample GR-verified form; `pipeline_lock` scaffolding
+removed):**
+
+1. **The mixer's output cell is genuinely at its register budget, and you CANNOT reclaim by
+   "operating on the input registers directly."** The mixer copies its 4 inputs (cosv, sinv,
+   xi, xq) into 4 state vars BEFORE the arithmetic *on purpose*: an INPUT register is NOT
+   stably re-readable across multiple MULQs in one execution (the async operand latch is
+   consumed / not guaranteed to hold for a second read). Rewriting the mixer to `MULQ t,
+   R{in:cosv}` etc. built fine and even passed the I channel, but **the Q channel came back
+   corrupt (corr ~0.7, `test_complex_mixer.py` Q=FAIL bit-exact)** — a silent DSP regression
+   the *saturation* probe (0 output) never would have caught; only the bit-exact GR gate did.
+   LESSON: after ANY register-reclaim on a compute cell, re-run the block's bit-exact
+   `test_*` gate, not just the pipeline/deadlock probe. The 2 face DataWords the lock needs
+   do NOT fit the mixer without a real redesign (e.g. a dedicated unlock relay cell that is
+   NOT a feedback source, or splitting the mixer).
+
+2. **The fixed-authored `WRITE.CFG @N` in the exit/output cell gets clobbered by
+   `_patch_last_write_handoff`.** iq_upconvert survives because its unlock WRITE.CFG is not
+   the highest-address WRITE (the `out` WRITE is last). In the mixer, instruction ordering
+   put the WRITE.CFG at/after the output WRITEs, so `_patch_last_write_handoff` (patches
+   `max(write_addrs)`) rewrote the WRITE.CFG's dest (4→1) and hop. To use the fixed-authored
+   approach you MUST guarantee the block's real output WRITE is the strictly-highest-address
+   WRITE (emit yi/yq LAST, WRITE.CFG before them) — same footgun as the CoherentBPSKRx packer
+   (`_patch_last_write_handoff patches the highest-addr WRITE — keep the out WRITE LAST`).
+
+3. The `_apply_internal_feedback` route (declare a backward `mixer→phase` edge) is the WRONG
+   mechanism for a config-only unlock with no data feedback: its data-WRITE patch collides
+   with the output register (phase.xi = reg 0 = the yi output reg), corrupting yi, and the
+   config patch it does apply is then re-defaulted anyway. iq_upconvert deliberately does NOT
+   declare the backward edge — it fixed-authors the hop and relies on `trig __terminate__` +
+   correct WRITE ordering. Follow iq_upconvert EXACTLY (no backward edge; fixed `@N`; face_
+   internal/face_tap names; output WRITE strictly last) — but only after solving (1).

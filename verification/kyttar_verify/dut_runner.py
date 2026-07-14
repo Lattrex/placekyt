@@ -299,7 +299,19 @@ def run_block_dut_pipelined(
             stream.append(int(w) & 0xFFFF)
         stream.append(_enc_jump(hop, entry))
     chip.queue_words_physical("x16_in", stream)
-    chip.run() if max_events is None else chip.run(max_events=max_events)
+    # SAFETY CEILING: never call run() unbounded. A block that livelocks under
+    # saturated drive (multi-cell fan-out that needs per-sample quiescence, or an
+    # unclearable feedback loop) leaves the event queue permanently non-empty, so an
+    # uncapped run() spins forever at 100% CPU. Default to a generous per-sample
+    # budget; a genuine block needs only a few hundred events/sample. If we hit the
+    # cap the run did NOT complete -> report it as a livelock, don't return garbage.
+    cap = max_events if max_events is not None else max(50_000, 2_000 * max(1, len(samples)))
+    res = chip.run(max_events=cap)
+    if isinstance(res, dict) and not res.get("completed", True):
+        return RateDUTResult(
+            False, reason=f"pipeline did NOT reach quiescence under saturated drive "
+            f"(stop_reason={res.get('stop_reason')}, events={res.get('events_processed')}, "
+            f"cap={cap}) — block livelocks when the pipeline is full")
 
     flat = [int(v) & 0xFFFF for (v, _d, _t) in chip.read_port_words_timed("x16_out")]
     return RateDUTResult(True, outputs_q15=flat, n_words=len(words),

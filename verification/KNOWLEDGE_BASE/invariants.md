@@ -643,3 +643,46 @@ per-sample output (the GR-verified reference). `verification/tests/test_pipeline
 enforces this for every catalog block (feed-forward + stateful blocks were already safe;
 only the Costas-class carrier loop had the hazard). Standalone Costas + the full
 CoherentRX both recover BER 0 pipelined (and FASTER — no inter-sample flush).
+
+**HARNESS SAFETY (do NOT remove):** `run_block_dut_pipelined` caps `chip.run()` at a
+generous but FINITE `max_events` (never `None`). A block that deadlocks/livelocks under
+saturation leaves the event queue permanently non-empty; an UNCAPPED `run()` then spins
+at 100% CPU forever (this melted the machine once). The harness now treats a non-`completed`
+run as a livelock FAILURE (clean `ok=False`), not a hang. Any new saturated-drive harness
+MUST do the same — bound the run and check `res["completed"]`.
+
+---
+
+## INV-20 — A FEED-FORWARD block with a RECONVERGENT fan-in DEADLOCKS under saturation unless samples are serialized
+
+**Rule:** a multi-cell block where one landing cell FANS OUT to ≥2 paths of *different
+lengths* that later RECONVERGE at a fan-in cell (e.g. an NCO column + a signal-relay column
+both feeding a final `mixer`) is NOT automatically safe under saturated drive, EVEN WITH NO
+feedback loop. With one sample it settles and emits; with two samples back-to-back it
+DEADLOCKS. This is distinct from INV-19 (that is a *data-feedback* hazard; this is a pure
+*fan-in ordering* hazard) and is invisible to `run_block_dut` (inject-and-flush).
+
+**The evidence (ComplexMixer, proven at the sim event level):** the 11-cell `multiply_cc`
+mixer — `phase` fans out to two NCO columns (sin/cos) + a `relay` carrying xi/xq, all
+reconverging at `mixer` (4 inputs: cosv, sinv, xi, xq, arriving via paths of length 4, 4,
+and 2). Bounded probe (`proto_cmix_probe.py`):
+`N=1 → completed=True (QueueEmpty), 2 output words` — perfect.
+`N=2 → completed=False, stop_reason=Deadlock, 0 output words` — locks the instant a second
+sample enters. The sim reports `Deadlock` EXPLICITLY (not EventLimit/flood). Cause: a
+circular wait — sample-2's fast-path operands occupy the fan-in cell's input registers
+before sample-1's slow-path operand arrives, and neither can proceed.
+
+**The fix (same LOCK idiom as INV-19, applied to a NON-feedback block):** serialize samples
+through the block so no two are co-resident in the reconvergent fan-in. The landing/fan-out
+cell (`phase`) LOCKs its input arbiter after launching a sample, and the fan-in/exit cell
+(`mixer`) CLEARS the lock (backward `WRITE.CFG @N, 4`) once it has consumed all four
+operands and emitted. Result: the port FIFO still pipelines input, but the block interior
+processes one sample at a time — no fan-in race. This is the SAME mechanism as the RX loop
+lock; the only difference is the lock-clear rides the block's EXIT cell (which here has no
+backward internal_connection, so `_set_cell_hop1` does not clobber it — cf. the INV-19 trap).
+
+**Consequence for the catalog:** every multi-column complex block with a reconvergent
+fan-in (ComplexMixer, the ComplexFIR family's I/Q recombine, IQUpconvert already carries a
+lock) needs this serialization to pass `run_block_dut_pipelined`. Check the block's
+`internal_connections`: if two paths of unequal length reconverge on one cell, it needs the
+serialize-LOCK.

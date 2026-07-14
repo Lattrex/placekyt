@@ -78,16 +78,25 @@ class ComplexCostasLoopBlock(KyttarBlock):
         name: str,
         loop_bw: float = 0.05,
         damping: float = 1.0,
+        pipeline_lock: bool = True,
     ):
         """
         Args:
             name: Block name.
             loop_bw: Loop bandwidth (normalized). 0.05 is the validated default.
             damping: Loop damping factor. 1.0 (critically damped) is validated.
+            pipeline_lock: When True (default), the ``phase`` cell LOCKs its arbiter to
+                the dphase-feedback face after each emit so the loop survives SATURATED
+                (pipelined) drive — pd_pi's backward ``WRITE.CFG`` clears the lock per
+                symbol (the proven interlock). Set False for consumers that OVERRIDE
+                pd_pi WITHOUT a matching lock-clear (e.g. the register-tight
+                ``CoherentRXBlock._pdpi_with_yitap``); the phase cell then boots unlocked
+                (proven per-sample behaviour, but NOT pipeline-safe). See the phase cell.
         """
         super().__init__(name, loop_bw=loop_bw, damping=damping)
         self._loop_bw = loop_bw
         self._damping = damping
+        self._pipeline_lock = bool(pipeline_lock)
 
         # Validated gain mapping (used DIRECTLY in Q15, k=1).
         theta = loop_bw
@@ -136,8 +145,17 @@ class ComplexCostasLoopBlock(KyttarBlock):
             outputs=[Port("ph_sin"), Port("ph_cos"),
                      Port("xi_fwd"), Port("xq_fwd"), Port("trig")],
             entries=[EntryPoint("default")],
-            data=[DataWord("quarter", 16384, address=3),
-                  DataWord("half", 32768, address=4)],
+            data=([DataWord("quarter", 16384, address=3),
+                   DataWord("half", 32768, address=4)]
+                  + ([  # the pipeline-interlock lock words (only when enabled)
+                      # ``lock_face`` = the face code (SOUTH=0) the dphase FEEDBACK
+                      # corridor arrives on (pd_pi -> transit -> phase's south face, per
+                      # ``default_layout``). ``is_face`` so it transforms with the block's
+                      # orientation — the same mechanism the iq_upconvert phase cell uses.
+                      # ``one`` engages LOCK.
+                      DataWord("lock_face", 0, address=5, is_face=True),
+                      DataWord("one", 1, address=6)]
+                     if self._pipeline_lock else [])),
             # LOOP MEMORY: ``phase`` is the NCO phase accumulator — it holds the
             # carrier lock (the derotation angle). A fresh packet must start at phase 0
             # (cold), else the new packet's first samples are derotated by the PREVIOUS
@@ -145,7 +163,19 @@ class ComplexCostasLoopBlock(KyttarBlock):
             # re-pulls. ``xis``/``xqs`` are per-sample scratch (written before read).
             state=[StateVar("phase", reset_per_batch=True),
                    StateVar("xis"), StateVar("xqs")],
-            assembly_template="""\
+            # PIPELINE INTERLOCK (blocks MUST run correctly when SATURATED, not just
+            # inject-and-flush): after launching a sample down the forward chain, LOCK
+            # the arbiter to ``lock_face`` (the dphase feedback corridor), gating off
+            # EVERY OTHER face — the NEXT input sample is HELD at the input face until
+            # pd_pi clears this LOCK (its backward WRITE.CFG) once it has fed back the
+            # CURRENT symbol's dphase. Without this, under continuous drive the phase NCO
+            # races ahead OPEN-LOOP on the back-to-back samples while pd_pi lags, the
+            # feedback decouples in time, and the carrier loop collapses after a few
+            # symbols (per-sample drive HID this — each sample fully quiesced). The FIRST
+            # sample runs unlocked (boots unlocked; dphase=0 initially = GNU Radio's cold
+            # start), then this lock engages. Same idiom as the iq_upconvert phase/upmix
+            # pair (whose upmix clears the lock via a backward WRITE.CFG).
+            assembly_template=("""\
 start:
     MOVE R{state:xis}, R{in:xi}
     MOVE R{state:xqs}, R{in:xq}
@@ -161,7 +191,12 @@ start:
     MOVE R0, R{state:xqs}
     {write:xq_fwd}
     {jump:trig}
-""",
+""" + ("""\
+    MOVE R0, R{data:lock_face}
+    MOVE [LOCK_FACE], R0
+    MOVE R0, R{data:one}
+    MOVE [LOCK], R0
+""" if self._pipeline_lock else "")),
         )
 
         # --- fold cell (sin & cos use identical programs): phase -> idx, neg. ---
@@ -326,9 +361,22 @@ start:
             # (else the new packet inherits the old frequency estimate and the phase
             # winds off before the loop re-converges). ``alpha``/``beta`` are the loop
             # GAINS (DataWords, NOT reset). ``err``/``yqs`` are per-sample scratch.
-            state=[StateVar("freq", reset_per_batch=True),
-                   StateVar("err"), StateVar("yqs")],
-            assembly_template="""\
+            # ``dph`` scratch holds dphase across the lock-clear (only when pipeline_lock).
+            state=([StateVar("freq", reset_per_batch=True),
+                    StateVar("err"), StateVar("yqs")]
+                   + ([StateVar("dph")] if self._pipeline_lock else [])),
+            # PIPELINE INTERLOCK release (pairs with the phase cell's lock-after-emit):
+            # after writing the current symbol's dphase back to phase, CLEAR phase's
+            # arbiter LOCK with a backward ``WRITE.CFG @N, 4`` (R0=0 -> phase CONFIG[4]
+            # =LOCK), releasing the NEXT input sample HELD at phase's input face. The
+            # ``@1`` is a PLACEHOLDER: the pd_pi -> phase corridor length is PLACEMENT-
+            # DEPENDENT (@2 in this block's default_layout), so the build's
+            # ``_apply_internal_feedback`` patches this WRITE.CFG's hop to the SAME resolved
+            # distance it patches the dphase feedback WRITE to (both ride the same corridor
+            # to the same phase cell). ``MOVE R0, zero`` sets the clear payload; ``dph``
+            # preserves dphase for its own WRITE. iq_upconvert upmix->phase unlock, made
+            # layout-portable. Emitted only when pipeline_lock (else the proven pd_pi).
+            assembly_template=("""\
 start:
     MOVE R{state:yqs}, R{in:yq}
     MOVE R{state:err}, R{in:yq}
@@ -342,9 +390,17 @@ pos:
     MOVE R{state:freq}, R0
     MULQ R{state:err}, R{data:alpha}
     ADD R{state:freq}, R0
+""" + ("""\
+    MOVE R{state:dph}, R0
+    MOVE R0, R{data:zero}
+    WRITE.CFG @1, 4
+    MOVE R0, R{state:dph}
     {write:dphase}
     {jump:trig}
-""",
+""" if self._pipeline_lock else """\
+    {write:dphase}
+    {jump:trig}
+""")),
         )
 
         return {

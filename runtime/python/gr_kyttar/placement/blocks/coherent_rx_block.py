@@ -58,8 +58,15 @@ class CoherentRXBlock(KyttarBlock):
     def __init__(self, name: str, loop_bw: float = 0.05, damping: float = 1.0,
                  kp: int = 3, ki: int = 1):
         super().__init__(name, loop_bw=loop_bw, damping=damping, kp=kp, ki=ki)
+        # pipeline_lock=False: this RX OVERRIDES pd_pi with `_pdpi_with_yitap` (which is
+        # register-full and can't carry the lock-clear WRITE.CFG), so the reused phase
+        # cell must NOT lock — else it locks with no unlock and deadlocks even per-sample.
+        # The RX's pipelined-saturation fix is a separate follow-up (a dedicated lock-clear
+        # relay, or a build-side reprogram of the dphase corridor transit cell). The
+        # STANDALONE ComplexCostasLoopBlock keeps pipeline_lock=True (proven pipelined).
         self._costas = ComplexCostasLoopBlock(name + "_costas",
-                                              loop_bw=loop_bw, damping=damping)
+                                              loop_bw=loop_bw, damping=damping,
+                                              pipeline_lock=False)
         self._gardner = GardnerTimingRecovery(name + "_gardner", kp=kp, ki=ki)
         self._kp, self._ki = int(kp), int(ki)
 

@@ -543,6 +543,8 @@ def decode_hop_cnt(hop_cnt: int) -> int:
 
 
 _WRITE_CONFIG_BIT = 1 << 10  # WRITE.CFG: dest names a CONFIG addr, not a reg
+_LOCK_CFG_ADDR = 4           # CONFIG[4] = LOCK (arbiter lock enable); the pipeline-
+#                              interlock lock-clear is a backward WRITE.CFG to this addr
 
 
 def _patch_instr(word: int, ov) -> int:
@@ -2485,7 +2487,8 @@ def _patch_complex_source_handoff(cfg, hop, burst_regs, entry) -> None:
         cfg.memory[addr] = word & 0xFFFF
 
 
-def _patch_one_handoff(cfg, opcode_wanted, dst_reg, hop, *, entry=None) -> bool:
+def _patch_one_handoff(cfg, opcode_wanted, dst_reg, hop, *, entry=None,
+                       config=None) -> bool:
     """Patch the SINGLE WRITE (or JUMP) instruction in ``cfg`` whose low-5-bit
     field already equals ``dst_reg`` — setting its ``@N`` ``hop`` (and, for a
     JUMP, its ``entry``). Returns True if a matching instruction was patched.
@@ -2494,7 +2497,14 @@ def _patch_one_handoff(cfg, opcode_wanted, dst_reg, hop, *, entry=None) -> bool:
     EVERY WRITE/JUMP in the cell to one hop), this touches exactly one
     instruction — needed for a cell that emits BOTH a feedback output and a
     local terminate (e.g. the Costas pd_pi cell: its dphase WRITE feeds back @8
-    while its trig JUMP stays a local terminate)."""
+    while its trig JUMP stays a local terminate).
+
+    ``config`` (WRITE only) disambiguates a data WRITE from a ``WRITE.CFG``: when
+    True, match ONLY words with the config bit set (dest names a CONFIG addr, e.g.
+    the pipeline-interlock lock-clear ``WRITE.CFG @N, 4``); when False, ONLY plain
+    data WRITEs; when None (default) either matches. This lets the feedback pass
+    patch the lock-clear WRITE.CFG's hop to the SAME resolved corridor as the data
+    feedback WRITE without touching an unrelated data WRITE to the same reg."""
     hop_cnt = encode_hop_cnt(hop)
     for addr, word in list(cfg.memory.items()):
         if not _is_instruction_addr(cfg, addr):
@@ -2503,6 +2513,9 @@ def _patch_one_handoff(cfg, opcode_wanted, dst_reg, hop, *, entry=None) -> bool:
             continue
         if (word & 0x1F) != (int(dst_reg) & 0x1F):
             continue
+        if config is not None and opcode_wanted == _WRITE:
+            if bool(word & _WRITE_CONFIG_BIT) != bool(config):
+                continue
         word = (word & ~(0x1F << 5)) | (hop_cnt << 5)
         if opcode_wanted == _JUMP and entry is not None:
             word = (word & ~0x1F) | (int(entry) & 0x1F)
@@ -2672,13 +2685,22 @@ def _apply_internal_feedback(cell_map, gr_placement, blocks, gr_blocks,
             if cfg is None:
                 continue
             # Patch the src cell's WRITE that targets dst_reg to @hops.
-            if _patch_one_handoff(cfg, _WRITE, dst_reg, hops):
+            if _patch_one_handoff(cfg, _WRITE, dst_reg, hops, config=False):
                 # Record (exit_cell_pos, feedback_dst_reg) so the exit-default
                 # below PRESERVES this feedback WRITE while still defaulting the
                 # cell's OTHER outputs (e.g. the Gardner loop_filter also emits a
                 # real `out` + a local `trig`).
                 feedback_blocks.setdefault(blk.name, set()).add(
                     (src_pos, int(dst_reg) & 0x1F))
+                # PIPELINE-INTERLOCK lock-clear: if this feedback source ALSO carries
+                # a backward ``WRITE.CFG @N, LOCK`` (the Costas pd_pi clearing the
+                # phase cell's arbiter LOCK so the next SATURATED sample is released),
+                # patch it to the SAME resolved corridor ``hops`` — it rides the same
+                # transit path to the same dst cell. Authored ``@1`` is a placeholder;
+                # a fixed hop deadlocks any layout whose feedback corridor differs
+                # (standalone Costas @2 vs CoherentRX @8). ``_LOCK_CFG_ADDR`` (4) is the
+                # CONFIG LOCK register; the WRITE.CFG's dest low-5 = 4, config bit set.
+                _patch_one_handoff(cfg, _WRITE, _LOCK_CFG_ADDR, hops, config=True)
     return feedback_blocks
 
 

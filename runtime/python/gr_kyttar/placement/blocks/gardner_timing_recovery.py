@@ -102,7 +102,8 @@ class GardnerTimingRecovery(KyttarBlock):
     _FACE_OUT = 0   # south
     _FACE_FB = 2    # west
 
-    def __init__(self, name: str, kp: int = 3, ki: int = 1):
+    def __init__(self, name: str, kp: int = 3, ki: int = 1,
+                 pipeline_lock: bool = False):
         """
         Args:
             name: Block name.
@@ -111,10 +112,21 @@ class GardnerTimingRecovery(KyttarBlock):
                 ``digital.symbol_sync`` control loop) as fixed shift amounts
                 (``_SB_PROP`` / ``_SB_INTEG``), NOT raw kp/ki multiplies. These
                 arguments are accepted for backward compatibility but IGNORED.
+            pipeline_lock: When True (default) the timing loop is SERIALIZED under
+                saturated drive (INV-19): on a STROBE the ``resampler`` LOCKs its
+                arbiter to the feedback face so the NEXT input sample is HELD until the
+                ``period_relay`` closes the loop (writes ``inst_next`` back) and CLEARS
+                the lock via a backward ``WRITE.CFG``. Without it, under continuous
+                (back-to-back) drive the resampler strobes AGAIN before the PI filter's
+                corrected period has fed back, using a STALE ``inst_next`` — the loop
+                decouples and the recovered symbols drift from the per-sample reference
+                (the Costas-dphase cautionary tale; same idiom as the Costas fix).
+                Set False for the legacy inject-and-flush (per-sample quiescence) path.
         """
         super().__init__(name, kp=kp, ki=ki)
         self._kp = int(kp)
         self._ki = int(ki)
+        self._pipeline_lock = bool(pipeline_lock)
 
     @property
     def cell_count(self) -> int:
@@ -137,12 +149,30 @@ class GardnerTimingRecovery(KyttarBlock):
         # previous strobe — the Costas-dphase feedback model). There is NO
         # mid-reset-to-nominal: both strobes use the loop's period. This is the fix
         # for the long-stream drift/collapse.
+        # SERIALIZE-LOCK (INV-19): on a STROBE the resampler LOCKs its arbiter to the
+        # feedback face (SOUTH, where period_relay.pout returns) so the NEXT input
+        # sample is HELD until the PI filter closes the loop. lock_face is an is_face
+        # DataWord (SOUTH=0) so it transforms with orientation; ``one`` engages LOCK.
+        # Placed at addresses 3/4 (contiguous after inc@1, one_q14@2). The lock tail
+        # runs ONLY on the strobe path (after {jump:val}); the no-strobe ``done`` path
+        # never locks, so non-strobe samples keep flowing to advance ``phase``.
+        # LOCK engages with ANY nonzero value, so reuse ``one_q14`` (=1<<14) for the
+        # LOCK write — no separate ``one`` data word. Only ``lock_face`` (SOUTH=0) is
+        # new. Saves a register slot on this budget-tight landing cell.
+        rs_lock_data = ([DataWord("lock_face", 0, address=3, is_face=True)]
+                        if self._pipeline_lock else [])
+        rs_lock_tail = ("""\
+    MOVE R0, R{data:lock_face}
+    MOVE [LOCK_FACE], R0
+    MOVE R0, R{data:one_q14}
+    MOVE [LOCK], R0
+""" if self._pipeline_lock else "")
         resampler = CellProgram(
             inputs=[Port("xi", register=0)],
             outputs=[Port("val"), Port("par"), Port("trig")],
             entries=[EntryPoint("default")],
             data=[DataWord("inc", 1 << 14, address=1),
-                  DataWord("one_q14", 1 << 14, address=2)],
+                  DataWord("one_q14", 1 << 14, address=2)] + rs_lock_data,
             # LOOP MEMORY (reset_per_batch): the NCO phase accumulator, the 2-sample
             # delay line (xp/xp2), the instantaneous half-period feedback registers
             # (inst_active/inst_next), and the strobe parity — all carry the previous
@@ -182,6 +212,7 @@ start:
     XOR R{state:parity}, R{data:one_q14}
     MOVE R{state:parity}, R0
     {jump:val}
+""" + rs_lock_tail + """\
 done:
     {jump:trig}
 """,
@@ -303,17 +334,27 @@ start:
             inputs=[Port("e_in", register=0)],
             outputs=[Port("pout")],
             entries=[EntryPoint("relay")],
-            data=[DataWord("one_q14", ONEQ, address=1),
-                  DataWord("mulq_integ", self._MULQ_INTEG, address=2),
-                  DataWord("mulq_prop", self._MULQ_PROP, address=3),
-                  DataWord("pdev", MAXDEV, address=4),
-                  DataWord("ndev", (-MAXDEV) & 0xFFFF, address=5),
-                  DataWord("rbias", self._INTEG_RBIAS, address=6)],
             # LOOP MEMORY: ``iavg`` is the PI integrator — the accumulated timing
             # correction, the heart of the converged lock. It MUST cold-start at 0 for
             # a fresh packet (else the new packet inherits the old period bias and
             # slips). ``es`` is per-trigger scratch (written before read each center).
             state=[StateVar("iavg", reset_per_batch=True), StateVar("es")],
+            # SERIALIZE-LOCK release (INV-19): after writing the corrected period back
+            # into the resampler's ``inst_next`` (the {write:pout} data feedback), CLEAR
+            # the resampler's arbiter LOCK with a backward ``WRITE.CFG @N, 4`` (R0=0 ->
+            # resampler CONFIG[4]=LOCK), releasing the input sample HELD since the last
+            # strobe. ``pout`` and the WRITE.CFG both travel the SAME period_relay->
+            # resampler corridor (NORTH); the @N authored hop is re-patched to the real
+            # resolved corridor hop by build's _apply_internal_feedback (it patches the
+            # feedback WRITE hop AND this WRITE.CFG hop together, like the Costas pd_pi).
+            # ``lzero`` provides the R0=0 for the config clear. Only emitted when locked.
+            data=[DataWord("one_q14", ONEQ, address=1),
+                  DataWord("mulq_integ", self._MULQ_INTEG, address=2),
+                  DataWord("mulq_prop", self._MULQ_PROP, address=3),
+                  DataWord("pdev", MAXDEV, address=4),
+                  DataWord("ndev", (-MAXDEV) & 0xFFFF, address=5),
+                  DataWord("rbias", self._INTEG_RBIAS, address=6)]
+                 + ([DataWord("lzero", 0, address=7)] if self._pipeline_lock else []),
             assembly_template="""\
 relay:
     MOVE R{state:es}, R{in:e_in}
@@ -335,7 +376,10 @@ ilo:
     ADD R0, R{state:iavg}
     ADD R0, R{data:one_q14}
     {write:pout}
-""",
+""" + ("""\
+    MOVE R0, R{data:lzero}
+    WRITE.CFG @1, 4
+""" if self._pipeline_lock else ""),
         )
 
         return {"resampler": resampler, "ted": ted, "loop_filter": loop_filter,

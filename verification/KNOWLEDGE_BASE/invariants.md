@@ -720,3 +720,25 @@ removed):**
    declare the backward edge — it fixed-authors the hop and relies on `trig __terminate__` +
    correct WRITE ordering. Follow iq_upconvert EXACTLY (no backward edge; fixed `@N`; face_
    internal/face_tap names; output WRITE strictly last) — but only after solving (1).
+
+**BRING-UP PROGRESS (2026-07-14, commits d82b359..b536b42) — the SOLVED path:** the
+approach that WORKS is a DEDICATED internal `unlock` cell (not inline in the mixer, which
+has no register room — see (1)). Build-engine support added: `_apply_internal_feedback`
+handles a CONFIG-ONLY backward edge whose src port is `"unlock"` (patch the WRITE.CFG hop
+via `_patch_config_write`, which matches on the config bit alone to recover a router-
+clobbered dest). Layout MUST keep the EXACT proven 2-column datapath (moving the cos column
+breaks relay→mixer — relay's EAST forward collides, seen via `get_trace` as relay re-firing
++ flooding the shifted column). Place `unlock` in a FREE cell NORTH of the mixer so the
+mixer's yi/yq egress EAST stays clear and its trig fires unlock NORTH; unlock's WRITE.CFG
+goes to phase. CRITICAL separate-concern bug found+fixed: phase's default_layout FACE is its
+DATAPATH emission (south→sin_fold) — it is INDEPENDENT of LOCK_FACE (the arbiter gate,
+a `lock_face` CONFIG DataWord). Setting phase's face to the corridor direction sends its
+fan-out into the corridor and stalls the whole block (phase re-fires forever). Status:
+**N=1 completes + emits**; STILL OPEN: N≥2 stalls at the output-port column + N=1 emits 1
+word value 0 (the auto-placer offsets the relative default_layout, so unlock↔phase adjacency
++ the WRITE.CFG hop don't match the hand-designed corridor; the output WRITE value/count is
+also wrong). Next: make the corridor placement-invariant (or author it so the placer keeps
+the adjacency) and fix the 2-word yi/yq output routing. Sim `get_trace()` (dict list with
+`cell_id` linear index, `kind`, `data`) + bounded `run(max_events=)` are the diagnostic
+tools — NOT blind face/hop guesses (a whole class of "@1 vs @2" dead-ends were a probe
+decode bug: hop field is bits[9:5]).

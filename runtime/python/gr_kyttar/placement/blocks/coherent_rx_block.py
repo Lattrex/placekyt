@@ -58,15 +58,13 @@ class CoherentRXBlock(KyttarBlock):
     def __init__(self, name: str, loop_bw: float = 0.05, damping: float = 1.0,
                  kp: int = 3, ki: int = 1):
         super().__init__(name, loop_bw=loop_bw, damping=damping, kp=kp, ki=ki)
-        # pipeline_lock=False: this RX OVERRIDES pd_pi with `_pdpi_with_yitap` (which is
-        # register-full and can't carry the lock-clear WRITE.CFG), so the reused phase
-        # cell must NOT lock — else it locks with no unlock and deadlocks even per-sample.
-        # The RX's pipelined-saturation fix is a separate follow-up (a dedicated lock-clear
-        # relay, or a build-side reprogram of the dphase corridor transit cell). The
-        # STANDALONE ComplexCostasLoopBlock keeps pipeline_lock=True (proven pipelined).
+        # pipeline_lock=True: the reused phase cell LOCKs after each emit (survives
+        # SATURATED drive). The `_pdpi_with_yitap` override carries the matching inline
+        # lock-clear WRITE.CFG (register-reclaimed to fit), EXACTLY like the standalone
+        # ComplexCostasLoop pd_pi — so no separate relay cell is needed.
         self._costas = ComplexCostasLoopBlock(name + "_costas",
                                               loop_bw=loop_bw, damping=damping,
-                                              pipeline_lock=False)
+                                              pipeline_lock=True)
         self._gardner = GardnerTimingRecovery(name + "_gardner", kp=kp, ki=ki)
         self._kp, self._ki = int(kp), int(ki)
 
@@ -89,6 +87,17 @@ class CoherentRXBlock(KyttarBlock):
         amap = {d.name: d.value for d in cp.data}
         alpha_q = amap.get("alpha", 0x1738)
         beta_q = amap.get("beta", 0x0129)
+        # PIPELINE INTERLOCK (identical to the standalone ComplexCostasLoop pd_pi that
+        # already works pipelined): after emitting dphase SOUTH toward the return
+        # corridor, CLEAR phase's arbiter LOCK inline with a backward WRITE.CFG @N, 4
+        # (the build's _apply_internal_feedback patches @N to the resolved pd_pi->phase
+        # hop, same as the dphase WRITE). To fit the register-tight cell, three reclaims
+        # vs the old _pdpi_with_yitap:
+        #   - emit ``yi_tap`` FIRST (while yi is still in R{in:yi}), dropping the ``yis``
+        #     saved-copy state AND its ``MOVE R0, yis`` reload;
+        #   - ``zero`` DOUBLES as the SOUTH face code (SOUTH==0), dropping ``face_south``;
+        #   - reuse ``yqs`` (which holds dphase) as the WRITE.CFG's post-clear reload,
+        #     exactly like the standalone pd_pi. face codes S=0,E=1,W=2,N=3.
         return CellProgram(
             inputs=[Port("yi", register=0), Port("yq", register=1)],
             outputs=[Port("dphase"), Port("yi_tap"), Port("ytrig")],
@@ -96,13 +105,14 @@ class CoherentRXBlock(KyttarBlock):
             data=[DataWord("zero", 0, address=2),
                   DataWord("alpha", alpha_q, address=3),
                   DataWord("beta", beta_q, address=4),
-                  DataWord("face_east", 1, address=5),
-                  DataWord("face_south", 0, address=6)],
-            state=[StateVar("freq"), StateVar("err"), StateVar("yqs"),
-                   StateVar("yis")],
+                  DataWord("face_east", 1, address=5)],
+            state=[StateVar("freq"), StateVar("err"), StateVar("yqs")],
             assembly_template="""\
 start:
-    MOVE R{state:yis}, R{in:yi}
+    MOVE [FACE], R{data:face_east}
+    MOVE R0, R{in:yi}
+    {write:yi_tap}
+    {jump:ytrig}
     MOVE R{state:yqs}, R{in:yq}
     MOVE R{state:err}, R{in:yq}
     CMP R{in:yi}, R{data:zero}
@@ -116,11 +126,9 @@ pos:
     MULQ R{state:err}, R{data:alpha}
     ADD R{state:freq}, R0
     MOVE R{state:yqs}, R0
-    MOVE [FACE], R{data:face_east}
-    MOVE R0, R{state:yis}
-    {write:yi_tap}
-    {jump:ytrig}
-    MOVE [FACE], R{data:face_south}
+    MOVE [FACE], R{data:zero}
+    MOVE R0, R{data:zero}
+    WRITE.CFG @1, 4
     MOVE R0, R{state:yqs}
     {write:dphase}
 """,

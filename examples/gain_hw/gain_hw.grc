@@ -6,13 +6,13 @@ options:
     cmake_opt: ''
     comment: ''
     copyright: ''
-    description: HARDWARE Kyttar Gain demo (CONTINUOUS STREAMING). A live sine from
-      sig_source -> throttle -> kyttar_source (x16_in) -> kyttar_gain -> kyttar_sink
-      (x16_out) -> QT time sink. Unlike the batch gain.grc (for the simulator), this
-      streams real-time samples through the REAL chip. The SAME blocks auto-detect
-      streaming vs batch from the placeKYT server, so you do nothing but toggle
-      Hardware Mode in placeKYT, then Execute here. The plot shows input (top) vs the
-      chip's gained output (bottom), live and continuous.
+    description: HARDWARE Kyttar TWO-GAIN MULTIPLEX demo. Two independent gain blocks
+      share ONE input port (x16_in) and ONE output port (x16_out) on the same chip,
+      distinguished by stream tags (stream_id "a"/"b") — the multiplexed shared-port
+      model, like the AM/SSB transceiver examples. Each chain has its own sig_source,
+      kyttar_source, kyttar_gain, kyttar_sink, and its own LIVE gain slider. Toggle
+      Hardware Mode in placeKYT, Run as GNURadio Server, then Execute here. The plot
+      shows both gained outputs; move each slider to retune that stream's gain live.
     gen_cmake: 'On'
     gen_linking: dynamic
     generate_options: qt_gui
@@ -28,7 +28,7 @@ options:
     run_options: prompt
     sizing_mode: fixed
     thread_safe_setters: ''
-    title: "Kyttar Gain — HARDWARE streaming (live)"
+    title: "Kyttar TWO-GAIN multiplex — HARDWARE streaming (live sliders)"
     window_size: (1200,800)
   states:
     bus_sink: false
@@ -48,7 +48,7 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [200, 80]
+    coordinate: [200, 8]
     rotation: 0
     state: enabled
 - name: server_port
@@ -60,17 +60,60 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [40, 160]
+    coordinate: [320, 8]
     rotation: 0
     state: enabled
-- name: src
+- name: gain_a
+  id: variable_qtgui_range
+  parameters:
+    comment: LIVE gain for stream A (retunes cell A's coefficient)
+    gui_hint: ''
+    label: gain A
+    min_len: '200'
+    orient: Qt.Horizontal
+    rangeType: float
+    start: '-1.0'
+    step: '0.01'
+    stop: '1.0'
+    value: '0.5'
+    widget: counter_slider
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [440, 8]
+    rotation: 0
+    state: enabled
+- name: gain_b
+  id: variable_qtgui_range
+  parameters:
+    comment: LIVE gain for stream B (retunes cell B's coefficient)
+    gui_hint: ''
+    label: gain B
+    min_len: '200'
+    orient: Qt.Horizontal
+    rangeType: float
+    start: '-1.0'
+    step: '0.01'
+    stop: '1.0'
+    value: '0.5'
+    widget: counter_slider
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [600, 8]
+    rotation: 0
+    state: enabled
+# ---------------- stream A chain ----------------
+- name: src_a
   id: analog_sig_source_x
   parameters:
     affinity: ''
     alias: ''
     amp: '0.8'
-    comment: CONTINUOUS sine stimulus (real-time streaming, not a bounded burst)
-    freq: '4'
+    comment: stream A stimulus (sine, freq 3)
+    freq: '3'
     maxoutbuf: '0'
     minoutbuf: '0'
     offset: '0'
@@ -83,17 +126,16 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [40, 260.0]
+    coordinate: [40, 180.0]
     rotation: 0
     state: enabled
-- name: msrc
+- name: msrc_a
   id: kyttar_source
   parameters:
     affinity: ''
     alias: ''
     burst_len: '0'
-    comment: "stimulus -> chip x16_in. STREAMING when placeKYT is in Hardware Mode\
-      \ (auto-detected from the server); batch on the simulator. Same block."
+    comment: stream A -> chip x16_in (stream_id "a")
     complex_in: float
     device_id: '"kyttar_0"'
     maxoutbuf: '0'
@@ -102,37 +144,37 @@ blocks:
     port_name: '"x16_in"'
     server_host: '"127.0.0.1"'
     server_port: server_port
-    stream_id: ''
+    stream_id: '"a"'
   states:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [512, 244.0]
+    coordinate: [280, 156.0]
     rotation: 0
     state: enabled
-- name: gain
+- name: gain_blk_a
   id: kyttar_gain
   parameters:
     affinity: ''
     alias: ''
-    comment: gain block (placed on chip); coefficient reprogrammable at run time
+    comment: gain block A (live gain_a slider)
     device_id: '"kyttar_0"'
-    gain: '0.5'
+    gain: gain_a
     maxoutbuf: '0'
     minoutbuf: '0'
   states:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [768, 288.0]
+    coordinate: [520, 188.0]
     rotation: 0
     state: enabled
-- name: msink
+- name: msink_a
   id: kyttar_sink
   parameters:
     affinity: ''
     alias: ''
-    comment: gained output <- chip x16_out (continuous stream in Hardware Mode)
+    comment: stream A output <- chip x16_out (stream_id "a")
     device_id: '"kyttar_0"'
     hold_secs: '8.0'
     in_type: float
@@ -142,14 +184,102 @@ blocks:
     port_name: '"x16_out"'
     server_port: server_port
     server_repeat: 'False'
-    stream_id: ''
+    stream_id: '"a"'
   states:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [1000, 212.0]
+    coordinate: [760, 132.0]
     rotation: 0
     state: enabled
+# ---------------- stream B chain ----------------
+- name: src_b
+  id: analog_sig_source_x
+  parameters:
+    affinity: ''
+    alias: ''
+    amp: '0.8'
+    comment: stream B stimulus (sine, freq 7)
+    freq: '7'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    offset: '0'
+    phase: '0'
+    samp_rate: samp_rate
+    showports: 'False'
+    type: float
+    waveform: analog.GR_SIN_WAVE
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [40, 420.0]
+    rotation: 0
+    state: enabled
+- name: msrc_b
+  id: kyttar_source
+  parameters:
+    affinity: ''
+    alias: ''
+    burst_len: '0'
+    comment: stream B -> chip x16_in (stream_id "b")
+    complex_in: float
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_channels: '1'
+    port_name: '"x16_in"'
+    server_host: '"127.0.0.1"'
+    server_port: server_port
+    stream_id: '"b"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [280, 396.0]
+    rotation: 0
+    state: enabled
+- name: gain_blk_b
+  id: kyttar_gain
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: gain block B (live gain_b slider)
+    device_id: '"kyttar_0"'
+    gain: gain_b
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [520, 428.0]
+    rotation: 0
+    state: enabled
+- name: msink_b
+  id: kyttar_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: stream B output <- chip x16_out (stream_id "b")
+    device_id: '"kyttar_0"'
+    hold_secs: '8.0'
+    in_type: float
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_channels: '1'
+    port_name: '"x16_out"'
+    server_port: server_port
+    server_repeat: 'False'
+    stream_id: '"b"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [760, 372.0]
+    rotation: 0
+    state: enabled
+# ---------------- shared plot ----------------
 - name: time_sink
   id: qtgui_time_sink_x
   parameters:
@@ -169,24 +299,24 @@ blocks:
     axislabels: 'True'
     color1: blue
     color10: dark blue
-    color2: red
-    color3: green
-    color4: black
-    color5: cyan
-    color6: magenta
-    color7: yellow
+    color2: cyan
+    color3: red
+    color4: magenta
+    color5: green
+    color6: yellow
+    color7: black
     color8: dark red
     color9: dark green
-    comment: input (top) vs gained output (bottom), live and continuous
+    comment: A in/out (blue/cyan) vs B in/out (red/magenta)
     ctrlpanel: 'False'
     entags: 'True'
     grid: 'True'
     gui_hint: ''
-    label1: input
+    label1: A input
     label10: Signal 10
-    label2: gained output
-    label3: Signal 3
-    label4: Signal 4
+    label2: A gained
+    label3: B input
+    label4: B gained
     label5: Signal 5
     label6: Signal 6
     label7: Signal 7
@@ -203,8 +333,8 @@ blocks:
     marker7: '-1'
     marker8: '-1'
     marker9: '-1'
-    name: '"Kyttar Gain (hardware): input vs output"'
-    nconnections: '2'
+    name: '"Two multiplexed gain streams (hardware): A & B in/out"'
+    nconnections: '4'
     size: '1024'
     srate: samp_rate
     stemplot: 'False'
@@ -244,16 +374,21 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [1176, 168.0]
+    coordinate: [1016, 240.0]
     rotation: 0
     state: enabled
 
 connections:
-- [src, '0', msrc, '0']
-- [msrc, '0', gain, '0']
-- [gain, '0', msink, '0']
-- [msink, '0', time_sink, '1']
-- [src, '0', time_sink, '0']
+- [src_a, '0', msrc_a, '0']
+- [msrc_a, '0', gain_blk_a, '0']
+- [gain_blk_a, '0', msink_a, '0']
+- [src_a, '0', time_sink, '0']
+- [msink_a, '0', time_sink, '1']
+- [src_b, '0', msrc_b, '0']
+- [msrc_b, '0', gain_blk_b, '0']
+- [gain_blk_b, '0', msink_b, '0']
+- [src_b, '0', time_sink, '2']
+- [msink_b, '0', time_sink, '3']
 
 metadata:
   file_format: 1

@@ -806,34 +806,34 @@ Two distinct facts about the pipelined/full-speed path (sim_bridge `process_batc
 `pipelined:true` → `queue_words_physical` whole burst + one continuous `run()`),
 both surfaced getting the coherent BPSK RX full-speed GRC demo live.
 
-**A. Pipelined ≠ input-saturated, AND the current coherent-RX layout is LATENCY-bound,
-not throughput-bound — the chip is ~88% IDLE.** ⚠️ CORRECTED after measuring cell
-UTILISATION (an earlier draft wrongly said "the Gardner cell is the saturated
-bottleneck" — the util data refutes that). Facts for the coherent BPSK RX .kyt driven
-saturated (throughput_bench.py + /tmp probes):
-- Throughput ~0.33 MSa/s in / 0.15 MSym/s out, ~10 µs fill latency. This ~MATCHES the
-  pre-pipelining per-sample number → the pipelined path mostly removed the HOST↔SIM
-  per-sample RPC round-trip (the visible GUI speedup), it did NOT make samples flow
-  through the chain concurrently.
-- EVERY cell's steady inter-fire gap is 27–47 ns = the 40 MIPS (27.43 ns Fast→Fast)
-  instruction rate. NO cell is slow. The Gardner resampler (6,5) runs flat-out WHEN it
-  runs — but it is only ~12% UTILISED (idle 88% of the run).
-- ROOT CAUSE: the receiver executes ~337 instructions PER INPUT SAMPLE across the chain
-  (Gardner cell alone ~23/sample), and the SERIAL DATA DEPENDENCY (each sample must
-  traverse MF→Costas→Gardner→slice, and the Costas + Gardner FEEDBACK LOOPS must settle
-  per sample) prevents those instructions from OVERLAPPING across samples. So the design
-  is LATENCY-bound by the feedback loops, not throughput-bound by any block. Cells spend
-  most of their time waiting on an upstream neighbour's handshake, not computing.
-- The input port (single-outstanding, no FIFO) backpressures, but that's a SYMPTOM: the
-  MF *head* ingests every ~358 ns (~2.8 MSa/s) then stalls waiting on the slow-draining
-  back half. The port could go ~2.5 MSa/s if downstream drained instantly.
-- ⇒ To actually go faster you must either (i) OVERLAP samples (a real multi-stage
-  pipeline where sample N+1 enters MF while N is in Gardner — needs per-stage buffering /
-  a FIFO the current single-outstanding fabric lacks), or (ii) PARALLELISE whole chains
-  across the array (the architecture's headline: hundreds of independent RX). Speeding
-  one serial feedback chain is bounded by its loop latency. ⚠️ OPEN QUESTION CM raised:
-  is 0.33 MSa/s acceptable, and can the fabric be made to overlap samples at all given
-  single-outstanding ports? See [[project_coherent_rx_cannot_pipeline]].
+**A. The coherent RX IS pipelined and the array is ~95% BUSY — it is THROUGHPUT-bound
+by DSP instruction count, ~675 instr per recovered symbol.** ⚠️ TWICE-CORRECTED. Two
+earlier drafts were WRONG: (1) "Gardner is the saturated bottleneck" and (2) "88% idle /
+latency-bound". Both came from measuring ONE cell's utilisation (~12%) and mistaking it
+for the array. Measuring a whole STEADY-STATE OUTPUT INTERVAL settles it. Facts for the
+coherent BPSK RX .kyt driven saturated (throughput_bench.py + timeline/interval probes):
+- Throughput ~0.15 MSym/s out (2 sps → ~0.33 MSa/s in), ~10 µs fill latency.
+- IT IS PIPELINED. The front ingests fast (JUMP-injections 405–810 ns apart, MF head
+  fires every ~358 ns) and **13 samples are in flight before the first output emerges**
+  — inputs do NOT wait for outputs. Steady state is then gated by the OUTPUT drain rate
+  (one symbol every ~6540 ns); the port back-pressures only once the pipe is ~13 deep.
+  (The "3010 ns mean input gap" was a misleading blend of the fast front rate and the
+  back-pressured stall — use the OUTPUT interval, not the mean input gap.)
+- THE ARRAY IS ~95% BUSY, not idle. In one 6561 ns output interval: **675 exec_ticks**
+  across ~24 cells, only ~5% of the interval with NOTHING executing. A single cell is
+  ~12% utilised, but 24 cells × ~12% ≈ the array running near-full.
+- ROOT CAUSE = raw DSP cost. The receiver executes **~675 instructions per recovered
+  symbol** (RRC matched filter ~16 complex taps + Costas complex derotate + Costas PI +
+  Gardner interpolate + Gardner TED + Gardner PI + slice). At 40 MIPS (27.43 ns/instr),
+  675 × 27 ≈ 6540 ns/symbol ⇒ 0.15 MSym/s. The number is HONEST DSP throughput, not
+  waste and not a slow block. 40 MIPS ÷ 675 instr/sym = 0.15 MSym/s, full stop.
+- ⇒ To speed ONE chain: cut instructions/symbol (leaner blocks — the MF taps and the two
+  PI loops dominate) — bounded, since it's real arithmetic. The BIG lever is PARALLELISM:
+  ~24 cells/chain on a 400-cell array ⇒ ~16 concurrent independent RX ⇒ aggregate
+  ~2.4 MSym/s per chip. Throughput-per-CHIP (parallel chains) is the architecture's
+  headline, NOT throughput-per-chain. The single-outstanding port limits pipeline DEPTH
+  (~13) but the array is already compute-saturated, so deeper overlap wouldn't help much
+  here — the work itself is the limit. See [[project_coherent_rx_cannot_pipeline]].
 HARDWARE: the FX3/FPGA FIFO provides real backpressure so on silicon the streaming
 source paces natively — the sim `queue_words_physical` path EMULATES that (no sim FIFO).
 Report chip-time

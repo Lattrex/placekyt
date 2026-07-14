@@ -688,7 +688,10 @@ class SimServer:
                             self._tag_buf.setdefault(int(tag), []).append(int(v))
                     _dt = time.perf_counter() - _t_batch0
                     sps = (nsamp / _dt) if _dt > 0 else 0.0
-                    if os.environ.get("KYTTAR_SERVER_QUIET") != "1":
+                    # Per-batch throughput line — OFF by default (a streaming run fires
+                    # this ~every batch and floods the terminal). Opt in with
+                    # KYTTAR_SERVER_VERBOSE=1 for debugging.
+                    if os.environ.get("KYTTAR_SERVER_VERBOSE") == "1":
                         import sys as _sys
                         _sys.stderr.write(
                             f"[placeKYT batch/HW] stream={stream_id!r} out_tag={out_tag} "
@@ -860,8 +863,9 @@ class SimServer:
                 # data_addrs/out_tag), samples in, words out, and the distinct output
                 # tags actually seen on the port. A produced-zero batch shows the
                 # resolved landing so a stale/wrong stream_target is obvious at a
-                # glance. Gated off only by an env var for a totally quiet run.
-                if os.environ.get("KYTTAR_SERVER_QUIET") != "1":
+                # glance. OFF by default (fires per batch); opt in with
+                # KYTTAR_SERVER_VERBOSE=1 for debugging.
+                if os.environ.get("KYTTAR_SERVER_VERBOSE") == "1":
                     import sys as _sys
                     seen_tags = sorted(self._tag_buf.keys())
                     _sys.stderr.write(

@@ -709,6 +709,61 @@ class SimServer:
                              "out_tag": out_tag, "stream_id": stream_id},
                             np.asarray(out_vals, dtype="<f4"))
 
+                # PIPELINED (SATURATED) DRIVE — opt-in via header ``pipelined: true``.
+                # The whole burst is enqueued as raw WRITE/DATA/JUMP words via
+                # ``queue_words_physical`` and processed in ONE continuous ``run()``
+                # with NO per-sample drain/quiescence: multiple samples are in flight
+                # at once, the input port's single-outstanding handshake pacing the
+                # corridor as a FIFO. This is the REAL GNU-Radio / hardware streaming
+                # condition (vs the default per-sample inject→run→drain below, which
+                # gives each sample full quiescence and HIDES feedback/handshake
+                # hazards). Only correct for blocks proven saturation-safe (the
+                # serialize-LOCK blocks: Costas / Gardner / ComplexMixer / IQUpconvert
+                # etc.; the pipeline-saturation gate enforces this per block). Drains
+                # ONCE at the end. Debug hooks are per-sample and NOT honored on this
+                # path (a saturated run has no per-sample boundary). Supports the
+                # single-stream real + complex ingress; tagged/duplex streams fall
+                # through to the per-sample path (out_tag handling stays there).
+                if bool(header.get("pipelined", False)) and out_tag is None:
+                    def _w(a): return (0x6 << 12) | ((hop & 0x1F) << 5) | (int(a) & 0x1F)
+                    def _j(): return (0x7 << 12) | ((hop & 0x1F) << 5) | (int(entry) & 0x1F)
+                    stream = []
+                    for kk in range(nsamp):
+                        if is_complex:
+                            xi = _float_to_q15(float(data[2 * kk]))
+                            xq = _float_to_q15(float(data[2 * kk + 1]))
+                            stream += [_w(a0), xi, _w(a1), xq, _j()]
+                        else:
+                            xi = (_float_to_raw_i16(float(data[kk])) if raw
+                                  else _float_to_q15(float(data[kk])))
+                            stream += [_w(a0), xi, _j()]
+                    self._chip.queue_words_physical(in_name, stream)
+                    # BOUNDED run (never uncapped — a livelock would spin at 100% CPU):
+                    _cap = max(50_000, 2_000 * max(1, nsamp))
+                    self._chip.run(max_events=_cap)
+                    for (v, _d, _t) in self._chip.read_port_words_timed(port):
+                        if _first_out_ns is None:
+                            _first_out_ns = float(_t)
+                        _last_out_ns = float(_t)
+                        if raw:
+                            _iv = int(v) & 0xFFFF
+                            out_vals.append(float(_iv - 0x10000 if _iv >= 0x8000 else _iv))
+                        else:
+                            out_vals.append(_q15_to_float(int(v)))
+                    _dt = time.perf_counter() - _t_batch0
+                    sps = (nsamp / _dt) if _dt > 0 else 0.0
+                    if self._on_activity is not None:
+                        try:
+                            self._on_activity(samples=nsamp, seconds=_dt,
+                                              samples_per_sec=sps)
+                        except TypeError:
+                            self._on_activity()
+                    return ({"ok": True, "samples": nsamp, "seconds": _dt,
+                             "samples_per_sec": sps, "aborted": False,
+                             "pipelined": True, "out_tag": out_tag,
+                             "stream_id": stream_id},
+                            np.asarray(out_vals, dtype="<f4"))
+
                 # Drive each sample the PROVEN way: inject xi→a0, run; (complex:
                 # xq→a1, run;) JUMP entry, run; then drain the output port. (The
                 # write_port_multi_i16 path stalls the loop after one sample; the

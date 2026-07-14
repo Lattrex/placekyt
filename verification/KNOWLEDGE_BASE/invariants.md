@@ -651,6 +651,30 @@ at 100% CPU forever (this melted the machine once). The harness now treats a non
 run as a livelock FAILURE (clean `ok=False`), not a hang. Any new saturated-drive harness
 MUST do the same — bound the run and check `res["completed"]`.
 
+**GARDNER — DONE 2026-07-14 (commit 0e18759), the predicted INV-19 case.** GardnerTimingRecovery
+(the 2-sps timing loop: resampler→ted→loop_filter→period_relay, feedback period_relay.pout→
+resampler.inst_next) drifted under saturation exactly as predicted (the resampler strobes again
+before the PI filter's corrected `inst_next` feeds back → stale). FIX = the serialize-LOCK
+(pipeline_lock=True default): the resampler LOCKs its arbiter on a STROBE ONLY (lock tail placed
+after `{jump:val}`, so the no-strobe `done` path never locks and non-strobe samples keep flowing
+to advance phase); period_relay clears it with a backward `WRITE.CFG @1,4` after `{write:pout}`
+(the existing pout→inst_next feedback edge co-patches the WRITE.CFG hop). PROVEN: saturated
+recovered BITS == per-sample bits, 0-diff, fracs 0.3/0.5/0.7 (proto_gardner_sat.py). NOTE: word
+values differ by sub-LSB interpolation amounts that never flip the sign — for a rate/timing block
+the SATURATION GATE MUST assert BIT-equality (sign), not word-equality. Also: use a REAL RRC-shaped
+2-sps BPSK stimulus — a piecewise-linear synthetic can't be locked in EITHER mode (false "divergence").
+
+**TWO REGISTER-RECLAIM TRICKS (for fitting a serialize-LOCK into a budget-tight landing cell):**
+1. **LOCK_FACE need not be written if the feedback face == the CONFIG reset default = SOUTH (00).**
+   simkyt config_reg.rs resets LOCK_FACE to Face::South. If the feedback corridor arrives on the
+   cell's SOUTH face (place the feedback cell SOUTH, emitting NORTH), the lock tail is just
+   `MOVE R0,<nonzero>; MOVE [LOCK],R0` (2 instrs, not 4 — skip the LOCK_FACE writes). CAVEAT: only
+   valid for the UN-rotated layout; if auto-orient rotates the block, restore the is_face lock_face
+   DataWord + the two LOCK_FACE writes (needs 2 more slots freed).
+2. **Merge two DataWords that hold the IDENTICAL value into one** (Gardner: `inc` and `one_q14`
+   were both 1<<14 → one word, freeing a slot). Also: LOCK engages with ANY nonzero, so reuse any
+   existing nonzero data word for the `MOVE [LOCK],Rn` — no dedicated `one` word needed.
+
 ---
 
 ## INV-20 — A FEED-FORWARD block with a RECONVERGENT fan-in DEADLOCKS under saturation unless samples are serialized

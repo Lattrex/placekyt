@@ -96,12 +96,20 @@ RATE_1IN = {
     "KeepOneInNBlock": ("x", "out", {"n": 2}),  # rate-REDUCING
 }
 
+# COMPLEX-in / COMPLEX-out (yi,yq 2-word egress): (in_ports, out_port, params). Same
+# drive as REAL_2IN but the per-sample reference AND the saturated stream are the FULL
+# interleaved yi/yq. ComplexMixer carries its OWN serialize-LOCK interlock (the dual-FACE
+# unlock folded into the mixer), so this is a strong saturation cross-check that the lock
+# releases cleanly under back-to-back drive without a phantom re-trigger deadlock.
+COMPLEX_2IN2OUT = {
+    "ComplexMixerBlock": (("xi", "xq"), "yi", {}),
+}
+
 # Blocks that need bespoke stimulus (documented, reported as skips — no silent gap).
 NEEDS_BESPOKE = {
     "ComplexCostasLoopBlock": "complex I/Q loop; own gate proto_costas_pipe.py (BER0)",
     "CoherentRXBlock": "complex I/Q RX loop; own gate proto_rx_bisect.py (BER0)",
     "GardnerTimingRecovery": "2-sps timing loop; own gate proto_gardner_race.py",
-    "ComplexMixerBlock": "complex I/Q OUTPUT (yi,yq) — 2-word egress de-interleave",
     "ComplexFIRFilterBlock": "complex I/Q output",
     "ComplexLowPassFilter": "complex I/Q output",
     "ComplexHighPassFilter": "complex I/Q output",
@@ -190,6 +198,42 @@ def test_pipelined_equals_per_sample_2in(block_type):
 
 
 @pytest.mark.skipif(not _CHIP_OK, reason="chip yaml absent")
+@pytest.mark.parametrize("block_type", sorted(COMPLEX_2IN2OUT))
+def test_pipelined_equals_per_sample_complex(block_type):
+    """Saturation gate for COMPLEX-in / COMPLEX-out (yi,yq) blocks. The per-sample
+    reference AND the saturated stream are the FULL interleaved [yi,yq,...] egress; a
+    block whose serialize-LOCK fails to release under back-to-back drive (phantom
+    re-trigger, corridor loop) either STALLS or diverges — caught bit-exact here. This
+    is the ComplexMixer's own gate now that its dual-FACE unlock is proven."""
+    from kyttar_verify.dut_runner import (  # noqa: PLC0415
+        run_block_dut_complex, run_block_dut_pipelined)
+
+    in_ports, out_port, params = COMPLEX_2IN2OUT[block_type]
+    pairs = [(_STIM[k], _STIM[(k + 3) % len(_STIM)]) for k in range(len(_STIM))]
+
+    # Per-sample reference (takes FLOAT pairs); flatten the per-trigger [yi,yq] lists.
+    seq = run_block_dut_complex(block_type, pairs, params=params, chip_yaml=CHIP_YAML,
+                                in_ports=in_ports, out_port=out_port)
+    assert seq.ok, f"per-sample build/run failed: {seq.reason}"
+    seq_out = [w for g in seq.outputs_q15 for w in g]
+
+    # Saturated drive (takes PRE-QUANTIZED uint16 pairs).
+    samples = [(_q15(i), _q15(q)) for (i, q) in pairs]
+    pipe = run_block_dut_pipelined(block_type, samples, params=params,
+                                   chip_yaml=CHIP_YAML, in_ports=in_ports,
+                                   out_port=out_port)
+    assert pipe.ok, f"pipelined build/run failed (deadlock/livelock?): {pipe.reason}"
+
+    n = len(seq_out)
+    assert len(pipe.outputs_q15) >= n, (
+        f"{block_type}: saturated produced {len(pipe.outputs_q15)} words, per-sample "
+        f"produced {n} — pipeline STALLED (serialize-LOCK did not release)")
+    assert pipe.outputs_q15[:n] == seq_out, (
+        f"{block_type}: saturated output diverges from per-sample at index "
+        f"{next(i for i in range(n) if pipe.outputs_q15[i] != seq_out[i])}")
+
+
+@pytest.mark.skipif(not _CHIP_OK, reason="chip yaml absent")
 @pytest.mark.parametrize("block_type", sorted(RATE_1IN))
 def test_pipelined_equals_per_sample_rate(block_type):
     """Saturation gate for RATE-CHANGING blocks. Per-sample ref = run_block_dut_rate
@@ -227,7 +271,7 @@ def test_bespoke_coverage_is_documented():
     cat = BlockCatalog.from_gr_kyttar()
     all_types = {b.type_name for b in cat.all()}
     covered = (set(REAL_1IN) | set(REAL_2IN) | set(RATE_1IN)
-               | set(NEEDS_BESPOKE))
+               | set(COMPLEX_2IN2OUT) | set(NEEDS_BESPOKE))
     missing = all_types - covered
     assert not missing, (
         "blocks with NO saturation coverage and NO bespoke reason (add to REAL_1IN, "

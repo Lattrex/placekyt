@@ -742,3 +742,34 @@ the adjacency) and fix the 2-word yi/yq output routing. Sim `get_trace()` (dict 
 `cell_id` linear index, `kind`, `data`) + bounded `run(max_events=)` are the diagnostic
 tools — NOT blind face/hop guesses (a whole class of "@1 vs @2" dead-ends were a probe
 decode bug: hop field is bits[9:5]).
+
+**RESOLVED (2026-07-14, commits 331e993 / 10969a9 / 9aaacda) — ComplexMixer is now fully
+pipeline-saturation-capable, bit-exact.** Supersedes the "NOT yet fixed" status and the
+dedicated-`unlock`-cell path above:
+- Dead-end (1) is DISPROVEN for MULQ: `MULQ A,B` writes R0 and does NOT clobber its operands
+  (PROGRAMMING_GUIDE). The earlier Q-corruption came from operating on INPUT regs (consumed by
+  the arbiter latch), NOT from re-reading a state var. So the mixer's `t` scratch was
+  UNNECESSARY: `MULQ xi2,c` directly frees 4 instrs + the `t` state reg — enough budget to
+  fold the unlock INLINE (no separate cell; CM required self-contained). RE-RUN the bit-exact
+  gate after any such reclaim (dead-end 1's real lesson stands).
+- The unlock is folded into the mixer with a DUAL-FACE flip EXACTLY like iq_upconvert's upmix:
+  emit yi/yq on `face_tap` (routed output, set by `_apply_rotate_tap_face`), flip to a
+  DISTINCTLY-NAMED `unlock_face` (NORTH — name it NOT `face_internal` so `_apply_rotate_tap_face`
+  leaves it to `_apply_orientation_face_words` to rotate), do `WRITE.CFG @2,4` down a 1-cell
+  `transit_unlock` corridor to phase. `output_cell_id()=="mixer"`; the config-only backward edge
+  IS declared as `("mixer","unlock","phase","xi")` and resolved by `_apply_internal_feedback`'s
+  `_src_port=="unlock"` branch (dead-end 3's data-collision does NOT occur because that branch
+  patches the WRITE.CFG by config-bit alone, never a data reg).
+- THE FINAL BUG (the N≥2 "post-burst deadlock"): the terminal `{jump:trig}` (self-terminating
+  via `__terminate__`) STILL EMITS a JUMP word on the CURRENT face, which was left at
+  `unlock_face`=NORTH by the WRITE.CFG → the trig fired into the unlock corridor → transit →
+  phase → transited through → sin_fold → ... a self-sustaining datapath loop that deadlocked
+  once the real samples drained. FIX: `MOVE [FACE], face_tap` AFTER the WRITE.CFG so the trailing
+  trig goes to the drained output port. **NEW INVARIANT: a `__terminate__` trig is not a no-op —
+  it emits a JUMP word on the current FACE; a dual-FACE cell MUST restore its output face before
+  any trailing emission.**
+- PROVEN: `run_block_dut_pipelined` (saturated) == `run_block_dut_complex` (per-sample GR ref)
+  BIT-EXACT over 8 samples, both placements. Gate: `test_pipeline_saturation.py` COMPLEX_2IN2OUT
+  (22 pass). DEFAULT stays `pipeline_lock=False` (flipping to True regressed the GRC importer's
+  input-reg/net-resolution + the compact SSB Weaver footprint); the lock is OPT-IN, gate passes
+  `params={pipeline_lock:True}`.

@@ -426,16 +426,13 @@ start:
             ("cos_interp", "val", "mixer", "cosv"),
         ]
         if self._pipeline_lock:
-            # mixer's TRIG fires the internal unlock cell (resolved as a named
-            # internal handoff, so the router routes it to unlock's `default` entry
-            # instead of positional-guessing / defaulting it to the output port).
-            conns += [("mixer", "trig", "unlock", "trig_in")]
-            # unlock's `done` self-terminates (no forward handoff); its WRITE.CFG
-            # is a BACKWARD config-only edge to phase (clears the LOCK), resolved by
-            # the build's _apply_internal_feedback (config_only branch) which traces
-            # unlock -> phase along the authored corridor and patches the @N hop.
-            conns += [("unlock", "done", "__terminate__", ""),
-                      ("unlock", "unlock", "phase", "xi")]
+            # mixer's TRIG -> unlock is handled by internal_JUMPS (positional/terminate),
+            # NOT here: declaring it as an internal_CONNECTION makes the router treat
+            # mixer as a mid-chain forwarder and disrupts its yi/yq OUTPUT routing (the
+            # mixer is the block's output cell). Only the unlock's BACKWARD config-only
+            # edge to phase is declared here — resolved by _apply_internal_feedback
+            # (config_only branch) which traces unlock -> phase + patches the WRITE.CFG.
+            conns += [("unlock", "unlock", "phase", "xi")]
         return conns
 
     def internal_jumps(self) -> List[Tuple[str, str, str, str]]:
@@ -454,6 +451,15 @@ start:
 
     def output_cell_ids(self) -> List[str]:
         return ["mixer"]
+
+    def output_cell_id(self):
+        """SINGULAR — the build reads THIS (not ``output_cell_ids``) to set the
+        Shape's ``exit_offset`` so the mixer (NOT the last-placed cell) is the block
+        exit. With the serialize-lock, the last-placed cell is ``unlock``; without
+        this the exit-default would clobber the mixer's routed yi/yq output WRITEs
+        (dropping them to @1 and losing the value). None when unlocked (mixer IS the
+        last cell, so the default last-cell exit is already correct)."""
+        return "mixer" if self._pipeline_lock else None
 
     def default_layout(self) -> Dict[Any, Tuple[int, int, str]]:
         if not self._pipeline_lock:

@@ -702,23 +702,50 @@ def _output_cell_carries_handoffs(gr_block) -> bool:
     """
     if gr_block is None:
         return False
+    # Determine the OUTPUT exit cell: the explicit output_cell_id() if the block
+    # declares one (its output leaves a non-last cell), else the last NON-transit
+    # cell (transit_* cells are face-only routing, never the output).
+    out_cid = None
     try:
-        if gr_block.output_cell_id() is not None:
-            return True
+        out_cid = gr_block.output_cell_id()
     except Exception:  # noqa: BLE001 — older blocks lack the method
-        pass
-    # The output exit cell = the last NON-transit cell of the block (the default
-    # exit; transit_* cells are face-only routing, never the output). Is it the
-    # source of any internal connection (a feedback/handoff WRITE)?
+        out_cid = None
     try:
-        layout = gr_block.default_layout() or {}
-        block_cids = [cid for cid in layout
-                      if not (isinstance(cid, str) and cid.startswith("transit"))]
-        if not block_cids:
-            return False
-        exit_cid = block_cids[-1]
         internal = list(gr_block.internal_connections() or [])
-        return any(src == exit_cid for (src, _sp, _d, _dp) in internal)
+        if out_cid is not None:
+            exit_cid = out_cid
+        else:
+            layout = gr_block.default_layout() or {}
+            block_cids = [cid for cid in layout
+                          if not (isinstance(cid, str) and cid.startswith("transit"))]
+            if not block_cids:
+                return False
+            exit_cid = block_cids[-1]
+        # "Carries handoffs" iff the exit cell ALSO emits a NON-output instruction
+        # alongside its port output, so patching EVERY WRITE would clobber it:
+        #   (a) it is the SOURCE of an internal_connection (a data feedback/handoff —
+        #       the Costas rotate / Gardner loop_filter), OR
+        #   (b) its program contains an inline WRITE.CFG (a config handoff — the
+        #       iq_upconvert upmix cell's backward lock-clear), which is NOT a declared
+        #       internal_connection.
+        # A block that declares output_cell_id() purely to relocate `exit_offset` (so a
+        # LATER non-output cell isn't taken as the exit — e.g. ComplexMixer's serialize-
+        # lock, whose `unlock` cell is placed AFTER `mixer` and does the WRITE.CFG) but
+        # whose OUTPUT cell emits ONLY its genuine yi/yq port rails (no internal WRITE,
+        # no WRITE.CFG) is NOT this case: its two rails must BOTH be routed by
+        # _patch_complex_output_port_handoff, so return False. (mixer.trig->unlock is an
+        # internal_JUMP, not an internal_connection, so it correctly does not trip (a).)
+        if any(src == exit_cid for (src, _sp, _d, _dp) in internal):
+            return True
+        try:
+            cps = gr_block.build_cell_programs()
+            cp = cps.get(exit_cid)
+            tmpl = getattr(cp, "assembly_template", "") if cp is not None else ""
+            if "WRITE.CFG" in tmpl:
+                return True
+        except Exception:  # noqa: BLE001
+            pass
+        return False
     except Exception:  # noqa: BLE001
         return False
 

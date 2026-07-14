@@ -81,6 +81,7 @@ class source(gr.sync_block):
         complex_in: bool = False,
         burst_len: int = 0,
         stream_id: str = "",
+        pipelined: bool = False,
     ):
         # SERVER-BATCH MODE (server_port > 0): drive a placeKYT-hosted chip via ONE
         # process_batch RPC instead of building/owning a local chip. The input is
@@ -124,6 +125,10 @@ class source(gr.sync_block):
         # burst is injected at its own block and its sink (same stream_id) drains
         # only ITS recovered words. Empty ⇒ today's single-stream behavior.
         self._stream_id = str(stream_id or "")
+        # FULL-SPEED: drive the whole burst SATURATED on the hosted chip (queue the
+        # word stream + run to completion) rather than per-sample-to-quiescence. Only
+        # safe for a saturation-tolerant (point-to-point-routed) chip design.
+        self._pipelined = bool(pipelined)
         self._inbuf = []          # server mode: accumulated complex burst
         self._dispatched = False
         # streaming (hardware) vs batch (sim) is decided by the SERVER at start();
@@ -239,7 +244,8 @@ class source(gr.sync_block):
         else:
             out = sess.dispatch(self._server_host, self._server_port, self._inbuf,
                                 in_port=self._port_name, complex=self._complex_in,
-                                raw=self._complex_in, stream_id=self._stream_id)
+                                raw=self._complex_in, stream_id=self._stream_id,
+                                pipelined=self._pipelined)
         self._dispatched = True
         print(f"[kyttar.source] SERVER-BATCH: sent {len(self._inbuf)} samples "
               f"-> {len(out)} recovered ({'duplex' if self._stream_id else 'single'} RPC)",

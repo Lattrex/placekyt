@@ -46,7 +46,7 @@ templates:
   make: kyttar.source(device_id=${device_id}, port_name=${port_name},
     num_channels=${num_channels}, server_host=${server_host},
     server_port=${server_port}, complex_in=${complex_in.make_val}, burst_len=${burst_len},
-    stream_id=${stream_id})
+    stream_id=${stream_id}, pipelined=${pipelined.make_val})
 
 parameters:
   - id: device_id
@@ -100,6 +100,20 @@ parameters:
     label: Stream ID
     dtype: string
     default: ''
+  # FULL-SPEED (SATURATED) DRIVE: when Yes, the whole burst is queued and run to
+  # completion on the hosted chip in ONE saturated pass (back-to-back words, no
+  # per-sample quiescence) — the device's real throughput. Requires a saturation-
+  # safe chip design (point-to-point-routed, no bus congestion): the coherent BPSK
+  # RX .kyt is proven to decode BER 0 this way. Leave No for per-sample drive (the
+  # lightweight demos). Enum (not bool) for the same GRC-truthiness reason as above.
+  - id: pipelined
+    label: Full-speed (saturated)
+    dtype: enum
+    default: 'no'
+    options: ['no', 'yes']
+    option_labels: ['No (per-sample)', 'Yes (pipelined)']
+    option_attributes:
+      make_val: ['False', 'True']
 
 inputs:
   - label: in

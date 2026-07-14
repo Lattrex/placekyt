@@ -337,9 +337,17 @@ class BatchSession:
             return {k: dict(v) for k, v in self.grc_params.items()}
 
     def dispatch(self, host, port, iq, in_port="x16_in", out_port="x16_out",
-                 data_addrs=(0, 1), raw=True, complex=True, stream_id=""):
+                 data_addrs=(0, 1), raw=True, complex=True, stream_id="",
+                 pipelined=False):
         """Send the whole burst to the placeKYT SimServer in one process_batch RPC;
         store the recovered words for the sink.
+
+        ``pipelined=True`` asks the server to drive the burst SATURATED (queue the
+        whole word stream then run to completion) instead of per-sample-to-quiescence
+        — the full-speed path. The chip design MUST tolerate back-to-back drive (a
+        point-to-point-routed, saturation-safe receiver); a bus-congested layout
+        would lock up. Absent/False ⇒ the per-sample path (an older host ignores the
+        field). See engine.sim_bridge process_batch pipelined branch.
 
         ``complex=True``  → INTERLEAVED I/Q: payload is [xi0, xq0, xi1, xq1, ...],
         TWO operands per sample (the I/Q receiver path); process_batch injects xi
@@ -368,6 +376,9 @@ class BatchSession:
         # ⇒ the single-stream path (server uses the port's default entry/hop).
         if stream_id:
             header["stream_id"] = str(stream_id)
+        # FULL-SPEED: drive the whole burst saturated (see docstring). Opt-in.
+        if pipelined:
+            header["pipelined"] = True
         # GRC-sync: advertise the flowgraph's per-block params alongside the burst
         # (additive header field). The placeKYT SimServer routes a present
         # ``grc_params`` to ``on_grc_params`` → the out-of-sync indicator. Absent

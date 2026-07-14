@@ -738,8 +738,14 @@ class SimServer:
                                   else _float_to_q15(float(data[kk])))
                             stream += [_w(a0), xi, _j()]
                     self._chip.queue_words_physical(in_name, stream)
-                    # BOUNDED run (never uncapped — a livelock would spin at 100% CPU):
-                    _cap = max(50_000, 2_000 * max(1, nsamp))
+                    # BOUNDED run (never uncapped — a livelock would spin at 100% CPU),
+                    # but the budget must scale with the actual WORK, not just nsamp: a
+                    # multi-block receiver (MF→Costas→Gardner→slicer) runs ~40+ cell
+                    # executions per sample, so a too-tight cap TRUNCATES the burst mid-
+                    # decode (tail bits never emitted → false BER). Budget per QUEUED
+                    # WORD (each word can trigger a full chain traversal) with generous
+                    # headroom; the floor still guards tiny bursts.
+                    _cap = max(200_000, 20_000 * max(1, len(stream)))
                     self._chip.run(max_events=_cap)
                     for (v, _d, _t) in self._chip.read_port_words_timed(port):
                         if _first_out_ns is None:

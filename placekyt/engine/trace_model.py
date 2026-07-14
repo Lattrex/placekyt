@@ -258,8 +258,61 @@ class TraceModel:
         so the port still appears."""
         self._ensure_capture_dest()
         streams: dict[tuple[int, str, int | None], list[tuple[float, int]]] = {}
+        # RAW-WORD (pipelined/saturated) INPUT coalescing: the pipelined drive path
+        # (sim_bridge process_batch pipelined branch → queue_words_physical) injects
+        # a PRE-ENCODED word stream — per complex sample: WRITE(hop,d0) → payload_xi
+        # → WRITE(hop,d1) → payload_xq → JUMP. simKYT records a port_injection for
+        # EVERY word; a bare payload has no hop/dest fields so it lands with
+        # target_hop=0/dest=0, and each distinct payload bit-pattern would otherwise
+        # spawn a PHANTOM "hop 0/N" input trace (the overlaid-streams artifact). The
+        # value we want to plot is the PAYLOAD, attributed to the (hop,dest) of the
+        # WRITE that addressed it — exactly where the hardware lands it. So: a WRITE
+        # (addressing word, target_hop != 0, opcode nibble 0x6) ARMS a tag; the next
+        # payload (target_hop == 0) inherits it; JUMPs (0x7) are control, dropped.
+        # The per-sample path never emits standalone WRITE/payload words (it injects
+        # one addressed event per sample), so its events fall through unchanged.
+        # Per port: a SINGLE-USE armed tag for the RAW-WORD path only. A raw WRITE
+        # addressing word is recognised by opcode nibble 0x6 AND a real target_hop;
+        # it arms (hop,dest) for the payload event that immediately follows (which
+        # carries target_hop 0 — a bare value has no hop field). The payload's VALUE
+        # is plotted under the armed tag, then the arm is consumed (one payload per
+        # WRITE), so the trailing JUMP is skipped. The PER-SAMPLE path is different:
+        # each injection is ONE event whose ``data`` IS the value (not a 0x6 opcode)
+        # with a real target_hop — those never arm and fall to the legacy per-event
+        # tag, plotting correctly under their own (hop,dest). Nibble 0x6 gating keeps
+        # the two paths from colliding.
+        _OP_WRITE = 0x6
+        armed: dict[tuple[int, str], tuple[int, int] | None] = {}
         for t in self.transactions:
-            if t.kind in (KIND_PORT_OUT, KIND_PORT_IN) and t.port is not None:
+            if t.kind == KIND_PORT_IN and t.port is not None:
+                pkey = (t.chip, t.port)
+                d = t.data if t.data is not None else 0
+                th = t.detail.get("target_hop")
+                if th and ((int(d) >> 12) & 0xF) == _OP_WRITE:
+                    # Raw WRITE addressing word: arm (hop,dest); don't plot it.
+                    armed[pkey] = (int(th), int(t.dest) if t.dest is not None else 0)
+                    continue
+                pending = armed.get(pkey)
+                if pending is not None and not th:
+                    # Payload (target_hop 0) following a raw WRITE: plot its VALUE
+                    # under the WRITE's (hop,dest), then DISARM.
+                    hop, dest = pending
+                    streams.setdefault((t.chip, t.port, (hop, dest)), []).append(
+                        (t.time_ns, d))
+                    armed[pkey] = None
+                    continue
+                armed[pkey] = None
+                # A raw JUMP tail (opcode 0x7, target_hop 0, NOT consumed by a pending
+                # WRITE — a 0x7xxx data payload always follows a WRITE and is consumed
+                # above) is a control word, not data: skip it so it doesn't spawn a
+                # phantom (0,0) trace. Everything else — the per-sample path (value-
+                # carrying addressed event) or an untagged single-stream port — plots
+                # under its own legacy tag.
+                if not th and ((int(d) >> 12) & 0xF) == 0x7:
+                    continue
+                streams.setdefault((t.chip, t.port, self._port_tag(t)), []).append(
+                    (t.time_ns, d))
+            elif t.kind == KIND_PORT_OUT and t.port is not None:
                 val = t.data if t.data is not None else 0
                 streams.setdefault((t.chip, t.port, self._port_tag(t)), []).append(
                     (t.time_ns, val))

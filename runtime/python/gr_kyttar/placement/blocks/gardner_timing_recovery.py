@@ -103,7 +103,7 @@ class GardnerTimingRecovery(KyttarBlock):
     _FACE_FB = 2    # west
 
     def __init__(self, name: str, kp: int = 3, ki: int = 1,
-                 pipeline_lock: bool = False):
+                 pipeline_lock: bool = True):
         """
         Args:
             name: Block name.
@@ -156,23 +156,30 @@ class GardnerTimingRecovery(KyttarBlock):
         # Placed at addresses 3/4 (contiguous after inc@1, one_q14@2). The lock tail
         # runs ONLY on the strobe path (after {jump:val}); the no-strobe ``done`` path
         # never locks, so non-strobe samples keep flowing to advance ``phase``.
-        # LOCK engages with ANY nonzero value, so reuse ``one_q14`` (=1<<14) for the
-        # LOCK write — no separate ``one`` data word. Only ``lock_face`` (SOUTH=0) is
-        # new. Saves a register slot on this budget-tight landing cell.
-        rs_lock_data = ([DataWord("lock_face", 0, address=3, is_face=True)]
-                        if self._pipeline_lock else [])
+        # SERIALIZE-LOCK engage — cost-reduced to fit this budget-tight 7-state landing
+        # cell. The arbiter's CONFIG default LOCK_FACE is 00 = SOUTH (verified in
+        # simkyt config_reg.rs), which is EXACTLY the feedback face (period_relay sits
+        # SOUTH of the resampler and emits NORTH into it). So LOCK_FACE need NOT be
+        # written — the reset default already gates all-but-SOUTH. We only set LOCK=1
+        # (any nonzero engages it; reuse ``one_q14``=1<<14, no extra data word). This
+        # is a 2-instruction tail (was 4). NOTE: this relies on the UN-rotated layout
+        # (SOUTH feedback); default_layout places the block accordingly and the block
+        # is not auto-oriented in the RX chain. If a future layout rotates it, add back
+        # an is_face ``lock_face`` DataWord + the two LOCK_FACE writes (orientation-
+        # transformed) — but that needs 2 more register slots freed first.
+        rs_lock_data = []
         rs_lock_tail = ("""\
-    MOVE R0, R{data:lock_face}
-    MOVE [LOCK_FACE], R0
-    MOVE R0, R{data:one_q14}
+    MOVE R0, R{data:inc}
     MOVE [LOCK], R0
 """ if self._pipeline_lock else "")
         resampler = CellProgram(
             inputs=[Port("xi", register=0)],
             outputs=[Port("val"), Port("par"), Port("trig")],
             entries=[EntryPoint("default")],
-            data=[DataWord("inc", 1 << 14, address=1),
-                  DataWord("one_q14", 1 << 14, address=2)] + rs_lock_data,
+            # ``inc`` (phase increment) and the old ``one_q14`` (parity toggle) are the
+            # IDENTICAL value 1<<14, so they share ONE data word (``inc``) — freeing the
+            # register slot the serialize-LOCK's LOCK=1 write needs on this tight cell.
+            data=[DataWord("inc", 1 << 14, address=1)] + rs_lock_data,
             # LOOP MEMORY (reset_per_batch): the NCO phase accumulator, the 2-sample
             # delay line (xp/xp2), the instantaneous half-period feedback registers
             # (inst_active/inst_next), and the strobe parity — all carry the previous
@@ -209,7 +216,7 @@ start:
     {write:val}
     MOVE R0, R{state:parity}
     {write:par}
-    XOR R{state:parity}, R{data:one_q14}
+    XOR R{state:parity}, R{data:inc}
     MOVE R{state:parity}, R0
     {jump:val}
 """ + rs_lock_tail + """\

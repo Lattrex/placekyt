@@ -806,19 +806,37 @@ Two distinct facts about the pipelined/full-speed path (sim_bridge `process_batc
 `pipelined:true` → `queue_words_physical` whole burst + one continuous `run()`),
 both surfaced getting the coherent BPSK RX full-speed GRC demo live.
 
-**A. Pipelined ≠ input-saturated. The chain backpressures the port.** The input port
-is single-outstanding (no FIFO): it can't accept sample N+1 until the chain consumes
-sample N far enough to free the corridor. So a saturated run self-paces to the
-SLOWEST block's rate, NOT the port's max accept rate. Measure it with
-`throughput_bench.py`: the input inter-sample **gap min vs mean** is the tell — if
-`min << mean`, the port is NOT the limiter (it's backpressured). Coherent RX: min gap
-~405 ns (port CAPACITY ~2.5 MSa/s) but mean ~3010 ns (actual ~0.33 MSa/s, ~7× headroom);
-0.15 MSym/s recovered; ~10 µs fill latency; bottleneck = the **Gardner resampler cell**
-(most exec_ticks). This is CORRECT — a serial feedback DSP chain can't ingest faster
-than its slowest stage settles. To go faster, PARALLELISE chains across the array
-(the architecture's point), don't speed one chain. HARDWARE: the FX3/FPGA FIFO provides
-real backpressure so on silicon the streaming source paces natively — the sim
-`queue_words_physical` path EMULATES that (there is no sim FIFO). Report chip-time
+**A. Pipelined ≠ input-saturated, AND the current coherent-RX layout is LATENCY-bound,
+not throughput-bound — the chip is ~88% IDLE.** ⚠️ CORRECTED after measuring cell
+UTILISATION (an earlier draft wrongly said "the Gardner cell is the saturated
+bottleneck" — the util data refutes that). Facts for the coherent BPSK RX .kyt driven
+saturated (throughput_bench.py + /tmp probes):
+- Throughput ~0.33 MSa/s in / 0.15 MSym/s out, ~10 µs fill latency. This ~MATCHES the
+  pre-pipelining per-sample number → the pipelined path mostly removed the HOST↔SIM
+  per-sample RPC round-trip (the visible GUI speedup), it did NOT make samples flow
+  through the chain concurrently.
+- EVERY cell's steady inter-fire gap is 27–47 ns = the 40 MIPS (27.43 ns Fast→Fast)
+  instruction rate. NO cell is slow. The Gardner resampler (6,5) runs flat-out WHEN it
+  runs — but it is only ~12% UTILISED (idle 88% of the run).
+- ROOT CAUSE: the receiver executes ~337 instructions PER INPUT SAMPLE across the chain
+  (Gardner cell alone ~23/sample), and the SERIAL DATA DEPENDENCY (each sample must
+  traverse MF→Costas→Gardner→slice, and the Costas + Gardner FEEDBACK LOOPS must settle
+  per sample) prevents those instructions from OVERLAPPING across samples. So the design
+  is LATENCY-bound by the feedback loops, not throughput-bound by any block. Cells spend
+  most of their time waiting on an upstream neighbour's handshake, not computing.
+- The input port (single-outstanding, no FIFO) backpressures, but that's a SYMPTOM: the
+  MF *head* ingests every ~358 ns (~2.8 MSa/s) then stalls waiting on the slow-draining
+  back half. The port could go ~2.5 MSa/s if downstream drained instantly.
+- ⇒ To actually go faster you must either (i) OVERLAP samples (a real multi-stage
+  pipeline where sample N+1 enters MF while N is in Gardner — needs per-stage buffering /
+  a FIFO the current single-outstanding fabric lacks), or (ii) PARALLELISE whole chains
+  across the array (the architecture's headline: hundreds of independent RX). Speeding
+  one serial feedback chain is bounded by its loop latency. ⚠️ OPEN QUESTION CM raised:
+  is 0.33 MSa/s acceptable, and can the fabric be made to overlap samples at all given
+  single-outstanding ports? See [[project_coherent_rx_cannot_pipeline]].
+HARDWARE: the FX3/FPGA FIFO provides real backpressure so on silicon the streaming
+source paces natively — the sim `queue_words_physical` path EMULATES that (no sim FIFO).
+Report chip-time
 numbers (`simulation_time`, per-word `time_ns`), NOT host wall-clock.
 
 **B. A raw-word input trace must be demuxed by POSITION, never by decoding word bits.**

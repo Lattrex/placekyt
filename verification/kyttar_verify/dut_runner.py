@@ -199,6 +199,113 @@ def run_block_dut(
                      entry_addr=entry, hop_count=hop)
 
 
+def _enc_write(hop: int, addr: int) -> int:
+    """WRITE opcode 0x6, hop in [9:5], dest in [4:0]."""
+    return (0x6 << 12) | ((hop & 0x1F) << 5) | (addr & 0x1F)
+
+
+def _enc_jump(hop: int, entry: int) -> int:
+    """JUMP opcode 0x7, hop in [9:5], entry in [4:0]."""
+    return (0x7 << 12) | ((hop & 0x1F) << 5) | (entry & 0x1F)
+
+
+def run_block_dut_pipelined(
+    block_type: str,
+    samples,
+    *,
+    params: dict | None = None,
+    chip_yaml: str,
+    library: str = "lattrex.official",
+    in_ports=("sample",),
+    out_port: str = "out",
+    place_xy: tuple[int, int] = (1, 1),
+    max_events: int | None = None,
+) -> RateDUTResult:
+    """Build ``block_type`` (x16_in -> block -> x16_out) and drive it SATURATED —
+    the WHOLE burst is enqueued as raw WRITE/DATA/JUMP words via
+    ``queue_words_physical`` and processed in ONE continuous ``run()`` with NO
+    drain-between-samples. The input port's single-outstanding handshake paces the
+    corridor as a FIFO; multiple samples are in flight at once.
+
+    This is the PIPELINE-SATURATION oracle: a correct block's saturated output must
+    equal its own per-sample output (:func:`run_block_dut` / ``_rate`` / ``_complex``),
+    which is already the GNU-Radio-verified reference. A block that DIVERGES when the
+    pipeline is full has a feedback/handshake hazard the per-sample harness cannot
+    see (e.g. a data-only feedback loop that assumes inter-sample quiescence — the
+    Costas dphase / Gardner period case). Returns the FLAT egress word stream.
+
+    ``samples`` is a list of per-sample operand tuples: ``(w,)`` for a 1-operand
+    real block, ``(i, q)`` for a complex block (matching ``in_ports``). Operands are
+    already uint16 words (Q15 or raw); the caller quantises. ``in_ports`` names the
+    block's input ports in operand order (their registers come from ``resolved_io``).
+    """
+    import simkyt  # noqa: PLC0415
+
+    (app, BlockCatalog, load_chip_type, BuildEngine, AppController,
+     ChipPortEndpoint, BlockEndpoint) = _engine()
+
+    cat = BlockCatalog.from_gr_kyttar()
+    ct = load_chip_type(chip_yaml)
+    ct_key = getattr(ct, "name", None) or "kyttar_10x12"
+    ctrl = AppController(catalog=cat)
+    ctrl.new_project("dut_pipe", ct_key)
+    px, py = place_xy
+    blk = ctrl.place_block(block_type, 0, px, py, library=library,
+                           params=params or {})
+    # Wire every input port to x16_in (multi-operand blocks land on one corridor).
+    for i, ip in enumerate(in_ports):
+        ctrl.add_logical_connection(
+            ChipPortEndpoint(chip=0, port="x16_in"),
+            BlockEndpoint(block=blk, port=ip), name=f"in{i}")
+    ctrl.add_logical_connection(
+        BlockEndpoint(block=blk, port=out_port),
+        ChipPortEndpoint(chip=0, port="x16_out"), name="blk_out")
+
+    rep = ctrl.auto_route_all({ct_key: ct})
+    if not rep.ok:
+        return RateDUTResult(False, reason="route failed: "
+                             + "; ".join(f"{r.name}:{r.reason}" for r in rep.failed))
+    bres = BuildEngine(cat, chip_yaml).build(ctrl.project, {ct_key: ct})
+    if not bres.ok:
+        return RateDUTResult(False, reason="build failed: "
+                             + "; ".join(str(e) for e in bres.errors))
+    words = bres.words(0)
+    entry, ins = cat.resolved_io(block_type, params or {}, library=library)
+    if len(ins) < len(in_ports):
+        return RateDUTResult(False, reason=f"block resolved {len(ins)} input reg(s); "
+                             f"need {len(in_ports)} for ports {in_ports}")
+    addrs = [int(a) for a in ins[:len(in_ports)]]
+
+    port = ct.port("x16_in")
+    blk_obj = ctrl.project.block(blk)
+    landing = (blk_obj.placement.cells[0]
+               if blk_obj and blk_obj.placement and blk_obj.placement.cells else None)
+    if landing is not None:
+        dist = abs(landing.x - port.cell_x) + abs(landing.y - port.cell_y) + 1
+    else:
+        dist = abs(px - port.cell_x) + abs(py - port.cell_y) + 1
+    hop = max(0, 31 - dist)
+
+    chip = simkyt.Chip.from_yaml(chip_yaml)
+    chip.load_bitstream_physical(words)
+    chip.set_port_entry_address("x16_in", entry)
+
+    # Build the whole burst: per sample, WRITE(addr_k),op_k ... then JUMP(entry).
+    stream: list[int] = []
+    for tup in samples:
+        ops = tup if isinstance(tup, (tuple, list)) else (tup,)
+        for k, w in enumerate(ops):
+            stream.append(_enc_write(hop, addrs[k]))
+            stream.append(int(w) & 0xFFFF)
+        stream.append(_enc_jump(hop, entry))
+    chip.queue_words_physical("x16_in", stream)
+    chip.run() if max_events is None else chip.run(max_events=max_events)
+
+    flat = [int(v) & 0xFFFF for (v, _d, _t) in chip.read_port_words_timed("x16_out")]
+    return RateDUTResult(True, outputs_q15=flat, n_words=len(words),
+                         entry_addr=entry, hop_count=hop)
+
+
 @dataclass
 class RateDUTResult:
     """Outcome of running a RATE-CHANGING (real-in) block on simKYT.

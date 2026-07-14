@@ -259,59 +259,76 @@ class TraceModel:
         self._ensure_capture_dest()
         streams: dict[tuple[int, str, int | None], list[tuple[float, int]]] = {}
         # RAW-WORD (pipelined/saturated) INPUT coalescing: the pipelined drive path
-        # (sim_bridge process_batch pipelined branch → queue_words_physical) injects
-        # a PRE-ENCODED word stream — per complex sample: WRITE(hop,d0) → payload_xi
-        # → WRITE(hop,d1) → payload_xq → JUMP. simKYT records a port_injection for
-        # EVERY word; a bare payload has no hop/dest fields so it lands with
-        # target_hop=0/dest=0, and each distinct payload bit-pattern would otherwise
-        # spawn a PHANTOM "hop 0/N" input trace (the overlaid-streams artifact). The
-        # value we want to plot is the PAYLOAD, attributed to the (hop,dest) of the
-        # WRITE that addressed it — exactly where the hardware lands it. So: a WRITE
-        # (addressing word, target_hop != 0, opcode nibble 0x6) ARMS a tag; the next
-        # payload (target_hop == 0) inherits it; JUMPs (0x7) are control, dropped.
-        # The per-sample path never emits standalone WRITE/payload words (it injects
-        # one addressed event per sample), so its events fall through unchanged.
-        # Per port: a SINGLE-USE armed tag for the RAW-WORD path only. A raw WRITE
-        # addressing word is recognised by opcode nibble 0x6 AND a real target_hop;
-        # it arms (hop,dest) for the payload event that immediately follows (which
-        # carries target_hop 0 — a bare value has no hop field). The payload's VALUE
-        # is plotted under the armed tag, then the arm is consumed (one payload per
-        # WRITE), so the trailing JUMP is skipped. The PER-SAMPLE path is different:
-        # each injection is ONE event whose ``data`` IS the value (not a 0x6 opcode)
-        # with a real target_hop — those never arm and fall to the legacy per-event
-        # tag, plotting correctly under their own (hop,dest). Nibble 0x6 gating keeps
-        # the two paths from colliding.
+        # (sim_bridge process_batch pipelined branch → queue_words_physical) injects a
+        # PRE-ENCODED word stream — per complex sample: WRITE(hop,d0) → payload_xi →
+        # WRITE(hop,d1) → payload_xq → JUMP. simKYT records a port_injection for EVERY
+        # word and recovers (hop,dest) by DECODING each word's bits. That's fine for
+        # the control words, but a bare DATA payload has no framing: a Q15 value in
+        # [0x6000,0x7FFF] is bit-identical to a WRITE/JUMP opcode, so ~1 in 8 payloads
+        # decodes as a spurious WRITE(hop=X,dest=Y) → a phantom "hop N" input trace.
+        # simKYT CANNOT tell them apart from bits alone, and neither can the panel.
+        #
+        # The reliable structure is POSITION, not bits: the stream STRICTLY alternates
+        # WRITE → DATA (an addressing WRITE is ALWAYS followed by exactly one data
+        # payload — it can never be any other way), with a JUMP terminating each
+        # packet. So run a per-port STATE MACHINE that sequences on position:
+        #   • expecting WRITE: an addressing word (opcode 0x6, real target_hop) arms
+        #     (hop,dest) and we switch to expecting DATA. A JUMP (opcode 0x7) is a
+        #     packet terminator — skip it, stay expecting WRITE.
+        #   • expecting DATA: the NEXT event IS the payload, UNCONDITIONALLY (whatever
+        #     its bits/decoded-hop) — plot its value under the armed (hop,dest), then
+        #     switch back to expecting WRITE.
+        # This ignores the payload's own (mis)decoded hop entirely, so a 0x6xxx /
+        # 0x7xxx data value can never masquerade as a control word.
+        #
+        # Applied ONLY to ports that use the raw-word path — detected by the presence
+        # of a target_hop==0 port_injection (a framing-less payload). The PER-SAMPLE
+        # path (inject_data_physical) emits ONE addressed event per operand, ALL with a
+        # real target_hop and the value in ``data`` (no hop-0 events), so it's left on
+        # the legacy per-event tag and plots unchanged.
         _OP_WRITE = 0x6
+        _OP_JUMP = 0x7
+        raw_ports: set[tuple[int, str]] = set()
+        for t in self.transactions:
+            if (t.kind == KIND_PORT_IN and t.port is not None
+                    and not t.detail.get("target_hop")):
+                raw_ports.add((t.chip, t.port))
+        # Per-port machine state: armed (hop,dest) tag when expecting DATA, else None.
         armed: dict[tuple[int, str], tuple[int, int] | None] = {}
         for t in self.transactions:
             if t.kind == KIND_PORT_IN and t.port is not None:
                 pkey = (t.chip, t.port)
                 d = t.data if t.data is not None else 0
-                th = t.detail.get("target_hop")
-                if th and ((int(d) >> 12) & 0xF) == _OP_WRITE:
-                    # Raw WRITE addressing word: arm (hop,dest); don't plot it.
-                    armed[pkey] = (int(th), int(t.dest) if t.dest is not None else 0)
+                if pkey not in raw_ports:
+                    # Per-sample / untagged port: legacy per-event tag, unchanged.
+                    streams.setdefault((t.chip, t.port, self._port_tag(t)), []).append(
+                        (t.time_ns, d))
                     continue
                 pending = armed.get(pkey)
-                if pending is not None and not th:
-                    # Payload (target_hop 0) following a raw WRITE: plot its VALUE
-                    # under the WRITE's (hop,dest), then DISARM.
+                if pending is not None:
+                    # Expecting DATA: this event IS the payload, no matter its bits.
+                    # Plot its value under the armed WRITE's (hop,dest), then re-expect
+                    # a WRITE.
                     hop, dest = pending
                     streams.setdefault((t.chip, t.port, (hop, dest)), []).append(
                         (t.time_ns, d))
                     armed[pkey] = None
                     continue
-                armed[pkey] = None
-                # A raw JUMP tail (opcode 0x7, target_hop 0, NOT consumed by a pending
-                # WRITE — a 0x7xxx data payload always follows a WRITE and is consumed
-                # above) is a control word, not data: skip it so it doesn't spawn a
-                # phantom (0,0) trace. Everything else — the per-sample path (value-
-                # carrying addressed event) or an untagged single-stream port — plots
-                # under its own legacy tag.
-                if not th and ((int(d) >> 12) & 0xF) == 0x7:
-                    continue
-                streams.setdefault((t.chip, t.port, self._port_tag(t)), []).append(
-                    (t.time_ns, d))
+                # Expecting a control word. Classify by opcode nibble (control words
+                # ARE real opcodes here — the ambiguous case is only the data slot,
+                # which is handled above).
+                op = (int(d) >> 12) & 0xF
+                th = t.detail.get("target_hop")
+                if op == _OP_WRITE and th:
+                    # Addressing WRITE: arm (hop,dest), switch to expecting DATA.
+                    armed[pkey] = (int(th), int(t.dest) if t.dest is not None else 0)
+                elif op == _OP_JUMP:
+                    pass  # packet terminator — skip, keep expecting a WRITE.
+                else:
+                    # Unexpected word while expecting a control word (shouldn't happen
+                    # for a well-formed packet). Plot under legacy tag rather than drop.
+                    streams.setdefault((t.chip, t.port, self._port_tag(t)), []).append(
+                        (t.time_ns, d))
             elif t.kind == KIND_PORT_OUT and t.port is not None:
                 val = t.data if t.data is not None else 0
                 streams.setdefault((t.chip, t.port, self._port_tag(t)), []).append(

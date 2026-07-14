@@ -68,6 +68,9 @@ REAL_1IN = {
     "LowPassFilter": ("in", "out", {}),
     "HighPassFilter": ("in", "out", {}),
     "RRCPulseShaperBlock": ("in", "out", {}),
+    # Bit-stream / LLR single-in single-out blocks (proven saturated 2026-07-14).
+    "LFSRScramblerBlock": ("sample", "out", {}),
+    "SoftDemodulatorBlock": ("sample", "llr", {}),
 }
 
 # TWO-input, single-real-output blocks: (in_ports, out_port, params). Driven with a
@@ -94,6 +97,8 @@ REAL_2IN = {
 RATE_1IN = {
     "UpsamplerBlock": ("x", "out", {}),        # rate-EXPANDING (fixed factor)
     "KeepOneInNBlock": ("x", "out", {"n": 2}),  # rate-REDUCING
+    # bit-stream -> symbols (emits every N bits) — proven saturated 2026-07-14.
+    "PSKSymbolMapperBlock": ("sample", "out_i", {}),
 }
 
 # COMPLEX-in / COMPLEX-out (yi,yq 2-word egress): (in_ports, out_port, params). Same
@@ -107,6 +112,23 @@ COMPLEX_2IN2OUT = {
     # importer/net-resolution keep the 11-cell footprint); this gate proves the LOCKED
     # path is bit-exact under saturation so consumers can opt in for high-rate pipelines.
     "ComplexMixerBlock": (("xi", "xq"), "yi", {"pipeline_lock": True}),
+    # FEED-FORWARD complex-in / complex-out blocks — proven bit-exact saturated 2026-07-14
+    # (they were in NEEDS_BESPOKE only because the gate reads ONE out port, not the yi/yq
+    # 2 rails; run_block_dut_complex + run_block_dut_pipelined both drain the interleaved
+    # pair). No block changes were needed — pure harness coverage.
+    "FloatToComplexBlock": (("re", "im"), "out_re", {}),
+    "ComplexToFloatBlock": (("re", "im"), "out_re", {}),
+    "ConjugateBlock": (("re", "im"), "out_re", {}),
+    "ComplexRRCMatchedFilterBlock": (("xi", "xq"), "yi", {}),
+    "ComplexLowPassFilter": (("xi", "xq"), "out_i",
+                             {"gain": 0.9, "samp_rate": 32000.0,
+                              "cutoff_freq": 1200.0, "transition_width": 2500.0}),
+    # generic ComplexFIR with a small-gain tap set (Σ|h|<=1 fits the multi-cell build);
+    # this is the shared datapath for the whole Complex{Low,High,Band}Pass/Reject family,
+    # so proving it saturates covers the family (the firdes high/band variants only fail
+    # to INSTANTIATE at high gain — a Σ|h|<=1 build constraint, not a saturation defect).
+    "ComplexFIRFilterBlock": (("xi", "xq"), "yi",
+                              {"coefficients": [0.2, 0.3, 0.2, 0.1, 0.05]}),
 }
 
 # Blocks that need bespoke stimulus (documented, reported as skips — no silent gap).
@@ -114,19 +136,18 @@ NEEDS_BESPOKE = {
     "ComplexCostasLoopBlock": "complex I/Q loop; own gate proto_costas_pipe.py (BER0)",
     "CoherentRXBlock": "complex I/Q RX loop; own gate proto_rx_bisect.py (BER0)",
     "GardnerTimingRecovery": "2-sps timing loop; own gate proto_gardner_race.py",
-    "ComplexFIRFilterBlock": "complex I/Q output",
-    "ComplexLowPassFilter": "complex I/Q output",
-    "ComplexHighPassFilter": "complex I/Q output",
-    "ComplexBandPassFilter": "complex I/Q output",
-    "ComplexBandRejectFilter": "complex I/Q output",
-    "ComplexRRCMatchedFilterBlock": "complex I/Q output",
-    "FloatToComplexBlock": "complex I/Q output",
+    # High/Band firdes variants only fail to INSTANTIATE at high gain (Σ|h|>1 build
+    # constraint); their datapath == ComplexFIR/LowPass which ARE gated saturated above.
+    "ComplexHighPassFilter": "Σ|h|>1 firdes build constraint; datapath == ComplexLowPass (gated)",
+    "ComplexBandPassFilter": "Σ|h|>1 firdes build constraint; datapath == ComplexLowPass (gated)",
+    "ComplexBandRejectFilter": "Σ|h|>1 firdes build constraint; datapath == ComplexLowPass (gated)",
     "DualFloatToComplexBlock": "2-face rendezvous (own gate proto_dual_f2c)",
-    "ComplexToFloatBlock": "complex I/Q output (out_re,out_im)",
-    "ConjugateBlock": "complex I/Q output (out_re,out_im)",
-    "NCOBlock": "source (no data input)",
-    "FrequencyModulatorBlock": "VCO / complex output",
-    "PSKSymbolMapperBlock": "bit-stream input",
+    # REAL SATURATION BUG (2026-07-14): NCO + FrequencyModulator are 10-cell blocks with the
+    # SAME phase->2-NCO-column->emit reconvergent fan-in as the pre-fix ComplexMixer, and NO
+    # serialize-LOCK — they DEADLOCK under saturated drive (INV-20). They need the SAME
+    # dual-FACE serialize-LOCK fix (folded into the emit cell). See project_block_saturation_inventory.
+    "NCOBlock": "INV-20 fan-in DEADLOCK under saturation — needs ComplexMixer-style serialize-LOCK (OPEN)",
+    "FrequencyModulatorBlock": "INV-20 fan-in DEADLOCK under saturation — needs serialize-LOCK (OPEN)",
     "BPSKSlicerBlock": "packed-bit output timing",
     "SoftDemodulatorBlock": "complex input",
     "LFSRScramblerBlock": "bit-stream input",

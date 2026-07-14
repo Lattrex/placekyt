@@ -797,3 +797,44 @@ dedicated-`unlock`-cell path above:
   (22 pass). DEFAULT stays `pipeline_lock=False` (flipping to True regressed the GRC importer's
   input-reg/net-resolution + the compact SSB Weaver footprint); the lock is OPT-IN, gate passes
   `params={pipeline_lock:True}`.
+
+---
+
+## INV-21 — SATURATED "pipelined" drive means the SLOWEST BLOCK is saturated, NOT the input port; a raw-word input stream cannot be demuxed by decoding word bits
+
+Two distinct facts about the pipelined/full-speed path (sim_bridge `process_batch`
+`pipelined:true` → `queue_words_physical` whole burst + one continuous `run()`),
+both surfaced getting the coherent BPSK RX full-speed GRC demo live.
+
+**A. Pipelined ≠ input-saturated. The chain backpressures the port.** The input port
+is single-outstanding (no FIFO): it can't accept sample N+1 until the chain consumes
+sample N far enough to free the corridor. So a saturated run self-paces to the
+SLOWEST block's rate, NOT the port's max accept rate. Measure it with
+`throughput_bench.py`: the input inter-sample **gap min vs mean** is the tell — if
+`min << mean`, the port is NOT the limiter (it's backpressured). Coherent RX: min gap
+~405 ns (port CAPACITY ~2.5 MSa/s) but mean ~3010 ns (actual ~0.33 MSa/s, ~7× headroom);
+0.15 MSym/s recovered; ~10 µs fill latency; bottleneck = the **Gardner resampler cell**
+(most exec_ticks). This is CORRECT — a serial feedback DSP chain can't ingest faster
+than its slowest stage settles. To go faster, PARALLELISE chains across the array
+(the architecture's point), don't speed one chain. HARDWARE: the FX3/FPGA FIFO provides
+real backpressure so on silicon the streaming source paces natively — the sim
+`queue_words_physical` path EMULATES that (there is no sim FIFO). Report chip-time
+numbers (`simulation_time`, per-word `time_ns`), NOT host wall-clock.
+
+**B. A raw-word input trace must be demuxed by POSITION, never by decoding word bits.**
+The pipelined path injects a pre-encoded stream — per complex sample:
+`WRITE(hop,d0) → xi → WRITE(hop,d1) → xq → JUMP`. simKYT records a `port_injection`
+per word and recovers `(hop,dest)` by DECODING each word's bits. That's fine for control
+words, but a bare Q15 DATA payload in `[0x6000,0x7FFF]` is BIT-IDENTICAL to a WRITE/JUMP
+opcode, so ~1 in 8 payloads decodes as a spurious `WRITE(hop=N)` → a phantom "hop N"
+input trace (the waveform panel showed a pile of flat overlaid traces). simKYT can't
+disambiguate a payload from bits, and neither can the panel. **FIX (trace_model
+`port_streams_by_tag`): a per-port WRITE→DATA state machine.** The stream STRICTLY
+alternates WRITE→DATA (an addressing WRITE is ALWAYS followed by exactly one payload —
+it can never be otherwise), so when expecting DATA the next event IS the payload
+UNCONDITIONALLY, whatever its bits decode to; JUMP terminates the packet. Applied only
+to ports with a `target_hop==0` injection (the raw-word path); the per-sample
+`inject_data_physical` path (one addressed value-event per operand, no hop-0 payloads)
+is untouched. This artifact ONLY appears on the raw-word/saturated path — every prior
+demo used per-sample injection (one clean addressed event per sample). Regression:
+`test_trace_model.py::TestRawWordInputCoalescing` (opcode-colliding payloads).

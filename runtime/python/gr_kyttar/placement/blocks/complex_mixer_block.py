@@ -361,12 +361,22 @@ out:
         lock_face_data = ([DataWord("face_tap", 1, address=5, is_face=True),
                            DataWord("unlock_face", 3, address=6, is_face=True)]
                           if self._pipeline_lock else [])
-        lock_set_out = ("    MOVE [FACE], R{data:face_tap}\n"
-                        if self._pipeline_lock else "")
+        # No top-of-loop face restore is needed: the tail below ends with
+        # ``MOVE [FACE], face_tap``, so FACE is ALREADY the routed output face when the
+        # next iteration's yi/yq are emitted (saves one register slot vs restoring here).
+        lock_set_out = ""
+        # After the backward WRITE.CFG (emitted on unlock_face=NORTH into the corridor),
+        # flip FACE BACK to face_tap so the trailing ``{jump:trig}`` (the mixer is the
+        # terminal cell, so trig self-terminates but a JUMP WORD is still emitted on the
+        # CURRENT face) does NOT fire into the unlock corridor. Without this, the trig
+        # JUMP travels NORTH -> transit -> phase -> transits through -> sin_fold -> ...
+        # cascading the whole datapath in a self-sustaining loop (the post-burst deadlock).
+        # This mirrors iq_upconvert's upmix, which flips to face_tap before its {jump}.
         lock_release_tail = ("""\
     MOVE [FACE], R{data:unlock_face}
     MOVE R0, R{data:zero}
     WRITE.CFG @2, 4
+    MOVE [FACE], R{data:face_tap}
 """ if self._pipeline_lock else "")
         # MULQ writes its Q15 product to R0 and does NOT clobber its operands
         # (PROGRAMMING_GUIDE: ``MULQ A, B -> R0 = (A*B)>>15``), so xi2/xq2 can be the

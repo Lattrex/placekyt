@@ -593,3 +593,53 @@ often exceed it, so pass a smaller gain (0.4–0.9) — correlation is gain-inva
 Gated by placekyt/tests/test_complex_fir_budget.py + verification/tests/test_complex_fir.py
 (GNU-Radio parity, 12 tests).
 
+## INV-19 — A FEEDBACK block must survive SATURATED (pipelined) drive, not just inject-and-flush
+
+**Rule:** any block with an internal FEEDBACK loop whose feedback is a *data-only*
+write (read by "the next sample") MUST still produce the correct output when the input
+is driven SATURATED — the whole burst enqueued back-to-back with NO quiescence between
+samples (`queue_words_physical`, the real GNU-Radio / hardware streaming condition). The
+per-sample harness (`run_block_dut` — inject one, run to quiescence, inject next) HIDES
+feedback hazards: each sample fully settles before the next arrives, so a loop that has
+NO real backpressure still "works". Under saturation it collapses.
+
+**The failure (the Costas cautionary tale, round 2):** the Costas carrier loop wrote
+`dphase` back to the `phase` NCO as pure data, assuming phase reads it "next sample".
+Pipelined, `phase` raced ahead OPEN-LOOP on the streamed samples while `pd_pi` lagged;
+the loop decoupled and died after ~3 symbols (per-sample: BER 0; pipelined: 1 bit out).
+Gardner's timing loop is the same shape. This is invisible to `run_block_dut`.
+
+**The fix — arbiter LOCK, the SAME idiom `iq_upconvert` already ships (don't invent):**
+1. The loop's LANDING cell (the NCO/accumulator) LOCKs its arbiter to the FEEDBACK face
+   after it launches a sample forward: `MOVE [LOCK_FACE], R{data:face}; MOVE [LOCK],
+   R{one}`. Gate-all-but-LOCK_FACE holds the NEXT input sample (single-outstanding) until
+   the loop closes. `face` is an `is_face=True` DataWord so it transforms with orientation.
+2. The LAST datapath cell (the PI filter) CLEARS that lock inline with a backward
+   `WRITE.CFG @N, 4` (R0=0 → the landing cell's CONFIG[4]=LOCK). The build's
+   `_apply_internal_feedback` patches `@N` to the SAME resolved feedback-corridor hop it
+   patches the data-feedback WRITE to — a fixed authored hop deadlocks a re-placed layout.
+3. First sample runs unlocked (cold dphase=0 = GR's cold start); the lock engages after.
+
+**WHY A WRITE.CFG SURVIVES IN ONE CELL BUT VANISHES IN ANOTHER (the trap that cost a
+day):** the lock-clear `WRITE.CFG` must live INLINE in the PI-filter cell that ALSO emits
+the data feedback (like the standalone Costas `pd_pi`, and `iq_upconvert`'s upmix). Do
+NOT hive it into a dedicated relay cell on the feedback corridor: that makes the relay a
+feedback SOURCE, and the build's exit-hop defaulting (`_set_cell_hop1`) rewrites feedback-
+source cells and CLOBBERS the config-write. `iq_upconvert`'s WRITE.CFG survives because
+its cell has NO backward internal_connection; the standalone Costas `pd_pi`'s survives
+because it is NOT the block's exit cell and holds the feedback WRITE alongside it. When a
+config-write disappears in the built cell, the cause is ALWAYS the cell's structural role
+(exit-cell / feedback-source), never the assembler — find the WORKING cell of the same
+kind and MATCH ITS STRUCTURE (inline vs relay, exit vs mid, feedback-source or not).
+
+**Register squeeze:** the lock-clear costs ~1 state + 2 instrs. Reclaim without changing
+behaviour: emit an output while its operand is still in its INPUT reg (drop a saved-copy
+state + its reload); merge a `0`-valued face DataWord into an existing `zero`
+(SOUTH==0); reuse the reg that already holds the feedback value as the post-CFG reload.
+The CoherentRX `_pdpi_with_yitap` did all three to fit the WRITE.CFG at 30/31 words.
+
+**Gate:** `run_block_dut_pipelined` (saturated queue_words drive) MUST equal the
+per-sample output (the GR-verified reference). `verification/tests/test_pipeline_saturation.py`
+enforces this for every catalog block (feed-forward + stateful blocks were already safe;
+only the Costas-class carrier loop had the hazard). Standalone Costas + the full
+CoherentRX both recover BER 0 pipelined (and FASTER — no inter-sample flush).

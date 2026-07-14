@@ -330,62 +330,77 @@ out:
         # Amplitude is folded into the quarter-wave table (_quarter_table), so the
         # mixer needs NO amp MULQ and stays at the original (budget-tight) shape.
         # offset is unsupported (raised in __init__) — no extra op here.
-        # The mixer ARITHMETIC IS UNCHANGED (byte-identical to the GR-verified block —
-        # the input->state copies are load-bearing: an input reg is NOT re-readable
-        # across MULQs, and the mixer has no register room for the unlock anyway). The
-        # serialize-LOCK's unlock lives in a DEDICATED `unlock` cell fired by the
-        # mixer's trig (below), so the mixer's DSP is untouched by pipeline_lock.
+        #
+        # The mixer DSP ARITHMETIC IS UNCHANGED (byte-identical to the GR-verified
+        # block; input->state copies are load-bearing: an input reg is NOT re-readable
+        # across MULQs). The SERIALIZE-LOCK release (INV-20) is folded into the mixer
+        # with a DUAL-FACE flip, EXACTLY like iq_upconvert's `upmix`: after emitting
+        # yi/yq on its ROUTED output face, the mixer flips FACE to the internal unlock
+        # corridor (unlock_face, WEST toward phase) and CLEARS phase's arbiter LOCK
+        # with a backward WRITE.CFG @N,4 (R0=0 -> phase CONFIG[4]=LOCK), releasing the
+        # NEXT input sample held at phase. yi/yq are emitted BEFORE the flip so their
+        # egress face is untouched. R0 is free to clobber after yq (acc/t are done).
+        # The lock words are added only when pipeline_lock; the yi/yq WRITEs and the
+        # {jump:trig} keep their original positions so _patch_complex_output_port_handoff
+        # and the exit-default still see the output rails at the same offsets.
+        # Two FACE constants for the dual-FACE serialize-LOCK release:
+        #  * face_tap    = the mixer's ROUTED output face (set by _apply_rotate_tap_face
+        #                  from the route-overridden fwd_face). yi/yq egress here. It is
+        #                  RE-SET at the top of every iteration so the FACE left at
+        #                  unlock_face by the previous sample's WRITE.CFG is restored
+        #                  before this sample's yi/yq — else sample N+1's output would
+        #                  chase the unlock corridor (only the first sample egressed).
+        #  * unlock_face = NORTH(3): flip up toward transit_unlock(1,0) which relays the
+        #                  WRITE.CFG WEST into phase. is_face so it transforms with
+        #                  orientation (via _apply_orientation_face_words). The name is
+        #                  deliberately NOT "face_internal" so _apply_rotate_tap_face
+        #                  (which would overwrite it with the resting face) leaves it
+        #                  alone; only _apply_orientation_face_words rotates it.
+        # The @2 authored hop (mixer->transit->phase) is re-patched to the real corridor
+        # distance by _apply_internal_feedback (config_only branch).
+        lock_face_data = ([DataWord("face_tap", 1, address=5, is_face=True),
+                           DataWord("unlock_face", 3, address=6, is_face=True)]
+                          if self._pipeline_lock else [])
+        lock_set_out = ("    MOVE [FACE], R{data:face_tap}\n"
+                        if self._pipeline_lock else "")
+        lock_release_tail = ("""\
+    MOVE [FACE], R{data:unlock_face}
+    MOVE R0, R{data:zero}
+    WRITE.CFG @2, 4
+""" if self._pipeline_lock else "")
+        # MULQ writes its Q15 product to R0 and does NOT clobber its operands
+        # (PROGRAMMING_GUIDE: ``MULQ A, B -> R0 = (A*B)>>15``), so xi2/xq2 can be the
+        # MULQ operands directly — no ``t`` scratch copy is needed. This removes the
+        # four ``MOVE t, ...`` instructions AND the ``t`` state register, freeing the
+        # register budget the serialize-LOCK's face-flip + WRITE.CFG needs. The
+        # arithmetic is IDENTICAL (bit-exact re-verified against process_reference).
         mixer_cell = CellProgram(
             inputs=[Port("cosv", register=0), Port("sinv", register=1),
                     Port("xi", register=2), Port("xq", register=3)],
             outputs=[Port("yi"), Port("yq"), Port("trig")],
             entries=[EntryPoint("default")],
-            data=[DataWord("zero", 0, address=4)],
+            data=[DataWord("zero", 0, address=4)] + lock_face_data,
             state=[StateVar("c"), StateVar("s"), StateVar("xi2"), StateVar("xq2"),
-                   StateVar("acc"), StateVar("t")],
+                   StateVar("acc")],
             assembly_template="""\
 start:
     MOVE R{state:c}, R{in:cosv}
     MOVE R{state:s}, R{in:sinv}
     MOVE R{state:xi2}, R{in:xi}
     MOVE R{state:xq2}, R{in:xq}
-    MOVE R{state:t}, R{state:xi2}
-    MULQ R{state:t}, R{state:c}
+    MULQ R{state:xi2}, R{state:c}
     MOVE R{state:acc}, R0
-    MOVE R{state:t}, R{state:xq2}
-    MULQ R{state:t}, R{state:s}
+    MULQ R{state:xq2}, R{state:s}
     SUB R{state:acc}, R0
+""" + lock_set_out + """\
     {write:yi}
-    MOVE R{state:t}, R{state:xi2}
-    MULQ R{state:t}, R{state:s}
+    MULQ R{state:xi2}, R{state:s}
     MOVE R{state:acc}, R0
-    MOVE R{state:t}, R{state:xq2}
-    MULQ R{state:t}, R{state:c}
+    MULQ R{state:xq2}, R{state:c}
     ADD R{state:acc}, R0
     {write:yq}
+""" + lock_release_tail + """\
     {jump:trig}
-""",
-        )
-
-        # UNLOCK cell (INV-20 serialize-LOCK): a dedicated INTERNAL cell fired by the
-        # mixer's trig AFTER it emits yi/yq. It does ONLY the backward WRITE.CFG that
-        # clears phase's arbiter LOCK (CONFIG[4]=LOCK -> 0) down the authored corridor,
-        # releasing the NEXT input sample held at phase — so exactly one sample
-        # traverses the reconvergent fan-in at a time. It has the whole register file
-        # for one instruction, so the mixer's DSP is untouched. @N is a fixed authored
-        # corridor hop (unlock -> ... -> phase), set in default_layout; the trig
-        # self-terminates so the build does not loop it. Only present when locked.
-        unlock_cell = CellProgram(
-            inputs=[Port("trig_in", register=0)],
-            outputs=[Port("done")],
-            entries=[EntryPoint("default")],
-            data=[DataWord("zero", 0, address=1)],
-            state=[],
-            assembly_template="""\
-start:
-    MOVE R0, R{data:zero}
-    WRITE.CFG @1, 4
-    {jump:done}
 """,
         )
 
@@ -398,8 +413,6 @@ start:
             "cos_odd": _odd_cell(), "cos_interp": _interp_cell(),
             "mixer": mixer_cell,
         }
-        if self._pipeline_lock:
-            cells["unlock"] = unlock_cell
         return cells
 
     def internal_connections(self) -> List[Tuple[str, str, str, str]]:
@@ -426,13 +439,14 @@ start:
             ("cos_interp", "val", "mixer", "cosv"),
         ]
         if self._pipeline_lock:
-            # mixer's TRIG -> unlock is handled by internal_JUMPS (positional/terminate),
-            # NOT here: declaring it as an internal_CONNECTION makes the router treat
-            # mixer as a mid-chain forwarder and disrupts its yi/yq OUTPUT routing (the
-            # mixer is the block's output cell). Only the unlock's BACKWARD config-only
-            # edge to phase is declared here — resolved by _apply_internal_feedback
-            # (config_only branch) which traces unlock -> phase + patches the WRITE.CFG.
-            conns += [("unlock", "unlock", "phase", "xi")]
+            # mixer's BACKWARD config-only edge to phase (the serialize-LOCK release).
+            # Declared as a mixer->phase internal_connection so _apply_internal_feedback
+            # (config_only branch) traces the mixer->phase corridor and patches the
+            # mixer's WRITE.CFG hop/dest. The mixer's yi/yq OUTPUT rails are handled
+            # separately (output_cell_id + _patch_complex_output_port_handoff); this
+            # config edge does NOT make the mixer a data forwarder (config_only branch
+            # matches on the CONFIG bit alone, distinct from the yi/yq WRITEs).
+            conns += [("mixer", "unlock", "phase", "xi")]
         return conns
 
     def internal_jumps(self) -> List[Tuple[str, str, str, str]]:
@@ -441,12 +455,11 @@ start:
         jumps = [(chain[i], "trig", chain[i + 1], "default")
                  for i in range(len(chain) - 1)]
         if self._pipeline_lock:
-            # After emitting yi/yq, the mixer's trig fires the internal `unlock` cell,
-            # which clears phase's LOCK. The unlock's own `done` JUMP self-terminates so
-            # the build does not loop it. mixer's yi/yq egress on the mixer's OUTPUT
-            # face (route-driven); its trig JUMP goes to unlock (abutting, WEST).
-            jumps.append(("mixer", "trig", "unlock", "default"))
-            jumps.append(("unlock", "done", "__terminate__", "default"))
+            # The mixer is the block's OUTPUT + LAST cell. Its trig SELF-TERMINATES
+            # (like iq_upconvert's upmix + Costas' pd_pi) so the build does NOT default
+            # the trig JUMP down the unlock corridor into phase (which would loop). The
+            # lock-clear is the mixer's in-program WRITE.CFG (dual-FACE flip), NOT a JUMP.
+            jumps.append(("mixer", "trig", "__terminate__", "default"))
         return jumps
 
     def output_cell_ids(self) -> List[str]:
@@ -454,11 +467,11 @@ start:
 
     def output_cell_id(self):
         """SINGULAR — the build reads THIS (not ``output_cell_ids``) to set the
-        Shape's ``exit_offset`` so the mixer (NOT the last-placed cell) is the block
-        exit. With the serialize-lock, the last-placed cell is ``unlock``; without
-        this the exit-default would clobber the mixer's routed yi/yq output WRITEs
-        (dropping them to @1 and losing the value). None when unlocked (mixer IS the
-        last cell, so the default last-cell exit is already correct)."""
+        Shape's ``exit_offset`` so the mixer is the block exit. Under the serialize-
+        lock the mixer is followed by a FACE-only transit cell (the unlock corridor);
+        without this the exit-default would target that transit cell and clobber the
+        mixer's routed yi/yq output WRITEs. None when unlocked (mixer IS the last
+        cell, so the default last-cell exit is already correct)."""
         return "mixer" if self._pipeline_lock else None
 
     def default_layout(self) -> Dict[Any, Tuple[int, int, str]]:
@@ -475,20 +488,23 @@ start:
             return layout
 
         # SERIALIZE-LOCK layout: the DATAPATH is the EXACT proven 2-column layout
-        # (unchanged — do NOT move the cos column, that breaks relay->mixer). The
-        # unlock cell + its return corridor are ADDED in free cells to the EAST (col 2
-        # + row 0), so the whole forward datapath routes identically to pipeline_lock
-        # =False.
+        # (unchanged — do NOT move the cos column, that breaks relay->mixer). The only
+        # addition is a single FACE-only transit cell at (1,0) that carries the mixer's
+        # backward WRITE.CFG (the serialize-LOCK release) up-and-over to phase, exactly
+        # like iq_upconvert's row-1 unlock corridor. The forward datapath is byte-
+        # identical to pipeline_lock=False (all forward faces unchanged).
         #   col:    0            1
-        #   row0:  phase(S)     unlock(W)     <- unlock ABOVE mixer; free cell (1,0)
+        #   row0:  phase(S)     transit_unlock(W)   <- free cell above mixer
         #   row1:  sin_fold(S)  mixer(E)
         #   ...    (sin col)    (cos col up col1)
-        # mixer(1,1) trig -> unlock(1,0) (abuts NORTH, @1). unlock's WRITE.CFG @1
-        # travels unlock(1,0,W) -> phase(0,0), landing on phase's EAST face (=
-        # lock_face=EAST). The mixer's yi/yq egress EAST on the mixer's ROUTED output
-        # face (external route) — kept clear because unlock is NORTH, not EAST. phase's
-        # FACE stays SOUTH (its datapath emission); LOCK_FACE is a separate CONFIG
-        # value (independent of fwd_face). No transit cells needed (@1 corridor).
+        # UNLOCK corridor: mixer(1,1) computes yi/yq (emitted EAST on its ROUTED output
+        # face), then flips FACE to unlock_face=NORTH(3) and does WRITE.CFG @2,4 which
+        # travels mixer(1,1)->transit_unlock(1,0)->phase(0,0), landing on phase's EAST
+        # face (=phase.lock_face=EAST=1). The @2 authored hop is re-patched to the real
+        # corridor distance by _apply_internal_feedback (config_only branch), so the
+        # actual hop is layout-invariant. yi/yq egress EAST (route) is untouched because
+        # the flip happens AFTER they are emitted. phase's FACE stays SOUTH (its datapath
+        # emission); LOCK_FACE is a separate CONFIG value.
         col0 = ["phase", "sin_fold", "sin_even", "sin_odd", "sin_interp", "relay"]
         col1_bottom_up = ["cos_fold", "cos_even", "cos_odd", "cos_interp", "mixer"]
         layout: Dict[Any, Tuple[int, int, str]] = {}
@@ -498,7 +514,9 @@ start:
         for k, cid in enumerate(col1_bottom_up):
             face = "east" if cid == "mixer" else "north"
             layout[cid] = (1, 5 - k, face)
-        layout["unlock"] = (1, 0, "west")   # mixer(N) fires it; WRITE.CFG @1 W -> phase
+        # FACE-only transit carrying the mixer's unlock WRITE.CFG WEST into phase.
+        # id starts with "transit" so the build treats it as a program-less routing cell.
+        layout["transit_unlock"] = (1, 0, "west")
         return layout
 
     # -------------------------------------------------------------- reference

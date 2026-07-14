@@ -102,7 +102,11 @@ RATE_1IN = {
 # unlock folded into the mixer), so this is a strong saturation cross-check that the lock
 # releases cleanly under back-to-back drive without a phantom re-trigger deadlock.
 COMPLEX_2IN2OUT = {
-    "ComplexMixerBlock": (("xi", "xq"), "yi", {}),
+    # pipeline_lock=True selects the saturation-safe (serialize-LOCK) variant. It is
+    # NOT the shipping default (that stays False so the compact SSB Weaver + the GRC
+    # importer/net-resolution keep the 11-cell footprint); this gate proves the LOCKED
+    # path is bit-exact under saturation so consumers can opt in for high-rate pipelines.
+    "ComplexMixerBlock": (("xi", "xq"), "yi", {"pipeline_lock": True}),
 }
 
 # Blocks that need bespoke stimulus (documented, reported as skips — no silent gap).

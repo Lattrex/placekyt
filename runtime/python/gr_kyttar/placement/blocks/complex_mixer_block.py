@@ -56,7 +56,7 @@ class ComplexMixerBlock(KyttarBlock):
     def __init__(self, name: str, sample_rate: float = 32000.0,
                  frequency: float = 2000.0, amplitude: float = 1.0,
                  offset: float = 0.0, phase: float = 0.0,
-                 pipeline_lock: bool = True):
+                 pipeline_lock: bool = False):
         super().__init__(name, sample_rate=sample_rate, frequency=frequency,
                          amplitude=amplitude, offset=offset, phase=phase)
         # SATURATION SERIALIZE-LOCK (INV-20). This block has a RECONVERGENT fan-in

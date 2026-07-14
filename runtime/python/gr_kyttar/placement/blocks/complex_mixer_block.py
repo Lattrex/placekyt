@@ -384,7 +384,7 @@ start:
             assembly_template="""\
 start:
     MOVE R0, R{data:zero}
-    WRITE.CFG @2, 4
+    WRITE.CFG @1, 4
     {jump:done}
 """,
         )
@@ -468,32 +468,31 @@ start:
                 layout[cid] = (1, 5 - k, face)
             return layout
 
-        # SERIALIZE-LOCK layout: cos column shifted to col2 so col1 is free for the
-        # mixer -> unlock -> phase corridor. Forward datapath unchanged.
-        #   col:    0            1                 2
-        #   row0:  phase(E)     transit(W)        cos_fold(N)
-        #   row1:  sin_fold(S)  unlock(W)         mixer(W) ... [and cos column up col2]
-        # mixer(2,1) trig -> unlock(1,1) (abuts WEST). unlock's WRITE.CFG @2 travels
-        # unlock(1,1,W) -> transit(1,0,W) -> phase(0,0), landing on phase's WEST face
-        # (= lock_face). The transit cell carries NO program. The mixer's yi/yq egress
-        # on the mixer's routed OUTPUT face (not this corridor).
-        # NOTE: phase's FACE here is its forward DATAPATH emission (south -> sin_fold,
-        # exactly as the non-lock layout), NOT the lock arbiter face. The LOCK_FACE
-        # (the corridor the unlock arrives on) is a separate CONFIG value (lock_face
-        # DataWord), independent of fwd_face. Setting phase's face to the corridor
-        # direction would send its ph_sin/xi_fwd fan-out into the corridor and stall
-        # the whole datapath (phase re-fires forever, NCO columns never run).
+        # SERIALIZE-LOCK layout: the DATAPATH is the EXACT proven 2-column layout
+        # (unchanged — do NOT move the cos column, that breaks relay->mixer). The
+        # unlock cell + its return corridor are ADDED in free cells to the EAST (col 2
+        # + row 0), so the whole forward datapath routes identically to pipeline_lock
+        # =False.
+        #   col:    0            1
+        #   row0:  phase(S)     unlock(W)     <- unlock ABOVE mixer; free cell (1,0)
+        #   row1:  sin_fold(S)  mixer(E)
+        #   ...    (sin col)    (cos col up col1)
+        # mixer(1,1) trig -> unlock(1,0) (abuts NORTH, @1). unlock's WRITE.CFG @1
+        # travels unlock(1,0,W) -> phase(0,0), landing on phase's EAST face (=
+        # lock_face=EAST). The mixer's yi/yq egress EAST on the mixer's ROUTED output
+        # face (external route) — kept clear because unlock is NORTH, not EAST. phase's
+        # FACE stays SOUTH (its datapath emission); LOCK_FACE is a separate CONFIG
+        # value (independent of fwd_face). No transit cells needed (@1 corridor).
         col0 = ["phase", "sin_fold", "sin_even", "sin_odd", "sin_interp", "relay"]
-        col2_bottom_up = ["cos_fold", "cos_even", "cos_odd", "cos_interp", "mixer"]
+        col1_bottom_up = ["cos_fold", "cos_even", "cos_odd", "cos_interp", "mixer"]
         layout: Dict[Any, Tuple[int, int, str]] = {}
         for j, cid in enumerate(col0):
             face = "east" if cid == "relay" else "south"
             layout[cid] = (0, j, face)
-        for k, cid in enumerate(col2_bottom_up):
-            face = "west" if cid == "mixer" else "north"
-            layout[cid] = (2, 5 - k, face)
-        layout["unlock"] = (1, 1, "west")              # mixer(W) fires it; it faces W
-        layout["transit_unlock_0"] = (1, 0, "west")    # unlock(W) -> here -> phase(W)
+        for k, cid in enumerate(col1_bottom_up):
+            face = "east" if cid == "mixer" else "north"
+            layout[cid] = (1, 5 - k, face)
+        layout["unlock"] = (1, 0, "west")   # mixer(N) fires it; WRITE.CFG @1 W -> phase
         return layout
 
     # -------------------------------------------------------------- reference

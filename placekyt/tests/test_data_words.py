@@ -114,6 +114,17 @@ class TestMultiCellBlocks:
     def test_all_catalog_blocks_build(self, qapp, catalog):
         # Every catalog block must place + build via the v2 path (excluded
         # blocks — Viterbi, BlockInterleaver — are already out of the catalog).
+        # A few blocks document a HARDWARE constraint that their GR-verbatim
+        # unity default violates (a multi-cell complex FIR needs Σ|h|≤1; a
+        # band-pass/reject at gain 1.0 has Σ|h|≈1.3–1.5). Build those at the
+        # scaled gain the block's own docstring prescribes — the same
+        # per-block-override pattern the abutment test uses for DCBlocker's length.
+        build_params = {
+            "ComplexLowPassFilter": {"gain": 0.6},      # Σ|h|>1 at unity → 0.6
+            "ComplexBandPassFilter": {"gain": 0.6},     # Σ|h|≈0.90 at unity→0.6
+            "ComplexBandRejectFilter": {"gain": 0.45},  # DC passthrough tap needs lower
+            "ComplexHighPassFilter": {"gain": 0.45},    # ditto — strong near-DC null
+        }
         failures = []
         for spec in catalog.all():
             ctrl = AppController(catalog=catalog)
@@ -137,7 +148,8 @@ class TestMultiCellBlocks:
                 ox = max(0, ox)
                 oy = max(0, oy)
             try:
-                ctrl.place_block(spec.type_name, 0, ox, oy, library=spec.library)
+                ctrl.place_block(spec.type_name, 0, ox, oy, library=spec.library,
+                                 params=build_params.get(spec.type_name))
                 res = ctrl.build()
                 if not res.ok:
                     failures.append((spec.type_name,

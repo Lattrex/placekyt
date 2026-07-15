@@ -84,11 +84,15 @@ class TestBuildHonorsRoutes:
     def test_dest_autofills_from_downstream_interface(self, qapp, catalog):
         ctrl, _g1, g2 = _two_gain_routed(catalog)
         tb = ctrl.project.block(g2)
-        # The WRITE dest auto-fills to the downstream block's RESOLVED input
-        # register (v2 — gain reads R0, not the static interface's R31).
+        # block->block delivery is ALWAYS BROKERED (AUTO_PNR_DESIGN §1.2): the
+        # source WRITEs to the BROKER's burst register, and the BROKER relays that
+        # into the downstream block's RESOLVED input register (v2 — gain reads R0,
+        # not the static interface's R31). So the dest that must equal the block's
+        # input reg is the BROKER's relay WRITE (the cell BEFORE the input cell at
+        # (1,4)), NOT the source WRITE (which addresses the broker burst reg).
         _entry, in_regs = ctrl.catalog.resolved_io(tb.type, tb.params,
                                                    library=tb.library)
-        assert _write_instr(ctrl, 1, 1)["field"] in in_regs
+        assert _write_instr(ctrl, 1, 4)["field"] in in_regs
 
 
 class TestInstrOverride:

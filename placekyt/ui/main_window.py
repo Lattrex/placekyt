@@ -507,7 +507,7 @@ class MainWindow(QMainWindow):
         # landing cell → median wait at the landing = the block's per-sample serial
         # barrier. Ranks the bottleneck table + tints the heatmap.
         self.stream_summary_panel.set_stall_provider(self.sim.cell_stall_report)
-        self.stream_summary_panel.set_landing_provider(self._block_landing_lookup)
+        self.stream_summary_panel.set_block_cells_provider(self._block_cells_lookup)
         # Bottleneck heatmap: recompute from each new trace, but only paint it when
         # the View toggle is on. Keep the latest model for on-demand toggling.
         self.sim.trace_updated.connect(self._on_trace_for_heatmap)
@@ -994,19 +994,20 @@ class MainWindow(QMainWindow):
         except Exception:  # noqa: BLE001
             return None
 
-    def _block_landing_lookup(self):
-        """Build ``{block name: (chip, x, y)}`` mapping each placed block to its
-        INPUT LANDING cell (placement.cells[0]) — the serial-barrier / bottleneck
-        view reads the stall at this cell. Returns None when nothing is placed."""
+    def _block_cells_lookup(self):
+        """Build ``{block name: [(chip, x, y), …]}`` — every placed block's cells,
+        with ``[0]`` the input LANDING cell. The serial-barrier bottleneck view uses
+        the input/output stall DIFFERENTIAL (landing stall − freest-cell stall), so
+        it needs ALL the block's cells, not just the landing. None when nothing is
+        placed."""
         try:
-            landings: dict[str, tuple[int, int, int]] = {}
+            out: dict[str, list[tuple[int, int, int]]] = {}
             for b in self.controller.project.blocks:
                 pl = getattr(b, "placement", None)
                 if pl is None or not pl.cells:
                     continue
-                c = pl.cells[0]
-                landings[b.name] = (pl.chip, c.x, c.y)
-            return landings or None
+                out[b.name] = [(pl.chip, c.x, c.y) for c in pl.cells]
+            return out or None
         except Exception:  # noqa: BLE001
             return None
 
@@ -1026,10 +1027,10 @@ class MainWindow(QMainWindow):
     def _refresh_heatmap(self) -> None:
         """Paint the bottleneck heatmap. Each cell of a block shares the block's
         heat, so a block glows uniformly and the hottest (deep red) is the
-        bottleneck. PRIMARY metric = the serial barrier (median STALL at the
-        block's landing cell — the honest throttle); falls back to busy-time
-        (dwell) when there are no stalls (unsaturated / feed-forward-only run).
-        No trace / no placement → clear the overlay."""
+        bottleneck. PRIMARY metric = the serial barrier (input/output stall
+        DIFFERENTIAL — the block where input backpressure piles up but output drains
+        freely); falls back to busy-time (dwell) when there are no stalls
+        (unsaturated / feed-forward-only run). No trace / no placement → clear."""
         model = getattr(self, "_heatmap_model", None)
         pair = self._block_utilization_lookup()
         if model is None or pair is None:
@@ -1037,10 +1038,11 @@ class MainWindow(QMainWindow):
             return
         block_lookup, block_types = pair
 
-        # 1) Try the serial-barrier (stall) heat first — the true bottleneck.
+        # 1) Try the serial-barrier (stall differential) heat first — the true
+        #    bottleneck: the block that manufactures backpressure.
         stall = self.sim.cell_stall_report()
-        landings = self._block_landing_lookup()
-        if stall and landings:
+        cells_by_block = self._block_cells_lookup()
+        if stall and cells_by_block:
             W = 4096
             raw = [{"time_ns": 0.0, "cell_id": y * W + x, "kind": "stall",
                     "waited_ns": float(w)}
@@ -1049,8 +1051,9 @@ class MainWindow(QMainWindow):
                 from engine.trace_model import TraceModel
                 tm = TraceModel()
                 tm.ingest(0, raw, W)
-                ll = {n: (0, c[1], c[2]) for n, c in landings.items()}
-                brows = tm.block_bottleneck(ll, block_types)
+                bc = {n: [(0, c[1], c[2]) for c in cells]
+                      for n, cells in cells_by_block.items()}
+                brows = tm.block_bottleneck(bc, block_types)
                 peak = max((b["stall_ns"] for b in brows), default=0.0)
                 if peak > 0:
                     by_block = {b["block"]: b["stall_ns"] for b in brows}

@@ -631,39 +631,48 @@ class TraceModel:
         return rows
 
     def block_bottleneck(
-        self, landing_lookup: dict[str, tuple[int, int, int]],
+        self, block_cells: dict[str, list[tuple[int, int, int]]],
         block_types: dict[str, str] | None = None,
     ) -> list[dict]:
         """Per-BLOCK serial-barrier bottleneck — the HONEST "which block throttles
         the sample rate" view, from the simKYT ``stall`` (backpressure) event.
 
-        CM's definition: the bottleneck is *how much serial execution a block must
-        finish before it can accept the NEXT input sample*. That is EXACTLY a
-        backpressure stall at the block's INPUT LANDING cell: when a word's REQ
-        arrives there and the cell is still busy/LOCKed with the previous sample,
-        the REQ PARKS; simKYT emits a ``stall`` record with ``waited_ns`` when the
-        word is finally accepted. A feedback loop (Costas/Gardner) that LOCKs while
-        it iterates holds off its next input → large landing stall; a feed-forward
-        block (matched filter, slicer) accepts back-to-back → ~zero landing stall.
+        CM's definition (refined): the culprit is the block where INPUT samples pile
+        up (its input REQs park) but the OUTPUT is NOT held up — the downstream block
+        accepts everything it produces as fast as it's made. That block MANUFACTURES
+        the backpressure. A block that merely RELAYS upstream backpressure stalls on
+        BOTH sides roughly equally (it can't take input because it can't hand off
+        output), so it is NOT the culprit even though its input stalls a lot.
 
-        CRITICAL — measure the LANDING cell ONLY (``placement.cells[0]``), never the
-        block's interior/output cells. Backpressure propagates UPSTREAM, so a wide
-        feed-forward block's OUTPUT cells stall waiting for a slow downstream loop —
-        summing over all its cells would wrongly crown the widest block (the exact
-        confound the earlier busy/dwell metrics hit). The landing cell stalls iff
-        THIS block can't take the next sample, which is the true throttle.
+        So the metric is the **input/output stall DIFFERENTIAL**:
+            barrier(block) = stall(input landing cell) − min(stall over its cells)
+        The landing cell (``cells[0]``) is the input; the freest-draining cell (min
+        stall over the block's cells) is the output side when the block drains freely.
+        - Costas: input stalls (loop LOCKs, samples pile up) but output drains freely
+          (Gardner takes every symbol) → large differential → THE bottleneck.
+        - RRC matched filter: input stalls AND its handoff cell stalls (both waiting
+          on Costas downstream) → differential ≈ 0 → correctly NOT the culprit, even
+          though its landing cell shows large stall. THIS is what made the earlier
+          landing-cell-only metric wrongly crown the matched filter.
+        - Slicer / feed-forward: no stall either side → 0.
 
-        Only meaningful under SATURATED drive (the pipeline full). Under sequential
-        per-sample drive nothing ever parks (every cell idle by the next word) → all
-        zero; the caller runs at saturation for this view.
+        Drive-independent: whether the matched filter's landing stalls a lot (GUI
+        per-sample overlap) or zero (saturated burst), its output stalls the same
+        amount, so the differential cancels it and crowns Costas either way. Requires
+        SOME backpressure in the run (a saturated / overlapping drive); a strictly
+        one-sample-at-a-time-to-quiescence run parks nothing and reports all zero.
 
-        ``landing_lookup`` maps ``block name -> (chip, x, y)`` of its landing cell
-        (caller builds it from the placement — keeps this Qt-free). Each row, ranked
-        by ``stall_ns`` (median wait) busiest-first (``rank`` 1 = bottleneck)::
+        ``block_cells`` maps ``block name -> [ (chip,x,y), … ]`` with ``[0]`` the
+        input LANDING cell (caller builds it from the placement — keeps this Qt-free).
+        Each row, ranked by ``stall_ns`` (the differential) busiest-first
+        (``rank`` 1 = bottleneck)::
 
-            {block, type, stall_ns, max_stall_ns, n_stalls, barrier_pct, rank}
+            {block, type, stall_ns, in_stall_ns, out_stall_ns, max_stall_ns,
+             n_stalls, barrier_pct, rank}
+        ``stall_ns`` is the differential (the ranked metric); ``in_stall_ns`` /
+        ``out_stall_ns`` expose the two sides for transparency.
         """
-        # Collect stall waits per landing cell.
+        # Median stall per cell (empty → 0).
         waits_by_cell: dict[tuple[int, int, int], list[float]] = {}
         for t in self.transactions:
             if t.kind == KIND_STALL:
@@ -672,16 +681,39 @@ class TraceModel:
                 if w is not None:
                     waits_by_cell.setdefault(key, []).append(float(w))
 
+        def cell_stall(cell):
+            return _median(waits_by_cell.get(cell, [])) or 0.0
+
         rows: list[dict] = []
-        for name, cell in landing_lookup.items():
-            waits = waits_by_cell.get(cell, [])
-            med = _median(waits) or 0.0
+        for name, cells in block_cells.items():
+            if not cells:
+                continue
+            in_stall = cell_stall(cells[0])
+            per_cell = [cell_stall(c) for c in cells]
+            if len(cells) > 1:
+                # Multi-cell block: input stall minus the freest-draining cell (the
+                # output side when the block drains freely). A relayer stalls on both
+                # sides → differential ~0; a manufacturer stalls only on input.
+                out_stall = min(per_cell)
+                diff = max(0.0, in_stall - out_stall)
+            else:
+                # Single-cell block: no internal output cell to net against, so the
+                # differential is undefined. Fall back to the raw landing stall — a
+                # 1-cell block that stalls IS holding its input (it has no separate
+                # egress cell whose stall would reveal downstream backpressure). Rare
+                # in practice (loops are multi-cell); keeps a genuine 1-cell throttle
+                # visible instead of always reporting 0.
+                out_stall = 0.0
+                diff = in_stall
+            n = sum(len(waits_by_cell.get(c, [])) for c in cells)
             rows.append({
                 "block": name,
                 "type": (block_types or {}).get(name, ""),
-                "stall_ns": med,               # median serial barrier per sample
-                "max_stall_ns": max(waits) if waits else 0.0,
-                "n_stalls": len(waits),
+                "stall_ns": diff,              # the DIFFERENTIAL — the ranked metric
+                "in_stall_ns": in_stall,
+                "out_stall_ns": out_stall,
+                "max_stall_ns": max(per_cell),
+                "n_stalls": n,
             })
         rows.sort(key=lambda r: (r["stall_ns"], r["max_stall_ns"]), reverse=True)
         peak = max((r["stall_ns"] for r in rows), default=0.0)

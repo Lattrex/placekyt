@@ -364,82 +364,98 @@ class TestBlockUtilization:
 
 
 class TestBlockBottleneck:
-    """The serial-barrier view: rank blocks by the median STALL (backpressure) at
-    their INPUT LANDING cell — how long a new sample waits to be accepted because
-    the block is still busy with the previous one. The honest bottleneck."""
+    """The serial-barrier view: rank blocks by the INPUT/OUTPUT stall DIFFERENTIAL —
+    the block where input backpressure piles up but the output drains freely. That
+    block MANUFACTURES the backpressure; a block that merely RELAYS it stalls on both
+    sides equally and is NOT the culprit."""
 
     def _trace(self):
-        # width 10.
-        #  - Costas landing (cell 0): stalls a LOT (loop LOCKs) — waits 2300,2400.
-        #  - Gardner landing (cell 1): tiny stall (decimated) — one 5 ns wait.
-        #  - MF landing (cell 2): NEVER stalls (feed-forward, fed by ingress).
-        # Also a stall at cell 3 (MF's OUTPUT-side cell) that MUST be ignored
-        # because we only look at the landing cell — it's upstream backpressure.
+        # width 10. Two 2-cell blocks:
+        #  - Costas: input cell 0 stalls a LOT (2300,2400 — loop LOCKs); output cell 1
+        #    NEVER stalls (Gardner downstream takes everything). MANUFACTURES it.
+        #  - MF: input cell 2 stalls a LOT (2400,2400 — GUI per-sample overlap), AND
+        #    output cell 3 ALSO stalls a lot (2400 — waiting on Costas). RELAYS it.
         ev = [
-            {"time_ns": 100.0, "cell_id": 0, "kind": "stall", "face": "W",
-             "is_data": False, "waited_ns": 2300.0},
-            {"time_ns": 200.0, "cell_id": 0, "kind": "stall", "face": "W",
-             "is_data": False, "waited_ns": 2400.0},
-            {"time_ns": 150.0, "cell_id": 1, "kind": "stall", "face": "W",
-             "is_data": False, "waited_ns": 5.0},
-            # MF output cell (3) stalls huge — but it's NOT MF's landing cell.
-            {"time_ns": 300.0, "cell_id": 3, "kind": "stall", "face": "E",
-             "is_data": True, "waited_ns": 9000.0},
+            {"time_ns": 100.0, "cell_id": 0, "kind": "stall", "waited_ns": 2300.0},
+            {"time_ns": 200.0, "cell_id": 0, "kind": "stall", "waited_ns": 2400.0},
+            # Costas output cell 1: no stall (drains freely).
+            {"time_ns": 110.0, "cell_id": 2, "kind": "stall", "waited_ns": 2400.0},
+            {"time_ns": 210.0, "cell_id": 2, "kind": "stall", "waited_ns": 2400.0},
+            {"time_ns": 120.0, "cell_id": 3, "kind": "stall", "waited_ns": 2400.0},
+            {"time_ns": 220.0, "cell_id": 3, "kind": "stall", "waited_ns": 2400.0},
         ]
         return ev
 
-    def test_costas_landing_stall_ranks_first(self):
+    def _blocks(self):
+        return {"Costas": [(0, 0, 0), (0, 1, 0)], "MF": [(0, 2, 0), (0, 3, 0)]}
+
+    def test_manufacturer_ranks_above_relayer(self):
+        # THE key regression: the MF landing STALLS AS MUCH as Costas (2400 each),
+        # but the MF also stalls on its OUTPUT, so its differential is ~0 — while
+        # Costas's output drains freely, giving it the full differential. Costas #1.
         tm = TraceModel()
         tm.ingest(0, self._trace(), 10)
-        landings = {"Costas": (0, 0, 0), "Gardner": (0, 1, 0), "MF": (0, 2, 0)}
-        rows = tm.block_bottleneck(landings)
+        rows = tm.block_bottleneck(self._blocks())
         assert rows[0]["block"] == "Costas"
         assert rows[0]["rank"] == 1
-        # median of (2300, 2400) = 2350.
-        assert rows[0]["stall_ns"] == 2350.0
-        assert rows[0]["max_stall_ns"] == 2400.0
-        assert rows[0]["n_stalls"] == 2
-
-    def test_feedforward_landing_never_stalls(self):
-        tm = TraceModel()
-        tm.ingest(0, self._trace(), 10)
-        landings = {"Costas": (0, 0, 0), "Gardner": (0, 1, 0), "MF": (0, 2, 0)}
-        rows = tm.block_bottleneck(landings)
+        costas = next(r for r in rows if r["block"] == "Costas")
         mf = next(r for r in rows if r["block"] == "MF")
-        # MF's landing cell (2) has NO stall — feed-forward, accepts back-to-back.
+        # Costas: in 2350 (median of 2300,2400), out 0 → differential 2350.
+        assert costas["in_stall_ns"] == 2350.0
+        assert costas["out_stall_ns"] == 0.0
+        assert costas["stall_ns"] == 2350.0
+        # MF: in 2400, out 2400 → differential 0. RELAYS, not the culprit.
+        assert mf["in_stall_ns"] == 2400.0
+        assert mf["out_stall_ns"] == 2400.0
         assert mf["stall_ns"] == 0.0
-        assert mf["n_stalls"] == 0
-        # It ranks last (or tied-last), never the bottleneck.
         assert mf["rank"] == len(rows)
 
-    def test_ignores_non_landing_cell_stall(self):
-        # The huge stall at MF's OUTPUT cell (3) is upstream backpressure and must
-        # NOT be attributed to any block — landing-cell-only is the whole point.
+    def test_differential_never_negative(self):
+        # If a block's output stalls MORE than its input (odd, but possible), the
+        # differential floors at 0 — it isn't a negative bottleneck.
         tm = TraceModel()
-        tm.ingest(0, self._trace(), 10)
-        landings = {"MF": (0, 2, 0)}
-        rows = tm.block_bottleneck(landings)
-        assert rows[0]["stall_ns"] == 0.0     # cell 3's 9000 ns is not counted
+        tm.ingest(0, [
+            {"time_ns": 0.0, "cell_id": 0, "kind": "stall", "waited_ns": 10.0},
+            {"time_ns": 1.0, "cell_id": 1, "kind": "stall", "waited_ns": 500.0},
+        ], 10)
+        rows = tm.block_bottleneck({"X": [(0, 0, 0), (0, 1, 0)]})
+        assert rows[0]["stall_ns"] == 0.0
 
     def test_barrier_pct_relative_to_worst(self):
         tm = TraceModel()
-        tm.ingest(0, self._trace(), 10)
-        landings = {"Costas": (0, 0, 0), "Gardner": (0, 1, 0)}
-        rows = tm.block_bottleneck(landings)
+        # Costas differential 2350; a second loop with in 500 / out 0 = 500.
+        ev = self._trace() + [
+            {"time_ns": 5.0, "cell_id": 5, "kind": "stall", "waited_ns": 500.0},
+        ]
+        tm.ingest(0, ev, 10)
+        blocks = dict(self._blocks(), Loop2=[(0, 5, 0), (0, 6, 0)])
+        rows = tm.block_bottleneck(blocks)
         costas = next(r for r in rows if r["block"] == "Costas")
-        gard = next(r for r in rows if r["block"] == "Gardner")
+        loop2 = next(r for r in rows if r["block"] == "Loop2")
         assert costas["barrier_pct"] == 100.0
-        assert abs(gard["barrier_pct"] - (100.0 * 5.0 / 2350.0)) < 1e-6
+        assert abs(loop2["barrier_pct"] - (100.0 * 500.0 / 2350.0)) < 1e-6
 
     def test_no_stalls_all_zero(self):
         # Sequential per-sample drive → nothing parks → every block 0, ranks stable.
         tm = TraceModel()
         tm.ingest(0, [{"time_ns": 0.0, "cell_id": 0, "kind": "exec_tick", "pc": 0}],
                   10)
-        rows = tm.block_bottleneck({"A": (0, 0, 0), "B": (0, 1, 0)})
+        rows = tm.block_bottleneck({"A": [(0, 0, 0)], "B": [(0, 1, 0)]})
         assert all(r["stall_ns"] == 0.0 for r in rows)
         assert all(r["barrier_pct"] is None for r in rows)
 
-    def test_empty_landing_lookup(self):
+    def test_single_cell_block_uses_raw_stall(self):
+        # A single-cell block has no internal output cell to net against, so the
+        # differential is undefined — fall back to the raw landing stall (rare; loops
+        # are multi-cell, so this keeps a genuine 1-cell throttle visible).
+        tm = TraceModel()
+        tm.ingest(0, [
+            {"time_ns": 0.0, "cell_id": 0, "kind": "stall", "waited_ns": 900.0},
+        ], 10)
+        rows = tm.block_bottleneck({"Slicer": [(0, 0, 0)]})
+        assert rows[0]["stall_ns"] == 900.0
+        assert rows[0]["out_stall_ns"] == 0.0
+
+    def test_empty_block_cells(self):
         tm = TraceModel()
         assert tm.block_bottleneck({}) == []

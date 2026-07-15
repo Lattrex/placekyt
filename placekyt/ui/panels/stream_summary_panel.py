@@ -100,8 +100,8 @@ class StreamSummaryPanel(QWidget):
         # () -> {(chip,x,y): [waited_ns, …]} | None: per-cell STALL (backpressure)
         # waits from the hosted chip. The honest serial-barrier / bottleneck signal.
         self._stall_provider: Callable[[], dict | None] | None = None
-        # () -> {block name: (chip,x,y)} | None: each block's INPUT LANDING cell.
-        self._landing_provider: Callable[[], dict | None] | None = None
+        # () -> {block name: [(chip,x,y), …]} | None: each block's cells, [0]=landing.
+        self._block_cells_provider: Callable[[], dict | None] | None = None
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(6, 6, 6, 6)
@@ -182,10 +182,11 @@ class StreamSummaryPanel(QWidget):
         ranking uses the median wait at each block's landing cell."""
         self._stall_provider = provider
 
-    def set_landing_provider(self, provider) -> None:
-        """Inject a ``() -> {block name: (chip,x,y)} | None`` mapping each block to
-        its INPUT LANDING cell (placement.cells[0]), for the serial-barrier view."""
-        self._landing_provider = provider
+    def set_block_cells_provider(self, provider) -> None:
+        """Inject a ``() -> {block name: [(chip,x,y), …]} | None`` giving each block's
+        cells with ``[0]`` the input LANDING cell, for the serial-barrier (input/
+        output stall differential) view."""
+        self._block_cells_provider = provider
 
     def set_trace_model(self, model) -> None:
         """Bind (or rebind) the TraceModel and refresh — the ``trace_updated``
@@ -361,9 +362,9 @@ class StreamSummaryPanel(QWidget):
             top = dsp[0]
             self._bottleneck.setText(
                 f"Bottleneck: {top['block']} "
-                f"({_fmt_ns(top['barrier_ns'])}/sample serial barrier) — the block "
-                "that must finish this many ns of serial work before it can accept "
-                "the next sample. Optimize here for throughput.")
+                f"({_fmt_ns(top['barrier_ns'])}/sample) — input backpressure piles up "
+                "here but its output drains freely (downstream keeps up), so THIS "
+                "block sets the pace. Optimize here for throughput.")
         elif dsp:
             # No stalls captured — either a feed-forward-only design, or the run
             # wasn't saturated (nothing parks). Fall back to the busy dwell view +
@@ -419,40 +420,37 @@ class StreamSummaryPanel(QWidget):
                 self._util.setItem(i, j, item)
 
     def _block_bottleneck(self, block_lookup, block_types):
-        """Compute the per-block serial-barrier rows from the stall provider +
-        landing provider. Returns [] if either is missing. The landing cell of each
-        block is taken from the landing provider (placement.cells[0]); the stall
-        provider gives per-cell parked-REQ waits, which TraceModel.block_bottleneck
-        reduces to the median wait at each landing cell."""
-        if self._stall_provider is None or self._landing_provider is None:
+        """Compute the per-block serial-barrier (input/output stall DIFFERENTIAL)
+        rows from the stall provider + block-cells provider. Returns [] if either is
+        missing. The provider gives every block's cells ([0]=landing); the stall
+        provider gives per-cell parked-REQ waits; TraceModel.block_bottleneck ranks
+        by (landing stall − freest-cell stall) so a block that merely relays upstream
+        backpressure (input≈output stall) is not mistaken for the true throttle."""
+        if self._stall_provider is None or self._block_cells_provider is None:
             return []
         try:
             stall = self._stall_provider()
-            landings = self._landing_provider()
+            cells_by_block = self._block_cells_provider()
         except Exception:  # noqa: BLE001
             return []
-        if not landings:
+        if not cells_by_block:
             return []
-        # Load the stall waits into a throwaway model so we reuse block_bottleneck's
-        # median/rank logic. We build Transaction-like stall events directly.
+        # Load the stall waits into a throwaway model to reuse block_bottleneck's
+        # median/differential/rank logic. Feed cell_id already mapped: encode with a
+        # synthetic width and normalise back with the SAME width.
         try:
             from engine.trace_model import TraceModel
         except Exception:  # noqa: BLE001
             return []
         tm = TraceModel()
+        W = 4096
+        raw = []
         if stall:
-            # width doesn't matter here — we feed cell_id already mapped, so pass a
-            # synthetic width and reconstruct cell_id = y*W + x with the SAME width.
-            W = 4096
-            raw = []
             for (chip, x, y), waits in stall.items():
                 for w in waits:
                     raw.append({"time_ns": 0.0, "cell_id": y * W + x,
                                 "kind": "stall", "waited_ns": float(w)})
-            tm.ingest(0, raw, W)
-            landing_lookup = {name: (0, cell[1], cell[2])
-                              for name, cell in landings.items()}
-        else:
-            landing_lookup = {name: (chip, x, y)
-                              for name, (chip, x, y) in landings.items()}
-        return tm.block_bottleneck(landing_lookup, block_types)
+        tm.ingest(0, raw, W)
+        block_cells = {name: [(0, c[1], c[2]) for c in cells]
+                       for name, cells in cells_by_block.items()}
+        return tm.block_bottleneck(block_cells, block_types)

@@ -222,6 +222,12 @@ class SimController(QObject):
         self._busy_last_tick: dict[tuple[int, int, int], float] = {}
         self._busy_first_tick: float | None = None
         self._busy_last_any: float | None = None
+        # Per-cell STALL waits (the backpressure / serial-barrier signal). Like
+        # busy, accumulated across drains: each cell whose incoming REQ PARKED (the
+        # cell was busy/LOCKed) gets its ``waited_ns`` appended. The block-bottleneck
+        # view reads the median wait at each block's LANDING cell. Bounded: one list
+        # per cell that ever stalled (rare — only genuine backpressure).
+        self._stall_waits: dict[tuple[int, int, int], list[float]] = {}
 
         from engine.breakpoints import BreakpointSet
 
@@ -1002,6 +1008,7 @@ class SimController(QObject):
             self._busy_last_tick = {}
             self._busy_first_tick = None
             self._busy_last_any = None
+            self._stall_waits = {}
             # A Run boundary also obsoletes the pull residual: any drained-but-
             # not-yet-ingested events belong to the PREVIOUS Run and must not
             # leak into the fresh (rebased) trace.
@@ -1078,6 +1085,13 @@ class SimController(QObject):
             if hasattr(self, "_accumulate_busy"):
                 self._accumulate_busy(ev for ev in drained
                                       if ev.get("kind") == "exec_tick")
+            # BOTTLENECK serial-barrier: accumulate per-cell STALL waits (the honest
+            # throttle signal). Kept survivable across the chip-trace clear the same
+            # way as busy — the stall records do reach the retained model, but the
+            # trimming window could drop them on a long run, so tally here too.
+            if hasattr(self, "_accumulate_stall"):
+                self._accumulate_stall(ev for ev in drained
+                                       if ev.get("kind") == "stall")
             if getattr(self, "_animate_cells", False):
                 anim_now = [ev for ev in drained if ev.get("kind") in _ANIM_ONLY]
             drained = [ev for ev in drained if ev.get("kind") not in _ANIM_ONLY]
@@ -1658,6 +1672,63 @@ class SimController(QObject):
                 self._busy_first_tick = t
             if self._busy_last_any is None or t > self._busy_last_any:
                 self._busy_last_any = t
+
+    def _accumulate_stall(self, stall_events) -> None:
+        """Fold this drain's STALL events into the per-cell stall accumulator.
+
+        Each stall carries ``waited_ns`` = how long an incoming word's REQ PARKED
+        at this cell before it was accepted (the cell was busy/LOCKed). We keep the
+        list of waits per cell so the bottleneck view can take the MEDIAN at each
+        block's landing cell. Uses the controller's width to map cell_id → (x, y)
+        (single-chip; chip 0), matching ``_accumulate_busy``."""
+        eng = self.engine
+        chip = getattr(eng, "chip", None) if eng is not None else None
+        w = getattr(self, "_width", None) or getattr(chip, "width", None)
+        if not w:
+            return
+        for ev in stall_events:
+            cid = ev.get("cell_id")
+            waited = ev.get("waited_ns")
+            if cid is None or waited is None:
+                continue
+            key = (0, int(cid) % w, int(cid) // w)
+            self._stall_waits.setdefault(key, []).append(float(waited))
+
+    def _stall_from_chip_trace(self) -> dict | None:
+        """HEADLESS fallback: derive per-cell stall waits straight from the whole
+        chip trace (still holds the stall records; parallels _busy_from_chip_trace)."""
+        eng = self.engine
+        chip = getattr(eng, "chip", None) if eng is not None else None
+        if chip is None or not hasattr(chip, "get_trace"):
+            return None
+        try:
+            w = getattr(self, "_width", None) or getattr(chip, "width", None)
+            if not w:
+                return None
+            waits: dict[tuple[int, int, int], list[float]] = {}
+            for ev in chip.get_trace():
+                if ev.get("kind") != "stall":
+                    continue
+                cid = ev.get("cell_id")
+                waited = ev.get("waited_ns")
+                if cid is None or waited is None:
+                    continue
+                key = (0, int(cid) % w, int(cid) // w)
+                waits.setdefault(key, []).append(float(waited))
+            return waits or None
+        except Exception:  # noqa: BLE001
+            return None
+
+    def cell_stall_report(self) -> dict | None:
+        """Per-cell STALL waits for the last run: ``{(chip, x, y): [waited_ns, …]}``,
+        or None. Powers the Stream Summary's block-BOTTLENECK (serial-barrier) table
+        + the canvas heatmap. Read from the incremental accumulator (survives the
+        per-drain chip-trace clear); falls back to the whole chip trace on the
+        headless path. Returns None when nothing ever stalled (sequential/unsaturated
+        drive) — the panel then shows the "run at saturation" hint."""
+        if self._stall_waits:
+            return {k: list(v) for k, v in self._stall_waits.items()}
+        return self._stall_from_chip_trace()
 
     def cell_busy_report(self) -> dict | None:
         """Per-cell EXECUTING chip-time for the last run:

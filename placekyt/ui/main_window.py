@@ -503,6 +503,11 @@ class MainWindow(QMainWindow):
         # NOT the retained TraceModel (which drops exec_ticks) — same in-process
         # chip that served the power report.
         self.stream_summary_panel.set_busy_provider(self.sim.cell_busy_report)
+        # Serial-barrier (the honest bottleneck): per-cell STALL waits + each block's
+        # landing cell → median wait at the landing = the block's per-sample serial
+        # barrier. Ranks the bottleneck table + tints the heatmap.
+        self.stream_summary_panel.set_stall_provider(self.sim.cell_stall_report)
+        self.stream_summary_panel.set_landing_provider(self._block_landing_lookup)
         # Bottleneck heatmap: recompute from each new trace, but only paint it when
         # the View toggle is on. Keep the latest model for on-demand toggling.
         self.sim.trace_updated.connect(self._on_trace_for_heatmap)
@@ -989,6 +994,22 @@ class MainWindow(QMainWindow):
         except Exception:  # noqa: BLE001
             return None
 
+    def _block_landing_lookup(self):
+        """Build ``{block name: (chip, x, y)}`` mapping each placed block to its
+        INPUT LANDING cell (placement.cells[0]) — the serial-barrier / bottleneck
+        view reads the stall at this cell. Returns None when nothing is placed."""
+        try:
+            landings: dict[str, tuple[int, int, int]] = {}
+            for b in self.controller.project.blocks:
+                pl = getattr(b, "placement", None)
+                if pl is None or not pl.cells:
+                    continue
+                c = pl.cells[0]
+                landings[b.name] = (pl.chip, c.x, c.y)
+            return landings or None
+        except Exception:  # noqa: BLE001
+            return None
+
     def _on_trace_for_heatmap(self, model) -> None:
         """Keep the latest trace model and repaint the heatmap if it's on."""
         self._heatmap_model = model
@@ -1003,18 +1024,42 @@ class MainWindow(QMainWindow):
             self.canvas.clear_heatmap()
 
     def _refresh_heatmap(self) -> None:
-        """Compute per-cell heat (0..1, normalized to the busiest block's cells)
-        from the latest trace and paint it on the canvas. Each cell of a block
-        shares the block's utilization, so a block glows uniformly by how much of
-        the run it spent executing — the hottest block (deep red) is the
-        bottleneck. No trace / no placement → clear the overlay."""
+        """Paint the bottleneck heatmap. Each cell of a block shares the block's
+        heat, so a block glows uniformly and the hottest (deep red) is the
+        bottleneck. PRIMARY metric = the serial barrier (median STALL at the
+        block's landing cell — the honest throttle); falls back to busy-time
+        (dwell) when there are no stalls (unsaturated / feed-forward-only run).
+        No trace / no placement → clear the overlay."""
         model = getattr(self, "_heatmap_model", None)
         pair = self._block_utilization_lookup()
         if model is None or pair is None:
             self.canvas.clear_heatmap()
             return
         block_lookup, block_types = pair
-        # Busy-time from the hosted chip's trace (exec_ticks dropped from the model).
+
+        # 1) Try the serial-barrier (stall) heat first — the true bottleneck.
+        stall = self.sim.cell_stall_report()
+        landings = self._block_landing_lookup()
+        if stall and landings:
+            W = 4096
+            raw = [{"time_ns": 0.0, "cell_id": y * W + x, "kind": "stall",
+                    "waited_ns": float(w)}
+                   for (chip, x, y), waits in stall.items() for w in waits]
+            if raw:
+                from engine.trace_model import TraceModel
+                tm = TraceModel()
+                tm.ingest(0, raw, W)
+                ll = {n: (0, c[1], c[2]) for n, c in landings.items()}
+                brows = tm.block_bottleneck(ll, block_types)
+                peak = max((b["stall_ns"] for b in brows), default=0.0)
+                if peak > 0:
+                    by_block = {b["block"]: b["stall_ns"] for b in brows}
+                    heat = {key: min(1.0, by_block.get(name, 0.0) / peak)
+                            for key, name in block_lookup.items()}
+                    self.canvas.apply_heatmap(heat)
+                    return
+
+        # 2) Fall back to busy-time dwell (exec_ticks) when no stalls were captured.
         busy = span = None
         rep = self.sim.cell_busy_report()
         if rep:
@@ -1024,16 +1069,16 @@ class MainWindow(QMainWindow):
             return
         rows = model.block_utilization(block_lookup, block_types,
                                        busy=busy, span_ns=span)
-        # Peak block busy-time (excluding pure routing) sets the 1.0 reference.
-        peak = max((r["busy_ns"] for r in rows if r["block"] != "(routing)"),
+        # Peak block CRITICAL-cell busy (excluding routing) sets the 1.0 reference —
+        # matches the table's dwell ranking (crit cell, not summed-over-cells).
+        peak = max((r["crit_ns"] for r in rows if r["block"] != "(routing)"),
                    default=0.0)
         if peak <= 0:
             self.canvas.clear_heatmap()
             return
-        busy_by_block = {r["block"]: r["busy_ns"] for r in rows}
-        heat: dict[tuple[int, int, int], float] = {}
-        for key, name in block_lookup.items():
-            heat[key] = min(1.0, busy_by_block.get(name, 0.0) / peak)
+        crit_by_block = {r["block"]: r["crit_ns"] for r in rows}
+        heat = {key: min(1.0, crit_by_block.get(name, 0.0) / peak)
+                for key, name in block_lookup.items()}
         self.canvas.apply_heatmap(heat)
 
     # -- breakpoints (DEBUG §3.6) ---------------------------------------------

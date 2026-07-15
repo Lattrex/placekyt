@@ -361,3 +361,85 @@ class TestBlockUtilization:
     def test_empty_trace_is_empty(self):
         tm = TraceModel()
         assert tm.block_utilization({}) == []
+
+
+class TestBlockBottleneck:
+    """The serial-barrier view: rank blocks by the median STALL (backpressure) at
+    their INPUT LANDING cell — how long a new sample waits to be accepted because
+    the block is still busy with the previous one. The honest bottleneck."""
+
+    def _trace(self):
+        # width 10.
+        #  - Costas landing (cell 0): stalls a LOT (loop LOCKs) — waits 2300,2400.
+        #  - Gardner landing (cell 1): tiny stall (decimated) — one 5 ns wait.
+        #  - MF landing (cell 2): NEVER stalls (feed-forward, fed by ingress).
+        # Also a stall at cell 3 (MF's OUTPUT-side cell) that MUST be ignored
+        # because we only look at the landing cell — it's upstream backpressure.
+        ev = [
+            {"time_ns": 100.0, "cell_id": 0, "kind": "stall", "face": "W",
+             "is_data": False, "waited_ns": 2300.0},
+            {"time_ns": 200.0, "cell_id": 0, "kind": "stall", "face": "W",
+             "is_data": False, "waited_ns": 2400.0},
+            {"time_ns": 150.0, "cell_id": 1, "kind": "stall", "face": "W",
+             "is_data": False, "waited_ns": 5.0},
+            # MF output cell (3) stalls huge — but it's NOT MF's landing cell.
+            {"time_ns": 300.0, "cell_id": 3, "kind": "stall", "face": "E",
+             "is_data": True, "waited_ns": 9000.0},
+        ]
+        return ev
+
+    def test_costas_landing_stall_ranks_first(self):
+        tm = TraceModel()
+        tm.ingest(0, self._trace(), 10)
+        landings = {"Costas": (0, 0, 0), "Gardner": (0, 1, 0), "MF": (0, 2, 0)}
+        rows = tm.block_bottleneck(landings)
+        assert rows[0]["block"] == "Costas"
+        assert rows[0]["rank"] == 1
+        # median of (2300, 2400) = 2350.
+        assert rows[0]["stall_ns"] == 2350.0
+        assert rows[0]["max_stall_ns"] == 2400.0
+        assert rows[0]["n_stalls"] == 2
+
+    def test_feedforward_landing_never_stalls(self):
+        tm = TraceModel()
+        tm.ingest(0, self._trace(), 10)
+        landings = {"Costas": (0, 0, 0), "Gardner": (0, 1, 0), "MF": (0, 2, 0)}
+        rows = tm.block_bottleneck(landings)
+        mf = next(r for r in rows if r["block"] == "MF")
+        # MF's landing cell (2) has NO stall — feed-forward, accepts back-to-back.
+        assert mf["stall_ns"] == 0.0
+        assert mf["n_stalls"] == 0
+        # It ranks last (or tied-last), never the bottleneck.
+        assert mf["rank"] == len(rows)
+
+    def test_ignores_non_landing_cell_stall(self):
+        # The huge stall at MF's OUTPUT cell (3) is upstream backpressure and must
+        # NOT be attributed to any block — landing-cell-only is the whole point.
+        tm = TraceModel()
+        tm.ingest(0, self._trace(), 10)
+        landings = {"MF": (0, 2, 0)}
+        rows = tm.block_bottleneck(landings)
+        assert rows[0]["stall_ns"] == 0.0     # cell 3's 9000 ns is not counted
+
+    def test_barrier_pct_relative_to_worst(self):
+        tm = TraceModel()
+        tm.ingest(0, self._trace(), 10)
+        landings = {"Costas": (0, 0, 0), "Gardner": (0, 1, 0)}
+        rows = tm.block_bottleneck(landings)
+        costas = next(r for r in rows if r["block"] == "Costas")
+        gard = next(r for r in rows if r["block"] == "Gardner")
+        assert costas["barrier_pct"] == 100.0
+        assert abs(gard["barrier_pct"] - (100.0 * 5.0 / 2350.0)) < 1e-6
+
+    def test_no_stalls_all_zero(self):
+        # Sequential per-sample drive → nothing parks → every block 0, ranks stable.
+        tm = TraceModel()
+        tm.ingest(0, [{"time_ns": 0.0, "cell_id": 0, "kind": "exec_tick", "pc": 0}],
+                  10)
+        rows = tm.block_bottleneck({"A": (0, 0, 0), "B": (0, 1, 0)})
+        assert all(r["stall_ns"] == 0.0 for r in rows)
+        assert all(r["barrier_pct"] is None for r in rows)
+
+    def test_empty_landing_lookup(self):
+        tm = TraceModel()
+        assert tm.block_bottleneck({}) == []

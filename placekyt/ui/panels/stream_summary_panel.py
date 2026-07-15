@@ -57,7 +57,8 @@ _COLS = ["Direction", "Chip", "Port", "Stream", "Samples",
 # "Cell duty" = average per-cell fraction of the run (≈100% everywhere ⇒ the array
 # is saturated). "Instr/cell" = mean instructions per cell (work-per-sample; a
 # feedback loop runs many, a flat filter few).
-_UTIL_COLS = ["Rank", "Block", "Type", "Dwell", "Cell duty", "Instr/cell", "Cells"]
+_UTIL_COLS = ["Rank", "Block", "Type", "Serial barrier", "Dwell", "Cell duty",
+              "Instr/cell", "Cells"]
 
 # Row tint for the #1 (bottleneck) block — a translucent hot red.
 _HOT_ROW = QColor(180, 60, 60, 90)
@@ -96,6 +97,11 @@ class StreamSummaryPanel(QWidget):
         # time from the hosted chip's trace (exec_ticks are dropped from the
         # retained TraceModel, so utilization can't come from ``self._model``).
         self._busy_provider: Callable[[], dict | None] | None = None
+        # () -> {(chip,x,y): [waited_ns, …]} | None: per-cell STALL (backpressure)
+        # waits from the hosted chip. The honest serial-barrier / bottleneck signal.
+        self._stall_provider: Callable[[], dict | None] | None = None
+        # () -> {block name: (chip,x,y)} | None: each block's INPUT LANDING cell.
+        self._landing_provider: Callable[[], dict | None] | None = None
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(6, 6, 6, 6)
@@ -168,6 +174,18 @@ class StreamSummaryPanel(QWidget):
         retained TraceModel drops exec_ticks — this pulls busy-time from the hosted
         chip's own trace instead (see SimController.cell_busy_report)."""
         self._busy_provider = provider
+
+    def set_stall_provider(self, provider) -> None:
+        """Inject a ``() -> {(chip,x,y): [waited_ns, …]} | None`` giving per-cell
+        STALL (parked-REQ backpressure) waits for the last run (see
+        SimController.cell_stall_report). The block-BOTTLENECK / serial-barrier
+        ranking uses the median wait at each block's landing cell."""
+        self._stall_provider = provider
+
+    def set_landing_provider(self, provider) -> None:
+        """Inject a ``() -> {block name: (chip,x,y)} | None`` mapping each block to
+        its INPUT LANDING cell (placement.cells[0]), for the serial-barrier view."""
+        self._landing_provider = provider
 
     def set_trace_model(self, model) -> None:
         """Bind (or rebind) the TraceModel and refresh — the ``trace_updated``
@@ -316,35 +334,61 @@ class StreamSummaryPanel(QWidget):
                 span = rep.get("span_ns")
         rows = self._model.block_utilization(
             block_lookup, block_types, busy=busy, span_ns=span)
-        # Ignore pure routing/transit for the headline bottleneck (it's the DSP
-        # block you'd optimize), but still SHOW it in the table for transparency.
+
+        # SERIAL BARRIER (the honest bottleneck): median STALL at each block's INPUT
+        # LANDING cell — how much serial execution the block must finish before it
+        # can accept the NEXT input sample. A feedback loop (Costas/Gardner) that
+        # LOCKs while it iterates holds off its input → large barrier; a feed-forward
+        # block accepts back-to-back → ~zero. Decimation- and saturation-immune (it
+        # only counts a stall when a sample actually arrives at THIS block's door,
+        # and it's a wait, not a duty). Requires the stall trace + a saturated run;
+        # falls back to the busy "dwell" ranking when there are no stalls.
+        barrier = self._block_bottleneck(block_lookup, block_types)
+        by_block = {b["block"]: b for b in barrier}
+        have_barrier = any(b["stall_ns"] > 0 for b in barrier)
+        for r in rows:
+            b = by_block.get(r["block"])
+            r["barrier_ns"] = b["stall_ns"] if b else 0.0
+        if have_barrier:
+            # Rank by the true serial barrier; routing/transit (no landing) sink low.
+            rows.sort(key=lambda r: (r.get("barrier_ns", 0.0), r["crit_ns"]),
+                      reverse=True)
+            for i, r in enumerate(rows):
+                r["rank"] = i + 1
+
         dsp = [r for r in rows if r["block"] != "(routing)"]
-        if dsp:
+        if have_barrier and dsp:
+            top = dsp[0]
+            self._bottleneck.setText(
+                f"Bottleneck: {top['block']} "
+                f"({_fmt_ns(top['barrier_ns'])}/sample serial barrier) — the block "
+                "that must finish this many ns of serial work before it can accept "
+                "the next sample. Optimize here for throughput.")
+        elif dsp:
+            # No stalls captured — either a feed-forward-only design, or the run
+            # wasn't saturated (nothing parks). Fall back to the busy dwell view +
+            # the saturation callout, and say the barrier needs a saturated run.
             top = dsp[0]
             pct = top["util_pct"]
             pct_txt = f"{pct:.0f}% busy" if isinstance(pct, (int, float)) else ""
-            # SATURATION CHECK: if EVERY DSP block's cells run near-100% duty, the
-            # array is throughput-bound — there is no single-block stall, so it's
-            # dishonest to finger one. Say so, and point to the per-sample slowest
-            # (the highest-work block) as the thing to widen to go faster.
             duties = [r.get("occupancy_pct") for r in dsp
                       if isinstance(r.get("occupancy_pct"), (int, float))]
             saturated = bool(duties) and min(duties) >= 90.0
+            hint = " (run at saturation to measure per-block serial barriers)"
             if saturated:
                 self._bottleneck.setText(
                     f"Array saturated (~{min(duties):.0f}% cell duty) — throughput-"
-                    f"bound, no single-block stall. Slowest per sample: {top['block']}"
-                    + (f" ({pct_txt})" if pct_txt else "")
-                    + " — widen it to go faster.")
+                    f"bound. Slowest per sample: {top['block']}"
+                    + (f" ({pct_txt})" if pct_txt else "") + "." + hint)
             else:
                 self._bottleneck.setText(
-                    f"Bottleneck: {top['block']}"
-                    + (f" ({pct_txt})" if pct_txt else "")
-                    + " — the worst-case serial path. Optimize here for throughput.")
+                    f"Busiest block: {top['block']}"
+                    + (f" ({pct_txt})" if pct_txt else "") + "." + hint)
         else:
             self._bottleneck.setText("Bottleneck: —")
 
         self._util.setRowCount(len(rows))
+        top_block = dsp[0]["block"] if dsp else None
         for i, r in enumerate(rows):
             pct = r["util_pct"]
             pct_txt = f"{pct:.0f}%" if isinstance(pct, (int, float)) else "—"
@@ -353,21 +397,62 @@ class StreamSummaryPanel(QWidget):
             ipc = r.get("instr_per_cell")
             ipc_txt = (f"{ipc:.0f}" if isinstance(ipc, (int, float)) and ipc
                        else "—")
+            bns = r.get("barrier_ns", 0.0)
+            barrier_txt = _fmt_ns(bns) if bns else "—"
             cells = [
                 str(r["rank"]),
                 r["block"],
                 r["type"] or "",
+                barrier_txt,
                 pct_txt,
                 duty_txt,
                 ipc_txt,
                 str(r["cells"]),
             ]
-            is_top = (r["block"] != "(routing)"
-                      and dsp and r["block"] == dsp[0]["block"])
+            is_top = (r["block"] != "(routing)" and r["block"] == top_block)
             for j, txt in enumerate(cells):
                 item = QTableWidgetItem(txt)
-                if j in (0, 3, 4, 5, 6):
+                if j in (0, 3, 4, 5, 6, 7):
                     item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 if is_top:
                     item.setBackground(_HOT_ROW)
                 self._util.setItem(i, j, item)
+
+    def _block_bottleneck(self, block_lookup, block_types):
+        """Compute the per-block serial-barrier rows from the stall provider +
+        landing provider. Returns [] if either is missing. The landing cell of each
+        block is taken from the landing provider (placement.cells[0]); the stall
+        provider gives per-cell parked-REQ waits, which TraceModel.block_bottleneck
+        reduces to the median wait at each landing cell."""
+        if self._stall_provider is None or self._landing_provider is None:
+            return []
+        try:
+            stall = self._stall_provider()
+            landings = self._landing_provider()
+        except Exception:  # noqa: BLE001
+            return []
+        if not landings:
+            return []
+        # Load the stall waits into a throwaway model so we reuse block_bottleneck's
+        # median/rank logic. We build Transaction-like stall events directly.
+        try:
+            from engine.trace_model import TraceModel
+        except Exception:  # noqa: BLE001
+            return []
+        tm = TraceModel()
+        if stall:
+            # width doesn't matter here — we feed cell_id already mapped, so pass a
+            # synthetic width and reconstruct cell_id = y*W + x with the SAME width.
+            W = 4096
+            raw = []
+            for (chip, x, y), waits in stall.items():
+                for w in waits:
+                    raw.append({"time_ns": 0.0, "cell_id": y * W + x,
+                                "kind": "stall", "waited_ns": float(w)})
+            tm.ingest(0, raw, W)
+            landing_lookup = {name: (0, cell[1], cell[2])
+                              for name, cell in landings.items()}
+        else:
+            landing_lookup = {name: (chip, x, y)
+                              for name, (chip, x, y) in landings.items()}
+        return tm.block_bottleneck(landing_lookup, block_types)

@@ -26,6 +26,7 @@ KIND_DATA = "data_arrival"
 KIND_EXEC = "exec_tick"
 KIND_OUTPUT = "output_ready"
 KIND_PORT_OUT = "port_capture"
+KIND_STALL = "stall"
 
 
 _DECODE_CACHE: dict[int, str] = {}
@@ -626,6 +627,67 @@ class TraceModel:
             # A feedback loop (Costas/Gardner) runs many instructions per sample;
             # a flat FIR runs few. Distinguishes real compute cost from mere width.
             r["instr_per_cell"] = (r["exec_count"] / r["cells"]) if r["cells"] else 0
+            r["rank"] = i + 1
+        return rows
+
+    def block_bottleneck(
+        self, landing_lookup: dict[str, tuple[int, int, int]],
+        block_types: dict[str, str] | None = None,
+    ) -> list[dict]:
+        """Per-BLOCK serial-barrier bottleneck — the HONEST "which block throttles
+        the sample rate" view, from the simKYT ``stall`` (backpressure) event.
+
+        CM's definition: the bottleneck is *how much serial execution a block must
+        finish before it can accept the NEXT input sample*. That is EXACTLY a
+        backpressure stall at the block's INPUT LANDING cell: when a word's REQ
+        arrives there and the cell is still busy/LOCKed with the previous sample,
+        the REQ PARKS; simKYT emits a ``stall`` record with ``waited_ns`` when the
+        word is finally accepted. A feedback loop (Costas/Gardner) that LOCKs while
+        it iterates holds off its next input → large landing stall; a feed-forward
+        block (matched filter, slicer) accepts back-to-back → ~zero landing stall.
+
+        CRITICAL — measure the LANDING cell ONLY (``placement.cells[0]``), never the
+        block's interior/output cells. Backpressure propagates UPSTREAM, so a wide
+        feed-forward block's OUTPUT cells stall waiting for a slow downstream loop —
+        summing over all its cells would wrongly crown the widest block (the exact
+        confound the earlier busy/dwell metrics hit). The landing cell stalls iff
+        THIS block can't take the next sample, which is the true throttle.
+
+        Only meaningful under SATURATED drive (the pipeline full). Under sequential
+        per-sample drive nothing ever parks (every cell idle by the next word) → all
+        zero; the caller runs at saturation for this view.
+
+        ``landing_lookup`` maps ``block name -> (chip, x, y)`` of its landing cell
+        (caller builds it from the placement — keeps this Qt-free). Each row, ranked
+        by ``stall_ns`` (median wait) busiest-first (``rank`` 1 = bottleneck)::
+
+            {block, type, stall_ns, max_stall_ns, n_stalls, barrier_pct, rank}
+        """
+        # Collect stall waits per landing cell.
+        waits_by_cell: dict[tuple[int, int, int], list[float]] = {}
+        for t in self.transactions:
+            if t.kind == KIND_STALL:
+                key = (t.chip, t.cx, t.cy)
+                w = t.detail.get("waited_ns")
+                if w is not None:
+                    waits_by_cell.setdefault(key, []).append(float(w))
+
+        rows: list[dict] = []
+        for name, cell in landing_lookup.items():
+            waits = waits_by_cell.get(cell, [])
+            med = _median(waits) or 0.0
+            rows.append({
+                "block": name,
+                "type": (block_types or {}).get(name, ""),
+                "stall_ns": med,               # median serial barrier per sample
+                "max_stall_ns": max(waits) if waits else 0.0,
+                "n_stalls": len(waits),
+            })
+        rows.sort(key=lambda r: (r["stall_ns"], r["max_stall_ns"]), reverse=True)
+        peak = max((r["stall_ns"] for r in rows), default=0.0)
+        for i, r in enumerate(rows):
+            # Fraction of the worst block's serial barrier (bottleneck = 100%).
+            r["barrier_pct"] = (100.0 * r["stall_ns"] / peak) if peak else None
             r["rank"] = i + 1
         return rows
 

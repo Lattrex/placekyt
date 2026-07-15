@@ -211,6 +211,18 @@ class SimController(QObject):
 
         self.trace_model = TraceModel()  # the debug data spine (§debug)
 
+        # BOTTLENECK busy-time accumulator (Stream Summary + heatmap). exec_ticks
+        # are dropped from the TraceModel AND the chip trace is cleared each drain,
+        # so busy-time can't be read back afterward — accumulate it INCREMENTALLY
+        # from the drained exec_ticks (before they're discarded). Per cell: the
+        # running sum of gaps between consecutive ticks + the last tick's time (to
+        # bridge the gap across drains). Bounded: one entry per executing cell.
+        self._busy_ns: dict[tuple[int, int, int], float] = {}
+        self._busy_gaps: dict[tuple[int, int, int], int] = {}  # #gaps summed per cell
+        self._busy_last_tick: dict[tuple[int, int, int], float] = {}
+        self._busy_first_tick: float | None = None
+        self._busy_last_any: float | None = None
+
         from engine.breakpoints import BreakpointSet
 
         # Active breakpoints (DEBUG §3.6) + per-chip scan cursors so each new
@@ -983,6 +995,13 @@ class SimController(QObject):
         if self._pending_trace_reset:
             self._pending_trace_reset = False
             self.trace_model.clear()
+            # New Run → forget the accumulated busy-time (the bottleneck view is
+            # per-Run, like the trace).
+            self._busy_ns = {}
+            self._busy_gaps = {}
+            self._busy_last_tick = {}
+            self._busy_first_tick = None
+            self._busy_last_any = None
             # A Run boundary also obsoletes the pull residual: any drained-but-
             # not-yet-ingested events belong to the PREVIOUS Run and must not
             # leak into the fresh (rebased) trace.
@@ -1048,6 +1067,17 @@ class SimController(QObject):
         _ANIM_ONLY = ("exec_tick", "output_ready", "instr_arrival")
         anim_now = []
         if drained:
+            # BOTTLENECK busy-time: accumulate per-cell exec chip-time from THIS
+            # drain's exec_ticks BEFORE they're dropped below (they never reach the
+            # retained model, and the chip trace is cleared right after). A cell's
+            # busy time is the sum of gaps between its consecutive ticks; carry each
+            # cell's last-tick timestamp across drains so a gap that straddles a
+            # drain boundary is still counted. O(#ticks) with O(#cells) memory.
+            # Guarded: some lightweight test harnesses call this drain on a partial
+            # object without the accumulator wiring — skip busy-tracking there.
+            if hasattr(self, "_accumulate_busy"):
+                self._accumulate_busy(ev for ev in drained
+                                      if ev.get("kind") == "exec_tick")
             if getattr(self, "_animate_cells", False):
                 anim_now = [ev for ev in drained if ev.get("kind") in _ANIM_ONLY]
             drained = [ev for ev in drained if ev.get("kind") not in _ANIM_ONLY]
@@ -1573,20 +1603,10 @@ class SimController(QObject):
         except Exception:  # noqa: BLE001
             return None
 
-    def cell_busy_report(self) -> dict | None:
-        """Per-cell EXECUTING chip-time for the last run:
-        ``{"busy": {(chip, x, y): busy_ns}, "span_ns": float}``, or None. Powers
-        the Stream Summary's block-utilization / bottleneck table + the canvas
-        heatmap.
-
-        Computed from the HOSTED CHIP's OWN trace (``get_trace()``), NOT the
-        retained TraceModel: the GUI drops ``exec_tick`` events before ingest (they
-        are the highest-volume, waveform-irrelevant fabric detail — see the
-        VOLUME CONTROL note in the pull path), so the TraceModel has no busy-time
-        signal. The in-process chip still holds the full trace (same object the
-        server ran, like ``perf_report``), so we build a throwaway TraceModel from
-        it here and reuse its ``cell_busy_ns``. Best-effort → None on any failure
-        (the panel then shows the 'run a simulation' hint)."""
+    def _busy_from_chip_trace(self) -> dict | None:
+        """Fallback for the HEADLESS run path (no server drain accumulated busy):
+        the chip trace is whole and still has exec_ticks, so derive busy from it
+        directly (like ``perf_report`` reads the same in-process chip)."""
         eng = self.engine
         chip = getattr(eng, "chip", None) if eng is not None else None
         if chip is None or not hasattr(chip, "get_trace"):
@@ -1606,6 +1626,82 @@ class SimController(QObject):
             return {"busy": busy, "span_ns": span}
         except Exception:  # noqa: BLE001
             return None
+
+    def _accumulate_busy(self, exec_events) -> None:
+        """Fold this drain's exec_ticks into the per-cell busy-time accumulator.
+
+        A cell's busy time = Σ gaps between its consecutive exec_ticks. We keep a
+        running sum + each cell's last-tick timestamp so a gap that straddles a
+        drain boundary is still counted. Called BEFORE exec_ticks are dropped from
+        the pull buffer (they never reach the retained model, and the chip trace is
+        cleared right after) — this is the ONLY place they're visible. Uses the
+        chip width to map cell_id → (x, y) (single-chip; chip 0)."""
+        eng = self.engine
+        chip = getattr(eng, "chip", None) if eng is not None else None
+        # Prefer the controller's own width (the same value _states_from_events
+        # uses to map cell_id → (x, y)); fall back to the chip's.
+        w = getattr(self, "_width", None) or getattr(chip, "width", None)
+        if not w:
+            return
+        for ev in exec_events:
+            cid = ev.get("cell_id")
+            if cid is None:
+                continue
+            t = float(ev.get("time_ns", 0.0))
+            key = (0, int(cid) % w, int(cid) // w)
+            last = self._busy_last_tick.get(key)
+            if last is not None and t >= last:
+                self._busy_ns[key] = self._busy_ns.get(key, 0.0) + (t - last)
+                self._busy_gaps[key] = self._busy_gaps.get(key, 0) + 1
+            self._busy_last_tick[key] = t
+            if self._busy_first_tick is None or t < self._busy_first_tick:
+                self._busy_first_tick = t
+            if self._busy_last_any is None or t > self._busy_last_any:
+                self._busy_last_any = t
+
+    def cell_busy_report(self) -> dict | None:
+        """Per-cell EXECUTING chip-time for the last run:
+        ``{"busy": {(chip, x, y): busy_ns}, "span_ns": float}``, or None. Powers
+        the Stream Summary's block-utilization / bottleneck table + the canvas
+        heatmap.
+
+        Read from the incremental accumulator (``_accumulate_busy``), NOT from a
+        trace: exec_ticks are dropped from the retained TraceModel AND the hosted
+        chip's trace is cleared after each drain, so neither holds the busy signal
+        after the run. The accumulator folds each drain's ticks in as they pass
+        through the pull path. Each cell's OWN last instruction (no following tick)
+        is charged its median instruction gap so it isn't counted as zero. Returns
+        None until at least one tick has been seen (panel shows the run hint)."""
+        if not self._busy_ns and not self._busy_last_tick:
+            # HEADLESS path (no server drain ran): the chip trace is whole and
+            # still holds exec_ticks — derive busy directly from it.
+            return self._busy_from_chip_trace()
+        # Charge each cell's final (unmeasured) instruction its own median gap.
+        # We don't retain every gap, so approximate the tail with the run-wide
+        # average gap-per-cell — small, and the ranking is what matters.
+        busy = dict(self._busy_ns)
+        # Ensure cells that ran but recorded no measurable gap (single tick) appear.
+        for key in self._busy_last_tick:
+            busy.setdefault(key, 0.0)
+        if not busy:
+            return None
+        # Tail estimate for each cell's FINAL (unmeasured) instruction: the cell's
+        # OWN mean instruction gap — so a hot cell's tail is large and a light
+        # cell's tail is small (a flat global tail would over-inflate light cells).
+        # A cell that ran a single instruction (no gaps) gets the GLOBAL mean gap.
+        global_total = sum(self._busy_ns.values())
+        global_n = sum(self._busy_gaps.values())
+        global_mean = (global_total / global_n) if global_n else 0.0
+        for key in busy:
+            g = self._busy_gaps.get(key, 0)
+            per_cell_mean = (self._busy_ns[key] / g) if g else global_mean
+            busy[key] += per_cell_mean
+        span = None
+        if (self._busy_first_tick is not None
+                and self._busy_last_any is not None
+                and self._busy_last_any > self._busy_first_tick):
+            span = self._busy_last_any - self._busy_first_tick
+        return {"busy": busy, "span_ns": span}
 
     # -- live cell state (DEBUG §3.2 Cell Inspector live mode) -----------------
 

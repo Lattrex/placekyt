@@ -1067,3 +1067,81 @@ class TestDisasmBreakpoint:
         dev = w.sim.panel_device(0)
         assert dev.writes_committed == len(DEMO_WORDS)
         assert dev.reads_issued == len(DEMO_WORDS)
+
+
+class TestBottleneckBusyAccumulator:
+    """The Stream Summary bottleneck view reads per-cell busy-time from an
+    incremental accumulator fed at trace-drain (exec_ticks are dropped from the
+    retained model AND the chip trace is cleared each drain — the live GRC-server
+    path that showed an EMPTY bottleneck table until this was added)."""
+
+    def _sc(self):
+        from ui.sim_controller import SimController
+
+        sc = SimController.__new__(SimController)
+        sc._busy_ns = {}
+        sc._busy_gaps = {}
+        sc._busy_last_tick = {}
+        sc._busy_first_tick = None
+        sc._busy_last_any = None
+
+        class _Chip:
+            width = 10
+
+        class _Eng:
+            chip = _Chip()
+
+        sc.engine = _Eng()
+        return sc
+
+    def _tick(self, cid, t):
+        return {"cell_id": cid, "time_ns": float(t), "kind": "exec_tick"}
+
+    def test_none_before_any_ticks(self):
+        sc = self._sc()
+        # No accumulator data and the (fake) chip has no get_trace → None.
+        assert sc.cell_busy_report() is None
+
+    def test_accumulates_across_drains_and_ranks(self):
+        sc = self._sc()
+        # Cell 0 is the busy one (100 ns gaps); cell 1 is light (10 ns gaps).
+        sc._accumulate_busy([self._tick(0, 0), self._tick(0, 100),
+                             self._tick(1, 0)])
+        # A gap that STRADDLES the drain boundary must still be counted.
+        sc._accumulate_busy([self._tick(0, 200), self._tick(1, 10),
+                             self._tick(1, 20)])
+        rep = sc.cell_busy_report()
+        assert rep is not None
+        busy = rep["busy"]
+        # cell 0 = 100+100 = 200 measured gaps; cell 1 = 10+10 = 20.
+        # A per-cell tail estimate is added equally, so 0 stays far busier than 1.
+        assert busy[(0, 0, 0)] > busy[(0, 1, 0)] * 3
+        assert rep["span_ns"] == 200.0
+
+    def test_reset_clears_between_runs(self):
+        sc = self._sc()
+        sc._accumulate_busy([self._tick(0, 0), self._tick(0, 100)])
+        assert sc.cell_busy_report() is not None
+        # A new Run zeroes the accumulator (mirrors the _pending_trace_reset path).
+        sc._busy_ns = {}
+        sc._busy_gaps = {}
+        sc._busy_last_tick = {}
+        sc._busy_first_tick = None
+        sc._busy_last_any = None
+        assert sc.cell_busy_report() is None
+
+    def test_feeds_block_utilization_relative_to_peak(self):
+        from engine.trace_model import TraceModel
+
+        sc = self._sc()
+        sc._accumulate_busy([self._tick(0, 0), self._tick(0, 100),
+                             self._tick(0, 200)])   # busy cell
+        sc._accumulate_busy([self._tick(1, 0), self._tick(1, 10)])  # light cell
+        rep = sc.cell_busy_report()
+        lookup = {(0, 0, 0): "Costas", (0, 1, 0): "Gardner"}
+        rows = TraceModel().block_utilization(
+            lookup, {"Costas": "ComplexCostasLoop"},
+            busy=rep["busy"], span_ns=rep["span_ns"])
+        assert rows[0]["block"] == "Costas"       # the bottleneck
+        assert rows[0]["util_pct"] == 100.0
+        assert rows[1]["util_pct"] < 100.0

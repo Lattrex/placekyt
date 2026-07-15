@@ -86,6 +86,11 @@ class _Harness:
     refresh_debug_from_chip = sc.SimController.refresh_debug_from_chip
     _states_from_events = sc.SimController._states_from_events
     _steps_from_events = sc.SimController._steps_from_events
+    # Bottleneck busy-time accumulator (exec_ticks are dropped from the model, so
+    # the drain folds them into this incrementally).
+    _accumulate_busy = sc.SimController._accumulate_busy
+    cell_busy_report = sc.SimController.cell_busy_report
+    _busy_from_chip_trace = sc.SimController._busy_from_chip_trace
 
     def __init__(self, events, *, retain_all=True):
         self.engine = _Engine(events)
@@ -98,6 +103,11 @@ class _Harness:
         self._pending_trace_reset = False
         self._trace_time_origin = None
         self._animate_cells = False
+        self._busy_ns = {}
+        self._busy_gaps = {}
+        self._busy_last_tick = {}
+        self._busy_first_tick = None
+        self._busy_last_any = None
         for name in ("cell_states", "cell_faces", "handshakes", "trace_updated",
                      "cell_state_refreshed"):
             setattr(self, name, _Sig())
@@ -384,3 +394,26 @@ def test_controller_stop_aborts_batch_and_next_batch_rearms(sim):
         hooks.after_sample(None, 0, "x16_out")
     hooks.clear_stop()                          # what the next batch RPC does
     hooks.after_sample(None, 1, "x16_out")      # runs — no abort, no hang
+
+
+
+def test_bottleneck_busy_accumulates_across_drain():
+    """The bottleneck view's per-cell busy-time survives the drain path that DROPS
+    exec_ticks from the retained model + clears the chip trace (the live GRC-server
+    path where the table was EMPTY until the incremental accumulator was added)."""
+    events = []
+    for t in (0.0, 100.0, 200.0, 300.0):
+        events.append({"kind": "exec_tick", "cell_id": 0, "time_ns": t, "pc": 0})
+    for t in (0.0, 10.0, 20.0, 30.0):
+        events.append({"kind": "exec_tick", "cell_id": 1, "time_ns": t, "pc": 0})
+    events.sort(key=lambda e: e["time_ns"])
+    h = _Harness(events, retain_all=True)
+    # Drain the whole batch through the REAL refresh path (final=True → drain all).
+    h.unthrottled_refresh(full_capture=True, force=True, final=True)
+    # exec_ticks never reached the retained model (they're animation-only)...
+    assert all(t.kind != "exec_tick" for t in h.trace_model.transactions)
+    # ...but the accumulator captured their busy-time, and cell 0 is the bottleneck.
+    rep = h.cell_busy_report()
+    assert rep is not None
+    busy = rep["busy"]
+    assert busy[(0, 0, 0)] > busy[(0, 1, 0)]

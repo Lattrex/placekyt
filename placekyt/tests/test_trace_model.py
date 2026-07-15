@@ -178,3 +178,64 @@ class TestRawWordInputCoalescing:
         streams = tm.port_streams_by_tag()
         assert [v for _, v in streams[(0, "x16_in", (28, 0))]] == [0x0111, 0x0333]
         assert [v for _, v in streams[(0, "x16_in", (28, 1))]] == [0x0222, 0x0444]
+
+
+class TestStreamSummary:
+    """stream_summary() + io_latency_ns(): per-stream settled DATA rate and the
+    aggregate in→out fill latency (#479). Rates are honest chip-time — 1/median
+    inter-sample gap — with the pipeline-fill first gap dropped."""
+
+    def _trace(self):
+        # 2 input operand streams (xi @ (22,0), xq @ (22,1)) one sample/1000ns each,
+        # 1 output stream every 5000ns. First output at t=3000.
+        evs = []
+        t = 0.0
+        for _k in range(6):
+            evs.append({"time_ns": t, "cell_id": 0, "kind": "port_injection",
+                        "port_name": "x16_in", "data": 1234, "dest": 0,
+                        "target_hop": 22})
+            evs.append({"time_ns": t + 500, "cell_id": 0, "kind": "port_injection",
+                        "port_name": "x16_in", "data": 5678, "dest": 1,
+                        "target_hop": 22})
+            t += 1000
+        for k in range(6):
+            evs.append({"time_ns": 3000 + 5000 * k, "cell_id": 66,
+                        "kind": "port_capture", "port_name": "x16_out",
+                        "data": k & 1})
+        return evs
+
+    def test_per_stream_settled_rate(self):
+        tm = TraceModel()
+        tm.ingest(0, self._trace(), 10)
+        rows = {(r["direction"], r["tag"]): r for r in tm.stream_summary()}
+        # Two input operands, each 1 sample / 1000 ns = 1.0 MSa/s.
+        for tag in ((22, 0), (22, 1)):
+            r = rows[("in", tag)]
+            assert r["samples"] == 6
+            assert abs(r["settled_sps"] - 1e6) < 1.0
+        # Output every 5000 ns = 0.2 MSa/s.
+        out = rows[("out", None)]
+        assert out["direction"] == "out"
+        assert abs(out["settled_sps"] - 2e5) < 1.0
+
+    def test_direction_and_ordering(self):
+        tm = TraceModel()
+        tm.ingest(0, self._trace(), 10)
+        rows = tm.stream_summary()
+        # Inputs sort before outputs.
+        dirs = [r["direction"] for r in rows]
+        assert dirs == sorted(dirs, key=lambda d: d != "in")
+        assert dirs.count("in") == 2 and dirs.count("out") == 1
+
+    def test_io_latency(self):
+        tm = TraceModel()
+        tm.ingest(0, self._trace(), 10)
+        # first input at t=0, first output at t=3000.
+        assert tm.io_latency_ns() == 3000.0
+
+    def test_latency_none_without_output(self):
+        tm = TraceModel()
+        tm.ingest(0, [{"time_ns": 0.0, "cell_id": 0, "kind": "port_injection",
+                       "port_name": "x16_in", "data": 1, "dest": 0,
+                       "target_hop": 22}], 10)
+        assert tm.io_latency_ns() is None

@@ -128,11 +128,21 @@ class MainWindow(QMainWindow):
         disasm_dock = self._add_dock(
             "Disassembly", self.disassembly_panel, Qt.BottomDockWidgetArea)
 
-        # Tab Output + Waveform + Breakpoints + Console + Disassembly together.
+        # Stream Summary (bottom): per-stream settled DATA rate (each input operand
+        # + each output net), aggregate in→out latency, and power/energy — the
+        # run-summary the user reads instead of hand-digging per design (#479).
+        from .panels.stream_summary_panel import StreamSummaryPanel
+
+        self.stream_summary_panel = StreamSummaryPanel()
+        summary_dock = self._add_dock(
+            "Stream Summary", self.stream_summary_panel, Qt.BottomDockWidgetArea)
+
+        # Tab Output + Waveform + Breakpoints + Console + Disassembly + Summary.
         self.tabifyDockWidget(output_dock, waveform_dock)
         self.tabifyDockWidget(waveform_dock, breakpoint_dock)
         self.tabifyDockWidget(breakpoint_dock, console_dock)
         self.tabifyDockWidget(console_dock, disasm_dock)
+        self.tabifyDockWidget(disasm_dock, summary_dock)
         output_dock.raise_()
 
     def _api_namespace(self) -> dict:
@@ -473,6 +483,11 @@ class MainWindow(QMainWindow):
         self.waveform_panel.set_port_tag_namer(self._port_tag_name)
         # Resolve a dragged ROUTE to the data channels flowing through it.
         self.waveform_panel.set_route_channel_provider(self._route_channels)
+        # Stream Summary (#479): recompute per-stream rates on each trace update;
+        # pull the chip's power report on demand; name streams by their logical net.
+        self.sim.trace_updated.connect(self.stream_summary_panel.set_trace_model)
+        self.stream_summary_panel.set_perf_report_provider(self.sim.perf_report)
+        self.stream_summary_panel.set_stream_namer(self._port_tag_name)
         # Timeline scrubber (DEBUG §3.4): rebuild span + markers on each trace
         # update; dragging it drives the shared cursor.
         self.sim.trace_updated.connect(self.scrubber.set_from_trace_model)

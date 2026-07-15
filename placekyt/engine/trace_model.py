@@ -105,6 +105,16 @@ _PROMOTED = {"time_ns", "cell_id", "kind", "face", "word", "data", "pc",
              "hop_cnt", "dest", "port_name", "data_raw"}
 
 
+def _median(xs: list[float]) -> float | None:
+    """Median of a non-empty list (returns None for empty). Used for the settled
+    inter-sample gap so a single outlier gap can't skew the reported rate."""
+    if not xs:
+        return None
+    s = sorted(xs)
+    m = len(s) // 2
+    return s[m] if len(s) % 2 else (s[m - 1] + s[m]) / 2.0
+
+
 def _tag_sort_key(d):
     """Total order over per-stream tags, which may be None (untagged), an int
     (output tag / dest-only input), or a (hop, dest) tuple (input stream). Sorts
@@ -374,6 +384,107 @@ class TraceModel:
         tags = {key[2] for key in self.port_streams_by_tag()
                 if key[0] == chip and key[1] == port}
         return sorted(tags, key=_tag_sort_key)
+
+    def _stream_directions(self) -> dict[tuple[int, str, int | None], str]:
+        """``(chip, port, tag) -> "in" | "out"`` for every stream the trace shows.
+
+        Direction is intrinsic to the underlying event kind: a stream built from
+        ``port_injection`` events is an INPUT, one built from ``port_capture`` is
+        an OUTPUT. We recompute the same (chip, port, tag) keys ``port_streams_by_tag``
+        produces, tagging each by the kind of event that fed it. (A given port is
+        always one direction, but we key by the full stream tag so the summary can
+        label each demuxed sub-stream.)"""
+        self._ensure_capture_dest()
+        dirs: dict[tuple[int, str, int | None], str] = {}
+        for t in self.transactions:
+            if t.kind == KIND_PORT_IN and t.port is not None:
+                # raw-word input payloads decode their own (possibly wrong) tag;
+                # the authoritative per-stream keys come from port_streams_by_tag,
+                # so we only need to know THIS port is an input direction.
+                dirs.setdefault((t.chip, t.port, None), "in")  # placeholder
+            elif t.kind == KIND_PORT_OUT and t.port is not None:
+                dirs.setdefault((t.chip, t.port, None), "out")
+        # Map each real stream key to its port's direction.
+        by_port: dict[tuple[int, str], str] = {}
+        for (c, p, _tag), d in dirs.items():
+            by_port[(c, p)] = d
+        out: dict[tuple[int, str, int | None], str] = {}
+        for key in self.port_streams_by_tag():
+            c, p, tag = key
+            out[key] = by_port.get((c, p), "out")
+        return out
+
+    def stream_summary(self) -> list[dict]:
+        """Per-stream throughput summary — ONE row per logical DATA stream.
+
+        For every ``(chip, port, tag)`` stream the trace demultiplexes (see
+        ``port_streams_by_tag``), reports the SETTLED DATA sample rate: the steady-
+        state rate at which real DATA samples cross that port, computed from the
+        cycle-accurate inter-sample gaps (simKYT's GLS timing), NOT host wall-clock.
+
+        The "settled" rate uses the MEDIAN inter-sample gap over the stream's
+        steady state (dropping the first gap, which includes pipeline fill), so a
+        one-off startup transient doesn't skew it — the same honest chip-time
+        measurement ``throughput_bench.py`` reports, but per stream.
+
+        Each row::
+
+            {chip, port, tag, direction ("in"|"out"), samples,
+             first_ns, last_ns, span_ns,
+             mean_gap_ns, median_gap_ns, settled_sps, mean_sps}
+
+        ``settled_sps``/``mean_sps`` are samples/second (Sa/s); divide by 1e6 for
+        MSa/s. ``None`` where a stream has too few samples to measure a gap."""
+        streams = self.port_streams_by_tag()
+        dirs = self._stream_directions()
+        rows: list[dict] = []
+        for key, series in streams.items():
+            chip, port, tag = key
+            times = sorted(t for (t, _v) in series)
+            n = len(times)
+            first_ns = times[0] if n else None
+            last_ns = times[-1] if n else None
+            span = (last_ns - first_ns) if n >= 2 else None
+            gaps = [times[i + 1] - times[i] for i in range(n - 1)]
+            # Drop the first gap (pipeline fill) for the settled measure when we
+            # have enough samples; keep it for the plain mean.
+            settled_gaps = gaps[1:] if len(gaps) >= 3 else gaps
+            mean_gap = (sum(gaps) / len(gaps)) if gaps else None
+            median_gap = _median(settled_gaps) if settled_gaps else None
+            settled_sps = (1e9 / median_gap) if median_gap else None
+            mean_sps = (1e9 / mean_gap) if mean_gap else None
+            rows.append({
+                "chip": chip, "port": port, "tag": tag,
+                "direction": dirs.get(key, "out"),
+                "samples": n,
+                "first_ns": first_ns, "last_ns": last_ns, "span_ns": span,
+                "mean_gap_ns": mean_gap, "median_gap_ns": median_gap,
+                "settled_sps": settled_sps, "mean_sps": mean_sps,
+            })
+        rows.sort(key=lambda r: (r["direction"] != "in", r["chip"], r["port"],
+                                 _tag_sort_key(r["tag"])))
+        return rows
+
+    def io_latency_ns(self) -> float | None:
+        """Chip fill latency: first INPUT DATA sample in → first OUTPUT sample out.
+
+        The pipeline depth in chip-time (ns) — how long after the first sample
+        arrives the first result emerges. Returns ``None`` if the trace lacks
+        either end. This is the AGGREGATE latency; per-stream input↔output
+        association would need the dataflow graph (a block-level concern), so the
+        summary reports this one honest end-to-end number."""
+        first_in = None
+        first_out = None
+        for t in self.transactions:
+            if t.kind == KIND_PORT_IN and t.port is not None and first_in is None:
+                first_in = t.time_ns
+            elif t.kind == KIND_PORT_OUT and t.port is not None and first_out is None:
+                first_out = t.time_ns
+            if first_in is not None and first_out is not None:
+                break
+        if first_in is None or first_out is None or first_out <= first_in:
+            return None
+        return first_out - first_in
 
     def register_stream(self, chip: int, x: int, y: int,
                         addr: int) -> list[tuple[float, int]]:

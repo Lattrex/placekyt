@@ -1551,6 +1551,28 @@ class SimController(QObject):
         self.trace_model.set_cursor(ns)
         self.cell_state_refreshed.emit()
 
+    def perf_report(self) -> dict | None:
+        """The chip's power/latency/throughput report for the last run, or None.
+
+        Pulls simKYT's ``performance_report()`` off the hosted chip. The GRC
+        server runs IN-PROCESS (in a thread over ``self.engine.chip``), so this
+        one call serves BOTH the headless GUI run and the live GRC-server run —
+        the same chip object is the one that just executed. A HwChip or a chip
+        built without power data returns whatever the report gives (its
+        ``power_data_available`` flag says whether the energy figures are real).
+        Best-effort: any failure (no engine, older sim without the API) is None
+        so the Stream Summary tab simply omits the power block."""
+        eng = self.engine
+        if eng is None:
+            return None
+        chip = getattr(eng, "chip", None)
+        if chip is None or not hasattr(chip, "performance_report"):
+            return None
+        try:
+            return chip.performance_report()
+        except Exception:  # noqa: BLE001
+            return None
+
     # -- live cell state (DEBUG §3.2 Cell Inspector live mode) -----------------
 
     def has_run(self) -> bool:

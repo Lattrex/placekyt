@@ -769,10 +769,15 @@ class TestGnuradioServer:
         eng = w.sim.engine
         prev_len = None
         prev_tmax = None
+        # Drive a wave LARGE enough that ONE wave already overflows the
+        # _LIVE_TRACE_MAX window — so the window is saturated (flat) from wave 0
+        # and the `n == prev_len` invariant holds every wave. A gain sample yields
+        # ~12 trace transactions, so 2000 samples ≈ 24k > 20k cap; a smaller wave
+        # would still be filling the window across the loop and legitimately grow.
         for _ in range(5):
             eng.chip.write_port(
-                "x16_in", np.random.uniform(-0.8, 0.8, 500).astype(np.float32))
-            eng.chip.run_until_output("x16_out", 500, 500 * 500)
+                "x16_in", np.random.uniform(-0.8, 0.8, 2000).astype(np.float32))
+            eng.chip.run_until_output("x16_out", 2000, 2000 * 500)
             eng.chip.read_port("x16_out")
             w.sim.refresh_debug_from_chip(force=True)
             txns = w.sim.trace_model.transactions

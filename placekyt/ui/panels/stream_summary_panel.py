@@ -52,9 +52,12 @@ from PySide6.QtWidgets import (
 _COLS = ["Direction", "Chip", "Port", "Stream", "Samples",
          "Settled rate", "Mean rate", "Sample gap"]
 
-# Per-block utilization table columns. "Busy" = busy-time relative to the busiest
-# block (bottleneck=100%). "Cell duty" = average per-cell fraction of the run.
-_UTIL_COLS = ["Rank", "Block", "Type", "Busy", "Cell duty", "Exec count", "Cells"]
+# Per-block utilization table columns. "Dwell" = critical-cell busy relative to
+# the busiest block (bottleneck=100%; size-independent, NOT summed over cells).
+# "Cell duty" = average per-cell fraction of the run (≈100% everywhere ⇒ the array
+# is saturated). "Instr/cell" = mean instructions per cell (work-per-sample; a
+# feedback loop runs many, a flat filter few).
+_UTIL_COLS = ["Rank", "Block", "Type", "Dwell", "Cell duty", "Instr/cell", "Cells"]
 
 # Row tint for the #1 (bottleneck) block — a translucent hot red.
 _HOT_ROW = QColor(180, 60, 60, 90)
@@ -320,10 +323,24 @@ class StreamSummaryPanel(QWidget):
             top = dsp[0]
             pct = top["util_pct"]
             pct_txt = f"{pct:.0f}% busy" if isinstance(pct, (int, float)) else ""
-            self._bottleneck.setText(
-                f"Bottleneck: {top['block']}"
-                + (f" ({pct_txt})" if pct_txt else "")
-                + " — the worst-case serial path. Optimize here for more throughput.")
+            # SATURATION CHECK: if EVERY DSP block's cells run near-100% duty, the
+            # array is throughput-bound — there is no single-block stall, so it's
+            # dishonest to finger one. Say so, and point to the per-sample slowest
+            # (the highest-work block) as the thing to widen to go faster.
+            duties = [r.get("occupancy_pct") for r in dsp
+                      if isinstance(r.get("occupancy_pct"), (int, float))]
+            saturated = bool(duties) and min(duties) >= 90.0
+            if saturated:
+                self._bottleneck.setText(
+                    f"Array saturated (~{min(duties):.0f}% cell duty) — throughput-"
+                    f"bound, no single-block stall. Slowest per sample: {top['block']}"
+                    + (f" ({pct_txt})" if pct_txt else "")
+                    + " — widen it to go faster.")
+            else:
+                self._bottleneck.setText(
+                    f"Bottleneck: {top['block']}"
+                    + (f" ({pct_txt})" if pct_txt else "")
+                    + " — the worst-case serial path. Optimize here for throughput.")
         else:
             self._bottleneck.setText("Bottleneck: —")
 
@@ -333,13 +350,16 @@ class StreamSummaryPanel(QWidget):
             pct_txt = f"{pct:.0f}%" if isinstance(pct, (int, float)) else "—"
             duty = r.get("occupancy_pct")
             duty_txt = f"{duty:.0f}%" if isinstance(duty, (int, float)) else "—"
+            ipc = r.get("instr_per_cell")
+            ipc_txt = (f"{ipc:.0f}" if isinstance(ipc, (int, float)) and ipc
+                       else "—")
             cells = [
                 str(r["rank"]),
                 r["block"],
                 r["type"] or "",
                 pct_txt,
                 duty_txt,
-                str(r["exec_count"]),
+                ipc_txt,
                 str(r["cells"]),
             ]
             is_top = (r["block"] != "(routing)"

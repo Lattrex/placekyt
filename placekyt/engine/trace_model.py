@@ -547,18 +547,22 @@ class TraceModel:
         so their transit cost is visible but never mistaken for a DSP block.
         ``block_types`` optionally maps block name -> block type for display.
 
-        ``util_pct`` is the block's busy time as a percentage of the BUSIEST DSP
-        block's busy time (so the bottleneck reads 100% and everything else is
-        relative to it — "Costas 100%, Gardner 34%"). It is NOT a fraction of
-        wall-clock: on a parallel array the summed cell-busy-time across a block's
-        many cells legitimately exceeds the run's wall-span, so a "% of the run"
-        reading would be nonsensical (>100%). Relative-to-peak is the honest
-        "who's the bottleneck" measure. ``occupancy_pct`` (per-cell average) IS a
-        true 0..100 fraction of the run for when you want raw cell duty-cycle.
+        ``util_pct`` is the block's CRITICAL-CELL busy time (its busiest single
+        cell — the longest serial path through it) as a percentage of the busiest
+        DSP block's critical cell (bottleneck = 100%). It ranks by the critical
+        cell, NOT the sum over cells, because a block's cells run CONCURRENTLY: the
+        summed busy-time is ≈ cells × occupancy, which on a saturated array just
+        crowns whichever block has the MOST cells (a wide FIR), not the true
+        bottleneck. ``occupancy_pct`` (per-cell average, a true 0..100% of the run)
+        is the SATURATION indicator — ~100% for every block ⇒ throughput-bound, no
+        single-block stall. ``instr_per_cell`` (mean instructions per cell) is the
+        size-independent work-per-sample: a feedback loop runs many, a flat filter
+        few.
 
-        Each row (sorted busiest-first, ``rank`` 1 = the bottleneck)::
+        Each row (sorted by critical cell busiest-first, ``rank`` 1 = bottleneck)::
 
-            {block, type, cells, exec_count, busy_ns, util_pct, occupancy_pct, rank}
+            {block, type, cells, exec_count, busy_ns, crit_ns, util_pct,
+             occupancy_pct, instr_per_cell, rank}
         ``busy``/``span_ns`` let a caller SUPPLY the per-cell busy map + run span
         instead of deriving them from this model's transactions — needed when the
         exec_ticks live on the hosted chip's trace but were dropped from the GUI's
@@ -587,24 +591,41 @@ class TraceModel:
         for key, ns in busy.items():
             name = block_lookup.get(key) or "(routing)"
             row = agg.setdefault(name, {"block": name, "cells": 0, "exec_count": 0,
-                                        "busy_ns": 0.0})
+                                        "busy_ns": 0.0, "crit_ns": 0.0})
             row["cells"] += 1
             row["busy_ns"] += ns
+            row["crit_ns"] = max(row["crit_ns"], ns)   # busiest single cell
             row["exec_count"] += exec_count.get(key, 0)
 
         rows = list(agg.values())
-        rows.sort(key=lambda r: r["busy_ns"], reverse=True)
-        # Peak busy over DSP blocks (ignore pure routing) → the 100% reference.
-        peak = max((r["busy_ns"] for r in rows if r["block"] != "(routing)"),
+        # RANK BY THE CRITICAL CELL, NOT THE SUM. A block's SUMMED busy-time is
+        # ~ (cells × per-cell occupancy) — on a saturated array where every cell is
+        # ~99% busy that just crowns the block with the MOST cells (the wide RRC
+        # matched filter), NOT the true bottleneck. A block's cells run CONCURRENTLY,
+        # so its throughput cost is its CRITICAL (busiest) cell — the longest single
+        # serial path through it — which is size-independent. That's the honest
+        # "where does a sample dwell longest" measure.
+        rows.sort(key=lambda r: (r["crit_ns"], r["busy_ns"]), reverse=True)
+        peak = max((r["crit_ns"] for r in rows if r["block"] != "(routing)"),
                    default=0.0)
         for i, r in enumerate(rows):
             r["type"] = (block_types or {}).get(r["block"], "")
-            r["util_pct"] = (100.0 * r["busy_ns"] / peak) if peak else None
+            # 'util_pct' = critical-cell busy relative to the busiest block's
+            # critical cell (bottleneck = 100%). NOT the summed-over-cells total.
+            r["util_pct"] = (100.0 * r["crit_ns"] / peak) if peak else None
             # Per-cell average duty cycle: what fraction of the run each of the
-            # block's cells was busy on average (a true 0..100% figure).
+            # block's cells was busy on average (a true 0..100% figure). When this
+            # is ~100% for EVERY block, the array is saturated / throughput-bound —
+            # the panel says so instead of fingering one block. Capped at 100%: the
+            # per-instruction tail estimate in ``busy_ns`` can nudge a fully-busy
+            # cell slightly over the run span, but a duty cycle can't exceed 100%.
             r["occupancy_pct"] = (
-                100.0 * r["busy_ns"] / (span * r["cells"])
+                min(100.0, 100.0 * r["busy_ns"] / (span * r["cells"]))
                 if span and r["cells"] else None)
+            # Instructions per cell — the size-independent WORK-PER-SAMPLE signal.
+            # A feedback loop (Costas/Gardner) runs many instructions per sample;
+            # a flat FIR runs few. Distinguishes real compute cost from mere width.
+            r["instr_per_cell"] = (r["exec_count"] / r["cells"]) if r["cells"] else 0
             r["rank"] = i + 1
         return rows
 

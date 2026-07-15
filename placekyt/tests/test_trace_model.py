@@ -280,15 +280,67 @@ class TestBlockUtilization:
         assert slow["util_pct"] == 100.0
         assert abs(fast["util_pct"] - (100.0 * 40.0 / 400.0)) < 1e-6
 
-    def test_occupancy_pct_is_fraction_of_run(self):
+    def test_ranks_by_critical_cell_not_block_size(self):
+        # THE key regression: a WIDE block (4 cells, each 50 ns busy → 200 summed)
+        # must NOT out-rank a NARROW block whose single cell is busier (150 ns).
+        # The old sum-over-cells metric crowned the wide block (200 > 150); the
+        # correct critical-cell metric crowns the narrow one (150 > 50). This is
+        # exactly the RRC-matched-filter-vs-Costas artifact.
+        ev = []
+        # Wide block: cells 0..3, each does 2 gaps of 25 ns (busy ≈ 50 + tail 25).
+        for cid in (0, 1, 2, 3):
+            for i, t in enumerate([0.0, 25.0, 50.0]):
+                ev.append({"time_ns": t, "cell_id": cid, "kind": "exec_tick",
+                           "pc": i})
+        # Narrow block: cell 5 does 2 gaps of 75 ns (busy ≈ 150 + tail 75).
+        for i, t in enumerate([0.0, 75.0, 150.0]):
+            ev.append({"time_ns": t, "cell_id": 5, "kind": "exec_tick", "pc": i})
+        tm = TraceModel()
+        tm.ingest(0, ev, 10)
+        lookup = {(0, c, 0): "Wide" for c in (0, 1, 2, 3)}
+        lookup[(0, 5, 0)] = "Narrow"
+        rows = tm.block_utilization(lookup)
+        wide = next(r for r in rows if r["block"] == "Wide")
+        narrow = next(r for r in rows if r["block"] == "Narrow")
+        # Summed busy: Wide (4 cells) > Narrow (1 cell) — the OLD (wrong) ranking.
+        assert wide["busy_ns"] > narrow["busy_ns"]
+        # But per-CRITICAL-cell, Narrow's cell is the longest serial path → #1.
+        assert narrow["crit_ns"] > wide["crit_ns"]
+        assert rows[0]["block"] == "Narrow"
+        assert narrow["util_pct"] == 100.0
+
+    def test_instr_per_cell_is_size_independent_work(self):
+        # A feedback loop runs MANY instructions per cell per sample; a flat block
+        # runs few. instr_per_cell captures that regardless of cell count.
+        ev = []
+        # Loopy: one cell, 6 exec ticks (heavy per-sample work).
+        for i, t in enumerate([0.0, 10, 20, 30, 40, 50]):
+            ev.append({"time_ns": float(t), "cell_id": 0, "kind": "exec_tick",
+                       "pc": i})
+        # Flat: two cells, 2 ticks each (light per-sample work, but wider).
+        for cid in (1, 2):
+            for i, t in enumerate([0.0, 10]):
+                ev.append({"time_ns": float(t), "cell_id": cid, "kind": "exec_tick",
+                           "pc": i})
+        tm = TraceModel()
+        tm.ingest(0, ev, 10)
+        rows = tm.block_utilization({(0, 0, 0): "Loopy", (0, 1, 0): "Flat",
+                                     (0, 2, 0): "Flat"})
+        loopy = next(r for r in rows if r["block"] == "Loopy")
+        flat = next(r for r in rows if r["block"] == "Flat")
+        assert loopy["instr_per_cell"] > flat["instr_per_cell"]
+
+    def test_occupancy_pct_is_capped_fraction_of_run(self):
         tm = TraceModel()
         tm.ingest(0, self._trace(), 10)
         rows = tm.block_utilization({(0, 0, 0): "SlowBlock", (0, 1, 0): "FastBlock"})
-        # Run span = 0..300 = 300 ns; SlowBlock (1 cell) busy 400 → occupancy
-        # 400/300 (>100% is possible for a single overworked cell, but it's a true
-        # per-cell duty ratio, not summed-over-cells).
+        # SlowBlock's single cell is busy the whole run (its tail estimate even
+        # nudges busy_ns past the span) → occupancy CAPPED at 100% (a duty cycle
+        # can't exceed 100%). FastBlock's cell is mostly idle → well under 100%.
         slow = next(r for r in rows if r["block"] == "SlowBlock")
-        assert abs(slow["occupancy_pct"] - (100.0 * 400.0 / (300.0 * 1))) < 1e-6
+        fast = next(r for r in rows if r["block"] == "FastBlock")
+        assert slow["occupancy_pct"] == 100.0
+        assert fast["occupancy_pct"] < 50.0
 
     def test_unmapped_cells_bucket_as_routing(self):
         tm = TraceModel()

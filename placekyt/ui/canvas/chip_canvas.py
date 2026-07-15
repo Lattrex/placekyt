@@ -1129,6 +1129,19 @@ class ChipCanvas(QGraphicsView):
             key = (getattr(item, "chip_id", 0) or 0, item.cx, item.cy)
             item.set_sim_state(states.get(key))
 
+    def apply_heatmap(self, heat: dict) -> None:
+        """Paint the bottleneck heatmap: ``heat`` maps ``(chip_id, x, y) -> 0..1``
+        utilization. Cells absent from the map are cleared (heat off). Keyed by
+        chip for multi-chip safety, like :meth:`apply_cell_states`."""
+        for item in self.cell_items():
+            key = (getattr(item, "chip_id", 0) or 0, item.cx, item.cy)
+            item.set_heat(heat.get(key))
+
+    def clear_heatmap(self) -> None:
+        """Turn the bottleneck heatmap overlay off on every cell."""
+        for item in self.cell_items():
+            item.set_heat(None)
+
     def apply_resolved_faces(self, build) -> None:
         """Sync a BLOCK/TRANSIT cell's arrow to its BUILD-resolved output face
         (#135). A block's effective output face can be set by its program /

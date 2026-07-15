@@ -96,6 +96,17 @@ def _shift_for_state(base: QColor, state: str) -> QColor:
     out.setHsv(h if h >= 0 else 0, ns, nv, a)
     return out
 
+
+def _heat_color(frac: float) -> QColor:
+    """Map a 0..1 utilization to a cold(blue)→hot(red) heatmap colour for the
+    bottleneck overlay. 1.0 = the busiest block (deep red = the worst-case serial
+    path); 0.0 = idle (blue). Hue sweeps 210°(blue)→0°(red) as frac rises."""
+    f = max(0.0, min(1.0, frac))
+    hue = int(210 * (1.0 - f))     # 210=blue at f=0, 0=red at f=1
+    out = QColor()
+    out.setHsv(hue, 200, 210, 255)
+    return out
+
 # Simulation-overlay fills (§3.2 cell-state colours). When a sim_state is set it
 # overrides the static fill so the canvas shows the "living chip".
 _SIM_EXECUTING = QColor(60, 220, 90)    # green bright — PC advancing
@@ -150,6 +161,7 @@ class CellItem(QGraphicsItem):
         self.io_role = None     # "input" / "output" for a block's interface cells
         self._fill = fill
         self.sim_state: str | None = None  # set during simulation (§3.2 overlay)
+        self._heat: float | None = None    # bottleneck heatmap intensity 0..1 (None=off)
         # Handshake-flash intensity per face ("S"/"E"/"W"/"N" → 0..1), decayed
         # each animation tick. A face flashes when a packet exits the cell there.
         self._flash: dict[str, float] = {}
@@ -180,6 +192,13 @@ class CellItem(QGraphicsItem):
         return _EMPTY_FILL
 
     def _fill_color(self) -> QColor:
+        # Bottleneck HEATMAP overlay (toggled, analysis-only): when active it
+        # REPLACES the fill with a hot(red)→cold(blue) tint by the cell's block
+        # utilization, so the worst-case serial path stands out at a glance. It
+        # takes precedence over the sim-state shift (you turn it on to read the
+        # heatmap, not the live activity).
+        if self._heat is not None:
+            return _heat_color(self._heat)
         # During simulation the cell-state SHIFTS the cell's own base colour
         # (brighter once it has executed) rather than replacing it with a generic
         # green — so each block keeps its distinct colour while still showing
@@ -198,6 +217,13 @@ class CellItem(QGraphicsItem):
         """Set/clear the simulation overlay state and request a repaint."""
         if state != self.sim_state:
             self.sim_state = state
+            self.update()
+
+    def set_heat(self, frac: float | None) -> None:
+        """Set/clear the bottleneck heatmap intensity (0..1, or None to turn the
+        overlay off) and repaint. 1.0 = the busiest block's cells (hot red)."""
+        if frac != self._heat:
+            self._heat = frac
             self.update()
 
     def set_breakpoint(self, has_bp: bool) -> None:

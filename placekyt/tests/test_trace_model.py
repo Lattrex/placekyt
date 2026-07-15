@@ -239,3 +239,73 @@ class TestStreamSummary:
                        "port_name": "x16_in", "data": 1, "dest": 0,
                        "target_hop": 22}], 10)
         assert tm.io_latency_ns() is None
+
+
+class TestBlockUtilization:
+    """The bottleneck view: sum each block's cells' exec busy-time; rank hottest."""
+
+    def _trace(self):
+        # width 10. Two cells: (0,0)=cell 0 runs a SLOW block (big gaps between
+        # exec ticks), (1,0)=cell 1 runs a FAST block (small gaps). The slow one
+        # must rank #1 (the bottleneck).
+        ev = []
+        # Slow block cell 0: ticks at 0,100,200,300 → 3 gaps of 100 each.
+        for i, t in enumerate([0.0, 100.0, 200.0, 300.0]):
+            ev.append({"time_ns": t, "cell_id": 0, "kind": "exec_tick", "pc": i})
+        # Fast block cell 1: ticks at 0,10,20,30 → 3 gaps of 10 each.
+        for i, t in enumerate([0.0, 10.0, 20.0, 30.0]):
+            ev.append({"time_ns": t, "cell_id": 1, "kind": "exec_tick", "pc": i})
+        return ev
+
+    def test_ranks_busiest_first(self):
+        tm = TraceModel()
+        tm.ingest(0, self._trace(), 10)
+        lookup = {(0, 0, 0): "SlowBlock", (0, 1, 0): "FastBlock"}
+        rows = tm.block_utilization(lookup)
+        assert [r["block"] for r in rows] == ["SlowBlock", "FastBlock"]
+        assert rows[0]["rank"] == 1 and rows[1]["rank"] == 2
+        # SlowBlock busy = 3*100 + median-tail(100) = 400; FastBlock = 3*10 + 10 = 40.
+        assert rows[0]["busy_ns"] == 400.0
+        assert rows[1]["busy_ns"] == 40.0
+        # SlowBlock is ~10x busier — it IS the bottleneck.
+        assert rows[0]["busy_ns"] > 5 * rows[1]["busy_ns"]
+
+    def test_util_pct_is_relative_to_peak(self):
+        tm = TraceModel()
+        tm.ingest(0, self._trace(), 10)
+        rows = tm.block_utilization({(0, 0, 0): "SlowBlock", (0, 1, 0): "FastBlock"})
+        # util_pct is normalized so the BUSIEST block = 100%, others relative.
+        slow = next(r for r in rows if r["block"] == "SlowBlock")
+        fast = next(r for r in rows if r["block"] == "FastBlock")
+        assert slow["util_pct"] == 100.0
+        assert abs(fast["util_pct"] - (100.0 * 40.0 / 400.0)) < 1e-6
+
+    def test_occupancy_pct_is_fraction_of_run(self):
+        tm = TraceModel()
+        tm.ingest(0, self._trace(), 10)
+        rows = tm.block_utilization({(0, 0, 0): "SlowBlock", (0, 1, 0): "FastBlock"})
+        # Run span = 0..300 = 300 ns; SlowBlock (1 cell) busy 400 → occupancy
+        # 400/300 (>100% is possible for a single overworked cell, but it's a true
+        # per-cell duty ratio, not summed-over-cells).
+        slow = next(r for r in rows if r["block"] == "SlowBlock")
+        assert abs(slow["occupancy_pct"] - (100.0 * 400.0 / (300.0 * 1))) < 1e-6
+
+    def test_unmapped_cells_bucket_as_routing(self):
+        tm = TraceModel()
+        tm.ingest(0, self._trace(), 10)
+        # Only map cell 0; cell 1 falls into "(routing)".
+        rows = tm.block_utilization({(0, 0, 0): "SlowBlock"})
+        names = {r["block"] for r in rows}
+        assert names == {"SlowBlock", "(routing)"}
+
+    def test_type_column_from_map(self):
+        tm = TraceModel()
+        tm.ingest(0, self._trace(), 10)
+        rows = tm.block_utilization({(0, 0, 0): "cost0"},
+                                    block_types={"cost0": "ComplexCostasLoopBlock"})
+        assert next(r for r in rows if r["block"] == "cost0")["type"] == \
+            "ComplexCostasLoopBlock"
+
+    def test_empty_trace_is_empty(self):
+        tm = TraceModel()
+        assert tm.block_utilization({}) == []

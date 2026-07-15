@@ -486,6 +486,115 @@ class TraceModel:
             return None
         return first_out - first_in
 
+    def cell_busy_ns(self) -> dict[tuple[int, int, int], float]:
+        """Per-cell EXECUTING chip-time: ``(chip, x, y) -> busy_ns``.
+
+        A cell records one ``exec_tick`` per instruction it runs. The chip-time
+        that instruction OCCUPIED the cell is the gap to that cell's NEXT exec_tick
+        (simKYT's cycle-accurate GLS timing — the ticks are spaced by the real
+        per-instruction latency). Summing those gaps gives how long the cell was
+        busy computing over the run. The cell's LAST tick has no following tick to
+        measure against, so it's charged the cell's own MEDIAN instruction gap (a
+        neutral estimate — never zero, never the whole tail-to-end idle span). A
+        cell that ran a single instruction is charged one median-of-all-cells gap.
+
+        This is the raw signal behind ``block_utilization`` — the "where do samples
+        get stuck" bottleneck view. Pure trace math, no Qt, independently testable."""
+        # Gather each cell's exec-tick timestamps in order.
+        by_cell: dict[tuple[int, int, int], list[float]] = {}
+        for t in self.transactions:
+            if t.kind == KIND_EXEC:
+                by_cell.setdefault((t.chip, t.cx, t.cy), []).append(t.time_ns)
+
+        # A global fallback gap (median of every intra-cell gap) for cells that ran
+        # exactly one instruction (no self-gap to measure).
+        all_gaps: list[float] = []
+        per_cell_gaps: dict[tuple[int, int, int], list[float]] = {}
+        for key, ts in by_cell.items():
+            ts.sort()
+            gaps = [ts[i + 1] - ts[i] for i in range(len(ts) - 1)]
+            per_cell_gaps[key] = gaps
+            all_gaps.extend(gaps)
+        global_med = _median(all_gaps) or 0.0
+
+        busy: dict[tuple[int, int, int], float] = {}
+        for key, ts in by_cell.items():
+            gaps = per_cell_gaps[key]
+            # Charge the final (unmeasured) instruction the cell's own median gap,
+            # or the global median if this cell ran only one instruction.
+            tail = _median(gaps) if gaps else global_med
+            busy[key] = sum(gaps) + (tail or 0.0)
+        return busy
+
+    def block_utilization(
+        self, block_lookup: dict[tuple[int, int, int], str],
+        block_types: dict[str, str] | None = None,
+    ) -> list[dict]:
+        """Per-BLOCK execution utilization — the throughput-bottleneck view.
+
+        Aggregates :meth:`cell_busy_ns` up to whole blocks: a block's busy time is
+        the sum over its cells. ``util_pct`` normalizes that against the run SPAN
+        (first exec_tick → last exec_tick across the whole chip) — the fraction of
+        the run this block spent computing. The block with the highest busy time is
+        the WORST-CASE SERIAL PATH: the one the pipeline waits on, the place to
+        optimize for more throughput (for the coherent RX this is the Costas loop).
+
+        ``block_lookup`` maps ``(chip, x, y) -> block name`` (the caller builds it
+        from the placement — keeps this model project-free / Qt-free). Cells with no
+        block entry (plain routing/transit cells) are bucketed under ``"(routing)"``
+        so their transit cost is visible but never mistaken for a DSP block.
+        ``block_types`` optionally maps block name -> block type for display.
+
+        ``util_pct`` is the block's busy time as a percentage of the BUSIEST DSP
+        block's busy time (so the bottleneck reads 100% and everything else is
+        relative to it — "Costas 100%, Gardner 34%"). It is NOT a fraction of
+        wall-clock: on a parallel array the summed cell-busy-time across a block's
+        many cells legitimately exceeds the run's wall-span, so a "% of the run"
+        reading would be nonsensical (>100%). Relative-to-peak is the honest
+        "who's the bottleneck" measure. ``occupancy_pct`` (per-cell average) IS a
+        true 0..100 fraction of the run for when you want raw cell duty-cycle.
+
+        Each row (sorted busiest-first, ``rank`` 1 = the bottleneck)::
+
+            {block, type, cells, exec_count, busy_ns, util_pct, occupancy_pct, rank}
+        """
+        busy = self.cell_busy_ns()
+        # Run span: first → last exec_tick over the whole chip.
+        exec_times = [t.time_ns for t in self.transactions if t.kind == KIND_EXEC]
+        span = (max(exec_times) - min(exec_times)) if len(exec_times) >= 2 else None
+
+        # exec counts per cell, to report per-block instruction volume.
+        exec_count: dict[tuple[int, int, int], int] = {}
+        for t in self.transactions:
+            if t.kind == KIND_EXEC:
+                k = (t.chip, t.cx, t.cy)
+                exec_count[k] = exec_count.get(k, 0) + 1
+
+        agg: dict[str, dict] = {}
+        for key, ns in busy.items():
+            name = block_lookup.get(key) or "(routing)"
+            row = agg.setdefault(name, {"block": name, "cells": 0, "exec_count": 0,
+                                        "busy_ns": 0.0})
+            row["cells"] += 1
+            row["busy_ns"] += ns
+            row["exec_count"] += exec_count.get(key, 0)
+
+        rows = list(agg.values())
+        rows.sort(key=lambda r: r["busy_ns"], reverse=True)
+        # Peak busy over DSP blocks (ignore pure routing) → the 100% reference.
+        peak = max((r["busy_ns"] for r in rows if r["block"] != "(routing)"),
+                   default=0.0)
+        for i, r in enumerate(rows):
+            r["type"] = (block_types or {}).get(r["block"], "")
+            r["util_pct"] = (100.0 * r["busy_ns"] / peak) if peak else None
+            # Per-cell average duty cycle: what fraction of the run each of the
+            # block's cells was busy on average (a true 0..100% figure).
+            r["occupancy_pct"] = (
+                100.0 * r["busy_ns"] / (span * r["cells"])
+                if span and r["cells"] else None)
+            r["rank"] = i + 1
+        return rows
+
     def register_stream(self, chip: int, x: int, y: int,
                         addr: int) -> list[tuple[float, int]]:
         """Value-over-time of one cell register ``(chip, x, y, addr)`` —

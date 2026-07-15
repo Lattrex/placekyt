@@ -211,6 +211,14 @@ class MainWindow(QMainWindow):
         self.act_port_stubs.setCheckable(True)
         self.act_port_stubs.toggled.connect(self.canvas.set_show_port_stubs)
         m_view.addAction(self.act_port_stubs)
+        # Bottleneck heatmap: tint each block's cells by how much chip-time it
+        # spends executing (from the latest run's trace). The hottest block is the
+        # worst-case serial path. OFF by default — it overrides the block colours,
+        # so it's opt-in for when you're optimizing throughput.
+        self.act_heatmap = QAction("Show Bottleneck Heatmap", self)
+        self.act_heatmap.setCheckable(True)
+        self.act_heatmap.toggled.connect(self._on_heatmap_toggled)
+        m_view.addAction(self.act_heatmap)
         m_view.addSeparator()
         m_view.addAction(self._action("Reset Layout", None, self.reset_layout))
         m_view.addAction(self._action("Fit to View", "Ctrl+0",
@@ -488,6 +496,12 @@ class MainWindow(QMainWindow):
         self.sim.trace_updated.connect(self.stream_summary_panel.set_trace_model)
         self.stream_summary_panel.set_perf_report_provider(self.sim.perf_report)
         self.stream_summary_panel.set_stream_namer(self._port_tag_name)
+        # Per-block utilization / bottleneck: the placement→block map (rebuilt each
+        # refresh so it tracks re-placements) powers the "worst-case serial path".
+        self.stream_summary_panel.set_block_provider(self._block_utilization_lookup)
+        # Bottleneck heatmap: recompute from each new trace, but only paint it when
+        # the View toggle is on. Keep the latest model for on-demand toggling.
+        self.sim.trace_updated.connect(self._on_trace_for_heatmap)
         # Timeline scrubber (DEBUG §3.4): rebuild span + markers on each trace
         # update; dragging it drives the shared cursor.
         self.sim.trace_updated.connect(self.scrubber.set_from_trace_model)
@@ -949,6 +963,65 @@ class MainWindow(QMainWindow):
             return None
         except Exception:  # noqa: BLE001
             return None
+
+    def _block_utilization_lookup(self):
+        """Build ``(block_lookup, block_types)`` for the Stream Summary's per-block
+        utilization / bottleneck view: ``(chip, x, y) -> block name`` and
+        ``name -> block type``, from every placed block's cells. Returns None when
+        nothing is placed yet (the panel then shows the 'place a design' hint)."""
+        try:
+            lookup: dict[tuple[int, int, int], str] = {}
+            types: dict[str, str] = {}
+            for b in self.controller.project.blocks:
+                pl = getattr(b, "placement", None)
+                if pl is None:
+                    continue
+                types[b.name] = b.type
+                for c in pl.cells:
+                    lookup[(pl.chip, c.x, c.y)] = b.name
+            if not lookup:
+                return None
+            return lookup, types
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _on_trace_for_heatmap(self, model) -> None:
+        """Keep the latest trace model and repaint the heatmap if it's on."""
+        self._heatmap_model = model
+        if getattr(self, "act_heatmap", None) is not None and self.act_heatmap.isChecked():
+            self._refresh_heatmap()
+
+    def _on_heatmap_toggled(self, on: bool) -> None:
+        """View-menu toggle: paint or clear the bottleneck heatmap overlay."""
+        if on:
+            self._refresh_heatmap()
+        else:
+            self.canvas.clear_heatmap()
+
+    def _refresh_heatmap(self) -> None:
+        """Compute per-cell heat (0..1, normalized to the busiest block's cells)
+        from the latest trace and paint it on the canvas. Each cell of a block
+        shares the block's utilization, so a block glows uniformly by how much of
+        the run it spent executing — the hottest block (deep red) is the
+        bottleneck. No trace / no placement → clear the overlay."""
+        model = getattr(self, "_heatmap_model", None)
+        pair = self._block_utilization_lookup()
+        if model is None or pair is None or not getattr(model, "transactions", None):
+            self.canvas.clear_heatmap()
+            return
+        block_lookup, block_types = pair
+        rows = model.block_utilization(block_lookup, block_types)
+        # Peak block busy-time (excluding pure routing) sets the 1.0 reference.
+        peak = max((r["busy_ns"] for r in rows if r["block"] != "(routing)"),
+                   default=0.0)
+        if peak <= 0:
+            self.canvas.clear_heatmap()
+            return
+        busy_by_block = {r["block"]: r["busy_ns"] for r in rows}
+        heat: dict[tuple[int, int, int], float] = {}
+        for key, name in block_lookup.items():
+            heat[key] = min(1.0, busy_by_block.get(name, 0.0) / peak)
+        self.canvas.apply_heatmap(heat)
 
     # -- breakpoints (DEBUG §3.6) ---------------------------------------------
 

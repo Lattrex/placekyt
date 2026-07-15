@@ -465,11 +465,12 @@ class TestFlyLines:
         assert len(flies) == 1
         assert flies[0].connection_name == "g_to_dc"
 
-    def test_unrouted_chip_input_to_block_draws_no_fly_line(self, qapp, catalog):
-        """A chip INPUT-port → block net injects directly at the port edge cell —
-        it has no physical route by design, so it must NOT draw a fly line (which
-        would falsely read as 'not connected'; the user-reported top-left
-        artifact). Block→block unrouted nets still fly-line (test above)."""
+    def test_unrouted_chip_input_to_block_draws_a_fly_line(self, qapp, catalog):
+        """A chip INPUT-port → block net injects at the port edge cell (no physical
+        route by design). It DOES draw a dashed guidance fly line (commit 76709f1 /
+        task #412) anchored to the first cell's input side, so the manual router can
+        see where the port feeds — the dashed line is guidance, NOT an 'unrouted'
+        error marker. (See test_flyline_port_sides for the authoritative spec.)"""
         w, ctrl = self._window_two_blocks(catalog)
         names = [b.name for b in ctrl.project.blocks]
         ctrl.add_logical_connection(
@@ -479,7 +480,7 @@ class TestFlyLines:
         )
         w.canvas.render_scene()
         _pump()
-        assert len(self._fly_items(w)) == 0
+        assert len(self._fly_items(w)) == 1
 
     def test_fly_line_is_selectable(self, qapp, catalog):
         w, ctrl = self._window_two_blocks(catalog)

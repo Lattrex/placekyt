@@ -2477,19 +2477,33 @@ def _patch_fanout_source_handoff(cfg, specs) -> None:
         return (_JUMP | (encode_hop_cnt(hop) << 5) | (int(entry) & 0x1F)) & 0xFFFF
 
     # Steer each rail's WRITE (in program order) to its own broker burst reg + hop.
+    # WRITE order is harmless — both operands land at their DISTINCT brokers before
+    # any JUMP fires, so a rail's data is present regardless of WRITE sequence.
     for i, (hop, dest_reg, _entry) in enumerate(specs):
         if i < len(write_addrs):
             _set_write(write_addrs[i], hop, dest_reg)
 
-    # The authored JUMP fires the LAST rail; a NEW JUMP (in the free program word,
-    # which sits ABOVE the authored JUMP) fires the FIRST rail. Both operands are
-    # already written, so firing the first rail's trigger after the last rail's is
-    # harmless. Generalises to N rails: authored JUMP = last, extra JUMPs = the rest.
-    last_hop, _lr, last_entry = specs[-1]
+    # JUMP ORDER IS NOT HARMLESS (fan-out FACE-transit hazard). The rails share ONE
+    # backbone: a FARTHER rail's trigger JUMP TRANSITS THROUGH the nearer rail's broker
+    # cell. If the nearer broker's trigger fires FIRST, that broker flips its output FACE
+    # toward ITS delivery target to relay — and the farther rail's JUMP, transiting while
+    # that FACE is diverted, is mis-routed into the nearer broker's target instead of
+    # continuing down the bus. The farther rail's broker then has its data but NEVER its
+    # trigger, so that whole rail silently drops (the mixer.yi→LowPass_I 0-output bug:
+    # ri's trigger was swallowed EAST at the rq broker mid-delivery). FIX: fire the rails
+    # in DESCENDING hop order — the farthest trigger executes FIRST, transiting every
+    # nearer broker while those brokers are still IDLE (FACE = bus/through direction), so
+    # each nearer trigger only diverts its OWN broker AFTER the farther JUMPs have already
+    # passed. Execution order is ASCENDING ADDRESS (the authored JUMP sits at the lowest
+    # JUMP address and runs first; extra JUMPs are placed ABOVE it and run later), so the
+    # AUTHORED JUMP gets the LARGEST hop and each successive extra JUMP a smaller one.
+    by_hop = sorted(specs, key=lambda s: s[0], reverse=True)  # farthest first
     old_jump = jump_addrs[-1]
-    cfg.memory[old_jump] = _make_jump(last_hop, last_entry)
+    first_hop, _fr, first_entry = by_hop[0]
+    cfg.memory[old_jump] = _make_jump(first_hop, first_entry)
 
-    # Place one extra JUMP per remaining rail in free program words above ``old_jump``.
+    # Place one extra JUMP per remaining rail in free program words above ``old_jump``
+    # (which execute AFTER it), in the same descending-hop order.
     free = [a for a in range(old_jump + 1, 32)
             if (cfg.memory.get(a, 0) & 0xFFFF) == 0]
     need = len(specs) - 1
@@ -2500,7 +2514,7 @@ def _patch_fanout_source_handoff(cfg, specs) -> None:
             f"{len(free)} — the block's output cell is over-full. INV-17: a complex-"
             f"output block MUST leave room for the fan-out form and be VERIFIED for it "
             f"at block-verification time, so this never surfaces at chip build.")
-    for slot, (hop, _dr, entry) in zip(free, specs[:-1]):
+    for slot, (hop, _dr, entry) in zip(free, by_hop[1:]):
         cfg.memory[slot] = _make_jump(hop, entry)
 
 

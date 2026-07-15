@@ -1964,18 +1964,59 @@ class SimController(QObject):
         if self._check_breakpoints(getattr(self, "_sim_chip", 0),
                                    self.engine.chip.get_trace(), self._width):
             return
-        # simkyt run() returns a dict; QueueEmpty means nothing left to do —
-        # BUT keep running if (a) the panel just injected push-reads (those
-        # bursts must still transit out), or (b) a held-ack panel port still has
-        # a cell stalled awaiting the panel's release (the controller is paused
-        # mid-handshake, not finished). Otherwise the no-FIFO backpressure would
-        # look like a finished run.
+        # simkyt run() returns a dict; QueueEmpty means the event queue drained.
+        # Keep running if (a) the panel just injected push-reads, (b) a held-ack
+        # panel port still has a cell stalled awaiting the panel's release, or
+        # (c) the input port still has QUEUED stimulus words not yet injected.
+        #
+        # But QueueEmpty ALONE is NOT proof the run finished. With a SMALL per-
+        # batch event budget (the slow speed steps / breakpoint stepping), a
+        # batch can end right as a cell latches a word whose forward/panel-
+        # reaction is DEFERRED (serviced only when the cell next goes Idle, on the
+        # FOLLOWING run() — the ack-on-latch pipeline's parked-req handling). At
+        # that instant the queue is momentarily empty, no held ack, no input
+        # queued — everything LOOKS done, but one more run() re-schedules the
+        # deferred work and the sim continues (the SRAM-panel demo committed only
+        # 5/6 writes, 0 reads under breakpoint stepping). So CONFIRM quiescence:
+        # on a bare QueueEmpty, pump ONE more run(); the run is truly done only if
+        # that produced NO events. This costs one extra empty run() at the true
+        # end and is a no-op at full batch (where the queue rarely drains early).
         if (isinstance(info, dict) and info.get("stop_reason") == "QueueEmpty"
-                and not pushed and not self._panel_acks_pending()):
-            self._timer.stop()
-            self._running = False
-            self._rebuild_trace()  # populate the debug views now the run is done
-            self.state_changed.emit("done")
+                and not pushed and not self._panel_acks_pending()
+                and not self._input_data_pending()):
+            confirm = self.engine.chip.run(max_events=self._effective_batch())
+            self._pump_panels()
+            if isinstance(confirm, dict):
+                self._events += int(confirm.get("events_processed", 0))
+            still_idle = (
+                isinstance(confirm, dict)
+                and confirm.get("stop_reason") == "QueueEmpty"
+                and int(confirm.get("events_processed", 0)) == 0
+                and not self._panel_acks_pending()
+                and not self._input_data_pending())
+            if still_idle:
+                self._timer.stop()
+                self._running = False
+                self._rebuild_trace()  # populate the debug views now the run is done
+                self.state_changed.emit("done")
+            else:
+                # Deferred work re-scheduled — re-emit the frame so the extra
+                # events are reflected, then let the next tick continue the run.
+                self._emit_single_chip_frame()
+
+    def _input_data_pending(self) -> bool:
+        """True if the hosted chip still has QUEUED stimulus words not yet
+        injected (single-outstanding input pacing feeds one per run()). Guards
+        the run-done check against a TRANSIENT QueueEmpty between injected words
+        — see _run_batch. Best-effort: a chip without the API (older build) reads
+        False, preserving the prior behaviour."""
+        chip = self.engine.chip if self.engine else None
+        if chip is None or not hasattr(chip, "has_pending_input_data"):
+            return False
+        try:
+            return bool(chip.has_pending_input_data())
+        except Exception:  # noqa: BLE001
+            return False
 
     def _panel_acks_pending(self) -> bool:
         """True if any registered panel's chip output port has a held ack

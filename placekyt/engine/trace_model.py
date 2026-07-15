@@ -529,6 +529,8 @@ class TraceModel:
     def block_utilization(
         self, block_lookup: dict[tuple[int, int, int], str],
         block_types: dict[str, str] | None = None,
+        busy: dict[tuple[int, int, int], float] | None = None,
+        span_ns: float | None = None,
     ) -> list[dict]:
         """Per-BLOCK execution utilization — the throughput-bottleneck view.
 
@@ -557,13 +559,24 @@ class TraceModel:
         Each row (sorted busiest-first, ``rank`` 1 = the bottleneck)::
 
             {block, type, cells, exec_count, busy_ns, util_pct, occupancy_pct, rank}
+        ``busy``/``span_ns`` let a caller SUPPLY the per-cell busy map + run span
+        instead of deriving them from this model's transactions — needed when the
+        exec_ticks live on the hosted chip's trace but were dropped from the GUI's
+        retained TraceModel (the live GRC-server path). When omitted they're
+        computed here (the headless / test path).
         """
-        busy = self.cell_busy_ns()
+        busy = busy if busy is not None else self.cell_busy_ns()
         # Run span: first → last exec_tick over the whole chip.
-        exec_times = [t.time_ns for t in self.transactions if t.kind == KIND_EXEC]
-        span = (max(exec_times) - min(exec_times)) if len(exec_times) >= 2 else None
+        if span_ns is not None:
+            span = span_ns
+        else:
+            exec_times = [t.time_ns for t in self.transactions if t.kind == KIND_EXEC]
+            span = (max(exec_times) - min(exec_times)) if len(exec_times) >= 2 else None
 
-        # exec counts per cell, to report per-block instruction volume.
+        # exec counts per cell, to report per-block instruction volume. Only
+        # available from this model's own exec_ticks; when a caller supplies
+        # ``busy`` (ticks not in this model), exec counts read 0 (the table still
+        # ranks by busy-time, which is the point).
         exec_count: dict[tuple[int, int, int], int] = {}
         for t in self.transactions:
             if t.kind == KIND_EXEC:

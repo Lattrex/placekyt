@@ -499,6 +499,10 @@ class MainWindow(QMainWindow):
         # Per-block utilization / bottleneck: the placement→block map (rebuilt each
         # refresh so it tracks re-placements) powers the "worst-case serial path".
         self.stream_summary_panel.set_block_provider(self._block_utilization_lookup)
+        # Busy-time (per-cell exec chip-time) comes from the hosted chip's trace,
+        # NOT the retained TraceModel (which drops exec_ticks) — same in-process
+        # chip that served the power report.
+        self.stream_summary_panel.set_busy_provider(self.sim.cell_busy_report)
         # Bottleneck heatmap: recompute from each new trace, but only paint it when
         # the View toggle is on. Keep the latest model for on-demand toggling.
         self.sim.trace_updated.connect(self._on_trace_for_heatmap)
@@ -1006,11 +1010,20 @@ class MainWindow(QMainWindow):
         bottleneck. No trace / no placement → clear the overlay."""
         model = getattr(self, "_heatmap_model", None)
         pair = self._block_utilization_lookup()
-        if model is None or pair is None or not getattr(model, "transactions", None):
+        if model is None or pair is None:
             self.canvas.clear_heatmap()
             return
         block_lookup, block_types = pair
-        rows = model.block_utilization(block_lookup, block_types)
+        # Busy-time from the hosted chip's trace (exec_ticks dropped from the model).
+        busy = span = None
+        rep = self.sim.cell_busy_report()
+        if rep:
+            busy, span = rep.get("busy"), rep.get("span_ns")
+        if busy is None:
+            self.canvas.clear_heatmap()
+            return
+        rows = model.block_utilization(block_lookup, block_types,
+                                       busy=busy, span_ns=span)
         # Peak block busy-time (excluding pure routing) sets the 1.0 reference.
         peak = max((r["busy_ns"] for r in rows if r["block"] != "(routing)"),
                    default=0.0)

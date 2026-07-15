@@ -1573,6 +1573,40 @@ class SimController(QObject):
         except Exception:  # noqa: BLE001
             return None
 
+    def cell_busy_report(self) -> dict | None:
+        """Per-cell EXECUTING chip-time for the last run:
+        ``{"busy": {(chip, x, y): busy_ns}, "span_ns": float}``, or None. Powers
+        the Stream Summary's block-utilization / bottleneck table + the canvas
+        heatmap.
+
+        Computed from the HOSTED CHIP's OWN trace (``get_trace()``), NOT the
+        retained TraceModel: the GUI drops ``exec_tick`` events before ingest (they
+        are the highest-volume, waveform-irrelevant fabric detail — see the
+        VOLUME CONTROL note in the pull path), so the TraceModel has no busy-time
+        signal. The in-process chip still holds the full trace (same object the
+        server ran, like ``perf_report``), so we build a throwaway TraceModel from
+        it here and reuse its ``cell_busy_ns``. Best-effort → None on any failure
+        (the panel then shows the 'run a simulation' hint)."""
+        eng = self.engine
+        chip = getattr(eng, "chip", None) if eng is not None else None
+        if chip is None or not hasattr(chip, "get_trace"):
+            return None
+        try:
+            from engine.trace_model import TraceModel, KIND_EXEC
+            raw = list(chip.get_trace())
+            if not raw:
+                return None
+            tm = TraceModel()
+            tm.ingest(0, raw, chip.width)
+            busy = tm.cell_busy_ns()
+            if not busy:
+                return None
+            ticks = [t.time_ns for t in tm.transactions if t.kind == KIND_EXEC]
+            span = (max(ticks) - min(ticks)) if len(ticks) >= 2 else None
+            return {"busy": busy, "span_ns": span}
+        except Exception:  # noqa: BLE001
+            return None
+
     # -- live cell state (DEBUG §3.2 Cell Inspector live mode) -----------------
 
     def has_run(self) -> bool:

@@ -89,6 +89,10 @@ class StreamSummaryPanel(QWidget):
         self._namer: Callable[[int, str, object], str | None] | None = None
         # () -> (block_lookup, block_types): the placement→block map for utilization.
         self._block_provider: Callable[[], tuple[dict, dict] | None] | None = None
+        # () -> {"busy": {(chip,x,y): ns}, "span_ns": float} | None: per-cell busy
+        # time from the hosted chip's trace (exec_ticks are dropped from the
+        # retained TraceModel, so utilization can't come from ``self._model``).
+        self._busy_provider: Callable[[], dict | None] | None = None
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(6, 6, 6, 6)
@@ -154,6 +158,13 @@ class StreamSummaryPanel(QWidget):
         maps name -> block type, both from the current placement. Powers the
         per-block utilization / bottleneck table."""
         self._block_provider = provider
+
+    def set_busy_provider(self, provider) -> None:
+        """Inject a ``() -> {"busy": {(chip,x,y): ns}, "span_ns": float} | None``
+        giving per-cell executing chip-time for the last run. Needed because the
+        retained TraceModel drops exec_ticks — this pulls busy-time from the hosted
+        chip's own trace instead (see SimController.cell_busy_report)."""
+        self._busy_provider = provider
 
     def set_trace_model(self, model) -> None:
         """Bind (or rebind) the TraceModel and refresh — the ``trace_updated``
@@ -288,7 +299,20 @@ class StreamSummaryPanel(QWidget):
             self._util.setRowCount(0)
             return
         block_lookup, block_types = pair
-        rows = self._model.block_utilization(block_lookup, block_types)
+        # Busy-time comes from the hosted chip's trace (exec_ticks are dropped from
+        # the retained TraceModel), via the busy provider. Fall back to the model
+        # itself (headless/test path where the model DOES hold exec_ticks).
+        busy = span = None
+        if self._busy_provider is not None:
+            try:
+                rep = self._busy_provider()
+            except Exception:  # noqa: BLE001
+                rep = None
+            if rep:
+                busy = rep.get("busy")
+                span = rep.get("span_ns")
+        rows = self._model.block_utilization(
+            block_lookup, block_types, busy=busy, span_ns=span)
         # Ignore pure routing/transit for the headline bottleneck (it's the DSP
         # block you'd optimize), but still SHOW it in the table for transparency.
         dsp = [r for r in rows if r["block"] != "(routing)"]

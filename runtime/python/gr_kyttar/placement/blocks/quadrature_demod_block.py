@@ -55,7 +55,7 @@ class QuadratureDemodBlock(KyttarBlock):
     Interface: COMPLEX input (xi@R0, xq@R1 — the proven complex-burst fan-in), ONE real
     output.  Two cells: ``conjmult`` (the conjugate product, emitting ``di``) → ``gain``.
     """
-    CATEGORY = "demodulators"
+    CATEGORY = "demodulation"
     TAGS = ["fm", "quadrature_demod", "discriminator", "demodulator", "demodulators"]
 
     _interface = BlockInterface(

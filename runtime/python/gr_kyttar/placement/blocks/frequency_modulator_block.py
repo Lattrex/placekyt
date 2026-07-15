@@ -64,7 +64,7 @@ class FrequencyModulatorBlock(NCOBlock):
     GR's float64 accumulator; verify against the Q15 reference (``process_reference``)
     which models BOTH effects op-for-op.
     """
-    CATEGORY = "modulators"
+    CATEGORY = "modulation"
     TAGS = ["fm", "vco", "frequency_modulator", "modulator", "modulators"]
 
     # Input is a REAL sample (drives phase); output is complex (unit-circle exp).

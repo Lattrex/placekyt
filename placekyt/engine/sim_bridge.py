@@ -857,13 +857,23 @@ class SimServer:
                             # SIGNED int16, so sign-extend the raw u16 here to keep the
                             # EXACT same values (a TX passband int16 stays negative;
                             # the RX bit-packer's 0/1 is unaffected either way).
-                            for (v, _d, _t) in self._chip.read_port_words_timed(port):
-                                if _first_out_ns is None:
-                                    _first_out_ns = float(_t)
-                                _last_out_ns = float(_t)
-                                _iv = int(v) & 0xFFFF
-                                out_vals.append(float(_iv - 0x10000 if _iv >= 0x8000
-                                                      else _iv))
+                            # FALLBACK: a minimal chip (or a fake) may expose only
+                            # read_port_i16 (no per-word sim-time). Use it then — the
+                            # values are identical; only the throughput/latency metrics
+                            # (which need _t) are unavailable, so they stay None.
+                            if hasattr(self._chip, "read_port_words_timed"):
+                                for (v, _d, _t) in self._chip.read_port_words_timed(port):
+                                    if _first_out_ns is None:
+                                        _first_out_ns = float(_t)
+                                    _last_out_ns = float(_t)
+                                    _iv = int(v) & 0xFFFF
+                                    out_vals.append(float(_iv - 0x10000 if _iv >= 0x8000
+                                                          else _iv))
+                            else:
+                                for v in self._chip.read_port_i16(port):
+                                    _iv = int(v) & 0xFFFF
+                                    out_vals.append(float(_iv - 0x10000 if _iv >= 0x8000
+                                                          else _iv))
                         else:
                             got = self._chip.read_port(port)
                             if got is not None and len(got):

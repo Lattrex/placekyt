@@ -77,7 +77,7 @@ class DualFloatToComplexBlock(KyttarBlock):
     Interface: entries ``arm`` (default, address 1), ``got_i``, ``got_q``. I and Q each
     land in R0 on their own trigger; latched to state xi/xq before the paired emit.
     """
-    CATEGORY = "type_conversion"
+    CATEGORY = "signal_conditioning"
     TAGS = ["float_to_complex", "rendezvous", "lock", "type_conversion", "complex"]
     # The DEFINING property of this block: its two inputs (i, q) are independent async
     # real streams that can ONLY be distinguished by arrival face, so the placer MUST

@@ -294,13 +294,13 @@ class ChipCanvas(QGraphicsView):
 
         for conn in self._project.connections:
             if not conn.is_routed:
-                # A chip INPUT-port net injects at the port edge cell (no physical
-                # route by design). Previously NO fly line was drawn for it — which
-                # left the input port -> first cell connection INVISIBLE, so a manual
-                # router couldn't see where the port feeds. Draw it now, anchored to
-                # the first cell's INPUT (wide) side, so the entry point is clear.
-                # (The fly line is dashed guidance; it does NOT imply "unrouted".)
-                self._render_fly_line(conn)
+                # A chip INPUT-port net injects directly at the port edge cell — it
+                # has no physical route BY DESIGN, so it must NOT draw a fly line
+                # (#286): a dashed line there falsely reads as "not connected" — the
+                # user-reported top-left artifact. Every OTHER unrouted net (block->
+                # block) still fly-lines as guidance for the manual router.
+                if not self._is_direct_input_port_net(conn):
+                    self._render_fly_line(conn)
                 continue
             chip_id = self._route_chip_of(conn)
             origin = self._chip_origin(chip_id)

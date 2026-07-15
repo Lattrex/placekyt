@@ -19,11 +19,15 @@ All numbers are honest CHIP-TIME figures from simKYT's cycle-accurate GLS timing
   char_tt per-instruction energy table): total energy, average/idle/total power,
   and energy per output sample.
 
-* **Block utilization / bottleneck** — from ``TraceModel.block_utilization()``:
-  each block's busy chip-time (Σ of its cells' exec-tick durations), ranked
-  busiest-first. The #1 block is the WORST-CASE SERIAL PATH — where samples get
-  stuck, the place to optimize for throughput. "Busy" is relative to the busiest
-  block (bottleneck = 100%); "Cell duty" is the true per-cell fraction of the run.
+* **Bottleneck (serial barrier)** — from ``TraceModel.block_bottleneck()``: each
+  block's INPUT/OUTPUT stall DIFFERENTIAL = the backpressure wait at its input
+  landing cell minus the wait at its freest-draining cell. The #1 block is where
+  input samples pile up but the output drains freely (downstream keeps up) — it
+  MANUFACTURES the backpressure and sets the pace. A block that merely RELAYS
+  upstream backpressure stalls on both sides equally → differential ~0, not the
+  culprit. The table shows Serial barrier + its In-stall / Out-stall components.
+  Needs the simKYT ``stall`` trace + a saturated run; falls back to the busy-dwell
+  headline (from ``block_utilization``) when nothing parks.
 
 Reads a :class:`engine.trace_model.TraceModel` (set on ``trace_updated``) and
 pulls the power report + block-placement map on demand via injected providers.
@@ -57,8 +61,13 @@ _COLS = ["Direction", "Chip", "Port", "Stream", "Samples",
 # "Cell duty" = average per-cell fraction of the run (≈100% everywhere ⇒ the array
 # is saturated). "Instr/cell" = mean instructions per cell (work-per-sample; a
 # feedback loop runs many, a flat filter few).
-_UTIL_COLS = ["Rank", "Block", "Type", "Serial barrier", "Dwell", "Cell duty",
-              "Instr/cell", "Cells"]
+# Bottleneck table: the serial-barrier DIFFERENTIAL and the two sides that make it.
+#   Serial barrier = In-stall − Out-stall — the block's per-sample throttle.
+#   In-stall  = median backpressure wait at its INPUT landing cell.
+#   Out-stall = stall at its freest-draining cell (the output side when it drains).
+# A block ranks high only when input piles up AND output drains (In ≫ Out).
+_UTIL_COLS = ["Rank", "Block", "Type", "Serial barrier", "In-stall", "Out-stall",
+              "Cells"]
 
 # Row tint for the #1 (bottleneck) block — a translucent hot red.
 _HOT_ROW = QColor(180, 60, 60, 90)
@@ -350,6 +359,8 @@ class StreamSummaryPanel(QWidget):
         for r in rows:
             b = by_block.get(r["block"])
             r["barrier_ns"] = b["stall_ns"] if b else 0.0
+            r["in_stall_ns"] = b["in_stall_ns"] if b else 0.0
+            r["out_stall_ns"] = b["out_stall_ns"] if b else 0.0
         if have_barrier:
             # Rank by the true serial barrier; routing/transit (no landing) sink low.
             rows.sort(key=lambda r: (r.get("barrier_ns", 0.0), r["crit_ns"]),
@@ -391,29 +402,25 @@ class StreamSummaryPanel(QWidget):
         self._util.setRowCount(len(rows))
         top_block = dsp[0]["block"] if dsp else None
         for i, r in enumerate(rows):
-            pct = r["util_pct"]
-            pct_txt = f"{pct:.0f}%" if isinstance(pct, (int, float)) else "—"
-            duty = r.get("occupancy_pct")
-            duty_txt = f"{duty:.0f}%" if isinstance(duty, (int, float)) else "—"
-            ipc = r.get("instr_per_cell")
-            ipc_txt = (f"{ipc:.0f}" if isinstance(ipc, (int, float)) and ipc
-                       else "—")
             bns = r.get("barrier_ns", 0.0)
             barrier_txt = _fmt_ns(bns) if bns else "—"
+            ins = r.get("in_stall_ns", 0.0)
+            outs = r.get("out_stall_ns", 0.0)
+            in_txt = _fmt_ns(ins) if ins else "—"
+            out_txt = _fmt_ns(outs) if outs else "—"
             cells = [
                 str(r["rank"]),
                 r["block"],
                 r["type"] or "",
                 barrier_txt,
-                pct_txt,
-                duty_txt,
-                ipc_txt,
+                in_txt,
+                out_txt,
                 str(r["cells"]),
             ]
             is_top = (r["block"] != "(routing)" and r["block"] == top_block)
             for j, txt in enumerate(cells):
                 item = QTableWidgetItem(txt)
-                if j in (0, 3, 4, 5, 6, 7):
+                if j in (0, 3, 4, 5, 6):
                     item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 if is_top:
                     item.setBackground(_HOT_ROW)

@@ -36,7 +36,6 @@ BUILTIN_BLOCKS = {
     'IIRBiquadBlock': 'iir_biquad_block',
     'CostasLoopBlock': 'costas_loop_block',
     'ComplexCostasLoopBlock': 'complex_costas_loop_block',
-    'CoherentBPSKRxBlock': 'coherent_bpsk_rx_block',
     'CoherentRXBlock': 'coherent_rx_block',
     'QAM16ComplexCostasLoopBlock': 'qam16_complex_costas_loop_block',
     'GardnerTimingRecovery': 'gardner_timing_recovery',

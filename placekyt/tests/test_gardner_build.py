@@ -126,8 +126,13 @@ def test_output_egress_preserves_period_feedback(qapp, catalog, chip_type):
     relay_e_in = next(p.register for p in cps["period_relay"].inputs
                       if p.name == "e_in")
     from gr_kyttar.placement.resolver import CellProgramResolver
-    rs_period = CellProgramResolver()._allocate_state(
-        cps["resampler"].state, list(range(3, 31)))["inst_next"]
+    # Resolve the resampler's `inst_next` (period) register via the AUTHORITATIVE
+    # resolver API the build itself uses — NOT a hand-rolled _allocate_state over a
+    # guessed gap_regs range. The build reserves low registers for I/O, so the real
+    # gap_regs differ from range(3,31): the old guess predicted reg 7, but the build
+    # actually places period at reg 6, so the WRITE-to-period scan found nothing.
+    rs_period = CellProgramResolver().compute_state_registers(
+        cps["resampler"])["inst_next"]
 
     # Place Gardner + a downstream sink; broker-route gardner.out → sink and confirm
     # both feedback WRITEs survive in the built programs.

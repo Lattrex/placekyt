@@ -73,9 +73,15 @@ def _start_server(port: int) -> subprocess.Popen:
         cat = BlockCatalog.from_gr_kyttar()
         ctrl = AppController(catalog=cat)
         ctrl.import_grc('examples/bpsk_modem/bpsk_modem.grc', chip_type='kyttar_10x12')
-        ctrl.auto_place(use_bus='always')
         ct = load_chip_type(str(CHIP_YAML))
-        ctrl.auto_route_all({{'kyttar_10x12': ct}}, use_bus='always', auto_orient=False)
+        # ABUTMENT-FIRST P&R (the default for compact fixed transceivers). The full
+        # duplex modem (TX + coherent RX filaments sharing one port) is too dense for
+        # the multiplexed BUS to route: the Costas.yi_tap -> Gardner.xi handoff (net1)
+        # finds no bus path once the TX filament congests the layout. auto_pnr abuts
+        # the connected block chains (far fewer cells), so that handoff becomes a
+        # direct cell-to-cell abutment and every net routes. The bus topology remains
+        # for DYNAMIC-reconfig designs; a fixed modem does not need it.
+        ctrl.auto_pnr({{'kyttar_10x12': ct}})
         res = ctrl.build()
         tgt = stream_targets(ctrl.project, ctrl.registry, cat, 0, build_result=res)
         chip = simkyt.Chip.from_yaml(str(CHIP_YAML)); chip.load_bitstream_physical(res.words(0))

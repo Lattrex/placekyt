@@ -8,6 +8,74 @@ anything that generalizes across block classes into `invariants.md`.
 
 ---
 
+## ComplexCostasLoop order=4 (QPSK) — WIP, on-chip trigger handoff open 2026-07-18
+
+- **Status:** REFERENCE + ALGORITHM PROVEN; on-chip NOT YET LOCKING. The Costas file
+  was REVERTED to the proven order-2 (BPSK) state to protect the shipped BPSK modem +
+  coherent RX; order-4 is a focused follow-up. (Do NOT ship order-4 until it locks
+  on-chip vs the reference.)
+- **GR order-4 PD (confirmed by running `digital.costas_loop_cc(0.05, 4)` — locks QPSK,
+  corr 1.0):** `err = sign(yi)·yq − sign(yq)·yi`. The order-2 BPSK PD is `sign(yi)·yq`.
+  A `process_reference` with this 2-term PD LOCKS QPSK (late mean|yi| ≈ 23170 =
+  0.707·32767, the ±45° grid) — the math + Q15 reference are correct.
+- **KEY CONSTRAINT: the 2-term PD does NOT fit in the single pd_pi cell** alongside the
+  pipeline-lock machinery (~37 words vs the 32-word cell ceiling — program + data +
+  state share one cell's 32-word unified memory). Adding even ONE scratch reg overflows
+  ("No register space for state 'err'"). This is the SAME limit the 16-QAM DD Costas hit
+  and solved with an incremental-error 3-cell pipeline (islice_pi|qslice_err|pi).
+- **CHOSEN FIX (CM-approved): split the order-4 PD into an extra ``qpd`` cell** between
+  rotate and pd_pi (order-2 stays 7 cells unchanged; order-4 = 8 cells). qpd computes
+  the 2-term err and forwards ONE finished ``err`` to a PI-only pd_pi. Per-order
+  `_CELL_IDS` / `cell_count` / `internal_connections` / `internal_jumps` /
+  `default_layout`. It BUILDS + ROUTES and ALL cells fire — verified by exec-tick trace.
+- **REMAINING BUG (where the follow-up picks up): qpd→pd_pi TRIGGER defaults to LOCAL.**
+  Per-cell exec trace: phase/sin_fold/cos_fold/table_sin/table_cos/rotate/qpd all fire;
+  **pd_pi shows 0 exec ticks**. qpd emits `err` (external_write, lands at pd_pi's east
+  face) but qpd's `{jump:trig}` assembles to `0x73ff` = hop 31 = LOCAL goto (self-
+  terminate) instead of @1-abutment to pd_pi — so pd_pi is never triggered and no dphase
+  feeds back (only 1 output ever emerges). The build's positional @1-abutment defaulting
+  covers the KNOWN chain (rotate→pd_pi in BPSK) but not a NEW mid-chain cell's trig. The
+  fix is on the BUILD side: qpd's declared `internal_jump` (qpd.trig→pd_pi) must patch
+  the trig JUMP hop to @1 like rotate→pd_pi gets (see `_HOP1_CNT`/`_set_cell_hop1` +
+  the rotate/pd_pi handoff patching in engine/build.py). Also verify the LAYOUT drop
+  is geometrically CONTINUOUS: table_cos(4,0,S) must drop to the cell at (4,1) — the
+  first order-4 layout put rotate at (3,1) and table_cos→rotate silently broke (rotate
+  never fired). Continuous snake row0 `phase..table_cos(4,0,S)` → row1 (4,1)rotate →
+  (3,1)qpd → (2,1)pd_pi → transits (1,1)(0,1) → phase.
+- **LESSON: inserting a cell into a proven feedback loop is multi-layer.** Each fix
+  surfaced the next: register ceiling → cell split → layout discontinuity (a cell stops
+  firing) → mid-chain trig JUMP not @1-patched. Trace exec-ticks per cell FIRST (which
+  cell stops firing pinpoints the break); the reference proving the algorithm keeps the
+  debug focused on WIRING, not math.
+
+## QPSKSlicerBlock — hard decoder vs GR constellation_decoder_cb(qpsk) 2026-07-18
+
+- **Status:** PASS / DONE. 1 cell. On-chip BIT-EXACT to `process_reference` and to
+  GR `digital.constellation_qpsk().decision_maker` over the 4 quadrants + 40 random
+  samples (0 mismatches, direct drive).
+- **MATCH THE GR MAP, VERIFIED AGAINST GR ITSELF.** GR `constellation_qpsk()` index
+  map is **MSB = imag-sign (Q≥0→1), LSB = real-sign (I≥0→1)**: `sym = (Q≥0?2:0) |
+  (I≥0?1:0)`. Confirmed by calling `constellation_qpsk().decision_maker(z)` per
+  quadrant: I+Q+→3, I−Q+→2, I+Q−→1, I−Q−→0. Do NOT assume the axis/bit order — read
+  it off GR. This is the same map `SoftDemodulatorBlock('qpsk')` emits (its 2 LLR
+  signs equal these 2 symbol bits), so a soft-demod chain and a hard-slicer chain
+  agree bit-for-bit on a clean channel.
+- **QPSK slice = 2 pure sign tests → 1 cell** (vs the 16-QAM slicer's 2 cells): QPSK
+  is constant-modulus, so there is NO PAM magnitude threshold — each axis is just
+  `CMP axis,0; BR.N skip; OR R0,#1`. Reused the proven 16-QAM slicer idiom (`SHL
+  sym,#1` writes R0; `OR R0,#1`; `MOVE sym,R0`), saving both I and Q to state FIRST
+  (like QAM16) so no live-register hazard.
+- **HARNESS GOTCHA (cost ~20 min, not a block bug): `run_block_dut_complex` defaults
+  `in_ports=("xi","xq")`.** If a complex block names its input ports differently
+  (this block uses `in_i`/`in_q`), you MUST pass `in_ports=("in_i","in_q")` or the
+  harness wires `x16_in` to non-existent ports → the landing cell reads stale
+  (non-negative) inputs → every symbol comes out `0b11` (3). SYMPTOM = "all outputs
+  are the max symbol". Direct-drive (place block, `inject_data_physical` xi/xq +
+  `inject_jump`, read port) is the ground-truth cross-check — it exonerated the block
+  instantly (correct `[2]` for I−Q+). LESSON: when a complex-block harness run gives a
+  constant/degenerate output, verify the input ports actually landed (read the landing
+  cell's input regs with `read_cell_memory`) BEFORE suspecting the block.
+
 ## QuadratureDemodBlock — FM demod vs GR quadrature_demod_cf 2026-07-05
 
 - **Status:** PASS / DONE vs GNU Radio `analog.quadrature_demod_cf`. 2 cells. DUT

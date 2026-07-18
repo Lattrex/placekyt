@@ -51,6 +51,7 @@ from .kyttar_block import (
     GardnerTimingRecovery,
     SoftDemodulatorBlock,
     BPSKSlicerBlock,
+    QPSKSlicerBlock,
     ViterbiBranchMetricBlock,
     ViterbiK7DecoderBlock,
     # STANAG 5066 / MIL-STD-188-110B blocks (Phase 3)
@@ -182,6 +183,7 @@ __all__ = [
     'GardnerTimingRecovery',
     'SoftDemodulatorBlock',
     'BPSKSlicerBlock',
+    'QPSKSlicerBlock',
     'ViterbiBranchMetricBlock',
     'ViterbiK7DecoderBlock',
     # STANAG 5066 / MIL-STD-188-110B blocks

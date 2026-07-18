@@ -41,6 +41,7 @@ BUILTIN_BLOCKS = {
     'GardnerTimingRecovery': 'gardner_timing_recovery',
     'SoftDemodulatorBlock': 'soft_demodulator_block',
     'BPSKSlicerBlock': 'bpsk_slicer_block',
+    'QPSKSlicerBlock': 'qpsk_slicer_block',
     'QAM16SymbolMapperBlock': 'qam16_symbol_mapper_block',
     'QAM16SlicerBlock': 'qam16_slicer_block',
     'QAM16TransceiverBlock': 'qam16_transceiver_block',

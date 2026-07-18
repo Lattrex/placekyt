@@ -8,41 +8,41 @@ anything that generalizes across block classes into `invariants.md`.
 
 ---
 
-## ComplexRRCMatchedFilter decimation — REFERENCE proven, on-chip gate WIP 2026-07-18
+## ComplexRRCMatchedFilter decimation — RESOLVED, bit-exact on-chip 2026-07-18
 
-- **Goal:** add a GR `fir_filter_ccf(M, taps)` `decim` param so the coherent RX can run
-  carrier/timing recovery at 2 sps instead of the full sample rate (the QPSK-modem
-  throughput win — no reason to run the loops at the sample rate).
-- **REFERENCE is correct + verified:** a `process_reference` with `decimation=M` emits
-  `filter(x)[n]` for `(n+1) % M == 0` — i.e. `full_output[M-1::M]`, matching GR
-  `fir_filter_ccf(M, taps)`. Confirmed bit-exact vs the un-decimated reference sliced
-  `[1::2]` for M=2. (This is the piece to KEEP when the on-chip gate is done.)
-- **On-chip emit gate NOT working yet — REVERTED to protect the shipped MF.** The plan:
-  a mod-M counter on the LAST I-rail cell (i4) gates the yi/yq emit — the FIR runs every
-  sample (delay lines update), only every M-th output is written+triggered. Mirror the
-  PROVEN `FIRFilterBlock` decimator gate (INV-13: bump counter FIRST, branch PAST the
-  emit to a REAL HALT instruction — never a {write}/{jump} label; the emit path HALTs so
-  it does not fall into the skip block). TWO symptoms seen, both unresolved:
-  (1) an early version OVER-emitted (7-of-8 samples) with yi=0 — the emit path's
-  branch-dependent dcnt write did not reliably commit, and R0 (yi) got clobbered before
-  `{write:yi}` (`MOVE dcnt, dg_zero` reset placed BEFORE the yi WRITE);
-  (2) the FIR-pattern version (HALT-terminated, XOR-reset) then emitted NOTHING — the
-  counter never reached decim on the standalone per-sample driver.
-  `reset_per_batch` on dcnt is a TRAP: True zeros it on EVERY injected symbol (each is
-  its own "batch") so it never advances → drop-all; False left it stuck. Neither worked.
-- **REGISTER pressure is real:** i4 is the tightest cell (1 tap + cs + partial/carry
-  inputs). dcnt + a yi-save + 3 gate constants + ~10 gate instructions overflowed the
-  gap-packer ("No register space for state 'd0'") until trimmed. Stay register-lean on i4.
-- **WORKAROUND that ships today:** run the MF at `decimation=1` and follow it with the
-  proven `FIRFilterBlock(decimation=M, taps=[1.0])` decimator stage (task #340, verified
-  vs GR). The QPSK modem demo can decimate that way until the in-MF gate is fixed.
-- **RESUME POINT:** disassemble the BUILT i4 (raw `read_cell_memory` decode) and
-  single-step: confirm the counter increments across samples (read dcnt's BUILT register —
-  classify_addresses may differ from the built layout), then confirm the emit branch is
-  taken when dcnt==decim and that `{write:yi}` sees R0=FIR-result (not 0). The dual-latch
-  commit of a branch-dependent state write is the prime suspect — prefer a SINGLE
-  unconditional dcnt commit per pass (like the FIR gate's ADD/MOVE then XOR/MOVE), and
-  keep the yi WRITE the FIRST thing after the FIR result with NOTHING touching R0 first.
+- **Status:** DONE. `decimation=M` (GR `fir_filter_ccf(M, taps)` `decim`) is BIT-EXACT
+  on-chip vs the block's decimated Q15 reference for M=1,2,4 (0 mismatches, both I and Q).
+  New gates `test_complex_decimation_matches_reference[2,4]` +
+  `test_complex_decimation_is_no_op_at_M1` in test_complex_harness.py. decimation=1
+  (the un-gated MF) is UNCHANGED. The coherent RX can now run carrier/timing recovery at
+  2 sps instead of the sample rate — the QPSK-modem throughput win.
+- **Reference:** `process_reference(decimation=M)` = `full_output[0::M]` (phase 0), matching
+  GR `fir_filter_ccf`. The on-chip counter uses `initial_value=decim-1` so it fires on
+  samples 0, M, 2M, ... (phase 0) — match that here, NOT `[M-1::M]`.
+- **On-chip gate = the PROVEN FIRFilterBlock decimator gate**, ported to the MF's last
+  I-rail cell: after the delay-line shift (runs EVERY sample) do
+  `ADD dcnt,one; MOVE dcnt,R0; CMP dcnt,decim; BR.NZ _mf_skip; XOR dcnt,dcnt; MOVE dcnt,R0`,
+  then the MAC + emit (yi/yq/trig), then `HALT`, then `_mf_skip: HALT`. INV-13: the branch
+  target is a REAL HALT (never a {write}/{jump} label); the emit path HALTs so it does not
+  fall into the skip block (a remote {jump} does NOT stop local execution). ``dcnt`` uses
+  ``initial_value=decim-1`` and is NOT `reset_per_batch` (True would zero it on every
+  injected symbol in the per-sample drive → drop-all).
+- **THE ROOT-CAUSE BUG (why the earlier attempts drop-all'd / emitted yi=0): a REGISTER
+  ALLOCATION COLLISION.** Adding the `dcnt` state + 2 gate DataWords (dg_decim/dg_one)
+  grew the last cell's DATA block, but the old input-register formula
+  `partial_reg = (n_taps+1) + n_state` did NOT account for the extra data words — so the
+  `partial` and `carry_in` inputs aliased onto the auto-packed `cs` (yq) and `dcnt`
+  registers (disasm showed `MOVE cs, dcnt` and `ADD R0, cs` where partial should be). FIX:
+  derive the input regs from the ACTUAL data-top:
+  `partial_reg = max(data addresses) + n_state + 1` (the FIR block's
+  `last_data_addr + len(state) + 1` convention). Identical to the old formula for
+  non-gated cells (data-top == n_taps there), so the plain MF is byte-for-byte unchanged.
+- **LESSON:** when adding state+data to a cell whose INPUT registers are computed from a
+  bare `n_taps`/`n_state` formula, re-derive the input regs from the real data-top — an
+  input aliasing a state reg silently corrupts the datapath (here: partial→cs, carry→dcnt).
+  Disassemble the BUILT cell (`engine.disasm.disassemble_word` over `read_cell_memory`) the
+  moment on-chip values look "shifted" — it showed the `MOVE R5,R6`/`ADD R0,R5` aliasing
+  instantly, after three theory-driven dead ends.
 
 ---
 

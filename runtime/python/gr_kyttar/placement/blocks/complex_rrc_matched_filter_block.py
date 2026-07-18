@@ -107,6 +107,7 @@ class ComplexRRCMatchedFilterBlock(KyttarBlock):
         sps: int = SPS,
         span: int = SPAN,
         headroom_shift: int = HEADROOM_SHIFT,
+        decimation: int = 1,
     ):
         """
         Args:
@@ -116,13 +117,25 @@ class ComplexRRCMatchedFilterBlock(KyttarBlock):
             span: Filter span in symbols (8 = full span, no ISI floor).
             headroom_shift: Tap down-scale exponent (1 => /2) to prevent the
                 16-bit MACQ accumulator wrapping on a full-scale input.
+            decimation: Output decimation factor M (GR ``fir_filter_ccf(M, taps)``
+                ``decim``). The matched filter runs at the FULL input rate (the delay
+                line updates every sample) but the filtered output is EMITTED only on
+                phase 0 — every M-th sample (``full_output[0::M]``, matching GR). So
+                the carrier/timing loops downstream see rate/M samples. 1 = no
+                decimation (default). The last I-rail cell gates its emit+trigger on
+                a mod-M counter (the PROVEN FIRFilterBlock decimator gate): the FIR
+                MAC + emit are branched-past on the M-1 dropped samples, so it is
+                bit-exact to ``filter(x)[0::M]``.
         """
+        if int(decimation) < 1:
+            raise ValueError(f"decimation must be >= 1, got {decimation}")
         super().__init__(name, beta=beta, sps=sps, span=span,
-                         headroom_shift=headroom_shift)
+                         headroom_shift=headroom_shift, decimation=int(decimation))
         self._beta = beta
         self._sps = sps
         self._span = span
         self._headroom_shift = headroom_shift
+        self._decimation = int(decimation)
         self._num_taps = span * sps + 1
         # The EXACT production Q15 taps (unit-energy sqrt-RRC, pre-scaled DOWN).
         self._coeff_q15 = self._rrc_taps_q15()
@@ -264,12 +277,36 @@ start:
             # both operands fresh (the input-port complex-sample contract).
             state.append(StateVar("cs"))   # the carried passenger (xi on Q, yq on I)
 
+            # DECIMATION GATE (last I-rail cell only, decimation > 1): a mod-M counter
+            # gates the emit so the output leaves at rate/M — the EXACT proven
+            # FIRFilterBlock decimator gate (INV-13). ``counter`` is initialised to
+            # decim-1 (NOT reset_per_batch — that would zero it on every injected
+            # symbol in the per-sample drive path and it would never advance): so the
+            # counter reaches decim on samples 0, M, 2M, ... = phase-0 emit. ``dg_decim``
+            # / ``dg_one`` are the gate constants (explicit addresses past the coeff).
+            gated = (is_last and rail == "i" and self._decimation > 1)
+            if gated:
+                state.append(StateVar("dcnt",
+                                      initial_value=self._decimation - 1))
+                base = n_taps + 1
+                data = data + [
+                    DataWord("dg_decim", self._decimation, address=base),
+                    DataWord("dg_one", 1, address=base + 1),
+                ]
+
             # Every rail cell reads its FIR sample from R0. Non-first cells also
             # receive the incoming partial sum at an explicit register past the
             # data+state block; every cell receives the carried passenger one slot
-            # further on (it never collides with the FIR data/state).
+            # further on (it never collides with the FIR data/state). The partial/carry
+            # input registers sit PAST the highest data address + all state regs — the
+            # gated last-I cell adds 2 extra data words (dg_decim/dg_one) and a dcnt
+            # state, so derive from the ACTUAL data-top (not the bare n_taps) or the
+            # inputs would collide with the auto-packed state (the FIR block's
+            # last_data_addr + len(state) + 1 convention).
             n_state = len(state)
-            partial_reg = (n_taps + 1) + n_state
+            data_top = max((dw.address for dw in data
+                            if dw.address is not None), default=n_taps)
+            partial_reg = data_top + n_state + 1
             carry_reg = partial_reg + 1
             if is_first:
                 inputs = [Port("sample", register=0),
@@ -311,6 +348,17 @@ start:
             for i in range(n_taps - 1):
                 lines.append(f"    MOVE R{{state:d{i}}}, R{{state:d{i+1}}}")
             lines.append(f"    MOVE R{{state:d{n_taps - 1}}}, R{{in:sample}}")
+            # DECIMATION GATE (gated last-I cell): the delay line was just updated (runs
+            # every sample); now bump the mod-M counter and, until it reaches decim,
+            # BRANCH PAST the MAC + emit to a HALT (never over a {write}/{jump} label —
+            # the build GOTO miscompile, INV-13). This is the exact proven FIR gate.
+            if gated:
+                lines.append("    ADD R{state:dcnt}, R{data:dg_one}")
+                lines.append("    MOVE R{state:dcnt}, R0")
+                lines.append("    CMP R{state:dcnt}, R{data:dg_decim}")
+                lines.append("    BR.NZ _mf_skip")     # counter < decim -> drop
+                lines.append("    XOR R{state:dcnt}, R{state:dcnt}")
+                lines.append("    MOVE R{state:dcnt}, R0")
             lines.append("    MULQ R{state:d0}, R{data:c0}")
             for i in range(1, n_taps):
                 lines.append(f"    MACQ R{{state:d{i}}}, R{{data:c{i}}}")
@@ -324,6 +372,12 @@ start:
                 lines.append("    MOVE R0, R{state:cs}")
                 lines.append("    {write:yq}")
                 lines.append("    {jump:trig}")
+                if gated:
+                    # emit path HALTs before falling into the skip block (a remote
+                    # {jump} does NOT stop local execution); skip target is a REAL HALT.
+                    lines.append("    HALT")
+                    lines.append("_mf_skip:")
+                    lines.append("    HALT")
             elif is_last:  # q4: hand yq (R0) and the passenger xi (cs) to i0, trigger
                 lines.append("    {write:yq_handoff}")
                 lines.append("    MOVE R0, R{state:cs}")
@@ -479,8 +533,14 @@ start:
 
         fi = fir(xi)
         fq = fir(xq)
-        return np.array([(a & 0xFFFF, b & 0xFFFF) for a, b in zip(fi, fq)],
-                        dtype=np.int32)
+        out = [(a & 0xFFFF, b & 0xFFFF) for a, b in zip(fi, fq)]
+        if self._decimation > 1:
+            # GR fir_filter_ccf(M, taps): emit phase 0 — every M-th filtered output
+            # (full_output[0::M]). The on-chip i4 gate uses counter initial_value
+            # decim-1, so it emits on samples 0, M, 2M, ... (the FIRST sample of each
+            # group of M) — match that phase here so the reference is bit-identical.
+            out = out[0::self._decimation]
+        return np.array(out, dtype=np.int32)
 
     def reset(self):
         """Reset (stateless FIR — delay lines live in cell state)."""

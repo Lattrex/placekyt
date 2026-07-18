@@ -173,6 +173,57 @@ def test_complex_bitexact_reference():
     assert res.passed, res.summary()
 
 
+@pytest.mark.parametrize("M", [2, 4])
+def test_complex_decimation_matches_reference(M):
+    """The MF ``decimation=M`` (GR fir_filter_ccf(M)) emits phase 0 — every M-th
+    filtered output (full_output[0::M]) — on chip, BIT-EXACT to the block's own
+    decimated Q15 reference on BOTH channels. The on-chip mod-M output gate (the
+    proven FIR decimator gate on the last I-rail cell) runs the FIR every sample
+    but writes+triggers only on phase 0; the harness records the M-1 dropped
+    samples as ``None`` (no egress), so the emitted (non-None) values are the
+    decimated stream."""
+    def _s16(v):
+        v = int(v) & 0xFFFF
+        return v - 0x10000 if v & 0x8000 else v
+
+    def _fq(f):
+        return _s16(int(round(max(-1.0, min(0.999, f)) * 32768.0)) & 0xFFFF)
+
+    stim = _complex_stim(seed=7, n=64, amp=0.5)
+    dut = run_block_dut_complex(
+        "ComplexRRCMatchedFilterBlock", stim, params={"decimation": M},
+        chip_yaml=CHIP_YAML, in_ports=("xi", "xq"), words_per_sample=2)
+    assert dut.ok, dut.reason
+    emitted_i = [_s16(v) for v in dut.i_q15 if v is not None]
+    emitted_q = [_s16(v) for v in dut.q_q15 if v is not None]
+
+    ref = ComplexRRCMatchedFilterBlock("ref", decimation=M).process_reference(
+        np.array([complex(_fq(s.real), _fq(s.imag)) for s in stim]))
+    ref_i = [_s16(a) for a, b in ref]
+    ref_q = [_s16(b) for a, b in ref]
+
+    # rate/M output: the chip emits len(stim)//M (phase-0) samples.
+    n = min(len(emitted_i), len(ref_i))
+    assert n >= len(stim) // M - 1, (
+        f"decim={M}: only {len(emitted_i)} emitted (expected ~{len(stim)//M})")
+    assert emitted_i[:n] == ref_i[:n], (
+        f"decim={M} I channel mismatch:\n chip={emitted_i[:8]}\n ref ={ref_i[:8]}")
+    assert emitted_q[:n] == ref_q[:n], (
+        f"decim={M} Q channel mismatch:\n chip={emitted_q[:8]}\n ref ={ref_q[:8]}")
+
+
+def test_complex_decimation_is_no_op_at_M1():
+    """decimation=1 is the plain MF (the un-gated path) — unchanged, bit-exact."""
+    stim = _complex_stim(seed=3, n=48, amp=0.6)
+    d1 = run_block_dut_complex(
+        "ComplexRRCMatchedFilterBlock", stim, params={"decimation": 1},
+        chip_yaml=CHIP_YAML, in_ports=("xi", "xq"), words_per_sample=2)
+    d0 = _run_complex_dut(stim)   # default params (no decimation)
+    assert d1.ok and d0.ok
+    assert [v for v in d1.i_q15 if v is not None] == \
+        [v for v in d0.i_q15 if v is not None]
+
+
 # --- MANDATORY complex mutation tests (the gate must DETECT these) ------------
 
 def test_complex_mutation_swapped_iq_fails():

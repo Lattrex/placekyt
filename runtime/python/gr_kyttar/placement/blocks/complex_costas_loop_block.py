@@ -73,11 +73,21 @@ class ComplexCostasLoopBlock(KyttarBlock):
         "rotate", "pd_pi",
     ]
 
+    # Cell ids (string keys) for order-4 (QPSK): a ``qpd`` cell is inserted
+    # between rotate and pd_pi to compute the 2-term QPSK phase detector
+    # (err = sign(yi)*yq - sign(yq)*yi), which does not fit in pd_pi's single cell
+    # alongside the PI + pipeline-lock machinery.
+    _CELL_IDS_QPSK = [
+        "phase", "sin_fold", "cos_fold", "table_sin", "table_cos",
+        "rotate", "qpd", "pd_pi",
+    ]
+
     def __init__(
         self,
         name: str,
         loop_bw: float = 0.05,
         damping: float = 1.0,
+        order: int = 2,
         pipeline_lock: bool = True,
     ):
         """
@@ -85,6 +95,11 @@ class ComplexCostasLoopBlock(KyttarBlock):
             name: Block name.
             loop_bw: Loop bandwidth (normalized). 0.05 is the validated default.
             damping: Loop damping factor. 1.0 (critically damped) is validated.
+            order: Constellation order for the decision-directed phase detector,
+                matching GNU Radio ``digital.costas_loop_cc(loop_bw, order)``. 2 = BPSK
+                (``err = sign(yi)*yq``, the proven 7-cell loop). 4 = QPSK
+                (``err = sign(yi)*yq - sign(yq)*yi``, an 8-cell loop with an extra
+                ``qpd`` phase-detector cell). Only 2 and 4 are supported.
             pipeline_lock: When True (default), the ``phase`` cell LOCKs its arbiter to
                 the dphase-feedback face after each emit so the loop survives SATURATED
                 (pipelined) drive — pd_pi's backward ``WRITE.CFG`` clears the lock per
@@ -93,9 +108,13 @@ class ComplexCostasLoopBlock(KyttarBlock):
                 ``CoherentRXBlock._pdpi_with_yitap``); the phase cell then boots unlocked
                 (proven per-sample behaviour, but NOT pipeline-safe). See the phase cell.
         """
-        super().__init__(name, loop_bw=loop_bw, damping=damping)
+        if int(order) not in (2, 4):
+            raise ValueError(
+                f"ComplexCostasLoopBlock order must be 2 (BPSK) or 4 (QPSK), got {order}")
+        super().__init__(name, loop_bw=loop_bw, damping=damping, order=int(order))
         self._loop_bw = loop_bw
         self._damping = damping
+        self._order = int(order)
         self._pipeline_lock = bool(pipeline_lock)
 
         # Validated gain mapping (used DIRECTLY in Q15, k=1).
@@ -113,7 +132,7 @@ class ComplexCostasLoopBlock(KyttarBlock):
 
     @property
     def cell_count(self) -> int:
-        return 7
+        return 8 if self._order == 4 else 7
 
     @property
     def interface(self) -> BlockInterface:
@@ -347,10 +366,111 @@ start:
         # :meth:`_rotate_legacy_single_face` (yi-first, single fwd_face — proven), which
         # it needs anyway since its yi_tap goes the SAME direction (WEST) as pd_pi.
 
-        # --- pd_pi cell: err = sign(yi)*yq; freq += beta*err;
-        # dphase = freq + alpha*err.  freq is state; dphase feeds back. ---
-        pd_pi_cell = CellProgram(
+        # --- rotate cell (ORDER 4 / QPSK): a PLAIN forward complex multiply. Unlike
+        # the BPSK rotate (which is the block's output_cell and does the dual-face
+        # yi_tap dance), the order-4 rotate is a pure INTERNAL cell: it emits yi, yq
+        # FORWARD to qpd on its single fwd_face (EAST in the straight-line layout) and
+        # nothing else. The recovered complex OUTPUT is tapped downstream from qpd
+        # (which already holds yis/yqs), so rotate never needs a second face — this is
+        # what removes the face_internal=WEST entanglement that blocked order-4. yi is
+        # emitted before yq (matching the proven order so qpd's R0=yi, R1=yq). ---
+        rotate4_cell = CellProgram(
+            inputs=[Port("xi", register=0), Port("xq", register=1),
+                    Port("sinv", register=2), Port("cosv", register=3)],
+            outputs=[Port("yi"), Port("yq"), Port("trig")],
+            entries=[EntryPoint("default")],
+            data=[DataWord("zero", 0, address=4)],
+            state=[StateVar("xis"), StateVar("xqs"), StateVar("sv"),
+                   StateVar("cv"), StateVar("acc")],
+            assembly_template="""\
+start:
+    MOVE R{state:xis}, R{in:xi}
+    MOVE R{state:xqs}, R{in:xq}
+    MOVE R{state:sv}, R{in:sinv}
+    MOVE R{state:cv}, R{in:cosv}
+    MULQ R{state:xis}, R{state:cv}
+    MOVE R{state:acc}, R0
+    MULQ R{state:xqs}, R{state:sv}
+    SUB R{state:acc}, R0
+    {write:yi}
+    MULQ R{state:xis}, R{state:sv}
+    MOVE R{state:acc}, R0
+    MULQ R{state:xqs}, R{state:cv}
+    ADD R{state:acc}, R0
+    {write:yq}
+    {jump:trig}
+""",
+        )
+
+        # --- qpd cell (ORDER 4 / QPSK ONLY): the 2-term QPSK phase detector
+        # err = sign(yi)*yq - sign(yq)*yi. Split out of pd_pi because the 2-term PD
+        # plus the PI + pipeline-lock machinery does not fit one 32-word cell (same
+        # register-ceiling split the 16-QAM DD Costas uses: islice_pi|qslice_err|pi).
+        # Structurally identical to QAM16's qslice_err: reads yi@R0, yq@R1, writes a
+        # finished ``err`` to the PI-only pd_pi, then triggers it.
+        #   term1 = yq       if yi>=0 else -yq   (= sign(yi)*yq)
+        #   term2 = yi       if yq>=0 else -yi   (= sign(yq)*yi)
+        #   err   = term1 - term2
+        # qpd ALSO taps the recovered complex sample (yi_tap, yq_tap) out as the
+        # block's OUTPUT: in order-4 rotate is a pure internal cell, so the recovered
+        # I/Q is exposed here (qpd holds yis/yqs). ``err`` + ``trig`` drive the loop
+        # FORWARD to pd_pi (fwd_face EAST, @1 abutment); the yi_tap/yq_tap + tap_trig
+        # are the DOWNSTREAM output (dual-face: flipped to face_tap, like the BPSK
+        # rotate). When unconsumed (standalone Costas) tap_trig self-terminates.
+        qpd_cell = CellProgram(
             inputs=[Port("yi", register=0), Port("yq", register=1)],
+            outputs=[Port("err"), Port("trig"),
+                     Port("yi_tap"), Port("yq_tap"), Port("tap_trig")],
+            entries=[EntryPoint("default")],
+            # face_internal = SOUTH (0): err/trig go DOWN to pd_pi (placed below qpd).
+            # face_tap = EAST (1): the recovered yi_tap/yq_tap leave the block toward
+            # the output port. Both is_face so they transform with the block orientation.
+            data=[DataWord("zero", 0, address=2),
+                  DataWord("face_internal", 0, address=3, is_face=True),
+                  DataWord("face_tap", 1, address=4, is_face=True)],
+            state=[StateVar("yis"), StateVar("yqs"), StateVar("err")],
+            assembly_template="""\
+start:
+    MOVE R{state:yis}, R{in:yi}
+    MOVE R{state:yqs}, R{in:yq}
+    MOVE [FACE], R{data:face_internal}
+    ; term1 = sign(yi)*yq  ->  err
+    MOVE R{state:err}, R{state:yqs}
+    CMP R{state:yis}, R{data:zero}
+    BR.NN t2
+    SUB R{data:zero}, R{state:yqs}
+    MOVE R{state:err}, R0
+t2:
+    ; term2 = sign(yq)*yi ; err -= term2
+    MOVE R0, R{state:yis}
+    CMP R{state:yqs}, R{data:zero}
+    BR.NN sub
+    SUB R{data:zero}, R{state:yis}
+sub:
+    SUB R{state:err}, R0
+    {write:err}
+    {jump:trig}
+    MOVE [FACE], R{data:face_tap}
+    MOVE R0, R{state:yis}
+    {write:yi_tap}
+    MOVE R0, R{state:yqs}
+    {write:yq_tap}
+    {jump:tap_trig}
+""",
+        )
+
+        # --- pd_pi cell: (order 2) err = sign(yi)*yq inline, then PI; (order 4) the
+        # err arrives ALREADY FORMED from qpd at R0, so the PD prologue is dropped and
+        # pd_pi is PI-only. freq += beta*err; dphase = freq + alpha*err. freq is state;
+        # dphase feeds back. ---
+        # order-4 input port is named ``errin`` (NOT ``err``) so it doesn't collide
+        # with the pd_pi STATE var ``err`` — the router's _resolve_named_input matches
+        # STATE names before INPUT names, so a same-named state would misroute qpd's
+        # err WRITE to the state register instead of the R0 input.
+        _pd_inputs = ([Port("errin", register=0)] if self._order == 4
+                      else [Port("yi", register=0), Port("yq", register=1)])
+        pd_pi_cell = CellProgram(
+            inputs=_pd_inputs,
             outputs=[Port("dphase"), Port("trig")],
             entries=[EntryPoint("default")],
             data=[DataWord("zero", 0, address=2),
@@ -376,7 +496,10 @@ start:
             # to the same phase cell). ``MOVE R0, zero`` sets the clear payload; ``dph``
             # preserves dphase for its own WRITE. iq_upconvert upmix->phase unlock, made
             # layout-portable. Emitted only when pipeline_lock (else the proven pd_pi).
-            assembly_template=("""\
+            assembly_template=(("""\
+start:
+    MOVE R{state:err}, R{in:errin}
+""" if self._order == 4 else """\
 start:
     MOVE R{state:yqs}, R{in:yq}
     MOVE R{state:err}, R{in:yq}
@@ -385,6 +508,7 @@ start:
     SUB R{data:zero}, R{state:yqs}
     MOVE R{state:err}, R0
 pos:
+""") + """\
     MULQ R{state:err}, R{data:beta}
     ADD R{state:freq}, R0
     MOVE R{state:freq}, R0
@@ -403,15 +527,20 @@ pos:
 """)),
         )
 
-        return {
+        cells = {
             "phase": phase_cell,
             "sin_fold": _fold_cell(),
             "cos_fold": _fold_cell(),
             "table_sin": _table_cell(),
             "table_cos": _table_cell(),
-            "rotate": rotate_cell,
-            "pd_pi": pd_pi_cell,
+            # order-4 uses a plain forward rotate (yi/yq -> qpd, single fwd_face);
+            # order-2 uses the dual-face output_cell rotate.
+            "rotate": rotate4_cell if self._order == 4 else rotate_cell,
         }
+        if self._order == 4:
+            cells["qpd"] = qpd_cell
+        cells["pd_pi"] = pd_pi_cell
+        return cells
 
     @staticmethod
     def _rotate_legacy_single_face() -> CellProgram:
@@ -464,7 +593,7 @@ start:
         phase cell (the loop closure). Every handoff is declared explicitly so
         the router does not fall back to its positional 'next cell' default.
         """
-        return [
+        base = [
             # phase -> folds (NCO phase words) and -> rotate (forwarded xi/xq).
             ("phase", "ph_sin", "sin_fold", "phase"),
             ("phase", "ph_cos", "cos_fold", "phase"),
@@ -478,13 +607,25 @@ start:
             # tables -> rotate (sinv/cosv).
             ("table_sin", "val", "rotate", "sinv"),
             ("table_cos", "val", "rotate", "cosv"),
-            # rotate -> pd_pi (yi, yq).  yi MUST reach the phase detector, not
-            # just the block output, or the err sign is wrong at zero-crossings.
-            ("rotate", "yi", "pd_pi", "yi"),
-            ("rotate", "yq", "pd_pi", "yq"),
-            # FEEDBACK: pd_pi dphase -> phase cell (loop closure, row-1 return).
-            ("pd_pi", "dphase", "phase", "dphase"),
         ]
+        if self._order == 4:
+            # QPSK: rotate -> qpd (2-term PD) -> pd_pi (PI). yi AND yq both reach qpd
+            # (the QPSK err uses both signs); qpd's finished err -> pd_pi.
+            base += [
+                ("rotate", "yi", "qpd", "yi"),
+                ("rotate", "yq", "qpd", "yq"),
+                ("qpd", "err", "pd_pi", "errin"),
+            ]
+        else:
+            # BPSK: rotate -> pd_pi (yi, yq). yi MUST reach the phase detector, not
+            # just the block output, or the err sign is wrong at zero-crossings.
+            base += [
+                ("rotate", "yi", "pd_pi", "yi"),
+                ("rotate", "yq", "pd_pi", "yq"),
+            ]
+        # FEEDBACK: pd_pi dphase -> phase cell (loop closure, row-1 return).
+        base += [("pd_pi", "dphase", "phase", "dphase")]
+        return base
 
     def internal_jumps(self) -> List[Tuple[int, str, int, str]]:
         """JUMP triggers forming the linear execution chain (each cell triggers
@@ -501,19 +642,33 @@ start:
         loop after the first sample. Declaring the trig as ``__terminate__``
         resolves it to a LOCAL terminator (@0/entry31), exactly as the proven
         proto's ``JumpTarget(0, 31)`` does — correct in BOTH layouts."""
-        return [
+        base = [
             ("phase", "trig", "sin_fold", "default"),
             ("sin_fold", "trig", "cos_fold", "default"),
             ("cos_fold", "trig", "table_sin", "default"),
             ("table_sin", "trig", "table_cos", "default"),
             ("table_cos", "trig", "rotate", "default"),
-            ("rotate", "trig", "pd_pi", "default"),
+        ]
+        if self._order == 4:
+            # QPSK: rotate triggers qpd (the 2-term PD), qpd triggers pd_pi (PI).
+            # qpd's SECOND JUMP (tap_trig) fires the downstream consumer of the
+            # recovered yi_tap/yq_tap; unconsumed (standalone) it self-terminates.
+            base += [
+                ("rotate", "trig", "qpd", "default"),
+                ("qpd", "trig", "pd_pi", "default"),
+                ("qpd", "tap_trig", "__terminate__", "default"),
+                ("pd_pi", "trig", "__terminate__", "default"),
+            ]
+            return base
+        base += [("rotate", "trig", "pd_pi", "default")]
+        base += [
             # rotate's SECOND JUMP triggers the downstream consumer of yi_tap. With no
             # downstream (standalone Costas) it self-terminates locally; a bus route to
             # a Gardner/x16_out retargets it (build `_patch_last_jump_handoff`).
             ("rotate", "tap_trig", "__terminate__", "default"),
             ("pd_pi", "trig", "__terminate__", "default"),
         ]
+        return base
 
     def default_layout(self) -> Dict[Any, Tuple[int, int, str]]:
         """COMPACT 4x2 serpentine fold (replaces the 13-cell straight line).
@@ -540,7 +695,38 @@ start:
         The lone FACE-only TRANSIT cell at (0,1) carries NO program (its id
         starts with ``"transit"`` so placeKYT materializes it as a TransitCell,
         per the project rule that transit cells never carry a program).
+
+        ORDER 4 (QPSK): a 7-wide row-0 forward chain phase..rotate..qpd, with pd_pi
+        dropped BELOW qpd on row 1 (NOT east of it). This keeps qpd — the block's
+        OUTPUT cell — at the EAST end of row 0 with a CLEAR eastward egress to the
+        chip output port; pd_pi sits under it. qpd is dual-face: err/trig go SOUTH to
+        pd_pi (@1), the recovered yi_tap/yq_tap tap goes EAST (@1) out of the block.
+        The dphase feedback returns along the row-1 WEST corridor to the phase cell::
+
+            col:    0        1         2         3          4          5        6
+            row 0: phase(E) sinf(E)  cosf(E)  tbl_s(E)  tbl_c(E)  rot(E)  qpd(E=tap)
+            row 1: fb0(N)   fb(W)    fb(W)    fb(W)     fb(W)     fb(W)   pd_pi(W)
+
+        rotate(5,0) abuts qpd(6,0) @1 (forward EAST); qpd(6,0) abuts pd_pi(6,1) @1
+        (SOUTH, err+trig); pd_pi(6,1) -> row-1 WEST return -> (0,1,N) -> phase. The
+        qpd EAST tap leaves the block cleanly toward the output port.
         """
+        if self._order == 4:
+            # forward chain phase..rotate..qpd on row 0 (cols 0..6), pd_pi below qpd.
+            fwd = [c for c in self._CELL_IDS_QPSK if c != "pd_pi"]  # 7 cells
+            n = len(fwd)  # 7
+            layout: Dict[Any, Tuple[int, int, str]] = {}
+            for i, cid in enumerate(fwd):
+                # qpd emits its FORWARD (err/trig -> pd_pi) SOUTH; its resting fwd_face
+                # is set by face_internal=SOUTH in the cell (the build faces the tap).
+                face = "south" if cid == "qpd" else "east"
+                layout[cid] = (i, 0, face)
+            layout["pd_pi"] = (n - 1, 1, "west")  # below qpd; dphase returns west
+            # row-1 WEST return corridor from pd_pi back toward the phase cell.
+            for x in range(1, n - 1):
+                layout[f"transit_fb_{x}"] = (x, 1, "west")
+            layout["transit_fb_0"] = (0, 1, "north")
+            return layout
         return {
             "phase": (0, 0, "east"),
             "sin_fold": (1, 0, "east"),
@@ -553,11 +739,14 @@ start:
         }
 
     def output_cell_id(self) -> Any:
-        """The recovered I (the ``yi_tap`` output) leaves from the ROTATE cell,
-        which sits in the MIDDLE of the block (pd_pi and the row-1 feedback transit
-        cells follow it in the chain). placeKYT marks/routes the output from here,
-        not the last placed cell."""
-        return "rotate"
+        """The recovered signal leaves from a MID-block cell (not the last placed
+        cell), so placeKYT marks/routes the output from here.
+
+        Order 2 (BPSK): the ``yi_tap`` output leaves the ROTATE cell.
+        Order 4 (QPSK): rotate is a pure internal cell; the recovered complex
+        ``yi_tap``/``yq_tap`` leaves the QPD cell (which holds yis/yqs), so the
+        output_cell is qpd."""
+        return "qpd" if self._order == 4 else "rotate"
 
     def process_reference(self, input_samples: np.ndarray) -> np.ndarray:
         """Reference Q15 complex Costas (matches the on-chip cells).
@@ -602,7 +791,15 @@ start:
             yi = u16(s16(mq(xi, cosv)) - s16(mq(xq, sinv)))
             yq = u16(s16(mq(xi, sinv)) + s16(mq(xq, cosv)))
             out.append(s16(yi))
-            err = yq if s16(yi) >= 0 else u16(-s16(yq))
+            if self._order == 4:
+                # QPSK 2-term PD (matches the on-chip qpd cell, raw int16 domain):
+                # err = sign(yi)*yq - sign(yq)*yi.
+                term1 = s16(yq) if s16(yi) >= 0 else -s16(yq)
+                term2 = s16(yi) if s16(yq) >= 0 else -s16(yi)
+                err = u16(term1 - term2)
+            else:
+                # BPSK 1-term PD: err = sign(yi)*yq.
+                err = yq if s16(yi) >= 0 else u16(-s16(yq))
             freq = u16(s16(freq) + s16(mq(beta, err)))
             phase = u16(s16(phase) + s16(freq) + s16(mq(alpha, err)))
         return np.array(out, dtype=np.int16)

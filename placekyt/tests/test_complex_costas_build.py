@@ -172,3 +172,116 @@ def test_costas_built_bitstream_locks(qapp, catalog, chip_type):
         assert consistency >= 48 and mag > 20000, (
             f"built Costas did NOT lock (seed={seed}, foff={foff}): "
             f"{consistency}/50, |yi|={mag:.0f}")
+
+
+def test_costas_order4_in_catalog(catalog):
+    """The order param exposes the QPSK (order=4) variant: 8 cells (the extra
+    ``qpd`` 2-term phase-detector cell), same 2 complex input registers."""
+    spec = catalog.get("ComplexCostasLoopBlock", "lattrex.official")
+    assert spec is not None
+    from gr_kyttar.placement import ComplexCostasLoopBlock
+    b2 = ComplexCostasLoopBlock("b2", order=2)
+    b4 = ComplexCostasLoopBlock("b4", order=4)
+    assert b2.cell_count == 7 and b4.cell_count == 8
+    assert list(b4.build_cell_programs().keys()) == [
+        "phase", "sin_fold", "cos_fold", "table_sin", "table_cos",
+        "rotate", "qpd", "pd_pi"]
+    with pytest.raises(ValueError):
+        ComplexCostasLoopBlock("bad", order=3)
+
+
+def test_costas_order4_builds_and_routes(qapp, catalog, chip_type):
+    """The QPSK (order=4) Costas places, routes I/Q in + recovered out, and
+    builds to a bitstream through the real placeKYT pipeline."""
+    from ui.controller import AppController
+    from model.connection import BlockEndpoint, ChipPortEndpoint
+    ctrl = AppController(catalog=catalog)
+    ctrl.new_project("Costas4", "kyttar_10x12")
+    blk = ctrl.place_block("ComplexCostasLoopBlock", 0, 0, 0,
+                           library="lattrex.official", params={"order": 4})
+    pm = catalog.port_map("ComplexCostasLoopBlock", {"order": 4},
+                          library="lattrex.official")
+    outp = [p.name for p in pm.ports if p.direction == "out"][0]
+    ctrl.add_logical_connection(ChipPortEndpoint(chip=0, port="x16_in"),
+                                BlockEndpoint(block=blk, port="xi"), name="i")
+    ctrl.add_logical_connection(ChipPortEndpoint(chip=0, port="x16_in"),
+                                BlockEndpoint(block=blk, port="xq"), name="q")
+    ctrl.add_logical_connection(BlockEndpoint(block=blk, port=outp),
+                                ChipPortEndpoint(chip=0, port="x16_out"), name="o")
+    rep = ctrl.auto_route_all({"kyttar_10x12": chip_type})
+    assert rep.ok, [r for r in rep.results if not r.ok]
+    res = BuildEngine(catalog, str(CT_PATH)).build(
+        ctrl.project, {"kyttar_10x12": chip_type})
+    assert res.ok, [str(e) for e in res.errors]
+    assert len(res.words(0)) > 0
+
+
+def test_costas_order4_built_bitstream_locks_qpsk(qapp, catalog, chip_type):
+    """The placeKYT-BUILT order-4 bitstream must LOCK a QPSK carrier: drive a
+    freq-offset QPSK signal and confirm the recovered I settles onto the
+    constant-modulus ±45deg grid (|yi| ~ 0.707*32767). This exercises the qpd
+    2-term phase detector + the qpd->pd_pi trigger handoff (the fix that made
+    order-4 fire on-chip) end to end through the real build pipeline."""
+    import math
+    import random
+    import simkyt
+    from ui.controller import AppController
+    from model.connection import BlockEndpoint, ChipPortEndpoint
+
+    ctrl = AppController(catalog=catalog)
+    ctrl.new_project("Costas4", "kyttar_10x12")
+    blk = ctrl.place_block("ComplexCostasLoopBlock", 0, 0, 0,
+                           library="lattrex.official", params={"order": 4})
+    pm = catalog.port_map("ComplexCostasLoopBlock", {"order": 4},
+                          library="lattrex.official")
+    outp = [p.name for p in pm.ports if p.direction == "out"][0]
+    ctrl.add_logical_connection(ChipPortEndpoint(chip=0, port="x16_in"),
+                                BlockEndpoint(block=blk, port="xi"), name="i")
+    ctrl.add_logical_connection(ChipPortEndpoint(chip=0, port="x16_in"),
+                                BlockEndpoint(block=blk, port="xq"), name="q")
+    ctrl.add_logical_connection(BlockEndpoint(block=blk, port=outp),
+                                ChipPortEndpoint(chip=0, port="x16_out"), name="o")
+    rep = ctrl.auto_route_all({"kyttar_10x12": chip_type})
+    assert rep.ok, [r for r in rep.results if not r.ok]
+    res = BuildEngine(catalog, str(CT_PATH)).build(
+        ctrl.project, {"kyttar_10x12": chip_type})
+    assert res.ok, [str(e) for e in res.errors]
+    entry, ins = catalog.resolved_io(
+        "ComplexCostasLoopBlock", {"order": 4}, library="lattrex.official")
+    a0, a1 = int(ins[0]), int(ins[1])
+
+    def fq(f):
+        return int(round(max(-1, min(0.999, f)) * 32768)) & 0xFFFF
+
+    def s16(v):
+        return v - 0x10000 if v & 0x8000 else v
+
+    def run_qpsk(seed, foff, n=200):
+        chip = simkyt.Chip.from_yaml(str(CT_PATH))
+        chip.load_bitstream_physical(res.words(0))
+        chip.set_port_entry_address("x16_in", entry)
+        random.seed(seed)
+        for k in range(n):
+            i = (1.0 if random.randint(0, 1) == 0 else -1.0) / math.sqrt(2)
+            q = (1.0 if random.randint(0, 1) == 0 else -1.0) / math.sqrt(2)
+            c = math.cos(2 * math.pi * foff * k); sn = math.sin(2 * math.pi * foff * k)
+            xi, xq = i * c - q * sn, i * sn + q * c
+            chip.inject_data_physical([fq(xi)], target_hop_cnt=30, target_addr=a0)
+            chip.run(max_events=6000)
+            chip.inject_data_physical([fq(xq)], target_hop_cnt=30, target_addr=a1)
+            chip.run(max_events=6000)
+            chip.inject_jump_physical(target_hop_cnt=30, entry_addr=entry)
+            chip.run(max_events=200000)
+        out = [s16(int(v)) for v, d, t in chip.read_port_words_timed("x16_out")]
+        return out
+
+    # A locked QPSK carrier puts the recovered I on the constant-modulus grid:
+    # |yi| settles near 0.707*32767 ~ 23170. Check the late-window mean magnitude.
+    for seed, foff in [(3, 0.01), (7, -0.01), (5, 0.008)]:
+        out = run_qpsk(seed, foff)
+        assert len(out) >= 150, f"only {len(out)} output words (loop stalled?)"
+        late = out[-80:]
+        mag = sum(abs(v) for v in late) / len(late)
+        assert 19000 < mag < 27000, (
+            f"order-4 did NOT lock to the QPSK grid (seed={seed}, foff={foff}): "
+            f"late mean|yi|={mag:.0f} (expect ~23170)")

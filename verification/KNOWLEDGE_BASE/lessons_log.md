@@ -8,8 +8,42 @@ anything that generalizes across block classes into `invariants.md`.
 
 ---
 
-## ComplexCostasLoop order=4 (QPSK) — WIP, on-chip trigger handoff open 2026-07-18
+## ComplexCostasLoop order=4 (QPSK) — RESOLVED, LOCKS on-chip 2026-07-18
 
+- **Status:** DONE. order=4 builds + routes + LOCKS a QPSK carrier on-chip through the
+  real placeKYT pipeline (late mean|yi| ~ 23083 = 0.707*32767, the ±45deg grid). order=2
+  (BPSK) UNCHANGED (37 build+saturation tests still green). New gates:
+  `test_costas_order4_in_catalog` / `_builds_and_routes` / `_built_bitstream_locks_qpsk`
+  in test_complex_costas_build.py.
+- **THE FIX (the qpd trig-JUMP-@0 bug): it was the LAYOUT, resolved by placing pd_pi
+  BELOW qpd, not east of it.** The router resolves a cell's `trig` JUMP hop via its
+  POSITIONAL-NEXT default (`_find_output_target`, the cell_pos+1 branch) — internal_jumps
+  is NOT consumed for hop resolution (only for `__terminate__` + portmap external-port
+  exclusion). So qpd's trig gets @1 IFF qpd's fwd_face traces to pd_pi at distance 1. In
+  the earlier straight-line layout (phase..qpd..pd_pi ALL on row 0) qpd faced EAST but the
+  router's distance trace to pd_pi came back 0 → JUMP @0/local. FIX: order-4 layout = a
+  7-wide row-0 forward chain phase..rotate..qpd, with **pd_pi dropped to row 1 BELOW qpd**;
+  qpd is dual-face (face_internal=SOUTH → err+trig to pd_pi @1; face_tap=EAST → recovered
+  yi_tap/yq_tap out). This ALSO clears the corridor congestion that made the output net
+  unroutable (an 8-wide row-0 block filled the top edge x16_in..x16_out).
+- **Other order-4 gotchas hit + fixed:** (1) rotate is now a PLAIN internal forward cell
+  (yi/yq → qpd, single fwd_face) — NOT the dual-face output_cell rotate; that removes the
+  hardcoded `face_internal=WEST` that mis-sent yi/yq. output_cell_id() returns "qpd" for
+  order-4 (rotate for order-2). (2) The 2-term PD (err=sign(yi)*yq - sign(yq)*yi) does NOT
+  fit pd_pi's cell with the PI+pipeline-lock → split into a ``qpd`` cell (QAM16 pattern).
+  (3) NAME COLLISION: pd_pi's order-4 INPUT port must be ``errin`` NOT ``err`` — the router
+  `_resolve_named_input` matches a same-named STATE var (pd_pi still has StateVar("err"))
+  BEFORE the input, so an input named "err" misrouted qpd's err WRITE to the state register
+  (dest=6 not R0) and the lock came in low (20668 vs 23059). Renaming the port → err WRITE
+  dest=0, lock 23059.
+- **LESSON (supersedes the earlier multi-layer WIP notes below):** the trig-hop resolution
+  is 100% the router's positional-next distance trace — get the layout so the output cell's
+  forward face ABUTS its trig target and drop everything else off that face. A mid-chain
+  output cell (qpd) works cleanly when its two consumers go in DIFFERENT directions
+  (SOUTH=loop, EAST=out) via the is_face dual-face idiom. Verify with read_cell_memory:
+  the trig JUMP word should be `73dX` (@1) not `73ff` (@0/local).
+
+### (superseded) earlier WIP notes
 - **Status:** REFERENCE + ALGORITHM PROVEN; on-chip NOT YET LOCKING. The Costas file
   was REVERTED to the proven order-2 (BPSK) state to protect the shipped BPSK modem +
   coherent RX; order-4 is a focused follow-up. (Do NOT ship order-4 until it locks

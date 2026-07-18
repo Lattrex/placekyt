@@ -42,11 +42,36 @@ anything that generalizes across block classes into `invariants.md`.
   first order-4 layout put rotate at (3,1) and table_cos→rotate silently broke (rotate
   never fired). Continuous snake row0 `phase..table_cos(4,0,S)` → row1 (4,1)rotate →
   (3,1)qpd → (2,1)pd_pi → transits (1,1)(0,1) → phase.
+- **UPDATE (2nd attempt, straight-line layout): the trig-JUMP-@0 bug is NOT layout.**
+  Retried with the PROVEN QAM16-style STRAIGHT-LINE layout (row-0 forward chain phase..
+  pd_pi, pd_pi faces south onto a row-1 west return) — the QAM16 DD Costas locks with
+  exactly this topology and its `qslice_err→pi` handoff is the analog of `qpd→pd_pi`.
+  Result: SAME break. All cells fire EXCEPT pd_pi. Dumped qpd's cell memory
+  (`read_cell_memory`): `err` WRITE = `0x67c4` = **@1, dest 4 (CORRECT** — reaches pd_pi
+  east), but the trig `JUMP = 0x73ff` = **@0 (LOCAL)**, and a STRAY `WRITE 0x6322 = @6,
+  dest 2` (router sink-default leak). So ONLY the trig JUMP is wrong; the data WRITE is
+  right. The block-level qpd is STRUCTURALLY IDENTICAL to QAM16's qslice_err (both
+  `{write:err}` then `{jump:trig}`, outputs err+trig) and my pd_pi ≡ QAM16 pi
+  (input err@R0) — so the block defs are not the problem.
+- **DEEPER ROOT (next resume point): the entanglement is with `rotate`'s
+  `output_cell_id()="rotate"` + dual-face/tap_trig machinery.** In order-4 rotate is now
+  MID-chain (position 5, with qpd+pd_pi after it). The build's mid-block-output patching
+  (`_output_cell_carries_handoffs` → `_patch_last_write_handoff`/`_patch_last_jump_handoff`,
+  and the `_default_unrouted_exit_hops` @1 defaulting which touches ONLY the exit cell)
+  resolves the yi_tap route on rotate but leaves qpd's trig JUMP at the router's local
+  default. QAM16's rotate has NO yi_tap/tap_trig/output_cell_id, so its qslice_err→pi trig
+  gets @1 cleanly. FIX DIRECTION: either (a) make qpd's declared internal_jump
+  (qpd.trig→pd_pi) get @1-patched by the build like the BPSK rotate→pd_pi does — find WHO
+  sets rotate.trig→pd_pi @1 in order-2 and extend it to any internal_jumps chain member;
+  or (b) drop rotate's yi_tap for order-4 and expose the output from pd_pi's own yi (needs
+  a yi tap on pd_pi) so rotate stops being the output_cell. Reverted AGAIN to protect BPSK.
 - **LESSON: inserting a cell into a proven feedback loop is multi-layer.** Each fix
   surfaced the next: register ceiling → cell split → layout discontinuity (a cell stops
-  firing) → mid-chain trig JUMP not @1-patched. Trace exec-ticks per cell FIRST (which
-  cell stops firing pinpoints the break); the reference proving the algorithm keeps the
-  debug focused on WIRING, not math.
+  firing) → mid-chain trig JUMP not @1-patched (build-side, entangled with the
+  output_cell_id/tap machinery, NOT the layout). Trace exec-ticks per cell FIRST (which
+  cell stops firing pinpoints the break) THEN dump the last-firing cell's WRITE/JUMP hops
+  with read_cell_memory (distinguishes "data reaches / trigger doesn't"). The reference
+  proving the algorithm kept every iteration focused on WIRING, not math.
 
 ## QPSKSlicerBlock — hard decoder vs GR constellation_decoder_cb(qpsk) 2026-07-18
 

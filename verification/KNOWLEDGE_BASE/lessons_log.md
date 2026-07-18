@@ -8,6 +8,44 @@ anything that generalizes across block classes into `invariants.md`.
 
 ---
 
+## ComplexRRCMatchedFilter decimation — REFERENCE proven, on-chip gate WIP 2026-07-18
+
+- **Goal:** add a GR `fir_filter_ccf(M, taps)` `decim` param so the coherent RX can run
+  carrier/timing recovery at 2 sps instead of the full sample rate (the QPSK-modem
+  throughput win — no reason to run the loops at the sample rate).
+- **REFERENCE is correct + verified:** a `process_reference` with `decimation=M` emits
+  `filter(x)[n]` for `(n+1) % M == 0` — i.e. `full_output[M-1::M]`, matching GR
+  `fir_filter_ccf(M, taps)`. Confirmed bit-exact vs the un-decimated reference sliced
+  `[1::2]` for M=2. (This is the piece to KEEP when the on-chip gate is done.)
+- **On-chip emit gate NOT working yet — REVERTED to protect the shipped MF.** The plan:
+  a mod-M counter on the LAST I-rail cell (i4) gates the yi/yq emit — the FIR runs every
+  sample (delay lines update), only every M-th output is written+triggered. Mirror the
+  PROVEN `FIRFilterBlock` decimator gate (INV-13: bump counter FIRST, branch PAST the
+  emit to a REAL HALT instruction — never a {write}/{jump} label; the emit path HALTs so
+  it does not fall into the skip block). TWO symptoms seen, both unresolved:
+  (1) an early version OVER-emitted (7-of-8 samples) with yi=0 — the emit path's
+  branch-dependent dcnt write did not reliably commit, and R0 (yi) got clobbered before
+  `{write:yi}` (`MOVE dcnt, dg_zero` reset placed BEFORE the yi WRITE);
+  (2) the FIR-pattern version (HALT-terminated, XOR-reset) then emitted NOTHING — the
+  counter never reached decim on the standalone per-sample driver.
+  `reset_per_batch` on dcnt is a TRAP: True zeros it on EVERY injected symbol (each is
+  its own "batch") so it never advances → drop-all; False left it stuck. Neither worked.
+- **REGISTER pressure is real:** i4 is the tightest cell (1 tap + cs + partial/carry
+  inputs). dcnt + a yi-save + 3 gate constants + ~10 gate instructions overflowed the
+  gap-packer ("No register space for state 'd0'") until trimmed. Stay register-lean on i4.
+- **WORKAROUND that ships today:** run the MF at `decimation=1` and follow it with the
+  proven `FIRFilterBlock(decimation=M, taps=[1.0])` decimator stage (task #340, verified
+  vs GR). The QPSK modem demo can decimate that way until the in-MF gate is fixed.
+- **RESUME POINT:** disassemble the BUILT i4 (raw `read_cell_memory` decode) and
+  single-step: confirm the counter increments across samples (read dcnt's BUILT register —
+  classify_addresses may differ from the built layout), then confirm the emit branch is
+  taken when dcnt==decim and that `{write:yi}` sees R0=FIR-result (not 0). The dual-latch
+  commit of a branch-dependent state write is the prime suspect — prefer a SINGLE
+  unconditional dcnt commit per pass (like the FIR gate's ADD/MOVE then XOR/MOVE), and
+  keep the yi WRITE the FIRST thing after the FIR result with NOTHING touching R0 first.
+
+---
+
 ## ComplexCostasLoop order=4 (QPSK) — RESOLVED, LOCKS on-chip 2026-07-18
 
 - **Status:** DONE. order=4 builds + routes + LOCKS a QPSK carrier on-chip through the

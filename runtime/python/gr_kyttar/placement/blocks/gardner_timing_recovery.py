@@ -584,10 +584,13 @@ center:
         # is WEST (the feedback-error direction) — but the real feedback edge the build
         # traces is period_relay -> qdelay, so loop_filter's face here only needs to
         # steer its own two emits.
-        # Face codes S=0, E=1, W=2, N=3. Complex loop_filter emits yi_out EAST
-        # (@1 -> qout, in-line) and e_fb SOUTH (@1 -> period_relay below).
-        _CFACE_OUT = 1   # east  (yi_out -> qout)
-        _CFACE_FB = 0    # south (e_fb  -> period_relay)
+        # Face codes S=0, E=1, W=2, N=3. In the COMPACT 3x3 fold (see default_layout)
+        # loop_filter sits at (2,1): its chain-next ``qout`` is directly SOUTH (2,2) and
+        # the ``period_relay`` is directly WEST (1,1). So yi_out egresses SOUTH (@1 ->
+        # qout, the chain-forward face == the cell's resting fwd_face) and e_fb egresses
+        # WEST (@1 -> period_relay, perpendicular so the two rails never collide).
+        _CFACE_OUT = 0   # south (yi_out -> qout, chain-forward)
+        _CFACE_FB = 2    # west  (e_fb  -> period_relay, perpendicular)
         loop_filter = CellProgram(
             inputs=[Port("e_in", register=0), Port("cval", register=1)],
             outputs=[Port("yi_out"), Port("e_fb"), Port("fb_trig"), Port("otrig")],
@@ -766,35 +769,40 @@ ilo:
 
     def default_layout(self) -> Dict[Any, Tuple[int, int, str]]:
         if self._complex:
-            # 6-cell complex layout — the Costas-loop serpentine idiom (a straight
-            # EAST forward chain on row 0 + a WEST feedback return corridor on row 1
-            # of FACE-only ``transit_*`` cells)::
+            # 6-cell complex layout — a COMPACT 3x3 fold of the old 5-wide
+            # longitudinal strip (INV-8/9/14: a multi-cell block must fold; I/O near
+            # one bus-facing edge; <=8 across). The forward chain snakes down at
+            # ``ted`` (Costas serpentine idiom) so the whole loop lands in a 3-wide
+            # footprint with a SHORT feedback return::
             #
-            #   col:    0          1            2        3              4
-            #   row 0: qdelay(E)  resampler(E) ted(E)  loop_filter(E) qout(E->out)
-            #   row 1: fb0(N)     fb(W)        fb(W)   period_relay(W)
+            #   col:    0                 1                  2
+            #   row 0: qdelay(E)          resampler(E)       ted(S)
+            #   row 1: transit_fb_0(N)    period_relay(W)    loop_filter(S)
+            #   row 2:                                       qout(S->out)
             #
-            # FORWARD chain (row 0, all EAST): qdelay -> resampler -> ted ->
-            # loop_filter -> qout. Every forward internal handoff is @1-abutted.
-            # qdelay ALSO writes the interpolated ``yq`` EAST (@4) — it transits the
-            # in-line resampler/ted/loop_filter (which forward transit traffic, the
-            # universal routing-cell rule) to land in qout; qdelay writes yq EARLY
-            # (upstream of the I chain) so it arrives before loop_filter flips face.
-            # loop_filter is DUAL-FACE (like the Costas qpd): yi_out EAST -> qout,
-            # e_fb SOUTH -> period_relay(3,1). qout is the single external OUTPUT.
-            # FEEDBACK: period_relay(3,1) --WEST--> transit(2,1),(1,1) --> (0,1)
-            # --NORTH--> qdelay(0,0), traced backward by _apply_internal_feedback.
-            # DICT ORDER == build_cell_programs order (positional mapping).
+            # FORWARD chain: qdelay(0,0,E) -> resampler(1,0,E) -> ted(2,0,S) ->
+            # loop_filter(2,1,S) -> qout(2,2). Every forward internal handoff is
+            # @1-abutted along this connected fwd_face path. qdelay ALSO writes the
+            # interpolated ``yq`` — it rides the SAME forward fwd_face path (its
+            # in-line resampler/ted/loop_filter forward transit traffic, the universal
+            # routing-cell rule) to land in qout. loop_filter is DUAL-FACE (like the
+            # Costas qpd): its chain-forward face is SOUTH, so yi_out egresses SOUTH
+            # (@1 -> qout at (2,2), its chain-next) and e_fb egresses WEST (@1 ->
+            # period_relay at (1,1)) — the two rails are PERPENDICULAR so they never
+            # collide (``_CFACE_OUT``=south / ``_CFACE_FB``=west in
+            # ``_build_complex_cell_programs``). qout sits on the bottom edge (a
+            # bus-facing edge) as the single external OUTPUT. FEEDBACK:
+            # period_relay(1,1) --WEST--> transit_fb_0(0,1) --NORTH--> qdelay(0,0),
+            # traced backward by ``_apply_internal_feedback`` (@2). DICT ORDER ==
+            # build_cell_programs order (positional mapping).
             return {
                 "qdelay": (0, 0, "east"),
                 "resampler": (1, 0, "east"),
-                "ted": (2, 0, "east"),
-                "loop_filter": (3, 0, "east"),     # dual-face: yi_out EAST, e_fb SOUTH
-                "qout": (4, 0, "east"),            # output cell (emits yi/yq EAST)
-                "period_relay": (3, 1, "west"),    # feedback WEST along row-1 corridor
+                "ted": (2, 0, "south"),
+                "loop_filter": (2, 1, "south"),   # dual-face: yi_out SOUTH, e_fb WEST
+                "qout": (2, 2, "south"),          # output cell on the bottom edge
+                "period_relay": (1, 1, "west"),   # feedback WEST -> transit -> qdelay
                 # FACE-only transit return corridor (period_relay -> qdelay).
-                "transit_fb_2": (2, 1, "west"),
-                "transit_fb_1": (1, 1, "west"),
                 "transit_fb_0": (0, 1, "north"),
             }
         """Compact 2x2 fold (CM-approved): resampler(0,0)->ted(1,0) on row 0

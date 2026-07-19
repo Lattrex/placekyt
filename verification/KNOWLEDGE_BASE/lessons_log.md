@@ -8,6 +8,42 @@ anything that generalizes across block classes into `invariants.md`.
 
 ---
 
+## complex Gardner RE-FOLDED to a compact 3x3 (was a 5-wide strip) — INV-8 DONE 2026-07-19
+
+- **DONE:** the `complex=True` GardnerTimingRecovery `default_layout` is now a compact
+  3-wide x 3-tall fold (was a 5-wide x 2-tall longitudinal strip). Routes with
+  auto_orient=False, BIT-EXACT to `process_reference(complex=True)` (0/0 I/Q
+  mismatches). Gates green: test_gardner_complex_reference (bit-exact + QPSK BER0),
+  test_pipeline_saturation, test_qpsk_modem_ber (folded RX chain). The REAL (BPSK)
+  Gardner path is byte-identical (only the `if self._complex:` layout branch + the
+  complex loop_filter's two face constants changed).
+- **The fold + the 4 constraints that make it hard (all had to hold at once):**
+  layout `phase/ted turns SOUTH` (Costas-serpentine idiom): qdelay(0,0,E)
+  resampler(1,0,E) ted(2,0,S) / period_relay(1,1,W) loop_filter(2,1,S) /
+  qout(2,2,S); transit_fb_0(0,1,N).
+  1. FORWARD chain qdelay->resampler->ted->loop_filter->qout stays face-abutted @1
+     along a single connected fwd_face path (ted turns SOUTH to drop to row 1).
+  2. qdelay writes `yq` to qout — it rides that SAME forward fwd_face path (the
+     in-line cells forward transit traffic). Break the path and qout gets NO Q rail
+     (symptom in the harness: "Q=0" / "too few outputs").
+  3. loop_filter is DUAL-face: `_CFACE_OUT` flipped 1->0 (yi_out now SOUTH -> qout at
+     (2,2), the chain-next) and `_CFACE_FB` flipped 0->2 (e_fb WEST -> period_relay at
+     (1,1)). The two rails are PERPENDICULAR (SOUTH vs WEST) so they never collide —
+     the same dual-face discipline the order-4 Costas qpd needs.
+  4. period_relay(1,1) --WEST--> transit_fb_0(0,1) --NORTH--> qdelay(0,0) is the
+     feedback corridor (@2), traced backward by `_apply_internal_feedback` following
+     loop_filter's/period_relay's resting fwd_face.
+- **⚠️ A fold can help the block STANDALONE yet HURT the auto-placer for a dense
+  design.** The folded Gardner routes fine standalone (auto_orient=False) and in the
+  RX chain with EXPLICIT anchors, but it made the FULL-DUPLEX QPSK modem's
+  `import->auto_pnr` packing LESS reliable (dropped from ~5/8 to 0/8 fully-routed
+  trials) — the fold changed the tap-egress geometry the auto-placer keys on. The
+  duplex acceptance path therefore uses EXPLICIT anchors (like the BPSK modem's own
+  `bpsk_modem_demo.py`), NOT auto_pnr; auto_pnr/GUI-import is the best-effort GUI
+  workflow. LESSON: measure a fold's effect on BOTH the standalone route AND the
+  target dense design — "compacter" is not automatically "more packable" for a
+  placer whose heuristic depends on the exact fold shape.
+
 ## order-4 Costas RE-FOLDED to a compact 4x2 (was a 7-wide strip) — INV-8 DONE 2026-07-19
 
 - **DONE:** the order-4 (QPSK) `ComplexCostasLoopBlock` `default_layout` is now the

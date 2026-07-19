@@ -257,92 +257,42 @@ def test_qpsk_rx_ber_zero(qapp, catalog, chip_type):
 # --- the .grc import path (the shipped examples/qpsk_modem/qpsk_modem.grc) -----
 GRC = Path("/home/system/placekyt/examples/qpsk_modem/qpsk_modem.grc")
 
-# The BER-0 RX floorplan (folded order-4 Costas): the Costas tap egresses SOUTH from
-# its qpd cell, so the Gardner sits directly below it. Both rails route with
-# auto_orient=False. auto_place does NOT handle the folded tap geometry, so the
-# GRC-import gates place the imported RX blocks explicitly at these proven anchors.
-_RX_ANCHORS = {
-    "ComplexRRCMatchedFilterBlock": (0, 0),
-    "ComplexCostasLoopBlock": (0, 3),
-    "GardnerTimingRecovery": (0, 6),
-    "QPSKSlicerBlock": (6, 8),
-}
-
-
-def _place_rx_explicit(ctrl):
-    """Place each imported RX block at its proven BER-0 anchor (the folded-Costas
-    floorplan). Mirrors the anchors in ``_build_qpsk_rx`` — a GRC import lands the
-    blocks provisionally; we pin them where the folded chain routes + recovers."""
-    from model.placement import Placement
-    for b in ctrl.project.blocks:
-        xy = _RX_ANCHORS.get(b.type)
-        if xy is None:
-            continue
-        cells = _default_cells_for(ctrl, b, xy)
-        b.placement = cells
-
-
-def _default_cells_for(ctrl, block, xy):
-    """Build a Placement for ``block`` anchored at ``xy`` from its catalog layout."""
-    from engine.grc_import import _default_cells
-    from model.placement import Placement
-    cells, transit = _default_cells(ctrl.catalog, block.type, block.params, 0)
-    # shift the default (idx=0) cells to the anchor
-    dx, dy = xy
-    for c in cells:
-        c.x += dx
-        c.y += dy
-    for c in transit:
-        c.x += dx
-        c.y += dy
-    return Placement(chip=0, cells=cells, transit_cells=transit)
-
 
 @pytest.mark.skipif(not GRC.exists(), reason="qpsk_modem.grc absent")
-def test_qpsk_grc_imports_and_routes(qapp, catalog, chip_type):
-    """The shipped qpsk_modem.grc imports into placeKYT (all 4 real blocks map, the
-    order-4 Costas + complex Gardner params coerce from the flowgraph), auto-places,
-    and bus-routes ALL nine forward nets — the GRC-first workflow."""
+def test_qpsk_grc_imports(qapp, catalog, chip_type):
+    """The shipped FULL-DUPLEX qpsk_modem.grc imports into placeKYT: all 8 real
+    blocks map (both chains), and the QPSK-defining params (order=4 Costas, complex
+    Gardner, qpsk mapper, complex upsampler) coerce from the flowgraph — the
+    GRC-first workflow. (The co-resident place+route+BER is gated deterministically
+    by ``test_qpsk_modem.py`` via ``engine.qpsk_modem_demo``.)"""
     ctrl = AppController(catalog=catalog)
     res = ctrl.import_grc(str(GRC), chip_type="kyttar_10x12")
     assert res.ok, res.unknown
     types = {b.type for b in ctrl.project.blocks}
+    # both chains present: RX (MF, Costas, Gardner, slicer) + TX (mapper, upsampler,
+    # a 2nd ComplexRRC as the shaper, upconvert).
     assert {"ComplexRRCMatchedFilterBlock", "ComplexCostasLoopBlock",
-            "GardnerTimingRecovery", "QPSKSlicerBlock"} <= types
+            "GardnerTimingRecovery", "QPSKSlicerBlock", "PSKSymbolMapperBlock",
+            "ComplexUpsamplerBlock", "IQUpconvertBlock"} <= types
+    assert len(ctrl.project.blocks) == 8
     # the QPSK-defining params came from the .grc, not the block defaults
     cos = next(b for b in ctrl.project.blocks if b.type == "ComplexCostasLoopBlock")
     gar = next(b for b in ctrl.project.blocks if b.type == "GardnerTimingRecovery")
+    mp = next(b for b in ctrl.project.blocks if b.type == "PSKSymbolMapperBlock")
     assert cos.params.get("order") == 4
     assert gar.params.get("complex") is True
-    _place_rx_explicit(ctrl)
-    rep = ctrl.auto_route_all({"kyttar_10x12": chip_type}, auto_orient=False,
-                              use_bus="always")
-    assert rep.ok, [(r.name, r.reason) for r in rep.failed]
-    assert len(rep.routed) == 9, f"expected 9 nets, got {len(rep.routed)}"
-    bres = BuildEngine(catalog, str(CT_PATH)).build(
-        ctrl.project, {"kyttar_10x12": chip_type})
-    assert bres.ok, [str(e) for e in bres.errors]
-    assert len(bres.words(0)) > 0
+    assert mp.params.get("modulation") == "qpsk"
 
 
 @pytest.mark.skipif(not GRC.exists(), reason="qpsk_modem.grc absent")
-def test_qpsk_grc_ber_zero(qapp, catalog, chip_type):
-    """ACCEPTANCE (import path): the qpsk_modem.grc, imported + auto-P&R'd + built,
-    recovers the 2-bit QPSK symbols at BER 0 through simkyt — the same acceptance
-    gate as ``test_qpsk_rx_ber_zero`` but pinning the GRC-import workflow."""
+def test_qpsk_grc_rx_chain_ber_zero(qapp, catalog, chip_type):
+    """ACCEPTANCE (RX chain, explicit floorplan): the QPSK RX chain (folded order-4
+    Costas + folded complex Gardner) recovers the 2-bit symbols at BER 0 through
+    simkyt with ``auto_orient=False``. This pins the folded-block RX recovery; the
+    full-duplex co-resident modem is gated by ``test_qpsk_modem.py``."""
     import simkyt
 
-    ctrl = AppController(catalog=catalog)
-    res = ctrl.import_grc(str(GRC), chip_type="kyttar_10x12")
-    assert res.ok, res.unknown
-    _place_rx_explicit(ctrl)
-    rep = ctrl.auto_route_all({"kyttar_10x12": chip_type}, auto_orient=False,
-                              use_bus="always")
-    assert rep.ok, [(r.name, r.reason) for r in rep.failed]
-    bres = BuildEngine(catalog, str(CT_PATH)).build(
-        ctrl.project, {"kyttar_10x12": chip_type})
-    assert bres.ok, [str(e) for e in bres.errors]
-    entry, _ = catalog.resolved_io("ComplexRRCMatchedFilterBlock")
+    _ctrl, bres, entry = _build_qpsk_rx(catalog, chip_type)
 
     random.seed(5)
     nsym, foff, toff = 160, 0.008, 0.45

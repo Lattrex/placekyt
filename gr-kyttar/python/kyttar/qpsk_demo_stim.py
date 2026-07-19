@@ -86,3 +86,12 @@ def tx_symbols(n_syms, seed=5):
     random.seed(seed)
     symbols = [(random.randint(0, 1), random.randint(0, 1)) for _ in range(n_syms)]
     return [(2 if bq == 0 else 0) | (1 if bi == 0 else 0) for bi, bq in symbols]
+
+
+def tx_bits(n_bits, seed=7):
+    """A finite TX bit burst for the modem's TX (modulator) chain. The QPSK mapper
+    accumulates 2 bits/symbol, so ``n_bits`` should be EVEN (each pair -> one QPSK
+    constellation point). Returns a list of 0/1 floats (a vector_source_f burst)."""
+    random.seed(seed)
+    n = n_bits - (n_bits % 2)   # even
+    return [float(random.randint(0, 1)) for _ in range(n)]

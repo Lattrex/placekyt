@@ -8,6 +8,38 @@ anything that generalizes across block classes into `invariants.md`.
 
 ---
 
+## IMPORTER BUG: complex Q-rail split silently dropped for tapped port names 2026-07-19
+
+- **Symptom (found via a hand-routed QPSK modem .kyt):** an imported complex RX chain
+  had a NONSENSICAL leftover flyline — the QPSK slicer's `in_i` looked satisfied by a
+  routed net, yet the router still demanded another route into it; and the slicer's
+  `in_q` was UNCONNECTED. Root: the GRC importer's complex I/Q BLOCK->BLOCK edge split
+  (`grc_import.py` `_iq_sibling`) SILENTLY failed to synthesise the Q-half net for the
+  PARAM-DEPENDENT tapped output ports — the order-4 Costas `yi_tap`/`yq_tap` and the
+  complex Gardner `yi_e`/`yq_e`. So the Costas->Gardner and Gardner->slicer complex
+  links imported with the I rail ONLY; the Q rail was never wired -> the derotation /
+  slice ran against a stale/zero Q and the design could not work.
+- **Root cause:** `_iq_sibling` formed the Q sibling from a TRAILING ``i`` only
+  (`port[:-1]+"q"`: `xi`->`xq`, `yi`->`yq`, `in_i`->`in_q`). The tapped forms carry the
+  ``i`` marker in the MIDDLE (`y`**`i`**`_tap`, `y`**`i`**`_e`), so the trailing rule
+  produced `yi_taq`/`yi_q` (non-existent) and returned None -> no Q net. This surfaced
+  only after the QPSK RX blocks (order-4 Costas tap, complex Gardner) started being
+  IMPORTED as a duplex .grc; the per-block explicit-anchor demos hand-wire both rails so
+  never hit it.
+- **Fix:** `_iq_sibling` now tries BOTH conventions and takes whichever names a REAL Q
+  port on the same cell: the trailing-``i`` swap (`in_i`->`in_q`, `xi`->`xq`, `yi`->`yq`)
+  AND the position-1 marker swap after an ``x``/``y`` prefix (`yi_tap`->`yq_tap`,
+  `yi_e`->`yq_e`). Verified: the full-duplex qpsk_modem.grc now imports all 16 nets (was
+  14 — the 2 missing were the Costas-tap Q and Gardner-out Q rails); BPSK modem import +
+  duplex e2e stay green (17 import tests). A real scalar `out` port correctly stays
+  unsplit (returns None).
+- **LESSON:** when a complex block exposes a DECORATED I/Q output name (a tap, a
+  suffixed rail) rather than the bare `yi`/`yq`, the importer's pair-synthesis must
+  match the ``i``/``q`` MARKER wherever it sits, not assume it's the last char. A
+  silently-dropped Q rail looks like a routing/DRC mystery (a flyline that "shouldn't
+  be there"), not an import bug — check the NET LIST (is the yq_* / *_q sibling present?)
+  before blaming the router.
+
 ## complex Gardner RE-FOLDED to a compact 3x3 (was a 5-wide strip) — INV-8 DONE 2026-07-19
 
 - **DONE:** the `complex=True` GardnerTimingRecovery `default_layout` is now a compact

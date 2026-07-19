@@ -540,11 +540,13 @@ def _iq_sibling(catalog, btype, port, *, want_out, params=None):
 
     A placeKYT complex block exposes its I/Q stream as TWO scalar ports that share
     one cell (and, for inputs, one entry) with consecutive registers — named with an
-    ``i``/``q`` suffix: ``xi``/``xq`` (in), ``yi``/``yq`` (out). GNURadio collapses
-    the pair into ONE complex port, so the importer wires only the I-half; this finds
-    the matching Q-half so the second (Q) net can be synthesised. Returns ``None`` if
-    there's no such sibling (a real scalar port, or an already-Q port) so a plain real
-    link is never double-wired."""
+    ``i``/``q`` marker right after the ``x``/``y`` rail prefix: ``xi``/``xq`` (in),
+    ``yi``/``yq`` (out), and the PARAM-DEPENDENT tapped forms ``yi_tap``/``yq_tap``
+    (order-4 Costas) and ``yi_e``/``yq_e`` (complex Gardner) where the ``i``/``q`` is
+    NOT at the end of the name. GNURadio collapses the pair into ONE complex port, so
+    the importer wires only the I-half; this finds the matching Q-half so the second
+    (Q) net can be synthesised. Returns ``None`` if there's no such sibling (a real
+    scalar port, or an already-Q port) so a plain real link is never double-wired."""
     if btype is None or not port:
         return None
     direction = "out" if want_out else "in"
@@ -554,9 +556,25 @@ def _iq_sibling(catalog, btype, port, *, want_out, params=None):
         return None
     ports = {p.name: p for p in pm.ports if p.direction == direction}
     p = ports.get(port)
-    if p is None or not port.endswith("i"):
+    if p is None:
         return None
-    qname = port[:-1] + "q"
+    # Find the Q-half by flipping the I-half's ``i`` MARKER to ``q``. Two naming
+    # conventions coexist across the catalog, so try BOTH and take whichever names a
+    # REAL Q port on the SAME cell:
+    #   * trailing ``i``  — ``xi``->``xq``, ``yi``->``yq``, ``in_i``->``in_q`` (slicer)
+    #   * position-1 ``i`` after an ``x``/``y`` prefix — the PARAM-DEPENDENT tapped
+    #     forms ``yi_tap``->``yq_tap`` (order-4 Costas) / ``yi_e``->``yq_e`` (complex
+    #     Gardner), where the marker is NOT at the end (a trailing-only rule wrongly
+    #     yields ``yi_taq``/``yi_q`` and misses the real Q rail — the QPSK RX import
+    #     bug this guards: the Costas/Gardner Q rails silently un-wired).
+    cands = []
+    if port.endswith("i"):
+        cands.append(port[:-1] + "q")
+    if len(port) >= 2 and port[0] in ("x", "y") and port[1] == "i":
+        cands.append(port[0] + "q" + port[2:])
+    qname = next((c for c in cands if c != port and c in ports), None)
+    if qname is None:
+        return None
     q = ports.get(qname)
     if q is None:
         return None

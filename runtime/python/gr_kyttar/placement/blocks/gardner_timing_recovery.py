@@ -86,7 +86,8 @@ class GardnerTimingRecovery(KyttarBlock):
     _MAXDEV = 12288    # 0.75 sample in Q14; period clamped to 16384 +- _MAXDEV
 
     # Complex/real 2-sps input lands at R0 of the resampler landing cell; the
-    # recovered center sample is the output.
+    # recovered center sample is the output. (COMPLEX mode overrides this with a
+    # two-register xi/xq interface + a two-register yi/yq output — see __init__.)
     _interface = BlockInterface(
         entry_address=1, input_registers=[0], output_registers=[0]
     )
@@ -109,18 +110,18 @@ class GardnerTimingRecovery(KyttarBlock):
             name: Block name.
             complex: When True, 2-rail (I/Q) timing recovery — the SAME I-driven
                 Gardner timing loop (NCO, TED on I, PI loop filter, period feedback all
-                identical and driven by the I rail only) but the resampler ALSO
-                interpolates the Q rail at each strobe with the same ``frac`` and the
-                block emits the recovered (yi, yq) symbol-center pair, so a downstream
-                QPSKSlicer can decode QPSK. The Q15 REFERENCE (``process_reference``) is
-                verified: its I channel is BIT-EXACT to the real (BPSK) reference and it
-                recovers a QPSK-with-timing-offset stream to the +-1/sqrt(2) grid. The
-                ON-CHIP complex cells are WIP (see the KB "complex Gardner" entry) — a
-                register-tight multi-cell bring-up — so ``complex=True`` raises on build
-                for now; use the reference and, for the QPSK modem, symbol-synchronous
-                input (no fractional timing offset) with the proven real chain until the
-                on-chip complex path lands. ``complex=False`` (default) is the shipped,
-                byte-identical BPSK timing loop.
+                identical and driven by the I rail only), with a parallel Q rail
+                that interpolates the Q sample at each strobe with the SAME ``frac``;
+                the block emits the recovered (yi, yq) symbol-center pair, so a
+                downstream QPSKSlicer can decode QPSK. The Q15 REFERENCE
+                (``process_reference``) is verified: its I channel is BIT-EXACT to the
+                real (BPSK) reference and it recovers a QPSK-with-timing-offset stream
+                to the +-1/sqrt(2) grid. The ON-CHIP complex cells are a 6-cell
+                topology (a ``qdelay`` landing cell that duplicates the Q NCO + owns
+                the Q delay line + interpolates Q, and a ``qout`` output cell that
+                emits the yi/yq pair) that is BIT-EXACT to the reference — see
+                ``_build_complex_cell_programs``. ``complex=False`` (default) is the
+                shipped, byte-identical BPSK timing loop.
             kp, ki: DEPRECATED. The loop filter now derives its proportional/integral
                 gains from GR's ``loop_bw=0.045`` + ``damping=1.0`` (the
                 ``digital.symbol_sync`` control loop) as fixed shift amounts
@@ -142,12 +143,20 @@ class GardnerTimingRecovery(KyttarBlock):
         self._ki = int(ki)
         self._pipeline_lock = bool(pipeline_lock)
         self._complex = bool(complex)
+        if self._complex:
+            # COMPLEX (2-rail) mode: the block lands a complex (xi, xq) sample on
+            # the qdelay landing cell (xi@R0, xq@R1 — the ComplexCostasLoop/MF
+            # complex-input convention) and emits the recovered (yi, yq) center
+            # pair. See build_cell_programs' complex branch for the 6-cell topology.
+            self._interface = BlockInterface(
+                entry_address=1, input_registers=[0, 1], output_registers=[0, 1])
 
     @property
     def cell_count(self) -> int:
-        # resampler, ted, loop_filter + the period_relay (PI filter / feedback
-        # relay that closes the timing loop as a data path — see build_cell_programs).
-        return 4
+        # REAL: resampler, ted, loop_filter + period_relay (4 cells).
+        # COMPLEX: adds a qdelay landing cell (Q delay line + duplicate Q NCO +
+        # Q interpolation) and a qout output cell (emits the yi/yq pair) — 6 cells.
+        return 6 if self._complex else 4
 
     @property
     def interface(self) -> BlockInterface:
@@ -157,17 +166,7 @@ class GardnerTimingRecovery(KyttarBlock):
         """The 4 cells implementing the GR symbol_sync control loop (see
         ``process_reference`` for the algorithm this is bit-exact with)."""
         if self._complex:
-            # The complex (2-rail) on-chip cells are WIP (register-tight multi-cell
-            # bring-up — the Q interpolation does not fold into the 32-word resampler,
-            # and the split-cell topology fights the framework's positional-next
-            # internal-JUMP resolution + complex-egress patching; see the KB). The Q15
-            # reference IS verified. Until the on-chip cells land, reject a build so no
-            # silently-wrong bitstream ships; the QPSK modem uses symbol-synchronous
-            # input + the proven real chain in the meantime.
-            raise NotImplementedError(
-                "GardnerTimingRecovery(complex=True) on-chip cells are WIP; the Q15 "
-                "reference is verified. Build the QPSK RX with symbol-synchronous "
-                "input (no fractional timing) until the complex on-chip path lands.")
+            return self._build_complex_cell_programs()
 
         # --- C1 resampler: Q14 NCO + 2-sample delay line + interp + parity. -----
         # Fires ONE strobe per 1.0-sample advance (2 per symbol). The instantaneous
@@ -419,6 +418,266 @@ ilo:
         return {"resampler": resampler, "ted": ted, "loop_filter": loop_filter,
                 "period_relay": period_relay}
 
+    # ================= COMPLEX (2-rail I/Q) on-chip cells =================
+    def _build_complex_cell_programs(self) -> Dict[str, CellProgram]:
+        """The 6-cell COMPLEX (I/Q) timing loop — BIT-EXACT with
+        ``process_reference(complex=True)``.
+
+        The I timing loop is the SAME shipped BPSK loop (``resampler`` -> ``ted``
+        -> ``loop_filter`` -> ``period_relay`` PI). Two new cells add the Q rail
+        WITHOUT touching the (register-FULL) resampler's I math:
+
+          * ``qdelay`` — the COMPLEX LANDING cell (xi@R0, xq@R1). It runs on EVERY
+            input sample (the reference shifts the Q delay line every sample). It:
+              (1) forwards its deferred period ``qinst_next`` -> resampler.inst_next
+                  and ``xi`` -> resampler.xi, then TRIGGERS the resampler;
+              (2) shifts its OWN Q delay line (xpq/xp2q);
+              (3) runs a DUPLICATE Q14 phase NCO — bit-identical to the resampler's
+                  (same warm-0.5 phase, same nominal period, fed the SAME deferred
+                  period ``qinst_next`` that period_relay computes) — so it strobes
+                  on EXACTLY the same samples as the resampler. On its strobe it
+                  linearly interpolates the Q rail with the SAME ``frac`` the I
+                  resampler uses (``sq_i = xp2q + MULQ(frac, xpq-xp2q)``) and WRITES
+                  it (pure data) to ``qout``. It writes on every strobe (center AND
+                  mid); the CENTER gate is applied downstream (only a center triggers
+                  ``qout``). No parity is tracked here — the reference computes sq_i
+                  on every strobe and gates only the OUTPUT on center.
+          * ``qout`` — the block's single external OUTPUT cell. On a CENTER it is
+            triggered by the loop_filter (which hands it the recovered ``yi``); it
+            emits ``yi`` then the held ``yq`` (last written by qdelay on this
+            sample's strobe) then ONE trigger — the ComplexCostasLoop/MF complex
+            output contract (yi -> R0, yq -> R1) a downstream QPSKSlicer consumes.
+
+        The whole thing is a LINEAR ring (qdelay -> resampler -> ted -> loop_filter
+        -> qout, plus the loop_filter -> period_relay -> qdelay PI feedback), so
+        every rendezvous is ordered by the chain: qdelay & resampler run UPSTREAM of
+        loop_filter, so both ``yq`` (from qdelay) and the deferred period are already
+        in place before ``qout``/the resampler-strobe consume them. The period
+        feedback returns to qdelay (single target); qdelay bridges it to the
+        resampler as a per-sample forward, keeping BOTH NCOs on the identical period.
+        """
+        ONEQ = 1 << 14
+        INC = 1 << 14
+
+        # --- qdelay: complex landing + Q delay line + duplicate Q NCO + interp. ---
+        qdelay = CellProgram(
+            inputs=[Port("xi", register=0), Port("xq", register=1)],
+            outputs=[Port("instfwd"), Port("xifwd"), Port("yq_out"), Port("rtrig")],
+            entries=[EntryPoint("default")],
+            data=[DataWord("inc", INC, address=2)],
+            # LOOP MEMORY (cold-start each packet, exactly like the resampler): the Q
+            # NCO phase, the deferred/active periods, and the Q delay line all carry
+            # the previous packet's converged lock. ``diffq`` is per-strobe scratch.
+            state=[StateVar("qphase", initial_value=INC >> 1, reset_per_batch=True),
+                   StateVar("xpq", reset_per_batch=True),
+                   StateVar("xp2q", reset_per_batch=True),
+                   StateVar("qinst_active", initial_value=ONEQ,
+                            reset_per_batch=True),
+                   StateVar("qinst_next", initial_value=ONEQ,
+                            reset_per_batch=True),
+                   StateVar("diffq")],
+            assembly_template="""\
+start:
+    MOVE R0, R{in:xi}
+    {write:xifwd}
+    MOVE R0, R{state:qinst_next}
+    {write:instfwd}
+    MOVE R{state:xp2q}, R{state:xpq}
+    MOVE R{state:xpq}, R{in:xq}
+    ADD R{state:qphase}, R{data:inc}
+    MOVE R{state:qphase}, R0
+    SUB R{state:qphase}, R{state:qinst_active}
+    BR.N qdone
+    MOVE R{state:qphase}, R0
+    MOVE R{state:qinst_active}, R{state:qinst_next}
+    SUB R{state:xpq}, R{state:xp2q}
+    MOVE R{state:diffq}, R0
+    SHL R{state:qphase}, #1
+    MULQ R0, R{state:diffq}
+    ADD R0, R{state:xp2q}
+    {write:yq_out}
+    {jump:rtrig}
+    HALT
+qdone:
+    {jump:rtrig}
+""",
+        )
+
+        # --- resampler: the SHIPPED I timing loop, verbatim (no pipeline lock in
+        # the complex path — the qdelay/qout rendezvous is ordered by the chain, and
+        # the acceptance harness drives per-sample). Its ``inst_next`` state is fed
+        # by qdelay's per-sample forward (kept identical to the qdelay NCO period).
+        resampler = CellProgram(
+            inputs=[Port("xi", register=0)],
+            outputs=[Port("val"), Port("par"), Port("trig")],
+            entries=[EntryPoint("default")],
+            data=[DataWord("inc", INC, address=1)],
+            state=[StateVar("phase", initial_value=INC >> 1, reset_per_batch=True),
+                   StateVar("xp", reset_per_batch=True),
+                   StateVar("xp2", reset_per_batch=True),
+                   StateVar("inst_active", initial_value=ONEQ, reset_per_batch=True),
+                   StateVar("inst_next", initial_value=ONEQ, reset_per_batch=True),
+                   StateVar("parity", reset_per_batch=True),
+                   StateVar("diff")],
+            assembly_template="""\
+start:
+    MOVE R{state:xp2}, R{state:xp}
+    MOVE R{state:xp}, R{in:xi}
+    ADD R{state:phase}, R{data:inc}
+    MOVE R{state:phase}, R0
+    SUB R{state:phase}, R{state:inst_active}
+    BR.N done
+    MOVE R{state:phase}, R0
+    MOVE R{state:inst_active}, R{state:inst_next}
+    SUB R{state:xp}, R{state:xp2}
+    MOVE R{state:diff}, R0
+    SHL R{state:phase}, #1
+    MULQ R0, R{state:diff}
+    ADD R0, R{state:xp2}
+    {write:val}
+    MOVE R0, R{state:parity}
+    {write:par}
+    XOR R{state:parity}, R{data:inc}
+    MOVE R{state:parity}, R0
+    {jump:val}
+done:
+    {jump:trig}
+""",
+        )
+
+        # --- ted: the SHIPPED Gardner TED, verbatim. ---
+        ted = CellProgram(
+            inputs=[Port("val", register=0), Port("par", register=1)],
+            outputs=[Port("e_out"), Port("c_out"), Port("trig")],
+            entries=[EntryPoint("default")],
+            data=[DataWord("one_q14", ONEQ, address=2),
+                  DataWord("mulq_half", self._MULQ_HALF, address=3)],
+            state=[StateVar("cph", reset_per_batch=True),
+                   StateVar("half", reset_per_batch=True),
+                   StateVar("csh"), StateVar("cs")],
+            assembly_template="""\
+start:
+    CMP R{in:par}, R{data:one_q14}
+    BR.NZ center
+    MOVE R{state:half}, R{in:val}
+    {jump:trig}
+center:
+    MOVE R{state:cs}, R{in:val}
+    MULQ R{state:cs}, R{data:mulq_half}
+    MOVE R{state:csh}, R0
+    SUB R0, R{state:cph}
+    MULHI R0, R{state:half}
+    MOVE R{state:cph}, R{state:csh}
+    {write:e_out}
+    MOVE R0, R{state:cs}
+    {write:c_out}
+    {jump:c_out}
+""",
+        )
+
+        # --- loop_filter (complex): a DUAL-FACE cell exactly like the real block,
+        # but ``yi_out`` (the recovered center) goes to the internal ``qout`` cell
+        # (SOUTH) instead of an external port, and the Gardner error ``e_fb`` goes to
+        # the period_relay (WEST). It flips FACE between the two forward handoffs. Both
+        # are FORWARD (qout, period_relay follow loop_filter in the dict), so the
+        # router resolves each WRITE's hop; the FACE flips steer them. Its resting face
+        # is WEST (the feedback-error direction) — but the real feedback edge the build
+        # traces is period_relay -> qdelay, so loop_filter's face here only needs to
+        # steer its own two emits.
+        # Face codes S=0, E=1, W=2, N=3. Complex loop_filter emits yi_out EAST
+        # (@1 -> qout, in-line) and e_fb SOUTH (@1 -> period_relay below).
+        _CFACE_OUT = 1   # east  (yi_out -> qout)
+        _CFACE_FB = 0    # south (e_fb  -> period_relay)
+        loop_filter = CellProgram(
+            inputs=[Port("e_in", register=0), Port("cval", register=1)],
+            outputs=[Port("yi_out"), Port("e_fb"), Port("fb_trig"), Port("otrig")],
+            entries=[EntryPoint("default")],
+            data=[DataWord("face_out", _CFACE_OUT, address=2, is_face=True),
+                  DataWord("face_fb", _CFACE_FB, address=3, is_face=True)],
+            state=[StateVar("es"), StateVar("cs")],
+            assembly_template="""\
+start:
+    MOVE R{state:es}, R{in:e_in}
+    MOVE R{state:cs}, R{in:cval}
+    MOVE [FACE], R{data:face_fb}
+    MOVE R0, R{state:es}
+    {write:e_fb}
+    {jump:fb_trig}
+    MOVE [FACE], R{data:face_out}
+    MOVE R0, R{state:cs}
+    {write:yi_out}
+    {jump:otrig}
+""",
+        )
+
+        # --- qout: the single external OUTPUT cell. Triggered by loop_filter on a
+        # CENTER, it emits yi (-> R0) then the held yq (-> R1) then ONE trigger — the
+        # complex-output contract. ``yq`` is the last value qdelay wrote this sample.
+        # yi lands at R0 (loop_filter's yi_out), yq at R1 (qdelay's yq_out). No state
+        # regs (they would ALIAS the pinned R0/R1 inputs). WRITE does not clobber R0.
+        qout = CellProgram(
+            inputs=[Port("yi", register=0), Port("yq", register=1)],
+            outputs=[Port("yi_e"), Port("yq_e"), Port("trig")],
+            entries=[EntryPoint("default")],
+            assembly_template="""\
+start:
+    MOVE R0, R{in:yi}
+    {write:yi_e}
+    MOVE R0, R{in:yq}
+    {write:yq_e}
+    {jump:trig}
+""",
+        )
+
+        # --- period_relay: the SHIPPED PI filter, verbatim, EXCEPT ``pout`` returns
+        # to qdelay's ``qinst_next`` (qdelay then forwards it to the resampler each
+        # sample, keeping both NCOs on the identical period). No pipeline-lock config
+        # write in the complex path.
+        MAXDEV = self._MAXDEV
+        period_relay = CellProgram(
+            inputs=[Port("e_in", register=0)],
+            outputs=[Port("pout")],
+            entries=[EntryPoint("relay")],
+            state=[StateVar("iavg", reset_per_batch=True), StateVar("es")],
+            data=[DataWord("one_q14", ONEQ, address=1),
+                  DataWord("mulq_integ", self._MULQ_INTEG, address=2),
+                  DataWord("mulq_prop", self._MULQ_PROP, address=3),
+                  DataWord("pdev", MAXDEV, address=4),
+                  DataWord("ndev", (-MAXDEV) & 0xFFFF, address=5),
+                  DataWord("rbias", self._INTEG_RBIAS, address=6)],
+            assembly_template="""\
+relay:
+    MOVE R{state:es}, R{in:e_in}
+    MOVE R0, R{state:es}
+    ADD R0, R{data:rbias}
+    MULQ R0, R{data:mulq_integ}
+    ADD R0, R{state:iavg}
+    MOVE R{state:iavg}, R0
+    CMP R{state:iavg}, R{data:pdev}
+    BR.N ihi
+    MOVE R{state:iavg}, R{data:pdev}
+ihi:
+    CMP R{state:iavg}, R{data:ndev}
+    BR.NN ilo
+    MOVE R{state:iavg}, R{data:ndev}
+ilo:
+    MOVE R0, R{state:es}
+    MULQ R0, R{data:mulq_prop}
+    ADD R0, R{state:iavg}
+    ADD R0, R{data:one_q14}
+    {write:pout}
+""",
+        )
+
+        # DICT ORDER = positional order. Each cell's default (unlisted) trigger goes
+        # to its POSITIONAL-NEXT cell; the ordering below makes loop_filter's local
+        # ``otrig`` reach qout (positional-next) and qdelay's ``rtrig`` reach the
+        # resampler (positional-next). All other triggers/handoffs are declared
+        # explicitly in internal_connections/internal_jumps.
+        return {"qdelay": qdelay, "resampler": resampler, "ted": ted,
+                "loop_filter": loop_filter, "qout": qout,
+                "period_relay": period_relay}
+
     def internal_connections(self) -> List[Tuple[int, str, int, str]]:
         """Forward data handoffs + the period FEEDBACK (relay -> resampler).
 
@@ -427,6 +686,30 @@ ilo:
         the corrected instantaneous period back to the resampler's ``inst_next``
         state (the loop closure).
         """
+        if self._complex:
+            return [
+                # qdelay (landing) bridges to the resampler each sample: the deferred
+                # period (kept identical to its own NCO period) + the raw xi.
+                ("qdelay", "instfwd", "resampler", "inst_next"),
+                ("qdelay", "xifwd", "resampler", "xi"),
+                # qdelay hands the interpolated Q sample (every strobe) to qout.
+                ("qdelay", "yq_out", "qout", "yq"),
+                # I chain (identical to the real block).
+                ("resampler", "val", "ted", "val"),
+                ("resampler", "par", "ted", "par"),
+                ("ted", "e_out", "loop_filter", "e_in"),
+                ("ted", "c_out", "loop_filter", "cval"),
+                # loop_filter hands the recovered center yi to qout, and the Gardner
+                # error to the period_relay; ``fb_trig`` is declared here too so its
+                # JUMP resolves to the (non-positional-next) period_relay explicitly.
+                ("loop_filter", "yi_out", "qout", "yi"),
+                ("loop_filter", "e_fb", "period_relay", "e_in"),
+                ("loop_filter", "fb_trig", "period_relay", "e_in"),
+                # PI feedback returns to qdelay's deferred period (single target);
+                # qdelay forwards it to the resampler (above), keeping both NCOs
+                # locked to the identical period.
+                ("period_relay", "pout", "qdelay", "qinst_next"),
+            ]
         return [
             ("resampler", "val", "ted", "val"),
             ("resampler", "par", "ted", "par"),
@@ -449,6 +732,23 @@ ilo:
         feedback path). The relay does NOT trigger the resampler — the period lands
         as pure data, read by the next external sample (the Costas dphase model).
         No-strobe / mid cases terminate locally (the `trig` outputs)."""
+        if self._complex:
+            return [
+                # qdelay triggers the resampler EVERY sample (both NCO paths). The
+                # resampler triggers ted on a strobe (val); ted triggers loop_filter
+                # on a center (c_out); loop_filter triggers period_relay (fb_trig) and
+                # qout (otrig, its positional-next). qdelay writes yq to qout as pure
+                # DATA (no trigger) — qout fires only on the loop_filter center.
+                ("qdelay", "rtrig", "resampler", "default"),
+                ("resampler", "val", "ted", "default"),
+                ("ted", "c_out", "loop_filter", "default"),
+                ("loop_filter", "fb_trig", "period_relay", "relay"),
+                ("loop_filter", "otrig", "qout", "default"),
+                # Dead-end the no-advance triggers so they never fall through to the
+                # positional-next cell (one recovered symbol per CENTER only).
+                ("resampler", "trig", "__terminate__", "default"),
+                ("ted", "trig", "__terminate__", "default"),
+            ]
         return [
             ("resampler", "val", "ted", "default"),
             ("ted", "c_out", "loop_filter", "default"),
@@ -465,6 +765,38 @@ ilo:
         ]
 
     def default_layout(self) -> Dict[Any, Tuple[int, int, str]]:
+        if self._complex:
+            # 6-cell complex layout — the Costas-loop serpentine idiom (a straight
+            # EAST forward chain on row 0 + a WEST feedback return corridor on row 1
+            # of FACE-only ``transit_*`` cells)::
+            #
+            #   col:    0          1            2        3              4
+            #   row 0: qdelay(E)  resampler(E) ted(E)  loop_filter(E) qout(E->out)
+            #   row 1: fb0(N)     fb(W)        fb(W)   period_relay(W)
+            #
+            # FORWARD chain (row 0, all EAST): qdelay -> resampler -> ted ->
+            # loop_filter -> qout. Every forward internal handoff is @1-abutted.
+            # qdelay ALSO writes the interpolated ``yq`` EAST (@4) — it transits the
+            # in-line resampler/ted/loop_filter (which forward transit traffic, the
+            # universal routing-cell rule) to land in qout; qdelay writes yq EARLY
+            # (upstream of the I chain) so it arrives before loop_filter flips face.
+            # loop_filter is DUAL-FACE (like the Costas qpd): yi_out EAST -> qout,
+            # e_fb SOUTH -> period_relay(3,1). qout is the single external OUTPUT.
+            # FEEDBACK: period_relay(3,1) --WEST--> transit(2,1),(1,1) --> (0,1)
+            # --NORTH--> qdelay(0,0), traced backward by _apply_internal_feedback.
+            # DICT ORDER == build_cell_programs order (positional mapping).
+            return {
+                "qdelay": (0, 0, "east"),
+                "resampler": (1, 0, "east"),
+                "ted": (2, 0, "east"),
+                "loop_filter": (3, 0, "east"),     # dual-face: yi_out EAST, e_fb SOUTH
+                "qout": (4, 0, "east"),            # output cell (emits yi/yq EAST)
+                "period_relay": (3, 1, "west"),    # feedback WEST along row-1 corridor
+                # FACE-only transit return corridor (period_relay -> qdelay).
+                "transit_fb_2": (2, 1, "west"),
+                "transit_fb_1": (1, 1, "west"),
+                "transit_fb_0": (0, 1, "north"),
+            }
         """Compact 2x2 fold (CM-approved): resampler(0,0)->ted(1,0) on row 0
         facing east; the loop_filter folds down to (1,1). It is a DUAL-FACE cell
         (see ``build_cell_programs``): it emits `out` SOUTH (outward, the
@@ -493,6 +825,9 @@ ilo:
         }
 
     def output_cell_id(self) -> Any:
+        if self._complex:
+            # COMPLEX: the external output (yi/yq pair) leaves the ``qout`` cell.
+            return "qout"
         """The recovered center `out` leaves the loop_filter (the last datapath
         cell), which ALSO carries the `period_fb` feedback WRITE. Declaring it
         explicitly tells the build to patch ONLY the loop_filter's LAST output
@@ -502,6 +837,11 @@ ilo:
         return "loop_filter"
 
     def output_face_addr(self) -> Any:
+        if self._complex:
+            # COMPLEX: qout is a plain single-face output cell (its yi/yq WRITEs all
+            # egress on its resting fwd_face, set by the route) — no baked-in face
+            # word to rewrite.
+            return None
         """The loop_filter is a DUAL-FACE output cell: its ``out`` WRITE fires on the
         in-program ``MOVE [FACE], R{face_out}`` flip (addr 2), independent of the
         cell's resting ``fwd_face`` (which carries the WEST feedback). So the build

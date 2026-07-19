@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""GardnerTimingRecovery(complex=True) — Q15 REFERENCE gate.
+"""GardnerTimingRecovery(complex=True) — Q15 reference + ON-CHIP bit-exact gate.
 
-The 2-rail (I/Q) timing recovery reference must (a) keep its I channel BIT-EXACT to
-the shipped real (BPSK) Gardner on the same I stimulus, and (b) recover a QPSK stream
-with a fractional timing offset at BER 0. The on-chip complex cells are WIP (build
-raises NotImplementedError — this gate covers ONLY the proven reference).
+The 2-rail (I/Q) timing recovery must (a) keep its I channel BIT-EXACT to the shipped
+real (BPSK) Gardner on the same I stimulus, (b) recover a QPSK stream with a
+fractional timing offset at BER 0, and (c) the ON-CHIP 6-cell complex build must be
+BIT-EXACT to the reference on BOTH the I and Q recovered centers.
 """
 from __future__ import annotations
 
@@ -128,8 +128,47 @@ def test_complex_reference_recovers_qpsk_ber0():
     assert best == 0.0, f"complex Gardner reference QPSK BER = {best:.4f} (expected 0)"
 
 
-def test_complex_on_chip_build_raises_until_wip_lands():
-    """The on-chip complex cells are WIP; building must RAISE (never silently ship a
-    wrong bitstream). Remove this guard when the on-chip complex path is bit-exact."""
-    with pytest.raises(NotImplementedError):
-        GardnerTimingRecovery("c", complex=True).build_cell_programs()
+def test_complex_on_chip_bit_exact():
+    """The ON-CHIP 6-cell complex build (qdelay landing + duplicate Q NCO + qout
+    output) recovers (yi, yq) centers BIT-EXACT to ``process_reference(complex=True)``
+    on a QPSK-with-timing-offset burst — 0 mismatches on BOTH I and Q."""
+    import numpy as np
+
+    ROOTV = ROOT / "verification"
+    for p in (ROOTV, ROOT / "placekyt"):
+        if str(p) not in sys.path:
+            sys.path.insert(0, str(p))
+    from kyttar_verify.dut_runner import run_block_dut_complex  # noqa: E402
+
+    chip_yaml = str(ROOT / "placekyt" / "resources" / "chips" / "kyttar_10x12.yaml")
+
+    random.seed(3)
+    N = 300
+    tb = [(random.randint(0, 1), random.randint(0, 1)) for _ in range(N)]
+    si = [(1 if bi == 0 else -1) / math.sqrt(2) for bi, _ in tb]
+    sq = [(1 if bq == 0 else -1) / math.sqrt(2) for _, bq in tb]
+    taps = _rrc(0.35, 2, 8)
+    xi = _timing_shift(_shape(si, taps), 0.4)
+    xq = _timing_shift(_shape(sq, taps), 0.4)
+    stim = np.array([complex(a, b) for a, b in zip(xi, xq)])
+
+    ref = GardnerTimingRecovery("r", complex=True).process_reference(stim)
+    ref_i = [int(a) for a, _ in ref]
+    ref_q = [int(b) for _, b in ref]
+
+    dut = run_block_dut_complex(
+        "GardnerTimingRecovery", stim, params={"complex": True},
+        chip_yaml=chip_yaml, in_ports=("xi", "xq"), words_per_sample=2)
+    assert dut.ok, f"complex build/route/run failed: {dut.reason}"
+
+    emit_i = [_s16(x) for x in dut.i_q15 if x is not None]
+    emit_q = [_s16(x) for x in dut.q_q15 if x is not None]
+    # >= 300-symbol burst: the emitted symbol-rate stream must equal the reference.
+    assert len(emit_i) >= 300 and len(emit_q) >= 300, \
+        f"on-chip emitted too few symbols: I={len(emit_i)} Q={len(emit_q)}"
+    m = min(len(emit_i), len(ref_i))
+    mi = sum(1 for k in range(m) if emit_i[k] != ref_i[k])
+    mq = sum(1 for k in range(min(len(emit_q), len(ref_q)))
+             if emit_q[k] != ref_q[k])
+    assert mi == 0, f"on-chip I diverged from reference: {mi}/{m} mismatches"
+    assert mq == 0, f"on-chip Q diverged from reference: {mq} mismatches"

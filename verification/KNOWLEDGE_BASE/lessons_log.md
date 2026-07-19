@@ -8,6 +8,49 @@ anything that generalizes across block classes into `invariants.md`.
 
 ---
 
+## GardnerTimingRecovery complex=True (2-rail I/Q) — REFERENCE proven, on-chip WIP 2026-07-18
+
+- **Why:** a QPSK modem needs SYMBOL-TIMING recovery on BOTH I and Q. The shipped
+  Gardner is single-rail (I only, for BPSK). Added a `complex: bool = False` param.
+  `complex=False` is byte-identical to the shipped block (37 regressions green:
+  test_gardner_recovers_on_chip + test_pipeline_saturation + test_coherent_rx_grc_autopnr).
+- **REFERENCE PROVEN + COMMITTED:** `process_reference(complex=True)` runs the IDENTICAL
+  I-driven timing loop (NCO, Gardner TED on I, PI loop filter, period feedback — all
+  copied verbatim, driven by I only) and adds a PARALLEL Q delay line interpolated at
+  every strobe with the SAME `frac`, returning `(N_sym, 2)` recovered (yi, yq). Verified:
+  (a) the complex ref's I channel is BIT-EXACT to the real ref on the same I stimulus
+  (0/200), and (b) it recovers a random QPSK stream (RRC 2 sps, fractional timing offset
+  0.4) at **BER 0** (best rotation+lag, QPSK 90° ambiguity). This is the hard DSP and it
+  is banked.
+- **ON-CHIP cells = WIP; `complex=True` RAISES on build** (NotImplementedError) so no
+  silently-wrong bitstream ships. A subagent attempt (stashed then discarded) built a
+  6-cell topology (resampler→qrail→ted→period_relay→relay6→loop_filter) that BUILT + ran
+  but was NOT bit-exact (drained only 1 packet, wrong values) and became register-fragile
+  (overflowed on a later edit). The framework interactions that make it hard, all
+  confirmed real this session:
+  * the Q interpolation does NOT fold into the 32-word resampler (overflows ~2 state regs)
+    → Q needs a dedicated cell, so the resampler must FORWARD frac + raw xq to it;
+  * the internal-JUMP resolver only reaches a cell's POSITIONAL-NEXT cell (see the order-4
+    Costas + MF entries) → a cell can't trigger two different destinations; multi-dest
+    handoffs need extra relay cells;
+  * the complex-egress build patch only fires for an output cell carrying NO internal
+    handoffs → the feedback must leave the output cell;
+  * the MF register-aliasing footgun (inputs computed from a bare count aliasing
+    auto-packed state) bites every added-state cell — re-derive input regs from the real
+    data-top and disassemble the BUILT cell (`engine.disasm.disassemble_word` over
+    `read_cell_memory`) the instant a value looks shifted.
+- **WORKAROUND / QPSK-modem path today:** run the QPSK RX with SYMBOL-SYNCHRONOUS input
+  (integer sps, no fractional timing offset) so no timing loop is needed — the proven
+  MF(decim)→Costas(order=4)→QPSKSlicer chain recovers BER 0. Add the complex Gardner
+  (fractional timing) as the follow-up.
+- **RESUME POINT for the on-chip cells:** build the SIMPLEST split — keep the 4 real cells
+  100% UNCHANGED (they lock BER 0), add ONE `qrs` cell that receives (xq every sample,
+  frac on strobe, and the strobe/parity tag) from the resampler, owns xpq/xp2q, interpolates
+  yq with the same frac, and hands yq forward so the output cell emits the (yi, yq) packet.
+  Verify each cell's emitted value against `process_reference` at the register level (dump
+  `read_cell_memory` per strobe) BEFORE wiring the next — the value bug is where the split
+  diverges from the reference's `sq_i = xp2q + mqr(frac, xpq-xp2q)`.
+
 ## ComplexRRCMatchedFilter decimation — RESOLVED, bit-exact on-chip 2026-07-18
 
 - **Status:** DONE. `decimation=M` (GR `fir_filter_ccf(M, taps)` `decim`) is BIT-EXACT

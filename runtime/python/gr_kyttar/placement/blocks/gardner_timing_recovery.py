@@ -103,10 +103,24 @@ class GardnerTimingRecovery(KyttarBlock):
     _FACE_FB = 2    # west
 
     def __init__(self, name: str, kp: int = 3, ki: int = 1,
-                 pipeline_lock: bool = True):
+                 pipeline_lock: bool = True, complex: bool = False):
         """
         Args:
             name: Block name.
+            complex: When True, 2-rail (I/Q) timing recovery — the SAME I-driven
+                Gardner timing loop (NCO, TED on I, PI loop filter, period feedback all
+                identical and driven by the I rail only) but the resampler ALSO
+                interpolates the Q rail at each strobe with the same ``frac`` and the
+                block emits the recovered (yi, yq) symbol-center pair, so a downstream
+                QPSKSlicer can decode QPSK. The Q15 REFERENCE (``process_reference``) is
+                verified: its I channel is BIT-EXACT to the real (BPSK) reference and it
+                recovers a QPSK-with-timing-offset stream to the +-1/sqrt(2) grid. The
+                ON-CHIP complex cells are WIP (see the KB "complex Gardner" entry) — a
+                register-tight multi-cell bring-up — so ``complex=True`` raises on build
+                for now; use the reference and, for the QPSK modem, symbol-synchronous
+                input (no fractional timing offset) with the proven real chain until the
+                on-chip complex path lands. ``complex=False`` (default) is the shipped,
+                byte-identical BPSK timing loop.
             kp, ki: DEPRECATED. The loop filter now derives its proportional/integral
                 gains from GR's ``loop_bw=0.045`` + ``damping=1.0`` (the
                 ``digital.symbol_sync`` control loop) as fixed shift amounts
@@ -127,6 +141,7 @@ class GardnerTimingRecovery(KyttarBlock):
         self._kp = int(kp)
         self._ki = int(ki)
         self._pipeline_lock = bool(pipeline_lock)
+        self._complex = bool(complex)
 
     @property
     def cell_count(self) -> int:
@@ -141,6 +156,18 @@ class GardnerTimingRecovery(KyttarBlock):
     def build_cell_programs(self) -> Dict[str, CellProgram]:
         """The 4 cells implementing the GR symbol_sync control loop (see
         ``process_reference`` for the algorithm this is bit-exact with)."""
+        if self._complex:
+            # The complex (2-rail) on-chip cells are WIP (register-tight multi-cell
+            # bring-up — the Q interpolation does not fold into the 32-word resampler,
+            # and the split-cell topology fights the framework's positional-next
+            # internal-JUMP resolution + complex-egress patching; see the KB). The Q15
+            # reference IS verified. Until the on-chip cells land, reject a build so no
+            # silently-wrong bitstream ships; the QPSK modem uses symbol-synchronous
+            # input + the proven real chain in the meantime.
+            raise NotImplementedError(
+                "GardnerTimingRecovery(complex=True) on-chip cells are WIP; the Q15 "
+                "reference is verified. Build the QPSK RX with symbol-synchronous "
+                "input (no fractional timing) until the complex on-chip path lands.")
 
         # --- C1 resampler: Q14 NCO + 2-sample delay line + interp + parity. -----
         # Fires ONE strobe per 1.0-sample advance (2 per symbol). The instantaneous
@@ -532,13 +559,20 @@ ilo:
         arr = np.asarray(input_samples)
         if np.iscomplexobj(arr):
             sq = [float_to_q15(float(c.real)) for c in arr]
+            sqq = [float_to_q15(float(c.imag)) for c in arr]
+        elif arr.ndim == 2 and arr.shape[1] == 2:  # (N,2) real [xi,xq]
+            sq = [int(x) & 0xFFFF for x, _ in arr]
+            sqq = [int(y) & 0xFFFF for _, y in arr]
         elif arr.dtype.kind == "f":
             sq = [float_to_q15(float(x)) for x in arr]
+            sqq = [0] * len(sq)
         else:
             sq = [int(x) & 0xFFFF for x in arr]
+            sqq = [0] * len(sq)
 
         ONE = 1 << 14           # nominal half-period (1.0 sample) in Q14
         out = []
+        outq = []               # complex: the recovered Q center per symbol
         iavg = 0                # WIDE integrator (raw, not requantised)
         avg = ONE
         inst_active = ONE       # period used for the CURRENT strobe
@@ -548,17 +582,25 @@ ilo:
         phase = ONE >> 1        # warm start: 0.5 half-period pre-accumulated
         xp = 0
         xp2 = 0
+        xpq = 0                 # complex: parallel Q delay line (same shift as I)
+        xp2q = 0
         parity = 0
-        for v in sq:
+        for idx, v in enumerate(sq):
             xi = s16(v)
             xp2 = xp
             xp = xi
+            if self._complex:
+                xp2q = xpq
+                xpq = s16(sqq[idx])
             phase += ONE
             if phase >= inst_active:
                 phase -= inst_active
                 inst_active = inst_next        # apply the deferred feedback
                 frac = u16(phase << 1)
                 s = xp2 + mqr(frac, u16((xp - xp2) & 0xFFFF))
+                # complex: interpolate Q with the IDENTICAL frac (same resampler math).
+                sq_i = (xp2q + mqr(frac, u16((xpq - xp2q) & 0xFFFF))
+                        if self._complex else 0)
                 if parity == 0:                # CENTER
                     # dc_half = (s>>1) - (cprev>>1), via sign-correct MULQ halving.
                     dch = u16((mqr(u16(s & 0xFFFF), self._MULQ_HALF)
@@ -566,6 +608,8 @@ ilo:
                     ewhi = mulhi(u16(midv & 0xFFFF), dch)
                     cprev = s
                     out.append(s16(u16(s)))
+                    if self._complex:
+                        outq.append(s16(u16(sq_i)))   # recovered Q center
                     # integral term ewhi>>8 via MULQ; proportional ewhi>>2 via MULQ.
                     # The ISA MULQ TRUNCATES (floor), so the integral term carries a
                     # systematic -0.5-LSB bias that a pure PI integrator accumulates
@@ -587,6 +631,9 @@ ilo:
                 else:                          # MID
                     midv = s                   # capture mid sample; no feedback
                 parity ^= 1
+        if self._complex:
+            # (N_sym, 2) recovered (yi, yq) center pair per symbol.
+            return np.array(list(zip(out, outq)), dtype=np.int16)
         return np.array(out, dtype=np.int16)
 
     def reset(self):

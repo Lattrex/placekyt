@@ -4,7 +4,7 @@ category: '[Kyttar]'
 
 templates:
   imports: from gnuradio import kyttar
-  make: kyttar.complex_rrc_matched_filter(${device_id}, ${alpha}, ${span})
+  make: kyttar.complex_rrc_matched_filter(${device_id}, ${alpha}, ${span}, ${decimation})
 
 parameters:
 - id: device_id
@@ -21,6 +21,11 @@ parameters:
   label: Filter Span (symbols)
   dtype: int
   default: '8'
+
+- id: decimation
+  label: Decimation
+  dtype: int
+  default: '1'
 
 inputs:
 - label: xi
@@ -52,6 +57,9 @@ documentation: |-
     Device ID: which Kyttar device to use
     alpha:     RRC roll-off / excess bandwidth (0.2-0.5 typical; 0.35 default)
     span:      filter span in symbols (default 8)
+    decimation: output decimation factor M (GR fir_filter_ccf decim; default 1).
+               The filter runs at full input rate; the filtered output is emitted
+               every M-th sample (full_output[0::M]).
 
   Mapped by placeKYT to ComplexRRCMatchedFilterBlock.
 

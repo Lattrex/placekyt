@@ -1,0 +1,60 @@
+id: kyttar_qpsk_slicer
+label: 🧪 Kyttar QPSK Slicer
+category: '[Kyttar]'
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.qpsk_slicer(${device_id})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+
+inputs:
+- id: '0'
+  label: in_i
+  domain: stream
+  dtype: float
+- id: '1'
+  label: in_q
+  domain: stream
+  dtype: float
+
+outputs:
+- id: '0'
+  label: out
+  domain: stream
+  dtype: float
+
+documentation: |-
+  🧪 PROOF-OF-CONCEPT: this block works in a demo but has NOT been through
+  per-block GNU Radio-equivalence verification. Use with care.
+
+  QPSK Slicer (hard decision) — final decision stage of the coherent QPSK RX.
+
+  Maps a recovered (I, Q) symbol-center sample to the 2-bit Gray symbol index
+  (0..3), mirroring GNU Radio
+  ``digital.constellation_decoder_cb(constellation_qpsk())``:
+    MSB (bit 0 of the symbol) = imag-sign   (Q >= 0 -> 1)
+    LSB (bit 1 of the symbol) = real-sign   (I >= 0 -> 1)
+    symbol = (Q >= 0 ? 2 : 0) | (I >= 0 ? 1 : 0)
+
+  Ports:
+    in_i (0): recovered in-phase (I) rail
+    in_q (1): recovered quadrature (Q) rail
+    out:      2-bit Gray symbol index (0..3) in the output word's LSBs
+
+  QPSK is constant-modulus and separable, so each axis is a pure SIGN decision
+  (one cell). Composed with the QPSK mapper it is the identity on a clean channel.
+
+  The (in_i, in_q) inputs land as I@R0, Q@R1 on the slicer's single cell, matching
+  the recovered (yi_e, yq_e) pair the complex Gardner emits upstream.
+
+  Parameters:
+    Device ID: Which Kyttar device to use
+
+  Mapped by placeKYT (File -> Import GNURadio Flowgraph) to QPSKSlicerBlock.
+
+file_format: 1

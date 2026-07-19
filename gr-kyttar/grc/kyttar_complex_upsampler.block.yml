@@ -1,0 +1,60 @@
+id: kyttar_complex_upsampler
+label: 🧪 Kyttar Complex Upsampler
+category: '[Kyttar]'
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.complex_upsampler(${device_id}, ${sps})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+
+- id: sps
+  label: Samples/Symbol (sps)
+  dtype: int
+  default: '2'
+
+inputs:
+- label: xi
+  domain: stream
+  dtype: complex
+
+outputs:
+- label: yi
+  domain: stream
+  dtype: complex
+
+asserts:
+- ${ 1 <= sps <= 4 }
+
+documentation: |-
+  🧪 PROOF-OF-CONCEPT: this block works in a demo but has NOT been through
+  per-block GNU Radio-equivalence verification. Use with care.
+
+  Complex Upsampler — 2-rail (I/Q) zero-stuffing rate expander, the front half of a
+  complex interpolating pulse-shaper.
+
+  The complex twin of Kyttar Upsampler: on each complex input sample (xi, xq) it
+  emits sps outputs — the sample itself followed by sps-1 ZERO pairs (0, 0). Feed
+  its output to the Complex RRC Matched Filter (used as a pulse shaper) and the pair
+  is GNU Radio's filter.interp_fir_filter_ccc(sps, rrc_taps). It sits between the
+  QPSK symbol mapper (which emits a complex constellation point per symbol) and the
+  complex RRC shaper in the QPSK modem's TX chain.
+
+  Ports:
+    xi (in):  complex symbol-rate samples (I/Q)
+    yi:       upsampled complex stream (sample, then sps-1 (0,0) pairs)
+
+  Parameters:
+    Device ID: which Kyttar device to use
+    sps:       samples per symbol / interpolation factor (1-4; default 2)
+
+  HARDWARE LIMIT: sps <= 4 (a single cell; the 3-word complex yi/yq packet halves
+  the real Upsampler's ceiling of 8). The QPSK modem runs at sps = 2.
+
+  Mapped by placeKYT (File -> Import GNURadio Flowgraph) to ComplexUpsamplerBlock.
+
+file_format: 1

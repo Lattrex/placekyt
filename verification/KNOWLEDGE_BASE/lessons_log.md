@@ -8,6 +8,46 @@ anything that generalizes across block classes into `invariants.md`.
 
 ---
 
+## ComplexUpsamplerBlock — new, bit-exact vs interp_fir_filter_ccc; sps<=4 cap 2026-07-19
+
+- **Why:** the QPSK MODEM's TX chain needs COMPLEX pulse-shaping (the QPSK mapper
+  emits genuine I/Q symbols, unlike BPSK where Q=0). The shipped `UpsamplerBlock` is
+  real single-rail; the TX front half `mapper->upsample->RRC` therefore needed a
+  2-rail zero-stuffer. Authored `ComplexUpsamplerBlock` (the 2-rail twin of
+  UpsamplerBlock); the complex RRC pulse-shaping reuses the existing
+  `ComplexRRCMatchedFilterBlock` (a complex RRC FIR) fed the zero-stuffed symbols.
+- **DONE + bit-exact on-chip + committed:** 1:1 vs GNU Radio
+  `filter.interp_fir_filter_ccc(sps, [1+0j])` — one complex input -> the sample +
+  sps-1 (0,0) pairs, kept sample pass-through on BOTH rails, zeros exact -> bit-exact
+  in Q15. Each output is a yi/yq PACKET (`WRITE yi; WRITE yq; JUMP`), the
+  complex-packet contract ([[INV-17]]). Gate: `verification/tests/test_complex_upsampler.py`
+  (12 tests: sps in {2,3,4}, full-scale edges, bit-exact ref, repeat/swapped-IQ/
+  wrong-rate/empty mutations, + the hardware-limit guard).
+- **HARDWARE LIMIT (INV-0/INV-7): single-cell sps<=4.** The unrolled emit is a
+  3-word packet PER OUTPUT (`WRITE yi; WRITE yq; JUMP`), vs the real Upsampler's
+  2-word packet (`WRITE; JUMP`) — so the complex block's single-cell ceiling is
+  HALF the real block's (4 vs 8). sps=5 overflows the ~31-word cell (verified: build
+  "Not enough register space"). The block RAISES on sps>4 (never silently clamps);
+  `test_sps_above_ceiling_raises` is the executable guard. The QPSK modem runs at
+  sps=2, comfortably within. A larger complex factor would need a multi-cell burst
+  emitter (not built).
+- **VERIFYING a rate-EXPANDING COMPLEX block (harness note):** there is a
+  `run_block_dut_complex` (per-sample I/Q) and a `run_block_dut_rate` (real,
+  rate-expanding) but NO complex-rate runner. `run_block_dut_complex` already drains
+  the WHOLE per-trigger burst into `outputs_q15` (a list of per-trigger word bursts);
+  for a rate-expander just FLATTEN that and de-interleave `[::2]`/`[1::2]` into the
+  expanded I/Q channels, then `compare_complex_against_grc` both rails. No new harness
+  needed.
+- **GRC binding (INV-22):** shipped `gr-kyttar/grc/kyttar_complex_upsampler.block.yml`
+  + a `complex_upsampler` shim (dsp_markers.py, re-exported in `__init__.py`). Kept it
+  a SEPARATE grc id (not `kyttar_upsampler` with `io_type=complex`) because the BPSK
+  modem's .grc ALREADY sets `io_type=complex` on `kyttar_upsampler` yet wants the REAL
+  UpsamplerBlock (BPSK carries real symbols; the complex io_type there is a GRC-wire
+  cosmetic). Dispatching the real `kyttar_upsampler` on io_type would have silently
+  swapped the BPSK modem's TX block. `kyttar_complex_upsampler` auto-maps to
+  ComplexUpsamplerBlock via snake->Pascal (no `_TYPE_OVERRIDES` entry needed) — the
+  same convention every other `complex_*` block follows.
+
 ## QPSK coherent RECEIVER demo — DSP proven BER 0 on-chip; GRC binding + layout NOT done 2026-07-18
 
 ⚠️ **CORRECTED 2026-07-18 (was headed "modem — DONE"; both claims were wrong — CM

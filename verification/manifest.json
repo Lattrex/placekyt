@@ -27,6 +27,17 @@
       "notes": "Zero-stuffing rate expander (front half of an interpolating pulse-shaper). Verified 1:1 vs interp_fir_filter_fff(sps,[1.0]): one input -> sample + sps-1 zeros, kept sample pass-through, zeros exact -> bit-exact in Q15. RATE-EXPANDING: verified with run_block_dut_rate (drains the full per-trigger burst; plain run_block_dut keeps only the last word). 9 tests (sps in {2,4,8}, full-scale edges, repeat-instead-of-zero + wrong-rate mutations). Single cell, unrolled WRITE/JUMP burst then HALT (JUMP does NOT halt the issuer)."
     },
     {
+      "kyttar_block": "ComplexUpsamplerBlock",
+      "grc_block": "filter.interp_fir_filter_ccc",
+      "tier": 1,
+      "status": "done",
+      "metric": "exact",
+      "params": {
+        "sps": 2
+      },
+      "notes": "Complex (I/Q) zero-stuffing rate expander \u2014 the 2-rail twin of UpsamplerBlock and the front half of a complex interpolating pulse-shaper (feed into ComplexRRCMatchedFilter as a shaper). Verified 1:1 vs interp_fir_filter_ccc(sps,[1+0j]): one complex input -> sample + sps-1 (0,0) pairs, kept sample pass-through on BOTH rails, zeros exact -> bit-exact in Q15. Each output is a yi/yq PACKET (WRITE yi; WRITE yq; JUMP) \u2014 the complex-packet contract (INV-17). 12 tests (sps in {2,3,4}, full-scale edges, bit-exact ref, repeat/swapped-IQ/wrong-rate/empty mutations). HARDWARE LIMIT: sps<=4 single cell (3-word packet halves the real block ceiling of 8); sps>4 RAISES (guard test). QPSK modem uses sps=2."
+    },
+    {
       "kyttar_block": "IQUpconvertBlock",
       "grc_block": "blocks.multiply_cc",
       "tier": 2,

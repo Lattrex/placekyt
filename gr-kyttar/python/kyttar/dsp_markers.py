@@ -84,43 +84,55 @@ class complex_rrc_matched_filter(_PassThrough):
     DSP runs on the chip; this only carries the graph so it imports into placeKYT
     and runs in server-batch mode."""
 
-    def __init__(self, device_id="kyttar_0", alpha=0.35, span=8):
+    def __init__(self, device_id="kyttar_0", alpha=0.35, span=8, decimation=1):
         super().__init__("Kyttar Complex RRC Matched Filter", n_in=1, n_out=1,
                          in_dtype=np.complex64, out_dtype=np.complex64)
         self.device_id = device_id
         self.alpha = alpha
         self.span = span
+        self.decimation = int(decimation)
         # placeKYT uses `beta` for the roll-off (GRC marker calls it `alpha`).
         self._advertise_grc_params(device_id, "ComplexRRCMatchedFilterBlock",
-                                   {"beta": alpha, "span": span})
+                                   {"beta": alpha, "span": span,
+                                    "decimation": int(decimation)})
 
 
 class complex_costas_loop(_PassThrough):
     """Complex Costas carrier recovery — GR marker (maps to ComplexCostasLoopBlock).
 
-    A SINGLE complex baseband stream in → recovered-I tap out (yi_tap, real)."""
+    A SINGLE complex baseband stream in → recovered-I tap out (yi_tap, real). At
+    ``order=4`` (QPSK) the block also taps the recovered Q rail (yq_tap); the marker
+    still carries a single stream (the graph is logical — the real DSP is on-chip)."""
 
-    def __init__(self, device_id="kyttar_0", loop_bw=0.05, damping=1.0):
-        # complex in, real yi_tap out
+    def __init__(self, device_id="kyttar_0", loop_bw=0.05, damping=1.0, order=2):
+        # complex in, real yi_tap out (matches digital.costas_loop_cc(loop_bw, order))
         super().__init__("Kyttar Complex Costas Loop", n_in=1, n_out=1,
                          in_dtype=np.complex64, out_dtype=np.float32)
         self.device_id = device_id
         self.loop_bw = loop_bw
         self.damping = damping
+        self.order = int(order)
         self._advertise_grc_params(device_id, "ComplexCostasLoopBlock",
-                                   {"loop_bw": loop_bw, "damping": damping})
+                                   {"loop_bw": loop_bw, "damping": damping,
+                                    "order": int(order)})
 
 
 class gardner_timing_recovery(_PassThrough):
-    """Gardner timing recovery — GR marker (maps to GardnerTimingRecovery)."""
+    """Gardner timing recovery — GR marker (maps to GardnerTimingRecovery).
 
-    def __init__(self, device_id="kyttar_0", kp=3, ki=1):
+    ``complex=True`` selects 2-rail (I/Q) timing recovery: the block gains an ``xq``
+    input rail and emits the recovered (yi_e, yq_e) symbol-center pair (feeding a
+    downstream QPSK slicer). ``complex=False`` (default) is the real BPSK timing
+    loop (single ``xi`` in, recovered center ``out``)."""
+
+    def __init__(self, device_id="kyttar_0", kp=3, ki=1, complex=False):
         super().__init__("Kyttar Gardner Timing Recovery")
         self.device_id = device_id
         self.kp = kp
         self.ki = ki
+        self.complex = bool(complex)
         self._advertise_grc_params(device_id, "GardnerTimingRecovery",
-                                   {"kp": kp, "ki": ki})
+                                   {"kp": kp, "ki": ki, "complex": bool(complex)})
 
 
 class bpsk_slicer(_PassThrough):
@@ -129,6 +141,23 @@ class bpsk_slicer(_PassThrough):
     def __init__(self, device_id="kyttar_0"):
         super().__init__("Kyttar BPSK Slicer")
         self.device_id = device_id
+
+
+class qpsk_slicer(_PassThrough):
+    """QPSK slicer — GR marker (maps to QPSKSlicerBlock).
+
+    Final decision stage of the coherent QPSK RX: a recovered (I, Q) symbol-center
+    pair -> the 2-bit Gray symbol index (0..3), mirroring GNU Radio
+    ``digital.constellation_decoder_cb(constellation_qpsk())``. Two real input rails
+    (in_i @0, in_q @1) land as I@R0/Q@R1 on the slicer's single cell; the real DSP
+    runs on the placeKYT chip. A pure pass-through marker (carries the graph for
+    import + server-batch run)."""
+
+    def __init__(self, device_id="kyttar_0"):
+        super().__init__("Kyttar QPSK Slicer", n_in=2, n_out=1,
+                         in_dtype=np.float32, out_dtype=np.float32)
+        self.device_id = device_id
+        self._advertise_grc_params(device_id, "QPSKSlicerBlock", {})
 
 
 class psk_symbol_mapper(_PassThrough):
@@ -171,6 +200,25 @@ class upsampler(_PassThrough):
         self.sps = sps
         self.io_type = io_type
         self._advertise_grc_params(device_id, "UpsamplerBlock", {"sps": sps})
+
+
+class complex_upsampler(_PassThrough):
+    """Complex Upsampler — GR marker (maps to ComplexUpsamplerBlock).
+
+    The 2-rail (I/Q) twin of :class:`upsampler`: one complex input sample ->
+    ``sps`` complex outputs (the sample, then sps-1 (0,0) pairs). In the QPSK modem
+    TX chain it carries the COMPLEX baseband symbol (one gr_complex stream in/out)
+    between the QPSK mapper and the complex RRC pulse shaper. Unlike the real
+    Upsampler (which the BPSK modem uses for its real symbol stream), this maps to
+    the on-chip ComplexUpsamplerBlock so BOTH I and Q rails are genuinely
+    zero-stuffed on the array."""
+
+    def __init__(self, device_id="kyttar_0", sps=2):
+        super().__init__("Kyttar Complex Upsampler", n_in=1, n_out=1,
+                         in_dtype=np.complex64, out_dtype=np.complex64)
+        self.device_id = device_id
+        self.sps = sps
+        self._advertise_grc_params(device_id, "ComplexUpsamplerBlock", {"sps": sps})
 
 
 class rrc_pulse_shaper(_PassThrough):

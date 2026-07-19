@@ -4,7 +4,7 @@ category: '[Kyttar]'
 
 templates:
   imports: from gnuradio import kyttar
-  make: kyttar.complex_costas_loop(${device_id}, ${loop_bw}, ${damping})
+  make: kyttar.complex_costas_loop(${device_id}, ${loop_bw}, ${damping}, ${order})
 
 parameters:
 - id: device_id
@@ -22,15 +22,30 @@ parameters:
   dtype: real
   default: '1.0'
 
+- id: order
+  label: Constellation Order
+  dtype: int
+  default: '2'
+
 inputs:
 - label: xi
   domain: stream
   dtype: complex
 
 outputs:
-- label: yi_tap
+- id: '0'
+  label: yi_tap
   domain: stream
   dtype: float
+# order=4 (QPSK) taps out the recovered Q rail as a second real output. GNU Radio
+# collapses an I/Q pair into one complex port; here the recovered (yi_tap, yq_tap)
+# leave as two real rails (the on-chip qpd output cell emits the pair), matching the
+# order-4 ComplexCostasLoopBlock PortMap so the placeKYT importer wires both rails.
+- id: '1'
+  label: yq_tap
+  domain: stream
+  dtype: float
+  hide: ${ 'none' if order == 4 else 'all' }
 
 documentation: |-
   🧪 PROOF-OF-CONCEPT: this block works in a demo but has NOT been through
@@ -48,5 +63,8 @@ documentation: |-
     Device ID: which Kyttar device to use
     Loop Bandwidth: normalized loop bandwidth (default 0.05)
     Damping Factor: loop damping (default 1.0)
+    Constellation Order: 2 = BPSK (default), 4 = QPSK. Matches GNU Radio
+      digital.costas_loop_cc(loop_bw, order). At order=4 the block runs the 2-term
+      QPSK phase detector and taps out BOTH recovered rails (yi_tap + yq_tap).
 
 file_format: 1

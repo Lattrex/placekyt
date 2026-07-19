@@ -11,6 +11,7 @@ BUILTIN_BLOCKS = {
     'AbsBlock': 'abs_block',
     'KeepOneInNBlock': 'keep_one_in_n_block',
     'UpsamplerBlock': 'upsampler_block',
+    'ComplexUpsamplerBlock': 'complex_upsampler_block',
     'MovingAverageBlock': 'moving_average_block',
     'ComplexToRealBlock': 'complex_real_imag_block',
     'ComplexToImagBlock': 'complex_real_imag_block',

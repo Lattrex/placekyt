@@ -119,10 +119,13 @@ def test_eleven_logical_nets(result):
     OUT = ("chip", "x16_out")
 
     # TX chain: x16_in -> mapper -> up -> rrc -> upc -> x16_out (one wire per hop).
-    # The mapper's complex output resolves to its first output rail (out_i); the
-    # IQUpconvert's complex input resolves to its first input rail (xi).
+    # The mapper is BPSK (modulation="bpsk" in the fixture): its output is a SINGLE
+    # REAL rail named ``out`` (not the complex out_i/out_q pair the qpsk/8psk mapper
+    # emits) — the port resolver now builds the PortMap with the block's PARAMS, so a
+    # BPSK mapper's output index 0 correctly resolves to ``out``. The IQUpconvert's
+    # complex input resolves to its first input rail (xi).
     assert (IN, ("blk", mapper, "sample")) in nets
-    assert (("blk", mapper, "out_i"), ("blk", up, "x")) in nets
+    assert (("blk", mapper, "out"), ("blk", up, "x")) in nets
     assert (("blk", up, "out"), ("blk", rrc, "sample")) in nets
     assert (("blk", rrc, "out"), ("blk", upc, "xi")) in nets
     assert (("blk", upc, "out"), OUT) in nets

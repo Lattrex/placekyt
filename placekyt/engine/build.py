@@ -1333,7 +1333,16 @@ def _apply_brokers(cell_map, gr_placement, blocks, connections, project,
             ordered = sorted(nets, key=lambda n: conn_burst_reg.get(n[0], 0))
             burst_regs = [BROKER_BURST_REG + conn_burst_reg.get(c, i)
                           for i, (c, _d, _e, _bc) in enumerate(ordered)]
-            _patch_complex_source_handoff(cfg, distance, burst_regs, b_entry)
+            # If the complex output cell ALSO carries internal handoffs (the order-4
+            # Costas qpd: err/trig→pd_pi internally AND yi_tap/yq_tap→the bus), patch
+            # ONLY the TAIL (external) WRITEs + JUMP so the internal err/trig keep their
+            # @1 hops — patching every WRITE/JUMP (the pure-output-cell path) would
+            # clobber the loop (pd_pi never fires). A pure output cell (MF i4) has no
+            # internal handoffs, so it takes the all-WRITEs path unchanged.
+            if _output_cell_carries_handoffs(gb):
+                _patch_complex_packet_last_handoff(cfg, distance, burst_regs, b_entry)
+            else:
+                _patch_complex_source_handoff(cfg, distance, burst_regs, b_entry)
             continue
         # FAN-OUT: 2+ rails from one complex output cell to DIFFERENT brokers (2 distinct
         # downstream blocks — the SSB Weaver's mixer.yi→LowPass_I, mixer.yq→LowPass_Q).
@@ -2541,6 +2550,46 @@ def _patch_complex_source_handoff(cfg, hop, burst_regs, entry) -> None:
         word = (word & ~0x1F) | (int(reg) & 0x1F)
         cfg.memory[addr] = word & 0xFFFF
     for addr in jump_addrs:
+        word = cfg.memory[addr]
+        word = (word & ~(0x1F << 5)) | (hop_cnt << 5)
+        word = (word & ~0x1F) | (int(entry) & 0x1F)
+        cfg.memory[addr] = word & 0xFFFF
+
+
+def _patch_complex_packet_last_handoff(cfg, hop, burst_regs, entry) -> None:
+    """COMPLEX-PACKET variant of :func:`_patch_complex_source_handoff` for an output
+    cell that ALSO carries INTERNAL handoffs (``_output_cell_carries_handoffs``).
+
+    The order-4 (QPSK) Costas ``qpd`` cell is BOTH the loop's phase detector — it
+    WRITEs ``err`` to ``pd_pi`` @1 and JUMPs ``trig``→pd_pi internally — AND the
+    block's complex output (``yi_tap``/``yq_tap`` WRITEs + ``tap_trig`` JUMP). It
+    emits the EXTERNAL rails LAST (after the internal handoffs), so patching EVERY
+    WRITE/JUMP (what :func:`_patch_complex_source_handoff` does for a PURE output cell
+    like the MF ``i4``) would clobber the internal ``err``/``trig`` and the Costas
+    loop never fires (pd_pi silent). Patch ONLY the LAST ``len(burst_regs)`` WRITEs
+    (the yi_tap/yq_tap rails, in program order → broker burst regs) and the LAST JUMP
+    (tap_trig → the broker deliver entry), leaving the earlier internal handoffs at
+    their already-resolved @1 hops.
+
+    This is the complex-packet counterpart of the SINGLE-net
+    :func:`_patch_last_write_handoff`/:func:`_patch_last_jump_handoff` pair — the
+    same "patch only the tail" treatment, but for the 2-rail packet form."""
+    hop_cnt = encode_hop_cnt(hop)
+    write_addrs = sorted(a for a, w in cfg.memory.items()
+                         if _is_instruction_addr(cfg, a) and (w & 0xF000) == _WRITE)
+    jump_addrs = sorted(a for a, w in cfg.memory.items()
+                        if _is_instruction_addr(cfg, a) and (w & 0xF000) == _JUMP)
+    n = len(burst_regs)
+    # The external rail WRITEs are the LAST n WRITEs (emitted after the internal ones).
+    for i, addr in enumerate(write_addrs[-n:]):
+        word = cfg.memory[addr]
+        word = (word & ~(0x1F << 5)) | (hop_cnt << 5)
+        word = (word & ~0x1F) | (int(burst_regs[i]) & 0x1F)
+        cfg.memory[addr] = word & 0xFFFF
+    # The external trigger is the LAST JUMP (tap_trig); the internal trig JUMP is left
+    # untouched at its @1 abutment hop to pd_pi.
+    if jump_addrs:
+        addr = jump_addrs[-1]
         word = cfg.memory[addr]
         word = (word & ~(0x1F << 5)) | (hop_cnt << 5)
         word = (word & ~0x1F) | (int(entry) & 0x1F)

@@ -1,0 +1,332 @@
+options:
+  parameters:
+    author: Lattrex
+    catch_exceptions: 'True'
+    category: '[GRC Hier Blocks]'
+    cmake_opt: ''
+    comment: ''
+    copyright: ''
+    description: "PRODUCTION coherent QPSK RX demo with the RRC matched-filter front\
+      \ end (GRC-first workflow). Built from the REAL DSP blocks so it IMPORTS into\
+      \ placeKYT: ComplexRRCMatchedFilter -> ComplexCostasLoop(order=4) -> GardnerTimingRecovery(complex)\
+      \ -> QPSKSlicer get placed + bus-routed; source/sink -> chip ports. The SAME\
+      \ flowgraph RUNS linked to the placeKYT-hosted chip: Simulation -> Run as GNURadio\
+      \ Server in placeKYT, set server_port below to the printed port, then Execute\
+      \ here. kyttar_source batches the whole I/Q burst through the hosted chip in\
+      \ one RPC. The QT time sinks show the INPUT waveform (top) versus the RECOVERED\
+      \ 2-bit QPSK symbols (bottom) — the input-vs-output view."
+    gen_cmake: 'On'
+    gen_linking: dynamic
+    generate_options: qt_gui
+    hier_block_src_path: '.:'
+    id: qpsk_modem
+    max_nouts: '0'
+    output_language: python
+    placement: (0,0)
+    qt_qss_theme: ''
+    realtime_scheduling: ''
+    run: 'True'
+    run_command: '{python} -u {filename}'
+    run_options: prompt
+    sizing_mode: fixed
+    thread_safe_setters: ''
+    title: "Coherent QPSK RX (RRC matched filter) — input vs recovered symbols"
+    window_size: (1600,1000)
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [8, 8]
+    rotation: 0
+    state: enabled
+
+blocks:
+- name: n_syms
+  id: variable
+  parameters:
+    comment: QPSK symbols in the burst
+    value: '160'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [200, 80]
+    rotation: 0
+    state: enabled
+- name: server_port
+  id: variable
+  parameters:
+    comment: placeKYT prints this on "Run as GNURadio Server"
+    value: '58950'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [40, 160]
+    rotation: 0
+    state: enabled
+- name: import_stim
+  id: import
+  parameters:
+    alias: ''
+    comment: RRC QPSK burst generator (carrier + timing offset)
+    imports: from gnuradio.kyttar import qpsk_demo_stim as stim
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [304, 24.0]
+    rotation: 0
+    state: enabled
+- name: src
+  id: blocks_vector_source_x
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: "RRC QPSK burst (carrier + timing offset) into the chip — REPEAT\
+      \ so the flowgraph never reaches EOF; the Kyttar Source dispatches the batch\
+      \ ONCE then passes through, and the Sink re-emits the recovered symbols for a\
+      \ stable live plot."
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    repeat: 'True'
+    tags: '[]'
+    type: complex
+    vector: stim.burst(n_syms)
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [200, 232]
+    rotation: 0
+    state: enabled
+- name: c2f
+  id: blocks_complex_to_float
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: split I (re) for the input-waveform view
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [424, 80]
+    rotation: 0
+    state: enabled
+- name: msrc
+  id: kyttar_source
+  parameters:
+    affinity: ''
+    alias: ''
+    burst_len: stim.burst_len(n_syms)
+    comment: I/Q burst -> placeKYT chip x16_in (batch); fans to MF xi/xq
+    complex_in: complex
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_channels: '1'
+    pipelined: 'yes'
+    port_name: '"x16_in"'
+    server_host: '"127.0.0.1"'
+    server_port: server_port
+    stream_id: ''
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [424, 220]
+    rotation: 0
+    state: enabled
+- name: mf
+  id: kyttar_complex_rrc_matched_filter
+  parameters:
+    affinity: ''
+    alias: ''
+    alpha: '0.35'
+    comment: RRC matched filter front end (placed on chip)
+    decimation: '1'
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    span: '8'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [688, 328.0]
+    rotation: 0
+    state: enabled
+- name: costas
+  id: kyttar_costas_loop
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: Order-4 (QPSK) Costas carrier recovery (placed on chip)
+    damping: '1.0'
+    device_id: '"kyttar_0"'
+    loop_bw: '0.05'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    order: '4'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [912, 152.0]
+    rotation: 0
+    state: enabled
+- name: gardner
+  id: kyttar_gardner_ted
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: Complex (I/Q) Gardner timing recovery (placed on chip)
+    complex: 'True'
+    device_id: '"kyttar_0"'
+    ki: '1'
+    kp: '3'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1080, 288.0]
+    rotation: 0
+    state: enabled
+- name: slicer
+  id: kyttar_qpsk_slicer
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: QPSK hard-decision slicer (placed on chip)
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1200, 136.0]
+    rotation: 0
+    state: enabled
+- name: msink
+  id: kyttar_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: recovered symbols <- placeKYT chip x16_out (batch)
+    device_id: '"kyttar_0"'
+    hold_secs: '8.0'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_channels: '1'
+    port_name: '"x16_out"'
+    server_port: server_port
+    server_repeat: 'False'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1312, 336.0]
+    rotation: 0
+    state: enabled
+- name: input_sink
+  id: qtgui_time_sink_x
+  parameters:
+    affinity: ''
+    alias: ''
+    autoscale: 'False'
+    axislabels: 'True'
+    comment: input RRC QPSK waveform (in-phase, before the chip)
+    ctrlpanel: 'False'
+    entags: 'True'
+    grid: 'True'
+    gui_hint: 0,0,1,1
+    label1: input I
+    legend: 'True'
+    name: '"Input waveform (RRC QPSK, in-phase)"'
+    nconnections: '1'
+    size: '256'
+    srate: '1'
+    stemplot: 'False'
+    tr_chan: '0'
+    tr_delay: '0'
+    tr_level: '0.0'
+    tr_mode: qtgui.TRIG_MODE_FREE
+    tr_slope: qtgui.TRIG_SLOPE_POS
+    tr_tag: '""'
+    type: float
+    update_time: '0.10'
+    ylabel: amplitude
+    ymax: '1.2'
+    ymin: '-1.2'
+    yunit: '""'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [648, 56]
+    rotation: 0
+    state: enabled
+- name: sym_sink
+  id: qtgui_time_sink_x
+  parameters:
+    affinity: ''
+    alias: ''
+    autoscale: 'False'
+    axislabels: 'True'
+    comment: "recovered QPSK symbols (chip out) — MF + Costas4 + Gardner + slicer"
+    ctrlpanel: 'False'
+    entags: 'True'
+    grid: 'True'
+    gui_hint: 1,0,1,1
+    label1: recovered symbol
+    legend: 'True'
+    name: '"Recovered QPSK symbols (chip x16_out)"'
+    nconnections: '1'
+    size: '128'
+    srate: '1'
+    stemplot: 'False'
+    tr_chan: '0'
+    tr_delay: '0'
+    tr_level: '0.0'
+    tr_mode: qtgui.TRIG_MODE_FREE
+    tr_slope: qtgui.TRIG_SLOPE_POS
+    tr_tag: '""'
+    type: float
+    update_time: '0.10'
+    ylabel: symbol
+    ymax: '3.3'
+    ymin: '-0.3'
+    yunit: '""'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1576, 200.0]
+    rotation: 0
+    state: enabled
+
+connections:
+- [c2f, '0', input_sink, '0']
+- [costas, '0', gardner, '0']
+- [costas, '1', gardner, '1']
+- [gardner, '0', slicer, '0']
+- [gardner, '1', slicer, '1']
+- [mf, '0', costas, '0']
+- [mf, '1', costas, '1']
+- [msink, '0', sym_sink, '0']
+- [msrc, '0', mf, '0']
+- [msrc, '0', mf, '1']
+- [slicer, '0', msink, '0']
+- [src, '0', c2f, '0']
+- [src, '0', msrc, '0']
+
+metadata:
+  file_format: 1
+  grc_version: 3.10.12.0

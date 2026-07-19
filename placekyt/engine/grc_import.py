@@ -62,6 +62,10 @@ _TYPE_OVERRIDES = {
     "kyttar_soft_demodulator": "SoftDemodulatorBlock",
     "kyttar_costas_loop": "ComplexCostasLoopBlock",
     "kyttar_gardner_ted": "GardnerTimingRecovery",
+    # QPSKSlicerBlock is hidden in the catalog (uncurated), so the case-insensitive
+    # snake→Pascal fallback — which iterates catalog.all() — can't reach it; map it
+    # explicitly (the override table uses catalog.get, which sees hidden specs).
+    "kyttar_qpsk_slicer": "QPSKSlicerBlock",
     "kyttar_iir_biquad": "IIRBiquadBlock",
     "kyttar_conv_encoder_k7": "ConvEncoderK7Block",
     "kyttar_lfsr_scrambler": "LFSRScramblerBlock",
@@ -274,6 +278,7 @@ def import_grc(path, catalog, chip_type: str = "kyttar_10x12",
     src_complex: dict = {}       # grc source name → injects a complex (I/Q) sample?
     sink_stream: dict = {}       # grc sink name → its stream_id param (or "")
     _INSTANCE_TYPE.clear()       # grc name → placeKYT type (for port resolution)
+    _INSTANCE_PARAMS.clear()     # grc name → coerced params (for param-correct ports)
     unknown, dropped = [], []
     placed_idx = 0
     for gname, gb in grc_blocks.items():
@@ -341,6 +346,7 @@ def import_grc(path, catalog, chip_type: str = "kyttar_10x12",
         project.blocks.append(block)
         block_map[gname] = blk_name
         _INSTANCE_TYPE[gname] = btype
+        _INSTANCE_PARAMS[gname] = params
         placed_idx += 1
 
     # Connections → logical nets. Drop nets touching a dropped block; map
@@ -403,8 +409,10 @@ def import_grc(path, catalog, chip_type: str = "kyttar_10x12",
     for sname, dname, src, dst in split_candidates:
         sbt = _btype_of(block_map, sname, catalog)
         dbt = _btype_of(block_map, dname, catalog)
-        sq = _iq_sibling(catalog, sbt, src.port, want_out=True)
-        dq = _iq_sibling(catalog, dbt, dst.port, want_out=False)
+        sq = _iq_sibling(catalog, sbt, src.port, want_out=True,
+                         params=_params_of(catalog, sbt, sname))
+        dq = _iq_sibling(catalog, dbt, dst.port, want_out=False,
+                         params=_params_of(catalog, dbt, dname))
         if sq is None or dq is None:
             continue
         if (src.block, sq, dst.block, dq) in wired_pairs:
@@ -458,7 +466,8 @@ def _endpoint(gname, role, block_map, catalog, grc_port, *, is_src):
         # be resolved (or the .grc gave a positional name like "0"), fall back to
         # the block's first in/out port — the conventional single-port case.
         btype = _btype_of(block_map, gname, catalog)
-        port = _resolve_port(catalog, btype, grc_port, want_out=is_src)
+        port = _resolve_port(catalog, btype, grc_port, want_out=is_src,
+                             params=_params_of(catalog, btype, gname))
         return BlockEndpoint(block=bn, port=port)
     return None
 
@@ -472,17 +481,36 @@ def _btype_of(block_map, gname, catalog):
 # Populated during import: GRC instance name → placeKYT type name, so the
 # connection pass can resolve ports against the right PortMap.
 _INSTANCE_TYPE: dict = {}
+# GRC instance name → coerced params. Port SETS are PARAM-DEPENDENT (the order-4
+# Costas exposes yq_tap and the complex Gardner exposes yi_e/yq_e — neither present
+# in the default order-2 / real-mode PortMap), so the port resolver MUST build the
+# PortMap with the instance's params or a numeric port index (1 → yq_tap) collapses
+# onto ports[0] and the Q rail is silently misrouted/dropped.
+_INSTANCE_PARAMS: dict = {}
 
 
-def _resolve_port(catalog, btype, grc_port, *, want_out):
+def _params_of(catalog, btype, gname=None):
+    """The instance's coerced params (recorded during the block pass), for building
+    a PARAM-CORRECT PortMap. Falls back to the type defaults when the instance is
+    unknown (e.g. the sync file-watcher's paramless probe)."""
+    if gname is not None and gname in _INSTANCE_PARAMS:
+        return _INSTANCE_PARAMS[gname]
+    spec = catalog.get(btype) if btype is not None else None
+    return spec.default_params() if spec else None
+
+
+def _resolve_port(catalog, btype, grc_port, *, want_out, params=None):
     """Map a GRC port name to a real block port name, validated against the
     block's PortMap. ``want_out`` picks the output side (source endpoint) vs the
-    input side (target endpoint). Falls back to the first port on that side."""
+    input side (target endpoint). Falls back to the first port on that side.
+
+    ``params`` selects the PARAM-DEPENDENT port set (order-4 Costas yq_tap, complex
+    Gardner yi_e/yq_e); without it a numeric index past the default set collapses."""
     direction = "out" if want_out else "in"
     ports = []
     if btype is not None:
         try:
-            pm = catalog.port_map(btype)
+            pm = catalog.port_map(btype, params)
             ports = [p.name for p in pm.ports if p.direction == direction]
         except Exception:  # noqa: BLE001 — no PortMap → fall through to default
             ports = []
@@ -506,7 +534,7 @@ def _resolve_port(catalog, btype, grc_port, *, want_out):
     return ports[0]
 
 
-def _iq_sibling(catalog, btype, port, *, want_out):
+def _iq_sibling(catalog, btype, port, *, want_out, params=None):
     """The Q-half port name paired with an I-half ``port`` on a complex block, or
     ``None`` when ``port`` is not the I-half of an on-cell I/Q pair.
 
@@ -521,7 +549,7 @@ def _iq_sibling(catalog, btype, port, *, want_out):
         return None
     direction = "out" if want_out else "in"
     try:
-        pm = catalog.port_map(btype)
+        pm = catalog.port_map(btype, params)
     except Exception:  # noqa: BLE001 — no PortMap → no pairing
         return None
     ports = {p.name: p for p in pm.ports if p.direction == direction}

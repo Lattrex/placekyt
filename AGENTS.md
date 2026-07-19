@@ -108,6 +108,13 @@ test). Mirror the GRC block's **parameter names verbatim** and derive any
 fixed-point/internal values from them — a user must never have to learn a
 Kyttar-specific parameter.
 
+**If you are ADDING A PARAM to an existing block, re-check the fold.** A new param
+(e.g. `order`, `complex`) that grows the cell count can turn a folded block into a
+longitudinal strip — the exact shape that silently fails to route (INV-8). Layout is
+resolved WITH the params (INV-6/11), so the *widened* variant must fold on its own:
+I/O co-located on one bus-facing edge, even column count (INV-14), ≤8 across (INV-9).
+Do not assume the base block's fold carries over.
+
 ### Step 4 — Verify it (the gate that defines "done")
 
 Copy **`verification/tests/test_gain.py`** — it is the gold-standard template. Write
@@ -134,6 +141,27 @@ If it does not match: **fix the block, never the gate.** Find the root cause (th
 invariants cover the usual ones). If you hit a genuine substrate limitation, record it
 as an explicit known-limit guard test (see FIRFilterBlock's tap ceiling) rather than
 claiming done — and report it. Never hide a problem behind a loosened tolerance.
+
+### Step 4b — Bind it into GRC (a block is unusable without this)
+
+A verified block that has no GRC binding shows up as a red **"Missing Block"** in GNU
+Radio Companion and cannot be placed in a flowgraph — it is NOT done (INV-22). Add
+both halves of the binding and make sure `install.sh` ships them:
+
+1. **`gr-kyttar/grc/<id>.block.yml`** — copy an existing one of the same shape (e.g.
+   `kyttar_costas_loop.block.yml`). It MUST expose **every** parameter under
+   `parameters:` (same names/defaults/units as GR — INV-0) and list **every** input
+   and output the block actually has for those params, including param-dependent ports
+   (e.g. the yi/yq complex pair when `order=4`, a second rail, decimated output). A
+   param that exists on the block but not in the YAML is a hidden param — the user
+   can't set it.
+2. **`gr-kyttar/python/kyttar/<name>.py`** — the shim the `make:` template calls (only
+   needed if the block has one; follow `costas_loop.py`).
+3. If the block needs a `_TYPE_OVERRIDES` / `_INSTANCE_PARAMS` entry in
+   `placekyt/engine/grc_import.py` so the importer resolves its ports **with** its
+   params (INV-6/11), add it.
+4. Run `gr-kyttar/install.sh`, open the block in GRC, confirm: no "Missing Block",
+   every param visible, ports match. A stale install shadows repo edits — re-run it.
 
 ### Step 5 — Record what you learned
 
@@ -173,6 +201,15 @@ not lower:
 - [ ] Coverage = edge + random (≥3 seeds) + parameter sweep.
 - [ ] `verification/reports/<KyttarBlock>.json` exists with measured metrics.
 - [ ] The block's GRC parameter names match GNU Radio verbatim.
+- [ ] **GRC binding exists and is complete (INV-22):** the block has a
+      `gr-kyttar/grc/<id>.block.yml` **and** its Python shim, the YAML exposes
+      **every** parameter (matching GR names/defaults) AND every param-dependent
+      port, `install.sh` copies both, and the block resolves in GRC with **no
+      "Missing Block"** and no hidden params. A block with a passing verification
+      test but no GRC binding is **NOT done** — it cannot be used in a flowgraph.
+- [ ] **Layout is folded (INV-8/9/14):** if the block is >1 cell (or a new param
+      *made* it >1 cell), its I/O co-locate on one bus-facing edge — it is NOT a
+      longitudinal strip. Adding a param that grows the cell count means RE-folding.
 - [ ] Manifest status is `"done"`; `gen_dashboard.py --check` exits 0.
 - [ ] A `lessons_log.md` entry is appended.
 - [ ] Any substrate limit hit is captured as an explicit guard test, not glossed over.

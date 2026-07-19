@@ -8,15 +8,32 @@ anything that generalizes across block classes into `invariants.md`.
 
 ---
 
-## QPSK modem demo — DONE, full coherent QPSK RX BER 0 on-chip 2026-07-18
+## QPSK coherent RECEIVER demo — DSP proven BER 0 on-chip; GRC binding + layout NOT done 2026-07-18
 
-- **SHIPPED:** `examples/qpsk_modem/` — the full coherent QPSK receiver
-  (MF -> Costas order-4 -> complex Gardner -> QPSK slicer) recovers 2-bit symbols at
-  **BER 0** on-chip through the real build+simKYT path (carrier + fractional-timing
-  offset). The .grc imports into placeKYT (4 blocks place + 9 nets route + build);
-  batch_check.py headless driver; README. Gates: `placekyt/tests/test_qpsk_modem_ber.py`
-  (programmatic + GRC-import BER-0). Requires auto_orient=True (GUI default) — the wider
-  order-4 Costas + complex Gardner won't route with auto_orient=False.
+⚠️ **CORRECTED 2026-07-18 (was headed "modem — DONE"; both claims were wrong — CM
+review).** It is a *receiver*, not a modem (no TX chain), and it is NOT done: the GRC
+binding is incomplete (INV-22) and two blocks lay out as longitudinal strips (INV-8).
+Do NOT cite this as a finished demo. What IS real vs what is OWED:
+
+- **REAL (the hard DSP):** `examples/qpsk_modem/` recovers 2-bit symbols at **BER 0**
+  on-chip through the real build+simKYT path (MF -> Costas order-4 -> complex Gardner ->
+  QPSK slicer; carrier + fractional-timing offset). batch_check.py headless driver;
+  README. Gates: `placekyt/tests/test_qpsk_modem_ber.py` (programmatic + import BER-0).
+  The BER-0 recovery is the load-bearing result and it holds.
+- **OWED — GRC binding (INV-22):** `kyttar_qpsk_slicer` has NO `.block.yml` → renders as
+  **Missing Block** in GRC. The Costas `order`, MF `decimation`, and Gardner `complex`
+  params are NOT exposed in their existing `.block.yml`s, and the param-dependent output
+  ports (Costas order-4 yi/yq pair; Gardner complex yi/yq) are not declared. Until the
+  bindings expose every param + resolve with no Missing Block, this is NOT GRC-usable.
+  (Task #484.)
+- **OWED — layout (INV-8/14):** the order-4 Costas and the complex Gardner place as
+  straight east-west STRIPS (I/O on opposite edges), not folded blocks like the RRC.
+  They only route today with auto_orient=True (GUI default); with auto_orient=False they
+  do not route — the symptom of the un-folded strip. Re-fold both (even column count,
+  I/O co-located, ≤8 across) so they route regardless of orient.
+- **OWED — naming:** rename to a RECEIVER (or add a real TX chain to make it a modem).
+- The engine-bug fixes below (build.py handoff patcher, grc_import.py param threading)
+  are real and stand.
 - **TWO real placeKYT engine bugs found + fixed while assembling the chain:**
   * `engine/build.py` `_apply_brokers`: the complex-packet handoff patcher
     (`_patch_complex_source_handoff`) patched EVERY WRITE/JUMP on the output cell — correct
@@ -62,6 +79,15 @@ anything that generalizes across block classes into `invariants.md`.
 
 ## GardnerTimingRecovery complex=True (2-rail I/Q) — REFERENCE proven, on-chip WIP 2026-07-18
 
+⚠️ **UPDATE 2026-07-18: the on-chip 6-cell build was SUBSEQUENTLY COMPLETED and is
+BIT-EXACT** on both I and Q (`verification/tests/test_gardner_complex_reference.py::
+test_complex_on_chip_bit_exact` — qdelay landing + duplicate Q14 NCO + qout output; the
+"RAISES on build" note below is obsolete). BUT the block is still NOT "done": (1) its
+`complex=True` topology lays out as a longitudinal STRIP (INV-8) like the order-4 Costas
+— re-fold it; (2) the `complex` param is NOT exposed in the Gardner `.block.yml`, nor the
+complex yi/yq output pair (INV-22). The WIP notes below are kept for the framework-gotcha
+catalogue (they're all still true), but read them as SOLVED, not open.
+
 - **Why:** a QPSK modem needs SYMBOL-TIMING recovery on BOTH I and Q. The shipped
   Gardner is single-rail (I only, for BPSK). Added a `complex: bool = False` param.
   `complex=False` is byte-identical to the shipped block (37 regressions green:
@@ -105,12 +131,16 @@ anything that generalizes across block classes into `invariants.md`.
 
 ## ComplexRRCMatchedFilter decimation — RESOLVED, bit-exact on-chip 2026-07-18
 
-- **Status:** DONE. `decimation=M` (GR `fir_filter_ccf(M, taps)` `decim`) is BIT-EXACT
-  on-chip vs the block's decimated Q15 reference for M=1,2,4 (0 mismatches, both I and Q).
-  New gates `test_complex_decimation_matches_reference[2,4]` +
+- **Status:** DSP DONE (bit-exact); GRC binding OWED. `decimation=M` (GR
+  `fir_filter_ccf(M, taps)` `decim`) is BIT-EXACT on-chip vs the block's decimated Q15
+  reference for M=1,2,4 (0 mismatches, both I and Q). New gates
+  `test_complex_decimation_matches_reference[2,4]` +
   `test_complex_decimation_is_no_op_at_M1` in test_complex_harness.py. decimation=1
   (the un-gated MF) is UNCHANGED. The coherent RX can now run carrier/timing recovery at
   2 sps instead of the sample rate — the QPSK-modem throughput win.
+  ⚠️ NOT fully done per INV-22: `decimation` is not yet exposed in
+  `gr-kyttar/grc/kyttar_complex_rrc_matched_filter.block.yml` — expose it (default 1) so
+  the 2-sps decimation is settable from GRC. (Task #484.)
 - **Reference:** `process_reference(decimation=M)` = `full_output[0::M]` (phase 0), matching
   GR `fir_filter_ccf`. The on-chip counter uses `initial_value=decim-1` so it fires on
   samples 0, M, 2M, ... (phase 0) — match that here, NOT `[M-1::M]`.
@@ -141,13 +171,18 @@ anything that generalizes across block classes into `invariants.md`.
 
 ---
 
-## ComplexCostasLoop order=4 (QPSK) — RESOLVED, LOCKS on-chip 2026-07-18
+## ComplexCostasLoop order=4 (QPSK) — DSP LOCKS on-chip; layout+binding NOT done 2026-07-18
 
-- **Status:** DONE. order=4 builds + routes + LOCKS a QPSK carrier on-chip through the
-  real placeKYT pipeline (late mean|yi| ~ 23083 = 0.707*32767, the ±45deg grid). order=2
-  (BPSK) UNCHANGED (37 build+saturation tests still green). New gates:
-  `test_costas_order4_in_catalog` / `_builds_and_routes` / `_built_bitstream_locks_qpsk`
-  in test_complex_costas_build.py.
+- **Status:** ⚠️ CORRECTED — DSP proven, block NOT done. order=4 builds + routes + LOCKS
+  a QPSK carrier on-chip through the real placeKYT pipeline (late mean|yi| ~ 23083 =
+  0.707*32767, the ±45deg grid). order=2 (BPSK) UNCHANGED (37 build+saturation tests
+  still green). New gates: `test_costas_order4_in_catalog` / `_builds_and_routes` /
+  `_built_bitstream_locks_qpsk` in test_complex_costas_build.py.
+  **TWO things still OWED before "done":** (1) the order-4 `default_layout` is a
+  longitudinal STRIP (phase..qpd along row 0, pd_pi below) — I/O on opposite edges,
+  violates INV-8; it only routes with auto_orient=True. Re-fold it (INV-8/14). (2) the
+  `order` param is NOT exposed in `gr-kyttar/grc/kyttar_costas_loop.block.yml`, and the
+  order-4 yi/yq output pair is not declared there (INV-22) — no way to pick QPSK from GRC.
 - **THE FIX (the qpd trig-JUMP-@0 bug): it was the LAYOUT, resolved by placing pd_pi
   BELOW qpd, not east of it.** The router resolves a cell's `trig` JUMP hop via its
   POSITIONAL-NEXT default (`_find_output_target`, the cell_pos+1 branch) — internal_jumps

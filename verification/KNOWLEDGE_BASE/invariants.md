@@ -875,3 +875,36 @@ CRITICAL PATH (243 serial instr/symbol), not adding chains: cut the serial spine
 PI loops + MF accumulate) and spread MF taps across more cells so real parallelism rises
 from 2.78× toward the ~10× the tap count allows. throughput_bench.py + /tmp/critpath.py
 measure it. See [[project_coherent_rx_cannot_pipeline]].
+
+
+## INV-22 — A block is NOT done until its GRC binding exposes EVERY param and resolves in GRC
+
+A block whose verification test is green but has no (or an incomplete) GRC binding is
+**not usable** and therefore **not done**. This is the product boundary: the value is a
+1:1 drop-in for a GRC block, and a block you cannot place in a flowgraph — or one whose
+params you cannot set from GRC — delivers none of that value. Two failures this rule
+exists to prevent, both hit while shipping the QPSK receiver blocks:
+
+**A. Missing binding ⇒ "Missing Block".** A block with no `gr-kyttar/grc/<id>.block.yml`
+renders in GRC as a red **Missing Block: kyttar_<id>** and cannot be instantiated —
+even after `install.sh`, because there is nothing to install. (QPSKSlicerBlock had a
+green bit-exact test and NO `.block.yml`.) The GRC binding is TWO files:
+`gr-kyttar/grc/<id>.block.yml` (the block definition) + `gr-kyttar/python/kyttar/<name>.py`
+(the shim the YAML `make:` template calls, when the block needs one). `install.sh` copies
+both — a stale install shadows repo edits, so re-run it and re-open GRC to confirm.
+
+**B. Hidden params / dropped ports.** The `.block.yml` must expose **every** parameter
+the block class accepts, with the SAME name/default/units as the GR counterpart (INV-0),
+AND list every input/output the block presents **for those params** — including
+param-DEPENDENT ports. A param on the class but absent from the YAML is invisible to the
+user; a param-dependent port absent from the YAML collapses that rail (the importer
+resolves ports WITH params per INV-6/11 — e.g. the Costas `order=4` yi/yq complex pair,
+a decimated output, a second input rail). Concretely, when a new param changes the
+block's port set, the binding must change too: add the param under `parameters:`, add/adjust
+the `inputs:`/`outputs:`, and if the importer needs it, an `_INSTANCE_PARAMS`/`_TYPE_OVERRIDES`
+entry in `placekyt/engine/grc_import.py` so `catalog.port_map(btype, params)` sees them.
+
+**The check:** run `gr-kyttar/install.sh`, open the block in GRC, and confirm — no
+"Missing Block", every param settable, ports match the built block. Only then is the
+Definition-of-done GRC-binding box (§4 of AGENTS.md) satisfied. See lessons_log entries
+for the QPSK receiver blocks (Costas `order`, QPSKSlicer, MF `decimation`).

@@ -8,7 +8,34 @@ anything that generalizes across block classes into `invariants.md`.
 
 ---
 
-## QPSK modem demo — all 4 RX blocks proven on-chip; chain assembly pending 2026-07-18
+## QPSK modem demo — DONE, full coherent QPSK RX BER 0 on-chip 2026-07-18
+
+- **SHIPPED:** `examples/qpsk_modem/` — the full coherent QPSK receiver
+  (MF -> Costas order-4 -> complex Gardner -> QPSK slicer) recovers 2-bit symbols at
+  **BER 0** on-chip through the real build+simKYT path (carrier + fractional-timing
+  offset). The .grc imports into placeKYT (4 blocks place + 9 nets route + build);
+  batch_check.py headless driver; README. Gates: `placekyt/tests/test_qpsk_modem_ber.py`
+  (programmatic + GRC-import BER-0). Requires auto_orient=True (GUI default) — the wider
+  order-4 Costas + complex Gardner won't route with auto_orient=False.
+- **TWO real placeKYT engine bugs found + fixed while assembling the chain:**
+  * `engine/build.py` `_apply_brokers`: the complex-packet handoff patcher
+    (`_patch_complex_source_handoff`) patched EVERY WRITE/JUMP on the output cell — correct
+    for a PURE output cell (MF i4) but WRONG for the order-4 Costas `qpd`, which is BOTH the
+    loop's phase detector (err/trig->pd_pi @1) AND the block output (yi_tap/yq_tap->bus).
+    Patching all clobbered the internal err/trig → pd_pi never fired → loop never locked.
+    FIX: `_patch_complex_packet_last_handoff` (tail external rails only), gated on
+    `_output_cell_carries_handoffs`. The MF pure-output path is unchanged.
+  * `engine/grc_import.py` `_resolve_port`/`_iq_sibling`: called `catalog.port_map()`
+    WITHOUT the instance params, so PARAM-DEPENDENT port sets (order-4 Costas `yq_tap`,
+    complex Gardner `yi_e/yq_e` — absent from the default order-2/real PortMap) collapsed a
+    numeric port index onto rail 0 and silently DROPPED the Q rail. FIX: thread the
+    instance's coerced params through (`_INSTANCE_PARAMS`) + fall back to type defaults.
+    Also mapped `kyttar_qpsk_slicer -> QPSKSlicerBlock` (hidden spec, unreachable by the
+    snake->Pascal fallback). This ALSO corrected a latent BPSK-mapper mis-resolution
+    (`out_i`->`out`); the BPSK import test assertion was updated to the correct `out`
+    wiring (duplex BPSK BER test stays green). 290 import/build/route/demo tests green.
+
+## (superseded) QPSK modem — all 4 RX blocks proven on-chip; chain assembly pending 2026-07-18
 
 - **All four QPSK RX building blocks are DONE + bit-exact on-chip + committed:**
   * `ComplexRRCMatchedFilterBlock(decimation=M)` — MF + mod-M output gate (2 sps out).

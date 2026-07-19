@@ -8,6 +8,48 @@ anything that generalizes across block classes into `invariants.md`.
 
 ---
 
+## order-4 Costas RE-FOLDED to a compact 4x2 (was a 7-wide strip) — INV-8 DONE 2026-07-19
+
+- **DONE:** the order-4 (QPSK) `ComplexCostasLoopBlock` `default_layout` is now the
+  COMPACT 4x2 serpentine (`phase,sin_fold,cos_fold,table_sin` on row 0;
+  `pd_pi,qpd,rotate,table_cos` on row 1) — the SAME fold as order-2 with the extra
+  `qpd` cell inserted. Was a 7-wide longitudinal STRIP (`phase..qpd` all on row 0,
+  pd_pi below qpd) that congested the dense QPSK modem (a 7-wide block leaves too
+  little bus channel on the 10-wide array, INV-9). Now x[0..3], EVEN columns
+  (INV-14), I/O co-located on the west edge. Routes with auto_orient=False, locks
+  QPSK (mean|yi| ~ 23100 = 0.707*32767, identical to the strip), and recovers BER 0
+  through the full MF->Costas->Gardner->slicer chain. Gates green:
+  test_complex_costas_build.py (9), test_qpsk_modem_ber.py (4), pipeline saturation.
+- **THE ONE CHANGE that matters (dual-face collision):** qpd is a DUAL-face cell —
+  its err/trig go to pd_pi on `face_internal`, its yi_tap/yq_tap tap leaves on
+  `face_tap`; these MUST be DIFFERENT faces or the tap (esp. the yq rail) collides
+  with the err path. In the fold pd_pi sits WEST of qpd, so `face_internal`=WEST(2)
+  (was SOUTH(0) in the strip). `_apply_rotate_tap_face` sets `face_internal` from the
+  cell's default_layout resting face and `face_tap` from the tap ROUTE's first-hop
+  exit — in the modem the tap routes SOUTH, distinct from the WEST err. So the fold
+  "just works" once the layout face is right; no cell-program rewrite beyond flipping
+  the face_internal default.
+- **⚠️ THE TRAP THAT COST HOURS — amp=0.9 clips a QPSK burst and mis-locks the
+  Costas (looks EXACTLY like a fold/routing bug).** A first fold attempt read as
+  "broke yq_tap delivery" (BER ~0.28-0.40, consistent across placements) — it was NOT
+  the fold. A QPSK constant-modulus burst peak-driven to amp=0.9 CLIPS in Q15 (both
+  axes carry +-0.707 = +-23170, and the RRC pulse-shaping overshoot pushes the peak
+  past full-scale), which mis-locks the order-4 Costas -> ~40% symbol errors. The BPSK
+  modem tolerates amp=0.9 (one real axis); QPSK needs **amp <= 0.7** (what the proven
+  test_qpsk_modem_ber uses). LESSON: when a QPSK/complex chain shows a stubborn
+  non-zero BER that's INSENSITIVE to placement, SUSPECT THE STIMULUS AMPLITUDE
+  (Q15 clipping) before blaming the layout — drive amp<=0.7 and re-measure. The
+  folded Costas RX went from BER 0.40 (amp 0.9) to BER 0 (amp 0.7) with NO block
+  change. This also means: a lock-magnitude check (|yi|~23100) is NECESSARY but NOT
+  SUFFICIENT — a clipped input can still show a plausible |yi| while the bits are wrong;
+  gate on END-TO-END BER, not just the lock magnitude.
+- **auto_place does NOT route the folded Costas tap** (the tap egress geometry differs
+  from what the auto-placer expects); the RX chain + the GRC-import gates now place
+  the RX blocks at EXPLICIT anchors (mf(0,0),cos(0,3),gar(0,6),sli(6,8)) — the Gardner
+  DIRECTLY below the Costas so the SOUTH tap has a clean corridor — and route with
+  auto_orient=False. This is the modem's floorplan idiom (explicit anchors, like the
+  BPSK modem), not auto_place.
+
 ## ComplexUpsamplerBlock — new, bit-exact vs interp_fir_filter_ccc; sps<=4 cap 2026-07-19
 
 - **Why:** the QPSK MODEM's TX chain needs COMPLEX pulse-shaping (the QPSK mapper

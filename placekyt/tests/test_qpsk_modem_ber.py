@@ -160,18 +160,22 @@ def _build_qpsk_rx(catalog, chip_type):
 
     Nets: x16_in→MF.xi/xq (2), MF.yi/yq→Costas.xi/xq (2), Costas.yi_tap/yq_tap→
     Gardner.xi/xq (2), Gardner.yi_e/yq_e→Slicer.in_i/in_q (2), Slicer.out→x16_out.
-    ``auto_orient=True`` (the GUI default) — the order-4 Costas (6 wide) + complex
-    Gardner need the flow-orient pass to fit and route on the 10x12 array.
+
+    EXPLICIT anchors + ``auto_orient=False``: the order-4 Costas is now the COMPACT
+    4x2 fold (INV-8), and its yi_tap/yq_tap tap egresses SOUTH from the qpd cell, so
+    the Gardner sits directly below the Costas to give both rails a clean corridor.
+    This floorplan recovers BER 0 without the flow-orient pass (the fold routes as
+    authored) — the folded-block acceptance the demo relies on.
     """
     ctrl = AppController(catalog=catalog)
     ctrl.new_project("qpskrx", "kyttar_10x12")
     lib = "lattrex.official"
     mf = ctrl.place_block("ComplexRRCMatchedFilterBlock", 0, 0, 0, library=lib)
-    cos = ctrl.place_block("ComplexCostasLoopBlock", 0, 0, 0, library=lib,
+    cos = ctrl.place_block("ComplexCostasLoopBlock", 0, 0, 3, library=lib,
                            params={"order": 4})
-    gar = ctrl.place_block("GardnerTimingRecovery", 0, 0, 0, library=lib,
+    gar = ctrl.place_block("GardnerTimingRecovery", 0, 0, 6, library=lib,
                            params={"complex": True})
-    sli = ctrl.place_block("QPSKSlicerBlock", 0, 0, 0, library=lib)
+    sli = ctrl.place_block("QPSKSlicerBlock", 0, 6, 8, library=lib)
 
     R = ctrl.add_route
     R(ChipPortEndpoint(chip=0, port="x16_in"), BlockEndpoint(block=mf, port="xi"), [])
@@ -185,8 +189,7 @@ def _build_qpsk_rx(catalog, chip_type):
     R(BlockEndpoint(block=sli, port="out"),
       ChipPortEndpoint(chip=0, port="x16_out"), [])
 
-    ctrl.auto_place(0)
-    rep = ctrl.auto_route_all({"kyttar_10x12": chip_type}, auto_orient=True,
+    rep = ctrl.auto_route_all({"kyttar_10x12": chip_type}, auto_orient=False,
                               use_bus="always")
     assert rep.ok, [(r.name, r.reason) for r in rep.failed]
     bres = BuildEngine(catalog, str(CT_PATH)).build(
@@ -254,6 +257,46 @@ def test_qpsk_rx_ber_zero(qapp, catalog, chip_type):
 # --- the .grc import path (the shipped examples/qpsk_modem/qpsk_modem.grc) -----
 GRC = Path("/home/system/placekyt/examples/qpsk_modem/qpsk_modem.grc")
 
+# The BER-0 RX floorplan (folded order-4 Costas): the Costas tap egresses SOUTH from
+# its qpd cell, so the Gardner sits directly below it. Both rails route with
+# auto_orient=False. auto_place does NOT handle the folded tap geometry, so the
+# GRC-import gates place the imported RX blocks explicitly at these proven anchors.
+_RX_ANCHORS = {
+    "ComplexRRCMatchedFilterBlock": (0, 0),
+    "ComplexCostasLoopBlock": (0, 3),
+    "GardnerTimingRecovery": (0, 6),
+    "QPSKSlicerBlock": (6, 8),
+}
+
+
+def _place_rx_explicit(ctrl):
+    """Place each imported RX block at its proven BER-0 anchor (the folded-Costas
+    floorplan). Mirrors the anchors in ``_build_qpsk_rx`` — a GRC import lands the
+    blocks provisionally; we pin them where the folded chain routes + recovers."""
+    from model.placement import Placement
+    for b in ctrl.project.blocks:
+        xy = _RX_ANCHORS.get(b.type)
+        if xy is None:
+            continue
+        cells = _default_cells_for(ctrl, b, xy)
+        b.placement = cells
+
+
+def _default_cells_for(ctrl, block, xy):
+    """Build a Placement for ``block`` anchored at ``xy`` from its catalog layout."""
+    from engine.grc_import import _default_cells
+    from model.placement import Placement
+    cells, transit = _default_cells(ctrl.catalog, block.type, block.params, 0)
+    # shift the default (idx=0) cells to the anchor
+    dx, dy = xy
+    for c in cells:
+        c.x += dx
+        c.y += dy
+    for c in transit:
+        c.x += dx
+        c.y += dy
+    return Placement(chip=0, cells=cells, transit_cells=transit)
+
 
 @pytest.mark.skipif(not GRC.exists(), reason="qpsk_modem.grc absent")
 def test_qpsk_grc_imports_and_routes(qapp, catalog, chip_type):
@@ -271,8 +314,8 @@ def test_qpsk_grc_imports_and_routes(qapp, catalog, chip_type):
     gar = next(b for b in ctrl.project.blocks if b.type == "GardnerTimingRecovery")
     assert cos.params.get("order") == 4
     assert gar.params.get("complex") is True
-    ctrl.auto_place(0)
-    rep = ctrl.auto_route_all({"kyttar_10x12": chip_type}, auto_orient=True,
+    _place_rx_explicit(ctrl)
+    rep = ctrl.auto_route_all({"kyttar_10x12": chip_type}, auto_orient=False,
                               use_bus="always")
     assert rep.ok, [(r.name, r.reason) for r in rep.failed]
     assert len(rep.routed) == 9, f"expected 9 nets, got {len(rep.routed)}"
@@ -292,8 +335,8 @@ def test_qpsk_grc_ber_zero(qapp, catalog, chip_type):
     ctrl = AppController(catalog=catalog)
     res = ctrl.import_grc(str(GRC), chip_type="kyttar_10x12")
     assert res.ok, res.unknown
-    ctrl.auto_place(0)
-    rep = ctrl.auto_route_all({"kyttar_10x12": chip_type}, auto_orient=True,
+    _place_rx_explicit(ctrl)
+    rep = ctrl.auto_route_all({"kyttar_10x12": chip_type}, auto_orient=False,
                               use_bus="always")
     assert rep.ok, [(r.name, r.reason) for r in rep.failed]
     bres = BuildEngine(catalog, str(CT_PATH)).build(

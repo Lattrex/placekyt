@@ -422,11 +422,15 @@ start:
             outputs=[Port("err"), Port("trig"),
                      Port("yi_tap"), Port("yq_tap"), Port("tap_trig")],
             entries=[EntryPoint("default")],
-            # face_internal = SOUTH (0): err/trig go DOWN to pd_pi (placed below qpd).
-            # face_tap = EAST (1): the recovered yi_tap/yq_tap leave the block toward
-            # the output port. Both is_face so they transform with the block orientation.
+            # face_internal = WEST (2): err/trig go WEST to pd_pi (placed WEST of qpd
+            # in the compact 4x2 fold). ``_apply_rotate_tap_face`` OVERWRITES this from
+            # the cell's default_layout resting face (WEST) at build, so it always
+            # matches the layout. face_tap = EAST (1) default; the bus router OVERRIDES
+            # it to the tap route's first-hop exit (SOUTH in the modem) — DISTINCT from
+            # the WEST err path, so the yi_tap/yq_tap pair and the internal err never
+            # collide. Both is_face so they transform with the block orientation.
             data=[DataWord("zero", 0, address=2),
-                  DataWord("face_internal", 0, address=3, is_face=True),
+                  DataWord("face_internal", 2, address=3, is_face=True),
                   DataWord("face_tap", 1, address=4, is_face=True)],
             state=[StateVar("yis"), StateVar("yqs"), StateVar("err")],
             assembly_template="""\
@@ -696,37 +700,38 @@ start:
         starts with ``"transit"`` so placeKYT materializes it as a TransitCell,
         per the project rule that transit cells never carry a program).
 
-        ORDER 4 (QPSK): a 7-wide row-0 forward chain phase..rotate..qpd, with pd_pi
-        dropped BELOW qpd on row 1 (NOT east of it). This keeps qpd — the block's
-        OUTPUT cell — at the EAST end of row 0 with a CLEAR eastward egress to the
-        chip output port; pd_pi sits under it. qpd is dual-face: err/trig go SOUTH to
-        pd_pi (@1), the recovered yi_tap/yq_tap tap goes EAST (@1) out of the block.
-        The dphase feedback returns along the row-1 WEST corridor to the phase cell::
+        ORDER 4 (QPSK): the SAME compact 4x2 serpentine as order-2, with the extra
+        ``qpd`` cell inserted between rotate and pd_pi (INV-8/9/14 — replaces the old
+        7-wide longitudinal STRIP that congested the dense QPSK modem)::
 
-            col:    0        1         2         3          4          5        6
-            row 0: phase(E) sinf(E)  cosf(E)  tbl_s(E)  tbl_c(E)  rot(E)  qpd(E=tap)
-            row 1: fb0(N)   fb(W)    fb(W)    fb(W)     fb(W)     fb(W)   pd_pi(W)
+            col:     0              1            2            3
+            row 0:  phase(E)       sin_fold(E)  cos_fold(E)  table_sin(S)
+            row 1:  pd_pi(N)       qpd(W)       rotate(W)    table_cos(W)
 
-        rotate(5,0) abuts qpd(6,0) @1 (forward EAST); qpd(6,0) abuts pd_pi(6,1) @1
-        (SOUTH, err+trig); pd_pi(6,1) -> row-1 WEST return -> (0,1,N) -> phase. The
-        qpd EAST tap leaves the block cleanly toward the output port.
+        Forward face-trace: phase(0,0,E) -> sin_fold(1,0,E) -> cos_fold(2,0,E) ->
+        table_sin(3,0,S) -> table_cos(3,1,W) -> rotate(2,1,W) -> qpd(1,1,W) ->
+        pd_pi(0,1). Every forward internal handoff is @1-abutted. qpd is DUAL-face:
+        err/trig go WEST to pd_pi(0,1) @1 (face_internal=WEST), the recovered
+        yi_tap/yq_tap tap leaves on face_tap (SOUTH here — the bus router sets it from
+        the route's first-hop exit, DISTINCT from the WEST err path). The dphase
+        feedback pd_pi(0,1) --NORTH--> phase(0,0) is @1 (directly above), traced
+        backward by ``_apply_internal_feedback`` — no transit cell, no full-width
+        return. 4 columns (EVEN, INV-14), <=8 across (INV-9); I/O co-located on the
+        west edge. Proven: locks QPSK (mean|yi| ~ 23100 = 0.707*32767) and recovers
+        BER 0 through the full MF->Costas->Gardner->slicer chain with auto_orient=False.
         """
         if self._order == 4:
-            # forward chain phase..rotate..qpd on row 0 (cols 0..6), pd_pi below qpd.
-            fwd = [c for c in self._CELL_IDS_QPSK if c != "pd_pi"]  # 7 cells
-            n = len(fwd)  # 7
-            layout: Dict[Any, Tuple[int, int, str]] = {}
-            for i, cid in enumerate(fwd):
-                # qpd emits its FORWARD (err/trig -> pd_pi) SOUTH; its resting fwd_face
-                # is set by face_internal=SOUTH in the cell (the build faces the tap).
-                face = "south" if cid == "qpd" else "east"
-                layout[cid] = (i, 0, face)
-            layout["pd_pi"] = (n - 1, 1, "west")  # below qpd; dphase returns west
-            # row-1 WEST return corridor from pd_pi back toward the phase cell.
-            for x in range(1, n - 1):
-                layout[f"transit_fb_{x}"] = (x, 1, "west")
-            layout["transit_fb_0"] = (0, 1, "north")
-            return layout
+            # COMPACT 4x2 serpentine fold (INV-8/9/14) — see the docstring above.
+            return {
+                "phase": (0, 0, "east"),
+                "sin_fold": (1, 0, "east"),
+                "cos_fold": (2, 0, "east"),
+                "table_sin": (3, 0, "south"),
+                "table_cos": (3, 1, "west"),
+                "rotate": (2, 1, "west"),
+                "qpd": (1, 1, "west"),
+                "pd_pi": (0, 1, "north"),
+            }
         return {
             "phase": (0, 0, "east"),
             "sin_fold": (1, 0, "east"),

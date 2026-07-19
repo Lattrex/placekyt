@@ -148,6 +148,7 @@ NEEDS_BESPOKE = {
     # dual-FACE serialize-LOCK fix (folded into the emit cell). See project_block_saturation_inventory.
     "NCOBlock": "INV-20 fan-in DEADLOCK under saturation — needs ComplexMixer-style serialize-LOCK (OPEN)",
     "FrequencyModulatorBlock": "INV-20 fan-in DEADLOCK under saturation — needs serialize-LOCK (OPEN)",
+    "ComplexUpsamplerBlock": "rate-EXPANDING complex (2-rail zero-stuff), no complex-rate harness; MEMORYLESS (no feedback/state carried across samples) so per-sample == saturated by construction — cf. UpsamplerBlock (RATE_1IN, gated)",
     "BPSKSlicerBlock": "packed-bit output timing",
     "SoftDemodulatorBlock": "complex input",
     "LFSRScramblerBlock": "bit-stream input",

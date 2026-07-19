@@ -8,6 +8,31 @@ anything that generalizes across block classes into `invariants.md`.
 
 ---
 
+## QPSK modem demo — all 4 RX blocks proven on-chip; chain assembly pending 2026-07-18
+
+- **All four QPSK RX building blocks are DONE + bit-exact on-chip + committed:**
+  * `ComplexRRCMatchedFilterBlock(decimation=M)` — MF + mod-M output gate (2 sps out).
+  * `ComplexCostasLoopBlock(order=4)` — QPSK carrier recovery; the `qpd` output cell
+    emits a COMPLEX pair `yi_tap`+`yq_tap` (dual-face tap) + `tap_trig`, so it feeds a
+    2-rail downstream even though `interface.output_registers` reports `[0]` (the router
+    wires the actual output PORTS, not the interface count — the complex pair egresses).
+  * `GardnerTimingRecovery(complex=True)` — 2-rail I/Q timing recovery (in [0,1], out
+    [0,1]); emits the (yi, yq) center pair.
+  * `QPSKSlicerBlock` — (I,Q) -> 2 Gray bits, GR constellation_qpsk map.
+- **The RX chain:** x16_in(I/Q) -> MF(decim=sps/2) -> Costas(order=4) -> Gardner(complex)
+  -> QPSKSlicer -> 2 bits. Every internal handoff is a COMPLEX yi/yq pair (2 WRITEs + 1
+  trigger) — the ComplexCostasLoop/MF output contract — until the slicer, which emits the
+  2-bit symbol. This mirrors the coherent BPSK RX flagship (test_coherent_rx_grc_autopnr)
+  but QPSK: same auto-place + bus/broker/crossover routing, complex taps instead of a
+  single yi rail. QPSK has a 90-degree carrier ambiguity → BER acceptance is
+  rotation+lag tolerant (try 4 constellation rotations, like the reference tests).
+- **PENDING (task #483): assemble the demo** = author `examples/qpsk_modem/` (a .grc with
+  the 4 real blocks + source/sink + stimulus + a 2-bit sink; a batch_check.py headless
+  BER-0 driver; a programmatic auto-P&R BER-0 acceptance test like test_flagship_ber; a
+  README). Model it on `examples/coherent_bpsk_rx/` + `placekyt/tests/test_coherent_rx_grc_autopnr.py`.
+  The TX: random 2-bit symbols -> QPSK constellation (1/sqrt2 per axis) -> RRC 2 sps ->
+  carrier + fractional-timing offset (the complex Gardner now handles fractional timing).
+
 ## GardnerTimingRecovery complex=True (2-rail I/Q) — REFERENCE proven, on-chip WIP 2026-07-18
 
 - **Why:** a QPSK modem needs SYMBOL-TIMING recovery on BOTH I and Q. The shipped

@@ -28,8 +28,15 @@ from .compare import (
     compare_against_grc, write_report, CompareResult, Metric,
     compare_complex_against_grc, ComplexCompareResult,
     compare_llr_against_grc, LLRCompareResult)
+from .orientation import (
+    check_orientation_invariance, compare_dut_results, format_report,
+    D4_ORIENTATIONS)
 
 __all__ = [
+    "check_orientation_invariance",
+    "compare_dut_results",
+    "format_report",
+    "D4_ORIENTATIONS",
     "run_block_dut",
     "DUTResult",
     "run_block_dut_complex",

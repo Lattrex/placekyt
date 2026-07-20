@@ -92,6 +92,7 @@ def run_block_dut(
     in_port: str = "sample",
     out_port: str = "out",
     place_xy: tuple[int, int] = (1, 1),
+    orient: list[str] | None = None,
     data_run: int = 6000,
     jump_run: int = 90000,
     drain_run: int = 4000,
@@ -107,6 +108,9 @@ def run_block_dut(
         library: block library namespace.
         in_port / out_port: the block's input/output port names.
         place_xy: where to anchor the block (default (1,1)).
+        orient: D4 orientation ops applied to the placement BEFORE routing (a list
+            of ``"cw"``/``"ccw"``/``"mirror_h"``/``"mirror_v"``). A correct block is
+            ORIENTATION-INVARIANT: identical on-chip output in all 8 orientations.
         data_run / jump_run / drain_run: simKYT event budgets per step.
 
     Returns:
@@ -128,6 +132,8 @@ def run_block_dut(
     px, py = place_xy
     blk = ctrl.place_block(block_type, 0, px, py, library=library,
                            params=params or {})
+    for _k in (orient or []):
+        ctrl.project.block(blk).placement.transform(_k)
 
     ctrl.add_logical_connection(
         ChipPortEndpoint(chip=0, port="x16_in"),
@@ -350,6 +356,7 @@ def run_block_dut_rate(
     in_port: str = "x",
     out_port: str = "out",
     place_xy: tuple[int, int] = (1, 1),
+    orient: list[str] | None = None,
     data_run: int = 6000,
     jump_run: int = 120000,
     drain_run: int = 6000,
@@ -379,6 +386,8 @@ def run_block_dut_rate(
     px, py = place_xy
     blk = ctrl.place_block(block_type, 0, px, py, library=library,
                            params=params or {})
+    for _k in (orient or []):
+        ctrl.project.block(blk).placement.transform(_k)
     ctrl.add_logical_connection(
         ChipPortEndpoint(chip=0, port="x16_in"),
         BlockEndpoint(block=blk, port=in_port), name="in_blk")
@@ -452,6 +461,7 @@ def run_block_dut_complex(
     in_ports: tuple[str, str] = ("xi", "xq"),
     out_port: str | None = None,
     place_xy: tuple[int, int] = (1, 1),
+    orient: list[str] | None = None,
     words_per_sample: int | None = None,
     data_run: int = 6000,
     jump_run: int = 200000,
@@ -522,6 +532,8 @@ def run_block_dut_complex(
     px, py = place_xy
     blk = ctrl.place_block(block_type, 0, px, py, library=library,
                            params=params or {})
+    for _k in (orient or []):
+        ctrl.project.block(blk).placement.transform(_k)
 
     # Resolve the block's external output port (the PRIMARY one) if unspecified.
     if out_port is None:

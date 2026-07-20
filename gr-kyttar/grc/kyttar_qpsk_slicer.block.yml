@@ -17,8 +17,7 @@ parameters:
 # importer splits it into the on-chip in_i (I@R0) / in_q (Q@R1) rails. One wire per
 # link keeps the flowgraph clean (no dangling second-rail port).
 inputs:
-- id: '0'
-  label: in_i
+- label: in
   domain: stream
   dtype: complex
 

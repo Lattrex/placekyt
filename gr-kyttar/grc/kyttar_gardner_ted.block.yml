@@ -27,20 +27,19 @@ parameters:
   dtype: bool
   default: 'False'
 
-# ONE input + ONE output port; GNU Radio carries an I/Q pair as a SINGLE complex
-# stream. complex=True -> the port is COMPLEX (the on-chip block's xi/xq in and
-# yi_e/yq_e out pairs; placeKYT's importer splits the single complex net into the two
-# rails). complex=False (BPSK) -> the port is FLOAT (real 2-sps in, recovered center
-# `out`). One wire per link keeps the flowgraph clean (no dangling second-rail port).
+# ONE input + ONE output port with FIXED names; only the DTYPE adapts to the mode.
+# GNU Radio carries an I/Q pair as a SINGLE complex stream, so complex=True makes the
+# ports COMPLEX (the on-chip block's xi/xq in and yi_e/yq_e out pairs — placeKYT's
+# importer splits the single complex net into the two rails) and complex=False makes
+# them FLOAT (real 2-sps timing recovery). A conditional dtype (not a conditional
+# name) is the standard GNU Radio idiom for a mode-dependent port.
 inputs:
-- id: '0'
-  label: ${ 'xi' if complex else 'x' }
+- label: in
   domain: stream
   dtype: ${ 'complex' if complex else 'float' }
 
 outputs:
-- id: '0'
-  label: ${ 'yi_e' if complex else 'out' }
+- label: out
   domain: stream
   dtype: ${ 'complex' if complex else 'float' }
 

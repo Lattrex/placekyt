@@ -149,12 +149,10 @@ class MoveBlockCommand(Command):
         if block is None or block.placement is None:
             raise KeyError(f"block {self.block_name!r} not placed")
         pl = block.placement
+        # Internal transit_* cells live in ``pl.cells`` now — shifted here too.
         for c in pl.cells:
             self.project._place_cell(self.block_name, pl.chip, c.cell_id,
                                      c.x + dx, c.y + dy, c.face)
-        for t in pl.transit_cells:
-            t.x += dx
-            t.y += dy
 
     def execute(self) -> None:
         # Clear the route of every connection touching this block (keep the net),
@@ -219,14 +217,10 @@ class MoveBlockToChipCommand(Command):
         # Shift so the FIRST cell (the anchor) lands at (ax, ay) on the new chip.
         anchor = pl.cells[0]
         dx, dy = self.ax - anchor.x, self.ay - anchor.y
+        # ``pl.cells`` includes the internal transit_* cells now — shift them all.
         new_cells = [PlacedCell(c.cell_id, c.x + dx, c.y + dy, c.face)
                      for c in pl.cells]
-        new_transit = [copy.deepcopy(t) for t in pl.transit_cells]
-        for t in new_transit:
-            t.x += dx
-            t.y += dy
         new_pl = Placement(chip=self.chip, cells=new_cells,
-                           transit_cells=new_transit,
                            instr_overrides=copy.deepcopy(pl.instr_overrides))
         self.project._set_block_placement(self.block_name, new_pl)
 

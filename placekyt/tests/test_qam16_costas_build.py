@@ -63,15 +63,17 @@ def test_qam16_costas_in_catalog(catalog):
 
 
 def test_qam16_costas_places_with_transit_feedback(qapp, catalog):
+    from model.placement import is_transit_cell
     ctrl, name = _place_qam16(catalog, x=1, y=1)
     blk = ctrl.project.block(name)
     assert blk is not None and blk.placement is not None
-    # 9 programmed cells on the forward row.
-    assert len(blk.placement.cells) == 9
-    # 9 FACE-only transit cells form the dphase feedback return path.
-    transit = getattr(blk.placement, "transit", None) or \
-        getattr(blk.placement, "transit_cells", [])
+    # Internal transit_* cells are first-class cells in ``cells`` now, so split by
+    # the id tag: 9 programmed cells + 9 FACE-only feedback-return transit cells.
+    program = [c for c in blk.placement.cells if not is_transit_cell(c)]
+    transit = blk.placement.transit_cells
+    assert len(program) == 9
     assert len(transit) == 9, f"expected 9 transit cells, got {len(transit)}"
+    assert len(blk.placement.cells) == 18
 
 
 def test_qam16_costas_builds_to_bitstream(qapp, catalog, chip_type):

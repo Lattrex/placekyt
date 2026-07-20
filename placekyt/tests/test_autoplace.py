@@ -97,7 +97,8 @@ def test_wide_chain_serpentine_fits_grid(qapp, catalog, chip_type):
     W, H = 10, 12
     occ = {}
     for b in ctrl.project.blocks:
-        cells = list(b.placement.cells) + list(b.placement.transit_cells)
+        # ``cells`` already includes the internal transit_* cells (first-class).
+        cells = list(b.placement.cells)
         for c in cells:
             assert 0 <= c.x < W and 0 <= c.y < H, \
                 f"{b.name} cell ({c.x},{c.y}) off the {W}x{H} grid"

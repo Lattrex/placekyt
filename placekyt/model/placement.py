@@ -8,8 +8,14 @@ Mirrors the ``placement:`` section of a block in the ``.kyt`` schema
       cells:
         - {cell_id: ff0, x: 7, y: 1, face: west}
         - {cell_id: ff1, x: 6, y: 1, face: west}
-      transit_cells:
-        - {x: 8, y: 0, face: east}
+        - {cell_id: transit_fb_0, x: 8, y: 0, face: east}
+
+Block-INTERNAL routing/feedback cells are FIRST-CLASS block cells: they live in
+the same ``cells:`` list, tagged by a ``transit_*`` ``cell_id`` (a face-only
+relay, no program). They share the block's identity/colour and count in its
+footprint. Legacy ``.kyt`` files that stored them in a separate ``transit_cells:``
+block (without a ``cell_id``) still load — each is given a synthesised
+``transit_N`` id and merged into ``cells``. See :func:`is_transit_cell`.
 
 A block with no ``placement`` (or an incomplete one) is "unplaced" — modeled by
 ``Block.placement is None`` rather than by an empty ``Placement`` here.
@@ -21,7 +27,7 @@ model is the single source of truth for positions per §3.2).
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Union
 
 from .enums import Face
@@ -106,22 +112,36 @@ class PlacedCell:
         return (self.x, self.y)
 
 
-@dataclass
-class TransitCell:
-    """A routing-only cell: FACE config set to a direction, no program.
+def is_transit_cell(cell: "PlacedCell") -> bool:
+    """True if ``cell`` is a block-INTERNAL routing/feedback cell.
 
-    Transit cells carry data between blocks via hop-count routing. They never
-    hold instructions (DRC ``transit_programmed`` enforces all-zero memory).
-    They have no ``cell_id`` — they are identified by position.
+    Internal cells are FIRST-CLASS block cells (carried in ``Placement.cells``
+    with the owning block's identity, colour, and footprint) — they are merely
+    *tagged* by a ``transit_*`` ``cell_id`` prefix so the build/router/DRC still
+    recognise them as face-only routing cells (no program). This is the single
+    source of truth for that tag; every consumer keys off it.
+    """
+    cid = getattr(cell, "cell_id", None)
+    return isinstance(cid, str) and cid.startswith("transit")
+
+
+@dataclass
+class TransitCell(PlacedCell):
+    """DEPRECATED thin alias kept only for backward-compatible ``.kyt`` loads.
+
+    Internal routing/feedback cells are now first-class :class:`PlacedCell`s
+    carried in ``Placement.cells`` with a ``transit_*`` ``cell_id`` (they render
+    with the owning block's colour/label and count in its footprint). Historic
+    saved files serialised these into a separate ``transit_cells:`` block WITHOUT
+    a ``cell_id`` (they were "identified by position"); this subclass lets the
+    loader synthesise a ``transit_N`` id for each so old designs still open.
+
+    New code must NOT construct these — append a ``PlacedCell`` with a
+    ``transit_*`` id to ``Placement.cells`` instead. See :func:`is_transit_cell`.
     """
 
-    x: int
-    y: int
-    face: Face
-
-    @property
-    def pos(self) -> tuple[int, int]:
-        return (self.x, self.y)
+    def __init__(self, x: int, y: int, face: Face, cell_id: CellId | None = None):
+        super().__init__(cell_id=cell_id, x=x, y=y, face=face)
 
 
 @dataclass
@@ -161,7 +181,6 @@ class InstrOverride:
                 and not self.dest_config)
 
 
-@dataclass
 class Placement:
     """A block's concrete placement on one chip.
 
@@ -171,18 +190,82 @@ class Placement:
 
     ``instr_overrides`` holds per-instruction handoff overrides, keyed by
     ``cell_id`` then by instruction address. See :class:`InstrOverride`.
+
+    NOTE — internal cells: block-INTERNAL routing/feedback cells are FIRST-CLASS
+    ``PlacedCell``s carried in ``cells`` (tagged by a ``transit_*`` ``cell_id``);
+    they share the block's identity/colour and count in its footprint. A
+    ``transit_cells=`` constructor keyword is still accepted for backward
+    compatibility (it merges those cells into ``cells``, synthesising a
+    ``transit_N`` id for a legacy positionless entry), and ``transit_cells`` is a
+    read-only filtering PROPERTY so router/DRC read-sites keep working unchanged.
+
+    This is a hand-written ``__init__`` (not ``@dataclass``) precisely so the
+    ``transit_cells`` name can be BOTH a constructor keyword and a property.
     """
 
-    chip: int
-    cells: list[PlacedCell] = field(default_factory=list)
-    transit_cells: list[TransitCell] = field(default_factory=list)
-    instr_overrides: dict[CellId, dict[int, "InstrOverride"]] = field(
-        default_factory=dict)
-    # Cumulative D4 transforms applied to this placement (in order), so the build
-    # can transform a block's IN-PROGRAM face constants (a ``MOVE [FACE], k``
-    # picks an ABSOLUTE direction; when the block is rotated/mirrored that
-    # direction must rotate with it). Empty = as-authored. See ``transform``.
-    orientation: list[str] = field(default_factory=list)
+    __slots__ = ("chip", "cells", "instr_overrides", "orientation")
+
+    def __init__(self, chip: int,
+                 cells: "list[PlacedCell] | None" = None,
+                 transit_cells: "list | None" = None,
+                 instr_overrides: "dict | None" = None,
+                 orientation: "list[str] | None" = None):
+        self.chip = chip
+        self.cells = list(cells) if cells else []
+        self.instr_overrides = instr_overrides if instr_overrides is not None else {}
+        # Cumulative D4 transforms applied to this placement (in order), so the
+        # build can transform a block's IN-PROGRAM face constants (a ``MOVE
+        # [FACE], k`` picks an ABSOLUTE direction; when the block is
+        # rotated/mirrored that direction must rotate with it). Empty =
+        # as-authored. See ``transform``.
+        self.orientation = list(orientation) if orientation else []
+        self._merge_transit(transit_cells)
+
+    def _merge_transit(self, transit_cells) -> None:
+        """Merge a legacy ``transit_cells=`` argument into ``cells``.
+
+        Internal cells are first-class ``PlacedCell``s now. A caller (or an old
+        ``.kyt`` loader) may still pass a ``transit_cells`` list of positionless
+        cells; give each a synthesised ``transit_N`` id (unless it already has a
+        ``transit_*`` id) and append it to ``cells`` so it participates in the
+        block's identity, footprint, and rigid transform like any other cell.
+        """
+        if not transit_cells:
+            return
+        existing = {c.cell_id for c in self.cells}
+        n = sum(1 for c in self.cells if is_transit_cell(c))
+        for t in transit_cells:
+            cid = getattr(t, "cell_id", None)
+            if not (isinstance(cid, str) and cid.startswith("transit")):
+                cid = f"transit_{n}"
+                while cid in existing:
+                    n += 1
+                    cid = f"transit_{n}"
+                n += 1
+            existing.add(cid)
+            self.cells.append(PlacedCell(cid, t.x, t.y, t.face))
+
+    def __repr__(self) -> str:  # keep dataclass-like debugging output
+        return (f"Placement(chip={self.chip!r}, cells={self.cells!r}, "
+                f"instr_overrides={self.instr_overrides!r}, "
+                f"orientation={self.orientation!r})")
+
+    def __eq__(self, other) -> bool:
+        if not isinstance(other, Placement):
+            return NotImplemented
+        return (self.chip == other.chip and self.cells == other.cells
+                and self.instr_overrides == other.instr_overrides
+                and self.orientation == other.orientation)
+
+    @property
+    def transit_cells(self) -> list[PlacedCell]:
+        """Read-only view of the block's INTERNAL routing/feedback cells.
+
+        These are first-class ``PlacedCell``s carried in ``cells`` and tagged by
+        a ``transit_*`` ``cell_id``; this filtering view preserves the historic
+        API that router/DRC consumers iterate (``.x``/``.y``/``.face``/``.pos``).
+        """
+        return [c for c in self.cells if is_transit_cell(c)]
 
     def override(self, cell_id: CellId, addr: int) -> "InstrOverride | None":
         """Return the override for ``(cell_id, addr)``, or ``None`` if absent."""
@@ -208,19 +291,19 @@ class Placement:
         return None
 
     def occupied_positions(self) -> set[tuple[int, int]]:
-        """Every grid position this placement occupies (block + transit cells).
+        """Every grid position this placement occupies (all cells, including the
+        internal ``transit_*`` routing/feedback cells now carried in ``cells``).
 
         Used by project-level overlap detection before the engine's DRC runs.
         """
-        positions = {c.pos for c in self.cells}
-        positions.update(t.pos for t in self.transit_cells)
-        return positions
+        return {c.pos for c in self.cells}
 
     def bounding_box(self) -> tuple[int, int, int, int] | None:
-        """``(min_x, min_y, max_x, max_y)`` over block cells, or ``None`` if empty.
+        """``(min_x, min_y, max_x, max_y)`` over ALL cells, or ``None`` if empty.
 
-        Transit cells are excluded — the bounding box describes the block's
-        footprint, which the canvas uses for selection and zoom-to-fit.
+        Internal ``transit_*`` routing/feedback cells are FIRST-CLASS block cells:
+        they count in the block's footprint (the box the canvas uses for
+        selection, zoom-to-fit, and auto-place area), just like any program cell.
         """
         if not self.cells:
             return None
@@ -229,14 +312,9 @@ class Placement:
         return (min(xs), min(ys), max(xs), max(ys))
 
     def full_bounding_box(self) -> tuple[int, int, int, int] | None:
-        """Bounding box over block cells AND transit cells — the full footprint
-        a transform must pivot around so transit cells stay attached."""
-        positions = list(self.occupied_positions())
-        if not positions:
-            return None
-        xs = [p[0] for p in positions]
-        ys = [p[1] for p in positions]
-        return (min(xs), min(ys), max(xs), max(ys))
+        """Alias of :meth:`bounding_box` — internal cells are now first-class, so
+        the footprint already spans every cell (kept as the transform pivot API)."""
+        return self.bounding_box()
 
     def transform(self, kind: str) -> None:
         """Rotate/mirror this placement in place, pivoting on its full footprint
@@ -278,9 +356,7 @@ class Placement:
         for c in self.cells:
             c.x, c.y = map_xy(c.x, c.y)
             c.face = map_face(c.face)
-        for t in self.transit_cells:
-            t.x, t.y = map_xy(t.x, t.y)
-            t.face = map_face(t.face)
+        # (Internal transit_* cells live in ``cells`` now — transformed above.)
         # Record the transform so the build can apply the SAME D4 map to the
         # block's in-program face constants (the cell `.face` above is the
         # resting/layout face; a `MOVE [FACE], const` inside the program names an

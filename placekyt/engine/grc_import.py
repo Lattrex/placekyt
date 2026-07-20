@@ -642,21 +642,20 @@ def _coerce_params(params, catalog, btype):
 def _default_cells(catalog, btype, params, idx):
     """Provisional cells for a block at a spread-out grid slot (auto-place reflows
     these). Uses the block's default_layout for the shape."""
-    from model.placement import PlacedCell, TransitCell
+    from model.placement import PlacedCell
     from model.enums import Face
 
     layout = catalog.default_layout(btype, params) or {0: (0, 0, "east")}
     # Spread blocks diagonally so the initial (pre-auto-place) project is valid
     # and non-overlapping; auto-place then flow-orders them.
     ox, oy = (idx * 3) % 8, (idx // 2) % 6
-    cells, transit = [], []
+    # Internal routing/feedback cells (``transit_*`` ids) are FIRST-CLASS block
+    # cells — emit them as ordinary ``PlacedCell``s alongside the program cells.
+    cells = []
     for cid, (dx, dy, face) in layout.items():
         x, y = ox + dx, oy + dy
-        if isinstance(cid, str) and cid.startswith("transit"):
-            transit.append(TransitCell(x, y, Face.from_str(face)))
-        else:
-            cells.append(PlacedCell(cid, x, y, Face.from_str(face)))
-    return cells, transit
+        cells.append(PlacedCell(cid, x, y, Face.from_str(face)))
+    return cells, []
 
 
 def _unique(base, *used_iters):

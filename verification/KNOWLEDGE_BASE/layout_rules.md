@@ -108,6 +108,29 @@ places the cells *and their faces* to satisfy conventions 1–3. Folding a 13×1
 line into a 4×4 block with colocated I/O is a deliberate layout design — the
 auto-snake will not do it for you.
 
+### 5. Internal feedback/"transit" cells are FIRST-CLASS block cells
+
+A `default_layout` entry whose `cell_id` starts with `transit_` (e.g.
+`transit_fb_0`) is a block-INTERNAL routing/feedback relay: a face-only cell (a
+FACE direction, no program) that carries a feedback value back to the front of
+the fold. These are **first-class block cells**, not second-class routing cells:
+
+- They live in `Placement.cells` like every program cell (tagged by the
+  `transit_*` id — that prefix is how the build/router/DRC recognise them as
+  face-only, program-less relays).
+- They render with the **owning block's colour/label/identity** (NOT the
+  light-blue inter-block route look).
+- They **count in the block's footprint** — `Placement.bounding_box()` and the
+  PortMap footprint (bbox / `io_colocated` / auto-place area) include them.
+- They transform rigidly with the block (the D4 pivot spans them).
+- They follow the same overlap/DRC rules as any block cell.
+
+`is_transit_cell(cell)` (`model/placement.py`) is the single source of truth for
+the tag. `Placement.transit_cells` is a read-only filtering VIEW of `cells` for
+the router/DRC read-sites; do NOT construct a separate transit list. (The
+light-blue `CellKind.TRANSIT` look is reserved for INTER-block connection route
+waypoints — the bus spine between blocks — never for cells inside a block.)
+
 ---
 
 ## How the auto-placer ORIENTS a block (flyline minimisation)

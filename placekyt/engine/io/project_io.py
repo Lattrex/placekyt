@@ -266,6 +266,11 @@ def _placement_from_node(node: Any, *, source: str) -> Placement:
         )
         for i, c in enumerate(opt_seq(node, "cells", source))
     ]
+    # Legacy ``.kyt`` files stored block-INTERNAL routing/feedback cells in a
+    # separate ``transit_cells:`` block WITHOUT a cell_id ("identified by
+    # position"). Internal cells are first-class now: read each as a positionless
+    # TransitCell so ``Placement.__post_init__`` synthesises a ``transit_N`` id
+    # and merges it into ``cells`` (new files write them inline under ``cells:``).
     transit = [
         TransitCell(
             x=int(require(require_mapping(t, f"{source}.transit_cells[{i}]"),
@@ -645,17 +650,15 @@ def _block_to_node(b: Block, existing: Any = None) -> CommentedMap:
 def _placement_to_node(p: Placement, existing: Any = None) -> CommentedMap:
     node = _reuse_or_new(existing)
     node["chip"] = p.chip
+    # Internal routing/feedback cells are first-class ``PlacedCell``s in ``cells``
+    # (tagged by a ``transit_*`` id), so they serialise inline here. The legacy
+    # separate ``transit_cells:`` block is no longer written (old files still load
+    # — see ``_placement_from_node``); drop any stale one from a reused node.
     node["cells"] = _seq(
         _flow_map({"cell_id": c.cell_id, "x": c.x, "y": c.y, "face": c.face.value})
         for c in p.cells
     )
-    if p.transit_cells:
-        node["transit_cells"] = _seq(
-            _flow_map({"x": t.x, "y": t.y, "face": t.face.value})
-            for t in p.transit_cells
-        )
-    else:
-        node.pop("transit_cells", None)
+    node.pop("transit_cells", None)
     rows = []
     for cid, by_addr in p.instr_overrides.items():
         for addr, ov in sorted(by_addr.items()):

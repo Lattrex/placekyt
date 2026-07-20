@@ -300,7 +300,9 @@ class TestPlacement:
         assert p.cell("a").pos == (1, 1)
         assert p.cell("missing") is None
 
-    def test_bounding_box_excludes_transit(self):
+    def test_bounding_box_includes_transit(self):
+        # Internal transit_* cells are FIRST-CLASS: they count in the block's
+        # footprint (bbox), so the box now spans them like any program cell.
         p = Placement(
             chip=0,
             cells=[
@@ -309,7 +311,7 @@ class TestPlacement:
             ],
             transit_cells=[TransitCell(9, 9, Face.EAST)],
         )
-        assert p.bounding_box() == (2, 1, 5, 3)
+        assert p.bounding_box() == (2, 1, 9, 9)
 
     def test_bounding_box_empty(self):
         assert Placement(chip=0).bounding_box() is None

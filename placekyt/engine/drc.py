@@ -200,16 +200,8 @@ def _check_placement(project, chip_types, result: DRCResult) -> None:
                 ))
             chip_occ.setdefault((cell.x, cell.y), []).append(label)
 
-        # transit cells also occupy space (overlap detection includes them)
-        for t in pl.transit_cells:
-            if ct is not None and not ct.in_bounds(t.x, t.y):
-                result.add(error(
-                    "unplaced_cell",
-                    f"transit cell of '{blk.name}' at ({t.x},{t.y}) is outside "
-                    f"the {ct.width}x{ct.height} fabric.",
-                    chip=pl.chip, x=t.x, y=t.y,
-                ))
-            chip_occ.setdefault((t.x, t.y), []).append(f"{blk.name}[transit]")
+        # (Internal transit_* cells are first-class ``PlacedCell``s in ``pl.cells``
+        # now — already counted in the loop above, so no separate pass here.)
 
     # overlap: any position claimed by more than one cell
     for chip_id, occ in occupancy.items():
@@ -452,9 +444,9 @@ def _report_utilization(project, chip_types, result: DRCResult) -> None:
     for blk in project.blocks:
         if blk.placement is None:
             continue
-        used[blk.placement.chip] = used.get(blk.placement.chip, 0) + (
-            len(blk.placement.cells) + len(blk.placement.transit_cells)
-        )
+        # ``cells`` already includes the internal transit_* cells (first-class).
+        used[blk.placement.chip] = used.get(blk.placement.chip, 0) + \
+            len(blk.placement.cells)
     chip_ids = [c.id for c in project.chips] or sorted(used)
     for chip_id in chip_ids:
         n = used.get(chip_id, 0)

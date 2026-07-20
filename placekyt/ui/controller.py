@@ -160,15 +160,15 @@ class AppController(QObject):
         ``cell_id -> (dx, dy, face)``; positions are offset from the anchor.
 
         A layout entry whose ``cell_id`` is a string starting with ``"transit"``
-        is a block-INTERNAL routing-only cell (a relay, e.g. the DFE's relay into
-        its decision cell): it carries a FACE but no program. These become
-        :class:`TransitCell` s, not programmed cells.
+        is a block-INTERNAL routing/feedback cell (a relay, e.g. the DFE's relay
+        into its decision cell): it carries a FACE but no program. These are
+        FIRST-CLASS block cells — emitted as ordinary :class:`PlacedCell`s with
+        their ``transit_*`` id so they share the block's identity and footprint.
 
-        Returns ``(placed_cells, transit_cells)``. Falls back to a single cell
-        when no layout is available.
+        Returns ``(placed_cells, [])`` (the second element is retained for the
+        historic call signature). Falls back to a single cell when no layout is
+        available.
         """
-        from model.placement import TransitCell
-
         layout = self.catalog.default_layout(type_name, params, library=library)
         if not layout:
             return [PlacedCell(0, x, y, Face.EAST)], []
@@ -178,14 +178,10 @@ class AppController(QObject):
         min_dx = min(dx for dx, _dy, _f in layout.values())
         min_dy = min(dy for _dx, dy, _f in layout.values())
         placed: list[PlacedCell] = []
-        transit: list[TransitCell] = []
         for cid, (dx, dy, face) in layout.items():
             ax, ay = x + dx - min_dx, y + dy - min_dy
-            if isinstance(cid, str) and cid.startswith("transit"):
-                transit.append(TransitCell(ax, ay, Face.from_str(face)))
-            else:
-                placed.append(PlacedCell(cid, ax, ay, Face.from_str(face)))
-        return placed, transit
+            placed.append(PlacedCell(cid, ax, ay, Face.from_str(face)))
+        return placed, []
 
     def place_block(self, type_name: str, chip: int, x: int, y: int,
                     *, library: str | None = None,

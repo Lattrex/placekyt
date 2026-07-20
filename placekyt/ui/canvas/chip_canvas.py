@@ -738,9 +738,11 @@ class ChipCanvas(QGraphicsView):
             else:
                 block_colors[blk.name] = block_palette_color(i)
 
-        # Index placed/transit cells for this chip.
+        # Index placed cells for this chip. Internal routing/feedback cells are
+        # first-class ``PlacedCell``s in ``pl.cells`` (tagged by a ``transit_*``
+        # id) — they render with the OWNING BLOCK's colour/label like any block
+        # cell (NO more light-blue routing look inside a block).
         block_cells: dict[tuple[int, int], tuple[str, Face, object]] = {}
-        transit_cells: dict[tuple[int, int], Face] = {}
         io_roles: dict[tuple[int, int], str] = {}
         for blk in self._project.blocks:
             pl = blk.placement
@@ -748,8 +750,6 @@ class ChipCanvas(QGraphicsView):
                 continue
             for c in pl.cells:
                 block_cells[(c.x, c.y)] = (blk.name, c.face, c.cell_id)
-            for t in pl.transit_cells:
-                transit_cells[(t.x, t.y)] = t.face
             # I/O cell indicators (§3.2): mark the block's REAL input/output cells
             # from its PortMap — NOT the first/last placed cell. For a FOLDED
             # multi-cell block the output is a MID-block cell (e.g. Costas `rotate`,
@@ -803,13 +803,12 @@ class ChipCanvas(QGraphicsView):
                 pos = (cx, cy)
                 if pos in block_cells:
                     name, face, cid = block_cells[pos]
+                    # Internal routing/feedback cells (transit_* ids) are drawn
+                    # with the block's own fill/label — same colour, same identity.
                     item = CellItem(cx, cy, kind=CellKind.BLOCK, face=face,
                                     label=name, cell_id=cid,
                                     fill=block_colors.get(name))
                     item.io_role = io_roles.get(pos)
-                elif pos in transit_cells:
-                    item = CellItem(cx, cy, kind=CellKind.TRANSIT,
-                                    face=transit_cells[pos])
                 else:
                     item = CellItem(cx, cy, kind=CellKind.EMPTY)
                 # Tag the cell with its chip so (cx, cy) lookups stay per-chip —

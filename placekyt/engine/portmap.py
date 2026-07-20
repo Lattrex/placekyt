@@ -304,13 +304,13 @@ def build_port_map(
     except Exception:  # noqa: BLE001
         out_cell_id = None
 
-    # Footprint: the block cells only (transit cells excluded — they aren't ports
-    # and a "transit_" id never carries a program). Offsets are normalised so the
-    # min corner is the origin (0,0).
-    block_cells = {
-        cid: pos for cid, pos in layout.items()
-        if not (isinstance(cid, str) and cid.startswith("transit"))
-    }
+    # Footprint: ALL cells, INCLUDING the block-internal ``transit_*`` routing/
+    # feedback cells — those are first-class block cells and count in the block's
+    # footprint (bbox / io_colocated / auto-place area). They still carry no ports
+    # and no program, so the landing-cell / output-cell selection below never
+    # picks one (it keys on cell_programs / the ``transit_*`` prefix). Offsets are
+    # normalised so the min corner is the origin (0,0).
+    block_cells = dict(layout)
     if block_cells:
         minx = min(p[0] for p in block_cells.values())
         miny = min(p[1] for p in block_cells.values())

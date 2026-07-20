@@ -222,7 +222,7 @@ def test_fir_chain_routes_builds_and_minimises_flyline(qapp, catalog, chip_type)
     W, H = 10, 12
     occ = {}
     for b in ctrl.project.blocks:
-        for c in list(b.placement.cells) + list(b.placement.transit_cells):
+        for c in list(b.placement.cells):  # incl. first-class transit_* cells
             assert 0 <= c.x < W and 0 <= c.y < H, f"{b.name} off-grid"
             assert (c.x, c.y) not in occ, f"overlap at ({c.x},{c.y})"
             occ[(c.x, c.y)] = b.name

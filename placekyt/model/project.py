@@ -30,7 +30,7 @@ from .connection import Connection, InterChipConnection, PanelConnection
 from .enums import Face
 from .panel import SramPanel
 from .events import EventBus
-from .placement import CellId, PlacedCell, Placement, TransitCell
+from .placement import CellId, PlacedCell, Placement
 
 
 @dataclass
@@ -257,12 +257,20 @@ class Project:
         if block.placement is None:
             block.placement = Placement(chip=chip)
         pl = block.placement
+        # Internal cells are first-class ``PlacedCell``s (tagged ``transit_*``)
+        # living in ``pl.cells``; update in place if one already sits here.
         for t in pl.transit_cells:
             if (t.x, t.y) == (x, y):
                 t.face = face
                 self.event_bus.emit("cell_placed", name=name, chip=chip, x=x, y=y)
                 return
-        pl.transit_cells.append(TransitCell(x, y, face))
+        used = {c.cell_id for c in pl.cells}
+        i = 0
+        cid = f"transit_{i}"
+        while cid in used:
+            i += 1
+            cid = f"transit_{i}"
+        pl.cells.append(PlacedCell(cid, x, y, face))
         self.event_bus.emit("cell_placed", name=name, chip=chip, x=x, y=y)
 
     def _unplace_transit(self, name: str, x: int, y: int) -> None:
@@ -270,9 +278,12 @@ class Project:
         if block is None or block.placement is None:
             return
         pl = block.placement
-        pl.transit_cells = [t for t in pl.transit_cells if (t.x, t.y) != (x, y)]
+        # Remove the internal (transit_*) cell at this position from ``cells``.
+        from .placement import is_transit_cell
+        pl.cells = [c for c in pl.cells
+                    if not (is_transit_cell(c) and (c.x, c.y) == (x, y))]
         self.event_bus.emit("cell_unplaced", name=name, x=x, y=y)
-        if not pl.cells and not pl.transit_cells:
+        if not pl.cells:
             block.placement = None
 
     def _unplace_cell(self, name: str, cell_id: CellId) -> None:
@@ -284,7 +295,7 @@ class Project:
         if cell is not None:
             pl.cells.remove(cell)
             self.event_bus.emit("cell_unplaced", name=name, x=cell.x, y=cell.y)
-        if not pl.cells and not pl.transit_cells:
+        if not pl.cells:
             block.placement = None
 
     def _set_cell_face(self, name: str, cell_id: CellId, face: Face) -> None:

@@ -61,15 +61,17 @@ def test_costas_in_catalog(catalog):
 
 
 def test_costas_places_with_transit_feedback(qapp, catalog):
+    from model.placement import is_transit_cell
     ctrl, name = _place_costas(catalog)
     blk = ctrl.project.block(name)
     assert blk is not None and blk.placement is not None
-    # 7 programmed cells in the serpentine fold.
-    assert len(blk.placement.cells) == 7
-    # 1 FACE-only transit cell (the corner) forms the dphase feedback return.
-    transit = getattr(blk.placement, "transit", None) or \
-        getattr(blk.placement, "transit_cells", [])
+    # Internal transit_* cells are first-class cells in ``cells`` now: 7 program
+    # cells in the serpentine fold + 1 FACE-only corner feedback-return cell.
+    program = [c for c in blk.placement.cells if not is_transit_cell(c)]
+    transit = blk.placement.transit_cells
+    assert len(program) == 7
     assert len(transit) == 1, f"expected 1 transit cell, got {len(transit)}"
+    assert len(blk.placement.cells) == 8
 
 
 def test_costas_builds_to_bitstream(qapp, catalog, chip_type):

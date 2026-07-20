@@ -8,6 +8,52 @@ anything that generalizes across block classes into `invariants.md`.
 
 ---
 
+## MODEL: internal feedback/"transit" cells are now FIRST-CLASS block cells 2026-07-20
+
+- **Change (the user's requirement):** block-INTERNAL routing/feedback cells
+  (`default_layout` entries with a `transit_*` id, e.g. the Costas `transit_fb_0`
+  corner) used to be second-class — a separate `Placement.transit_cells` list,
+  rendered light-blue (`CellKind.TRANSIT`), and EXCLUDED from the block's
+  footprint. They are now first-class `PlacedCell`s carried in `Placement.cells`
+  (still tagged by the `transit_*` id): they render with the OWNING block's
+  colour/label, COUNT in the block's `bounding_box()` / PortMap footprint
+  (`io_colocated` / auto-place area), transform rigidly with the block, and follow
+  the same DRC/overlap rules. `Placement.transit_cells` is now a read-only
+  FILTERING VIEW of `cells`, so the ~19 router/DRC read-sites kept working unchanged.
+- **Key mechanic:** kept the `transit_*` id-PREFIX (every build/router/DRC consumer
+  that keyed on it — exit-cell selection, universal routing-program stamping,
+  feedback materialisation, the bus-router restore-face map — keeps working) but
+  MERGED the representation. `is_transit_cell(cell)` in `model/placement.py` is the
+  single source of truth for the tag.
+- **Gotchas fixed while merging (all double-count/duplicate bugs from cells that
+  now appear in BOTH `cells` and the `transit_cells` view):**
+  - `Placement` had to stop being a `@dataclass`: a `transit_cells` InitVar and a
+    `transit_cells` @property collide (the dataclass takes the property object as
+    the InitVar default → `'property' object is not iterable`). Hand-wrote
+    `__init__`/`__eq__`/`__repr__` with `__slots__` so `transit_cells` can be BOTH a
+    back-compat constructor kwarg (merged into `cells`) AND the filtering property.
+  - `drc.py` counted transit cells twice (once via `cells`, once via the view) →
+    a FALSE "overlap" ( `complexcostasloop[transit_fb_0]` vs `[transit]` at the same
+    pos). Removed the separate transit pass; fixed the utilization double-count too.
+  - `MoveBlockCommand._shift` / `MoveBlockToChipCommand` shifted transit cells a
+    second time (they're in `cells` now). Dropped the extra transit handling.
+  - `_place_transit` / `_unplace_transit` (project.py) now add/remove a first-class
+    `PlacedCell` with a synthesised `transit_N` id instead of appending to the
+    (now read-only) list.
+- **Persistence:** new `.kyt` files serialise internal cells INLINE under `cells:`
+  (they have a `cell_id`); the legacy separate `transit_cells:` block still LOADS
+  (each positionless entry → a synthesised `transit_N` `PlacedCell` merged into
+  `cells`). Round-trip is stable.
+- **Byte-identical proof:** the built bitstream for the identity (un-rotated) case
+  is UNCHANGED — ComplexCostasLoop `sha256=38267a9f…` (434 words) and Gardner
+  `sha256=59a7a6ba…` (222 words) before AND after. Full regression 100% green
+  (1190 passed). Internal cells are the SAME cells, just represented as first-class.
+- **Note:** the light-blue `CellKind.TRANSIT` look is RETAINED for INTER-block
+  connection route waypoints (the bus spine between blocks) — the user objected only
+  to light-blue cells *inside* a block, which no longer happens.
+
+---
+
 ## IMPORTER BUG: complex Q-rail split silently dropped for tapped port names 2026-07-19
 
 - **Symptom (found via a hand-routed QPSK modem .kyt):** an imported complex RX chain

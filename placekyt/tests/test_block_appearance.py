@@ -245,17 +245,53 @@ class TestDFELayout:
 
 class TestInternalTransitMechanism:
     """The general default_layout transit-cell mechanism ('transit'-prefixed
-    ids → routing-only TransitCells). Exercised via the controller directly
-    since no shipped block currently uses it (the DFE relay is programmed)."""
+    ids). Internal cells are FIRST-CLASS now: ``default_cells`` returns them as
+    ordinary ``PlacedCell``s inside ``cells`` (tagged by a ``transit_*`` id), NOT
+    in a separate list. Exercised via the controller directly since no shipped
+    block currently uses it (the DFE relay is programmed)."""
 
-    def test_transit_prefixed_layout_entry_becomes_transit_cell(self, controller):
+    def test_transit_prefixed_layout_entry_becomes_first_class_cell(self, controller):
         from unittest.mock import patch
         from model.enums import Face
+        from model.placement import is_transit_cell
         # A synthetic layout with one programmed cell + one 'transit' entry.
         fake = {0: (0, 0, "east"), "transit_r": (1, 0, "north")}
         with patch.object(controller.catalog, "default_layout",
                           return_value=fake):
             cells, transit = controller.default_cells(
                 "GainBlock", "lattrex.official", 0, 2, 2)
-        assert len(cells) == 1 and len(transit) == 1
-        assert transit[0].face is Face.NORTH
+        # No separate transit list; both cells come back in ``cells``.
+        assert transit == []
+        assert len(cells) == 2
+        program = [c for c in cells if not is_transit_cell(c)]
+        internal = [c for c in cells if is_transit_cell(c)]
+        assert len(program) == 1 and len(internal) == 1
+        assert internal[0].cell_id == "transit_r"
+        assert internal[0].face is Face.NORTH
+
+    def test_internal_cell_renders_with_block_identity(self, controller):
+        """An internal transit_* cell must render with the OWNING BLOCK's
+        colour/label/identity (a BLOCK cell), NOT the light-blue TRANSIT look."""
+        from model.placement import is_transit_cell
+        w = _window(controller)
+        # ComplexCostasLoop has a ``transit_fb_0`` internal feedback cell.
+        name = controller.place_block(
+            "ComplexCostasLoopBlock", 0, 1, 1, library="lattrex.official")
+        w._on_model_changed()
+        blk = controller.project.block(name)
+        tcells = [c for c in blk.placement.cells if is_transit_cell(c)]
+        assert tcells, "expected an internal transit_* cell"
+        tpos = {(c.x, c.y) for c in tcells}
+        # No CellItem is rendered as light-blue TRANSIT for these positions; each
+        # renders as a BLOCK cell carrying the block's own name (label) and fill.
+        seen = 0
+        for it in w.canvas.cell_items():
+            if not isinstance(it, CellItem):
+                continue
+            if it.chip_id == blk.placement.chip and (it.cx, it.cy) in tpos:
+                assert it.kind == CellKind.BLOCK, \
+                    "internal cell must not render as light-blue TRANSIT"
+                assert it.label == name
+                assert it._fill is not None  # owning block's fill, not default
+                seen += 1
+        assert seen == len(tcells)

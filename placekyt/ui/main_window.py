@@ -727,8 +727,17 @@ class MainWindow(QMainWindow):
             blk = self.controller.project.block(block_name)
             if blk is not None:
                 try:
+                    # Resolve the PortMap WITH the block's params (INV-6/11): a
+                    # PARAM-DEPENDENT port set — the complex Gardner's yi_e/yq_e (vs
+                    # the real-mode single ``out``), the order-4 Costas yi_tap/yq_tap,
+                    # a decimating filter's output cell — is WRONG for the param-less
+                    # default. Omitting params here resolved the complex Gardner output
+                    # to the non-existent real-mode ``out`` and spawned a phantom net
+                    # ``gardner.out -> slicer.in_i`` (a stray fly line that moved with
+                    # the block), leaving the real yi_e/yq_e rails unrouted.
                     pm = self.controller.catalog.port_map(
-                        blk.type, library=blk.library)
+                        blk.type, getattr(blk, "params", None),
+                        library=blk.library)
                     names = [p.name for p in pm.ports if p.direction == direction]
                 except Exception:  # noqa: BLE001
                     names = []

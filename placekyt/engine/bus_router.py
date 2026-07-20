@@ -2009,6 +2009,15 @@ def broker_plan(project, chip_id, chip_type, catalog):
         return entry, reg
 
     taps: dict[tuple, BrokerTap] = {}
+    # A port COMPLEX fan-in wires BOTH rails (in_xi AND in_xq) from the chip input
+    # port to the SAME block input cell, landing on the SAME broker. Each rail's net
+    # expands into the FULL operand packet (xi+xq) below — so emitting BOTH rails would
+    # relay the operands TWICE (R1,R2 then R3,R4), and the second, host-unwritten pair
+    # (stale 0) CLOBBERS the first at the block input (phase R0,R1 overwritten with 0 →
+    # mixer computes 0 → zero output). The host injects ONE complex packet, so the
+    # broker must relay the operand group EXACTLY ONCE. Track which (broker, in_cell)
+    # already carries its port-complex group and skip any further rail into it.
+    port_complex_done: set = set()
     for conn in project.connections:
         if not conn.is_routed:
             continue
@@ -2063,6 +2072,13 @@ def broker_plan(project, chip_id, chip_type, catalog):
             if _regs and len(_regs) > 1:
                 port_complex_regs = list(_regs)
         if port_complex_regs is not None:
+            # Emit the operand group ONCE per (broker, target input cell). A second
+            # rail (in_xq after in_xi) into the same landing would duplicate the packet
+            # and clobber it with stale operands — skip it.
+            done_key = (last, in_cell)
+            if done_key in port_complex_done:
+                continue
+            port_complex_done.add(done_key)
             grp_key = ("port_complex", in_cell)
             for _r in port_complex_regs:
                 d = BrokerDelivery(conn=conn.name, in_cell=in_cell, in_reg=_r,

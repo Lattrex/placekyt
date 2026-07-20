@@ -2272,15 +2272,26 @@ def _reassert_internal_forward_faces(cell_map, blocks: list, gr_blocks: dict) ->
             continue
         if not internal:
             continue
-        # Cell ids that SOURCE an internal handoff (index into placement.cells,
-        # which the layout/build keep in cell-id order).
-        fwd_src_ids = {int(s) for (s, _sp, _d, _dp) in internal
-                       if isinstance(s, int)}
+        # Cell ids that SOURCE an internal handoff. A block authors these as EITHER
+        # an integer index into ``placement.cells`` OR a STRING cell name (the
+        # ComplexMixer et al. use named cells: ('phase', ...)). Collect both forms;
+        # resolving ONLY the int form silently no-ops for named-cell blocks (their
+        # internal-forwarding input cell then keeps whatever face the incoming route
+        # last stamped — SOUTH toward the corridor instead of the authored internal
+        # direction — so the block's wavefront dies at some orientations).
+        fwd_src_ids = {s for (s, _sp, _d, _dp) in internal
+                       if isinstance(s, (int, str))}
         cells = blk.placement.cells
-        for cid in fwd_src_ids:
-            if cid < 0 or cid >= len(cells):
+        # Resolve each source id to its placement cell: an int is a direct index; a
+        # string matches the cell's ``cell_id`` name.
+        by_name = {getattr(pc, "cell_id", None): pc for pc in cells}
+        for sid in fwd_src_ids:
+            if isinstance(sid, int):
+                pc = cells[sid] if 0 <= sid < len(cells) else None
+            else:
+                pc = by_name.get(sid)
+            if pc is None:
                 continue
-            pc = cells[cid]
             face = getattr(pc, "face", None)
             if face is None:
                 continue

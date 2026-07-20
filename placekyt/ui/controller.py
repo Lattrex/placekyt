@@ -1793,6 +1793,105 @@ class AppController(QObject):
                 self.project.event_bus.flush()
         return report
 
+    def _routes_cross_block_body(self, report) -> bool:
+        """True if ANY routed net in ``report`` transits a block's own BODY cell that
+        is NOT that net's source/target endpoint — an INVALID route (a word never
+        rides through a live block cell: the cell's fwd_face serves the block's
+        internal wavefront, so an egress corridor drawn across it is swallowed).
+
+        This catches the CP-SAT router weaving a block's OUTPUT egress back through
+        the block's own footprint (the rotated single-block complex fan-in: the
+        mixer's yi egress routed across its own phase INPUT cell → zero output). The
+        maze router is node-disjoint (block cells are hard obstacles) and routes such
+        cases cleanly, so a crossing report is escalated to it."""
+        # Every block body cell → owning block name, per chip.
+        body: dict = {}   # (chip, x, y) -> block_name
+        for blk in self.project.blocks:
+            pl = blk.placement
+            if pl is None:
+                continue
+            for c in pl.cells:
+                body[(pl.chip, c.x, c.y)] = blk.name
+            for t in getattr(pl, "transit_cells", []):
+                body[(pl.chip, t.x, t.y)] = blk.name
+        if not body:
+            return False
+        from model.connection import BlockEndpoint as _BE, ChipPortEndpoint as _CPE
+
+        def _chip_of(conn):
+            for ep in (conn.source, conn.target):
+                if isinstance(ep, _BE):
+                    b = self.project.block(ep.block)
+                    if b is not None and b.placement is not None:
+                        return b.placement.chip
+                if isinstance(ep, _CPE):
+                    return ep.chip
+            return None
+
+        for r in report.routed:
+            pts = getattr(r, "points", None)
+            if not pts:
+                continue
+            conn = self.project.connection(r.name)
+            if conn is None:
+                continue
+            chip = _chip_of(conn)
+            if chip is None:
+                continue
+            # The net's OWN endpoint block(s): a route legitimately starts on its
+            # source block's output cell and ends on its target block's input cell.
+            own = set()
+            for ep in (conn.source, conn.target):
+                if isinstance(ep, _BE):
+                    own.add(ep.block)
+            for p in pts:
+                key = (chip, int(p[0]), int(p[1]))
+                owner = body.get(key)
+                if owner is not None and owner not in own:
+                    return True
+                # A cell owned by the net's OWN endpoint block is allowed ONLY at the
+                # route ends (the source/target cell). An interior transit across the
+                # net's own block body (the yi egress crossing the block's phase cell)
+                # is still illegal — it is not the first/last waypoint.
+                if owner is not None and p not in (pts[0], pts[-1]):
+                    return True
+        return False
+
+    def _port_complex_fanin_split(self, report) -> bool:
+        """True if a chip-input-port COMPLEX fan-in (two rails — xi + xq — from the
+        SAME input port into the SAME target block) is routed on DIVERGENT corridors.
+
+        The host injects a complex sample as ONE packet (WRITE xi, WRITE xq, one JUMP)
+        that must ride a SINGLE corridor and land coherently at the block's input cell.
+        When the two rails leave the port in different directions and take different
+        corridors (the rotated single-block fan-in boxed into a corner), they land at
+        different cells / entries and NO single injection delivers both operands → zero
+        output. Such a report is escalated to the node-disjoint MAZE router, which routes
+        both rails on ONE shared corridor (a coherent broker fan-in)."""
+        from model.connection import BlockEndpoint as _BE, ChipPortEndpoint as _CPE
+
+        # Group routed input nets by (input port, target block).
+        rails: dict = {}
+        for r in report.routed:
+            conn = self.project.connection(r.name)
+            if conn is None:
+                continue
+            if not (isinstance(conn.source, _CPE)
+                    and isinstance(conn.target, _BE)):
+                continue
+            pts = getattr(r, "points", None)
+            if not pts:
+                continue
+            key = (conn.source.chip, conn.source.port, conn.target.block)
+            rails.setdefault(key, []).append(tuple((int(p[0]), int(p[1])) for p in pts))
+        for paths in rails.values():
+            if len(paths) < 2:
+                continue
+            # All rails of one complex fan-in must ride the IDENTICAL corridor.
+            if any(pp != paths[0] for pp in paths[1:]):
+                return True
+        return False
+
     def _run_router(self, heuristic_router, port_cells, chip_types, use_cpsat,
                     use_bus="auto", port_maps=None, topology="block"):
         """Pick the router and return the AutoRouteReport.
@@ -1801,8 +1900,30 @@ class AppController(QObject):
         (BUS/BROKER router if STILL failures + ``use_bus`` allows). The bus router
         is the §1.2 path that handles DIFFERENT-sink sharing via programmed brokers,
         so it is what finally routes the dense multi-block chain. ``use_bus="always"``
-        forces it directly; ``"never"`` disables it."""
+        forces it directly; ``"never"`` disables it.
+
+        A returned report is VALIDATED: if a chosen router's routes cross a block's
+        own body cells (an invalid corridor the CP-SAT solver can emit for a rotated
+        single-block complex fan-in), escalate to the node-disjoint MAZE router, which
+        treats block cells as hard obstacles and routes such cases cleanly."""
         from engine.cpsat_router import route_all_cpsat, CpSatUnavailable
+
+        def _invalid(report):
+            # A report is INVALID if a route crosses a block body OR a complex port
+            # fan-in's rails diverge (can't land as one coherent sample).
+            return (self._routes_cross_block_body(report)
+                    or self._port_complex_fanin_split(report))
+
+        def _validated(report):
+            # If the report is clean, keep it. If invalid, try the node-disjoint MAZE
+            # router; adopt maze only when it routes AT LEAST as many nets AND is itself
+            # valid (so a genuinely-harder design never regresses to fewer nets).
+            if not _invalid(report):
+                return report
+            maze = self._maze_route(port_cells, chip_types, port_maps)
+            if len(maze.routed) >= len(report.routed) and not _invalid(maze):
+                return maze
+            return report
 
         if use_bus == "always":
             report = self._bus_route(port_cells, chip_types, port_maps, topology)
@@ -1811,9 +1932,9 @@ class AppController(QObject):
             # corridors. Escalate any residual failures to the MAZE router, which
             # routes any legal placement node-disjoint. Keep it only if it routes more.
             if report.ok:
-                return report
+                return _validated(report)
             maze = self._maze_route(port_cells, chip_types, port_maps)
-            return maze if len(maze.routed) > len(report.routed) else report
+            return maze if len(maze.routed) > len(report.routed) else _validated(report)
         if use_cpsat == "always":
             report = route_all_cpsat(self.project, chip_types, port_cells)
         else:
@@ -1827,18 +1948,18 @@ class AppController(QObject):
                 except CpSatUnavailable:
                     pass
         if use_bus == "never" or report.ok:
-            return report
+            return _validated(report)
         # CP-SAT/heuristic can't demux DIFFERENT-sink streams — escalate to the
         # bus/broker router, which can. Keep its result only if it routes more.
         bus = self._bus_route(port_cells, chip_types, port_maps, topology)
         if len(bus.routed) > len(report.routed):
             report = bus
         if report.ok:
-            return report
+            return _validated(report)
         # STILL failures (a compact 2-D pack the backbone can't route) — final
         # escalation to the maze router (routes any legal placement node-disjoint).
         maze = self._maze_route(port_cells, chip_types, port_maps)
-        return maze if len(maze.routed) > len(report.routed) else report
+        return maze if len(maze.routed) > len(report.routed) else _validated(report)
 
     def _select_topology(self, use_bus) -> str:
         """Pick the routing topology (doc/ROUTING_TOPOLOGIES.md) for the current

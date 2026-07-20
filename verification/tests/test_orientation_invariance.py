@@ -6,15 +6,24 @@ A block placed on the array is a RIGID unit: rotating/mirroring it changes only 
 it sits and which way its ports face, never what it computes. This gate drives each
 block at every D4 orientation and asserts the on-chip output EQUALS the identity output.
 
-KNOWN, DOCUMENTED residual (xfail — NOT a datapath bug): when a complex-INPUT block is
-wired STRAIGHT from the chip input port and rotated into an "anti-orientation" (its
-input cell lands opposite the port), the single-block-to-port harness's port→2-rail
-fan-in router corner-contends with the block's own output egress and mis-routes. This
-does NOT occur in real block→block chains — a Costas rotated to ANY orientation recovers
-BER 0 in the MF→Costas→Gardner→slicer RX chain — nor with the production auto-placer
-(which orients each block's I/O toward the ports). The block DATAPATH is provably
-invariant (its built cells transform correctly). Those specific (block, orientation)
-pairs are xfailed so the gate stays green + honest rather than hiding the harness limit.
+FIXED (was the "single-block port-input fan-in" residual): a complex-INPUT block wired
+STRAIGHT from the chip input port and rotated into a 180°-family "anti-orientation" used
+to emit ZERO. Root cause was THREE distinct defects at those geometries — (1) the block's
+internal-forward face was not re-asserted for NAMED-cell blocks (the reassert pass only
+handled integer cell ids), so the input wavefront died; (2) the CP-SAT router wove the
+output egress / a mis-coalesced port fan-in through block cells; (3) the port complex
+fan-in's two rails were double-relayed / split across divergent corridors. Fixed in
+``build._reassert_internal_forward_faces`` (named cells), ``bus_router.broker_plan``
+(emit the port-complex operand group once), and the router validation in
+``controller._run_router`` (escalate a block-crossing / split-fan-in route to the
+node-disjoint maze router). ComplexMixer + ComplexRRC are now invariant in all 8 D4
+orientations.
+
+KNOWN, DOCUMENTED residual (xfail — NOT a datapath bug): NCOBlock's REAL (single-rail)
+input at two anti-orientations still emits nothing, a DISTINCT failure mode (its routes
+are clean, single rail, no fan-in). The block DATAPATH is provably invariant (its built
+cells transform correctly). Those specific (block, orientation) pairs are xfailed so the
+gate stays green + honest rather than hiding the residual.
 
 Run:
     KYTTAR_GR_PYTHON=/usr/bin/python3 QT_QPA_PLATFORM=offscreen \
@@ -71,10 +80,10 @@ _CASES = [
 # cell lands opposite the chip input port so the port→2-rail fan-in corner-contends with
 # the egress. NOT a datapath bug; the block is invariant block→block.
 _XFAIL = {
-    ("ComplexRRCMatchedFilterBlock", "cw"),
-    ("ComplexRRCMatchedFilterBlock", "mirror_v+cw+cw"),
-    ("ComplexRRCMatchedFilterBlock", "mirror_v+cw+cw+cw"),
-    ("ComplexMixerBlock", "cw+cw"),
+    # NCOBlock's single-rail (real-input) anti-orientation residual is a DISTINCT
+    # failure mode from the complex 2-rail port fan-in that the D4 routing/broker fix
+    # resolved (routes are clean, no fan-in split — the block still emits nothing at
+    # these two orientations). It is NOT fixed by that change, so it stays xfailed.
     ("NCOBlock", "cw+cw"),
     ("NCOBlock", "mirror_v+cw+cw+cw"),
 }

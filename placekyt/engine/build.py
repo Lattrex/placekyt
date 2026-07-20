@@ -1368,6 +1368,17 @@ def _apply_brokers(cell_map, gr_placement, blocks, connections, project,
         # source to R0 unconditionally makes the broker read an EMPTY reg → relay 0 (the
         # compact-modem mapper→upsampler 0-output bug). Use this net's own burst reg.
         dest_reg = BROKER_BURST_REG + int(conn_burst_reg.get(conn_name, 0))
+        # Is the SOURCE a COMPLEX 2-rail output cell (yi+yq, ≥2 output registers)?
+        # Same discriminator the abutted branch uses (build.py ~951-955): the block
+        # SPEC declares >1 output register. A single-rail cell that happens to emit
+        # several WRITEs (e.g. IQUpconvert) is NOT complex — so gate on the register
+        # count, NOT a bare _cell_write_count (that earlier over-broad guard broke the
+        # BPSK modem TX).
+        src_is_complex_out = False
+        try:
+            src_is_complex_out = len(gb.interface.output_registers) > 1
+        except Exception:  # noqa: BLE001
+            src_is_complex_out = False
         # If the source block declares a MID-block output cell (the Costas rotate
         # writes yi→pd_pi internally AND yi_tap→the bus), patch ONLY the output
         # WRITE (the last WRITE — emitted after the internal handoffs) so the
@@ -1376,6 +1387,21 @@ def _apply_brokers(cell_map, gr_placement, blocks, connections, project,
         if _output_cell_carries_handoffs(gb):
             _patch_last_write_handoff(cfg, distance, dest=dest_reg)
             _patch_last_jump_handoff(cfg, distance, entry=b_entry)
+        elif src_is_complex_out and _cell_write_count(cfg) > 1:
+            # COMPLEX-PACKET output cell (yi/yq — ≥2 output WRITEs) delivered as a
+            # SINGLE brokered net (only the I rail is wired; the Q rail rides the same
+            # corridor and is de-interleaved by POSITION downstream). Plain
+            # _patch_cell_handoff sets EVERY WRITE to the SAME dest_reg — collapsing yq
+            # onto yi's register so the de-interleaved Q is garbage/zero. This is the
+            # ORIENTATION-INVARIANCE bug: at identity the output ABUTS its consumer (the
+            # abutted 2-rail patcher fires), but after a rotation the same output routes
+            # via a BROKER and lands HERE — so the block's Q rail silently broke under
+            # rotation. Steer the rails to CONSECUTIVE broker burst regs
+            # (dest_reg, dest_reg+1, …) in program/emit order, exactly as the multi-net
+            # complex-packet path does (_patch_complex_source_handoff).
+            n = _cell_write_count(cfg)
+            _patch_complex_source_handoff(
+                cfg, distance, [dest_reg + i for i in range(n)], b_entry)
         else:
             _patch_cell_handoff(cfg, distance, dest=dest_reg,
                                 entry=b_entry)

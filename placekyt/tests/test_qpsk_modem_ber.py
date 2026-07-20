@@ -263,8 +263,8 @@ def test_qpsk_grc_imports(qapp, catalog, chip_type):
     """The shipped FULL-DUPLEX qpsk_modem.grc imports into placeKYT: all 8 real
     blocks map (both chains), and the QPSK-defining params (order=4 Costas, complex
     Gardner, qpsk mapper, complex upsampler) coerce from the flowgraph — the
-    GRC-first workflow. (The co-resident place+route+BER is gated deterministically
-    by ``test_qpsk_modem.py`` via ``engine.qpsk_modem_demo``.)"""
+    GRC-first workflow. The RX chain's on-chip BER-0 recovery through simKYT is gated
+    by ``test_qpsk_grc_rx_chain_ber_zero`` below."""
     ctrl = AppController(catalog=catalog)
     res = ctrl.import_grc(str(GRC), chip_type="kyttar_10x12")
     assert res.ok, res.unknown

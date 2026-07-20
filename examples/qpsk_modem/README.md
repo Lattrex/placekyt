@@ -99,12 +99,10 @@ Expect **BER 0** after the loops lock. `--no-plot` prints stats only.
 
 ## Acceptance test
 
-The programmatic acceptance test — the full-duplex modem placed + auto-routed +
-built into ONE bitstream, then BOTH directions exercised on it (RX recovers the
-2-bit symbols at BER 0; TX is value-exact vs the composed reference) — lives in
-[`placekyt/engine/qpsk_modem_demo.py`](../../placekyt/engine/qpsk_modem_demo.py) and
-is gated by [`placekyt/tests/test_qpsk_modem.py`](../../placekyt/tests/test_qpsk_modem.py).
-The RX-only BER-0 gates (programmatic + GRC-import) are in
+The acceptance test builds the coherent QPSK RX chain (MF → order-4 Costas → complex
+Gardner → QPSK slicer) on-chip through the real placeKYT place+route+build pipeline
+and recovers the 2-bit QPSK symbols at **BER 0 through simKYT** — both a programmatic
+build and the GRC-import path. It lives in
 [`placekyt/tests/test_qpsk_modem_ber.py`](../../placekyt/tests/test_qpsk_modem_ber.py).
 
 ## Key parameters

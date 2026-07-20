@@ -14,7 +14,8 @@ options:
       both TX and RX source blocks map to x16_in and both sink blocks map to x16_out
       (the shared-port duplex). Built from the REAL DSP blocks so it IMPORTS into placeKYT
       (File -> Import GNURadio Flowgraph): all 8 blocks get placed + the logical nets are
-      recovered; the headless engine.qpsk_modem_demo proves BER 0 on the built bitstream.'
+      recovered, and the RX chain recovers the 2-bit QPSK symbols at BER 0 on the built
+      bitstream through simKYT (placekyt/tests/test_qpsk_modem_ber.py).'
     gen_cmake: 'On'
     gen_linking: dynamic
     generate_options: qt_gui

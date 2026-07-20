@@ -1760,3 +1760,67 @@ they are larger than one autonomous step at the production-quality bar.
   UNDOCTORED GR golden.** A golden that "adjusts" the input to match the DUT is not a
   golden — it's a second copy of the bug. If a test helper transforms taps/inputs before
   GR, that's a red flag: GR must be called exactly as a user/GRC would.
+
+## Block orientation-invariance — the datapath IS invariant; the breaks are I/O-boundary (2026-07-20)
+
+Investigated why the multi-cell complex blocks (ComplexRRC MF, Costas 2/4, complex
+Gardner, IQUpconvert, ComplexMixer, NCO) FAIL the D4 orientation harness
+(`verification/kyttar_verify/orientation.py`) on `cw`, `cw+cw`, `mirror_v+cw+cw+cw`.
+
+- **KEY FINDING: the block DATAPATH is fully D4-invariant.** Dumping every cell's
+  program (head→q0..q4→i0..i4 for the MF) across all 8 orientations, the internal
+  cells are **byte-identical** in every orientation; the ONLY cell whose program
+  differs is the OUTPUT cell (`i4`), and only in its egress hop (the output→port
+  distance legitimately changes with placement). The face/feedback transforms
+  (`_apply_orientation_face_words`, `_apply_internal_feedback`, `Placement.transform`)
+  are correct. So the "orientation-invariance" failures are **NOT** in the block or its
+  internal handoffs — they are at the block↔chip-port I/O boundary (input corridor +
+  landing, output egress).
+
+- **BUG 1 (fixed, real, helps the live bridge): `_resolve_input_landings` face-checked
+  the PORT cell.** The divert scan (build.py ~1506) walked the corridor from index 0 =
+  the chip input PORT cell and compared its fwd_face to the drawn route's first step.
+  But the host INJECTS at the port (sets the hop directly) — the port cell does not
+  FORWARD on a fwd_face; the first real transit is index 1. For a complex fan-in
+  (xi + xq both on `head`, reached from different neighbours) ONE net's drawn first step
+  disagrees with the port's own I/O face (NORTH), so the scan falsely reported a divert
+  AT the port and produced a bogus BROKER landing (wrong entry/reg) even though the word
+  rides straight into the block — so the live bridge injecting from that landing misses
+  the block (0 output). This even mis-resolved the IDENTITY MF at (1,1) (broker
+  entry 23 / reg 1, vs the correct straight entry 25 / reg 0). FIX: start the divert
+  scan at index 1 (skip the port cell). Committed; 116/116 identity green.
+
+- **BUG 2 (partial fix): the input corridor is routed THROUGH the chip OUTPUT-port
+  cell.** For orientations where a block's input cell lands far from the input port, the
+  CP-SAT joint router let the input net thread straight through the output-port cell
+  (9,0) — because the node-disjoint constraint exempts any net's endpoint, and (9,0) is
+  blk_out's sink. The landing then resolves to a broker AT (9,0), which can't deliver
+  into the block (a word riding a corridor cannot transit a foreign PORT cell — it
+  ejects). FIX: forbid every CP-SAT net from occupying a chip-port cell that is not its
+  own source/sink. Sound + regression-green. (Does NOT fix the harness's single-block
+  "block"-topology route, which comes from the heuristic/maze/bus fallback, not CP-SAT —
+  the residual harness failures are that same wrap-through-(9,0) pathology in those
+  routers, left for a follow-up.)
+
+- **The harness DUT runner now drives from `input_landings` (the bridge's source of
+  truth), not a naive Manhattan hop.** `run_block_dut_complex` used
+  `31 - manhattan(port, landing)`, which is correct ONLY for a STRAIGHT corridor;
+  under rotation the corridor snakes and the manhattan hop lands the WRITE/JUMP on the
+  wrong cell → false "NO OUTPUT". Now it prefers the build's corridor-accurate landing
+  (hop/entry/data_addrs), the same the live bridge uses — a faithful oracle.
+
+- **The residual harness failures (`cw`, `mirror_v+cw+cw+cw`, and mixer/NCO `cw+cw`) are
+  routing-quality, NOT block invariance.** They are exactly the orientations where the
+  input cell lands opposite the input port and the router wraps the input corridor to
+  the output-port corner. The real auto-placer never produces these (it flyline-orients
+  each block so its I/O faces the ports); the production auto-P&R modem recovers BER 0
+  (test_qpsk_modem_ber green). A rotated block placed by hand INTO its own input port
+  (e.g. MF cw+cw anchored at (0,0), which covers x16_in) is an inherently unroutable
+  placement, not an invariance bug.
+
+- **LESSON: prove datapath invariance by DIFFING the per-cell programs across all 8
+  orientations BEFORE chasing the router.** Byte-identical internal cells (only the
+  I/O-boundary cells differing) tells you instantly the block is invariant and the fault
+  is in the corridor/landing/egress — saving a long hunt in the wrong layer. And INV-1's
+  `31 - manhattan` hop is a STRAIGHT-corridor approximation; the general truth is the
+  build's corridor-walked `input_landings` (what the bridge uses).

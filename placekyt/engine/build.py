@@ -339,6 +339,20 @@ class BuildEngine:
         # program's entries fire only at HOP_CNT==31, never for transiting traffic).
         _apply_routing_cell_programs(cell_map)
 
+        # SHARED INPUT-PORT DIVERT (§1.2/§1.3): the chip-input port cell has ONE
+        # fwd_face, but a full-duplex port fans out to TWO blocks whose first route
+        # steps leave the port in DIFFERENT directions. One stream rides the static
+        # face straight; the OTHER must LAND at the port cell and be RELAYED off it.
+        # Promote the port cell to a broker for the diverting net(s) — flip toward the
+        # net's first waypoint, relay ONE hop to its downstream broker (which finishes
+        # the delivery into the block), restore the bus face. Runs AFTER the universal
+        # routing program so it REPLACES the port cell's latent transit program with the
+        # turn program (fwd_face unchanged → the riding stream is untouched). Returns
+        # the diverted nets' host-injection landings (merged into input_landings below).
+        port_divert_landings = _apply_port_diverts(
+            cell_map, blocks_here, conns_here, project, chip_id, chip_type,
+            self.catalog, broker_conn_entry, broker_conn_burst)
+
         # Reconcile a face-locking rendezvous block's LOCK faces (DualFloatToComplex) to
         # the ROUTED geometry: after all corridor faces/brokers are set, patch its
         # face_i/face_q DataWords + cold-start LOCK to the faces its i/q input nets
@@ -354,6 +368,11 @@ class BuildEngine:
         input_landings = _resolve_input_landings(
             cell_map, blocks_here, conns_here, project, chip_id, chip_type,
             gr_placement, self.catalog, broker_conn_entry, broker_conn_burst)
+        # A net that DIVERTS at the shared port cell (relayed off it by the port
+        # broker, above) OVERRIDES the straight corridor resolution: the host must land
+        # it AT the port cell (its turn entry / hop / burst regs), NOT ride it straight
+        # (which would forward it down the OTHER stream's face and lose it).
+        input_landings.update(port_divert_landings)
 
         # Per-cell address classification (data / state / instruction) from the
         # v2 CellProgram of each block, so the Inspector can tell DATA words
@@ -1887,6 +1906,152 @@ def _apply_routing_cell_programs(cell_map) -> None:
         cfg.entry_addr = _entries.get("transmit", cfg.entry_addr)
         if not getattr(cfg, "block_name", ""):
             cfg.block_name = "_routing"
+
+
+def _apply_port_diverts(cell_map, blocks, connections, project, chip_id,
+                        chip_type, catalog, broker_conn_entry,
+                        broker_conn_burst) -> dict:
+    """Turn the CHIP-INPUT PORT cell into a BROKER for a port-source net that must
+    DIVERT at the port (the shared-input full-duplex corner, §1.2/§1.3).
+
+    A chip has ONE input port cell and ONE ``fwd_face`` on it. When the port fans out
+    to TWO blocks whose first route steps leave the port in DIFFERENT directions (the
+    duplex modem: RX net leaves the port EAST toward the matched filter, TX net leaves
+    SOUTH toward the mapper), only ONE direction can be the static ``fwd_face``. One
+    stream (TX) rides that face straight (a HOP<31 transit, untouched); the OTHER (RX)
+    would be forwarded the WRONG way and die.
+
+    The host injects each stream AT the port. So the diverting stream must LAND at the
+    port cell (HOP_CNT==31, hop field 30) and be RELAYED off it: a broker turn entry
+    flips the face toward that net's first waypoint, relays the operand(s) ONE hop to
+    the net's DOWNSTREAM broker (the route's next cell, already programmed to deliver
+    into the block), then restores ``fwd_face`` so a LATER transiting word (the OTHER
+    stream) still forwards on the bus direction.
+
+    This is the multi-cell delivery the ``@1`` adjacent-broker could not do: the port
+    is not adjacent to the block — the RX word must transit the intermediate routing
+    cell (the downstream broker) before reaching the block. We solve it by chaining
+    brokers: the port broker lands the word at the DOWNSTREAM broker (its burst regs +
+    deliver entry, ``@1``), and that broker relays it the rest of the way (into the
+    block). Both hops are ``@1`` (each broker delivers to its adjacent neighbour), so
+    no new opcode is needed — just a second broker on the shared port cell.
+
+    Runs AFTER :func:`_apply_routing_cell_programs` (the port cell already carries the
+    universal transit program with ``fwd_face`` = the riding stream's direction). For a
+    diverting net it REPLACES that latent program with the broker turn program (same
+    ``fwd_face``, so the riding stream's HOP<31 transit is unchanged). A no-op when the
+    port fans out one way (every net rides its face — the common single-stream path).
+
+    Returns ``{conn_name: {"cell", "entry", "hop", "data_addrs"}}`` — the host-injection
+    landing for each diverted net (land AT the port cell, run its turn entry). The
+    build merges these into ``input_landings`` (overriding the straight resolution)."""
+    from model.connection import BlockEndpoint, ChipPortEndpoint
+    from .bus_router import (BROKER_BURST_REG, BrokerDelivery, _phys_pts,
+                             _target_input_cell)
+
+    in_port = next((p for p in chip_type.ports
+                    if p.direction.value == "input"), None)
+    if in_port is None:
+        return {}
+    port_cell = (in_port.cell_x, in_port.cell_y)
+    pcfg = cell_map.get_cell(*port_cell)
+    if pcfg is None:
+        return {}
+    port_face = getattr(pcfg, "fwd_face", None)
+    if port_face is None:
+        return {}
+    port_face = int(port_face)
+
+    # Every port-source input net on this chip, with its physical route + first step.
+    port_nets = []
+    for conn in connections:
+        if not (isinstance(conn.source, ChipPortEndpoint)
+                and conn.source.chip == chip_id
+                and conn.source.port == in_port.name
+                and isinstance(conn.target, BlockEndpoint)):
+            continue
+        pts = _phys_pts(project, conn, catalog) if conn.is_routed else []
+        if not pts or pts[0] != port_cell or len(pts) < 2:
+            continue
+        step = _step_face(port_cell[0], port_cell[1], pts[1][0], pts[1][1])
+        port_nets.append((conn, pts, step))
+
+    # A net whose first step matches the port's static fwd_face RIDES straight — it
+    # transits the port on that face (HOP<31), untouched. A net whose first step
+    # DIFFERS diverts: it must land at the port and be relayed off it.
+    diverting = [(conn, pts, step) for (conn, pts, step) in port_nets
+                 if step is not None and step != port_face]
+    if not diverting:
+        return {}
+
+    # Build the port-cell broker deliveries: one group per diverting net, targeting
+    # the net's DOWNSTREAM broker (route cell pts[1]) — its burst regs + deliver entry
+    # (already programmed by _apply_brokers). Coalesced by a per-net src_cell sentinel
+    # so a COMPLEX net's N operands relay as N WRITEs + ONE JUMP (the complex-sample
+    # contract), matching the downstream broker's expectation.
+    deliveries = []
+    landing_meta = {}   # conn -> (n_operands, downstream_regs)
+    for (conn, pts, step) in diverting:
+        down_cell = pts[1]
+        d_entry = broker_conn_entry.get(conn.name)
+        if d_entry is None:
+            # No downstream broker for this net (shouldn't happen for a routed
+            # port fan-out into a bus-tapped block) — leave it to the straight path.
+            continue
+        blk = project.block(conn.target.block)
+        _e, in_regs = catalog.resolved_io(blk.type, blk.params, library=blk.library)
+        # N operands the downstream broker expects for THIS net. broker_conn_burst is
+        # the LAST (highest) operand reg of the net's group at the downstream broker;
+        # the N operands are the N consecutive regs ending there.
+        last = BROKER_BURST_REG + int(broker_conn_burst.get(conn.name, 0))
+        if in_regs and len(in_regs) > 1 and conn.src_complex is not False:
+            n = len(in_regs)
+            down_regs = [last - (n - 1) + i for i in range(n)]
+        else:
+            n = 1
+            down_regs = [last]
+        grp_key = ("port_divert", conn.name)
+        for r in down_regs:
+            deliveries.append(BrokerDelivery(
+                conn=conn.name, in_cell=down_cell, in_reg=r,
+                in_entry=int(d_entry), deliver_face=int(step), src_cell=grp_key))
+        landing_meta[conn.name] = (n, down_regs)
+
+    if not deliveries:
+        return {}
+
+    # Assemble the port-cell broker program: restore face = the port's static face
+    # (the riding stream's direction) so a transiting word (TX) still forwards right.
+    by_conn, memory, burst_reg_by_conn = _broker_program(deliveries, port_face)
+
+    # REPLACE the port cell's latent universal program with the broker turn program.
+    # fwd_face is UNCHANGED (still the riding stream's direction) — the riding stream's
+    # HOP<31 transit is byte-identical; only a deliberately-landed (diverting) word
+    # runs the new turn entry.
+    pcfg.memory.clear()
+    pcfg.memory.update(memory)
+    pcfg.entry_addr = min(by_conn.values()) if by_conn else pcfg.entry_addr
+    pcfg.fwd_face = _CM_FACE(port_face)
+    if not getattr(pcfg, "block_name", ""):
+        pcfg.block_name = "_broker"
+
+    # Host-injection landing for each diverted net: land AT the port cell (hop field
+    # 30 == HOP_CNT 31 there), run its turn entry, inject its operand(s) into the
+    # port broker's OWN burst regs (the regs _broker_program allocated, R1..RN).
+    landings = {}
+    for (conn, pts, step) in diverting:
+        if conn.name not in by_conn or conn.name not in burst_reg_by_conn:
+            continue
+        n, _down_regs = landing_meta[conn.name]
+        # burst_reg_by_conn is the LAST operand reg the source WRITEs to at this broker
+        # (overwritten per operand → highest of the N consecutive regs). The N operands
+        # occupy the N consecutive regs ENDING there.
+        last = int(burst_reg_by_conn[conn.name])
+        data_addrs = [last - (n - 1) + i for i in range(n)]
+        landings[conn.name] = {
+            "cell": port_cell, "entry": int(by_conn[conn.name]),
+            "hop": 30 & 0x1F, "data_addrs": data_addrs}
+    return landings
 
 
 def _patch_last_jump_handoff(cfg, hop, entry=None) -> None:

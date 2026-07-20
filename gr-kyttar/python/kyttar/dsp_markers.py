@@ -100,14 +100,18 @@ class complex_rrc_matched_filter(_PassThrough):
 class complex_costas_loop(_PassThrough):
     """Complex Costas carrier recovery — GR marker (maps to ComplexCostasLoopBlock).
 
-    A SINGLE complex baseband stream in → recovered-I tap out (yi_tap, real). At
-    ``order=4`` (QPSK) the block also taps the recovered Q rail (yq_tap); the marker
-    still carries a single stream (the graph is logical — the real DSP is on-chip)."""
+    A SINGLE complex baseband stream in → recovered tap out. At ``order=2`` (BPSK) the
+    tap is the recovered I only (yi_tap, real/float); at ``order=4`` (QPSK) it is the
+    recovered (I, Q) pair carried as ONE gr_complex stream (yi_tap) — placeKYT's
+    importer splits that single complex net into the on-chip yi_tap/yq_tap rails. One
+    wire per complex link keeps the flowgraph clean (no dangling second-rail port)."""
 
     def __init__(self, device_id="kyttar_0", loop_bw=0.05, damping=1.0, order=2):
-        # complex in, real yi_tap out (matches digital.costas_loop_cc(loop_bw, order))
+        # complex in; out is complex at order 4 (I/Q tap) else float (I tap only),
+        # matching the .block.yml's ${ 'complex' if order == 4 else 'float' } out dtype.
+        out_dt = np.complex64 if int(order) == 4 else np.float32
         super().__init__("Kyttar Complex Costas Loop", n_in=1, n_out=1,
-                         in_dtype=np.complex64, out_dtype=np.float32)
+                         in_dtype=np.complex64, out_dtype=out_dt)
         self.device_id = device_id
         self.loop_bw = loop_bw
         self.damping = damping
@@ -120,13 +124,16 @@ class complex_costas_loop(_PassThrough):
 class gardner_timing_recovery(_PassThrough):
     """Gardner timing recovery — GR marker (maps to GardnerTimingRecovery).
 
-    ``complex=True`` selects 2-rail (I/Q) timing recovery: the block gains an ``xq``
-    input rail and emits the recovered (yi_e, yq_e) symbol-center pair (feeding a
-    downstream QPSK slicer). ``complex=False`` (default) is the real BPSK timing
-    loop (single ``xi`` in, recovered center ``out``)."""
+    ``complex=True`` selects 2-rail (I/Q) timing recovery carried as ONE gr_complex
+    stream in/out (the on-chip xi/xq in + yi_e/yq_e out pairs; placeKYT's importer
+    splits the single complex net into the two rails), feeding a downstream QPSK
+    slicer. ``complex=False`` (default) is the real BPSK timing loop (a single float
+    stream in, recovered center ``out``). One wire per link — no dangling rail port."""
 
     def __init__(self, device_id="kyttar_0", kp=3, ki=1, complex=False):
-        super().__init__("Kyttar Gardner Timing Recovery")
+        dt = np.complex64 if bool(complex) else np.float32
+        super().__init__("Kyttar Gardner Timing Recovery",
+                         in_dtype=dt, out_dtype=dt)
         self.device_id = device_id
         self.kp = kp
         self.ki = ki
@@ -148,14 +155,14 @@ class qpsk_slicer(_PassThrough):
 
     Final decision stage of the coherent QPSK RX: a recovered (I, Q) symbol-center
     pair -> the 2-bit Gray symbol index (0..3), mirroring GNU Radio
-    ``digital.constellation_decoder_cb(constellation_qpsk())``. Two real input rails
-    (in_i @0, in_q @1) land as I@R0/Q@R1 on the slicer's single cell; the real DSP
-    runs on the placeKYT chip. A pure pass-through marker (carries the graph for
-    import + server-batch run)."""
+    ``digital.constellation_decoder_cb(constellation_qpsk())``. The recovered pair
+    arrives as ONE gr_complex stream (matching the complex Gardner's complex output);
+    placeKYT's importer splits it into the on-chip in_i (I@R0)/in_q (Q@R1) rails. A
+    pure pass-through marker (carries the graph for import + server-batch run)."""
 
     def __init__(self, device_id="kyttar_0"):
-        super().__init__("Kyttar QPSK Slicer", n_in=2, n_out=1,
-                         in_dtype=np.float32, out_dtype=np.float32)
+        super().__init__("Kyttar QPSK Slicer", n_in=1, n_out=1,
+                         in_dtype=np.complex64, out_dtype=np.float32)
         self.device_id = device_id
         self._advertise_grc_params(device_id, "QPSKSlicerBlock", {})
 

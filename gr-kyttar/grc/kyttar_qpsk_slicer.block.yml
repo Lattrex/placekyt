@@ -12,15 +12,15 @@ parameters:
   dtype: string
   default: '"kyttar_0"'
 
+# ONE input port: GNU Radio carries the recovered (I, Q) symbol-center pair as a
+# SINGLE complex stream (matching the complex Gardner's complex output). placeKYT's
+# importer splits it into the on-chip in_i (I@R0) / in_q (Q@R1) rails. One wire per
+# link keeps the flowgraph clean (no dangling second-rail port).
 inputs:
 - id: '0'
   label: in_i
   domain: stream
-  dtype: float
-- id: '1'
-  label: in_q
-  domain: stream
-  dtype: float
+  dtype: complex
 
 outputs:
 - id: '0'

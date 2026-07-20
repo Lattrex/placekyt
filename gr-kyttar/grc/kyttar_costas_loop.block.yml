@@ -32,20 +32,17 @@ inputs:
   domain: stream
   dtype: complex
 
+# ONE output port. GNU Radio collapses an I/Q pair into a single COMPLEX stream, so
+# the recovered tap is complex at order=4 (QPSK: the on-chip qpd cell emits the
+# (yi_tap, yq_tap) pair — placeKYT's importer SPLITS the single complex net into the
+# two on-chip rails) and float at order=2 (BPSK: only the recovered I, yi_tap). This
+# keeps the flowgraph ONE wire per complex link (no dangling second-rail port in GRC),
+# exactly like kyttar_complex_rrc_matched_filter's single complex out.
 outputs:
 - id: '0'
   label: yi_tap
   domain: stream
-  dtype: float
-# order=4 (QPSK) taps out the recovered Q rail as a second real output. GNU Radio
-# collapses an I/Q pair into one complex port; here the recovered (yi_tap, yq_tap)
-# leave as two real rails (the on-chip qpd output cell emits the pair), matching the
-# order-4 ComplexCostasLoopBlock PortMap so the placeKYT importer wires both rails.
-- id: '1'
-  label: yq_tap
-  domain: stream
-  dtype: float
-  hide: ${ 'none' if order == 4 else 'all' }
+  dtype: ${ 'complex' if order == 4 else 'float' }
 
 documentation: |-
   🧪 PROOF-OF-CONCEPT: this block works in a demo but has NOT been through

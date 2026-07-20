@@ -27,39 +27,22 @@ parameters:
   dtype: bool
   default: 'False'
 
+# ONE input + ONE output port; GNU Radio carries an I/Q pair as a SINGLE complex
+# stream. complex=True -> the port is COMPLEX (the on-chip block's xi/xq in and
+# yi_e/yq_e out pairs; placeKYT's importer splits the single complex net into the two
+# rails). complex=False (BPSK) -> the port is FLOAT (real 2-sps in, recovered center
+# `out`). One wire per link keeps the flowgraph clean (no dangling second-rail port).
 inputs:
 - id: '0'
-  label: xi
+  label: ${ 'xi' if complex else 'x' }
   domain: stream
-  dtype: float
-# complex=True adds the Q input rail (2-rail I/Q timing recovery). GNU Radio would
-# carry this as a single complex port; here it is the second real rail xq (R1) so it
-# matches the complex GardnerTimingRecovery PortMap (xi, xq) the importer wires.
-- id: '1'
-  label: xq
-  domain: stream
-  dtype: float
-  hide: ${ 'none' if complex else 'all' }
+  dtype: ${ 'complex' if complex else 'float' }
 
 outputs:
-# REAL mode (complex=False): the single recovered center sample `out`.
 - id: '0'
-  label: out
+  label: ${ 'yi_e' if complex else 'out' }
   domain: stream
-  dtype: float
-  hide: ${ 'all' if complex else 'none' }
-# COMPLEX mode (complex=True): the recovered (yi_e, yq_e) symbol-center pair — two
-# real rails from the qout output cell, feeding a downstream QPSK slicer.
-- id: '1'
-  label: yi_e
-  domain: stream
-  dtype: float
-  hide: ${ 'none' if complex else 'all' }
-- id: '2'
-  label: yq_e
-  domain: stream
-  dtype: float
-  hide: ${ 'none' if complex else 'all' }
+  dtype: ${ 'complex' if complex else 'float' }
 
 documentation: |-
   🧪 PROOF-OF-CONCEPT: this block works in a demo but has NOT been through

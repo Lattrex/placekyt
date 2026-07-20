@@ -270,6 +270,22 @@ def _solve_chip(cp_model, ct, occ, chip_nets, max_time_s):
                     continue
                 m.Add(use[(a, c)] + use[(b, c)] <= 1)
 
+    # A CHIP-PORT cell (an input or output edge port) is a HARD boundary: a word
+    # riding a corridor cannot TRANSIT through a foreign port cell — it would be
+    # injected/ejected there, not forwarded on. The disjointness loop above EXEMPTS a
+    # cell that is any net's endpoint (so a fan-out can share a sink), which
+    # inadvertently lets one net thread STRAIGHT THROUGH another net's PORT endpoint
+    # (e.g. the input corridor riding along the top row to the OUTPUT-port cell and
+    # brokering there — the word never reaches the block, 0 output; the orientation
+    # cases where a rotated block's input cell lands far from the input port). Forbid
+    # every net from OCCUPYING a chip-port cell that is not ITS OWN source or sink, so
+    # the corridor is forced onto a real free-cell path to the block instead.
+    port_cells = {(p.cell_x, p.cell_y) for p in ct.ports}
+    for nm in nets_list:
+        for pc in port_cells:
+            if pc in cellset and pc != src_of[nm] and pc != sink_of[nm]:
+                m.Add(use[(nm, pc)] == 0)
+
     # Objective: minimise the number of active cell-faces (compact bus). Sharing
     # is free — two nets down one corridor cost the same as one.
     m.Minimize(sum(cellface.values()))

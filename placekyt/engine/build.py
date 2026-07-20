@@ -1502,8 +1502,19 @@ def _resolve_input_landings(cell_map, blocks, connections, project, chip_id,
             full.append(in_cell)
         # Find the FIRST corridor cell that mis-forwards (its built fwd_face does not
         # point to the next waypoint). The block input cell (last) has no "next".
+        #
+        # SKIP the PORT cell (index 0): the host INJECTS the burst at the port (it sets
+        # the hop directly), so the port cell does not FORWARD the word on a fwd_face —
+        # the first real face-transit is at corridor index 1. Face-checking the port
+        # cell mis-fires whenever the port's own I/O face (e.g. NORTH/SOUTH for the edge)
+        # differs from the drawn route's first step: a complex fan-in draws xi via one
+        # neighbour and xq via another, so ONE net's drawn first step disagrees with the
+        # port face and the scan falsely reports a divert at the port → a bogus broker
+        # landing (wrong entry/reg) even though the word rides straight to the block. The
+        # word's transit is governed by the NEIGHBOUR faces, not the port's, so start the
+        # divert scan at index 1.
         divert = None
-        for i in range(len(full) - 1):
+        for i in range(1, len(full) - 1):
             want = _step_face(full[i][0], full[i][1], full[i + 1][0], full[i + 1][1])
             if want is None or _face_of(full[i]) != want:
                 divert = i

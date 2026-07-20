@@ -575,7 +575,16 @@ def run_block_dut_complex(
             "block must declare two (xi, xq)")
     a0, a1 = int(ins[0]), int(ins[1])
 
-    # INV-1: placement-dependent hop derived from the landing cell, never a const.
+    # INV-1: placement-dependent hop. The naive ``31 - manhattan(port, landing)`` is
+    # correct ONLY when the input corridor runs STRAIGHT (the flyline placer normally
+    # guarantees this). Under an arbitrary D4 orientation the corridor SNAKES — the word
+    # transits cells on their built fwd_face, not a straight line — so the manhattan hop
+    # lands the WRITE/JUMP short of (or past) the real landing cell and the block never
+    # fires. The BUILD resolves the corridor-ACCURATE landing (hop / entry / data_addrs)
+    # by walking the built faces (build._resolve_input_landings), and the LIVE bridge
+    # (engine.port_config) drives the chip from exactly that. So the DUT — to be a
+    # faithful oracle — prefers the built landing, falling back to the manhattan estimate
+    # only when no net has a recorded landing (an unrouted direct-on-port placement).
     port = ct.port("x16_in")
     blk_obj = ctrl.project.block(blk)
     landing = (blk_obj.placement.cells[0]
@@ -587,6 +596,28 @@ def run_block_dut_complex(
         dist = abs(px - port.cell_x) + abs(py - port.cell_y) + 1
     hop = max(0, 31 - dist)
 
+    # Corridor-accurate landing (preferred). The two input nets (xi, xq) deliver ONE
+    # complex sample; when the corridor rides straight both resolve to the block's input
+    # cell with data_addrs = [xi_reg, xq_reg] and entry = block entry. Pick the landing
+    # whose data_addrs cover BOTH operands (the straight, complete delivery) so the two
+    # operands + trigger all address the same cell the corridor actually reaches.
+    cb = getattr(bres, "chips", {}).get(0)
+    il = (getattr(cb, "input_landings", {}) or {}) if cb is not None else {}
+    hop_i = hop; addr_i = a0; addr_q = a1; entry_i = entry
+    best = None
+    for lname in ("in_xi", "in_xq"):
+        ld = il.get(lname)
+        if ld and ld.get("data_addrs"):
+            # Prefer a landing that carries both operand registers (straight complex ride).
+            if best is None or len(ld["data_addrs"]) > len(best["data_addrs"]):
+                best = ld
+    if best is not None:
+        das = best["data_addrs"]
+        hop_i = int(best["hop"]) & 0x1F
+        entry_i = int(best["entry"])
+        addr_i = int(das[0])
+        addr_q = int(das[1]) if len(das) > 1 else int(das[0])
+
     chip = simkyt.Chip.from_yaml(chip_yaml)
     chip.load_bitstream_physical(words)
     chip.set_port_entry_address("x16_in", entry)
@@ -594,13 +625,13 @@ def run_block_dut_complex(
     per_sample: list[list[int]] = []
     for (i_f, q_f) in pairs:
         # ONE complex sample = WRITE xi -> a0, WRITE xq -> a1, then JUMP entry.
-        chip.inject_data_physical([_to_q15(i_f)], target_hop_cnt=hop,
-                                  target_addr=a0)
+        chip.inject_data_physical([_to_q15(i_f)], target_hop_cnt=hop_i,
+                                  target_addr=addr_i)
         chip.run(max_events=data_run)
-        chip.inject_data_physical([_to_q15(q_f)], target_hop_cnt=hop,
-                                  target_addr=a1)
+        chip.inject_data_physical([_to_q15(q_f)], target_hop_cnt=hop_i,
+                                  target_addr=addr_q)
         chip.run(max_events=data_run)
-        chip.inject_jump_physical(target_hop_cnt=hop, entry_addr=entry)
+        chip.inject_jump_physical(target_hop_cnt=hop_i, entry_addr=entry_i)
         chip.run(max_events=jump_run)
         got: list[int] = []
         while chip.output_available("x16_out"):

@@ -1824,3 +1824,42 @@ Gardner, IQUpconvert, ComplexMixer, NCO) FAIL the D4 orientation harness
   is in the corridor/landing/egress — saving a long hunt in the wrong layer. And INV-1's
   `31 - manhattan` hop is a STRAIGHT-corridor approximation; the general truth is the
   build's corridor-walked `input_landings` (what the bridge uses).
+
+## Port-input complex fan-in under rotation (Part A residual) — `cw` FIXED
+
+- **The `cw` collapse was the input fan-in CORRIDOR snaking THROUGH the chip OUTPUT-port
+  cell.** For a `cw`-rotated ComplexRRC/Costas/Gardner/IQUpconvert the two input rails
+  (xi/xq) from x16_in routed a bizarre snake out to x16_out's cell (9,0) and back. The
+  egress net (blk_out) faces (9,0) toward the port EXIT, and `_apply_routes` overwrites
+  the cell's fwd_face — so `_resolve_input_landings`' divert scan sees (9,0)'s built face
+  disagree with the drawn route and DIVERTS both rails into dead space (block never
+  fires → empty output). FIX (`bus_router._route_chip_bus` / `_bus_bfs`): penalise
+  (soft, +1000) any FOREIGN chip-port cell as a transit cell in the Dijkstra. A net with
+  a detour avoids the port terminus; a net with no other path (a column-9 egress that
+  must pass x16_out to reach x1_out — the `test_different_sink_share` case) still routes.
+  A HARD wall broke that test; the soft penalty is the right knob. This took ComplexRRC/
+  Costas(2,4)/Gardner/IQUpconvert from FAIL to PASS on `cw`; Gardner is now 8/8.
+
+- **A block OUTPUT cell's emit neighbour must be kept OFF the input-broker candidate
+  set.** When a complex block is packed so its output cell emits into the SAME free cell
+  the head's input fan-in wants as its broker, the egress faces that cell toward its exit
+  and clobbers the broker delivery. FIX: both routers now de-prioritise (bus
+  `_free_neighbor`) / exclude (maze `_broker_cells`) any `output_emit_cells` (source cell
+  + emit-face neighbour) when seating an input broker — soft, so a walled target still
+  takes it. This took ComplexRRC to full 8/8.
+
+- **RESIDUAL (`mirror_v+cw+cw+cw` for RRC/Costas/IQUpconvert; `cw+cw` for Mixer/NCO) is
+  ONE class: a corner-packed placement where the output cell and the head input are
+  ADJACENT and the egress corridor unavoidably boxes the head.** Traced exhaustively: the
+  output cell (e.g. i4/mixer) emits into the head's only escape cell, and every free
+  neighbour of the head is consumed by the egress corridor, so the input fan-in broker
+  and the block-output emit cell genuinely contend for the same one cell. Routing the
+  fan-in FIRST (a new "fanin" order) reserves the broker but then the egress cannot leave
+  its own output cell (that emit neighbour is on the input corridor). This is a
+  PLACEMENT-congestion / build-side dual-role-broker limitation, NOT a per-net routing
+  bug — the fan-in broker cell would have to BOTH relay a multi-operand complex sample
+  (N WRITEs + trigger + face-restore) AND forward a transiting egress word. Fixing it
+  needs either Part B (place the output cell facing open space) or build-side support for
+  a fan-in broker that is also transited. Left for that follow-up; the `cw` primary bug
+  is fixed and committed, and `test_qpsk_modem_ber` (the production auto-P&R path) stays
+  green.

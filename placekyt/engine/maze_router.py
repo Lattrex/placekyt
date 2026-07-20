@@ -201,6 +201,19 @@ def _route_chip_maze(project, ct, chip_id, nets, *, distinct_face_cells=None):
         block_cells.update((c.x, c.y) for c in pl.cells)
         block_cells.update((t.x, t.y) for t in getattr(pl, "transit_cells", []))
 
+    # A block OUTPUT net drives its egress into the cell just outside its source cell's
+    # emit face (the source's first corridor hop). That cell is CLAIMED for egress: a
+    # foreign broker must not sit there, or the two roles collide on its single fwd_face
+    # (the block whose output cell emits toward the SAME free cell another rail needs as
+    # its input broker — the rotated complex fan-in whose i4 output and head input broker
+    # both wanted (1,6), zero output). Reserve every block-output emit neighbour.
+    output_emit_cells: set = set()
+    for n in nets:
+        if isinstance(n.conn.source, BlockEndpoint):
+            step = _face_step(n.sface)
+            if step is not None:
+                output_emit_cells.add((n.src[0] + step[0], n.src[1] + step[1]))
+
     def _adjacent(a, b):
         return abs(a[0] - b[0]) + abs(a[1] - b[1]) == 1
 
@@ -221,7 +234,7 @@ def _route_chip_maze(project, ct, chip_id, nets, *, distinct_face_cells=None):
         MOST-CONSTRAINED-FIRST key: a walled fan-in target (1 candidate) must claim
         its only broker before a roomier sibling grabs the corridor to it."""
         return len(_broker_cells(target_in, dface, set(), in_bounds,
-                                 None, block_cells))
+                                 None, block_cells, output_emit_cells))
 
     # Routing order: fan-in nets to the SAME target input cell must be CONSECUTIVE
     # (the first creates the broker, the rest reuse it). Group key = target input cell
@@ -307,7 +320,7 @@ def _route_chip_maze(project, ct, chip_id, nets, *, distinct_face_cells=None):
                     continue     # abutment nets claim their face directly (no broker)
                 cands = [c for c in _broker_cells(
                             tgt, g[0].dface, {c: 0 for c in reserved},
-                            in_bounds, None, block_cells)
+                            in_bounds, None, block_cells, output_emit_cells)
                          if _face_of_neighbour(tgt, c) not in used_faces]
                 if not cands:
                     broker_fail[tgt] = ("no free DISTINCT-face broker for a face-locking "
@@ -321,7 +334,7 @@ def _route_chip_maze(project, ct, chip_id, nets, *, distinct_face_cells=None):
         if tgt in broker_of:
             continue
         cands = _broker_cells(tgt, g[0].dface, {c: 0 for c in reserved},
-                              in_bounds, None, block_cells)
+                              in_bounds, None, block_cells, output_emit_cells)
         if not cands:
             broker_fail[tgt] = "no free broker cell abutting the target input"
             continue
@@ -480,26 +493,37 @@ def _route_chip_maze(project, ct, chip_id, nets, *, distinct_face_cells=None):
     return out
 
 
-def _broker_cells(target_in, in_face, cell_dir, in_bounds, src, block_cells):
+def _broker_cells(target_in, in_face, cell_dir, in_bounds, src, block_cells,
+                  output_emit_cells=None):
     """Free cells abutting the target input cell that may host a broker.
 
     A broker may sit on ANY orthogonal neighbour of the target input cell EXCEPT the
     target's own emit face (§7.4 — a delivery must not arrive on the face the block
     drives its own output). It must NOT be a block cell, must not already carry a
     routing corridor (``cell_dir`` — a broker is a terminus, not a shared transit
-    cell), and never the source cell itself."""
+    cell), and never the source cell itself.
+
+    ``output_emit_cells`` (cells a block OUTPUT net drives its egress into) are AVOIDED:
+    a broker there would clash with the egress on the cell's single fwd_face. They are
+    excluded ONLY when a non-egress broker candidate remains — a target with no other
+    neighbour still takes the emit cell (best-effort; the face DRC then re-checks)."""
     forbid = _face_step(in_face)
     forbid_cell = ((target_in[0] + forbid[0], target_in[1] + forbid[1])
                    if forbid else None)
+    emit = set(output_emit_cells or ())
     cells = []
+    emit_only = []
     for dx, dy in _NEI:
         c = (target_in[0] + dx, target_in[1] + dy)
         if c == forbid_cell:
             continue
         if not in_bounds(c) or c in block_cells or c in cell_dir or c == src:
             continue
-        cells.append(c)
-    return cells
+        if c in emit:
+            emit_only.append(c)
+        else:
+            cells.append(c)
+    return cells if cells else emit_only
 
 
 def _astar_congestion(src, sface, goal, block_cells, blocked_brokers, in_bounds, *,

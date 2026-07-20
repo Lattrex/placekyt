@@ -1319,6 +1319,17 @@ def _route_chip_bus(project, ct, chip_id, nets, spine, *, sc_cells=None,
             # ABUTMENT nets have no corridor cells — they occupy nothing.
             occ.update((p.x, p.y) for p in conn.route)
 
+    # Cells a block OUTPUT net drives its egress into (the source cell's emit-face
+    # neighbour). Reserved AGAINST hosting a foreign broker: the egress faces that cell
+    # toward its exit, clobbering a broker delivery routed there (the rotated complex
+    # fan-in whose output cell and input broker collided → zero output).
+    output_emit_cells = set()
+    for (_nm, _s, _sf, _d, _df, _sp, _dp, _cn) in nets:
+        if isinstance(_cn.source, BlockEndpoint):
+            st = _FACE_STEP.get(_sf)
+            if st is not None:
+                output_emit_cells.add((_s[0] + st[0], _s[1] + st[1]))
+
     # Chip PORT edge cells. A port cell is a DEDICATED I/O terminus: a net owning it
     # (its src or goal) uses it, but no OTHER net may TRANSIT it — the build faces a
     # port-egress cell toward the port exit, clobbering any transit face routed through
@@ -1416,7 +1427,8 @@ def _route_chip_bus(project, ct, chip_id, nets, spine, *, sc_cells=None,
             avoid_bus = src_is_port
             goal = reuse if reuse is not None else \
                 _free_neighbor(d, dface, occ, bus, spine_set, in_bounds, s,
-                               forbid_broker, broker_target, avoid_bus=avoid_bus)
+                               forbid_broker, broker_target, avoid_bus=avoid_bus,
+                               output_emit_cells=output_emit_cells)
             goal_is_block = True
             goal_is_broker = True
             if goal is None:
@@ -1565,7 +1577,8 @@ def _broker_forbidden(in_face, forbid_out):
 
 
 def _free_neighbor(cell, in_face, occ, bus, spine_set, in_bounds, src,
-                   forbid_out=None, broker_target=None, avoid_bus=False):
+                   forbid_out=None, broker_target=None, avoid_bus=False,
+                   output_emit_cells=None):
     """A free cell abutting ``cell`` (the target input) to host the broker.
 
     A delivery may arrive on any face EXCEPT the target's own emit (``in_face``) face
@@ -1585,6 +1598,7 @@ def _free_neighbor(cell, in_face, occ, bus, spine_set, in_bounds, src,
     is excluded: it has ONE fwd_face flipping toward its own target and cannot also
     deliver into this cell (the two distinct-sink streams would collide on it)."""
     forbid = _broker_forbidden(in_face, forbid_out)
+    emit = set(output_emit_cells or ())
     cands = []
     for code, (dx, dy) in _FWD_DELTA.items():
         if (dx, dy) in forbid:
@@ -1606,7 +1620,12 @@ def _free_neighbor(cell, in_face, occ, bus, spine_set, in_bounds, src,
             rank = (base, adj)
         else:
             rank = (0 if n in bus else (1 if n in spine_set else 2), 0)
-        cands.append((rank, n))
+        # A cell a block OUTPUT drives its egress into is DE-PRIORITISED as a broker
+        # (leading emit-flag sorts it last): the egress net faces it toward its own exit,
+        # clobbering a broker delivery there (the rotated complex fan-in whose i4 output
+        # and head input broker both wanted one cell → zero output). Soft, not a wall: a
+        # target with no other free neighbour still takes it.
+        cands.append(((1 if n in emit else 0, rank), n))
     if not cands:
         return None
     cands.sort()

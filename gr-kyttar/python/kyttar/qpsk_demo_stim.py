@@ -95,3 +95,35 @@ def tx_bits(n_bits, seed=7):
     random.seed(seed)
     n = n_bits - (n_bits % 2)   # even
     return [float(random.randint(0, 1)) for _ in range(n)]
+
+
+# --- qtgui time-sink plot sizing (so the recovered-symbol / TX-passband waveforms
+# actually PAINT on a finite burst). A FREE-trigger time_sink only flushes a
+# completed frame once a sample arrives PAST the frame boundary, so on a FINITE
+# batch a ``size`` EQUAL to the delivered count leaves the last frame un-flushed =>
+# a FLAT plot. Size the sinks a guard BELOW the guaranteed delivered count so a full
+# frame always completes and a trailing sample flushes it (mirrors modem_demo_stim).
+_PLOT_GUARD = 16
+
+
+def tx_pb_len(n_bits):
+    """Passband-word count the QPSK TX chain (mapper -> complex upsampler -> complex
+    RRC shaper -> I/Q upconvert) emits on x16_out for ``n_bits`` input bits. The QPSK
+    mapper packs 2 bits/symbol and the upsampler runs at ``sps`` (2), so the chain
+    emits ``sps`` passband words per SYMBOL => ``sps * (n_bits // 2)`` = ``n_bits``
+    words (sps=2)."""
+    return int(n_bits)
+
+
+def rx_syms_points(n_syms):
+    """Number of Points for the RECOVERED-SYMBOLS time-sink. The RX chain recovers
+    ~``n_syms`` 2-bit symbols (may be a few short on a warm chip); a frame a guard
+    below that always completes and flushes so the symbol waveform PAINTS."""
+    return max(1, int(n_syms) - _PLOT_GUARD)
+
+
+def tx_pb_points(n_bits):
+    """Number of Points for the TX-PASSBAND time-sink: a guard below the emitted
+    passband-word count so its FREE-trigger frame completes and flushes on the
+    finite burst."""
+    return max(1, tx_pb_len(n_bits) - _PLOT_GUARD)

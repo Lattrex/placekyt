@@ -1319,6 +1319,12 @@ def _route_chip_bus(project, ct, chip_id, nets, spine, *, sc_cells=None,
             # ABUTMENT nets have no corridor cells — they occupy nothing.
             occ.update((p.x, p.y) for p in conn.route)
 
+    # Chip PORT edge cells. A port cell is a DEDICATED I/O terminus: a net owning it
+    # (its src or goal) uses it, but no OTHER net may TRANSIT it — the build faces a
+    # port-egress cell toward the port exit, clobbering any transit face routed through
+    # it (the rotated complex fan-in that snaked THROUGH x16_out and lost both operands).
+    port_cells = {(p.cell_x, p.cell_y) for p in getattr(ct, "ports", [])}
+
     spine_set = {tuple(p) for p in spine if in_bounds(tuple(p))}
     bus: set = set()                  # cells already carrying the bus (preferred)
     # The committed OUTGOING direction of each bus cell. A cell has ONE fwd_face
@@ -1426,10 +1432,16 @@ def _route_chip_bus(project, ct, chip_id, nets, spine, *, sc_cells=None,
         if s in sc_cells and isinstance(conn.source, BlockEndpoint):
             forbid_first = hazard_in_face.get(s)
 
+        # Reserve every FOREIGN chip port cell (a port cell that is not THIS net's own
+        # source or goal): no net may thread its corridor through another net's I/O
+        # terminus (the port-egress face would clobber the transit face).
+        forbid_transit = {pc for pc in port_cells if pc != s and pc != goal}
+
         path = _bus_bfs(s, sface, goal, occ, bus, spine_set, in_bounds,
                         src_is_port, bus_dir=bus_dir, brokers=brokers,
                         forbid_first=forbid_first,
-                        forbid_broker_transit=forbid_broker_transit)
+                        forbid_broker_transit=forbid_broker_transit,
+                        forbid_transit=forbid_transit)
         if path is None and goal_is_broker:
             # The chosen broker is walled (its only approaches are committed the wrong
             # way). Try the OTHER free neighbours of the target as broker taps before
@@ -1438,10 +1450,12 @@ def _route_chip_bus(project, ct, chip_id, nets, spine, *, sc_cells=None,
                                            forbid_broker, broker_target):
                 if alt == goal:
                     continue
+                alt_forbid = {pc for pc in port_cells if pc != s and pc != alt}
                 path = _bus_bfs(s, sface, alt, occ, bus, spine_set, in_bounds,
                                 src_is_port, bus_dir=bus_dir, brokers=brokers,
                                 forbid_first=forbid_first,
-                                forbid_broker_transit=forbid_broker_transit)
+                                forbid_broker_transit=forbid_broker_transit,
+                                forbid_transit=alt_forbid)
                 if path is not None:
                     goal = alt
                     break
@@ -1647,13 +1661,21 @@ def _broker_abutting(cell, in_face, brokers, src, forbid_out=None,
 
 def _bus_bfs(src, sface, goal, occ, bus, spine_set, in_bounds, src_is_port,
              *, bus_dir=None, brokers=None, forbid_first=None,
-             forbid_broker_transit=False):
+             forbid_broker_transit=False, forbid_transit=None):
     """Shortest free-cell path src→goal, PREFERRING bus then spine cells, and only
     SHARING a bus cell when leaving it in its already-committed direction.
 
     ``forbid_first`` (a face code, or None) forbids the FIRST hop from leaving ``src``
     on that face — used for a single-cell hazard block's OUTPUT net so it never drives
     the same link the input arrives on (the §5.3 deadlock guard; input != output face).
+
+    ``forbid_transit`` (a set of cells, or None) forbids the path from TRANSITING those
+    cells — they may still be this net's own ``src``/``goal``, but no other net's
+    corridor may thread THROUGH them. Used to reserve the chip OUTPUT-port edge cell: a
+    net that merely rides through it would be re-faced toward the port exit when the
+    egress net faces that cell (the port exit face clobbers the transit face), diverting
+    the transiting stream into dead space (the rotated complex fan-in that snaked through
+    x16_out and lost both operands).
 
     A block source emits on ``sface`` so the first step leaves on that face; a chip
     input port injects AT its own cell so BFS starts there. Cells already on the bus
@@ -1674,6 +1696,7 @@ def _bus_bfs(src, sface, goal, occ, bus, spine_set, in_bounds, src_is_port,
 
     bus_dir = bus_dir or {}
     brokers = brokers or set()
+    forbid_transit = forbid_transit or set()
 
     if src == goal:
         return [src]
@@ -1722,7 +1745,16 @@ def _bus_bfs(src, sface, goal, occ, bus, spine_set, in_bounds, src_is_port,
     def cost(c):
         if c == goal:
             return 0
-        return 0 if c in bus else (1 if c in spine_set else 4)
+        base = 0 if c in bus else (1 if c in spine_set else 4)
+        # A FOREIGN port cell (another net's I/O terminus) is heavily penalised as a
+        # TRANSIT cell — the build faces a port-egress cell toward the port exit, which
+        # clobbers a transit face routed through it (the rotated complex fan-in that
+        # snaked THROUGH x16_out and lost both operands). The penalty is soft, not a
+        # hard wall: a net with NO alternative (e.g. a column-9 egress that must pass the
+        # x16_out cell to reach x1_out) still routes, but any net with a detour takes it.
+        if c in forbid_transit:
+            base += 1000
+        return base
 
     # Dijkstra from ALL candidate starts; reconstruct start..goal then prepend src.
     pq = []

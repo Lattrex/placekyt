@@ -290,10 +290,34 @@ def route_all_bus(project, chip_types, port_cell_provider,
                 return (_cls(src_is_port, dst_is_port, "egress"),
                         _free_target_neighbors(n), d,
                         0 if not src_is_port else 1, span)
+            if mode == "portfork":
+                # PORT FAN-OUT ordering: when ≥2 nets leave ONE chip input port, route
+                # the port net whose target is NEAREST the port FIRST. The near net then
+                # brokers off at the shared fork cell (the first cell past the port), and
+                # the farther sibling(s) COALESCE onto the common prefix and TRANSIT that
+                # broker (HOP<31) to their own deeper brokers — the sound shared-bus fork
+                # (never two corridors diverging AT the port). Port nets lead (0), then by
+                # source→target distance ascending, so nearest brokers first.
+                port_span = abs(s[0] - d[0]) + abs(s[1] - d[1])
+                return (0 if src_is_port else 1, port_span, d, span)
             return (_cls(src_is_port, dst_is_port, mode), d,
                     0 if not src_is_port else 1, span)
 
+        # DIFFERENT-BLOCK port fan-out: a chip input port feeding ≥2 DIFFERENT blocks
+        # needs the nearest-first "portfork" ordering so the nets share a fork cell PAST
+        # the port (never diverge AT it). A same-block I/Q fan-in (xi+xq into one block)
+        # is NOT counted — its broker delivery already works and needs no reordering.
+        _port_fanout: dict = {}
+        for _n in nets:
+            _c = _n[7]
+            if isinstance(_c.source, ChipPortEndpoint) \
+                    and isinstance(_c.target, BlockEndpoint):
+                _port_fanout.setdefault(_c.source.port, set()).add(_c.target.block)
+        has_port_fanout = any(len(v) >= 2 for v in _port_fanout.values())
+
         modes = ("egress", "blocks", "constrained")
+        if has_port_fanout:
+            modes = ("portfork",) + modes
         if sc_cells:
             modes = modes + ("hazard",)
         best = None
@@ -1392,6 +1416,7 @@ def _route_chip_bus(project, ct, chip_id, nets, spine, *, sc_cells=None,
         #   * block→block → a programmed BROKER taps off the bus into the target
         #     (the §1.2 case that lets different-sink streams share the spine).
         forbid_broker = None
+        broker_goal = None      # PORT fan-out straight-ride broker fallback (set below)
         if dst_is_port:
             goal = d
             goal_is_block = False
@@ -1418,19 +1443,60 @@ def _route_chip_bus(project, ct, chip_id, nets, spine, *, sc_cells=None,
                 forbid_broker = hazard_out_face.get(d)
             reuse = _broker_abutting(d, dface, brokers, s, forbid_broker,
                                      broker_target)
-            # A PORT→block INPUT net (the host injects the burst) should NOT broker off
-            # a cell already carrying ANOTHER input stream's corridor: the host word
-            # would have to ride that shared corridor and DIVERT at the foreign broker,
-            # landing one operand at the wrong cell (the modem's TX-mapper net riding the
-            # RX corridor to a shared broker → corrupted symbols). Prefer a FRESH broker
-            # cell (off the existing bus) so each input stream gets its own clean tap.
-            avoid_bus = src_is_port
-            goal = reuse if reuse is not None else \
+            # PORT FAN-OUT (≥2 nets off ONE chip input port). The port cell has ONE
+            # forward face (§1.3): it cannot steer two words in two directions. So all
+            # nets off a port must leave the port cell in ONE SHARED direction (a common
+            # bus prefix) and FORK at a shared cell BEYOND the port — one net RIDES the
+            # bus STRAIGHT into its own input cell (transiting the fork on its through-
+            # face), and the other(s) BROKER off the shared fork cell (a broker DELIVER
+            # entry is a SEPARATE face, sound alongside the cell's committed through-face).
+            # NEVER two private corridors diverging AT the port cell (the port's single
+            # fwd_face then loses one stream — the modem's RX chain got data, the TX chain
+            # got NONE).
+            #
+            # For a PORT fan-out net we therefore FIRST try to ride the shared bus STRAIGHT
+            # into the target's own input cell (``straight_goal`` below): the word transits
+            # the fork cell on its committed through-face and lands at the block input
+            # (exactly the working modem's TX net (0,0)->(0,1)->(0,2)). If that straight
+            # ride is walled (the fork cell is committed a direction that does not reach
+            # this target), it falls back to a BROKER abutting the target — which, for the
+            # sibling that must TURN off the bus, lands ON the shared fork cell (a broker
+            # there delivers on its own face while forwarding transiting words on the bus
+            # face: the working modem's RX net brokered at (0,1)). ``broker_target`` still
+            # forbids landing on a broker serving a DIFFERENT target, so no port word ever
+            # diverts to the wrong operand (the failure mode the old blanket bus-avoidance
+            # guarded — now handled structurally; the bus is SHARED, not avoided).
+            # A DIFFERENT-BLOCK sibling off the SAME chip input port is the fan-out the
+            # user's bug is about (x16_in → MF.xi AND x16_in → mapper.sample — two
+            # DIFFERENT blocks). A same-block I/Q fan-in (xi + xq into ONE complex block)
+            # is NOT this case: it is the classic two-rails-into-one-block delivery whose
+            # broker logic already works — leave it untouched.
+            src_port = conn.source.port if src_is_port else None
+            tgt_block = conn.target.block if isinstance(conn.target, BlockEndpoint) \
+                else None
+            has_diff_block_port_sibling = src_is_port and any(
+                _c.name != name and isinstance(_c.source, ChipPortEndpoint)
+                and _c.source.port == src_port
+                and isinstance(_c.target, BlockEndpoint)
+                and _c.target.block != tgt_block
+                for (_n, _s, _sf, _d, _df, _sp, _dp, _c) in nets)
+            # SOLE port net (or a same-block I/Q fan-in): keep the legacy fresh-tap
+            # behaviour (``avoid_bus``). A DIFFERENT-BLOCK fan-out port net SHARES the bus
+            # (coalesce) so it forks PAST the port cell instead of diverging AT it.
+            avoid_bus = src_is_port and not has_diff_block_port_sibling
+            straight_goal = None
+            if src_is_port and has_diff_block_port_sibling and reuse is None:
+                # Prefer riding the shared bus straight into the block's own input cell
+                # (``d`` is that resolved cell). Attempted first in the BFS section below;
+                # broker is the fallback if the straight ride is walled.
+                straight_goal = d
+            broker_goal = reuse if reuse is not None else \
                 _free_neighbor(d, dface, occ, bus, spine_set, in_bounds, s,
                                forbid_broker, broker_target, avoid_bus=avoid_bus,
                                output_emit_cells=output_emit_cells)
+            goal = straight_goal if straight_goal is not None else broker_goal
             goal_is_block = True
-            goal_is_broker = True
+            goal_is_broker = straight_goal is None
             if goal is None:
                 out.append(RouteResult(
                     name, False,
@@ -1454,6 +1520,21 @@ def _route_chip_bus(project, ct, chip_id, nets, spine, *, sc_cells=None,
                         forbid_first=forbid_first,
                         forbid_broker_transit=forbid_broker_transit,
                         forbid_transit=forbid_transit)
+        # PORT fan-out straight-ride fallback: if the STRAIGHT ride into the target's
+        # own input cell was walled (the shared fork cell is committed a direction that
+        # doesn't reach this target), fall back to BROKERING off the bus — which lands on
+        # the shared fork cell for the sibling that must TURN (a broker there delivers on
+        # its own face + forwards transiting words on the bus face). This keeps the fork
+        # SHARED (both nets leave the port the same way) instead of diverging at the port.
+        if path is None and not goal_is_broker and broker_goal is not None:
+            goal = broker_goal
+            goal_is_broker = True
+            forbid_transit = {pc for pc in port_cells if pc != s and pc != goal}
+            path = _bus_bfs(s, sface, goal, occ, bus, spine_set, in_bounds,
+                            src_is_port, bus_dir=bus_dir, brokers=brokers,
+                            forbid_first=forbid_first,
+                            forbid_broker_transit=forbid_broker_transit,
+                            forbid_transit=forbid_transit)
         if path is None and goal_is_broker:
             # The chosen broker is walled (its only approaches are committed the wrong
             # way). Try the OTHER free neighbours of the target as broker taps before

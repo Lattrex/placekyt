@@ -1937,12 +1937,21 @@ class AppController(QObject):
         return placer.plan(chip).spine
 
     def add_logical_connection(self, source, target, *, name: str | None = None,
-                               kind: str | None = None):
+                               kind: str | None = None, _sibling: bool = False):
         """Create an UNROUTED logical net (a fly line) from ``source`` to
         ``target`` — the auto-P&R capture path (P2.3). No waypoints: the Phase-3
         router materialises the physical route later. ``kind`` is the LogicalNet
         kind (data / trigger / data+trigger); defaults to the Connection default.
-        Returns the connection name."""
+        Returns the connection name.
+
+        COMPLEX I/Q LINK: GNURadio (and the user drawing ONE wire) represents a
+        complex stream as a SINGLE link, but a placeKYT complex block carries it as
+        TWO on-chip rails (yi/yq out, xi/xq in — or yi_e/yq_e, yi_tap/yq_tap …). When
+        the drawn link is the I-half of a genuine I/Q pair on BOTH endpoints, the
+        Q-half net is SYNTHESISED automatically (same rule the .grc importer uses via
+        ``_iq_sibling``) — else the Q rail is silently dropped and the block derotates
+        against a stale/zero Q (a "connected-but-no-output" trap). Deduped: never
+        double-wire a Q rail already present."""
         from commands import AddConnectionCommand
         from model.connection import Connection, NET_DATA_TRIGGER
 
@@ -1956,7 +1965,46 @@ class AppController(QObject):
             kind=kind or NET_DATA_TRIGGER,
         )
         self.commands.execute(AddConnectionCommand(self.project, conn))
+        # Auto-wire the Q-half of a complex I/Q link (only for the primary call, so a
+        # synthesised sibling never recurses).
+        if not _sibling:
+            self._add_iq_sibling_net(source, target, kind=kind)
         return conn_name
+
+    def _add_iq_sibling_net(self, source, target, *, kind=None):
+        """If ``source``→``target`` is the I-half of a complex I/Q pair on BOTH
+        block endpoints, create the matching Q-half net (yq→xq). No-op for a real
+        scalar link, a chip-port endpoint, or an already-wired Q rail."""
+        from engine.grc_import import _iq_sibling
+        from model.connection import BlockEndpoint
+
+        if not (isinstance(source, BlockEndpoint)
+                and isinstance(target, BlockEndpoint)):
+            return
+        sb = self.project.block(source.block)
+        tb = self.project.block(target.block)
+        if sb is None or tb is None:
+            return
+        try:
+            sq = _iq_sibling(self.catalog, sb.type, source.port,
+                             want_out=True, params=sb.params)
+            tq = _iq_sibling(self.catalog, tb.type, target.port,
+                             want_out=False, params=tb.params)
+        except Exception:  # noqa: BLE001 — sibling resolution is best-effort
+            return
+        if sq is None or tq is None:
+            return
+        # Dedup: the Q rail may already be wired (a re-import, or the user drew it).
+        for c in self.project.connections:
+            s, t = c.source, c.target
+            if (isinstance(s, BlockEndpoint) and isinstance(t, BlockEndpoint)
+                    and s.block == source.block and s.port == sq
+                    and t.block == target.block and t.port == tq):
+                return
+        self.add_logical_connection(
+            BlockEndpoint(block=source.block, port=sq),
+            BlockEndpoint(block=target.block, port=tq),
+            kind=kind, _sibling=True)
 
     @staticmethod
     def _endpoint_from_any(ep):

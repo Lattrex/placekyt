@@ -210,6 +210,12 @@ not lower:
 - [ ] **Layout is folded (INV-8/9/14):** if the block is >1 cell (or a new param
       *made* it >1 cell), its I/O co-locate on one bus-facing edge — it is NOT a
       longitudinal strip. Adding a param that grows the cell count means RE-folding.
+- [ ] **Orientation-invariant (INV-23):** the block computes IDENTICALLY in all 8 D4
+      orientations — `verification/tests/test_orientation_invariance.py` is green for
+      it (drive it via the `orient=` param on the DUT runner in every orientation and
+      assert the output equals the identity build). A block that breaks when rotated is
+      broken. Its internal (`transit_*`) cells are FIRST-CLASS block cells (block color,
+      footprint, same rules), never light-blue routing cells.
 - [ ] Manifest status is `"done"`; `gen_dashboard.py --check` exits 0.
 - [ ] A `lessons_log.md` entry is appended.
 - [ ] Any substrate limit hit is captured as an explicit guard test, not glossed over.

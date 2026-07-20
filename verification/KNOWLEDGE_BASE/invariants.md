@@ -908,3 +908,49 @@ entry in `placekyt/engine/grc_import.py` so `catalog.port_map(btype, params)` se
 "Missing Block", every param settable, ports match the built block. Only then is the
 Definition-of-done GRC-binding box (§4 of AGENTS.md) satisfied. See lessons_log entries
 for the QPSK receiver blocks (Costas `order`, QPSKSlicer, MF `decimation`).
+
+
+## INV-23 — A block must be ORIENTATION-INVARIANT; its internal cells are FIRST-CLASS
+
+A block placed on the array is a **rigid unit**. Rotating or mirroring it (any of the 8
+D4 orientations — 4 rotations × 2 mirrors) may change *where it sits* and *which way its
+ports face*, but must **NEVER change what it computes**. A block whose on-chip output
+changes (or vanishes) under some orientation is BROKEN — its per-cell faces, internal
+handoffs, or feedback corridors do not transform with the block. The user rotates blocks
+at will; the toolchain must make them orientation-invariant, NOT forbid rotation.
+
+Two coupled requirements:
+
+**A. Internal cells are FIRST-CLASS block cells.** A block's internal feedback/relay
+cells (authored as `transit_*` ids in `default_layout`) are PART OF THE BLOCK: they
+carry the block's identity/color, count in the block's footprint/bbox, transform
+rigidly with the block, and follow the SAME rules as any other cell — NOT disguised as
+light-blue "routing cells" split into a separate list. (Model: they live in
+`placement.cells` as `PlacedCell`s with a `transit_*` id; `placement.transit_cells` is a
+filtering property; `is_transit_cell()` is the single tag check. The `transit_*` prefix
+is retained ONLY so the build never picks an internal cell as an I/O port and stamps the
+universal routing program into it — behavior, not second-class status.)
+
+**B. Identical output in all 8 D4 orientations.** The DATAPATH is invariant by
+construction when the transforms are complete: `Placement.transform` D4-maps every cell's
+position + face; `_apply_orientation_face_words` D4-maps in-program `is_face` FACE
+constants; `_apply_internal_feedback` TRACES the feedback corridor (never assumes a
+direction). The bugs that break invariance are NOT in the block or those transforms —
+they are in the build/router HANDOFF selection keying on orientation-dependent geometry:
+a complex 2-rail output that ABUTS its consumer at identity but routes via a BROKER after
+rotation must still steer its rails to distinct regs (the brokered single-net branch must
+carry the same 2-rail guard the abutted branch has — `output_registers > 1`, not bare
+write-count, which over-broadly caught single-rail IQUpconvert).
+
+**The gate (mandatory, every block, at 100%):** `verification/tests/test_orientation_
+invariance.py` drives each block at all 8 D4 orientations and asserts the on-chip output
+EQUALS the identity output (via the `orient=` param on `run_block_dut`/`_complex`/`_rate`
++ `check_orientation_invariance`). A KNOWN, DOCUMENTED residual — the single-block-wired-
+straight-to-a-chip-port fan-in router corner-contending with the block's own egress in an
+anti-orientation — is xfailed with its reason; it does NOT occur block→block (a Costas
+rotated to ANY orientation recovers BER 0 in the RX chain) nor under the production
+auto-placer, so it is a harness/router limit, not a block-invariance failure.
+
+**Applies to:** every block; especially multi-cell feedback/complex blocks (Costas,
+Gardner, complex MF, IQUpconvert, ComplexMixer, NCO). See [[layout_rules]] and the
+lessons_log orientation entries.

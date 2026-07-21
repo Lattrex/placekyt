@@ -22,7 +22,8 @@ documentation: |-
 
 templates:
   imports: from gnuradio import kyttar
-  make: kyttar.frequency_modulator(device_id=${device_id}, sensitivity=${sensitivity})
+  make: kyttar.frequency_modulator(device_id=${device_id}, sensitivity=${sensitivity},
+    pipeline_lock=${pipeline_lock})
 
 parameters:
   - id: device_id
@@ -33,6 +34,16 @@ parameters:
     label: Sensitivity (rad/sample per unit input)
     dtype: real
     default: '1.0'
+  # SATURATION serialize-LOCK (INV-20). The phase->sin/cos->emit reconvergent fan-in
+  # DROPS every other sample under saturated/pipelined drive without it (a 2-sps modem
+  # TX runs the FM saturated, so it MUST be True there). Off by default keeps the
+  # committed per-sample footprint for latency-bound single-shot uses.
+  - id: pipeline_lock
+    label: Saturation lock
+    dtype: enum
+    default: 'False'
+    options: ['False', 'True']
+    option_labels: ['Off (per-sample)', 'On (pipelined/saturated)']
 
 inputs:
   - label: in

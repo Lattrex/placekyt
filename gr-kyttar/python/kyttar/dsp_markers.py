@@ -456,13 +456,18 @@ class frequency_modulator(_PassThrough):
     verification/tests/test_frequency_modulator.py). The real DSP runs on the chip;
     this carries the graph."""
 
-    def __init__(self, device_id="kyttar_0", sensitivity=1.0):
+    def __init__(self, device_id="kyttar_0", sensitivity=1.0, pipeline_lock=False):
         super().__init__("Kyttar Frequency Modulator", n_in=1, n_out=1,
                          in_dtype=np.float32, out_dtype=np.complex64)
         self.device_id = device_id
         self.sensitivity = sensitivity
+        # SATURATION serialize-LOCK (INV-20): required True for a pipelined/saturated
+        # TX (e.g. the 2-sps 4FSK modem) or the reconvergent fan-in drops every other
+        # sample; advertised so the importer builds the locked FrequencyModulatorBlock.
+        self.pipeline_lock = bool(pipeline_lock)
         self._advertise_grc_params(device_id, "FrequencyModulatorBlock",
-                                   {"sensitivity": sensitivity})
+                                   {"sensitivity": sensitivity,
+                                    "pipeline_lock": bool(pipeline_lock)})
 
     def work(self, input_items, output_items):
         # A faithful float->complex FM so a GR run of the flowgraph shows the passband

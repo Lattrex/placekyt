@@ -312,6 +312,7 @@ blocks:
     maxoutbuf: '0'
     minoutbuf: '0'
     sensitivity: '1.5707963267948966'
+    pipeline_lock: 'True'
   states:
     bus_sink: false
     bus_source: false

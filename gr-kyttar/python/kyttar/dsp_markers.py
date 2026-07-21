@@ -264,6 +264,29 @@ class fsk4_slicer(_PassThrough):
         return n
 
 
+class fsk4_sync_timing_recovery(_PassThrough):
+    """M17 4FSK sync-word timing recovery — GR marker (maps to
+    FSK4SyncTimingRecoveryBlock).
+
+    RX symbol-timing stage of an M17 4-level FSK modem. Gardner (any decision-feedback
+    loop) does NOT lock a 4-level FSK signal; real M17 receivers recover timing by
+    cross-correlating the known sync word. This block slides the M17 LSF sync word's
+    +-1 template over the RX matched-filter stream (2 sps), locks on the first
+    correlation peak above a threshold, and decimates 2:1 at the locked symbol phase ->
+    one recovered symbol-center value per symbol, feeding the FSK4Slicer. A real float
+    stream in/out marker; the DSP runs on the chip. The RX signal must be scaled so the
+    outer symbols reach ~full-scale (the fixed correlation + slicer thresholds assume
+    outer ~= +-1.0)."""
+
+    def __init__(self, device_id="kyttar_0", threshold=None):
+        super().__init__("Kyttar 4FSK Sync Timing Recovery", n_in=1, n_out=1,
+                         in_dtype=np.float32, out_dtype=np.float32)
+        self.device_id = device_id
+        self.threshold = threshold
+        params = {} if threshold is None else {"threshold": int(threshold)}
+        self._advertise_grc_params(device_id, "FSK4SyncTimingRecoveryBlock", params)
+
+
 class upsampler(_PassThrough):
     """Upsampler — GR marker (maps to UpsamplerBlock).
 

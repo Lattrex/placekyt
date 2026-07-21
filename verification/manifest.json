@@ -377,6 +377,14 @@
       "notes": "NEW (tier 3, no exact single GR counterpart): M17 4FSK hard-decision slicer (RX final stage). Recovered discriminator LEVEL in -> 2-bit DIBIT out (b0 LSB then b1 MSB) -- the exact inverse of FSK4SymbolMapperBlock in the same LSB-first convention. Thresholds at 0 and +-2/3 -> nearest of {+3,+1,-1,-3} -> inverse Gray map; falls out to b0=(|y|>=2/3) (magnitude), b1=(y<0) (sign) -- no dibit lookup table needed. Single cell (a sign compare + a magnitude compare, two bit WRITEs + one trigger). Verified: four levels + decision boundaries + random slice on-chip == reference; the STRONGEST gate is the mapper->slicer LOOPBACK is bit-for-bit the identity on random bits (pins the shared LSB-first M17 Gray convention); mutation gates (flipped sign / dropped magnitude bit / one-bit shift) FAIL (INV-4). Orientation-invariant 100% (INV-23). GRC binding kyttar_fsk4_slicer."
     },
     {
+      "kyttar_block": "FSK4SyncTimingRecoveryBlock",
+      "grc_block": "M17 sync-word correlation timing recovery (no single GR block)",
+      "tier": 3,
+      "status": "done",
+      "metric": "decision",
+      "notes": "NEW (tier 3): M17 4FSK sync-word symbol-timing recovery -- the RX timing stage that REPLACES Gardner for 4-level FSK. Gardner (any decision-feedback loop) does NOT lock a 4-PAM signal (measured BER ~0.3: the inner-level eye is too narrow); real M17 receivers (mobilinkd/m17-cxx-demod) recover timing by SYNC-WORD CORRELATION. This block slides the M17 LSF sync word {+3,+3,+3,+3,-3,-3,+3,-3} (+-1 template) over the RX matched-filter stream at 2 sps (a systolic 8-deep +-1 correlator, each tap pre-scaled 1/8 via sign-correct Q15 MULQ so the sum fits int16), locks on the first local-max above a fixed threshold, and decimates 2:1 at the locked phase. 10 cells (d0..d7 correlator + lock + emit). Pure MAC/add + compare -- no atan, no divide, no feedback loop (the best Kyttar-ISA fit and what M17 itself uses). Verified: on-chip == process_reference BIT-EXACT; the recovered centers slice to the M17 dibits at BER 0 over several seeds; the full RX chain (QuadratureDemod -> RRC -> this -> FSK4Slicer) recovers BER 0 end to end on-chip. Mutation gates (wrong-phase decimation / no-sync) FAIL/hold (INV-4). Operating point: drive the RX so outer symbols reach ~full-scale (fixed correlation + slicer thresholds assume outer ~= +-1.0). GRC binding kyttar_fsk4_sync_timing_recovery. GardnerTimingRecovery left untouched (still the timing recovery for BPSK/QPSK). Known limit: 2 of 8 D4 anti-orientations produce no output through the single-block harness (INV-23 residual, feed-forward datapath is invariant; the modem places at identity)."
+    },
+    {
       "kyttar_block": "LFSRScramblerBlock",
       "grc_block": "digital.additive_scrambler_bb",
       "tier": 2,

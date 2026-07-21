@@ -1,0 +1,55 @@
+id: kyttar_fsk4_sync_timing_recovery
+label: 🧪 Kyttar 4FSK Sync Timing Recovery
+category: '[Kyttar]'
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.fsk4_sync_timing_recovery(${device_id})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+
+inputs:
+- label: sample
+  domain: stream
+  dtype: float
+
+outputs:
+- label: out
+  domain: stream
+  dtype: float
+
+documentation: |-
+  🧪 M17 4FSK sync-word timing recovery — the RX symbol-timing stage of an M17
+  4-level FSK (C4FM) modem.
+
+  A Gardner (or any decision-feedback) timing loop does NOT lock a 4-level FSK
+  signal — the 4-PAM eye (inner levels ±1/3) is far narrower than a 2-level BPSK
+  eye, so the loop jitters across the inner thresholds. Real M17 receivers instead
+  recover timing by cross-correlating the known SYNC WORD. This block does exactly
+  that, matched to the Kyttar ISA (pure MAC/add + compare; no atan/divide/feedback):
+
+    1. slides the M17 LSF sync word's ±1 template ({+3,+3,+3,+3,-3,-3,+3,-3}) over
+       the RX matched-filter stream at 2 samples/symbol;
+    2. locks on the first correlation peak above a threshold — the symbol phase;
+    3. decimates 2:1 at the locked phase -> one recovered symbol-center value per
+       symbol, feeding the 4FSK Slicer.
+
+  A frame must open with a short alternating +3/-3 preamble followed by the sync
+  word. The RX signal must be scaled so the outer symbols reach ~full-scale (the
+  fixed correlation + slicer thresholds assume outer ≈ ±1.0).
+
+  Ports:
+    sample (in): RX matched-filter sample (signed, 2 sps)
+    out:         recovered symbol-center value (one per symbol, after lock)
+
+  Parameters:
+    Device ID: which Kyttar device to use
+
+  Mapped by placeKYT (File -> Import GNURadio Flowgraph) to
+  FSK4SyncTimingRecoveryBlock.
+
+file_format: 1

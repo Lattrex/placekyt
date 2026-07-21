@@ -71,6 +71,7 @@ _TYPE_OVERRIDES = {
     # hidden in the palette, so pin it via the override table which uses catalog.get).
     "kyttar_fsk4_symbol_mapper": "FSK4SymbolMapperBlock",
     "kyttar_fsk4_slicer": "FSK4SlicerBlock",
+    "kyttar_fsk4_sync_timing_recovery": "FSK4SyncTimingRecoveryBlock",
     "kyttar_iir_biquad": "IIRBiquadBlock",
     "kyttar_conv_encoder_k7": "ConvEncoderK7Block",
     "kyttar_lfsr_scrambler": "LFSRScramblerBlock",

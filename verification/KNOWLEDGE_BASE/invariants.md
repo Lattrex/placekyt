@@ -67,6 +67,22 @@ The **same** hop must be used for both the data inject and the jump inject. (Ver
 GainBlock at (1,1), x16_in at (0,0) → distance 3 → hop 28. Hop 29/30 give 0 output.)
 `run_block_dut` in `kyttar_verify` does this for you.
 
+**REFINEMENT (distance = ROUTED CORRIDOR LENGTH, not manhattan span).** `distance` is the
+number of cells the word actually TRANSITS on its `fwd_face` corridor — which equals the
+manhattan span ONLY when the router drew a straight corridor. Under some D4 orientations
+the auto-router **snakes** the corridor (e.g. a single-real-rail block whose input cell
+lands on the far edge: routed length 10 vs manhattan 8), and a manhattan-derived hop stops
+the injected word 2 cells SHORT → **zero/None output that looks exactly like a datapath /
+rotation bug but is a HARNESS bug**. This masqueraded as an "NCO anti-orientation
+invariance failure" for a long time. So when the port→block input net is ROUTED and
+anchored at the port cell, derive `dist = len(route)` (the point list `[port_cell,
+...transit..., landing]`); fall back to the manhattan span only for the unrouted /
+direct-on-port case. `run_block_dut` now does this. NOTE: the LIVE production path
+(`build._resolve_input_landings` → `stream_targets`) already uses corridor-accurate hops
+from the built faces, so the real modem was never affected — only the self-placing DUT
+harness used the manhattan shortcut. When a rotated single-rail block gives zero output,
+suspect the harness hop BEFORE the block.
+
 **Applies to:** every block driven through x16_in by a harness that places blocks itself.
 
 ---
@@ -945,12 +961,87 @@ write-count, which over-broadly caught single-rail IQUpconvert).
 **The gate (mandatory, every block, at 100%):** `verification/tests/test_orientation_
 invariance.py` drives each block at all 8 D4 orientations and asserts the on-chip output
 EQUALS the identity output (via the `orient=` param on `run_block_dut`/`_complex`/`_rate`
-+ `check_orientation_invariance`). A KNOWN, DOCUMENTED residual — the single-block-wired-
-straight-to-a-chip-port fan-in router corner-contending with the block's own egress in an
-anti-orientation — is xfailed with its reason; it does NOT occur block→block (a Costas
-rotated to ANY orientation recovers BER 0 in the RX chain) nor under the production
-auto-placer, so it is a harness/router limit, not a block-invariance failure.
++ `check_orientation_invariance`). As of this cycle the gate is **fully green — 0 xfailed**
+(every catalog block D4-invariant, verified stable across repeated runs). The
+anti-orientation cases that were previously xfailed as a "harness/router residual" were
+NOT invariance failures of the blocks — they were four concrete handoff/harness bugs, now
+fixed (see below). Do NOT re-introduce an xfail to hide an orientation failure; a zero /
+mismatched output under some orientation is a real bug in one of these handoff sites.
+
+**The four anti-orientation failure modes (all FIXED — the checklist to trace a new one):**
+
+1. **Internal-face restore keyed on integer cell ids only.** `_reassert_internal_forward_
+   faces` (build.py) restored a block's authored internal-forward face only for cells whose
+   internal-handoff source id is an `int`. Blocks that NAME their cells (strings like
+   `phase`/`sin_fold`/`emit` — ComplexMixer, ComplexRRC, NCO) got a NO-OP, so the input cell
+   kept the incoming ROUTE face instead of its authored face and the internal wavefront
+   died. Fix: resolve string ids against each cell's `cell_id`. Symptom: zero output at the
+   180°-family orientations for a named-cell block.
+
+2. **Port complex fan-in double-relayed.** `broker_plan` (bus_router.py) expanded EACH rail
+   of a 2-rail port fan-in into the full xi+xq operand packet and coalesced them → 4 relays
+   (2 stale zeros) that clobbered the input. Fix: emit the operand group ONCE per
+   `(broker, target-input cell)`.
+
+3. **Router wove egress / a fan-in THROUGH the block body.** CP-SAT drew a block's output
+   egress corridor across the block's OWN input cell (one cell, one fwd_face → the egress
+   word is swallowed), or split a complex fan-in's two rails onto divergent corridors. Fix:
+   read-only report validators in `controller._run_router` (`_routes_cross_block_body`,
+   `_port_complex_fanin_split`) escalate ONLY an invalid report to the node-disjoint maze
+   router (block cells = hard obstacles). Clean designs never trigger it.
+
+4. **Harness manhattan hop on a snaked corridor.** See [[invariants]] INV-1 REFINEMENT —
+   the DUT harness stopped the injected word short when the router snaked the corridor. A
+   HARNESS bug that looks exactly like a block-invariance failure; the live modem path was
+   never affected. This was the last "NCO residual."
+
+**Related build machinery (read before touching):** `_apply_port_diverts` (build.py) — the
+SHARED input-port fan-out primitive (INV-24), also the place a single-rail anti-orientation
+divert would live if a future block needs the port cell to relay toward a rotated input
+cell it cannot reach on the port's static face.
 
 **Applies to:** every block; especially multi-cell feedback/complex blocks (Costas,
 Gardner, complex MF, IQUpconvert, ComplexMixer, NCO). See [[layout_rules]] and the
 lessons_log orientation entries.
+
+---
+
+## INV-24 — A SHARED input port that fans out to 2+ blocks must FORK at a broker cell, never diverge AT the port cell
+
+**Symptom:** a full-duplex modem (TX + RX on one array, sharing ONE `x16_in` port,
+multiplexed by `stream_id` / hop tags — the [[layout_rules]] duplex pattern) recovers ONE
+stream but the OTHER produces **zero output**. (The QPSK modem: RX BER 0, TX passband
+present, but the mapper never fires — or vice-versa depending on which way the port faces.)
+
+**Root cause:** the chip input port cell has exactly ONE `fwd_face` (§1.3). When two
+input nets leave the port cell in DIFFERENT directions (RX net leaves EAST to the matched
+filter, TX net leaves SOUTH to the mapper), the port can forward only ONE of them; the
+other is injected and immediately mis-forwarded → lost. Two private corridors that share
+ONLY the port cell (diverge AT it) CANNOT both work. `_resolve_input_landings`' divert
+scan SKIPS the port cell (index 0), so it silently mis-declares the losing net as "rides
+straight" and the host injects it at a hop that goes nowhere.
+
+**The rule:** all nets off one input port must leave the port cell in ONE shared direction
+(a common bus prefix) and FORK at a shared cell BEYOND the port — where the fork cell
+BROKERS one stream off (delivers it toward its block) while FORWARDING the other(s) onward
+(HOP<31 transit). One shared fork/broker cell that splits to two block inputs; never two
+diverging corridors. (Ground truth: the working hand-built modem's net6 brokered at (0,1),
+net8 transited (0,1); the broken variant differed by exactly one cell — net6 leaving the
+port EAST into a private corridor.)
+
+**The build primitive:** `_apply_port_diverts` (build.py) promotes the port cell to a
+broker for a diverting net: it lands the host burst AT the port cell (HOP_CNT==31), a turn
+entry flips the face toward the net's first waypoint and relays the operand(s) one hop to
+the net's DOWNSTREAM broker (which finishes delivery into the block), then RESTORES the
+port's `fwd_face` so the OTHER (transiting) stream still forwards on the bus direction.
+Chaining two `@1` brokers spans an intermediate routing cell, so a broker can deliver to a
+target that is NOT directly adjacent (the corner case the original single-hop broker never
+handled). The router side: `route_all_bus`'s `portfork` ordering + the shared-fork logic
+in `_route_chip_bus` (a DIFFERENT-block port fan-out shares the bus prefix; a same-block
+I/Q fan-in keeps its own broker). Regression: `verification/tests/test_router_port_fanout.py`.
+
+**Applies to:** any full-duplex / shared-input-port design (the BPSK modem, the QPSK
+modem, the upcoming 4FSK modem) — a TX and an RX chain multiplexed on one `x16_in`. Prove
+it end-to-end on the HOSTED chip (load `.kyt` → build → `stream_targets` → `SimServer` →
+drive both `stream_id`s), NOT with a synthetic single-block harness — the shared-port fork
+only exercises when both streams are present. See [[layout_rules]] duplex pattern.

@@ -8,6 +8,49 @@ anything that generalizes across block classes into `invariants.md`.
 
 ---
 
+## FULL-DUPLEX shared-port modem + orientation 100%: QPSK modem works on the hand-built .kyt 2026-07-20
+
+- **Shared input-port fan-out (→ [[invariants]] INV-24).** The full-duplex QPSK modem
+  shares ONE `x16_in` between a TX chain (mapper→upsampler→RRC→upconvert) and an RX chain
+  (MF→Costas→Gardner→slicer), multiplexed by `stream_id`. On the user's HAND-BUILT
+  `examples/qpsk_modem/qpsk_modem.orig.kyt` one stream recovered and the other emitted
+  ZERO — because the two input nets diverged AT the port cell (which has one `fwd_face`).
+  Fixed with `_apply_port_diverts` (build.py): promote the port cell to a broker that
+  lands the diverting stream AT the port (HOP_CNT==31), relays it toward its block through
+  the DOWNSTREAM broker (two chained `@1` brokers span a non-adjacent target — the corner
+  case the original single-hop broker never handled), and RESTORES the port face for the
+  transiting stream. RX recovers **BER 0/132** on the orig file; TX passband correct.
+- **PROVE a modem the way it's USED, not with a synthetic proxy.** The recurring failure
+  this session was "fixed" claims verified on toy 1-port→2-block projects or auto-routed
+  placements — which do NOT reproduce the user's topology. The real oracle: load the
+  hand-built `.kyt` → `BuildEngine.build` (NO auto-route; the router can't place this) →
+  `stream_targets(...)` → host on `SimServer` → drive both `stream_id`s over a socket
+  (`process_batch`). See `verification/kyttar/tests/proto_orig_e2e.py` /
+  `proto_orig_rx_ber.py`. The user's `.kyt` is PROTECTED — never modify/delete/auto-route
+  it; restore from `qpsk_modem.orig.kyt` if a build leaves the working copy dirty.
+- **Verification-harness CARRIER convention (cost hours, twice).** A coherent RX chain
+  (MF→Costas→Gardner→slicer) is BASEBAND — no downconverter in front. Drive it with a
+  SMALL residual carrier offset the Costas can pull in (`foff=0.008`), NOT the TX
+  upconvert frequency (`4000/32000 = 0.125`, ~16× the pull-in range). The 0.125 carrier
+  yields BER ~0.68 on ANY correct RX and masqueraded as a delivery bug. Match the
+  KNOWN-GOOD test's convention (`test_qpsk_modem_ber.py`: `foff=0.008, toff=0.45`).
+- **TX RRC passband at sps=2 LOOKS rough — that's correct, not a filter bug.** Only 2
+  samples/symbol + an 8-sample carrier period → the eye can't see the pulse shape. Verify
+  numerically: the chip TX output's near-zero-sample fraction matches the RRC reference
+  (0.188), NOT the unfiltered zero-stuff (0.5), and correlates 0.82 once the QPSK
+  constellation convention (a rotation + conjugation) is aligned.
+- **Orientation invariance is now 100% (0 xfailed) — the "flake" was 4 real bugs.** The
+  `ComplexMixer cw` "flaky test" was three deterministic anti-orientation handoff bugs
+  (named-cell internal-face restore no-op; port complex fan-in double-relay; router
+  weaving egress through the block body) + one DUT-harness manhattan-hop bug (the "NCO
+  residual"). All catalogued in [[invariants]] INV-23. LESSON: a "flaky" orientation test
+  is almost always a REAL deterministic bug — reproduce it IN-PROCESS outside pytest
+  (`proto_mixer_orient.py` / `proto_nco_orient.py` build every orientation in one script);
+  it will be stable there and the pytest "flakiness" is just which orientations ran
+  before it. Do NOT xfail to hide it.
+
+---
+
 ## MODEL: internal feedback/"transit" cells are now FIRST-CLASS block cells 2026-07-20
 
 - **Change (the user's requirement):** block-INTERNAL routing/feedback cells

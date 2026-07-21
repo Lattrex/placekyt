@@ -1,0 +1,497 @@
+options:
+  parameters:
+    author: Lattrex
+    catch_exceptions: 'True'
+    category: '[GRC Hier Blocks]'
+    cmake_opt: ''
+    comment: ''
+    copyright: ''
+    description: 'Full-duplex M17 4FSK (C4FM) modem authored in GNU Radio (GRC-first
+      workflow). The TX chain (4FSK symbol mapper -> upsampler -> RRC pulse shaper ->
+      frequency modulator) and the RX chain (quadrature demod -> RRC matched filter ->
+      4FSK sync-word timing recovery -> 4FSK slicer) live on ONE placeKYT array, sharing
+      ONE input port (x16_in) and ONE output port (x16_out): both TX and RX source blocks
+      map to x16_in and both sink blocks map to x16_out (the shared-port duplex). Gardner
+      does NOT lock a 4-level FSK signal, so timing is recovered by SYNC-WORD CORRELATION
+      (the M17 LSF sync word) -- exactly what real M17 receivers do. Built from the REAL
+      DSP blocks so it IMPORTS into placeKYT (File -> Import GNURadio Flowgraph) and
+      recovers the M17 dibits at BER 0.'
+    gen_cmake: 'On'
+    gen_linking: dynamic
+    generate_options: qt_gui
+    hier_block_src_path: '.:'
+    id: fsk4_modem
+    max_nouts: '0'
+    output_language: python
+    placement: (0,0)
+    qt_qss_theme: ''
+    realtime_scheduling: ''
+    run: 'True'
+    run_command: '{python} -u {filename}'
+    run_options: run
+    sizing_mode: fixed
+    thread_safe_setters: ''
+    title: Full-duplex M17 4FSK modem (TX + sync-timed RX on one array)
+    window_size: (1600,1000)
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [8, 8]
+    rotation: 0
+    state: enabled
+
+blocks:
+- name: samp_rate
+  id: variable
+  parameters:
+    comment: display sample rate for the sinks
+    value: '9600'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [320, 12]
+    rotation: 0
+    state: enabled
+- name: sps
+  id: variable
+  parameters:
+    comment: samples/symbol (on-chip operating point)
+    value: '2'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [400, 12]
+    rotation: 0
+    state: enabled
+- name: n_syms
+  id: variable
+  parameters:
+    comment: RX payload symbols in the burst
+    value: '160'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [680, 12]
+    rotation: 0
+    state: enabled
+- name: n_bits
+  id: variable
+  parameters:
+    comment: TX payload bits in the burst (2/symbol)
+    value: '64'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [800, 12]
+    rotation: 0
+    state: enabled
+- name: sensitivity
+  id: variable
+  parameters:
+    comment: FM sensitivity 2*pi*2400/9600 = pi/2 (+3 -> 2400 Hz)
+    value: '1.5707963267948966'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [520, 12]
+    rotation: 0
+    state: enabled
+- name: import_stim
+  id: import
+  parameters:
+    alias: ''
+    comment: ''
+    imports: from gnuradio.kyttar import fsk4_demo_stim as stim
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [560, 12]
+    rotation: 0
+    state: enabled
+- name: tx_passband
+  id: qtgui_time_sink_x
+  parameters:
+    affinity: ''
+    alias: ''
+    alpha1: '1.0'
+    autoscale: 'False'
+    axislabels: 'True'
+    color1: blue
+    comment: TX 4FSK passband (real part of the FM signal)
+    ctrlpanel: 'False'
+    entags: 'True'
+    grid: 'False'
+    gui_hint: ''
+    label1: amplitude
+    legend: 'True'
+    marker1: '-1'
+    name: '"TX passband (real)"'
+    nconnections: '1'
+    size: stim.tx_pb_points(n_bits)
+    srate: samp_rate
+    stemplot: 'False'
+    style1: '1'
+    tr_chan: '0'
+    tr_delay: '0'
+    tr_level: '0.0'
+    tr_mode: qtgui.TRIG_MODE_FREE
+    tr_slope: qtgui.TRIG_SLOPE_POS
+    tr_tag: '""'
+    type: float
+    update_time: '0.10'
+    width1: '1'
+    ylabel: amplitude
+    ymax: '1'
+    ymin: '-1'
+    yunit: '""'
+    grid_style1: solid
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1608, 80.0]
+    rotation: 0
+    state: enabled
+- name: rx_syms
+  id: qtgui_time_sink_x
+  parameters:
+    affinity: ''
+    alias: ''
+    alpha1: '1.0'
+    autoscale: 'False'
+    axislabels: 'True'
+    color1: green
+    comment: recovered 4FSK dibits (0..3)
+    ctrlpanel: 'False'
+    entags: 'True'
+    grid: 'False'
+    gui_hint: ''
+    label1: dibit
+    legend: 'True'
+    marker1: '-1'
+    name: '"Recovered dibits"'
+    nconnections: '1'
+    size: stim.rx_syms_points(n_syms)
+    srate: samp_rate
+    stemplot: 'False'
+    style1: '1'
+    tr_chan: '0'
+    tr_delay: '0'
+    tr_level: '0.0'
+    tr_mode: qtgui.TRIG_MODE_FREE
+    tr_slope: qtgui.TRIG_SLOPE_POS
+    tr_tag: '""'
+    type: float
+    update_time: '0.10'
+    width1: '1'
+    ylabel: dibit
+    ymax: '3'
+    ymin: '0'
+    yunit: '""'
+    grid_style1: solid
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1608, 340.0]
+    rotation: 0
+    state: enabled
+- name: tx_bits
+  id: blocks_vector_source_x
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: TX bit stimulus (preamble+sync+payload; one finite burst, no repeat)
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    repeat: 'False'
+    tags: '[]'
+    type: float
+    vector: stim.tx_bits(n_bits)
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [88, 168.0]
+    rotation: 0
+    state: enabled
+- name: tx_src
+  id: kyttar_source
+  parameters:
+    affinity: ''
+    alias: ''
+    burst_len: len(stim.tx_bits(n_bits))
+    comment: TX bits -> placeKYT chip x16_in (shared duplex port, stream 'tx')
+    complex_in: float
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_channels: '1'
+    pipelined: 'no'
+    port_name: '"x16_in"'
+    server_host: '"127.0.0.1"'
+    server_port: '58950'
+    stream_id: '"tx"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [360, 148.0]
+    rotation: 0
+    state: enabled
+- name: mapper
+  id: kyttar_fsk4_symbol_mapper
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: "4FSK symbol mapper (bits -> PAM level) -- placed on chip"
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [608, 156.0]
+    rotation: 0
+    state: enabled
+- name: up
+  id: kyttar_upsampler
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: "Zero-stuff upsampler (sps) -- placed on chip"
+    device_id: '"kyttar_0"'
+    io_type: float
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    sps: '2'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [800, 156.0]
+    rotation: 0
+    state: enabled
+- name: rrc
+  id: kyttar_rrc_pulse_shaper
+  parameters:
+    affinity: ''
+    alias: ''
+    alpha: '0.5'
+    comment: "RRC pulse shaper -- placed on chip"
+    device_id: '"kyttar_0"'
+    io_type: float
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    span: '8'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [968, 156.0]
+    rotation: 0
+    state: enabled
+- name: fm
+  id: kyttar_frequency_modulator
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: "FM modulator (PAM level -> passband) -- placed on chip"
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    sensitivity: '1.5707963267948966'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1160, 148.0]
+    rotation: 0
+    state: enabled
+- name: tx_sink
+  id: kyttar_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: TX passband -> placeKYT chip x16_out (shared duplex port, stream 'tx')
+    device_id: '"kyttar_0"'
+    hold_secs: '8.0'
+    in_type: complex
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_channels: '1'
+    port_name: '"x16_out"'
+    server_port: '58950'
+    server_repeat: 'False'
+    stream_id: '"tx"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1392, 100.0]
+    rotation: 0
+    state: enabled
+- name: rx_iq
+  id: blocks_vector_source_x
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: RX 4FSK FM burst (preamble+sync+payload); finite, no repeat
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    repeat: 'False'
+    tags: '[]'
+    type: complex
+    vector: stim.burst(n_syms)
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [80, 368.0]
+    rotation: 0
+    state: enabled
+- name: rx_src
+  id: kyttar_source
+  parameters:
+    affinity: ''
+    alias: ''
+    burst_len: stim.burst_len(n_syms)
+    comment: RX I/Q burst -> placeKYT chip x16_in (shared duplex port, stream 'rx')
+    complex_in: complex
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_channels: '1'
+    pipelined: 'no'
+    port_name: '"x16_in"'
+    server_host: '"127.0.0.1"'
+    server_port: '58950'
+    stream_id: '"rx"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [360, 340.0]
+    rotation: 0
+    state: enabled
+- name: qd
+  id: kyttar_quadrature_demod
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: "FM discriminator (complex -> real level) -- placed on chip"
+    device_id: '"kyttar_0"'
+    gain: '1.0'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [568, 356.0]
+    rotation: 0
+    state: enabled
+- name: mf
+  id: kyttar_rrc_pulse_shaper
+  parameters:
+    affinity: ''
+    alias: ''
+    alpha: '0.5'
+    comment: "RRC matched filter -- placed on chip"
+    device_id: '"kyttar_0"'
+    io_type: float
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    span: '8'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [760, 356.0]
+    rotation: 0
+    state: enabled
+- name: timing
+  id: kyttar_fsk4_sync_timing_recovery
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: "4FSK sync-word timing recovery (M17 correlation) -- placed on chip"
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [952, 356.0]
+    rotation: 0
+    state: enabled
+- name: slicer
+  id: kyttar_fsk4_slicer
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: "4FSK slicer (recovered dibits) -- placed on chip"
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1176, 448.0]
+    rotation: 0
+    state: enabled
+- name: rx_sink
+  id: kyttar_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: recovered dibits -> placeKYT chip x16_out (shared duplex port, stream 'rx')
+    device_id: '"kyttar_0"'
+    hold_secs: '8.0'
+    in_type: float
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_channels: '1'
+    port_name: '"x16_out"'
+    server_port: '58950'
+    server_repeat: 'False'
+    stream_id: '"rx"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1392, 340.0]
+    rotation: 0
+    state: enabled
+
+connections:
+- [tx_bits, '0', tx_src, '0']
+- [tx_src, '0', mapper, '0']
+- [mapper, '0', up, '0']
+- [up, '0', rrc, '0']
+- [rrc, '0', fm, '0']
+- [fm, '0', tx_sink, '0']
+- [tx_sink, '0', tx_passband, '0']
+- [rx_iq, '0', rx_src, '0']
+- [rx_src, '0', qd, '0']
+- [qd, '0', mf, '0']
+- [mf, '0', timing, '0']
+- [timing, '0', slicer, '0']
+- [slicer, '0', rx_sink, '0']
+- [rx_sink, '0', rx_syms, '0']
+
+metadata:
+  file_format: 1
+  grc_version: 3.10.12.0

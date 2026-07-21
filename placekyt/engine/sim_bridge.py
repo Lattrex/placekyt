@@ -226,6 +226,10 @@ class SimServer:
         # the other tags' words buffered for their own reader (so two streams can
         # share one output port without one stealing the other's words).
         self._tag_buf: dict[int, list[int]] = {}
+        # COMPLEX-EGRESS RAGGED TAIL: an I/Q pair whose I and Q words arrived in
+        # different per-sample drains (chain latency bursts several pairs at once,
+        # occasionally splitting one across the drain boundary). Reset per batch.
+        self._iq_carry: tuple[list[float], list[float]] = ([], [])
         # OUTPUT CAPTURE TAG MAP: (port_name, chip sim-time_ns) -> WRITE dest of the
         # word captured at the egress port at that time. Populated in the drain loop
         # (which reads value+dest+time via read_port_words_timed), so the host can
@@ -553,6 +557,8 @@ class SimServer:
                 # packet (which corrupts its first samples). Done ONCE per RPC — never
                 # per sample (that would break the loop mid-packet).
                 self._apply_batch_reset()
+                # Fresh packet: no half-formed I/Q pair carries over from a prior batch.
+                self._iq_carry = ([], [])
                 # Re-arm the debug hooks for THIS batch: a previous abort (Stop /
                 # client disconnect) left the one-shot stop latch set; the hooks
                 # persist for the whole server session, so without clearing it
@@ -724,7 +730,18 @@ class SimServer:
                 # path (a saturated run has no per-sample boundary). Supports the
                 # single-stream real + complex ingress; tagged/duplex streams fall
                 # through to the per-sample path (out_tag handling stays there).
-                if bool(header.get("pipelined", False)) and out_tag is None:
+                # A tagged COMPLEX-EGRESS stream (out_tag set, complex_out) also takes
+                # the saturated path: the transmit chain ends in a deep pipeline block
+                # (FrequencyModulator/NCO = 10 cells) whose I/Q pair for input n only
+                # flushes when input n+1 pushes it through. The per-sample inject→JUMP→
+                # drain then LOSES every pair still in flight at each drain boundary
+                # (measured: 258 of 352 pairs survive → a ragged, unrecoverable I/Q
+                # stream). Queuing the whole burst and draining ONCE flushes the entire
+                # pipeline; the tail demux below splits the two rails by tag.
+                _pipe_tagged_cplx = (out_tag is not None and out_complex
+                                     and not is_complex)
+                if bool(header.get("pipelined", False)) and (
+                        out_tag is None or _pipe_tagged_cplx):
                     def _w(a): return (0x6 << 12) | ((hop & 0x1F) << 5) | (int(a) & 0x1F)
                     def _j(): return (0x7 << 12) | ((hop & 0x1F) << 5) | (int(entry) & 0x1F)
                     stream = []
@@ -747,15 +764,41 @@ class SimServer:
                     # headroom; the floor still guards tiny bursts.
                     _cap = max(200_000, 20_000 * max(1, len(stream)))
                     self._chip.run(max_events=_cap)
-                    for (v, _d, _t) in self._chip.read_port_words_timed(port):
-                        if _first_out_ns is None:
-                            _first_out_ns = float(_t)
-                        _last_out_ns = float(_t)
-                        if raw:
-                            _iv = int(v) & 0xFFFF
-                            out_vals.append(float(_iv - 0x10000 if _iv >= 0x8000 else _iv))
-                        else:
-                            out_vals.append(_q15_to_float(int(v)))
+                    if _pipe_tagged_cplx:
+                        # COMPLEX EGRESS, saturated drain: the whole burst's I/Q pairs
+                        # sit in the output queue in emit order (I,Q rails alternate,
+                        # tag out_tag / out_tag+1). Split by tag and interleave [I,Q,…]
+                        # so the GR complex sink reassembles the stream. Foreign tags
+                        # (the other duplex stream) are parked for their own reader.
+                        i_tag, q_tag = int(out_tag), int(out_tag) + 1
+                        i_words: list[float] = []
+                        q_words: list[float] = []
+                        for (v, d, _t) in self._chip.read_port_words_timed(port):
+                            self._capture_tags[(port, float(_t))] = int(d)
+                            if _first_out_ns is None:
+                                _first_out_ns = float(_t)
+                            _last_out_ns = float(_t)
+                            if int(d) == i_tag:
+                                i_words.append(float(int(v) & 0xFFFF) if raw
+                                               else _q15_to_float(int(v)))
+                            elif int(d) == q_tag:
+                                q_words.append(float(int(v) & 0xFFFF) if raw
+                                               else _q15_to_float(int(v)))
+                            else:
+                                self._tag_buf.setdefault(int(d), []).append(int(v))
+                        for p in range(min(len(i_words), len(q_words))):
+                            out_vals.append(i_words[p])
+                            out_vals.append(q_words[p])
+                    else:
+                        for (v, _d, _t) in self._chip.read_port_words_timed(port):
+                            if _first_out_ns is None:
+                                _first_out_ns = float(_t)
+                            _last_out_ns = float(_t)
+                            if raw:
+                                _iv = int(v) & 0xFFFF
+                                out_vals.append(float(_iv - 0x10000 if _iv >= 0x8000 else _iv))
+                            else:
+                                out_vals.append(_q15_to_float(int(v)))
                     _dt = time.perf_counter() - _t_batch0
                     sps = (nsamp / _dt) if _dt > 0 else 0.0
                     if self._on_activity is not None:
@@ -810,25 +853,42 @@ class SimServer:
                         self._chip.run(max_events=mx)
                         if out_tag is not None and out_complex:
                             # COMPLEX EGRESS: the I rail is tagged out_tag, the Q rail
-                            # out_tag+1. Collect this sample's I and Q (in (v,d) order)
-                            # and emit them INTERLEAVED [I,Q] so the GR complex sink
-                            # reassembles the I/Q stream. Any foreign tag is parked.
+                            # out_tag+1. A single JUMP's drain can return MORE THAN ONE
+                            # (I,Q) pair — the chain has latency, so a quiet sample
+                            # (0 words) is followed by one that flushes several pairs
+                            # (…,4 words = TWO pairs). Collect EVERY I and Q word this
+                            # drain in arrival order (I,Q rails alternate) and emit them
+                            # ALL interleaved [I,Q,I,Q,…]; keeping only the last of each
+                            # tag DROPPED the earlier pair (the interleave corruption).
+                            # A pair split across two drains is carried in _iq_carry.
                             i_tag, q_tag = int(out_tag), int(out_tag) + 1
-                            si = sq = None
+                            i_words: list[float] = []
+                            q_words: list[float] = []
                             for (v, d, _t) in self._chip.read_port_words_timed(port):
                                 self._capture_tags[(port, float(_t))] = int(d)
                                 if _first_out_ns is None:
                                     _first_out_ns = float(_t)
                                 _last_out_ns = float(_t)
                                 if int(d) == i_tag:
-                                    si = float(int(v) & 0xFFFF) if raw else _q15_to_float(int(v))
+                                    i_words.append(
+                                        float(int(v) & 0xFFFF) if raw
+                                        else _q15_to_float(int(v)))
                                 elif int(d) == q_tag:
-                                    sq = float(int(v) & 0xFFFF) if raw else _q15_to_float(int(v))
+                                    q_words.append(
+                                        float(int(v) & 0xFFFF) if raw
+                                        else _q15_to_float(int(v)))
                                 else:
                                     self._tag_buf.setdefault(int(d), []).append(int(v))
-                            if si is not None:
-                                out_vals.append(si)
-                                out_vals.append(sq if sq is not None else 0.0)
+                            # Prepend any I/Q left unpaired by the previous drain.
+                            carry_i, carry_q = self._iq_carry
+                            i_words = carry_i + i_words
+                            q_words = carry_q + q_words
+                            npair = min(len(i_words), len(q_words))
+                            for p in range(npair):
+                                out_vals.append(i_words[p])
+                                out_vals.append(q_words[p])
+                            # Stash the ragged tail for the next drain to pair up.
+                            self._iq_carry = (i_words[npair:], q_words[npair:])
                         elif out_tag is not None:
                             # SHARED-OUTPUT-PORT DEMUX: drain the chip's tagged
                             # output WORDS (value, dest, t) and keep only those

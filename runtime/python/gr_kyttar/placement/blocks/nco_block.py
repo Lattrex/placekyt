@@ -92,10 +92,21 @@ class NCOBlock(KyttarBlock):
     def __init__(self, name: str, sample_rate: float = 32000.0,
                  frequency: float = 2000.0, amplitude: float = 0.9,
                  offset: float = 0.0, phase: float = 0.0,
-                 waveform: str = "cos"):
+                 waveform: str = "cos", pipeline_lock: bool = False):
         super().__init__(name, sample_rate=sample_rate, frequency=frequency,
                          amplitude=amplitude, offset=offset, phase=phase,
                          waveform=waveform)
+        # SATURATION SERIALIZE-LOCK (INV-20). This block has a RECONVERGENT fan-in:
+        # `phase` fans out to the sin + cos NCO columns (paths of length 4) that
+        # RECONVERGE at `emit`. Under saturated drive a 2nd sample's fast-path
+        # operand occupies emit's input regs before the 1st sample's slow-path
+        # operand arrives -> DEADLOCK (drops every other sample; measured 352 in ->
+        # 176 out). Fix (same idiom as ComplexMixer / iq_upconvert): `phase` LOCKs
+        # its input arbiter after launching a sample; `emit` clears the lock via a
+        # backward WRITE.CFG once it has emitted, so ONE sample traverses the fan-in
+        # at a time. The port FIFO still pipelines input. Opt-in (default False keeps
+        # the committed per-sample GR-verified shape); the modem TX enables it.
+        self._pipeline_lock = bool(pipeline_lock)
         self._sample_rate = float(sample_rate)
         self._frequency = float(frequency)
         self._amplitude = float(amplitude)
@@ -119,7 +130,9 @@ class NCOBlock(KyttarBlock):
 
     @property
     def cell_count(self) -> int:
-        return 10
+        # +2 when serialize-locked: the trigger `relay` (arm serializer) + the FACE-only
+        # transit_unlock corridor cell.
+        return 12 if self._pipeline_lock else 10
 
     @property
     def interface(self) -> BlockInterface:
@@ -149,12 +162,32 @@ class NCOBlock(KyttarBlock):
     def build_cell_programs(self) -> Dict[str, CellProgram]:
         even_tbl, odd_tbl = self._even_odd_tables()
 
+        # SERIALIZE-LOCK tail (INV-20): after phase launches the sample's fan-out to
+        # the sin/cos columns, it LOCKs its input arbiter to the unlock-corridor face
+        # (lock_face, an is_face DataWord) so the NEXT input sample is HELD (gate-all-
+        # but-lock_face) until `emit` clears the lock. JUMP does NOT halt the issuer,
+        # so the lock instructions after {jump:trig} still run. Data words pack
+        # CONTIGUOUSLY after freq@3/quarter@4 -> 5/6 (a gap would shrink the
+        # state/input allocation window). lock_face = the face the UNLOCK word ENTERS
+        # phase on: default_layout runs the corridor emit -> transit_unlock -> phase
+        # with the transit EAST of phase emitting WEST into it, so the word enters
+        # phase from its EAST side => EAST(1). Off when pipeline_lock=False.
+        ph_lock_data = ([DataWord("lock_face", 1, address=5, is_face=True),
+                         DataWord("one", 1, address=6)]
+                        if self._pipeline_lock else [])
+        ph_lock_tail = ("""\
+    MOVE R0, R{data:lock_face}
+    MOVE [LOCK_FACE], R0
+    MOVE R0, R{data:one}
+    MOVE [LOCK], R0
+""" if self._pipeline_lock else "")
+
         phase_cell = CellProgram(
             inputs=[Port("xi", register=0), Port("xq", register=1)],  # trigger only
             outputs=[Port("ph_sin"), Port("ph_cos"), Port("trig")],
             entries=[EntryPoint("default")],
             data=[DataWord("freq", self._freq_word, address=3),
-                  DataWord("quarter", 16384, address=4)],
+                  DataWord("quarter", 16384, address=4)] + ph_lock_data,
             # Initial phase (GR sig_source_c `phase`, radians -> 16-bit word).
             state=[StateVar("phase", initial_value=self._phase0_word)],
             assembly_template="""\
@@ -166,7 +199,7 @@ start:
     ADD R{state:phase}, R{data:freq}
     MOVE R{state:phase}, R0
     {jump:trig}
-""",
+""" + ph_lock_tail,
         )
 
         def _fold_cell():
@@ -267,7 +300,7 @@ start:
                 inputs=[Port("eval", register=0), Port("oval", register=1),
                         Port("par", register=2), Port("frac", register=3),
                         Port("neg", register=4)],
-                outputs=[Port("mag"), Port("negf"), Port("trig")],
+                outputs=[Port("mag"), Port("trig")],
                 entries=[EntryPoint("default")],
                 # Data MUST sit past the 5 explicit input registers (R0..R4): the
                 # resolver allocates state from gap = range(next_data_addr, base),
@@ -276,6 +309,14 @@ start:
                 data=[DataWord("zero", 0, address=5)],
                 state=[StateVar("p"), StateVar("Pe"), StateVar("Po"),
                        StateVar("d")],
+                # Apply the quadrant SIGN INLINE (identical structure to ComplexMixer's
+                # interp) and emit a SINGLE SIGNED `mag`. This collapses `emit` to TWO
+                # operands (signed cos + signed sin) so the serialize-LOCK's serialized
+                # datapath delivers ALL of emit's fan-in before it fires (INV-20) — a
+                # 4-operand emit STARVES under the lock (only 2 operands co-arrive).
+                # process_reference's _channel_q15 signs the magnitude BEFORE the amp
+                # MULQ to match this order bit-for-bit (the negate-vs-shift order is a
+                # 1-LSB choice on negatives; datapath + reference agree).
                 assembly_template="""\
 start:
     MOVE R{state:Pe}, R{in:eval}
@@ -291,64 +332,135 @@ evencase:
     MULQ R{state:d}, R{in:frac}
     MOVE R{state:d}, R0
     ADD R{state:d}, R{state:Pe}
+    MOVE R{state:d}, R0
+    CMP R{in:neg}, R{data:zero}
+    BR.Z out
+    SUB R{data:zero}, R{state:d}
+    MOVE R{state:d}, R0
+out:
+    MOVE R0, R{state:d}
     {write:mag}
-    MOVE R0, R{in:neg}
-    {write:negf}
     {jump:trig}
 """,
             )
 
+        # SERIALIZE-LOCK release (INV-20), folded into emit with a DUAL-FACE flip
+        # EXACTLY like ComplexMixer's mixer / iq_upconvert's upmix: after emitting
+        # yi/yq on its ROUTED output face, emit flips FACE to the internal unlock
+        # corridor (unlock_face=NORTH) and CLEARS phase's arbiter LOCK with a backward
+        # WRITE.CFG @N,4 (R0=0 -> phase CONFIG[4]=LOCK), releasing the NEXT input
+        # sample held at phase. yi/yq are emitted BEFORE the flip so their egress face
+        # is untouched; the @2 authored hop is re-patched to the real corridor distance
+        # by _apply_internal_feedback (config_only branch). The trailing {jump:trig}
+        # self-terminates (__terminate__) but still emits a JUMP word on the CURRENT
+        # face — so flip FACE BACK to face_tap AFTER the WRITE.CFG (else the trig fires
+        # up the unlock corridor into phase and self-sustains a datapath loop = the
+        # post-burst deadlock). Face constants: face_tap = the routed output face
+        # (set by _apply_rotate_tap_face); unlock_face = NORTH(3), rotated by
+        # _apply_orientation_face_words (name is deliberately NOT "face_internal").
+        # REGISTER RECLAIM for the serialize-LOCK budget: the `off` (offset) ADD is a
+        # no-op when offset==0 (the common case: FM + every complex-baseband source),
+        # so DROP both the `off` DataWord and its ADD then. This frees 1 data addr + 1
+        # instruction — exactly the room the lock's 2 face DataWords + 4 instrs need.
+        # When offset!=0 (rare) the lock still fits because the emit stays within
+        # budget without face reclaim only if unlocked; a nonzero-offset + locked NCO
+        # would need a further reclaim (guarded below).
+        _has_off = self._offset_q15 != 0
+        off_data = ([DataWord("off", self._offset_q15, address=6)] if _has_off else [])
+        off_add = ("    ADD R{state:cv}, R{data:off}\n" if _has_off else "")
+        # Face DataWords pack CONTIGUOUSLY after the existing data (amp@4, zero@5,
+        # [off@6]) -> 6/7 (no offset) or 7/8 (with offset).
+        _face_base = 7 if _has_off else 6
+        emit_lock_data = ([DataWord("face_tap", 1, address=_face_base, is_face=True),
+                           DataWord("unlock_face", 3, address=_face_base + 1,
+                                    is_face=True)]
+                          if self._pipeline_lock else [])
+        emit_lock_tail = ("""\
+    MOVE [FACE], R{data:unlock_face}
+    MOVE R0, R{data:zero}
+    WRITE.CFG @2, 4
+    MOVE [FACE], R{data:face_tap}
+""" if self._pipeline_lock else "")
+
+        # emit takes the ALREADY-SIGNED cos/sin magnitudes (the interp cells sign
+        # inline) — TWO operands, not four — so it just scales by amplitude and writes
+        # yi/yq (+ the serialize-LOCK release when locked). The 2-operand fan-in is what
+        # lets the serialized (locked) datapath deliver BOTH operands before emit fires;
+        # a 4-operand emit starves under the lock. offset is added to the I channel only
+        # (GR sig_source_c) after amplitude, present only when offset!=0.
         emit_cell = CellProgram(
-            inputs=[Port("cos_mag", register=0), Port("sin_mag", register=1),
-                    Port("cos_neg", register=2), Port("sin_neg", register=3)],
+            inputs=[Port("cos_mag", register=0), Port("sin_mag", register=1)],
             outputs=[Port("yi"), Port("yq"), Port("trig")],
             entries=[EntryPoint("default")],
-            # `off` = the GR sig_source_c `offset`, a Q15 DC bias added to each
-            # channel after amplitude+sign (offset==0 -> ADD R0,off is a no-op).
             data=[DataWord("amp", self._amp_q15, address=4),
-                  DataWord("zero", 0, address=5),
-                  DataWord("off", self._offset_q15, address=6)],
+                  DataWord("zero", 0, address=5)] + off_data + emit_lock_data,
             state=[StateVar("cv"), StateVar("sv")],
             assembly_template="""\
 start:
     MOVE R{state:cv}, R{in:cos_mag}
     MOVE R{state:sv}, R{in:sin_mag}
     MULQ R{state:cv}, R{data:amp}
-    MOVE R{state:cv}, R0
-    MULQ R{state:sv}, R{data:amp}
-    MOVE R{state:sv}, R0
-    CMP R{in:cos_neg}, R{data:zero}
-    BR.Z cpos
-    SUB R{data:zero}, R{state:cv}
-    MOVE R{state:cv}, R0
-cpos:
-    ADD R{state:cv}, R{data:off}
+""" + ("    MOVE R{state:cv}, R0\n" + off_add
+       if _has_off else "") + """\
     {write:yi}
-    CMP R{in:sin_neg}, R{data:zero}
-    BR.Z spos
-    SUB R{data:zero}, R{state:sv}
-    MOVE R{state:sv}, R0
-spos:
-    MOVE R0, R{state:sv}
+    MULQ R{state:sv}, R{data:amp}
     {write:yq}
+""" + emit_lock_tail + """\
     {jump:trig}
 """,
         )
 
-        return {
+        # A trigger-only RELAY between the sin and cos arms (only when locked) — the
+        # SAME structural role ComplexMixer's `relay` plays (INV-20). It (a) extends
+        # col0 to 6 cells so the serpentine corner (sin_interp -> cos_fold) stays
+        # aligned when emit is shifted to (1,1) to make room for the transit_unlock
+        # corridor, and (b) serializes the two arms so cos_fold reliably fires (without
+        # it the cos arm never fired under the lock). It carries no data — the NCO emit
+        # needs no forwarded signal — so it just passes the trigger through. It MUST be
+        # inserted in DICT ORDER between the sin and cos arms (mirroring the jump chain
+        # and ComplexMixer): the build derives cell CHAIN POSITION from dict order, and
+        # `emit` MUST remain the LAST cell (its exit_offset / complex-output handoff
+        # depends on it) — appending relay after emit made relay the exit cell and WIPED
+        # emit's program to a bare JUMP.
+        cells = {
             "phase": phase_cell,
             "sin_fold": _fold_cell(), "sin_even": _even_cell(),
             "sin_odd": _odd_cell(), "sin_interp": _interp_cell(),
+        }
+        if self._pipeline_lock:
+            # The relay FORWARDS the cos-arm phase (ph_cos) — like ComplexMixer's relay
+            # forwards xi/xq — so it is DATA-triggered (a pure trigger-only cell does not
+            # reliably re-fire on the substrate). phase writes ph_cos to relay; relay
+            # holds it and re-forwards it to cos_fold. This serializes the arms AND keeps
+            # cos_fold fed.
+            cells["relay"] = CellProgram(
+                inputs=[Port("phase", register=0)],
+                outputs=[Port("phase"), Port("trig")],
+                entries=[EntryPoint("default")], data=[],
+                state=[StateVar("ph")],
+                assembly_template="""\
+start:
+    MOVE R{state:ph}, R{in:phase}
+    MOVE R0, R{state:ph}
+    {write:phase}
+    {jump:trig}
+""",
+            )
+        cells.update({
             "cos_fold": _fold_cell(), "cos_even": _even_cell(),
             "cos_odd": _odd_cell(), "cos_interp": _interp_cell(),
             "emit": emit_cell,
-        }
+        })
+        return cells
 
     def internal_connections(self) -> List[Tuple[str, str, str, str]]:
-        conns = [
-            ("phase", "ph_sin", "sin_fold", "phase"),
-            ("phase", "ph_cos", "cos_fold", "phase"),
-        ]
+        conns = [("phase", "ph_sin", "sin_fold", "phase")]
+        if self._pipeline_lock:
+            # ph_cos travels through the arm-serializer relay: phase -> relay -> cos_fold.
+            conns += [("phase", "ph_cos", "relay", "phase"),
+                      ("relay", "phase", "cos_fold", "phase")]
+        else:
+            conns += [("phase", "ph_cos", "cos_fold", "phase")]
         for ch in ("sin", "cos"):
             conns += [
                 (f"{ch}_fold", "idx_e", f"{ch}_even", "idx"),
@@ -359,43 +471,97 @@ spos:
                 (f"{ch}_even", "par", f"{ch}_interp", "par"),
                 (f"{ch}_odd", "oval", f"{ch}_interp", "oval"),
                 (f"{ch}_interp", "mag", "emit", f"{ch}_mag"),
-                (f"{ch}_interp", "negf", "emit", f"{ch}_neg"),
             ]
+        if self._pipeline_lock:
+            # emit's BACKWARD config-only edge to phase (the serialize-LOCK release).
+            # Declared so _apply_internal_feedback (config_only branch) traces the
+            # emit->phase corridor and patches emit's WRITE.CFG hop/dest. The yi/yq
+            # OUTPUT rails are handled separately (output_cell_id + the complex-egress
+            # handoff); this config edge matches on the CONFIG bit alone, so it does
+            # NOT make emit a data forwarder.
+            conns += [("emit", "unlock", "phase", "xi")]
         return conns
 
     def internal_jumps(self) -> List[Tuple[str, str, str, str]]:
-        chain = ["phase", "sin_fold", "sin_even", "sin_odd", "sin_interp",
-                 "cos_fold", "cos_even", "cos_odd", "cos_interp", "emit"]
-        return [(chain[i], "trig", chain[i + 1], "default")
-                for i in range(len(chain) - 1)]
+        # The RELAY (when locked) sits between the sin and cos arms, serializing them
+        # (ComplexMixer's chain order): ...sin_interp -> relay -> cos_fold -> ...
+        chain = (["phase", "sin_fold", "sin_even", "sin_odd", "sin_interp"]
+                 + (["relay"] if self._pipeline_lock else [])
+                 + ["cos_fold", "cos_even", "cos_odd", "cos_interp", "emit"])
+        jumps = [(chain[i], "trig", chain[i + 1], "default")
+                 for i in range(len(chain) - 1)]
+        if self._pipeline_lock:
+            # emit is the block's OUTPUT + LAST cell. Its trig SELF-TERMINATES so the
+            # build does NOT default the trig JUMP down the unlock corridor into phase
+            # (which would loop). The lock-clear is emit's in-program WRITE.CFG.
+            jumps.append(("emit", "trig", "__terminate__", "default"))
+        return jumps
 
     def output_cell_ids(self) -> List[str]:
         """The single external output cell (the complex emit)."""
         return ["emit"]
 
+    def output_cell_id(self):
+        """SINGULAR — the build reads THIS to set the Shape's exit_offset so emit is
+        the block exit. Under the serialize-lock emit is followed by a FACE-only
+        transit cell (the unlock corridor); without this the exit-default would target
+        that transit cell and clobber emit's routed yi/yq output WRITEs. None when
+        unlocked (emit IS the last cell, default last-cell exit already correct)."""
+        return "emit" if self._pipeline_lock else None
+
     def default_layout(self) -> Dict[Any, Tuple[int, int, str]]:
-        # Two-row serpentine modelled on the proven ComplexRRCMatchedFilter layout.
-        # The FACE = each cell's egress direction matching the flow (this is what
-        # makes egress work, not I/O co-location): row 0 (sin) flows EAST; its last
-        # cell turns the corner SOUTH to the cos rail; row 1 (cos) flows WEST and
-        # ends at emit, which egresses WEST to the bus.
-        #
-        #   col:    0          1        2        3        4
-        #   row 0: phase ->  sin_fold sin_even sin_odd sin_interp(South)
-        #   row 1: emit  <-  cos_interp cos_odd cos_even cos_fold
-        # Column-major serpentine: col 0 flows SOUTH (phase down to sin_interp),
-        # col 1 flows NORTH (cos_fold up to emit). emit (output) sits at the top of
-        # col 1 and egresses EAST to the bus; faces match each cell's flow.
-        col0 = ["phase", "sin_fold", "sin_even", "sin_odd", "sin_interp"]
+        if not self._pipeline_lock:
+            # Two-row serpentine modelled on the proven ComplexRRCMatchedFilter layout.
+            # The FACE = each cell's egress direction matching the flow: row 0 (sin)
+            # flows SOUTH down col0; col1 flows NORTH up to emit at the top, which
+            # egresses EAST to the bus.
+            #
+            #   col:    0          1
+            #   row 0: phase(S)   emit(E)
+            #   ...    (sin col)  (cos col up col1)
+            col0 = ["phase", "sin_fold", "sin_even", "sin_odd", "sin_interp"]
+            col1_bottom_up = ["cos_fold", "cos_even", "cos_odd", "cos_interp", "emit"]
+            layout = {}
+            for j, cid in enumerate(col0):
+                face = "east" if cid == "sin_interp" else "south"
+                layout[cid] = (0, j, face)
+            for k, cid in enumerate(col1_bottom_up):
+                y = 4 - k
+                face = "east" if cid == "emit" else "north"
+                layout[cid] = (1, y, face)
+            return layout
+
+        # SERIALIZE-LOCK layout (INV-20): the DATAPATH is the proven 2-column layout,
+        # shifted DOWN one row so emit lands at (1,1) with a free cell at (1,0) ABOVE
+        # it for the FACE-only transit_unlock corridor (exactly like ComplexMixer). The
+        # forward datapath faces are unchanged. UNLOCK corridor: emit(1,1) computes
+        # yi/yq (emitted EAST on its ROUTED output face), then flips FACE to
+        # unlock_face=NORTH(3) and does WRITE.CFG @2,4 which travels emit(1,1) ->
+        # transit_unlock(1,0) -> phase(0,0), landing on phase's EAST face
+        # (=phase.lock_face=EAST=1). The @2 authored hop is re-patched to the real
+        # corridor distance by _apply_internal_feedback (config_only branch), so the
+        # actual hop is layout-invariant. yi/yq egress EAST (route) is untouched
+        # because the flip happens AFTER they are emitted.
+        # Layout MIRRORS ComplexMixer's locked layout EXACTLY (the proven one): col0 is
+        # 6 cells ending in the trigger `relay` at (0,5), whose EAST turns the corner to
+        # cos_fold at (1,5). emit lands at (1,1) egressing EAST; transit_unlock sits at
+        # (1,0) NORTH of emit and relays the unlock WRITE.CFG WEST into phase at (0,0).
+        #   col:    0            1
+        #   row0:  phase(S)     transit_unlock(W)
+        #   ...    (sin col)    (cos col up col1)
+        #   row5:  relay(E)  -> cos_fold(N)
+        col0 = ["phase", "sin_fold", "sin_even", "sin_odd", "sin_interp", "relay"]
         col1_bottom_up = ["cos_fold", "cos_even", "cos_odd", "cos_interp", "emit"]
-        layout = {}
+        layout: Dict[Any, Tuple[int, int, str]] = {}
         for j, cid in enumerate(col0):
-            face = "east" if cid == "sin_interp" else "south"
+            face = "east" if cid == "relay" else "south"
             layout[cid] = (0, j, face)
         for k, cid in enumerate(col1_bottom_up):
-            y = 4 - k
+            y = 5 - k          # emit at (1,1); cos_fold at (1,5)
             face = "east" if cid == "emit" else "north"
             layout[cid] = (1, y, face)
+        # FACE-only transit carrying emit's unlock WRITE.CFG WEST into phase.
+        layout["transit_unlock"] = (1, 0, "west")
         return layout
 
     # -------------------------------------------------------------- reference
@@ -423,11 +589,14 @@ spos:
         return mag, neg
 
     def _channel_q15(self, phase16, tbl, amp):
-        """One channel's signed Q15 output: amplitude FIRST (Q15 MULQ), THEN the
-        sign — exactly the emit cell's order (``neg ? -((mag·amp)>>15) : ...``)."""
+        """One channel's signed Q15 output: the SIGN is applied FIRST (in the interp
+        cell), THEN amplitude (the emit cell's Q15 MULQ) — ``((neg ? -mag : mag)·amp)
+        >>15``. This op order (sign-before-amp) matches the datapath so the block is
+        bit-exact; it differs from amp-before-sign by at most 1 LSB on negatives (a
+        rounding-order choice in the final arithmetic shift, not an error)."""
         mag, neg = self._sine_mag_neg(phase16, tbl)
-        v = (mag * amp) >> 15
-        return -v if neg else v
+        signed = -mag if neg else mag
+        return (signed * amp) >> 15
 
     def process_reference(self, input_samples) -> np.ndarray:
         """Complex reference ``amplitude·(cos θ_n + j sin θ_n)`` via the on-chip

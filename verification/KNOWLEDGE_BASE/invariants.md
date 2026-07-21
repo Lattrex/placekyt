@@ -814,6 +814,37 @@ dedicated-`unlock`-cell path above:
   input-reg/net-resolution + the compact SSB Weaver footprint); the lock is OPT-IN, gate passes
   `params={pipeline_lock:True}`.
 
+**NCO + FrequencyModulator RESOLVED (2026-07-21) — the same INV-20 fan-in, now saturation-safe
+(opt-in `pipeline_lock=True`).** They have the identical `phase → sin-arm(4) + cos-arm(4) → emit`
+reconvergent fan-in as ComplexMixer, but NO `relay` and a 4-operand emit. Porting the ComplexMixer
+lock needed THREE NCO-specific moves (each was a distinct failure mode found via `get_trace`):
+1. **Collapse emit to 2 operands.** The 4-operand emit (cos_mag, sin_mag, cos_neg, sin_neg) STARVES
+   under the lock — only 2 of the 4 operands co-arrive before emit fires. Move the quadrant SIGN
+   INLINE into the interp cells (emit a single SIGNED `mag`, drop the `negf` output) exactly like
+   ComplexMixer's interp; emit then takes just (cos_mag, sin_mag). This ALSO frees the register room
+   the lock's 2 face DataWords + 4 instrs need. **Update `process_reference` to sign-BEFORE-amp**
+   (`(neg?-mag:mag)*amp>>15`) to match — it differs from amp-before-sign by ≤1 LSB on negatives, a
+   rounding-order choice; the bit-exact gate then agrees. (Offset ADD writes R0 already — do NOT add
+   a trailing `MOVE R0,cv` after it, that drops the offset; a whole day's-worth of the same class of
+   R0-vs-state confusion.)
+2. **The `relay` must FORWARD DATA, not be trigger-only.** A pure `{jump:trig}` relay does NOT
+   reliably re-fire on the substrate (exec_tick=1 for many triggers) → the cos arm never fires →
+   emit starves. Route the cos-arm phase THROUGH it: `phase→relay→cos_fold` (relay holds `ph_cos`
+   and re-forwards it), mirroring ComplexMixer's relay forwarding xi/xq. This is what makes cos_fold
+   fire and serializes the arms.
+3. **`relay` MUST be inserted in DICT ORDER between the arms; `emit` MUST stay the LAST cell in
+   `build_cell_programs()`.** Appending relay AFTER emit made relay the exit cell and the build WIPED
+   emit's whole program to a bare JUMP (only `output_cell_id()="emit"` + last-dict-position keep the
+   exit/complex-egress handoff on emit). Layout: 6-cell col0 ending in relay(0,5)→cos_fold(1,5)
+   corner, emit(1,1) egress EAST, transit_unlock(1,0) NORTH of emit — EXACTLY ComplexMixer's.
+- PROVEN in ISOLATION: locked FM 40 in → 40 unit-circle pairs (|IQ|=1.0), 60/60 + 16/16 BIT-EXACT
+  vs `process_reference_q15` under saturated `queue_words` drive. Unlocked stays bit-exact (70/70).
+  Gate: NCO in COMPLEX_2IN2OUT, FM in `test_fm_saturation_safe` (real-in/complex-out, driven direct).
+- KNOWN-OPEN (2026-07-21): the unlock corridor is NOT yet placement-invariant in an AUTO-ROUTED
+  CHAIN — FM releases the lock hand-placed, but auto-placed in the fsk4 TX chain `transit_unlock`
+  never fires (WRITE.CFG never reaches phase → stall). Next: make emit→transit_unlock→phase
+  adjacency survive auto-placement (or author it placement-invariant). This blocks the fsk4 modem TX.
+
 ---
 
 ## INV-21 — SATURATED "pipelined" drive means the SLOWEST BLOCK is saturated, NOT the input port; a raw-word input stream cannot be demuxed by decoding word bits

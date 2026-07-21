@@ -2054,3 +2054,40 @@ Gardner, IQUpconvert, ComplexMixer, NCO) FAIL the D4 orientation harness
   a fan-in broker that is also transited. Left for that follow-up; the `cw` primary bug
   is fixed and committed, and `test_qpsk_modem_ber` (the production auto-P&R path) stays
   green.
+
+## 2026-07-21 — Saturation is a REQUIRED per-block gate; NCO/FrequencyModulator INV-20 fix
+
+- **Saturation-safety is now a first-class acceptance gate (AGENTS.md checklist +
+  INV-19/INV-20), on par with orientation-invariance.** A block must produce the correct
+  output COUNT (its N:M rate) AND correct VALUES under SATURATED drive (whole burst
+  back-to-back via `queue_words_physical`, no inter-sample quiescence). The per-sample
+  harness HIDES fan-in / handshake / feedback hazards. `test_pipeline_saturation.py` +
+  its `test_bespoke_coverage_is_documented` enforce that EVERY "done" block is either
+  gated or in `NEEDS_BESPOKE` with a reason — no silent gap. This gap is what let the
+  4FSK modem's FrequencyModulator ship dropping HALF its samples under load (352→176).
+
+- **NCO + FrequencyModulator were the last two OPEN INV-20 fan-in cases; now fixed
+  (opt-in `pipeline_lock=True`), bit-exact in isolation.** Full mechanism in INV-20. The
+  three non-obvious NCO-specific moves: (1) collapse `emit` to 2 operands by signing
+  INLINE in the interp cells (a 4-operand emit STARVES under the lock; also update
+  `process_reference` to sign-before-amp to stay bit-exact, ≤1 LSB); (2) the `relay` must
+  FORWARD DATA (ph_cos through it) — a trigger-only relay doesn't re-fire on the substrate
+  so the cos arm never fires; (3) `relay` goes in DICT ORDER between the arms and `emit`
+  stays the LAST cell, else the build WIPES emit's program to a bare JUMP (relay becomes
+  the exit cell). All found with `chip.get_trace()` per-cell fire counts + bounded `run()`,
+  NOT blind guesses.
+
+- **The 3 M17 4FSK blocks are now in the saturation gate:** FSK4SymbolMapper (2:1) +
+  FSK4Slicer (1:2) in RATE_1IN (pass); FSK4SyncTimingRecovery in NEEDS_BESPOKE (sync-gated
+  decimator — needs a framed burst; covered by the RX BER0-pipelined gate).
+
+- **KNOWN-OPEN:** the NCO/FM unlock corridor is not yet placement-invariant in an
+  auto-routed CHAIN (`transit_unlock` doesn't fire when auto-placed) — blocks the fsk4
+  modem TX end-to-end. The block itself is proven correct hand-placed. Next task.
+
+- **TEST-HARNESS TRAP (cost ~an hour):** `_STIM_Q15` holds UNSIGNED Q15 words; feeding a
+  reference `w/32768` reconstructs negatives as large positives → a phantom "rotation
+  drift" that looks like a block bug but is a stimulus-encoding bug. Drive the chip with
+  the Q15 words AND the reference with the ORIGINAL signed floats (or the same words the
+  reference re-quantises internally). ALWAYS reconcile a "divergence" against a
+  hand-computed sample before blaming the datapath.

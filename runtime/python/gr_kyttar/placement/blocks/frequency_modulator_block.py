@@ -71,13 +71,17 @@ class FrequencyModulatorBlock(NCOBlock):
     _interface = BlockInterface(
         entry_address=1, input_registers=[0], output_registers=[0, 1])
 
-    def __init__(self, name: str, sensitivity: float = 1.0):
+    def __init__(self, name: str, sensitivity: float = 1.0,
+                 pipeline_lock: bool = False):
         # Reuse the NCO plumbing: unit amplitude, no offset/initial-phase, cos wave.
         # frequency=0 -> freq_word 0 (unused: the phase cell adds the INPUT, not a
         # constant), but keep the NCO ctor happy.  amplitude MUST be 1.0 (GR emits
-        # on the unit circle).
+        # on the unit circle).  pipeline_lock -> the INV-20 serialize-LOCK (the FM's
+        # phase->sin/cos->emit reconvergent fan-in drops every other sample under
+        # saturated drive without it); passed through to the NCO plumbing.
         super().__init__(name, sample_rate=1.0, frequency=0.0, amplitude=1.0,
-                         offset=0.0, phase=0.0, waveform="cos")
+                         offset=0.0, phase=0.0, waveform="cos",
+                         pipeline_lock=pipeline_lock)
         self._sensitivity = float(sensitivity)
         # HARDWARE DEVIATION: sensitivity is limited to |s| <= pi so that
         # kscale = s/pi fits a Q15 MULQ multiplier (|kscale| <= 1.0).  GR accepts
@@ -102,16 +106,32 @@ class FrequencyModulatorBlock(NCOBlock):
         return self._kscale_q15
 
     def build_cell_programs(self) -> Dict[str, CellProgram]:
-        # Inherit every cell from the NCO, then REPLACE the phase cell with the
-        # input-driven accumulator (phase += (x_q15 * kscale) >> 15).
+        # Inherit every cell from the NCO (including the LOCKED emit when
+        # pipeline_lock), then REPLACE the phase cell with the input-driven
+        # accumulator (phase += (x_q15 * kscale) >> 15). The replacement phase cell
+        # must carry the SAME serialize-LOCK tail as the NCO's (super's phase is
+        # discarded here), else the LOCK is never engaged and the fan-in still drops
+        # samples under saturation (INV-20).
         cells = super().build_cell_programs()
+        # Lock tail: pack lock_face/one CONTIGUOUSLY after kscale@3/quarter@4 -> 5/6.
+        # lock_face = EAST(1) (the unlock word enters phase from its EAST side via
+        # the transit_unlock corridor); is_face so it transforms with orientation.
+        ph_lock_data = ([DataWord("lock_face", 1, address=5, is_face=True),
+                         DataWord("one", 1, address=6)]
+                        if self._pipeline_lock else [])
+        ph_lock_tail = ("""\
+    MOVE R0, R{data:lock_face}
+    MOVE [LOCK_FACE], R0
+    MOVE R0, R{data:one}
+    MOVE [LOCK], R0
+""" if self._pipeline_lock else "")
         cells["phase"] = CellProgram(
             # The REAL input sample lands in R0 (the block's single input port).
             inputs=[Port("x", register=0)],
             outputs=[Port("ph_sin"), Port("ph_cos"), Port("trig")],
             entries=[EntryPoint("default")],
             data=[DataWord("kscale", self._kscale_q15, address=3),
-                  DataWord("quarter", 16384, address=4)],
+                  DataWord("quarter", 16384, address=4)] + ph_lock_data,
             state=[StateVar("phase", initial_value=0),
                    StateVar("incr")],
             # GR's frequency_modulator_fc ACCUMULATES FIRST, then emits:
@@ -133,7 +153,7 @@ start:
     SUB R{state:phase}, R{data:quarter}
     MOVE R{state:phase}, R0
     {jump:trig}
-""",
+""" + ph_lock_tail,
         )
         return cells
 

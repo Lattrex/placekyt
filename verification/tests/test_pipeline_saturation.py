@@ -99,6 +99,12 @@ RATE_1IN = {
     "KeepOneInNBlock": ("x", "out", {"n": 2}),  # rate-REDUCING
     # bit-stream -> symbols (emits every N bits) — proven saturated 2026-07-14.
     "PSKSymbolMapperBlock": ("sample", "out_i", {}),
+    # M17 4FSK blocks (2026-07-21): 4FSK symbol MAPPER packs 2 bits/symbol (2:1
+    # rate-REDUCING — a symbol emerges every 2 input bits); 4FSK SLICER emits 2 bits
+    # per symbol (1:2 rate-EXPANDING). Both are memoryless per (di)bit and saturation-
+    # safe — the saturated flat stream equals the per-sample flat stream.
+    "FSK4SymbolMapperBlock": ("sample", "out", {}),
+    "FSK4SlicerBlock": ("sample", "out", {}),
 }
 
 # COMPLEX-in / COMPLEX-out (yi,yq 2-word egress): (in_ports, out_port, params). Same
@@ -112,6 +118,10 @@ COMPLEX_2IN2OUT = {
     # importer/net-resolution keep the 11-cell footprint); this gate proves the LOCKED
     # path is bit-exact under saturation so consumers can opt in for high-rate pipelines.
     "ComplexMixerBlock": (("xi", "xq"), "yi", {"pipeline_lock": True}),
+    # NCO: complex TRIGGER in (xi,xq ignored) / complex cos+j·sin out. Same phase->2-arm
+    # ->emit reconvergent fan-in as ComplexMixer; the pipeline_lock=True serialize-LOCK
+    # (relay arm-serializer + emit dual-FACE unlock) makes it saturation-safe (INV-20).
+    "NCOBlock": (("xi", "xq"), "yi", {"pipeline_lock": True}),
     # FEED-FORWARD complex-in / complex-out blocks — proven bit-exact saturated 2026-07-14
     # (they were in NEEDS_BESPOKE only because the gate reads ONE out port, not the yi/yq
     # 2 rails; run_block_dut_complex + run_block_dut_pipelined both drain the interleaved
@@ -142,18 +152,26 @@ NEEDS_BESPOKE = {
     "ComplexBandPassFilter": "Σ|h|>1 firdes build constraint; datapath == ComplexLowPass (gated)",
     "ComplexBandRejectFilter": "Σ|h|>1 firdes build constraint; datapath == ComplexLowPass (gated)",
     "DualFloatToComplexBlock": "2-face rendezvous (own gate proto_dual_f2c)",
-    # REAL SATURATION BUG (2026-07-14): NCO + FrequencyModulator are 10-cell blocks with the
-    # SAME phase->2-NCO-column->emit reconvergent fan-in as the pre-fix ComplexMixer, and NO
-    # serialize-LOCK — they DEADLOCK under saturated drive (INV-20). They need the SAME
-    # dual-FACE serialize-LOCK fix (folded into the emit cell). See project_block_saturation_inventory.
-    "NCOBlock": "INV-20 fan-in DEADLOCK under saturation — needs ComplexMixer-style serialize-LOCK (OPEN)",
-    "FrequencyModulatorBlock": "INV-20 fan-in DEADLOCK under saturation — needs serialize-LOCK (OPEN)",
+    # INV-20 fan-in FIXED (2026-07-21): NCO + FrequencyModulator had the SAME phase->2-arm
+    # ->emit reconvergent fan-in as the pre-fix ComplexMixer. The pipeline_lock=True
+    # serialize-LOCK (relay arm-serializer + emit dual-FACE unlock + sign-inline interp)
+    # makes them saturation-safe. NCOBlock is now gated in COMPLEX_2IN2OUT above.
+    # FrequencyModulator has a REAL input (x) / complex out — the COMPLEX_2IN2OUT harness
+    # drives 2 in-ports, so FM has its OWN saturated gate (test_fm_saturation_safe below);
+    # its datapath is NCO's (verified in COMPLEX_2IN2OUT) with only the phase cell changed.
+    "FrequencyModulatorBlock": "real-in/complex-out; own gate test_fm_saturation_safe (locked, bit-exact)",
     "ComplexUpsamplerBlock": "rate-EXPANDING complex (2-rail zero-stuff), no complex-rate harness; MEMORYLESS (no feedback/state carried across samples) so per-sample == saturated by construction — cf. UpsamplerBlock (RATE_1IN, gated)",
     "BPSKSlicerBlock": "packed-bit output timing",
     "SoftDemodulatorBlock": "complex input",
     "LFSRScramblerBlock": "bit-stream input",
     "BandPassFilter": "band filter — covered by FIR family",
     "BandRejectFilter": "band filter — covered by FIR family",
+    # M17 4FSK sync-timing recovery: correlates the LSF sync word then GATE-decimates
+    # 2:1 — its output is CONDITIONAL on sync detection, so a flat random stimulus emits
+    # nothing (no lock). Needs a FRAMED (preamble+sync+payload) burst; driven saturated
+    # in its own gate (proto_fsk4_sync_model / the fsk4 modem RX BER harness), which
+    # proves the whole RX chain recovers BER 0 pipelined (the real saturation proof).
+    "FSK4SyncTimingRecoveryBlock": "sync-gated decimator; needs framed burst — own gate (fsk4 RX BER0 pipelined)",
 }
 
 
@@ -287,6 +305,102 @@ def test_pipelined_equals_per_sample_rate(block_type):
     assert pipe.outputs_q15[:n] == seq_out, (
         f"{block_type}: saturated output diverges from per-sample at index "
         f"{next(i for i in range(n) if pipe.outputs_q15[i] != seq_out[i])}")
+
+
+def _drive_fm_saturated(sens: float, xs_q15):
+    """Build FM (locked) x16_in -> FM(yi,yq) -> x16_out, drive the whole burst
+    SATURATED via queue_words_physical, and return the interleaved [yi,yq,...] signed
+    egress. Driven directly (not through run_block_dut_pipelined) so the complex 2-rail
+    yi/yq egress is drained in emit order without the single-out-port harness's pairing
+    assumptions."""
+    import numpy as np  # noqa: PLC0415
+    import simkyt  # noqa: PLC0415
+    from PySide6.QtWidgets import QApplication  # noqa: PLC0415
+    from engine.catalog import BlockCatalog  # noqa: PLC0415
+    from engine.io.chip_type_io import load_chip_type  # noqa: PLC0415
+    from engine.build import BuildEngine  # noqa: PLC0415
+    from engine.registry import ChipTypeRegistry  # noqa: PLC0415
+    from engine.port_config import stream_targets  # noqa: PLC0415
+    from ui.controller import AppController  # noqa: PLC0415
+    from model.connection import BlockEndpoint, ChipPortEndpoint  # noqa: PLC0415
+
+    QApplication.instance() or QApplication([])
+    cat = BlockCatalog.from_gr_kyttar()
+    ct = load_chip_type(CHIP_YAML)
+    key = getattr(ct, "name", None) or "kyttar_10x12"
+    ctrl = AppController(catalog=cat)
+    ctrl.new_project("fmsat", key)
+    fm = ctrl.place_block("FrequencyModulatorBlock", 0, 3, 1,
+                          library="lattrex.official",
+                          params={"sensitivity": sens, "pipeline_lock": True})
+    R = ctrl.add_route
+    R(ChipPortEndpoint(chip=0, port="x16_in"), BlockEndpoint(block=fm, port="x"), [])
+    R(BlockEndpoint(block=fm, port="yi"), ChipPortEndpoint(chip=0, port="x16_out"), [])
+    R(BlockEndpoint(block=fm, port="yq"), ChipPortEndpoint(chip=0, port="x16_out"), [])
+    assert ctrl.auto_route_all({key: ct}, auto_orient=True, use_bus="always").ok
+    for conn in ctrl.project.connections:
+        s = getattr(conn, "source", None)
+        if s is not None and getattr(s, "port", None) == "x16_in":
+            conn.stream_id = "tx"
+    bres = BuildEngine(cat, CHIP_YAML).build(ctrl.project, {key: ct})
+    assert bres.ok, getattr(bres, "errors", None)
+    reg = ChipTypeRegistry()
+    reg.register_file(CHIP_YAML)
+    tg = stream_targets(ctrl.project, reg, cat, 0, build_result=bres)["tx"]
+    entry, hop, a0 = tg["entry_addr"], tg["hop_count"], tg["data_addrs"][0]
+
+    def _w(a):
+        return (0x6 << 12) | ((hop & 0x1F) << 5) | (int(a) & 0x1F)
+
+    def _j():
+        return (0x7 << 12) | ((hop & 0x1F) << 5) | (int(entry) & 0x1F)
+
+    chip = simkyt.Chip.from_yaml(CHIP_YAML)
+    chip.load_bitstream_physical(bres.words(0))
+    stream = []
+    for w in xs_q15:
+        stream += [_w(a0), int(w) & 0xFFFF, _j()]
+    chip.queue_words_physical("x16_in", stream)
+    chip.run(max_events=max(300000, 20000 * len(stream)))
+
+    def _s16(u):
+        u &= 0xFFFF
+        return u - 0x10000 if u >= 0x8000 else u
+    return [_s16(int(v)) for (v, _d, _t) in chip.read_port_words_timed("x16_out")]
+
+
+@pytest.mark.skipif(not _CHIP_OK, reason="chip yaml absent")
+def test_fm_saturation_safe():
+    """FrequencyModulator (REAL input x / complex yi,yq out) under SATURATED drive ==
+    its bit-exact ``process_reference_q15`` (the GR-equivalent oracle). FM has a single
+    REAL input, so it fits neither the 2-in COMPLEX_2IN2OUT harness nor the single-word
+    ``run_block_dut`` complex drain; drive it saturated directly and compare the
+    interleaved [yi,yq,...] egress pair-for-pair. The pipeline_lock=True serialize-LOCK
+    (INV-20) must deliver EVERY input's I/Q pair 1:1 — without it the reconvergent
+    fan-in drops every other sample (measured 352 in -> 176 out)."""
+    from gr_kyttar.placement.blocks.frequency_modulator_block import (  # noqa: PLC0415
+        FrequencyModulatorBlock)
+
+    sens = 1.5707963267948966
+    # Reference takes the ORIGINAL signed floats (NOT _STIM_Q15/32768 — those are
+    # UNSIGNED Q15 words, so a negative value would reconstruct as a large positive
+    # float and mis-drive the reference). The chip is driven with the same _STIM_Q15
+    # words process_reference_q15 re-quantises internally, so they agree bit-for-bit.
+    ref = FrequencyModulatorBlock("ref", sensitivity=sens).process_reference_q15(_STIM)
+
+    out = _drive_fm_saturated(sens, _STIM_Q15)
+    n = len(ref)
+    assert len(out) >= 2 * n, (
+        f"FrequencyModulator: saturated produced {len(out)} words for {n} inputs "
+        f"(expected {2 * n} = 1 I/Q pair each) — pipeline DROPPED samples "
+        f"(serialize-LOCK did not release / fan-in starved)")
+    got = [(out[2 * k], out[2 * k + 1]) for k in range(n)]
+    ref_s = [(FrequencyModulatorBlock._s16(a), FrequencyModulatorBlock._s16(b))
+             for (a, b) in ref]
+    bad = [k for k in range(n) if got[k] != ref_s[k]]
+    assert not bad, (
+        f"FrequencyModulator: saturated output diverges from reference at pair "
+        f"{bad[0]}: got {got[bad[0]]}, ref {ref_s[bad[0]]}")
 
 
 def test_bespoke_coverage_is_documented():

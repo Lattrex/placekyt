@@ -216,6 +216,23 @@ not lower:
       assert the output equals the identity build). A block that breaks when rotated is
       broken. Its internal (`transit_*`) cells are FIRST-CLASS block cells (block color,
       footprint, same rules), never light-blue routing cells.
+- [ ] **Saturation-safe (INV-19/INV-20):** the block produces the CORRECT output COUNT
+      (its N:M rate, no dropped/duplicated samples) AND the correct VALUES when driven
+      SATURATED — the whole burst enqueued back-to-back with NO inter-sample quiescence
+      (`queue_words_physical`), the real GNU-Radio / hardware streaming condition. This is
+      a REQUIRED gate, exactly like orientation: the per-sample harness (`run_block_dut`,
+      inject-and-flush) HIDES feedback/handshake/fan-in hazards, so a block can pass every
+      per-sample test and still collapse under load. `verification/tests/test_pipeline_saturation.py`
+      must be green for it — the block is in one of its coverage sets (REAL_1IN / REAL_2IN /
+      RATE_1IN / COMPLEX_2IN2OUT) OR in `NEEDS_BESPOKE` with a reason + its own saturated gate
+      (no silent omission; a coverage test enforces this). Two known hazard classes: a
+      data-only FEEDBACK loop that assumes inter-sample settle (INV-19: Costas/Gardner —
+      fix = serialize-LOCK), and a feed-forward RECONVERGENT FAN-IN where arms of unequal
+      length reconverge on one cell (INV-20: ComplexMixer/NCO/FrequencyModulator — fix =
+      the SAME serialize-LOCK: landing cell LOCKs its arbiter, exit cell clears it via a
+      backward `WRITE.CFG`; opt-in `pipeline_lock=True`). If your block has feedback or a
+      reconvergent fan-in, it needs the lock — do NOT invent a new mechanism, port the
+      ComplexMixer one.
 - [ ] Manifest status is `"done"`; `gen_dashboard.py --check` exits 0.
 - [ ] A `lessons_log.md` entry is appended.
 - [ ] Any substrate limit hit is captured as an explicit guard test, not glossed over.

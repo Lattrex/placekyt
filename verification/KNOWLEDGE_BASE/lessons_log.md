@@ -8,6 +8,63 @@ anything that generalizes across block classes into `invariants.md`.
 
 ---
 
+## M17 4FSK: FSK4SymbolMapper + FSK4Slicer blocks; Gardner does NOT lock 4-PAM timing 2026-07-21
+
+Two NEW tier-3 blocks for an **M17 4-level FSK (C4FM)** modem, both DONE (verified,
+GRC-bound, orientation-invariant 100%), plus a HARD, honest finding on the RX timing loop.
+
+- **FSK4SymbolMapperBlock (1 cell).** Bit stream (0/1) → one signed PAM deviation LEVEL per
+  DIBIT. M17 Gray map PINNED **LSB-first** (RULE #0): dibit `(b0,b1)`, `d = b0 + 2·b1`,
+  `(1,0)→+3, (0,0)→+1, (0,1)→−1, (1,1)→−3`; levels normalised so `+3 → +1.0` (Q15 full
+  scale) → table by `d` = `[+1/3, +1, −1/3, −1]`. Feed a FrequencyModulator with
+  `sensitivity = 2π·2400/fs` (fs = sps·4800; sps=2 → 9600) for the M17 ±2400/±800 Hz
+  deviations (a full-scale +1.0 level advances π/2 rad/sample = 2400 Hz). The M17 spec
+  tables the map MSB-first — I TRANSPOSED it to the prompt's LSB-first convention (stated
+  loudly). Bit-accumulator + 4-entry LOAD-indirect table. Gate: LEVEL TABLE + LSB-first
+  order pinned bit-for-bit vs `digital.chunks_to_symbols_bf` over dibit indices; bit-exact
+  chip==reference; mutations (sign-flip / inner-outer swap / one-symbol shift) FAIL.
+- **FSK4SlicerBlock (1 cell).** Discriminator LEVEL → 2-bit dibit (b0 LSB first, then b1).
+  The dibit's two bits ARE the two decision flags — **no lookup table**: `b0 = (|y| ≥ 2/3)`
+  (magnitude), `b1 = (y < 0)` (sign). This falls straight out of the inverse Gray map and
+  is what let it fit one cell (an early table+LOAD version OVERFLOWED the 32-word cell:
+  28 instrs + 8 data words). Gate: the STRONGEST test is the **mapper→slicer LOOPBACK is
+  bit-for-bit the identity** on random bits (pins the shared LSB-first convention);
+  mutations (flipped sign / dropped magnitude / one-bit shift) FAIL.
+- **Both are ORIENTATION-INVARIANT 100%** (added to `test_orientation_invariance.py`,
+  0 xfail): single real rail; the mapper emits None-gaps (1 level / 2 bits), the slicer
+  drains 1 word/trigger in the harness — both produce the IDENTICAL word list in all 8 D4.
+- **Single-block on-chip DUT for a VARIABLE-rate block:** neither `run_block_dut` (1
+  word/trigger) fits — the mapper emits 1 level per 2 bits, the slicer 2 bits per level.
+  Use a drain-ALL-words-per-trigger runner (`verification/tests/fsk4_dut.py`, modelled on
+  `test_psk_symbol_mapper._run_index_dut`).
+
+- **HARD, HONEST FINDING — GardnerTimingRecovery(complex=False) does NOT recover 4-level
+  PAM timing to BER 0.** The full RX (QuadratureDemod → RRC matched filter → Gardner →
+  FSK4Slicer) was built and driven end-to-end. The DSP is CORRECT: a host reference and
+  an ideal FIXED-PHASE decimation of the very same chain recover **BER 0** (the eye is
+  open; TX/discriminator/MF are right). But Gardner — in its OWN bit-exact
+  `process_reference` AND on-chip — plateaus at **BER ~0.21–0.31**. The Gardner TED
+  S-curve for this FM-discriminator 4-PAM signal is actually correct (zero at τ=0, right
+  slope), and the loop PERIOD holds at nominal (16384 Q14), yet the recovered symbol
+  values are enormously JITTERED (per-symbol std 0.3–0.46 on a ±1 grid) — the loop sits in
+  a high-timing-jitter regime it can't leave. Swept exhaustively and it does NOT reach
+  BER 0: decision-directed TED (slice the center samples before differencing) → ~0.10–0.21;
+  lower loop bandwidth (integral shift 8→14, proportional 2→6) → ~0.21; initial-phase
+  seeding → ~0.07. None close. The 4-PAM eye is NARROWER than BPSK's (inner levels ±1/3),
+  so the same absolute timing jitter that BPSK tolerates smears 4-PAM across the decision
+  thresholds. Gardner's fixed loop_bw=0.045 / damping=1.0 (kp/ki are IGNORED per its
+  docstring) is tuned for the 2-level (BPSK/QPSK-per-axis) case that the shipped modems
+  use, where it is BER 0. **A genuinely BER-0 4-PAM receiver needs a different timing
+  recovery** (feedforward Oerder–Meyr, or full Mueller–Müller with a proper multilevel
+  S-curve) — a new block, NOT a retune of Gardner; retuning was proven insufficient.
+  CAUTION (my own error, logged so the next agent doesn't repeat it): several intermediate
+  "BER 0" readings during this investigation were MEASUREMENT BUGS in ad-hoc slicing/lag
+  code — always score against the block's own `process_reference` with a correct
+  guard+lag, and treat a recovered-symbol scatter (mean/std per true symbol) as the honest
+  lock metric, not a single BER number from a hand-rolled comparator.
+
+---
+
 ## FULL-DUPLEX shared-port modem + orientation 100%: QPSK modem works on the hand-built .kyt 2026-07-20
 
 - **Shared input-port fan-out (→ [[invariants]] INV-24).** The full-duplex QPSK modem

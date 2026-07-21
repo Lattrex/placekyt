@@ -79,6 +79,12 @@ _CASES = [
     ("IQUpconvertBlock", {}, "complex_wps1", ("xi", "xq", "out")),
     ("ComplexMixerBlock", {}, "complex", ("xi", "xq", "yi")),
     ("NCOBlock", {}, "real", ("sample", "yi")),
+    # M17 4FSK modem blocks: single real rail in/out. The mapper emits one PAM
+    # level per two input bits (None-gaps on the odd samples); the slicer emits two
+    # bits per level (the harness drains one per trigger) — both must produce the
+    # IDENTICAL output word list in every D4 orientation.
+    ("FSK4SymbolMapperBlock", {}, "real", ("sample", "out")),
+    ("FSK4SlicerBlock", {}, "real", ("sample", "out")),
 ]
 
 # No orientation residuals remain: every block in _CASES is invariant in all 8 D4

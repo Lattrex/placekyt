@@ -1,0 +1,52 @@
+id: kyttar_fsk4_slicer
+label: 🧪 Kyttar 4FSK Slicer
+category: '[Kyttar]'
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.fsk4_slicer(${device_id})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+
+inputs:
+- label: sample
+  domain: stream
+  dtype: float
+
+outputs:
+- label: out
+  domain: stream
+  dtype: float
+
+documentation: |-
+  🧪 M17 4FSK hard-decision slicer — the RX final stage of an M17 4-level FSK modem.
+
+  Maps a recovered FM-discriminator LEVEL (real, from the timing loop) to the 2-bit
+  DIBIT it came from, emitting b0 (the LSB) then b1 (the MSB) — the exact inverse of
+  the 4FSK Symbol Mapper in the same LSB-first convention (RULE #0), so a TX->RX
+  loopback recovers the original bitstream unchanged.
+
+  Decision (thresholds at 0 and ±2/3 on the normalised {±1, ±3} grid -> nearest of
+  {+3, +1, -1, -3} -> inverse Gray map):
+
+      y >= +2/3      -> +3  ->  d=1  ->  (b0=1, b1=0)
+      0 <= y < +2/3  -> +1  ->  d=0  ->  (b0=0, b1=0)
+      -2/3 <= y < 0  -> -1  ->  d=2  ->  (b0=0, b1=1)
+      y < -2/3       -> -3  ->  d=3  ->  (b0=1, b1=1)
+
+  i.e. b0 = (|y| >= 2/3) (the magnitude bit) and b1 = (y < 0) (the sign bit).
+
+  Ports:
+    sample (in): recovered discriminator symbol level (signed)
+    out:         hard dibit bits (b0 LSB then b1 MSB; two words per input level)
+
+  Parameters:
+    Device ID: which Kyttar device to use
+
+  Mapped by placeKYT (File -> Import GNURadio Flowgraph) to FSK4SlicerBlock.
+
+file_format: 1

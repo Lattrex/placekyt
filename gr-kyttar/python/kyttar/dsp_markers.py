@@ -188,6 +188,82 @@ class psk_symbol_mapper(_PassThrough):
                                    {"modulation": modulation})
 
 
+class fsk4_symbol_mapper(_PassThrough):
+    """M17 4FSK symbol mapper — GR marker (maps to FSK4SymbolMapperBlock).
+
+    TX front end of an M17 4-level FSK (C4FM) modem: a real bit stream (0/1) in ->
+    one signed PAM deviation LEVEL per DIBIT out (two LSB-first bits -> one level).
+    The four normalised M17 levels are {+1, +1/3, -1/3, -1} (== {+3,+1,-1,-3}·1/3),
+    Gray-mapped LSB-first ((b0,b1): (1,0)->+3, (0,0)->+1, (0,1)->-1, (1,1)->-3). Feed
+    the level stream to a FrequencyModulator (sensitivity 2*pi*2400/fs) to get the
+    M17 +-2400/+-800 Hz deviations. The real DSP runs on the chip; this carries the
+    graph (float in -> float out, one level per two input bits)."""
+
+    def __init__(self, device_id="kyttar_0"):
+        super().__init__("Kyttar 4FSK Symbol Mapper", n_in=1, n_out=1,
+                         in_dtype=np.float32, out_dtype=np.float32)
+        self.device_id = device_id
+        self._advertise_grc_params(device_id, "FSK4SymbolMapperBlock", {})
+
+    def work(self, input_items, output_items):
+        # Faithful M17 4FSK mapping so a GR run shows the PAM level stream: accumulate
+        # two bits LSB-first (d = b0 + 2*b1), emit levels[d] on the SECOND bit. The
+        # marker is 1:1 (sync_block), so a level per input sample; the intermediate
+        # (first-bit) sample repeats the held level (visual only — the chip halves
+        # the rate). d=0->+1/3, d=1->+1, d=2->-1/3, d=3->-1.
+        levels = [1.0 / 3.0, 1.0, -1.0 / 3.0, -1.0]
+        x = input_items[0]
+        n = len(x)
+        out = output_items[0]
+        bidx = getattr(self, "_bidx", 0)
+        dacc = getattr(self, "_dacc", 0)
+        lvl = getattr(self, "_lvl", 0.0)
+        for k in range(n):
+            b = int(round(float(x[k]))) & 1
+            if bidx == 0:
+                dacc = b
+                bidx = 1
+            else:
+                dacc = dacc + 2 * b
+                lvl = levels[dacc]
+                bidx = 0
+                dacc = 0
+            out[k] = lvl
+        self._bidx, self._dacc, self._lvl = bidx, dacc, lvl
+        return n
+
+
+class fsk4_slicer(_PassThrough):
+    """M17 4FSK hard-decision slicer — GR marker (maps to FSK4SlicerBlock).
+
+    RX final stage of an M17 4-level FSK modem: a recovered FM-discriminator LEVEL
+    (real) in -> the 2-bit DIBIT it came from out (b0 LSB then b1 MSB). The exact
+    inverse of :class:`fsk4_symbol_mapper` (thresholds at 0 and +-2/3 -> nearest of
+    {+3,+1,-1,-3} -> inverse LSB-first Gray map): b0 = (|y| >= 2/3), b1 = (y < 0).
+    The real DSP runs on the chip; this carries the graph (float level in -> float
+    bit out, two bits per input level)."""
+
+    def __init__(self, device_id="kyttar_0"):
+        super().__init__("Kyttar 4FSK Slicer", n_in=1, n_out=1,
+                         in_dtype=np.float32, out_dtype=np.float32)
+        self.device_id = device_id
+        self._advertise_grc_params(device_id, "FSK4SlicerBlock", {})
+
+    def work(self, input_items, output_items):
+        # Faithful slice so a GR run shows a bit stream. The chip emits TWO bits per
+        # input level; the 1:1 marker can only show one word per sample, so emit b0
+        # (the magnitude bit) — enough to visualise the decision. (The chip's full
+        # 2-bit output is drained by the server-batch path.)
+        x = input_items[0]
+        n = len(x)
+        out = output_items[0]
+        thr = 2.0 / 3.0
+        for k in range(n):
+            y = float(x[k])
+            out[k] = 1.0 if abs(y) >= thr else 0.0
+        return n
+
+
 class upsampler(_PassThrough):
     """Upsampler — GR marker (maps to UpsamplerBlock).
 

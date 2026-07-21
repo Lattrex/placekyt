@@ -1,0 +1,52 @@
+id: kyttar_fsk4_symbol_mapper
+label: 🧪 Kyttar 4FSK Symbol Mapper
+category: '[Kyttar]'
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.fsk4_symbol_mapper(${device_id})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+
+inputs:
+- label: sample
+  domain: stream
+  dtype: float
+
+outputs:
+- label: out
+  domain: stream
+  dtype: float
+
+documentation: |-
+  🧪 M17 4FSK / C4FM symbol mapper — the TX front end of an M17 4-level FSK modem
+  (the scheme M17 shares with DMR and Yaesu System Fusion).
+
+  Maps a real bit stream (0/1) to signed PAM deviation LEVELS: two LSB-first bits
+  make one DIBIT, one level is emitted per dibit. The four normalised M17 levels
+  are {+1, +1/3, -1/3, -1} (== {+3, +1, -1, -3}·1/3), Gray-mapped LSB-FIRST
+  (RULE #0):
+
+      (b0=1, b1=0) -> +3     (b0=0, b1=0) -> +1
+      (b0=0, b1=1) -> -1     (b0=1, b1=1) -> -3
+
+  where b0 is the FIRST/earlier bit in the stream (the LSB) and d = b0 + 2·b1.
+
+  Feed the level stream to a Frequency Modulator with sensitivity = 2·pi·2400/fs
+  (fs = sps·4800; sps=2 -> fs=9600) to produce the M17 ±2400/±800 Hz deviations:
+  the full-scale +3 level (+1.0) advances pi/2 rad/sample = 2400 Hz.
+
+  Ports:
+    sample (in): input bit (one 0/1 word per call; 2 LSB-first bits -> one level)
+    out:         signed PAM deviation level (one per dibit)
+
+  Parameters:
+    Device ID: which Kyttar device to use
+
+  Mapped by placeKYT (File -> Import GNURadio Flowgraph) to FSK4SymbolMapperBlock.
+
+file_format: 1

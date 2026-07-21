@@ -66,6 +66,11 @@ _TYPE_OVERRIDES = {
     # snake→Pascal fallback — which iterates catalog.all() — can't reach it; map it
     # explicitly (the override table uses catalog.get, which sees hidden specs).
     "kyttar_qpsk_slicer": "QPSKSlicerBlock",
+    # M17 4FSK modem blocks — map explicitly (snake→Pascal gives "Fsk4..." which
+    # the case-insensitive fallback would still match, but the block is uncurated/
+    # hidden in the palette, so pin it via the override table which uses catalog.get).
+    "kyttar_fsk4_symbol_mapper": "FSK4SymbolMapperBlock",
+    "kyttar_fsk4_slicer": "FSK4SlicerBlock",
     "kyttar_iir_biquad": "IIRBiquadBlock",
     "kyttar_conv_encoder_k7": "ConvEncoderK7Block",
     "kyttar_lfsr_scrambler": "LFSRScramblerBlock",

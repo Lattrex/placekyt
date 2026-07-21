@@ -361,6 +361,22 @@
       "notes": "Verified vs GNU Radio digital.chunks_to_symbols (arbitrary symbol_table + dimension, GRC-verbatim). GR-NATIVE path: an arbitrary complex symbol_table; INPUT INDEX -> symbol_table[index] (D=1, one complex symbol per index) via on-chip I+Q LOAD-indirect table (I at addr 1..M, Q at M+1..2M). GR does NOT pack bits (that is an upstream block); this index-in path IS the true chunks_to_symbols. On-chip the QPSK table and an asymmetric 6-point table both map index->symbol bit-exact vs digital.chunks_to_symbols_ic (<=2 LSB on I and Q). KYTTAR EXTENSION (documented LOUD, back-compat): the modulation enum bpsk/qpsk/8psk builds the Gray constellation AND retains an internal BIT ACCUMULATOR (1/2/3 input bits -> one symbol) -- this bit-packing is NOT part of GR chunks_to_symbols (index-in), it is a Kyttar convenience so bit-fed flowgraphs map directly; the 7 BPSK bit-packing tests still pass. HARDWARE LIMITS (raise): dimension>1 (vector symbols) needs a multi-word burst per index -> unsupported; symbol_table beyond MAX_SYMBOL_TABLE=14 (the per-cell I+Q table) needs a multi-cell table. 11 tests pass (7 bit-packing back-compat + 4 symbol_table: qpsk vs GR, arbitrary table vs GR, dim>1 raises, oversize raises)."
     },
     {
+      "kyttar_block": "FSK4SymbolMapperBlock",
+      "grc_block": "digital.chunks_to_symbols_bf (M17 4FSK level table)",
+      "tier": 3,
+      "status": "done",
+      "metric": "amplitude",
+      "notes": "NEW (tier 3, no exact single GR counterpart): M17 4FSK / C4FM TX symbol mapper. Real bit stream (0/1) in -> one signed PAM deviation LEVEL per DIBIT (two LSB-first bits -> one level). Four normalised M17 levels {+1,+1/3,-1/3,-1} (=={+3,+1,-1,-3}*1/3) Gray-mapped LSB-FIRST (RULE #0): d=b0+2*b1, (1,0)->+3,(0,0)->+1,(0,1)->-1,(1,1)->-3. Feed a FrequencyModulator sensitivity=2*pi*2400/fs (fs=sps*4800; sps=2->fs=9600) for the M17 +-2400/+-800 Hz deviations (+1.0 full-scale advances pi/2 rad/sample = 2400 Hz). Single cell (bit-accumulator + 4-entry LOAD-indirect level table). Verified: the LEVEL TABLE + LSB-first Gray order pinned bit-for-bit vs digital.chunks_to_symbols_bf over dibit indices; bit-exact on-chip == reference; mutation gates (sign-flip / inner-outer swap / one-symbol shift) FAIL (INV-4). Orientation-invariant 100% (INV-23). GRC binding kyttar_fsk4_symbol_mapper."
+    },
+    {
+      "kyttar_block": "FSK4SlicerBlock",
+      "grc_block": "digital.constellation_decoder (M17 4FSK PAM, inverse of mapper)",
+      "tier": 3,
+      "status": "done",
+      "metric": "decision",
+      "notes": "NEW (tier 3, no exact single GR counterpart): M17 4FSK hard-decision slicer (RX final stage). Recovered discriminator LEVEL in -> 2-bit DIBIT out (b0 LSB then b1 MSB) -- the exact inverse of FSK4SymbolMapperBlock in the same LSB-first convention. Thresholds at 0 and +-2/3 -> nearest of {+3,+1,-1,-3} -> inverse Gray map; falls out to b0=(|y|>=2/3) (magnitude), b1=(y<0) (sign) -- no dibit lookup table needed. Single cell (a sign compare + a magnitude compare, two bit WRITEs + one trigger). Verified: four levels + decision boundaries + random slice on-chip == reference; the STRONGEST gate is the mapper->slicer LOOPBACK is bit-for-bit the identity on random bits (pins the shared LSB-first M17 Gray convention); mutation gates (flipped sign / dropped magnitude bit / one-bit shift) FAIL (INV-4). Orientation-invariant 100% (INV-23). GRC binding kyttar_fsk4_slicer."
+    },
+    {
       "kyttar_block": "LFSRScramblerBlock",
       "grc_block": "digital.additive_scrambler_bb",
       "tier": 2,

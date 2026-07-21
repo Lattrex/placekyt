@@ -3,7 +3,7 @@
 
 # Kyttar block library — status
 
-**38 verified · 0 in progress · 46 targeted.** Each Kyttar block is verified as a drop-in equivalent of its GNU Radio Companion counterpart (same parameters, output matching within Q15 quantization). “Quality” is the measured error of the verified block versus the GNU Radio reference.
+**40 verified · 0 in progress · 48 targeted.** Each Kyttar block is verified as a drop-in equivalent of its GNU Radio Companion counterpart (same parameters, output matching within Q15 quantization). “Quality” is the measured error of the verified block versus the GNU Radio reference.
 
 > **Reading the quality column.** `err N / tol M LSB` — the worst-case sample error (`N`) against the derived pass threshold (`M`), in Q15 **LSBs** (1 LSB = 1/32768 of full scale ≈ 3.05e-5); pass requires `N ≤ M`. `−X dB SNR` — the **NMSE**: the error power is `X` dB below the signal power (more negative = quieter; Q15's floor is ≈ −90 dB). Decision blocks report **BER** instead. To estimate a chain's total noise, convert each block's dB to linear power (`10^(dB/10)`), sum, and convert back (`10·log10`) — the noisiest stage dominates.
 
@@ -50,6 +50,8 @@
 | **GardnerTimingRecovery** | `digital.symbol_sync_cc` | 2 · stateful/loop | ⬜ planned · 🧪 proof-of-concept | — | — |
 | **BPSKSlicerBlock** | `digital.binary_slicer_fb` | 2 · stateful/loop | ⬜ planned · 🧪 proof-of-concept | — | — |
 | **LFSRScramblerBlock** | `digital.additive_scrambler_bb` | 2 · stateful/loop | ⬜ planned | — | — |
+| **FSK4SymbolMapperBlock** | `digital.chunks_to_symbols_bf (M17 4FSK level table)` | 3 · new GRC block | ✅ done | err 0 / tol 0 LSB | mut |
+| **FSK4SlicerBlock** | `digital.constellation_decoder (M17 4FSK PAM, inverse of mapper)` | 3 · new GRC block | ✅ done | BER 0 (64 bits) | mut |
 | **QuadratureDemod** | `analog.quadrature_demod_cf` | 3 · new GRC block | ✅ done | — | — |
 | **FrequencyModulatorBlock** | `analog.frequency_modulator_fc` | 3 · new GRC block | ✅ done | pass | sweep×4 mut |
 | **MultiplyConstComplex** | `blocks.multiply_const_cc` | 3 · new GRC block | ⬜ planned | — | — |

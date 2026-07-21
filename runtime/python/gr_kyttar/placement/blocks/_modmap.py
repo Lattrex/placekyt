@@ -54,6 +54,8 @@ BUILTIN_BLOCKS = {
     'LFSRScramblerBlock': 'lfsr_scrambler_block',
     'ConvEncoderK7Block': 'conv_encoder_k7_block',
     'PSKSymbolMapperBlock': 'psk_symbol_mapper_block',
+    'FSK4SymbolMapperBlock': 'fsk4_symbol_mapper_block',
+    'FSK4SlicerBlock': 'fsk4_slicer_block',
     'DFEEqualizerBlock': 'dfe_equalizer_block',
     'PreambleCorrelatorBlock': 'preamble_correlator_block',
     'FrameSyncBlock': 'frame_sync_block',

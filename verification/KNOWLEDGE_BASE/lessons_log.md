@@ -8,6 +8,51 @@ anything that generalizes across block classes into `invariants.md`.
 
 ---
 
+## M17 4FSK timing recovery: sync-word CORRELATION, not Gardner (algorithm chosen) 2026-07-21
+
+Follow-up to the Gardner-can't-lock-4PAM finding below. Researched + numerically validated
+the RIGHT timing-recovery algorithm for 4-level FSK before building.
+
+- **What real M17 does:** the reference demod (mobilinkd/m17-cxx-demod) recovers timing by
+  SYNC-WORD CORRELATION (a sliding cross-correlation against the known ±3 sync symbols;
+  `find_peak()` → the within-symbol sample offset IS the sampling instant) + a light
+  feedforward Kalman predictor between frames. NOT a Gardner. DMR/P25/C4FM decoders (OP25
+  C4FM, DSD, dsdcc) similarly avoid raw Gardner on the 4-level path (custom DPLL / symbol-
+  rate-tone PLL / crossing trackers + sync correlation); Gardner only appears on their
+  CQPSK/PSK paths.
+- **Numerically, on OUR FM-discriminator 4-PAM signal (2 sps):** decision-directed feedback
+  trackers (Mueller-Müller, DD/normalized Gardner) are UNSTABLE — worst-case BER 0.2–0.5
+  across seeds; decision errors derail the loop (a documented 4-PAM failure mode). Oerder-
+  Meyr feedforward wants ≥4 sps + an atan (poor ISA fit). **Data-aided correlation against
+  an M17-style ASYMMETRIC sync word wins: BER 0 across 60 seeds**, pure MAC + compare (no
+  atan/divide/feedback) — the best Kyttar-ISA fit and what M17 itself uses.
+- **The validated algorithm (proto_fsk4_sync_model.py, BER 0 / 60 seeds):** frame = a short
+  alternating +3/-3 preamble + the M17 LSF sync word {+3,+3,+3,+3,-3,-3,+3,-3}. The RX slides
+  the (time-REVERSED) sync's ±1 template over the on-phase samples; each sample is pre-scaled
+  by 1/SYNC_LEN via a SIGN-CORRECT Q15 MULQ (CORR_SCALE_Q15=4096; a raw logical SHR mangles
+  negatives, [[invariants]] INV-13) so the 8-tap sum fits int16; lock on the FIRST local max
+  of C above a fixed threshold (~14745, a fraction of the ideal ≈full-scale peak); then
+  decimate 2:1 from peak+2. The ALTERNATING preamble alone is ambiguous (half-symbol/polarity
+  self-similar) → the ASYMMETRIC sync word gives the unique peak. Account for the RRC MF
+  GROUP DELAY (search the full early range, not a narrow window). The RX must be scaled so the
+  recovered OUTER level ≈ ±1.0 (MF gain ≥1.3) for the fixed 2/3 slicer + fixed correlation
+  threshold (validated at gain 1.5).
+- **STATUS: FSK4SyncTimingRecoveryBlock authored + BUILDS (10 cells: d0..d7 systolic ±1
+  correlator @ 2 samples/cell → lock → emit; fits the 32-word budget after splitting the
+  16-sample line 2/cell and the gate into lock+emit). The block's `process_reference` and the
+  self-contained model both recover BER 0. All 10 cells EXECUTE on-chip (verified via
+  `enable_trace`/`get_trace`: the d0→…→d7→lock→emit wavefront fires every sample). OPEN: the
+  on-chip datapath VALUE is wrong (correlation C saturates / recovered symbols garbage) —
+  an arithmetic bug in the correlation scaling or the 2-samples-per-cell delay-line indexing
+  (cell c must present reg[2c]=x[n-2c] with the leaving sample = old rb saved before the
+  shift). NOT yet registered in manifest/GRC/orientation (do that only once chip output ==
+  process_reference). NEXT: instrument the per-cell tap registers (the disassembler's linear
+  per-cell dump is unreliable — data/code interleave by address; use register reads or a
+  reduced 2-cell chain with known impulse) to pin the delay index, then verify C matches the
+  reference stream before the lock/emit.**
+
+---
+
 ## M17 4FSK: FSK4SymbolMapper + FSK4Slicer blocks; Gardner does NOT lock 4-PAM timing 2026-07-21
 
 Two NEW tier-3 blocks for an **M17 4-level FSK (C4FM)** modem, both DONE (verified,

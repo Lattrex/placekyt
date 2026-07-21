@@ -56,6 +56,7 @@ BUILTIN_BLOCKS = {
     'PSKSymbolMapperBlock': 'psk_symbol_mapper_block',
     'FSK4SymbolMapperBlock': 'fsk4_symbol_mapper_block',
     'FSK4SlicerBlock': 'fsk4_slicer_block',
+    'FSK4SyncTimingRecoveryBlock': 'fsk4_sync_timing_recovery_block',
     'DFEEqualizerBlock': 'dfe_equalizer_block',
     'PreambleCorrelatorBlock': 'preamble_correlator_block',
     'FrameSyncBlock': 'frame_sync_block',

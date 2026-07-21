@@ -341,6 +341,21 @@ def import_grc(path, catalog, chip_type: str = "kyttar_10x12",
         if (btype == "BPSKSlicerBlock"
                 and "out_mode" not in (gb.get("parameters") or {})):
             params["out_mode"] = "bit"
+        # RRCPulseShaperBlock is parameterised by firdes (sampling_freq, symbol_rate,
+        # alpha, ntaps), but the GRC binding exposes the friendlier alpha/span/sps. The
+        # names don't match, so _coerce_params keeps the block's default (sps=4,
+        # ntaps=33) even when the .grc set sps=2 -> a mismatched filter that garbles a
+        # 2-sps chain. Translate span/sps here: sampling_freq=sps, symbol_rate=1,
+        # ntaps=span*sps+1 (firdes.root_raised_cosine length convention).
+        if btype == "RRCPulseShaperBlock":
+            gparams = gb.get("parameters", {}) or {}
+            _sps = _try_int(gparams.get("sps"))
+            _span = _try_int(gparams.get("span"))
+            if _sps:
+                params["sampling_freq"] = float(_sps)
+                params["symbol_rate"] = 1.0
+                if _span:
+                    params["ntaps"] = _span * _sps + 1
         cells, transit = _default_cells(catalog, btype, params, placed_idx)
         from model.block import Block
         blk_name = _unique(_default_name(btype), block_map.values(),
@@ -526,6 +541,16 @@ _INSTANCE_TYPE: dict = {}
 # PortMap with the instance's params or a numeric port index (1 → yq_tap) collapses
 # onto ports[0] and the Q rail is silently misrouted/dropped.
 _INSTANCE_PARAMS: dict = {}
+
+
+def _try_int(v):
+    """Best-effort int of a GRC param string (returns None on a variable/expression)."""
+    if v is None:
+        return None
+    try:
+        return int(float(str(v).strip().strip("'\"")))
+    except (ValueError, TypeError):
+        return None
 
 
 def _params_of(catalog, btype, gname=None):

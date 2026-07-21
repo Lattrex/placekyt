@@ -124,16 +124,16 @@ blocks:
     autoscale: 'False'
     axislabels: 'True'
     color1: blue
-    comment: TX 4FSK COMPLEX baseband I/Q (the FM signal exp(j*phi); I and Q traces)
+    comment: TX 4FSK COMPLEX baseband, drained as an interleaved I/Q float stream
+      [I0,Q0,I1,Q1,...] (the kyttar sink always emits float; a float sink shows it)
     ctrlpanel: 'False'
     entags: 'True'
     grid: 'False'
     gui_hint: ''
-    label1: I
-    label2: Q
+    label1: I/Q (interleaved)
     legend: 'True'
     marker1: '-1'
-    name: '"TX baseband I/Q (complex)"'
+    name: '"TX baseband I/Q (interleaved)"'
     nconnections: '1'
     size: stim.tx_pb_points(n_bits)
     srate: samp_rate
@@ -145,7 +145,7 @@ blocks:
     tr_mode: qtgui.TRIG_MODE_FREE
     tr_slope: qtgui.TRIG_SLOPE_POS
     tr_tag: '""'
-    type: complex
+    type: float
     update_time: '0.10'
     width1: '1'
     ylabel: amplitude
@@ -294,6 +294,7 @@ blocks:
     maxoutbuf: '0'
     minoutbuf: '0'
     span: '8'
+    sps: '2'
   states:
     bus_sink: false
     bus_source: false
@@ -415,6 +416,7 @@ blocks:
     maxoutbuf: '0'
     minoutbuf: '0'
     span: '8'
+    sps: '2'
   states:
     bus_sink: false
     bus_source: false

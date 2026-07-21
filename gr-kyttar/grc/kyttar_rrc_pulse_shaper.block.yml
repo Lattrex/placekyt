@@ -4,7 +4,8 @@ category: '[Kyttar]'
 
 templates:
   imports: from gnuradio import kyttar
-  make: kyttar.rrc_pulse_shaper(${device_id}, ${alpha}, ${span}, io_type=${io_type})
+  make: kyttar.rrc_pulse_shaper(${device_id}, ${alpha}, ${span}, sps=${sps},
+    io_type=${io_type})
 
 parameters:
 - id: device_id
@@ -21,6 +22,16 @@ parameters:
   label: Filter Span (symbols)
   dtype: int
   default: '8'
+
+# Samples per symbol. The RRC's on-chip length (ntaps = span*sps+1) and its
+# samples/symbol (sampling_freq = sps, symbol_rate = 1) are derived from this, so a
+# 2-sps modem MUST set sps=2 here (else the block keeps its default sps=4 / ntaps=33
+# -> a mismatched filter that garbles a 2-sps chain). Default 4 keeps the shipped
+# BPSK modem unchanged.
+- id: sps
+  label: Samples/Symbol (sps)
+  dtype: int
+  default: '4'
 
 # Stream type. The RRC shaper is a real FIR applied per rail; its GRC port dtype
 # must match the chain: REAL for BPSK (interp_fir_filter_fff pulse shaping of the

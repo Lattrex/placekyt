@@ -347,7 +347,8 @@ class rrc_pulse_shaper(_PassThrough):
     pulse-shapes the upsampled complex symbol before the I/Q upconvert). The real
     DSP runs on the chip; this only carries the graph."""
 
-    def __init__(self, device_id="kyttar_0", alpha=0.35, span=8, io_type="complex"):
+    def __init__(self, device_id="kyttar_0", alpha=0.35, span=8, sps=4,
+                 io_type="complex"):
         # io_type selects the stream dtype and MUST equal the .block.yml ``io_type``
         # default + ${io_type} port dtype. Default COMPLEX: the PSK TX chain carries a
         # COMPLEX baseband symbol (GR's interp_fir_filter_ccf). A real-only stream
@@ -358,10 +359,20 @@ class rrc_pulse_shaper(_PassThrough):
         self.device_id = device_id
         self.alpha = alpha
         self.span = span
+        self.sps = int(sps)
         self.io_type = io_type
-        # placeKYT uses `beta` for the roll-off (GRC marker calls it `alpha`).
+        # Advertise the placeKYT block's REAL params so the importer sets them (its
+        # ports/taps come from sampling_freq/symbol_rate/alpha/ntaps, NOT beta/span).
+        # RRCPulseShaperBlock derives sps = sampling_freq/symbol_rate; ntaps = span·sps+1
+        # (GNU Radio firdes.root_raised_cosine convention). So sampling_freq = sps and
+        # symbol_rate = 1 gives the intended samples/symbol, and ntaps = span·sps+1
+        # matches the on-chip filter length. Without this, the block kept its default
+        # (sps=4, ntaps=33) even in a 2-sps chain -> a mismatched matched filter.
         self._advertise_grc_params(device_id, "RRCPulseShaperBlock",
-                                   {"beta": alpha, "span": span})
+                                   {"sampling_freq": float(self.sps),
+                                    "symbol_rate": 1.0,
+                                    "alpha": alpha,
+                                    "ntaps": span * self.sps + 1})
 
 
 class iq_upconvert(_PassThrough):

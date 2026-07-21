@@ -830,17 +830,32 @@ class AppController(QObject):
         """
         w, h = self._chip_dims(chip)
         problems: list[str] = []
-        owner: dict[tuple, str] = {}
+        owner: dict[tuple, str] = {}          # (x,y) -> block name (cross-block)
         for b in self.project.blocks:
             pl = b.placement
             if pl is None or pl.chip != chip or not pl.cells:
                 continue
+            self_cells: dict[tuple, str] = {}  # (x,y) -> cell_id within THIS block
             for c in pl.cells:
                 if not (0 <= c.x < w and 0 <= c.y < h):
                     problems.append(
                         f"block '{b.name}' cell ({c.x},{c.y}) is off the "
                         f"{w}x{h} array")
                     continue
+                # INTRA-block overlap: two of a block's OWN cells on one cell. This
+                # happens when a multi-cell block's footprint folds/clamps against an
+                # edge so an internal (e.g. transit/relay) cell lands on a datapath
+                # cell — the FrequencyModulator's serialize-LOCK transit_unlock onto
+                # emit was invisible here before, passing legality and only failing at
+                # DRC. A self-overlap is just as illegal as a cross-block one.
+                prev_self = self_cells.get((c.x, c.y))
+                if prev_self is not None:
+                    problems.append(
+                        f"block '{b.name}' cells '{prev_self}' and "
+                        f"'{c.cell_id}' overlap at ({c.x},{c.y})")
+                else:
+                    self_cells[(c.x, c.y)] = c.cell_id
+                # CROSS-block overlap.
                 prev = owner.get((c.x, c.y))
                 if prev is not None and prev != b.name:
                     problems.append(

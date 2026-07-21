@@ -417,6 +417,18 @@ class MainWindow(QMainWindow):
         self._status_sim = QLabel("Sim: idle")
         for w in (self._status_canvas, self._status_hw, self._status_sim):
             sb.addPermanentWidget(w)
+
+        # DRC status indicator (bottom-right, alongside HW/Sim). A clickable pill:
+        # GREEN "✓ DRC" when the design is clean, RED "✕ DRC: N" when there are
+        # violations. Clicking it runs Check Design Rules and opens the (resizable)
+        # findings window — the same as Build → Check Design Rules — so the user can
+        # jump straight to the problems and click a violation to highlight it.
+        self._status_drc = QPushButton("DRC: —")
+        self._status_drc.setFlat(True)
+        self._status_drc.setToolTip("Design-rule status. Click to check + view violations.")
+        self._status_drc.clicked.connect(self._check_drc)
+        sb.addPermanentWidget(self._status_drc)
+        self._set_drc_indicator(None)
         sb.showMessage("Ready")
 
     # -- signal wiring --------------------------------------------------------
@@ -1453,6 +1465,11 @@ class MainWindow(QMainWindow):
         rt = self.controller.commands.redo_text()
         self.act_undo.setText(f"Undo {ut}" if ut else "Undo")
         self.act_redo.setText(f"Redo {rt}" if rt else "Redo")
+        # The design changed → the last DRC result is stale; grey the indicator to
+        # "?" so the user knows to re-check (unless nothing's been checked yet).
+        if getattr(self, "_status_drc", None) is not None \
+                and self._status_drc.text() != "DRC: ?":
+            self._set_drc_indicator(None)
 
     def _undo(self) -> None:
         self.controller.undo()
@@ -1983,8 +2000,37 @@ class MainWindow(QMainWindow):
 
     def _check_drc(self) -> None:
         result = self.controller.run_drc()
+        errs = [f for f in result.findings
+                if str(getattr(f, "severity", "")).lower().endswith("error")]
+        self._set_drc_indicator(len(errs) if not result.ok else 0)
         self._show_findings("Design Rule Check", result.findings,
                             ok_msg="DRC clean." if result.ok else None)
+
+    def _set_drc_indicator(self, error_count: int | None) -> None:
+        """Paint the bottom-right DRC pill. ``None`` = unknown (not yet checked),
+        ``0`` = clean (green ✓), ``>0`` = that many errors (red ✕)."""
+        btn = getattr(self, "_status_drc", None)
+        if btn is None:
+            return
+        if error_count is None:
+            btn.setText("DRC: ?")
+            btn.setStyleSheet(
+                "QPushButton { color: #ddd; background: #555; border-radius: 3px;"
+                " padding: 1px 8px; }")
+            btn.setToolTip("Design-rule status unknown — click to check.")
+        elif error_count == 0:
+            btn.setText("✓ DRC")
+            btn.setStyleSheet(
+                "QPushButton { color: white; background: #27ae60; border-radius: 3px;"
+                " padding: 1px 8px; }")
+            btn.setToolTip("Design-rule clean. Click to re-check.")
+        else:
+            btn.setText(f"✕ DRC: {error_count}")
+            btn.setStyleSheet(
+                "QPushButton { color: white; background: #c0392b; border-radius: 3px;"
+                " padding: 1px 8px; font-weight: bold; }")
+            btn.setToolTip(
+                f"{error_count} design-rule violation(s). Click to view + highlight them.")
 
     def _generate_bitstream(self) -> None:
         result = self.controller.build()
@@ -1992,6 +2038,8 @@ class MainWindow(QMainWindow):
         if result.ok:
             self._sync_resolved_faces()  # arrows now reflect resolved faces
         findings = result.errors + result.warnings
+        # Reflect the build's rule findings in the bottom-right DRC indicator.
+        self._set_drc_indicator(0 if result.ok else len(result.errors))
         if result.ok:
             cells = ", ".join(str(result.chips[c].cell_count)
                               for c in sorted(result.chips))
@@ -2050,17 +2098,93 @@ class MainWindow(QMainWindow):
         if not findings:
             QMessageBox.information(self, title, ok_msg or f"{title}: clean.")
             return
-        text = "\n".join(str(f) for f in findings[:50])
-        if len(findings) > 50:
-            text += f"\n… and {len(findings) - 50} more"
-        box = QMessageBox(self)
-        box.setWindowTitle(title)
-        errors = [f for f in findings if f.severity.value == "ERROR"]
-        box.setIcon(QMessageBox.Critical if errors else QMessageBox.Warning)
-        box.setText(f"{len(errors)} error(s), "
-                    f"{len(findings) - len(errors)} other finding(s).")
-        box.setDetailedText(text)
-        box.exec()
+        # A RESIZABLE findings window (the old QMessageBox.detailedText was fixed-size
+        # and text-only). Each finding is a clickable row; clicking it HIGHLIGHTS the
+        # offending cell/block on the canvas so the user can see where to fix it.
+        self._show_findings_dialog(title, list(findings))
+
+    def _show_findings_dialog(self, title, findings) -> None:
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import (
+            QDialog, QVBoxLayout, QHBoxLayout, QLabel, QListWidget,
+            QListWidgetItem, QPushButton, QSizeGrip)
+
+        def _sev(f):
+            return str(getattr(getattr(f, "severity", None), "value",
+                               getattr(f, "severity", ""))).upper()
+
+        errors = [f for f in findings if _sev(f) == "ERROR"]
+        dlg = QDialog(self)
+        dlg.setWindowTitle(title)
+        dlg.setSizeGripEnabled(True)          # resizable from the corner
+        dlg.resize(640, 380)
+        dlg.setMinimumSize(360, 200)
+        lay = QVBoxLayout(dlg)
+
+        header = QLabel(
+            f"<b>{len(errors)} error(s)</b>, "
+            f"{len(findings) - len(errors)} other finding(s). "
+            "Click a row to highlight it on the canvas.")
+        header.setWordWrap(True)
+        lay.addWidget(header)
+
+        lst = QListWidget(dlg)
+        lst.setWordWrap(True)
+        lst.setAlternatingRowColors(True)
+        for f in findings:
+            it = QListWidgetItem(str(f))
+            sev = _sev(f)
+            if sev == "ERROR":
+                it.setForeground(Qt.red)
+            elif sev == "WARNING":
+                it.setForeground(Qt.darkYellow)
+            # Stash the finding's location on the item for the highlight action.
+            it.setData(Qt.UserRole, {
+                "chip": getattr(f, "chip", None),
+                "x": getattr(f, "x", None),
+                "y": getattr(f, "y", None),
+                "message": str(getattr(f, "message", str(f))),
+            })
+            lst.addItem(it)
+        lay.addWidget(lst, 1)
+
+        def _highlight(item):
+            data = item.data(Qt.UserRole) or {}
+            canvas = getattr(self, "canvas", None) or getattr(self, "chip_canvas", None)
+            if canvas is None or not hasattr(canvas, "highlight_drc"):
+                return
+            block = self._drc_block_from_message(data.get("message", ""))
+            canvas.highlight_drc(data.get("chip"), data.get("x"),
+                                 data.get("y"), block_name=block)
+
+        lst.itemClicked.connect(_highlight)
+        lst.itemActivated.connect(_highlight)
+
+        btns = QHBoxLayout()
+        btns.addStretch(1)
+        close = QPushButton("Close", dlg)
+        close.clicked.connect(dlg.accept)
+        btns.addWidget(close)
+        # A visible resize grip in the corner (belt-and-suspenders with
+        # setSizeGripEnabled for window managers that hide the native one).
+        btns.addWidget(QSizeGrip(dlg), 0, Qt.AlignBottom | Qt.AlignRight)
+        lay.addLayout(btns)
+
+        dlg.setModal(False)   # non-modal so the user can pan the canvas while it's open
+        dlg.show()
+        self._drc_dialog = dlg  # keep a reference so it isn't GC'd
+
+    @staticmethod
+    def _drc_block_from_message(message: str) -> str | None:
+        """Best-effort: pull a block name out of a DRC message so a finding with no
+        (x,y) can still be highlighted by its block. DRC overlap/route messages name
+        cells like ``frequencymodulator[emit]`` or nets like ``net11``; return the
+        block token (before any ``[``) when present."""
+        import re
+        m = re.search(r"\b([a-z][a-z0-9_]+)\[", message)
+        if m:
+            return m.group(1)
+        return None
 
     def _error(self, title, message) -> None:
         from PySide6.QtWidgets import QMessageBox

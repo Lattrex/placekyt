@@ -1106,6 +1106,80 @@ class ChipCanvas(QGraphicsView):
                 return (chip.position_x, chip.position_y)
         return (0.0, 0.0)
 
+    def highlight_drc(self, chip: int | None, x: int | None, y: int | None,
+                      block_name: str | None = None) -> bool:
+        """Center the view on a DRC finding's location and PULSE a red marker there
+        so the user can see WHERE the problem is (wired to the DRC dialog's
+        click-a-violation action). Prefers an explicit (chip,x,y) cell; else falls
+        back to the named block's bounding box. Returns True if it located a spot."""
+        from PySide6.QtCore import QRectF, QTimer, QPointF
+        from PySide6.QtWidgets import QGraphicsRectItem
+        from PySide6.QtGui import QPen, QColor
+
+        cx = cy = None
+        if chip is not None and x is not None and y is not None:
+            ox, oy = self._chip_origin(int(chip))
+            cx, cy = ox + int(x) * CELL_PX, oy + int(y) * CELL_PX
+            rect = QRectF(cx, cy, CELL_PX, CELL_PX)
+        elif block_name and self._project is not None:
+            blk = self._project.block(block_name)
+            if blk is not None and blk.placement is not None and blk.placement.cells:
+                ox, oy = self._chip_origin(blk.placement.chip)
+                xs = [c.x for c in blk.placement.cells]
+                ys = [c.y for c in blk.placement.cells]
+                cx = ox + min(xs) * CELL_PX
+                cy = oy + min(ys) * CELL_PX
+                rect = QRectF(cx, cy,
+                              (max(xs) - min(xs) + 1) * CELL_PX,
+                              (max(ys) - min(ys) + 1) * CELL_PX)
+            else:
+                return False
+        else:
+            return False
+
+        # Center the viewport on the finding.
+        self.centerOn(QPointF(rect.center()))
+
+        # Draw a pulsing red outline that fades out (a one-shot attention flash),
+        # reusing a dedicated overlay item so repeated clicks don't stack markers.
+        old = getattr(self, "_drc_marker", None)
+        if old is not None:
+            try:
+                self._scene.removeItem(old)
+            except Exception:  # noqa: BLE001
+                pass
+        marker = QGraphicsRectItem(rect)
+        marker.setZValue(10_000)  # above everything
+        marker.setBrush(QColor(0, 0, 0, 0))  # no fill
+        pen = QPen(QColor("#ff3030"))
+        pen.setWidth(4)
+        marker.setPen(pen)
+        self._scene.addItem(marker)
+        self._drc_marker = marker
+
+        # Pulse the outline a few times then remove it.
+        self._drc_pulse = {"n": 0, "on": True}
+
+        def _pulse():
+            st = getattr(self, "_drc_pulse", None)
+            m = getattr(self, "_drc_marker", None)
+            if st is None or m is None:
+                return
+            st["on"] = not st["on"]
+            m.setVisible(st["on"] or st["n"] < 2)
+            st["n"] += 1
+            if st["n"] >= 8:
+                try:
+                    self._scene.removeItem(m)
+                except Exception:  # noqa: BLE001
+                    pass
+                self._drc_marker = None
+                return
+            QTimer.singleShot(220, _pulse)
+
+        QTimer.singleShot(220, _pulse)
+        return True
+
     def _route_chip_of_cell(self, item: CellItem) -> int:
         """The chip a block cell sits on (from the block's placement)."""
         if self._project is not None and item.label:

@@ -317,6 +317,23 @@ blocks:
     coordinate: [1160, 148.0]
     rotation: 0
     state: enabled
+- name: tx_c2r
+  id: blocks_complex_to_real
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: take the real part of the FM signal -> real 4FSK passband (dissolves at
+      import; the FM output cell shapes the I rail)
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1296, 156.0]
+    rotation: 0
+    state: enabled
 - name: tx_sink
   id: kyttar_sink
   parameters:
@@ -325,7 +342,7 @@ blocks:
     comment: TX passband -> placeKYT chip x16_out (shared duplex port, stream 'tx')
     device_id: '"kyttar_0"'
     hold_secs: '8.0'
-    in_type: complex
+    in_type: float
     maxoutbuf: '0'
     minoutbuf: '0'
     num_channels: '1'
@@ -482,7 +499,8 @@ connections:
 - [mapper, '0', up, '0']
 - [up, '0', rrc, '0']
 - [rrc, '0', fm, '0']
-- [fm, '0', tx_sink, '0']
+- [fm, '0', tx_c2r, '0']
+- [tx_c2r, '0', tx_sink, '0']
 - [tx_sink, '0', tx_passband, '0']
 - [rx_iq, '0', rx_src, '0']
 - [rx_src, '0', qd, '0']

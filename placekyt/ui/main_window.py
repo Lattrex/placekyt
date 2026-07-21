@@ -28,6 +28,13 @@ MIN_WIDTH = 1200
 MIN_HEIGHT = 800
 
 
+def _finding_is_error(f) -> bool:
+    """True if a DRC/build finding is ERROR severity (across the enum / str shapes)."""
+    sev = getattr(f, "severity", None)
+    val = getattr(sev, "value", sev)
+    return str(val).upper() == "ERROR"
+
+
 class MainWindow(QMainWindow):
     """The application main window."""
 
@@ -137,12 +144,24 @@ class MainWindow(QMainWindow):
         summary_dock = self._add_dock(
             "Stream Summary", self.stream_summary_panel, Qt.BottomDockWidgetArea)
 
-        # Tab Output + Waveform + Breakpoints + Console + Disassembly + Summary.
+        # Design Rules (bottom): DRC / build findings list; click a row to highlight
+        # the offending cell/block/net on the canvas. A tab (not a pop-up) so it
+        # never covers the array.
+        from .panels.design_rule_panel import DesignRulePanel
+
+        self.drc_panel = DesignRulePanel()
+        self.drc_panel.highlight_requested.connect(self._on_drc_highlight)
+        drc_dock = self._add_dock(
+            "Design Rules", self.drc_panel, Qt.BottomDockWidgetArea)
+        self._drc_dock = drc_dock
+
+        # Tab Output + Waveform + Breakpoints + Console + Disassembly + Summary + DRC.
         self.tabifyDockWidget(output_dock, waveform_dock)
         self.tabifyDockWidget(waveform_dock, breakpoint_dock)
         self.tabifyDockWidget(breakpoint_dock, console_dock)
         self.tabifyDockWidget(console_dock, disasm_dock)
         self.tabifyDockWidget(disasm_dock, summary_dock)
+        self.tabifyDockWidget(summary_dock, drc_dock)
         output_dock.raise_()
 
     def _api_namespace(self) -> dict:
@@ -2001,7 +2020,7 @@ class MainWindow(QMainWindow):
     def _check_drc(self) -> None:
         result = self.controller.run_drc()
         errs = [f for f in result.findings
-                if str(getattr(f, "severity", "")).lower().endswith("error")]
+                if _finding_is_error(f)]
         self._set_drc_indicator(len(errs) if not result.ok else 0)
         self._show_findings("Design Rule Check", result.findings,
                             ok_msg="DRC clean." if result.ok else None)
@@ -2093,98 +2112,33 @@ class MainWindow(QMainWindow):
             self._error("Export failed", str(exc))
 
     def _show_findings(self, title, findings, ok_msg=None) -> None:
-        from PySide6.QtWidgets import QMessageBox
-
-        if not findings:
-            QMessageBox.information(self, title, ok_msg or f"{title}: clean.")
+        """Populate the Design Rules bottom tab (NOT a pop-up — it covers the array)
+        and raise it. A clean check still surfaces the tab so the result is visible."""
+        panel = getattr(self, "drc_panel", None)
+        if panel is None:  # pragma: no cover — panel always created in _create_docks
             return
-        # A RESIZABLE findings window (the old QMessageBox.detailedText was fixed-size
-        # and text-only). Each finding is a clickable row; clicking it HIGHLIGHTS the
-        # offending cell/block on the canvas so the user can see where to fix it.
-        self._show_findings_dialog(title, list(findings))
+        panel.set_findings(title, findings)
+        dock = getattr(self, "_drc_dock", None)
+        if dock is not None:
+            dock.show()
+            dock.raise_()
 
-    def _show_findings_dialog(self, title, findings) -> None:
-        from PySide6.QtCore import Qt
-        from PySide6.QtWidgets import (
-            QDialog, QVBoxLayout, QHBoxLayout, QLabel, QListWidget,
-            QListWidgetItem, QPushButton, QSizeGrip)
-
-        def _sev(f):
-            return str(getattr(getattr(f, "severity", None), "value",
-                               getattr(f, "severity", ""))).upper()
-
-        errors = [f for f in findings if _sev(f) == "ERROR"]
-        dlg = QDialog(self)
-        dlg.setWindowTitle(title)
-        dlg.setSizeGripEnabled(True)          # resizable from the corner
-        dlg.resize(640, 380)
-        dlg.setMinimumSize(360, 200)
-        lay = QVBoxLayout(dlg)
-
-        header = QLabel(
-            f"<b>{len(errors)} error(s)</b>, "
-            f"{len(findings) - len(errors)} other finding(s). "
-            "Click a row to highlight it on the canvas.")
-        header.setWordWrap(True)
-        lay.addWidget(header)
-
-        lst = QListWidget(dlg)
-        lst.setWordWrap(True)
-        lst.setAlternatingRowColors(True)
-        for f in findings:
-            it = QListWidgetItem(str(f))
-            sev = _sev(f)
-            if sev == "ERROR":
-                it.setForeground(Qt.red)
-            elif sev == "WARNING":
-                it.setForeground(Qt.darkYellow)
-            # Stash the finding's location on the item for the highlight action.
-            it.setData(Qt.UserRole, {
-                "chip": getattr(f, "chip", None),
-                "x": getattr(f, "x", None),
-                "y": getattr(f, "y", None),
-                "message": str(getattr(f, "message", str(f))),
-            })
-            lst.addItem(it)
-        lay.addWidget(lst, 1)
-
-        def _highlight(item):
-            data = item.data(Qt.UserRole) or {}
-            canvas = getattr(self, "canvas", None) or getattr(self, "chip_canvas", None)
-            if canvas is None or not hasattr(canvas, "highlight_drc"):
+    def _on_drc_highlight(self, data: dict) -> None:
+        """A Design-Rules row was clicked → highlight its location on the canvas.
+        Prefer an explicit (chip,x,y) cell; else the named block's footprint; else
+        the named net's fly-line (unrouted findings carry only a net name)."""
+        canvas = getattr(self, "canvas", None)
+        if canvas is None:
+            return
+        chip, x, y = data.get("chip"), data.get("x"), data.get("y")
+        if x is not None and y is not None and hasattr(canvas, "highlight_drc"):
+            canvas.highlight_drc(chip, x, y)
+            return
+        if data.get("block") and hasattr(canvas, "highlight_drc"):
+            if canvas.highlight_drc(None, None, None, block_name=data["block"]):
                 return
-            block = self._drc_block_from_message(data.get("message", ""))
-            canvas.highlight_drc(data.get("chip"), data.get("x"),
-                                 data.get("y"), block_name=block)
-
-        lst.itemClicked.connect(_highlight)
-        lst.itemActivated.connect(_highlight)
-
-        btns = QHBoxLayout()
-        btns.addStretch(1)
-        close = QPushButton("Close", dlg)
-        close.clicked.connect(dlg.accept)
-        btns.addWidget(close)
-        # A visible resize grip in the corner (belt-and-suspenders with
-        # setSizeGripEnabled for window managers that hide the native one).
-        btns.addWidget(QSizeGrip(dlg), 0, Qt.AlignBottom | Qt.AlignRight)
-        lay.addLayout(btns)
-
-        dlg.setModal(False)   # non-modal so the user can pan the canvas while it's open
-        dlg.show()
-        self._drc_dialog = dlg  # keep a reference so it isn't GC'd
-
-    @staticmethod
-    def _drc_block_from_message(message: str) -> str | None:
-        """Best-effort: pull a block name out of a DRC message so a finding with no
-        (x,y) can still be highlighted by its block. DRC overlap/route messages name
-        cells like ``frequencymodulator[emit]`` or nets like ``net11``; return the
-        block token (before any ``[``) when present."""
-        import re
-        m = re.search(r"\b([a-z][a-z0-9_]+)\[", message)
-        if m:
-            return m.group(1)
-        return None
+        if data.get("net") and hasattr(canvas, "highlight_net"):
+            canvas.highlight_net(data["net"])
 
     def _error(self, title, message) -> None:
         from PySide6.QtWidgets import QMessageBox

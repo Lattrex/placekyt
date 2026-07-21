@@ -1180,6 +1180,67 @@ class ChipCanvas(QGraphicsView):
         QTimer.singleShot(220, _pulse)
         return True
 
+    def highlight_net(self, net_name: str) -> bool:
+        """Center on and PULSE a named connection's fly-line — for UNROUTED-net DRC
+        findings, which carry no cell (x,y). Draws a thick red dashed line between the
+        net's two endpoint anchors (and boxes the source block) so the user sees which
+        link has no route. Returns True if the net was found + anchored."""
+        from PySide6.QtCore import QTimer, QPointF, Qt
+        from PySide6.QtWidgets import QGraphicsLineItem
+        from PySide6.QtGui import QPen, QColor
+
+        if self._project is None:
+            return False
+        conn = next((c for c in self._project.connections
+                     if getattr(c, "name", None) == net_name), None)
+        if conn is None:
+            return False
+        start = self._endpoint_anchor(conn.source)
+        end = self._endpoint_anchor(conn.target)
+        if start is None or end is None:
+            return False
+        sx, sy = start.x(), start.y()
+        ex, ey = end.x(), end.y()
+
+        self.centerOn(QPointF((sx + ex) / 2, (sy + ey) / 2))
+
+        old = getattr(self, "_drc_marker", None)
+        if old is not None:
+            try:
+                self._scene.removeItem(old)
+            except Exception:  # noqa: BLE001
+                pass
+        line = QGraphicsLineItem(sx, sy, ex, ey)
+        pen = QPen(QColor("#ff3030"))
+        pen.setWidth(5)
+        pen.setStyle(Qt.DashLine)
+        line.setPen(pen)
+        line.setZValue(10_000)
+        self._scene.addItem(line)
+        self._drc_marker = line
+
+        self._drc_pulse = {"n": 0, "on": True}
+
+        def _pulse():
+            st = getattr(self, "_drc_pulse", None)
+            m = getattr(self, "_drc_marker", None)
+            if st is None or m is None:
+                return
+            st["on"] = not st["on"]
+            m.setVisible(st["on"] or st["n"] < 2)
+            st["n"] += 1
+            if st["n"] >= 8:
+                try:
+                    self._scene.removeItem(m)
+                except Exception:  # noqa: BLE001
+                    pass
+                self._drc_marker = None
+                return
+            QTimer.singleShot(220, _pulse)
+
+        QTimer.singleShot(220, _pulse)
+        return True
+
     def _route_chip_of_cell(self, item: CellItem) -> int:
         """The chip a block cell sits on (from the block's placement)."""
         if self._project is not None and item.label:

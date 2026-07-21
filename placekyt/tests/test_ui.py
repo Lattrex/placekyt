@@ -302,7 +302,8 @@ class TestMainWindow:
         # the docks exist (Program is its own dock, separate from Inspector)
         assert set(w._docks) == {
             "Block Library", "Inspector", "Program", "Output", "Waveform",
-            "Breakpoints", "Console", "Disassembly", "Stream Summary"}
+            "Breakpoints", "Console", "Disassembly", "Stream Summary",
+            "Design Rules"}
 
     def test_disassembly_panel_shows_bitstream(self, qapp):
         # The Disassembly dock renders a bitstream as a WRITE+DATA+JUMP listing.

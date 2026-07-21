@@ -217,7 +217,11 @@ class FSK4SyncTimingRecoveryBlock(KyttarBlock):
             add_upstream = ("    MOVE R0, R{state:part}\n"
                             "    ADD R0, R{state:pins}\n"
                             "    MOVE R{state:part}, R0\n")
-        # scaled tap: part = sign·(reg[2c]·scale)>>15
+        # scaled tap: part = sign·(reg[2c]·scale)>>15. Correlate the STORED tap ``ra``
+        # (= x[n-2c], the even-lag sample, verified via read_cell_memory) — NOT the
+        # incoming input register a second time: an async input operand latch is consumed
+        # on its first read (the head already moved ``shifted``→ra), so re-reading it in
+        # corr yields a stale/zero value (INV-20). ``ra`` holds the same value, stably.
         corr = "    MULQ R{state:%s}, R{data:scale}\n" % ra
         if sign > 0:
             corr += "    MOVE R{state:part}, R0\n"
@@ -241,10 +245,16 @@ class FSK4SyncTimingRecoveryBlock(KyttarBlock):
                     + shifted_emit
                     + "    MOVE R0, R{state:xsave}\n    {write:xfwd}\n"
                     + "    {jump:trig}\n")
+        # Data words must NOT collide with the input registers: d0 has ONE input (reg
+        # 0) so data can start at addr 1; d1.. have THREE inputs (pin@0, shifted@1,
+        # xfwd@2) so their data must start ABOVE reg 2 (else the incoming shifted/xfwd
+        # WRITE clobbers ``zero``/``scale`` — the bug that made every downstream cell's
+        # correlation use garbage constants).
+        dbase = 1 if first else 3
         return CellProgram(
             inputs=inputs, outputs=outs, entries=[EntryPoint("default")],
-            data=[DataWord("zero", 0, address=1),
-                  DataWord("scale", self.CORR_SCALE_Q15, address=2)],
+            data=[DataWord("zero", 0, address=dbase),
+                  DataWord("scale", self.CORR_SCALE_Q15, address=dbase + 1)],
             state=state,
             assembly_template=template,
         )
@@ -265,9 +275,11 @@ class FSK4SyncTimingRecoveryBlock(KyttarBlock):
             inputs=[Port("cin", register=0), Port("xin", register=1)],
             outputs=[Port("xout"), Port("lk"), Port("trig")],
             entries=[EntryPoint("default")],
-            data=[DataWord("zero", 0, address=1),
-                  DataWord("one", 1, address=2),
-                  DataWord("thr", thr & 0xFFFF, address=3)],
+            # data ABOVE the input regs (cin@0, xin@1) so the incoming WRITEs don't
+            # clobber the constants (the systolic data-collision bug).
+            data=[DataWord("zero", 0, address=2),
+                  DataWord("one", 1, address=3),
+                  DataWord("thr", thr & 0xFFFF, address=4)],
             state=[StateVar("cval"), StateVar("cm1"), StateVar("cm2"),
                    StateVar("done", initial_value=0), StateVar("lkf")],
             assembly_template="""\
@@ -306,7 +318,9 @@ fwd:
             inputs=[Port("xin", register=0), Port("lkin", register=1)],
             outputs=[Port("out"), Port("trig")],
             entries=[EntryPoint("default")],
-            data=[DataWord("zero", 0, address=1), DataWord("one", 1, address=2)],
+            # data ABOVE the input regs (xin@0, lkin@1) — else the incoming lk WRITE
+            # clobbers ``zero`` (the systolic data-collision bug).
+            data=[DataWord("zero", 0, address=2), DataWord("one", 1, address=3)],
             state=[StateVar("xv"), StateVar("phase", initial_value=0),
                    StateVar("run", initial_value=0)],
             assembly_template="""\
@@ -325,10 +339,15 @@ run_check:
     ; emit when phase==0 (a symbol center), else count down to it
     CMP R{state:phase}, R{data:zero}
     BR.NZ flip
+    ; emit path: set phase=1 FIRST, then emit. A remote JUMP does NOT halt local
+    ; execution, so the emit path MUST end in a real HALT — otherwise it falls
+    ; through into ``flip`` and immediately resets phase back to 0 (the bug that
+    ; made the decimator emit every sample instead of 2:1).
+    MOVE R{state:phase}, R{data:one}
     MOVE R0, R{state:xv}
     {write:out}
-    MOVE R{state:phase}, R{data:one}
     {jump:trig}
+    HALT
 flip:
     MOVE R{state:phase}, R{data:zero}
 done:

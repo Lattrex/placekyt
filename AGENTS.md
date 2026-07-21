@@ -216,6 +216,18 @@ not lower:
       assert the output equals the identity build). A block that breaks when rotated is
       broken. Its internal (`transit_*`) cells are FIRST-CLASS block cells (block color,
       footprint, same rules), never light-blue routing cells.
+- [ ] **Footprint legal under orientation AND movement (INV-25):** the block's cells stay
+      pairwise-distinct (no self-overlap) after every D4 orientation AND after user
+      movement — a whole-block drag OR an Alt-drag single-cell breakout. This is DISTINCT
+      from orientation-INVARIANCE (that's compute; this is geometry). A multi-cell block
+      with an internal transit/relay cell can fold that cell onto a datapath cell; that
+      self-overlap used to pass placement (the legality gate only compared DIFFERENT
+      blocks) and fail only at DRC with a broken build + un-routable net.
+      `verification/tests/test_placement_legality.py` must be green — add the block (with
+      its footprint-growing params, e.g. `pipeline_lock=True`) to its `BLOCKS` list. Both
+      the placer's `_placement_legality` and the single-cell `move_cell` reject overlaps
+      (self or cross-block); if a new block introduces an internal cell, verify it can't
+      be orphaned.
 - [ ] **Saturation-safe (INV-19/INV-20):** the block produces the CORRECT output COUNT
       (its N:M rate, no dropped/duplicated samples) AND the correct VALUES when driven
       SATURATED — the whole burst enqueued back-to-back with NO inter-sample quiescence

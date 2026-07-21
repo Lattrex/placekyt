@@ -222,7 +222,14 @@ class AppController(QObject):
             TransformBlockCommand(self.project, block_name, kind))
 
     def move_cell(self, block_name: str, cell_id, x: int, y: int) -> None:
-        """Reposition a single cell of a block (Alt+drag breakout). Undoable."""
+        """Reposition a single cell of a block (Alt+drag breakout). Undoable.
+
+        REJECTS a move that would land the cell ON TOP of another cell — its own
+        block's OR another block's. A single-cell drag used to skip this, so a user
+        could Alt-drag e.g. the FrequencyModulator's `emit` onto its `transit_unlock`
+        cell, producing a self-overlap that passed placement but failed at DRC (and
+        broke routing). A cell that must occupy a taken square is never valid.
+        """
         from commands import PlaceCellCommand
 
         blk = self.project.block(block_name)
@@ -231,8 +238,26 @@ class AppController(QObject):
         cell = blk.placement.cell(cell_id)
         if cell is None:
             raise KeyError(f"block {block_name!r} has no cell {cell_id!r}")
+        chip = blk.placement.chip
+        # Off-grid guard.
+        w, h = self._chip_dims(chip)
+        if not (0 <= x < w and 0 <= y < h):
+            raise ValueError(
+                f"cell ({x},{y}) is off the {w}x{h} array")
+        # Overlap guard: any OTHER cell (same block or another) already at (x,y)?
+        for b in self.project.blocks:
+            if b.placement is None or b.placement.chip != chip:
+                continue
+            for c in b.placement.cells:
+                if c is cell:
+                    continue
+                if (c.x, c.y) == (x, y):
+                    who = (f"{b.name}[{c.cell_id}]" if b.name != block_name
+                           else f"this block's '{c.cell_id}'")
+                    raise ValueError(
+                        f"cell ({x},{y}) is already occupied by {who}")
         self.commands.execute(PlaceCellCommand(
-            self.project, block_name, blk.placement.chip, cell_id, x, y, cell.face))
+            self.project, block_name, chip, cell_id, x, y, cell.face))
 
     def remove_block(self, block_name: str) -> None:
         self.commands.execute(RemoveBlockCommand(self.project, block_name))

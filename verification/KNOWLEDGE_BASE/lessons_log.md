@@ -2091,3 +2091,32 @@ Gardner, IQUpconvert, ComplexMixer, NCO) FAIL the D4 orientation harness
   the Q15 words AND the reference with the ORIGINAL signed floats (or the same words the
   reference re-quantises internally). ALWAYS reconcile a "divergence" against a
   hand-computed sample before blaming the datapath.
+
+## 2026-07-21 — Placement legality must survive USER MOVEMENT, not just clean transforms (INV-25)
+
+- **A block's footprint can self-overlap through USER MOVEMENT, and neither the layout
+  transform nor the orientation test caught it.** The FrequencyModulator serialize-LOCK
+  grew the block to 12 cells (added `relay` + `transit_unlock`). A user Alt-dragged one
+  cell (the single-cell "breakout" move) onto another of the block's own cells → emit and
+  transit_unlock stacked at one square. The DRC caught it (overlap + an un-routable yq/net),
+  but only AFTER the fact — the placement itself was accepted.
+
+- **TWO holes, both fixed:**
+  1. `ui/controller._placement_legality` skipped a collision when both cells were the SAME
+     block (`prev != b.name`) — so a self-overlap passed. Now flags intra-block overlap too.
+  2. `ui/controller.move_cell` (the Alt-drag single-cell move) did NO overlap/off-grid
+     validation — it just placed the cell. Now REJECTS a move onto any occupied cell (self
+     or cross-block) or off-grid; the GUI shows "Cell move failed: …" and the placement is
+     untouched.
+
+- **The orientation test was NOT thorough enough** (user's words). It checked compute-
+  invariance via clean `OrientBlockCommand` transforms only — never movement. NEW GATE
+  `verification/tests/test_placement_legality.py` (INV-25) proves, per multi-cell block:
+  (a) no self-overlap in any D4 orientation, (b) `move_cell` rejects a colliding move,
+  (c) move-then-rotate / rotate-then-move never yields an overlap. Added to the AGENTS.md
+  acceptance checklist. LESSON: a "rotation test" that only rotates a pristine block misses
+  the failure mode that actually bites users — moving cells around AFTER placing/rotating.
+
+- **CAVEAT (still open):** a .kyt SAVED with a pre-fix overlap stays overlapping on load
+  (the fix prevents CREATING overlaps, not repairing saved ones). Recovery: drag the
+  orphaned cell to a free square (now allowed) or delete + re-place the block.

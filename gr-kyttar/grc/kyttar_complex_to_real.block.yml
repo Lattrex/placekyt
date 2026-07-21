@@ -1,0 +1,45 @@
+id: kyttar_complex_to_real
+label: 🧪 Kyttar Complex To Real
+category: '[Kyttar]'
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.complex_to_real(${device_id})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+
+inputs:
+- label: in
+  domain: stream
+  dtype: complex
+
+outputs:
+- label: out
+  domain: stream
+  dtype: float
+
+documentation: |-
+  🧪 Complex -> Real (take the real part): ONE complex stream in -> ONE real stream
+  out (out = Re(in)). A placed 1-cell block that reads the I/Q pair and emits ONLY
+  the real rail — used to turn a complex passband (e.g. an FM modulator's exp(jφ))
+  into a REAL passband for viewing/output.
+
+  Unlike GNU Radio's blocks_complex_to_real (which the placeKYT importer DISSOLVES,
+  relying on the upstream cell to shape one rail — which an FM modulator's emit cell
+  cannot do, it always emits BOTH rails), this kyttar_ binding is PLACED as a real
+  block that genuinely drops the Q rail.
+
+  Ports:
+    in (complex): complex stream (e.g. an FM passband exp(jφ))
+    out (float):  the real part Re(in)
+
+  Parameters:
+    Device ID: which Kyttar device to use
+
+  Mapped by placeKYT (File -> Import GNURadio Flowgraph) to ComplexToRealBlock.
+
+file_format: 1

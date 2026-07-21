@@ -1000,10 +1000,25 @@ def _apply_routes(cell_map, gr_placement, blocks, connections, chip_type,
                   and _cell_write_count(cfg) > 1):
                 # COMPLEX EGRESS to the OUTPUT PORT: the source emits yi+yq (≥2 output
                 # WRITEs) straight to x16_out. Give each rail its OWN dest tag
-                # (yi→out_tag, yq→out_tag+1) so the port demux keeps I and Q as
+                # (yi→base_tag, yq→base_tag+1) so the port demux keeps I and Q as
                 # SEPARATE captured streams (mirrors complex INPUT xi→a0, xq→a1), and
                 # the waveform plots two clean traces instead of one interleaved band.
-                _patch_complex_output_port_handoff(cfg, phys_dist, dest, entry=0)
+                #
+                # The source drives the port on TWO nets (yi→tag N, yq→tag N+1). Both
+                # nets reach this branch, but ONE call patches BOTH rails — so patch
+                # once, from the LOWER (I-rail) tag as the base, and skip the sibling
+                # net (else the second call remaps yi→N+1, yq→N+2 and corrupts it).
+                base_tag = dest
+                for _oc in connections:
+                    _os, _ot = _oc.source, _oc.target
+                    if (isinstance(_os, BlockEndpoint) and _os.block == src.block
+                            and not isinstance(_ot, BlockEndpoint)
+                            and _oc.out_tag is not None):
+                        base_tag = min(base_tag, _oc.out_tag)
+                if dest == base_tag:      # this is the I-rail net → patch both rails
+                    _patch_complex_output_port_handoff(cfg, phys_dist, base_tag,
+                                                       entry=0)
+                # else: the sibling (Q) net — already handled by the I-rail patch.
             elif n_target_ins > 1 and _cell_write_count(cfg) > 1:
                 # COMPLEX PACKET over abutment: the source cell emits ≥2 output
                 # WRITEs (yi, yq) to a ≥2-register target. Steer THIS rail's WRITE

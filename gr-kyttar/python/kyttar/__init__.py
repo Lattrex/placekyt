@@ -70,7 +70,7 @@ from .dsp_markers import (complex_rrc_matched_filter, complex_costas_loop,
                           iq_upconvert, complex_to_float,
                           frequency_modulator, quadrature_demod,
                           fsk4_symbol_mapper, fsk4_slicer,
-                          fsk4_sync_timing_recovery)
+                          fsk4_sync_timing_recovery, complex_to_real)
 from .gain import gain
 from .multiply import multiply
 from .add import add, subtract
@@ -117,6 +117,7 @@ __all__ = [
     "fsk4_symbol_mapper",
     "fsk4_slicer",
     "fsk4_sync_timing_recovery",
+    "complex_to_real",
     "upsampler",
     "complex_upsampler",
     "rrc_pulse_shaper",

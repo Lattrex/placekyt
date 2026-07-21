@@ -412,6 +412,30 @@ class complex_to_float(_PassThrough):
         return n
 
 
+class complex_to_real(_PassThrough):
+    """Complex -> Real (take the real part) — GR marker (maps to ComplexToRealBlock).
+
+    ONE complex stream in -> ONE real stream out (``out = Re(in)``). On the chip this
+    is a placed 1-cell block that reads the I/Q pair and emits ONLY the real rail --
+    used to turn a complex passband (e.g. an FM modulator's ``exp(jφ)``) into a REAL
+    passband for viewing/output. Unlike GNU Radio's ``blocks_complex_to_real`` (which
+    the placeKYT importer DISSOLVES, relying on the upstream cell to shape one rail --
+    which the FM emit cell cannot do, it always emits BOTH rails), this ``kyttar_``
+    binding is PLACED as a real block that genuinely drops the Q rail."""
+
+    def __init__(self, device_id="kyttar_0"):
+        super().__init__("Kyttar Complex To Real", n_in=1, n_out=1,
+                         in_dtype=np.complex64, out_dtype=np.float32)
+        self.device_id = device_id
+        self._advertise_grc_params(device_id, "ComplexToRealBlock", {})
+
+    def work(self, input_items, output_items):
+        x = input_items[0]
+        n = min(len(output_items[0]), len(x))
+        output_items[0][:n] = x[:n].real
+        return n
+
+
 class frequency_modulator(_PassThrough):
     """FM modulator (VCO) — GR marker (maps to FrequencyModulatorBlock).
 

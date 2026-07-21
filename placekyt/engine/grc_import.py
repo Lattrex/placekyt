@@ -431,6 +431,39 @@ def import_grc(path, catalog, chip_type: str = "kyttar_10x12",
             target=BlockEndpoint(block=dst.block, port=dq),
             route=None, stream_id=None, out_tag=None))
 
+    # COMPLEX BLOCK → CHIP OUTPUT PORT SPLIT: a complex-output block (e.g. a
+    # FrequencyModulator emitting yi/yq) feeding the chip output port arrives as ONE
+    # gr_complex wire, so only the I-half (yi) net was created above — the Q rail
+    # (yq) is then never routed and the FM emits it anyway onto the port, garbling
+    # the stream. Synthesise the yq→x16_out net so BOTH rails egress: the build tags
+    # them out_tag / out_tag+1 and the live bridge reassembles the interleaved I/Q
+    # (engine.sim_bridge complex-egress path). Mirrors the block→block split above,
+    # but the target is the chip OUTPUT port, not a second block.
+    for c in list(project.connections):
+        src, dst = c.source, c.target
+        if not (isinstance(src, BlockEndpoint)
+                and isinstance(dst, ChipPortEndpoint)
+                and getattr(dst, "port", None) == "x16_out"):
+            continue
+        # src.block is the placeKYT block NAME; look up its TYPE from the project.
+        sblk = project.block(src.block)
+        sbt = sblk.type if sblk is not None else None
+        sq = _iq_sibling(catalog, sbt, src.port, want_out=True,
+                         params=(sblk.params if sblk is not None else None))
+        if sq is None:
+            continue  # not a complex-output rail (a real scalar output) — leave it
+        if any(isinstance(o.source, BlockEndpoint)
+               and o.source.block == src.block and o.source.port == sq
+               for o in project.connections):
+            continue  # yq already wired somewhere — don't duplicate
+        net_idx += 1
+        project.connections.append(Connection(
+            f"net{net_idx}",
+            source=BlockEndpoint(block=src.block, port=sq),
+            target=ChipPortEndpoint(chip=0, port="x16_out"),
+            route=None, stream_id=None,
+            out_tag=(c.out_tag + 1) if c.out_tag is not None else None))
+
     return GrcImportResult(project=project, block_map=block_map,
                            unknown=unknown, dropped=dropped)
 

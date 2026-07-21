@@ -268,7 +268,16 @@ def _chain_out_tags(project, chip_id, in_port_name):
         elif (isinstance(s, BlockEndpoint)
               and isinstance(t, ChipPortEndpoint)
               and str(t.port).endswith("_out")):
-            out_net_tag[s.block] = getattr(conn, "out_tag", None)
+            # A COMPLEX-output block feeds the port on TWO nets (yi→tag N, yq→tag N+1);
+            # keep the LOWER (I-rail) tag as the chain's base so the complex-egress
+            # collector reads I on out_tag and Q on out_tag+1 (not the reverse). For a
+            # single real output there's just one net and this is a no-op.
+            t_new = getattr(conn, "out_tag", None)
+            t_old = out_net_tag.get(s.block, None)
+            if t_old is None:
+                out_net_tag[s.block] = t_new
+            elif t_new is not None:
+                out_net_tag[s.block] = min(t_old, t_new)
 
     result: dict[str, tuple] = {}
     for conn in project.connections:

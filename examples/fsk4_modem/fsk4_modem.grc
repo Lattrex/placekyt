@@ -124,15 +124,16 @@ blocks:
     autoscale: 'False'
     axislabels: 'True'
     color1: blue
-    comment: TX 4FSK passband (real part of the FM signal)
+    comment: TX 4FSK COMPLEX baseband I/Q (the FM signal exp(j*phi); I and Q traces)
     ctrlpanel: 'False'
     entags: 'True'
     grid: 'False'
     gui_hint: ''
-    label1: amplitude
+    label1: I
+    label2: Q
     legend: 'True'
     marker1: '-1'
-    name: '"TX passband (real)"'
+    name: '"TX baseband I/Q (complex)"'
     nconnections: '1'
     size: stim.tx_pb_points(n_bits)
     srate: samp_rate
@@ -144,7 +145,7 @@ blocks:
     tr_mode: qtgui.TRIG_MODE_FREE
     tr_slope: qtgui.TRIG_SLOPE_POS
     tr_tag: '""'
-    type: float
+    type: complex
     update_time: '0.10'
     width1: '1'
     ylabel: amplitude
@@ -317,32 +318,16 @@ blocks:
     coordinate: [1160, 148.0]
     rotation: 0
     state: enabled
-- name: tx_c2r
-  id: blocks_complex_to_real
-  parameters:
-    affinity: ''
-    alias: ''
-    comment: take the real part of the FM signal -> real 4FSK passband (dissolves at
-      import; the FM output cell shapes the I rail)
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    vlen: '1'
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [1296, 156.0]
-    rotation: 0
-    state: enabled
 - name: tx_sink
   id: kyttar_sink
   parameters:
     affinity: ''
     alias: ''
-    comment: TX passband -> placeKYT chip x16_out (shared duplex port, stream 'tx')
+    comment: TX complex baseband I/Q -> placeKYT chip x16_out (shared duplex port,
+      stream 'tx'; the FM yi/yq rails egress on out_tag / out_tag+1)
     device_id: '"kyttar_0"'
     hold_secs: '8.0'
-    in_type: float
+    in_type: complex
     maxoutbuf: '0'
     minoutbuf: '0'
     num_channels: '1'
@@ -499,8 +484,7 @@ connections:
 - [mapper, '0', up, '0']
 - [up, '0', rrc, '0']
 - [rrc, '0', fm, '0']
-- [fm, '0', tx_c2r, '0']
-- [tx_c2r, '0', tx_sink, '0']
+- [fm, '0', tx_sink, '0']
 - [tx_sink, '0', tx_passband, '0']
 - [rx_iq, '0', rx_src, '0']
 - [rx_src, '0', qd, '0']

@@ -165,16 +165,33 @@ def run_block_dut(
 
     # Placement-dependent hop: 31 - (number of cells the word transits from the
     # x16_in port cell to the block's landing cell, inclusive of the port's own
-    # edge cell). Derive it from the actual landing-cell position rather than the
-    # routed point list — the chip-input net's route is unreliable for this (it
-    # may be absent, or include the port edge cell inconsistently). The landing
-    # cell is the block's input-port cell (first placed cell for a simple block).
+    # edge cell). The word rides its built fwd_face corridor cell-by-cell until it
+    # has transited exactly `dist` cells, so `dist` MUST be the true corridor
+    # length — NOT the manhattan span. Under most orientations the auto-router
+    # draws a straight (manhattan) corridor and the two agree, but under some D4
+    # rotations the corridor SNAKES (e.g. a single-real-rail block whose input
+    # cell lands on the far edge): the routed path is longer than |dx|+|dy|, and a
+    # manhattan hop stops the injected word SHORT of the block → zero/None output
+    # (the NCO cw+cw / mirror_v+cw+cw+cw anti-orientation case). So derive `dist`
+    # from the ACTUAL routed corridor when present: the port→block input net's
+    # route is a point list [port_cell, ...transit..., landing]; `len(route)` is
+    # exactly the transit count incl. the port's edge cell. Fall back to the
+    # manhattan span only when the net is unrouted / direct-on-port (route absent
+    # or not anchored at the port cell) — the proven explicit-placement path.
     port = ct.port("x16_in")
+    port_cell = (port.cell_x, port.cell_y)
     blk_obj = ctrl.project.block(blk)
     landing = (blk_obj.placement.cells[0]
                if blk_obj and blk_obj.placement and blk_obj.placement.cells
                else None)
-    if landing is not None:
+    in_conn = next((c for c in ctrl.project.connections if c.name == "in_blk"), None)
+    route = getattr(in_conn, "route", None) if in_conn is not None else None
+    if (isinstance(route, list) and route
+            and (route[0].x, route[0].y) == port_cell):
+        # True corridor length: transit cells from the port cell to (and incl.)
+        # the landing, matching how the word rides fwd_faces to HOP_CNT==31.
+        dist = len(route)
+    elif landing is not None:
         # transit cells = |dx| + |dy| from port cell to landing, + 1 for the
         # port's own edge cell that the word is consumed past.
         dist = abs(landing.x - port.cell_x) + abs(landing.y - port.cell_y) + 1

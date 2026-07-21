@@ -19,11 +19,17 @@ fan-in's two rails were double-relayed / split across divergent corridors. Fixed
 node-disjoint maze router). ComplexMixer + ComplexRRC are now invariant in all 8 D4
 orientations.
 
-KNOWN, DOCUMENTED residual (xfail — NOT a datapath bug): NCOBlock's REAL (single-rail)
-input at two anti-orientations still emits nothing, a DISTINCT failure mode (its routes
-are clean, single rail, no fan-in). The block DATAPATH is provably invariant (its built
-cells transform correctly). Those specific (block, orientation) pairs are xfailed so the
-gate stays green + honest rather than hiding the residual.
+FIXED (was the NCOBlock single-rail residual): NCOBlock's REAL (single-rail) input at two
+180°-family anti-orientations (``cw+cw`` / ``mirror_v+cw+cw+cw``) used to emit nothing —
+but this was NEVER a datapath or routing defect. The build is fully invariant there: the
+datapath cells transform correctly and every corridor cell forwards the sample straight to
+the block's input cell. The failure was in the DUT HARNESS: it derived the port target hop
+count from the MANHATTAN span (``|dx|+|dy|``) to the landing cell, but under those rotations
+the auto-router draws a corridor that SNAKES (longer than manhattan), so the injected word
+stopped SHORT and never reached the block. Fixed in ``kyttar_verify.run_block_dut`` by
+deriving the hop from the ACTUAL routed corridor length (``len(route)``) when the input net
+is routed from the port cell. All blocks are now invariant in all 8 D4 orientations; no
+xfails remain.
 
 Run:
     KYTTAR_GR_PYTHON=/usr/bin/python3 QT_QPA_PLATFORM=offscreen \
@@ -75,18 +81,11 @@ _CASES = [
     ("NCOBlock", {}, "real", ("sample", "yi")),
 ]
 
-# KNOWN single-block port-input fan-in residual (xfail — see module docstring). Keyed by
-# (block_type, orient_label). These are the ANTI-orientations where the block's input
-# cell lands opposite the chip input port so the port→2-rail fan-in corner-contends with
-# the egress. NOT a datapath bug; the block is invariant block→block.
-_XFAIL = {
-    # NCOBlock's single-rail (real-input) anti-orientation residual is a DISTINCT
-    # failure mode from the complex 2-rail port fan-in that the D4 routing/broker fix
-    # resolved (routes are clean, no fan-in split — the block still emits nothing at
-    # these two orientations). It is NOT fixed by that change, so it stays xfailed.
-    ("NCOBlock", "cw+cw"),
-    ("NCOBlock", "mirror_v+cw+cw+cw"),
-}
+# No orientation residuals remain: every block in _CASES is invariant in all 8 D4
+# orientations. (The former NCOBlock single-rail xfails were a DUT-harness manhattan-hop
+# bug — the routed corridor snaked longer than the manhattan span — now fixed in
+# kyttar_verify.run_block_dut; see module docstring.)
+_XFAIL: set[tuple[str, str]] = set()
 
 
 def _fq(v: float) -> int:

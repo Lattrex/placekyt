@@ -379,17 +379,32 @@ done:
         return ["emit"]
 
     def default_layout(self):
-        # Serpentine fold, ≤8 across (INV-9): d0..d7 across the top row (west→east),
-        # then lock/emit fold back on the row below so the block's external I/O (d0
-        # input, emit output) co-locate near the west edge.
-        #   row 0:  d0 d1 d2 d3 d4 d5 d6 d7   (east)
-        #   row 1:  emit lock  ... (west)     — d7 drops south to lock, lock→emit west
+        # 2x5 COLUMN-MAJOR serpentine fold (10 cells): the datapath chain
+        # d0->d1->...->d7->lock->emit snakes DOWN the left column, OVER, and UP the
+        # right column, so the block's external I/O (d0 input, emit output) co-locate
+        # on the TOP (north) edge -- exactly the same-face I/O the user wants (INV-8/14:
+        # an EVEN column count lands the last cell at the top of the right column).
+        #
+        #   x=0 (left, top->bottom):  d0  d1  d2  d3  d4     faces SOUTH (toward next)
+        #   d4 -> d5:                 (0,4) -> (1,4)          faces EAST
+        #   x=1 (right, bottom->top): d5  d6  d7  lock  emit  faces NORTH (toward next)
+        #
+        #   input  = d0   at (0,0)  -> north edge
+        #   output = emit at (1,0)  -> north edge   (co-located, 1 cell apart)
+        chain = [f"d{c}" for c in range(self.N_DELAY)] + ["lock", "emit"]  # 10 cells
+        H = 5   # column height
         lay = {}
-        for c in range(self.N_DELAY):
-            face = "south" if c == self.N_DELAY - 1 else "east"
-            lay[f"d{c}"] = (c, 0, face)
-        lay["lock"] = (self.N_DELAY - 1, 1, "west")
-        lay["emit"] = (self.N_DELAY - 2, 1, "west")
+        for i, cid in enumerate(chain):
+            col = i // H
+            row = (i % H) if col % 2 == 0 else (H - 1 - (i % H))  # snake
+            # face points toward the NEXT cell in the chain (last cell = output face).
+            if i == len(chain) - 1:
+                face = "north"                      # emit: output egresses north
+            elif (i + 1) // H != col:
+                face = "east"                       # column turn -> step right
+            else:
+                face = "south" if col % 2 == 0 else "north"
+            lay[cid] = (col, row, face)
         return lay
 
     def reset(self):

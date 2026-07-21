@@ -17,6 +17,19 @@ from gnuradio import gr
 import numpy as np
 
 
+def _io_dtype(io_type):
+    """Normalise a GRC ``io_type`` value to a numpy dtype. GRC substitutes an enum
+    option (``float`` / ``complex``) as a BARE identifier, so the generated make call
+    passes the Python BUILTIN ``float`` / ``complex`` — NOT the string ``"float"``.
+    Accept the string, the builtin type, and numpy dtypes; default COMPLEX."""
+    if io_type in ("float", float, np.float32, "real"):
+        return np.float32
+    if isinstance(io_type, str) and io_type.strip().strip("'\"").lower() in (
+            "float", "real", "f"):
+        return np.float32
+    return np.complex64
+
+
 class _PassThrough(gr.sync_block):
     """A float-stream pass-through GR block — a placeable-DSP MARKER. The real DSP
     runs on the placeKYT chip; this only carries the graph so it imports + runs.
@@ -299,7 +312,7 @@ class upsampler(_PassThrough):
         # the .block.yml ``io_type`` default + ${io_type} port dtype. Default COMPLEX:
         # the PSK TX chain carries a COMPLEX baseband symbol (the mapper emits
         # gr_complex). A real-only stream sets io_type=float.
-        dt = np.float32 if str(io_type) == "float" else np.complex64
+        dt = _io_dtype(io_type)
         super().__init__("Kyttar Upsampler", n_in=1, n_out=1,
                          in_dtype=dt, out_dtype=dt)
         self.device_id = device_id
@@ -339,7 +352,7 @@ class rrc_pulse_shaper(_PassThrough):
         # default + ${io_type} port dtype. Default COMPLEX: the PSK TX chain carries a
         # COMPLEX baseband symbol (GR's interp_fir_filter_ccf). A real-only stream
         # sets io_type=float.
-        dt = np.float32 if str(io_type) == "float" else np.complex64
+        dt = _io_dtype(io_type)
         super().__init__("Kyttar RRC Pulse Shaper", n_in=1, n_out=1,
                          in_dtype=dt, out_dtype=dt)
         self.device_id = device_id

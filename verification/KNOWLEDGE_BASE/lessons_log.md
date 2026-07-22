@@ -49,6 +49,27 @@ mutations — all green.
    Costas is a full-width row-0 strip (INV-9 violation) → the auto-router congests ("no bus path")
    with the 3-cell slicer; the modem will need a hand-placed .kyt (like FSK4) AND the Costas
    refolded ≤8 across.
+   **UPDATE 2 (same session — the tap MECHANISM is now solved; the fold + acquisition remain):**
+   * **The tap needs `output_registers=[0,1]` on the block interface.** The build's complex-egress
+     patch keys `src_is_complex_out` on `len(spec.output_registers) > 1`. The Costas shipped
+     `output_registers=[0]` → the tap took the single-rail `_patch_last_write_handoff` (only the
+     LAST tap write got the route hop; yi_tap kept its @30 internal hop → 0 egress). Setting
+     `[0,1]` makes both rails get patched.
+   * **CHIP-PORT egress OVER-patches** a 4-write tap cell: `_patch_complex_output_port_handoff`
+     walks ALL WRITEs, so the tap's 2 internal forwards (yi_fwd/yq_fwd) ALSO get the port hop
+     (loop breaks). The BLOCK→BLOCK coalesced path (`_patch_complex_packet_last_handoff`, both
+     rails to ONE downstream broker) patches only the TAIL writes → correct. So wire the tap to
+     the SLICER (one broker), not to x16_out directly.
+   * **A dedicated `tap` cell (rotate→tap→islice_pi) + `output_registers=[0,1]` + a SERPENTINE
+     fold ≤6 across ROUTED AND BUILT the Costas→slicer chain** (the flat 10-wide strip → "no free
+     corridor"). CONFIRMED: route ok + build ok.
+   * **REMAINING BREAK: the dphase feedback corridor in the custom fold.** Serpentine (phase(0,1),
+     pi(2,2)) → pi's dphase WRITE (@26) and re-trigger JUMP (@28) resolved to DIFFERENT hops →
+     loop never closes → 0 recovered symbols. The proven feedback is pi at the row END facing
+     SOUTH onto a STRAIGHT west row-1 return to phase; a serpentine with pi mid-array breaks
+     `_apply_internal_feedback`'s corridor trace. NEXT: keep the straight-return feedback but
+     narrow the forward chain, OR hand-place+hand-route the whole modem in a `.kyt` (bypasses the
+     auto-router corridor search AND lets you draw the feedback lane explicitly — FSK4/SSB pattern).
 2. **DD acquisition is marginal for 16-QAM.** Standalone at 1 sps (feed constellation points
    directly, no MF) it LOCKS BER0 over foff∈[0.001,0.003] (`alpha_q15=0x0400,beta_q15=0x0020`)
    or [0.002,0.005] (`0x1000/0x0040`); the shipped defaults `0x0800/0x0040` are marginal

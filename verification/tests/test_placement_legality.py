@@ -138,6 +138,45 @@ def test_single_cell_move_rejects_overlap(block_type, params):
 
 
 @pytest.mark.skipif(not _CHIP_OK, reason="chip yaml absent")
+def test_collides_detects_self_overlap():
+    """``_collides`` (the auto-P&R re-fold's per-block legality check) must return True
+    when a block's OWN cells stack — it used `occupied_positions()` (a SET) which
+    silently dedups a self-overlap, so the re-fold ACCEPTED an orientation that folded
+    transit_unlock onto emit (the FrequencyModulator (6,2) bug). This drives the exact
+    fold via the full place<->route loop and asserts no self-overlap is committed."""
+    from engine.catalog import BlockCatalog
+    from engine.io.chip_type_io import load_chip_type
+    from engine.grc_import import import_grc
+    from ui.controller import AppController
+    from engine.drc import check_project
+
+    grc = str(Path(__file__).resolve().parents[2] / "examples" / "fsk4_modem"
+              / "fsk4_modem.grc")
+    if not os.path.exists(grc):
+        pytest.skip("fsk4 modem .grc absent")
+    cat = BlockCatalog.from_gr_kyttar()
+    ct = load_chip_type(CHIP_YAML)
+    key = "kyttar_10x12"
+    r = import_grc(grc, cat, chip_type=key)
+    ctrl = AppController(catalog=cat)
+    ctrl.project = r.project
+    try:
+        ctrl.auto_pnr({key: ct}, time_budget_s=40.0)
+    except Exception:  # noqa: BLE001 — a hard design may not fully route; we only
+        pass          # check the COMMITTED placement has no self-overlap.
+    for b in ctrl.project.blocks:
+        if b.placement is None:
+            continue
+        seen: dict = {}
+        for c in b.placement.cells:
+            k = (c.x, c.y)
+            assert k not in seen, (
+                f"auto-P&R committed a SELF-OVERLAP in '{b.name}': "
+                f"{c.cell_id} on {seen[k]} at {k}")
+            seen[k] = c.cell_id
+
+
+@pytest.mark.skipif(not _CHIP_OK, reason="chip yaml absent")
 @pytest.mark.parametrize("block_type,params", BLOCKS,
                          ids=[b[0] for b in BLOCKS])
 def test_move_then_rotate_stays_legal(block_type, params):

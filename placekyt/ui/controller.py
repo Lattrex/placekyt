@@ -1492,7 +1492,14 @@ class AppController(QObject):
         if blk is None or blk.placement is None:
             return True
         w, h = self._chip_dims(chip)
-        mine = blk.placement.occupied_positions()
+        cell_positions = [(c.x, c.y) for c in blk.placement.cells]
+        mine = set(cell_positions)
+        # SELF-OVERLAP: two of the block's OWN cells on one square. `occupied_positions`
+        # (a SET) silently dedups these, so the re-fold's collision check accepted an
+        # orientation that folded e.g. transit_unlock onto emit — the exact
+        # FrequencyModulator (6,2) bug. Compare cell COUNT to unique positions to catch it.
+        if len(cell_positions) != len(mine):
+            return True
         if any(not (0 <= x < w and 0 <= y < h) for (x, y) in mine):
             return True
         for other in self.project.blocks:

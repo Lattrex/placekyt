@@ -116,16 +116,26 @@ def test_port_00_fork_delivers_each_stream_to_its_block():
             lid = chip.cell_id_at(*cell)
             return Counter(t.get("kind") for t in tr
                            if t.get("cell_id") == lid).get("exec_tick", 0)
-        return _exec(east_cell), _exec(south_cell)
+        n_egress = len(list(chip.read_port_words_timed("x16_out")))
+        return _exec(east_cell), _exec(south_cell), n_egress
 
-    # Drive the EAST stream: the EAST block must fire; the SOUTH block must NOT.
-    e_exec, s_exec = _drive_and_trace("east")
+    # Drive the EAST stream: the EAST block must fire, the SOUTH block must NOT, and the
+    # driven block must PRODUCE OUTPUT (proving the broker relayed to the block's OWN DSP
+    # entry/reg — the cell-(0,0) bug delivered to a spurious broker entry, so the block
+    # "fired" but never emitted).
+    e_exec, s_exec, egress = _drive_and_trace("east")
     assert e_exec > 0, "EAST stream did not reach its (EAST) block"
     assert s_exec == 0, (
         "EAST stream LEAKED into the SOUTH block — the port fork mis-delivered")
+    assert egress > 0, (
+        "EAST block fired but produced NO output — broker delivered to the wrong "
+        "entry/reg (the block's DSP never ran)")
 
-    # Drive the SOUTH stream: the SOUTH block must fire; the EAST block must NOT.
-    e_exec, s_exec = _drive_and_trace("south")
+    # Drive the SOUTH stream: the SOUTH block must fire + emit; the EAST block must NOT.
+    e_exec, s_exec, egress = _drive_and_trace("south")
     assert s_exec > 0, "SOUTH stream did not reach its (SOUTH) block"
     assert e_exec == 0, (
         "SOUTH stream LEAKED into the EAST block — the port fork mis-delivered")
+    assert egress > 0, (
+        "SOUTH block fired but produced NO output — broker delivered to the wrong "
+        "entry/reg (the block's DSP never ran)")

@@ -2035,20 +2035,21 @@ def _apply_port_diverts(cell_map, blocks, connections, project, chip_id,
         down_cell = pts[1]
         blk = project.block(conn.target.block)
         _e, in_regs = catalog.resolved_io(blk.type, blk.params, library=blk.library)
-        d_entry = broker_conn_entry.get(conn.name)
-        _direct_abut = False
-        if d_entry is None:
-            # No DOWNSTREAM broker for this net. That is the ABUTTING fan-out target
-            # case (the cell-(0,0) shared-port bug): the block sits DIRECTLY next to the
-            # port (route == [port, in_cell]), so there is no free routing cell to host a
-            # downstream broker — the port broker must relay @1 STRAIGHT into the block's
-            # OWN input cell + entry. (Previously this net was silently dropped and its
-            # word rode the other stream's fwd_face into the wrong block.)
-            in_cell = _target_input_cell(blk, conn.target.port, catalog)
-            if in_cell is not None and in_cell == down_cell:
-                d_entry = _e            # deliver to the block's own landing entry
-                _direct_abut = True
-            else:
+        # ABUTTING fan-out target (the cell-(0,0) shared-port bug): the block sits
+        # DIRECTLY next to the port (route == [port, in_cell]), so the port broker must
+        # relay @1 STRAIGHT into the block's OWN input cell — its own DSP entry + input
+        # registers. Detect this by GEOMETRY (the divert's next cell IS the block's input
+        # cell). This takes PRECEDENCE over any broker_conn_entry: `_apply_brokers` may
+        # have seated a broker AT that same input cell (a spurious relay entry that does
+        # NOT run the block's DSP — the word landed in the broker's reg + entry and the
+        # mapper never emitted), so we must NOT use it; deliver to the block itself.
+        in_cell = _target_input_cell(blk, conn.target.port, catalog)
+        _direct_abut = (in_cell is not None and in_cell == down_cell)
+        if _direct_abut:
+            d_entry = _e                # the block's own landing entry
+        else:
+            d_entry = broker_conn_entry.get(conn.name)
+            if d_entry is None:
                 # Genuinely no downstream target (shouldn't happen for a routed
                 # port fan-out) — leave it to the straight path.
                 continue

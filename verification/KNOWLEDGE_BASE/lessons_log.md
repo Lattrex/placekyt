@@ -2140,3 +2140,20 @@ Gardner, IQUpconvert, ComplexMixer, NCO) FAIL the D4 orientation harness
   place<->route loop on the fsk4 modem and asserts no committed self-overlap — it FAILS on
   the pre-fix `_collides` and passes after. The per-block orientation/move tests (INV-25)
   cover the other two paths.
+
+## 2026-07-22 — Complex-egress yq rail must CO-ROUTE with yi (shared corridor), not route separately
+
+- **The fsk4 modem's yq→x16_out net (net11) was unrouted → build failed + orphan fly-line.**
+  A complex-output block feeding the chip output port emits BOTH rails from its ONE emit
+  cell down ONE corridor: yi on out_tag T, yq on out_tag T+1; the port de-interleaves by
+  tag (engine.sim_bridge complex-egress). The router routes yi but CANNOT draw a second
+  distinct path from the same source cell to the same port, so it leaves yq unrouted.
+- **Fix: co-rail resolution.** `controller._resolve_complex_egress_corails` (run right after
+  `_run_router` in auto_route_all): an unrouted yq egress net whose yi sibling (same source
+  block, both → x16_out, yq.out_tag == yi.out_tag + 1) DID route gets the SAME waypoints —
+  both rails ride the shared corridor. Idempotent; no-op for single-rail egress.
+- **PROVEN:** the user's hand-placed fsk4_modem.kyt now routes 0 DRC errors + builds, and
+  the RX recovers BER 0.0000 end-to-end through SimServer (TX complex_out tag10/11, RX
+  stream). The fsk4 modem is the FIRST design to egress TWO complex-baseband rails from one
+  emit cell to one output port (QPSK/Weaver upconvert to a single real rail first), so this
+  pattern had no prior coverage.

@@ -147,30 +147,14 @@ class BuildEngine:
         result = BuildResult()
 
         # 1. Project-level DRC. Collect everything; errors block generation.
-        drc = check_project(project, chip_types, board)
+        # check_project now folds in the BUS DRC (§1.3/§5.3: face conflicts + the
+        # single-cell input==output deadlock hazard + dual-input-same-face) when given
+        # the catalog — the SAME checks that used to be re-run only here. Passing the
+        # catalog makes the DRC panel/badge and this build gate report one identical
+        # error list (no more "panel clean / sim aborts with 1 DRC error").
+        drc = check_project(project, chip_types, board, catalog=self.catalog)
         result.errors.extend(drc.errors)
         result.warnings.extend(drc.warnings)
-        # BUS DRC (§1.3/§5.3): face conflicts + the single-cell input==output deadlock
-        # hazard. An offending single-cell bus-fed block (a router fallback that could
-        # not split its faces, or a hand-laid route) is a NAMED build error — never a
-        # silent unsafe build (P3.4). Needs the catalog (broker/crossover derivation).
-        try:
-            from .bus_drc import check_project_bus
-            for v in check_project_bus(project, chip_types, self.catalog):
-                kind = getattr(v, "kind", None)
-                if kind == "single_cell_inout":
-                    result.errors.append(drc_error(
-                        "single_cell_inout_deadlock", str(v),
-                        chip=0, x=v.cell[0], y=v.cell[1]))
-                elif kind == "dual_input_same_face":
-                    # A face-locking rendezvous (DualFloatToComplex) whose two inputs land
-                    # on ONE face cannot pair its two async streams — NAMED build error,
-                    # never a silent unpairnable build.
-                    result.errors.append(drc_error(
-                        "dual_input_same_face", str(v),
-                        chip=0, x=v.cell[0], y=v.cell[1]))
-        except Exception:  # noqa: BLE001 — bus DRC is best-effort context
-            pass
         # utilization INFOs are reported separately; not added to errors/warnings.
         if not result.ok:
             return result  # do not generate when DRC has errors

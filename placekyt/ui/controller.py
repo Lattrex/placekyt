@@ -2816,10 +2816,17 @@ class AppController(QObject):
     # -- build / DRC ----------------------------------------------------------
 
     def run_drc(self):
-        """Run project-level DRC and return the :class:`DRCResult`."""
+        """Run project-level DRC and return the :class:`DRCResult`.
+
+        Passes the catalog so the BUS hazard checks (single-cell input==output
+        deadlock, dual-input-same-face) run here too — the DRC panel/badge then
+        report the SAME errors the sim's build gate does, instead of the badge
+        going green while the build refuses to run.
+        """
         from engine.drc import check_project
 
-        return check_project(self.project, self.chip_types())
+        return check_project(self.project, self.chip_types(),
+                             catalog=self.catalog)
 
     def build(self):
         """Build the project (DRC + bitstream). Returns the :class:`BuildResult`."""

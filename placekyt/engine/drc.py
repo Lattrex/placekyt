@@ -119,14 +119,18 @@ def check_project(
     project: Project,
     chip_types: dict[str, ChipType] | None = None,
     board: Board | None = None,
+    catalog=None,
 ) -> DRCResult:
     """Run all project-level DRC checks. Collects every finding.
 
     ``chip_types`` (name → ChipType) enables in-bounds and hop-count checks
     that need the fabric geometry / port positions. ``board`` enables the
-    ``inter_chip_not_wired`` check. Both are optional — checks that need missing
-    context are skipped (not silently passed: their absence just means fewer
-    checks ran).
+    ``inter_chip_not_wired`` check. ``catalog`` enables the BUS hazard checks
+    (single-cell input==output deadlock, dual-input-same-face) — the SAME checks
+    the build gate runs, so the DRC panel / badge and the sim's build gate agree
+    instead of one saying "clean" while the other refuses to run (#drc-out-of-sync).
+    All are optional — checks that need missing context are skipped (not silently
+    passed: their absence just means fewer checks ran).
     """
     result = DRCResult()
     chip_types = chip_types or {}
@@ -136,8 +140,45 @@ def check_project(
     _check_inter_chip(project, board, result)
     _check_panels(project, chip_types, result)
     _check_unused_ports(project, result)
+    _check_bus_hazards(project, chip_types, catalog, result)
     _report_utilization(project, chip_types, result)
     return result
+
+
+def _check_bus_hazards(project, chip_types, catalog, result: DRCResult) -> None:
+    """Fold the BUILD-time bus DRC (bus_drc.check_project_bus) into project DRC so
+    the panel/badge report the SAME errors the sim's build gate does.
+
+    The build gate (engine.build) runs these via ``check_project_bus`` and fails on
+    them; ``check_project`` historically did NOT, so a routed design with a
+    single-cell input==output deadlock read "DRC clean" (green badge, empty panel)
+    yet the sim aborted with "1 DRC error(s)". Running the same check here closes
+    that gap. Best-effort: without a catalog the crossover/broker derivation is
+    limited, and any failure here must not mask the other findings.
+    """
+    try:
+        from .bus_drc import check_project_bus
+    except Exception:  # noqa: BLE001
+        return
+    try:
+        viols = check_project_bus(project, chip_types, catalog)
+    except Exception:  # noqa: BLE001 — bus DRC is best-effort context
+        return
+    # ONLY the two hazards the build gate itself treats as hard errors. The generic
+    # face_conflict / crossover-needed bus violations are NOT surfaced here: the build's
+    # downstream broker/crossover/DIVERT synthesis (INV-24 shared-input-port fork,
+    # programmed crossovers) legally RESOLVES those on raw routes, so raising them at
+    # project-DRC time would false-positive on a design that builds clean (the duplex
+    # shared-port fork at cell (0,0)). Mirror exactly what engine.build enforces.
+    for v in viols:
+        kind = getattr(v, "kind", None)
+        cell = getattr(v, "cell", None) or (None, None)
+        if kind == "single_cell_inout":
+            result.add(error("single_cell_inout_deadlock", str(v),
+                             chip=0, x=cell[0], y=cell[1]))
+        elif kind == "dual_input_same_face":
+            result.add(error("dual_input_same_face", str(v),
+                             chip=0, x=cell[0], y=cell[1]))
 
 
 # --------------------------------------------------------------------------- #

@@ -1,0 +1,177 @@
+project:
+  format_version: 1
+  name: Full-duplex M17 4FSK modem (TX + sync-timed RX on one array)
+  version: '1.0'
+chip_type: kyttar_10x12
+chips:
+- id: 0
+  label: Chip 0
+  position: {x: 0.0, y: 0.0}
+blocks:
+- name: fsk4symbolmapper
+  type: FSK4SymbolMapperBlock
+  library: lattrex.official
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 1, y: 0, face: south}
+    orientation:
+    - cw
+- name: upsampler
+  type: UpsamplerBlock
+  library: lattrex.official
+  params:
+    sps: 2
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 3, y: 0, face: north}
+    orientation:
+    - ccw
+    - mirror_h
+- name: rrcpulseshaper
+  type: RRCPulseShaperBlock
+  library: lattrex.official
+  params:
+    gain: 1.0
+    sampling_freq: 2.0
+    symbol_rate: 1.0
+    alpha: 0.5
+    ntaps: 17
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 5, y: 0, face: east}
+    - {cell_id: 1, x: 6, y: 0, face: east}
+    - {cell_id: 2, x: 7, y: 0, face: east}
+    - {cell_id: 3, x: 8, y: 0, face: east}
+- name: frequencymodulator
+  type: FrequencyModulatorBlock
+  library: lattrex.official
+  params:
+    sensitivity: 1.5707963267948966
+    pipeline_lock: true
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: phase, x: 8, y: 2, face: west}
+    - {cell_id: sin_fold, x: 7, y: 2, face: west}
+    - {cell_id: sin_even, x: 6, y: 2, face: west}
+    - {cell_id: sin_odd, x: 5, y: 2, face: west}
+    - {cell_id: sin_interp, x: 4, y: 2, face: west}
+    - {cell_id: relay, x: 3, y: 2, face: south}
+    - {cell_id: cos_fold, x: 3, y: 3, face: east}
+    - {cell_id: cos_even, x: 4, y: 3, face: east}
+    - {cell_id: cos_odd, x: 5, y: 3, face: east}
+    - {cell_id: cos_interp, x: 6, y: 3, face: east}
+    - {cell_id: emit, x: 7, y: 3, face: south}
+    - {cell_id: transit_unlock, x: 8, y: 3, face: north}
+    orientation:
+    - cw
+- name: quadraturedemod
+  type: QuadratureDemodBlock
+  library: lattrex.official
+  params:
+    gain: 1.0
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: conjmult, x: 0, y: 1, face: south}
+    - {cell_id: gain, x: 0, y: 2, face: south}
+    orientation:
+    - cw
+- name: rrcpulseshaper_2
+  type: RRCPulseShaperBlock
+  library: lattrex.official
+  params:
+    gain: 1.0
+    sampling_freq: 2.0
+    symbol_rate: 1.0
+    alpha: 0.5
+    ntaps: 17
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 0, y: 5, face: east}
+    - {cell_id: 1, x: 1, y: 5, face: east}
+    - {cell_id: 2, x: 2, y: 5, face: east}
+    - {cell_id: 3, x: 3, y: 5, face: east}
+- name: fsk4synctimingrecovery
+  type: FSK4SyncTimingRecoveryBlock
+  library: lattrex.official
+  params:
+    threshold:
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: d0, x: 2, y: 7, face: south}
+    - {cell_id: d1, x: 2, y: 8, face: south}
+    - {cell_id: d2, x: 2, y: 9, face: south}
+    - {cell_id: d3, x: 2, y: 10, face: south}
+    - {cell_id: d4, x: 2, y: 11, face: east}
+    - {cell_id: d5, x: 3, y: 11, face: north}
+    - {cell_id: d6, x: 3, y: 10, face: north}
+    - {cell_id: d7, x: 3, y: 9, face: north}
+    - {cell_id: lock, x: 3, y: 8, face: north}
+    - {cell_id: emit, x: 3, y: 7, face: north}
+- name: fsk4slicer
+  type: FSK4SlicerBlock
+  library: lattrex.official
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 7, y: 7, face: south}
+    orientation:
+    - cw
+connections:
+- name: net1
+  from: {chip_port: {chip: 0, port: x16_in}}
+  to: {block: fsk4symbolmapper, port: sample}
+  stream_id: tx
+- name: net2
+  from: {block: fsk4symbolmapper, port: out}
+  to: {block: upsampler, port: x}
+  route: auto
+- name: net3
+  from: {block: upsampler, port: out}
+  to: {block: rrcpulseshaper, port: sample}
+  route:
+  - {x: 3, y: 0}
+  - {x: 4, y: 0}
+- name: net4
+  from: {block: rrcpulseshaper, port: out}
+  to: {block: frequencymodulator, port: x}
+- name: net5
+  from: {block: frequencymodulator, port: yi}
+  to: {chip_port: {chip: 0, port: x16_out}}
+  route:
+  - {x: 7, y: 3}
+  - {x: 7, y: 4}
+  - {x: 8, y: 4}
+  - {x: 9, y: 4}
+  - {x: 9, y: 3}
+  - {x: 9, y: 2}
+  - {x: 9, y: 1}
+  - {x: 9, y: 0}
+  out_tag: 10
+- name: net6
+  from: {chip_port: {chip: 0, port: x16_in}}
+  to: {block: quadraturedemod, port: xi}
+  stream_id: rx
+- name: net7
+  from: {block: quadraturedemod, port: out}
+  to: {block: rrcpulseshaper_2, port: sample}
+- name: net8
+  from: {block: rrcpulseshaper_2, port: out}
+  to: {block: fsk4synctimingrecovery, port: sample}
+- name: net9
+  from: {block: fsk4synctimingrecovery, port: out}
+  to: {block: fsk4slicer, port: sample}
+- name: net10
+  from: {block: fsk4slicer, port: out}
+  to: {chip_port: {chip: 0, port: x16_out}}
+  out_tag: 5
+- name: net11
+  from: {block: frequencymodulator, port: yq}
+  to: {chip_port: {chip: 0, port: x16_out}}
+  out_tag: 11

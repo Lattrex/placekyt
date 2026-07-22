@@ -90,6 +90,37 @@ def test_non_iq_route_has_no_spurious_siblings(qapp, catalog):
     assert after - before == 1, "a lone net must route exactly one connection"
 
 
+_FSK4_MOVED = EXAMPLES_DIR / "fsk4_modem" / "fsk4_modem.moved.kyt"
+
+
+@pytest.mark.skipif(not _FSK4_MOVED.exists(),
+                    reason="fsk4 modem moved .kyt absent")
+def test_routing_complex_egress_yi_routes_yq_sibling(qapp, catalog):
+    """COMPLEX EGRESS to the chip OUTPUT port: the FrequencyModulator emits yi
+    (out_tag 10) and yq (out_tag 11) from its ONE emit cell to x16_out; the port
+    de-interleaves by tag, so both rails ride ONE corridor. Manually routing the yi
+    rail (net5) MUST co-route the yq rail (net11) — else yq stays a fly line + a "no
+    physical route" DRC error, which is EXACTLY the bug the user hit after moving the
+    FM and routing its output. The target is a ChipPort (not a block cell), so the
+    old cell-pair sibling match missed it. Pinned to the user's real saved placement."""
+    from engine.io.project_io import load_project
+
+    prj = load_project(str(_FSK4_MOVED))
+    ctrl = AppController(catalog=catalog)
+    ctrl.project = prj
+    net5 = prj.connection("net5")     # frequencymodulator.yi -> x16_out, out_tag 10
+    net11 = prj.connection("net11")   # frequencymodulator.yq -> x16_out, out_tag 11
+    assert net5 is not None and net11 is not None
+    assert not net11.is_routed, "yq starts unrouted (the fly line)"
+    pts = [(p.x, p.y) for p in net5.route] if not isinstance(net5.route, str) \
+        else [(0, 0)]
+    # Re-draw the route on the yi rail (the user's manual 'route the FM output').
+    ctrl.add_route(net5.source, net5.target, pts)
+    assert prj.connection("net5").is_routed, "the drawn yi rail must be routed"
+    assert prj.connection("net11").is_routed, (
+        "yq complex-egress sibling must route with the same draw — no orphan fly line")
+
+
 if __name__ == "__main__":
     app = QApplication.instance() or QApplication([])
     cat = BlockCatalog.from_gr_kyttar()

@@ -420,14 +420,23 @@ class AppController(QObject):
                                                                if points else None)}}))
 
     def _route_siblings(self, conn):
-        """Other UNROUTED connections that share ``conn``'s physical source-output
-        cell AND target-input cell — an I/Q complex pair the auto-router routes
-        with one shared path. Used so a manually-drawn route on one rail also
-        routes its sibling rail (else the sibling shows a fly line + DRC error on a
-        link that visually appears connected). Empty unless both endpoints resolve
-        to cells AND a distinct sibling matches."""
+        """Other UNROUTED connections that share ``conn``'s physical corridor and so
+        must be routed with the SAME path when ``conn`` is routed (manually or auto):
+
+          (a) BLOCK→BLOCK I/Q pair — same source-output cell AND target-input cell
+              (e.g. MF.yi→Costas.xi and MF.yq→Costas.xq).
+          (b) COMPLEX EGRESS to the chip OUTPUT port — the yi rail (out_tag T) and the
+              yq rail (out_tag T+1) leave the SAME source block's emit cell to the SAME
+              x16_out port; the port de-interleaves by tag. The target is a ChipPort, not
+              a block cell, so case (a)'s target-input-cell match returns None — THIS is
+              why the yq fly-line survived a manual route of the FM output. Match the
+              egress pair by (source block, x16_out target, out_tag ±1).
+
+        Used so drawing/auto-routing ONE rail also routes its sibling(s); else the
+        sibling shows a fly line + a "no physical route" DRC error on a link that visually
+        looks connected. Empty unless a distinct sibling matches."""
         from engine.bus_router import _source_output_cell, _target_input_cell
-        from model.connection import BlockEndpoint
+        from model.connection import BlockEndpoint, ChipPortEndpoint
 
         def cells(c):
             s, t = c.source, c.target
@@ -442,21 +451,38 @@ class AppController(QObject):
                     ic = _target_input_cell(b, t.port, self.catalog)
             return oc, ic
 
+        out = []
+
+        # (b) COMPLEX-EGRESS pair: same source block + x16_out target, adjacent out_tags.
+        def _is_egress(c):
+            return (isinstance(c.source, BlockEndpoint)
+                    and isinstance(c.target, ChipPortEndpoint)
+                    and getattr(c.target, "port", None) == "x16_out")
+
+        if _is_egress(conn) and getattr(conn, "out_tag", None) is not None:
+            src_block = conn.source.block
+            sib_tags = {conn.out_tag - 1, conn.out_tag + 1}
+            for c in self.project.connections:
+                if c.name == conn.name or c.is_routed:
+                    continue
+                if (_is_egress(c) and c.source.block == src_block
+                        and getattr(c, "out_tag", None) in sib_tags):
+                    out.append(c)
+
+        # (a) BLOCK→BLOCK I/Q pair by shared source-output + target-input cell.
         try:
             key = cells(conn)
         except Exception:  # noqa: BLE001
-            return []
-        if key[0] is None or key[1] is None:
-            return []
-        out = []
-        for c in self.project.connections:
-            if c.name == conn.name or c.is_routed:
-                continue
-            try:
-                if cells(c) == key:
-                    out.append(c)
-            except Exception:  # noqa: BLE001
-                continue
+            key = (None, None)
+        if key[0] is not None and key[1] is not None:
+            for c in self.project.connections:
+                if c.name == conn.name or c.is_routed or c in out:
+                    continue
+                try:
+                    if cells(c) == key:
+                        out.append(c)
+                except Exception:  # noqa: BLE001
+                    continue
         return out
 
     def import_grc(self, path, *, chip_type: str | None = None,
@@ -1862,39 +1888,76 @@ class AppController(QObject):
         such pair (the common single-rail case)."""
         from model.connection import BlockEndpoint, ChipPortEndpoint
 
-        res_by_name = {r.name: r for r in report.results}
-
         def _is_egress(conn):
             return (conn is not None
                     and isinstance(conn.source, BlockEndpoint)
                     and isinstance(conn.target, ChipPortEndpoint)
                     and getattr(conn.target, "port", None) == "x16_out")
 
-        # Index routed egress nets by (source block, out_tag) so a yq net can find its yi.
-        routed_egress: dict[tuple, object] = {}
-        for r in report.results:
-            if not (r.ok and r.points):
-                continue
-            conn = self.project.connection(r.name)
-            if _is_egress(conn) and conn.out_tag is not None:
-                routed_egress[(conn.source.block, conn.out_tag)] = r
+        def _waypoints(pts):
+            """Normalise a route's points to a list of (x,y) tuples, or None."""
+            out = []
+            for p in (pts or []):
+                x = getattr(p, "x", None)
+                y = getattr(p, "y", None)
+                if x is None and isinstance(p, (tuple, list)) and len(p) >= 2:
+                    x, y = p[0], p[1]
+                if x is not None and y is not None:
+                    out.append((int(x), int(y)))
+            return out or None
 
-        for r in list(report.results):
-            if r.ok:
-                continue
-            conn = self.project.connection(r.name)
+        # Index routed egress nets by (source block, out_tag) so a yq net can find its yi.
+        # CRITICAL: the yi sibling may have been routed in a PRIOR action (it is already on
+        # the project and NOT in THIS pass's report) — the exact "move block, route output"
+        # case where yi kept its route and only yq is unrouted this pass. So index BOTH the
+        # report's freshly-routed nets AND the project's already-routed connections.
+        routed_egress: dict[tuple, list] = {}
+        for r in report.results:
+            if r.ok and r.points:
+                conn = self.project.connection(r.name)
+                if _is_egress(conn) and conn.out_tag is not None:
+                    routed_egress[(conn.source.block, conn.out_tag)] = list(r.points)
+        for conn in self.project.connections:
             if not (_is_egress(conn) and conn.out_tag is not None):
                 continue
-            # yq rides yi: yi carries out_tag − 1 from the SAME source block.
-            sib = routed_egress.get((conn.source.block, conn.out_tag - 1))
-            if sib is None:
+            if not getattr(conn, "is_routed", False):
                 continue
+            wp = _waypoints(getattr(conn, "route", None))
+            if wp is not None:
+                routed_egress.setdefault((conn.source.block, conn.out_tag), wp)
+
+        # Candidates to co-rail: yq egress nets that are NOT routed after this pass —
+        # whether they were in the report as FAILED, or simply not attempted (already
+        # unrouted on the project and skipped by the "route only unrouted nets" pass).
+        def _report_result(name):
+            for rr in report.results:
+                if rr.name == name:
+                    return rr
+            return None
+
+        for conn in self.project.connections:
+            if not (_is_egress(conn) and conn.out_tag is not None):
+                continue
+            if getattr(conn, "is_routed", False):
+                continue  # already routed — nothing to do
+            r = _report_result(conn.name)
+            if r is not None and r.ok:
+                continue  # routed this pass
+            # yq rides yi: yi carries out_tag − 1 from the SAME source block.
+            sib_pts = routed_egress.get((conn.source.block, conn.out_tag - 1))
+            if sib_pts is None:
+                continue
+            if r is None:
+                # The net wasn't in the report (not attempted this pass). Add a synthetic
+                # OK result so auto_route_all's SetConnectionRouteCommand records the route.
+                from engine.autoroute import RouteResult
+                r = RouteResult(name=conn.name, ok=False)
+                report.results.append(r)
             # Give this yq net the yi sibling's corridor (both egress the same path;
             # the port demuxes by tag). Mark it routed so the build accepts it.
             r.ok = True
-            r.points = list(sib.points)
+            r.points = list(sib_pts)
             r.reason = None
-            _ = res_by_name  # (kept for clarity; results are mutated in place)
 
     def _routes_cross_block_body(self, report) -> bool:
         """True if ANY routed net in ``report`` transits a block's own BODY cell that

@@ -791,6 +791,35 @@ class MainWindow(QMainWindow):
             port = _resolve_block_port(ep, want_out=want_out)
             return BlockEndpoint(ep, port), f"{ep}.{port}"
 
+        # If the two handles are BLOCKS that a logical net ALREADY links (in EITHER
+        # direction), the user is re-drawing that existing edge — reroute it, do NOT
+        # spawn a second net. The drag DIRECTION (which end the user grabbed first)
+        # decides source vs target for a NEW edge, but it must NOT override an
+        # established topology: net4 is rrc.out→fm.x, so dragging FM→RRC would resolve
+        # FM's OUTPUT (yi) and RRC's INPUT (sample) and create the phantom
+        # ``frequencymodulator_to_rrcpulseshaper`` (fm.yi→rrc.sample) — a stray net that
+        # appeared "after moving blocks around". Reuse the existing net's real
+        # endpoints/direction instead.
+        if not (isinstance(source, tuple) and source and source[0] == "port") and \
+                not (isinstance(target, tuple) and target and target[0] == "port"):
+            pair = {source, target}
+            existing = next(
+                (c for c in self.controller.project.connections
+                 if isinstance(c.source, BlockEndpoint)
+                 and isinstance(c.target, BlockEndpoint)
+                 and {c.source.block, c.target.block} == pair
+                 and c.source.block != c.target.block), None)
+            if existing is not None:
+                try:
+                    self.controller.add_route(existing.source, existing.target, points)
+                    self.statusBar().showMessage(
+                        f"Re-routed {existing.source.block}.{existing.source.port} → "
+                        f"{existing.target.block}.{existing.target.port} "
+                        f"({max(0, len(points) - 1)} hops)", 4000)
+                except Exception as exc:  # noqa: BLE001
+                    self.statusBar().showMessage(f"Route failed: {exc}", 5000)
+                return
+
         source_ep, source_label = _endpoint(source, want_out=True)
         target_ep, target_label = _endpoint(target, want_out=False)
         try:

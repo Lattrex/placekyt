@@ -70,8 +70,8 @@ def _send_message(conn, header, payload=None):
 
 def process_batch(conn, iq_interleaved):
     """Hand the whole interleaved-I/Q RX burst to placeKYT (stream 'rx'), get the
-    recovered dibit stream back. ``raw=True`` returns the raw output words (the
-    slicer packs the dibit bits in the low bits; Q15 scaling would crush them)."""
+    recovered dibit stream back. ``raw=True`` returns the raw output words (the slicer
+    emits the dibit 0..3 in the low bits; Q15 scaling would crush them)."""
     _send_message(conn, {"op": "process_batch", "port": "x16_out",
                          "in_port": "x16_in", "stream_id": "rx", "complex": True,
                          "raw": True, "pipelined": True},
@@ -114,8 +114,9 @@ def main():
     recovered = process_batch(conn, interleaved)
     conn.close()
 
-    bits = [int(v) & 1 for v in recovered]
-    rx = [bits[i] + 2 * bits[i + 1] for i in range(0, len(bits) - 1, 2)]
+    # The FSK4 slicer emits ONE recovered DIBIT (0..3) per symbol (like the QPSK
+    # slicer), so read them directly — no b0/b1 reassembly.
+    rx = [int(v) & 3 for v in recovered]
     ber, e, lag = _ber(rx, tx_dibits)
     print(f"Recovered {len(rx)} dibits from {len(iq)} samples "
           f"({args.n} payload symbols)")

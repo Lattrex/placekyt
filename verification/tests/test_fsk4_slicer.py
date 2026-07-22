@@ -53,34 +53,37 @@ def _q15(v):
     return max(-32768, min(32767, q)) & 0xFFFF
 
 
-# The four normalised M17 levels (mapper output) and their expected dibits.
+# The four normalised M17 levels (mapper output) and their expected DIBITS (0..3).
+# The slicer now emits ONE dibit word per symbol (like the QPSK slicer), so a waveform
+# sink plots clean 0..3 levels instead of a stacked b0/b1 bit stream. (0.99, not 1.0:
+# 1.0*32768 overflows Q15 to -32768 and flips the level's sign.)
 _LEVEL_TO_DIBIT = [
-    (1.0, 1),        # +3 -> d=1 -> (b0=1,b1=0)
-    (1.0 / 3.0, 0),  # +1 -> d=0 -> (b0=0,b1=0)
-    (-1.0 / 3.0, 2),  # -1 -> d=2 -> (b0=0,b1=1)
-    (-1.0, 3),       # -3 -> d=3 -> (b0=1,b1=1)
+    (0.99, 1),       # +3 -> d=1  (b0=1, b1=0)
+    (1.0 / 3.0, 0),  # +1 -> d=0  (b0=0, b1=0)
+    (-1.0 / 3.0, 2),  # -1 -> d=2  (b0=0, b1=1)
+    (-0.99, 3),      # -3 -> d=3  (b0=1, b1=1)
 ]
 
 
 def _dibit_bits(d):
+    """Unpack a dibit to its two bits LSB-first (b0, then b1) — for loopback vs the
+    mapper's bit input."""
     return [d & 1, (d >> 1) & 1]
 
 
 # --- correctness: the four levels slice to the four M17 dibits -----------------
 
 def test_four_levels_slice_to_dibits():
-    """Each of the four M17 levels slices to its dibit (b0 LSB first)."""
+    """Each of the four M17 levels slices to its dibit (0..3), one word per symbol."""
     levels = [_q15(lv) for lv, _ in _LEVEL_TO_DIBIT]
-    bits = run_fsk4_slicer_dut(levels, CHIP_YAML)
-    exp = []
-    for _, d in _LEVEL_TO_DIBIT:
-        exp += _dibit_bits(d)
-    print(f"\nlevels->bits: {bits}  expect {exp}")
-    assert bits == exp, f"got {bits}, expected {exp}"
+    dibits = run_fsk4_slicer_dut(levels, CHIP_YAML)
+    exp = [d for _, d in _LEVEL_TO_DIBIT]
+    print(f"\nlevels->dibits: {dibits}  expect {exp}")
+    assert dibits == exp, f"got {dibits}, expected {exp}"
 
 
 def test_decision_boundaries():
-    """Levels near the thresholds (0 and ±2/3) resolve to the right side."""
+    """Levels near the thresholds (0 and ±2/3) resolve to the right dibit."""
     # Just inside each region: outer-hi, inner-hi, inner-lo, outer-lo.
     cases = [
         (0.9, 1),    # >= +2/3 -> +3 -> d=1
@@ -90,28 +93,27 @@ def test_decision_boundaries():
         (0.0, 0),    # exactly 0 -> non-negative inner -> +1 -> d=0
     ]
     levels = [_q15(v) for v, _ in cases]
-    bits = run_fsk4_slicer_dut(levels, CHIP_YAML)
-    exp = []
-    for _, d in cases:
-        exp += _dibit_bits(d)
-    assert bits == exp, f"boundary decision wrong: got {bits}, expected {exp}"
+    dibits = run_fsk4_slicer_dut(levels, CHIP_YAML)
+    exp = [d for _, d in cases]
+    assert dibits == exp, f"boundary decision wrong: got {dibits}, expected {exp}"
 
 
 def test_reference_matches_chip_bitexact():
-    """The block's own reference equals the on-chip bit stream, bit for bit."""
+    """The block's own reference (dibits) equals the on-chip stream, word for word."""
     blk = FSK4SlicerBlock("s")
     rng = random.Random(11)
-    levels = [_q15(rng.uniform(-1.0, 1.0)) for _ in range(40)]
-    bits = run_fsk4_slicer_dut(levels, CHIP_YAML)
-    ref = [int(b) for b in blk.process_reference(levels)]
-    assert bits == ref, f"chip != reference:\n chip {bits}\n ref  {ref}"
+    levels = [_q15(rng.uniform(-0.99, 0.99)) for _ in range(40)]
+    dibits = run_fsk4_slicer_dut(levels, CHIP_YAML)
+    ref = [int(d) for d in blk.process_reference(levels)]
+    assert dibits == ref, f"chip != reference:\n chip {dibits}\n ref  {ref}"
 
 
 # --- the strongest gate: mapper -> slicer LOOPBACK is the identity -------------
 
 def test_mapper_slicer_loopback_identity():
-    """Random bits -> mapper -> (levels) -> slicer -> the SAME bits. Pins the two
-    blocks' shared LSB-first M17 Gray convention end to end (clean channel)."""
+    """Random bits -> mapper -> (levels) -> slicer -> the SAME dibits. Pins the two
+    blocks' shared LSB-first M17 Gray convention end to end (clean channel). The
+    slicer emits dibits, so unpack them to bits to compare against the mapper input."""
     rng = random.Random(7)
     n_dibits = 64
     bits_in = []
@@ -119,8 +121,11 @@ def test_mapper_slicer_loopback_identity():
         bits_in += [rng.randint(0, 1), rng.randint(0, 1)]
     levels = run_fsk4_mapper_dut(bits_in, CHIP_YAML)          # 64 PAM levels
     levels_q15 = [_q15(v) for v in levels]
-    bits_out = run_fsk4_slicer_dut(levels_q15, CHIP_YAML)     # 128 bits
-    print(f"\nloopback: in {len(bits_in)} bits, out {len(bits_out)} bits")
+    dibits_out = run_fsk4_slicer_dut(levels_q15, CHIP_YAML)   # 64 dibits (0..3)
+    bits_out = []
+    for d in dibits_out:
+        bits_out += _dibit_bits(d)                            # unpack to 128 bits
+    print(f"\nloopback: in {len(bits_in)} bits, out {len(dibits_out)} dibits")
     assert bits_out == bits_in, "mapper->slicer loopback is NOT the identity!"
 
 
@@ -128,44 +133,41 @@ def test_mapper_slicer_loopback_identity():
 
 def test_mutation_inverted_thresholds_fails():
     """A slicer that inverts its sign decision (b1 flipped) MUST disagree with the
-    reference — proves the sign test is under test."""
+    reference — proves the sign test is under test. (Output is now DIBITS 0..3;
+    flipping b1 is XOR-ing bit 1 of each dibit, i.e. d ^= 2.)"""
     blk = FSK4SlicerBlock("s")
-    levels = [_q15(v) for v in (1.0, 1.0 / 3.0, -1.0 / 3.0, -1.0)]
-    bits = run_fsk4_slicer_dut(levels, CHIP_YAML)
-    ref = [int(b) for b in blk.process_reference(levels)]
-    # Mutate: flip every b1 (the sign bit, output index 1,3,5,7).
-    mutated = list(bits)
-    for k in range(1, len(mutated), 2):
-        mutated[k] ^= 1
+    levels = [_q15(v) for v in (0.99, 1.0 / 3.0, -1.0 / 3.0, -0.99)]
+    dibits = run_fsk4_slicer_dut(levels, CHIP_YAML)
+    ref = [int(d) for d in blk.process_reference(levels)]
+    mutated = [d ^ 2 for d in dibits]      # flip b1 (sign) of every dibit
     assert mutated != ref, "gate missed a flipped sign decision!"
 
 
 def test_mutation_shifted_stream_fails():
-    """A one-bit shift of the sliced stream must be caught."""
+    """A one-symbol shift of the sliced dibit stream must be caught."""
     blk = FSK4SlicerBlock("s")
     rng = random.Random(3)
-    levels = [_q15(rng.uniform(-1.0, 1.0)) for _ in range(20)]
-    bits = run_fsk4_slicer_dut(levels, CHIP_YAML)
-    ref = [int(b) for b in blk.process_reference(levels)]
-    shifted = [0] + list(bits[:-1])
-    assert shifted != ref, "gate missed a one-bit stream shift!"
+    levels = [_q15(rng.uniform(-0.99, 0.99)) for _ in range(20)]
+    dibits = run_fsk4_slicer_dut(levels, CHIP_YAML)
+    ref = [int(d) for d in blk.process_reference(levels)]
+    shifted = [0] + list(dibits[:-1])
+    assert shifted != ref, "gate missed a one-symbol stream shift!"
 
 
 def test_mutation_magnitude_swap_fails():
-    """If the magnitude bit b0 were dropped (all inner) the gate MUST fail."""
+    """If the magnitude bit b0 were dropped (all inner) the gate MUST fail. (b0 is
+    bit 0 of each dibit; force it to 0 via d &= ~1.)"""
     blk = FSK4SlicerBlock("s")
-    levels = [_q15(v) for v in (1.0, 1.0 / 3.0, -1.0 / 3.0, -1.0)]
-    bits = run_fsk4_slicer_dut(levels, CHIP_YAML)
-    ref = [int(b) for b in blk.process_reference(levels)]
-    mutated = list(bits)
-    for k in range(0, len(mutated), 2):
-        mutated[k] = 0   # force every b0 to 0 (never outer)
+    levels = [_q15(v) for v in (0.99, 1.0 / 3.0, -1.0 / 3.0, -0.99)]
+    dibits = run_fsk4_slicer_dut(levels, CHIP_YAML)
+    ref = [int(d) for d in blk.process_reference(levels)]
+    mutated = [d & ~1 for d in dibits]     # force every b0 to 0 (never outer)
     assert mutated != ref, "gate missed a dropped magnitude bit!"
 
 
 def test_empty_output_fails():
     blk = FSK4SlicerBlock("s")
-    ref = [int(b) for b in blk.process_reference([_q15(1.0)])]
+    ref = [int(d) for d in blk.process_reference([_q15(0.99)])]
     assert ref and [] != ref
 
 

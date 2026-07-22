@@ -88,12 +88,14 @@ class FSK4SlicerBlock(KyttarBlock):
         return float_to_q15(self._THR)
 
     def build_cell_programs(self) -> Dict[int, CellProgram]:
-        """Slice a signed level to a dibit and emit its two bits LSB-first.
+        """Slice a signed level to a DIBIT and emit it as ONE word (value 0..3).
 
         The dibit's two bits ARE the two decision flags (see class docstring):
-        ``b0 = (|y| ≥ thr)`` (magnitude) and ``b1 = (y < 0)`` (sign). ``mag`` holds
-        ``|y|`` (negate when ``y < 0``, tracked by ``sign``). Emit ``b0`` then
-        ``b1`` — no dibit lookup table. Single cell, single output face."""
+        ``b0 = (|y| ≥ thr)`` (magnitude, the LSB) and ``b1 = (y < 0)`` (sign, the MSB).
+        The recovered dibit is ``d = b0 + 2·b1`` (LSB-first, matching the mapper). ONE
+        output word per input symbol — like the QPSK slicer — so a waveform / time sink
+        plots clean 0..3 levels, not a stacked b0/b1 0/1 bit stream. Single cell, single
+        output face. (Downstream that wants the raw bit stream unpacks the dibit.)"""
         return {0: CellProgram(
             inputs=[Port("sample", register=0)],
             outputs=[Port("out")],
@@ -102,43 +104,43 @@ class FSK4SlicerBlock(KyttarBlock):
                 DataWord("zero", 0x0000, address=1),
                 DataWord("one", 0x0001, address=2),
                 DataWord("thr", self.threshold_q15, address=3),
+                DataWord("two", 0x0002, address=4),
             ],
             state=[
                 StateVar("y_save"),
-                StateVar("mag"),   # |y|
-                StateVar("sign"),  # b1 = (y < 0)
+                StateVar("mag"),    # |y|
+                StateVar("dibit"),  # d = b0 + 2*b1
             ],
             assembly_template="""\
 start:
     MOVE R{state:y_save}, R{in:sample}
-    ; --- sign bit b1 = (y < 0); build |y| in mag ---
-    MOVE R{state:sign}, R{data:zero}
+    ; --- sign bit b1 = (y < 0); build |y| in mag; seed dibit with 2*b1 ---
+    MOVE R{state:dibit}, R{data:zero}
     MOVE R{state:mag}, R{state:y_save}
     CMP R{state:y_save}, R{data:zero}
     BR.NN nonneg
-    MOVE R{state:sign}, R{data:one}
+    MOVE R{state:dibit}, R{data:two}   ; b1 = 1 -> d += 2
     MOVE R0, R{data:zero}
     SUB R0, R{state:y_save}
     MOVE R{state:mag}, R0
 nonneg:
-    ; --- b0 = (|y| >= thr): emit LSB first ---
-    MOVE R0, R{data:zero}
+    ; --- b0 = (|y| >= thr): add the LSB into the dibit ---
     CMP R{state:mag}, R{data:thr}
-    BR.N emit_b0
-    MOVE R0, R{data:one}
-emit_b0:
-    {write:out}
-    ; --- b1 = sign: emit MSB ---
-    MOVE R0, R{state:sign}
+    BR.N emit
+    ADD R{state:dibit}, R{data:one}    ; b0 = 1 -> d += 1
+    MOVE R{state:dibit}, R0
+emit:
+    MOVE R0, R{state:dibit}
     {write:out}
     {jump:out}
 """,
         )}
 
     def process_reference(self, input_samples) -> np.ndarray:
-        """Reference: signed Q15 level -> two bits (b0 LSB, then b1 MSB) per input,
-        matching the on-chip inverse Gray map (LSB-first). Returns a flat bit list
-        of length ``2·len(input)``."""
+        """Reference: signed Q15 level -> ONE recovered DIBIT (0..3) per input,
+        ``d = b0 + 2·b1`` with ``b0 = (|y| ≥ thr)`` (LSB) and ``b1 = (y < 0)`` (MSB) —
+        the inverse Gray map (LSB-first). One value per symbol (matches the on-chip
+        single-word emit)."""
         def s16(v):
             v = int(v) & 0xFFFF
             return v - 0x10000 if v & 0x8000 else v
@@ -147,12 +149,10 @@ emit_b0:
         out = []
         for v in np.asarray(input_samples).reshape(-1):
             y = s16(v)
-            sign = 1 if y < 0 else 0
+            sign = 1 if y < 0 else 0            # b1 (MSB)
             mag = -y if y < 0 else y
-            magflag = 1 if mag >= thr else 0
-            # b0 (LSB) = magnitude flag, b1 (MSB) = sign flag (see class docstring).
-            out.append(magflag)   # b0 (LSB) first
-            out.append(sign)      # b1 (MSB)
+            magflag = 1 if mag >= thr else 0    # b0 (LSB)
+            out.append(magflag + 2 * sign)     # d = b0 + 2*b1
         return np.asarray(out, dtype=np.int16)
 
     def reset(self):

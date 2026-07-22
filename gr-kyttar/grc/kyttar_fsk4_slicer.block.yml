@@ -25,10 +25,11 @@ outputs:
 documentation: |-
   🧪 M17 4FSK hard-decision slicer — the RX final stage of an M17 4-level FSK modem.
 
-  Maps a recovered FM-discriminator LEVEL (real, from the timing loop) to the 2-bit
-  DIBIT it came from, emitting b0 (the LSB) then b1 (the MSB) — the exact inverse of
+  Maps a recovered FM-discriminator LEVEL (real, from the timing loop) to the DIBIT
+  (0..3) it came from — ONE word per input symbol (d = b0 + 2*b1, like the QPSK
+  slicer), so a waveform / time sink plots clean 0..3 levels. The exact inverse of
   the 4FSK Symbol Mapper in the same LSB-first convention (RULE #0), so a TX->RX
-  loopback recovers the original bitstream unchanged.
+  loopback recovers the original dibit stream unchanged.
 
   Decision (thresholds at 0 and ±2/3 on the normalised {±1, ±3} grid -> nearest of
   {+3, +1, -1, -3} -> inverse Gray map):
@@ -42,7 +43,7 @@ documentation: |-
 
   Ports:
     sample (in): recovered discriminator symbol level (signed)
-    out:         hard dibit bits (b0 LSB then b1 MSB; two words per input level)
+    out:         the recovered dibit 0..3 (d = b0 + 2*b1; ONE word per input level)
 
   Parameters:
     Device ID: which Kyttar device to use

@@ -250,11 +250,12 @@ class fsk4_slicer(_PassThrough):
     """M17 4FSK hard-decision slicer — GR marker (maps to FSK4SlicerBlock).
 
     RX final stage of an M17 4-level FSK modem: a recovered FM-discriminator LEVEL
-    (real) in -> the 2-bit DIBIT it came from out (b0 LSB then b1 MSB). The exact
-    inverse of :class:`fsk4_symbol_mapper` (thresholds at 0 and +-2/3 -> nearest of
-    {+3,+1,-1,-3} -> inverse LSB-first Gray map): b0 = (|y| >= 2/3), b1 = (y < 0).
-    The real DSP runs on the chip; this carries the graph (float level in -> float
-    bit out, two bits per input level)."""
+    (real) in -> the recovered DIBIT (0..3) it came from, ONE word per input symbol
+    (like the QPSK slicer). The exact inverse of :class:`fsk4_symbol_mapper` (thresholds
+    at 0 and +-2/3 -> nearest of {+3,+1,-1,-3} -> inverse LSB-first Gray map):
+    ``d = b0 + 2*b1`` with ``b0 = (|y| >= 2/3)`` (LSB) and ``b1 = (y < 0)`` (MSB). The
+    real DSP runs on the chip; this carries the graph (float level in -> float dibit
+    out, 1:1). A downstream that wants the raw 9600-bps bit stream unpacks the dibit."""
 
     def __init__(self, device_id="kyttar_0"):
         super().__init__("Kyttar 4FSK Slicer", n_in=1, n_out=1,
@@ -263,17 +264,17 @@ class fsk4_slicer(_PassThrough):
         self._advertise_grc_params(device_id, "FSK4SlicerBlock", {})
 
     def work(self, input_items, output_items):
-        # Faithful slice so a GR run shows a bit stream. The chip emits TWO bits per
-        # input level; the 1:1 marker can only show one word per sample, so emit b0
-        # (the magnitude bit) — enough to visualise the decision. (The chip's full
-        # 2-bit output is drained by the server-batch path.)
+        # Faithful slice so a GR run shows clean 0..3 dibit levels (matches the chip's
+        # single-word-per-symbol emit): d = b0 + 2*b1.
         x = input_items[0]
         n = len(x)
         out = output_items[0]
         thr = 2.0 / 3.0
         for k in range(n):
             y = float(x[k])
-            out[k] = 1.0 if abs(y) >= thr else 0.0
+            b0 = 1 if abs(y) >= thr else 0
+            b1 = 1 if y < 0 else 0
+            out[k] = float(b0 + 2 * b1)
         return n
 
 

@@ -93,8 +93,9 @@ def run_fsk4_mapper_dut(bits, chip_yaml):
 
 
 def run_fsk4_slicer_dut(levels_q15, chip_yaml):
-    """Feed signed Q15 discriminator levels to the slicer; return the emitted bits
-    (0/1) as a flat list (two bits, b0 then b1, per input level)."""
+    """Feed signed Q15 discriminator levels to the slicer; return the emitted DIBITS
+    (0..3) as a list — ONE dibit word per input level (the slicer packs b0+2*b1 into a
+    single output word, like the QPSK slicer, so a waveform sink plots 0..3 levels)."""
     words = _run_single_block_stream(
         "FSK4SlicerBlock", {}, [int(v) & 0xFFFF for v in levels_q15], chip_yaml)
-    return [w & 1 for w in words]
+    return [w & 3 for w in words]

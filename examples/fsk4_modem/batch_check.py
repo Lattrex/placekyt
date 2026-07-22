@@ -13,7 +13,9 @@
 # recovered dibits (0..3), one per symbol — a real demodulator, end to end.
 #
 # Setup:
-#   1. In placeKYT, import examples/fsk4_modem/fsk4_modem.grc and place+route it.
+#   1. Open examples/fsk4_modem/fsk4_modem.kyt in placeKYT (File -> Open). This is a
+#      dense design the auto-router can't fully route from a fresh .grc import, so open
+#      the pre-placed .kyt directly (like the SSB Weaver) -- do NOT import the .grc.
 #   2. Simulation -> "Run as GNURadio Server"; note the printed port.
 #   3. Run this with --port <PORT>.
 

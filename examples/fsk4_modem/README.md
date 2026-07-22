@@ -69,22 +69,30 @@ threshold and the slicer's ±2/3 threshold both assume outer ≈ ±1.0.
 
 | File | What it is |
 |------|------------|
-| `fsk4_modem.grc` | The GNU Radio flowgraph: a TX source/sink pair and an RX source/sink pair, both targeting the same placeKYT-hosted chip by `stream_id`. Open in **both** placeKYT (to host the chip) and `gnuradio-companion` (to drive it). |
+| `fsk4_modem.kyt` | **The pre-placed, pre-routed design — open THIS.** A DRC-clean, fully-routed placeKYT layout of both chains on one cell array. Open it directly (**File → Open**) to host the chip; **do not import the `.grc`** (see the note below). |
+| `fsk4_modem.grc` | The GNU Radio flowgraph that **drives** the hosted chip: a TX source/sink pair and an RX source/sink pair, both targeting the same chip by `stream_id`. Open it in `gnuradio-companion` (terminal 2) — not in placeKYT. |
 | `batch_check.py` | A headless verifier: streams a framed 4FSK burst through the hosted chip and reports the recovered dibits + symbol BER. No GNU Radio GUI needed. |
+
+> **Open the `.kyt` — don't import the `.grc`.** Like the [SSB Weaver](../ssb_weaver/),
+> this modem is a dense design the auto-router **cannot fully route from a fresh
+> import** (the tall `FrequencyModulator` and `FSK4SyncTimingRecovery` blocks box in
+> the shared input-port fan-out and the single-cell slicer, leaving nets unrouted). The
+> shipped `fsk4_modem.kyt` is a hand-tuned, DRC-clean placement + routing of exactly
+> this flowgraph — so **open the `.kyt`** to host the chip. Importing the `.grc` into
+> placeKYT will leave fly lines and the build will fail.
 
 ## Run it
 
 Two terminals, two commands — run both **from the repo root** (`placekyt/`).
 
-**1. Host the chip** (terminal 1) — launch placeKYT and import the flowgraph:
+**1. Host the chip** (terminal 1) — launch placeKYT with the pre-built design:
 
 ```bash
-.venv/bin/python placekyt/main.py
+.venv/bin/python placekyt/main.py examples/fsk4_modem/fsk4_modem.kyt
 ```
 
-In placeKYT: **File → Import GNURadio Flowgraph…** → `examples/fsk4_modem/fsk4_modem.grc`
-(placeKYT places and routes both chains onto one cell array), then **Simulation →
-Run as GNURadio Server** (binds port **58950**). Leave placeKYT running.
+placeKYT opens the placed-and-routed modem directly. Then **Simulation → Run as
+GNURadio Server** (binds port **58950**). Leave placeKYT running.
 
 **2. Drive it** (terminal 2) — open the flowgraph and press **▶ Run** (F6):
 
@@ -92,8 +100,8 @@ Run as GNURadio Server** (binds port **58950**). Leave placeKYT running.
 gnuradio-companion examples/fsk4_modem/fsk4_modem.grc
 ```
 
-You'll see the TX 4FSK passband and the RX side's recovered dibits, both coming back
-from the one hosted chip.
+You'll see the TX 4FSK baseband (separate **I** and **Q** traces) and the RX side's
+recovered dibits (0..3), both coming back from the one hosted chip.
 
 ## Headless check (no GNU Radio GUI)
 

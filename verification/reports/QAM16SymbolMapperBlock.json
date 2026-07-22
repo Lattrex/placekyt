@@ -1,0 +1,19 @@
+{
+  "kyttar_block": "QAM16SymbolMapperBlock",
+  "passed": true,
+  "metric": "exact",
+  "n_compared": 16,
+  "max_abs_err": 1,
+  "tolerance": 2,
+  "nmse_db": null,
+  "correlation": null,
+  "bit_errors": 0,
+  "delay_used": 0,
+  "coverage": {
+    "gr_equiv": "digital.chunks_to_symbols_bc(constellation_16qam().points(), 1)",
+    "patterns": "all-16 + random",
+    "mutation": true,
+    "provenance": "points() re-derived from GNU Radio",
+    "note": "3-cell (acc/itab/qtab); complex-egress (I,Q) pair per symbol"
+  }
+}

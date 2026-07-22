@@ -8,6 +8,39 @@ anything that generalizes across block classes into `invariants.md`.
 
 ---
 
+## QAM16 slicer REBUILT to GR decision_maker + Costas tap/acquisition BLOCKERS 2026-07-22
+
+Rebuilt `QAM16SlicerBlock` as a 1:1 `digital.constellation_decoder_cb(constellation_16qam())`
+drop-in. GR's map is non-separable, BUT the nearest-point decision FACTORS exactly into two
+per-axis binary tests + a 16-entry permutation LUT (verified == `decision_maker` over the
+whole plane, `qam16_sign_outer_lut`): `sign=(v>=0)`, `outer=(|v|>=2/√10)`,
+`key=(Is<<3)|(Io<<2)|(Qs<<1)|Qo`, `symbol=LUT[key]`, LUT=`[1,6,10,13,4,3,15,8,0,7,11,12,5,2,14,9]`.
+3-cell islice/qslice/lut (2 per-axis tests + |v| don't fit one 32-word cell). `lut`'s key input
+is pinned R17 (above the 16-entry table at addr 1..16) — the same aliasing trap the mapper hit.
+`test_qam16_slicer.py`: exact points + noisy grid + mapper→slicer loopback identity + INV-4
+mutations — all green.
+
+**COSTAS BLOCKERS (modem NOT yet BER-0 end-to-end):**
+1. **No recovered-output tap.** The DD `QAM16ComplexCostasLoopBlock` recovers (yi,yq) at its
+   `rotate`/`qslice_err` cell but `output_cell_id` returned None → it emits only the pi/dphase
+   feedback; the recovered pair never reaches a downstream slicer. It was only ever tested via
+   `process_reference`, never wired block→block. Adding a dual-face tap (like the order-4 QPSK
+   Costas `qpd` yi_tap/yq_tap) overflows `rotate`/`qslice_err` (both at register ceiling with the
+   derotate / PAM slice). A dedicated `tap` relay cell (rotate→tap→islice_pi, cell_count 9→10)
+   BUILDS+ROUTES, but its mid-block `tap_trig` is NOT patched to fire the downstream → 0 output.
+   This is the SAME multi-day trig-resolution problem this log documents for the order-4 QPSK
+   Costas (`_patch_last_jump_handoff` / the tap-trig retarget). Reverted to the clean committed
+   block; the tap is unfinished.
+2. **DD acquisition is marginal for 16-QAM.** Standalone at 1 sps (feed constellation points
+   directly, no MF) it LOCKS BER0 over foff∈[0.001,0.003] (`alpha_q15=0x0400,beta_q15=0x0020`)
+   or [0.002,0.005] (`0x1000/0x0040`); the shipped defaults `0x0800/0x0040` are marginal
+   (BER~0.015). But the MF-DECIMATED 2 sps path (the QPSK-modem topology) does NOT acquire — BER
+   cliffs from 0 (foff=0) to 0.75 (any offset). The DD algorithm locks PERFECTLY in float (150/150),
+   so it's a Q15 + 2-sps-phase-doubling + residual-ISI interaction, unsolved. Path forward for a
+   BER-0 modem: (a) finish the tap-trig patch, (b) run at the 1-sps symbol-synchronous operating
+   point (the KB's QPSK-modem workaround), (c) ship a hand-placed dense .kyt (auto-route congests
+   with the 10-cell Costas + 3-cell slicer). The mapper+slicer are DONE + GR-verified + committed.
+
 ## QAM16 mapper REBUILT to GR constellation_16qam() + the table/register aliasing bug 2026-07-22
 
 The legacy `QAM16SymbolMapperBlock` used an INVENTED separable-Gray map

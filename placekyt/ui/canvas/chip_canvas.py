@@ -402,19 +402,44 @@ class ChipCanvas(QGraphicsView):
         return False
 
     def _render_abutment_link(self, conn, chip_id, origin) -> None:
-        """Draw an ABUTMENT connection as a SOLID link between the source output
-        cell and its (adjacent) target input cell.
+        """Draw an ABUTMENT connection as a routed line between the source output
+        cell CENTER and its (adjacent) target input cell CENTER — the SAME
+        cell-center poly-line a normal (manual / corridor) route draws.
 
         An abutment net is a REAL routed connection with no corridor waypoints — its
         two I/O cells physically touch and the source delivers @1 straight into the
-        input. Without this it draws NOTHING and reads as "not wired". We anchor a
-        solid connection line between the two block-port anchors (the same anchors a
-        fly line uses), so it renders like any realised link — just short and
-        corridor-free — instead of vanishing."""
+        input. Drawing it CELL-CENTER to CELL-CENTER makes an auto-routed adjacent-block
+        hop look identical to a manual route (the clean green line through the cells),
+        instead of a short angled "jumper" between the two port-edge anchors. Falls back
+        to the port-edge anchors only when a cell can't be resolved (e.g. a chip-port
+        target)."""
+        from model.connection import BlockEndpoint
+
+        def _cell_xy(endpoint):
+            """(x, y) of a block endpoint's port cell (via port_cell_provider), or
+            None for a non-block / unresolvable endpoint."""
+            if not (isinstance(endpoint, BlockEndpoint) and self._project is not None):
+                return None
+            b = self._project.block(endpoint.block)
+            if b is None or b.placement is None or not b.placement.cells:
+                return None
+            pmap = self._port_cells_for(b)
+            ent = pmap.get(getattr(endpoint, "port", None))
+            cell = b.placement.cell(ent[0]) if ent is not None else None
+            return (cell.x, cell.y) if cell is not None else None
+
+        src_cell = _cell_xy(conn.source)
+        tgt_cell = _cell_xy(conn.target)
+        if src_cell is not None and tgt_cell is not None:
+            # Same cell-center poly-line a routed corridor uses → identical look.
+            self._scene.addItem(
+                ConnectionItem([src_cell, tgt_cell], origin, name=conn.name))
+            return
+        # Fallback: a cell couldn't be resolved (e.g. a chip-port endpoint) — draw the
+        # solid link between the port-edge anchors so the net still renders as wired.
         start = self._endpoint_anchor(conn.source)
         end = self._endpoint_anchor(conn.target)
         if start is None or end is None:
-            # Endpoints not anchorable yet (unplaced) — nothing to draw.
             return
         self._scene.addItem(
             ConnectionItem.solid_link(start, end, name=conn.name))

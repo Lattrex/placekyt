@@ -1976,7 +1976,7 @@ def _apply_port_diverts(cell_map, blocks, connections, project, chip_id,
     Returns ``{conn_name: {"cell", "entry", "hop", "data_addrs"}}`` — the host-injection
     landing for each diverted net (land AT the port cell, run its turn entry). The
     build merges these into ``input_landings`` (overriding the straight resolution)."""
-    from model.connection import BlockEndpoint, ChipPortEndpoint
+    from model.connection import BlockEndpoint, ChipPortEndpoint, ABUTMENT_ROUTE
     from .bus_router import (BROKER_BURST_REG, BrokerDelivery, _phys_pts,
                              _target_input_cell)
 
@@ -1993,7 +1993,14 @@ def _apply_port_diverts(cell_map, blocks, connections, project, chip_id,
         return {}
     port_face = int(port_face)
 
-    # Every port-source input net on this chip, with its physical route + first step.
+    # Every port-source input net on this chip, with its route first step. Use the RAW
+    # drawn route (conn.route), NOT _phys_pts: _phys_pts STRIPS the trailing input-cell
+    # waypoint when the target block ABUTS the port (route == [port, in_cell]), leaving
+    # a 1-cell path — which would make the divert skip an abutting fan-out target and
+    # forward its word the WRONG way (the cell-(0,0) shared-port bug: TX net [(0,0),
+    # (1,0)] into the mapper stripped to [(0,0)] → rode the RX face SOUTH into the RX
+    # block). The divert only needs the port cell + the FIRST step direction; keep the
+    # full route so an adjacent block is still seen as a fan-out branch.
     port_nets = []
     for conn in connections:
         if not (isinstance(conn.source, ChipPortEndpoint)
@@ -2001,7 +2008,9 @@ def _apply_port_diverts(cell_map, blocks, connections, project, chip_id,
                 and conn.source.port == in_port.name
                 and isinstance(conn.target, BlockEndpoint)):
             continue
-        pts = _phys_pts(project, conn, catalog) if conn.is_routed else []
+        if not conn.is_routed or conn.route == ABUTMENT_ROUTE:
+            continue
+        pts = [(p.x, p.y) for p in conn.route]
         if not pts or pts[0] != port_cell or len(pts) < 2:
             continue
         step = _step_face(port_cell[0], port_cell[1], pts[1][0], pts[1][1])
@@ -2024,23 +2033,44 @@ def _apply_port_diverts(cell_map, blocks, connections, project, chip_id,
     landing_meta = {}   # conn -> (n_operands, downstream_regs)
     for (conn, pts, step) in diverting:
         down_cell = pts[1]
-        d_entry = broker_conn_entry.get(conn.name)
-        if d_entry is None:
-            # No downstream broker for this net (shouldn't happen for a routed
-            # port fan-out into a bus-tapped block) — leave it to the straight path.
-            continue
         blk = project.block(conn.target.block)
         _e, in_regs = catalog.resolved_io(blk.type, blk.params, library=blk.library)
-        # N operands the downstream broker expects for THIS net. broker_conn_burst is
-        # the LAST (highest) operand reg of the net's group at the downstream broker;
-        # the N operands are the N consecutive regs ending there.
-        last = BROKER_BURST_REG + int(broker_conn_burst.get(conn.name, 0))
-        if in_regs and len(in_regs) > 1 and conn.src_complex is not False:
-            n = len(in_regs)
-            down_regs = [last - (n - 1) + i for i in range(n)]
+        d_entry = broker_conn_entry.get(conn.name)
+        _direct_abut = False
+        if d_entry is None:
+            # No DOWNSTREAM broker for this net. That is the ABUTTING fan-out target
+            # case (the cell-(0,0) shared-port bug): the block sits DIRECTLY next to the
+            # port (route == [port, in_cell]), so there is no free routing cell to host a
+            # downstream broker — the port broker must relay @1 STRAIGHT into the block's
+            # OWN input cell + entry. (Previously this net was silently dropped and its
+            # word rode the other stream's fwd_face into the wrong block.)
+            in_cell = _target_input_cell(blk, conn.target.port, catalog)
+            if in_cell is not None and in_cell == down_cell:
+                d_entry = _e            # deliver to the block's own landing entry
+                _direct_abut = True
+            else:
+                # Genuinely no downstream target (shouldn't happen for a routed
+                # port fan-out) — leave it to the straight path.
+                continue
+        if _direct_abut:
+            # Deliver into the BLOCK's OWN input registers (it is the landing cell).
+            if in_regs and len(in_regs) > 1 and conn.src_complex is not False:
+                n = len(in_regs)
+                down_regs = list(in_regs)
+            else:
+                n = 1
+                down_regs = [in_regs[0] if in_regs else 0]
         else:
-            n = 1
-            down_regs = [last]
+            # N operands the downstream broker expects for THIS net. broker_conn_burst is
+            # the LAST (highest) operand reg of the net's group at the downstream broker;
+            # the N operands are the N consecutive regs ending there.
+            last = BROKER_BURST_REG + int(broker_conn_burst.get(conn.name, 0))
+            if in_regs and len(in_regs) > 1 and conn.src_complex is not False:
+                n = len(in_regs)
+                down_regs = [last - (n - 1) + i for i in range(n)]
+            else:
+                n = 1
+                down_regs = [last]
         grp_key = ("port_divert", conn.name)
         for r in down_regs:
             deliveries.append(BrokerDelivery(

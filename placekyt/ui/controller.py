@@ -1898,17 +1898,22 @@ class AppController(QObject):
         return report
 
     def _resolve_complex_egress_corails(self, report) -> None:
-        """Satisfy an UNROUTED complex-egress yq net by riding its yi sibling's route.
+        """Make BOTH rails of a complex-egress pair ride ONE corridor after routing.
 
-        A complex-output block feeding x16_out emits yi (out_tag T) and yq (out_tag T+1)
-        from ONE emit cell down ONE corridor; the port de-interleaves by tag. The router
-        routes yi but can't draw a SECOND path from the same cell to the same port, so the
-        synthesised yq net is left unrouted and the build fails. Here we find each unrouted
-        yq net whose yi sibling (same source block, both → x16_out, yq.out_tag == yi.out_tag
-        + 1) DID route, and rewrite the yq net's result to ``ok`` with the SAME waypoints,
-        so both rails egress on the shared corridor. Idempotent; a no-op when there is no
-        such pair (the common single-rail case)."""
-        from model.connection import BlockEndpoint, ChipPortEndpoint
+        A complex-output block feeding x16_out emits yi and yq from its ONE emit cell down
+        ONE corridor; the port de-interleaves by tag. The router routes ONE rail but can't
+        draw a SECOND distinct path from the same cell to the same port, so the OTHER rail
+        is left unrouted (or stuck at the AUTO_ROUTE sentinel) → a fly line + a "no physical
+        route" build error. This pass copies the routed rail's REAL waypoints onto its
+        unrouted sibling.
+
+        BIDIRECTIONAL + rail-relationship based: EITHER rail may be the one that routed
+        (the router's choice varies), so whichever of a yi/yq pair has real waypoints
+        donates them to the other. Pairs are matched by the yi<->yq PORT relationship
+        (via _iq_sibling), NOT out_tag — a rail's out_tag may be None on a raw/hand-wired
+        net. Idempotent; a no-op without a complex-egress pair."""
+        from model.connection import BlockEndpoint, ChipPortEndpoint, AUTO_ROUTE
+        from engine.grc_import import _iq_sibling
 
         def _is_egress(conn):
             return (conn is not None
@@ -1917,9 +1922,12 @@ class AppController(QObject):
                     and getattr(conn.target, "port", None) == "x16_out")
 
         def _waypoints(pts):
-            """Normalise a route's points to a list of (x,y) tuples, or None."""
+            """A route's points as [(x,y), …], or None (rejects the AUTO_ROUTE
+            sentinel string and empty/degenerate routes)."""
+            if pts is None or isinstance(pts, str):   # AUTO_ROUTE / ABUTMENT sentinels
+                return None
             out = []
-            for p in (pts or []):
+            for p in pts:
                 x = getattr(p, "x", None)
                 y = getattr(p, "y", None)
                 if x is None and isinstance(p, (tuple, list)) and len(p) >= 2:
@@ -1928,58 +1936,68 @@ class AppController(QObject):
                     out.append((int(x), int(y)))
             return out or None
 
-        # Index routed egress nets by (source block, out_tag) so a yq net can find its yi.
-        # CRITICAL: the yi sibling may have been routed in a PRIOR action (it is already on
-        # the project and NOT in THIS pass's report) — the exact "move block, route output"
-        # case where yi kept its route and only yq is unrouted this pass. So index BOTH the
-        # report's freshly-routed nets AND the project's already-routed connections.
-        routed_egress: dict[tuple, list] = {}
-        for r in report.results:
-            if r.ok and r.points:
-                conn = self.project.connection(r.name)
-                if _is_egress(conn) and conn.out_tag is not None:
-                    routed_egress[(conn.source.block, conn.out_tag)] = list(r.points)
-        for conn in self.project.connections:
-            if not (_is_egress(conn) and conn.out_tag is not None):
-                continue
-            if not getattr(conn, "is_routed", False):
-                continue
-            wp = _waypoints(getattr(conn, "route", None))
-            if wp is not None:
-                routed_egress.setdefault((conn.source.block, conn.out_tag), wp)
-
-        # Candidates to co-rail: yq egress nets that are NOT routed after this pass —
-        # whether they were in the report as FAILED, or simply not attempted (already
-        # unrouted on the project and skipped by the "route only unrouted nets" pass).
         def _report_result(name):
             for rr in report.results:
                 if rr.name == name:
                     return rr
             return None
 
-        for conn in self.project.connections:
-            if not (_is_egress(conn) and conn.out_tag is not None):
-                continue
-            if getattr(conn, "is_routed", False):
-                continue  # already routed — nothing to do
+        def _real_points(conn):
+            """REAL waypoints for a routed egress net, from THIS pass's report first
+            (freshest), else the connection's own route. None if only a sentinel."""
             r = _report_result(conn.name)
-            if r is not None and r.ok:
-                continue  # routed this pass
-            # yq rides yi: yi carries out_tag − 1 from the SAME source block.
-            sib_pts = routed_egress.get((conn.source.block, conn.out_tag - 1))
-            if sib_pts is None:
-                continue
-            if r is None:
-                # The net wasn't in the report (not attempted this pass). Add a synthetic
-                # OK result so auto_route_all's SetConnectionRouteCommand records the route.
-                from engine.autoroute import RouteResult
-                r = RouteResult(name=conn.name, ok=False)
-                report.results.append(r)
-            # Give this yq net the yi sibling's corridor (both egress the same path;
-            # the port demuxes by tag). Mark it routed so the build accepts it.
-            r.ok = True
-            r.points = list(sib_pts)
-            r.reason = None
+            if r is not None and r.ok and r.points:
+                wp = _waypoints(r.points)
+                if wp is not None:
+                    return wp
+            return _waypoints(getattr(conn, "route", None))
+
+        # Group egress nets by source block, then pair yi<->yq via the port relationship.
+        egress = [c for c in self.project.connections if _is_egress(c)]
+        by_block: dict[str, list] = {}
+        for c in egress:
+            by_block.setdefault(c.source.block, []).append(c)
+
+        for block_name, conns in by_block.items():
+            blk = self.project.block(block_name)
+            btype = blk.type if blk is not None else None
+            bparams = getattr(blk, "params", None) if blk is not None else None
+            by_port = {c.source.port: c for c in conns}
+            seen = set()
+            for c in conns:
+                if c.name in seen:
+                    continue
+                # The Q-rail paired with this port (works whether c is the i- or q-rail).
+                q = _iq_sibling(self.catalog, btype, c.source.port,
+                                want_out=True, params=bparams)
+                sib = by_port.get(q) if q else None
+                if sib is None:
+                    # c may itself be the q-rail: find the i-rail that maps to it.
+                    for other in conns:
+                        if _iq_sibling(self.catalog, btype, other.source.port,
+                                       want_out=True, params=bparams) == c.source.port:
+                            sib = other
+                            break
+                if sib is None:
+                    continue
+                seen.add(c.name)
+                seen.add(sib.name)
+                # Whichever rail has REAL waypoints donates them to the other.
+                pa, pb = _real_points(c), _real_points(sib)
+                donor_pts = pa if pa is not None else pb
+                if donor_pts is None:
+                    continue  # neither rail actually routed — leave both to fail loudly
+                for net in (c, sib):
+                    if _real_points(net) is not None:
+                        continue  # this rail already has a real route
+                    r = _report_result(net.name)
+                    if r is None:
+                        from engine.autoroute import RouteResult
+                        r = RouteResult(name=net.name, ok=False)
+                        report.results.append(r)
+                    r.ok = True
+                    r.points = list(donor_pts)
+                    r.reason = None
 
     def _routes_cross_block_body(self, report) -> bool:
         """True if ANY routed net in ``report`` transits a block's own BODY cell that

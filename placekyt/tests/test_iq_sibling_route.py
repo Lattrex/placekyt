@@ -145,6 +145,104 @@ def test_manual_move_then_route_complex_egress_co_routes_yq(qapp, catalog):
         "yq complex-egress sibling must route with the yi draw — no orphan fly line")
 
 
+@pytest.mark.skipif(not CT.exists(), reason="chip yaml absent")
+def test_manual_route_either_egress_rail_co_routes_the_other(qapp, catalog):
+    """Routing EITHER complex-egress rail must co-route the other (both share ONE emit-
+    cell corridor to x16_out; if one routes, both must). The user's saved state had the
+    yq rail routed but yi left at the import AUTO_ROUTE default — a fly line — because a
+    directional match only co-routed yq-from-yi, never yi-from-yq. This asserts BOTH
+    directions: routing the yq rail co-routes the yi rail (the direction that was broken),
+    and vice-versa. Self-contained (no saved .kyt)."""
+    from engine.io.chip_type_io import load_chip_type
+    from model.connection import BlockEndpoint, ChipPortEndpoint
+
+    key = "kyttar_10x12"
+    ct = load_chip_type(str(CT))
+
+    def _build():
+        ctrl = AppController(catalog=catalog)
+        ctrl.new_project("egress3", key)
+        fm = ctrl.place_block(
+            "FrequencyModulatorBlock", 0, 2, 2, library="lattrex.official",
+            params={"sensitivity": 1.5707963267948966, "pipeline_lock": True})
+        add = ctrl.add_route
+        add(ChipPortEndpoint(chip=0, port="x16_in"),
+            BlockEndpoint(block=fm, port="x"), [])
+        add(BlockEndpoint(block=fm, port="yi"),
+            ChipPortEndpoint(chip=0, port="x16_out"), [])
+        add(BlockEndpoint(block=fm, port="yq"),
+            ChipPortEndpoint(chip=0, port="x16_out"), [])
+        # Auto-place to seat the cells, but DO NOT auto-route the egress rails — leave
+        # both unrouted (the fresh-import state the user routes one rail from).
+        ctrl.auto_place(0, use_bus="always")
+        return ctrl, fm
+
+    def _fm_net(ctrl, fm, port):
+        return next(c for c in ctrl.project.connections
+                    if getattr(c.source, "block", "") == fm
+                    and getattr(c.source, "port", "") == port)
+
+    # Direction 1: route the YQ rail → the YI rail must co-route (the broken direction).
+    ctrl, fm = _build()
+    yi, yq = _fm_net(ctrl, fm, "yi"), _fm_net(ctrl, fm, "yq")
+    assert not yi.is_routed and not yq.is_routed
+    emit = next(c for c in ctrl.project.block(fm).placement.cells
+                if c.cell_id == "emit")
+    ctrl.add_route(yq.source, yq.target, [(emit.x, emit.y), (emit.x, emit.y + 1)])
+    assert _fm_net(ctrl, fm, "yq").is_routed, "the drawn yq rail must route"
+    assert _fm_net(ctrl, fm, "yi").is_routed, (
+        "routing yq must co-route yi — else yi stays a fly line (the user's bug)")
+
+    # Direction 2: route the YI rail → the YQ rail must co-route.
+    ctrl, fm = _build()
+    yi = _fm_net(ctrl, fm, "yi")
+    emit = next(c for c in ctrl.project.block(fm).placement.cells
+                if c.cell_id == "emit")
+    ctrl.add_route(yi.source, yi.target, [(emit.x, emit.y), (emit.x, emit.y + 1)])
+    assert _fm_net(ctrl, fm, "yi").is_routed and _fm_net(ctrl, fm, "yq").is_routed, (
+        "routing yi must co-route yq")
+
+
+@pytest.mark.skipif(not CT.exists(), reason="chip yaml absent")
+def test_autoroute_co_rails_either_egress_rail(qapp, catalog):
+    """AUTO-ROUTE of a complex-egress pair must leave BOTH rails routed, whichever one
+    the router picked. The router routes only ONE rail (it can't draw a second path from
+    the same emit cell to the same port); the OTHER is left unrouted / at the AUTO_ROUTE
+    sentinel → a fly line + a "no physical route" build error. The user hit BOTH polarities
+    of this: yq unrouted (manual route), and yi stuck at AUTO while yq routed (auto route).
+    The co-rail pass must be BIDIRECTIONAL — whichever rail has real waypoints donates them
+    to the other. Reproduces the yi=AUTO / yq=routed inversion self-contained (no .kyt)."""
+    from engine.io.chip_type_io import load_chip_type
+    from model.connection import BlockEndpoint, ChipPortEndpoint, AUTO_ROUTE
+
+    key = "kyttar_10x12"
+    ct = load_chip_type(str(CT))
+    ctrl = AppController(catalog=catalog)
+    ctrl.new_project("egress2", key)
+    fm = ctrl.place_block(
+        "FrequencyModulatorBlock", 0, 2, 2, library="lattrex.official",
+        params={"sensitivity": 1.5707963267948966, "pipeline_lock": True})
+    add = ctrl.add_route
+    add(ChipPortEndpoint(chip=0, port="x16_in"), BlockEndpoint(block=fm, port="x"), [])
+    add(BlockEndpoint(block=fm, port="yi"), ChipPortEndpoint(chip=0, port="x16_out"), [])
+    add(BlockEndpoint(block=fm, port="yq"), ChipPortEndpoint(chip=0, port="x16_out"), [])
+    ctrl.auto_route_all({key: ct}, auto_orient=True, use_bus="always")
+
+    def _fm_net(port):
+        return next(c for c in ctrl.project.connections
+                    if getattr(c.source, "block", "") == fm
+                    and getattr(c.source, "port", "") == port)
+
+    # Force the INVERSION the user saw in .initial.kyt: the yi rail stuck at AUTO_ROUTE
+    # (a fly line) while the yq rail is routed. A bare auto-route must recover yi.
+    _fm_net("yi").route = AUTO_ROUTE
+    assert not _fm_net("yi").is_routed and _fm_net("yq").is_routed
+    ctrl.auto_route_all({key: ct}, auto_orient=False)
+    assert _fm_net("yi").is_routed, (
+        "yi rail must recover — the routed yq sibling donates its corridor (no fly line)")
+    assert _fm_net("yq").is_routed
+
+
 if __name__ == "__main__":
     app = QApplication.instance() or QApplication([])
     cat = BlockCatalog.from_gr_kyttar()

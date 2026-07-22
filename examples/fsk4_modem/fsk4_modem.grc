@@ -115,30 +115,55 @@ blocks:
     coordinate: [560, 12]
     rotation: 0
     state: enabled
+- name: tx_iq_split
+  id: blocks_deinterleave
+  parameters:
+    affinity: ''
+    alias: ''
+    blocksize: '1'
+    comment: split the kyttar sink's interleaved [I0,Q0,I1,Q1,...] float stream into
+      SEPARATE I (ch0) and Q (ch1) float streams for the TX baseband plot
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_streams: '2'
+    type: float
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1392, 240.0]
+    rotation: 0
+    state: enabled
 - name: tx_passband
   id: qtgui_time_sink_x
   parameters:
     affinity: ''
     alias: ''
     alpha1: '1.0'
+    alpha2: '1.0'
     autoscale: 'False'
     axislabels: 'True'
     color1: blue
-    comment: TX 4FSK COMPLEX baseband, drained as an interleaved I/Q float stream
-      [I0,Q0,I1,Q1,...] (the kyttar sink always emits float; a float sink shows it)
+    color2: red
+    comment: TX 4FSK COMPLEX baseband shown as SEPARATE I (blue) and Q (red) traces
+      (de-interleaved from the kyttar sink's [I0,Q0,...] float stream)
     ctrlpanel: 'False'
     entags: 'True'
     grid: 'False'
     gui_hint: ''
-    label1: I/Q (interleaved)
+    label1: I
+    label2: Q
     legend: 'True'
     marker1: '-1'
-    name: '"TX baseband I/Q (interleaved)"'
-    nconnections: '1'
+    marker2: '-1'
+    name: '"TX baseband I/Q"'
+    nconnections: '2'
     size: stim.tx_pb_points(n_bits)
     srate: samp_rate
     stemplot: 'False'
     style1: '1'
+    style2: '1'
     tr_chan: '0'
     tr_delay: '0'
     tr_level: '0.0'
@@ -148,11 +173,13 @@ blocks:
     type: float
     update_time: '0.10'
     width1: '1'
+    width2: '1'
     ylabel: amplitude
     ymax: '1'
     ymin: '-1'
     yunit: '""'
     grid_style1: solid
+    grid_style2: solid
   states:
     bus_sink: false
     bus_source: false
@@ -553,7 +580,9 @@ connections:
 - [up, '0', rrc, '0']
 - [rrc, '0', fm, '0']
 - [fm, '0', tx_sink, '0']
-- [tx_sink, '0', tx_passband, '0']
+- [tx_sink, '0', tx_iq_split, '0']
+- [tx_iq_split, '0', tx_passband, '0']
+- [tx_iq_split, '1', tx_passband, '1']
 - [rx_iq, '0', rx_src, '0']
 - [rx_src, '0', qd, '0']
 - [qd, '0', mf, '0']

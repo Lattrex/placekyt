@@ -1746,6 +1746,20 @@ class AppController(QObject):
                         clean = False
                 except Exception:  # noqa: BLE001
                     pass
+            # Reject a layout that ROUTES but trips the SINGLE-CELL in==out deadlock
+            # (§5.3): a single-cell block whose input arrives on the SAME face its output
+            # drives. The build hard-fails this, so if the loop ACCEPTS it (as it did —
+            # the fsk4 slicer at (8,3) with input+output both on face E) the user is left
+            # with a DRC-erroring design and no auto path out. Marking it not-clean makes
+            # the sweep ESCALATE channel_reserve / try the next seed until it finds a
+            # layout that splits the block's input and output onto DIFFERENT faces.
+            if ok and clean:
+                try:
+                    from engine.bus_drc import _check_single_cell_inout
+                    if _check_single_cell_inout(self.project):
+                        clean = False
+                except Exception:  # noqa: BLE001
+                    pass
             n_routed = sum(1 for r in report.results if r.ok)
             # Capture this iteration's CONCRETE result (placement geometry + routes) so
             # the accepted one can be re-applied deterministically as registered commands.

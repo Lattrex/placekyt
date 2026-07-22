@@ -224,6 +224,70 @@ blocks:
     coordinate: [88, 168.0]
     rotation: 0
     state: enabled
+- name: tx_syms_src
+  id: blocks_vector_source_x
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: transmitted DIBITS (0..3) — same burst as tx_bits, packed 2 bits/symbol
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    repeat: 'False'
+    tags: '[]'
+    type: float
+    vector: stim.tx_syms(n_bits)
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [88, 40.0]
+    rotation: 0
+    state: enabled
+- name: tx_syms
+  id: qtgui_time_sink_x
+  parameters:
+    affinity: ''
+    alias: ''
+    alpha1: '1.0'
+    autoscale: 'False'
+    axislabels: 'True'
+    color1: blue
+    comment: transmitted 4FSK dibits (0..3) — compare with 'Recovered dibits'
+    ctrlpanel: 'False'
+    entags: 'True'
+    grid: 'False'
+    gui_hint: ''
+    label1: dibit
+    legend: 'True'
+    marker1: '-1'
+    name: '"Transmitted dibits"'
+    nconnections: '1'
+    size: stim.tx_syms_points(n_bits)
+    srate: samp_rate
+    stemplot: 'False'
+    style1: '1'
+    tr_chan: '0'
+    tr_delay: '0'
+    tr_level: '0.0'
+    tr_mode: qtgui.TRIG_MODE_FREE
+    tr_slope: qtgui.TRIG_SLOPE_POS
+    tr_tag: '""'
+    type: float
+    update_time: '0.10'
+    width1: '1'
+    ylabel: dibit
+    ymax: '3'
+    ymin: '0'
+    yunit: '""'
+    grid_style1: solid
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [280, 24.0]
+    rotation: 0
+    state: enabled
 - name: tx_src
   id: kyttar_source
   parameters:
@@ -483,6 +547,7 @@ blocks:
 
 connections:
 - [tx_bits, '0', tx_src, '0']
+- [tx_syms_src, '0', tx_syms, '0']
 - [tx_src, '0', mapper, '0']
 - [mapper, '0', up, '0']
 - [up, '0', rrc, '0']

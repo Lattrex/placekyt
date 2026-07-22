@@ -104,6 +104,21 @@ def tx_bits(n_bits, seed=7):
     return [float(b) for b in bits]
 
 
+def tx_syms(n_bits, seed=7):
+    """The TRANSMITTED DIBITS (0..3) for the SAME burst ``tx_bits(n_bits, seed)``
+    produces — every LSB-first bit pair (b0, b1) packed to ``d = b0 + 2*b1``. Plot this
+    (0..3) alongside the recovered dibits so the two are directly comparable, instead of
+    the raw 0/1 bit stream. Returns floats."""
+    bits = tx_bits(n_bits, seed)
+    return [float(int(bits[i]) + 2 * int(bits[i + 1]))
+            for i in range(0, len(bits) - 1, 2)]
+
+
+def tx_syms_points(n_bits):
+    """Points for the transmitted-dibit time-sink (a guard below the symbol count)."""
+    return max(1, (len(tx_syms(n_bits))) - _PLOT_GUARD)
+
+
 # --- qtgui time-sink plot sizing (so the recovered-dibit / TX-passband waveforms
 # actually PAINT on a finite burst — a FREE-trigger sink flushes a frame only once a
 # sample arrives PAST the frame boundary, so size a guard below the delivered count).

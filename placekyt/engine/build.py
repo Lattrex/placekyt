@@ -692,6 +692,12 @@ def _patch_complex_output_port_handoff(cfg, hop, base_tag, entry=0) -> None:
         opcode = word & 0xF000
         if opcode not in (_WRITE, _JUMP):
             continue
+        # SKIP a WRITE.CFG (config-bit set): the serialize-LOCK's backward unlock
+        # (emit → phase CONFIG[LOCK]) is a WRITE with the CONFIG bit — it is NOT an
+        # egress rail. Patching it with the port hop + an output tag would break the
+        # lock release (and mis-count the yi/yq rails). Leave it untouched.
+        if opcode == _WRITE and (word & _WRITE_CONFIG_BIT):
+            continue
         word = (word & ~(0x1F << 5)) | (hop_cnt << 5)   # @hop on all WRITE/JUMP
         if opcode == _WRITE:
             word = (word & ~0x1F) | ((int(base_tag) + write_i) & 0x1F)
@@ -993,13 +999,23 @@ def _apply_routes(cell_map, gr_placement, blocks, connections, chip_type,
             # EDGE cell at hop_cnt 31 and execute there instead of transiting out — 0 egress,
             # the FM-transceiver symptom that traced to the bus router omitting the exit cell.)
             phys_dist = _phys_distance(conn, pts)
-            if _output_cell_carries_handoffs(gb):
+            _is_complex_port_egress = (
+                not isinstance(tgt, BlockEndpoint) and src_is_complex_out
+                and _cell_write_count(cfg) > 1)
+            if _output_cell_carries_handoffs(gb) and not _is_complex_port_egress:
                 _patch_last_write_handoff(cfg, phys_dist, dest=dest)
                 _patch_last_jump_handoff(cfg, phys_dist, entry=entry)
-            elif (not isinstance(tgt, BlockEndpoint) and src_is_complex_out
-                  and _cell_write_count(cfg) > 1):
+            elif _is_complex_port_egress:
                 # COMPLEX EGRESS to the OUTPUT PORT: the source emits yi+yq (≥2 output
-                # WRITEs) straight to x16_out. Give each rail its OWN dest tag
+                # WRITEs) straight to x16_out. This takes PRECEDENCE over the
+                # output-cell-carries-handoffs path even when the source declares an
+                # output_cell_id (e.g. the FrequencyModulator's serialize-LOCK emit
+                # cell): that path patches ONE last WRITE with ONE tag, which would give
+                # the yi rail the port hop but leave yq (and the emit hop) wrong, so the
+                # I/Q never egresses (0 output). The complex handoff below patches BOTH
+                # rails' WRITEs with the port hop + distinct tags (and skips the lock's
+                # WRITE.CFG via _patch_complex_output_port_handoff's write walk).
+                # Give each rail its OWN dest tag
                 # (yi→base_tag, yq→base_tag+1) so the port demux keeps I and Q as
                 # SEPARATE captured streams (mirrors complex INPUT xi→a0, xq→a1), and
                 # the waveform plots two clean traces instead of one interleaved band.

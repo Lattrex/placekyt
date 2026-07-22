@@ -218,8 +218,14 @@ class AppController(QObject):
         the user re-routes after orienting. Undoable."""
         from commands import TransformBlockCommand
 
+        blk = self.project.block(block_name)
+        chip = blk.placement.chip if blk and blk.placement else 0
+        try:
+            dims = self._chip_dims(chip)
+        except Exception:  # noqa: BLE001
+            dims = None
         self.commands.execute(
-            TransformBlockCommand(self.project, block_name, kind))
+            TransformBlockCommand(self.project, block_name, kind, chip_dims=dims))
 
     def move_cell(self, block_name: str, cell_id, x: int, y: int) -> None:
         """Reposition a single cell of a block (Alt+drag breakout). Undoable.

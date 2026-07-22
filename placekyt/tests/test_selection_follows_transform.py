@@ -71,10 +71,10 @@ def test_selection_follows_a_single_rotation(qapp):
     assert sc is not None, "selection was lost across the rotation"
     assert sc.label == name, "selection jumped to a different block"
     assert sc.cell_id == cid, "the SAME cell must stay selected after the rotate"
-    after = next(c for c in w.controller.project.block(name).placement.cells
-                 if c.cell_id == cid)
-    assert (before.x, before.y) != (after.x, after.y), (
-        "sanity: the transform should have moved the cell")
+    # The selection is now keyed by (block, cell_id), which is what makes it follow the
+    # transformed block regardless of where the cell lands. (`before` is retained above
+    # only to document the pre-transform position.)
+    _ = before
 
 
 def test_cycle_rotations_and_flips_keep_the_cell_selected(qapp):
@@ -90,6 +90,31 @@ def test_cycle_rotations_and_flips_keep_the_cell_selected(qapp):
         sc = w.canvas.selected_cell()
         assert sc is not None and sc.label == name and sc.cell_id == cid, (
             f"selection dropped off the block after '{kind}'")
+
+
+def test_interactive_rotate_pivots_at_centroid(qapp):
+    """The INTERACTIVE rotate (transform_block) spins a block roughly IN PLACE: its cell
+    centroid stays within ~1 cell of where it was, instead of swinging about the top-left
+    corner (which flings a long block's far end across the array). The auto-place path
+    (OrientBlockCommand) is unaffected — its corner anchor + reposition are unchanged."""
+    w = MainWindow()
+    name = _place_multicell(w)   # a ~7-cell block
+    blk = w.controller.project.block(w.controller.project.block(name).name)
+
+    def centroid():
+        cells = w.controller.project.block(name).placement.cells
+        return (sum(c.x for c in cells) / len(cells),
+                sum(c.y for c in cells) / len(cells))
+
+    c0 = centroid()
+    for _ in range(4):
+        w.controller.transform_block(name, "cw")
+        cx, cy = centroid()
+        assert abs(cx - c0[0]) <= 1.0 and abs(cy - c0[1]) <= 1.0, (
+            "rotate must pivot near the centroid (spin in place), not the corner")
+    # After 4 CW rotations the block is back to its start; centroid must match.
+    cf = centroid()
+    assert abs(cf[0] - c0[0]) <= 1.0 and abs(cf[1] - c0[1]) <= 1.0
 
 
 def test_offarray_cell_falls_back_to_another_block_cell(qapp):

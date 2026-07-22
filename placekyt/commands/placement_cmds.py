@@ -256,10 +256,16 @@ class TransformBlockCommand(Command):
     ``kind`` ∈ ``{"cw", "ccw", "mirror_h", "mirror_v"}``.
     """
 
-    def __init__(self, project: Project, block_name: str, kind: str):
+    def __init__(self, project: Project, block_name: str, kind: str,
+                 chip_dims: tuple | None = None):
         self.project = project
         self.block_name = block_name
         self.kind = kind
+        # (w, h) of the array — used to clamp the centroid-pivot shift so no cell leaves
+        # the grid. None → the caller couldn't resolve it; the shift is applied unclamped
+        # (safe: a rotation about the corner keeps the footprint in the same region, and
+        # the centroid shift is at most ~half the block extent).
+        self._chip_dims_hint = chip_dims
         self._prev: Placement | None = None
         # (connection_name, prior_route) snapshots so undo restores the routes.
         self._prev_routes: list = []
@@ -276,8 +282,39 @@ class TransformBlockCommand(Command):
             self._prev_routes.append((conn.name, conn.route))
             conn.route = None
         new_pl = copy.deepcopy(pl)
+        # PIVOT AT THE CELL CENTROID for the INTERACTIVE rotate/flip: transform() rotates
+        # about the footprint's top-left corner, which SWINGS a long block's far end
+        # across the array. Re-translate so the block's centroid returns (rounded) to
+        # where it was — the block spins roughly IN PLACE. Applied ONLY here (the user
+        # command); the auto-placer's OrientBlockCommand keeps the corner anchor it
+        # relies on and repositions each block afterward anyway.
+        old_cx = sum(c.x for c in pl.cells) / len(pl.cells)
+        old_cy = sum(c.y for c in pl.cells) / len(pl.cells)
         new_pl.transform(self.kind)
+        new_cx = sum(c.x for c in new_pl.cells) / len(new_pl.cells)
+        new_cy = sum(c.y for c in new_pl.cells) / len(new_pl.cells)
+        dx = int(round(old_cx - new_cx))
+        dy = int(round(old_cy - new_cy))
+        # Clamp the shift so no cell leaves the array (keep the whole footprint on-grid).
+        w, h = self._chip_dims()
+        xs = [c.x for c in new_pl.cells]
+        ys = [c.y for c in new_pl.cells]
+        if w is not None:
+            dx = max(-min(xs), min(dx, (w - 1) - max(xs)))
+            dy = max(-min(ys), min(dy, (h - 1) - max(ys)))
+        if dx or dy:
+            for c in new_pl.cells:
+                c.x += dx
+                c.y += dy
         self.project._set_block_placement(self.block_name, new_pl)
+
+    def _chip_dims(self):
+        """(width, height) of the array from the caller-provided hint, or (None, None)."""
+        if self._chip_dims_hint and len(self._chip_dims_hint) == 2:
+            w, h = self._chip_dims_hint
+            if isinstance(w, int) and isinstance(h, int):
+                return w, h
+        return None, None
 
     def undo(self) -> None:
         if self._prev is not None:

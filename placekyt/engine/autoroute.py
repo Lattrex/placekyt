@@ -401,7 +401,10 @@ class AutoRouter:
             occ.update((c.x, c.y) for c in pl.cells)
             occ.update((t.x, t.y) for t in pl.transit_cells)
         for conn in self._project.connections:
-            if conn.is_routed:
+            # Only a WAYPOINT route (a list) contributes occupied cells. is_routed is
+            # ALSO True for an ABUTMENT (route == the string "abutment", no corridor);
+            # iterating that string here yields chars → 'str' has no attribute 'x'.
+            if isinstance(conn.route, list) and conn.route:
                 chip = self._chip_of(conn)
                 if chip is not None:
                     occupied.setdefault(chip, set()).update(

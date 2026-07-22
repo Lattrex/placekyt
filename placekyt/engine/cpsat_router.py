@@ -119,7 +119,11 @@ def route_all_cpsat(project, chip_types, port_cell_provider, *,
             occ.update((c.x, c.y) for c in pl.cells)
             occ.update((t.x, t.y) for t in pl.transit_cells)
         for conn in project.connections:
-            if conn.is_routed and helper._chip_of(conn) == chip_id:
+            # Only a WAYPOINT route (list) occupies cells; an ABUTMENT (route ==
+            # "abutment", is_routed True) has no corridor — skip it (iterating the
+            # string would raise 'str' has no attribute 'x').
+            if (isinstance(conn.route, list) and conn.route
+                    and helper._chip_of(conn) == chip_id):
                 occ.update((p.x, p.y) for p in conn.route)
         results.extend(_solve_chip(cp_model, ct, occ, chip_nets, max_time_s))
 

@@ -189,7 +189,9 @@ def check_project_bus(project, chip_types, catalog=None) -> list[Violation]:
     derivation; without it the bare-route checks still run."""
     routes: dict = {}
     for conn in project.connections:
-        if conn.is_routed:
+        # Only WAYPOINT routes (lists) have cells to check; an ABUTMENT (route ==
+        # "abutment", is_routed True) has no corridor — iterating the string raises.
+        if isinstance(conn.route, list) and conn.route:
             routes[conn.name] = [(p.x, p.y) for p in conn.route]
     exempt, egress = _bus_exempt_and_egress(project, chip_types, catalog)
     viols = check_bus(project, routes, chip_types, exempt_cells=exempt,
@@ -231,7 +233,8 @@ def _check_single_cell_inout(project) -> list[Violation]:
     in_is_direct_port: set = set()
     out_drive: dict = {}    # cell -> output drive face code
     for conn in project.connections:
-        if not conn.is_routed or not conn.route:
+        # WAYPOINT routes only; an ABUTMENT (route == "abutment") has no corridor cells.
+        if not (isinstance(conn.route, list) and conn.route):
             continue
         pts = [(p.x, p.y) for p in conn.route]
         # Input net into a single-cell block: target is that block.

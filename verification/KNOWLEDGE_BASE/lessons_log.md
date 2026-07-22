@@ -2120,3 +2120,23 @@ Gardner, IQUpconvert, ComplexMixer, NCO) FAIL the D4 orientation harness
 - **CAVEAT (still open):** a .kyt SAVED with a pre-fix overlap stays overlapping on load
   (the fix prevents CREATING overlaps, not repairing saved ones). Recovery: drag the
   orphaned cell to a free square (now allowed) or delete + re-place the block.
+
+## 2026-07-21 (cont.) — THE actual FM self-overlap cause: a SET-based collision check dedups self-overlap
+
+- **The real root cause of the FrequencyModulator emit/transit_unlock (6,2) overlap was
+  NOT user movement — it was the AUTO-P&R re-fold.** `auto_pnr`'s per-block re-fold tries
+  each D4 orientation and keeps one that routes better + doesn't collide, gated by
+  `_collides`. `_collides` tested `placement.occupied_positions()`, which returns a SET —
+  so two of a block's OWN cells on one square DEDUP to one entry and the self-overlap is
+  invisible. The re-fold happily committed an orientation that folded transit_unlock onto
+  emit. Fix: `_collides` compares cell COUNT vs unique-position count → True on self-overlap.
+- **LESSON: any "does this block collide?" check that builds a SET of positions silently
+  swallows self-overlap.** Three places had to learn this the same day: `_placement_legality`
+  (iterated cells, but the same-block branch was skipped — fixed), `move_cell` (no check at
+  all — fixed), and `_collides` (SET dedup — fixed, and it was THE one the auto-placer hit).
+  When validating a footprint, compare the CELL LIST to its unique positions; never trust a
+  set's membership alone to prove non-overlap.
+- Gate: `test_placement_legality.test_collides_detects_self_overlap` runs the full
+  place<->route loop on the fsk4 modem and asserts no committed self-overlap — it FAILS on
+  the pre-fix `_collides` and passes after. The per-block orientation/move tests (INV-25)
+  cover the other two paths.

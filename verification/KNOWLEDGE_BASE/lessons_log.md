@@ -8,6 +8,44 @@ anything that generalizes across block classes into `invariants.md`.
 
 ---
 
+## QAM16 mapper REBUILT to GR constellation_16qam() + the table/register aliasing bug 2026-07-22
+
+The legacy `QAM16SymbolMapperBlock` used an INVENTED separable-Gray map
+`(I_bits<<2)|Q_bits` (per-axis Gray `{-3:00,-1:01,+1:11,+3:10}`) that matches GR
+`digital.constellation_16qam()` on **0 of 16** symbols. GR's map is a {±1,±3}/√10 grid
+but its bit→point assignment is an idiosyncratic PERMUTATION (NOT separable). Rebuilt the
+mapper to store GR's EXACT `points()` table; `test_qam16_mapper.py` re-derives `points()`
+from GNU Radio and pins the baked Q15 table against it (a GR bump can't silently drift).
+
+- **16 pts > the single-cell I+Q LOAD-indirect budget (PSKSymbolMapper's MAX=14):** a
+  16-entry I table (16 words) + 16-entry Q table (16 words) can't co-fit one 32-word cell
+  with a program. Split into 3 cells: `acc` (4-bit MSB-first accumulator) → `itab` (I
+  table, emits `i_fwd` + forwards `idx+1`) → `qtab` (Q table, emits the (I,Q) pair down
+  the shared complex-egress corridor). Explicit `internal_connections`/`internal_jumps`/
+  `output_cell_id="qtab"` + a 3-cell linear `default_layout` (the default positional
+  auto-wire can't resolve a mid-chain cell that emits both a port and an internal handoff).
+- **THE BUG (cost the session's biggest chunk): a TABLE entry aliased an INPUT register.**
+  Memory IS the register file — `mem[n] == Rn`. The Q table sits at addresses 1..16, so
+  it occupies R1..R16. `qtab`'s `addr` input was pinned to **R1**, which is **mem[1] = the
+  q[0] table entry**. Delivering the address (1, for symbol 0) OVERWROTE q[0], so symbol 0
+  read its Q back as the delivered address (Q=0x0001) instead of −0.316. EVERY other
+  symbol was exact — only idx=0 hit the clobbered slot, which is why it looked like a
+  "symbol-0 warm-up". FIX: pin `qtab`'s inputs ABOVE the table (R17/R18). LESSON: when a
+  cell has a LOAD-indirect table at addr 1..M, its INPUT and STATE registers must live at
+  addr 0 or >M — an input/state landing in 1..M silently corrupts the table (and only the
+  colliding index shows it). This is the LOAD-table analog of the MF partial→cs aliasing.
+  Trace it by reading the built cell's Rn live (`read_cell_memory` per symbol): R18=addr=1
+  but R0 stayed 1 after LOAD → LOAD read a clobbered `mem[1]`.
+- **`LOAD Rn` is a SINGLE table deref, not double.** The ISA doc writes `R0 = mem[mem[Rn]
+  & 0x1F]`, but since R0..R31 ARE mem[0..31], `mem[Rn]` = the register's VALUE, so it is
+  one lookup into the table: `LOAD Rn` with Rn holding `1+idx` gives `mem[1+idx]` = the
+  table entry. (Confirmed against the working FSK4 mapper's level-table LOAD.)
+- **Complex-egress (I,Q) pair:** the mapper emits I then Q down one corridor (out_i/out_q
+  from `qtab`), de-interleaved by out_tag — the same contract as the QPSK mapper feeding
+  the ComplexUpsampler. The DUT drains all words/trigger (fsk4_dut `_run_single_block_stream`)
+  and de-interleaves I0,Q0,I1,Q1,...; verify by symbol-value (a lag search absorbs any
+  cold-start), like the QPSK/FSK4 modem BER checks.
+
 ## M17 4FSK timing recovery: sync-word CORRELATION, not Gardner (algorithm chosen) 2026-07-21
 
 Follow-up to the Gardner-can't-lock-4PAM finding below. Researched + numerically validated

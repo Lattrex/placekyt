@@ -1,25 +1,42 @@
 """QAM16SymbolMapperBlock — see :class:`QAM16SymbolMapperBlock`."""
 import numpy as np
 from ..block import CellProgram, Port, EntryPoint, StateVar, DataWord
-from typing import Dict
+from typing import Dict, List, Tuple, Any
 from ._base import KyttarBlock, BlockInterface, assemble_to_words, float_to_q15, q15_to_float
-from ._qam16_common import _QAM16_NORM, _QAM16_PAM_LEVELS, _QAM16_PAM_Q15
+from ._qam16_common import qam16_points_q15
 
 
 class QAM16SymbolMapperBlock(KyttarBlock):
     """
-    16-QAM Symbol Mapper Block (2 cells).
+    16-QAM Symbol Mapper Block (3 cells).
 
-    Maps 4 input bits to a Gray-coded 16-QAM constellation point, emitting the I
-    and Q components on separate output ports — the same 2-cell shape as the
-    QPSK/8-PSK mapper. 16-QAM is separable, so cell 1 holds just a 4-entry I-PAM
-    table and a 4-entry Q-PAM table (high 2 bits -> I, low 2 bits -> Q).
+    Mirrors GNU Radio ``digital.chunks_to_symbols_bc(constellation_16qam().points())``
+    (the constellation-modulator symbol-mapping stage): maps a 4-bit symbol index
+    0..15 to the EXACT ``digital.constellation_16qam()`` point and emits its I and Q
+    components on separate output ports.
 
-        bits b3 b2 b1 b0  ->  I = PAM[b3 b2],  Q = PAM[b1 b0]
+    THE MAP IS GR'S, VERIFIED AGAINST GR ITSELF. ``constellation_16qam()`` is a
+    rectangular {±1,±3}/sqrt(10) grid, but its bit->point assignment is NOT the naive
+    ``(I_bits<<2)|Q_bits`` separable Gray map — it is an idiosyncratic permutation
+    (call ``constellation_16qam().points()`` to see it). This block stores that exact
+    point table, so composed with :class:`QAM16SlicerBlock` (which mirrors
+    ``decision_maker``) it is the identity on a clean channel: 4 bits -> symbol v ->
+    points()[v] -> v.
 
-    Cell 0 accumulates 4 input bits (MSB first) into an index 0..15. Cell 1 splits
-    the index into I-index (bits 3:2) and Q-index (bits 1:0), LOADs each PAM level,
-    and writes out_i / out_q.
+    Bit packing is MSB-first (``symbol = (b3<<3)|(b2<<2)|(b1<<1)|b0``), matching the
+    GR ``constellation_modulator`` / ``pack_k_bits`` upstream that feeds
+    ``chunks_to_symbols``. Bit-in packing is a documented Kyttar convenience (the same
+    one the PSK/FSK4 mappers use) so a bit-fed flowgraph maps directly; GR's
+    ``chunks_to_symbols`` itself is index-in.
+
+    Architecture (3 cells): a 16-entry I table (16 words) and a 16-entry Q table
+    (16 words) do NOT co-fit one 32-word cell alongside the program, so the lookup is
+    split — ``acc`` accumulates 4 bits into an index, ``itab`` LOADs I (emits out_i)
+    and forwards ``idx`` to ``qtab``, which LOADs Q and emits out_q. The I and Q rails
+    egress independently (paired by corridor at the port, the complex-egress co-rail
+    contract)::
+
+        acc (accumulate) --idx--> itab (I table; emit out_i) --idx--> qtab (Q; emit out_q)
 
     Interface:
         - Entry: R1 (cell 0)
@@ -29,26 +46,30 @@ class QAM16SymbolMapperBlock(KyttarBlock):
     CATEGORY = "demodulation"
     TAGS = ["qam16", "symbol_mapper", "modulation", "demodulation"]
 
-    _interface = BlockInterface(entry_address=1, input_registers=[31], output_registers=[31])
+    _interface = BlockInterface(entry_address=1, input_registers=[0], output_registers=[0])
 
     BITS_PER_SYMBOL = 4
+    _CELL_IDS = ["acc", "itab", "qtab"]
 
     def __init__(self, name: str):
         super().__init__(name)
+        pts = qam16_points_q15()
+        self._i_q15 = [p[0] for p in pts]
+        self._q_q15 = [p[1] for p in pts]
         self._bit_buffer = 0
         self._bit_count = 0
 
     @property
     def cell_count(self) -> int:
-        return 2
+        return 3
 
     @property
     def interface(self) -> BlockInterface:
         return self._interface
 
-    def build_cell_programs(self) -> Dict[int, CellProgram]:
-        # Cell 0: accumulate 4 bits (MSB first) -> index 0..15, send to cell 1.
-        cell0 = CellProgram(
+    def build_cell_programs(self) -> Dict[Any, CellProgram]:
+        # acc: accumulate 4 bits (MSB first) -> index 0..15, send to itab.
+        acc = CellProgram(
             inputs=[Port("sample", register=0)],
             outputs=[Port("idx")],
             entries=[EntryPoint("default")],
@@ -79,54 +100,99 @@ done:
 """,
         )
 
-        # Cell 1: split idx -> I-index (idx>>2) and Q-index (idx & 3); LOAD each
-        # 4-entry PAM table; output I then Q. PAM tables share addresses 1..4
-        # (I) and 5..8 (Q) — both are the same {-3,-1,+3,+1}/sqrt(10) levels.
-        i_pam = [DataWord(f"ip{i}", v, address=i + 1)
-                 for i, v in enumerate(_QAM16_PAM_Q15)]
-        q_pam = [DataWord(f"qp{i}", v, address=i + 5)
-                 for i, v in enumerate(_QAM16_PAM_Q15)]
-        cell1 = CellProgram(
+        # itab: LOAD the I value for symbol idx (16-entry table at addr 1..16);
+        # forward (I, idx) to qtab as ONE atomic delivery (2 writes + trigger).
+        i_tab = [DataWord(f"i{k}", v, address=1 + k)
+                 for k, v in enumerate(self._i_q15)]
+        itab = CellProgram(
             inputs=[Port("index", register=0)],
-            outputs=[Port("out_i"), Port("out_q"), Port("out_trigger")],
+            outputs=[Port("i_fwd"), Port("idx_fwd"), Port("trig")],
             entries=[EntryPoint("default")],
-            data=i_pam + q_pam + [
-                DataWord("one", 1, address=9),
-                DataWord("three", 3, address=10),
-                DataWord("q_base", 5, address=11),
-            ],
+            data=i_tab + [DataWord("one", 1, address=17)],
             state=[StateVar("idx_save"), StateVar("addr_tmp")],
             assembly_template="""\
 start:
     MOVE R{state:idx_save}, R{in:index}
-    SHR R{state:idx_save}, #2
-    ADD R0, R{data:one}
+    ADD R{state:idx_save}, R{data:one}   ; R0 = idx + 1 = table address (1..16)
     MOVE R{state:addr_tmp}, R0
-    LOAD R{state:addr_tmp}
+    LOAD R{state:addr_tmp}               ; R0 = I = mem[idx+1]
+    {write:i_fwd}
+    ; forward the table ADDRESS (idx+1) so qtab indexes directly (no re-add)
+    MOVE R0, R{state:addr_tmp}
+    {write:idx_fwd}
+    {jump:trig}
+""",
+        )
+
+        # qtab: receives (I, addr=idx+1) atomically; LOADs Q; emits (out_i, out_q)
+        # from the SAME trigger so the complex pair is one delivery. out_i is emitted
+        # straight from the snapshot so I and Q are the SAME symbol.
+        #
+        # CRITICAL: the 16-entry Q table lives in memory addresses 1..16, and memory IS
+        # the register file (mem[n] == Rn). So the INPUT registers must NOT alias the
+        # table — landing ``addr`` in R1 would CLOBBER q[0] (mem[1]), making symbol 0's
+        # Q read back the delivered address instead of the table value. Pin the inputs
+        # and state ABOVE the table (R17+).
+        q_tab = [DataWord(f"q{k}", v, address=1 + k)
+                 for k, v in enumerate(self._q_q15)]
+        qtab = CellProgram(
+            inputs=[Port("i_in", register=17), Port("addr", register=18)],
+            outputs=[Port("out_i"), Port("out_q"), Port("out_trigger")],
+            entries=[EntryPoint("default")],
+            data=q_tab,
+            state=[StateVar("i_save"), StateVar("addr_tmp")],
+            assembly_template="""\
+start:
+    MOVE R{state:i_save}, R{in:i_in}     ; snapshot I
+    MOVE R{state:addr_tmp}, R{in:addr}   ; addr = idx + 1 (the table address, >=1)
+    LOAD R{state:addr_tmp}               ; R0 = Q = mem[idx+1]
+    MOVE R{state:addr_tmp}, R0           ; addr_tmp = Q
+    MOVE R0, R{state:i_save}
     {write:out_i}
-    MOVE R0, R{state:idx_save}
-    MOVE R{state:idx_save}, R{in:index}
-    AND R{state:idx_save}, R{data:three}
-    ADD R0, R{data:q_base}
-    MOVE R{state:addr_tmp}, R0
-    LOAD R{state:addr_tmp}
+    MOVE R0, R{state:addr_tmp}
     {write:out_q}
     {jump:out_trigger}
 """,
         )
-        return {0: cell0, 1: cell1}
+        return {"acc": acc, "itab": itab, "qtab": qtab}
+
+    def internal_connections(self) -> List[Tuple[str, str, str, str]]:
+        """acc.idx -> itab.index;  itab.(i_fwd,idx_fwd) -> qtab.(i_in,addr)."""
+        return [
+            ("acc", "idx", "itab", "index"),
+            ("itab", "i_fwd", "qtab", "i_in"),
+            ("itab", "idx_fwd", "qtab", "addr"),
+        ]
+
+    def internal_jumps(self) -> List[Tuple[str, str, str, str]]:
+        """Linear trigger chain acc -> itab -> qtab; qtab emits externally."""
+        return [
+            ("acc", "idx", "itab", "default"),
+            ("itab", "trig", "qtab", "default"),
+        ]
+
+    def output_cell_id(self) -> Any:
+        """The (I, Q) pair leaves the last cell, ``qtab``."""
+        return "qtab"
+
+    def default_layout(self) -> Dict[Any, Tuple[int, int, str]]:
+        """Linear 3-cell row: acc -> itab -> qtab, each facing EAST to the next."""
+        return {
+            "acc": (0, 0, "east"),
+            "itab": (1, 0, "east"),
+            "qtab": (2, 0, "east"),
+        }
 
     def process_reference(self, input_bits):
-        """Reference: 4 bits -> (I, Q) Q15 pair per symbol (separable Gray PAM)."""
+        """Reference: 4 bits (MSB first) -> (I, Q) Q15 pair per symbol, using the
+        EXACT GR ``constellation_16qam()`` point table."""
         out = []
         acc = cnt = 0
         for b in np.asarray(input_bits).ravel():
             acc = ((acc << 1) | (int(b) & 1)) & 0xF
             cnt += 1
             if cnt == 4:
-                i_idx = (acc >> 2) & 3
-                q_idx = acc & 3
-                out.append((_QAM16_PAM_Q15[i_idx], _QAM16_PAM_Q15[q_idx]))
+                out.append((self._i_q15[acc], self._q_q15[acc]))
                 acc = cnt = 0
         return out
 

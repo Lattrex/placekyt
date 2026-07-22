@@ -1804,6 +1804,15 @@ class AppController(QObject):
 
         report = self._run_router(router, port_cells, chip_types, use_cpsat,
                                   use_bus, port_maps, topology)
+        # COMPLEX-EGRESS CO-RAIL: a complex-output block feeding the chip output port
+        # emits BOTH rails (yi on out_tag, yq on out_tag+1) from its ONE emit cell down
+        # ONE physical corridor — the port de-interleaves them by tag. So the synthesised
+        # yq→x16_out net does NOT need its own separate route; it rides the yi net's
+        # corridor. The router can't draw a second distinct path from the same source cell
+        # to the same port, so it leaves yq unrouted → the build fails "unrouted net". Give
+        # the yq net the SAME route the yi sibling got (same source block, same x16_out
+        # target, out_tag = yq_tag − 1), so both rails egress on the shared corridor.
+        self._resolve_complex_egress_corails(report)
         # A chip INPUT-port → block net injects at the edge cell and needs NO
         # physical route (DRC + the build treat it as a direct port injection).
         # The router emits a vestigial 1-cell route (the input cell itself), which
@@ -1839,6 +1848,53 @@ class AppController(QObject):
                 self.project.mark_dirty()
                 self.project.event_bus.flush()
         return report
+
+    def _resolve_complex_egress_corails(self, report) -> None:
+        """Satisfy an UNROUTED complex-egress yq net by riding its yi sibling's route.
+
+        A complex-output block feeding x16_out emits yi (out_tag T) and yq (out_tag T+1)
+        from ONE emit cell down ONE corridor; the port de-interleaves by tag. The router
+        routes yi but can't draw a SECOND path from the same cell to the same port, so the
+        synthesised yq net is left unrouted and the build fails. Here we find each unrouted
+        yq net whose yi sibling (same source block, both → x16_out, yq.out_tag == yi.out_tag
+        + 1) DID route, and rewrite the yq net's result to ``ok`` with the SAME waypoints,
+        so both rails egress on the shared corridor. Idempotent; a no-op when there is no
+        such pair (the common single-rail case)."""
+        from model.connection import BlockEndpoint, ChipPortEndpoint
+
+        res_by_name = {r.name: r for r in report.results}
+
+        def _is_egress(conn):
+            return (conn is not None
+                    and isinstance(conn.source, BlockEndpoint)
+                    and isinstance(conn.target, ChipPortEndpoint)
+                    and getattr(conn.target, "port", None) == "x16_out")
+
+        # Index routed egress nets by (source block, out_tag) so a yq net can find its yi.
+        routed_egress: dict[tuple, object] = {}
+        for r in report.results:
+            if not (r.ok and r.points):
+                continue
+            conn = self.project.connection(r.name)
+            if _is_egress(conn) and conn.out_tag is not None:
+                routed_egress[(conn.source.block, conn.out_tag)] = r
+
+        for r in list(report.results):
+            if r.ok:
+                continue
+            conn = self.project.connection(r.name)
+            if not (_is_egress(conn) and conn.out_tag is not None):
+                continue
+            # yq rides yi: yi carries out_tag − 1 from the SAME source block.
+            sib = routed_egress.get((conn.source.block, conn.out_tag - 1))
+            if sib is None:
+                continue
+            # Give this yq net the yi sibling's corridor (both egress the same path;
+            # the port demuxes by tag). Mark it routed so the build accepts it.
+            r.ok = True
+            r.points = list(sib.points)
+            r.reason = None
+            _ = res_by_name  # (kept for clarity; results are mutated in place)
 
     def _routes_cross_block_body(self, report) -> bool:
         """True if ANY routed net in ``report`` transits a block's own BODY cell that

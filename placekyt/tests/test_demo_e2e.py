@@ -25,7 +25,6 @@ DEMO_DIR = Path(__file__).parent / "data" / "demo"
 DEMO = DEMO_DIR / "gain_demo.kyt"
 BPSK_DEMO = DEMO_DIR / "bpsk_demo.kyt"
 BPSK_DUPLEX_DEMO = DEMO_DIR / "bpsk_duplex_demo.kyt"
-QAM16_DEMO = DEMO_DIR / "qam16_demo.kyt"
 
 pytestmark = pytest.mark.skipif(
     not (CT_PATH.exists() and DEMO.exists()),
@@ -121,49 +120,6 @@ class TestBpskDemo:
         out = sim.capture_output_words("x16_out")
         bits = [w.value for w in out if not w.is_jump]
         assert bits == DEMO_BITS
-
-
-class TestQam16Demo:
-    """The 16-QAM symbol-level loopback demo (one composed transceiver block):
-    symbols in == symbols out (clean channel, the mapper+slicer identity)."""
-
-    def test_qam16_builds_clean(self, catalog, registry):
-        project = load_project(QAM16_DEMO)
-        res = BuildEngine(catalog, registry.paths()).build(
-            project, registry.chip_types()
-        )
-        assert res.ok, [str(e) for e in res.errors]
-
-    def test_qam16_cli_test_passes(self, capsys):
-        rc = cli.main(["--test", str(QAM16_DEMO), "--chip-type", str(CT_PATH)])
-        assert rc == cli.EXIT_OK
-        assert "PASSED" in capsys.readouterr().out
-
-    def test_qam16_identity_symbols_in_equal_symbols_out(self):
-        """Inject DEMO_BITS (4 bits/symbol), expect the symbol indices back."""
-        from engine.qam16_demo import DEMO_SYMBOLS, build_stimulus, _entry
-
-        project = load_project(QAM16_DEMO)
-        catalog = BlockCatalog.from_gr_kyttar()
-        reg = ChipTypeRegistry()
-        reg.register_file(CT_PATH)
-        res = BuildEngine(catalog, reg.paths()).build(project, reg.chip_types())
-        assert res.ok, [str(e) for e in res.errors]
-
-        stim = build_stimulus(_entry(res))
-        sim = SimulationEngine(CT_PATH)
-        sim.load(res.words(0))
-        sim.inject_words(stim, port="x16_in")
-        for _ in range(20000):
-            info = sim.chip.run(max_events=64)
-            if (isinstance(info, dict)
-                    and info.get("stop_reason") == "QueueEmpty"
-                    and sim.chip.run(max_events=0).get("stop_reason")
-                    == "QueueEmpty"):
-                break
-        out = sim.capture_output_words("x16_out")
-        syms = [w.value for w in out if not w.is_jump]
-        assert syms == DEMO_SYMBOLS
 
 
 class TestBpskDuplexDemo:

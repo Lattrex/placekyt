@@ -49,7 +49,7 @@ class TestDiscovery:
         for n in ("GainBlock", "FIRFilterBlock", "IIRBiquadBlock", "NCOBlock",
                   "ComplexMixerBlock", "LowPassFilter"):
             assert n in palette, f"{n} (verified) must be in the palette"
-        for n in ("DFEEqualizerBlock", "QAM16TransceiverBlock", "FrameSyncBlock",
+        for n in ("DFEEqualizerBlock", "QAM16SlicerBlock", "FrameSyncBlock",
                   "CoherentRXBlock", "EOMDetectorBlock"):
             assert n not in palette, f"{n} (unverified) must be hidden"
 

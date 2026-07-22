@@ -45,8 +45,6 @@ BUILTIN_BLOCKS = {
     'QPSKSlicerBlock': 'qpsk_slicer_block',
     'QAM16SymbolMapperBlock': 'qam16_symbol_mapper_block',
     'QAM16SlicerBlock': 'qam16_slicer_block',
-    'QAM16TransceiverBlock': 'qam16_transceiver_block',
-    'QAM16SoftDemapperBlock': 'qam16_soft_demapper_block',
     'ViterbiBranchMetricBlock': 'viterbi_branch_metric_block',
     'ViterbiK7DecoderBlock': 'viterbi_k7_decoder_block',
     'LMSEqualizerBlock': 'lms_equalizer_block',

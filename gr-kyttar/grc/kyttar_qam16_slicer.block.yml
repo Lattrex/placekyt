@@ -1,0 +1,53 @@
+id: kyttar_qam16_slicer
+label: 🧪 Kyttar 16-QAM Slicer
+category: '[Kyttar]'
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.qam16_slicer(${device_id})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+
+# ONE input port: GNU Radio carries the recovered (I, Q) symbol-center pair as a
+# SINGLE complex stream (matching the 16-QAM Costas / complex Gardner complex output).
+# placeKYT's importer splits it into the on-chip in_i (I@R0) / in_q (Q@R1) rails.
+inputs:
+- label: in
+  domain: stream
+  dtype: complex
+
+outputs:
+- id: '0'
+  label: out
+  domain: stream
+  dtype: float
+
+documentation: |-
+  16-QAM Slicer (hard decision) — final decision stage of the coherent 16-QAM RX.
+
+  Maps a recovered (I, Q) symbol-center sample to the 4-bit symbol index (0..15),
+  mirroring GNU Radio
+  ``digital.constellation_decoder_cb(constellation_16qam())`` — i.e. it returns the
+  same index ``constellation_16qam().decision_maker()`` would.
+
+  GR's constellation_16qam() map is NOT separable, but the nearest-point decision
+  factors exactly into two per-axis bits — a SIGN test (v>=0) and an OUTER-magnitude
+  test (|v| >= 2/sqrt(10)) — plus a fixed 16-entry permutation LUT (verified equal to
+  decision_maker over the whole plane). Composed with the 16-QAM mapper it is the
+  identity on a clean channel.
+
+  Ports:
+    in_i (0): recovered in-phase (I) rail
+    in_q (1): recovered quadrature (Q) rail
+    out:      4-bit symbol index (0..15) in the output word's LSBs
+
+  Parameters:
+    Device ID: Which Kyttar device to use
+
+  Mapped by placeKYT (File -> Import GNURadio Flowgraph) to QAM16SlicerBlock.
+
+file_format: 1

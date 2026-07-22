@@ -201,6 +201,59 @@ class psk_symbol_mapper(_PassThrough):
                                    {"modulation": modulation})
 
 
+class qam16_symbol_mapper(_PassThrough):
+    """16-QAM symbol mapper — GR marker (maps to QAM16SymbolMapperBlock).
+
+    TX front end: 4 input bits (MSB-first) -> the COMPLEX ``digital.constellation_16qam()``
+    point, mirroring ``digital.chunks_to_symbols_bc(constellation_16qam().points(), 1)``.
+    Bit in (float) -> gr_complex symbol out; the on-chip block emits the (I, Q) pair
+    which placeKYT carries as one complex net into the downstream ComplexUpsampler."""
+
+    def __init__(self, device_id="kyttar_0"):
+        super().__init__("Kyttar 16-QAM Symbol Mapper", n_in=1, n_out=1,
+                         in_dtype=np.float32, out_dtype=np.complex64)
+        self.device_id = device_id
+        self._advertise_grc_params(device_id, "QAM16SymbolMapperBlock", {})
+
+
+class qam16_slicer(_PassThrough):
+    """16-QAM slicer — GR marker (maps to QAM16SlicerBlock).
+
+    Final decision stage of the coherent 16-QAM RX: a recovered (I, Q) symbol-center
+    pair -> the 4-bit symbol index (0..15), mirroring GNU Radio
+    ``digital.constellation_decoder_cb(constellation_16qam())``. The recovered pair
+    arrives as ONE gr_complex stream; placeKYT's importer splits it into the on-chip
+    in_i (I@R0)/in_q (Q@R1) rails. A pure pass-through marker."""
+
+    def __init__(self, device_id="kyttar_0"):
+        super().__init__("Kyttar 16-QAM Slicer", n_in=1, n_out=1,
+                         in_dtype=np.complex64, out_dtype=np.float32)
+        self.device_id = device_id
+        self._advertise_grc_params(device_id, "QAM16SlicerBlock", {})
+
+
+class qam16_costas_loop(_PassThrough):
+    """16-QAM decision-directed carrier recovery — GR marker (maps to
+    QAM16ComplexCostasLoopBlock).
+
+    A SINGLE complex baseband stream in -> recovered (I, Q) pair out (ONE gr_complex
+    stream; placeKYT splits it into the on-chip yi/yq rails). 16-QAM is not
+    constant-modulus, so the order-2/4 PSK phase detectors fail — this runs a
+    DECISION-DIRECTED loop (slice to the nearest constellation grid point, form the
+    error from the decision), the standard ``digital.constellation_receiver_cb(
+    constellation_16qam())`` carrier-recovery path."""
+
+    def __init__(self, device_id="kyttar_0", alpha_q15=0x0800, beta_q15=0x0040):
+        super().__init__("Kyttar 16-QAM Costas Loop", n_in=1, n_out=1,
+                         in_dtype=np.complex64, out_dtype=np.complex64)
+        self.device_id = device_id
+        self.alpha_q15 = int(alpha_q15)
+        self.beta_q15 = int(beta_q15)
+        self._advertise_grc_params(device_id, "QAM16ComplexCostasLoopBlock",
+                                   {"alpha_q15": int(alpha_q15),
+                                    "beta_q15": int(beta_q15)})
+
+
 class fsk4_symbol_mapper(_PassThrough):
     """M17 4FSK symbol mapper — GR marker (maps to FSK4SymbolMapperBlock).
 

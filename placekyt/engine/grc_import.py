@@ -72,6 +72,11 @@ _TYPE_OVERRIDES = {
     "kyttar_fsk4_symbol_mapper": "FSK4SymbolMapperBlock",
     "kyttar_fsk4_slicer": "FSK4SlicerBlock",
     "kyttar_fsk4_sync_timing_recovery": "FSK4SyncTimingRecoveryBlock",
+    # 16-QAM modem blocks — snake→Pascal would give "Qam16..." not "QAM16...", so pin
+    # them explicitly (the override table uses catalog.get, which sees hidden specs).
+    "kyttar_qam16_symbol_mapper": "QAM16SymbolMapperBlock",
+    "kyttar_qam16_slicer": "QAM16SlicerBlock",
+    "kyttar_qam16_costas_loop": "QAM16ComplexCostasLoopBlock",
     "kyttar_iir_biquad": "IIRBiquadBlock",
     "kyttar_conv_encoder_k7": "ConvEncoderK7Block",
     "kyttar_lfsr_scrambler": "LFSRScramblerBlock",

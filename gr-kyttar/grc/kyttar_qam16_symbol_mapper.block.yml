@@ -1,0 +1,48 @@
+id: kyttar_qam16_symbol_mapper
+label: 🧪 Kyttar 16-QAM Symbol Mapper
+category: '[Kyttar]'
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.qam16_symbol_mapper(${device_id})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+
+inputs:
+- label: sample
+  domain: stream
+  dtype: float
+
+# ONE complex output: the on-chip block emits the (I, Q) constellation-point pair,
+# which GNU Radio carries as a single gr_complex stream into the ComplexUpsampler.
+outputs:
+- label: out
+  domain: stream
+  dtype: complex
+
+documentation: |-
+  16-QAM Symbol Mapper — 4 bits -> the exact GNU Radio constellation_16qam() point.
+
+  TX front end: accumulates 4 input bits (MSB-first) into a symbol index 0..15 and
+  emits the COMPLEX ``digital.constellation_16qam()`` point, mirroring
+  ``digital.chunks_to_symbols_bc(constellation_16qam().points(), 1)``.
+
+  constellation_16qam() is a {±1,±3}/sqrt(10) grid, but its bit->point assignment is
+  an idiosyncratic permutation (NOT the naive (I_bits<<2)|Q_bits separable Gray map);
+  this block stores that exact GR point table, so composed with the 16-QAM slicer it
+  is the identity on a clean channel.
+
+  Ports:
+    sample (in): input bit (one 0/1 word per call; 4 bits -> one symbol)
+    out:         complex constellation symbol (I + jQ)
+
+  Parameters:
+    Device ID: which Kyttar device to use
+
+  Mapped by placeKYT (File -> Import GNURadio Flowgraph) to QAM16SymbolMapperBlock.
+
+file_format: 1

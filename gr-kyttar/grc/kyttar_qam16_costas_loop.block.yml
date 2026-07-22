@@ -1,0 +1,63 @@
+id: kyttar_qam16_costas_loop
+label: 🧪 Kyttar 16-QAM Costas Loop
+category: '[Kyttar]'
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.qam16_costas_loop(${device_id}, ${alpha_q15}, ${beta_q15})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+
+- id: alpha_q15
+  label: Proportional gain (Q15)
+  dtype: int
+  default: 2048
+
+- id: beta_q15
+  label: Integral gain (Q15)
+  dtype: int
+  default: 64
+
+# ONE complex input / ONE complex output: a single complex baseband stream in, the
+# recovered (I, Q) pair out (carried as one gr_complex stream; placeKYT splits it into
+# the on-chip yi/yq rails).
+inputs:
+- label: in
+  domain: stream
+  dtype: complex
+
+outputs:
+- label: out
+  domain: stream
+  dtype: complex
+
+documentation: |-
+  16-QAM Decision-Directed Carrier Recovery (Costas loop).
+
+  16-QAM is not constant-modulus, so the order-2 (BPSK) and order-4 (QPSK) Costas
+  phase detectors fail. This runs a DECISION-DIRECTED loop — derotate, slice each axis
+  to the nearest 4-PAM grid level, form the phase error from the decision
+  (err = Im{y·conj(decision)}) — the standard
+  ``digital.constellation_receiver_cb(constellation_16qam())`` carrier-recovery path.
+  The error is constellation-LABEL-agnostic (it depends only on the square grid), so
+  it recovers the derotated (I, Q); the 16-QAM slicer downstream assigns the symbol.
+
+  16-QAM keeps the same 90-degree 4-fold phase ambiguity as QPSK (resolved downstream
+  by the BER check trying the 4 rotations).
+
+  Ports:
+    in:  complex baseband (post matched-filter)
+    out: recovered (I, Q) symbol-center pair
+
+  Parameters:
+    Device ID:          which Kyttar device to use
+    Proportional gain:  loop proportional gain, Q15 (default 2048 = 0x0800)
+    Integral gain:      loop integral gain, Q15 (default 64 = 0x0040)
+
+  Mapped by placeKYT (File -> Import GNURadio Flowgraph) to QAM16ComplexCostasLoopBlock.
+
+file_format: 1

@@ -31,6 +31,24 @@ mutations — all green.
    This is the SAME multi-day trig-resolution problem this log documents for the order-4 QPSK
    Costas (`_patch_last_jump_handoff` / the tap-trig retarget). Reverted to the clean committed
    block; the tap is unfinished.
+   **PRECISE DIAGNOSIS (resume point):** with the tap cell in place it BUILDS+ROUTES; disasm of
+   the built tap cell shows the tap emits 4 WRITEs — yi_fwd/yq_fwd (@30, internal to islice_pi)
+   then yi_tap/yq_tap. Only the LAST tap write (yq_tap) + tap_trig get patched to the route hop
+   (@25); **yi_tap keeps @30** (fires toward islice_pi, never egresses) → 0 output. Root cause is
+   in `engine/build.py` ~L989: a source whose output cell "carries handoffs"
+   (`_output_cell_carries_handoffs` True — my tap IS a source of an internal_connection) takes the
+   `_patch_last_write_handoff` path (patches ONLY the last WRITE) instead of the dual-rail
+   `_patch_complex_output_port_handoff`; the latter only fires for a CHIP-PORT egress
+   (`not isinstance(tgt, BlockEndpoint)`), not block→block. The order-4 QPSK `qpd` works block→block
+   because it emits only ONE internal write (`err`) + the yi_tap/yq_tap pair, so the co-rail
+   patch lands right. FIX DIRECTIONS: (a) restructure so the tap cell has ≤1 internal write (make
+   `qslice_err` itself tap, like qpd — but it's at the register ceiling; aggressive reclaim
+   needed: read sinv/cosv from input regs like the rotate reclaim freed 2 state), OR (b) extend
+   the block→block complex-egress patch in build.py to co-rail both tap writes when the source
+   declares 2 output rails (broad blast radius — touches every complex block). Also the 10-cell
+   Costas is a full-width row-0 strip (INV-9 violation) → the auto-router congests ("no bus path")
+   with the 3-cell slicer; the modem will need a hand-placed .kyt (like FSK4) AND the Costas
+   refolded ≤8 across.
 2. **DD acquisition is marginal for 16-QAM.** Standalone at 1 sps (feed constellation points
    directly, no MF) it LOCKS BER0 over foff∈[0.001,0.003] (`alpha_q15=0x0400,beta_q15=0x0020`)
    or [0.002,0.005] (`0x1000/0x0040`); the shipped defaults `0x0800/0x0040` are marginal

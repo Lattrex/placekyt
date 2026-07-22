@@ -90,35 +90,59 @@ def test_non_iq_route_has_no_spurious_siblings(qapp, catalog):
     assert after - before == 1, "a lone net must route exactly one connection"
 
 
-_FSK4_MOVED = EXAMPLES_DIR / "fsk4_modem" / "fsk4_modem.moved.kyt"
+@pytest.mark.skipif(not CT.exists(), reason="chip yaml absent")
+def test_manual_move_then_route_complex_egress_co_routes_yq(qapp, catalog):
+    """Reproduce the user's EXACT GUI sequence, SELF-CONTAINED (no saved .kyt):
+    place a complex-output block (FrequencyModulator, pipeline_lock) whose yi/yq rails
+    both go to x16_out, auto-route, then MANUALLY MOVE the block one row (which unroutes
+    its nets), then MANUALLY ROUTE the yi output. The yq rail MUST co-route — both ride
+    the one emit-cell corridor and the port de-interleaves by tag. Before the fix, yq
+    stayed a fly line + a "no physical route" DRC on a link that looked connected: the
+    egress target is a ChipPort (not a block cell), so the cell-pair sibling match missed
+    it. The rail match is by yi<->yq PORT relationship (via _iq_sibling), NOT out_tag —
+    a raw/hand-wired net's out_tag is None, so a tag-based match would miss it.
 
+    Exercises the SAME add_route -> _route_siblings path the GUI's manual route uses (NOT
+    auto_route_all — the earlier auto-only fix is why this looked "not fixed"). Built
+    in-code so the regression needs no external .kyt."""
+    from engine.io.chip_type_io import load_chip_type
+    from model.connection import BlockEndpoint, ChipPortEndpoint
+    from commands.placement_cmds import MoveBlockCommand
 
-@pytest.mark.skipif(not _FSK4_MOVED.exists(),
-                    reason="fsk4 modem moved .kyt absent")
-def test_routing_complex_egress_yi_routes_yq_sibling(qapp, catalog):
-    """COMPLEX EGRESS to the chip OUTPUT port: the FrequencyModulator emits yi
-    (out_tag 10) and yq (out_tag 11) from its ONE emit cell to x16_out; the port
-    de-interleaves by tag, so both rails ride ONE corridor. Manually routing the yi
-    rail (net5) MUST co-route the yq rail (net11) — else yq stays a fly line + a "no
-    physical route" DRC error, which is EXACTLY the bug the user hit after moving the
-    FM and routing its output. The target is a ChipPort (not a block cell), so the
-    old cell-pair sibling match missed it. Pinned to the user's real saved placement."""
-    from engine.io.project_io import load_project
-
-    prj = load_project(str(_FSK4_MOVED))
+    key = "kyttar_10x12"
+    ct = load_chip_type(str(CT))
     ctrl = AppController(catalog=catalog)
-    ctrl.project = prj
-    net5 = prj.connection("net5")     # frequencymodulator.yi -> x16_out, out_tag 10
-    net11 = prj.connection("net11")   # frequencymodulator.yq -> x16_out, out_tag 11
-    assert net5 is not None and net11 is not None
-    assert not net11.is_routed, "yq starts unrouted (the fly line)"
-    pts = [(p.x, p.y) for p in net5.route] if not isinstance(net5.route, str) \
-        else [(0, 0)]
-    # Re-draw the route on the yi rail (the user's manual 'route the FM output').
-    ctrl.add_route(net5.source, net5.target, pts)
-    assert prj.connection("net5").is_routed, "the drawn yi rail must be routed"
-    assert prj.connection("net11").is_routed, (
-        "yq complex-egress sibling must route with the same draw — no orphan fly line")
+    ctrl.new_project("egress", key)
+    fm = ctrl.place_block(
+        "FrequencyModulatorBlock", 0, 2, 2, library="lattrex.official",
+        params={"sensitivity": 1.5707963267948966, "pipeline_lock": True})
+    add = ctrl.add_route
+    add(ChipPortEndpoint(chip=0, port="x16_in"), BlockEndpoint(block=fm, port="x"), [])
+    add(BlockEndpoint(block=fm, port="yi"), ChipPortEndpoint(chip=0, port="x16_out"), [])
+    add(BlockEndpoint(block=fm, port="yq"), ChipPortEndpoint(chip=0, port="x16_out"), [])
+    ctrl.auto_route_all({key: ct}, auto_orient=True, use_bus="always")
+
+    def _fm_net(port):
+        return next((c for c in ctrl.project.connections
+                     if getattr(c.source, "block", "") == fm
+                     and getattr(c.source, "port", "") == port), None)
+
+    yi, yq = _fm_net("yi"), _fm_net("yq")
+    assert yi is not None and yq is not None
+    assert yi.is_routed and yq.is_routed, "auto-route seeds both egress rails routed"
+    yi_path = [(p.x, p.y) for p in yi.route]
+
+    # MANUAL MOVE the FM one row down (the user's 'moved' step) — unroutes both rails.
+    MoveBlockCommand(ctrl.project, fm, 0, 1).execute()
+    yi, yq = _fm_net("yi"), _fm_net("yq")
+    assert not yq.is_routed, "the move leaves the egress rails unrouted (fly lines)"
+
+    # MANUAL ROUTE of the yi output only, on the shifted path — must co-route yq.
+    shifted = [(x, y + 1) for (x, y) in yi_path]
+    ctrl.add_route(yi.source, yi.target, shifted)
+    assert _fm_net("yi").is_routed, "the drawn yi rail must be routed"
+    assert _fm_net("yq").is_routed, (
+        "yq complex-egress sibling must route with the yi draw — no orphan fly line")
 
 
 if __name__ == "__main__":

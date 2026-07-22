@@ -453,20 +453,42 @@ class AppController(QObject):
 
         out = []
 
-        # (b) COMPLEX-EGRESS pair: same source block + x16_out target, adjacent out_tags.
+        # (b) COMPLEX-EGRESS pair: the yi and yq rails of the SAME source block, both
+        # → x16_out, ride ONE emit-cell corridor (the port de-interleaves by tag). Match
+        # by the RAIL RELATIONSHIP (yi<->yq port names via _iq_sibling), NOT by out_tag —
+        # out_tag may be None on a raw/manually-wired net and is only assigned later, so
+        # a tag-based match would miss the pair exactly when a user hand-routes it.
+        from engine.grc_import import _iq_sibling
+
         def _is_egress(c):
             return (isinstance(c.source, BlockEndpoint)
                     and isinstance(c.target, ChipPortEndpoint)
                     and getattr(c.target, "port", None) == "x16_out")
 
-        if _is_egress(conn) and getattr(conn, "out_tag", None) is not None:
+        if _is_egress(conn):
             src_block = conn.source.block
-            sib_tags = {conn.out_tag - 1, conn.out_tag + 1}
+            b = self.project.block(src_block)
+            btype = b.type if b is not None else None
+            bparams = getattr(b, "params", None) if b is not None else None
+            port = conn.source.port
+            # Sibling port name: the yq for a yi (or the yi for a yq — try both marker
+            # flips so routing EITHER rail first co-routes the other).
+            sib_ports = set()
+            for p in (port,):
+                q = _iq_sibling(self.catalog, btype, p, want_out=True, params=bparams)
+                if q:
+                    sib_ports.add(q)
+            # If conn IS the q-rail, find which i-rail names back to it.
+            for c in self.project.connections:
+                if (_is_egress(c) and c.source.block == src_block
+                        and _iq_sibling(self.catalog, btype, c.source.port,
+                                        want_out=True, params=bparams) == port):
+                    sib_ports.add(c.source.port)
             for c in self.project.connections:
                 if c.name == conn.name or c.is_routed:
                     continue
                 if (_is_egress(c) and c.source.block == src_block
-                        and getattr(c, "out_tag", None) in sib_tags):
+                        and c.source.port in sib_ports):
                     out.append(c)
 
         # (a) BLOCK→BLOCK I/Q pair by shared source-output + target-input cell.

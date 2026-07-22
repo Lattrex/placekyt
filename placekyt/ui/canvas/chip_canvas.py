@@ -247,13 +247,19 @@ class ChipCanvas(QGraphicsView):
     def _selection_key(self):
         """A stable identifier for the current selection, robust to re-render.
 
-        ``("cell", chip_id, cx, cy)`` for a cell item, ``("conn", name)`` for a
-        routed connection, or ``None`` when nothing is selected. The chip id is
-        part of the key so a re-render re-selects the SAME chip's cell (the same
-        local coords exist on every chip).
+        For a BLOCK cell: ``("blockcell", block_name, cell_id)`` — keyed by the block
+        and its cell id, which are STABLE across a rotate/flip/move (only the cell's
+        (x,y) change). This is what makes the selection FOLLOW a transformed block so the
+        user can cycle transforms without re-clicking. For a non-block cell (a routing
+        cell, no cell_id): ``("cell", chip_id, cx, cy)``. ``("conn", name)`` for a routed
+        connection, or ``None`` when nothing is selected.
         """
         cell = self.selected_cell()
         if cell is not None:
+            label = getattr(cell, "label", None)
+            cid = getattr(cell, "cell_id", None)
+            if label and cid is not None:
+                return ("blockcell", label, cid)
             return ("cell", getattr(cell, "chip_id", None), cell.cx, cell.cy)
         conn = self.selected_connection()
         if conn is not None and conn.connection_name:
@@ -261,11 +267,32 @@ class ChipCanvas(QGraphicsView):
         return None
 
     def _restore_selection(self, key) -> bool:
-        """Re-select the item matching ``key`` after a re-render. Returns True
-        if a matching item was found and selected."""
+        """Re-select the item matching ``key`` after a re-render. Returns True if a
+        matching item was found and selected.
+
+        For a ``blockcell`` key, re-select the cell with that (block, cell_id) at its
+        NEW position (the transform moved it). If that exact cell is gone (e.g. off-grid
+        after a transform), FALL BACK to ANY on-array cell of the same block, so the
+        block stays selected and the user can keep cycling transforms.
+        """
         if key is None:
             return False
         kind = key[0]
+        if kind == "blockcell":
+            _, block_name, cell_id = key
+            fallback = None
+            for it in self._scene.items():
+                if not (isinstance(it, CellItem)
+                        and getattr(it, "label", None) == block_name):
+                    continue
+                if getattr(it, "cell_id", None) == cell_id:
+                    it.setSelected(True)
+                    return True
+                fallback = fallback or it   # any cell of the same block
+            if fallback is not None:
+                fallback.setSelected(True)
+                return True
+            return False
         for it in self._scene.items():
             if kind == "cell" and isinstance(it, CellItem) \
                     and (getattr(it, "chip_id", None), it.cx, it.cy) \

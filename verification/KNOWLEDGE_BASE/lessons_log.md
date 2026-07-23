@@ -8,6 +8,53 @@ anything that generalizes across block classes into `invariants.md`.
 
 ---
 
+## QAM16 DD Costas: an INTERNAL-FEEDBACK block with a RECOVERED-OUTPUT TAP, wired end-to-end 2026-07-22
+
+This is the recipe for making a **feedback (PLL/Costas-class) block emit its recovered
+signal to a DOWNSTREAM on-chip block** — the hardest block class (a data feedback loop
++ a mid-block output tap). The QAM16 DD Costas went from "recovers I/Q internally but
+never reaches a consumer (0 egress)" to "Costas→slicer routes+builds+recovers symbols"
+by copying the order-4 QPSK `ComplexCostasLoop` structure EXACTLY. Three coupled fixes,
+all of which have a subtle failure mode:
+
+1. **`output_registers=[0,1]` on the block interface (NOT [0]).** The build's complex-
+   egress patch (`engine/build.py` ~L964, ~L1413) gates `src_is_complex_out` on
+   `len(spec.output_registers) > 1`. A feedback block that shipped `output_registers=[0]`
+   (because its scalar interface entry is one reg) takes the SINGLE-rail
+   `_patch_last_write_handoff` path → only the LAST tap WRITE (yq_tap) gets the route
+   hop; yi_tap keeps its internal @30 hop and fires back into the loop → **0 egress**.
+   Declaring `[0,1]` makes the build steer BOTH recovered rails to the route.
+2. **A dedicated dual-face `tap` cell (rotate→tap→islice_pi), modeled on the order-4
+   `qpd`.** It forwards yi/yq to the loop on `face_internal` AND taps yi_tap/yq_tap on
+   `face_tap` (an `is_face` DataWord the bus router overrides to the route's first-hop
+   exit — DISTINCT from the internal face so they never collide). Emit the tap pair as
+   the program TAIL (after the internal forwards + their trigger) so the block→block
+   coalesced tail-patch (`_patch_complex_packet_last_handoff`, fired when BOTH tap rails
+   go to ONE downstream broker) steers both tap rails while the internal forwards keep
+   @1. Wire the tap to a BLOCK (the slicer), NOT to a chip port: chip-port egress
+   (`_patch_complex_output_port_handoff`) walks ALL WRITEs and over-patches the internal
+   forwards too (loop breaks).
+3. **A compact SERPENTINE fold (INV-8/9/14), NOT a flat strip.** The 10-cell block as a
+   flat 10-wide row filled the top edge → "no free corridor" for the auto-router. A 5×2
+   snake (phase..table_cos EAST on row 0, turn SOUTH, rotate/tap/islice_pi/qslice_err/pi
+   WEST on row 1) puts the dphase feedback pi→phase @1 DIRECTLY above (no transit cell) —
+   the exact order-4 4×2 pattern. `_apply_internal_feedback` traces this @1 corridor
+   cleanly; a fold that puts `pi` mid-array (dphase WRITE and re-trigger JUMP resolving to
+   DIFFERENT hops) does NOT close the loop.
+4. **ANCHOR the block at (0,0) so the landing (`phase`) cell abuts x16_in.** With the
+   fold, a non-(0,0) anchor shifted `phase` away from the input port and the injected
+   sample never reached the landing cell (phase's accumulator stayed all-zero across
+   every sample → nothing fires → 0 output). The fold is anchor-sensitive.
+
+RESULT: Costas→slicer routes+builds and recovers 13/16 constellation symbols exactly on
+a random stream (BER ~0.04). REMAINING for BER 0: (a) the slicer fires 2×/symbol — the
+tap→slicer delivery isn't atomic (broker delivers yi_tap and yq_tap as 2 triggers; the
+2nd/complete fire is correct, so batch_check phase-1 is the real stream). (b) The residual
+~4% is DD Q15 precision on 16-QAM's tight decision regions (the recovered outer ±3 points
+occasionally cross a threshold; amp-sensitive — 0.85 input scale gives fewer errors). A
+CONSTANT-symbol settle test is DEGENERATE for a DD loop (err=Im{y·conj(slice y)}=0 on-grid
+→ no phase info → drifts); always characterize with a RANDOM stream.
+
 ## QAM16 slicer REBUILT to GR decision_maker + Costas tap/acquisition BLOCKERS 2026-07-22
 
 Rebuilt `QAM16SlicerBlock` as a 1:1 `digital.constellation_decoder_cb(constellation_16qam())`

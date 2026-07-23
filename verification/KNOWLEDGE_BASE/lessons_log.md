@@ -8,6 +8,19 @@ anything that generalizes across block classes into `invariants.md`.
 
 ---
 
+## 16-QAM modem COMPLETE — mapper + slicer + DD Costas, BER 0 end-to-end 2026-07-22
+
+The whole 16-QAM job is DONE. `examples/qam16_modem/` ships the coherent 16-QAM RX
+(QAM16ComplexCostasLoop → QAM16Slicer) at **BER 0** on the hosted `.kyt`
+(`placekyt/tests/test_qam16_modem_ber.py`, incl. `test_shipped_kyt_recovers_ber_zero`).
+All 3 blocks are GR-vetted (the legacy ones used an INVENTED constellation matching GR on
+0/16 symbols — purged), catalog-registered (manifest, status=done → curated), GRC-bound,
+orientation-invariant (INV-23 gate), and saturation-covered (INV-19/20 → NEEDS_BESPOKE,
+driven saturated by the modem BER-0 acceptance). 196 QAM16-relevant + regression tests green.
+The three deep sub-lessons — the GR constellation map, the mapper/slicer rebuild + the
+table/register aliasing bug, and the feedback-block-with-recovered-output-tap recipe (incl.
+the `__terminate__` fix that was the BER-0 key) — are the entries below.
+
 ## QAM16 DD Costas: an INTERNAL-FEEDBACK block with a RECOVERED-OUTPUT TAP, wired end-to-end 2026-07-22
 
 This is the recipe for making a **feedback (PLL/Costas-class) block emit its recovered

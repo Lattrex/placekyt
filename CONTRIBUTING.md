@@ -38,7 +38,7 @@ opening a pull request. A quick end-to-end sanity check is the headless demo
 build:
 
 ```bash
-.venv/bin/python placekyt/cli.py --test placekyt/tests/data/demo/qam16_demo.kyt \
+.venv/bin/python placekyt/cli.py --test placekyt/tests/data/demo/bpsk_demo.kyt \
     --chip-type placekyt/resources/chips/kyttar_10x12.yaml
 ```
 

@@ -31,6 +31,7 @@ BUILTIN_BLOCKS = {
     'FrequencyModulatorBlock': 'frequency_modulator_block',
     'QuadratureDemodBlock': 'quadrature_demod_block',
     'ComplexMixerBlock': 'complex_mixer_block',
+    'ComplexGainBlock': 'complex_gain_block',
     'IQUpconvertBlock': 'iq_upconvert_block',
     'DualFloatToComplexBlock': 'dual_float_to_complex_block',
     'SquelchBlock': 'squelch_block',

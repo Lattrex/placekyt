@@ -419,8 +419,18 @@ start:
 
     def internal_jumps(self) -> List[Tuple[int, str, int, str]]:
         """JUMP triggers forming the linear execution chain (each cell triggers
-        the next). The pi cell terminates the pass; the NEXT input sample
-        re-triggers the phase cell (which applies the fed-back dphase)."""
+        the next so every cell runs ONCE per sample). The pi cell terminates the
+        pass; the NEXT input sample re-triggers the phase cell (which applies the
+        fed-back dphase).
+
+        CRITICAL — pi's trig MUST SELF-TERMINATE (``__terminate__``), like the order-4
+        QPSK Costas's pd_pi: pi is the last datapath cell, so WITHOUT this the router
+        defaults its trig JUMP to a positional-next cell and LOOPS BACK THROUGH the
+        live datapath, running phase..pi TWICE per input (the 2×-fire that doubled the
+        recovered-symbol rate and corrupted the DD lock). The dphase FEEDBACK to phase
+        is a data ``internal_connection`` (below), NOT a trigger — the next input
+        drives phase. The unconsumed ``tap_trig`` self-terminates too (harmless when a
+        standalone Costas has no downstream tap consumer)."""
         return [
             ("phase", "trig", "sin_fold", "default"),
             ("sin_fold", "trig", "cos_fold", "default"),
@@ -431,6 +441,8 @@ start:
             ("tap", "trig", "islice_pi", "default"),
             ("islice_pi", "trig", "qslice_err", "default"),
             ("qslice_err", "trig", "pi", "default"),
+            ("tap", "tap_trig", "__terminate__", "default"),
+            ("pi", "trig", "__terminate__", "default"),
         ]
 
     def default_layout(self) -> Dict[Any, Tuple[int, int, str]]:

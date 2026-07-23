@@ -61,14 +61,19 @@ class QAM16ComplexCostasLoopBlock(KyttarBlock):
 
     QUARTER_SIZE = 17
 
-    # Landing cell is the phase cell; complex input lands at R0 (xi) and R1 (xq).
+    # Landing cell is the phase cell; complex input lands at R0 (xi) and R1 (xq). The
+    # recovered output is the COMPLEX (yi_tap, yq_tap) pair — TWO output registers so
+    # the build's complex-egress patch (``src_is_complex_out``) steers BOTH rails to
+    # the route. A single ``output_registers=[0]`` takes the single-rail last-write
+    # patch and leaves yi_tap on its internal hop (0 egress) — the same fix the order-4
+    # QPSK Costas relies on.
     _interface = BlockInterface(
-        entry_address=1, input_registers=[0, 1], output_registers=[0]
+        entry_address=1, input_registers=[0, 1], output_registers=[0, 1]
     )
 
     _CELL_IDS = [
         "phase", "sin_fold", "cos_fold", "table_sin", "table_cos",
-        "rotate", "islice_pi", "qslice_err", "pi",
+        "rotate", "tap", "islice_pi", "qslice_err", "pi",
     ]
 
     # Validated DD loop gains (Q15), hand-tuned for a stable decision-directed
@@ -102,7 +107,7 @@ class QAM16ComplexCostasLoopBlock(KyttarBlock):
 
     @property
     def cell_count(self) -> int:
-        return 9
+        return 10
 
     @property
     def interface(self) -> BlockInterface:
@@ -260,6 +265,43 @@ start:
 """,
         )
 
+        # --- tap cell: relay (yi, yq) to islice_pi (the loop) AND tap the recovered
+        # (yi_tap, yq_tap) OUT as the block's OUTPUT — modelled DIRECTLY on the order-4
+        # QPSK Costas's ``qpd`` dual-face tap (the proven feedback+tap pattern). The
+        # internal forwards (yi_fwd, yq_fwd) go on ``face_internal`` (WEST -> islice_pi
+        # in the 5x2 serpentine); the yi_tap/yq_tap pair + tap_trig go on ``face_tap``
+        # (the bus router overrides it to the tap route's first-hop exit, DISTINCT from
+        # the WEST forward so they never collide). Both is_face (orientation-safe). The
+        # tap pair is the program TAIL so the build's block→block complex-packet tail
+        # patch steers BOTH rails to the route while the forwards keep their @1 hops.
+        # Unconsumed tap -> tap_trig self-terminates. ---
+        tap_cell = CellProgram(
+            inputs=[Port("yi", register=0), Port("yq", register=1)],
+            outputs=[Port("yi_fwd"), Port("yq_fwd"), Port("trig"),
+                     Port("yi_tap"), Port("yq_tap"), Port("tap_trig")],
+            entries=[EntryPoint("default")],
+            data=[DataWord("face_internal", 2, address=2, is_face=True),
+                  DataWord("face_tap", 1, address=3, is_face=True)],
+            state=[StateVar("yis"), StateVar("yqs")],
+            assembly_template="""\
+start:
+    MOVE R{state:yis}, R{in:yi}
+    MOVE R{state:yqs}, R{in:yq}
+    MOVE [FACE], R{data:face_internal}
+    MOVE R0, R{state:yis}
+    {write:yi_fwd}
+    MOVE R0, R{state:yqs}
+    {write:yq_fwd}
+    {jump:trig}
+    MOVE [FACE], R{data:face_tap}
+    MOVE R0, R{state:yis}
+    {write:yi_tap}
+    MOVE R0, R{state:yqs}
+    {write:yq_tap}
+    {jump:tap_trig}
+""",
+        )
+
         # --- islice_pi: di = slice(yi); pi = yq*di; forward pi, yi, yq. ---
         islice_pi_cell = CellProgram(
             inputs=[Port("yi", register=0), Port("yq", register=1)],
@@ -333,10 +375,18 @@ start:
             "table_sin": _table_cell(),
             "table_cos": _table_cell(),
             "rotate": rotate_cell,
+            "tap": tap_cell,
             "islice_pi": islice_pi_cell,
             "qslice_err": qslice_err_cell,
             "pi": pi_cell,
         }
+
+    def output_cell_id(self) -> Any:
+        """The recovered (yi_tap, yq_tap) pair leaves the ``tap`` cell (right after
+        ``rotate``, where the derotated constellation is freshest), NOT the last placed
+        cell (``pi``, which emits only the dphase feedback). Mirrors the order-4 QPSK
+        Costas's ``qpd`` recovered-output tap."""
+        return "tap"
 
     def internal_connections(self) -> List[Tuple[int, str, int, str]]:
         """Data handoffs (src_cell, src_out, dst_cell, dst_in), incl. the dphase
@@ -352,9 +402,11 @@ start:
             ("cos_fold", "neg", "table_cos", "neg"),
             ("table_sin", "val", "rotate", "sinv"),
             ("table_cos", "val", "rotate", "cosv"),
-            # rotate -> islice_pi (yi, yq).
-            ("rotate", "yi", "islice_pi", "yi"),
-            ("rotate", "yq", "islice_pi", "yq"),
+            # rotate -> tap (yi, yq); tap -> islice_pi (yi, yq) + taps them out.
+            ("rotate", "yi", "tap", "yi"),
+            ("rotate", "yq", "tap", "yq"),
+            ("tap", "yi_fwd", "islice_pi", "yi"),
+            ("tap", "yq_fwd", "islice_pi", "yq"),
             # islice_pi -> qslice_err (pi, yi, yq).
             ("islice_pi", "pi", "qslice_err", "pi"),
             ("islice_pi", "yi_fwd", "qslice_err", "yi"),
@@ -375,7 +427,8 @@ start:
             ("cos_fold", "trig", "table_sin", "default"),
             ("table_sin", "trig", "table_cos", "default"),
             ("table_cos", "trig", "rotate", "default"),
-            ("rotate", "trig", "islice_pi", "default"),
+            ("rotate", "trig", "tap", "default"),
+            ("tap", "trig", "islice_pi", "default"),
             ("islice_pi", "trig", "qslice_err", "default"),
             ("qslice_err", "trig", "pi", "default"),
         ]
@@ -386,14 +439,40 @@ start:
         row-1 cells (8,1)..(1,1) face WEST and (0,1) faces NORTH up into the phase
         cell. Row-1 cells are FACE-only TRANSIT cells (ids start with
         ``"transit"`` so placeKYT materializes them as TransitCells)."""
-        layout: Dict[Any, Tuple[int, int, str]] = {}
-        for i, cid in enumerate(self._CELL_IDS):
-            face = "south" if cid == "pi" else "east"
-            layout[cid] = (i, 0, face)
-        for x in range(1, 9):
-            layout[f"transit_fb_{x}"] = (x, 1, "west")
-        layout["transit_fb_0"] = (0, 1, "north")
-        return layout
+        # COMPACT 5x2 serpentine fold (INV-8/9/14), modelled DIRECTLY on the order-4
+        # QPSK Costas's 4x2 fold — the proven feedback+tap layout. The datapath snakes
+        # across two rows so the dphase FEEDBACK return is a SINGLE short corridor
+        # (pi(0,1) --NORTH--> phase(0,0), @1, NO transit cell), instead of a full-width
+        # row-1 return that congests the auto-router::
+        #
+        #     col:     0          1            2            3           4
+        #     row 0:  phase(E)   sin_fold(E)  cos_fold(E)  table_sin(E) table_cos(S)
+        #     row 1:  pi(N)      qslice_err(W) islice_pi(W) tap(W)      rotate(W)
+        #
+        # Forward face-trace (each cell's fwd_face followed by the router):
+        #   phase(0,0,E) -> sin_fold(1,0,E) -> cos_fold(2,0,E) -> table_sin(3,0,E)
+        #   -> table_cos(4,0,S) -> rotate(4,1,W) -> tap(3,1,W) -> islice_pi(2,1,W)
+        #   -> qslice_err(1,1,W) -> pi(0,1,N) -> phase. Every forward handoff is
+        # @1-abutted; ``tap`` is DUAL-face (yi_fwd/yq_fwd WEST to islice_pi @1;
+        # yi_tap/yq_tap on face_tap, the bus router sets it from the route's first-hop
+        # exit — SOUTH, DISTINCT from the WEST forward). The dphase feedback
+        # pi(0,1) --NORTH--> phase(0,0) is @1 (directly above), traced backward by
+        # ``_apply_internal_feedback`` — no transit cell, no full-width return. 5 cols
+        # (odd — but I/O co-locate on the WEST edge, and the tap egresses SOUTH; the
+        # even-column INV-14 rule is for a return-on-row-1 fold, not this @1-feedback
+        # fold, cf. order-4 which is 4 wide with the SAME @1 feedback).
+        return {
+            "phase": (0, 0, "east"),
+            "sin_fold": (1, 0, "east"),
+            "cos_fold": (2, 0, "east"),
+            "table_sin": (3, 0, "east"),
+            "table_cos": (4, 0, "south"),
+            "rotate": (4, 1, "west"),
+            "tap": (3, 1, "west"),
+            "islice_pi": (2, 1, "west"),
+            "qslice_err": (1, 1, "west"),
+            "pi": (0, 1, "north"),
+        }
 
     def _slice_pam_ref(self, y_q15: int) -> int:
         """Reference branchless 4-PAM slice (signed Q15 decision level)."""

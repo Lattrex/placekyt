@@ -1,0 +1,426 @@
+options:
+  parameters:
+    author: Lattrex
+    catch_exceptions: 'True'
+    category: '[GRC Hier Blocks]'
+    cmake_opt: ''
+    comment: ''
+    copyright: ''
+    description: "Coherent 16-QAM receiver on the Kyttar array: a decision-directed complex Costas loop\
+      \ recovers the carrier, then a 16-QAM hard-decision slicer emits the 4-bit symbol index. Built from\
+      \ the REAL DSP blocks (QAM16ComplexCostasLoop -> QAM16Slicer) so it IMPORTS into placeKYT. NOTE:\
+      \ this is a dense hand-placed design \u2014 OPEN qam16_modem.kyt to host the chip (importing this\
+      \ .grc auto-places the blocks away from the input port and the DD loop won't lock). Simulation ->\
+      \ Run as GNURadio Server, set server_port to the printed port, then Execute here."
+    gen_cmake: 'On'
+    gen_linking: dynamic
+    generate_options: qt_gui
+    hier_block_src_path: '.:'
+    id: qam16_modem
+    max_nouts: '0'
+    output_language: python
+    placement: (0,0)
+    qt_qss_theme: ''
+    realtime_scheduling: ''
+    run: 'True'
+    run_command: '{python} -u {filename}'
+    run_options: prompt
+    sizing_mode: fixed
+    thread_safe_setters: ''
+    title: "Coherent 16-QAM RX (DD Costas + slicer) \u2014 input vs recovered symbols"
+    window_size: (1600,1000)
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 8
+    - 8
+    rotation: 0
+    state: enabled
+blocks:
+- name: n_syms
+  id: variable
+  parameters:
+    comment: 16-QAM symbols in the burst
+    value: '400'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 200
+    - 80
+    rotation: 0
+    state: enabled
+- name: server_port
+  id: variable
+  parameters:
+    comment: placeKYT prints this on "Run as GNURadio Server"
+    value: '58950'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 40
+    - 160
+    rotation: 0
+    state: enabled
+- name: bit_sink
+  id: qtgui_time_sink_x
+  parameters:
+    affinity: ''
+    alias: ''
+    alpha1: '1.0'
+    alpha10: '1.0'
+    alpha2: '1.0'
+    alpha3: '1.0'
+    alpha4: '1.0'
+    alpha5: '1.0'
+    alpha6: '1.0'
+    alpha7: '1.0'
+    alpha8: '1.0'
+    alpha9: '1.0'
+    autoscale: 'False'
+    axislabels: 'True'
+    color1: blue
+    color10: dark blue
+    color2: red
+    color3: green
+    color4: black
+    color5: cyan
+    color6: magenta
+    color7: yellow
+    color8: dark red
+    color9: dark green
+    comment: "recovered bits (chip out) \u2014 MF + Costas + Gardner RX"
+    ctrlpanel: 'False'
+    entags: 'True'
+    grid: 'True'
+    gui_hint: 1,0,1,1
+    label1: recovered bit
+    label10: Signal 10
+    label2: Signal 2
+    label3: Signal 3
+    label4: Signal 4
+    label5: Signal 5
+    label6: Signal 6
+    label7: Signal 7
+    label8: Signal 8
+    label9: Signal 9
+    legend: 'True'
+    marker1: '-1'
+    marker10: '-1'
+    marker2: '-1'
+    marker3: '-1'
+    marker4: '-1'
+    marker5: '-1'
+    marker6: '-1'
+    marker7: '-1'
+    marker8: '-1'
+    marker9: '-1'
+    name: '"Recovered bits (chip x16_out)"'
+    nconnections: '1'
+    size: '128'
+    srate: '1'
+    stemplot: 'False'
+    style1: '1'
+    style10: '1'
+    style2: '1'
+    style3: '1'
+    style4: '1'
+    style5: '1'
+    style6: '1'
+    style7: '1'
+    style8: '1'
+    style9: '1'
+    tr_chan: '0'
+    tr_delay: '0'
+    tr_level: '0.0'
+    tr_mode: qtgui.TRIG_MODE_FREE
+    tr_slope: qtgui.TRIG_SLOPE_POS
+    tr_tag: '""'
+    type: float
+    update_time: '0.10'
+    width1: '1'
+    width10: '1'
+    width2: '1'
+    width3: '1'
+    width4: '1'
+    width5: '1'
+    width6: '1'
+    width7: '1'
+    width8: '1'
+    width9: '1'
+    ylabel: bit
+    ymax: '1.3'
+    ymin: '-0.3'
+    yunit: '""'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1576
+    - 200.0
+    rotation: 0
+    state: enabled
+- name: costas
+  id: kyttar_qam16_costas_loop
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 16-QAM decision-directed carrier recovery (on chip)
+    device_id: '"kyttar_0"'
+    alpha_q15: '2048'
+    beta_q15: '32'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 912
+    - 152.0
+    rotation: 0
+    state: enabled
+- name: import_stim
+  id: import
+  parameters:
+    alias: ''
+    comment: RRC BPSK burst generator (carrier + timing offset)
+    imports: "import numpy as np, random, math\n_N=1.0/math.sqrt(10.0)\n_L=[(1,-1),(-1,-1),(3,-3),(-3,-3),(-3,-1),(3,-1),(-1,-3),(1,-3),(-3,3),(3,3),(-1,1),(1,1),(1,3),(-1,3),(3,1),(-3,1)]\n\
+      _P=[complex(i*_N,q*_N) for (i,q) in _L]\ndef qam16_burst(n, foff=0.002, seed=5):\n    random.seed(seed);\
+      \ s=[random.randint(0,15) for _ in range(n)]\n    return [ _P[sm]*complex(math.cos(2*math.pi*foff*k),math.sin(2*math.pi*foff*k))\
+      \ for k,sm in enumerate(s) ]\n"
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 304
+    - 24.0
+    rotation: 0
+    state: enabled
+- name: input_sink
+  id: qtgui_time_sink_x
+  parameters:
+    affinity: ''
+    alias: ''
+    alpha1: '1.0'
+    alpha10: '1.0'
+    alpha2: '1.0'
+    alpha3: '1.0'
+    alpha4: '1.0'
+    alpha5: '1.0'
+    alpha6: '1.0'
+    alpha7: '1.0'
+    alpha8: '1.0'
+    alpha9: '1.0'
+    autoscale: 'False'
+    axislabels: 'True'
+    color1: blue
+    color10: dark blue
+    color2: red
+    color3: green
+    color4: black
+    color5: cyan
+    color6: magenta
+    color7: yellow
+    color8: dark red
+    color9: dark green
+    comment: input RRC BPSK waveform (in-phase, before the chip)
+    ctrlpanel: 'False'
+    entags: 'True'
+    grid: 'True'
+    gui_hint: 0,0,1,1
+    label1: input I
+    label10: Signal 10
+    label2: Signal 2
+    label3: Signal 3
+    label4: Signal 4
+    label5: Signal 5
+    label6: Signal 6
+    label7: Signal 7
+    label8: Signal 8
+    label9: Signal 9
+    legend: 'True'
+    marker1: '-1'
+    marker10: '-1'
+    marker2: '-1'
+    marker3: '-1'
+    marker4: '-1'
+    marker5: '-1'
+    marker6: '-1'
+    marker7: '-1'
+    marker8: '-1'
+    marker9: '-1'
+    name: '"Input waveform (RRC BPSK, in-phase)"'
+    nconnections: '1'
+    size: '256'
+    srate: '1'
+    stemplot: 'False'
+    style1: '1'
+    style10: '1'
+    style2: '1'
+    style3: '1'
+    style4: '1'
+    style5: '1'
+    style6: '1'
+    style7: '1'
+    style8: '1'
+    style9: '1'
+    tr_chan: '0'
+    tr_delay: '0'
+    tr_level: '0.0'
+    tr_mode: qtgui.TRIG_MODE_FREE
+    tr_slope: qtgui.TRIG_SLOPE_POS
+    tr_tag: '""'
+    type: complex
+    update_time: '0.10'
+    width1: '1'
+    width10: '1'
+    width2: '1'
+    width3: '1'
+    width4: '1'
+    width5: '1'
+    width6: '1'
+    width7: '1'
+    width8: '1'
+    width9: '1'
+    ylabel: amplitude
+    ymax: '1.2'
+    ymin: '-1.2'
+    yunit: '""'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 648
+    - 56
+    rotation: 0
+    state: enabled
+- name: msink
+  id: kyttar_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: recovered bits <- placeKYT chip x16_out (batch)
+    device_id: '"kyttar_0"'
+    hold_secs: '8.0'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_channels: '1'
+    port_name: '"x16_out"'
+    server_port: server_port
+    server_repeat: 'False'
+    stream_id: '""'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1312
+    - 336.0
+    rotation: 0
+    state: enabled
+- name: msrc
+  id: kyttar_source
+  parameters:
+    affinity: ''
+    alias: ''
+    burst_len: n_syms
+    comment: I/Q burst -> placeKYT chip x16_in (batch); fans to MF xi/xq
+    complex_in: complex
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_channels: '1'
+    pipelined: 'yes'
+    port_name: '"x16_in"'
+    server_host: '"127.0.0.1"'
+    server_port: server_port
+    stream_id: '""'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 424
+    - 220
+    rotation: 0
+    state: enabled
+- name: slicer
+  id: kyttar_qam16_slicer
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 16-QAM hard-decision slicer (on chip)
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1200
+    - 136.0
+    rotation: 0
+    state: enabled
+- name: src
+  id: blocks_vector_source_x
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: "RRC BPSK burst (carrier + timing offset) into the chip \u2014 REPEAT so the flowgraph never\
+      \ reaches EOF (which would tear down the graph before the QT time sink ever paints); the Kyttar\
+      \ Source dispatches the batch ONCE then passes through, and the Sink re-emits the recovered bits\
+      \ for a stable live plot."
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    repeat: 'True'
+    tags: '[]'
+    type: complex
+    vector: qam16_burst(n_syms)
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 200
+    - 232
+    rotation: 0
+    state: enabled
+connections:
+- - src
+  - '0'
+  - msrc
+  - '0'
+- - src
+  - '0'
+  - input_sink
+  - '0'
+- - msrc
+  - '0'
+  - costas
+  - '0'
+- - costas
+  - '0'
+  - slicer
+  - '0'
+- - slicer
+  - '0'
+  - msink
+  - '0'
+- - msink
+  - '0'
+  - bit_sink
+  - '0'
+metadata:
+  file_format: 1
+  grc_version: 3.10.12.0

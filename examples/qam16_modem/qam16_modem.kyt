@@ -1,0 +1,72 @@
+project:
+  format_version: 1
+  name: Coherent 16-QAM receiver (DD Costas + slicer on one array)
+  version: '1.0'
+chip_type: kyttar_10x12
+chips:
+- id: 0
+  label: Chip 0
+  position: {x: 0.0, y: 0.0}
+blocks:
+- name: qam16complexcostasloop
+  type: QAM16ComplexCostasLoopBlock
+  library: lattrex.official
+  params:
+    alpha_q15: 1024
+    beta_q15: 32
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: phase, x: 0, y: 0, face: east}
+    - {cell_id: sin_fold, x: 1, y: 0, face: east}
+    - {cell_id: cos_fold, x: 2, y: 0, face: east}
+    - {cell_id: table_sin, x: 3, y: 0, face: east}
+    - {cell_id: table_cos, x: 4, y: 0, face: south}
+    - {cell_id: rotate, x: 4, y: 1, face: west}
+    - {cell_id: tap, x: 3, y: 1, face: west}
+    - {cell_id: islice_pi, x: 2, y: 1, face: west}
+    - {cell_id: qslice_err, x: 1, y: 1, face: west}
+    - {cell_id: pi, x: 0, y: 1, face: north}
+- name: qam16slicer
+  type: QAM16SlicerBlock
+  library: lattrex.official
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: islice, x: 7, y: 0, face: east}
+    - {cell_id: qslice, x: 8, y: 0, face: east}
+    - {cell_id: lut, x: 9, y: 0, face: east}
+connections:
+- name: x16_in_to_qam16complexcostasloop
+  from: {chip_port: {chip: 0, port: x16_in}}
+  to: {block: qam16complexcostasloop, port: xi}
+- name: x16_in_to_qam16complexcostasloop_1
+  from: {chip_port: {chip: 0, port: x16_in}}
+  to: {block: qam16complexcostasloop, port: xq}
+- name: qam16complexcostasloop_to_qam16slicer
+  from: {block: qam16complexcostasloop, port: yi_tap}
+  to: {block: qam16slicer, port: in_i}
+  route:
+  - {x: 3, y: 1}
+  - {x: 3, y: 2}
+  - {x: 4, y: 2}
+  - {x: 5, y: 2}
+  - {x: 5, y: 1}
+  - {x: 6, y: 1}
+  - {x: 6, y: 0}
+- name: qam16complexcostasloop_to_qam16slicer_1
+  from: {block: qam16complexcostasloop, port: yq_tap}
+  to: {block: qam16slicer, port: in_q}
+  route:
+  - {x: 3, y: 1}
+  - {x: 3, y: 2}
+  - {x: 4, y: 2}
+  - {x: 5, y: 2}
+  - {x: 5, y: 1}
+  - {x: 6, y: 1}
+  - {x: 6, y: 0}
+- name: qam16slicer_to_x16_out
+  from: {block: qam16slicer, port: out}
+  to: {chip_port: {chip: 0, port: x16_out}}
+  route:
+  - {x: 9, y: 0}

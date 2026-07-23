@@ -46,14 +46,24 @@ all of which have a subtle failure mode:
    sample never reached the landing cell (phase's accumulator stayed all-zero across
    every sample → nothing fires → 0 output). The fold is anchor-sensitive.
 
-RESULT: Costas→slicer routes+builds and recovers 13/16 constellation symbols exactly on
-a random stream (BER ~0.04). REMAINING for BER 0: (a) the slicer fires 2×/symbol — the
-tap→slicer delivery isn't atomic (broker delivers yi_tap and yq_tap as 2 triggers; the
-2nd/complete fire is correct, so batch_check phase-1 is the real stream). (b) The residual
-~4% is DD Q15 precision on 16-QAM's tight decision regions (the recovered outer ±3 points
-occasionally cross a threshold; amp-sensitive — 0.85 input scale gives fewer errors). A
-CONSTANT-symbol settle test is DEGENERATE for a DD loop (err=Im{y·conj(slice y)}=0 on-grid
-→ no phase info → drifts); always characterize with a RANDOM stream.
+RESULT: **BER 0** — Costas→slicer recovers 16-QAM at BER 0 on the real SimKYT pipeline
+(400 in, 400 out, 0 errors; solid across seeds at the foff≈0.002 design operating point).
+
+5. **THE BER-0 FIX — the last datapath cell's trig MUST SELF-TERMINATE (`__terminate__`).**
+   The chain first gave BER ~0.04 with 2 outputs PER input symbol. Root cause: `pi` (the
+   last datapath cell) had NO `internal_jump` entry for its `trig`, so the router defaulted
+   its trig JUMP to a positional-next cell and LOOPED BACK THROUGH the live datapath —
+   running phase..pi TWICE per input (the "2×-fire"). That doubled the recovered rate AND
+   corrupted the DD lock (phase advanced at 2×). FIX (exactly the order-4 pd_pi pattern):
+   declare `("pi", "trig", "__terminate__", "default")` (and the unconsumed
+   `("tap", "tap_trig", "__terminate__", "default")`). The dphase FEEDBACK to phase stays a
+   DATA `internal_connection`, NOT a trigger; the NEXT input drives phase. This was the
+   whole ballgame — with it, BER 0.
+   DEBUG NOTE: a "2 outputs per input" symptom on a feedback block ⇒ suspect the last
+   cell's trig looping back through the datapath, NOT the tap/broker (the broker DID
+   coalesce yi_tap/yq_tap correctly — same src_cell + in_cell → one WRITE-WRITE-JUMP). A
+   CONSTANT-symbol settle test is DEGENERATE for a DD loop (err=Im{y·conj(slice y)}=0
+   on-grid → no phase info → drifts); always characterize with a RANDOM stream.
 
 ## QAM16 slicer REBUILT to GR decision_maker + Costas tap/acquisition BLOCKERS 2026-07-22
 

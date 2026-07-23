@@ -47,9 +47,12 @@ class TestDiscovery:
         full = {s.type_name for s in catalog.all(include_hidden=True)}
         assert 0 < len(palette) < len(full), "palette must be a curated subset"
         for n in ("GainBlock", "FIRFilterBlock", "IIRBiquadBlock", "NCOBlock",
-                  "ComplexMixerBlock", "LowPassFilter"):
+                  "ComplexMixerBlock", "LowPassFilter",
+                  # the GR-verified 16-QAM modem blocks are curated (in the manifest)
+                  "QAM16SymbolMapperBlock", "QAM16SlicerBlock",
+                  "QAM16ComplexCostasLoopBlock"):
             assert n in palette, f"{n} (verified) must be in the palette"
-        for n in ("DFEEqualizerBlock", "QAM16SlicerBlock", "FrameSyncBlock",
+        for n in ("DFEEqualizerBlock", "FrameSyncBlock",
                   "CoherentRXBlock", "EOMDetectorBlock"):
             assert n not in palette, f"{n} (unverified) must be hidden"
 

@@ -85,6 +85,12 @@ _CASES = [
     # IDENTICAL output word list in every D4 orientation.
     ("FSK4SymbolMapperBlock", {}, "real", ("sample", "out")),
     ("FSK4SlicerBlock", {}, "real", ("sample", "out")),
+    # 16-QAM modem blocks: the mapper packs 4 bits -> the GR constellation_16qam()
+    # point (bit rail in, complex I/Q pair out — drain the I rail); the slicer maps a
+    # recovered (I, Q) pair -> the 4-bit symbol index. Both must produce the IDENTICAL
+    # output word list in every D4 orientation.
+    ("QAM16SymbolMapperBlock", {}, "real", ("sample", "out_i")),
+    ("QAM16SlicerBlock", {}, "complex_wps1", ("in_i", "in_q", "out")),
 ]
 
 # No orientation residuals remain: every block in _CASES is invariant in all 8 D4

@@ -581,6 +581,36 @@
       "metric": "exact",
       "params": {},
       "notes": "The PHYSICAL float_to_complex for the case a single logical FloatToComplex CAN'T cover: TWO INDEPENDENT real producers (I from one source, Q from another) feeding a complex block. A single-real float_to_complex (Q = null_source) is a logical no-op the importer splices out with no cell; but two independent, ASYNCHRONOUSLY-timed real streams must be paired sample-for-sample into one complex sample, which needs a real cell. This 1-cell block uses the arbiter LOCK/LOCK_FACE (CONFIG regs) to rendezvous the two rails by ARRIVAL FACE -- face = stream identity -- so matched I/Q pairs form regardless of interleaving. The importer AUTO-INSERTS it when it sees a raw float_to_complex fed by two real producers (no null_source on Q). Verified: catalog discovery + builds/routes on one chip + LOCK-rendezvous bitstream (LOCK_FACE write, boot-locked cfg) + importer auto-insertion from a raw 2-real .grc + out-of-order 2-face interleave emits matched pairs. Functional end-to-end equivalence (complex in -> converters -> chip out, corr 1.0) is proven in the converter-flavors live-run gate. Structural/rendezvous adapter -- no err/tol quality metric (it carries samples, it doesn't transform them)."
+    },
+    {
+      "kyttar_block": "QAM16SymbolMapperBlock",
+      "grc_block": "digital.chunks_to_symbols_bc(constellation_16qam)",
+      "tier": 1,
+      "status": "done",
+      "metric": "exact",
+      "params": {},
+      "notes": "4 bits -> the exact GR constellation_16qam() point (idiosyncratic non-separable Gray map, re-derived from GR + pinned). 3-cell acc/itab/qtab; complex-egress (I,Q) pair. Verified test_qam16_mapper.py (all-16 + random + INV-4 mutations); orientation-invariant (test_orientation_invariance); saturated in the qam16_modem BER0 acceptance."
+    },
+    {
+      "kyttar_block": "QAM16SlicerBlock",
+      "grc_block": "digital.constellation_decoder_cb(constellation_16qam)",
+      "tier": 1,
+      "status": "done",
+      "metric": "decision",
+      "params": {},
+      "notes": "Recovered (I,Q) -> GR decision_maker() index 0..15 via per-axis (sign,|v|>=2/sqrt10) key + a 16-entry permutation LUT (verified == decision_maker over the whole plane). 3-cell islice/qslice/lut. test_qam16_slicer.py (exact points + noisy + mapper->slicer loopback + mutations); orientation-invariant; saturated in the qam16_modem BER0 acceptance."
+    },
+    {
+      "kyttar_block": "QAM16ComplexCostasLoopBlock",
+      "grc_block": "digital.constellation_receiver_cb(constellation_16qam)",
+      "tier": 2,
+      "status": "done",
+      "metric": "ber",
+      "params": {
+        "alpha_q15": 1024,
+        "beta_q15": 32
+      },
+      "notes": "16-QAM decision-directed carrier recovery (non-constant-modulus, so QPSK/BPSK PDs fail). 10-cell feedback block with a recovered-I/Q tap (dual-face) + 5x2 serpentine fold like the order-4 QPSK Costas; pi trig __terminate__. Recovers 16-QAM at BER 0 through Costas->slicer on the hosted qam16_modem.kyt (test_qam16_modem_ber.py)."
     }
   ]
 }

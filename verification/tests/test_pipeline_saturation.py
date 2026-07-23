@@ -172,6 +172,16 @@ NEEDS_BESPOKE = {
     # in its own gate (proto_fsk4_sync_model / the fsk4 modem RX BER harness), which
     # proves the whole RX chain recovers BER 0 pipelined (the real saturation proof).
     "FSK4SyncTimingRecoveryBlock": "sync-gated decimator; needs framed burst — own gate (fsk4 RX BER0 pipelined)",
+    # 16-QAM modem blocks. The mapper is bit-in / COMPLEX-egress (I,Q pair per symbol)
+    # and the slicer is COMPLEX-in (I,Q) / 4-bit-symbol-out — neither fits the single-
+    # rail RATE_1IN / REAL_1IN harnesses. The Costas is a data-FEEDBACK loop (like
+    # ComplexCostasLoopBlock above). All three are driven SATURATED end-to-end by the
+    # qam16_modem BER-0 acceptance test (placekyt/tests/test_qam16_modem_ber.py): the
+    # random 16-QAM burst streams through Costas->slicer with no inter-sample quiescence
+    # and recovers BER 0 — the real saturation proof for the whole chain.
+    "QAM16SymbolMapperBlock": "bit-in/complex-egress mapper; saturated in the qam16_modem RX BER0 acceptance (test_qam16_modem_ber)",
+    "QAM16SlicerBlock": "complex-in/4-bit-out slicer; saturated in the qam16_modem RX BER0 acceptance (test_qam16_modem_ber)",
+    "QAM16ComplexCostasLoopBlock": "complex I/Q DD carrier loop; saturated in the qam16_modem RX BER0 acceptance (test_qam16_modem_ber)",
 }
 
 

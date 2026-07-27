@@ -26,7 +26,7 @@ first command into a terminal, copy the second into another, and you're running.
 | **[coherent_bpsk_rx/](coherent_bpsk_rx/)** | The coherent BPSK **receiver** on its own — RRC matched filter → Costas carrier recovery → Gardner timing recovery → BPSK slicer. The input carries a carrier **and** a timing offset; the chip recovers the bits at **BER 0**. An extra, receiver-only view of the same recovery chain the modem uses. Includes a headless `batch_check.py`. | 4 | `.grc` or `.kyt` |
 | **[qpsk_modem/](qpsk_modem/)** | The coherent **QPSK** receiver — RRC matched filter → **order-4** Costas carrier recovery → **complex** Gardner timing recovery → QPSK slicer. Fully complex (both I and Q carried through every handoff), 2 bits per symbol; recovers the symbols at **BER 0** through a carrier **and** a timing offset. The QPSK analog of `coherent_bpsk_rx/`, with a headless `batch_check.py`. | 4 | `.grc` or `.kyt` |
 | **[fsk4_modem/](fsk4_modem/)** | A full-duplex **M17 4FSK (C4FM)** modem — a transmit (`FSK4SymbolMapper → Upsampler → RRC → FrequencyModulator`) and a receive (`QuadratureDemod → RRC matched filter → FSK4SyncTimingRecovery → FSK4Slicer`) chain sharing one chip. Because a Gardner loop can't lock a 4-level FSK eye, timing is recovered by **cross-correlating the M17 sync word** — exactly what real M17 receivers do; recovers the dibits at **BER 0**. Ships a headless `batch_check.py`. Like the SSB Weaver, this one is **hand-placed: open the `.kyt` directly, don't import the `.grc`** (see its README). | 8 (TX+RX) | `.kyt` only |
-| **[qam16_modem/](qam16_modem/)** | The coherent **16-QAM** receiver — a **decision-directed** complex Costas loop (16-QAM is non-constant-modulus, so the QPSK/BPSK phase detectors fail) → 16-QAM slicer, **4 bits per symbol** on the square 16-point `digital.constellation_16qam()` grid; recovers the symbols at **BER 0** through a carrier offset. The next step up from `qpsk_modem/`, with a headless `batch_check.py`. Hand-placed (the 10-cell DD Costas must abut the input port): **open the `.kyt`, don't import the `.grc`** (see its README). | 2 | `.kyt` only |
+| **[qam16_modem/](qam16_modem/)** | A full-duplex **16-QAM** modem — a transmit (`QAM16SymbolMapper → ComplexUpsampler → RRC → IQUpconvert`) and a coherent receive (`RRC matched filter → ComplexGain → MMTimingRecovery → decision-directed 16-QAM Costas → 16-QAM slicer`) chain sharing one chip. 16-QAM is non-constant-modulus, so timing is **Mueller & Müller** (Gardner can't lock a 4-level eye) and carrier recovery is **decision-directed** (the QPSK/BPSK phase detectors fail); **4 bits per symbol** on the square 16-point `digital.constellation_16qam()` grid, recovers the symbols at **BER 0**. Runs full-duplex at the same rate as simplex. Ships a headless `batch_check.py`. Hand-placed: **open the `.kyt`, don't import the `.grc`** (see its README). | 9 (TX+RX) | `.kyt` only |
 | **[am_transceiver/](am_transceiver/)** | A double-sideband **AM** transceiver: a coherent product modulator and detector sharing one chip. The simplest analog transceiver. | 8 (TX+RX) | `.grc` |
 | **[fm_transceiver/](fm_transceiver/)** | An **FM** transceiver: a VCO modulator (`FrequencyModulator`) and a quadrature discriminator (`QuadratureDemod`) sharing one chip. | 6 (TX+RX) | `.grc` |
 | **[ssb_weaver/](ssb_weaver/)** | A single-sideband **SSB** transceiver built the Weaver (third-method) way, using the complex-FIR filter blocks. The most involved analog demo — **hand-placed: open the `.kyt` directly, don't import the `.grc`** (see its README). | 11 (TX+RX) | `.kyt` only |
@@ -37,11 +37,11 @@ directly (**File → Open**) and explore on the canvas without importing anythin
 Flowgraph…**) and placeKYT auto-places and routes it. Either way, you then **Run
 as GNURadio Server** and drive it from `gnuradio-companion`.
 
-> Two demos are the exception — the **SSB Weaver** and the **FSK4 modem**: they're
-> dense, hand-placed designs the auto-router can't fully route, so you **must open
-> their `.kyt` directly** (importing the `.grc` will leave nets unrouted and the build
-> will fail). Each README explains why. Every other demo places and routes from the
-> `.grc`.
+> Three demos are the exception — the **SSB Weaver**, the **FSK4 modem**, and the
+> **16-QAM modem**: they're dense, hand-placed designs the auto-router can't fully
+> route, so you **must open their `.kyt` directly** (importing the `.grc` will leave
+> nets unrouted and the build will fail). Each README explains why. Every other demo
+> places and routes from the `.grc`.
 
 ## The common workflow (every demo)
 

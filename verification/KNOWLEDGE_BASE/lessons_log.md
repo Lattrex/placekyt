@@ -8,11 +8,230 @@ anything that generalizes across block classes into `invariants.md`.
 
 ---
 
-## 16-QAM modem COMPLETE — mapper + slicer + DD Costas, BER 0 end-to-end 2026-07-22
+## GRC-settable duplex SCHEDULE switch + the installed-OOT boundary 2026-07-27
 
-The whole 16-QAM job is DONE. `examples/qam16_modem/` ships the coherent 16-QAM RX
-(QAM16ComplexCostasLoop → QAM16Slicer) at **BER 0** on the hosted `.kyt`
-(`placekyt/tests/test_qam16_modem_ber.py`, incl. `test_shipped_kyt_recovers_ber_zero`).
+- **GOAL:** let a user flip a full-duplex modem between *interleaved* (real full-duplex —
+  TX+RX words merged on the shared `x16_in` port, both chains co-resident) and
+  *sequential/simplex* (each direction's whole burst runs alone, one direction on the array
+  at a time) for timing analysis, WITHOUT editing the placed `.kyt`. Requirement: a **GRC
+  variable** set before Run, not an env var.
+- **HEADLINE FINDING — full-duplex has NO throughput penalty; duplex ≈ simplex (~146 kSa/s
+  RX on the 16-QAM modem).** A shared input PORT serializes the input CORRIDOR (one word at a
+  time), but it does NOT halve the array's COMPUTE — both chains advance on the same timeline,
+  so TX+RX co-resident run at the SAME rate as one alone. Splitting two ways does not divide
+  throughput. (An earlier "~33–38 kSa/s full-duplex, chains throttle each other" claim was a
+  MEASUREMENT ARTIFACT: an arbitrary bounded `run()` inserted between interleaved packets added
+  dead time that had nothing to do with contention. Let the input port SELF-PACE — queue the
+  whole interleaved word stream, one `run()`, exactly like simplex — and the fake penalty
+  vanishes. Report chip-time, and never insert a fixed inter-packet run to "let it settle".)
+- **LESSON — SATURATED is the real drive; per-sample-to-quiescence is a DEMO-only view.**
+  The old duplex path drove each sample inject→run-to-quiescence→drain, so no two samples were
+  ever in flight — the RX chain never felt back-to-back pressure, reported NO stall, and the
+  "rate" was per-sample LATENCY mislabeled as throughput. The saturated (`pipelined`) drive
+  queues the whole burst and runs once; only then do real per-block serial barriers appear
+  (on the 16-QAM RX the barrier is `mmtimingrecovery`/`complexgain` — the serialize-LOCK
+  block — NOT the TX `iqupconvert`, which the un-saturated per-sample TX phase falsely
+  implicated). Ship examples with `pipelined: yes`; nobody runs per-sample for real.
+- **LESSON — the INTERLEAVED saturated FRAMING INVARIANT (submit-order INDEPENDENT).** Two
+  duplex streams share the input corridor AND (on this modem) the same entry addr at different
+  hops. You canNOT naively concatenate their WRITE/DATA/JUMP words: a JUMP immediately followed
+  by the OTHER stream's WRITE (different hop) clobbers the first program, and two adjacent JUMPs
+  let only the last-firing chain survive. The rule that works for EVERY submit order (the
+  rendezvous races two threads → can hand the server tx-first OR rx-first): within each sample
+  emit **all streams' DATA, then all streams' JUMPs, with the COMPLEX stream WRAPPING the real
+  one** — complex DATA first, complex JUMP last (`RX_data, TX_data, TX_jump, RX_jump`). Derive
+  the order from complex-ness, NOT submit order; a submit-order-relative rule silently drops one
+  direction (the GUI bug: TX drained only AFTER RX, or showed zero output, depending on which
+  source flushed first). See `sim_bridge._process_batch_duplex` (`data_order`/`jump_order`).
+- **THE CARRIER PATH (thread a GRC param to the server through the rendezvous):**
+  `kyttar_source.block.yml` dropdown `schedule` → `kyttar.source(schedule=)` →
+  `source._server_dispatch` → `DuplexRendezvous.submit(..., schedule=)` (stored on the
+  rendezvous; **non-default wins** so setting it on either duplex source works) →
+  `_dispatch_all` puts it in the `process_batch_duplex` header → `sim_bridge._process_batch_duplex`
+  picks the sequential vs interleaved drive branch. The `.kyt`/placement are untouched; only
+  the host stimulus ORDER differs.
+- **LESSON — the env var could NEVER work, and WHY it looked done but wasn't:** an
+  env-var carrier (`KYTTAR_SCHEDULE`) read in `_batch_session` is invisible to the running
+  SimServer — GRC selects the stream, and the var was set in a different shell than the
+  long-lived server process. A GRC-first design must carry per-run options **in the RPC
+  header**, sourced from a block param — never process env.
+- **LESSON — the INSTALL BOUNDARY silently shadows repo edits (the real time-sink).** GRC
+  imports the **installed** OOT at `/usr/lib/python3/dist-packages/gnuradio/kyttar/`, a
+  SEPARATE copy from the repo `gr-kyttar/python/kyttar/`. Editing the repo copy and testing
+  in-process "passes" while the GUI runs stale code → the change appears to no-op. `install.sh`
+  exists precisely for this ("repo is the source of truth"); it needs sudo for the system
+  dirs. ALWAYS check `grep -c schedule /usr/lib/python3/dist-packages/gnuradio/kyttar/_batch_session.py`
+  (installed) vs the repo before believing an OOT edit is live. Headless tests can bypass the
+  install with `PYTHONPATH=gr-kyttar/python`, but the GUI cannot — it needs the install.
+- **VERIFICATION (two real processes, the GUI path):**
+  `placekyt/tests/test_live_duplex_schedule.py` starts a SimServer subprocess hosting the
+  SHIPPED `qam16_modem.kyt` (opened read-only) and a real GR `top_block` with two
+  `source`/`sink` pairs (rx complex + tx real), the RX source carrying `schedule=<mode>`.
+  It asserts (a) the server's own `[placeKYT duplex] INTERLEAVED|SEQUENTIAL` line matches the
+  dropdown (proof the value TRAVERSED source→rendezvous→server) and (b) RX BER 0 both ways,
+  saturated (`pipelined=True`), TX non-empty (schedule/order change correctness NEVER).
+  `_process_batch_duplex` reports per-stream `t_first`/`t_last` (chip sim-time span): under
+  interleaved the RX and TX spans OVERLAP (co-resident, verified equal for tx-first and
+  rx-first submit order); under sequential they are disjoint (one direction then the other).
+- **GOTCHA:** the RX `kyttar.sink` must be `in_type=True` (complex) to match the RX
+  `source`'s complex marker-chain output, or GRC/`top_block.connect` raises
+  `itemsize mismatch: ... using 8, ... using 4`. TX stays float (`in_type` default).
+
+## Full-duplex 16-QAM modem — assembling the most complex example so far 2026-07-24
+
+`examples/qam16_modem/` is a full-duplex TX + coherent RX 16-QAM modem on one 10×12 array,
+BER 0 on the hosted `.kyt`. This is the process/integration lesson (the per-block lessons are
+in the `MMTimingRecoveryBlock`, mapper/slicer, and DD-Costas entries). It was the most
+involved automated build to date; the notes that generalize to the NEXT hard modem:
+
+**The receiver is a CASCADE, and the order + the glue between stages is the whole game.**
+The working RX is `MF → ComplexGain(2.4) → MMTimingRecovery → QAM16Costas → QAM16Slicer`.
+Two glue facts are load-bearing and non-obvious:
+- **Gain-staging BETWEEN the MF and the decision-directed loops.** The RRC matched filter
+  pre-scales its taps ÷2 for Q15 headroom, so its output constellation is ~2.8× compressed
+  (outer level ~0.34 instead of 0.949). The M&M TED and the DD Costas both SLICE to fixed
+  4-PAM thresholds (±0.316/±0.632/±0.949), so a compressed input makes every decision wrong
+  and the recovered constellation collapses to a few inner symbols. A `ComplexGainBlock` in
+  the middle, gain ≈2.4 (robust window [2.3,2.45]), restores the nominal scale. This is a
+  RECURRING lesson (DD Costas, MM timing) — any decision-directed stage needs its input at
+  nominal scale; put a gain stage right before it. NOT peak-scaling — RMS/outer-level match.
+- **Timing BEFORE carrier for the same-chip modem.** On the hosted loopback foff=0, so the
+  M&M timing (which has no carrier tracking) can sit in front of the DD Costas (which handles
+  static phase). Over a REAL channel with a frequency offset you would need a coarse-freq
+  (FLL/FFT) stage ahead of M&M — the standard industry cascade — but that is out of scope for
+  a same-chip modem. Do not add carrier-recovery complexity the channel doesn't require.
+
+**Drive a FULL-DUPLEX .kyt through the STREAM-ROUTED batch path, not a raw port injection.**
+On the duplex chip `x16_in` fans to BOTH the RX matched filter and the TX mapper, distinguished
+only by each net's `stream_id` ("rx"/"tx") + `out_tag`. A raw `inject_data_physical(hop=30)` (fine
+for a single-chain RX-only .kyt) fires BOTH chains and corrupts the RX (BER ~0.76–0.90). The
+faithful test drives the RX like the live SimServer / `batch_check.py` do: resolve
+`engine.port_config.stream_targets(project, ctrl.registry, catalog, build_result=bres)` (needs a
+CONTROLLER-loaded project, `ctrl.open_project(.kyt)`, for `ctrl.registry`), then call
+`SimServer(chip, stream_targets=tgts)._process_batch_duplex({streams:[{stream_id:"rx",complex,raw,
+n_samples}]}, payload)` in-process — it routes to the rx entry/hop and demuxes output by out_tag.
+`test_shipped_kyt_recovers_ber_zero` (qam16) does this; it caught a shipped .kyt that differed from
+the auto-P&R build. The stream_ids live in the .kyt on the x16_in→block nets (at the END of each net
+block after the route points), and out_tag on the block→x16_out nets.
+
+**Verify the CASCADE on-chip, not just each block.** Each block being GR-bit-exact does NOT
+prove the chain works — the gain-staging, the complex-packet handoffs (`yi`/`yq` pair per
+hop), and the port-name wiring (`MM.yi_e/yq_e → Costas.xi/xq`, `Costas.yi_tap/yq_tap →
+slicer.in_i/in_q`, `slicer.out → x16_out`) are all chain-level. Build the whole RX through the
+real place+route+build pipeline, drive a 2-sps RRC 16-QAM burst into `x16_in`, and BER-score
+the `x16_out` symbols (rotation×4 + lag aligned — QAM keeps the 90° four-fold ambiguity). The
+acceptance test `placekyt/tests/test_qam16_modem_ber.py` does exactly this AND loads the
+shipped `.kyt` as a user opens it (`test_shipped_kyt_recovers_ber_zero`) — the latter is what
+catches a shipped artifact that differs from the auto-P&R build.
+
+**A REFERENCE-chaining shortcut that does NOT work, and what to do instead.** You cannot just
+pipe one block's `process_reference()` into the next: they return different shapes (the DD
+Costas reference returns only the recovered `yi`, not the `yi/yq` pair), and the decision-
+directed loops need the correct input SCALE to reproduce the on-chip decisions. The reliable
+composition proof is the ON-CHIP cascade (simKYT), not a stitched float reference. Prove BER 0
+on-chip early — it de-risks the whole example before authoring the `.kyt`.
+
+**Measurement discipline (this bit us repeatedly across the whole 16-QAM effort).** SER-by-
+symbol-LABEL is a broken metric for QAM: the 90° ambiguity + GR's idiosyncratic bit→point
+permutation make a PERFECT lock read as ~93% "errors". Use **grid-distance of the recovered
+constellation** (RMS-normalize, distance to the nearest {±1,±3}/√10 point) as the phase/label-
+invariant lock metric during development, and only score true symbol BER through the full
+rotation+lag+permutation alignment at the very end. Also: keep ONE trusted harness — cross-file
+protos with different channels/windows/scales gave contradictory numbers and cost hours
+(`verification/kyttar/tests/proto_mm_authoritative.py` was the single trusted GR-vs-mine harness).
+
+**TX end shape.** The TX chain is `QAM16Mapper → ComplexUpsampler(sps2) → ComplexRRC(shaper)
+→ IQUpconvert`. The output is a SINGLE REAL passband (`s = I·cos − Q·sin`, the upconvert's
+free-running NCO carrier), NOT a complex stream — quadrature is already in the one real
+waveform, exactly like a real transmitter and the QPSK modem. The RX baseband is complex I/Q
+until the slicer emits the single real 4-bit symbol index. (The upconvert NCO increment is
+data-INDEPENDENT — `freq_word = round(f/fs·65536)`; a same-chip async timeline just compresses
+more samples per ns under load, which LOOKS like the carrier speeding up but isn't.)
+
+**Full-duplex on one array is a placement problem, not a capacity one.** TX(21 cells)+RX(39
+cells)=60 on a 120-cell chip fits; the auto-router congests only because MMTimingRecovery is a
+14-cell feedback block ~7 columns wide with a routed feedback ring + a long M&M→Costas
+corridor. Like FSK4: ship a HAND-PLACED `.kyt` (open it, don't import the `.grc`) and a
+`pnr_trace.py` replay of the place+route. The `.grc` is the reference flowgraph (imports with
+zero unknown blocks); the actual placement is the hand-authored `.kyt`. Keep a replay so the
+`.kyt` is reproducible.
+
+**Workflow methodology that worked for a build this size.** Two deep-research passes settled
+the ARCHITECTURE before any code (industry-standard M&M cascade; then the exact interpolator↔
+loop control contract). Then a bounded ultracode workflow per phase — design→judge, author→
+adversarial-verify vs a bit-exact reference, gate-completeness critic — with the human in the
+loop between phases. Critically: VERIFY the workflow's claims independently (a workflow reported
+the shipped `.kyt` passing when it actually recovered BER 0.90 — a wrong baked-in gain param).
+Re-run the acceptance test yourself; do not trust a summary.
+
+---
+
+## MMTimingRecoveryBlock — M&M decision-directed timing recovery for 16-QAM, on-chip bit-exact 2026-07-24
+
+The 16-QAM timing-recovery wall (Gardner leaves ~3% jitter on 4-level axes) is SOLVED with a
+Mueller & Müller DECISION-DIRECTED loop = GR `symbol_sync_cc(TED_MUELLER_AND_MULLER)`. Two deep-research
+passes established the industry-standard architecture (Rice "Digital Communications: A Discrete-Time
+Approach" Ch.8): a **modulo-1 interpolator-control counter** (strobe on underflow, mu = cnt/W) + a
+**cubic Farrow interpolator** at continuous mu + a **decision-directed M&M TED** + a **2nd-order PI**.
+The block is on-chip **BIT-EXACT** to `process_reference` (0 mismatches, full burst, offsets 0.0–0.7),
+itself verified vs GR to grid-distance parity; worst-case per-axis error 0.277 < 0.316 = BER-0-safe.
+14 cells, all gates green (INV-4/8/9/14/19/20/22/23/25). `verification/tests/test_mm_timing_recovery.py`.
+
+Load-bearing lessons (several generalize):
+- **The failing pipeline was the WRONG topology, not tuning.** 2sps-Gardner→Costas fails 3 ways, each
+  documented: raw Gardner is a BPSK/QPSK TED (shallow S-curve on multilevel QAM); a plain Costas is
+  PSK-only (orders 2/4/8, no QAM); a decision-directed carrier loop must not precede coarse-freq under a
+  large offset. For the hosted foff=0 channel only the TED matters → M&M.
+- **The modulo-1 counter is the fix for "conflated symbol-clock/interpolator phase"** (Andy Walls GRCon17:
+  "self noise & unable to stay locked" — the old mm_clock_recovery bug, and the exact symptom of a
+  free-running-index loop). Per input sample: W=1/L+v; strobe = cnt<W; cnt=mod(cnt−W,1); at strobe mu=cnt/W.
+  The PI runs EVERY sample (e=0 off-strobe). Error polarity esign=−1 (S-curve stable-zero).
+- **ISA-friendly reformulation dodges the two hard ISA gaps:** Q15 16-bit counter (no wide ADC chain);
+  **mu = cnt<<1** (single SHL — since W≈0.5, mu=cnt/W≈2·cnt, bit-identical to the divide; the ISA has no
+  divide); Q15 MULQ loop filter (no integral underflow at this operating point). All verified identical to
+  the wide SC=2^20 model AND to GR.
+- **Cubic Farrow coeffs OVERFLOW Q15** (|c| up to 2.5). Fix = the TRUE Farrow structure: 4 sub-filter MACs
+  (v3,v2,v1,v0), coeffs stored Q13 (÷4) so they fit, Horner in mu, result <<2. `v0 = MULQ(8192,x0)` is a
+  real MAC, not a bare tap.
+- **DECISION-DIRECTED loops are SCALE-SENSITIVE** (recurring): gain-stage so the outer constellation level
+  is 0.949 (RMS-matched), NOT peak=0.9 — a wrong scale biases every 4-PAM decision and the loop walks off
+  lock, EVEN IN FLOAT. Cost hours; it's the same lesson as the DD Costas + ComplexGainBlock.
+- **default_layout dict ORDER must match build_cell_programs() key order** — the placer indexes
+  pb.cells[cell_pos] positionally; a physically-ordered fold silently mis-resolves every internal handoff.
+- **A generic ROUTER bug (fixed, `runtime/python/gr_kyttar/placement/router.py`):** the runtime router's
+  `_find_output_target` IGNORED `internal_jumps`, so a JUMP to a non-positional-next cell OR a NAMED
+  (non-default) entry fell through to the positional-next default. Added an explicit internal_jumps
+  resolution loop (mirrors the internal_connections branch, resolves the entry by name via
+  compute_entry_addresses). Any multi-cell block with named-entry triggers needs this; 59+ feedback/timing
+  regression tests still green.
+- **Two-rail reconvergence** (I/Q Farrow rails reconverging at the M&M TED): a cell must NOT write DATA to
+  one neighbor AND trigger a DIFFERENT neighbor (router mis-bundles). Fix = strictly-linear trigger thread;
+  the parallel rail delivers its (s,d) to the reconvergence cell as a PURE DATA 1-hop write; ted triggered
+  only by the linear thread's last cell. ted placed ADJACENT to BOTH slices (opposite faces). Mirror the
+  shipped complex-Gardner qdelay/qout parallel-rail-writes-data pattern.
+- **Feedback closure needs a declared `transit_fb_*` cell** (like Gardner's transit_fb_0): `_apply_internal_feedback`
+  traces the backward internal_connection through the transit cell's stable faces (the router never overrides
+  them). Without it, when the router relocates the tail to route the feedback corridor, the trace fails and
+  the feedback JUMP lands on the wrong entry → period_relay never runs → the loop never converges → symbols
+  drift after ~5. Keep the feedback SHORT (period_relay near the counter) + a short transit lane.
+- **Serialize-LOCK on EVERY sample, not just strobes** (INV-19, differs from Gardner): the M&M interior
+  fans out (land→2 Farrow rails→decision-directed ted), so strobe-only locking left no-strobe samples
+  un-serialized → they co-reside with the next strobe and corrupt ted's decision state. The PI runs every
+  sample (period_relay unlocks every sample), so locking every sample is correct. `MOVE [LOCK],Rn` engages
+  on BIT0 (not any-nonzero) — reuse a bit0=1 constant. `pipeline_lock=True` ships; the saturation gate is
+  BESPOKE (a synthetic stimulus can't lock a timing loop, same as Gardner/Costas).
+
+## QAM16 mapper + slicer + DD Costas — GR-vetted, BER 0 (the RX back-end) 2026-07-22
+
+> NOTE (superseded by the 2026-07-24 full-modem entry above): this entry called the
+> 2-block `QAM16ComplexCostasLoop → QAM16Slicer` chain "the whole 16-QAM job" — it is
+> NOT. That was a carrier+slicer BACK-END that assumes clean symbol-rate samples; a real
+> 16-QAM receiver needs a matched filter + M&M timing recovery in FRONT of the Costas (see
+> the `MMTimingRecoveryBlock` entry above). These three blocks are all real, GR-vetted, and
+> used unchanged in the final full modem — but they are the RX back-end, not the modem.
+
+The mapper/slicer/DD-Costas back-end recovers 16-QAM symbols at **BER 0** *when fed clean
+symbol-rate constellation points* (`placekyt/tests/test_qam16_modem_ber.py`).
 All 3 blocks are GR-vetted (the legacy ones used an INVENTED constellation matching GR on
 0/16 symbols — purged), catalog-registered (manifest, status=done → curated), GRC-bound,
 orientation-invariant (INV-23 gate), and saturation-covered (INV-19/20 → NEEDS_BESPOKE,

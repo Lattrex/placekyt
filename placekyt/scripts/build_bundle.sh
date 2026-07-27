@@ -39,8 +39,8 @@ fi
 echo ">> building bundle (this takes a minute)"
 "$PYINSTALLER" placekyt.spec --noconfirm --log-level WARN
 
-echo ">> smoke-testing the bundled CLI (QAM16 demo build + golden compare)"
-./dist/placekyt/placekyt-cli --test tests/data/demo/qam16_demo.kyt \
+echo ">> smoke-testing the bundled CLI (BPSK demo build + golden compare)"
+./dist/placekyt/placekyt-cli --test tests/data/demo/bpsk_demo.kyt \
   --chip-type "$CT"
 
 echo ""

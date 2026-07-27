@@ -112,6 +112,7 @@ blocks:
     loop_bw: '0.05'
     maxoutbuf: '0'
     minoutbuf: '0'
+    order: '2'
   states:
     bus_sink: false
     bus_source: false
@@ -125,6 +126,7 @@ blocks:
     affinity: ''
     alias: ''
     comment: "Gardner timing recovery \u2014 placed on chip"
+    complex: 'False'
     device_id: '"kyttar_0"'
     ki: '1'
     kp: '3'
@@ -174,6 +176,7 @@ blocks:
     alias: ''
     alpha: '0.35'
     comment: "Complex RRC matched filter front end \u2014 placed on chip"
+    decimation: '1'
     device_id: '"kyttar_0"'
     maxoutbuf: '0'
     minoutbuf: '0'
@@ -197,6 +200,7 @@ blocks:
     maxoutbuf: '0'
     minoutbuf: '0'
     span: '8'
+    sps: '4'
   states:
     bus_sink: false
     bus_source: false
@@ -356,6 +360,7 @@ blocks:
     maxoutbuf: '0'
     minoutbuf: '0'
     num_channels: '1'
+    pipelined: 'no'
     port_name: '"x16_in"'
     server_host: '"127.0.0.1"'
     server_port: '58950'
@@ -535,6 +540,7 @@ blocks:
     maxoutbuf: '0'
     minoutbuf: '0'
     num_channels: '1'
+    pipelined: 'no'
     port_name: '"x16_in"'
     server_host: '"127.0.0.1"'
     server_port: '58950'

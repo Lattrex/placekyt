@@ -64,9 +64,10 @@ from .sink import sink
 from .rx_batch import rx_batch
 from .chip_batch import chip_batch
 from .dsp_markers import (complex_rrc_matched_filter, complex_costas_loop,
-                          gardner_timing_recovery, bpsk_slicer, qpsk_slicer,
+                          gardner_timing_recovery, mm_timing_recovery,
+                          bpsk_slicer, qpsk_slicer,
                           psk_symbol_mapper, upsampler, complex_upsampler,
-                          rrc_pulse_shaper,
+                          complex_gain, rrc_pulse_shaper,
                           iq_upconvert, complex_to_float,
                           frequency_modulator, quadrature_demod,
                           fsk4_symbol_mapper, fsk4_slicer,
@@ -112,6 +113,7 @@ __all__ = [
     "complex_rrc_matched_filter",
     "complex_costas_loop",
     "gardner_timing_recovery",
+    "mm_timing_recovery",
     "bpsk_slicer",
     "qpsk_slicer",
     "psk_symbol_mapper",
@@ -124,6 +126,7 @@ __all__ = [
     "complex_to_real",
     "upsampler",
     "complex_upsampler",
+    "complex_gain",
     "rrc_pulse_shaper",
     "iq_upconvert",
     "frequency_modulator",

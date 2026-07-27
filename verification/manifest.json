@@ -16,6 +16,18 @@
       "notes": "Reference example; fully documented. Single MULQ."
     },
     {
+      "kyttar_block": "ComplexGainBlock",
+      "grc_block": "blocks.multiply_const_cc",
+      "tier": 1,
+      "status": "planned",
+      "poc": true,
+      "metric": "amplitude",
+      "params": {
+        "gain": 2.4
+      },
+      "notes": "Complex (I/Q) fixed-gain scaler — the 2-rail twin of GainBlock, scaling both rails by the SAME real constant (no rotation). Supports gain in (0,4) via integer-doubling (ADD) + Q15 fractional (MULQ) so the datapath stays Q15 while gain>1. Receiver gain-staging: restores the ~2.8x the 16-QAM matched filter's Q15 headroom pre-scale attenuates, before the fixed-threshold DD Costas/slicer. Verified on-chip (0.3 -> 0.78 exact) and load-bearing in the shipped qam16_modem BER-0 example; NOT yet through per-block GRC-equivalence verification."
+    },
+    {
       "kyttar_block": "UpsamplerBlock",
       "grc_block": "filter.interp_fir_filter_fff",
       "tier": 1,
@@ -307,6 +319,15 @@
       "poc": true,
       "metric": "decision",
       "notes": "Proof-of-concept: works in the coherent BPSK RX demo but NOT yet per-block verified. Timing recovery loop. Worst-offender param refactor (kp/ki -> sps/loop_bw)."
+    },
+    {
+      "kyttar_block": "MMTimingRecoveryBlock",
+      "grc_block": "digital.symbol_sync_cc",
+      "tier": 2,
+      "status": "done",
+      "poc": false,
+      "metric": "decision",
+      "notes": "NEW (tier 2): Mueller & Muller DECISION-DIRECTED symbol-timing recovery for MULTILEVEL QAM -- the timing stage GR symbol_sync_cc runs with TED_MUELLER_AND_MULLER. Gardner (BPSK/QPSK NDA detector) leaves ~3% jitter on 16-QAM's 4-level axes; M&M locks it cleanly at 2 sps. Rice Ch.8 structure: modulo-1 interpolator-control counter (strobe on underflow, mu=cnt/W) + CUBIC FARROW interp at continuous mu (coeffs stored Q13/4 to avoid Q15 overflow, <<2 restore) + M&M decision-directed TED (esign -1 for stable S-curve) + 2nd-order PI (GR control_loop gains, wide SC=2^20 accumulator). process_reference is BIT-EXACT with proto_mm_authoritative.mm_q15, itself verified vs GR symbol_sync_cc(M&M) to grid-distance parity (Q15 matches GR at toff 0/0.1; worst-case per-axis error 0.277 < 0.316 boundary = BER-0 safe across offsets 0-0.9). Complex (xi@R0,xq@R1) in -> recovered (yi,yq) center pair out. SCALE-SENSITIVE (DD): input outer level must be ~0.949 (RMS-matched, gain-stage upstream). Leaves Gardner untouched (still BPSK/QPSK timing). ON-CHIP DONE: 14-cell build BIT-EXACT to process_reference (0 mismatches, full burst, offsets 0.0-0.7), per-sample AND saturated (pipeline_lock serialize-LOCK, INV-19). Gates GREEN: orientation INV-23, placement INV-25, saturation INV-19/20 (bespoke gate), GRC binding INV-22 (kyttar_mm_timing_recovery). test_mm_timing_recovery.py 15 tests + 5 failing-mutation controls. A generic router fix (internal_jumps to non-positional/named entries were ignored) was needed; 225+ regression tests green."
     },
     {
       "kyttar_block": "BPSKSlicerBlock",

@@ -12,6 +12,7 @@ install(FILES
     kyttar_source.block.yml
     kyttar_sink.block.yml
     kyttar_gain.block.yml
+    kyttar_complex_gain.block.yml
     kyttar_fir_filter.block.yml
     kyttar_low_pass_filter.block.yml
     kyttar_high_pass_filter.block.yml
@@ -38,5 +39,24 @@ install(FILES
     kyttar_lfsr_scrambler.block.yml
     kyttar_conv_encoder_k7.block.yml
     kyttar_block_interleaver.block.yml
+    # Modem-example blocks (qpsk / fsk4 / 16-QAM chains) — required so the shipped
+    # examples install into GRC. Grouped by the example that introduced them.
+    kyttar_rrc_pulse_shaper.block.yml
+    kyttar_upsampler.block.yml
+    kyttar_psk_symbol_mapper.block.yml
+    kyttar_qpsk_slicer.block.yml
+    kyttar_bpsk_slicer.block.yml
+    kyttar_quadrature_demod.block.yml
+    kyttar_frequency_modulator.block.yml
+    kyttar_fsk4_symbol_mapper.block.yml
+    kyttar_fsk4_slicer.block.yml
+    kyttar_fsk4_sync_timing_recovery.block.yml
+    kyttar_complex_rrc_matched_filter.block.yml
+    kyttar_complex_upsampler.block.yml
+    kyttar_iq_upconvert.block.yml
+    kyttar_mm_timing_recovery.block.yml
+    kyttar_qam16_symbol_mapper.block.yml
+    kyttar_qam16_slicer.block.yml
+    kyttar_qam16_costas_loop.block.yml
     DESTINATION share/gnuradio/grc/blocks
 )

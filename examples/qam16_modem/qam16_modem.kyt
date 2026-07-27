@@ -1,6 +1,6 @@
 project:
   format_version: 1
-  name: Coherent 16-QAM receiver (DD Costas + slicer on one array)
+  name: Full-duplex 16-QAM modem (TX + coherent RX on one array)
   version: '1.0'
 chip_type: kyttar_10x12
 chips:
@@ -8,6 +8,17 @@ chips:
   label: Chip 0
   position: {x: 0.0, y: 0.0}
 blocks:
+- name: complexgain
+  type: ComplexGainBlock
+  library: lattrex.official
+  params:
+    gain: 2.4
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 1, y: 9, face: west}
+    orientation:
+    - mirror_h
 - name: qam16complexcostasloop
   type: QAM16ComplexCostasLoopBlock
   library: lattrex.official
@@ -17,56 +28,294 @@ blocks:
   placement:
     chip: 0
     cells:
-    - {cell_id: phase, x: 0, y: 0, face: east}
-    - {cell_id: sin_fold, x: 1, y: 0, face: east}
-    - {cell_id: cos_fold, x: 2, y: 0, face: east}
-    - {cell_id: table_sin, x: 3, y: 0, face: east}
-    - {cell_id: table_cos, x: 4, y: 0, face: south}
-    - {cell_id: rotate, x: 4, y: 1, face: west}
-    - {cell_id: tap, x: 3, y: 1, face: west}
-    - {cell_id: islice_pi, x: 2, y: 1, face: west}
-    - {cell_id: qslice_err, x: 1, y: 1, face: west}
-    - {cell_id: pi, x: 0, y: 1, face: north}
+    - {cell_id: phase, x: 9, y: 10, face: north}
+    - {cell_id: sin_fold, x: 9, y: 9, face: north}
+    - {cell_id: cos_fold, x: 9, y: 8, face: north}
+    - {cell_id: table_sin, x: 9, y: 7, face: north}
+    - {cell_id: table_cos, x: 9, y: 6, face: west}
+    - {cell_id: rotate, x: 8, y: 6, face: south}
+    - {cell_id: tap, x: 8, y: 7, face: south}
+    - {cell_id: islice_pi, x: 8, y: 8, face: south}
+    - {cell_id: qslice_err, x: 8, y: 9, face: south}
+    - {cell_id: pi, x: 8, y: 10, face: east}
+    orientation:
+    - ccw
+    - mirror_h
+- name: qam16symbolmapper
+  type: QAM16SymbolMapperBlock
+  library: lattrex.official
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: acc, x: 1, y: 5, face: east}
+    - {cell_id: itab, x: 2, y: 5, face: east}
+    - {cell_id: qtab, x: 3, y: 5, face: east}
+- name: complexrrcmatchedfilter
+  type: ComplexRRCMatchedFilterBlock
+  library: lattrex.official
+  params:
+    beta: 0.35
+    sps: 2
+    span: 8
+    headroom_shift: 1
+    decimation: 1
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: head, x: 0, y: 6, face: east}
+    - {cell_id: q0, x: 1, y: 6, face: east}
+    - {cell_id: q1, x: 2, y: 6, face: east}
+    - {cell_id: q2, x: 3, y: 6, face: east}
+    - {cell_id: q3, x: 4, y: 6, face: east}
+    - {cell_id: q4, x: 5, y: 6, face: south}
+    - {cell_id: i0, x: 5, y: 7, face: west}
+    - {cell_id: i1, x: 4, y: 7, face: west}
+    - {cell_id: i2, x: 3, y: 7, face: west}
+    - {cell_id: i3, x: 2, y: 7, face: west}
+    - {cell_id: i4, x: 1, y: 7, face: west}
+- name: mmtimingrecovery
+  type: MMTimingRecoveryBlock
+  library: lattrex.official
+  params:
+    sps: 2
+    loop_bw: 0.02
+    damping: 1.0
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: counter, x: 2, y: 9, face: south}
+    - {cell_id: land, x: 2, y: 10, face: east}
+    - {cell_id: qland, x: 3, y: 10, face: east}
+    - {cell_id: farrow_q_hi, x: 4, y: 10, face: east}
+    - {cell_id: farrow_q_lo, x: 5, y: 10, face: east}
+    - {cell_id: slice_q, x: 6, y: 10, face: south}
+    - {cell_id: iland, x: 2, y: 11, face: east}
+    - {cell_id: farrow_i_hi, x: 3, y: 11, face: east}
+    - {cell_id: farrow_i_lo, x: 4, y: 11, face: east}
+    - {cell_id: slice_i, x: 5, y: 11, face: east}
+    - {cell_id: ted, x: 6, y: 11, face: east}
+    - {cell_id: loop_filter, x: 7, y: 11, face: north}
+    - {cell_id: qout, x: 8, y: 11, face: north}
+    - {cell_id: period_relay, x: 7, y: 10, face: north}
+    - {cell_id: transit_fb_0, x: 7, y: 9, face: west}
+    - {cell_id: transit_fb_1, x: 6, y: 9, face: west}
+    - {cell_id: transit_fb_2, x: 5, y: 9, face: west}
+    - {cell_id: transit_fb_3, x: 4, y: 9, face: west}
+    - {cell_id: transit_fb_4, x: 3, y: 9, face: north}
+    - {cell_id: transit_fb_5, x: 3, y: 8, face: west}
+    - {cell_id: transit_fb_6, x: 2, y: 8, face: south}
+    orientation:
+    - mirror_v
+- name: complexrrcmatchedfilter_2
+  type: ComplexRRCMatchedFilterBlock
+  library: lattrex.official
+  params:
+    beta: 0.35
+    sps: 2
+    span: 8
+    headroom_shift: 1
+    decimation: 1
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: head, x: 1, y: 3, face: east}
+    - {cell_id: q0, x: 2, y: 3, face: east}
+    - {cell_id: q1, x: 3, y: 3, face: east}
+    - {cell_id: q2, x: 4, y: 3, face: east}
+    - {cell_id: q3, x: 5, y: 3, face: east}
+    - {cell_id: q4, x: 6, y: 3, face: north}
+    - {cell_id: i0, x: 6, y: 2, face: west}
+    - {cell_id: i1, x: 5, y: 2, face: west}
+    - {cell_id: i2, x: 4, y: 2, face: west}
+    - {cell_id: i3, x: 3, y: 2, face: west}
+    - {cell_id: i4, x: 2, y: 2, face: west}
+    orientation:
+    - mirror_v
 - name: qam16slicer
   type: QAM16SlicerBlock
   library: lattrex.official
   placement:
     chip: 0
     cells:
-    - {cell_id: islice, x: 7, y: 0, face: east}
-    - {cell_id: qslice, x: 8, y: 0, face: east}
-    - {cell_id: lut, x: 9, y: 0, face: east}
+    - {cell_id: islice, x: 7, y: 7, face: north}
+    - {cell_id: qslice, x: 7, y: 6, face: north}
+    - {cell_id: lut, x: 7, y: 5, face: north}
+    orientation:
+    - ccw
+- name: complexupsampler
+  type: ComplexUpsamplerBlock
+  library: lattrex.official
+  params:
+    sps: 2
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 2, y: 4, face: west}
+    orientation:
+    - mirror_h
+- name: iqupconvert
+  type: IQUpconvertBlock
+  library: lattrex.official
+  params:
+    sample_rate: 32000.0
+    frequency: 4000.0
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: phase, x: 5, y: 0, face: east}
+    - {cell_id: sin_fold, x: 6, y: 0, face: east}
+    - {cell_id: cos_fold, x: 7, y: 0, face: east}
+    - {cell_id: table_sin, x: 8, y: 0, face: south}
+    - {cell_id: table_cos, x: 8, y: 1, face: west}
+    - {cell_id: upmix, x: 7, y: 1, face: west}
+    - {cell_id: transit_unlock_0, x: 6, y: 1, face: west}
+    - {cell_id: transit_unlock_1, x: 5, y: 1, face: north}
 connections:
-- name: x16_in_to_qam16complexcostasloop
-  from: {chip_port: {chip: 0, port: x16_in}}
-  to: {block: qam16complexcostasloop, port: xi}
-- name: x16_in_to_qam16complexcostasloop_1
-  from: {chip_port: {chip: 0, port: x16_in}}
-  to: {block: qam16complexcostasloop, port: xq}
-- name: qam16complexcostasloop_to_qam16slicer
+- name: net1
+  from: {block: complexgain, port: yi}
+  to: {block: mmtimingrecovery, port: xi}
+  route:
+  - {x: 1, y: 9}
+  - {x: 2, y: 9}
+- name: net2
   from: {block: qam16complexcostasloop, port: yi_tap}
   to: {block: qam16slicer, port: in_i}
   route:
-  - {x: 3, y: 1}
-  - {x: 3, y: 2}
-  - {x: 4, y: 2}
-  - {x: 5, y: 2}
-  - {x: 5, y: 1}
-  - {x: 6, y: 1}
-  - {x: 6, y: 0}
-- name: qam16complexcostasloop_to_qam16slicer_1
-  from: {block: qam16complexcostasloop, port: yq_tap}
-  to: {block: qam16slicer, port: in_q}
+  - {x: 8, y: 7}
+  - {x: 7, y: 7}
+- name: net3
+  from: {block: qam16symbolmapper, port: out_i}
+  to: {block: complexupsampler, port: xi}
   route:
-  - {x: 3, y: 1}
-  - {x: 3, y: 2}
-  - {x: 4, y: 2}
-  - {x: 5, y: 2}
-  - {x: 5, y: 1}
-  - {x: 6, y: 1}
-  - {x: 6, y: 0}
-- name: qam16slicer_to_x16_out
+  - {x: 3, y: 5}
+  - {x: 3, y: 4}
+  - {x: 2, y: 4}
+- name: net4
+  from: {block: complexrrcmatchedfilter, port: yi}
+  to: {block: complexgain, port: xi}
+  route:
+  - {x: 1, y: 7}
+  - {x: 1, y: 8}
+  - {x: 1, y: 9}
+- name: net5
+  from: {block: mmtimingrecovery, port: yi_e}
+  to: {block: qam16complexcostasloop, port: xi}
+  route:
+  - {x: 8, y: 11}
+  - {x: 9, y: 11}
+  - {x: 9, y: 10}
+- name: net6
+  from: {block: complexrrcmatchedfilter_2, port: yi}
+  to: {block: iqupconvert, port: xi}
+  route:
+  - {x: 2, y: 2}
+  - {x: 2, y: 1}
+  - {x: 2, y: 0}
+  - {x: 3, y: 0}
+  - {x: 4, y: 0}
+  - {x: 5, y: 0}
+- name: net7
+  from: {chip_port: {chip: 0, port: x16_in}}
+  to: {block: complexrrcmatchedfilter, port: xi}
+  route:
+  - {x: 0, y: 0}
+  - {x: 0, y: 1}
+  - {x: 0, y: 2}
+  - {x: 0, y: 3}
+  - {x: 0, y: 4}
+  - {x: 0, y: 5}
+  - {x: 0, y: 6}
+  stream_id: rx
+- name: net8
   from: {block: qam16slicer, port: out}
   to: {chip_port: {chip: 0, port: x16_out}}
   route:
+  - {x: 7, y: 5}
+  - {x: 8, y: 5}
+  - {x: 9, y: 5}
+  - {x: 9, y: 4}
+  - {x: 9, y: 3}
+  - {x: 9, y: 2}
+  - {x: 9, y: 1}
   - {x: 9, y: 0}
+  out_tag: 5
+- name: net9
+  from: {chip_port: {chip: 0, port: x16_in}}
+  to: {block: qam16symbolmapper, port: sample}
+  route:
+  - {x: 0, y: 0}
+  - {x: 0, y: 1}
+  - {x: 0, y: 2}
+  - {x: 0, y: 3}
+  - {x: 0, y: 4}
+  - {x: 0, y: 5}
+  - {x: 1, y: 5}
+  stream_id: tx
+- name: net10
+  from: {block: complexupsampler, port: yi}
+  to: {block: complexrrcmatchedfilter_2, port: xi}
+  route:
+  - {x: 2, y: 4}
+  - {x: 1, y: 4}
+  - {x: 1, y: 3}
+- name: net11
+  from: {block: iqupconvert, port: out}
+  to: {chip_port: {chip: 0, port: x16_out}}
+  route:
+  - {x: 7, y: 1}
+  - {x: 7, y: 2}
+  - {x: 8, y: 2}
+  - {x: 9, y: 2}
+  - {x: 9, y: 1}
+  - {x: 9, y: 0}
+  out_tag: 10
+- name: net12
+  from: {block: complexgain, port: yq}
+  to: {block: mmtimingrecovery, port: xq}
+  route:
+  - {x: 1, y: 9}
+  - {x: 2, y: 9}
+- name: net13
+  from: {block: qam16complexcostasloop, port: yq_tap}
+  to: {block: qam16slicer, port: in_q}
+  route:
+  - {x: 8, y: 7}
+  - {x: 7, y: 7}
+- name: net14
+  from: {block: qam16symbolmapper, port: out_q}
+  to: {block: complexupsampler, port: xq}
+  route:
+  - {x: 3, y: 5}
+  - {x: 3, y: 4}
+  - {x: 2, y: 4}
+- name: net15
+  from: {block: complexrrcmatchedfilter, port: yq}
+  to: {block: complexgain, port: xq}
+  route:
+  - {x: 1, y: 7}
+  - {x: 1, y: 8}
+  - {x: 1, y: 9}
+- name: net16
+  from: {block: mmtimingrecovery, port: yq_e}
+  to: {block: qam16complexcostasloop, port: xq}
+  route:
+  - {x: 8, y: 11}
+  - {x: 9, y: 11}
+  - {x: 9, y: 10}
+- name: net17
+  from: {block: complexrrcmatchedfilter_2, port: yq}
+  to: {block: iqupconvert, port: xq}
+  route:
+  - {x: 2, y: 2}
+  - {x: 2, y: 1}
+  - {x: 2, y: 0}
+  - {x: 3, y: 0}
+  - {x: 4, y: 0}
+  - {x: 5, y: 0}
+- name: net18
+  from: {block: complexupsampler, port: yq}
+  to: {block: complexrrcmatchedfilter_2, port: xq}
+  route:
+  - {x: 2, y: 4}
+  - {x: 1, y: 4}
+  - {x: 1, y: 3}

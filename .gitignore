@@ -43,3 +43,10 @@ examples/ssb_weaver/ssb_weaver_transceiver.py
 
 # Claude Code agent scratch/worktrees (NEVER checked in)
 .claude/
+
+# Diagnostic / prototype scratch scripts (one-off debug, not a maintained suite)
+verification/kyttar/tests/proto_*.py
+verification/kyttar/workflows/
+
+# Pre-fix .kyt backups (personal snapshots kept locally, not shipped)
+*.orig.kyt

@@ -91,17 +91,36 @@ class DuplexRendezvous:
         self._gen = 0            # bumped each dispatched Run
         self._taken = {}         # stream_id -> last gen that stream drained
         self._dispatching = False
+        # SCHEDULE for this Run's duplex dispatch — see submit()/_dispatch_all.
+        # "interleaved" (default) unless a source names a non-default value.
+        self._schedule = "interleaved"
+        # SATURATED drive for this Run — True if ANY source asked to be pipelined
+        # (the honest full-speed drive; see _dispatch_all + sim_bridge duplex).
+        self._pipelined = False
 
     def submit(self, host, port, stream_id, samples, complex_, raw,
-               collect_window=0.4):
+               collect_window=0.4, schedule="interleaved", pipelined=False):
         """Register this stream's burst for the current Run. The leader (first in)
         waits ``collect_window`` s for peers, then dispatches the combined duplex
-        RPC. Returns this stream's recovered words."""
+        RPC. Returns this stream's recovered words.
+
+        ``schedule`` ("interleaved"/"sequential") is the GRC-settable timing knob
+        (kyttar_source's Duplex schedule dropdown). Both duplex sources carry it;
+        whichever names a NON-default ("sequential") wins for the Run, so setting
+        it on either source (or both) works. Reset to the default each new Run."""
         with self._cv:
             self._pending[str(stream_id)] = {
                 "stream_id": str(stream_id), "samples": np.asarray(samples),
                 "complex": bool(complex_), "raw": bool(raw),
             }
+            # Non-default schedule wins (a source that leaves it at "interleaved"
+            # must not clobber a peer that asked for "sequential").
+            sched = str(schedule or "interleaved").lower()
+            if sched != "interleaved":
+                self._schedule = sched
+            # Any source opting into saturation makes the whole Run saturated.
+            if pipelined:
+                self._pipelined = True
             leader = not self._dispatching
             if leader:
                 self._dispatching = True
@@ -146,8 +165,24 @@ class DuplexRendezvous:
                                 "n_samples": int(n)})
         payload = (np.concatenate(parts).astype(np.float32) if parts
                    else np.array([], dtype=np.float32))
+        # SCHEDULE (timing-analysis knob, no design change): how the duplex streams
+        # are driven on the shared input port —
+        #   "interleaved" (default): TX + RX round-robin sample-by-sample, so the two
+        #     chains contend for the port and each throttles the other (the real
+        #     full-duplex rate).
+        #   "sequential"/"simplex": each stream's WHOLE burst runs before the next, so
+        #     each direction is measured ALONE at its own compute-bound ceiling.
+        # Carried from the kyttar_source "Duplex schedule" GRC dropdown (via submit),
+        # NOT an env var — the user flips it in the flowgraph and re-Runs; the .kyt is
+        # unchanged. Read-and-reset so it doesn't leak into a later Run.
+        with self._cv:
+            _sched = self._schedule
+            _pipe = self._pipelined
+            self._schedule = "interleaved"
+            self._pipelined = False
         header = {"op": "process_batch_duplex", "port": "x16_out",
-                  "in_port": "x16_in", "streams": streams_hdr}
+                  "in_port": "x16_in", "streams": streams_hdr, "schedule": _sched,
+                  "pipelined": bool(_pipe)}
         conn = socket.create_connection((host, int(port)))
         try:
             _send_message(conn, header, payload)

@@ -1,0 +1,71 @@
+id: kyttar_mm_timing_recovery
+label: Kyttar M&M Timing Recovery
+category: '[Kyttar]'
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.mm_timing_recovery(${device_id}, ${sps}, ${loop_bw}, ${damping})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+
+- id: sps
+  label: Samples/Symbol
+  dtype: int
+  default: '2'
+
+- id: loop_bw
+  label: Loop Bandwidth
+  dtype: float
+  default: '0.02'
+
+- id: damping
+  label: Damping Factor
+  dtype: float
+  default: '1.0'
+
+# Always COMPLEX (I/Q): 16-QAM is a multilevel constellation, so the recovered
+# (yi, yq) center pair is carried as ONE gr_complex stream in/out — the on-chip
+# xi/xq in + yi_e/yq_e out pairs. placeKYT's importer splits the single complex net
+# into the two rails; one wire per link, no dangling rail port.
+inputs:
+- label: in
+  domain: stream
+  dtype: complex
+
+outputs:
+- label: out
+  domain: stream
+  dtype: complex
+
+documentation: |-
+  Mueller & Müller Decision-Directed Symbol-Timing Recovery (16-QAM)
+
+  The timing stage GNU Radio's digital.symbol_sync_cc runs with
+  TED_MUELLER_AND_MULLER. Unlike Gardner (a BPSK/QPSK non-decision-directed
+  detector whose shallow, self-noisy S-curve leaves ~3% jitter on 16-QAM's
+  4-level axes), M&M is DECISION-DIRECTED and locks 16-QAM cleanly at 2 sps.
+
+  Structure (Rice "Digital Communications: A Discrete-Time Approach" Ch.8;
+  verified against GR symbol_sync_cc to grid-distance parity, on-chip bit-exact):
+
+  - Modulo-1 interpolator-control counter: strobe on underflow, mu = cnt/W
+  - Cubic Farrow interpolator at continuous mu (no polyphase phase-snap)
+  - Decision-directed M&M TED: slice each rail to the nearest 4-PAM level
+  - 2nd-order PI loop filter (GR control_loop gains from loop_bw + damping)
+
+  Parameters:
+  - sps: samples per symbol (2)
+  - loop_bw: control-loop bandwidth (0.02 default, the verified operating point)
+  - damping: loop damping factor (1.0)
+
+  OPERATING POINT: decision-directed -> scale-sensitive. Gain-stage upstream so the
+  input outer constellation level is ~0.949 (RMS-matched), NOT peak-scaled.
+
+  GR marker: the real DSP runs on the placeKYT-hosted chip; this keeps the exact GR
+  interface so it places/wires identically in GRC.
+
+file_format: 1

@@ -60,6 +60,7 @@ BLOCKS = [
     ("ComplexRRCMatchedFilterBlock", {}),
     ("FSK4SyncTimingRecoveryBlock", {}),
     ("GardnerTimingRecovery", {}),
+    ("MMTimingRecoveryBlock", {}),
     ("IQUpconvertBlock", {}),
     ("ComplexCostasLoopBlock", {}),
 ]

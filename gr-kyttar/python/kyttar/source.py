@@ -82,6 +82,7 @@ class source(gr.sync_block):
         burst_len: int = 0,
         stream_id: str = "",
         pipelined: bool = False,
+        schedule: str = "interleaved",
     ):
         # SERVER-BATCH MODE (server_port > 0): drive a placeKYT-hosted chip via ONE
         # process_batch RPC instead of building/owning a local chip. The input is
@@ -125,6 +126,19 @@ class source(gr.sync_block):
         # burst is injected at its own block and its sink (same stream_id) drains
         # only ITS recovered words. Empty ⇒ today's single-stream behavior.
         self._stream_id = str(stream_id or "")
+        # SCHEDULE (timing-analysis knob, no design change): how the two duplex
+        # streams are driven on the shared input port.
+        #   "interleaved" (default): TX + RX round-robin sample-by-sample, so the
+        #     chains contend for the port and throttle each other (the real
+        #     full-duplex rate — this is the honest steady-state number).
+        #   "sequential"/"simplex": each stream's WHOLE burst runs before the next,
+        #     so each direction is measured ALONE at its compute-bound ceiling.
+        # A GRC-settable dropdown on this block (see kyttar_source.block.yml). Set it
+        # before Run; the .kyt design is untouched. Only meaningful with a stream_id
+        # (duplex); a single-stream source ignores it. Two duplex sources both carry
+        # this param — they should agree, and the rendezvous takes whichever names a
+        # NON-default value so setting it on either source (or both) works.
+        self._schedule = str(schedule or "interleaved").lower()
         # FULL-SPEED: drive the whole burst SATURATED on the hosted chip (queue the
         # word stream + run to completion) rather than per-sample-to-quiescence. Only
         # safe for a saturation-tolerant (point-to-point-routed) chip design.
@@ -236,7 +250,8 @@ class source(gr.sync_block):
             rv = get_rendezvous(self._device_id)
             out = rv.submit(self._server_host, self._server_port, self._stream_id,
                             self._inbuf, complex_=self._complex_in,
-                            raw=self._complex_in)
+                            raw=self._complex_in, schedule=self._schedule,
+                            pipelined=self._pipelined)
             with sess._cv:            # deliver to this stream's sink
                 sess._result = out
                 sess._seq += 1

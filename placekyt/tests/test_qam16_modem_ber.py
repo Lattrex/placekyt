@@ -1,14 +1,27 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""PRODUCTION coherent 16-QAM RX — decision-directed Costas + slicer, BER 0.
+"""PRODUCTION coherent 16-QAM RX — industry-standard M&M cascade, BER 0.
 
-The chain QAM16ComplexCostasLoop -> QAM16Slicer is placed + bus/broker-routed by the
-tool and recovers the 4-bit 16-QAM symbols at BER 0 through simkyt, driven by a random
-``digital.constellation_16qam()`` symbol stream with a carrier frequency offset.
+The full receiver chain
 
-16-QAM is non-constant-modulus, so the QPSK/BPSK Costas phase detectors fail — the DD
-loop derotates, slices each axis to the nearest 4-PAM grid level, and forms the phase
-error from the decision (the constellation_receiver_cb path). Like QPSK it keeps a
-90-degree 4-fold ambiguity, so the BER check tries the 4 constellation rotations.
+    ComplexRRCMatchedFilter -> ComplexGain(2.4) -> MMTimingRecovery
+        -> QAM16ComplexCostasLoop -> QAM16Slicer
+
+is placed + bus/broker-routed by the tool and recovers the 4-bit 16-QAM symbols at
+BER 0 through simkyt, driven by a random RRC-shaped ``constellation_16qam()`` symbol
+stream at 2 samples/symbol. This is the step up from the old 2-block Costas->slicer
+stub (rejected as "not a modem").
+
+16-QAM is non-constant-modulus, so the QPSK/BPSK receiver fails: raw Gardner leaves
+~3% jitter on the 4-level axes (M&M decision-directed timing replaces it), the PSK
+Costas orders don't apply (a decision-directed carrier loop replaces them), and the
+decision-directed loops need the constellation at its nominal scale (the ComplexGain
+restores the 0.949 outer level the matched filter's Q15 headroom pre-scaling
+compressed). Like QPSK it keeps a 90-degree four-fold ambiguity, so the BER check
+tries the four constellation rotations.
+
+No carrier frequency offset: the hosted .kyt runs TX and RX on the SAME chip / SAME
+clock, so foff = 0 by construction (the decision-directed M&M TED, before the Costas,
+needs foff = 0).
 
 This mirrors ``test_qpsk_modem_ber.py`` and ships as ``examples/qam16_modem/``.
 
@@ -21,7 +34,6 @@ from __future__ import annotations
 
 import math
 import os
-import random
 import sys
 from pathlib import Path
 
@@ -56,6 +68,9 @@ _LEVELS = [(+1, -1), (-1, -1), (+3, -3), (-3, -3), (-3, -1), (+3, -1), (-1, -3),
            (+3, +1), (-3, +1)]
 _POINTS = [(i * _NORM, q * _NORM) for (i, q) in _LEVELS]
 
+_BETA, _SPS, _SPAN = 0.35, 2, 8
+_GAIN = 2.4
+
 
 @pytest.fixture(scope="module")
 def qapp():
@@ -76,6 +91,39 @@ def _fq(f):
     return int(round(max(-1.0, min(0.999, f)) * 32768)) & 0xFFFF
 
 
+def _rrc(beta, sps, span):
+    n = span * sps
+    taps = []
+    for i in range(n + 1):
+        t = (i - n / 2) / sps
+        if abs(t) < 1e-8:
+            v = 1 - beta + 4 * beta / math.pi
+        elif abs(abs(4 * beta * t) - 1.0) < 1e-8:
+            v = (beta / math.sqrt(2)) * (
+                (1 + 2 / math.pi) * math.sin(math.pi / (4 * beta))
+                + (1 - 2 / math.pi) * math.cos(math.pi / (4 * beta)))
+        else:
+            v = (math.sin(math.pi * t * (1 - beta))
+                 + 4 * beta * t * math.cos(math.pi * t * (1 + beta))) / (
+                     math.pi * t * (1 - (4 * beta * t) ** 2))
+        taps.append(v)
+    e = math.sqrt(sum(x * x for x in taps))
+    return np.array([x / e for x in taps])
+
+
+def _qam16_burst(n, seed=5, amp=0.9):
+    """A random RRC-shaped 16-QAM baseband stream at 2 sps, peak-scaled to ``amp``
+    (no carrier offset). Returns (iq complex64, tx symbol indices)."""
+    rng = np.random.RandomState(seed)
+    tx = rng.randint(0, 16, n)
+    base = np.array([complex(*_POINTS[s]) for s in tx], dtype=np.complex128)
+    up = np.zeros(n * _SPS, dtype=np.complex128)
+    up[::_SPS] = base
+    shaped = np.convolve(up, _rrc(_BETA, _SPS, _SPAN))
+    shaped = shaped / (np.max(np.abs(shaped)) + 1e-12) * amp
+    return shaped.astype(np.complex64), tx.tolist()
+
+
 def _rot_sym(sym, r):
     i, q = _POINTS[sym]
     for _ in range(r):
@@ -83,7 +131,7 @@ def _rot_sym(sym, r):
     return min(range(16), key=lambda j: (i - _POINTS[j][0]) ** 2 + (q - _POINTS[j][1]) ** 2)
 
 
-def _qam16_ber(rx, tx, max_lag=20, guard=40):
+def _qam16_ber(rx, tx, max_lag=25, guard=60):
     best = (1.0, 0, 0)
     for r in range(4):
         for lag in range(0, max_lag + 1):
@@ -99,39 +147,53 @@ def _qam16_ber(rx, tx, max_lag=20, guard=40):
 
 
 def _build_rx(catalog, chip_type):
-    """Place QAM16 Costas -> slicer, route all nets on the bus, build. Returns
-    (bres, costas_entry). Uses the validated DD loop gains + the 5x2 fold anchored at
-    (0,0) so the phase landing cell abuts x16_in."""
+    """Place MF -> ComplexGain(2.4) -> MMTimingRecovery -> QAM16 Costas -> slicer,
+    route all nets on the bus, build. Returns (bres, mf_entry). Uses the proven
+    RX floorplan (auto_orient=False): MF(0,0), gain(0,3), MM(2,4) -- MM's counter
+    input must NOT sit at chip column 0 -- Costas(1,8), slicer(6,8)."""
     ctrl = AppController(catalog=catalog)
     ctrl.new_project("qam16rx", "kyttar_10x12")
     lib = "lattrex.official"
-    cos = ctrl.place_block("QAM16ComplexCostasLoopBlock", 0, 0, 0, library=lib,
+    mf = ctrl.place_block("ComplexRRCMatchedFilterBlock", 0, 0, 0, library=lib)
+    cg = ctrl.place_block("ComplexGainBlock", 0, 0, 3, library=lib,
+                          params={"gain": _GAIN})
+    mm = ctrl.place_block("MMTimingRecoveryBlock", 0, 2, 4, library=lib)
+    cos = ctrl.place_block("QAM16ComplexCostasLoopBlock", 0, 1, 8, library=lib,
                            params={"alpha_q15": 0x0400, "beta_q15": 0x0020})
-    sli = ctrl.place_block("QAM16SlicerBlock", 0, 7, 0, library=lib)
+    sli = ctrl.place_block("QAM16SlicerBlock", 0, 6, 8, library=lib)
     R = ctrl.add_route
-    R(ChipPortEndpoint(chip=0, port="x16_in"), BlockEndpoint(block=cos, port="xi"), [])
-    R(ChipPortEndpoint(chip=0, port="x16_in"), BlockEndpoint(block=cos, port="xq"), [])
+    R(ChipPortEndpoint(chip=0, port="x16_in"), BlockEndpoint(block=mf, port="xi"), [])
+    R(ChipPortEndpoint(chip=0, port="x16_in"), BlockEndpoint(block=mf, port="xq"), [])
+    R(BlockEndpoint(block=mf, port="yi"), BlockEndpoint(block=cg, port="xi"), [])
+    R(BlockEndpoint(block=mf, port="yq"), BlockEndpoint(block=cg, port="xq"), [])
+    R(BlockEndpoint(block=cg, port="yi"), BlockEndpoint(block=mm, port="xi"), [])
+    R(BlockEndpoint(block=cg, port="yq"), BlockEndpoint(block=mm, port="xq"), [])
+    R(BlockEndpoint(block=mm, port="yi_e"), BlockEndpoint(block=cos, port="xi"), [])
+    R(BlockEndpoint(block=mm, port="yq_e"), BlockEndpoint(block=cos, port="xq"), [])
     R(BlockEndpoint(block=cos, port="yi_tap"), BlockEndpoint(block=sli, port="in_i"), [])
     R(BlockEndpoint(block=cos, port="yq_tap"), BlockEndpoint(block=sli, port="in_q"), [])
     R(BlockEndpoint(block=sli, port="out"),
       ChipPortEndpoint(chip=0, port="x16_out"), [])
-    rep = ctrl.auto_route_all({"kyttar_10x12": chip_type}, auto_orient=True,
+    rep = ctrl.auto_route_all({"kyttar_10x12": chip_type}, auto_orient=False,
                               use_bus="always")
     assert rep.ok, [(r.name, r.reason) for r in rep.failed]
     bres = BuildEngine(catalog, str(CT_PATH)).build(
         ctrl.project, {"kyttar_10x12": chip_type})
     assert bres.ok, [str(e) for e in bres.errors]
-    entry, _ = catalog.resolved_io("QAM16ComplexCostasLoopBlock")
+    entry, _ = catalog.resolved_io("ComplexRRCMatchedFilterBlock")
     return bres, entry
 
 
-def _drive_ber(bres, entry, n=400, foff=0.002, seed=5):
+def _drive_ber(bres, entry, n=400, seed=5, hop=30):
+    """Inject xi then xq then a jump per sample, read the recovered 4-bit symbols
+    from x16_out (the M&M cascade at 2 sps). ``hop`` is the injection hop count to
+    the RX chain's landing cell — 30 (the port edge) for the RX-only auto-P&R
+    build, or the RX stream's resolved ``hop_count`` for the full-duplex .kyt
+    (where x16_in fans to BOTH the RX matched filter and the TX mapper, so a
+    generic port injection would corrupt the RX — the burst must land at the RX
+    stream's specific block entry/hop)."""
     import simkyt
-    random.seed(seed)
-    tx = [random.randint(0, 15) for _ in range(n)]
-    base = np.asarray([complex(*_POINTS[s]) for s in tx], dtype=np.complex64)
-    k = np.arange(len(base))
-    iq = (base * np.exp(1j * 2 * np.pi * foff * k)).astype(np.complex64)
+    iq, tx = _qam16_burst(n, seed=seed)
 
     chip = simkyt.Chip.from_yaml(str(CT_PATH))
     chip.load_bitstream_physical(bres.words(0))
@@ -139,43 +201,75 @@ def _drive_ber(bres, entry, n=400, foff=0.002, seed=5):
 
     rx = []
     for s in iq:
-        chip.inject_data_physical([_fq(float(s.real))], target_hop_cnt=30, target_addr=0)
-        chip.run(max_events=6000)
-        chip.inject_data_physical([_fq(float(s.imag))], target_hop_cnt=30, target_addr=1)
-        chip.run(max_events=6000)
-        chip.inject_jump_physical(target_hop_cnt=30, entry_addr=entry)
-        chip.run(max_events=200000)
+        chip.inject_data_physical([_fq(float(s.real))], target_hop_cnt=hop, target_addr=0)
+        chip.run(max_events=8000)
+        chip.inject_data_physical([_fq(float(s.imag))], target_hop_cnt=hop, target_addr=1)
+        chip.run(max_events=8000)
+        chip.inject_jump_physical(target_hop_cnt=hop, entry_addr=entry)
+        chip.run(max_events=300000)
         while chip.output_available("x16_out"):
             rx += [int(x) & 0xF for x in
                    chip.read_port_i16("x16_out").view("uint16").tolist()]
             chip.release_output_ack("x16_out")
             chip.run(max_events=8000)
-    return _qam16_ber(rx, tx), len(rx)
+    return _qam16_ber(rx, tx), len(rx), tx
 
 
 def test_qam16_rx_builds_all_nets(qapp, catalog, chip_type):
-    """The two QAM16 blocks place, all five nets route, it builds."""
+    """The five RX blocks place, all eleven nets route, it builds."""
     _bres, _entry = _build_rx(catalog, chip_type)
 
 
 def test_qam16_rx_ber_zero(qapp, catalog, chip_type):
-    """ACCEPTANCE: a random 16-QAM burst (carrier offset) through the auto-P&R'd
-    Costas -> slicer chain recovers the 4-bit symbols at BER 0 (rotation-aligned)."""
+    """ACCEPTANCE: a random RRC-shaped 16-QAM burst through the auto-P&R'd
+    MF -> gain -> M&M -> Costas -> slicer chain recovers the 4-bit symbols at
+    BER 0 (rotation-aligned)."""
     bres, entry = _build_rx(catalog, chip_type)
-    (ber, rot, lag), n_out = _drive_ber(bres, entry)
+    (ber, rot, lag), n_out, tx = _drive_ber(bres, entry)
     print(f"\n16-QAM RX: BER {ber:.4f}  ({n_out} symbols out, rot={rot}, lag={lag})")
+    assert n_out >= len(tx) - 10, f"too few recovered symbols: {n_out}"
     assert ber == 0.0, f"expected BER 0, got {ber:.4f}"
 
 
 @pytest.mark.skipif(not _KYT.exists(), reason="shipped .kyt absent")
 def test_shipped_kyt_recovers_ber_zero(qapp, catalog, chip_type):
     """The shipped examples/qam16_modem/qam16_modem.kyt (as a user opens it) builds
-    and recovers BER 0 — the exact hosted design, not a script reconstruction."""
-    proj = load_project(str(_KYT))
+    and recovers BER 0 -- the exact FULL-DUPLEX hosted design, not a script
+    reconstruction. x16_in fans to BOTH the RX matched filter and the TX mapper,
+    so the RX burst is driven through the SAME stream-routed batch path the live
+    SimServer / batch_check.py use (``stream_id 'rx'`` → the RX chain's entry/hop,
+    output demuxed by the rx net's out_tag) — NOT a generic port injection (which
+    would corrupt the RX by also firing the TX chain on the shared port)."""
+    import simkyt  # noqa: PLC0415
+    from engine.port_config import stream_targets  # noqa: PLC0415
+    from engine.sim_bridge import SimServer  # noqa: PLC0415
+
+    ctrl = AppController(catalog=catalog)
+    ctrl.open_project(str(_KYT))
     bres = BuildEngine(catalog, str(CT_PATH)).build(
-        proj, {"kyttar_10x12": chip_type})
+        ctrl.project, {"kyttar_10x12": chip_type})
     assert bres.ok, [str(e) for e in bres.errors]
-    entry, _ = catalog.resolved_io("QAM16ComplexCostasLoopBlock")
-    (ber, rot, lag), n_out = _drive_ber(bres, entry)
-    print(f"\nshipped .kyt: BER {ber:.4f}  ({n_out} symbols out)")
+
+    tgts = stream_targets(ctrl.project, ctrl.registry, catalog, 0, build_result=bres)
+    assert "rx" in tgts and "tx" in tgts, f"stream targets: {sorted(tgts)}"
+
+    chip = simkyt.Chip.from_yaml(str(CT_PATH))
+    chip.load_bitstream_physical(bres.words(0))
+    srv = SimServer(chip, stream_targets=tgts)
+
+    n = 400
+    iq, tx = _qam16_burst(n, seed=5)
+    payload = np.empty(2 * len(iq), dtype="<f4")
+    payload[0::2] = iq.real
+    payload[1::2] = iq.imag
+    header = {"port": "x16_out", "in_port": "x16_in",
+              "streams": [{"stream_id": "rx", "complex": True, "raw": True,
+                           "n_samples": len(iq)}]}
+    reply, out = srv._process_batch_duplex(header, payload)
+    assert reply.get("ok"), reply.get("error")
+    rx = [int(round(float(v))) & 0xF for v in (out if out is not None else [])]
+
+    (ber, rot, lag) = _qam16_ber(rx, tx)
+    print(f"\nshipped full-duplex .kyt (rx stream via SimServer batch): "
+          f"BER {ber:.4f}  ({len(rx)} symbols out)")
     assert ber == 0.0, f"shipped .kyt expected BER 0, got {ber:.4f}"

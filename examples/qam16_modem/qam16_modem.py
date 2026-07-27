@@ -5,9 +5,9 @@
 # SPDX-License-Identifier: GPL-3.0
 #
 # GNU Radio Python Flow Graph
-# Title: Coherent 16-QAM RX (DD Costas + slicer) — input vs recovered symbols
+# Title: Full-duplex 16-QAM modem (TX + coherent RX on one array)
 # Author: Lattrex
-# Description: Coherent 16-QAM receiver on the Kyttar array: a decision-directed complex Costas loop recovers the carrier, then a 16-QAM hard-decision slicer emits the 4-bit symbol index. Built from the REAL DSP blocks (QAM16ComplexCostasLoop -> QAM16Slicer) so it IMPORTS into placeKYT. NOTE: this is a dense hand-placed design — OPEN qam16_modem.kyt to host the chip (importing this .grc auto-places the blocks away from the input port and the DD loop won't lock). Simulation -> Run as GNURadio Server, set server_port to the printed port, then Execute here.
+# Description: Full-duplex 16-QAM modem authored in GNU Radio (GRC-first workflow). The TX chain (16-QAM symbol mapper -> complex upsampler -> complex RRC pulse shaper -> I/Q upconvert) and the coherent RX chain (complex RRC matched filter -> complex gain -> Mueller & Muller decision-directed symbol-timing recovery -> QAM16 decision-directed Costas -> QAM16 hard-decision slicer) live on ONE placeKYT array, sharing ONE input port (x16_in) and ONE output port (x16_out): both TX and RX source blocks map to x16_in and both sink blocks map to x16_out (the shared-port duplex, exactly like the QPSK modem). Built from the REAL DSP blocks so it IMPORTS into placeKYT (File -> Import GNURadio Flowgraph): every block gets placed + the logical nets are recovered, and the RX chain recovers the 4-bit 16-QAM symbols at BER 0 through simKYT. On-chip CO-PLACEMENT of the full duplex is up to the user: the M&M timing block is a large feedback block and the auto-router congests from a fresh import, so hand-place the chip (open a .kyt) rather than auto-P&R the whole duplex. NO carrier frequency offset: the hosted TX and RX share one clock, so the decision-directed M&M TED sees foff = 0 by construction.
 # GNU Radio version: 3.10.12.0
 
 from PyQt5 import Qt
@@ -23,13 +23,7 @@ from argparse import ArgumentParser
 from gnuradio.eng_arg import eng_float, intx
 from gnuradio import eng_notation
 from gnuradio import kyttar
-import numpy as np, random, math
-_N=1.0/math.sqrt(10.0)
-_L=[(1,-1),(-1,-1),(3,-3),(-3,-3),(-3,-1),(3,-1),(-1,-3),(1,-3),(-3,3),(3,3),(-1,1),(1,1),(1,3),(-1,3),(3,1),(-3,1)]
-_P=[complex(i*_N,q*_N) for (i,q) in _L]
-def qam16_burst(n, foff=0.002, seed=5):
-    random.seed(seed); s=[random.randint(0,15) for _ in range(n)]
-    return [ _P[sm]*complex(math.cos(2*math.pi*foff*k),math.sin(2*math.pi*foff*k)) for k,sm in enumerate(s) ]
+from gnuradio.kyttar import qam16_demo_stim as stim
 import sip
 import threading
 
@@ -38,9 +32,9 @@ import threading
 class qam16_modem(gr.top_block, Qt.QWidget):
 
     def __init__(self):
-        gr.top_block.__init__(self, "Coherent 16-QAM RX (DD Costas + slicer) — input vs recovered symbols", catch_exceptions=True)
+        gr.top_block.__init__(self, "Full-duplex 16-QAM modem (TX + coherent RX on one array)", catch_exceptions=True)
         Qt.QWidget.__init__(self)
-        self.setWindowTitle("Coherent 16-QAM RX (DD Costas + slicer) — input vs recovered symbols")
+        self.setWindowTitle("Full-duplex 16-QAM modem (TX + coherent RX on one array)")
         qtgui.util.check_set_qss()
         try:
             self.setWindowIcon(Qt.QIcon.fromTheme('gnuradio-grc'))
@@ -71,95 +65,43 @@ class qam16_modem(gr.top_block, Qt.QWidget):
         ##################################################
         # Variables
         ##################################################
-        self.server_port = server_port = 58950
+        self.sps = sps = 2
+        self.samp_rate = samp_rate = 32000
         self.n_syms = n_syms = 400
+        self.n_bits = n_bits = 1600
+        self.gain = gain = 2.4
+        self.carrier = carrier = 4000
 
         ##################################################
         # Blocks
         ##################################################
 
-        self.src = blocks.vector_source_c(qam16_burst(n_syms), True, 1, [])
-        self.slicer = kyttar.qam16_slicer("kyttar_0")
-        self.msrc = kyttar.source(device_id="kyttar_0", port_name="x16_in", num_channels=1, server_host="127.0.0.1", server_port=server_port, complex_in=True, burst_len=n_syms, stream_id="", pipelined=True)
-        self.msink = kyttar.sink(device_id="kyttar_0", port_name="x16_out", num_channels=1, server_port=server_port, server_repeat=False, hold_secs=8.0, stream_id="", in_type=False)
-        self.input_sink = qtgui.time_sink_c(
-            256, #size
-            1, #samp_rate
-            "Input waveform (RRC BPSK, in-phase)", #name
+        self.upc = kyttar.iq_upconvert("kyttar_0", 32000, 4000)
+        self.up = kyttar.complex_upsampler("kyttar_0", sps)
+        self.tx_src = kyttar.source(device_id="kyttar_0", port_name="x16_in", num_channels=1, server_host="127.0.0.1", server_port=58950, complex_in=False, burst_len=n_bits, stream_id="tx", pipelined=True, schedule="interleaved")
+        self.tx_sink = kyttar.sink(device_id="kyttar_0", port_name="x16_out", num_channels=1, server_port=58950, server_repeat=False, hold_secs=8.0, stream_id="tx", in_type=False)
+        self.tx_passband = qtgui.time_sink_f(
+            stim.tx_pb_points(n_bits), #size
+            samp_rate, #samp_rate
+            "TX passband (real)", #name
             1, #number of inputs
             None # parent
         )
-        self.input_sink.set_update_time(0.10)
-        self.input_sink.set_y_axis(-1.2, 1.2)
+        self.tx_passband.set_update_time(0.10)
+        self.tx_passband.set_y_axis(-1, 1)
 
-        self.input_sink.set_y_label('amplitude', "")
+        self.tx_passband.set_y_label('amplitude', "")
 
-        self.input_sink.enable_tags(True)
-        self.input_sink.set_trigger_mode(qtgui.TRIG_MODE_FREE, qtgui.TRIG_SLOPE_POS, 0.0, 0, 0, "")
-        self.input_sink.enable_autoscale(False)
-        self.input_sink.enable_grid(True)
-        self.input_sink.enable_axis_labels(True)
-        self.input_sink.enable_control_panel(False)
-        self.input_sink.enable_stem_plot(False)
-
-
-        labels = ['input I', 'Signal 2', 'Signal 3', 'Signal 4', 'Signal 5',
-            'Signal 6', 'Signal 7', 'Signal 8', 'Signal 9', 'Signal 10']
-        widths = [1, 1, 1, 1, 1,
-            1, 1, 1, 1, 1]
-        colors = ['blue', 'red', 'green', 'black', 'cyan',
-            'magenta', 'yellow', 'dark red', 'dark green', 'dark blue']
-        alphas = [1.0, 1.0, 1.0, 1.0, 1.0,
-            1.0, 1.0, 1.0, 1.0, 1.0]
-        styles = [1, 1, 1, 1, 1,
-            1, 1, 1, 1, 1]
-        markers = [-1, -1, -1, -1, -1,
-            -1, -1, -1, -1, -1]
+        self.tx_passband.enable_tags(True)
+        self.tx_passband.set_trigger_mode(qtgui.TRIG_MODE_FREE, qtgui.TRIG_SLOPE_POS, 0.0, 0, 0, "")
+        self.tx_passband.enable_autoscale(False)
+        self.tx_passband.enable_grid(False)
+        self.tx_passband.enable_axis_labels(True)
+        self.tx_passband.enable_control_panel(False)
+        self.tx_passband.enable_stem_plot(False)
 
 
-        for i in range(2):
-            if len(labels[i]) == 0:
-                if (i % 2 == 0):
-                    self.input_sink.set_line_label(i, "Re{{Data {0}}}".format(i/2))
-                else:
-                    self.input_sink.set_line_label(i, "Im{{Data {0}}}".format(i/2))
-            else:
-                self.input_sink.set_line_label(i, labels[i])
-            self.input_sink.set_line_width(i, widths[i])
-            self.input_sink.set_line_color(i, colors[i])
-            self.input_sink.set_line_style(i, styles[i])
-            self.input_sink.set_line_marker(i, markers[i])
-            self.input_sink.set_line_alpha(i, alphas[i])
-
-        self._input_sink_win = sip.wrapinstance(self.input_sink.qwidget(), Qt.QWidget)
-        self.top_grid_layout.addWidget(self._input_sink_win, 0, 0, 1, 1)
-        for r in range(0, 1):
-            self.top_grid_layout.setRowStretch(r, 1)
-        for c in range(0, 1):
-            self.top_grid_layout.setColumnStretch(c, 1)
-        self.costas = kyttar.qam16_costas_loop("kyttar_0", 2048, 32)
-        self.bit_sink = qtgui.time_sink_f(
-            128, #size
-            1, #samp_rate
-            "Recovered bits (chip x16_out)", #name
-            1, #number of inputs
-            None # parent
-        )
-        self.bit_sink.set_update_time(0.10)
-        self.bit_sink.set_y_axis(-0.3, 1.3)
-
-        self.bit_sink.set_y_label('bit', "")
-
-        self.bit_sink.enable_tags(True)
-        self.bit_sink.set_trigger_mode(qtgui.TRIG_MODE_FREE, qtgui.TRIG_SLOPE_POS, 0.0, 0, 0, "")
-        self.bit_sink.enable_autoscale(False)
-        self.bit_sink.enable_grid(True)
-        self.bit_sink.enable_axis_labels(True)
-        self.bit_sink.enable_control_panel(False)
-        self.bit_sink.enable_stem_plot(False)
-
-
-        labels = ['recovered bit', 'Signal 2', 'Signal 3', 'Signal 4', 'Signal 5',
+        labels = ['Signal 1', 'Signal 2', 'Signal 3', 'Signal 4', 'Signal 5',
             'Signal 6', 'Signal 7', 'Signal 8', 'Signal 9', 'Signal 10']
         widths = [1, 1, 1, 1, 1,
             1, 1, 1, 1, 1]
@@ -175,32 +117,96 @@ class qam16_modem(gr.top_block, Qt.QWidget):
 
         for i in range(1):
             if len(labels[i]) == 0:
-                self.bit_sink.set_line_label(i, "Data {0}".format(i))
+                self.tx_passband.set_line_label(i, "Data {0}".format(i))
             else:
-                self.bit_sink.set_line_label(i, labels[i])
-            self.bit_sink.set_line_width(i, widths[i])
-            self.bit_sink.set_line_color(i, colors[i])
-            self.bit_sink.set_line_style(i, styles[i])
-            self.bit_sink.set_line_marker(i, markers[i])
-            self.bit_sink.set_line_alpha(i, alphas[i])
+                self.tx_passband.set_line_label(i, labels[i])
+            self.tx_passband.set_line_width(i, widths[i])
+            self.tx_passband.set_line_color(i, colors[i])
+            self.tx_passband.set_line_style(i, styles[i])
+            self.tx_passband.set_line_marker(i, markers[i])
+            self.tx_passband.set_line_alpha(i, alphas[i])
 
-        self._bit_sink_win = sip.wrapinstance(self.bit_sink.qwidget(), Qt.QWidget)
-        self.top_grid_layout.addWidget(self._bit_sink_win, 1, 0, 1, 1)
-        for r in range(1, 2):
-            self.top_grid_layout.setRowStretch(r, 1)
-        for c in range(0, 1):
-            self.top_grid_layout.setColumnStretch(c, 1)
+        self._tx_passband_win = sip.wrapinstance(self.tx_passband.qwidget(), Qt.QWidget)
+        self.top_layout.addWidget(self._tx_passband_win)
+        self.tx_bits = blocks.vector_source_f(stim.tx_bits(n_bits), False, 1, [])
+        self.slicer = kyttar.qam16_slicer("kyttar_0")
+        self.rx_syms = qtgui.time_sink_f(
+            stim.rx_syms_points(n_syms), #size
+            1, #samp_rate
+            "Recovered 16-QAM symbols", #name
+            1, #number of inputs
+            None # parent
+        )
+        self.rx_syms.set_update_time(0.10)
+        self.rx_syms.set_y_axis(0, 15)
+
+        self.rx_syms.set_y_label('symbol', "")
+
+        self.rx_syms.enable_tags(True)
+        self.rx_syms.set_trigger_mode(qtgui.TRIG_MODE_FREE, qtgui.TRIG_SLOPE_POS, 0.0, 0, 0, "")
+        self.rx_syms.enable_autoscale(False)
+        self.rx_syms.enable_grid(True)
+        self.rx_syms.enable_axis_labels(True)
+        self.rx_syms.enable_control_panel(False)
+        self.rx_syms.enable_stem_plot(False)
+
+
+        labels = ['recovered symbol', 'Signal 2', 'Signal 3', 'Signal 4', 'Signal 5',
+            'Signal 6', 'Signal 7', 'Signal 8', 'Signal 9', 'Signal 10']
+        widths = [1, 1, 1, 1, 1,
+            1, 1, 1, 1, 1]
+        colors = ['blue', 'red', 'green', 'black', 'cyan',
+            'magenta', 'yellow', 'dark red', 'dark green', 'dark blue']
+        alphas = [1.0, 1.0, 1.0, 1.0, 1.0,
+            1.0, 1.0, 1.0, 1.0, 1.0]
+        styles = [1, 1, 1, 1, 1,
+            1, 1, 1, 1, 1]
+        markers = [-1, -1, -1, -1, -1,
+            -1, -1, -1, -1, -1]
+
+
+        for i in range(1):
+            if len(labels[i]) == 0:
+                self.rx_syms.set_line_label(i, "Data {0}".format(i))
+            else:
+                self.rx_syms.set_line_label(i, labels[i])
+            self.rx_syms.set_line_width(i, widths[i])
+            self.rx_syms.set_line_color(i, colors[i])
+            self.rx_syms.set_line_style(i, styles[i])
+            self.rx_syms.set_line_marker(i, markers[i])
+            self.rx_syms.set_line_alpha(i, alphas[i])
+
+        self._rx_syms_win = sip.wrapinstance(self.rx_syms.qwidget(), Qt.QWidget)
+        self.top_layout.addWidget(self._rx_syms_win)
+        self.rx_src = kyttar.source(device_id="kyttar_0", port_name="x16_in", num_channels=1, server_host="127.0.0.1", server_port=58950, complex_in=True, burst_len=stim.burst_len(n_syms), stream_id="rx", pipelined=True, schedule="interleaved")
+        self.rx_sink = kyttar.sink(device_id="kyttar_0", port_name="x16_out", num_channels=1, server_port=58950, server_repeat=False, hold_secs=8.0, stream_id="rx", in_type=False)
+        self.rx_iq = blocks.vector_source_c(stim.burst(n_syms), False, 1, [])
+        self.rrc = kyttar.complex_rrc_matched_filter("kyttar_0", 0.35, 8, 1)
+        self.mm = kyttar.mm_timing_recovery("kyttar_0", sps, 0.02, 1.0)
+        self.mf = kyttar.complex_rrc_matched_filter("kyttar_0", 0.35, 8, 1)
+        self.mapper = kyttar.qam16_symbol_mapper("kyttar_0")
+        self.costas = kyttar.qam16_costas_loop("kyttar_0", 1024, 32)
+        self.cgain = kyttar.complex_gain("kyttar_0", 2.4)
 
 
         ##################################################
         # Connections
         ##################################################
+        self.connect((self.cgain, 0), (self.mm, 0))
         self.connect((self.costas, 0), (self.slicer, 0))
-        self.connect((self.msink, 0), (self.bit_sink, 0))
-        self.connect((self.msrc, 0), (self.costas, 0))
-        self.connect((self.slicer, 0), (self.msink, 0))
-        self.connect((self.src, 0), (self.input_sink, 0))
-        self.connect((self.src, 0), (self.msrc, 0))
+        self.connect((self.mapper, 0), (self.up, 0))
+        self.connect((self.mf, 0), (self.cgain, 0))
+        self.connect((self.mm, 0), (self.costas, 0))
+        self.connect((self.rrc, 0), (self.upc, 0))
+        self.connect((self.rx_iq, 0), (self.rx_src, 0))
+        self.connect((self.rx_sink, 0), (self.rx_syms, 0))
+        self.connect((self.rx_src, 0), (self.mf, 0))
+        self.connect((self.slicer, 0), (self.rx_sink, 0))
+        self.connect((self.tx_bits, 0), (self.tx_src, 0))
+        self.connect((self.tx_sink, 0), (self.tx_passband, 0))
+        self.connect((self.tx_src, 0), (self.mapper, 0))
+        self.connect((self.up, 0), (self.rrc, 0))
+        self.connect((self.upc, 0), (self.tx_sink, 0))
 
 
     def closeEvent(self, event):
@@ -211,18 +217,44 @@ class qam16_modem(gr.top_block, Qt.QWidget):
 
         event.accept()
 
-    def get_server_port(self):
-        return self.server_port
+    def get_sps(self):
+        return self.sps
 
-    def set_server_port(self, server_port):
-        self.server_port = server_port
+    def set_sps(self, sps):
+        self.sps = sps
+
+    def get_samp_rate(self):
+        return self.samp_rate
+
+    def set_samp_rate(self, samp_rate):
+        self.samp_rate = samp_rate
+        self.tx_passband.set_samp_rate(self.samp_rate)
 
     def get_n_syms(self):
         return self.n_syms
 
     def set_n_syms(self, n_syms):
         self.n_syms = n_syms
-        self.src.set_data(qam16_burst(self.n_syms), [])
+        self.rx_iq.set_data(stim.burst(self.n_syms), [])
+
+    def get_n_bits(self):
+        return self.n_bits
+
+    def set_n_bits(self, n_bits):
+        self.n_bits = n_bits
+        self.tx_bits.set_data(stim.tx_bits(self.n_bits), [])
+
+    def get_gain(self):
+        return self.gain
+
+    def set_gain(self, gain):
+        self.gain = gain
+
+    def get_carrier(self):
+        return self.carrier
+
+    def set_carrier(self, carrier):
+        self.carrier = carrier
 
 
 

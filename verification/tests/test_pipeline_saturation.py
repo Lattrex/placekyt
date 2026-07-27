@@ -161,6 +161,7 @@ NEEDS_BESPOKE = {
     # its datapath is NCO's (verified in COMPLEX_2IN2OUT) with only the phase cell changed.
     "FrequencyModulatorBlock": "real-in/complex-out; own gate test_fm_saturation_safe (locked, bit-exact)",
     "ComplexUpsamplerBlock": "rate-EXPANDING complex (2-rail zero-stuff), no complex-rate harness; MEMORYLESS (no feedback/state carried across samples) so per-sample == saturated by construction — cf. UpsamplerBlock (RATE_1IN, gated)",
+    "ComplexGainBlock": "complex (2-rail) fixed-gain scaler, no complex-in/complex-out per-sample harness; MEMORYLESS (no feedback/state across samples) so per-sample == saturated by construction — cf. GainBlock (REAL_1IN, gated). Driven SATURATED end-to-end in the qam16_modem BER-0 acceptance test (pipelined RX gain-stage).",
     "BPSKSlicerBlock": "packed-bit output timing",
     "SoftDemodulatorBlock": "complex input",
     "LFSRScramblerBlock": "bit-stream input",
@@ -182,6 +183,19 @@ NEEDS_BESPOKE = {
     "QAM16SymbolMapperBlock": "bit-in/complex-egress mapper; saturated in the qam16_modem RX BER0 acceptance (test_qam16_modem_ber)",
     "QAM16SlicerBlock": "complex-in/4-bit-out slicer; saturated in the qam16_modem RX BER0 acceptance (test_qam16_modem_ber)",
     "QAM16ComplexCostasLoopBlock": "complex I/Q DD carrier loop; saturated in the qam16_modem RX BER0 acceptance (test_qam16_modem_ber)",
+    # M&M (Mueller & Muller) decision-directed 16-QAM timing loop — a data-FEEDBACK
+    # loop (like Gardner/Costas). It is UNCONDITIONALLY saturation-safe (INV-19): the NCO
+    # counter LOCKs its arbiter to the (orientation-safe, is_face) feedback face every
+    # sample, serialising the interior
+    # (land fan -> 2 Farrow rails -> decision-directed ted -> PI -> period_relay) so one
+    # sample closes the loop before the next enters; period_relay clears the lock with a
+    # backward WRITE.CFG. Like Gardner/Costas it needs a REAL RRC-shaped 2-sps stimulus
+    # to lock — the generic synthetic 16-sample drive here produces NO strobes / NO
+    # egress in either mode (nothing to compare) and the empty locked pipeline never
+    # quiesces. Proved saturated in its OWN gate on the real 16-QAM RRC channel:
+    # test_mm_timing_recovery.test_saturated_equals_per_sample (bit-exact I&Q, 0-diff,
+    # toff 0.0/0.3/0.5).
+    "MMTimingRecoveryBlock": "2-sps 16-QAM M&M timing loop; own gate test_mm_timing_recovery.test_saturated_equals_per_sample (bit-exact saturated, real RRC channel)",
 }
 
 

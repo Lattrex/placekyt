@@ -62,6 +62,9 @@ _TYPE_OVERRIDES = {
     "kyttar_soft_demodulator": "SoftDemodulatorBlock",
     "kyttar_costas_loop": "ComplexCostasLoopBlock",
     "kyttar_gardner_ted": "GardnerTimingRecovery",
+    # M&M timing recovery (16-QAM): snake→Pascal gives "MmTimingRecoveryBlock" not
+    # "MMTimingRecoveryBlock", so pin it explicitly (override table uses catalog.get).
+    "kyttar_mm_timing_recovery": "MMTimingRecoveryBlock",
     # QPSKSlicerBlock is hidden in the catalog (uncurated), so the case-insensitive
     # snake→Pascal fallback — which iterates catalog.all() — can't reach it; map it
     # explicitly (the override table uses catalog.get, which sees hidden specs).

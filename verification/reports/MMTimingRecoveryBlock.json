@@ -1,0 +1,52 @@
+{
+  "block": "MMTimingRecoveryBlock",
+  "grc_block": "digital.symbol_sync_cc (TED_MUELLER_AND_MULLER)",
+  "passed": true,
+  "metric": "on-chip bit-exact vs GR-verified process_reference",
+  "coverage": {
+    "offsets": [
+      0.0,
+      0.1,
+      0.3,
+      0.5,
+      0.7
+    ],
+    "per_sample": true,
+    "saturated": true,
+    "mutations": [
+      "invert_ted_sign",
+      "wrong_farrow_coeff",
+      "extra_delay_slip",
+      "drop_final_sat_shift",
+      "overscale_input"
+    ]
+  },
+  "metrics": {
+    "toff_0.0": {
+      "symbols": 916,
+      "i_mismatches": 0,
+      "q_mismatches": 0
+    },
+    "toff_0.1": {
+      "symbols": 916,
+      "i_mismatches": 0,
+      "q_mismatches": 0
+    },
+    "toff_0.3": {
+      "symbols": 916,
+      "i_mismatches": 0,
+      "q_mismatches": 0
+    },
+    "toff_0.5": {
+      "symbols": 916,
+      "i_mismatches": 0,
+      "q_mismatches": 0
+    },
+    "toff_0.7": {
+      "symbols": 916,
+      "i_mismatches": 0,
+      "q_mismatches": 0
+    }
+  },
+  "notes": "M&M decision-directed timing recovery for 16-QAM. Rice Ch.8 modulo-1 counter + cubic Farrow + M&M TED + PI. On-chip 14 cells, 0 mismatches vs process_reference (itself bit-exact vs GR symbol_sync_cc). Unconditionally saturation-safe AND orientation-safe via the serialize-LOCK."
+}

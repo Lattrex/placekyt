@@ -155,6 +155,29 @@ class gardner_timing_recovery(_PassThrough):
                                    {"kp": kp, "ki": ki, "complex": bool(complex)})
 
 
+class mm_timing_recovery(_PassThrough):
+    """Mueller & Müller timing recovery — GR marker (maps to MMTimingRecoveryBlock).
+
+    Decision-directed symbol-timing recovery for MULTILEVEL QAM (16-QAM) — the GR
+    ``digital.symbol_sync_cc`` M&M path. Always COMPLEX (I/Q): the recovered (yi, yq)
+    center pair is carried as ONE gr_complex stream in/out (the on-chip xi/xq in +
+    yi_e/yq_e out pairs; placeKYT's importer splits the single complex net into the
+    two rails), feeding a downstream QAM16 Costas + slicer. Unlike Gardner (a
+    BPSK/QPSK non-decision-directed TED that leaves ~3% jitter on 16-QAM's 4-level
+    axes), M&M locks 16-QAM cleanly at 2 sps. A pure pass-through marker."""
+
+    def __init__(self, device_id="kyttar_0", sps=2, loop_bw=0.02, damping=1.0):
+        super().__init__("Kyttar M&M Timing Recovery",
+                         in_dtype=np.complex64, out_dtype=np.complex64)
+        self.device_id = device_id
+        self.sps = int(sps)
+        self.loop_bw = float(loop_bw)
+        self.damping = float(damping)
+        self._advertise_grc_params(device_id, "MMTimingRecoveryBlock",
+                                   {"sps": int(sps), "loop_bw": float(loop_bw),
+                                    "damping": float(damping)})
+
+
 class bpsk_slicer(_PassThrough):
     """BPSK slicer — GR marker (maps to BPSKSlicerBlock)."""
 
@@ -392,6 +415,28 @@ class complex_upsampler(_PassThrough):
         self.device_id = device_id
         self.sps = sps
         self._advertise_grc_params(device_id, "ComplexUpsamplerBlock", {"sps": sps})
+
+
+class complex_gain(_PassThrough):
+    """Complex fixed-gain scaler — GR marker (maps to ComplexGainBlock).
+
+    The complex twin of :class:`gain`: multiplies a complex (I, Q) stream by the
+    SAME real constant ``gain`` on BOTH rails (out = gain * in), scaling the
+    constellation WITHOUT rotation — mirrors GNU Radio ``blocks.multiply_const_cc(
+    gain)``. In the 16-QAM RX it gain-stages the matched-filter output up to the
+    nominal 0.949 outer level the decision-directed M&M timing recovery + QAM16
+    Costas need (both are scale-sensitive). ``gain`` may exceed 1 (a receiver
+    amplifies): the on-chip block applies it as an integer-part doubling plus a
+    Q15 fractional MULQ, so any ``gain`` in (0, 4) is exact. A pass-through marker;
+    the real DSP runs on the placeKYT chip."""
+
+    def __init__(self, device_id="kyttar_0", gain=1.0):
+        super().__init__("Kyttar Complex Gain", n_in=1, n_out=1,
+                         in_dtype=np.complex64, out_dtype=np.complex64)
+        self.device_id = device_id
+        self.gain = float(gain)
+        self._advertise_grc_params(device_id, "ComplexGainBlock",
+                                   {"gain": float(gain)})
 
 
 class rrc_pulse_shaper(_PassThrough):

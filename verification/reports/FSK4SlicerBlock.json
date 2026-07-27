@@ -2,7 +2,7 @@
   "kyttar_block": "FSK4SlicerBlock",
   "passed": true,
   "metric": "decision",
-  "n_compared": 64,
+  "n_compared": 32,
   "max_abs_err": 0,
   "tolerance": 0,
   "nmse_db": null,

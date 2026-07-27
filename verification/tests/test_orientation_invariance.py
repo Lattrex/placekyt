@@ -76,6 +76,10 @@ _CASES = [
     ("ComplexCostasLoopBlock", {"order": 2}, "complex", ("xi", "xq", "yi_tap")),
     ("ComplexCostasLoopBlock", {"order": 4}, "complex", ("xi", "xq", "yi_tap")),
     ("GardnerTimingRecovery", {"complex": True}, "complex", ("xi", "xq", "yi_e")),
+    # M&M decision-directed timing recovery (16-QAM): complex I/Q in, recovered
+    # (yi, yq) center pair out. Internal-feedback block (kept at identity by the
+    # placer); its datapath is orientation-invariant by construction.
+    ("MMTimingRecoveryBlock", {}, "complex", ("xi", "xq", "yi_e")),
     ("IQUpconvertBlock", {}, "complex_wps1", ("xi", "xq", "out")),
     ("ComplexMixerBlock", {}, "complex", ("xi", "xq", "yi")),
     ("NCOBlock", {}, "real", ("sample", "yi")),

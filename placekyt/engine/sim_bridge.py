@@ -1144,64 +1144,239 @@ class SimServer:
                 "sid": sid, "complex": is_complex, "raw": raw, "n": n,
                 "seg": seg, "entry": entry, "hop": hop, "a0": a0, "a1": a1,
                 "out_tag": out_tag, "out": [], "port": header.get("port", "x16_out"),
+                # Chip sim-time span of THIS stream's recovered words. Under the
+                # "sequential" schedule the two streams' spans are disjoint (RX fully
+                # drains before TX starts); under "interleaved" they overlap. Reported
+                # so a timing-analysis client can SEE the schedule took effect.
+                "tmin": None, "tmax": None,
             })
 
         mx = int(header.get("max_events_per", 40000))
         n_max = max((s["n"] for s in streams), default=0)
         _t0 = time.perf_counter()
         aborted = False
-        # ROUND-ROBIN by sample index: at each step k, drive stream 0's sample k,
-        # then stream 1's sample k, … so all chains advance together. A stream that
-        # has run out of samples is skipped. Output is drained after EACH stream's
-        # step and demuxed by out_tag into that stream's bucket (other tags parked
-        # in _tag_buf and swept up whenever their owning stream drains). Wrapped so
-        # a debug-hook STOP or a client disconnect (BatchAborted) returns the
-        # samples produced so far instead of running the whole burst.
-        try:
-            for k in range(n_max):
+
+        # Drive ONE sample k of stream s (inject xi[/xq] + JUMP, drain + demux by
+        # out_tag into each stream's bucket). Shared by both schedules below.
+        def _drive_one(s, k):
+            seg = s["seg"]
+            hop, a0, a1, entry = s["hop"], s["a0"], s["a1"], s["entry"]
+            if s["complex"]:
+                xi = _float_to_q15(float(seg[2 * k]))
+                xq = _float_to_q15(float(seg[2 * k + 1]))
+            else:
+                xi = (_float_to_raw_i16(float(seg[k])) if s["raw"]
+                      else _float_to_q15(float(seg[k])))
+                xq = None
+            self._chip.inject_data_physical([xi], target_hop_cnt=hop,
+                                            target_addr=int(a0))
+            self._chip.run(max_events=3000)
+            if xq is not None:
+                self._chip.inject_data_physical([xq], target_hop_cnt=hop,
+                                                target_addr=int(a1))
+                self._chip.run(max_events=3000)
+            self._chip.inject_jump_physical(target_hop_cnt=hop, entry_addr=entry)
+            self._chip.run(max_events=mx)
+            # Drain + demux by tag into EACH stream's bucket.
+            for (v, d, _t) in self._chip.read_port_words_timed(s["port"]):
+                self._capture_tags[(s["port"], float(_t))] = int(d)
+                dst = None
+                for s2 in streams:
+                    if s2["out_tag"] is not None and int(d) == int(s2["out_tag"]):
+                        dst = s2
+                        break
+                if dst is not None:
+                    dst["out"].append(float(int(v) & 0xFFFF) if dst["raw"]
+                                      else _q15_to_float(int(v)))
+                    tt = float(_t)
+                    dst["tmin"] = tt if dst["tmin"] is None else min(dst["tmin"], tt)
+                    dst["tmax"] = tt if dst["tmax"] is None else max(dst["tmax"], tt)
+                else:
+                    self._tag_buf.setdefault(int(d), []).append(int(v))
+            if self._debug_hooks is not None:
+                self._debug_hooks.after_sample(self._chip, k, s["port"])
+
+        # --- SATURATED (pipelined) duplex drive ------------------------------
+        # The per-sample _drive_one above runs each sample to QUIESCENCE (inject →
+        # run → drain), so no two samples are ever in flight — the RX chain never
+        # feels back-to-back pressure and reports NO stall (the honest complaint:
+        # "the modem never actually saturates"). The saturated path mirrors the
+        # single-stream process_batch pipelined branch: build each stream's WHOLE
+        # burst as raw WRITE/DATA/JUMP words, queue_words_physical them (the run loop
+        # delivers one at a time, each waiting on the input cell to accept the prior),
+        # and run ONCE with no per-sample drain — multiple samples in flight, the
+        # port handshake pacing the corridor as a FIFO. THIS is the real streaming
+        # condition; only correct for saturation-safe (serialize-LOCK) blocks.
+        def _stream_words(s):
+            """The raw WRITE/DATA/JUMP word stream for stream ``s``'s whole burst.
+            Each WRITE/JUMP embeds THIS stream's hop+entry, so words for both duplex
+            streams can share one x16_in queue and still route to their own chains."""
+            hop, a0, a1, entry = s["hop"], s["a0"], s["a1"], s["entry"]
+            seg = s["seg"]
+
+            def _w(a):
+                return (0x6 << 12) | ((hop & 0x1F) << 5) | (int(a) & 0x1F)
+
+            def _j():
+                return (0x7 << 12) | ((hop & 0x1F) << 5) | (int(entry) & 0x1F)
+
+            words = []
+            if s["complex"]:
+                for kk in range(s["n"]):
+                    xi = _float_to_q15(float(seg[2 * kk]))
+                    xq = _float_to_q15(float(seg[2 * kk + 1]))
+                    words += [_w(a0), xi, _w(a1), xq, _j()]
+            else:
+                for kk in range(s["n"]):
+                    xi = (_float_to_raw_i16(float(seg[kk])) if s["raw"]
+                          else _float_to_q15(float(seg[kk])))
+                    words += [_w(a0), xi, _j()]
+            return words
+
+        def _drain_demux(port):
+            """Drain the output port ONCE and demux every word by out_tag into its
+            stream's bucket (same tagging _drive_one uses)."""
+            for (v, d, _t) in self._chip.read_port_words_timed(port):
+                self._capture_tags[(port, float(_t))] = int(d)
+                dst = None
+                for s2 in streams:
+                    if s2["out_tag"] is not None and int(d) == int(s2["out_tag"]):
+                        dst = s2
+                        break
+                if dst is not None:
+                    dst["out"].append(float(int(v) & 0xFFFF) if dst["raw"]
+                                      else _q15_to_float(int(v)))
+                    tt = float(_t)
+                    dst["tmin"] = tt if dst["tmin"] is None else min(dst["tmin"], tt)
+                    dst["tmax"] = tt if dst["tmax"] is None else max(dst["tmax"], tt)
+                else:
+                    self._tag_buf.setdefault(int(d), []).append(int(v))
+
+        def _run_saturated(sequential_):
+            """Saturated duplex drive. sequential: queue+run+drain each stream's whole
+            burst alone (each chain saturated in isolation — the RX-alone rate). else:
+            merge both word streams round-robin into ONE queue and run once, so both
+            chains contend saturated on the shared port (the real full-duplex rate)."""
+            in_port = streams[0]["port"] if streams else "x16_out"
+            # Injection port is the chip INPUT (x16_in); the words carry hop/entry.
+            inj = "x16_in"
+            if sequential_:
                 for s in streams:
-                    if k >= s["n"]:
+                    w = _stream_words(s)
+                    if not w:
                         continue
-                    seg = s["seg"]
-                    hop, a0, a1, entry = s["hop"], s["a0"], s["a1"], s["entry"]
-                    if s["complex"]:
-                        xi = _float_to_q15(float(seg[2 * k]))
-                        xq = _float_to_q15(float(seg[2 * k + 1]))
-                    else:
-                        xi = (_float_to_raw_i16(float(seg[k])) if s["raw"]
-                              else _float_to_q15(float(seg[k])))
-                        xq = None
-                    self._chip.inject_data_physical([xi], target_hop_cnt=hop,
-                                                    target_addr=int(a0))
-                    self._chip.run(max_events=3000)
-                    if xq is not None:
-                        self._chip.inject_data_physical([xq], target_hop_cnt=hop,
-                                                        target_addr=int(a1))
-                        self._chip.run(max_events=3000)
-                    self._chip.inject_jump_physical(target_hop_cnt=hop, entry_addr=entry)
-                    self._chip.run(max_events=mx)
-                    # Drain + demux by tag into EACH stream's bucket.
-                    for (v, d, _t) in self._chip.read_port_words_timed(s["port"]):
-                        self._capture_tags[(s["port"], float(_t))] = int(d)
-                        dst = None
-                        for s2 in streams:
-                            if s2["out_tag"] is not None and int(d) == int(s2["out_tag"]):
-                                dst = s2
-                                break
-                        if dst is not None:
-                            dst["out"].append(float(int(v) & 0xFFFF) if dst["raw"]
-                                              else _q15_to_float(int(v)))
-                        else:
-                            self._tag_buf.setdefault(int(d), []).append(int(v))
-                    # Same first-class debug controls as process_batch: pause /
-                    # step / speed / stop after each stream's sample (and the
-                    # lockstep frame gate when animation is on).
-                    if self._debug_hooks is not None:
-                        self._debug_hooks.after_sample(self._chip, k, s["port"])
-                # GRC STOP / client disconnect: abort the interleaved burst
-                # promptly (see process_batch — same bounded poll cadence).
-                if (k & 31) == 31 and not self._client_alive():
-                    raise BatchAborted()
+                    self._chip.queue_words_physical(inj, w)
+                    self._chip.run(max_events=max(200_000, 20_000 * len(w)))
+                    _drain_demux(s["port"])
+            else:
+                # INTERLEAVED (real full-duplex): build ONE merged word stream and
+                # queue it all at once — the input port self-paces (each word waits
+                # until the input cell accepts the prior), NO artificial per-packet
+                # delay. This is the SAME saturated drive as simplex, just interleaved
+                # content, so duplex runs at the SAME array speed (~146 kSa/s) — it
+                # does NOT divide throughput; a shared port serializes the corridor,
+                # it does not halve compute.
+                #
+                # FRAMING RULE (the only real constraint, and it is SUBMIT-ORDER
+                # INDEPENDENT): within each sample emit ALL streams' DATA, then ALL
+                # streams' JUMPs — with the JUMPs ordered so the COMPLEX (multi-data-
+                # word) stream's JUMP fires LAST. The streams share the entry addr at
+                # different hops; a JUMP immediately followed by another stream's WRITE
+                # (different hop) clobbers the first program, and the complex stream —
+                # whose packet is longer (WRITE,xi,WRITE,xq) — must own the final JUMP
+                # or its decode is dropped. Measured: real-JUMP(s) then complex-JUMP
+                # decodes BOTH streams at BER 0 REGARDLESS of which source submitted
+                # first; putting the complex JUMP anywhere but last zeros the other
+                # stream (the GUI bug: the rendezvous can submit tx-first or rx-first,
+                # so a submit-order-relative rule silently corrupted one direction).
+                per = [_stream_words_by_sample(s) for s in streams]
+                # The COMPLEX stream must WRAP the real one: its DATA first and its
+                # JUMP last, so the real stream's (WRITE,data,JUMP) sits fully inside.
+                # data order = complex streams first; jump order = complex streams last
+                # (the exact reverse). Both derived from complex-ness, NOT submit order,
+                # so tx-first vs rx-first from the rendezvous give identical results.
+                data_order = sorted(range(len(streams)),
+                                    key=lambda pi: 0 if streams[pi]["complex"] else 1)
+                jump_order = list(reversed(data_order))
+                merged = []
+                for k in range(n_max):
+                    for pi in data_order:                   # DATA: complex first
+                        if k < len(per[pi]):
+                            merged += per[pi][k][0]
+                    for pi in jump_order:                   # JUMPs: complex last
+                        if k < len(per[pi]):
+                            merged.append(per[pi][k][1])
+                if merged:
+                    self._chip.queue_words_physical(inj, merged)
+                    self._chip.run(max_events=max(200_000, 20_000 * len(merged)))
+                    _drain_demux(in_port)
+
+        def _stream_words_by_sample(s):
+            """Per sample, ``(data_words, jump_word)`` so the interleaver can emit all
+            streams' DATA then all their JUMPs (complex stream wrapping the real one)."""
+            hop, a0, a1, entry = s["hop"], s["a0"], s["a1"], s["entry"]
+            seg = s["seg"]
+
+            def _w(a):
+                return (0x6 << 12) | ((hop & 0x1F) << 5) | (int(a) & 0x1F)
+
+            def _j():
+                return (0x7 << 12) | ((hop & 0x1F) << 5) | (int(entry) & 0x1F)
+
+            # Per sample: (DATA words, JUMP word) SEPARATED so the interleaver can emit
+            # all streams' DATA first, then their JUMPs — the JUMPs must not be
+            # interrupted by a WRITE (see the interleaved branch).
+            groups = []
+            if s["complex"]:
+                for kk in range(s["n"]):
+                    xi = _float_to_q15(float(seg[2 * kk]))
+                    xq = _float_to_q15(float(seg[2 * kk + 1]))
+                    groups.append(([_w(a0), xi, _w(a1), xq], _j()))
+            else:
+                for kk in range(s["n"]):
+                    xi = (_float_to_raw_i16(float(seg[kk])) if s["raw"]
+                          else _float_to_q15(float(seg[kk])))
+                    groups.append(([_w(a0), xi], _j()))
+            return groups
+
+        # SCHEDULE (header ``schedule``): "interleaved" (default, full-duplex — both
+        # streams' words merged on the shared input port, TX + RX co-resident) OR
+        # "sequential"/"simplex" (each stream's WHOLE burst runs before the next, one
+        # direction on the array at a time). Same design, same placement — only the
+        # host stimulus ORDER differs. Both run at full array speed under the saturated
+        # drive (a shared input PORT serializes the corridor; it does not halve the
+        # array's compute — duplex ≈ simplex rate). Wrapped so STOP returns partial.
+        schedule = str(header.get("schedule", "interleaved")).lower()
+        sequential = schedule in ("sequential", "simplex", "ordered")
+        pipelined = bool(header.get("pipelined", False))
+        try:
+            if pipelined:
+                # SATURATED (the real drive — per-sample-to-quiescence is a demo-only
+                # data-flow view nobody runs). Sequential: each stream's whole burst
+                # queued + run once (that direction alone, ~146 kSa/s RX). Interleaved:
+                # both streams' sample-k packets alternated with a bounded latch burst
+                # so their JUMPs don't clobber each other on the shared corridor —
+                # genuine full-duplex contention (~38 kSa/s RX). Both BER 0 with real
+                # per-block serial barriers. STOP not honored mid-run (one continuous
+                # drive, like process_batch).
+                _run_saturated(sequential)
+            elif sequential:
+                # RX first, then TX (streams are in header order; the .grc lists rx
+                # before tx). Each burst drains fully before the next starts.
+                for s in streams:
+                    for k in range(s["n"]):
+                        _drive_one(s, k)
+                        if (k & 31) == 31 and not self._client_alive():
+                            raise BatchAborted()
+            else:
+                for k in range(n_max):
+                    for s in streams:
+                        if k >= s["n"]:
+                            continue
+                        _drive_one(s, k)
+                    # GRC STOP / client disconnect: abort promptly.
+                    if (k & 31) == 31 and not self._client_alive():
+                        raise BatchAborted()
         except BatchAborted:
             aborted = True
         # Sweep any parked words that belong to a stream (late/ordering).
@@ -1222,7 +1397,8 @@ class SimServer:
             summary = ", ".join(
                 f"{s['sid']}:{s['n']}in->{len(s['out'])}out(tag{s['out_tag']})"
                 for s in streams)
-            _sys.stderr.write(f"[placeKYT duplex] INTERLEAVED {summary}\n")
+            _sys.stderr.write(
+                f"[placeKYT duplex] {schedule.upper()} {summary}\n")
             _sys.stderr.flush()
         if self._on_activity is not None:
             try:
@@ -1232,5 +1408,10 @@ class SimServer:
                 self._on_activity()
         return ({"ok": True, "samples": n_max, "seconds": _dt,
                  "lengths": lengths, "aborted": aborted,
-                 "stream_ids": [s["sid"] for s in streams]},
+                 "schedule": schedule,
+                 "stream_ids": [s["sid"] for s in streams],
+                 # Per-stream chip sim-time span of the recovered words (ns), in
+                 # stream order. Disjoint spans ⇒ sequential took effect.
+                 "t_first": [s["tmin"] for s in streams],
+                 "t_last": [s["tmax"] for s in streams]},
                 np.asarray(out_all, dtype="<f4"))

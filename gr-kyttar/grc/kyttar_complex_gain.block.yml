@@ -1,0 +1,63 @@
+id: kyttar_complex_gain
+label: 🧪 Kyttar Complex Gain
+category: '[Kyttar]'
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.complex_gain(${device_id}, ${gain})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+
+- id: gain
+  label: Gain
+  dtype: real
+  default: '2.4'
+
+inputs:
+- label: xi
+  domain: stream
+  dtype: complex
+
+outputs:
+- label: yi
+  domain: stream
+  dtype: complex
+
+asserts:
+- ${ 0 < gain < 4 }
+
+documentation: |-
+  🧪 PROOF-OF-CONCEPT: this block works in a demo but has NOT been through
+  per-block GNU Radio-equivalence verification. Use with care.
+
+  Complex Gain — 2-rail (I/Q) fixed-gain scaler, the complex twin of Kyttar Gain.
+
+  Multiplies a complex (I, Q) stream by the SAME real constant `gain` on BOTH
+  rails (out = gain * in), scaling the constellation WITHOUT rotation or
+  distortion — GNU Radio's blocks.multiply_const_cc(gain).
+
+  In the 16-QAM RX chain it gain-stages the matched-filter output up to the
+  nominal 0.949 outer constellation level the decision-directed M&M timing
+  recovery and QAM16 Costas loop need (both are scale-sensitive: the MF pre-scales
+  its taps for Q15 headroom, so its output is compressed and must be restored to
+  the constellation RMS before the decision-directed loops). The demo uses
+  gain = 2.4.
+
+  `gain` may exceed 1 (a receiver amplifies): the on-chip block applies it as an
+  integer-part doubling plus a Q15 fractional MULQ, so any gain in (0, 4) is exact.
+
+  Ports:
+    xi (in): complex baseband samples (I/Q)
+    yi:      the same stream scaled by `gain`
+
+  Parameters:
+    Device ID: which Kyttar device to use
+    gain:      real multiplier applied to both I and Q (0 < gain < 4; default 2.4)
+
+  Mapped by placeKYT (File -> Import GNURadio Flowgraph) to ComplexGainBlock.
+
+file_format: 1

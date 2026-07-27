@@ -878,6 +878,44 @@ class Router:
                 target_input, _e = self._resolve_named_input(dst_cp, dst_port)
             return (distance, target_input, target_entry)
 
+        # EXPLICIT internal JUMP (declared in internal_jumps): a TRIGGER to a
+        # NON-positional-next cell AND/OR a NAMED (non-default) entry. Without this,
+        # a jump to a cell that is not the positional-next (or to a named entry other
+        # than the target's first/default one) falls through to the positional
+        # default below and misresolves (e.g. the M&M block's ``qland ns_trig ->
+        # loop_filter.nostrobe``: the no-strobe PI path must land on loop_filter's
+        # SECOND entry, not its default ``strobe`` entry, and not the positional-next
+        # farrow cell). ``dst_port`` here is the target ENTRY name. This mirrors the
+        # internal_connections branch above but resolves the entry by NAME.
+        jumps = getattr(block_def, "internal_jumps", None) or []
+        for (src_cid, src_port, dst_cid, dst_entry) in jumps:
+            if src_cid != cell_idx or src_port != port_name:
+                continue
+            if dst_cid == "__terminate__":
+                continue  # handled by the terminator branch above
+            keys = list(block_def.cell_programs.keys())
+            if dst_cid not in keys:
+                continue
+            dst_pos_idx = keys.index(dst_cid)
+            if cell_pos is None or cell_pos >= len(pb.cells) \
+                    or dst_pos_idx >= len(pb.cells):
+                continue
+            src_pos = pb.cells[cell_pos]
+            dst_pos = pb.cells[dst_pos_idx]
+            distance = self._get_routing_distance(src_pos, dst_pos, cell_map)
+            dst_cp = block_def.cell_programs[dst_cid]
+            # Resolve the target INPUT register (first input) and the NAMED entry
+            # address. Fall back to the default entry when the name is unknown.
+            target_input, default_entry = self._resolve_named_input(dst_cp, None)
+            target_entry = default_entry
+            try:
+                entry_addrs = CellProgramResolver().compute_entry_addresses(dst_cp)
+                if dst_entry in entry_addrs:
+                    target_entry = entry_addrs[dst_entry]
+            except Exception:  # noqa: BLE001
+                pass
+            return (distance, target_input, target_entry)
+
         # INTERNAL forward (DEFAULT): a non-last cell of a multi-cell block hands
         # off to the NEXT cell in the chain (cell_pos + 1). cell_programs is
         # ordered to match pb.cells, so the next placed position is the target.

@@ -40,13 +40,18 @@ documentation: |-
   - Server Host / Server Port: the placeKYT SimServer endpoint (0 = local mode)
   - Complex Input: Yes for an I/Q (coherent) burst in server mode
   - Burst length: complex-sample count to batch (0 = flush at stop)
+  - Duplex schedule: how a two-stream (TX+RX) duplex design drives the shared
+    input port — Interleaved (real full-duplex, chains contend) or Sequential
+    (each direction runs alone for a compute-bound timing baseline). Settable
+    before Run; the .kyt design is untouched. Ignored without a Stream ID.
 
 templates:
   imports: from gnuradio import kyttar
   make: kyttar.source(device_id=${device_id}, port_name=${port_name},
     num_channels=${num_channels}, server_host=${server_host},
     server_port=${server_port}, complex_in=${complex_in.make_val}, burst_len=${burst_len},
-    stream_id=${stream_id}, pipelined=${pipelined.make_val})
+    stream_id=${stream_id}, pipelined=${pipelined.make_val},
+    schedule=${schedule})
 
 parameters:
   - id: device_id
@@ -114,6 +119,25 @@ parameters:
     option_labels: ['No (per-sample)', 'Yes (pipelined)']
     option_attributes:
       make_val: ['False', 'True']
+  # SCHEDULE (timing-analysis knob, no design change): how the TWO duplex streams
+  # (TX + RX sharing one x16_in port) are driven on the chip. GRC-settable BEFORE
+  # Run — flip it and re-Run to compare timing with NO edit to the .kyt. Under the
+  # saturated drive BOTH run at the SAME array rate (~146 kSa/s RX on the 16-QAM
+  # modem): a shared input PORT serializes the corridor, it does NOT halve the
+  # array's compute, so full-duplex costs NO throughput vs simplex.
+  #   Interleaved (full-duplex): TX + RX words merged on the shared port, both chains
+  #     co-resident — the honest steady-state full-duplex condition (TX and RX drain
+  #     together in the same window).
+  #   Sequential (simplex): each direction's WHOLE burst runs alone before the other
+  #     (one direction on the array at a time) — a per-direction timing baseline.
+  # Only meaningful with a Stream ID (duplex); a single-stream source ignores it.
+  # Set it on either duplex source (or both) — the rendezvous takes the non-default.
+  - id: schedule
+    label: Duplex schedule
+    dtype: enum
+    default: '"interleaved"'
+    options: ['"interleaved"', '"sequential"']
+    option_labels: ['Interleaved (full-duplex)', 'Sequential (simplex)']
 
 inputs:
   - label: in

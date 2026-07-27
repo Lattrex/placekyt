@@ -52,7 +52,7 @@ from engine.port_config import stream_targets    # noqa: E402
 from tests.conftest import CHIP_YAML             # noqa: E402
 
 simkyt = pytest.importorskip("simkyt")
-M = pytest.importorskip("engine.bpsk_modem_demo")
+from tests import modem_helpers as M  # noqa: E402
 
 GRC_MODEM = "examples/bpsk_modem/bpsk_modem.grc"
 
@@ -155,22 +155,7 @@ def test_tx_delivers_correct_symbol(_app):
             chip.read_port_i16("x16_out")
 
 
-def test_tx_envelope_tracks_reference(_app):
-    """The auto-P&R TX passband's energy envelope tracks the explicit-placement
-    reference: the RRC pulse train lands in the right places (symbols flow through the
-    full chain). This is an ENVELOPE (per-symbol RMS) check — sample-exact carrier-phase
-    equality is the explicit duplex's gate (see module docstring)."""
-    ctrl, cat, _ct, _rep, res = _auto_modem(_app)
-    bits = [random.Random(11).randint(0, 1) for _ in range(64)]
-    _tgt, out = _drive_tx(ctrl, cat, res, bits)
-    ref = np.asarray(M._tx_reference(bits), dtype=np.float64)
-
-    def env(x, w=4):
-        return np.array([np.sqrt(np.mean(x[i:i + w] ** 2))
-                         for i in range(0, len(x) - w + 1, w)])
-
-    ea, er = env(out), env(ref)
-    n = min(len(ea), len(er))
-    assert n >= 30, f"too few symbols to compare ({n})"
-    corr = float(np.corrcoef(ea[:n], er[:n])[0, 1])
-    assert corr > 0.7, f"TX envelope corr {corr:.3f} (expected the pulse train to track)"
+# (The former test_tx_envelope_tracks_reference compared the auto-P&R TX against a
+# hardcoded explicit-placement reference build; that reference is gone. The real TX
+# passband is now covered directly by test_tx_emits_passband +
+# test_tx_delivers_correct_symbol on the imported + auto-P&R'd chip.)

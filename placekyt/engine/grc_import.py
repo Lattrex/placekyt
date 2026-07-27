@@ -494,7 +494,7 @@ def import_grc(path, catalog, chip_type: str = "kyttar_10x12",
 # -- helpers -------------------------------------------------------------------
 
 # Stable, deterministic out_tag per stream_id for the shared-output-port demux.
-# Known demo ids get fixed tags matching engine.bpsk_modem_demo (rx=5, tx=10);
+# Known demo ids get fixed tags (rx=5, tx=10);
 # any other id derives a small nonzero tag from its name (0 = untagged/default,
 # so never assign it). The same id always maps to the same tag, so the input-side
 # stream and the output-side tag round-trip consistently.

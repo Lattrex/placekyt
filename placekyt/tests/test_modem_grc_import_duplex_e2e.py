@@ -45,7 +45,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from engine import bpsk_modem_demo as M  # noqa: E402
+from tests import modem_helpers as M  # noqa: E402
 from engine.catalog import BlockCatalog  # noqa: E402
 from engine.io.chip_type_io import load_chip_type  # noqa: E402
 from engine.port_config import stream_targets as resolve_stream_targets  # noqa: E402

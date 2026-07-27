@@ -5,8 +5,8 @@ upsampler -> RRC pulse shaper -> I/Q upconvert; RX: complex RRC matched filter -
 complex Costas loop -> Gardner timing recovery -> BPSK slicer) imports CLEANLY
 into placeKYT: every kyttar_* block resolves to a catalog type, both source/sink
 pairs collapse onto the shared x16_in / x16_out duplex ports, and the 11 logical
-nets are recovered. This is the IMPORT gate; BER is proven headless by
-engine.bpsk_modem_demo / test_bpsk_modem on the built bitstream.
+nets are recovered. This is the IMPORT gate; BER is proven on the imported +
+auto-P&R'd chip by test_modem_grc_import_duplex_e2e (the real end-to-end path).
 
 Complex baseband is carried as a SINGLE gr_complex stream per hop in GNURadio, but a
 complex placeKYT block has TWO scalar input regs (xi/xq) that must BOTH be fed. So the

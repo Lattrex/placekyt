@@ -185,7 +185,7 @@ def test_chip_batch_live_recovers_full_stream():
             srv.kill()
 
     rx = res["rx"]
-    # Reference bits from the SAME stim seed bpsk_modem_demo / coherent_demo_stim use.
+    # Reference bits from the SAME stim seed coherent_demo_stim uses.
     random.seed(5)
     ref = [random.randint(0, 1) for _ in range(120)]
     ref = [0 if (1.0 if b == 0 else -1.0) > 0 else 1 for b in ref]

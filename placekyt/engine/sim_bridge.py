@@ -895,7 +895,7 @@ class SimServer:
                             # whose dest == this stream's out_tag; OTHER tags are
                             # buffered in self._tag_buf so the other stream's
                             # process_batch (its own RPC) can still claim them.
-                            # Mirrors bpsk_modem_demo._drain_tagged's tag filter.
+                            # Keep only this stream's out_tag words.
                             for (v, d, _t) in self._chip.read_port_words_timed(port):
                                 self._capture_tags[(port, float(_t))] = int(d)
                                 if int(d) == int(out_tag):

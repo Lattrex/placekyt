@@ -47,7 +47,7 @@
       "params": {
         "sps": 2
       },
-      "notes": "Complex (I/Q) zero-stuffing rate expander \u2014 the 2-rail twin of UpsamplerBlock and the front half of a complex interpolating pulse-shaper (feed into ComplexRRCMatchedFilter as a shaper). Verified 1:1 vs interp_fir_filter_ccc(sps,[1+0j]): one complex input -> sample + sps-1 (0,0) pairs, kept sample pass-through on BOTH rails, zeros exact -> bit-exact in Q15. Each output is a yi/yq PACKET (WRITE yi; WRITE yq; JUMP) \u2014 the complex-packet contract (INV-17). 12 tests (sps in {2,3,4}, full-scale edges, bit-exact ref, repeat/swapped-IQ/wrong-rate/empty mutations). HARDWARE LIMIT: sps<=4 single cell (3-word packet halves the real block ceiling of 8); sps>4 RAISES (guard test). QPSK modem uses sps=2."
+      "notes": "Complex (I/Q) zero-stuffing rate expander — the 2-rail twin of UpsamplerBlock and the front half of a complex interpolating pulse-shaper (feed into ComplexRRCMatchedFilter as a shaper). Verified 1:1 vs interp_fir_filter_ccc(sps,[1+0j]): one complex input -> sample + sps-1 (0,0) pairs, kept sample pass-through on BOTH rails, zeros exact -> bit-exact in Q15. Each output is a yi/yq PACKET (WRITE yi; WRITE yq; JUMP) — the complex-packet contract (INV-17). 12 tests (sps in {2,3,4}, full-scale edges, bit-exact ref, repeat/swapped-IQ/wrong-rate/empty mutations). HARDWARE LIMIT: sps<=4 single cell (3-word packet halves the real block ceiling of 8); sps>4 RAISES (guard test). QPSK modem uses sps=2."
     },
     {
       "kyttar_block": "IQUpconvertBlock",
@@ -59,7 +59,7 @@
         "sample_rate": 32000.0,
         "frequency": 2000.0
       },
-      "notes": "Now takes GR real-world params sample_rate + frequency (Hz); derives the 16-bit freq_word internally (freq_word=round(freq/samp*65536)) \u2014 was exposing the raw hardware freq_word proxy. GR equivalent = multiply_cc(baseband, sig_source_c(samp,COS,freq,1,0,ph0)) -> complex_to_real, ph0=2pi*freq/samp (increment-before-emit). 1 LSB vs GR, delay 0. 11 verify + 25 build/catalog tests. Q15 overflow corner (|I|+|Q|>1 WRAPS) verified vs own ref. Migrated the build/catalog/verify tests off freq_word."
+      "notes": "Now takes GR real-world params sample_rate + frequency (Hz); derives the 16-bit freq_word internally (freq_word=round(freq/samp*65536)) — was exposing the raw hardware freq_word proxy. GR equivalent = multiply_cc(baseband, sig_source_c(samp,COS,freq,1,0,ph0)) -> complex_to_real, ph0=2pi*freq/samp (increment-before-emit). 1 LSB vs GR, delay 0. 11 verify + 25 build/catalog tests. Q15 overflow corner (|I|+|Q|>1 WRAPS) verified vs own ref. Migrated the build/catalog/verify tests off freq_word."
     },
     {
       "kyttar_block": "RRCPulseShaperBlock",
@@ -229,7 +229,7 @@
       "tier": 1,
       "status": "done",
       "metric": "amplitude",
-      "notes": "Verified vs GNU Radio filter.iir_filter_ffd (ARBITRARY-ORDER, GRC-verbatim params). Direct-Form-I IIR: y[n] = \u03a3 fftaps[k]\u00b7x[n-k] (\u00b1) \u03a3_{j>=1} fbtaps[j]\u00b7y[n-j], feedback sign + if oldstyle else - (GR's tap-sign convention; oldstyle default True). fbtaps[0] is IGNORED in both styles (confirmed against GR; NOT a normalizer). Any ff/fb order. Float reference reproduces GR EXACTLY (err 0) for arbitrary order + both styles; on-chip bit-exact vs the Q15 datapath reference AND within the Q15 floor vs GR (~2 LSB at 4th order). Feedback coeffs |coef| up to ~2 (e.g. a1=-2cos w) handled by the half-and-double-MSUQ trick (stored halved, MSUQ x2; no clamp - clamping silently corrupts sharp filters). HARDWARE LIMIT (documented + LOUD, raises): the whole filter is ONE 32-word cell, so len(fftaps)+len(fbtaps) + the x/y delay lines + program must fit 31 usable words; the exact word footprint is computed and raises above it (feedback taps cost more: a y-history word + a double MSUQ each). A 2nd-order biquad and a 4th-order ff / 2nd-order fb section fit; larger needs a multi-cell wavefront (Tier-2). PRECISION known-limit: Q15 vs GR's double-precision taps; error grows as poles approach |z|=1 (production-accurate gentle-to-moderate, guarded sharp-pole test). BACK-COMPAT: the old positional (name, b_coeffs, a_coeffs) biquad signature + lowpass/highpass/bandpass classmethods preserved EXACTLY (maps to fftaps=b, fbtaps=[1]+a, oldstyle=False); no-arg place = identity passthrough. 27 tests pass (16 biquad back-compat + 11 arbitrary-order incl. fb[0]-ignored, oldstyle-sign-flip, over-budget-raises).",
+      "notes": "Verified vs GNU Radio filter.iir_filter_ffd (ARBITRARY-ORDER, GRC-verbatim params). Direct-Form-I IIR: y[n] = Σ fftaps[k]·x[n-k] (±) Σ_{j>=1} fbtaps[j]·y[n-j], feedback sign + if oldstyle else - (GR's tap-sign convention; oldstyle default True). fbtaps[0] is IGNORED in both styles (confirmed against GR; NOT a normalizer). Any ff/fb order. Float reference reproduces GR EXACTLY (err 0) for arbitrary order + both styles; on-chip bit-exact vs the Q15 datapath reference AND within the Q15 floor vs GR (~2 LSB at 4th order). Feedback coeffs |coef| up to ~2 (e.g. a1=-2cos w) handled by the half-and-double-MSUQ trick (stored halved, MSUQ x2; no clamp - clamping silently corrupts sharp filters). HARDWARE LIMIT (documented + LOUD, raises): the whole filter is ONE 32-word cell, so len(fftaps)+len(fbtaps) + the x/y delay lines + program must fit 31 usable words; the exact word footprint is computed and raises above it (feedback taps cost more: a y-history word + a double MSUQ each). A 2nd-order biquad and a 4th-order ff / 2nd-order fb section fit; larger needs a multi-cell wavefront (Tier-2). PRECISION known-limit: Q15 vs GR's double-precision taps; error grows as poles approach |z|=1 (production-accurate gentle-to-moderate, guarded sharp-pole test). BACK-COMPAT: the old positional (name, b_coeffs, a_coeffs) biquad signature + lowpass/highpass/bandpass classmethods preserved EXACTLY (maps to fftaps=b, fbtaps=[1]+a, oldstyle=False); no-arg place = identity passthrough. 27 tests pass (16 biquad back-compat + 11 arbitrary-order incl. fb[0]-ignored, oldstyle-sign-flip, over-budget-raises).",
       "params": {
         "fftaps": [
           0.0675,
@@ -256,7 +256,7 @@
         "amplitude": 1.0,
         "phase": 0.0
       },
-      "notes": "Matches multiply_cc(signal, sig_source_c(samp,COS,freq,amp,offset,phase)) \u2014 added oscillator amplitude (scales osc; folded into the NCO quarter-wave table, so FREE/no extra MULQ) + phase (initial angle radians). HW-DEVIATION: oscillator offset (DC bias on the mixing LO) UNSUPPORTED -> RAISES (mixer output cell at full register budget; near-never case, compose NCO+Add). Real-world Hz params. 25 tests incl. amp/phase sweep vs GR (1-2 LSB grid) + offset-raises."
+      "notes": "Matches multiply_cc(signal, sig_source_c(samp,COS,freq,amp,offset,phase)) — added oscillator amplitude (scales osc; folded into the NCO quarter-wave table, so FREE/no extra MULQ) + phase (initial angle radians). HW-DEVIATION: oscillator offset (DC bias on the mixing LO) UNSUPPORTED -> RAISES (mixer output cell at full register budget; near-never case, compose NCO+Add). Real-world Hz params. 25 tests incl. amp/phase sweep vs GR (1-2 LSB grid) + offset-raises."
     },
     {
       "kyttar_block": "NCOBlock",
@@ -271,7 +271,7 @@
         "offset": 0.0,
         "phase": 0.0
       },
-      "notes": "Matches analog.sig_source_c(samp_rate,COS,freq,amp,offset,phase) \u2014 added offset (real DC bias on I only, matching GR real-offset behaviour) + phase (initial phase radians -> 16-bit accumulator start). Real-world Hz params (NOT a freq_word proxy). 33-entry quarter-wave LUT + interp -> ~1-2 LSB on grid; ~11 LSB derived table floor off-grid. 26 tests incl. offset/phase sweep vs GR."
+      "notes": "Matches analog.sig_source_c(samp_rate,COS,freq,amp,offset,phase) — added offset (real DC bias on I only, matching GR real-offset behaviour) + phase (initial phase radians -> 16-bit accumulator start). Real-world Hz params (NOT a freq_word proxy). 33-entry quarter-wave LUT + interp -> ~1-2 LSB on grid; ~11 LSB derived table floor off-grid. 26 tests incl. offset/phase sweep vs GR."
     },
     {
       "kyttar_block": "SoftDemodulatorBlock",
@@ -300,7 +300,7 @@
       "tier": 2,
       "status": "done",
       "metric": "amplitude",
-      "notes": "GRC-verbatim params (rate, reference, gain, max_gain); update law gain += rate*(reference-|out|). Verified vs analog.agc_ff within ~39 LSB in the ATTENUATING regime (gain<=1, Q15 range). Amplification (gain>1) needs a gain register with integer headroom \u2014 out of scope for the single-cell Q15 block."
+      "notes": "GRC-verbatim params (rate, reference, gain, max_gain); update law gain += rate*(reference-|out|). Verified vs analog.agc_ff within ~39 LSB in the ATTENUATING regime (gain<=1, Q15 range). Amplification (gain>1) needs a gain register with integer headroom — out of scope for the single-cell Q15 block."
     },
     {
       "kyttar_block": "ComplexCostasLoopBlock",
@@ -383,7 +383,7 @@
     },
     {
       "kyttar_block": "FSK4SymbolMapperBlock",
-      "grc_block": "digital.chunks_to_symbols_bf (M17 4FSK level table)",
+      "grc_block": "digital.chunks_to_symbols_bf (4FSK level table)",
       "tier": 3,
       "status": "done",
       "metric": "amplitude",
@@ -391,7 +391,7 @@
     },
     {
       "kyttar_block": "FSK4SlicerBlock",
-      "grc_block": "digital.constellation_decoder (M17 4FSK PAM, inverse of mapper)",
+      "grc_block": "digital.constellation_decoder (4FSK PAM, inverse of mapper)",
       "tier": 3,
       "status": "done",
       "metric": "decision",
@@ -399,7 +399,7 @@
     },
     {
       "kyttar_block": "FSK4SyncTimingRecoveryBlock",
-      "grc_block": "M17 sync-word correlation timing recovery (no single GR block)",
+      "grc_block": "sync-word correlation timing recovery (no single GR block)",
       "tier": 3,
       "status": "done",
       "metric": "decision",

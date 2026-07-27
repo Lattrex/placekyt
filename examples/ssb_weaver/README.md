@@ -22,10 +22,8 @@ RX (stream 'rx'):  SSB ─▶ ComplexMixer(-fc) ─▶ ComplexLowPass ─▶ IQU
   so the classic Weaver's complex→2-real-LPF fan-out and 2-real→1 recombine both vanish.
 - `IQUpconvert` = complex baseband → real passband (`out = I·cos − Q·sin`), the SSB combine.
 
-**Why this shape.** This chip is clockless — a standalone NCO drawn as a source gets no
-trigger and is DEAD on-chip. Each mixer carries its OWN oscillator (the fused-oscillator
-trade: cheap per-mixer phase accumulators, no scarce carrier fan-out). The complex-FIR
-version is the topology that fits ONE 10x12 die.
+**Topology.** Each mixer carries its own oscillator (fused per-mixer phase accumulators,
+no carrier fan-out). This complex-FIR Weaver form fits one 10×12 die.
 
 (USB; `fa=1500 Hz` audio-band centre, `fc=6000 Hz` carrier, `fs=32 kHz`, LPF cutoff 1200 Hz.
 The Weaver DSP is verified on-chip at **corr 0.986** — `weaver_builder_cfir.py`.)
@@ -40,24 +38,16 @@ The Weaver DSP is verified on-chip at **corr 0.986** — `weaver_builder_cfir.py
 | `weaver_builder.py` / `weaver_builder_cfir.py` | Headless builders + on-chip verifiers (per-block simKYT proof, corr 0.986). |
 | `ssb_hand_place_script.py` | A runnable placeKYT command trace that reproduces the hand-placement deterministically (advanced/reference). |
 
-## ⚠️ This demo is HAND-PLACED — open the `.kyt`, don't import the `.grc`
+## This demo is HAND-PLACED — open the `.kyt`, don't import the `.grc`
 
-Unlike the other demos, **you cannot auto-place-and-route this one.** It's a dense
-transceiver (11 chip blocks) whose complex-packet **fan-in** nets (both `xi` and `xq`
-landing on one mixer/upconvert cell) exceed what the auto-router threads at this
-utilisation — importing the `.grc` places the blocks but leaves several nets unrouted,
-so the build fails. The demo therefore ships a **hand-placed, hand-routed `ssb_weaver.kyt`**
-that you **open directly**.
+This modem ships as a hand-placed, pre-routed design: **open `ssb_weaver.kyt`**
+(File → Open) to host the chip. The `.grc` is for driving the hosted chip from
+`gnuradio-companion`, not for import. Hand layout is the intended workflow for compact,
+high-utilisation designs like this one.
 
-> This is expected and normal for compact, high-utilisation designs — hand layout is the
-> intended workflow above ~50% cell usage (the auto-router is best for looser designs).
-> The auto-route path is a known limitation, tracked as `xfail` in
-> `verification/tests/test_ssb_weaver_grc.py`.
-
-The on-chip DSP is verified **end to end**: the hand-placed chip emits the SSB passband
-(TX) at **corr 0.98** vs the `ssb_demo_stim` reference, and the RX chain **recovers the
-audio at corr ~0.97** (the block chain is proven at corr 0.986 by `weaver_builder_cfir.py`).
-Both streams are gated in `verification/tests/test_ssb_weaver_grc.py`.
+The on-chip DSP is verified end to end: the chip emits the SSB passband (TX) at **corr
+0.98** vs the `ssb_demo_stim` reference, and the RX chain **recovers the audio at corr
+~0.97**. Both streams are gated in `verification/tests/test_ssb_weaver_grc.py`.
 
 ## Run it
 

@@ -13,22 +13,17 @@ TX (stream 'tx'):  bits ─▶ PSKSymbolMapper(qpsk) ─▶ ComplexUpsampler ─
 RX (stream 'rx'):  RRC-QPSK I/Q ─▶ ComplexRRCMatchedFilter ─▶ CostasLoop(order=4) ─▶ Gardner(complex) ─▶ QPSKSlicer ─▶ 2-bit symbols
 ```
 
-- **TX (modulator):** maps 2-bit symbols to the QPSK constellation (±1/√2 per
-  axis), zero-stuffs BOTH rails to `sps` samples per symbol, complex-RRC pulse-shapes,
-  and upconverts to a passband — the transmit side of a QPSK link. Because QPSK carries
-  genuine I *and* Q (unlike BPSK, where Q=0), the pulse-shaping path is complex: a
-  **ComplexUpsampler** (2-rail zero-stuff) feeding a **ComplexRRCMatchedFilter** reused
-  as the complex pulse shaper.
-- **RX (demodulator):** a complex RRC matched filter, an **order-4 (QPSK) Costas
-  loop** for carrier recovery, **complex (I/Q) Gardner** timing recovery, and a
-  **QPSK hard-decision slicer** — recovers the 2-bit Gray symbols from an RRC-shaped
-  QPSK burst carrying a carrier **and** a fractional timing offset, at **BER 0**.
+- **TX (modulator):** maps 2-bit symbols to the QPSK constellation (±1/√2 per axis),
+  zero-stuffs both rails to `sps` samples per symbol (**ComplexUpsampler**), complex-RRC
+  pulse-shapes (**ComplexRRCMatchedFilter** as the shaper), and upconverts to a passband.
+  The full I/Q path carries genuine I *and* Q.
+- **RX (demodulator):** a complex RRC matched filter, an **order-4 (QPSK) Costas loop**
+  for carrier recovery, **complex (I/Q) Gardner** timing recovery, and a **QPSK
+  hard-decision slicer** — recovers the 2-bit Gray symbols from an RRC-shaped QPSK burst
+  carrying a carrier **and** a fractional timing offset, at **BER 0**.
 
-The RX chain is the QPSK analog of [`../coherent_bpsk_rx/`](../coherent_bpsk_rx/);
-this demo adds the matching **transmitter** on the same chip so you can see a whole
-QPSK modem in one design. The channel (the carrier + fractional-timing offset) is
-external — in the headless check the host loopback applies it, exactly as a real RF
-channel would between a modulator and a demodulator.
+The channel (the carrier + fractional-timing offset) is applied by the host loopback
+in the headless check, as a real RF channel would between a modulator and a demodulator.
 
 ## The chain
 
@@ -52,8 +47,7 @@ rotated by a multiple of 90° — the BER check tries all four constellation rot
 Radio `digital.constellation_qpsk()`: `symbol = (Q≥0 ? 2 : 0) | (I≥0 ? 1 : 0)`.
 
 **Design point.** The transmitter runs at **2 samples/symbol** and the matched
-filter uses **decimation = 1**, so the carrier and timing loops run at 2 sps — the
-operating point at which the complex Gardner is proven bit-exact on-chip.
+filter uses **decimation = 1**, so the carrier and timing loops run at 2 sps.
 
 ## Files
 

@@ -55,9 +55,9 @@
 | **GardnerTimingRecovery** | `digital.symbol_sync_cc` | 2 · stateful/loop | ⬜ planned · 🧪 proof-of-concept | — | — |
 | **BPSKSlicerBlock** | `digital.binary_slicer_fb` | 2 · stateful/loop | ⬜ planned · 🧪 proof-of-concept | — | — |
 | **LFSRScramblerBlock** | `digital.additive_scrambler_bb` | 2 · stateful/loop | ⬜ planned | — | — |
-| **FSK4SymbolMapperBlock** | `digital.chunks_to_symbols_bf (M17 4FSK level table)` | 3 · new GRC block | ✅ done | err 0 / tol 0 LSB | mut |
-| **FSK4SlicerBlock** | `digital.constellation_decoder (M17 4FSK PAM, inverse of mapper)` | 3 · new GRC block | ✅ done | BER 0 (32 bits) | mut |
-| **FSK4SyncTimingRecoveryBlock** | `M17 sync-word correlation timing recovery (no single GR block)` | 3 · new GRC block | ✅ done | BER 0 (208 bits) | mut |
+| **FSK4SymbolMapperBlock** | `digital.chunks_to_symbols_bf (4FSK level table)` | 3 · new GRC block | ✅ done | err 0 / tol 0 LSB | mut |
+| **FSK4SlicerBlock** | `digital.constellation_decoder (4FSK PAM, inverse of mapper)` | 3 · new GRC block | ✅ done | BER 0 (32 bits) | mut |
+| **FSK4SyncTimingRecoveryBlock** | `sync-word correlation timing recovery (no single GR block)` | 3 · new GRC block | ✅ done | BER 0 (208 bits) | mut |
 | **QuadratureDemod** | `analog.quadrature_demod_cf` | 3 · new GRC block | ✅ done | — | — |
 | **FrequencyModulatorBlock** | `analog.frequency_modulator_fc` | 3 · new GRC block | ✅ done | pass | sweep×4 mut |
 | **MultiplyConstComplex** | `blocks.multiply_const_cc` | 3 · new GRC block | ⬜ planned | — | — |

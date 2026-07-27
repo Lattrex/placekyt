@@ -27,18 +27,14 @@ generated in `fm_demo_stim` from the identical audio + sensitivity, so the RX ch
 independently recovers the transmitted audio — a true end-to-end transceiver across
 the shared chip.
 
-**Complex I/Q the proven way.** The FM passband is genuinely complex (both I and Q
-carry signal, unlike DSB-AM where Q=0). The RX source streams it INTO the chip with
-`Input Type = I/Q (complex)` — the interleaved xi/xq path already proven by the
-coherent BPSK RX demo. The TX sink is set to `Input Type = I/Q (complex)` too, since
-the VCO ahead of it produces complex.
+**Complex I/Q.** The FM passband is complex (both I and Q carry signal). The RX source
+streams it into the chip with `Input Type = I/Q (complex)` (interleaved xi/xq), and the
+TX sink is `Input Type = I/Q (complex)` since the VCO ahead of it produces complex.
 
-**Why FM is fabric-friendly.** This chip is clockless — every cell fires only when a
-neighbour triggers it, so there is no free-running oscillator. The `FrequencyModulator`
-VCO is **input-paced**: each audio sample is BOTH the trigger AND the phase increment
-(`phi += sensitivity·x`), so a clean linear filament emits the FM passband with no
-carrier fan-out. The discriminator has no oscillator at all (it's a MAC of the
-conjugate product).
+**The VCO is input-paced.** Each audio sample is both the trigger and the phase
+increment (`phi += sensitivity·x`), so the `FrequencyModulator` emits the FM passband
+with no carrier fan-out. The discriminator has no oscillator at all — it's a MAC of the
+conjugate product.
 
 `fs = 32 kHz`, `f_dev = 1500 Hz`, `sensitivity = 2π·f_dev/fs`, `gain = 1/sensitivity`.
 

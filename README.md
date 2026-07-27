@@ -157,9 +157,9 @@ factory is named in the dashboard so you never have to guess the equivalent.
 | **MMTimingRecoveryBlock** | `digital.symbol_sync_cc` | pass |
 | **SquelchBlock** | `analog.pwr_squelch_ff` | err 0 / tol 4 LSB |
 | **PSKSymbolMapperBlock** | `digital.chunks_to_symbols` | err 0 / tol 0 LSB |
-| **FSK4SymbolMapperBlock** | `digital.chunks_to_symbols_bf (M17 4FSK level table)` | err 0 / tol 0 LSB |
-| **FSK4SlicerBlock** | `digital.constellation_decoder (M17 4FSK PAM, inverse of mapper)` | BER 0 (32 bits) |
-| **FSK4SyncTimingRecoveryBlock** | `M17 sync-word correlation timing recovery (no single GR block)` | BER 0 (208 bits) |
+| **FSK4SymbolMapperBlock** | `digital.chunks_to_symbols_bf (4FSK level table)` | err 0 / tol 0 LSB |
+| **FSK4SlicerBlock** | `digital.constellation_decoder (4FSK PAM, inverse of mapper)` | BER 0 (32 bits) |
+| **FSK4SyncTimingRecoveryBlock** | `sync-word correlation timing recovery (no single GR block)` | BER 0 (208 bits) |
 | **QuadratureDemod** | `analog.quadrature_demod_cf` | — |
 | **FrequencyModulatorBlock** | `analog.frequency_modulator_fc` | pass |
 | **LowPassFilter** | `filter.fir_filter_fff (firdes.low_pass)` | err 37 / tol 79 LSB · -55 dB SNR |

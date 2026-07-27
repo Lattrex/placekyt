@@ -2,12 +2,11 @@
 
 # Full-duplex 16-QAM modem (TX + coherent RX on one array)
 
-A full-duplex **16-QAM** modem running on the Kyttar cell array — the step up from the
-[QPSK modem](../qpsk_modem/) (4 bits on a 16-point square constellation vs. 2 bits on a
-QPSK circle). The transmit chain and the coherent receiver live on **one** 10×12 array,
-sharing one input port (`x16_in`) and one output port (`x16_out`), exactly like the QPSK
-and [FSK4](../fsk4_modem/) modems. The receiver takes an RRC-shaped 16-QAM baseband at
-**2 samples/symbol** and recovers the 4-bit symbol indices (0..15) at **BER 0**:
+A full-duplex **16-QAM** modem running on the Kyttar cell array: **4 bits/symbol** on a
+16-point square constellation. The transmit chain and the coherent receiver live on
+**one** 10×12 array, sharing one input port (`x16_in`) and one output port (`x16_out`).
+The receiver takes an RRC-shaped 16-QAM baseband at **2 samples/symbol** and recovers the
+4-bit symbol indices (0..15) at **BER 0**:
 
 ```
 TX:  bits ─▶ QAM16 Symbol Mapper (4 bits → constellation point)
@@ -22,46 +21,23 @@ RX:  RRC 16-QAM I/Q ─▶ Complex RRC Matched Filter
                     ─▶ QAM16 Slicer ─▶ 4-bit symbols
 ```
 
-The receiver is a real demodulator front-to-back — **not** the 2-block `Costas → slicer`
-stub. The one new block this modem required is `MMTimingRecoveryBlock`; everything else
-already existed in the library.
+## The receive chain
 
-## Why this cascade (and not 2-sps Gardner + PSK Costas)
+- **Complex RRC matched filter** — matched to the TX pulse shape (β 0.35, span 8).
+- **Complex Gain (2.4)** — restores the constellation to its nominal scale (outer symbols
+  at **0.949**), which the decision-directed loops downstream expect.
+- **Mueller & Müller timing recovery** — decision-directed symbol timing at 2 sps, the
+  `digital.symbol_sync_cc` M&M path (on-chip `MMTimingRecoveryBlock`, verified bit-exact
+  to that reference).
+- **16-QAM Costas loop** — decision-directed carrier phase: slice to the nearest grid
+  point, then `err = Im{y · conj(decision)}` (the
+  `digital.constellation_receiver_cb(constellation_16qam())` path).
+- **16-QAM slicer** — hard-decision to the 4-bit symbol index (0..15).
 
-16-QAM is **not** constant-modulus, so the receiver the QPSK/BPSK modems use does not work
-here. Three independently-documented reasons, each fixed by this chain:
-
-1. **Raw Gardner is a BPSK/QPSK timing-error detector.** On 16-QAM's 4-level-per-axis
-   signal its S-curve is shallow and self-noisy (~3 % residual jitter — enough to misslice
-   the tight inner levels). The correct TED is **Mueller & Müller** — decision-directed,
-   GNU Radio's mainstream `digital.symbol_sync_cc` M&M path — which locks 16-QAM cleanly at
-   2 sps. The on-chip `MMTimingRecoveryBlock` is verified **bit-exact** to that reference.
-2. **A plain Costas is PSK-only.** GNU Radio's `costas_loop_cc` supports orders 2/4/8 only.
-   QAM fine carrier phase uses a **decision-directed** phase-error detector (slice to the
-   nearest grid point, then `err = Im{y · conj(decision)}`) — the
-   `digital.constellation_receiver_cb(constellation_16qam())` path, here the
-   `QAM16ComplexCostasLoopBlock`.
-3. **The decision-directed loops are scale-sensitive.** The matched filter pre-scales its
-   taps ÷2 for Q15 headroom, so its output is ~2.8× compressed. The **Complex Gain** stage
-   restores the constellation so the outer symbols reach the nominal **0.949** level the
-   M&M slicer and the DD Costas expect (their thresholds are fixed at ±0.316/±0.632/±0.949).
-   `gain = 2.4` is the centre of the robust BER-0 window `[2.3, 2.45]` (higher saturates the
-   outer symbols; lower collapses them toward the inner levels — either way the DD decisions
-   go wrong and the constellation degenerates to a handful of symbols).
-
-The recovered symbols keep a 90° four-fold phase ambiguity (like QPSK), so the BER check
-tries the four constellation rotations plus a small lag before scoring.
-
-## No carrier frequency offset — by construction, not a limitation
-
-The hosted `.kyt` runs the transmitter and receiver on the **same chip, same clock**, so
-there is genuinely **no carrier frequency offset** (`foff = 0`) — the same same-chip
-loopback the QPSK and FSK4 shipped modems use. The decision-directed M&M TED sits *before*
-the Costas and so has no carrier tracking; a same-chip TX guarantees the `foff = 0` it
-needs. The Costas still handles the static phase (the 90° ambiguity + any fixed rotation).
-Over a real channel with a frequency offset you would add a coarse-frequency (FLL /
-FFT-based) stage ahead of the M&M block — the standard industry cascade — but that is not
-needed for the same-chip modem and is out of scope here.
+The recovered symbols keep a 90° four-fold phase ambiguity, so the BER check tries the four
+constellation rotations plus a small lag before scoring. The transmitter and receiver run
+on the same chip and clock, so there is no carrier frequency offset (`foff = 0`); the
+Costas handles the static phase and the 90° ambiguity.
 
 ## The chain
 

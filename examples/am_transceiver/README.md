@@ -25,12 +25,9 @@ each `stream_id` to its own chain's landing cell and demuxes the two output stre
 by tag (`engine.port_config.stream_targets`), so TX and RX run independently on one
 chip.
 
-**Why oscillator-mixers, not a shared NCO?** This chip is clockless — every cell
-fires only when a neighbour triggers it, so there is no free-running oscillator. A
-standalone NCO drawn as a source gets NO trigger on-chip and is DEAD. The fix is to
-**fuse the oscillator into the mixer**: the arriving sample is both the trigger AND
-the data, and the mixer runs its own carrier. Both mixers start at phase 0 from
-sample 0, so TX/RX carriers are coherent.
+**Oscillator-mixers.** Each mixer runs its own carrier, fused with the mix: the
+arriving sample is both the trigger and the data. Both mixers start at phase 0 from
+sample 0, so the TX and RX carriers are coherent.
 
 `fc = 6000 Hz`, `fs = 32 kHz`, audio tones 800/1500 Hz, RX cutoff 2000 Hz
 (fc/message-BW = 3).

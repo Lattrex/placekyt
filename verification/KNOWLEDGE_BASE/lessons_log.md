@@ -8,6 +8,33 @@ anything that generalizes across block classes into `invariants.md`.
 
 ---
 
+## Saturated drive breaks RATE-EXPANDING TX chains (bpsk/qpsk/fsk4) 2026-07-27
+
+- **CONTEXT:** goal was to ship every modem example (bpsk/qpsk/fsk4/am/fm/ssb) at full
+  saturation (`pipelined: yes`) like the 16-QAM modem. Do NOT flip `pipelined: yes` blind —
+  it ships broken demos. Verified before flipping anything; the `.grc` files were left at
+  `pipelined: no` pending the fix below.
+- **FINDING (verified via `_process_batch_duplex`, per-stream, TX-only):** the saturated
+  `queue_words_physical` drive collapses a **rate-EXPANDING** chain to ~1 output word.
+  BPSK TX (bit → 4 passband words, 80 in → 320 out) drops to **1 out** saturated (320 out
+  per-sample). 16-QAM TX (2 bits → 1 symbol, rate-REDUCING) is fine — 100 out both drives.
+  So the discriminator is **rate expansion**, NOT interleaving: the earlier "bpsk duplex
+  BER 1.0" was a downstream symptom; TX-ONLY saturated already collapses.
+- **Why:** the saturated path queues one `[WRITE,data,JUMP]` per INPUT and drains the
+  output port ONCE at the end. A rate-reducing/preserving chain emits ≤1 word per JUMP, so
+  one final drain captures everything. A rate-EXPANDING chain emits N>1 words per JUMP; the
+  expanded egress backs up / the single trailing drain only captures the first — the burst
+  is lost. (RX demods are rate-reducing, which is why RX saturation always looked fine.)
+- **What DOES work saturated (verified BER 0 / full count):** any rate-reducing/preserving
+  chain — every RX demod, and the 16-QAM TX. BPSK RX saturated sequential = BER 0. So each
+  chain is individually saturation-*safe*; the bug is egress DRAIN pacing for expansion.
+- **FIX DIRECTION (not yet done):** the saturated drive must drain the output port
+  PERIODICALLY as it runs (or size the run/drain to the expansion factor), not once at the
+  end — so a rate-expanding chain's multi-word-per-input egress is collected. Then re-verify
+  each modem TX+RX at BER 0/correct count before setting `pipelined: yes` in its `.grc`.
+- **STATUS:** 16-QAM ships saturated (its TX is rate-reducing, RX rate-reducing — both safe).
+  bpsk/qpsk/fsk4/am/fm/ssb stay per-sample until the drain-pacing fix lands.
+
 ## GRC-settable duplex SCHEDULE switch + the installed-OOT boundary 2026-07-27
 
 - **GOAL:** let a user flip a full-duplex modem between *interleaved* (real full-duplex —

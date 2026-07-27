@@ -20,20 +20,38 @@ anything that generalizes across block classes into `invariants.md`.
   per-sample). 16-QAM TX (2 bits → 1 symbol, rate-REDUCING) is fine — 100 out both drives.
   So the discriminator is **rate expansion**, NOT interleaving: the earlier "bpsk duplex
   BER 1.0" was a downstream symptom; TX-ONLY saturated already collapses.
-- **Why:** the saturated path queues one `[WRITE,data,JUMP]` per INPUT and drains the
-  output port ONCE at the end. A rate-reducing/preserving chain emits ≤1 word per JUMP, so
-  one final drain captures everything. A rate-EXPANDING chain emits N>1 words per JUMP; the
-  expanded egress backs up / the single trailing drain only captures the first — the burst
-  is lost. (RX demods are rate-reducing, which is why RX saturation always looked fine.)
-- **What DOES work saturated (verified BER 0 / full count):** any rate-reducing/preserving
-  chain — every RX demod, and the 16-QAM TX. BPSK RX saturated sequential = BER 0. So each
-  chain is individually saturation-*safe*; the bug is egress DRAIN pacing for expansion.
-- **FIX DIRECTION (not yet done):** the saturated drive must drain the output port
-  PERIODICALLY as it runs (or size the run/drain to the expansion factor), not once at the
-  end — so a rate-expanding chain's multi-word-per-input egress is collected. Then re-verify
-  each modem TX+RX at BER 0/correct count before setting `pipelined: yes` in its `.grc`.
-- **STATUS:** 16-QAM ships saturated (its TX is rate-reducing, RX rate-reducing — both safe).
-  bpsk/qpsk/fsk4/am/fm/ssb stay per-sample until the drain-pacing fix lands.
+- **ROOT CAUSE (fully isolated, NOT an output-drain problem):** it's an INPUT-side
+  DEADLOCK. The rate-expanding TX chain jams when the NEXT input word reaches the input cell
+  before the current input's multi-word expansion has finished propagating. Proven by
+  depth-sweep on BPSK TX (80 bits → 320 words) driven via `queue_words_physical`:
+  - all bits queued back-to-back, one run → **1 out (deadlock)**; `has_pending_input=True`,
+    `pending_events=5` stuck, and no amount of run()/drain()/ack() unjams it.
+  - 1 bit queued, run to quiescence, drain, repeat → **320 out, ~319 kSa/s** ✓
+  - 2 bits in flight → 320 out ✓;  **3+ in flight → deadlock (1 out)**.
+  So continuous output draining does NOT help (verified: drain-continuous == drain-at-end ==
+  1 out). The expanding block can sustain ≤2 inputs in flight, then jams. RX demods are
+  rate-reducing so they never fill the pipeline this way; 16-QAM TX is rate-REDUCING
+  (2 bits→1 symbol) so it's also safe — that's why only 16-QAM shipped saturated.
+- **16-QAM is NOT secretly throttled:** verified drain-at-end vs drain-continuous give the
+  IDENTICAL 146.1 kSa/s and 409 out for the 16-QAM RX. The chip clock records emit time, not
+  read time, so late draining doesn't slow a rate-reducing chain's reported rate — it only
+  DEADLOCKS a rate-expanding one.
+- **THE EXPANDER is `UpsamplerBlock`** (1 input → `sps` outputs, single cell, unrolled
+  WRITE/JUMP burst). None of the BPSK TX blocks (`PSKSymbolMapper → Upsampler → RRC →
+  IQUpconvert`) currently carries a serialize-LOCK (`iq_upconvert_block` no longer has one
+  either — check the repo, not old notes).
+- **FIX (chosen: serialize-LOCK the expanding blocks):** give `UpsamplerBlock` the same
+  serialize-LOCK idiom `NCOBlock`/`FrequencyModulatorBlock` use (INV-20): the cell LOCKs its
+  input arbiter after launching a sample's burst and clears it via a backward `WRITE.CFG`
+  once the burst has emitted, so ONE input traverses at a time while the port FIFO still
+  pipelines. Note this turns the single-cell Upsampler into a multi-cell block (NCO adds +2:
+  a transit_unlock corridor + relay), so it needs a placement/orientation/saturation re-gate
+  and the shipped `.kyt`/example floorplans re-checked. Then verify each TX+RX modem at
+  BER 0/correct count and set `pipelined: yes` in the `.grc`. Likely also needed on any other
+  rate-expanding block a modem TX uses.
+- **STATUS:** 16-QAM ships saturated (both directions rate-reducing — safe).
+  bpsk/qpsk/fsk4/am/fm/ssb stay per-sample until the Upsampler serialize-LOCK lands + each is
+  re-verified. Do NOT flip their `.grc` to `pipelined: yes` before that.
 
 ## GRC-settable duplex SCHEDULE switch + the installed-OOT boundary 2026-07-27
 

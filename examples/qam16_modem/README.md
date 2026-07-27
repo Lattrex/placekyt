@@ -81,6 +81,19 @@ exactly like a real transmitter and like the QPSK modem's `time_sink_f`), while 
 > so **open the `.kyt`** to host the chip. The `.grc` is the reference flowgraph (it imports
 > with zero unknown blocks); the actual placement is the hand-authored `.kyt`.
 
+## Performance
+
+Measured on the built chip driven at **saturation** (back-to-back samples, one
+continuous run), recovering at **BER 0**. Throughput and power come from the chip's
+own performance report (the same figures the Stream Summary panel shows).
+
+| Direction | Throughput | Bit rate | Active power | Idle power | Energy / output |
+|-----------|-----------:|---------:|-------------:|-----------:|----------------:|
+| **RX** (demod) | 146 kSa/s | 0.58 Mbit/s | 8.9 mW  | 0.38 mW | 60 nJ/symbol |
+| **TX** (mod)   | 460 kSa/s | 1.84 Mbit/s | 11.5 mW | 0.47 mW | 29 nJ/sample |
+
+The array is asynchronous — only active cells draw power, so idle power is ~0.5 mW.
+
 ## Files
 
 | File | What it is |

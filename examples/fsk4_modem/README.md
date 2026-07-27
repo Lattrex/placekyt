@@ -49,6 +49,19 @@ The importer maps these flowgraph blocks by id + params:
 symbols reach ~full-scale: the sync correlation threshold and the slicer's ±2/3
 threshold both assume outer ≈ ±1.0.
 
+## Performance
+
+Measured on the built chip driven at **saturation** (back-to-back samples, one
+continuous run), recovering at **BER 0**. Throughput and power come from the chip's
+own performance report (the same figures the Stream Summary panel shows).
+
+| Direction | Throughput | Bit rate | Active power | Idle power | Energy / output |
+|-----------|-----------:|---------:|-------------:|-----------:|----------------:|
+| **RX** (demod) | 542 kSa/s | 1.08 Mbit/s | 15.1 mW | 0.50 mW | 34 nJ/dibit |
+| **TX** (mod)   | 451 kSa/s | 0.90 Mbit/s | 4.2 mW  | 0.49 mW | 8 nJ/sample |
+
+The array is asynchronous — only active cells draw power, so idle power is ~0.5 mW.
+
 ## Files
 
 | File | What it is |

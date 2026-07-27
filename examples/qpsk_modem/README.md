@@ -49,6 +49,19 @@ Radio `digital.constellation_qpsk()`: `symbol = (Q≥0 ? 2 : 0) | (I≥0 ? 1 : 0
 **Design point.** The transmitter runs at **2 samples/symbol** and the matched
 filter uses **decimation = 1**, so the carrier and timing loops run at 2 sps.
 
+## Performance
+
+Measured on the built chip driven at **saturation** (back-to-back samples, one
+continuous run), recovering at **BER 0**. Throughput and power come from the chip's
+own performance report (the same figures the Stream Summary panel shows).
+
+| Direction | Throughput | Bit rate | Active power | Idle power | Energy / output |
+|-----------|-----------:|---------:|-------------:|-----------:|----------------:|
+| **RX** (demod) | 172 kSa/s | 0.34 Mbit/s | 8.2 mW | 0.44 mW | 46 nJ/symbol |
+| **TX** (mod)   | 460 kSa/s | 0.92 Mbit/s | 9.1 mW | 0.48 mW | 20 nJ/sample |
+
+The array is asynchronous — only active cells draw power, so idle power is ~0.5 mW.
+
 ## Files
 
 | File | What it is |

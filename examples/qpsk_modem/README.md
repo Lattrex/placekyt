@@ -51,16 +51,19 @@ filter uses **decimation = 1**, so the carrier and timing loops run at 2 sps.
 
 ## Performance
 
-Measured on the built chip driven at **saturation** (back-to-back samples, one
-continuous run), recovering at **BER 0**. Throughput and power come from the chip's
-own performance report (the same figures the Stream Summary panel shows).
+Measured on the built chip driven at **saturation** (back-to-back samples), recovering
+at **BER 0**, from the chip's own performance report (the figures the Stream Summary
+panel shows). Two operating points: **simplex** (one direction running flat-out alone)
+and **full-duplex** (TX and RX co-resident, contending for the shared port).
 
-| Direction | Throughput | Bit rate | Active power | Idle power | Energy / output |
-|-----------|-----------:|---------:|-------------:|-----------:|----------------:|
-| **RX** (demod) | 172 kSa/s | 0.34 Mbit/s | 8.2 mW | 0.44 mW | 46 nJ/symbol |
-| **TX** (mod)   | 460 kSa/s | 0.92 Mbit/s | 9.1 mW | 0.48 mW | 20 nJ/sample |
+| Direction | Simplex (alone) | Full-duplex (both) |
+|-----------|----------------:|-------------------:|
+| **RX** (demod) | 172 kSa/s | 172 kSa/s |
+| **TX** (mod)   | 460 kSa/s | 350 kSa/s |
 
-The array is asynchronous — only active cells draw power, so idle power is ~0.5 mW.
+**~13.6 mW** active, **~0.3 mW** idle, **~28 nJ** per recovered symbol. The array is
+asynchronous — only active cells draw power. Simplex is the peak per-chain rate; in
+full-duplex the two chains time-slice the single shared input/output port.
 
 ## Files
 

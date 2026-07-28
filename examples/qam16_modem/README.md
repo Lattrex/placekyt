@@ -83,16 +83,19 @@ exactly like a real transmitter and like the QPSK modem's `time_sink_f`), while 
 
 ## Performance
 
-Measured on the built chip driven at **saturation** (back-to-back samples, one
-continuous run), recovering at **BER 0**. Throughput and power come from the chip's
-own performance report (the same figures the Stream Summary panel shows).
+Measured on the built chip driven at **saturation** (back-to-back samples), recovering
+at **BER 0**, from the chip's own performance report (the figures the Stream Summary
+panel shows). Two operating points: **simplex** (one direction running flat-out alone)
+and **full-duplex** (TX and RX co-resident, contending for the shared port).
 
-| Direction | Throughput | Bit rate | Active power | Idle power | Energy / output |
-|-----------|-----------:|---------:|-------------:|-----------:|----------------:|
-| **RX** (demod) | 146 kSa/s | 0.58 Mbit/s | 8.9 mW  | 0.38 mW | 60 nJ/symbol |
-| **TX** (mod)   | 460 kSa/s | 1.84 Mbit/s | 11.5 mW | 0.47 mW | 29 nJ/sample |
+| Direction | Simplex (alone) | Full-duplex (both) |
+|-----------|----------------:|-------------------:|
+| **RX** (demod) | 146 kSa/s | 146 kSa/s |
+| **TX** (mod)   | 460 kSa/s | 148 kSa/s |
 
-The array is asynchronous — only active cells draw power, so idle power is ~0.5 mW.
+**~11.3 mW** active, **~0.3 mW** idle, **~41 nJ** per recovered symbol. The array is
+asynchronous — only active cells draw power. Simplex is the peak per-chain rate; in
+full-duplex the two chains time-slice the single shared input/output port.
 
 ## Files
 

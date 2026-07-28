@@ -1277,43 +1277,31 @@ class SimServer:
                 # does NOT divide throughput; a shared port serializes the corridor,
                 # it does not halve compute.
                 #
-                # FRAMING RULE (the only real constraint, and it is SUBMIT-ORDER
-                # INDEPENDENT): within each sample emit ALL streams' DATA, then ALL
-                # streams' JUMPs — with the JUMPs ordered so the COMPLEX (multi-data-
-                # word) stream's JUMP fires LAST. The streams share the entry addr at
-                # different hops; a JUMP immediately followed by another stream's WRITE
-                # (different hop) clobbers the first program, and the complex stream —
-                # whose packet is longer (WRITE,xi,WRITE,xq) — must own the final JUMP
-                # or its decode is dropped. Measured: real-JUMP(s) then complex-JUMP
-                # decodes BOTH streams at BER 0 REGARDLESS of which source submitted
-                # first; putting the complex JUMP anywhere but last zeros the other
-                # stream (the GUI bug: the rendezvous can submit tx-first or rx-first,
-                # so a submit-order-relative rule silently corrupted one direction).
+                # FRAMING RULE: each stream's per-sample operation is an ATOMIC PACKET —
+                # its WRITE(s), the operand DATA, and its JUMP emitted CONTIGUOUSLY
+                # (WRITE,xi,WRITE,xq,JUMP for a complex stream; WRITE,x,JUMP for a real
+                # one). A JUMP triggers execution against the data already written at its
+                # landing cell, so a stream's data must NEVER be separated from its JUMP
+                # by another stream's words. We interleave at PACKET granularity: emit
+                # stream A's whole sample-k packet, then stream B's, then A's k+1, …. Each
+                # stream lands at its OWN cell/hop, so packets are independent.
                 per = [_stream_words_by_sample(s) for s in streams]
-                # The COMPLEX stream must WRAP the real one: its DATA first and its
-                # JUMP last, so the real stream's (WRITE,data,JUMP) sits fully inside.
-                # data order = complex streams first; jump order = complex streams last
-                # (the exact reverse). Both derived from complex-ness, NOT submit order,
-                # so tx-first vs rx-first from the rendezvous give identical results.
-                data_order = sorted(range(len(streams)),
-                                    key=lambda pi: 0 if streams[pi]["complex"] else 1)
-                jump_order = list(reversed(data_order))
                 merged = []
                 for k in range(n_max):
-                    for pi in data_order:                   # DATA: complex first
+                    for pi in range(len(streams)):
                         if k < len(per[pi]):
-                            merged += per[pi][k][0]
-                    for pi in jump_order:                   # JUMPs: complex last
-                        if k < len(per[pi]):
-                            merged.append(per[pi][k][1])
+                            data_words, jump_word = per[pi][k]
+                            merged += data_words
+                            merged.append(jump_word)
                 if merged:
                     self._chip.queue_words_physical(inj, merged)
                     self._chip.run(max_events=max(200_000, 20_000 * len(merged)))
                     _drain_demux(in_port)
 
         def _stream_words_by_sample(s):
-            """Per sample, ``(data_words, jump_word)`` so the interleaver can emit all
-            streams' DATA then all their JUMPs (complex stream wrapping the real one)."""
+            """Per sample, ``(data_words, jump_word)`` — the interleaver emits each as
+            one atomic packet (``data_words + [jump_word]``), never splitting a stream's
+            data from its JUMP."""
             hop, a0, a1, entry = s["hop"], s["a0"], s["a1"], s["entry"]
             seg = s["seg"]
 

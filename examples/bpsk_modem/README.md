@@ -25,16 +25,19 @@ modem in one design.
 
 ## Performance
 
-Measured on the built chip driven at **saturation** (back-to-back samples, one
-continuous run), recovering at **BER 0**. Throughput and power come from the chip's
-own performance report (the same figures the Stream Summary panel shows).
+Measured on the built chip driven at **saturation** (back-to-back samples), recovering
+at **BER 0**, from the chip's own performance report (the figures the Stream Summary
+panel shows). Two operating points: **simplex** (one direction running flat-out alone)
+and **full-duplex** (TX and RX co-resident, contending for the shared port).
 
-| Direction | Throughput | Bit rate | Active power | Idle power | Energy / output |
-|-----------|-----------:|---------:|-------------:|-----------:|----------------:|
-| **RX** (demod) | 186 kSa/s | 0.19 Mbit/s | 9.5 mW | 0.46 mW | 52 nJ/bit |
-| **TX** (mod)   | 481 kSa/s | 0.48 Mbit/s | 7.7 mW | 0.49 mW | 15 nJ/sample |
+| Direction | Simplex (alone) | Full-duplex (both) |
+|-----------|----------------:|-------------------:|
+| **RX** (demod) | 186 kSa/s | 61 kSa/s |
+| **TX** (mod)   | 481 kSa/s | 481 kSa/s |
 
-The array is asynchronous — only active cells draw power, so idle power is ~0.5 mW.
+**~9.8 mW** active, **~0.4 mW** idle, **~18 nJ** per recovered symbol. The array is
+asynchronous — only active cells draw power. Simplex is the peak per-chain rate; in
+full-duplex the two chains time-slice the single shared input/output port.
 
 ## Files
 

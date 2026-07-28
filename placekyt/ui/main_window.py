@@ -1230,15 +1230,27 @@ class MainWindow(QMainWindow):
         if checked:
             # Fixed default port so the bundled live .grc flowgraph
             # (server_port=58950) connects without reconfiguration. Falls back to
-            # an OS-assigned port if 58950 is busy.
+            # an OS-assigned port if 58950 is busy. ANY failure to start (not just
+            # OSError) must be REPORTED, not swallowed by the Qt slot — a silent
+            # exception here reads as "the button does nothing" (the reported bug).
+            bound = None
             try:
-                bound = self.sim.start_gnuradio_server(port=58950)
-            except OSError:
-                bound = self.sim.start_gnuradio_server(port=0)
+                try:
+                    bound = self.sim.start_gnuradio_server(port=58950)
+                except OSError:
+                    bound = self.sim.start_gnuradio_server(port=0)
+            except Exception as e:  # noqa: BLE001 — surface it instead of vanishing
+                import traceback
+                traceback.print_exc()
+                self.act_gr_server.setChecked(False)
+                self.statusBar().showMessage(
+                    f"GNURadio server failed to start: {type(e).__name__}: {e}", 0)
+                return
             if bound is None:
                 self.act_gr_server.setChecked(False)
                 self.statusBar().showMessage(
-                    "GNURadio server failed to start (build errors?)", 5000)
+                    "GNURadio server failed to start (build errors? check the "
+                    "console / Design Rules tab)", 0)
                 return
             self.statusBar().showMessage(
                 f"GNURadio server listening on 127.0.0.1:{bound} — point a "

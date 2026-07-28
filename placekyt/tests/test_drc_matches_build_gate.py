@@ -37,6 +37,7 @@ from model.connection import BlockEndpoint, ChipPortEndpoint  # noqa: E402
 
 _CHIP = str(Path(__file__).resolve().parents[1] / "resources" / "chips"
             / "kyttar_10x12.yaml")
+_KEY = "kyttar_10x12"
 _LIB = "lattrex.official"
 
 
@@ -49,18 +50,32 @@ def _errs(drc):
     return [f for f in drc.findings if f.severity.value == "ERROR"]
 
 
-_MODEM = str(Path(__file__).resolve().parents[2]
-             / "examples" / "fsk4_modem" / "fsk4_modem.kyt")
+@pytest.mark.skipif(not os.path.exists(_CHIP), reason="chip yaml absent")
+def test_run_drc_matches_build_gate_on_single_cell_deadlock(qapp):
+    """On a HAND-LAID single-cell input==output deadlock, the DRC panel
+    (run_drc → check_project) must report exactly what the build gate
+    (build → BuildEngine) reports.
 
-
-@pytest.mark.skipif(not (os.path.exists(_CHIP) and os.path.exists(_MODEM)),
-                    reason="chip yaml / modem .kyt absent")
-def test_run_drc_matches_build_gate_on_saved_modem(qapp):
-    """On the SAVED modem .kyt (whose slicer geometry has the single_cell_inout
-    deadlock), the DRC panel must report exactly what the build gate reports."""
+    The geometry is built directly here — a GainBlock at (8,5) whose input net
+    arrives on the EAST face and whose output net's first hop also drives EAST, so
+    ``_check_single_cell_inout`` flags the deadlock. We do NOT lean on a shipped
+    example being broken: the shipped modems build CLEAN (they are verified BER-0
+    designs), so keying this on one would only pass while an example is broken and
+    silently regress the moment it's fixed (exactly what happened once). A
+    purpose-built deadlock is the stable fixture.
+    """
     cat = BlockCatalog.from_gr_kyttar()
     ctrl = AppController(catalog=cat)
-    ctrl.open_project(_MODEM)
+    ctrl.new_project("dl", _KEY)
+    g = ctrl.place_block("GainBlock", 0, 8, 5, library=_LIB, params={"gain": 1.0})
+    # input net ENDS at the EAST neighbour (9,5) → arrival face E;
+    # output net's first hop ALSO drives to (9,5) → drive face E → deadlock.
+    ctrl.add_route(ChipPortEndpoint(chip=0, port="x16_in"),
+                   BlockEndpoint(block=g, port="sample"),
+                   [(0, 5), (9, 5)])
+    ctrl.add_route(BlockEndpoint(block=g, port="out"),
+                   ChipPortEndpoint(chip=0, port="x16_out"),
+                   [(8, 5), (9, 5), (9, 0)])
 
     build = ctrl.build()
     drc = ctrl.run_drc()
@@ -68,8 +83,8 @@ def test_run_drc_matches_build_gate_on_saved_modem(qapp):
     b_cats = {getattr(e, "category", None) for e in build.errors}
     d_cats = {e.category for e in _errs(drc)}
 
-    # The build gate genuinely fails on the slicer deadlock.
-    assert not build.ok, "saved modem should trip the single-cell deadlock at build"
+    # The build gate genuinely fails on the single-cell deadlock.
+    assert not build.ok, "hand-laid single-cell in==out geometry should fail at build"
     assert "single_cell_inout_deadlock" in b_cats, b_cats
 
     # THE FIX: run_drc (panel/badge) must NOT read clean while the build gate fails,

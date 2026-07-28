@@ -1248,9 +1248,22 @@ class MainWindow(QMainWindow):
                 return
             if bound is None:
                 self.act_gr_server.setChecked(False)
+                # The server refused to start because the build gate found DRC
+                # errors. Run that SAME gate now and populate the Design Rules
+                # panel + badge with the actual errors, so the panel isn't empty
+                # while the status bar claims "N DRC errors" (the reported
+                # self-inconsistency). These are placement/routing/generation
+                # errors the standalone project DRC (check_project) never sees.
+                build = self.controller.build()
+                n = len(build.errors)
+                if not build.ok:
+                    self._set_drc_indicator(n)
+                    self._show_findings(
+                        "GNURadio server — build blocked",
+                        build.errors + build.warnings)
                 self.statusBar().showMessage(
-                    "GNURadio server failed to start (build errors? check the "
-                    "console / Design Rules tab)", 0)
+                    f"GNURadio server failed to start: {n} DRC error(s) — see the "
+                    "Design Rules tab (click a row to highlight it).", 0)
                 return
             self.statusBar().showMessage(
                 f"GNURadio server listening on 127.0.0.1:{bound} — point a "
@@ -2059,12 +2072,30 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Connect panel failed: {exc}", 4000)
 
     def _check_drc(self) -> None:
-        result = self.controller.run_drc()
-        errs = [f for f in result.findings
-                if _finding_is_error(f)]
-        self._set_drc_indicator(len(errs) if not result.ok else 0)
-        self._show_findings("Design Rule Check", result.findings,
-                            ok_msg="DRC clean." if result.ok else None)
+        # Run the FULL build gate, not just project-level check_project. The
+        # standalone project DRC (run_drc → check_project) only sees rules it can
+        # evaluate WITHOUT placing/routing; the placement, routing and generation
+        # stages emit their own DRC errors ("no physical route", single-cell
+        # deadlock, etc.) that only surface inside engine.build. When those fired,
+        # this panel/badge read "0 errors — DRC clean" while Build and the
+        # GNURadio-server start both aborted with "N DRC error(s)" — the exact
+        # self-inconsistency the user hit (panel green, server says 7 errors).
+        # Building here makes the DRC check report the SAME error set those paths
+        # enforce, so the badge can never go green while the build refuses to run.
+        build = self.controller.build()
+        if build.ok:
+            # Build clean: also surface project-DRC warnings/infos (utilization,
+            # non-blocking findings) that build() carries but doesn't fail on.
+            self._last_build = build
+            self._set_drc_indicator(0)
+            drc = self.controller.run_drc()
+            self._show_findings("Design Rule Check", drc.findings,
+                                ok_msg="DRC clean." if drc.ok else None)
+            return
+        # Build failed: report exactly the errors (+ warnings) that block it, so
+        # the panel and badge match Build / server-start.
+        self._set_drc_indicator(len(build.errors))
+        self._show_findings("Design Rule Check", build.errors + build.warnings)
 
     def _set_drc_indicator(self, error_count: int | None) -> None:
         """Paint the bottom-right DRC pill. ``None`` = unknown (not yet checked),

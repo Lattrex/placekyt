@@ -40,19 +40,23 @@ conjugate product.
 
 ## Performance
 
-Measured on the built chip driven at **saturation**, recovering the audio at
-**corr 0.996** vs the input, from the chip's own performance report. **Simplex** =
-one direction flat-out alone; **full-duplex** = both chains co-resident.
+**Simplex**, driven at **saturation** (whole burst back-to-back), recovering the
+audio at **corr 0.996** vs the input. Each direction runs alone at its compute-bound
+ceiling; the rate is the sink (output) sample rate — the "Settled rate" the Stream
+Summary panel shows.
 
-| Direction | Simplex (alone) | Full-duplex (both) |
-|-----------|----------------:|-------------------:|
-| **RX** (discriminator) | 1872 kSa/s | 429 kSa/s |
-| **TX** (VCO modulator) | 427 kSa/s | 427 kSa/s |
+| Direction | Sink rate | Power |
+|-----------|----------:|------:|
+| **RX** (discriminator) | 1.93 MSa/s | 6.3 mW |
+| **TX** (VCO modulator) | 429 kSa/s  | 5.7 mW |
 
-**~6.8 mW** active, **~0.5 mW** idle, **~6 nJ** per output sample. The RX is just a
-quadrature discriminator (a MAC of the conjugate product, no loops), so its
-per-chain rate is the highest of any demod here. The array is asynchronous — only
-active cells draw power.
+Power is total draw (active + idle) while that direction runs alone; **idle ~0.5 mW**.
+The RX is just a quadrature discriminator (a MAC of the conjugate product, no loops) on
+3 active cells, so its per-chain rate is the highest of any demod here. The array is
+asynchronous — only active cells draw power. To reproduce: open the
+`.kyt`, Run as GNURadio Server, set the Kyttar Source **Full-speed (saturated) = Yes**
+and **Duplex schedule = Sequential**, Run, and read each direction's Settled rate. (Set
+schedule = Interleaved for the full-duplex rate.)
 
 ## Files
 | File | What it is |

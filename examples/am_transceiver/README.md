@@ -34,17 +34,22 @@ sample 0, so the TX and RX carriers are coherent.
 
 ## Performance
 
-Measured on the built chip driven at **saturation**, recovering the audio at
-**corr 0.998** vs the input, from the chip's own performance report. **Simplex** =
-one direction flat-out alone; **full-duplex** = both chains co-resident.
+**Simplex**, driven at **saturation** (whole burst back-to-back), recovering the
+audio at **corr 0.998** vs the input. Each direction runs alone at its compute-bound
+ceiling; the rate is the sink (output) sample rate — the "Settled rate" the Stream
+Summary panel shows.
 
-| Direction | Simplex (alone) | Full-duplex (both) |
-|-----------|----------------:|-------------------:|
-| **RX** (detector) | 481 kSa/s | 481 kSa/s |
-| **TX** (modulator) | 488 kSa/s | 481 kSa/s |
+| Direction | Sink rate | Power |
+|-----------|----------:|------:|
+| **RX** (detector)  | 460 kSa/s | 10.1 mW |
+| **TX** (modulator) | 479 kSa/s | 5.9 mW  |
 
-**~14 mW** active, **~0.4 mW** idle, **~16 nJ** per output sample. The array is
-asynchronous — only active cells draw power.
+Power is total draw (active + idle) while that direction runs alone; **idle ~0.5 mW**.
+The array is asynchronous — only active cells draw power. To reproduce: open the `.kyt`,
+Run as GNURadio Server, set the Kyttar
+Source **Full-speed (saturated) = Yes** and **Duplex schedule = Sequential**, Run, and
+read each direction's Settled rate. (Set schedule = Interleaved for the full-duplex
+rate.)
 
 ## Files
 | File | What it is |

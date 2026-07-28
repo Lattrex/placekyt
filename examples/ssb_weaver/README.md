@@ -30,18 +30,22 @@ The Weaver DSP is verified on-chip at **corr 0.986** — `weaver_builder_cfir.py
 
 ## Performance
 
-Measured on the built chip driven at **saturation**, recovering the audio at
-**corr 0.97** vs the input, from the chip's own performance report. **Simplex** =
-one direction flat-out alone; **full-duplex** = both chains co-resident.
+**Simplex**, driven at **saturation** (whole burst back-to-back), recovering the
+audio at **corr 0.97** vs the input. Each direction runs alone at its compute-bound
+ceiling; the rate is the sink (output) sample rate — the "Settled rate" the Stream
+Summary panel shows.
 
-| Direction | Simplex (alone) | Full-duplex (both) |
-|-----------|----------------:|-------------------:|
-| **RX** (demodulator) | 346 kSa/s | 346 kSa/s |
-| **TX** (modulator) | 346 kSa/s | 346 kSa/s |
+| Direction | Sink rate | Power |
+|-----------|----------:|------:|
+| **RX** (demodulator) | 346 kSa/s | 14.0 mW |
+| **TX** (modulator)   | 346 kSa/s | 14.4 mW |
 
-**~26 mW** active, **~0.2 mW** idle, **~40 nJ** per output sample — the highest of
-the seven demos (11 cells of complex-FIR filtering). The array is asynchronous —
-only active cells draw power.
+Power is total draw (active + idle) while that direction runs alone; **idle ~0.4 mW** —
+the heaviest of the seven demos (~35–38 active cells of complex-FIR filtering). The
+array is asynchronous — only active cells draw power. To
+reproduce: open the `.kyt`, Run as GNURadio Server, set the Kyttar Source **Full-speed
+(saturated) = Yes** and **Duplex schedule = Sequential**, Run, and read each
+direction's Settled rate. (Set schedule = Interleaved for the full-duplex rate.)
 
 ## Files
 

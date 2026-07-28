@@ -83,19 +83,21 @@ exactly like a real transmitter and like the QPSK modem's `time_sink_f`), while 
 
 ## Performance
 
-Measured on the built chip driven at **saturation** (back-to-back samples), recovering
-at **BER 0**, from the chip's own performance report (the figures the Stream Summary
-panel shows). Two operating points: **simplex** (one direction running flat-out alone)
-and **full-duplex** (TX and RX co-resident, contending for the shared port).
+**Simplex**, driven at **saturation** (whole burst back-to-back), recovering at
+**BER 0**. Each direction runs alone at its compute-bound ceiling; the rate is the
+sink (output) sample rate — the "Settled rate" the Stream Summary panel shows.
 
-| Direction | Simplex (alone) | Full-duplex (both) |
-|-----------|----------------:|-------------------:|
-| **RX** (demod) | 146 kSa/s | 146 kSa/s |
-| **TX** (mod)   | 460 kSa/s | 148 kSa/s |
+| Direction | Sink rate | Power |
+|-----------|----------:|------:|
+| **RX** (demod) | 146 kSa/s | 8.9 mW  |
+| **TX** (mod)   | 460 kSa/s | 11.5 mW |
 
-**~11.3 mW** active, **~0.3 mW** idle, **~41 nJ** per recovered symbol. The array is
-asynchronous — only active cells draw power. Simplex is the peak per-chain rate; in
-full-duplex the two chains time-slice the single shared input/output port.
+Power is total draw (active + idle) while that direction runs alone; **idle ~0.4 mW**.
+The array is asynchronous — only active cells draw power. To reproduce: open the `.kyt`,
+Run as GNURadio Server, set the Kyttar
+Source **Full-speed (saturated) = Yes** and **Duplex schedule = Sequential**, Run, and
+read each direction's Settled rate. (Set schedule = Interleaved for the full-duplex
+rate.)
 
 ## Files
 

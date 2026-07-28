@@ -1,54 +1,66 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 
-# Modem & transceiver performance — full-duplex, saturated
+# Modem & transceiver performance — simplex, saturated
 
 All seven example designs run on **one 120-cell (10×12) Kyttar asynchronous array**,
-full-duplex (transmit and receive chains co-resident, sharing one input port and one
-output port). Each was driven at **saturation** (back-to-back samples, one continuous
-run) through the real path (import the `.grc` / open the `.kyt`), and its throughput,
-power, and energy come from the chip's own `performance_report()` — the same figures
-the GUI Stream Summary panel shows.
+each a full transceiver (transmit and receive chains co-resident on the array, sharing
+one input port and one output port). The figures below are the **simplex** operating
+point: each direction driven **alone**, **saturated** (whole burst queued back-to-back),
+so each chain reaches its own compute-bound ceiling with no cross-chain contention —
+the peak per-chain rate.
 
-Two operating points are reported per direction:
-
-- **Simplex** — one direction running flat-out alone (peak per-chain rate).
-- **Full-duplex** — TX and RX co-resident, time-slicing the shared input/output port
-  (the sustained rate when both directions run at once).
+Reported per direction is the **sink (output) sample rate**: the rate at which the
+chain emits results (recovered symbols for a demod, passband/audio samples for a
+modulator). It is the `settled_sps` from `TraceModel.stream_summary()` — the exact
+"Settled rate" the GUI Stream Summary panel shows.
 
 Correctness was verified at the same saturated operating point: **BER 0** for the
 digital modems, **audio correlation** vs the input for the analog transceivers.
 
+> Simplex only, by design: the full-duplex (interleaved) rate depends on how the two
+> chains time-slice the single shared port and is contention-window sensitive, which
+> makes it easy to misread. Simplex is the clean, reproducible per-chain number. To see
+> the full-duplex figure yourself, set the Kyttar Source **Duplex schedule =
+> Interleaved** (see the block help); Sequential reproduces the numbers here.
+
 ## Results
 
-| Design  | Modulation   | RX simplex | RX full-duplex | TX simplex | TX full-duplex | Active power | Idle power | Energy / output | Correctness  |
-|---------|--------------|-----------:|---------------:|-----------:|---------------:|-------------:|-----------:|----------------:|:------------:|
-| BPSK    | 1 bit/sym    | 186 kSa/s  | 61 kSa/s       | 481 kSa/s  | 481 kSa/s      | 9.8 mW       | 0.37 mW    | 18 nJ/sym       | BER 0        |
-| QPSK    | 2 bit/sym    | 172 kSa/s  | 172 kSa/s      | 460 kSa/s  | 350 kSa/s      | 13.6 mW      | 0.34 mW    | 28 nJ/sym       | BER 0        |
-| 4FSK    | 2 bit/sym    | 542 kSa/s  | 115 kSa/s      | 225 kSa/s  | 225 kSa/s      | 6.7 mW       | 0.40 mW    | 12 nJ/dibit     | BER 0        |
-| 16-QAM  | 4 bit/sym    | 146 kSa/s  | 146 kSa/s      | 460 kSa/s  | 148 kSa/s      | 11.3 mW      | 0.26 mW    | 41 nJ/sym       | BER 0        |
-| AM      | analog audio | 481 kSa/s  | 481 kSa/s      | 488 kSa/s  | 481 kSa/s      | 14.2 mW      | 0.43 mW    | 16 nJ/sample    | corr 0.998   |
-| FM      | analog audio | 1872 kSa/s | 429 kSa/s      | 427 kSa/s  | 427 kSa/s      | 6.8 mW       | 0.52 mW    | 6 nJ/sample     | corr 0.996   |
-| SSB     | analog audio | 346 kSa/s  | 346 kSa/s      | 346 kSa/s  | 346 kSa/s      | 25.7 mW      | 0.23 mW    | 40 nJ/sample    | corr 0.97    |
+Per direction: the sink (output) sample rate and the **total power drawn** (active +
+idle) while that chain runs alone. RX and TX differ because each lights up a different
+set of cells.
+
+| Design  | Modulation   | RX rate    | RX power | TX rate    | TX power | Correctness |
+|---------|--------------|-----------:|---------:|-----------:|---------:|:-----------:|
+| BPSK    | 1 bit/sym    | 188 kSa/s  | 9.6 mW   | 481 kSa/s  | 7.6 mW   | BER 0       |
+| QPSK    | 2 bit/sym    | 172 kSa/s  | 8.2 mW   | 460 kSa/s  | 9.1 mW   | BER 0       |
+| 4FSK    | 2 bit/sym    | 542 kSa/s  | 15.2 mW  | 225 kSa/s  | 4.2 mW   | BER 0       |
+| 16-QAM  | 4 bit/sym    | 146 kSa/s  | 8.9 mW   | 460 kSa/s  | 11.5 mW  | BER 0       |
+| AM      | analog audio | 460 kSa/s  | 10.1 mW  | 479 kSa/s  | 5.9 mW   | corr 0.998  |
+| FM      | analog audio | 1.93 MSa/s | 6.3 mW   | 429 kSa/s  | 5.7 mW   | corr 0.996  |
+| SSB     | analog audio | 346 kSa/s  | 14.0 mW  | 346 kSa/s  | 14.4 mW  | corr 0.97   |
 
 Notes:
 
-- **Idle power ~0.2–0.5 mW** across all designs — the array is asynchronous, so only
-  active cells draw power.
-- **FM RX (1872 kSa/s simplex)** is the fastest demodulator: its receive path is a bare
-  quadrature discriminator (a MAC of the conjugate product, no feedback loops).
-- **SSB (~26 mW active)** is the heaviest — 11 cells of complex-FIR filtering (the
-  Weaver third-method topology).
-- Full-duplex vs simplex differs per design by how the two chains time-slice the single
-  shared port; the full-duplex figure is the sustained contended-region rate (verified
-  stable: settled == mean, not a burst-ratio artifact).
+- **Idle power ~0.4–0.6 mW** across all designs (included in the totals above) — the
+  array is asynchronous, so only active cells draw power.
+- **FM RX (1.93 MSa/s on 3 active cells)** is the fastest demodulator: its receive path
+  is a bare quadrature discriminator (a MAC of the conjugate product, no feedback loops).
+- **SSB (~14 mW each way, ~35–38 active cells)** is the heaviest — the Weaver
+  third-method topology's complex-FIR filtering.
+- All figures freshly measured on the current simkyt build; deterministic (identical
+  across repeated runs). Power is the chip's own `performance_report()` `total_power_mw`.
 
 ## Method
 
-- Real path only: `import the .grc → auto-place-and-route → build`, or `open the shipped
-  .kyt`. No hand-built reconstructions.
-- Saturated drive: the whole burst queued via `queue_words_physical`, run to completion,
-  drained by tag — the `pipelined` path the shipped `.grc` files now select by default.
-- Throughput/power from `chip.performance_report()` (`output_throughput_per_us`,
-  `total_power_mw`, `energy_per_output_pj`) and per-stream rates from
-  `TraceModel.stream_summary()` (the GUI's own methodology).
-- All figures are deterministic (identical across repeated runs).
+- Real path only: **open the shipped `.kyt`** (hand-placed, as a user does), build,
+  host on the SimServer. No hand-built reconstructions, no re-import/re-route.
+- **Simplex, saturated:** one `process_batch_duplex` RPC with
+  `schedule="sequential", pipelined=True` — each direction's whole burst runs alone,
+  back-to-back (the GUI "Duplex schedule = Sequential" + "Full-speed (saturated)" Run).
+- Each direction runs on its OWN freshly-hosted chip, so both the trace and the
+  `performance_report()` reflect ONLY that direction — that's what makes the RX and TX
+  power numbers separable.
+- Per-direction sink rate = `TraceModel.stream_summary()` `settled_sps` for that
+  chain's output stream (matched by `out_tag`) — the GUI Stream Summary methodology.
+  Per-direction power = `chip.performance_report()` `total_power_mw`.
+- Reproduce with: `QT_QPA_PLATFORM=offscreen .venv/bin/python verification/simplex_rates.py`

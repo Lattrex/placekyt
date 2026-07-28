@@ -40,10 +40,30 @@ documentation: |-
   - Server Host / Server Port: the placeKYT SimServer endpoint (0 = local mode)
   - Complex Input: Yes for an I/Q (coherent) burst in server mode
   - Burst length: complex-sample count to batch (0 = flush at stop)
+  - Full-speed (saturated): how the burst is PACED into the chip.
+    * No (per-sample): one sample injected, run to quiescence, next sample — a
+      data-flow view for stepping/animation. Rate is dominated by host round-trips,
+      NOT the chip; do NOT read throughput from this mode.
+    * Yes (pipelined): the WHOLE burst is queued back-to-back and the input port
+      self-paces (each word waits only until the input cell accepts the prior).
+      This is the chip's real saturated throughput — the number the Stream Summary
+      "Settled rate" reports and what the README Performance tables quote.
   - Duplex schedule: how a two-stream (TX+RX) duplex design drives the shared
-    input port — Interleaved (real full-duplex, chains contend) or Sequential
-    (each direction runs alone for a compute-bound timing baseline). Settable
-    before Run; the .kyt design is untouched. Ignored without a Stream ID.
+    input port.
+    * Sequential (simplex): each direction's WHOLE burst runs ALONE on the array,
+      one at a time. Each chain hits its own compute-bound ceiling with no
+      contention — the PEAK per-chain rate. This is what the README simplex
+      numbers report.
+    * Interleaved (full-duplex): TX + RX words are merged on the shared input port
+      and both chains run co-resident, time-slicing the one corridor. The honest
+      sustained full-duplex rate (contention-dependent, generally below simplex).
+    Settable before Run; the .kyt design is untouched. Ignored without a Stream ID.
+
+  REPRODUCING THE README PERFORMANCE NUMBERS (simplex):
+    open the shipped .kyt → Run as GNURadio Server → in the .grc set
+    Full-speed (saturated) = Yes and Duplex schedule = Sequential → Run →
+    read each direction's "Settled rate" in the Stream Summary panel. For the
+    full-duplex figure instead, set Duplex schedule = Interleaved.
 
 templates:
   imports: from gnuradio import kyttar

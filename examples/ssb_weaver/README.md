@@ -28,6 +28,21 @@ no carrier fan-out). This complex-FIR Weaver form fits one 10×12 die.
 (USB; `fa=1500 Hz` audio-band centre, `fc=6000 Hz` carrier, `fs=32 kHz`, LPF cutoff 1200 Hz.
 The Weaver DSP is verified on-chip at **corr 0.986** — `weaver_builder_cfir.py`.)
 
+## Performance
+
+Measured on the built chip driven at **saturation**, recovering the audio at
+**corr 0.97** vs the input, from the chip's own performance report. **Simplex** =
+one direction flat-out alone; **full-duplex** = both chains co-resident.
+
+| Direction | Simplex (alone) | Full-duplex (both) |
+|-----------|----------------:|-------------------:|
+| **RX** (demodulator) | 346 kSa/s | 346 kSa/s |
+| **TX** (modulator) | 346 kSa/s | 346 kSa/s |
+
+**~26 mW** active, **~0.2 mW** idle, **~40 nJ** per output sample — the highest of
+the seven demos (11 cells of complex-FIR filtering). The array is asynchronous —
+only active cells draw power.
+
 ## Files
 
 | File | What it is |

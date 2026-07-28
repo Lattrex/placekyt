@@ -526,6 +526,7 @@ blocks:
     maxoutbuf: '0'
     minoutbuf: '0'
     num_channels: '1'
+    pipelined: 'yes'
     port_name: '"x16_in"'
     server_host: '"127.0.0.1"'
     server_port: server_port
@@ -755,6 +756,7 @@ blocks:
     maxoutbuf: '0'
     minoutbuf: '0'
     num_channels: '1'
+    pipelined: 'yes'
     port_name: '"x16_in"'
     server_host: '"127.0.0.1"'
     server_port: server_port

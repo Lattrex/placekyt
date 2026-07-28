@@ -38,6 +38,22 @@ conjugate product.
 
 `fs = 32 kHz`, `f_dev = 1500 Hz`, `sensitivity = 2π·f_dev/fs`, `gain = 1/sensitivity`.
 
+## Performance
+
+Measured on the built chip driven at **saturation**, recovering the audio at
+**corr 0.996** vs the input, from the chip's own performance report. **Simplex** =
+one direction flat-out alone; **full-duplex** = both chains co-resident.
+
+| Direction | Simplex (alone) | Full-duplex (both) |
+|-----------|----------------:|-------------------:|
+| **RX** (discriminator) | 1872 kSa/s | 429 kSa/s |
+| **TX** (VCO modulator) | 427 kSa/s | 427 kSa/s |
+
+**~6.8 mW** active, **~0.5 mW** idle, **~6 nJ** per output sample. The RX is just a
+quadrature discriminator (a MAC of the conjugate product, no loops), so its
+per-chain rate is the highest of any demod here. The array is asynchronous — only
+active cells draw power.
+
 ## Files
 | File | What it is |
 |------|------------|

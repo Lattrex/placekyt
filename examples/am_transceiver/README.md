@@ -32,6 +32,20 @@ sample 0, so the TX and RX carriers are coherent.
 `fc = 6000 Hz`, `fs = 32 kHz`, audio tones 800/1500 Hz, RX cutoff 2000 Hz
 (fc/message-BW = 3).
 
+## Performance
+
+Measured on the built chip driven at **saturation**, recovering the audio at
+**corr 0.998** vs the input, from the chip's own performance report. **Simplex** =
+one direction flat-out alone; **full-duplex** = both chains co-resident.
+
+| Direction | Simplex (alone) | Full-duplex (both) |
+|-----------|----------------:|-------------------:|
+| **RX** (detector) | 481 kSa/s | 481 kSa/s |
+| **TX** (modulator) | 488 kSa/s | 481 kSa/s |
+
+**~14 mW** active, **~0.4 mW** idle, **~16 nJ** per output sample. The array is
+asynchronous — only active cells draw power.
+
 ## Files
 | File | What it is |
 |------|------------|

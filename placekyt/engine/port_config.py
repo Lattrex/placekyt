@@ -228,6 +228,59 @@ def stream_targets(project, registry, catalog, chip_id: int = 0,
     return targets
 
 
+def multi_chip_stream_targets(project, registry, catalog, build_result=None):
+    """Resolve input streams across ALL chips for the multi-chip GRC bridge.
+
+    The multi-chip generalization of :func:`stream_targets`: it runs the per-chip
+    resolver on every ``project.chip`` and augments each entry with the two things
+    the multi-chip live bridge needs beyond the single-chip case:
+
+      * ``chip_id`` — WHICH chip the stream feeds (placement-derived: the block's
+        chip). The bridge injects the burst on that chip's head and demuxes its
+        recovered words by ``(chip_id, out_tag)``. The GRC source/sink are unchanged
+        — chip_id rides here, resolved from placement, exactly like hop/entry.
+      * ``routed`` — is the head block reached via a corridor (landing cell != the
+        chip's input-port cell) rather than sitting AT the landing? A routed head
+        needs the WRITE+JUMP inter-chip/injection path (the routed-input .so); an
+        at-landing head uses the raw queue. Derived from the built ``input_landings``.
+
+    Stream-id collisions across chips are namespaced ``"<chip_id>:<stream_id>"`` so
+    two chains can both carry e.g. ``rx`` without clobbering each other; the plain
+    ``stream_id`` is preserved in the entry for the GR sink's demux. Returns
+    ``{key: {..stream_targets fields.., chip_id, routed, stream_id}}``.
+
+    Additive — does NOT touch the single-chip :func:`stream_targets` path.
+    """
+    merged: dict = {}
+    for chip in project.chips:
+        cid = chip.id
+        ct = registry.require(chip.type_name or project.chip_type).chip_type
+        in_port = next((p for p in ct.ports
+                        if p.direction.value == "input"), None)
+        port_cell = (in_port.cell_x, in_port.cell_y) if in_port else (0, 0)
+        landings = {}
+        if build_result is not None:
+            cb = getattr(build_result, "chips", {}).get(cid)
+            if cb is not None:
+                landings = getattr(cb, "input_landings", {}) or {}
+        per = stream_targets(project, registry, catalog, cid,
+                             build_result=build_result)
+        for sid, tgt in per.items():
+            # Routed iff the built landing cell for this stream's net != port cell.
+            routed = False
+            for land in landings.values():
+                if tuple(land.get("cell", port_cell)) != tuple(port_cell):
+                    routed = True
+                    break
+            entry = dict(tgt)
+            entry["chip_id"] = cid
+            entry["routed"] = routed
+            entry["stream_id"] = sid
+            key = sid if sid not in merged else f"{cid}:{sid}"
+            merged[key] = entry
+    return merged
+
+
 def batch_reset_writes(build_result, chip_id: int = 0) -> list:
     """The chip's per-batch (packet-boundary) state resets from a BuildResult:
     a list of ``(x, y, addr, value)``.

@@ -336,6 +336,11 @@ class MultiChipSimEngine:
         self._widths: dict[int, int] = {}
         self._chip_ids: list[int] = []
         self._trace_cursors: dict[int, int] = {}
+        # Per (chip, port): is the head routed, and its (entry, hop, data_addr) —
+        # so inject() can WRITE+JUMP a routed head (the multichip binding has no
+        # get_port_injection_config; we keep the values we set here).
+        self._routed_ports: dict[tuple[int, str], bool] = {}
+        self._port_cfg: dict[tuple[int, str], tuple[int, int, int]] = {}
         for cid, path in self._paths.items():
             ct = simkyt.ChipType.from_yaml(str(path))
             self._sim.add_chip(_chip_name(cid), ct)
@@ -356,13 +361,42 @@ class MultiChipSimEngine:
             self._sim.enable_trace(_chip_name(chip_id), None)
 
     def configure_input_port(self, chip_id: int, port: str, *,
-                             entry_addr: int, hop_count: int, data_addr: int) -> None:
+                             entry_addr: int, hop_count: int, data_addr: int,
+                             routed: bool = False) -> None:
+        """Configure ``chip_id``'s input ``port`` routing. ``routed=True`` marks a
+        head block reached via a corridor (not at the port landing cell), so the
+        inter-chip relay delivers a crossed value to it via WRITE+JUMP rather than
+        the at-landing raw queue. Derive it from the build's input_landings: the
+        head is routed iff its landing cell != the port cell. Default False keeps
+        the proven at-landing path."""
         name = _chip_name(chip_id)
         self._sim.set_port_entry_address(name, port, entry_addr)
         self._sim.set_port_target_hop_count(name, port, hop_count)
         self._sim.set_port_target_data_address(name, port, data_addr)
+        # set_port_input_routed lands with the routed-input .so; guard so an older
+        # binary (no flag) still loads (at-landing-only behavior).
+        setter = getattr(self._sim, "set_port_input_routed", None)
+        if setter is not None:
+            setter(name, port, bool(routed))
+        self._routed_ports[(chip_id, port)] = bool(routed)
+        self._port_cfg[(chip_id, port)] = (int(entry_addr), int(hop_count),
+                                           int(data_addr))
 
     def inject(self, chip_id: int, port: str, data: list[int]) -> None:
+        """Inject a stimulus burst at a chain HEAD. For an at-landing head this is
+        the raw write_port_i16 (the port paces the burst). For a ROUTED head (per
+        configure_input_port), each value is a WRITE+JUMP to the configured landing
+        — the head analogue of the routed relay — paced one value at a time (queue-
+        all-then-run overruns the single-outstanding input handshake)."""
+        if self._routed_ports.get((chip_id, port)) and \
+                hasattr(self._sim, "inject_data_physical"):
+            name = _chip_name(chip_id)
+            entry, hop, a0 = self._port_cfg[(chip_id, port)]
+            for v in data:
+                self._sim.inject_data_physical(name, [int(v) & 0xFFFF], hop, a0)
+                self._sim.inject_jump_physical(name, hop, entry)
+                self._sim.run(None, 200)
+            return
         # uint16 → int16 view so values ≥ 0x8000 (negative in Q15) are accepted.
         arr = np.asarray([d & 0xFFFF for d in data], dtype=np.uint16).view(np.int16)
         self._sim.write_port_i16(_chip_name(chip_id), port, arr)

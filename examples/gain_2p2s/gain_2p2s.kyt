@@ -1,0 +1,121 @@
+project:
+  format_version: 1
+  name: p
+  version: '1.0'
+chip_type: kyttar_10x12
+chips:
+- id: 0
+  label: Chip 0
+  position: {x: 0.0, y: 0.0}
+- id: 1
+  label: Chip 1
+  position: {x: 768.0, y: 0.0}
+- id: 2
+  label: Chip 2
+  position: {x: 1536.0, y: 0.0}
+- id: 3
+  label: Chip 3
+  position: {x: 2304.0, y: 0.0}
+inter_chip_connections:
+- from: {chip: 0, port: x16_out}
+  to: {chip: 1, port: x16_in}
+- from: {chip: 2, port: x16_out}
+  to: {chip: 3, port: x16_in}
+blocks:
+- name: gain
+  type: GainBlock
+  library: lattrex.official
+  params:
+    gain: 0.5
+    gain_range: 15
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 0, y: 0, face: east}
+- name: gain_1
+  type: GainBlock
+  library: lattrex.official
+  params:
+    gain: 0.5
+    gain_range: 15
+  placement:
+    chip: 1
+    cells:
+    - {cell_id: 0, x: 0, y: 0, face: east}
+- name: gain_2
+  type: GainBlock
+  library: lattrex.official
+  params:
+    gain: 0.5
+    gain_range: 15
+  placement:
+    chip: 2
+    cells:
+    - {cell_id: 0, x: 0, y: 0, face: east}
+- name: gain_3
+  type: GainBlock
+  library: lattrex.official
+  params:
+    gain: 0.5
+    gain_range: 15
+  placement:
+    chip: 3
+    cells:
+    - {cell_id: 0, x: 0, y: 0, face: east}
+connections:
+- name: gain_to_x16_out
+  from: {block: gain, port: out}
+  to: {chip_port: {chip: 0, port: x16_out}}
+  route:
+  - {x: 0, y: 0}
+  - {x: 1, y: 0}
+  - {x: 2, y: 0}
+  - {x: 3, y: 0}
+  - {x: 4, y: 0}
+  - {x: 5, y: 0}
+  - {x: 6, y: 0}
+  - {x: 7, y: 0}
+  - {x: 8, y: 0}
+  - {x: 9, y: 0}
+- name: gain_1_to_x16_out
+  from: {block: gain_1, port: out}
+  to: {chip_port: {chip: 1, port: x16_out}}
+  route:
+  - {x: 0, y: 0}
+  - {x: 1, y: 0}
+  - {x: 2, y: 0}
+  - {x: 3, y: 0}
+  - {x: 4, y: 0}
+  - {x: 5, y: 0}
+  - {x: 6, y: 0}
+  - {x: 7, y: 0}
+  - {x: 8, y: 0}
+  - {x: 9, y: 0}
+- name: gain_2_to_x16_out
+  from: {block: gain_2, port: out}
+  to: {chip_port: {chip: 2, port: x16_out}}
+  route:
+  - {x: 0, y: 0}
+  - {x: 1, y: 0}
+  - {x: 2, y: 0}
+  - {x: 3, y: 0}
+  - {x: 4, y: 0}
+  - {x: 5, y: 0}
+  - {x: 6, y: 0}
+  - {x: 7, y: 0}
+  - {x: 8, y: 0}
+  - {x: 9, y: 0}
+- name: gain_3_to_x16_out
+  from: {block: gain_3, port: out}
+  to: {chip_port: {chip: 3, port: x16_out}}
+  route:
+  - {x: 0, y: 0}
+  - {x: 1, y: 0}
+  - {x: 2, y: 0}
+  - {x: 3, y: 0}
+  - {x: 4, y: 0}
+  - {x: 5, y: 0}
+  - {x: 6, y: 0}
+  - {x: 7, y: 0}
+  - {x: 8, y: 0}
+  - {x: 9, y: 0}

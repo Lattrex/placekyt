@@ -1403,3 +1403,201 @@ class SimServer:
                  "t_first": [s["tmin"] for s in streams],
                  "t_last": [s["tmax"] for s in streams]},
                 np.asarray(out_all, dtype="<f4"))
+
+
+class MultiChipSimServer:
+    """Serves a MULTI-CHIP design (2+ chips, e.g. the 2P2S board's two parallel
+    daisy-chains) over the SAME socket protocol as :class:`SimServer`, so a GRC
+    flowgraph drives all chains live and each stream is addressed to WHICH chip
+    (chain) it feeds.
+
+    Deliberately a SEPARATE class from the single-chip ``SimServer`` (which wraps
+    one ``simkyt.Chip`` in ~40 places and carries the intricate single-chip live
+    bridge every shipped modem depends on): the multi-chip path must not risk that.
+    It reuses the module framing (:func:`recv_message`/:func:`send_message`) and the
+    accept/serve skeleton, and is backed by a ``MultiChipSimEngine`` (which relays
+    values across inter-chip wires and, with the routed-input flag, drives routed
+    head blocks).
+
+    Wire protocol — a superset of the single-chip one; the new bits:
+      * ``ping`` → ``{ok, mode: "batch", multichip: true}``.
+      * ``process_batch_multichip`` (header ``streams``: a list of
+        ``{stream_id, chip_id, complex, raw, n_samples}``; payload = each stream's
+        samples concatenated in list order). Each stream is injected on ITS chip's
+        input port (routed-aware) and the reply payload is every stream's recovered
+        words concatenated, with header ``lengths`` (per stream) + ``stream_ids`` +
+        ``chip_ids`` so the client splits + demuxes by chain.
+
+    ``stream_targets`` is the multi-chip map from
+    :func:`engine.port_config.multi_chip_stream_targets` (keyed by the same key the
+    client sends as ``stream_id``): each carries ``chip_id``, ``entry_addr``,
+    ``hop_count``, ``data_addrs``, ``out_tag``, ``routed``.
+    """
+
+    def __init__(self, engine, stream_targets, *,
+                 host: str = "127.0.0.1", port: int = 0):
+        self._engine = engine                     # MultiChipSimEngine
+        self._stream_targets = dict(stream_targets or {})
+        self._host = host
+        self._req_port = port
+        self.bound_port: int | None = None
+        self._sock: socket.socket | None = None
+        self._thread: threading.Thread | None = None
+        self._running = False
+        self._lock = threading.RLock()
+
+    # -- lifecycle (mirrors SimServer) ---------------------------------------
+    def start(self) -> int:
+        self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._sock.bind((self._host, self._req_port))
+        self._sock.listen(2)
+        self.bound_port = self._sock.getsockname()[1]
+        self._running = True
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._thread.start()
+        return self.bound_port
+
+    def stop(self) -> None:
+        self._running = False
+        sock = self._sock
+        self._sock = None
+        if sock is not None:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
+                sock.close()
+            except OSError:
+                pass
+        thread = self._thread
+        self._thread = None
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=2.0)
+        self.bound_port = None
+
+    def _serve(self) -> None:
+        sock = self._sock
+        while self._running and sock is not None:
+            try:
+                conn, _addr = sock.accept()
+            except OSError:
+                break
+            try:
+                self._handle_client(conn)
+            except (ConnectionError, OSError):
+                pass
+            finally:
+                try:
+                    conn.close()
+                except OSError:
+                    pass
+
+    def _handle_client(self, conn: socket.socket) -> None:
+        while self._running:
+            try:
+                header, payload = recv_message(conn)
+            except (ConnectionError, OSError):
+                return
+            reply, out_payload = self._dispatch(header, payload)
+            try:
+                send_message(conn, reply, out_payload)
+            except (ConnectionError, OSError):
+                return
+
+    # -- dispatch ------------------------------------------------------------
+    def _dispatch(self, header: dict, payload):
+        op = header.get("op")
+        try:
+            if op == "ping":
+                return {"ok": True, "mode": "batch", "multichip": True}, None
+            if op == "process_batch_multichip":
+                return self._process_batch_multichip(header, payload)
+            return {"ok": False, "error": f"unknown op {op!r} (multichip)"}, None
+        except Exception as exc:  # noqa: BLE001 — surface to the client
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}, None
+
+    def _target_for(self, sid):
+        """The multi-chip stream_targets entry for a client stream key."""
+        return self._stream_targets.get(sid)
+
+    def _process_batch_multichip(self, header, payload):
+        """Drive each stream on ITS chip's head (routed-aware), relay across the
+        inter-chip wires, and demux each chain's recovered words by out_tag.
+
+        Streams are driven SEQUENTIALLY (each whole burst alone) — the simplex
+        operating point (the 4-chip 2P2S board is simplex; see the OFDM plan). Each
+        sample is injected to quiescence so the value fully traverses its chain +
+        the inter-chip relay before the next."""
+        from engine.simulator import _chip_name
+        streams_hdr = list(header.get("streams") or [])
+        if not streams_hdr:
+            return {"ok": False, "error": "process_batch_multichip: no streams"}, None
+        data = (np.asarray(payload, dtype="<f4")
+                if payload is not None else np.array([]))
+        eng = self._engine
+
+        # Slice each stream's samples + resolve its chip/landing/out_tag.
+        streams = []
+        off = 0
+        for sh in streams_hdr:
+            sid = sh.get("stream_id")
+            is_complex = bool(sh.get("complex", True))
+            raw = bool(sh.get("raw", False))
+            n = int(sh.get("n_samples", 0))
+            width = 2 * n if is_complex else n
+            seg = data[off:off + width]
+            off += width
+            tgt = self._target_for(sid) or {}
+            chip_id = int(sh.get("chip_id", tgt.get("chip_id", 0)))
+            entry = int(tgt.get("entry_addr", 0)) & 0xFF
+            hop = int(tgt.get("hop_count", 30)) & 0x1F
+            das = list(tgt.get("data_addrs") or [0])
+            a0 = das[0]
+            a1 = das[1] if len(das) > 1 else a0 + 1
+            out_tag = tgt.get("out_tag")
+            out_chip = int(sh.get("out_chip", tgt.get("out_chip", chip_id)))
+            streams.append({
+                "sid": sid, "chip_id": chip_id, "out_chip": out_chip,
+                "complex": is_complex, "raw": raw, "n": n, "seg": seg,
+                "entry": entry, "hop": hop, "a0": a0, "a1": a1,
+                "out_tag": out_tag, "out_port": sh.get("out_port", "x16_out"),
+                "out": [],
+            })
+
+        mx = int(header.get("max_events_per", 40000))
+        for s in streams:
+            name = _chip_name(s["chip_id"])
+            for k in range(s["n"]):
+                if s["complex"]:
+                    xi = _float_to_q15(float(s["seg"][2 * k]))
+                    xq = _float_to_q15(float(s["seg"][2 * k + 1]))
+                else:
+                    xi = (_float_to_raw_i16(float(s["seg"][k])) if s["raw"]
+                          else _float_to_q15(float(s["seg"][k])))
+                    xq = None
+                eng._sim.inject_data_physical(name, [xi], s["hop"], int(s["a0"]))
+                eng._sim.run(None, 200)
+                if xq is not None:
+                    eng._sim.inject_data_physical(name, [xq], s["hop"], int(s["a1"]))
+                    eng._sim.run(None, 200)
+                eng._sim.inject_jump_physical(name, s["hop"], s["entry"])
+                eng._sim.run(None, max(200, mx // 200))
+            # Drain this chain's tail, demux by out_tag.
+            tail = _chip_name(s["out_chip"])
+            arr = eng._sim.read_port_i16(tail, s["out_port"])
+            for v in np.asarray(arr).view(np.uint16):
+                s["out"].append(float(int(v) & 0xFFFF) if s["raw"]
+                                else _q15_to_float(int(v)))
+
+        out_all: list[float] = []
+        lengths: list[int] = []
+        for s in streams:
+            lengths.append(len(s["out"]))
+            out_all.extend(s["out"])
+        return ({"ok": True,
+                 "lengths": lengths,
+                 "stream_ids": [s["sid"] for s in streams],
+                 "chip_ids": [s["chip_id"] for s in streams]},
+                np.asarray(out_all, dtype="<f4"))

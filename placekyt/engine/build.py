@@ -1515,6 +1515,14 @@ def _resolve_input_landings(cell_map, blocks, connections, project, chip_id,
         blk = project.block(conn.target.block)
         if blk is None or blk.placement is None or not blk.placement.cells:
             continue
+        # CROSS-CHIP stream: this input net enters chip_id's port but its target
+        # block is on a DOWNSTREAM chip (it transits this chip's bus to a far gain).
+        # It is NOT a landing on THIS chip — engine.port_config.multi_chip_stream_
+        # targets resolves its composite cross-chip hop. Skip it here so it doesn't
+        # register a bogus same-chip landing (which corrupted the head chip's port
+        # config and deadlocked the multi-chip drive).
+        if blk.placement.chip != chip_id:
+            continue
         pts = _phys_pts(project, conn, catalog) if conn.is_routed else []
         # Unrouted (direct-on-port placement): keep the legacy manhattan model so the
         # proven explicit modem path (block on the port cell) is untouched.

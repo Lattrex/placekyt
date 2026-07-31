@@ -1597,12 +1597,22 @@ class MultiChipSimServer:
                     eng._sim.run(ev, 80)
                 eng._sim.inject_jump_physical(name, s["hop"], s["entry"])
                 eng._sim.run(ev, 120)
-            # Drain this chain's tail, demux by out_tag.
+            # Drain this chain's tail, DEMUX by out_tag: several streams can share
+            # one chain-tail port (A+B on chain A's tail), each writing its own tag.
+            # Keep only THIS stream's words. read_port_words_timed gives (value, tag,
+            # t); fall back to read_port_i16 (no tags) when out_tag is None.
             tail = _chip_name(s["out_chip"])
-            arr = eng._sim.read_port_i16(tail, s["out_port"])
-            for v in np.asarray(arr).view(np.uint16):
-                s["out"].append(float(int(v) & 0xFFFF) if s["raw"]
-                                else _q15_to_float(int(v)))
+            out_tag = s["out_tag"]
+            if out_tag is not None and hasattr(eng._sim, "read_port_words_timed"):
+                for (v, d, _t) in eng._sim.read_port_words_timed(tail, s["out_port"]):
+                    if int(d) == int(out_tag):
+                        s["out"].append(float(int(v) & 0xFFFF) if s["raw"]
+                                        else _q15_to_float(int(v)))
+            else:
+                arr = eng._sim.read_port_i16(tail, s["out_port"])
+                for v in np.asarray(arr).view(np.uint16):
+                    s["out"].append(float(int(v) & 0xFFFF) if s["raw"]
+                                    else _q15_to_float(int(v)))
 
         out_all: list[float] = []
         lengths: list[int] = []

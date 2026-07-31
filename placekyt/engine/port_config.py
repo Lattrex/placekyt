@@ -359,12 +359,24 @@ def multi_chip_stream_targets(project, registry, catalog, build_result=None):
         if own is None:
             continue
         composite_hop = int(own["hop"]) - _bus_crossing(head)
+        # out_tag from the FAR block's own output net (blk -> x16_out on the far
+        # chip): the gain writes this tag as its output WRITE dest, and the tag rides
+        # across the transparent wire to the chain tail so the host demuxes this
+        # stream's words there. (The far block's chain may itself continue, but a
+        # simple gain drives x16_out directly.)
+        far_tag = None
+        for oc in project.connections:
+            os_, ot = oc.source, oc.target
+            if (isinstance(os_, BlockEndpoint) and os_.block == blk.name
+                    and isinstance(ot, _CPE) and str(ot.port).endswith("_out")):
+                far_tag = getattr(oc, "out_tag", None)
+                break
         e = {
             "entry_addr": int(own["entry"]),
             "hop_count": composite_hop,
             "data_addrs": list(own["data_addrs"]) or [0],
             "in_port": src.port,
-            "out_tag": None,
+            "out_tag": far_tag,
             "complex_out": False,
             "chip_id": head,               # injected on the HEAD chip
             "out_chip": _tail(head),       # emerges at the chain tail

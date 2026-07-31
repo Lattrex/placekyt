@@ -175,15 +175,22 @@ def test_sim_controller_hosts_multichip_server(qapp, catalog):
     stream_id."""
     from ui.sim_controller import SimController
     from engine.sim_bridge import send_message, recv_message
+    from engine.port_config import multi_chip_stream_targets
 
     ctrl = AppController(catalog=catalog)
     ctrl.open_project(str(_2P2S_KYT))
     assert len(ctrl.project.chips) == 4
     assert len(ctrl.project.inter_chip_connections) == 2
-    # Resolve the chain-head landing (hop/entry) from the build (gain-on-bus @(1,0)).
     r = ctrl.build()
-    ilA = list(r.chips[0].input_landings.values())[0]
+    tg = multi_chip_stream_targets(ctrl.project, ctrl.registry, ctrl.catalog,
+                                   build_result=r)
+    # The shipped gain_2p2s.kyt: 4 streams — A(chip0) B(chip1) on chain A; C(chip2)
+    # D(chip3) on chain B — each tapping ONE gain, each 0.5x. A+B share chain A's
+    # tail, demuxed by out_tag; C+D share chain B's.
+    assert set(tg) == {"A", "B", "C", "D"}, list(tg)
 
+    inputs = {"A": [0.5, 0.25], "B": [0.6, 0.3],
+              "C": [0.7, 0.35], "D": [0.8, 0.4]}
     sim = SimController(ctrl)
     port = sim.start_gnuradio_server(port=0)
     try:
@@ -194,20 +201,32 @@ def test_sim_controller_hosts_multichip_server(qapp, catalog):
         c.connect(("127.0.0.1", port))
         send_message(c, {"op": "ping"})
         assert recv_message(c)[0].get("multichip") is True
-        payload = np.array([0.5, 0.25, 0.75, 0.125], dtype=np.float32)
-        head = {"entry_addr": ilA["entry"], "hop_count": ilA["hop"],
-                "data_addrs": ilA["data_addrs"]}
-        send_message(c, {"op": "process_batch_multichip", "streams": [
-            {"stream_id": "A", "chip_id": 0, "out_chip": 1, **head,
-             "complex": False, "raw": False, "n_samples": 2},
-            {"stream_id": "B", "chip_id": 2, "out_chip": 3, **head,
-             "complex": False, "raw": False, "n_samples": 2}]}, payload)
-        _rh, out = recv_message(c)
+        payload = np.concatenate([np.asarray(inputs[s], dtype=np.float32)
+                                  for s in "ABCD"])
+        streams = []
+        for s in "ABCD":
+            t = tg[s]
+            streams.append({
+                "stream_id": s, "chip_id": t["chip_id"], "out_chip": t["out_chip"],
+                "entry_addr": t["entry_addr"], "hop_count": t["hop_count"],
+                "data_addrs": t["data_addrs"], "out_tag": t["out_tag"],
+                "complex": False, "raw": False, "n_samples": 2})
+        send_message(c, {"op": "process_batch_multichip", "streams": streams},
+                     payload)
+        rh, out = recv_message(c)
         c.close()
     finally:
         sim.stop_gnuradio_server()
 
+    # Split the reply per stream by lengths; each stream = 0.5x of its OWN input,
+    # demuxed by out_tag at its chain tail (no crosstalk between the 4 streams).
     vals = [round(float(v), 4) for v in out]
-    assert vals[0] == pytest.approx(0.25, abs=1e-3), vals   # chain A 0.5x
-    assert vals[2] == pytest.approx(0.375, abs=1e-3), vals  # chain B 0.5x, no crosstalk
+    off = 0
+    got = {}
+    for sid, ln in zip(rh["stream_ids"], rh["lengths"]):
+        got[sid] = vals[off:off + ln]
+        off += ln
+    for s in "ABCD":
+        exp = [round(v * 0.5, 4) for v in inputs[s]]
+        assert got[s] == pytest.approx(exp, abs=2e-3), (s, got[s], exp)
     assert sim._gr_server is None  # stopped cleanly

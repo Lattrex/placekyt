@@ -6,8 +6,9 @@ options:
     cmake_opt: ''
     comment: ''
     copyright: ''
-    description: '2P2S multi-chip demo: two parallel gain daisy-chains driven over
-      the placeKYT multi-chip GNURadio server. Each chain -> 0.25x.'
+    description: '2P2S multi-chip demo: FOUR gain streams (one per chip) across two
+      parallel daisy-chains, multiplexed over the placeKYT multi-chip GNURadio server.
+      Each stream -> 0.5x.'
     gen_cmake: 'On'
     gen_linking: dynamic
     generate_options: qt_gui
@@ -23,8 +24,8 @@ options:
     run_options: prompt
     sizing_mode: fixed
     thread_safe_setters: ''
-    title: "Kyttar 2P2S \u2014 two parallel chains (0.25x each)"
-    window_size: (1200,800)
+    title: "Kyttar 2P2S \u2014 four multiplexed gain streams (0.5x each)"
+    window_size: (1400,900)
   states:
     bus_sink: false
     bus_source: false
@@ -68,7 +69,7 @@ blocks:
   parameters:
     affinity: ''
     alias: ''
-    comment: chain A sine -> chip0 head
+    comment: stream A sine (taps chip0's gain)
     maxoutbuf: '0'
     minoutbuf: '0'
     repeat: 'True'
@@ -83,7 +84,7 @@ blocks:
     bus_structure: null
     coordinate:
     - 40
-    - 200
+    - 180
     rotation: 0
     state: enabled
 - name: msrcA
@@ -92,7 +93,7 @@ blocks:
     affinity: ''
     alias: ''
     burst_len: burst_len
-    comment: stream A -> chip0 (chain head)
+    comment: stream A -> placeKYT (stream_id only; chip/hop resolved there)
     complex_in: float
     device_id: '"kyttar_0"'
     maxoutbuf: '0'
@@ -104,18 +105,32 @@ blocks:
     stream_id: '"A"'
     pipelined: 'False'
     schedule: '"interleaved"'
-    chip_id: '0'
-    out_chip: '1'
-    entry_addr: '28'
-    hop_count: '30'
-    data_addrs: '"0"'
   states:
     bus_sink: false
     bus_source: false
     bus_structure: null
     coordinate:
-    - 300
-    - 200
+    - 290
+    - 180
+    rotation: 0
+    state: enabled
+- name: gainA
+  id: kyttar_gain
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: gain 0.5 (chip0)
+    device_id: '"kyttar_0"'
+    gain: '0.5'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 520
+    - 180
     rotation: 0
     state: enabled
 - name: msinkA
@@ -123,7 +138,7 @@ blocks:
   parameters:
     affinity: ''
     alias: ''
-    comment: chain A tail (chip1 x16_out), 0.25x
+    comment: stream A recovered (0.5x)
     device_id: '"kyttar_0"'
     hold_secs: '8.0'
     in_type: float
@@ -139,8 +154,8 @@ blocks:
     bus_source: false
     bus_structure: null
     coordinate:
-    - 560
-    - 200
+    - 750
+    - 180
     rotation: 0
     state: enabled
 - name: time_sink_A
@@ -167,7 +182,7 @@ blocks:
     color9: blue
     color10: blue
     label1: input
-    label2: chain A out (0.25x)
+    label2: Stream A out (0.5x)
     label3: Signal 3
     label4: Signal 4
     label5: Signal 5
@@ -180,13 +195,13 @@ blocks:
     alias: ''
     autoscale: 'False'
     axislabels: 'True'
-    comment: 'chain A: input vs 0.25x'
+    comment: 'Stream A: input vs 0.5x'
     ctrlpanel: 'False'
     entags: 'True'
     grid: 'True'
     gui_hint: ''
     legend: 'True'
-    name: '"Chain A"'
+    name: '"Stream A"'
     nconnections: '2'
     size: burst_len
     srate: burst_len
@@ -206,8 +221,8 @@ blocks:
     bus_source: false
     bus_structure: null
     coordinate:
-    - 820
-    - 200
+    - 980
+    - 180
     rotation: 0
     state: enabled
 - name: srcB
@@ -215,7 +230,7 @@ blocks:
   parameters:
     affinity: ''
     alias: ''
-    comment: chain B sine -> chip2 head
+    comment: stream B sine (taps chip1's gain)
     maxoutbuf: '0'
     minoutbuf: '0'
     repeat: 'True'
@@ -230,7 +245,7 @@ blocks:
     bus_structure: null
     coordinate:
     - 40
-    - 460
+    - 400
     rotation: 0
     state: enabled
 - name: msrcB
@@ -239,7 +254,7 @@ blocks:
     affinity: ''
     alias: ''
     burst_len: burst_len
-    comment: stream B -> chip2 (chain head)
+    comment: stream B -> placeKYT (stream_id only; chip/hop resolved there)
     complex_in: float
     device_id: '"kyttar_0"'
     maxoutbuf: '0'
@@ -251,18 +266,32 @@ blocks:
     stream_id: '"B"'
     pipelined: 'False'
     schedule: '"interleaved"'
-    chip_id: '2'
-    out_chip: '3'
-    entry_addr: '28'
-    hop_count: '30'
-    data_addrs: '"0"'
   states:
     bus_sink: false
     bus_source: false
     bus_structure: null
     coordinate:
-    - 300
-    - 460
+    - 290
+    - 400
+    rotation: 0
+    state: enabled
+- name: gainB
+  id: kyttar_gain
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: gain 0.5 (chip1)
+    device_id: '"kyttar_0"'
+    gain: '0.5'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 520
+    - 400
     rotation: 0
     state: enabled
 - name: msinkB
@@ -270,7 +299,7 @@ blocks:
   parameters:
     affinity: ''
     alias: ''
-    comment: chain B tail (chip3 x16_out), 0.25x
+    comment: stream B recovered (0.5x)
     device_id: '"kyttar_0"'
     hold_secs: '8.0'
     in_type: float
@@ -286,8 +315,8 @@ blocks:
     bus_source: false
     bus_structure: null
     coordinate:
-    - 560
-    - 460
+    - 750
+    - 400
     rotation: 0
     state: enabled
 - name: time_sink_B
@@ -314,7 +343,7 @@ blocks:
     color9: blue
     color10: blue
     label1: input
-    label2: chain B out (0.25x)
+    label2: Stream B out (0.5x)
     label3: Signal 3
     label4: Signal 4
     label5: Signal 5
@@ -327,13 +356,13 @@ blocks:
     alias: ''
     autoscale: 'False'
     axislabels: 'True'
-    comment: 'chain B: input vs 0.25x'
+    comment: 'Stream B: input vs 0.5x'
     ctrlpanel: 'False'
     entags: 'True'
     grid: 'True'
     gui_hint: ''
     legend: 'True'
-    name: '"Chain B"'
+    name: '"Stream B"'
     nconnections: '2'
     size: burst_len
     srate: burst_len
@@ -353,14 +382,344 @@ blocks:
     bus_source: false
     bus_structure: null
     coordinate:
-    - 820
-    - 460
+    - 980
+    - 400
+    rotation: 0
+    state: enabled
+- name: srcC
+  id: blocks_vector_source_x
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: stream C sine (taps chip2's gain)
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    repeat: 'True'
+    tags: '[]'
+    type: float
+    vector: '[0.8*float(__import__(''math'').sin(2*3.141592653589793*4*n/burst_len))
+      for n in range(burst_len)]'
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 40
+    - 620
+    rotation: 0
+    state: enabled
+- name: msrcC
+  id: kyttar_source
+  parameters:
+    affinity: ''
+    alias: ''
+    burst_len: burst_len
+    comment: stream C -> placeKYT (stream_id only; chip/hop resolved there)
+    complex_in: float
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_channels: '1'
+    port_name: '"x16_in"'
+    server_host: '"127.0.0.1"'
+    server_port: server_port
+    stream_id: '"C"'
+    pipelined: 'False'
+    schedule: '"interleaved"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 290
+    - 620
+    rotation: 0
+    state: enabled
+- name: gainC
+  id: kyttar_gain
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: gain 0.5 (chip2)
+    device_id: '"kyttar_0"'
+    gain: '0.5'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 520
+    - 620
+    rotation: 0
+    state: enabled
+- name: msinkC
+  id: kyttar_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: stream C recovered (0.5x)
+    device_id: '"kyttar_0"'
+    hold_secs: '8.0'
+    in_type: float
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_channels: '1'
+    port_name: '"x16_out"'
+    server_port: server_port
+    server_repeat: 'False'
+    stream_id: '"C"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 750
+    - 620
+    rotation: 0
+    state: enabled
+- name: time_sink_C
+  id: qtgui_time_sink_x
+  parameters:
+    alpha1: '1.0'
+    alpha2: '1.0'
+    alpha3: '1.0'
+    alpha4: '1.0'
+    alpha5: '1.0'
+    alpha6: '1.0'
+    alpha7: '1.0'
+    alpha8: '1.0'
+    alpha9: '1.0'
+    alpha10: '1.0'
+    color1: blue
+    color2: green
+    color3: blue
+    color4: blue
+    color5: blue
+    color6: blue
+    color7: blue
+    color8: blue
+    color9: blue
+    color10: blue
+    label1: input
+    label2: Stream C out (0.5x)
+    label3: Signal 3
+    label4: Signal 4
+    label5: Signal 5
+    label6: Signal 6
+    label7: Signal 7
+    label8: Signal 8
+    label9: Signal 9
+    label10: Signal 10
+    affinity: ''
+    alias: ''
+    autoscale: 'False'
+    axislabels: 'True'
+    comment: 'Stream C: input vs 0.5x'
+    ctrlpanel: 'False'
+    entags: 'True'
+    grid: 'True'
+    gui_hint: ''
+    legend: 'True'
+    name: '"Stream C"'
+    nconnections: '2'
+    size: burst_len
+    srate: burst_len
+    type: float
+    tr_chan: '0'
+    tr_delay: '0'
+    tr_level: '0.0'
+    tr_mode: qtgui.TRIG_MODE_FREE
+    tr_slope: qtgui.TRIG_SLOPE_POS
+    tr_tag: '""'
+    ylabel: Amplitude
+    ymax: '1'
+    ymin: '-1'
+    yunit: '""'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 980
+    - 620
+    rotation: 0
+    state: enabled
+- name: srcD
+  id: blocks_vector_source_x
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: stream D sine (taps chip3's gain)
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    repeat: 'True'
+    tags: '[]'
+    type: float
+    vector: '[0.8*float(__import__(''math'').sin(2*3.141592653589793*5*n/burst_len))
+      for n in range(burst_len)]'
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 40
+    - 840
+    rotation: 0
+    state: enabled
+- name: msrcD
+  id: kyttar_source
+  parameters:
+    affinity: ''
+    alias: ''
+    burst_len: burst_len
+    comment: stream D -> placeKYT (stream_id only; chip/hop resolved there)
+    complex_in: float
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_channels: '1'
+    port_name: '"x16_in"'
+    server_host: '"127.0.0.1"'
+    server_port: server_port
+    stream_id: '"D"'
+    pipelined: 'False'
+    schedule: '"interleaved"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 290
+    - 840
+    rotation: 0
+    state: enabled
+- name: gainD
+  id: kyttar_gain
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: gain 0.5 (chip3)
+    device_id: '"kyttar_0"'
+    gain: '0.5'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 520
+    - 840
+    rotation: 0
+    state: enabled
+- name: msinkD
+  id: kyttar_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: stream D recovered (0.5x)
+    device_id: '"kyttar_0"'
+    hold_secs: '8.0'
+    in_type: float
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_channels: '1'
+    port_name: '"x16_out"'
+    server_port: server_port
+    server_repeat: 'False'
+    stream_id: '"D"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 750
+    - 840
+    rotation: 0
+    state: enabled
+- name: time_sink_D
+  id: qtgui_time_sink_x
+  parameters:
+    alpha1: '1.0'
+    alpha2: '1.0'
+    alpha3: '1.0'
+    alpha4: '1.0'
+    alpha5: '1.0'
+    alpha6: '1.0'
+    alpha7: '1.0'
+    alpha8: '1.0'
+    alpha9: '1.0'
+    alpha10: '1.0'
+    color1: blue
+    color2: magenta
+    color3: blue
+    color4: blue
+    color5: blue
+    color6: blue
+    color7: blue
+    color8: blue
+    color9: blue
+    color10: blue
+    label1: input
+    label2: Stream D out (0.5x)
+    label3: Signal 3
+    label4: Signal 4
+    label5: Signal 5
+    label6: Signal 6
+    label7: Signal 7
+    label8: Signal 8
+    label9: Signal 9
+    label10: Signal 10
+    affinity: ''
+    alias: ''
+    autoscale: 'False'
+    axislabels: 'True'
+    comment: 'Stream D: input vs 0.5x'
+    ctrlpanel: 'False'
+    entags: 'True'
+    grid: 'True'
+    gui_hint: ''
+    legend: 'True'
+    name: '"Stream D"'
+    nconnections: '2'
+    size: burst_len
+    srate: burst_len
+    type: float
+    tr_chan: '0'
+    tr_delay: '0'
+    tr_level: '0.0'
+    tr_mode: qtgui.TRIG_MODE_FREE
+    tr_slope: qtgui.TRIG_SLOPE_POS
+    tr_tag: '""'
+    ylabel: Amplitude
+    ymax: '1'
+    ymin: '-1'
+    yunit: '""'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 980
+    - 840
     rotation: 0
     state: enabled
 connections:
 - - srcA
   - '0'
   - msrcA
+  - '0'
+- - msrcA
+  - '0'
+  - gainA
+  - '0'
+- - gainA
+  - '0'
+  - msinkA
   - '0'
 - - msinkA
   - '0'
@@ -374,6 +733,14 @@ connections:
   - '0'
   - msrcB
   - '0'
+- - msrcB
+  - '0'
+  - gainB
+  - '0'
+- - gainB
+  - '0'
+  - msinkB
+  - '0'
 - - msinkB
   - '0'
   - time_sink_B
@@ -381,6 +748,46 @@ connections:
 - - srcB
   - '0'
   - time_sink_B
+  - '0'
+- - srcC
+  - '0'
+  - msrcC
+  - '0'
+- - msrcC
+  - '0'
+  - gainC
+  - '0'
+- - gainC
+  - '0'
+  - msinkC
+  - '0'
+- - msinkC
+  - '0'
+  - time_sink_C
+  - '1'
+- - srcC
+  - '0'
+  - time_sink_C
+  - '0'
+- - srcD
+  - '0'
+  - msrcD
+  - '0'
+- - msrcD
+  - '0'
+  - gainD
+  - '0'
+- - gainD
+  - '0'
+  - msinkD
+  - '0'
+- - msinkD
+  - '0'
+  - time_sink_D
+  - '1'
+- - srcD
+  - '0'
+  - time_sink_D
   - '0'
 metadata:
   file_format: 1

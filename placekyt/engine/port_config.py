@@ -187,6 +187,12 @@ def stream_targets(project, registry, catalog, chip_id: int = 0,
         blk = project.block(conn.target.block)
         if blk is None or blk.placement is None or not blk.placement.cells:
             continue
+        # CROSS-CHIP stream: the input net enters THIS chip's port but its target
+        # block lives on a DOWNSTREAM chip (it transits this chip's bus to a far
+        # gain). The single-chip hop math (30 - dist to a same-chip cell) is wrong
+        # for it — multi_chip_stream_targets resolves the composite cross-chip hop.
+        if blk.placement.chip != chip_id:
+            continue
         land = landings.get(conn.name)
         if land is not None:
             # Built-corridor landing: the cell/entry/hop the routed corridor actually
@@ -295,6 +301,78 @@ def multi_chip_stream_targets(project, registry, catalog, build_result=None):
             entry["stream_id"] = sid
             key = sid if sid not in merged else f"{cid}:{sid}"
             merged[key] = entry
+
+    # --- CROSS-CHIP streams: enter a HEAD port, tap a FAR chip's block ----------
+    # A stream whose input net is chip_H.x16_in -> block-on-chip_F (F downstream of
+    # H in the chain). It transits chip_H's agnostic bus and lands on chip_F's gain.
+    # Composite hop = (chip_F's OWN landing hop, from chip_F.x16_in) - (chip_H's bus
+    # crossing, x16_in->x16_out). The word is injected on chip_H's HEAD with that
+    # hop; it rides chip_H's bus, crosses the boundary, and lands at chip_F's block.
+    from model.connection import BlockEndpoint, ChipPortEndpoint as _CPE
+
+    def _far_landing(far_chip, block):
+        """The FAR block's landing as seen from chip_F's OWN x16_in: hop = 30 -
+        dist(port -> block cell), entry/data from the block's resolved IO. Computed
+        from placement directly (not input_landings, which can carry MULTIPLE nets
+        on a chip and pick the wrong one)."""
+        fct = registry.require(
+            (project.chip(far_chip).type_name if project.chip(far_chip) else None)
+            or project.chip_type).chip_type
+        fip = next((p for p in fct.ports if p.direction.value == "input"), None)
+        if fip is None or block.placement is None or not block.placement.cells:
+            return None
+        c0 = block.placement.cells[0]
+        dist = abs(c0.x - fip.cell_x) + abs(c0.y - fip.cell_y)
+        entry, in_regs = catalog.resolved_io(
+            block.type, block.params, library=block.library)
+        return {"hop": 30 - dist, "entry": int(entry),
+                "data_addrs": list(in_regs) if in_regs else [0]}
+
+    def _bus_crossing(head_chip):
+        """chip_H's transit-bus width: x16_in cell -> x16_out cell manhattan +1
+        (the exit hop). e.g. (0,0)->(9,0) = 9, +1 = 10."""
+        hct = registry.require(
+            (project.chip(head_chip).type_name if project.chip(head_chip) else None)
+            or project.chip_type).chip_type
+        ip = next((p for p in hct.ports if p.direction.value == "input"), None)
+        op = next((p for p in hct.ports
+                   if p.direction.value == "output" and p.name.endswith("_out")), None)
+        if ip is None or op is None:
+            return 10
+        return abs(op.cell_x - ip.cell_x) + abs(op.cell_y - ip.cell_y) + 1
+
+    for conn in project.connections:
+        src, tg = conn.source, conn.target
+        if not (isinstance(src, _CPE) and src.port.endswith("_in")
+                and isinstance(tg, BlockEndpoint)):
+            continue
+        sid = getattr(conn, "stream_id", None)
+        if not sid:
+            continue
+        blk = project.block(tg.block)
+        if blk is None or blk.placement is None:
+            continue
+        head, far = src.chip, blk.placement.chip
+        if head == far:
+            continue  # same-chip — already handled above
+        own = _far_landing(far, blk)
+        if own is None:
+            continue
+        composite_hop = int(own["hop"]) - _bus_crossing(head)
+        e = {
+            "entry_addr": int(own["entry"]),
+            "hop_count": composite_hop,
+            "data_addrs": list(own["data_addrs"]) or [0],
+            "in_port": src.port,
+            "out_tag": None,
+            "complex_out": False,
+            "chip_id": head,               # injected on the HEAD chip
+            "out_chip": _tail(head),       # emerges at the chain tail
+            "routed": True,                # a far tap is always routed
+            "stream_id": sid,
+        }
+        key = sid if sid not in merged else f"{head}:{sid}"
+        merged[key] = e
     return merged
 
 

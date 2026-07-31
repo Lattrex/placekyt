@@ -61,18 +61,28 @@ def catalog():
 
 
 def _build_2p2s(catalog):
-    """4 chips, 2 chains. Head gain AT (0,0) per chip; output routed to x16_out."""
+    """4 chips, 2 chains, GAIN-ON-BUS @(1,0) per chip. A stream taps its head chip's
+    gain (0.5x); its output crosses the TRANSPARENT inter-chip wire (hop composed to
+    the chain tail) and transits the tail chip's bus to x16_out -> 0.5x. The word's
+    hop carries it continuously across both chips (the real-hardware model)."""
     ctrl = AppController(catalog=catalog)
     ctrl.new_project("2p2s", "kyttar_10x12")
     for _ in range(3):
         ctrl.add_chip()                      # chips 1, 2, 3 (chip 0 exists)
+    gns = {}
     for chip in range(4):
-        ctrl.place_block("GainBlock", chip, 0, 0, library="lattrex.official")
-        gn = [b.name for b in ctrl.project.blocks
-              if b.placement and b.placement.chip == chip][-1]
-        ctrl.add_route(BlockEndpoint(gn, "out"),
+        ctrl.place_block("GainBlock", chip, 1, 0, library="lattrex.official")
+        gns[chip] = [b.name for b in ctrl.project.blocks
+                     if b.placement and b.placement.chip == chip][-1]
+        ctrl.add_route(BlockEndpoint(gns[chip], "out"),
                        ChipPortEndpoint(chip, "x16_out"),
-                       [(x, 0) for x in range(10)])
+                       [(x, 0) for x in range(1, 10)])
+    # Each chain's HEAD gain input taps the bus at (0,0); chain A head=chip0,
+    # chain B head=chip2.
+    ctrl.add_route(ChipPortEndpoint(0, "x16_in"),
+                   BlockEndpoint(gns[0], "sample"), [(0, 0)])
+    ctrl.add_route(ChipPortEndpoint(2, "x16_in"),
+                   BlockEndpoint(gns[2], "sample"), [(0, 0)])
     ctrl.add_inter_chip(0, "x16_out", 1, "x16_in")   # chain A series link
     ctrl.add_inter_chip(2, "x16_out", 3, "x16_in")   # chain B series link
     return ctrl
@@ -99,8 +109,13 @@ def test_2p2s_drc_clean_against_board(qapp, catalog):
 
 
 def test_two_parallel_chains_relay_independently(qapp, catalog):
-    """Both chains run at once with DIFFERENT stimulus; each tail = 0.25x of its
-    OWN chain's input, with no cross-chain interference."""
+    """Both chains run at once with DIFFERENT stimulus; each tail = 0.5x of its OWN
+    chain's input (tap the head gain, transit the tail chip via the TRANSPARENT
+    wire), no cross-chain interference. Requires the transparent-boundary .so."""
+    import simkyt
+    if not hasattr(simkyt.MultiChipSimulation.new("probe", 5.0),
+                   "set_port_input_routed"):
+        pytest.skip("simkyt .so predates the multichip work")
     from engine.simulator import MultiChipSimEngine
 
     ctrl = _build_2p2s(catalog)
@@ -111,22 +126,24 @@ def test_two_parallel_chains_relay_independently(qapp, catalog):
     eng = MultiChipSimEngine({0: ct, 1: ct, 2: ct, 3: ct})
     eng.connect(0, "x16_out", 1, "x16_in")   # chain A
     eng.connect(2, "x16_out", 3, "x16_in")   # chain B
-    e, ir = catalog.resolved_io("GainBlock")
     for cid in range(4):
         eng.load(cid, r.words(cid), trace=True)
-        eng.configure_input_port(cid, "x16_in", entry_addr=e, hop_count=30,
-                                 data_addr=ir[0])
+        lands = r.chips[cid].input_landings
+        il = (list(lands.values())[0] if lands
+              else {"entry": 28, "hop": 29, "data_addrs": [0]})
+        eng.configure_input_port(cid, "x16_in", entry_addr=il["entry"],
+                                 hop_count=il["hop"],
+                                 data_addr=il["data_addrs"][0], routed=True)
 
-    eng.inject(0, "x16_in", [0x4000, 0x2000])   # chain A stimulus
-    eng.inject(2, "x16_in", [0x6000, 0x1000])   # chain B stimulus (distinct)
-    eng.run_until_output(1, "x16_out", 2, None, 4000)
-    eng.run_until_output(3, "x16_out", 2, None, 4000)
+    eng.inject(0, "x16_in", [0x4000, 0x2000])   # chain A head (chip0 gain)
+    eng.inject(2, "x16_in", [0x6000, 0x1000])   # chain B head (chip2 gain)
+    eng.run(3000, 300)
 
     out_a = eng.capture(1, "x16_out")
     out_b = eng.capture(3, "x16_out")
-    # 0.25x of each chain's OWN input — proves parallel + cross-chip, no crosstalk.
-    assert out_a[:2] == [0x1000, 0x0800], out_a
-    assert out_b[:2] == [0x1800, 0x0400], out_b
+    # 0.5x of each chain's OWN input — parallel + cross-chip transit, no crosstalk.
+    assert out_a[:2] == [0x2000, 0x1000], out_a
+    assert out_b[:2] == [0x3000, 0x0800], out_b
     # cell-state overlay spans all four chips
     states = eng.cell_states()
     assert {k[0] for k in states} == {0, 1, 2, 3}

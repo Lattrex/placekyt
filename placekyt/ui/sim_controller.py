@@ -1426,15 +1426,28 @@ class SimController(QObject):
         # Inter-chip wires.
         for ic in project.inter_chip_connections:
             self.engine.connect(ic.from_chip, ic.from_port, ic.to_chip, ic.to_port)
-        # Load + trace + configure each chip's input port.
+        # Load + trace + configure each chip's input port. ``routed`` (head reached
+        # via a corridor, not at the port cell) comes from the built input_landings
+        # so MultiChipSimEngine.inject drives a routed head via WRITE+JUMP (the raw
+        # write_port_i16 only reaches an at-landing block) — and so a word taps its
+        # gain and its composed output crosses the transparent wire to the next chip.
         first_chip = project.chips[0].id
         first_port = None
         for chip in project.chips:
             self.engine.load(chip.id, result.words(chip.id), trace=True)
-            cfg = self._input_port_config(chip.id)
+            cfg = self._input_port_config(chip.id, build_result=result)
             if cfg is not None:
                 port, kw = cfg
-                self.engine.configure_input_port(chip.id, port, **kw)
+                cb = getattr(result, "chips", {}).get(chip.id)
+                lands = getattr(cb, "input_landings", {}) or {} if cb else {}
+                ct = self.app.registry.require(
+                    chip.type_name or project.chip_type).chip_type
+                ip = next((p for p in ct.ports
+                           if p.direction.value == "input"), None)
+                pc = (ip.cell_x, ip.cell_y) if ip else (0, 0)
+                routed = any(tuple(l.get("cell", pc)) != tuple(pc)
+                             for l in lands.values())
+                self.engine.configure_input_port(chip.id, port, routed=routed, **kw)
                 if chip.id == first_chip:
                     first_port = port
         # Inject stimulus at the first chip's input port. Multi-chip injection

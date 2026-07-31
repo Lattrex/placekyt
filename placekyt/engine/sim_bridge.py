@@ -1586,13 +1586,17 @@ class MultiChipSimServer:
                     xi = (_float_to_raw_i16(float(s["seg"][k])) if s["raw"]
                           else _float_to_q15(float(s["seg"][k])))
                     xq = None
+                # BOUNDED events per chip per round: run(None, ...) uses UNBOUNDED
+                # events per round, and a mis-hopped word that keeps generating
+                # events makes one round never terminate (a hang). Cap it.
+                ev = max(3000, mx // 10)
                 eng._sim.inject_data_physical(name, [xi], s["hop"], int(s["a0"]))
-                eng._sim.run(None, 200)
+                eng._sim.run(ev, 80)
                 if xq is not None:
                     eng._sim.inject_data_physical(name, [xq], s["hop"], int(s["a1"]))
-                    eng._sim.run(None, 200)
+                    eng._sim.run(ev, 80)
                 eng._sim.inject_jump_physical(name, s["hop"], s["entry"])
-                eng._sim.run(None, max(200, mx // 200))
+                eng._sim.run(ev, 120)
             # Drain this chain's tail, demux by out_tag.
             tail = _chip_name(s["out_chip"])
             arr = eng._sim.read_port_i16(tail, s["out_port"])

@@ -125,3 +125,51 @@ def test_multichip_server_drives_both_chains(qapp, catalog):
     assert vals[1] == pytest.approx(0.0625, abs=1e-3)
     assert vals[2] == pytest.approx(0.1875, abs=1e-3)
     assert vals[3] == pytest.approx(0.0312, abs=2e-3)
+
+
+_2P2S_KYT = (Path(__file__).resolve().parents[2] / "examples" / "gain_2p2s"
+             / "gain_2p2s.kyt")
+
+
+@pytest.mark.skipif(not _2P2S_KYT.exists(), reason="gain_2p2s.kyt absent")
+def test_sim_controller_hosts_multichip_server(qapp, catalog):
+    """The GUI path: SimController.start_gnuradio_server on a 4-chip 2P2S project
+    auto-selects MultiChipSimServer (was a hard 'single-chip only' error), and a
+    client drives both chains addressed by chip_id, each recovering its own input.
+    The at-landing gain_2p2s.kyt (gain@(0,0), hop=30) — the header carries the
+    resolved landing since its nets carry no stream_id."""
+    from ui.sim_controller import SimController
+    from engine.sim_bridge import send_message, recv_message
+
+    ctrl = AppController(catalog=catalog)
+    ctrl.open_project(str(_2P2S_KYT))
+    assert len(ctrl.project.chips) == 4
+    assert len(ctrl.project.inter_chip_connections) == 2
+
+    sim = SimController(ctrl)
+    port = sim.start_gnuradio_server(port=0)
+    try:
+        assert port is not None, "multi-chip server failed to start"
+        assert sim._multi is True
+        assert type(sim._gr_server).__name__ == "MultiChipSimServer"
+        c = socket.socket()
+        c.connect(("127.0.0.1", port))
+        send_message(c, {"op": "ping"})
+        assert recv_message(c)[0].get("multichip") is True
+        payload = np.array([0.5, 0.25, 0.75, 0.125], dtype=np.float32)
+        send_message(c, {"op": "process_batch_multichip", "streams": [
+            {"stream_id": "A", "chip_id": 0, "out_chip": 1, "entry_addr": 28,
+             "hop_count": 30, "data_addrs": [0], "complex": False,
+             "raw": False, "n_samples": 2},
+            {"stream_id": "B", "chip_id": 2, "out_chip": 3, "entry_addr": 28,
+             "hop_count": 30, "data_addrs": [0], "complex": False,
+             "raw": False, "n_samples": 2}]}, payload)
+        _rh, out = recv_message(c)
+        c.close()
+    finally:
+        sim.stop_gnuradio_server()
+
+    vals = [round(float(v), 4) for v in out]
+    assert vals[0] == pytest.approx(0.125, abs=1e-3), vals   # chain A
+    assert vals[2] == pytest.approx(0.1875, abs=1e-3), vals  # chain B, no crosstalk
+    assert sim._gr_server is None  # stopped cleanly

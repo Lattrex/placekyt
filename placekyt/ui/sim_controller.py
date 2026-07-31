@@ -670,9 +670,12 @@ class SimController(QObject):
         if not result.ok and not empty_project:
             self.state_changed.emit(f"error: {len(result.errors)} DRC error(s)")
             return None
+        # MULTI-CHIP (e.g. the 2P2S board's two parallel daisy-chains): host a
+        # MultiChipSimServer over a MultiChipSimEngine instead of the single-chip
+        # SimServer. A dedicated path so the single-chip server below stays exactly
+        # as the 7 shipped modems rely on it. (Was a hard "single-chip only" error.)
         if len(project.chips) > 1:
-            self.state_changed.emit("error: GNURadio server is single-chip only")
-            return None
+            return self._start_gnuradio_server_multichip(host, port, result)
 
         # Hosting for a GRC client → bounded batches → retain the WHOLE trace in
         # the waveform (set before engine.load so the chip-side cap is sized for
@@ -890,6 +893,67 @@ class SimController(QObject):
         self._last_refresh_cost = 0.0
         self._server_pull_timer.start()
         self.state_changed.emit(f"gnuradio-server :{bound}")
+        self.server_state.emit(bound)
+        return bound
+
+    def _start_gnuradio_server_multichip(self, host, port, result):
+        """Host a MULTI-CHIP design (2+ chips — the 2P2S board's parallel chains)
+        for a GRC client, via a MultiChipSimEngine + MultiChipSimServer.
+
+        Kept separate from the single-chip ``start_gnuradio_server`` body so that
+        proven path is untouched. Loads every chip's bitstream, wires the project's
+        inter-chip connections, configures each chip's input port (with ``routed``
+        from the built input_landings so a routed head is driven WRITE+JUMP), and
+        resolves the per-chip stream map (``multi_chip_stream_targets`` — chip_id +
+        routed per stream) the server addresses each chain by. Returns the bound
+        port, or None on failure."""
+        from engine.simulator import MultiChipSimEngine
+        from engine.sim_bridge import MultiChipSimServer
+        from engine.port_config import (multi_chip_stream_targets,
+                                         input_port_config)
+
+        project = self.app.project
+        # Per-chip ChipType paths.
+        paths: dict[int, str] = {}
+        for chip in project.chips:
+            tn = chip.type_name or project.chip_type
+            paths[chip.id] = str(self.app.registry.require(tn).path)
+        engine = MultiChipSimEngine(paths)
+        # Inter-chip wires (each chain's on-carrier series link).
+        for ic in project.inter_chip_connections:
+            engine.connect(ic.from_chip, ic.from_port, ic.to_chip, ic.to_port)
+        # Load + trace + configure each chip's input port; routed iff the built
+        # landing cell is not the port cell.
+        for chip in project.chips:
+            cid = chip.id
+            engine.load(cid, result.words(cid), trace=True)
+            cfg = input_port_config(project, self.app.registry, self.app.catalog,
+                                    cid, build_result=result)
+            if cfg is None:
+                continue
+            port_name, kw = cfg
+            cb = getattr(result, "chips", {}).get(cid)
+            landings = getattr(cb, "input_landings", {}) or {} if cb else {}
+            ct = self.app.registry.require(chip.type_name
+                                           or project.chip_type).chip_type
+            in_p = next((p for p in ct.ports
+                         if p.direction.value == "input"), None)
+            port_cell = (in_p.cell_x, in_p.cell_y) if in_p else (0, 0)
+            routed = any(tuple(l.get("cell", port_cell)) != tuple(port_cell)
+                         for l in landings.values())
+            engine.configure_input_port(cid, port_name, routed=routed, **kw)
+
+        stream_targets = multi_chip_stream_targets(
+            project, self.app.registry, self.app.catalog, build_result=result)
+
+        self._multi = True
+        self.engine = engine
+        self._hosted_design_version = getattr(project, "design_version", 0)
+        self._hosted_project_id = id(project)
+        self._gr_server = MultiChipSimServer(engine, stream_targets,
+                                             host=host, port=port)
+        bound = self._gr_server.start()
+        self.state_changed.emit(f"gnuradio-server :{bound} (multi-chip)")
         self.server_state.emit(bound)
         return bound
 

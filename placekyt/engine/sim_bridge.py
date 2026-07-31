@@ -1549,14 +1549,19 @@ class MultiChipSimServer:
             width = 2 * n if is_complex else n
             seg = data[off:off + width]
             off += width
+            # Landing resolution: the server's stream_targets (from
+            # multi_chip_stream_targets) is the source of truth, but a header may
+            # also carry entry/hop/data_addrs directly (a client that resolved the
+            # landing itself, or a design whose nets carry no stream_id). Header
+            # wins when present so the server drives either way.
             tgt = self._target_for(sid) or {}
             chip_id = int(sh.get("chip_id", tgt.get("chip_id", 0)))
-            entry = int(tgt.get("entry_addr", 0)) & 0xFF
-            hop = int(tgt.get("hop_count", 30)) & 0x1F
-            das = list(tgt.get("data_addrs") or [0])
+            entry = int(sh.get("entry_addr", tgt.get("entry_addr", 0))) & 0xFF
+            hop = int(sh.get("hop_count", tgt.get("hop_count", 30))) & 0x1F
+            das = list(sh.get("data_addrs") or tgt.get("data_addrs") or [0])
             a0 = das[0]
             a1 = das[1] if len(das) > 1 else a0 + 1
-            out_tag = tgt.get("out_tag")
+            out_tag = sh.get("out_tag", tgt.get("out_tag"))
             out_chip = int(sh.get("out_chip", tgt.get("out_chip", chip_id)))
             streams.append({
                 "sid": sid, "chip_id": chip_id, "out_chip": out_chip,

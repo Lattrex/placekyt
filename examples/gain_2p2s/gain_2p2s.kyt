@@ -5,17 +5,17 @@ project:
 chip_type: kyttar_10x12
 chips:
 - id: 0
-  label: Chip 0
+  label: A0 (chain A head)
   position: {x: 0.0, y: 0.0}
 - id: 1
-  label: Chip 1
+  label: A1 (chain A tail)
   position: {x: 768.0, y: 0.0}
 - id: 2
-  label: Chip 2
-  position: {x: 1536.0, y: 0.0}
+  label: B0 (chain B head)
+  position: {x: 0.0, y: 900.0}
 - id: 3
-  label: Chip 3
-  position: {x: 2304.0, y: 0.0}
+  label: B1 (chain B tail)
+  position: {x: 768.0, y: 900.0}
 inter_chip_connections:
 - from: {chip: 0, port: x16_out}
   to: {chip: 1, port: x16_in}

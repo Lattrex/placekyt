@@ -250,7 +250,23 @@ def multi_chip_stream_targets(project, registry, catalog, build_result=None):
     ``{key: {..stream_targets fields.., chip_id, routed, stream_id}}``.
 
     Additive — does NOT touch the single-chip :func:`stream_targets` path.
+
+    Each entry also carries ``out_chip`` — the chain TAIL where this stream's
+    recovered words emerge (its head chip's chain, walking the inter-chip wires
+    forward until a chip with no outgoing inter-chip link). For a single-chip chain
+    ``out_chip == chip_id``.
     """
+    # Chain tail per chip: follow inter-chip from_chip -> to_chip forward until no
+    # outgoing wire. (Depth <= 2 on the 2P2S board, but this handles any linear chain.)
+    _next = {ic.from_chip: ic.to_chip for ic in project.inter_chip_connections}
+
+    def _tail(cid, _guard=None):
+        _guard = _guard or set()
+        while cid in _next and cid not in _guard:
+            _guard.add(cid)
+            cid = _next[cid]
+        return cid
+
     merged: dict = {}
     for chip in project.chips:
         cid = chip.id
@@ -274,6 +290,7 @@ def multi_chip_stream_targets(project, registry, catalog, build_result=None):
                     break
             entry = dict(tgt)
             entry["chip_id"] = cid
+            entry["out_chip"] = _tail(cid)
             entry["routed"] = routed
             entry["stream_id"] = sid
             key = sid if sid not in merged else f"{cid}:{sid}"

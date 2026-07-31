@@ -99,9 +99,7 @@ class DuplexRendezvous:
         self._pipelined = False
 
     def submit(self, host, port, stream_id, samples, complex_, raw,
-               collect_window=0.4, schedule="interleaved", pipelined=False,
-               chip_id=None, out_chip=None, entry_addr=None, hop_count=None,
-               data_addrs=None):
+               collect_window=0.4, schedule="interleaved", pipelined=False):
         """Register this stream's burst for the current Run. The leader (first in)
         waits ``collect_window`` s for peers, then dispatches the combined duplex
         RPC. Returns this stream's recovered words.
@@ -111,26 +109,15 @@ class DuplexRendezvous:
         whichever names a NON-default ("sequential") wins for the Run, so setting
         it on either source (or both) works. Reset to the default each new Run.
 
-        MULTI-CHIP (2P2S): when ``chip_id`` is given, the stream feeds a specific
-        chip/chain and the Run dispatches ``process_batch_multichip`` instead of the
-        single-chip duplex RPC. ``out_chip`` (chain tail), ``entry_addr``,
-        ``hop_count`` and ``data_addrs`` are the stream's resolved landing (from
-        placeKYT's multi_chip_stream_targets, carried on the GR source). A design is
-        single-chip iff NO submitted stream carries a chip_id."""
+        The stream carries only its LOGICAL identity (stream_id); placeKYT resolves
+        which chip/port/landing it maps to. A multi-chip design is handled entirely
+        server-side (the server's stream_targets carry each stream's chip) — the
+        rendezvous + dispatch here are identical for single- and multi-chip."""
         with self._cv:
-            sub = {
+            self._pending[str(stream_id)] = {
                 "stream_id": str(stream_id), "samples": np.asarray(samples),
                 "complex": bool(complex_), "raw": bool(raw),
             }
-            if chip_id is not None:
-                sub.update({
-                    "chip_id": int(chip_id),
-                    "out_chip": int(out_chip if out_chip is not None else chip_id),
-                    "entry_addr": int(entry_addr or 0),
-                    "hop_count": int(hop_count if hop_count is not None else 30),
-                    "data_addrs": [int(a) for a in (data_addrs or [0])],
-                })
-            self._pending[str(stream_id)] = sub
             # Non-default schedule wins (a source that leaves it at "interleaved"
             # must not clobber a peer that asked for "sequential").
             sched = str(schedule or "interleaved").lower()
@@ -159,12 +146,12 @@ class DuplexRendezvous:
 
     def _dispatch_all(self, host, port):
         """Build + send ONE process_batch_duplex from all pending streams; split
-        the reply per stream into ``self._results``. MULTI-CHIP: if any stream
-        carries a chip_id, send process_batch_multichip instead."""
+        the reply per stream into ``self._results``. The server routes each stream
+        to its chip (single- or multi-chip) from its own stream_targets — the
+        client sends only stream_id + samples."""
         with self._cv:
             subs = list(self._pending.values())
             self._pending = {}
-        multichip = any("chip_id" in s for s in subs)
         # Build header stream list + concatenated payload (stream order preserved).
         streams_hdr = []
         parts = []
@@ -180,46 +167,11 @@ class DuplexRendezvous:
                 seg = np.real(arr).astype(np.float32)
                 n = len(seg)
             parts.append(seg)
-            sh = {"stream_id": s["stream_id"], "complex": s["complex"],
-                  "raw": s["raw"], "n_samples": int(n)}
-            if multichip and "chip_id" in s:
-                sh.update({"chip_id": s["chip_id"], "out_chip": s["out_chip"],
-                           "entry_addr": s["entry_addr"],
-                           "hop_count": s["hop_count"],
-                           "data_addrs": s["data_addrs"]})
-            streams_hdr.append(sh)
+            streams_hdr.append({"stream_id": s["stream_id"],
+                                "complex": s["complex"], "raw": s["raw"],
+                                "n_samples": int(n)})
         payload = (np.concatenate(parts).astype(np.float32) if parts
                    else np.array([], dtype=np.float32))
-        if multichip:
-            # Reset the per-Run knobs (unused for multichip but keep them clean).
-            with self._cv:
-                self._schedule = "interleaved"
-                self._pipelined = False
-            header = {"op": "process_batch_multichip", "streams": streams_hdr}
-            conn = socket.create_connection((host, int(port)))
-            try:
-                _send_message(conn, header, payload)
-                reply, out = _recv_message(conn)
-            finally:
-                conn.close()
-            if not reply.get("ok"):
-                raise RuntimeError(
-                    f"placeKYT SimServer error: {reply.get('error')}")
-            lengths = list(reply.get("lengths") or [])
-            ids = list(reply.get("stream_ids")
-                       or [s["stream_id"] for s in streams_hdr])
-            out = (out if out is not None else np.array([], dtype=np.float32))
-            results = {}
-            off = 0
-            for sid, ln in zip(ids, lengths):
-                results[str(sid)] = np.asarray(out[off:off + ln], dtype=np.float32)
-                off += ln
-            with self._cv:
-                self._results = results
-                self._gen += 1
-                self._dispatching = False
-                self._cv.notify_all()
-            return
         # SCHEDULE (timing-analysis knob, no design change): how the duplex streams
         # are driven on the shared input port —
         #   "interleaved" (default): TX + RX round-robin sample-by-sample, so the two

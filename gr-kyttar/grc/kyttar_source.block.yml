@@ -71,8 +71,7 @@ templates:
     num_channels=${num_channels}, server_host=${server_host},
     server_port=${server_port}, complex_in=${complex_in.make_val}, burst_len=${burst_len},
     stream_id=${stream_id}, pipelined=${pipelined.make_val},
-    schedule=${schedule}, chip_id=${chip_id}, out_chip=${out_chip},
-    entry_addr=${entry_addr}, hop_count=${hop_count}, data_addrs=${data_addrs})
+    schedule=${schedule})
 
 parameters:
   - id: device_id
@@ -159,36 +158,6 @@ parameters:
     default: '"interleaved"'
     options: ['"interleaved"', '"sequential"']
     option_labels: ['Interleaved (full-duplex)', 'Sequential (simplex)']
-  # --- MULTI-CHIP (2P2S) — which chip/chain this stream feeds ---------------
-  # chip_id >= 0 routes this stream to a specific chip/chain (the Run then uses
-  # process_batch_multichip). Leave chip_id = -1 for a single-chip design. The
-  # landing (entry/hop/data_addrs) + out_chip come from placeKYT's resolved
-  # multi_chip_stream_targets — read them off the server console at start-up.
-  - id: chip_id
-    label: 'Multi-chip: Chip ID (-1=off)'
-    dtype: int
-    default: '-1'
-    hide: ${ 'part' if str(chip_id) == '-1' else 'none' }
-  - id: out_chip
-    label: 'Multi-chip: Output chip (chain tail)'
-    dtype: int
-    default: '-1'
-    hide: ${ 'part' if str(chip_id) == '-1' else 'none' }
-  - id: entry_addr
-    label: 'Multi-chip: Entry addr'
-    dtype: int
-    default: '0'
-    hide: ${ 'part' if str(chip_id) == '-1' else 'none' }
-  - id: hop_count
-    label: 'Multi-chip: Hop count'
-    dtype: int
-    default: '30'
-    hide: ${ 'part' if str(chip_id) == '-1' else 'none' }
-  - id: data_addrs
-    label: 'Multi-chip: Data addrs (csv)'
-    dtype: string
-    default: '"0"'
-    hide: ${ 'part' if str(chip_id) == '-1' else 'none' }
 
 inputs:
   - label: in

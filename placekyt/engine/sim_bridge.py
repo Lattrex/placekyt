@@ -1512,7 +1512,11 @@ class MultiChipSimServer:
         try:
             if op == "ping":
                 return {"ok": True, "mode": "batch", "multichip": True}, None
-            if op == "process_batch_multichip":
+            # process_batch_duplex is what the GR rendezvous sends (the client is
+            # chip-agnostic — it carries only stream_id). We resolve each stream's
+            # chip/landing HERE from the server's stream_targets. Same for the
+            # explicit process_batch_multichip op (a client that already knows).
+            if op in ("process_batch_duplex", "process_batch_multichip"):
                 return self._process_batch_multichip(header, payload)
             return {"ok": False, "error": f"unknown op {op!r} (multichip)"}, None
         except Exception as exc:  # noqa: BLE001 — surface to the client

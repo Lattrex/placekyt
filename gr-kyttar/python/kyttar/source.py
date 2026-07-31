@@ -83,11 +83,6 @@ class source(gr.sync_block):
         stream_id: str = "",
         pipelined: bool = False,
         schedule: str = "interleaved",
-        chip_id: int = -1,
-        out_chip: int = -1,
-        entry_addr: int = 0,
-        hop_count: int = 30,
-        data_addrs: str = "0",
     ):
         # SERVER-BATCH MODE (server_port > 0): drive a placeKYT-hosted chip via ONE
         # process_batch RPC instead of building/owning a local chip. The input is
@@ -144,22 +139,6 @@ class source(gr.sync_block):
         # this param — they should agree, and the rendezvous takes whichever names a
         # NON-default value so setting it on either source (or both) works.
         self._schedule = str(schedule or "interleaved").lower()
-        # MULTI-CHIP (2P2S): chip_id >= 0 marks this stream as feeding a specific
-        # chip/chain, so the Run dispatches process_batch_multichip (each chain
-        # addressed by chip_id) instead of the single-chip duplex RPC. out_chip is
-        # the chain's tail; entry_addr/hop_count/data_addrs are the head's resolved
-        # landing (from placeKYT's multi_chip_stream_targets). data_addrs is a
-        # comma string (GRC-friendly), e.g. "0" or "0,1". chip_id < 0 ⇒ single-chip.
-        self._chip_id = int(chip_id)
-        self._out_chip = int(out_chip)
-        self._entry_addr = int(entry_addr)
-        self._hop_count = int(hop_count)
-        try:
-            self._data_addrs = [int(a) for a in str(data_addrs).split(",") if a != ""]
-        except ValueError:
-            self._data_addrs = [0]
-        if not self._data_addrs:
-            self._data_addrs = [0]
         # FULL-SPEED: drive the whole burst SATURATED on the hosted chip (queue the
         # word stream + run to completion) rather than per-sample-to-quiescence. Only
         # safe for a saturation-tolerant (point-to-point-routed) chip design.
@@ -261,23 +240,13 @@ class source(gr.sync_block):
         # REAL/float-input DSP block (gain, FIR, ...) emits a Q15 VALUE the sink
         # should rescale to float. So tie raw to complex: raw for the receiver
         # path, Q15-float for the value path.
-        if self._stream_id and self._chip_id >= 0:
-            # MULTI-CHIP (2P2S): rendezvous with the other chains' sources; the Run
-            # dispatches ONE process_batch_multichip addressing each chain by
-            # chip_id. Same collect-then-dispatch pattern as duplex, but each stream
-            # carries its chip/chain landing.
-            rv = get_rendezvous(self._device_id)
-            out = rv.submit(self._server_host, self._server_port, self._stream_id,
-                            self._inbuf, complex_=self._complex_in,
-                            raw=self._complex_in, chip_id=self._chip_id,
-                            out_chip=self._out_chip, entry_addr=self._entry_addr,
-                            hop_count=self._hop_count, data_addrs=self._data_addrs)
-            with sess._cv:            # deliver to this stream's sink
-                sess._result = out
-                sess._seq += 1
-                sess._cv.notify_all()
-        elif self._stream_id:
-            # DUPLEX: rendezvous with the other stream's source so BOTH bursts run
+        if self._stream_id:
+            # DUPLEX / MULTI-CHIP: rendezvous with the other streams' sources so
+            # ALL bursts dispatch in ONE RPC. The source carries only stream_id
+            # (the LOGICAL identity) — placeKYT (the PHYSICAL side) resolves which
+            # chip/port/landing that stream maps to from the placed+routed design.
+            # A multi-chip design is handled server-side (its stream_targets carry
+            # chip_id); the flowgraph is identical to the single-chip duplex case.
             # INTERLEAVED on the shared input port in ONE process_batch_duplex RPC
             # (not tx-whole-burst-then-rx, which put the streams ~1.7M ns apart on
             # the chip clock). The rendezvous collects each stream, dispatches once,

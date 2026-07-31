@@ -791,6 +791,42 @@ def _phys_distance(conn, phys_pts) -> int:
     return distance
 
 
+def _output_cross_chip_extra(conn, project, chip_type) -> int:
+    """Extra exit hops when a block's OUTPUT port is INTER-CHIP-WIRED to a
+    downstream chip whose OWN output continues the chain (2P2S). The word must
+    transit the far chip's bus to the CHAIN TAIL, not stop at this chip's x16_out.
+
+    The output mirror of the composite input hop: for each inter-chip wire this
+    chip's output port feeds, add (boundary crossing + the far chip's x16_in ->
+    x16_out bus width). Walks the chain forward (2P2S depth <= 2; general linear
+    chain supported). Chains are homogeneous (all kyttar_10x12), so ``chip_type``
+    gives the far chip's bus width too. Returns 0 for a single-chip design or a
+    chain-tail chip (no outgoing inter-chip wire from this output port)."""
+    from model.connection import ChipPortEndpoint
+    if not (isinstance(conn.target, ChipPortEndpoint)
+            and conn.target.port.endswith("_out")):
+        return 0
+    ics = getattr(project, "inter_chip_connections", []) or []
+    ip = next((p for p in chip_type.ports if p.direction.value == "input"), None)
+    op = next((p for p in chip_type.ports
+               if p.direction.value == "output" and p.name.endswith("_out")), None)
+    if ip is None or op is None:
+        return 0
+    bus = abs(op.cell_x - ip.cell_x) + abs(op.cell_y - ip.cell_y) + 1
+    extra = 0
+    cur_chip, cur_port = conn.target.chip, conn.target.port
+    guard = set()
+    while cur_chip not in guard:
+        guard.add(cur_chip)
+        wire = next((ic for ic in ics
+                     if ic.from_chip == cur_chip and ic.from_port == cur_port), None)
+        if wire is None:
+            break
+        extra += 1 + bus   # +1 boundary crossing + far chip's bus width
+        cur_chip, cur_port = wire.to_chip, op.name
+    return extra
+
+
 # fwd_face int codes (cell_map.Face): S=0, E=1, W=2, N=3.
 _FACE_S, _FACE_E, _FACE_W, _FACE_N = 0, 1, 2, 3
 _PORT_FACE_CODE = {"south": _FACE_S, "east": _FACE_E,
@@ -983,6 +1019,12 @@ def _apply_routes(cell_map, gr_placement, blocks, connections, chip_type,
             # EDGE cell at hop_cnt 31 and execute there instead of transiting out — 0 egress,
             # the FM-transceiver symptom that traced to the bus router omitting the exit cell.)
             phys_dist = _phys_distance(conn, pts)
+            # CROSS-CHIP OUTPUT (2P2S): if this output port is inter-chip-wired to a
+            # downstream chip, the exit word must transit the far chip's bus to the
+            # CHAIN TAIL — add the crossing + far bus width so the WRITE/JUMP hop
+            # carries it across (the output mirror of the composite input hop). No-op
+            # for single-chip / chain-tail outputs.
+            phys_dist += _output_cross_chip_extra(conn, project, chip_type)
             _is_complex_port_egress = (
                 not isinstance(tgt, BlockEndpoint) and src_is_complex_out
                 and _cell_write_count(cfg) > 1)

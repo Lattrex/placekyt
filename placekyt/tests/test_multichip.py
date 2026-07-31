@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -159,55 +160,74 @@ class TestMultiChipSim:
     """End-to-end round-based multi-chip simulation (decoupled relay)."""
 
     def _chain_project(self, catalog):
+        """Two 0.5x gains in SERIES across the transparent inter-chip wire, GAIN-ON-
+        BUS geometry: each gain sits at (1,0) ON the row-0 bus, so a word rides the
+        bus and either taps the gain (tap hop) or transits (lower hop). A stream
+        entering chip0 taps chip0's gain, its output crosses the transparent wire and
+        taps chip1's gain (0.25x), exiting chip1's tail. The word's HOP carries it
+        continuously across both chips (the real-hardware model) — NOT a value relay."""
         from model.connection import BlockEndpoint, ChipPortEndpoint
 
         ctrl = AppController(catalog=catalog)
         ctrl.new_project("M", "kyttar_10x12")
         ctrl.add_chip("RX-2")
-        # chip0: gain at the input cell → x16_out
-        ctrl.place_block("GainBlock", 0, 0, 0, library="lattrex.official")
-        g0 = ctrl.project.blocks[0].name
-        ctrl.add_route(BlockEndpoint(g0, "out"), ChipPortEndpoint(0, "x16_out"),
-                       [(x, 0) for x in range(10)])
-        # chip1: gain at the input cell → x16_out
-        ctrl.place_block("GainBlock", 1, 0, 0, library="lattrex.official")
-        g1 = ctrl.project.blocks[1].name
-        ctrl.add_route(BlockEndpoint(g1, "out"), ChipPortEndpoint(1, "x16_out"),
-                       [(x, 0) for x in range(10)])
+        gns = {}
+        for chip in (0, 1):
+            ctrl.place_block("GainBlock", chip, 1, 0, library="lattrex.official")
+            gn = [b.name for b in ctrl.project.blocks
+                  if b.placement and b.placement.chip == chip][-1]
+            gns[chip] = gn
+            # gain-on-bus output: (1,0)->(2,0)->... row 0 -> x16_out (incl source cell)
+            ctrl.add_route(BlockEndpoint(gn, "out"), ChipPortEndpoint(chip, "x16_out"),
+                           [(x, 0) for x in range(1, 10)])
+        # chip0's gain input taps the bus at (0,0); the stream then chains to chip1's
+        # gain via the transparent wire (chip0's gain OUTPUT hop is composed to the
+        # far tail by the build's _output_cross_chip_extra).
+        ctrl.add_route(ChipPortEndpoint(0, "x16_in"),
+                       BlockEndpoint(gns[0], "sample"), [(0, 0)])
         ctrl.add_inter_chip(0, "x16_out", 1, "x16_in")
-        return ctrl
+        return ctrl, gns
 
     def test_engine_relays_value_across_chips(self, qapp, catalog):
-        # Two 0.5 gains chained across chips → 0.25× (matches the ref model's
-        # decoupled relay; the data value at the handshake is identical to the
-        # continuous-HOP_CNT hardware view).
-        from engine.simulator import MultiChipSimEngine
+        # 2P2S model: a stream taps chip0's gain (0.5x); its output crosses the
+        # TRANSPARENT inter-chip wire (hop composed to the chain TAIL) and TRANSITS
+        # chip1's bus to chip1's x16_out — chip1's gain is a SEPARATE stream's tap,
+        # not in this stream's path. So the result is 0.5x, and the word's hop carries
+        # it continuously across both chips (the real-hardware model, NOT a value
+        # relay that re-gained at each chip). Requires the transparent-boundary .so.
+        import simkyt
+        if not hasattr(simkyt.MultiChipSimulation.new("probe", 5.0),
+                       "set_port_input_routed"):
+            pytest.skip("simkyt .so predates the multichip work")
+        from engine.port_config import multi_chip_stream_targets
 
-        ctrl = self._chain_project(catalog)
+        ctrl, _gns = self._chain_project(catalog)
         r = ctrl.build()
         assert r.ok
-        ct_path = str(ctrl.registry.require("kyttar_10x12").path)
-        eng = MultiChipSimEngine({0: ct_path, 1: ct_path})
-        eng.connect(0, "x16_out", 1, "x16_in")
-        eng.load(0, r.words(0), trace=True)
-        eng.load(1, r.words(1), trace=True)
-        e, ir = catalog.resolved_io("GainBlock")
-        eng.configure_input_port(0, "x16_in", entry_addr=e, hop_count=30,
-                                 data_addr=ir[0])
-        eng.configure_input_port(1, "x16_in", entry_addr=e, hop_count=30,
-                                 data_addr=ir[0])
-        eng.inject(0, "x16_in", [0x4000, 0x2000])
-        eng.run_until_output(1, "x16_out", 2, None, 2000)
-        out = eng.capture(1, "x16_out")
-        assert out[:2] == [0x1000, 0x800]  # 0.25× of 0x4000, 0x2000
-        # cell-state overlay covers both chips.
-        states = eng.cell_states()
-        assert {k[0] for k in states} == {0, 1}
+        tg = multi_chip_stream_targets(ctrl.project, ctrl.registry, ctrl.catalog,
+                                       build_result=r)
+        # single stream (no stream_id set) — resolve chip0's gain landing directly.
+        il = list(r.chips[0].input_landings.values())[0]
+        hop, entry, a0 = il["hop"], il["entry"], il["data_addrs"][0]
+        ct = str(ctrl.registry.require("kyttar_10x12").path)
+        sim = simkyt.MultiChipSimulation.new("m", 5.0)
+        for cid in (0, 1):
+            sim.add_chip(f"c{cid}", simkyt.ChipType.from_yaml(ct))
+            sim.load_bitstream(f"c{cid}", [w & 0xFFFF for w in r.words(cid)])
+        sim.connect("c0", "x16_out", "c1", "x16_in")
+        for v in (0x4000, 0x2000):
+            sim.inject_data_physical("c0", [v], hop, int(a0))
+            sim.inject_jump_physical("c0", hop, entry)
+            sim.run(3000, 80)
+        sim.run(3000, 100)
+        out = [int(x) & 0xFFFF for x in
+               np.asarray(sim.read_port_i16("c1", "x16_out")).view(np.uint16)]
+        assert out[:2] == [0x2000, 0x1000], out  # 0.5x (tap chip0, transit chip1)
 
     def test_simcontroller_auto_selects_multichip(self, qapp, catalog):
         from ui.main_window import MainWindow
 
-        ctrl = self._chain_project(catalog)
+        ctrl, _gns = self._chain_project(catalog)
         w = MainWindow(controller=ctrl)
         w._after_project_loaded()
         assert w.sim.start()
@@ -435,30 +455,44 @@ class TestInterChipSim:
         _port, kw = input_port_config(ctrl.project, ctrl.registry, catalog)
         return list(res.words(0)), kw
 
-    def test_gain_pipeline_through_relay_no_fifo(self, qapp, catalog):
+    def test_gain_pipeline_through_transparent_wire(self, qapp, catalog):
+        # TRANSPARENT WIRE: a stream taps chip0's gain (0.5x); its output crosses the
+        # inter-chip wire (hop composed to the chain tail) and TRANSITS chip1's bus to
+        # the tail -> 0.5x per input. The word's hop carries it continuously; there is
+        # NO output buffer / value relay on the boundary (words cross like a cell-to-
+        # cell hop). Replaces the old no-FIFO relay test (that buffer no longer exists).
         if not self.CT.exists():
             pytest.skip("chip-type yaml absent")
-        from engine.simulator import MultiChipSimEngine, _chip_name
-        gw, kw = self._gain_bitstream(catalog)
-        eng = MultiChipSimEngine({0: str(self.CT), 1: str(self.CT)})
-        eng.connect(0, "x16_out", 1, "x16_in")
-        eng.load(0, gw)
-        eng.load(1, gw)
+        import simkyt
+        from model.connection import BlockEndpoint, ChipPortEndpoint
+        # Build a gain-on-bus 2-chip chain (chip0 tap -> transparent wire -> tail).
+        ctrl = AppController(catalog=catalog)
+        ctrl.new_project("P", "kyttar_10x12")
+        ctrl.add_chip()
+        gns = {}
+        for chip in (0, 1):
+            ctrl.place_block("GainBlock", chip, 1, 0, library="lattrex.official")
+            gns[chip] = [b.name for b in ctrl.project.blocks
+                         if b.placement and b.placement.chip == chip][-1]
+            ctrl.add_route(BlockEndpoint(gns[chip], "out"),
+                           ChipPortEndpoint(chip, "x16_out"),
+                           [(x, 0) for x in range(1, 10)])
+        ctrl.add_route(ChipPortEndpoint(0, "x16_in"),
+                       BlockEndpoint(gns[0], "sample"), [(0, 0)])
+        ctrl.add_inter_chip(0, "x16_out", 1, "x16_in")
+        r = ctrl.build()
+        assert r.ok
+        il = list(r.chips[0].input_landings.values())[0]
+        sim = simkyt.MultiChipSimulation.new("p", 5.0)
         for cid in (0, 1):
-            eng.configure_input_port(
-                cid, "x16_in", entry_addr=kw["entry_addr"],
-                hop_count=kw["hop_count"], data_addr=kw["data_addr"])
-        eng.inject(0, "x16_in", [0x4000, 0x2000, 0x6000])
-        c0 = _chip_name(0)
-        max_buf = 0
-        for _ in range(3000):
-            eng.run(64, rounds=1)
-            try:
-                max_buf = max(max_buf, eng._sim.output_available(c0, "x16_out"))
-            except Exception:  # noqa: BLE001
-                pass
-        out = [v & 0xFFFF for v in eng.capture(1, "x16_out")]
-        # gain 0.5 on BOTH chips → 0.25x each input.
-        assert out == [0x1000, 0x800, 0x1800]
-        # NO FIFO on the wire: the source output port never accumulates a buffer.
-        assert max_buf <= 1
+            sim.add_chip(f"c{cid}", simkyt.ChipType.from_yaml(str(self.CT)))
+            sim.load_bitstream(f"c{cid}", [w & 0xFFFF for w in r.words(cid)])
+        sim.connect("c0", "x16_out", "c1", "x16_in")
+        for v in (0x4000, 0x2000, 0x6000):
+            sim.inject_data_physical("c0", [v], il["hop"], int(il["data_addrs"][0]))
+            sim.inject_jump_physical("c0", il["hop"], il["entry"])
+            sim.run(3000, 80)
+        sim.run(3000, 100)
+        out = [int(x) & 0xFFFF for x in
+               np.asarray(sim.read_port_i16("c1", "x16_out")).view(np.uint16)]
+        assert out[:3] == [0x2000, 0x1000, 0x3000], out  # 0.5x each

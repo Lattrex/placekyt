@@ -97,4 +97,6 @@ BUILTIN_BLOCKS = {
     'VaricodeDecoderBlock': 'varicode_decoder_block',
     'ComplexToMagBlock': 'cordic_blocks',
     'ComplexToArgBlock': 'cordic_blocks',
+    'RMSBlock': 'rms_block',
+    'RMSCFBlock': 'rms_block',
 }

@@ -118,6 +118,14 @@ REAL_1IN = {
     # cubic), no feedback corridor / no reconvergent fan-in across samples, so the
     # saturated flat stream equals the per-sample flat stream.
     "Nlog10Block": ("sample", "out", {"n": 10.0, "k": 0.0}),
+    # rms (blocks.rms_ff): 4-cell feed-forward chain (power+IIR -> normalize ->
+    # quartic -> denorm). The IIR state lives INSIDE the head cell (no cross-cell
+    # feedback corridor) and the chain is a straight pipeline (no reconvergent
+    # fan-in), so back-to-back drive serializes on the link handshakes and the
+    # saturated stream must equal the per-sample stream bit-for-bit. The norm/
+    # denorm cells have DATA-DEPENDENT run lengths (shift loops) — exactly the
+    # kind of jitter only this saturated gate can prove harmless.
+    "RMSBlock": ("sample", "out", {"alpha": 0.25}),
     # PSK31 raised-cosine ENVELOPE shaper (on-the-fly NCO cosine, PATH B): 7-cell
     # feed-forward pipeline (ingest -> phasegen -> NCO sine column -> shape). The sine
     # column reconverges at `shape` like the NCO's, but the datapath is PURELY
@@ -134,6 +142,11 @@ REAL_2IN = {
     "ComplexToRealBlock": (("re", "im"), "out", {}),
     "ComplexToImagBlock": (("re", "im"), "out", {}),
     "ComplexToMagSquaredBlock": (("re", "im"), "out", {}),
+    # rms_cf (blocks.rms_cf): the complex twin of RMSBlock (REAL_1IN above) —
+    # same 4-cell feed-forward chain with a |z|^2 front; complex (re,im) in, ONE
+    # real RMS word out, IIR state inside the head cell, no feedback corridor /
+    # no reconvergent fan-in, so saturated == per-sample bit-for-bit.
+    "RMSCFBlock": (("re", "im"), "out", {"alpha": 0.25}),
     "AddBlock": (("a0", "a1"), "out", {}),
     "MultiplyBlock": (("a0", "a1"), "out", {}),
     "SubtractBlock": (("a0", "a1"), "out", {}),

@@ -15,6 +15,7 @@ which is why a real-block GRC flowgraph could not generate/run.
 """
 
 from gnuradio import gr
+import math
 import numpy as np
 
 
@@ -1122,4 +1123,69 @@ class moving_average(_PassThrough):
         out = (csum[L:] - csum[:-L])[:n] * float(self.scale)
         output_items[0][:n] = out.astype(np.float32)
         self._hist = buf[-(L - 1):] if L > 1 else np.zeros(0, dtype=np.float64)
+        return n
+
+
+class rms(_PassThrough):
+    """RMS (real) — GR marker (maps to RMSBlock).
+
+    Drop-in for GNU Radio ``blocks.rms_ff``: single-pole IIR power average
+    ``avg = (1-alpha)*avg + alpha*x^2`` then ``out = sqrt(avg)``. ONE real
+    stream in -> ONE real stream out. On the chip: a 4-cell feed-forward chain
+    (power+IIR with full-precision error feedback -> normalize -> quartic
+    sqrt -> denormalize). GR marker only; the real DSP runs on the placeKYT
+    chip. HW-DEVIATION: alpha is quantized to Q15 (the default 1e-4 runs as
+    3/32768; the settled RMS is unchanged, only the time constant shifts ~8%)."""
+
+    def __init__(self, device_id="kyttar_0", alpha=0.0001):
+        super().__init__("Kyttar RMS", n_in=1, n_out=1,
+                         in_dtype=np.float32, out_dtype=np.float32)
+        self.device_id = device_id
+        self.alpha = float(alpha)
+        self._advertise_grc_params(device_id, "RMSBlock",
+                                   {"alpha": float(alpha)})
+
+    def work(self, input_items, output_items):
+        x = input_items[0].astype(np.float64)
+        n = min(len(output_items[0]), len(x))
+        avg = float(getattr(self, "_avg", 0.0))
+        a = float(self.alpha)
+        out = np.empty(n, dtype=np.float64)
+        for k in range(n):
+            avg = (1.0 - a) * avg + a * x[k] * x[k]
+            out[k] = math.sqrt(avg)
+        self._avg = avg
+        output_items[0][:n] = out.astype(np.float32)
+        return n
+
+
+class rms_cf(_PassThrough):
+    """RMS (complex) — GR marker (maps to RMSCFBlock).
+
+    Drop-in for GNU Radio ``blocks.rms_cf``: the same single-pole averager run
+    on ``|z|^2 = re^2 + im^2`` with a REAL output. ONE complex stream in -> ONE
+    real stream out. Same 4-cell chip datapath as ``rms`` with a
+    ComplexToMagSquared front. GR marker only; the real DSP runs on the
+    placeKYT chip. HW-DEVIATION: alpha quantized to Q15 (see ``rms``)."""
+
+    def __init__(self, device_id="kyttar_0", alpha=0.0001):
+        super().__init__("Kyttar RMS (Complex)", n_in=1, n_out=1,
+                         in_dtype=np.complex64, out_dtype=np.float32)
+        self.device_id = device_id
+        self.alpha = float(alpha)
+        self._advertise_grc_params(device_id, "RMSCFBlock",
+                                   {"alpha": float(alpha)})
+
+    def work(self, input_items, output_items):
+        z = input_items[0]
+        n = min(len(output_items[0]), len(z))
+        avg = float(getattr(self, "_avg", 0.0))
+        a = float(self.alpha)
+        out = np.empty(n, dtype=np.float64)
+        for k in range(n):
+            p = float(z[k].real) ** 2 + float(z[k].imag) ** 2
+            avg = (1.0 - a) * avg + a * p
+            out[k] = math.sqrt(avg)
+        self._avg = avg
+        output_items[0][:n] = out.astype(np.float32)
         return n

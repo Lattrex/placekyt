@@ -931,18 +931,18 @@
   {
    "kyttar_block": "RMSBlock",
    "grc_block": "blocks.rms_ff",
-   "status": "planned",
+   "status": "done",
    "tier": 2,
    "metric": "amplitude",
-   "notes": "RMS of a real stream: out[n] = sqrt(y[n]), y[n] = (1-alpha)*y[n-1] + alpha*x[n]^2 (GR rms_ff verbatim, param alpha). The SQRT is the work: the ISA has no sqrt -- use an unrolled Newton-Raphson reciprocal-sqrt (one iteration per cell, immediate shifts per INV-34, CORDIC-unroll style) with a shift-loop normalize front (the Nlog10Block mantissa/exponent normalize is the template; pick the output representation FIRST so every constant is Q15-representable, the Nlog10 lesson). Single-pole IIR state is INV-19-safe if kept inline in one cell. Verify vs LIVE GR blocks.rms_ff: alpha sweep, settled-tail amplitude metric with a derived warm-up guard (IIR transient), full-scale edges, INV-4 mutations (wrong alpha, no-sqrt passthrough, x-not-squared, +1 shift, empty). SHARE the sqrt/IIR core with RMSCFBlock (same dispatch)."
+   "notes": "DONE 2026-08-16, shared module rms_block.py with RMSCFBlock. GR semantics pinned vs LIVE GR first: avg=(1-alpha)*avg+alpha*x^2 THEN out=sqrt(avg) (first out = sqrt(alpha)*|x0|, avg starts 0). 4-cell feed-forward 2x2 fold: pwr (x^2 + single-pole IIR with FULL-PRECISION ERROR FEEDBACK — a 30-bit S=y*2^15+acc_lo accumulator as two 16-bit words, because bare MULQ truncation stalls the averager up to 2^15/alpha_q LSB short; at GR's default alpha=1e-4 that is 1/3 of full scale) -> norm (shift-count normalize to [0.5,1), Nlog10 template) -> poly (quartic LSQ sqrt(0.5+f/2), all coeffs sub-unity, 0.53 LSB fit) -> denorm (1/sqrt2 on odd s + SHR#1 counter loop, INV-34). Sqrt path exhaustively bounded over all 32768 power words: err in [-4.5,+0.6] LSB (a guard test pins it). Gates: BIT-EXACT vs process_reference_q15 (edge+3 seeds+alpha sweep incl default), LIVE-GR settled tail (representable-alpha sweep, derived warm=ceil(10/alpha_eff), derived TOL 16 LSB), step-response full trajectory, default-alpha deviation pinned at 113k samples, INV-4 mutations all FAIL (wrong alpha on the step window — settled tail alone is alpha-INDEPENDENT; no-sqrt; x-not-squared; +1 delay; inverted; empty; 1-LSB alpha perturbation breaks bit-exactness). Saturation + orientation + placement-legality gates green. HW-DEVIATION: (1) alpha quantized to Q15 (default 1e-4 -> 3/32768, ~8% slower transient, settled value unchanged; alpha outside (0,1] or quantizing to 0 RAISES); (2) instantaneous power >= 1.0 (|x|=1) saturates to 0x7FFF. EXIT-CELL TRAP (new general lesson): a GOTO in the block's EXIT cell is rewritten by the output-handoff pass into the external JUMP — denorm's loop must use conditional branches only."
   },
   {
    "kyttar_block": "RMSCFBlock",
    "grc_block": "blocks.rms_cf",
-   "status": "planned",
+   "status": "done",
    "tier": 2,
    "metric": "amplitude",
-   "notes": "Complex twin of RMSBlock (SAME dispatch/module): y IIR runs on |x|^2 = re^2+im^2 (the proven ComplexToMagSquared front: MULQ re,re + MACQ im,im with the one-sided BR.N saturation), then the shared sqrt core. Real scalar out. Verify vs LIVE GR blocks.rms_cf same protocol; swapped-rail is NOT a corruption (symmetric) -- teeth from wrong-second-rail + no-sqrt mutations."
+   "notes": "DONE 2026-08-16, complex twin of RMSBlock (SAME module rms_block.py, shared IIR + sqrt core; only the power front differs). Front = |z|^2 = MULQ re,re + MACQ im,im — but with a BR.N check after EACH step, not one end-check: re=im=-1.0 makes 0x8000+0x8000 WRAP TO ZERO with N clear, so a single one-sided clamp (the ComplexToMagSquared form) misses that corner; the per-step guard saturates it (bit-exact corner test pinned). Real scalar out (words_per_sample=1). Gates: BIT-EXACT vs process_reference_q15 (edge incl the wrap corner + 3 seeds), LIVE-GR rms_cf settled tail (alpha sweep, derived warm-up, TOL 16 LSB), INV-4 mutations FAIL (wrong-second-rail, imag-rail-dropped, no-sqrt, empty; swapped rails is NOT a corruption — |z|^2 is symmetric). Saturation (REAL_2IN) + orientation (complex_wps1) + placement-legality gates green. HW-DEVIATION: same as RMSBlock (Q15-quantized alpha; |z|^2 in [0,2) saturates to Q15 [0,1) full-scale)."
   },
   {
    "kyttar_block": "AddCCBlock",

@@ -11,6 +11,65 @@ dropped) — append new entries above the oldest ones as before.
 
 ---
 
+## RMSBlock + RMSCFBlock — rms_ff/rms_cf pair, error-feedback IIR + quartic sqrt, 2x2 fold 2026-08-16
+
+= GR `blocks.rms_ff` / `blocks.rms_cf` (param `alpha` verbatim, default 1e-4).
+ONE shared module (`rms_block.py`): a `_RMSCoreBlock` base holds the IIR tail +
+the 3-cell sqrt pipeline; the twins differ ONLY in the power front (x² vs
+re²+im²). Verified: bit-exact vs the q15 reference on every stream tried
+(edge/random/alpha sweep incl. default), LIVE-GR settled tail max err 4–8 LSB
+(derived TOL 16), 36 tests green + saturation/orientation/legality gates.
+
+- **PIN GR FIRST paid off in one line:** `rms_ff` computes
+  `avg=(1-alpha)*avg+alpha*x²` THEN `out=sqrt(avg)` — first output
+  `sqrt(alpha)*|x0|`, avg starts 0. The manifest's formula matched, but the
+  sqrt-after-update order and the first-output value are only pinnable live.
+- **THE IIR TRAP — bare `MULQ(alpha_q, d)` STALLS at small alpha.** Truncation
+  zeroes every increment with `|d| < 2^15/alpha_q` LSB; at GR's DEFAULT
+  alpha=1e-4 (alpha_q=3) the averager stalls up to 10923 LSB (1/3 full scale)
+  short. FIX = full-precision ERROR FEEDBACK: keep S = y*2^15 + acc_lo as two
+  16-bit words; `alpha_q*d = (MULQ<<15) + (MUL&0x7FFF)` EXACTLY (floor-division
+  identity, MULQ truncates toward -inf = arithmetic >>15), so
+  `t=acc_lo+lo15; y+=MULQ+(t>>15); acc_lo=t&0x7FFF` loses nothing and y
+  converges within ±1 LSB at ANY representable alpha. Costs 8 instrs + 2 state
+  regs over the naive form — fits one cell WITH the x² front (19 words).
+  (AGCBlock's `rate` MULQ has the same stall latent at its 1e-4 default.)
+- **THE SQRT (no-sqrt ISA):** normalize y by counting `SHL #1` to [0.5,1)
+  (Nlog10's loop), quartic LSQ of `sqrt(0.5+f/2)` (all coeffs sub-unity, fit
+  0.53 LSB — pick the representation FIRST, the Nlog10 lesson), then denorm:
+  ×1/√2 when s odd + `SHR #1` under a counter for the s/2 shifts (INV-34, no
+  variable shift). EXHAUSTIVE bound over all 32768 power words: err in
+  [-4.5, +0.6] LSB, pinned by a guard test. A quartic beats unrolled
+  Newton-Raphson here: same accuracy class, no >1 constants, 15 instrs.
+- **NEW GENERAL TRAP — a GOTO in the block's EXIT cell is DESTROYED by the
+  build's output-handoff pass.** `GOTO` assembles to a local hop-31 JUMP; in
+  the exit cell the handoff pass rewrote it into the EXTERNAL output JUMP
+  (memory dump: the loop tail became a second port-trigger, hop 22), so the
+  denorm shift loop ran ONCE — every s>=4 output exactly 2x. The SAME GOTO
+  loop in a mid-chain cell (norm) is untouched. Rule: EXIT cells use
+  CONDITIONAL branches only (do-while on SUB's Z flag; SHR sets Z for the
+  k==0 pre-test). Extends the INV-13/INV-19 exit-cell-structural-role family.
+- **CF WRAP CORNER:** re=im=-1.0 → 0x8000+0x8000 wraps to ZERO with N clear —
+  ComplexToMagSquared's single `BR.N` end-check form would emit 0. Guard N
+  after EACH step (`MULQ re,re; BR.N sat; MACQ im,im; BR.NN ok`); the corner
+  is pinned bit-exact. (ComplexToMagSquaredBlock itself has this latent corner
+  — its stimulus stays inside the unit circle.)
+- **VERIFICATION SHAPE for an averager:** the settled tail is
+  alpha-INDEPENDENT (it's the mean power) — so (1) the settled-tail gate is
+  robust to alpha quantization, but (2) a wrong-alpha mutation needs a
+  TRANSIENT window to have teeth: use an amplitude-STEP stimulus and compare
+  the full post-warm-up trajectory (also gives the +1-delay mutation its
+  teeth; measured teeth 5000+ LSB vs TOL 16). Warm-up is DERIVED:
+  n = ceil(10/alpha_eff) (e^-10 residual ≤ 1.5 LSB power). The default-alpha
+  HW-DEVIATION (1e-4 → 3/32768, 8% slower) is pinned on a 113k-sample
+  constant-amplitude run: tail matches GR, mid-transient FAILS (the warm-up
+  guard is load-bearing). Build the GR golden's long constant vector INSIDE
+  the GR script — 113k words inline overflows the subprocess argv limit.
+- **Tolerance derivation (16 LSB):** sqrt path ≤4.5 + settled power err ≤2.5
+  amplified by d(sqrt)/dY = 90.5/sqrt(Y) (≤2.78 at stimulus RMS ≥0.18 → ≤7)
+  + warm-up residual ≤4. Near-zero amplitude the amplification explodes
+  (90 LSB/LSB at Y=1) — intrinsic to sqrt, not a bug; GR-gate stimuli keep
+  RMS ≥ 0.18, everything below is covered by the bit-exact gate.
 ## HammingDecoderBlock — Hamming(7,4) syndrome decoder, BIT-EXACT; the FUSED word+syndrome accumulator 2026-08-16
 
 Systematic Hamming(7,4) hard-decision FEC decoder (7:4 rate-reducing, raw 0/1

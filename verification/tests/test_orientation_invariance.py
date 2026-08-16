@@ -167,6 +167,16 @@ _CASES = [
     # feed-forward pipeline (no feedback corridor / no reconvergent fan-in), so
     # its per-trigger output word list must be IDENTICAL in every D4 orientation.
     ("HammingDecoderBlock", {}, "real", ("sample", "out")),
+    # RMS (GR blocks.rms_ff): single real rail in -> RMS word out. 4-cell
+    # feed-forward 2x2 fold (power+IIR -> normalize -> quartic -> denorm), no
+    # in-template FACE constants, no feedback corridor — all forwarding faces
+    # come from default_layout, so the chain must compute IDENTICALLY in every
+    # D4 orientation (the normalize/denorm shift LOOPS included).
+    ("RMSBlock", {"alpha": 0.25}, "real", ("sample", "out")),
+    # RMS of a complex stream (GR blocks.rms_cf): complex (re, im) in -> ONE
+    # real RMS word out (words_per_sample=1). Same 4-cell chain as RMSBlock with
+    # the |z|^2 front — D4-invariant for the same reasons.
+    ("RMSCFBlock", {"alpha": 0.25}, "complex_wps1", ("re", "im", "out")),
 ]
 
 # No orientation residuals remain: every block in _CASES is invariant in all 8 D4

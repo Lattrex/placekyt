@@ -90,6 +90,12 @@ BLOCKS = [
     # cell, no footprint-growing param — footprint must stay pairwise-distinct under
     # every D4 orientation and movement.
     ("HammingDecoderBlock", {}),
+    # RMS pair: 4-cell 2x2 serpentine fold (pwr -> norm -> poly -> denorm), no
+    # internal transit cell, no footprint-growing param (alpha only changes a
+    # coefficient word) — the 2x2 footprint must stay pairwise-distinct in every
+    # D4 orientation and under movement.
+    ("RMSBlock", {"alpha": 0.25}),
+    ("RMSCFBlock", {"alpha": 0.25}),
 ]
 
 _LIB = "lattrex.official"

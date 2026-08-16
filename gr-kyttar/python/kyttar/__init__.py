@@ -77,7 +77,8 @@ from .dsp_markers import (complex_rrc_matched_filter, complex_costas_loop,
                           qam16_symbol_mapper, qam16_slicer, qam16_costas_loop,
                           abs_bb, splitter, conjugate, complex_to_imag,
                           complex_to_mag_squared, float_to_complex,
-                          dual_float_to_complex, keep_one_in_n, moving_average)
+                          dual_float_to_complex, keep_one_in_n, moving_average,
+                          rms, rms_cf)
 from .gain import gain
 from .multiply import multiply
 from .add import add, subtract
@@ -174,6 +175,8 @@ __all__ = [
     "dual_float_to_complex",
     "keep_one_in_n",
     "moving_average",
+    "rms",
+    "rms_cf",
     # Routing primitives
     "demux",
     "mux",

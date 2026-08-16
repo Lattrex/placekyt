@@ -1,6 +1,7 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Unit tests for the placeKYT data model (``model/``).
 
-Pure Python — no Qt, no simkyt, no gr_kyttar (the architecture notes §6).
+Pure Python — no Qt, no simkyt, no gr_kyttar.
 Covers enum parsing/validation, the deferred-delivery event bus contract,
 placement geometry, and project aggregate wiring.
 """

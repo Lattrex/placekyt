@@ -1,0 +1,31 @@
+{
+  "block": "ComplexToArgBlock",
+  "grc_block": "blocks.complex_to_arg(1)",
+  "tier": 2,
+  "wave": 3,
+  "schema_version": 1,
+  "started_utc": "2026-08-13T20:56:00Z",
+  "ended_utc": "2026-08-13T22:05:00Z",
+  "walltime_sec": 2070.0,
+  "tokens": {
+    "input": 0,
+    "output": 145000,
+    "cache_read": 0,
+    "total": 145000
+  },
+  "turns": 31,
+  "attempts": 1,
+  "human_interventions": 0,
+  "intervention_reasons": [],
+  "prompts": [
+    {
+      "role": "initial",
+      "text": "The CORDIC implementation will unlock a lot of doors as well. (User dispatch, inline session build — CORDIC vectoring engine, built as a PAIR with ComplexToMagBlock in one shared session.)"
+    }
+  ],
+  "verify_passed": true,
+  "quarantined": false,
+  "quarantine_reason": "",
+  "commit_sha": "0c05e71",
+  "notes": "METHODOLOGY (same flag as LMSEqualizerBlock): built INLINE in an interactive session, not via factory_dispatch — tokens are the SESSION BUDGET DELTA (upper bound incl. input/cache), and this block was built AS A PAIR with ComplexToMagBlock in one shared session: the PAIR totals (~295k tokens, ~69 min wall, ~63 turns) are DIVIDED EVENLY across the two records. ARG-SPECIFIC over the shared engine: pre-rotation cell (PRE2a, 26 instructions = an EXACT 32-word fit) with quadrant flags forwarded to Z0; interleaved XY_i/Z_i serpentine (each XY_i streams its PRE-update y-sign source to Z_i, which owns ATAN[i] as a data word — no indexed LOAD needed); HALF-TURN Q15 angle convention (16-bit wrap IS mod 2pi — the +-pi seam is free and edge-swept); z accumulation is PURE WRAP, no saturation. One arg-specific route lesson: the first 10-wide serpentine ended on the east edge with no free egress corridor ('no free corridor between the ports') — reshaped to 8x4 ending at column 2 (a LAYOUT fix, not a router fight). RESULT: chip BIT-EXACT per-sample AND saturated; vs GR max 0.0026 rad measured for |v|>=0.1, 0.006 rad gate (input-quantization-limited below: 1 input LSB subtends ~1/(|v|*pi) half-turns). atan2(0,0) documented (+0.25 half-turn, matches no contract, callers gate on magnitude)."
+}

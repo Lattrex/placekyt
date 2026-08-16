@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Build the placeKYT + simKYT standalone bundle with PyInstaller (#163).
 #
 # Produces dist/placekyt/ containing two executables:

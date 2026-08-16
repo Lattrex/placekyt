@@ -1,0 +1,66 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+id: kyttar_diff_decoder
+label: Kyttar Differential Decoder
+category: '[Kyttar]/Digital'
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.diff_decoder(${device_id}, ${modulus}, ${coding})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+
+- id: modulus
+  label: Modulus
+  dtype: int
+  default: '2'
+
+- id: coding
+  label: Coding
+  dtype: enum
+  options: ['0', '1']
+  option_labels: ['Differential', 'NRZI']
+  default: '0'
+
+inputs:
+- id: '0'
+  label: in
+  domain: stream
+  dtype: byte
+
+outputs:
+- id: '0'
+  label: out
+  domain: stream
+  dtype: byte
+
+documentation: |-
+  Differential Decoder (digital.diff_decoder_bb)
+
+  y[n] = (x[n] - x[n-1]) mod M, with x[-1] = 0 (DIFF_DIFFERENTIAL, the default).
+  The inverse of the differential encoder (diff_encoder_bb): the decoded symbol
+  depends on the DIFFERENCE between the current and previous received symbols, so an
+  unknown constant phase rotation of the whole stream cancels out (DBPSK/DQPSK RX).
+
+  coding = NRZI (modulus 2 ONLY): y[n] = (x[n] - x[n-1] + 1) mod 2 — the
+  bit-complement of the Differential result. NRZI with any modulus other than 2 is an
+  error (mirrors GNU Radio).
+
+  Verified BIT-EXACT against live GNU Radio digital.diff_decoder_bb for modulus 2 and
+  4. Single cell, 1-sample previous-input state, cold-start 0.
+
+  Ports:
+    in:  symbol stream (0..modulus-1 as bytes)
+    out: decoded symbol stream
+
+  Parameters:
+    Device ID: Which Kyttar device to use
+    Modulus:   Modulus of the code's alphabet (power of two on Kyttar: 2, 4, ...)
+    Coding:    Differential (default) or NRZI (modulus 2 only)
+
+  Mapped by placeKYT (File -> Import GNURadio Flowgraph) to DiffDecoderBlock.
+
+file_format: 1

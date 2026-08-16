@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Auto-route tests (auto-P&R Phase 3, P3.1): the BFS corridor router that
 materialises logical nets into drawn waypoint routes the build path consumes."""
 

@@ -1,0 +1,31 @@
+{
+  "block": "PackKBitsBlock",
+  "grc_block": "blocks.pack_k_bits_bb",
+  "tier": 1,
+  "wave": 1,
+  "schema_version": 1,
+  "started_utc": "2026-08-07T03:40:26Z",
+  "ended_utc": "2026-08-07T04:10:15Z",
+  "walltime_sec": 753.322,
+  "tokens": {
+    "input": 0,
+    "output": 167781,
+    "cache_read": 0,
+    "total": 167781
+  },
+  "turns": 103,
+  "attempts": 1,
+  "human_interventions": 0,
+  "intervention_reasons": [],
+  "prompts": [
+    {
+      "role": "initial",
+      "text": "factory_dispatch prompt for PackKBitsBlock; isolated worktree."
+    }
+  ],
+  "verify_passed": true,
+  "quarantined": false,
+  "quarantine_reason": "",
+  "commit_sha": "9259b62",
+  "notes": "1 cell. Bug: AND writes R0 not Ra, so masked value was stranded (hidden under clean 0/1 stimulus; caught by stray-high-bit edge test). BIT-EXACT vs GR k=2..8."
+}

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Manually routing one rail of an I/Q complex pair routes its sibling too.
 
 An I/Q complex pair is two LOGICAL nets that share ONE physical path (same

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """The §1.2 TIME-MULTIPLEXED BUS crossover (the FINAL auto-P&R piece).
 
 Two parts:

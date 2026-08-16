@@ -38,7 +38,7 @@ class QuadratureDemodBlock(KyttarBlock):
       discriminator.  The two AGREE to first order in Δphase and are used
       interchangeably in practice.  The verification CONTRACT is therefore a
       CORRELATION gate (≥0.999 vs GR over the FM deviation range), NOT bit-exact
-      equality to ``atan2`` — CM-approved (2026-07-05).  Correlation vs GR:
+      equality to ``atan2`` — maintainer-approved (2026-07-05).  Correlation vs GR:
       ~0.99999 at fs/fdev typical (Δphase ≤ ~0.33 rad), degrading gracefully only
       past ~1 rad/sample (extreme deviation).  A hard-limiter/AGC ahead of this block
       (as in any FM RX) keeps |x| constant, which is the regime it matches GR in.

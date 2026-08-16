@@ -384,6 +384,22 @@ use the two-path / duplicated-`{write}` + terminal `HALT` structure above (the
 in-range path's HALT is REQUIRED — a remote JUMP does NOT stop local execution, so
 without it the in-range path falls into the sat block and double-emits).
 
+**Budget / fold.** The headroom restore lives on ONE cell only (the single cell, or
+the last multi-cell cell). For S=0 the per-cell density is UNCHANGED (TAPS_PER_CELL=5,
+a 20-tap FIR = 4 cells). For S>0 the last cell caps its segment (≤3 taps) to fit the
+restore, so a high-gain FIR may use one extra cell (a 40-tap gain-20 FIR = 9 cells vs
+8 normalized); single-cell ceiling drops 6→4 when S>0.
+
+**Verification.** The bit-exact reference models scaled wrapping accumulation + the
+final saturating shift (NOT the float ideal). In-range (S=0) it equals GR float
+clipped to Q15 (the GR drop-in claim — assert on NORMALIZED taps, Σ<1, so S=0
+deterministically and no headroom precision loss). The overload/rail test uses a
+HIGH-GAIN (S>0) filter at full scale so the shift fires and the DUT pins; the
+wrap-mutation models the OLD no-headroom UNSCALED+wrap DUT and must FAIL the gate.
+
+**Applies to:** FIR, IIR, complex mixer, correlators — any Q15 MAC chain. See
+[[layout_rules]] for how the per-cell tap density + the S>0 last-cell cap set the fold.
+
 ---
 
 ## INV-14 — A serpentine fold co-locates I/O on one edge ONLY with an EVEN column count
@@ -408,8 +424,8 @@ After an **ODD** number of columns it ends going DOWN → at the **BOTTOM** → 
 **OPPOSITE edge**. This is pure geometry, independent of D4 orientation: rotating an
 odd-column fold still leaves I/O on opposite edges.
 
-**Fix / guideline (not a hard DRC — a layout constraint). NO PADDING (CM, this
-session).** Choose the most COMPACT fold (tallest column `H ≤ FOLD_HEIGHT` ⇒ fewest
+**Fix / guideline (not a hard DRC — a layout constraint). NO PADDING
+(maintainer decision).** Choose the most COMPACT fold (tallest column `H ≤ FOLD_HEIGHT` ⇒ fewest
 columns) and PREFER one whose `n` cells fill an **EVEN number of FULL columns** — then
 the snake ends going UP at the top, the output co-locates with the input on the top
 edge, and there is **no relay padding** in the egress (the output is just the last
@@ -422,7 +438,7 @@ datapath cell at the top of the last column). The FIR chooser scans
 wider than the array allows: a cell count whose ONLY even-quotient divisor is
 `H=1` (e.g. `n=26` → its even folds are just `26×1`) would otherwise pick a
 degenerate full-width LINE that runs off the 10-wide array and cannot route (a
-26-tap... no — a 125-tap/26-cell dc_blocker hit exactly this: `_fold_geometry`
+125-tap/26-cell dc_blocker hit exactly this: `_fold_geometry`
 returned `(26,1)` and placement failed `unplaced_cell outside fabric`). The
 chooser only accepts an even-column fold whose column count is `≤ 8`
 (`MAX_CELLS_ACROSS`); otherwise it falls through to the compact fold (n=26 →
@@ -447,22 +463,6 @@ pad.
 `default_layout` serpentines). See `layout_rules.md` for the fold conventions this
 refines.
 
-**Budget / fold.** The headroom restore lives on ONE cell only (the single cell, or
-the last multi-cell cell). For S=0 the per-cell density is UNCHANGED (TAPS_PER_CELL=5,
-a 20-tap FIR = 4 cells). For S>0 the last cell caps its segment (≤3 taps) to fit the
-restore, so a high-gain FIR may use one extra cell (a 40-tap gain-20 FIR = 9 cells vs
-8 normalized); single-cell ceiling drops 6→4 when S>0.
-
-**Verification.** The bit-exact reference models scaled wrapping accumulation + the
-final saturating shift (NOT the float ideal). In-range (S=0) it equals GR float
-clipped to Q15 (the GR drop-in claim — assert on NORMALIZED taps, Σ<1, so S=0
-deterministically and no headroom precision loss). The overload/rail test uses a
-HIGH-GAIN (S>0) filter at full scale so the shift fires and the DUT pins; the
-wrap-mutation models the OLD no-headroom UNSCALED+wrap DUT and must FAIL the gate.
-
-**Applies to:** FIR, IIR, complex mixer, correlators — any Q15 MAC chain. See
-[[layout_rules]] for how the per-cell tap density + the S>0 last-cell cap set the fold.
-
 ---
 
 ## INV-15 — A Q15 coefficient with |c| > 1 is stored HALVED and applied TWICE
@@ -478,8 +478,8 @@ to ±0x7FFF/0x8000, so storing the coefficient directly LOSES it. Clamping it to
 
 **Fix — store HALVED, apply TWICE.** Store `c/2` (representable whenever |c|<2) and
 apply its multiply-op TWICE: `MACQ Ra,c_half` twice == `+c*Ra`; `MSUQ Ra,c_half`
-twice == `-c*Ra` (`MSUQ` is `R0 -= (Ra*Rb)>>15`, arch_spec v0.11 §4.12 — MAC opcode
-MODE=11). Each `(Ra * c/2)>>15` product is in range, so there is NO intermediate
+twice == `-c*Ra` (`MSUQ` is `R0 -= (Ra*Rb)>>15` — MAC opcode MODE=11; see
+PROGRAMMING_GUIDE.md, MAC MODE table). Each `(Ra * c/2)>>15` product is in range, so there is NO intermediate
 overflow and NO new ISA/guard bits. For |c|>2, cascade: store `c/4` and apply four
 times, etc. (Distinct from the FIR's COEFFICIENT HEADROOM [[INV-13]], which scales
 the WHOLE coefficient set down and restores once with a saturating shift; that's for
@@ -675,14 +675,14 @@ before the PI filter's corrected `inst_next` feeds back → stale). FIX = the se
 after `{jump:val}`, so the no-strobe `done` path never locks and non-strobe samples keep flowing
 to advance phase); period_relay clears it with a backward `WRITE.CFG @1,4` after `{write:pout}`
 (the existing pout→inst_next feedback edge co-patches the WRITE.CFG hop). PROVEN: saturated
-recovered BITS == per-sample bits, 0-diff, fracs 0.3/0.5/0.7 (proto_gardner_sat.py). NOTE: word
+recovered BITS == per-sample bits, 0-diff, fracs 0.3/0.5/0.7. NOTE: word
 values differ by sub-LSB interpolation amounts that never flip the sign — for a rate/timing block
 the SATURATION GATE MUST assert BIT-equality (sign), not word-equality. Also: use a REAL RRC-shaped
 2-sps BPSK stimulus — a piecewise-linear synthetic can't be locked in EITHER mode (false "divergence").
 
 **TWO REGISTER-RECLAIM TRICKS (for fitting a serialize-LOCK into a budget-tight landing cell):**
 1. **LOCK_FACE need not be written if the feedback face == the CONFIG reset default = SOUTH (00).**
-   simkyt config_reg.rs resets LOCK_FACE to Face::South. If the feedback corridor arrives on the
+   The cell CONFIG resets LOCK_FACE to SOUTH. If the feedback corridor arrives on the
    cell's SOUTH face (place the feedback cell SOUTH, emitting NORTH), the lock tail is just
    `MOVE R0,<nonzero>; MOVE [LOCK],R0` (2 instrs, not 4 — skip the LOCK_FACE writes). CAVEAT: only
    valid for the UN-rotated layout; if auto-orient rotates the block, restore the is_face lock_face
@@ -705,7 +705,7 @@ DEADLOCKS. This is distinct from INV-19 (that is a *data-feedback* hazard; this 
 **The evidence (ComplexMixer, proven at the sim event level):** the 11-cell `multiply_cc`
 mixer — `phase` fans out to two NCO columns (sin/cos) + a `relay` carrying xi/xq, all
 reconverging at `mixer` (4 inputs: cosv, sinv, xi, xq, arriving via paths of length 4, 4,
-and 2). Bounded probe (`proto_cmix_probe.py`):
+and 2). Bounded probe:
 `N=1 → completed=True (QueueEmpty), 2 output words` — perfect.
 `N=2 → completed=False, stop_reason=Deadlock, 0 output words` — locks the instant a second
 sample enters. The sim reports `Deadlock` EXPLICITLY (not EventLimit/flood). Cause: a
@@ -727,92 +727,45 @@ lock) needs this serialization to pass `run_block_dut_pipelined`. Check the bloc
 `internal_connections`: if two paths of unequal length reconverge on one cell, it needs the
 serialize-LOCK.
 
-**BRING-UP STATUS + two dead-ends found (ComplexMixer attempt, 2026-07-14 — NOT yet fixed,
-block reverted to its committed per-sample GR-verified form; `pipeline_lock` scaffolding
-removed):**
-
-1. **The mixer's output cell is genuinely at its register budget, and you CANNOT reclaim by
-   "operating on the input registers directly."** The mixer copies its 4 inputs (cosv, sinv,
-   xi, xq) into 4 state vars BEFORE the arithmetic *on purpose*: an INPUT register is NOT
-   stably re-readable across multiple MULQs in one execution (the async operand latch is
-   consumed / not guaranteed to hold for a second read). Rewriting the mixer to `MULQ t,
-   R{in:cosv}` etc. built fine and even passed the I channel, but **the Q channel came back
-   corrupt (corr ~0.7, `test_complex_mixer.py` Q=FAIL bit-exact)** — a silent DSP regression
-   the *saturation* probe (0 output) never would have caught; only the bit-exact GR gate did.
-   LESSON: after ANY register-reclaim on a compute cell, re-run the block's bit-exact
-   `test_*` gate, not just the pipeline/deadlock probe. The 2 face DataWords the lock needs
-   do NOT fit the mixer without a real redesign (e.g. a dedicated unlock relay cell that is
-   NOT a feedback source, or splitting the mixer).
-
-2. **The fixed-authored `WRITE.CFG @N` in the exit/output cell gets clobbered by
-   `_patch_last_write_handoff`.** iq_upconvert survives because its unlock WRITE.CFG is not
-   the highest-address WRITE (the `out` WRITE is last). In the mixer, instruction ordering
-   put the WRITE.CFG at/after the output WRITEs, so `_patch_last_write_handoff` (patches
-   `max(write_addrs)`) rewrote the WRITE.CFG's dest (4→1) and hop. To use the fixed-authored
-   approach you MUST guarantee the block's real output WRITE is the strictly-highest-address
-   WRITE (emit yi/yq LAST, WRITE.CFG before them) — same footgun as the CoherentBPSKRx packer
-   (`_patch_last_write_handoff patches the highest-addr WRITE — keep the out WRITE LAST`).
-
-3. The `_apply_internal_feedback` route (declare a backward `mixer→phase` edge) is the WRONG
-   mechanism for a config-only unlock with no data feedback: its data-WRITE patch collides
-   with the output register (phase.xi = reg 0 = the yi output reg), corrupting yi, and the
-   config patch it does apply is then re-defaulted anyway. iq_upconvert deliberately does NOT
-   declare the backward edge — it fixed-authors the hop and relies on `trig __terminate__` +
-   correct WRITE ordering. Follow iq_upconvert EXACTLY (no backward edge; fixed `@N`; face_
-   internal/face_tap names; output WRITE strictly last) — but only after solving (1).
-
-**BRING-UP PROGRESS (2026-07-14, commits d82b359..b536b42) — the SOLVED path:** the
-approach that WORKS is a DEDICATED internal `unlock` cell (not inline in the mixer, which
-has no register room — see (1)). Build-engine support added: `_apply_internal_feedback`
-handles a CONFIG-ONLY backward edge whose src port is `"unlock"` (patch the WRITE.CFG hop
-via `_patch_config_write`, which matches on the config bit alone to recover a router-
-clobbered dest). Layout MUST keep the EXACT proven 2-column datapath (moving the cos column
-breaks relay→mixer — relay's EAST forward collides, seen via `get_trace` as relay re-firing
-+ flooding the shifted column). Place `unlock` in a FREE cell NORTH of the mixer so the
-mixer's yi/yq egress EAST stays clear and its trig fires unlock NORTH; unlock's WRITE.CFG
-goes to phase. CRITICAL separate-concern bug found+fixed: phase's default_layout FACE is its
-DATAPATH emission (south→sin_fold) — it is INDEPENDENT of LOCK_FACE (the arbiter gate,
-a `lock_face` CONFIG DataWord). Setting phase's face to the corridor direction sends its
-fan-out into the corridor and stalls the whole block (phase re-fires forever). Status:
-**N=1 completes + emits**; STILL OPEN: N≥2 stalls at the output-port column + N=1 emits 1
-word value 0 (the auto-placer offsets the relative default_layout, so unlock↔phase adjacency
-+ the WRITE.CFG hop don't match the hand-designed corridor; the output WRITE value/count is
-also wrong). Next: make the corridor placement-invariant (or author it so the placer keeps
-the adjacency) and fix the 2-word yi/yq output routing. Sim `get_trace()` (dict list with
-`cell_id` linear index, `kind`, `data`) + bounded `run(max_events=)` are the diagnostic
-tools — NOT blind face/hop guesses (a whole class of "@1 vs @2" dead-ends were a probe
-decode bug: hop field is bits[9:5]).
-
-**RESOLVED (2026-07-14, commits 331e993 / 10969a9 / 9aaacda) — ComplexMixer is now fully
-pipeline-saturation-capable, bit-exact.** Supersedes the "NOT yet fixed" status and the
-dedicated-`unlock`-cell path above:
-- Dead-end (1) is DISPROVEN for MULQ: `MULQ A,B` writes R0 and does NOT clobber its operands
-  (PROGRAMMING_GUIDE). The earlier Q-corruption came from operating on INPUT regs (consumed by
-  the arbiter latch), NOT from re-reading a state var. So the mixer's `t` scratch was
-  UNNECESSARY: `MULQ xi2,c` directly frees 4 instrs + the `t` state reg — enough budget to
-  fold the unlock INLINE (no separate cell; CM required self-contained). RE-RUN the bit-exact
-  gate after any such reclaim (dead-end 1's real lesson stands).
-- The unlock is folded into the mixer with a DUAL-FACE flip EXACTLY like iq_upconvert's upmix:
-  emit yi/yq on `face_tap` (routed output, set by `_apply_rotate_tap_face`), flip to a
-  DISTINCTLY-NAMED `unlock_face` (NORTH — name it NOT `face_internal` so `_apply_rotate_tap_face`
-  leaves it to `_apply_orientation_face_words` to rotate), do `WRITE.CFG @2,4` down a 1-cell
-  `transit_unlock` corridor to phase. `output_cell_id()=="mixer"`; the config-only backward edge
-  IS declared as `("mixer","unlock","phase","xi")` and resolved by `_apply_internal_feedback`'s
-  `_src_port=="unlock"` branch (dead-end 3's data-collision does NOT occur because that branch
-  patches the WRITE.CFG by config-bit alone, never a data reg).
-- THE FINAL BUG (the N≥2 "post-burst deadlock"): the terminal `{jump:trig}` (self-terminating
-  via `__terminate__`) STILL EMITS a JUMP word on the CURRENT face, which was left at
-  `unlock_face`=NORTH by the WRITE.CFG → the trig fired into the unlock corridor → transit →
-  phase → transited through → sin_fold → ... a self-sustaining datapath loop that deadlocked
-  once the real samples drained. FIX: `MOVE [FACE], face_tap` AFTER the WRITE.CFG so the trailing
-  trig goes to the drained output port. **NEW INVARIANT: a `__terminate__` trig is not a no-op —
-  it emits a JUMP word on the current FACE; a dual-FACE cell MUST restore its output face before
-  any trailing emission.**
-- PROVEN: `run_block_dut_pipelined` (saturated) == `run_block_dut_complex` (per-sample GR ref)
-  BIT-EXACT over 8 samples, both placements. Gate: `test_pipeline_saturation.py` COMPLEX_2IN2OUT
-  (22 pass). DEFAULT stays `pipeline_lock=False` (flipping to True regressed the GRC importer's
-  input-reg/net-resolution + the compact SSB Weaver footprint); the lock is OPT-IN, gate passes
-  `params={pipeline_lock:True}`.
+**ComplexMixer resolution (the reference implementation) + the durable traps found
+on the way:**
+- The unlock is folded INLINE into the mixer/exit cell with a DUAL-FACE flip
+  exactly like iq_upconvert's upmix: emit yi/yq on `face_tap` (the routed
+  output face), flip to a DISTINCTLY-NAMED `unlock_face` (name it NOT
+  `face_internal` so the orientation pass — not the tap pass — rotates it), do
+  `WRITE.CFG @2,4` down a 1-cell `transit_unlock` corridor to the landing
+  cell. The config-only backward edge is declared as
+  `("mixer","unlock","phase","xi")` and resolved by
+  `_apply_internal_feedback`'s `_src_port=="unlock"` branch (it patches the
+  WRITE.CFG by config-bit alone, never a data reg — so no output-register
+  collision).
+- **A `__terminate__` trig is not a no-op — it emits a JUMP word on the
+  current FACE.** A dual-FACE cell MUST restore its output face
+  (`MOVE [FACE], face_tap`) after the WRITE.CFG, or the trailing trig fires
+  into the unlock corridor and forms a self-sustaining datapath loop that
+  deadlocks once the real samples drain.
+- **Register-reclaim facts:** `MULQ A,B` writes R0 and does NOT clobber its
+  operand STATE registers — a scratch copy of a state var is unnecessary. But
+  an INPUT register is NOT stably re-readable across multiple ops (the async
+  operand latch is consumed): operating on input regs directly corrupted the
+  Q rail (corr ~0.7) while the pipeline probe stayed green — **after ANY
+  register-reclaim on a compute cell, re-run the block's bit-exact gate, not
+  just the pipeline/deadlock probe.**
+- **A fixed-authored `WRITE.CFG @N` in the exit cell is clobbered by
+  `_patch_last_write_handoff`** (which patches the highest-address WRITE)
+  unless the block's real output WRITE is strictly LAST — emit yi/yq last,
+  WRITE.CFG before them.
+- The landing cell's default_layout FACE is its DATAPATH emission and is
+  INDEPENDENT of LOCK_FACE (an arbiter-gate CONFIG word) — pointing the face
+  at the unlock corridor sends the fan-out into the corridor and stalls the
+  block.
+- Sim `get_trace()` (per-cell events) + bounded `run(max_events=)` are the
+  diagnostic tools — not blind face/hop guesses (a whole class of "@1 vs @2"
+  dead-ends was a probe decode bug; the hop field is bits[9:5]).
+- PROVEN: `run_block_dut_pipelined` (saturated) == per-sample GR reference
+  BIT-EXACT, both placements (`test_pipeline_saturation.py` COMPLEX_2IN2OUT).
+  DEFAULT stays `pipeline_lock=False` (opt-in — flipping the default
+  regressed the GRC importer's net resolution + the compact SSB footprint).
 
 **NCO + FrequencyModulator RESOLVED (2026-07-21) — the same INV-20 fan-in, now saturation-safe
 (opt-in `pipeline_lock=True`).** They have the identical `phase → sin-arm(4) + cos-arm(4) → emit`
@@ -840,10 +793,11 @@ lock needed THREE NCO-specific moves (each was a distinct failure mode found via
 - PROVEN in ISOLATION: locked FM 40 in → 40 unit-circle pairs (|IQ|=1.0), 60/60 + 16/16 BIT-EXACT
   vs `process_reference_q15` under saturated `queue_words` drive. Unlocked stays bit-exact (70/70).
   Gate: NCO in COMPLEX_2IN2OUT, FM in `test_fm_saturation_safe` (real-in/complex-out, driven direct).
-- KNOWN-OPEN (2026-07-21): the unlock corridor is NOT yet placement-invariant in an AUTO-ROUTED
-  CHAIN — FM releases the lock hand-placed, but auto-placed in the fsk4 TX chain `transit_unlock`
-  never fires (WRITE.CFG never reaches phase → stall). Next: make emit→transit_unlock→phase
-  adjacency survive auto-placement (or author it placement-invariant). This blocks the fsk4 modem TX.
+- KNOWN LIMIT: the unlock corridor is proven HAND-PLACED but not yet placement-invariant in
+  an AUTO-ROUTED chain (an auto-placed `transit_unlock` can lose the emit→unlock→landing
+  adjacency and the WRITE.CFG never reaches the landing cell). The shipped fsk4 modem uses the
+  hand-placed `.kyt` (open it, don't import) and runs BER 0; making the corridor survive
+  auto-placement is the follow-up.
 
 ---
 
@@ -854,10 +808,9 @@ Two distinct facts about the pipelined/full-speed path (sim_bridge `process_batc
 both surfaced getting the coherent BPSK RX full-speed GRC demo live.
 
 **A. The coherent RX IS pipelined and the array is ~95% BUSY — it is THROUGHPUT-bound
-by DSP instruction count, ~675 instr per recovered symbol.** ⚠️ TWICE-CORRECTED. Two
-earlier drafts were WRONG: (1) "Gardner is the saturated bottleneck" and (2) "88% idle /
-latency-bound". Both came from measuring ONE cell's utilisation (~12%) and mistaking it
-for the array. Measuring a whole STEADY-STATE OUTPUT INTERVAL settles it. Facts for the
+by DSP instruction count, ~675 instr per recovered symbol.** (Two earlier readings —
+"one slow block" and "mostly idle" — came from measuring ONE cell's utilisation and
+mistaking it for the array; measure a whole STEADY-STATE OUTPUT INTERVAL.) Facts for the
 coherent BPSK RX .kyt driven saturated (throughput_bench.py + timeline/interval probes):
 - Throughput ~0.15 MSym/s out (2 sps → ~0.33 MSa/s in), ~10 µs fill latency.
 - IT IS PIPELINED. The front ingests fast (JUMP-injections 405–810 ns apart, MF head
@@ -880,7 +833,7 @@ coherent BPSK RX .kyt driven saturated (throughput_bench.py + timeline/interval 
   ~2.4 MSym/s per chip. Throughput-per-CHIP (parallel chains) is the architecture's
   headline, NOT throughput-per-chain. The single-outstanding port limits pipeline DEPTH
   (~13) but the array is already compute-saturated, so deeper overlap wouldn't help much
-  here — the work itself is the limit. See [[project_coherent_rx_cannot_pipeline]].
+  here — the work itself is the limit.
 HARDWARE: the FX3/FPGA FIFO provides real backpressure so on silicon the streaming
 source paces natively — the sim `queue_words_physical` path EMULATES that (no sim FIFO).
 Report chip-time
@@ -911,17 +864,16 @@ is only **~2.78×** (mean 2.62 cells firing per 27 ns bin, NOT 24) — so the ~6
 symbol are mostly SERIAL on the two PI feedback loops + the sequential MF accumulate.
 ⇒ **sustained complex input ≈ 0.33 MSa/s/chain** at this node (~0.165 MBaud, ~0.33 MHz
 occupied BW). Node shrink scales ~linearly: ~3.3 MSa/s at 10×, ~6.6 MSa/s at 20×.
-COMMERCIAL REALITY (CM's framing): as a SINGLE serial DSP engine this is SLOW — a
+COMMERCIAL REALITY (the maintainer's framing): as a SINGLE serial DSP engine this is SLOW — a
 commodity FPGA/RFSoC/C66x demod core does tens–hundreds of MSa/s complex, i.e. ~100–
 1000× faster per chain; even at 20× shrink one chain trails badly. Parallelism does NOT
-rescue a chain too slow for the target signal (CM: "a million too-slow chains still
+rescue a chain too slow for the target signal ("a million too-slow chains still
 can't demod a fast signal"). So Kyttar is viable ONLY for NARROWBAND many-channel work
 (the skimmer: hundreds of kBaud–low-MBaud channels — PSK31/RTTY/AFSK/voice/low-rate PSK-
 FSK), NOT wideband single-channel. THE LEVER for one-chain speed is SHORTENING THE
 CRITICAL PATH (243 serial instr/symbol), not adding chains: cut the serial spine (the 2
 PI loops + MF accumulate) and spread MF taps across more cells so real parallelism rises
-from 2.78× toward the ~10× the tap count allows. throughput_bench.py + /tmp/critpath.py
-measure it. See [[project_coherent_rx_cannot_pipeline]].
+from 2.78× toward the ~10× the tap count allows. throughput_bench.py measures it.
 
 
 ## INV-22 — A block is NOT done until its GRC binding exposes EVERY param and resolves in GRC
@@ -955,6 +907,17 @@ entry in `placekyt/engine/grc_import.py` so `catalog.port_map(btype, params)` se
 "Missing Block", every param settable, ports match the built block. Only then is the
 Definition-of-done GRC-binding box (§4 of AGENTS.md) satisfied. See lessons_log entries
 for the QPSK receiver blocks (Costas `order`, QPSKSlicer, MF `decimation`).
+
+**ENFORCED (2026-08-08):** this was a rule with NO automated gate, so it drifted — an
+audit found 18 done blocks with no binding at all + ~18 with param mismatches (RRC still
+exposed legacy `span`/`sps` not the class's GR-verbatim `sampling_freq`/`symbol_rate`;
+`FSK4SyncTimingRecovery` missing `threshold`; filters missing `decimation`/
+`interpolation`). `verification/tests/test_grc_binding_complete.py` now HARD-FAILS for any
+done block whose binding doesn't resolve (via placeKYT's own `_grc_id_to_type`) or doesn't
+expose every class param. A param the block INTENTIONALLY omits (a documented HW-deviation
+that raises) must be declared in the class attribute `GRC_UNSUPPORTED_PARAMS = (...)` — the
+ONLY legitimate way to omit a param; `*_range` GUI-slider hints are auto-excluded. "Green
+DSP test" is not done; "placeable in GRC with every param" is.
 
 
 ## INV-23 — A block must be ORIENTATION-INVARIANT; its internal cells are FIRST-CLASS
@@ -1071,8 +1034,388 @@ handled). The router side: `route_all_bus`'s `portfork` ordering + the shared-fo
 in `_route_chip_bus` (a DIFFERENT-block port fan-out shares the bus prefix; a same-block
 I/Q fan-in keeps its own broker). Regression: `verification/tests/test_router_port_fanout.py`.
 
+**PLACEMENT PRECONDITION (2026-08-11):** the fork geometry is only constructible
+when the port's exit cell is FREE — a fan-out port with a fed block's INPUT CELL
+directly abutting the port cell is UNROUTABLE-SOUND (the single fwd_face must
+point INTO the abutting block for one arm; the sibling's corridor cannot transit
+a block cell), and the maze escalation then ships a silently-wrong two-direction
+port (tremolo's 200-zeros). The CP-SAT placer hard-forbids it (fed input cells at
+manhattan ≥2 from a fan-out port) and auto_pnr's acceptance gate
+(`_port_fanout_abuts_port`) rejects any layout that violates it.
+
 **Applies to:** any full-duplex / shared-input-port design (the BPSK modem, the QPSK
 modem, the upcoming 4FSK modem) — a TX and an RX chain multiplexed on one `x16_in`. Prove
 it end-to-end on the HOSTED chip (load `.kyt` → build → `stream_targets` → `SimServer` →
 drive both `stream_id`s), NOT with a synthetic single-block harness — the shared-port fork
 only exercises when both streams are present. See [[layout_rules]] duplex pattern.
+
+---
+
+## INV-25 — A `poc` block is NOT verified; treat it as unproven and expect latent bugs
+
+**Symptom:** a block used in a shipped, BER-0 example (so it "obviously works") turns out
+to disagree with its GNU Radio counterpart the moment it goes through per-block
+equivalence verification — on inputs the example never happened to exercise.
+
+**Root cause:** the manifest distinguishes three states, and only ONE means "trustworthy":
+`done` = verified BER-0 vs GNU Radio; `planned` + **`poc: true`** = **code exists but was
+never verified**; `planned` + no `poc` = no code yet. A PoC was written to make ONE
+design work and was never held against GNU Radio across its full input range. It can carry
+a real bug that hides because the one place it's used stays in range.
+
+**Ground truth:** `ComplexGainBlock` was a `poc` load-bearing in the shipped `qam16_modem`
+(BER 0). Verification found it **wrapped mod 2^16 instead of saturating** on `gain>1`
+overload — max error 27,525 LSB on the Q rail — undetected only because the 16-QAM
+constellation happens to stay in range at gain 2.4. Both its own reference and GR
+`multiply_const_cc` saturate. Fixed via the INV-13 coefficient-headroom idiom
+(store `gain/4` in Q15, MULQ each rail, restore with a **saturating** `<<2`).
+
+**The rule:** when the manifest entry is `poc: true`, "building" it means *finalize +
+VERIFY the existing code against GNU Radio across the full parameter range* — NOT trust
+it because an example uses it. Sweep the whole valid parameter range (not just the value
+the example uses), include full-scale/overload edges, and expect to find and fix real
+bugs. Do not mark it `done` on the strength of an example; only the gate (INV-4) makes it
+done. "It's used in a working modem" is not verification.
+
+**Applies to:** every `poc: true` entry in the manifest (`ComplexRRCMatchedFilterBlock`,
+`ComplexCostasLoopBlock`, `GardnerTimingRecovery`, `BPSKSlicerBlock`, …). See
+[[FACTORY]] for the queue and the per-block dispatch, and the manifest-status note in
+`AGENTS.md` §5.
+
+---
+
+## INV-26 — A block's own "green" tests can validate it OUTSIDE GR's operating regime
+
+**Symptom:** a block ships with passing tests, is load-bearing in a BER-0 demo, yet fails
+per-block GR-equivalence — because its tests compared it against a *self-generated*
+stimulus that GNU Radio itself cannot process correctly.
+
+**Ground truth:** `GardnerTimingRecovery` had green `test_gardner_convergence` /
+`test_gardner_complex_reference` — but they drove it with a synthetic 2-samples/symbol
+stimulus (`_make_bpsk_2sps`) on which **GR's own `symbol_sync_cc(Gardner)` recovers at
+BER ~0.45** (i.e. does not lock). The block was tuned to that non-Nyquist stimulus. On the
+true matched-filter Nyquist channel — where GR locks at BER 0 across the timing-offset
+sweep — the Q15 Gardner TED (which `>>1`-halves both samples to fit int16 before the
+product) jitters too hard and recovers at BER ~4–12%. The block was quarantined
+(`needs_human`); MMTimingRecovery is the verified alternative. Extends the documented
+Gardner 4-PAM limit (see the M17/4FSK lessons_log entries) to 2-level BPSK on a Nyquist channel.
+
+**The rule:** a verification stimulus is only valid if GR ITSELF produces the correct
+answer on it. Before comparing DUT-vs-GR, assert the GOLDEN is real — GR meets the pass
+bar (e.g. `test_gr_gardner_locks_ber0_on_matched_channel` asserts GR BER==0 first). A
+"green" test that never checks GR's own competence on its stimulus proves nothing. This is
+INV-25's sibling: INV-25 = a poc was never held against GR at all; INV-26 = it was held
+against GR on a channel GR can't do, which is just as blind.
+
+**Applies to:** any recovery/adaptive/timing block whose test uses a hand-built channel.
+Pin GR's competence on the channel FIRST, then gate the DUT against it.
+
+---
+
+## INV-27 — Validate `manifest.json` as JSON after EVERY conflict resolution (orchestrator)
+
+**Symptom:** the queue tool / dashboard suddenly can't read the manifest; a merge or
+cherry-pick "succeeded" but the committed `manifest.json` is not valid JSON.
+
+**Root cause:** when merging parallel factory builders, two blocks touch adjacent manifest
+entries and git leaves a `<<<<<<< / ======= / >>>>>>>` conflict inside the JSON. If the
+orchestrator `git add`s + `--continue`s WITHOUT resolving that file, the markers get
+committed — invalid JSON, silently, because git doesn't parse content.
+
+**Ground truth:** during this tier-2/3 batch merge, `MultiplyConstComplex`'s manifest
+entry was committed with live conflict markers (`json.load` raised
+`Expecting property name` at line 421). Caught by validating, fixed by taking the
+builder's (verified) notes side, `git commit --amend`.
+
+**The rule (orchestrator merge hygiene):** after resolving ANY conflict that includes
+`manifest.json` — and before `cherry-pick --continue` — run
+`python -c "import json;json.load(open('verification/manifest.json'))"`. It must exit 0.
+Do the same for any other JSON report touched. Never rely on git's clean exit; git
+validates nothing about file content. Also: builders that "sync a block into the main tree
+to run the venv gate" can LEAVE a stray edit in the main checkout's manifest (a block
+flipped to `in_progress`) — `git checkout -- verification/manifest.json` before cherry-pick
+if the working tree is unexpectedly dirty.
+
+---
+
+## INV-28 — Parallel factory builders MUST NOT mutate the shared editable-install finder
+
+**Symptom (orchestrator):** after a parallel batch, `python -c "import gr_kyttar;
+print(gr_kyttar.__file__)"` resolves to some builder's WORKTREE, not the main checkout —
+so the orchestrator's verification runs against a random builder's tree, and any builder
+whose gate ran mid-race tested the wrong code.
+
+**Root cause:** the venv's editable install
+(`site-packages/__editable___gr_kyttar_0_1_0_finder.py`) has a module-level
+`MAPPING = {'gr_kyttar': '<path>', ...}`. It is GLOBAL, shared by every process using that
+venv. A builder that repoints `MAPPING['gr_kyttar']` at its own worktree to run the gate,
+then "restores" it, RACES with every other concurrent builder doing the same — restores
+clobber each other and the finder is left pointing at whoever wrote last. Observed in the
+tier-1 batch: the finder was left aimed at the AndConstBlock worktree; DiffDecoder's and
+others' registrations were intermittently invisible.
+
+**The rule:** a builder in a worktree runs its gate by PREPENDING its own tree to the
+import path for that process only — `PYTHONPATH=<worktree>/runtime/python` (or
+`sys.path.insert(0, ...)`), which cleanly SHADOWS the editable install without touching
+global state. The NotBlock/DelayBlock/MapBB builders did exactly this and had no race. NEVER
+edit the shared `MAPPING`/`.pth`/`.so` in `site-packages` from a parallel builder. The
+orchestrator, before verifying a merged batch, must CHECK the finder points at the main
+checkout and restore it if a builder left it dirty (this batch required a manual restore).
+Related: the OOT-install boundary and stale-`.pth` shadowing lessons in lessons_log.md
+(same shadowing mechanics, different trigger). Add this to the builder dispatch prompt's
+environment note.
+
+---
+
+## INV-29 — Table-heavy protocol/waveform logic does NOT fit a Q15 cell; it needs the SRAM panel
+
+**Symptom:** a block whose CORRECTNESS is a large lookup table or long adaptive state —
+a character codec, a Morse/Varicode map, a long envelope table, an adaptive decoder FSM —
+builds fine as a Python golden but its on-chip `build_cell_programs()` cannot fit the table
++ state + program into a cell.
+
+**Ground truth (the PSK31 + CW/Morse wave, 2026-08-07):** 5 ham-mode blocks all
+quarantined on the SAME wall, and it is now a measured, repeatable substrate boundary:
+- a cell is **32 words total** (chip yaml `memory_words: 32`), shared by program + data +
+  state; the `LOAD`-indirect table is capped at **~21 usable entries** (`mem[Rn] & 0x1F`,
+  the MapBB `MAX_TABLE=21` ceiling).
+- **VaricodeEncoder:** 128-entry variable-length table = ~6× over; plus a data-dependent
+  3–12-word burst emit with no variable-length WRITE-loop primitive.
+- **VaricodeDecoder:** reverse code→char map = a **1024-entry** LUT (codeword values to 955)
+  or ~200-node trie = ~49× over.
+- **RaisedCosineEnvelope:** an sps-entry cosine table (sps=256 → 129 even after symmetry
+  folding) + an sps-sample lookahead delay line.
+- **CWKeyer:** ~48-entry Morse table + timing FSM + a raised-cosine click-suppression edge
+  LUT together overflow the cell (program budget measured −2…−56 across sizes).
+- **CWDecoder:** 64-entry reverse Morse LUT + **adaptive** unit-estimate/run-length/
+  element-buffer state that is global+sequential (not wavefront-splittable like FIR taps)
+  → ≥39 data words before a single instruction. The long-memory-state-in-SRAM case.
+
+**The rule / what fits vs what doesn't:** the Q15 cell substrate hosts *DSP math* (filters,
+mixers, loops, small constellations, per-sample transforms) but NOT *table-heavy protocol/
+waveform logic*. The dividing line is the ~21-entry LOAD table and the 32-word cell. Such
+blocks need the **external SRAM panel** driven by `SramControllerBlock` (the hardened
+FPGA-controller macro — see INV-31) — a memory-interface construction, not a single-cell
+drop-in. When scoping a block, estimate the table/state footprint FIRST; if it exceeds ~21
+LOAD entries or ~31 registers, it is an SRAM-panel block, and building it single-cell will
+QUARANTINE. This is a real capability boundary (a paper data point about the architecture),
+NOT a builder failure. The long ON/OFF emit-loop itself IS representable (proven) — the wall
+is the register footprint, so on-the-fly generation (NCO cosine) beats a table where possible.
+Note the honest workflow value: each such block still ships a bit-exact Python GOLDEN
+(Varicode from fldigi, Morse from ITU-R M.1677) so the spec is proven and the SRAM-panel
+build has a reference. See the SRAM-backed-block-wave lessons_log entries.
+
+---
+
+## INV-30 — Rebase builder worktrees onto current HEAD BEFORE dispatch (stale-base corrupts the manifest)
+
+**Symptom:** after merging a parallel batch, `manifest.json` has DUPLICATE entries, MISSING
+entries (total block count drops), or reverted statuses — even though every block's source/
+test/report committed fine.
+
+**Root cause:** the `Agent(isolation:"worktree")` mechanism branches the worktree from a base
+that can be OLDER than the orchestrator's current branch HEAD (observed twice: the tier-1
+batch branched from a pre-batch commit; the ham batch branched from `40c9460`). A builder
+edits its stale copy of `manifest.json`; on cherry-pick, a naive **take-theirs** resolution
+wholesale-replaces the correct manifest with the builder's stale one, DROPPING every entry
+added on main since the fork. A keep-both resolution instead DUPLICATES entries. Either way
+the manifest is corrupted while the block files are fine.
+
+**The rule:** (1) BEFORE dispatching a parallel batch, ensure worktrees branch from current
+HEAD — if the isolation mechanism won't guarantee it, have each builder `git merge` current
+main into its worktree as step 0 (the CWDecoder builder did this correctly and had no
+corruption). (2) NEVER resolve a `manifest.json` conflict by take-theirs against a possibly-
+stale base. The safe repair (used here): reset `manifest.json` to the known-good HEAD
+version, then re-apply ONLY the batch's per-block status changes by name + adopt each
+builder's richer notes. (3) ALWAYS assert `len(blocks)` didn't shrink and there are no
+duplicate `kyttar_block` names after a batch merge (INV-27 sibling). See
+`verification/tools/_merge_resolve.py` (whose take-theirs on manifest.json is UNSAFE against
+a stale base — a known limitation).
+
+---
+
+## INV-31 — The SRAM panel is the substrate's memory tier; drive it with `SramControllerBlock`
+
+**What it is:** the answer to INV-29 (table-heavy/long-memory logic doesn't fit a 32-word
+cell). An **SRAM panel** (`placekyt/engine/sram_panel.py`, `SramPanelDevice`) is dumb
+storage + a tiny register protocol, HOST-SIDE (the FPGA implements it in the demo; embedded
+panels in the array on the next chip). A **`SramControllerBlock`** — a 1-cell HARDENED
+FPGA-controller macro — sits at the panel port and drives it with the EXISTING ISA (no new
+primitives): `WRITE @N, dest` for panel data registers, `JUMP @N, entry` for panel triggers.
+
+**The protocol (full contract in [[SRAM_PANEL]] / `verification/SRAM_PANEL.md`):** panel
+regs R0=write-commit trigger (JUMP), R1=read trigger (JUMP), R2=payload (WRITE), R3/R4=
+read-out WRITE/JUMP descriptors (WRITE), R5+=address (WRITE). The **decisive mechanism** is
+the self-driven **push-read**: the controller pre-writes R3/R4 (*where the answer should
+land + which entry to kick*), writes the address, and JUMPs R1 — the panel then ORIGINATES
+a `WRITE(dest)=value` (+optional `JUMP(entry)`) into a chip INPUT port, delivering the
+looked-up word back out a **different port** to the destination hop. The controller does not
+poll; the read is asynchronous and panel-originated.
+
+**The rule / when to reach for it:** a block whose correctness is a big LUT (Varicode
+128/1024-entry, Morse ~64, constellation >21), long memory (interleaver depth, correlator
+history, Viterbi survivors), or unbounded adaptive state → do NOT force it single-cell (it
+QUARANTINEs per INV-29). Build it as an **SRAM-backed** design per the SRAM_PANEL.md §6
+recipe: table lives in the panel (unbounded), small index/logic stays in cells, the answer
+arrives via the push-read. This is the heterogeneous compute-next-to-memory pattern the next
+chip generalizes to embedded panels.
+
+**Ground truth:** `SramControllerBlock` is VERIFIED — `placekyt/tests/test_sram_panel.py`
+(21 tests) incl. a write-then-read-back-out-the-port round-trip through REAL routing
+(`0xCAFE`→addr 3→emerges on `x16_out`) + the runnable `engine/sram_demo.py`. The older,
+naive `FpgaRamBlock` (2-cell orchestrator, passive pull-read, no address registers) was
+DELETED 2026-08-07 — do not resurrect it; `SramControllerBlock` is the one true SRAM path.
+
+---
+
+## INV-32 — Routes are STRICT shortest paths, and a block's output corridor must NEVER transit its own input-delivery broker (deadlock cycle)
+
+**Symptom A (quality):** shipped `.kyt`s carried routes like 21 cells for a
+manhattan-5 hop and 25-for-3 weaving beside their own path; every one-free-cell
+block pair staircased up-and-over to a far-side broker. Ugly in the GUI — and a
+real saturation hazard: the longer a shared corridor, the more back-to-back
+in-flight words pile into it.
+
+**Symptom B (correctness — the hard one):** a design passes EVERY per-sample
+gate, then under saturated (pipelined / Full-speed) drive the sim reports a hard
+`Deadlock` with ZERO output (data_link: 2103 events then stuck). Per-sample
+pacing fully hides it.
+
+**Root cause A:** the bus router priced corridor sharing as a DISCOUNT (fresh
+cell 5, bus cell 1) — sharing could buy a ~5× longer route; the broker was
+picked by bus/spine membership BEFORE routing (distance-blind, so routes
+wrapped their target); a net could not broker on its OWN source's emit cell
+(the reservation guarding FOREIGN emit cells was applied to all nets).
+
+**Root cause B:** a strictly-shortest route can legally pass THROUGH the broker
+cell that DELIVERS INTO the routed net's own source block. The block's output
+words then occupy the single-outstanding link its own NEXT input must cross —
+a closed 4-cell wait cycle (`src → … → own-input-broker → src`). This is the
+cross-net sibling of INV-19/20: not a block bug, a ROUTING topology bug.
+
+**The rules (all enforced in `engine/bus_router.py`, 2026-08-11):**
+1. Path length strictly dominates (`_HOP_COST` per cell); corridor sharing,
+   emit-face starts, and straight-over-staircase are SUB-HOP tie-breaks only.
+2. A net may broker on its own source's emit cell; FOREIGN emit cells stay
+   last-resort. Brokers are chosen by ROUTED distance over all legal
+   candidates (ties → fewest turns).
+3. HARD guard, both routing orders: a net sourced at block B treats every
+   broker delivering into B as impassable; a broker candidate for a net
+   targeting B must not sit on B's committed output corridor. An unroutable
+   net (named failure) is always preferred over shipping a cycle.
+4. A terminal broker's onward direction stays UNCOMMITTED until a transiting
+   net claims it (the build's `broker_through_face` restores to exactly that);
+   pre-committing the arrival direction walls same-source fan-out arms.
+5. The v2 single-backbone result is kept only when the legacy per-net loop
+   cannot route everything strictly shorter; orderings are scored by
+   (nets routed, total corridor length), never first-full-wins.
+
+**Gates:** `verification/tests/test_route_quality.py` (per-net excess ≤ 8 vs
+manhattan, no revisits, per-file pinned totals over every shipped example
+`.kyt`); `test_one_gap_pair_brokers_on_own_emit_cell` (minimal hand-off form +
+on-chip compute); `test_data_link_example.py::test_shipped_kyt_saturated_matches_per_sample`
+(the deadlock-cycle pin); `test_audio_meter_example.py::test_shipped_kyt_saturated_matches_per_sample`
+(duplex saturated bit-exactness). Remaining route excess in the ratchet is
+PLACEMENT-forced (walls of folded blocks); the next quality lever is picking
+the auto_pnr attempt by total route length, not the first fully-routed one.
+
+**Review-driven hardening (2026-08-11, adversarial code review of the fix):**
+- The dominance invariant (tie-breaks < one hop) is now ASSERTED per chip
+  against the real fabric size (`_HOP_COST > 2·W·H + 2` in `route_all_bus`) —
+  the constant was hand-derived for 120 cells while chip dims are
+  YAML-parameterized and >31-hop routes are relay-extended.
+- The own-block delivery cycle is ALSO caught at the DRC (`check_bus` check
+  (c)): any net sourced at block B transiting a broker that delivers into B is
+  a named deadlock — covering v2-routed and HAND-LAID routes the router-level
+  guard never sees. SCOPE IS DELIBERATE: a GENERAL through-block cycle test
+  (block supernodes in the wait graph) was tried and FALSE-POSITIVED the
+  proven-saturated coherent RX — a static cell-cycle over independent corridor
+  segments cannot be distinguished from a true circular wait without
+  rate/buffer modeling. The own-block shape is deadlock-CERTAIN (same stream,
+  causally chained); anything broader is owned by the saturated example gates
+  (the empirical check). `test_bus_drc_block_cycles.py` pins the caught
+  shapes, the 2-cycle, the non-flagged clean chain, AND the out-of-scope
+  logical-loop case.
+- The hazard-DISABLED fallback (`sc_cells=None` re-route) regained dedicated
+  coverage: `test_walled_corner_fallback_demotes_to_named_failure` forces the
+  one-free-neighbour corner and asserts the unsafe route is DEMOTED to a named
+  failure by the router's own DRC gate, never returned silently ok.
+
+**Applies to:** every auto-routed design; any future router change must keep
+the ratchet green and the saturated example gates green.
+
+## INV-33 — The cell register-allocation CONTRACT: inputs < data < state; R0 is the ACCUMULATOR, not a mailbox
+
+**Symptom (all hit building the LMS equalizer):** (a) "No register space for
+state 'X'" on a cell that physically fits; (b) an input value silently ZERO /
+stale by the time the program reads it; (c) a state var's initial value lands in
+an INPUT register and gets clobbered by the first delivery.
+
+**The resolver's allocation rule** (`compute_state_registers`): explicit-address
+data words are honored; ``state`` is auto-allocated ONLY into the gap
+``range(max_data_address + 1, 31 - instr_count)`` — it never scans holes below
+the data words and never avoids INPUT registers outside that gap. So the
+authoring contract is strict: **input registers at the LOW addresses, data words
+ABOVE them, state auto-lands above data, instructions fill the top.** A hole
+between inputs (e.g. an absent acc input on the first tap of a chain) is usable
+ONLY by PINNING state into it explicitly (``StateVar(register=N)``).
+
+**NO-DATA-WORDS corollary (hit building the CORDIC blocks):** a cell with ZERO
+data words has ``max_data_address = -1``, so the auto-scan starts at **R0** and
+state lands ON TOP of R0 and the input registers — the block builds cleanly and
+runs garbage (every temporary write clobbers an input). ANY cell whose state is
+not explicitly pinned needs at least one data word below it; in practice: **pin
+every StateVar register explicitly, always.** (The CORDIC XY cells: inputs @1,2
+→ pin state @3,4,5.)
+
+**R0 rules:** every ALU op writes R0, so an input delivered to R0 is destroyed
+by the FIRST ALU/MOVE-to-R0 instruction. Land inputs at R0 only as a deliberate
+idiom: the ACCUMULATOR-DELIVERY trick — the upstream cell WRITEs a running sum
+into the downstream's R0 as its LAST write before the trigger, and the
+downstream's FIRST instructions are the MAC(Q)s that consume it (saving the seed
+MOVE that otherwise doesn't fit). The consumed-and-reemitted value must then be
+WRITTEN FIRST so the next hop's R0 delivery is never disturbed by later writes.
+
+**Positional pairing:** ``build_cell_programs()`` dict order MUST equal
+``default_layout()`` order (cells are paired BY INDEX; face-only ``transit_*``
+entries go LAST in the layout). A mismatch assigns program A to cell B with no
+error — the block builds and runs garbage.
+
+**Internal-feedback pass hazard:** ``_apply_internal_feedback`` re-patches every
+connection that runs BACKWARD in program order, matching the source cell's WRITE
+**by destination register** — ambiguous when a broadcast cell fans out several
+writes sharing a dest register (the LMS y_i hop was clobbered by the g-fan-out's
+patch). Order broadcast-source cells EARLY in the program dict so their edges
+are FORWARD and the pass never touches them.
+
+## INV-34 — ISA: shift counts are IMMEDIATE instruction fields; the silicon design is the authority for ISA claims
+
+**The rule:** a shift/rotate word is `OP | ROT[11] | RSVD[10] | CNT[9:6] |
+SRC[5:0]` — CNT is an immediate count (0-15) and bit[10] is reserved
+(PROGRAMMING_GUIDE §4.3). There is no register-count shift form; the assembler rejects
+`[Rm]` count syntax at the root and the decoder treats bit[10] as reserved.
+
+**Expressing data-dependent shift amounts with immediate counts** (all
+proven in shipping blocks):
+- **Fixed-position extraction over a left-aligned working register**: align
+  the data once (at pack/table-build time when possible), then walk it with
+  `SHR #15` / `SHL #1` per step (VaricodeEncoder's packed-word walk).
+- **Arithmetic identity for a 0/1 count**: `x << b == x + x*b` — a branchless
+  MUL/ADD pair (VaricodeDecoder's pending-zero commit).
+- **CMP-guarded `SHL #1`**: CMP sets flags WITHOUT touching R0, so the value
+  being shifted survives the test.
+- **Shift-by-one loop** with a counter, for genuinely variable counts.
+
+**Authority order for any ISA claim: the silicon design > the spec's
+FIELD TABLES > simulator/assembler prose.** The instruction field tables
+(PROGRAMMING_GUIDE.md §4) are canonical; prose and examples elsewhere can lag
+them, and the simulator is kept conformant to the design. Before relying on a
+"discovered" feature that appears only in prose or in simulator behavior,
+check it against the field tables.
+
+Gate: `verification/tests/test_silicon_isa_subset.py` — source-scans every
+block for `[Rm]` shift syntax and asserts the assembler rejects it.
+
+Confirmed-real for contrast: `GOTO label` is assembler sugar for a local
+`JUMP hop_cnt=31`; WRITE/MOVE preserving FLAGS is real hardware behavior
+(only ALU/logic/shift/CMP ops update the flags).

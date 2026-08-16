@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """The GNURadio server must run the CURRENT design, never a stale build.
 
 Regression for the bug the user found: with the GNURadio server running, deleting

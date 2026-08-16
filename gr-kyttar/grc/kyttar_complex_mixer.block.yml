@@ -26,12 +26,18 @@ documentation: |-
 templates:
   imports: from gnuradio import kyttar
   make: kyttar.complex_mixer(device_id=${device_id}, sample_rate=${sample_rate},
-    frequency=${frequency}, amplitude=${amplitude}, offset=${offset}, phase=${phase})
+    frequency=${frequency}, amplitude=${amplitude}, offset=${offset}, phase=${phase},
+    block_name=${block_name})
   callbacks:
     - set_frequency(${frequency})
 
 parameters:
-  - id: device_id
+  - id: block_name
+  label: placeKYT block name
+  dtype: string
+  default: '""'
+  hide: part
+- id: device_id
     label: Device ID
     dtype: string
     default: '"kyttar_0"'

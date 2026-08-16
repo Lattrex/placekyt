@@ -1,4 +1,5 @@
-"""Load dev-board configurations from ``.kdb`` YAML (the architecture notes §2.4).
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Load dev-board configurations from ``.kdb`` YAML.
 
 Enforces the ``wire_delay_ns >= 1.0`` rule at load time (§2.4: zero-delay
 inter-chip wires break causal ordering in multi-chip simulation).

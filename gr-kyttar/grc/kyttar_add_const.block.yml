@@ -1,0 +1,45 @@
+id: kyttar_add_const
+label: Kyttar Add Const
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar Add Const — add a real constant to a real stream (drop-in for GNU
+  Radio's blocks.add_const_ff). out = in + const.
+
+  On the Kyttar chip this maps to AddConstBlock: a single SATURATING Q15 add of
+  the baked-in constant. The constant is a Q15 immediate in [-1.0, +0.99997]; an
+  out-of-range result PINS to ±full-scale (GR float neither quantizes nor clips).
+  Place it between a KyttarSource and KyttarSink and ensure the device_id matches
+  your KyttarDevice.
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.add_const(device_id=${device_id}, const=${const})
+  callbacks:
+    - set_const(${const})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+- id: const
+  label: Constant
+  dtype: real
+  default: '0.0'
+
+inputs:
+- label: in
+  domain: stream
+  dtype: float
+
+outputs:
+- label: out
+  domain: stream
+  dtype: float
+
+asserts:
+- ${ -1.0 <= const and const < 1.0 }
+
+file_format: 1

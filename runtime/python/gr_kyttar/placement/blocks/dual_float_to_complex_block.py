@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """DualFloatToComplexBlock — see :class:`DualFloatToComplexBlock`."""
 import numpy as np
 from typing import Dict
@@ -84,6 +85,14 @@ class DualFloatToComplexBlock(KyttarBlock):
     # land them on two DISTINCT faces and the build DRC MUST reject same-face landing.
     # No other block sets this (they receive pre-paired complex packets).
     NEEDS_DISTINCT_INPUT_FACES = True
+
+    # GR's blocks.float_to_complex has NO params; this block's ctor args are all
+    # PLACEMENT/ROUTING internals the placer+router reconcile (face_i/face_q are the
+    # two distinct arrival faces the router chooses; hop/dest_i/dest_q/entry are the
+    # brokered output-handoff addresses, "retained for API compatibility"). None are
+    # user-facing DSP params, so NONE are exposed in GRC — exposing them would break
+    # the 1:1 float_to_complex drop-in contract (INV-22 documented HW-deviation).
+    GRC_UNSUPPORTED_PARAMS = ("face_i", "face_q", "hop", "dest_i", "dest_q", "entry")
 
     _FACE = {"south": 0, "east": 1, "west": 2, "north": 3}
 

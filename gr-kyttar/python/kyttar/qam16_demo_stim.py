@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """16-QAM modem demo stimulus (TX bits + RX RRC burst) for qam16_modem.grc.
 
 Imported by the flowgraph as a plain Python module (same pattern as

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """
 Kyttar Soft Demodulator GRC Block.
 
@@ -21,24 +22,31 @@ class soft_demodulator(_PassThrough):
 
     Parameters:
         device_id: Device ID to register with
-        noise_variance: Estimated noise variance σ² (0.01-1.0 typical)
+        constellation: 'bpsk' | 'qpsk' (GR constellation_soft_decoder_cf)
+        npwr: noise power (GR param; <0 -> GR's stored default 1.0)
+        noise_variance: DEPRECATED BPSK-only alias for npwr (σ²)
         llr_scale: Scale factor for LLR output
     """
 
     def __init__(
         self,
         device_id: str = "kyttar_0",
+        constellation: str = "bpsk",
+        npwr: float = -1.0,
         noise_variance: float = 0.1,
         llr_scale: float = 1.0,
     ):
         super().__init__(name="Kyttar Soft Demodulator", n_in=1, n_out=1)
         self._device_id = device_id
+        self._constellation = constellation
+        self._npwr = npwr
         self._noise_variance = noise_variance
         self._llr_scale = llr_scale
         # Advertise params for GRC↔placeKYT sync detection (see dsp_markers).
         self._advertise_grc_params(
             device_id, "SoftDemodulatorBlock",
-            {"noise_variance": noise_variance, "llr_scale": llr_scale})
+            {"constellation": constellation, "npwr": npwr,
+             "noise_variance": noise_variance, "llr_scale": llr_scale})
 
     @property
     def noise_variance(self) -> float:

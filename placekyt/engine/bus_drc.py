@@ -1,4 +1,5 @@
-"""Bus DRC — face-conflict + deadlock checks over a bus/broker routing (P1.2, §1.3/§5.3).
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Bus DRC — face-conflict + deadlock checks over a bus/broker routing.
 
 The §1.2 bus model shares cells between streams; a cell has ONE ``fwd_face`` (§1.3), so
 two streams may share a cell ONLY if they leave it the SAME way — and a broker mid-flip
@@ -61,7 +62,7 @@ def check_bus(project, routes, chip_types, *, exempt_cells=None,
 
     Two checks, per the design:
 
-    (a) **Face conflict (§1.3, P1.2):** if two routed nets both leave a cell in
+    (a) **Face conflict:** if two routed nets both leave a cell in
         DIFFERENT directions, the cell's single ``fwd_face`` cannot serve both — the
         static-face build would mis-face one stream (the BPSK-dead-build). Counted as
         a "leave" is an interior TRANSIT (toward the next waypoint) AND a chip-output
@@ -115,6 +116,56 @@ def check_bus(project, routes, chip_types, *, exempt_cells=None,
             ecell = tuple(ecell)
             if eface is not None:
                 out_dir.setdefault(ecell, {}).setdefault(int(eface), []).append(name)
+
+    # (c) OWN-BLOCK delivery cycle (INV-32, the data_link f2c saturation lockup):
+    # a net SOURCED at block B whose corridor TRANSITS a cell that DELIVERS a net
+    # INTO B closes a wait cycle through B's own internals — B's output words
+    # occupy the single-outstanding link its own NEXT input must cross. This
+    # shape is deadlock-CERTAIN (same stream, causally chained), unlike a general
+    # cell-cycle over independent corridors (the proven-saturated coherent RX
+    # carries harmless topological rings of unrelated segments, so a broader
+    # through-block collapse would false-positive it — scope deliberately kept
+    # to the certain shape; the router additionally hard-forbids it while
+    # routing, and the saturated example gates are the empirical check beyond).
+    # Needs ``project`` for block ownership; bare route-dict callers skip it.
+    if project is not None:
+        blk_of_cell: dict[tuple, str] = {}
+        for blk in getattr(project, "blocks", ()) or ():
+            pl = getattr(blk, "placement", None)
+            if pl is None or not getattr(pl, "cells", None):
+                continue
+            for c in pl.cells:
+                blk_of_cell[(c.x, c.y)] = blk.name
+            for t in getattr(pl, "transit_cells", ()) or ():
+                blk_of_cell[(t.x, t.y)] = blk.name
+        deliver_into: dict[str, dict] = {}   # block -> {broker cell: net name}
+        src_block: dict[str, str] = {}       # net name -> source block name
+        for conn in getattr(project, "connections", ()) or ():
+            name = getattr(conn, "name", "")
+            tgt = getattr(conn, "target", None)
+            pts = routes.get(name)
+            if pts and isinstance(tgt, BlockEndpoint):
+                last = tuple(pts[-1])
+                if blk_of_cell.get(last) != tgt.block:
+                    deliver_into.setdefault(tgt.block, {})[last] = name
+            src = getattr(conn, "source", None)
+            if isinstance(src, BlockEndpoint):
+                src_block[name] = src.block
+        for name, pts in routes.items():
+            b = src_block.get(name)
+            if b is None or b not in deliver_into:
+                continue
+            hits = [(tuple(p), deliver_into[b][tuple(p)])
+                    for p in pts[1:] if tuple(p) in deliver_into[b]]
+            for cell, in_net in hits:
+                violations.append(Violation(
+                    cell=cell, kind="deadlock",
+                    reason=f"net '{name}' (output of block '{b}') transits the "
+                           f"broker cell that DELIVERS net '{in_net}' into "
+                           f"'{b}' — the block's own output words block its "
+                           "next input delivery (own-block wait cycle, "
+                           "INV-32/§5.3)",
+                    nets=tuple(sorted({name, in_net}))))
 
     # (a) face conflict: a cell with >1 distinct outgoing direction across nets,
     #     UNLESS it is an exempt (crossover/broker) cell that serves them legally.

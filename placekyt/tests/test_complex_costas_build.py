@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Build the ComplexCostasLoopBlock through the real placeKYT pipeline.
 
 This is Gate 1 for #216: prove the 7-cell complex Costas block (with its row-1

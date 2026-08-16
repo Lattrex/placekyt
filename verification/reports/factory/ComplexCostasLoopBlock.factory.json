@@ -1,0 +1,31 @@
+{
+  "block": "ComplexCostasLoopBlock",
+  "grc_block": "digital.costas_loop_cc",
+  "tier": 2,
+  "wave": 2,
+  "schema_version": 1,
+  "started_utc": "2026-08-07T01:32:07Z",
+  "ended_utc": "2026-08-07T02:14:15Z",
+  "walltime_sec": 1966.922,
+  "tokens": {
+    "input": 0,
+    "output": 281769,
+    "cache_read": 0,
+    "total": 281769
+  },
+  "turns": 155,
+  "attempts": 2,
+  "human_interventions": 0,
+  "intervention_reasons": [],
+  "prompts": [
+    {
+      "role": "initial",
+      "text": "Follow AGENTS.md \u00a73: verify poc ComplexCostasLoopBlock vs digital.costas_loop_cc across order/loop_bw. Isolated worktree. Full text: `factory_dispatch.py ComplexCostasLoopBlock` + KB Costas notes."
+    }
+  ],
+  "verify_passed": true,
+  "quarantined": false,
+  "quarantine_reason": "",
+  "commit_sha": "465ec9c",
+  "notes": "subagent_tokens(total)=281769 from orchestrator <usage>. INV-25 latent bug: order-4 (QPSK) recovered complex pair could not egress a chip port standalone (199/200 wrong) while the abutted production path was always correct \u2014 masked because the demos abut. Root-caused to engine/build.py port-egress (param-blind complex-out resolve + single-rail WRITE handoff stranding yi_tap); fixed in build.py + added order-dependent interface + process_reference_complex. Gate=DECISION: 0 sign errors vs GR across sweep; on-chip bit-exact both rails; RMS-normalized soft spread peak ~1513 LSB (diagnostic only, never a gate). 2 attempts (1st single-rail approach broke QPSK modem, reverted). order-2=7 cells, order-4=8 cells, 4x2 serpentine. INDEPENDENTLY RE-VERIFIED on merged block-factory: 61 new tests + full suite 1134 passed (2 pre-existing failures proven at base 40c9460, unrelated); shared build.py change caused NO regression."
+}

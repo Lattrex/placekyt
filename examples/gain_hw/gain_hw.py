@@ -130,12 +130,12 @@ class gain_hw(gr.top_block, Qt.QWidget):
         self.top_layout.addWidget(self._time_sink_win)
         self.src_b = analog.sig_source_f(samp_rate, analog.GR_SIN_WAVE, 7, 0.8, 0, 0)
         self.src_a = analog.sig_source_f(samp_rate, analog.GR_SIN_WAVE, 3, 0.8, 0, 0)
-        self.msrc_b = kyttar.source(device_id="kyttar_0", port_name="x16_in", num_channels=1, server_host="127.0.0.1", server_port=server_port, complex_in=False, burst_len=0, stream_id="b")
-        self.msrc_a = kyttar.source(device_id="kyttar_0", port_name="x16_in", num_channels=1, server_host="127.0.0.1", server_port=server_port, complex_in=False, burst_len=0, stream_id="a")
-        self.msink_b = kyttar.sink(device_id="kyttar_0", port_name="x16_out", num_channels=1, server_port=server_port, server_repeat=False, hold_secs=8.0, stream_id="b", in_type=False)
-        self.msink_a = kyttar.sink(device_id="kyttar_0", port_name="x16_out", num_channels=1, server_port=server_port, server_repeat=False, hold_secs=8.0, stream_id="a", in_type=False)
-        self.gain_blk_b = kyttar.gain(device_id="kyttar_0", gain=gain_b)
-        self.gain_blk_a = kyttar.gain(device_id="kyttar_0", gain=gain_a)
+        self.msrc_b = kyttar.source(device_id="kyttar_0", port_name="x16_in", num_channels=1, server_host="127.0.0.1", server_port=server_port, complex_in=False, burst_len=0, stream_id="b", pipelined=False, schedule="interleaved", repeat=True)
+        self.msrc_a = kyttar.source(device_id="kyttar_0", port_name="x16_in", num_channels=1, server_host="127.0.0.1", server_port=server_port, complex_in=False, burst_len=0, stream_id="a", pipelined=False, schedule="interleaved", repeat=True)
+        self.msink_b = kyttar.sink(device_id="kyttar_0", port_name="x16_out", num_channels=1, server_port=server_port, server_repeat=True, hold_secs=8.0, stream_id="b", in_type=False)
+        self.msink_a = kyttar.sink(device_id="kyttar_0", port_name="x16_out", num_channels=1, server_port=server_port, server_repeat=True, hold_secs=8.0, stream_id="a", in_type=False)
+        self.gain_blk_b = kyttar.gain(device_id="kyttar_0", gain=gain_b, block_name="gain_2")
+        self.gain_blk_a = kyttar.gain(device_id="kyttar_0", gain=gain_a, block_name="gain")
 
 
         ##################################################

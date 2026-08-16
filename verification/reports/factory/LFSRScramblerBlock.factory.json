@@ -1,0 +1,31 @@
+{
+  "block": "LFSRScramblerBlock",
+  "grc_block": "digital.additive_scrambler_bb",
+  "tier": 2,
+  "wave": 1,
+  "schema_version": 1,
+  "started_utc": "2026-08-07T02:18:32Z",
+  "ended_utc": "2026-08-07T03:26:59Z",
+  "walltime_sec": 1452.632,
+  "tokens": {
+    "input": 0,
+    "output": 218895,
+    "cache_read": 0,
+    "total": 218895
+  },
+  "turns": 118,
+  "attempts": 2,
+  "human_interventions": 0,
+  "intervention_reasons": [],
+  "prompts": [
+    {
+      "role": "initial",
+      "text": "factory_dispatch-style prompt for LFSRScramblerBlock; isolated worktree; verify vs GR or quarantine."
+    }
+  ],
+  "verify_passed": true,
+  "quarantined": false,
+  "quarantine_reason": "",
+  "commit_sha": "806d0a6",
+  "notes": "1 cell, 2 attempts, autonomous. NEW. BIT-EXACT vs live additive_scrambler_bb. Real bugs: LFSR convention (pinned right-shift Fibonacci vs GR by all-zeros probe; old block was a hardcoded MIL-STD poly, wrong) + INV-13 GOTO-in-tail double-shift on odd parity (branchless merge fix). 6 mutation gates FAIL. Re-verified merged."
+}

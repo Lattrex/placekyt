@@ -1,0 +1,11 @@
+{
+  "kyttar_block": "SramControllerBlock",
+  "grc_block": "",
+  "passed": true,
+  "metric": "decision",
+  "n_compared": 21,
+  "tolerance": 0,
+  "max_abs_err": 0,
+  "coverage": {"edge": true, "random": 0, "param_sweep": 0, "mutation": false, "integration": true, "roundtrip": true},
+  "notes": "Verified by placekyt/tests/test_sram_panel.py (21 tests): decode, write/read path, multi-register address, full-loop integration, write-then-read-back-out-port round-trip through real routing, runnable demo, single-outstanding no-FIFO handshake, PanelDriver time-ordering. placeKYT-native host-side panel controller; no GR counterpart."
+}

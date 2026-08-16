@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Waveform signal-list persistence (YAML) — Qt-free.
 
 Saves/loads the waveform viewer's SIGNAL LIST (what to plot + how) so a debug

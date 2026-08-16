@@ -1,0 +1,37 @@
+id: kyttar_abs
+label: Abs
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar Abs — absolute value of a real stream, a drop-in for GNU Radio's
+  blocks.abs_ff.
+
+      out[n] = |in[n]|
+
+  Single cell on the Kyttar chip (a conditional negate: CMP vs 0 then 0-in when
+  negative). EXACT vs GR except the lone in=-1.0 (0x8000) Q15 corner, where the
+  negate wraps.
+
+  This block runs on the Kyttar chip. Place it between a KyttarSource and KyttarSink
+  block, and ensure the device_id matches your KyttarDevice.
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.abs_bb(device_id=${device_id})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+
+inputs:
+  - label: in
+    dtype: float
+
+outputs:
+  - label: out
+    dtype: float
+
+file_format: 1

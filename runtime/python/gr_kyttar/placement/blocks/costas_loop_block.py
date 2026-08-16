@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """CostasLoopBlock — see :class:`CostasLoopBlock`."""
 import numpy as np
 import math
@@ -12,7 +13,7 @@ class CostasLoopBlock(KyttarBlock):
 
     A single REAL input carries no quadrature to drive the loop, so this block
     does not actually achieve carrier lock. It is kept only for reference / the
-    legacy 3-way RTL test. For real carrier recovery use
+    legacy 3-way hardware test. For real carrier recovery use
     ``ComplexCostasLoopBlock`` (complex baseband, decision-directed, validated to
     lock 50/50 over multiple offsets) or ``QAM16ComplexCostasLoopBlock`` for
     16-QAM. Do NOT use this block in new chains.

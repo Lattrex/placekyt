@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """SRAM inspector view + panel activity/flash tests."""
 
 from __future__ import annotations

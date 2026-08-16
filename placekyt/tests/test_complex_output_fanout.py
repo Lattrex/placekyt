@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Complex-output FAN-OUT: the build steers a complex cell's two rails (yi/yq) to
 TWO DIFFERENT downstream blocks, and every complex-output block is budgeted for it.
 

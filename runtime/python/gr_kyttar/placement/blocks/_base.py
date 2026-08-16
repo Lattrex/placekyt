@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Base class, interface, and shared helpers for Kyttar DSP blocks.
 
 All concrete blocks subclass :class:`KyttarBlock` and live in their own
@@ -257,6 +258,29 @@ class KyttarBlock(ABC):
         NOT build any cell programs.
         """
         return self._serpentine_layout(self.cell_count, self.DEFAULT_LAYOUT_WIDTH)
+
+    def panel_requirements(self) -> Optional[dict]:
+        """SRAM-panel backing this block needs (INV-31), or ``None`` (default).
+
+        A panel-backed block (Varicode encoder, CW keyer, …) returns::
+
+            {
+              "label": str,                # panel display label
+              "image": {addr: word},       # ROM init contents (may be empty)
+              "controller_cell": cell_id,  # the embedded SRAM-controller cell —
+                                           #   must be placed AT the panel's
+                                           #   x1_out chip-port cell
+              "return_port": str,          # the block INPUT the panel push-read
+                                           #   delivers to (e.g. 'word')
+              "return_cell": cell_id,      # that input's cell
+            }
+
+        The GRC importer uses this to SYNTHESIZE the panel + panel_connections +
+        the x1_in return net, and the auto-P&R panel template uses it to pin the
+        controller at the panel port and derive the push-read descriptors from
+        the routed return corridor (engine/panel_pnr.py).
+        """
+        return None
 
     def output_cell_id(self) -> Optional[Any]:
         """The cell_id (key in ``default_layout``) that this block's OUTPUT leaves

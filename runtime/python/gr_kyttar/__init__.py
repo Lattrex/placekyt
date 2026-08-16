@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """
 gr_kyttar - block placement & bitstream generation for the Kyttar cell array.
 

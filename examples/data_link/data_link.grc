@@ -1,0 +1,650 @@
+options:
+  parameters:
+    author: Lattrex
+    catch_exceptions: 'True'
+    category: '[GRC Hier Blocks]'
+    cmake_opt: ''
+    comment: ''
+    copyright: ''
+    description: 'A scrambled DATA-LINK LOOPBACK entirely on the placeKYT chip: payload
+      bytes -> unpack to bits (MSB first) -> bitwise NOT -> AND 0x01 (extract the
+      complemented bit) -> map_bb [1,0] (re-invert) -> additive LFSR scrambler (CCSDS-style
+      mask 0x8A, seed 0x7F, len 7) -> differential encode (mod 2) -> differential
+      decode -> the SAME additive scrambler again (self-inverse in sync = descrambler)
+      -> char/float converter pair -> pack 8 bits -> the original bytes emerge at
+      x16_out. Every stage is a placed Kyttar block; the golden is the IDENTICAL stock-GNU-Radio
+      flowgraph, so the gate proves the whole placed composition is GR-equivalent,
+      and the loopback identity (bytes out == bytes in) is asserted on top. The uchar/float
+      casts at the chip ports are GRC type glue only (spliced on import).'
+    gen_cmake: 'On'
+    gen_linking: dynamic
+    generate_options: qt_gui
+    hier_block_src_path: '.:'
+    id: data_link
+    max_nouts: '0'
+    output_language: python
+    placement: (0,0)
+    qt_qss_theme: ''
+    realtime_scheduling: ''
+    run: 'True'
+    run_command: '{python} -u {filename}'
+    run_options: prompt
+    sizing_mode: fixed
+    thread_safe_setters: ''
+    title: Scrambled data link (unpack -> NOT/AND/map -> LFSR -> diff -> loopback)
+    window_size: (1600,1000)
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 8
+    - 8
+    rotation: 0
+    state: enabled
+blocks:
+- name: message
+  id: variable
+  parameters:
+    comment: the transported payload bytes
+    value: '"KYTTAR DATA LINK 73"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 200
+    - 12
+    rotation: 0
+    state: enabled
+- name: burst_len
+  id: variable
+  parameters:
+    comment: payload length in bytes
+    value: len(message)
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 320
+    - 12
+    rotation: 0
+    state: enabled
+- name: samp_rate
+  id: variable
+  parameters:
+    comment: display rate for the time sink
+    value: '8000'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 440
+    - 12
+    rotation: 0
+    state: enabled
+- name: msg_src
+  id: blocks_vector_source_x
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    repeat: 'False'
+    tags: '[]'
+    type: byte
+    vector: '[ord(c) for c in message]'
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 72
+    - 156
+    rotation: 0
+    state: enabled
+- name: b2f_in
+  id: blocks_uchar_to_float
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 176
+    - 172
+    rotation: 0
+    state: enabled
+- name: to_raw
+  id: blocks_multiply_const_vxx
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    const: 1.0/32768.0
+    type: float
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 176
+    - 260
+    rotation: 0
+    state: enabled
+- name: tx_src
+  id: kyttar_source
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    burst_len: burst_len
+    complex_in: float
+    device_id: '"kyttar_0"'
+    num_channels: '1'
+    pipelined: 'yes'
+    port_name: '"x16_in"'
+    schedule: '"interleaved"'
+    server_host: '"127.0.0.1"'
+    server_port: '58950'
+    stream_id: '"tx"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 296
+    - 148
+    rotation: 0
+    state: enabled
+- name: f2b_in
+  id: blocks_float_to_uchar
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 470
+    - 172
+    rotation: 0
+    state: enabled
+- name: unpack
+  id: kyttar_unpack_k_bits
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    device_id: '"kyttar_0"'
+    k: '8'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 560
+    - 148
+    rotation: 0
+    state: enabled
+- name: inv
+  id: kyttar_not
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    device_id: '"kyttar_0"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 700
+    - 148
+    rotation: 0
+    state: enabled
+- name: mask
+  id: kyttar_and_const
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    constant: '1'
+    device_id: '"kyttar_0"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 820
+    - 148
+    rotation: 0
+    state: enabled
+- name: remap
+  id: kyttar_map_bb
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    device_id: '"kyttar_0"'
+    map: '[1, 0]'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 950
+    - 148
+    rotation: 0
+    state: enabled
+- name: scramble
+  id: kyttar_lfsr_scrambler
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    bits_per_byte: '1'
+    count: '0'
+    device_id: '"kyttar_0"'
+    len: '7'
+    mask: '0x8A'
+    seed: '0x7F'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1080
+    - 148
+    rotation: 0
+    state: enabled
+- name: denc
+  id: kyttar_diff_encoder
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    coding: '"DIFF_DIFFERENTIAL"'
+    device_id: '"kyttar_0"'
+    modulus: '2'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1230
+    - 148
+    rotation: 0
+    state: enabled
+- name: ddec
+  id: kyttar_diff_decoder
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    coding: '0'
+    device_id: '"kyttar_0"'
+    modulus: '2'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1370
+    - 148
+    rotation: 0
+    state: enabled
+- name: descramble
+  id: kyttar_lfsr_scrambler
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    bits_per_byte: '1'
+    count: '0'
+    device_id: '"kyttar_0"'
+    len: '7'
+    mask: '0x8A'
+    seed: '0x7F'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1510
+    - 148
+    rotation: 0
+    state: enabled
+- name: c2f
+  id: kyttar_char_to_float
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    device_id: '"kyttar_0"'
+    scale: '128.0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1660
+    - 148
+    rotation: 0
+    state: enabled
+- name: f2c
+  id: kyttar_float_to_char
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    device_id: '"kyttar_0"'
+    scale: '128.0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1800
+    - 148
+    rotation: 0
+    state: enabled
+- name: pack
+  id: kyttar_pack_k_bits
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    device_id: '"kyttar_0"'
+    k: '8'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1940
+    - 148
+    rotation: 0
+    state: enabled
+- name: tx_sink
+  id: kyttar_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    device_id: '"kyttar_0"'
+    hold_secs: '8.0'
+    in_type: float
+    num_channels: '1'
+    port_name: '"x16_out"'
+    server_port: '58950'
+    server_repeat: 'True'
+    stream_id: '"tx"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 2080
+    - 148
+    rotation: 0
+    state: enabled
+- name: rx_bytes
+  id: qtgui_time_sink_x
+  parameters:
+    affinity: ''
+    alias: ''
+    alpha1: '1.0'
+    alpha10: '1.0'
+    alpha2: '1.0'
+    alpha3: '1.0'
+    alpha4: '1.0'
+    alpha5: '1.0'
+    alpha6: '1.0'
+    alpha7: '1.0'
+    alpha8: '1.0'
+    alpha9: '1.0'
+    autoscale: 'True'
+    axislabels: 'True'
+    color1: blue
+    color10: dark blue
+    color2: red
+    color3: green
+    color4: black
+    color5: cyan
+    color6: magenta
+    color7: yellow
+    color8: dark red
+    color9: dark green
+    comment: recovered payload bytes (loopback == the message)
+    ctrlpanel: 'False'
+    entags: 'True'
+    grid: 'False'
+    gui_hint: ''
+    label1: Signal 1
+    label10: Signal 10
+    label2: Signal 2
+    label3: Signal 3
+    label4: Signal 4
+    label5: Signal 5
+    label6: Signal 6
+    label7: Signal 7
+    label8: Signal 8
+    label9: Signal 9
+    legend: 'True'
+    marker1: '-1'
+    marker10: '-1'
+    marker2: '-1'
+    marker3: '-1'
+    marker4: '-1'
+    marker5: '-1'
+    marker6: '-1'
+    marker7: '-1'
+    marker8: '-1'
+    marker9: '-1'
+    name: '"recovered bytes"'
+    nconnections: '1'
+    size: burst_len
+    srate: samp_rate
+    stemplot: 'True'
+    style1: '1'
+    style10: '1'
+    style2: '1'
+    style3: '1'
+    style4: '1'
+    style5: '1'
+    style6: '1'
+    style7: '1'
+    style8: '1'
+    style9: '1'
+    tr_chan: '0'
+    tr_delay: '0'
+    tr_level: '0.0'
+    tr_mode: qtgui.TRIG_MODE_FREE
+    tr_slope: qtgui.TRIG_SLOPE_POS
+    tr_tag: '""'
+    type: float
+    update_time: '0.10'
+    width1: '1'
+    width10: '1'
+    width2: '1'
+    width3: '1'
+    width4: '1'
+    width5: '1'
+    width6: '1'
+    width7: '1'
+    width8: '1'
+    width9: '1'
+    ylabel: byte value
+    ymax: '256'
+    ymin: '0'
+    yunit: '""'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 2220
+    - 116
+    rotation: 0
+    state: enabled
+- name: pack_b2f
+  id: blocks_uchar_to_float
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 900
+    - 300
+    rotation: 0
+    state: enabled
+- name: rx_words
+  id: blocks_multiply_const_vxx
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: kyttar.sink emits the chip stream as q15/32768 floats; restore the raw
+      word value for display
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    const: '32768.0'
+    type: float
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 560
+    - 660
+    rotation: 0
+    state: enabled
+connections:
+- - b2f_in
+  - '0'
+  - to_raw
+  - '0'
+- - c2f
+  - '0'
+  - f2c
+  - '0'
+- - ddec
+  - '0'
+  - descramble
+  - '0'
+- - denc
+  - '0'
+  - ddec
+  - '0'
+- - descramble
+  - '0'
+  - c2f
+  - '0'
+- - f2b_in
+  - '0'
+  - unpack
+  - '0'
+- - f2c
+  - '0'
+  - pack
+  - '0'
+- - inv
+  - '0'
+  - mask
+  - '0'
+- - mask
+  - '0'
+  - remap
+  - '0'
+- - msg_src
+  - '0'
+  - b2f_in
+  - '0'
+- - pack
+  - '0'
+  - pack_b2f
+  - '0'
+- - remap
+  - '0'
+  - scramble
+  - '0'
+- - scramble
+  - '0'
+  - denc
+  - '0'
+- - to_raw
+  - '0'
+  - tx_src
+  - '0'
+- - tx_sink
+  - '0'
+  - rx_words
+  - '0'
+- - tx_src
+  - '0'
+  - f2b_in
+  - '0'
+- - unpack
+  - '0'
+  - inv
+  - '0'
+- - pack_b2f
+  - '0'
+  - tx_sink
+  - '0'
+- - rx_words
+  - '0'
+  - rx_bytes
+  - '0'
+metadata:
+  file_format: 1
+  grc_version: 3.10.12.0

@@ -19,53 +19,63 @@ class agc(_PassThrough):
     Maintains a target output level by adaptively adjusting gain on the chip.
     GR marker; the real DSP runs on the placeKYT-hosted chip.
 
-    Parameters:
+    Parameters (mirror GNU Radio analog.agc_ff VERBATIM):
         device_id: ID of the kyttar.device to use
-        target: Target output level (0.0 to 1.0, default 0.7)
-        rate: Attack/decay rate (0.001 to 0.1, default 0.01)
-        initial_gain: Initial gain value (default 0.5)
+        rate: update rate of the loop (GR default 1e-4)
+        reference: reference value to adjust signal power to (GR default 1.0)
+        gain: initial gain value (GR default 1.0)
+        max_gain: maximum gain value; 0 = unlimited (GR default 0)
     """
 
     def __init__(
         self,
         device_id: str = "kyttar_0",
-        target: float = 0.7,
-        rate: float = 0.01,
-        initial_gain: float = 0.5,
+        rate: float = 1e-4,
+        reference: float = 1.0,
+        gain: float = 1.0,
+        max_gain: float = 0.0,
     ):
         super().__init__(name="Kyttar AGC", n_in=1, n_out=1)
         self._device_id = device_id
-        self._target = target
         self._rate = rate
-        self._initial_gain = initial_gain
+        self._reference = reference
+        self._gain = gain
+        self._max_gain = max_gain
         # Advertise params for GRC↔placeKYT sync detection (see dsp_markers).
-        # Only the params with a 1:1 placeKYT counterpart are advertised; the GRC
-        # single `rate` has no single placeKYT field (it splits attack/decay), so
-        # it is omitted rather than guessed.
+        # Names are the AGCBlock/analog.agc_ff class params VERBATIM.
         self._advertise_grc_params(
             device_id, "AGCBlock",
-            {"target": target, "initial_gain": initial_gain})
+            {"rate": rate, "reference": reference, "gain": gain,
+             "max_gain": max_gain})
 
-    def set_target(self, target: float):
-        """Set target level."""
-        self._target = target
+    def set_reference(self, reference: float):
+        """Set reference level."""
+        self._reference = reference
 
-    def get_target(self) -> float:
-        """Get current target level."""
-        return self._target
+    def get_reference(self) -> float:
+        """Get current reference level."""
+        return self._reference
 
     def set_rate(self, rate: float):
-        """Set attack/decay rate."""
+        """Set update rate."""
         self._rate = rate
 
     def get_rate(self) -> float:
-        """Get current attack/decay rate."""
+        """Get current update rate."""
         return self._rate
 
-    def set_initial_gain(self, gain: float):
-        """Set initial gain."""
-        self._initial_gain = gain
+    def set_gain(self, gain: float):
+        """Set gain."""
+        self._gain = gain
 
-    def get_initial_gain(self) -> float:
-        """Get initial gain value."""
-        return self._initial_gain
+    def get_gain(self) -> float:
+        """Get gain value."""
+        return self._gain
+
+    def set_max_gain(self, max_gain: float):
+        """Set maximum gain."""
+        self._max_gain = max_gain
+
+    def get_max_gain(self) -> float:
+        """Get maximum gain value."""
+        return self._max_gain

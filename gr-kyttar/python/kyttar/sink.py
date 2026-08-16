@@ -230,6 +230,24 @@ class sink(gr.basic_block):
                 if r is not None:
                     self._server_result = np.asarray(r, dtype=np.float32)
                     self._server_outq = self._server_result.copy()
+                    self._seen_generations = getattr(
+                        self, "_seen_generations", 0) + 1
+            else:
+                # A REPEAT source publishes new generations mid-run: refresh the
+                # emit queue with each fresh burst (non-blocking — None when
+                # nothing new). Once a SECOND generation has been seen, this run
+                # is a burst loop: the hold-then-end below is disabled so the
+                # graph never ends between bursts (the sim's burst period can
+                # exceed hold_secs).
+                try:
+                    r = sess.take_result(timeout=0.0)
+                except Exception:  # noqa: BLE001
+                    r = None
+                if r is not None and len(r):
+                    self._server_result = np.asarray(r, dtype=np.float32)
+                    self._server_outq = self._server_result.copy()
+                    self._seen_generations = getattr(
+                        self, "_seen_generations", 0) + 1
             n = 0
             if self._server_outq is not None and len(self._server_outq):
                 n = min(len(out), len(self._server_outq))
@@ -246,8 +264,10 @@ class sink(gr.basic_block):
                     return 0
                 # Emit-once: hold the graph open a few seconds so the GUI paints the
                 # real trace, then WORK_DONE. (A headless vector_sink test sets
-                # _hold_secs=0 to end immediately after the one emit.)
+                # _hold_secs=0 to end immediately after the one emit.) A REPEAT
+                # run (2+ generations seen) never ends — bursts keep coming.
                 if (self._emit_done_at is not None
+                        and getattr(self, "_seen_generations", 0) <= 1
                         and time.time() - self._emit_done_at >= self._hold_secs):
                     return -1   # WORK_DONE — the genuine batch result has been shown
                 time.sleep(0.05)

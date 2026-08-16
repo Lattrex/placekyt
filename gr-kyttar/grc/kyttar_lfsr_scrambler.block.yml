@@ -1,69 +1,83 @@
 id: kyttar_lfsr_scrambler
-label: 🧪 Kyttar LFSR Scrambler
+label: Kyttar LFSR Scrambler
 category: '[Kyttar]/FEC'
 
 templates:
   imports: from gnuradio import kyttar
-  make: kyttar.lfsr_scrambler(${device_id}, ${initial_state}, ${mode})
+  make: kyttar.lfsr_scrambler(${device_id}, ${mask}, ${seed}, ${len}, ${count}, ${bits_per_byte})
 
 parameters:
 - id: device_id
   label: Device ID
   dtype: string
   default: '"kyttar_0"'
-
-- id: initial_state
-  label: Initial LFSR State
+- id: mask
+  label: Mask (polynomial)
   dtype: int
-  default: '0x0001'
-
-- id: mode
-  label: Mode
-  dtype: enum
-  options: ['"scramble"', '"descramble"']
-  option_labels: ['Scramble', 'Descramble']
-  default: '"scramble"'
+  default: '0x8A'
+- id: seed
+  label: Seed
+  dtype: int
+  default: '0x7F'
+- id: len
+  label: Register length
+  dtype: int
+  default: '7'
+- id: count
+  label: Reset count (0=never)
+  dtype: int
+  default: '0'
+- id: bits_per_byte
+  label: Bits per byte
+  dtype: int
+  default: '1'
 
 inputs:
-- label: in
+- id: '0'
+  label: in
   domain: stream
-  dtype: float
+  dtype: byte
 
 outputs:
-- label: out
+- id: '0'
+  label: out
   domain: stream
-  dtype: float
+  dtype: byte
 
 documentation: |-
-  🧪 NOT YET VERIFIED: this block is queued for GNU Radio-equivalence
-  verification but hasn't been validated yet. Use with care.
+  Additive LFSR Scrambler — GNU Radio digital.additive_scrambler_bb.
 
-  LFSR Scrambler/Descrambler Block
+  XORs the input bit stream with the free-running output of a Fibonacci LFSR
+  (gr::digital::lfsr::next_bit()):
 
-  Self-synchronizing scrambler using polynomial x^15 + x^14 + 1.
-  This is the MIL-STD-188-110B standard scrambler.
+      out    = input XOR (shift_register & 1)          # LSB is the LFSR output
+      newbit = parity(shift_register & mask)           # XOR of masked bits
+      shift_register = (shift_register >> 1) | (newbit << len)
 
-  The same algorithm works for both scrambling and descrambling
-  due to the self-synchronizing property of the LFSR.
+  It is ADDITIVE (the LFSR runs independently of the data), so it is deterministic
+  given (mask, seed, len) and self-inverse: an identically-configured block
+  descrambles. BIT-EXACT-verified vs digital.additive_scrambler_bb across edge
+  (all-zeros / all-ones), seed/param/count sweeps, random and mutation stimulus.
 
-  Architecture:
-    Single cell implementation (fits in 32 words)
-    - R25: LFSR state (15-bit)
-    - R27: Constant 1
-    - Feedback = LFSR[14] XOR LFSR[0]
-    - Output = Input XOR Feedback
+  The output bit is packed in the output word's LSB (read the raw int16, not
+  Q15-scaled).
 
-  Algorithm:
-    feedback = LFSR[14] XOR LFSR[0]
-    output = input XOR feedback
-    LFSR = (LFSR >> 1) | (feedback << 14)
+  Ports:
+    in  (in):  data bit stream (0/1)
+    out:       scrambled/descrambled bit (0/1 in the LSB)
 
-  Parameters:
-    Device ID: Which Kyttar device to use
-    Initial LFSR State: Starting state for LFSR (default 0x5555)
-    Mode: Scramble or Descramble (same algorithm, label only)
+  Parameters (mirror GR additive_scrambler_bb verbatim):
+    Device ID:       Which Kyttar device to use.
+    Mask:            Polynomial mask (feedback tap positions).
+    Seed:            Initial shift-register contents.
+    Register length: Feedback bit position (len). Kyttar hardware limit: <= 15
+                     (the on-chip shift register is one 16-bit word).
+    Reset count:     Reset the register to seed after this many bits (0 = never).
+    Bits per byte:   Kyttar requires 1 (the fabric is bit-serial).
 
-  Input: Data bits (0/1 as float)
-  Output: Scrambled/descrambled bits (0/1 as float)
+  Hardware deviations from digital.additive_scrambler_bb (INV-0):
+    bits_per_byte must be 1; len must be <= 15; reset_tag_key is not supported.
+
+  Mapped by placeKYT (File -> Import GNURadio Flowgraph) to LFSRScramblerBlock.
 
 file_format: 1

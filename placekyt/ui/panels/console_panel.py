@@ -1,4 +1,5 @@
-"""Embedded Python console — a REPL with the API namespace (the architecture notes §3.1).
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Embedded Python console — a REPL with the API namespace.
 
 A ``QPlainTextEdit``-based REPL running on the main Qt thread via
 ``code.InteractiveConsole`` (so widget access is thread-safe). The namespace is

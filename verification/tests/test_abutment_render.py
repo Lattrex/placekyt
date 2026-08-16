@@ -17,7 +17,7 @@ stable, hand-built 2-block abutment whose geometry is fixed forever.
 
 Run::
 
-    cd /home/system/placekyt
+    cd <repo root>
     QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest \
         verification/tests/test_abutment_render.py -q
 """

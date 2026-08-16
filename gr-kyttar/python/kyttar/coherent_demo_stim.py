@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """RRC-shaped BPSK burst generator (carrier + timing offset) for the coherent RX
 demo flowgraph. Imported by coherent_bpsk_rx_demo.grc as a plain Python module so
 there is no fragile inline epy_module source (which produced a SyntaxError when

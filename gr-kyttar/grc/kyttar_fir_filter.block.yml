@@ -15,6 +15,8 @@ documentation: |-
   Parameters:
   - Device ID: ID of the KyttarDevice block
   - Coefficients: List of filter coefficients (taps)
+  - Decimation: GR decim (M) — emit every M-th output (fir_filter_fff)
+  - Interpolation: GR interp (L) — zero-stuff by L (interp_fir_filter_fff)
 
   Default coefficients [0.25, 0.5, 0.25] implement a simple 3-tap lowpass filter.
 
@@ -22,7 +24,8 @@ documentation: |-
 
 templates:
   imports: from gnuradio import kyttar
-  make: kyttar.fir_filter(device_id=${device_id}, coefficients=${coefficients})
+  make: kyttar.fir_filter(device_id=${device_id}, coefficients=${coefficients},
+    decimation=${decimation}, interpolation=${interpolation})
   callbacks:
     - set_coefficients(${coefficients})
 
@@ -35,6 +38,14 @@ parameters:
     label: Coefficients
     dtype: real_vector
     default: '[0.25, 0.5, 0.25]'
+  - id: decimation
+    label: Decimation
+    dtype: int
+    default: '1'
+  - id: interpolation
+    label: Interpolation
+    dtype: int
+    default: '1'
 
 inputs:
   - label: in

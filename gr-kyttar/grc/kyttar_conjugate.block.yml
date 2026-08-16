@@ -1,0 +1,37 @@
+id: kyttar_conjugate
+label: Conjugate
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar Conjugate — complex conjugate, a drop-in for GNU Radio's
+  blocks.conjugate_cc.
+
+      out[n] = conj(in[n]) = re(in[n]) - j*im(in[n])
+
+  Single cell on the Kyttar chip: the I rail passes through and the Q rail is
+  negated. EXACT vs GR (0 LSB on both channels); the only Q15 corner is im=-1.0
+  (0x8000), whose negate wraps.
+
+  This block runs on the Kyttar chip. Place it between a KyttarSource and KyttarSink
+  block, and ensure the device_id matches your KyttarDevice.
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.conjugate(device_id=${device_id})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+
+inputs:
+  - label: in
+    dtype: complex
+
+outputs:
+  - label: out
+    dtype: complex
+
+file_format: 1

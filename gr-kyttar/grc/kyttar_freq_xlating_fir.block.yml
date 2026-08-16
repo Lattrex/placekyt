@@ -1,0 +1,76 @@
+id: kyttar_freq_xlating_fir
+label: Kyttar Freq Xlating FIR
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar Frequency Xlating FIR Filter — the workhorse channelizer, a drop-in for
+  GNU Radio's filter.freq_xlating_fir_filter_ccf.
+
+  A frequency shift (a complex mixer with an NCO) FUSED with a decimating real-tap
+  FIR:
+      mixed[n] = in[n] * exp(-j*2*pi*center_freq/sampling_freq*n)   (DOWN-shift)
+      out[m]   = decimate( FIR(mixed, taps), decimation )
+
+  On-chip this is a down-mixer (the same interpolated quarter-wave NCO as the Kyttar
+  Complex Mixer, ~12 LSB) whose initial phase absorbs GR's (L-1)/2 tap-fold constant,
+  feeding a real-tap complex FIR, then a phase-0 decimation gate. Verified bit-exact
+  vs GR within the NCO-table + FIR floor (~4 LSB peak, correlation 0.99999996;
+  verification/tests/test_freq_xlating_fir.py).
+
+  This block runs on the Kyttar chip. Place it between a KyttarSource and KyttarSink
+  block, and ensure the device_id matches your KyttarDevice.
+
+  Parameters (VERBATIM the GNU Radio block's names):
+  - Device ID:     ID of the KyttarDevice block
+  - Decimation:    output decimation factor M
+  - Taps:          real FIR taps (Σ|taps| <= 1 for Q15 headroom; a firdes low/band-pass
+                   at gain <= 1 satisfies this — a larger gain RAISES on the chip)
+  - Center Freq:   the frequency shift in Hz
+  - Sampling Freq: sample rate in Hz
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.freq_xlating_fir(device_id=${device_id}, decimation=${decimation},
+    taps=${taps}, center_freq=${center_freq}, sampling_freq=${sampling_freq},
+    pipeline_lock=${pipeline_lock})
+  callbacks:
+    - set_center_freq(${center_freq})
+    - set_taps(${taps})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+  - id: decimation
+    label: Decimation
+    dtype: int
+    default: '1'
+  - id: taps
+    label: Taps
+    dtype: real_vector
+    default: '[0.25, 0.5, 0.25]'
+  - id: center_freq
+    label: Center Freq (Hz)
+    dtype: real
+    default: '0.0'
+  - id: sampling_freq
+    label: Sampling Freq (Hz)
+    dtype: real
+    default: samp_rate
+  - id: pipeline_lock
+    label: Pipeline Lock
+    dtype: bool
+    default: 'False'
+    hide: part
+
+inputs:
+  - label: in
+    dtype: complex
+
+outputs:
+  - label: out
+    dtype: complex
+
+file_format: 1

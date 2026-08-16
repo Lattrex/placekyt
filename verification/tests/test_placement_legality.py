@@ -58,11 +58,26 @@ BLOCKS = [
     ("RRCPulseShaperBlock", {"sampling_freq": 2.0, "symbol_rate": 1.0,
                              "alpha": 0.5, "ntaps": 17, "gain": 1.0}),
     ("ComplexRRCMatchedFilterBlock", {}),
+    ("FreqXlatingFIRBlock", {"decimation": 2, "taps": [0.1, 0.2, 0.3, 0.2, 0.1],
+                             "center_freq": 2000.0, "sampling_freq": 32000.0}),
     ("FSK4SyncTimingRecoveryBlock", {}),
     ("GardnerTimingRecovery", {}),
     ("MMTimingRecoveryBlock", {}),
     ("IQUpconvertBlock", {}),
     ("ComplexCostasLoopBlock", {}),
+    # BPSK hard slicer: single-cell, so it can never self-overlap — but assert the
+    # legal footprint under D4 + movement anyway (a param sweep of out_mode does not
+    # change the 1-cell footprint).
+    ("BPSKSlicerBlock", {"out_mode": "word"}),
+    ("ComplexCostasLoopBlock", {"order": 4}),
+    # Single-cell additive LFSR scrambler — no internal transit cell, no footprint-
+    # growing param (count>0 only adds registers, not cells); trivially non-self-
+    # overlapping in every D4 orientation and under movement.
+    ("LFSRScramblerBlock", {"count": 8}),
+    ("MultiplyConstComplex", {"re": 0.7, "im": 0.5}),
+    # Bitwise NOT (GR blocks.not_bb): single-cell, no params, no internal transit
+    # cell — trivially non-self-overlapping in every D4 orientation and under movement.
+    ("NotBlock", {}),
 ]
 
 _LIB = "lattrex.official"

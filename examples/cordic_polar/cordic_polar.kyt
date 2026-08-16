@@ -1,0 +1,130 @@
+project:
+  format_version: 1
+  name: Kyttar CORDIC polar — on-chip magnitude + phase vs stock GNU Radio
+  version: '1.0'
+chip_type: kyttar_10x12
+chips:
+- id: 0
+  label: Chip 0
+  position: {x: 0.0, y: 0.0}
+blocks:
+- name: complextomag
+  type: ComplexToMagBlock
+  library: lattrex.official
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: pre1, x: 0, y: 6, face: east}
+    - {cell_id: pre2, x: 1, y: 6, face: east}
+    - {cell_id: xy0, x: 2, y: 6, face: east}
+    - {cell_id: xy1, x: 3, y: 6, face: east}
+    - {cell_id: xy2, x: 4, y: 6, face: east}
+    - {cell_id: xy3, x: 5, y: 6, face: east}
+    - {cell_id: xy4, x: 6, y: 6, face: east}
+    - {cell_id: xy5, x: 7, y: 6, face: east}
+    - {cell_id: xy6, x: 8, y: 6, face: south}
+    - {cell_id: xy7, x: 8, y: 7, face: west}
+    - {cell_id: xy8, x: 7, y: 7, face: west}
+    - {cell_id: xy9, x: 6, y: 7, face: west}
+    - {cell_id: xy10, x: 5, y: 7, face: west}
+    - {cell_id: xy11, x: 4, y: 7, face: west}
+    - {cell_id: xy12, x: 3, y: 7, face: west}
+    - {cell_id: xy13, x: 2, y: 7, face: west}
+    - {cell_id: mag, x: 1, y: 7, face: west}
+- name: complextoarg
+  type: ComplexToArgBlock
+  library: lattrex.official
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: pre1, x: 1, y: 1, face: east}
+    - {cell_id: pre2, x: 2, y: 1, face: east}
+    - {cell_id: xy0, x: 3, y: 1, face: east}
+    - {cell_id: z0, x: 4, y: 1, face: east}
+    - {cell_id: xy1, x: 5, y: 1, face: east}
+    - {cell_id: z1, x: 6, y: 1, face: east}
+    - {cell_id: xy2, x: 7, y: 1, face: east}
+    - {cell_id: z2, x: 8, y: 1, face: south}
+    - {cell_id: xy3, x: 8, y: 2, face: west}
+    - {cell_id: z3, x: 7, y: 2, face: west}
+    - {cell_id: xy4, x: 6, y: 2, face: west}
+    - {cell_id: z4, x: 5, y: 2, face: west}
+    - {cell_id: xy5, x: 4, y: 2, face: west}
+    - {cell_id: z5, x: 3, y: 2, face: west}
+    - {cell_id: xy6, x: 2, y: 2, face: west}
+    - {cell_id: z6, x: 1, y: 2, face: south}
+    - {cell_id: xy7, x: 1, y: 3, face: east}
+    - {cell_id: z7, x: 2, y: 3, face: east}
+    - {cell_id: xy8, x: 3, y: 3, face: east}
+    - {cell_id: z8, x: 4, y: 3, face: east}
+    - {cell_id: xy9, x: 5, y: 3, face: east}
+    - {cell_id: z9, x: 6, y: 3, face: east}
+    - {cell_id: xy10, x: 7, y: 3, face: east}
+    - {cell_id: z10, x: 8, y: 3, face: south}
+    - {cell_id: xy11, x: 8, y: 4, face: west}
+    - {cell_id: z11, x: 7, y: 4, face: west}
+    - {cell_id: xy12, x: 6, y: 4, face: west}
+    - {cell_id: z12, x: 5, y: 4, face: west}
+    - {cell_id: xy13, x: 4, y: 4, face: west}
+    - {cell_id: z13, x: 3, y: 4, face: west}
+connections:
+- name: net1
+  from: {chip_port: {chip: 0, port: x16_in}}
+  to: {block: complextomag, port: xi}
+  route:
+  - {x: 0, y: 0}
+  - {x: 0, y: 1}
+  - {x: 0, y: 2}
+  - {x: 0, y: 3}
+  - {x: 0, y: 4}
+  - {x: 0, y: 5}
+  - {x: 0, y: 6}
+  stream_id: mag
+- name: net2
+  from: {block: complextomag, port: mag}
+  to: {chip_port: {chip: 0, port: x16_out}}
+  route:
+  - {x: 1, y: 7}
+  - {x: 1, y: 8}
+  - {x: 2, y: 8}
+  - {x: 3, y: 8}
+  - {x: 4, y: 8}
+  - {x: 5, y: 8}
+  - {x: 6, y: 8}
+  - {x: 7, y: 8}
+  - {x: 8, y: 8}
+  - {x: 9, y: 8}
+  - {x: 9, y: 7}
+  - {x: 9, y: 6}
+  - {x: 9, y: 5}
+  - {x: 9, y: 4}
+  - {x: 9, y: 3}
+  - {x: 9, y: 2}
+  - {x: 9, y: 1}
+  - {x: 9, y: 0}
+  out_tag: 11
+- name: net3
+  from: {chip_port: {chip: 0, port: x16_in}}
+  to: {block: complextoarg, port: xi}
+  route:
+  - {x: 0, y: 0}
+  - {x: 0, y: 1}
+  stream_id: arg
+- name: net4
+  from: {block: complextoarg, port: z}
+  to: {chip_port: {chip: 0, port: x16_out}}
+  route:
+  - {x: 3, y: 4}
+  - {x: 3, y: 5}
+  - {x: 4, y: 5}
+  - {x: 5, y: 5}
+  - {x: 6, y: 5}
+  - {x: 7, y: 5}
+  - {x: 8, y: 5}
+  - {x: 9, y: 5}
+  - {x: 9, y: 4}
+  - {x: 9, y: 3}
+  - {x: 9, y: 2}
+  - {x: 9, y: 1}
+  - {x: 9, y: 0}
+  out_tag: 16

@@ -1,4 +1,5 @@
-"""Breakpoints — Qt-free condition model (DEBUG_the architecture notes §3.6).
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Breakpoints — Qt-free condition model.
 
 The engine has no native breakpoints; they are implemented by checking trace
 events after each step batch. This module is the pure-data layer: a

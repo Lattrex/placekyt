@@ -1,65 +1,85 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """
-Kyttar LFSR Scrambler/Descrambler GRC Block.
+Kyttar Additive LFSR Scrambler GRC Block — GNU Radio ``digital.additive_scrambler_bb``.
 
-Self-synchronizing scrambler using the polynomial x^15 + x^14 + 1
-(the MIL-STD-188-110B standard scrambler).
+Additive scrambler: XORs the input bit stream with the free-running output of a
+Fibonacci LFSR defined by ``mask`` (polynomial), ``seed`` (initial register) and
+``len`` (register length), with an optional ``count`` fixed-vector reseed. Because
+the LFSR runs independently of the data, the block is deterministic and self-inverse
+— an identically-configured block descrambles. Verified BIT-EXACT vs
+``digital.additive_scrambler_bb`` on the placeKYT-hosted chip.
 
-GR marker; the real DSP runs on the placeKYT-hosted chip. This block keeps the
-exact GR interface (class name, params, ports) so it places/wires identically in
-GRC, but does NO in-process placement and streams pure pass-through.
+GR marker; the real DSP runs on the placeKYT-hosted chip. This block keeps the exact
+GR interface (class name, params, ports) so it places/wires identically in GRC, but
+does NO in-process placement and streams pure pass-through.
 """
+
+import numpy as np
 
 from .dsp_markers import _PassThrough
 
 
 class lfsr_scrambler(_PassThrough):
     """
-    LFSR Scrambler/Descrambler Block.
+    Additive LFSR Scrambler — GNU Radio ``digital.additive_scrambler_bb``.
 
-    Self-synchronizing scrambler using polynomial x^15 + x^14 + 1 on the chip.
-    The same operation descrambles when applied to scrambled data
-    (self-synchronizing property). GR marker; the real DSP runs on the
-    placeKYT-hosted chip.
+    Parameters (mirror GR ``additive_scrambler_bb`` VERBATIM):
+        device_id: Device ID to register with.
+        mask: polynomial mask (feedback tap positions).
+        seed: initial shift-register contents.
+        len: shift-register length (feedback bit position). Kyttar: <= 15.
+        count: reset the register to ``seed`` after this many items (0 = never).
+        bits_per_byte: Kyttar requires 1 (bit-serial fabric).
 
-    Input: Data bits (0/1 as float)
-    Output: Scrambled/descrambled bits (0/1 as float)
-
-    Parameters:
-        device_id: Device ID to register with
-        initial_state: Initial LFSR state (default 0x0001)
-        mode: "scramble" or "descramble" (same algorithm, label only)
+    Input: Data bits (0/1 as float).
+    Output: Scrambled/descrambled bits (0/1 as float).
     """
 
     def __init__(
         self,
         device_id: str = "kyttar_0",
-        initial_state: int = 0x0001,
-        mode: str = "scramble",
+        mask: int = 0x8A,
+        seed: int = 0x7F,
+        len: int = 7,
+        count: int = 0,
+        bits_per_byte: int = 1,
     ):
-        super().__init__(
-            name="Kyttar LFSR Scrambler" if mode == "scramble" else "Kyttar LFSR Descrambler",
-            n_in=1,
-            n_out=1,
-        )
+        # digital.additive_scrambler_bb is a BYTE block (uint8 in/out) — declare the byte
+        # itemsize so GRC stream connections match (a _bb block, not _ff).
+        super().__init__(name="Kyttar LFSR Scrambler", n_in=1, n_out=1,
+                         in_dtype=np.uint8, out_dtype=np.uint8)
         self._device_id = device_id
-        self._initial_state = initial_state
-        self._mode = mode
-        # Advertise params for GRC↔placeKYT sync detection (see dsp_markers).
-        # placeKYT models scramble/descramble as a bool `is_descrambler`.
+        self._mask = int(mask)
+        self._seed = int(seed)
+        self._len = int(len)
+        self._count = int(count)
+        self._bits_per_byte = int(bits_per_byte)
+        # Advertise params for GRC↔placeKYT sync detection (see dsp_markers). Names
+        # match LFSRScramblerBlock's constructor kwargs verbatim.
         self._advertise_grc_params(
             device_id, "LFSRScramblerBlock",
-            {"initial_state": initial_state,
-             "is_descrambler": (mode == "descramble")})
+            {"mask": self._mask, "seed": self._seed, "len": self._len,
+             "count": self._count, "bits_per_byte": self._bits_per_byte})
 
     @property
-    def initial_state(self) -> int:
-        """Initial LFSR state."""
-        return self._initial_state
+    def mask(self) -> int:
+        return self._mask
 
     @property
-    def mode(self) -> str:
-        """Mode: scramble or descramble."""
-        return self._mode
+    def seed(self) -> int:
+        return self._seed
+
+    @property
+    def len(self) -> int:
+        return self._len
+
+    @property
+    def count(self) -> int:
+        return self._count
+
+    @property
+    def bits_per_byte(self) -> int:
+        return self._bits_per_byte
 
     @property
     def cell_count(self) -> int:

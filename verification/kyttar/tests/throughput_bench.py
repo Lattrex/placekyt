@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Throughput / latency / saturation benchmark for the coherent BPSK RX (or any
 # built .kyt), driven SATURATED via queue_words_physical. Reports honest CHIP-TIME
 # numbers from the cycle-accurate trace (simKYT's GLS timing), NOT host wall-clock:
@@ -17,7 +18,7 @@ import statistics
 from collections import Counter
 from pathlib import Path
 
-ROOT = Path("/home/system/placekyt")
+ROOT = Path(__file__).resolve().parents[3]
 for p in (ROOT / "placekyt", ROOT / "runtime" / "python", ROOT / "verification"):
     if str(p) not in sys.path:
         sys.path.insert(0, str(p))

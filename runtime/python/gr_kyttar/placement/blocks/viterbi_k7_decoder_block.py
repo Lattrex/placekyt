@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """ViterbiK7DecoderBlock — see :class:`ViterbiK7DecoderBlock`."""
 import numpy as np
 from ..block import CellProgram

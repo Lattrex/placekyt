@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 # placeKYT command trace (runnable replay) — replay with:
 #   placekyt --replay this_file.py
 # or inside the placeKYT console where `controller` exists:

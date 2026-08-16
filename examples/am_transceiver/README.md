@@ -54,6 +54,7 @@ rate.)
 ## Files
 | File | What it is |
 |------|------------|
+| `am_transceiver.kyt` | The pre-placed design — open directly, or import the `.grc` and auto-P&R. |
 | `am_transceiver.grc` | The GNU Radio flowgraph — **import into placeKYT** (File → Import GNURadio Flowgraph…) to auto-P&R it. Open in `gnuradio-companion` to drive the hosted chip. |
 | `gen_grc.py` | Regenerates `am_transceiver.grc` (edit fc/cutoff here). |
 
@@ -69,22 +70,22 @@ SimServer batch bridge as a true duplex transceiver:
   group delay).
 
 Both streams run on the SAME shared chip, demuxed by `stream_id`. Gate:
-`verification/tests/test_am_transceiver_grc.py` (5/5 pass).
+`verification/tests/test_am_transceiver_grc.py` (7/7 pass).
 
 ## Run it
 
 Two terminals, two commands — run both **from the repo root** (`placekyt/`).
 
-**1. Host the chip** (terminal 1) — launch placeKYT (no pre-built `.kyt`, so start
-blank and import):
+**1. Host the chip** (terminal 1) — open the pre-built design directly:
 
 ```bash
-.venv/bin/python placekyt/main.py
+.venv/bin/python placekyt/main.py examples/am_transceiver/am_transceiver.kyt
 ```
 
-In placeKYT: **File → Import GNURadio Flowgraph…** →
-`examples/am_transceiver/am_transceiver.grc` (auto-P&Rs onto one chip), then
-**Simulation → Run as GNURadio Server** (port **58950**). Leave placeKYT running.
+Then **Simulation → Run as GNURadio Server** (port **58950**). Leave placeKYT
+running. *(Prefer to auto-P&R it yourself? Launch placeKYT blank and **File →
+Import GNURadio Flowgraph…** → `examples/am_transceiver/am_transceiver.grc`
+instead — it auto-P&Rs onto one chip.)*
 
 **2. Drive it** (terminal 2) — open the flowgraph and press **▶ Run** (F6):
 

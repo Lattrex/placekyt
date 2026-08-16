@@ -1,0 +1,68 @@
+id: kyttar_repeat
+label: Kyttar Repeat
+category: '[Kyttar]'
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.repeat(${device_id}, ${interp}, io_type=${io_type})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+
+- id: interp
+  label: Interpolation
+  dtype: int
+  default: '4'
+
+# Stream type. The repeat is a dtype-AGNOSTIC hold (each sample emitted interp
+# times), so its GRC port dtype must match how the chain uses it — same enum
+# pattern as kyttar_upsampler. Default float: the PSK31 TX chain holds a REAL
+# ±A symbol rail into the raised-cosine envelope.
+- id: io_type
+  label: Stream Type
+  dtype: enum
+  default: float
+  options: [float, complex]
+  option_labels: ['Real (float)', 'I/Q (complex)']
+  option_attributes:
+    io_type: [float, complex]
+
+inputs:
+- label: x
+  domain: stream
+  dtype: ${ io_type }
+
+outputs:
+- label: out
+  domain: stream
+  dtype: ${ io_type }
+
+asserts:
+- ${ 1 <= interp <= 8 }
+
+documentation: |-
+  Repeat — hold-upsampling rate expander (GNU Radio blocks.repeat).
+
+  On each input sample it emits interp COPIES of that sample. This is the
+  symbol-HOLD a shaped-envelope transmitter needs between its symbol mapper and
+  an amplitude-envelope stage: the PSK31 Raised-Cosine Envelope consumes a HELD
+  ±A symbol stream at samples-per-symbol — i.e. the output of THIS block —
+  where the zero-stuffing Upsampler (a pulse-shaper front half) would feed it
+  zeros between symbols. Rate-EXPANDING: one input -> interp outputs.
+
+  Verified 1:1 (bit-exact) against blocks.repeat(gr.sizeof_float, interp).
+
+  Ports:
+    x (in):  symbol-rate samples
+    out:     held stream (each sample repeated interp times)
+
+  Parameters:
+    Device ID: which Kyttar device to use
+    interp:    repeat count (1-8 in a single cell; default 4)
+
+  Mapped by placeKYT (File -> Import GNURadio Flowgraph) to RepeatBlock.
+
+file_format: 1

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Tests for the live GNURadio↔placeKYT chip bridge (engine.sim_bridge)."""
 from __future__ import annotations
 import socket
@@ -465,14 +466,17 @@ def test_duplex_chip_over_bridge_real():
             return int(round(max(-1.0, min(0.999969, v)) * 32768)) & 0xFFFF
 
         # RX chain emits the recovered BIT (0x0000 or 0x0001) — read the raw value.
+        # BPSKSlicer = GR binary_slicer_fb: sample >= 0 -> bit 1, < 0 -> 0.
+        # (s & 0x8000 is set iff s is negative Q15 -> bit 0; positive -> bit 1.)
         rx_bits = [q15(v) for v in rx_vals]
-        exp_rx = [0 if not (s & 0x8000) else 1 for s in RX_SYMBOLS]
+        exp_rx = [0 if (s & 0x8000) else 1 for s in RX_SYMBOLS]
         assert rx_bits == exp_rx, f"RX {rx_bits} != {exp_rx}"
         assert all(d == RX_TAG for d in rx_dests)
 
         # TX chain maps each bit to a ±1.0 symbol — compare signs (full-scale).
+        # PSK mapper with bpsk_bit0_positive=false: bit 0 -> -1 (0x8000), bit 1 -> +1.
         tx_q15 = [q15(v) for v in tx_vals]
-        exp_tx = [Q15_PLUS_ONE if b == 0 else Q15_MINUS_ONE for b in TX_BITS]
+        exp_tx = [Q15_MINUS_ONE if b == 0 else Q15_PLUS_ONE for b in TX_BITS]
         assert [0 if t < 0x8000 else 1 for t in tx_q15] == \
                [0 if e < 0x8000 else 1 for e in exp_tx], f"TX signs {tx_q15}"
         assert all(d == TX_TAG for d in tx_dests)

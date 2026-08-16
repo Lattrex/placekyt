@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Maze router — route ANY legal placement with per-net BFS + rip-up-reroute.
 
 The bus/broker router (:mod:`engine.bus_router`) grows ONE shared directed backbone

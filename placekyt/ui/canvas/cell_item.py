@@ -1,4 +1,5 @@
-"""CellItem — a single cell on the chip canvas (the architecture notes §3.2).
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""CellItem — a single cell on the chip canvas.
 
 A custom ``QGraphicsItem`` (NOT QGraphicsRectItem). One ``paint()`` draws the
 fill colour, the face-direction arrow, and the block label, selecting detail by

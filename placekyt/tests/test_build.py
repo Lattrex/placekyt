@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Integration tests for the build pipeline (engine/build.py, §5.1).
 
 Requires gr_kyttar + simkyt (both in the venv). Builds a real project to

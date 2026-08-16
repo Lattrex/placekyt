@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Kyttar DSP block library.
 
 Each block lives in its own module here (``gain.py``, ``costas_loop.py``, …) and

@@ -77,7 +77,7 @@ class bpsk_modem(gr.top_block, Qt.QWidget):
 
         self.upc = kyttar.iq_upconvert("kyttar_0", 32000, 8000)
         self.up = kyttar.upsampler("kyttar_0", sps, io_type=complex)
-        self.tx_src = kyttar.source(device_id="kyttar_0", port_name="x16_in", num_channels=1, server_host="127.0.0.1", server_port=58950, complex_in=False, burst_len=n_bits, stream_id="tx", pipelined=False)
+        self.tx_src = kyttar.source(device_id="kyttar_0", port_name="x16_in", num_channels=1, server_host="127.0.0.1", server_port=58950, complex_in=False, burst_len=n_bits, stream_id="tx", pipelined=True, schedule="interleaved", repeat=False, output_words="auto")
         self.tx_sink = kyttar.sink(device_id="kyttar_0", port_name="x16_out", num_channels=1, server_port=58950, server_repeat=False, hold_secs=8.0, stream_id="tx", in_type=False)
         self.tx_passband = qtgui.time_sink_f(
             stim.tx_pb_points(n_bits), #size
@@ -128,8 +128,9 @@ class bpsk_modem(gr.top_block, Qt.QWidget):
         self._tx_passband_win = sip.wrapinstance(self.tx_passband.qwidget(), Qt.QWidget)
         self.top_layout.addWidget(self._tx_passband_win)
         self.tx_bits = blocks.vector_source_f(stim.tx_bits(n_bits), False, 1, [])
-        self.slicer = kyttar.bpsk_slicer("kyttar_0")
-        self.rx_src = kyttar.source(device_id="kyttar_0", port_name="x16_in", num_channels=1, server_host="127.0.0.1", server_port=58950, complex_in=True, burst_len=stim.rx_burst_len(n_syms), stream_id="rx", pipelined=False)
+        self.slicer_b2f = blocks.uchar_to_float()
+        self.slicer = kyttar.bpsk_slicer("kyttar_0", "bit")
+        self.rx_src = kyttar.source(device_id="kyttar_0", port_name="x16_in", num_channels=1, server_host="127.0.0.1", server_port=58950, complex_in=True, burst_len=stim.rx_burst_len(n_syms), stream_id="rx", pipelined=True, schedule="interleaved", repeat=False, output_words="auto")
         self.rx_sink = kyttar.sink(device_id="kyttar_0", port_name="x16_out", num_channels=1, server_port=58950, server_repeat=False, hold_secs=8.0, stream_id="rx", in_type=False)
         self.rx_iq = blocks.vector_source_c(stim.rx_burst(n_syms), False, 1, [])
         self.rx_bits = qtgui.time_sink_f(
@@ -180,9 +181,9 @@ class bpsk_modem(gr.top_block, Qt.QWidget):
 
         self._rx_bits_win = sip.wrapinstance(self.rx_bits.qwidget(), Qt.QWidget)
         self.top_layout.addWidget(self._rx_bits_win)
-        self.rrc = kyttar.rrc_pulse_shaper("kyttar_0", 0.35, 8, sps=4, io_type=complex)
-        self.mf = kyttar.complex_rrc_matched_filter("kyttar_0", 0.35, 8, 1)
-        self.mapper = kyttar.psk_symbol_mapper("kyttar_0", "bpsk")
+        self.rrc = kyttar.rrc_pulse_shaper("kyttar_0", gain=1.0, sampling_freq=4.0, symbol_rate=1.0, alpha=0.35, ntaps=33, io_type=complex)
+        self.mf = kyttar.complex_rrc_matched_filter(device_id="kyttar_0", gain=0.7105, samp_rate=2.0, sym_rate=1.0, alpha=0.35, ntaps=17, decimation=1)
+        self.mapper = kyttar.psk_symbol_mapper("kyttar_0", "bpsk", [], 1, True)
         self.gardner = kyttar.gardner_timing_recovery("kyttar_0", 3, 1, False)
         self.costas = kyttar.complex_costas_loop("kyttar_0", 0.05, 1.0, 2)
 
@@ -198,7 +199,8 @@ class bpsk_modem(gr.top_block, Qt.QWidget):
         self.connect((self.rx_iq, 0), (self.rx_src, 0))
         self.connect((self.rx_sink, 0), (self.rx_bits, 0))
         self.connect((self.rx_src, 0), (self.mf, 0))
-        self.connect((self.slicer, 0), (self.rx_sink, 0))
+        self.connect((self.slicer, 0), (self.slicer_b2f, 0))
+        self.connect((self.slicer_b2f, 0), (self.rx_sink, 0))
         self.connect((self.tx_bits, 0), (self.tx_src, 0))
         self.connect((self.tx_sink, 0), (self.tx_passband, 0))
         self.connect((self.tx_src, 0), (self.mapper, 0))

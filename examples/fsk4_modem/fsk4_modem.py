@@ -126,7 +126,7 @@ class fsk4_modem(gr.top_block, Qt.QWidget):
         self.tx_bits = blocks.vector_source_f(stim.tx_bits(n_bits), False, 1, [])
         self.up = kyttar.upsampler("kyttar_0", 2, io_type=float)
         self.tx_syms_src = blocks.vector_source_f(stim.tx_syms(n_bits), False, 1, [])
-        self.tx_src = kyttar.source(device_id="kyttar_0", port_name="x16_in", num_channels=1, server_host="127.0.0.1", server_port=58950, complex_in=False, burst_len=len(stim.tx_bits(n_bits)), stream_id="tx", pipelined=False)
+        self.tx_src = kyttar.source(device_id="kyttar_0", port_name="x16_in", num_channels=1, server_host="127.0.0.1", server_port=58950, complex_in=False, burst_len=len(stim.tx_bits(n_bits)), stream_id="tx", pipelined=True, schedule="interleaved", repeat=False, output_words="auto")
         self.tx_sink = kyttar.sink(device_id="kyttar_0", port_name="x16_out", num_channels=1, server_port=58950, server_repeat=False, hold_secs=8.0, stream_id="tx", in_type=True)
         self.tx_passband = qtgui.time_sink_f(
             stim.tx_pb_points(n_bits), #size
@@ -177,7 +177,7 @@ class fsk4_modem(gr.top_block, Qt.QWidget):
         self._tx_passband_win = sip.wrapinstance(self.tx_passband.qwidget(), Qt.QWidget)
         self.top_layout.addWidget(self._tx_passband_win)
         self.tx_iq_split = blocks.deinterleave(gr.sizeof_float*1, 1)
-        self.timing = kyttar.fsk4_sync_timing_recovery("kyttar_0")
+        self.timing = kyttar.fsk4_sync_timing_recovery("kyttar_0", 14745)
         self.slicer = kyttar.fsk4_slicer("kyttar_0")
         self.rx_syms = qtgui.time_sink_f(
             stim.rx_syms_points(n_syms), #size
@@ -227,12 +227,12 @@ class fsk4_modem(gr.top_block, Qt.QWidget):
 
         self._rx_syms_win = sip.wrapinstance(self.rx_syms.qwidget(), Qt.QWidget)
         self.top_layout.addWidget(self._rx_syms_win)
-        self.rx_src = kyttar.source(device_id="kyttar_0", port_name="x16_in", num_channels=1, server_host="127.0.0.1", server_port=58950, complex_in=True, burst_len=stim.burst_len(n_syms), stream_id="rx", pipelined=False)
+        self.rx_src = kyttar.source(device_id="kyttar_0", port_name="x16_in", num_channels=1, server_host="127.0.0.1", server_port=58950, complex_in=True, burst_len=stim.burst_len(n_syms), stream_id="rx", pipelined=True, schedule="interleaved", repeat=False, output_words="auto")
         self.rx_sink = kyttar.sink(device_id="kyttar_0", port_name="x16_out", num_channels=1, server_port=58950, server_repeat=False, hold_secs=8.0, stream_id="rx", in_type=False)
         self.rx_iq = blocks.vector_source_c(stim.burst(n_syms), False, 1, [])
-        self.rrc = kyttar.rrc_pulse_shaper("kyttar_0", 0.5, 8, sps=2, io_type=float)
+        self.rrc = kyttar.rrc_pulse_shaper("kyttar_0", gain=1.0, sampling_freq=2.0, symbol_rate=1.0, alpha=0.5, ntaps=17, io_type=float)
         self.qd = kyttar.quadrature_demod(device_id="kyttar_0", gain=1.0)
-        self.mf = kyttar.rrc_pulse_shaper("kyttar_0", 0.5, 8, sps=2, io_type=float)
+        self.mf = kyttar.rrc_pulse_shaper("kyttar_0", gain=1.0, sampling_freq=2.0, symbol_rate=1.0, alpha=0.5, ntaps=17, io_type=float)
         self.mapper = kyttar.fsk4_symbol_mapper("kyttar_0")
         self.fm = kyttar.frequency_modulator(device_id="kyttar_0", sensitivity=1.5707963267948966, pipeline_lock=True)
 
@@ -251,8 +251,8 @@ class fsk4_modem(gr.top_block, Qt.QWidget):
         self.connect((self.slicer, 0), (self.rx_sink, 0))
         self.connect((self.timing, 0), (self.slicer, 0))
         self.connect((self.tx_bits, 0), (self.tx_src, 0))
-        self.connect((self.tx_iq_split, 0), (self.tx_passband, 0))
         self.connect((self.tx_iq_split, 1), (self.tx_passband, 1))
+        self.connect((self.tx_iq_split, 0), (self.tx_passband, 0))
         self.connect((self.tx_sink, 0), (self.tx_iq_split, 0))
         self.connect((self.tx_src, 0), (self.mapper, 0))
         self.connect((self.tx_syms_src, 0), (self.tx_syms, 0))

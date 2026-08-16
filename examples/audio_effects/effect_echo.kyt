@@ -1,0 +1,129 @@
+project:
+  format_version: 1
+  name: Echo + tone shaping (placed audio effect)
+  version: '1.0'
+chip_type: kyttar_10x12
+chips:
+- id: 0
+  label: Chip 0
+  position: {x: 0.0, y: 0.0}
+blocks:
+- name: delay
+  type: DelayBlock
+  library: lattrex.official
+  params:
+    delay: 8
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 1, y: 1, face: south}
+    orientation:
+    - cw
+- name: gain
+  type: GainBlock
+  library: lattrex.official
+  params:
+    gain: 0.5
+    gain_range: 15
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 2, y: 1, face: west}
+    orientation:
+    - mirror_h
+- name: add
+  type: AddBlock
+  library: lattrex.official
+  params:
+    num_inputs: 2
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 2, y: 0, face: east}
+- name: gain_2
+  type: GainBlock
+  library: lattrex.official
+  params:
+    gain: 0.5
+    gain_range: 15
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 3, y: 0, face: east}
+- name: iirbiquad
+  type: IIRBiquadBlock
+  library: lattrex.official
+  params:
+    b_coeffs:
+    - 0.04125353724172031
+    - 0.08250707448344062
+    - 0.04125353724172031
+    a_coeffs:
+    - -1.3489677452527948
+    - 0.5139818942196759
+    fftaps:
+    fbtaps:
+    oldstyle: false
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 4, y: 0, face: east}
+- name: keeponeinn
+  type: KeepOneInNBlock
+  library: lattrex.official
+  params:
+    n: 2
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 5, y: 0, face: west}
+    orientation:
+    - mirror_h
+connections:
+- name: net1
+  from: {chip_port: {chip: 0, port: x16_in}}
+  to: {block: add, port: a0}
+  route:
+  - {x: 0, y: 0}
+  - {x: 1, y: 0}
+  stream_id: fx
+  entry_override: 12
+- name: net2
+  from: {chip_port: {chip: 0, port: x16_in}}
+  to: {block: delay, port: sample}
+  route:
+  - {x: 0, y: 0}
+  - {x: 1, y: 0}
+  - {x: 1, y: 1}
+  stream_id: fx
+- name: net3
+  from: {block: delay, port: out}
+  to: {block: gain, port: sample}
+  route: abutment
+- name: net4
+  from: {block: gain, port: out}
+  to: {block: add, port: a1}
+  route: abutment
+  entry_override: 12
+- name: net5
+  from: {block: add, port: out}
+  to: {block: gain_2, port: sample}
+  route: abutment
+- name: net6
+  from: {block: gain_2, port: out}
+  to: {block: iirbiquad, port: sample}
+  route: abutment
+- name: net7
+  from: {block: iirbiquad, port: out}
+  to: {block: keeponeinn, port: x}
+  route: abutment
+- name: net8
+  from: {block: keeponeinn, port: out}
+  to: {chip_port: {chip: 0, port: x16_out}}
+  route:
+  - {x: 5, y: 0}
+  - {x: 6, y: 0}
+  - {x: 7, y: 0}
+  - {x: 8, y: 0}
+  - {x: 9, y: 0}
+  out_tag: 14

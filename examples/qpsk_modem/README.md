@@ -20,7 +20,10 @@ RX (stream 'rx'):  RRC-QPSK I/Q ─▶ ComplexRRCMatchedFilter ─▶ CostasLoop
 - **RX (demodulator):** a complex RRC matched filter, an **order-4 (QPSK) Costas loop**
   for carrier recovery, **complex (I/Q) Gardner** timing recovery, and a **QPSK
   hard-decision slicer** — recovers the 2-bit Gray symbols from an RRC-shaped QPSK burst
-  carrying a carrier **and** a fractional timing offset, at **BER 0**.
+  carrying a carrier **and** a fractional timing offset, at **BER 0**. The Gardner
+  timing block is proof-of-concept — verified at BER 0 in this demo, but not yet a
+  certified drop-in for GNU Radio's `symbol_sync_cc`; see
+  [`verification/STATUS.md`](../../verification/STATUS.md).
 
 The channel (the carrier + fractional-timing offset) is applied by the host loopback
 in the headless check, as a real RF channel would between a modulator and a demodulator.
@@ -71,6 +74,7 @@ rate.)
 
 | File | What it is |
 |------|------------|
+| `qpsk_modem.kyt` | The pre-placed design — open directly, or import the `.grc` and auto-P&R. |
 | `qpsk_modem.grc` | The GNU Radio flowgraph: a TX source/sink pair and an RX source/sink pair, both targeting the same placeKYT-hosted chip by `stream_id`. Open in **both** placeKYT (to host the chip) and `gnuradio-companion` (to drive it). |
 | `batch_check.py` | A headless verifier: streams a QPSK burst through the hosted chip and reports the recovered symbols + symbol BER. No GNU Radio GUI needed. |
 

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """File + Build menu wiring tests (controller-level, offscreen Qt).
 
 These exercise the controller methods the menus call (open/save/new/build/drc/

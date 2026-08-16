@@ -1,4 +1,5 @@
-"""UI smoke tests (the architecture notes §11.2 "UI smoke tests").
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""UI smoke tests.
 
 Run with the offscreen Qt platform so they work headless / in CI. Skipped
 entirely if PySide6 is not installed.

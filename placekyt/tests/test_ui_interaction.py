@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Interactive-canvas tests: controller + drag-drop + selection + undo/redo.
 
 Offscreen Qt. These need gr_kyttar (the controller builds a BlockCatalog) and

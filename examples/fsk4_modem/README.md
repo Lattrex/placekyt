@@ -38,10 +38,10 @@ The importer maps these flowgraph blocks by id + params:
 |--------------|----------------|-----------|
 | `kyttar_fsk4_symbol_mapper` | FSK4SymbolMapperBlock | — |
 | `kyttar_upsampler` | UpsamplerBlock | `sps=2`, `io_type=float` |
-| `kyttar_rrc_pulse_shaper` (TX shaper) | RRCPulseShaperBlock | `alpha=0.5`, `span=8`, `io_type=float` |
+| `kyttar_rrc_pulse_shaper` (TX shaper) | RRCPulseShaperBlock | `alpha=0.5`, `ntaps=17` (span 8 at 2 sps), `io_type=float` |
 | `kyttar_frequency_modulator` | FrequencyModulatorBlock | `sensitivity=π/2` |
 | `kyttar_quadrature_demod` | QuadratureDemodBlock | `gain=1.0` |
-| `kyttar_rrc_pulse_shaper` (RX MF) | RRCPulseShaperBlock | `alpha=0.5`, `span=8`, `io_type=float` |
+| `kyttar_rrc_pulse_shaper` (RX MF) | RRCPulseShaperBlock | `alpha=0.5`, `ntaps=17` (span 8 at 2 sps), `io_type=float` |
 | `kyttar_fsk4_sync_timing_recovery` | FSK4SyncTimingRecoveryBlock | — |
 | `kyttar_fsk4_slicer` | FSK4SlicerBlock | — |
 

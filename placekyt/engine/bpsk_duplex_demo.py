@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """bpsk_duplex_demo - generate the full-duplex BPSK demo's stimulus + golden (#206).
 
 The project (`tests/data/demo/bpsk_duplex_demo.kyt`) is a full-duplex BPSK
@@ -162,8 +163,11 @@ if __name__ == "__main__":
     _out, rx_bits, tx_syms = capture(ct_path, result.words(0),
                                      build_stimulus(rx_entry, tx_entry))
 
-    exp_rx = [0 if (s if s < 0x8000 else s - 0x10000) >= 0 else 1 for s in RX_SYMBOLS]
-    exp_tx = [Q15_PLUS_ONE if b == 0 else Q15_MINUS_ONE for b in TX_BITS]
+    # RX: symbol -> BPSKSlicer (GR binary_slicer_fb: sample >= 0 -> bit 1, < 0 -> 0).
+    exp_rx = [1 if (s if s < 0x8000 else s - 0x10000) >= 0 else 0 for s in RX_SYMBOLS]
+    # TX: bit -> PSK mapper with bpsk_bit0_positive=false (constellation convention:
+    # bit 0 -> -1 (0x8000), bit 1 -> +1 (0x7FFF)) so the chain pairs with the slicer.
+    exp_tx = [Q15_MINUS_ONE if b == 0 else Q15_PLUS_ONE for b in TX_BITS]
     rx_ok = (rx_bits == exp_rx)
     tx_ok = (tx_syms == exp_tx)
     print(f"  RX bits  (tag {RX_TAG}): {rx_bits}  expect {exp_rx}  {'OK' if rx_ok else 'FAIL'}")

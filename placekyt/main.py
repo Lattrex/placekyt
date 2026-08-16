@@ -1,4 +1,5 @@
-"""placeKYT GUI entry point (the architecture notes §3.1, §6).
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""placeKYT GUI entry point.
 
 Creates the QApplication and MainWindow. Optionally opens a project given on
 the command line. The headless CLI lives in ``cli.py``; this module is the GUI.

@@ -1,7 +1,8 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Enumerations shared across the placeKYT data model.
 
 These mirror the string values used in the ``.kyt`` / ``.kbl`` / ``.kdb`` /
-chip-type YAML files (the architecture notes §2) so that serialization is a direct
+chip-type YAML files so that serialization is a direct
 ``.value`` round-trip with no translation table.
 """
 
@@ -138,14 +139,14 @@ def face_code_after(code: int, kinds) -> int:
 
 
 class PortDirection(Enum):
-    """Direction of a chip I/O port (the architecture notes §2.3)."""
+    """Direction of a chip I/O port."""
 
     INPUT = "input"
     OUTPUT = "output"
 
 
 class Modulation(Enum):
-    """Connection modulation metadata (the architecture notes §2.1 connections).
+    """Connection modulation metadata (the ``.kyt`` ``connections:`` schema).
 
     Drives Constellation View, BER auto-derive, and throughput conversion.
     ``bits_per_symbol`` is used by the throughput calculation in
@@ -184,8 +185,7 @@ class IQFormat(Enum):
     """How complex I/Q samples are conveyed on a connection (§2.1, §3.8).
 
     Only ``q15_paired`` is supported: consecutive 16-bit writes carry I then
-    Q, each a full Q15 value. (The 8-bit-packed Q7 format was removed — see
-    the the architecture notes errata.)
+    Q, each a full Q15 value. (The 8-bit-packed Q7 format was removed.)
     """
 
     Q15_PAIRED = "q15_paired"

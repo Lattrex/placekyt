@@ -6,6 +6,68 @@ This is the front door for an **automated agent** (any harness — not tied to o
 vendor) working in this repository. It is self-contained: read it top to bottom and
 you have everything you need to build and verify a Kyttar DSP block on your own.
 
+> ## ⚠️ READ THIS FIRST — the working relationship
+>
+> **I am looking for a COLLABORATOR, not a cheerleader.** Honesty and integrity are the
+> cornerstone values of this project. False promises are not appreciated and actively
+> damage the work.
+>
+> **VERIFICATION IS KING. If it hasn't been verified, it isn't done.** This applies to
+> blocks and — even more so — to examples and end-to-end chains. We must have the
+> *correct* answer, not one that merely *looks or sounds* good and falls apart on first
+> inspection.
+>
+> Non-negotiable rules:
+> 1. **Do not claim success you have not demonstrated.** "It should work", "the build
+>    passed so it's done", "each piece is verified so the whole is verified" — these are
+>    NOT proof. Pre-claiming victory when it is demonstrably false is the single worst
+>    thing you can do here. If you catch yourself about to write "proven"/"verified"/
+>    "works", stop and ask: *did I actually run the whole thing and observe the correct
+>    result end to end?* If not, say exactly what you did verify and what you did not.
+> 2. **If you think you have the right answer, VERIFY IT.** Then verify it the way it
+>    will actually be used — not a convenient proxy. A per-block test is not a
+>    whole-chain test. A build-succeeds check is not a data-flows-through check. An
+>    example is not done until it runs **end to end in the GUI / on the real placed +
+>    routed chip** and produces the correct output (see §5b).
+> 3. **Report failures plainly, with the evidence.** A precise "this does not work
+>    because X, proven by Y" is far more valuable than a false "done". A quarantine or a
+>    documented limitation with a reproduction is a real, respected result.
+> 4. **When unsure, dig until you are sure, or say you are unsure.** Do not paper over a
+>    gap with confident language. Confidence without verification is the failure mode
+>    this project exists to eliminate.
+
+> ## 🔒 HARD RULE — this is a PUBLIC repository. NOTHING private goes in it. EVER.
+>
+> Everything committed here is world-readable, forever. There is no "internal note",
+> no "temporary comment", no "just this once". Before EVERY commit, check your diff
+> against this list. Violating it is the one unrecoverable mistake — a leaked secret
+> cannot be un-published.
+>
+> 1. **NEVER reference any Verilog — not file names, not module names, not content,
+>    not directory layout.** Not in code, comments, docs, tests, commit messages, or
+>    binaries. The hardware design does not exist as far as this repo is concerned.
+>    Describe BEHAVIOR ("the hardware routing engine forwards on the cell's current
+>    face"), never the source that implements it. This is absolute.
+> 2. **Never name closed-source simulator internals** (source file names, module
+>    paths, crate layout). The simulator ships as a binary; its insides are not a
+>    citable reference. Rebuild the binary with path-prefix remapping + strip so it
+>    carries no build-machine or source paths.
+> 3. **Never cite private documents** — the architecture spec/notes by any name,
+>    version, or section number; anything under `dev_docs/`; planning/roadmap/demo
+>    material; agent-memory notes. If a fact matters publicly, state it in a public
+>    doc (PROGRAMMING_GUIDE.md, doc/) and cite that.
+> 4. **No business or strategy content**: conference/demo plans, unannounced targets,
+>    hardware revisions, board/gateware internals, ROI/roadmap language, personal
+>    initials or approver names.
+> 5. **No absolute machine paths, ever** (`/home/<user>/...`). They leak the
+>    environment AND break every other machine. Derive paths from
+>    `Path(__file__).resolve().parents[N]`; write `<repo root>` in docs. Scratch/
+>    debug scripts stay untracked (`.gitignore` covers `proto_*.py` and `dev_docs/`).
+> 6. **Commit messages are public too.** Never mention private material, internal
+>    incidents, or what was removed and why.
+>
+> If you are unsure whether something is private: it is. Leave it out and ask.
+
 > **Your mission, by default:** take the next unbuilt block from the work-queue,
 > author it, verify it is a drop-in equivalent of its GNU Radio counterpart, record
 > what you learned, regenerate the status dashboard, and commit. Then repeat. The
@@ -13,6 +75,15 @@ you have everything you need to build and verify a Kyttar DSP block on your own.
 
 If a human gave you a *different* explicit task, do that instead — this default
 mission is what you do when you were turned loose with no other instruction.
+
+> **Building MANY blocks, or running this for someone else?** There is an
+> orchestration + metrics layer on top of this loop — see
+> **[`verification/FACTORY.md`](verification/FACTORY.md)**. It gives you a one-command
+> queue (`factory_queue.py`), a copy-paste dispatch prompt anyone can hand to an agent,
+> and per-block cost capture (tokens/turns/walltime/interventions) for measuring the
+> workflow. **Read the whole of THIS file and the KB (§3 Step 2) before deciding what to
+> build** — the manifest's `poc`/`planned`/`done`/`needs_human` states and the substrate
+> invariants change what "build block X" actually means.
 
 ---
 
@@ -201,12 +272,18 @@ not lower:
 - [ ] Coverage = edge + random (≥3 seeds) + parameter sweep.
 - [ ] `verification/reports/<KyttarBlock>.json` exists with measured metrics.
 - [ ] The block's GRC parameter names match GNU Radio verbatim.
-- [ ] **GRC binding exists and is complete (INV-22):** the block has a
+- [ ] **GRC binding exists and is complete (INV-22) — ENFORCED by
+      `verification/tests/test_grc_binding_complete.py`:** the block has a
       `gr-kyttar/grc/<id>.block.yml` **and** its Python shim, the YAML exposes
       **every** parameter (matching GR names/defaults) AND every param-dependent
       port, `install.sh` copies both, and the block resolves in GRC with **no
       "Missing Block"** and no hidden params. A block with a passing verification
       test but no GRC binding is **NOT done** — it cannot be used in a flowgraph.
+      This is a HARD GATE: `test_grc_binding_complete.py` fails for any done block
+      without a resolvable, param-complete binding. Run it before marking a block
+      done. A param the block INTENTIONALLY does not expose (a documented
+      HW-deviation that raises) must be listed in the class's `GRC_UNSUPPORTED_PARAMS`
+      tuple — that is the ONLY way to legitimately omit a param from the binding.
 - [ ] **Layout is folded (INV-8/9/14):** if the block is >1 cell (or a new param
       *made* it >1 cell), its I/O co-locate on one bus-facing edge — it is NOT a
       longitudinal strip. Adding a param that grows the cell count means RE-folding.
@@ -255,7 +332,7 @@ not lower:
 
 | Path | What |
 |------|------|
-| `verification/manifest.json` | **The work-queue.** Block targets, GR counterparts, tiers, status. |
+| `verification/manifest.json` | **The work-queue.** Block targets, GR counterparts, tiers, status. See the status note below. |
 | `verification/KNOWLEDGE_BASE/invariants.md` | Substrate rules INV-1…N. **Read first.** |
 | `verification/KNOWLEDGE_BASE/layout_rules.md` | How a multi-cell block FOLDS on the array (same-edge I/O, last-cell egress, ≤8-across). **Read before any 2+ cell block.** |
 | `verification/KNOWLEDGE_BASE/lessons_log.md` | Per-block lessons. Read relevant ones; append yours. |
@@ -263,10 +340,100 @@ not lower:
 | `verification/kyttar_verify/` | Harness internals: `dut_runner` (build+sim a block), `gnuradio_ref` (golden), `compare` (aligned, Q15-aware compare). |
 | `verification/tools/gen_dashboard.py` | Regenerates STATUS.md from manifest + reports. |
 | `verification/reports/<Block>.json` | Per-block measured metrics (generated by a passing test). |
+| **`verification/FACTORY.md`** | **Run the loop over MANY blocks (unattended) + the paper metrics.** Read this if you're building more than one block, or running the factory for someone else. |
+| `verification/tools/factory_queue.py` | The queue over the manifest: `ready` / `claim` / `set` / `status`. |
+| `verification/tools/factory_dispatch.py` | Prints the ready-to-paste builder prompt for a block (`<block>` / `--next` / `--next --claim`) — the single source of the build methodology. |
+| `verification/tools/factory_metrics.py` · `gen_paper_table.py` | Per-build cost record (tokens/turns/walltime/interventions) + the paper table. |
 | `STATUS.md` | **Generated** dashboard. Do NOT edit by hand. |
+
+> **Manifest status — read this before picking a block.** `done` = verified BER-0 vs
+> GNU Radio (trustworthy). `planned` = **on the queue** — and note: a `planned` entry
+> may carry **`poc: true`**, meaning **code for it already exists but was NEVER verified
+> against GNU Radio**. A PoC is NOT trustworthy: it may have a latent bug that only
+> hides because the one place it's used happens to stay in range (this is exactly what
+> happened to `ComplexGainBlock` — it wrapped instead of saturating on overload, caught
+> only when it went through the gate). So "building" a `poc` block usually means
+> *finalize + VERIFY the existing code*, not write it from scratch — and expect to find
+> and fix real bugs. `needs_human` = quarantined (hit a substrate wall; a human must look).
 | `runtime/python/gr_kyttar/placement/blocks/` | Block source. One module per block. |
 | `BLOCK_AUTHORING_GUIDE.md` / `PROGRAMMING_GUIDE.md` | How to write a block / the cell model + ISA. |
 | `CONTRIBUTING.md` / `INSTALL.md` | Conventions / full install. |
+
+---
+
+## 5b. Building EXAMPLES (not just blocks) — the end-to-end bar
+
+An **example** (a modem, a transmitter, a demo under `examples/`) is a whole flowgraph
+placed and routed on a chip, not a single block. It has a HIGHER verification bar than a
+block, because "each block is verified" does NOT imply "the assembled chain works" — the
+placement, the routing, the port hand-offs, the panel wiring, and the actual data flow
+are all new surface area that only the whole chain exercises.
+
+**An example is NOT done until it has been run END TO END, on the real placed + routed
+chip, and observed to produce the correct output.** Specifically:
+
+- [ ] **The `.kyt` genuinely builds AND routes as ONE chip** — every net routed, no gaps,
+      no islands. `auto_pnr(...).ok` AND `build().ok` both true, and you have LOOKED at
+      the result (cell adjacency / the drawn routes) to confirm the chain is actually
+      connected, not visually disconnected fragments.
+- [ ] **Data actually FLOWS through the placed topology.** Drive the real input, run the
+      real simulator on THAT built bitstream, capture the real output, and assert it
+      matches a golden. **Running each block separately and composing the results in
+      Python is NOT a whole-chain proof** — it never exercises the placement/routing/
+      hand-offs, which is exactly where examples break. If your "proof" would still pass
+      with a broken `.kyt`, it is not proving the example.
+- [ ] **The path the USER will actually use works.** If the example is meant to be opened
+      in the GUI or imported from a `.grc`, then GRC import → auto-place → auto-route →
+      run must succeed and produce the right output. Verify THAT path, in the GUI, end to
+      end — not a headless proxy that skips the parts that fail. If you cannot run the GUI
+      yourself, say so explicitly and mark the example UNVERIFIED-in-GUI; do not claim it
+      works.
+- [ ] **SRAM-panel-backed chains** (Varicode, CW keyer, any INV-31 block) must have the
+      panel wired and routed in the `.kyt` (mirror `placekyt/engine/sram_demo.py` +
+      `placekyt/tests/data/demo/sram_panel_demo.kyt`, which are FULLY hand-routed) and
+      must flow data through the panel round-trip on the built chip. Note: GRC auto-route
+      of SRAM panels is a known gap — check its status before claiming import works.
+- [ ] **The `.grc` OPENS AND BUILDS under the real GRC compiler** —
+      `verification/tests/test_examples_grc_instantiate.py` must pass for it. This
+      GRC-generates the flowgraph against the REPO ymls and INSTANTIATES the generated
+      top block with the REPO markers: it catches schema-invalid ymls (a missing
+      `file_format` silently becomes "Missing Block"), dropped connections, invalid
+      params, and marker-level ITEMSIZE mismatches the ymls can misrepresent (a yml may
+      claim any dtype — the marker's `io_signature` is the runtime truth; keep them in
+      agreement, and remember GRC in the GUI reads the INSTALLED ymls until
+      `install.sh` re-syncs them). The static yml lint
+      (`test_examples_grc_valid.py`) must also pass.
+- [ ] **A demo flowgraph ships REAL stimuli.** A placeholder RX vector
+      (`[0.0]*64`) passes every headless gate while showing the user NOTHING — the
+      shipped `.grc`'s own embedded stimulus must exercise the chain, and for the
+      transceivers `test_examples_grc_userpath.py` runs the SHIPPED `.grc` (GRC-
+      generated, real GR interpreter) against the SHIPPED `.kyt` hosted on the GUI's
+      default server port and asserts the decoded output.
+- [ ] **The demo's scopes must actually DRAW the verified output.** Three GR display
+      rules blanked whole windows while the data verifiably arrived: (1) a QT
+      `time_sink` draws NOTHING until a FULL `size` buffer arrives, AND the GR
+      scheduler STRANDS the tail of a finite stream (measured: a 200-sample burst
+      delivers only 192 to the scope, an 8-char decode delivers NOTHING — even
+      after WORK_DONE) — so a scope sized ≥ its burst NEVER paints. Either size the
+      scope ≤ burst−16, or loop the display sink (`server_repeat=True` re-emits the
+      genuine one-batch result — the shipped fix for the char scopes; assert
+      repetition integrity in the gate). (2) `kyttar.sink` emits q15/32768 FLOATS —
+      put a ×32768 rescale in front of any byte/ASCII-value scope. (3) An
+      un-plotted time sink still renders a default-axis empty frame (1024/srate) —
+      a "blank window with a plausible axis" means STARVED, and the axis arithmetic
+      tells you the size the scope is actually running with. A headless gate cannot
+      see a blank window; the pixel-probe (render the qwidget offscreen +
+      `nitems_read`) is how to verify a scope truly draws.
+- [ ] **No corridor routes THROUGH a DSP block's cells**
+      (`test_kyt_route_transits.py`). Taps and mid-corridor deliveries use standard
+      build BROKERS (plain routing cells; corridor words transit them at HOP<31); the
+      ONLY cell class two corridors may share is a CrossoverBlock at a genuine
+      crossing (one fwd_face per cell — a crossing is what crossovers are for).
+
+If any box is not checked, the example is **not done** — say exactly which parts you
+verified and which you did not. A "proven sample-exact" claim backed only by per-block
+composition, with a `.kyt` that is actually disconnected, is precisely the false-victory
+failure this project forbids (see the top-of-file mandate).
 
 ---
 

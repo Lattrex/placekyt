@@ -1,0 +1,358 @@
+options:
+  parameters:
+    author: Lattrex
+    catch_exceptions: 'True'
+    category: '[GRC Hier Blocks]'
+    cmake_opt: ''
+    comment: ''
+    copyright: ''
+    description: 'A placed feedforward COMB (x - 0.3*delay5(x), a single-fire Subtract
+      join). Golden: the IDENTICAL stock-GNU-Radio chain (delay, multiply_const_ff,
+      sub_ff) within a DERIVED per-block bound.'
+    gen_cmake: 'On'
+    gen_linking: dynamic
+    generate_options: qt_gui
+    hier_block_src_path: '.:'
+    id: effect_comb
+    max_nouts: '0'
+    output_language: python
+    placement: (0,0)
+    qt_qss_theme: ''
+    realtime_scheduling: ''
+    run: 'True'
+    run_command: '{python} -u {filename}'
+    run_options: prompt
+    sizing_mode: fixed
+    thread_safe_setters: ''
+    title: Feedforward comb (placed audio effect)
+    window_size: (1600,1000)
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 8
+    - 8
+    rotation: 0
+    state: enabled
+blocks:
+- name: imports
+  id: import
+  parameters:
+    alias: ''
+    comment: ''
+    imports: import math
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 8
+    - 68
+    rotation: 0
+    state: enabled
+- name: samp_rate
+  id: variable
+  parameters:
+    comment: audio sample rate
+    value: '8000'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 200
+    - 12
+    rotation: 0
+    state: enabled
+- name: sig
+  id: variable
+  parameters:
+    comment: a 330 Hz tone + a faint 2.2 kHz overtone (max 0.55 FS)
+    value: '[0.5*math.sin(2*math.pi*330*t/8000) + 0.05*math.sin(2*math.pi*2200*t/8000)
+      for t in range(400)]'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 320
+    - 12
+    rotation: 0
+    state: enabled
+- name: burst_len
+  id: variable
+  parameters:
+    comment: samples per burst
+    value: len(sig)
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 620
+    - 12
+    rotation: 0
+    state: enabled
+- name: fx_vec
+  id: blocks_vector_source_x
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    repeat: 'False'
+    tags: '[]'
+    type: float
+    vector: sig
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 40
+    - 220
+    rotation: 0
+    state: enabled
+- name: fx_in
+  id: kyttar_source
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    burst_len: burst_len
+    complex_in: float
+    device_id: '"kyttar_0"'
+    num_channels: '1'
+    pipelined: 'no'
+    port_name: '"x16_in"'
+    schedule: '"interleaved"'
+    server_host: '"127.0.0.1"'
+    server_port: '58950'
+    stream_id: '"fx"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 190
+    - 212
+    rotation: 0
+    state: enabled
+- name: comb_delay
+  id: kyttar_delay
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    device_id: '"kyttar_0"'
+    delay: '5'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 370
+    - 300
+    rotation: 0
+    state: enabled
+- name: comb_gain
+  id: kyttar_gain
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    device_id: '"kyttar_0"'
+    gain: '0.3'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 500
+    - 300
+    rotation: 0
+    state: enabled
+- name: comb_sub
+  id: kyttar_subtract
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    device_id: '"kyttar_0"'
+    num_inputs: '2'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 630
+    - 212
+    rotation: 0
+    state: enabled
+- name: fx_out
+  id: kyttar_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    device_id: '"kyttar_0"'
+    hold_secs: '8.0'
+    in_type: float
+    num_channels: '1'
+    port_name: '"x16_out"'
+    server_port: '58950'
+    server_repeat: 'False'
+    stream_id: '"fx"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 780
+    - 204
+    rotation: 0
+    state: enabled
+- name: scope
+  id: qtgui_time_sink_x
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    ctrlpanel: 'False'
+    entags: 'True'
+    grid: 'False'
+    gui_hint: ''
+    legend: 'True'
+    autoscale: 'False'
+    axislabels: 'True'
+    name: '"feedforward comb (x - 0.3*delay5)"'
+    nconnections: '1'
+    size: burst_len
+    srate: samp_rate
+    stemplot: 'False'
+    tr_chan: '0'
+    tr_delay: '0'
+    tr_level: '0.0'
+    tr_mode: qtgui.TRIG_MODE_FREE
+    tr_slope: qtgui.TRIG_SLOPE_POS
+    tr_tag: '""'
+    type: float
+    update_time: '0.10'
+    ylabel: level
+    ymax: '1'
+    ymin: '-1'
+    yunit: '""'
+    alpha1: '1.0'
+    color1: blue
+    label1: Signal 1
+    marker1: '-1'
+    style1: '1'
+    width1: '1'
+    alpha2: '1.0'
+    color2: red
+    label2: Signal 2
+    marker2: '-1'
+    style2: '1'
+    width2: '1'
+    alpha3: '1.0'
+    color3: green
+    label3: Signal 3
+    marker3: '-1'
+    style3: '1'
+    width3: '1'
+    alpha4: '1.0'
+    color4: black
+    label4: Signal 4
+    marker4: '-1'
+    style4: '1'
+    width4: '1'
+    alpha5: '1.0'
+    color5: cyan
+    label5: Signal 5
+    marker5: '-1'
+    style5: '1'
+    width5: '1'
+    alpha6: '1.0'
+    color6: magenta
+    label6: Signal 6
+    marker6: '-1'
+    style6: '1'
+    width6: '1'
+    alpha7: '1.0'
+    color7: yellow
+    label7: Signal 7
+    marker7: '-1'
+    style7: '1'
+    width7: '1'
+    alpha8: '1.0'
+    color8: dark red
+    label8: Signal 8
+    marker8: '-1'
+    style8: '1'
+    width8: '1'
+    alpha9: '1.0'
+    color9: dark green
+    label9: Signal 9
+    marker9: '-1'
+    style9: '1'
+    width9: '1'
+    alpha10: '1.0'
+    color10: dark blue
+    label10: Signal 10
+    marker10: '-1'
+    style10: '1'
+    width10: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 940
+    - 180
+    rotation: 0
+    state: enabled
+connections:
+- - fx_vec
+  - '0'
+  - fx_in
+  - '0'
+- - fx_in
+  - '0'
+  - comb_sub
+  - '0'
+- - fx_in
+  - '0'
+  - comb_delay
+  - '0'
+- - comb_delay
+  - '0'
+  - comb_gain
+  - '0'
+- - comb_gain
+  - '0'
+  - comb_sub
+  - '1'
+- - comb_sub
+  - '0'
+  - fx_out
+  - '0'
+- - fx_out
+  - '0'
+  - scope
+  - '0'
+metadata:
+  file_format: 1
+  grc_version: 3.10.9.2

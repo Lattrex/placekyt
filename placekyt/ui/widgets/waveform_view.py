@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """WaveformView — a GTKWave-style time-series viewer (DEBUG_ARCHITECTURE §3.3).
 
 A custom-painted widget that draws the design's port streams as stacked rows,

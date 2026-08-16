@@ -1,6 +1,7 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Route-bus analysis: which logical connections traverse each physical cell.
 
-The fabric bus is TIME-MULTIPLEXED (the auto-P&R design notes §1.2): several logical
+The fabric bus is TIME-MULTIPLEXED (see doc/ROUTING_TOPOLOGIES.md): several logical
 :class:`~model.connection.Connection` s can share the SAME physical routing
 cells (the bus runs through transit lanes, blocks tap it via brokers). So a
 routing cell is "shared" when more than one connection's waypoint route covers

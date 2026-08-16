@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """SRAM panel device + driver tests (the SRAM panel notes, task #166)."""
 
 from __future__ import annotations
@@ -469,3 +470,33 @@ class TestPanelDriver:
         assert samples == [[(6, 0x9999)]]                 # dest=6, value
         assert entry == 2                                 # jump entry
         assert ("in", 8) in chip.hop_set                  # hop from descriptor
+
+
+class TestReadAutoIncrement:
+    """The panel's READ-side address auto-increment (a streaming-read mode the
+    CW keyer's 3-word record fetch depends on — see SramPanelDevice)."""
+
+    def test_auto_inc_reads_advance_sequentially(self):
+        dev = SramPanelDevice(auto_inc_read=True)
+        dev.mem.update({5: 100, 6: 200, 7: 300})
+        dev.on_write(REG_READ_WR_DESC, _write_word(8, 6))
+        dev.on_write(REG_ADDR_BASE, 5)
+        vals = [dev.on_jump(REG_READ_TRIGGER).value for _ in range(3)]
+        assert vals == [100, 200, 300]
+
+    def test_default_latched_behaviour_unchanged(self):
+        dev = SramPanelDevice()
+        dev.mem.update({5: 100, 6: 200})
+        dev.on_write(REG_READ_WR_DESC, _write_word(8, 6))
+        dev.on_write(REG_ADDR_BASE, 5)
+        vals = [dev.on_jump(REG_READ_TRIGGER).value for _ in range(2)]
+        assert vals == [100, 100]                 # classic latched address
+
+    def test_auto_inc_starts_at_zero_unset(self):
+        # A fresh device (no R5 write) streams from address 0 — the record-ROM
+        # convention: records load at 0 and the fetch never touches R5.
+        dev = SramPanelDevice(auto_inc_read=True)
+        dev.mem.update({0: 11, 1: 22, 2: 33})
+        dev.on_write(REG_READ_WR_DESC, _write_word(8, 6))
+        vals = [dev.on_jump(REG_READ_TRIGGER).value for _ in range(3)]
+        assert vals == [11, 22, 33]

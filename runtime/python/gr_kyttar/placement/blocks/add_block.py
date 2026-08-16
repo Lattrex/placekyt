@@ -88,13 +88,52 @@ class _NStreamAddSub(KyttarBlock):
                 "    ADD R0, R{data:satpos}",
             ]
         lines += ["    {write:out}", "    {jump:out}"]
+        # ``join``: the COUNTING-JOIN entry — EVERY arm of a 2-arm dataflow join
+        # JUMPs here (its operand already deposited by its WRITE). A toggle
+        # counter fires the combiner on the SECOND arrival regardless of arm
+        # ORDER, so equal-depth sibling arms (e.g. both through one splitter)
+        # need no depth election and cannot race a stale operand:
+        #   arrival 1: R0 = 1-jcnt = 1 (NZ) → store jcnt=1, HALT;
+        #   arrival 2: R0 = 1-jcnt = 0 (Z)  → store jcnt=0, FALL THROUGH into
+        #   ``default:`` with both operands fresh. BR.Z immediately follows the
+        #   SUB (no intervening flag-clobber). The tail PRECEDES the compute
+        #   body, whose label is ``default`` so the default entry resolves BY
+        #   LABEL (an unlabelled entry falls back to the program's first
+        #   instruction — the counter — hijacking every plain delivery). NO
+        #   GOTO: it assembles to an opcode-0x7 word the handoff patcher would
+        #   rewrite into an external JUMP (it patches every 0x7 word).
+        # ``sink``: the legacy DATA-ONLY entry (deepest-arm election) — kept
+        # for compatibility with saved designs whose overrides resolved it.
+        # R0 is BOTH the ALU result register AND input a0 — the counter must
+        # save/restore it or the toggle arithmetic destroys the delivered a0
+        # (the sum then reads 1-jcnt as its first operand).
+        # The counting tail costs 8 program words + jcnt/jsav + 'one' — it
+        # exists ONLY for the 2-input form (the dataflow-join arity every GRC
+        # join uses; N>=3 combiners are driven as single N-operand bursts and
+        # would overflow the 32-word cell with the tail).
+        join_tail = "" if n != 2 else (
+            "join:\n"
+            "    MOVE R{state:jsav}, R0\n"
+            "    MOVE R0, R{data:one}\n"
+            "    SUB R0, R{state:jcnt}\n"
+            "    BR.Z +3\n"
+            "    MOVE R{state:jcnt}, R0\n"
+            "    MOVE R0, R{state:jsav}\n"
+            "    HALT\n"
+            "    MOVE R{state:jcnt}, R0\n"
+            "    MOVE R0, R{state:jsav}\n")
         return {0: CellProgram(
             inputs=ports,
             outputs=[Port("out")],
-            entries=[EntryPoint("default")],
-            data=[DataWord("satpos", self.SAT_POS_Q15, address=satpos_addr)],
-            state=[StateVar("asav")],
-            assembly_template="start:\n" + "\n".join(lines) + "\n",
+            entries=([EntryPoint("default"), EntryPoint("sink")]
+                     + ([EntryPoint("join")] if n == 2 else [])),
+            data=([DataWord("satpos", self.SAT_POS_Q15, address=satpos_addr)]
+                  + ([DataWord("one", 1, address=satpos_addr + 1)]
+                     if n == 2 else [])),
+            state=([StateVar("asav")]
+                   + ([StateVar("jcnt"), StateVar("jsav")] if n == 2 else [])),
+            assembly_template=(join_tail + "default:\n" + "\n".join(lines)
+                               + "\nsink:\n    HALT\n"),
         )}
 
     # -------------------------------------------------------------- reference

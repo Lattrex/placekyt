@@ -21,7 +21,7 @@ The complex FM passband is streamed into the RX the PROVEN way (``complex_in='co
 interleaved xi/xq per sample — the coherent-BPSK-RX ingress path).
 
 Run:
-    cd /home/system/placekyt
+    cd <repo root>
     QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest \
         verification/tests/test_fm_transceiver_grc.py -q
 """

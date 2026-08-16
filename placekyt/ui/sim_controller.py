@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """SimController — drives a GUI simulation over the engine SimulationEngine.
 
 Builds the project, loads the bitstream (with tracing), configures the input
@@ -252,9 +253,9 @@ class SimController(QObject):
         # GNURadio bridge server (placeKYT hosts the chip; GRC streams to it).
         self._gr_server = None
         # Hardware mode: when True, start_gnuradio_server hosts a HwChip (real
-        # Kyttar over the devkyt FPGA / USB) instead of the simkyt.Chip. Same
-        # project, same flowgraphs, same wire protocol — just the backend swapped
-        # (see dev_docs/HARDWARE_BACKEND_PLAN.md). The HwChip is created lazily and
+        # Kyttar over the dev-kit FPGA / USB) instead of the simkyt.Chip. Same
+        # project, same flowgraphs, same wire protocol — just the backend swapped.
+        # The HwChip is created lazily and
         # kept connected across server start/stop so the board isn't re-opened per
         # run. run-only: placement editing is disabled in HW mode (no per-batch
         # rebuild), the design is programmed onto the board once at server start.
@@ -654,7 +655,19 @@ class SimController(QObject):
         streaming to the real Kyttar over USB (same wire protocol, same .grc).
         Single-chip only for now. Returns the bound port, or None on failure."""
         if self._gr_server is not None:
-            return self._gr_server.bound_port
+            # Idempotent for the SAME project (its live edits self-heal via the
+            # per-batch rebuild). A DIFFERENT project needs a fresh host — and a
+            # single<->multi chip switch even needs a DIFFERENT server class, so
+            # the per-batch rebuild can never cover it: the stale 2P2S
+            # MultiChipSimServer kept answering single-chip flowgraphs with
+            # "unknown op 'process_batch'" after a project switch. Restart on
+            # the SAME port so a configured GRC client keeps working.
+            if self._hosted_project_id == id(self.app.project):
+                return self._gr_server.bound_port
+            keep = self._gr_server.bound_port
+            self.stop_gnuradio_server()
+            if port == 0 and keep:
+                port = keep
 
         result = self.app.build()
         project = self.app.project
@@ -670,9 +683,12 @@ class SimController(QObject):
         if not result.ok and not empty_project:
             self.state_changed.emit(f"error: {len(result.errors)} DRC error(s)")
             return None
+        # MULTI-CHIP (e.g. the 2P2S board's two parallel daisy-chains): host a
+        # MultiChipSimServer over a MultiChipSimEngine instead of the single-chip
+        # SimServer. A dedicated path so the single-chip server below stays exactly
+        # as the 7 shipped modems rely on it. (Was a hard "single-chip only" error.)
         if len(project.chips) > 1:
-            self.state_changed.emit("error: GNURadio server is single-chip only")
-            return None
+            return self._start_gnuradio_server_multichip(host, port, result)
 
         # Hosting for a GRC client → bounded batches → retain the WHOLE trace in
         # the waveform (set before engine.load so the chip-side cap is sized for
@@ -700,6 +716,12 @@ class SimController(QObject):
         # handled by _server_batch_retain_all in refresh_debug_from_chip.
         chip_cap = _SERVER_CHIP_CAP if self._server_batch_retain_all else _LIVE_CHIP_CAP
         self.engine.load(result.words(0), trace=True, max_records=chip_cap)
+        # SRAM panels must be registered on the SERVER-hosted chip too (ROM image
+        # preloaded, run() self-pumping the push-reads). This was only done on the
+        # local-Sim run path — a GRC-server run of a panel-backed design (PSK31 /
+        # CW) drove x1_out with NOBODY listening: no push-reads, no output, and an
+        # empty panel in the inspector.
+        self._setup_panels()
         # Server now hosts the design at this version; the pre-batch check rebuilds
         # only when the live design_version moves past it (i.e. an edit happened).
         self._hosted_design_version = getattr(self.app.project, "design_version", 0)
@@ -746,6 +768,15 @@ class SimController(QObject):
         from engine.port_config import batch_reset_writes as _batch_reset_writes_fn
         reset_writes = ([] if empty_project
                         else _batch_reset_writes_fn(result, self._sim_chip))
+        # LIVE-TUNABLE PARAMS: resolve every single-cell block whose cell program
+        # stores a param as a same-named DataWord (the GainBlock pattern) to its
+        # coefficient WRITE target. A changed GRC slider value arriving with a
+        # burst's ``grc_params`` then retunes the RUNNING fabric (sim or board)
+        # with no reflash — see SimServer._apply_live_coeffs.
+        from engine.port_config import live_coeff_writes as _live_coeff_writes_fn
+        coeff_writes = ({} if empty_project else _live_coeff_writes_fn(
+            self.app.project, self.app.registry, self.app.catalog,
+            self._sim_chip, build_result=result))
         # OBSERVABILITY: report what the server resolved at start-up. An EMPTY map
         # is why a duplex run injects at the entry=0/hop=30 single-stream fallback
         # and gets 0 words — it means no x16_in→block input net carried a stream_id
@@ -881,7 +912,12 @@ class SimController(QObject):
             stream_targets=stream_targets,
             batch_reset_writes=reset_writes,
             on_grc_params=_grc_params,
-            debug_hooks=self._batch_debug)
+            debug_hooks=self._batch_debug,
+            # SRAM-panel designs are NOT saturation-safe: enforce the per-sample
+            # paced drive server-side, whatever the flowgraph's pipelined header
+            # says (see SimServer.force_per_sample).
+            force_per_sample=bool(project.panels))
+        self._gr_server.set_coeff_writes(coeff_writes)
         bound = self._gr_server.start()
         # Start the GUI-side pull timer: the ONLY per-sample-rate GUI work
         # during a batch run (the server thread emits nothing per sample). Runs
@@ -890,6 +926,83 @@ class SimController(QObject):
         self._last_refresh_cost = 0.0
         self._server_pull_timer.start()
         self.state_changed.emit(f"gnuradio-server :{bound}")
+        self.server_state.emit(bound)
+        return bound
+
+    def _start_gnuradio_server_multichip(self, host, port, result):
+        """Host a MULTI-CHIP design (2+ chips — the 2P2S board's parallel chains)
+        for a GRC client, via a MultiChipSimEngine + MultiChipSimServer.
+
+        Kept separate from the single-chip ``start_gnuradio_server`` body so that
+        proven path is untouched. Loads every chip's bitstream, wires the project's
+        inter-chip connections, configures each chip's input port (with ``routed``
+        from the built input_landings so a routed head is driven WRITE+JUMP), and
+        resolves the per-chip stream map (``multi_chip_stream_targets`` — chip_id +
+        routed per stream) the server addresses each chain by. Returns the bound
+        port, or None on failure."""
+        from engine.simulator import MultiChipSimEngine
+        from engine.sim_bridge import MultiChipSimServer
+        from engine.port_config import (multi_chip_stream_targets,
+                                         input_port_config)
+
+        project = self.app.project
+        # Per-chip ChipType paths.
+        paths: dict[int, str] = {}
+        for chip in project.chips:
+            tn = chip.type_name or project.chip_type
+            paths[chip.id] = str(self.app.registry.require(tn).path)
+        engine = MultiChipSimEngine(paths)
+        # Inter-chip wires (each chain's on-carrier series link).
+        for ic in project.inter_chip_connections:
+            engine.connect(ic.from_chip, ic.from_port, ic.to_chip, ic.to_port)
+        # Load + trace + configure each chip's input port; routed iff the built
+        # landing cell is not the port cell.
+        for chip in project.chips:
+            cid = chip.id
+            engine.load(cid, result.words(cid), trace=True)
+            cfg = input_port_config(project, self.app.registry, self.app.catalog,
+                                    cid, build_result=result)
+            if cfg is None:
+                continue
+            port_name, kw = cfg
+            cb = getattr(result, "chips", {}).get(cid)
+            landings = getattr(cb, "input_landings", {}) or {} if cb else {}
+            ct = self.app.registry.require(chip.type_name
+                                           or project.chip_type).chip_type
+            in_p = next((p for p in ct.ports
+                         if p.direction.value == "input"), None)
+            port_cell = (in_p.cell_x, in_p.cell_y) if in_p else (0, 0)
+            routed = any(tuple(l.get("cell", port_cell)) != tuple(port_cell)
+                         for l in landings.values())
+            engine.configure_input_port(cid, port_name, routed=routed, **kw)
+
+        stream_targets = multi_chip_stream_targets(
+            project, self.app.registry, self.app.catalog, build_result=result)
+
+        self._multi = True
+        self.engine = engine
+        self._hosted_design_version = getattr(project, "design_version", 0)
+        self._hosted_project_id = id(project)
+        self._gr_server = MultiChipSimServer(engine, stream_targets,
+                                             host=host, port=port)
+        # LIVE-TUNABLE PARAMS (multi-chip): a changed GRC slider value retunes
+        # its block's die with a WRITE injected at the CHAIN HEAD (composite
+        # cross-chip hop) — see MultiChipSimServer._apply_live_coeffs.
+        from engine.port_config import multi_chip_live_coeff_writes
+        self._gr_server.set_coeff_writes(multi_chip_live_coeff_writes(
+            project, self.app.registry, self.app.catalog, build_result=result))
+        bound = self._gr_server.start()
+        # LIVE VIEW: the same GUI-side pull timer as the single-chip server —
+        # each tick drains every chip's trace (MultiChipSimEngine.drain_trace)
+        # into chip-qualified waveform rows + (animation ON) per-chip cell
+        # overlays. Rolling-window mode (no batch retain/rebase): the repeat-
+        # burst loop runs indefinitely.
+        self._server_batch_retain_all = False
+        self._pending_batch_events = []
+        self._last_refresh_cost = 0.0
+        self._last_server_refresh = 0.0
+        self._server_pull_timer.start()
+        self.state_changed.emit(f"gnuradio-server :{bound} (multi-chip)")
         self.server_state.emit(bound)
         return bound
 
@@ -1034,12 +1147,25 @@ class SimController(QObject):
         # chip trace small). get_trace() is non-destructive — only clear_trace()
         # empties it — so both threads can read concurrently.
         _bps = getattr(self, "breakpoints", None)
+        _multi = bool(getattr(self, "_multi", False))
+        # Breakpoints are a single-chip feature; the multi-chip drain below
+        # resets the trace buffers, which would break the server-side scan.
         _bp_mode = (getattr(self, "_gr_server", None) is not None
-                    and _bps is not None and bool(_bps.breakpoints))
-        try:
-            full = list(self.engine.chip.get_trace())
-        except Exception:  # noqa: BLE001
-            full = []
+                    and _bps is not None and bool(_bps.breakpoints)
+                    and not _multi)
+        if _multi:
+            # MULTI-CHIP live view: drain EVERY chip's trace, chip-tagged +
+            # time-sorted, buffers reset in the same call (drain_trace mirrors
+            # the single-chip drain+clear cycle — see MultiChipSimEngine).
+            try:
+                full = self.engine.drain_trace()
+            except Exception:  # noqa: BLE001
+                full = []
+        else:
+            try:
+                full = list(self.engine.chip.get_trace())
+            except Exception:  # noqa: BLE001
+                full = []
         if _bp_mode:
             _gstart = getattr(self, "_gui_trace_scan", 0)
             if _gstart > len(full):        # trace cleared (Run boundary) — restart
@@ -1137,7 +1263,8 @@ class SimController(QObject):
             pending.extend(drained)
             # In breakpoint mode we read a tail via _gui_trace_scan and MUST NOT
             # clear (the server scan needs the events). Otherwise clear as before.
-            if not _bp_mode:
+            # (Multi-chip: drain_trace already reset every chip's buffer.)
+            if not _bp_mode and not _multi:
                 self.engine.clear_trace()
                 self._trace_scan_reset()
         # BOUNDED INGEST — this call's slice of the pending delta:
@@ -1186,7 +1313,27 @@ class SimController(QObject):
         # visuals — the bulk of the per-refresh GUI cost — are skipped. See
         # set_animate_cells. (getattr keeps the trace path robust if a partial
         # test harness stubs this method without the flag.)
-        if getattr(self, "_animate_cells", False):
+        if getattr(self, "_animate_cells", False) and _multi:
+            # MULTI-CHIP animation: per-chip states + handshake steps from the
+            # chip-tagged events (all shipped chips share the 10-wide grid the
+            # decoders assume). Live cell FACES are skipped (single-chip engine
+            # API only) — the static build-resolved arrows stand.
+            anim_events = new_events + anim_now if anim_now else new_events
+            by_chip: dict[int, list] = {}
+            for ev in anim_events:
+                by_chip.setdefault(int(ev.get("_chip", 0)), []).append(ev)
+            m_states: list = []
+            m_steps: list = []
+            for cid in sorted(by_chip):
+                m_states += list(self._states_from_events(by_chip[cid], cid))
+                m_steps += list(self._steps_from_events(by_chip[cid], cid))
+            self.cell_states.emit(m_states)
+            self.handshakes.emit({
+                "steps": m_steps,
+                "cells": [c for s in m_steps for c in s["cells"]],
+                "ports": [p for s in m_steps for p in s["ports"]],
+            })
+        elif getattr(self, "_animate_cells", False):
             # Cell-state overlay + handshakes from THIS batch of new events. The
             # plotted events (new_events) no longer carry the animation-only kinds
             # (exec_tick/output_ready/instr_arrival) — they were split off at drain
@@ -1229,7 +1376,16 @@ class SimController(QObject):
         # Append the new events to the rolling TraceModel window, trim, clear the
         # chip trace (resets the hard cap so recording continues).
         tm = self.trace_model
-        tm.append_live(chip, trimmed, self._width)
+        if _multi:
+            # Per-chip append so the rows are chip-qualified ("chip1.x16_out …")
+            # — the TraceModel is already chip-aware; feed each chip's slice.
+            by_chip2: dict[int, list] = {}
+            for ev in trimmed:
+                by_chip2.setdefault(int(ev.get("_chip", 0)), []).append(ev)
+            for cid in sorted(by_chip2):
+                tm.append_live(cid, by_chip2[cid], self.engine.chip_width(cid))
+        else:
+            tm.append_live(chip, trimmed, self._width)
         if not retain_all:
             tm.trim_to(self._live_trace_max)
         else:
@@ -1362,15 +1518,28 @@ class SimController(QObject):
         # Inter-chip wires.
         for ic in project.inter_chip_connections:
             self.engine.connect(ic.from_chip, ic.from_port, ic.to_chip, ic.to_port)
-        # Load + trace + configure each chip's input port.
+        # Load + trace + configure each chip's input port. ``routed`` (head reached
+        # via a corridor, not at the port cell) comes from the built input_landings
+        # so MultiChipSimEngine.inject drives a routed head via WRITE+JUMP (the raw
+        # write_port_i16 only reaches an at-landing block) — and so a word taps its
+        # gain and its composed output crosses the transparent wire to the next chip.
         first_chip = project.chips[0].id
         first_port = None
         for chip in project.chips:
             self.engine.load(chip.id, result.words(chip.id), trace=True)
-            cfg = self._input_port_config(chip.id)
+            cfg = self._input_port_config(chip.id, build_result=result)
             if cfg is not None:
                 port, kw = cfg
-                self.engine.configure_input_port(chip.id, port, **kw)
+                cb = getattr(result, "chips", {}).get(chip.id)
+                lands = getattr(cb, "input_landings", {}) or {} if cb else {}
+                ct = self.app.registry.require(
+                    chip.type_name or project.chip_type).chip_type
+                ip = next((p for p in ct.ports
+                           if p.direction.value == "input"), None)
+                pc = (ip.cell_x, ip.cell_y) if ip else (0, 0)
+                routed = any(tuple(l.get("cell", pc)) != tuple(pc)
+                             for l in lands.values())
+                self.engine.configure_input_port(chip.id, port, routed=routed, **kw)
                 if chip.id == first_chip:
                     first_port = port
         # Inject stimulus at the first chip's input port. Multi-chip injection
@@ -1875,6 +2044,10 @@ class SimController(QObject):
         if cfg is not None:
             port_name, kw = cfg
             self.engine.configure_input_port(port_name, **kw)
+        # Re-register the SRAM panels on the FRESH chip (a rehost discards the
+        # previous chip's panel registration + held-ack marking; without this a
+        # second Run of a panel-backed design goes silent). Qt-free.
+        self._setup_panels()
         # An explicit 'reset' RPC IS a fresh run → reset the trace (consumed on
         # the GUI thread; never clear directly here — that races the append).
         self._pending_trace_reset = True
@@ -1921,6 +2094,9 @@ class SimController(QObject):
                 isinstance(c.source, _CPE) and isinstance(c.target, _BE)
                 and getattr(c, "stream_id", None)
                 for c in self.app.project.connections)
+            # Refresh the saturation-safety override for the CURRENT design
+            # (a rehost may have switched to/from a panel-backed project).
+            self._gr_server._force_per_sample = bool(self.app.project.panels)
             if _new_targets or not _has_stream_nets:
                 self._gr_server._stream_targets = _new_targets
                 self._gr_server._batch_reset_writes = list(_brw_fn(
@@ -2029,6 +2205,9 @@ class SimController(QObject):
         if cfg is not None:
             port_name, kw = cfg
             self.engine.configure_input_port(port_name, **kw)
+        # Re-register the SRAM panels on the freshly rebuilt chip (ROM image +
+        # held-ack + self-pump) — same requirement as the rehost path. Qt-free.
+        self._setup_panels()
         # Do NOT reset the trace here (this rebuild fires on the FIRST batch of a
         # Run; the on_new_run handler already reset at the Run's connection start).
         # Resetting here too would wipe an earlier batch of the SAME Run.
@@ -2103,7 +2282,15 @@ class SimController(QObject):
         from model.enums import PortDirection
         for panel in project.panels:
             dev = SramPanelDevice(size_words=panel.size_words,
-                                  addr_regs=panel.address_regs)
+                                  addr_regs=panel.address_regs,
+                                  auto_inc_read=bool(
+                                      getattr(panel, "auto_inc_read", False)))
+            # ROM image: preload the panel's initial contents (the .kyt-shipped
+            # table, e.g. the Varicode/Morse LUT) exactly like a bitstream loads
+            # into cells — the design is runnable with NO streamed load phase.
+            if getattr(panel, "image", None):
+                dev.mem.update({int(a): int(w) & 0xFFFF
+                                for a, w in panel.image.items()})
             self._panel_devices[panel.id] = dev
             # Resolve the chip output port (panel-input side) and chip input
             # port (panel-output side) from the panel connections.

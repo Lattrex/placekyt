@@ -1,4 +1,5 @@
-"""SimulationEngine — thin adapter over simkyt (the architecture notes §4.3).
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""SimulationEngine — thin adapter over simkyt.
 
 v1.0 single-chip path: load a bitstream into ``simkyt.Chip``, inject a
 BITSTREAM stimulus, run, capture output as tagged words, and compare against a
@@ -136,7 +137,7 @@ class SimulationEngine:
 
     def read_cell_registers(self, x: int, y: int) -> dict[int, int]:
         """Read all 32 registers of cell ``(x, y)`` from the engine's live RAM
-        (DEBUG_the architecture notes §3.2 live register view). Unlike trace
+        (live register view). Unlike trace
         reconstruction, this reflects values the cell COMPUTED itself (R0
         accumulator, ALU results), not just externally-written words. Returns
         ``{addr: value}`` (uint16), or ``{}`` if the read is unsupported."""
@@ -336,6 +337,11 @@ class MultiChipSimEngine:
         self._widths: dict[int, int] = {}
         self._chip_ids: list[int] = []
         self._trace_cursors: dict[int, int] = {}
+        # Per (chip, port): is the head routed, and its (entry, hop, data_addr) —
+        # so inject() can WRITE+JUMP a routed head (the multichip binding has no
+        # get_port_injection_config; we keep the values we set here).
+        self._routed_ports: dict[tuple[int, str], bool] = {}
+        self._port_cfg: dict[tuple[int, str], tuple[int, int, int]] = {}
         for cid, path in self._paths.items():
             ct = simkyt.ChipType.from_yaml(str(path))
             self._sim.add_chip(_chip_name(cid), ct)
@@ -356,13 +362,42 @@ class MultiChipSimEngine:
             self._sim.enable_trace(_chip_name(chip_id), None)
 
     def configure_input_port(self, chip_id: int, port: str, *,
-                             entry_addr: int, hop_count: int, data_addr: int) -> None:
+                             entry_addr: int, hop_count: int, data_addr: int,
+                             routed: bool = False) -> None:
+        """Configure ``chip_id``'s input ``port`` routing. ``routed=True`` marks a
+        head block reached via a corridor (not at the port landing cell), so the
+        inter-chip relay delivers a crossed value to it via WRITE+JUMP rather than
+        the at-landing raw queue. Derive it from the build's input_landings: the
+        head is routed iff its landing cell != the port cell. Default False keeps
+        the proven at-landing path."""
         name = _chip_name(chip_id)
         self._sim.set_port_entry_address(name, port, entry_addr)
         self._sim.set_port_target_hop_count(name, port, hop_count)
         self._sim.set_port_target_data_address(name, port, data_addr)
+        # set_port_input_routed lands with the routed-input .so; guard so an older
+        # binary (no flag) still loads (at-landing-only behavior).
+        setter = getattr(self._sim, "set_port_input_routed", None)
+        if setter is not None:
+            setter(name, port, bool(routed))
+        self._routed_ports[(chip_id, port)] = bool(routed)
+        self._port_cfg[(chip_id, port)] = (int(entry_addr), int(hop_count),
+                                           int(data_addr))
 
     def inject(self, chip_id: int, port: str, data: list[int]) -> None:
+        """Inject a stimulus burst at a chain HEAD. For an at-landing head this is
+        the raw write_port_i16 (the port paces the burst). For a ROUTED head (per
+        configure_input_port), each value is a WRITE+JUMP to the configured landing
+        — the head analogue of the routed relay — paced one value at a time (queue-
+        all-then-run overruns the single-outstanding input handshake)."""
+        if self._routed_ports.get((chip_id, port)) and \
+                hasattr(self._sim, "inject_data_physical"):
+            name = _chip_name(chip_id)
+            entry, hop, a0 = self._port_cfg[(chip_id, port)]
+            for v in data:
+                self._sim.inject_data_physical(name, [int(v) & 0xFFFF], hop, a0)
+                self._sim.inject_jump_physical(name, hop, entry)
+                self._sim.run(None, 200)
+            return
         # uint16 → int16 view so values ≥ 0x8000 (negative in Q15) are accepted.
         arr = np.asarray([d & 0xFFFF for d in data], dtype=np.uint16).view(np.int16)
         self._sim.write_port_i16(_chip_name(chip_id), port, arr)
@@ -411,6 +446,35 @@ class MultiChipSimEngine:
         NOT expose per-cell memory reads, so this returns ``{}`` — the inspector
         falls back to trace reconstruction for multi-chip live state."""
         return {}
+
+    def drain_trace(self) -> list[dict]:
+        """Drain EVERY chip's trace — chip-tagged (``ev["_chip"]``), time-sorted
+        — and RESET the buffers. MultiChipSimulation has no ``clear_trace``, but
+        re-calling ``enable_trace`` starts a FRESH buffer (verified: n → 0 → n on
+        the next run), so this mirrors the single-chip drain+clear cycle the GUI
+        live view depends on (the chip-side buffer never grows unbounded under
+        the repeat-burst loop). ``handshakes()``'s cursors restart with the
+        buffers."""
+        out: list[dict] = []
+        for cid in self._chip_ids:
+            try:
+                events = self._sim.get_trace(_chip_name(cid))
+            except Exception:  # noqa: BLE001 — trace not enabled for this chip
+                continue
+            for ev in events:
+                d = dict(ev)
+                d["_chip"] = cid
+                out.append(d)
+            try:
+                self._sim.enable_trace(_chip_name(cid), None)
+            except Exception:  # noqa: BLE001
+                pass
+            self._trace_cursors[cid] = 0
+        out.sort(key=lambda e: float(e.get("time_ns", 0.0)))
+        return out
+
+    def chip_width(self, chip_id: int) -> int:
+        return int(self._widths.get(chip_id, 10))
 
     def handshakes(self) -> dict:
         """NEW data transfers since the last call → ``{"cells": [(chip,x,y,face),

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """PRODUCTION coherent QPSK RX — RRC matched filter front end, auto-P&R, BER 0.
 
 The QPSK analog of ``test_production_rx_mf_ber.py``: FOUR separate catalog blocks —
@@ -255,7 +256,7 @@ def test_qpsk_rx_ber_zero(qapp, catalog, chip_type):
 
 
 # --- the .grc import path (the shipped examples/qpsk_modem/qpsk_modem.grc) -----
-GRC = Path("/home/system/placekyt/examples/qpsk_modem/qpsk_modem.grc")
+GRC = Path(__file__).resolve().parents[2] / "examples" / "qpsk_modem" / "qpsk_modem.grc"
 
 
 @pytest.mark.skipif(not GRC.exists(), reason="qpsk_modem.grc absent")

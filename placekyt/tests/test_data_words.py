@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Data-vs-instruction classification + v2 resolved I/O (§3.3).
 
 placeKYT builds via the v2 block path. v2 CellPrograms declare DataWord/StateVar,
@@ -124,6 +125,11 @@ class TestMultiCellBlocks:
             "ComplexBandPassFilter": {"gain": 0.6},     # Σ|h|≈0.90 at unity→0.6
             "ComplexBandRejectFilter": {"gain": 0.45},  # DC passthrough tap needs lower
             "ComplexHighPassFilter": {"gain": 0.45},    # ditto — strong near-DC null
+            # char_to_float's GR default scale=1 is unrepresentable in Q15 (out=in/scale
+            # over int8 [-128,127] only fits [-1,1) when scale>=128); the block's docstring
+            # prescribes scale>=128 and RAISES below it (a documented HW-deviation). Build
+            # it at the minimum valid scale, same as the filters above.
+            "CharToFloatBlock": {"scale": 128},
         }
         failures = []
         for spec in catalog.all():

@@ -2,7 +2,7 @@
 """MultiplyBlock — see :class:`MultiplyBlock`."""
 import numpy as np
 
-from ..block import CellProgram, EntryPoint, Port
+from ..block import CellProgram, DataWord, EntryPoint, Port, StateVar
 from ._base import BlockInterface, KyttarBlock
 
 
@@ -68,12 +68,39 @@ class MultiplyBlock(KyttarBlock):
         for i in range(2, n):
             lines.append(f"    MULQ R0, R{{in:a{i}}}")
         lines += ["    {write:out}", "    {jump:out}"]
+        # ``join``: the COUNTING-JOIN entry (see AddBlock) — every arm JUMPs
+        # here; a toggle counter fires the product on the SECOND arrival, in
+        # ANY arm order (no depth election, no stale-operand race). The tail
+        # PRECEDES the compute body labelled ``default`` and falls through on
+        # the second arrival (see AddBlock for the label/GOTO rationale).
+        # ``sink``: the legacy DATA-ONLY entry, kept for saved designs.
+        # R0 is BOTH the ALU result register AND input a0 — the counter must
+        # save/restore it or the toggle arithmetic destroys the delivered a0
+        # (the sum then reads 1-jcnt as its first operand).
+        # The counting tail costs 8 program words + jcnt/jsav + 'one' — it
+        # exists ONLY for the 2-input form (the dataflow-join arity every GRC
+        # join uses; N>=3 combiners are driven as single N-operand bursts and
+        # would overflow the 32-word cell with the tail).
+        join_tail = "" if n != 2 else (
+            "join:\n"
+            "    MOVE R{state:jsav}, R0\n"
+            "    MOVE R0, R{data:one}\n"
+            "    SUB R0, R{state:jcnt}\n"
+            "    BR.Z +3\n"
+            "    MOVE R{state:jcnt}, R0\n"
+            "    MOVE R0, R{state:jsav}\n"
+            "    HALT\n"
+            "    MOVE R{state:jcnt}, R0\n"
+            "    MOVE R0, R{state:jsav}\n")
         return {0: CellProgram(
             inputs=ports,
             outputs=[Port("out")],
-            entries=[EntryPoint("default")],
-            data=[],
-            assembly_template="start:\n" + "\n".join(lines) + "\n",
+            entries=([EntryPoint("default"), EntryPoint("sink")]
+                     + ([EntryPoint("join")] if n == 2 else [])),
+            data=([DataWord("one", 1, address=n)] if n == 2 else []),
+            state=([StateVar("jcnt"), StateVar("jsav")] if n == 2 else []),
+            assembly_template=(join_tail + "default:\n" + "\n".join(lines)
+                               + "\nsink:\n    HALT\n"),
         )}
 
     # -------------------------------------------------------------- reference

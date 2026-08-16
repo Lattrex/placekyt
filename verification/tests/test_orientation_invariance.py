@@ -70,8 +70,24 @@ def _label(orient):
 # (block_type, params, kind, ports). kind: "real" | "complex" | "complex_wps1".
 _CASES = [
     ("GainBlock", {"gain": 0.5}, "real", ("sample", "out")),
+    # Add-constant (blocks.add_const_ff): single real rail in (x) -> x + const out.
+    # Single cell, feed-forward, no internal connections -> freely orientable; its
+    # saturating ADD datapath is D4-invariant by construction.
+    ("AddConstBlock", {"const": 0.3}, "real", ("x", "out")),
+    # float->char (int8 quantiser): single real rail in / one int8 word out. Memoryless,
+    # so its int8 output must be the IDENTICAL word list in every D4 orientation.
+    ("FloatToCharBlock", {"scale": 127.0}, "real", ("sample", "out")),
+    # Integer-sample delay line (blocks.delay): single real rail in (sample) ->
+    # delayed sample out. A depth-`delay` shift register (pure MOVEs, no arithmetic,
+    # no internal connections / feedback corridor) -> freely orientable; its output
+    # word list must be IDENTICAL in every D4 orientation.
+    ("DelayBlock", {"delay": 3}, "real", ("sample", "out")),
     ("FIRFilterBlock", {"coefficients": [0.2, 0.3, 0.2]}, "real", ("sample", "out")),
     ("ComplexUpsamplerBlock", {"sps": 2}, "complex", ("xi", "xq", "yi")),
+    # Complex fixed-gain scaler (blocks.multiply_const_cc): I/Q in, scaled (yi, yq)
+    # out. Single cell, feed-forward, no internal connections -> freely orientable;
+    # its per-rail MULQ + saturating-restore datapath is D4-invariant by construction.
+    ("ComplexGainBlock", {"gain": 2.4}, "complex", ("xi", "xq", "yi")),
     ("ComplexRRCMatchedFilterBlock", {}, "complex", ("xi", "xq", "yi")),
     ("ComplexCostasLoopBlock", {"order": 2}, "complex", ("xi", "xq", "yi_tap")),
     ("ComplexCostasLoopBlock", {"order": 4}, "complex", ("xi", "xq", "yi_tap")),
@@ -82,6 +98,17 @@ _CASES = [
     ("MMTimingRecoveryBlock", {}, "complex", ("xi", "xq", "yi_e")),
     ("IQUpconvertBlock", {}, "complex_wps1", ("xi", "xq", "out")),
     ("ComplexMixerBlock", {}, "complex", ("xi", "xq", "yi")),
+    # TRUE complex-constant multiply (2 cells: mul -> sat). Complex I/Q in, complex
+    # (yi, yq) out; a full complex-product rotation must be IDENTICAL in every D4
+    # orientation (a real cross-term k so the rotation is exercised).
+    ("MultiplyConstComplex", {"re": 0.7, "im": 0.5}, "complex", ("xi", "xq", "yi")),
+    # Freq-xlating decimating FIR (channelizer): complex I/Q in, complex I/Q out.
+    # The fused NCO down-mixer + real-tap complex FIR must compute IDENTICALLY in all
+    # 8 D4 orientations (no direction-specific internal feedback; the FIR wavefront
+    # faces come from default_layout and transform correctly).
+    ("FreqXlatingFIRBlock",
+     {"decimation": 1, "taps": [0.25, 0.5, 0.25], "center_freq": 2000.0,
+      "sampling_freq": 32000.0}, "complex", ("xi", "xq", "out")),
     ("NCOBlock", {}, "real", ("sample", "yi")),
     # M17 4FSK modem blocks: single real rail in/out. The mapper emits one PAM
     # level per two input bits (None-gaps on the odd samples); the slicer emits two
@@ -89,12 +116,39 @@ _CASES = [
     # IDENTICAL output word list in every D4 orientation.
     ("FSK4SymbolMapperBlock", {}, "real", ("sample", "out")),
     ("FSK4SlicerBlock", {}, "real", ("sample", "out")),
+    # BPSK hard slicer (GR digital.binary_slicer_fb): single real rail in (llr) ->
+    # hard bit out. Memoryless sign decision; verified in the 1:1 'bit' mode.
+    ("BPSKSlicerBlock", {"out_mode": "bit"}, "real", ("llr", "out")),
     # 16-QAM modem blocks: the mapper packs 4 bits -> the GR constellation_16qam()
     # point (bit rail in, complex I/Q pair out — drain the I rail); the slicer maps a
     # recovered (I, Q) pair -> the 4-bit symbol index. Both must produce the IDENTICAL
     # output word list in every D4 orientation.
     ("QAM16SymbolMapperBlock", {}, "real", ("sample", "out_i")),
     ("QAM16SlicerBlock", {}, "complex_wps1", ("in_i", "in_q", "out")),
+    # Additive LFSR scrambler (GR digital.additive_scrambler_bb): single real rail
+    # in (bit) -> scrambled bit out. Deterministic feed-forward datapath with an
+    # internal 16-bit LFSR state (no feedback corridor / no reconvergent fan-in), so
+    # its on-chip output must be IDENTICAL in every D4 orientation.
+    ("LFSRScramblerBlock", {}, "real", ("sample", "out")),
+    # Pack-k-bits (GR blocks.pack_k_bits_bb): single real rail in (one bit LSB) ->
+    # one packed byte every k triggers (None-gaps on the accumulating samples).
+    # Feed-forward datapath with a small packing accumulator + counter (no feedback
+    # corridor / no reconvergent fan-in), so its per-trigger output word list must be
+    # IDENTICAL in every D4 orientation.
+    ("PackKBitsBlock", {"k": 8}, "real", ("sample", "out")),
+    # Differential decoder (GR digital.diff_decoder_bb): single real rail in
+    # (symbol) -> decoded symbol out. Single cell, 1-sample previous-INPUT state (no
+    # feedback corridor / no reconvergent fan-in), so its on-chip output must be
+    # IDENTICAL in every D4 orientation. modulus 4 exercises the multi-bit mask.
+    ("DiffDecoderBlock", {"modulus": 4}, "real", ("sample", "out")),
+    # digital.map_bb per-symbol LUT remap: single real rail in/out, one word per
+    # input (out = map[in], LOAD-indirect table). Memoryless — must emit the
+    # IDENTICAL output word list in every D4 orientation.
+    ("MapBBBlock", {"map": [3, 2, 1, 0]}, "real", ("sample", "out")),
+    # Bitwise NOT of a byte stream (GR blocks.not_bb): single real rail in (sample)
+    # -> (~in)&0xFF out. Single cell, memoryless, no internal connections / feedback,
+    # so its NOT+mask datapath is D4-invariant by construction.
+    ("NotBlock", {}, "real", ("sample", "out")),
 ]
 
 # No orientation residuals remain: every block in _CASES is invariant in all 8 D4

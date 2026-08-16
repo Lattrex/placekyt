@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """InterChipWireItem — a board-level chip-to-chip wire (§3.2).
 
 Drawn as a thick dark line between two chips' port anchors (the from-port output

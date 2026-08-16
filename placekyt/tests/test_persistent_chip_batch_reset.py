@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Repeated persistent-chip RX Runs stay BER 0 — the packet-boundary reset guard.
 
 A coherent RX modem hosted PERSISTENTLY on one SimServer used to CORRUPT on

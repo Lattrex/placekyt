@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """
 Kyttar Convolutional Encoder K=7 GRC Block.
 

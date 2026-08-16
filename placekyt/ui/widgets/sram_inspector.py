@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """SramInspectorView — a live 2D map of an SRAM panel's contents.
 
 The panel stores up to 65 536 words; showing that as a 1-D list is useless, so

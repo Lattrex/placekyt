@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Flagship: the REAL 4-block coherent BPSK RX through auto-P&R.
 
 Import ``coherent_bpsk_rx.grc`` (x16_in → ComplexRRCMatchedFilter →

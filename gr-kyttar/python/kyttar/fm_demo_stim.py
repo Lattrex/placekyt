@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Stimulus generators for the FM transceiver demo flowgraph
 (examples/fm_transceiver/fm_transceiver.grc). Imported as a plain Python module
 (like am_demo_stim / modem_demo_stim) so the .grc has no fragile inline epy source.

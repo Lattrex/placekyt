@@ -1,0 +1,18 @@
+{
+  "kyttar_block": "ComplexToMagBlock",
+  "passed": true,
+  "metric": "amplitude",
+  "n_compared": 3000,
+  "max_abs_err": 20,
+  "tolerance": 40,
+  "nmse_db": null,
+  "correlation": null,
+  "bit_errors": 0,
+  "delay_used": 0,
+  "coverage": {
+    "gr_equiv": "blocks.complex_to_mag(1)",
+    "patterns": "3000 uniform complex points + rails/axes/seam edges; chip bit-exact to reference per-sample AND saturated-pipelined",
+    "mutation": true,
+    "note": "CORDIC vectoring, 14 iterations, prescale 1/4, max 19.7 LSB vs GR (gate 40); |v|>1 saturates by design"
+  }
+}

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """
 Bitstream Generator for Kyttar arrays.
 
@@ -20,7 +21,7 @@ from .intel_hex import IntelHexWriter
 from .myc_format import MycWriter
 
 
-# CONFIG register bit positions (from config_reg.rs)
+# CONFIG register bit positions (the cell CONFIG register layout)
 # CONFIG format:
 #   [5:0]   FLAGS (read-only status flags)
 #   [9:8]   FWD_FACE (forward direction)

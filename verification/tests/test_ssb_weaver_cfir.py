@@ -22,7 +22,7 @@ The gate (NEVER weakened):
 
 Run:
     KYTTAR_GR_PYTHON=/usr/bin/python3 QT_QPA_PLATFORM=offscreen \
-      /home/system/placekyt/.venv/bin/python -m pytest \
+      .venv/bin/python -m pytest \
       verification/tests/test_ssb_weaver_cfir.py -x -q -s
 """
 from __future__ import annotations
@@ -100,9 +100,13 @@ def test_single_chip_build_succeeds():
           f"nets={len(res.routed_nets)} reason={res.reason[:160]}")
     assert res.ok, f"single-chip build failed: {res.reason}"
     assert res.total_cells <= res.grid_cells, "footprint exceeds the array"
-    # 6 blocks: 2 ComplexMixer(11) + 2 ComplexLowPass + 2 IQUpconvert(6).
-    assert res.block_cells == 2 * 11 + 2 * clpf_cells(PLAN) + 2 * 6
-    assert len(res.routed_nets) == 11, "all 11 nets must route"
+    # 6 blocks: 2 ComplexMixer(11) + 2 ComplexLowPass(clpf_cells) + 2 IQUpconvert(8).
+    # IQUpconvert is 8 cells (the datapath cells + the INV-20 serialize-LOCK transit/relay
+    # its complex fan-in needs), NOT 6 — the old formula undercounted by 2 per upconvert.
+    assert res.block_cells == 2 * 11 + 2 * clpf_cells(PLAN) + 2 * 8
+    # 15 nets: the TX + RX Weaver chains (mixer->lpf->upconvert x2) plus ingress/egress
+    # and the per-rail complex sub-nets — count follows the built graph, not a stale 11.
+    assert len(res.routed_nets) == 15, "all nets must route"
 
 
 # --- (d) mutation: the gate has teeth ----------------------------------------

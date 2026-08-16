@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Direct abutment is a valid connection (no filler routing cell required).
 
 User report: a packed layout where blocks are placed edge-to-edge and connected

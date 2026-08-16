@@ -1,0 +1,518 @@
+options:
+  parameters:
+    author: Lattrex
+    catch_exceptions: 'True'
+    category: '[GRC Hier Blocks]'
+    cmake_opt: ''
+    comment: ''
+    copyright: ''
+    description: 'CORDIC polar decomposition on the Kyttar array: ONE complex signal
+      (an amplitude-modulated rotating phasor) split into two placed CORDIC chains
+      — Complex To Mag recovers the AM ENVELOPE, Complex To Arg recovers the PHASE
+      RAMP — each overlaid on the stock GNU Radio reference block so the chip and
+      GR traces sit on top of each other. Both chains share the chip via the
+      stream-id duplex (streams "mag" / "arg" on x16_in/x16_out). The Arg chain
+      emits HALF-TURN units (word/32768*pi rad); the stock reference is scaled by
+      1/pi so the traces align. Run as GNURadio Server in placeKYT (port 58950),
+      then Execute here.'
+    gen_cmake: 'On'
+    gen_linking: dynamic
+    generate_options: qt_gui
+    hier_block_src_path: '.:'
+    id: cordic_polar
+    max_nouts: '0'
+    output_language: python
+    placement: (0,0)
+    qt_qss_theme: ''
+    realtime_scheduling: ''
+    run: 'True'
+    run_command: '{python} -u {filename}'
+    run_options: prompt
+    sizing_mode: fixed
+    thread_safe_setters: ''
+    title: "Kyttar CORDIC polar — on-chip magnitude + phase vs stock GNU Radio"
+    window_size: (1400,900)
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [8, 8]
+    rotation: 0
+    state: enabled
+
+blocks:
+- name: burst_len
+  id: variable
+  parameters:
+    comment: samples per dispatched burst
+    value: '256'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [200, 12]
+    rotation: 0
+    state: enabled
+- name: server_port
+  id: variable
+  parameters:
+    comment: placeKYT prints this on "Run as GNURadio Server"
+    value: '58950'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [40, 12]
+    rotation: 0
+    state: enabled
+- name: iq_stim
+  id: variable
+  parameters:
+    comment: 'AM''d rotating phasor: envelope 0.25..0.80 at 2 cyc/burst, phase ramp
+      10 cyc/burst — mag shows the envelope, arg shows the sawtooth'
+    value: '[(0.25+0.55*(0.5+0.5*__import__(''math'').sin(2*3.141592653589793*2*n/burst_len)))*complex(__import__(''math'').cos(2*3.141592653589793*10*n/burst_len),__import__(''math'').sin(2*3.141592653589793*10*n/burst_len))
+      for n in range(burst_len)]'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [360, 12]
+    rotation: 0
+    state: enabled
+- name: src_mag
+  id: blocks_vector_source_x
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: stimulus for the MAG stream (repeat for a stable live plot)
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    repeat: 'True'
+    tags: '[]'
+    type: complex
+    vector: iq_stim
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [48, 156]
+    rotation: 0
+    state: enabled
+- name: src_arg
+  id: blocks_vector_source_x
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: stimulus for the ARG stream (same signal, its own stream)
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    repeat: 'True'
+    tags: '[]'
+    type: complex
+    vector: iq_stim
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [48, 520]
+    rotation: 0
+    state: enabled
+- name: ksrc_mag
+  id: kyttar_source
+  parameters:
+    affinity: ''
+    alias: ''
+    burst_len: burst_len
+    comment: I/Q burst -> chip x16_in (stream 'mag')
+    complex_in: complex
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_channels: '1'
+    pipelined: 'yes'
+    output_words: '"q15"'
+    port_name: '"x16_in"'
+    repeat: 'no'
+    schedule: '"interleaved"'
+    server_host: '"127.0.0.1"'
+    server_port: server_port
+    stream_id: '"mag"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [312, 140]
+    rotation: 0
+    state: enabled
+- name: ksrc_arg
+  id: kyttar_source
+  parameters:
+    affinity: ''
+    alias: ''
+    burst_len: burst_len
+    comment: I/Q burst -> chip x16_in (stream 'arg')
+    complex_in: complex
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_channels: '1'
+    pipelined: 'yes'
+    output_words: '"q15"'
+    port_name: '"x16_in"'
+    repeat: 'no'
+    schedule: '"interleaved"'
+    server_host: '"127.0.0.1"'
+    server_port: server_port
+    stream_id: '"arg"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [312, 504]
+    rotation: 0
+    state: enabled
+- name: cmag
+  id: kyttar_complex_to_mag
+  parameters:
+    affinity: ''
+    alias: ''
+    block_name: '""'
+    comment: CORDIC vectoring |x+jy| (placed on chip)
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [568, 172]
+    rotation: 0
+    state: enabled
+- name: carg
+  id: kyttar_complex_to_arg
+  parameters:
+    affinity: ''
+    alias: ''
+    block_name: '""'
+    comment: CORDIC vectoring atan2 in half-turns (placed on chip)
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [568, 536]
+    rotation: 0
+    state: enabled
+- name: ksink_mag
+  id: kyttar_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: chip envelope <- x16_out (stream 'mag')
+    device_id: '"kyttar_0"'
+    hold_secs: '8.0'
+    in_type: float
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_channels: '1'
+    port_name: '"x16_out"'
+    server_port: server_port
+    server_repeat: 'False'
+    stream_id: '"mag"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [808, 156]
+    rotation: 0
+    state: enabled
+- name: ksink_arg
+  id: kyttar_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: chip phase (half-turns) <- x16_out (stream 'arg')
+    device_id: '"kyttar_0"'
+    hold_secs: '8.0'
+    in_type: float
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_channels: '1'
+    port_name: '"x16_out"'
+    server_port: server_port
+    server_repeat: 'False'
+    stream_id: '"arg"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [808, 520]
+    rotation: 0
+    state: enabled
+- name: ref_mag
+  id: blocks_complex_to_mag
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: stock GNU Radio reference envelope
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [312, 296]
+    rotation: 0
+    state: enabled
+- name: ref_arg
+  id: blocks_complex_to_arg
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: stock GNU Radio reference phase (radians)
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [312, 660]
+    rotation: 0
+    state: enabled
+- name: ref_arg_scale
+  id: blocks_multiply_const_vxx
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: radians -> half-turns (1/pi), matching the chip's angle units
+    const: '0.3183098861837907'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    type: float
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [520, 668]
+    rotation: 0
+    state: enabled
+- name: time_mag
+  id: qtgui_time_sink_x
+  parameters:
+    affinity: ''
+    alias: ''
+    alpha1: '1.0'
+    alpha10: '1.0'
+    alpha2: '1.0'
+    alpha3: '1.0'
+    alpha4: '1.0'
+    alpha5: '1.0'
+    alpha6: '1.0'
+    alpha7: '1.0'
+    alpha8: '1.0'
+    alpha9: '1.0'
+    autoscale: 'False'
+    axislabels: 'True'
+    color1: blue
+    color10: dark blue
+    color2: red
+    color3: green
+    color4: black
+    color5: cyan
+    color6: magenta
+    color7: yellow
+    color8: dark red
+    color9: dark green
+    comment: stock GR envelope (blue) vs Kyttar CORDIC envelope (red)
+    ctrlpanel: 'False'
+    entags: 'True'
+    grid: 'True'
+    gui_hint: ''
+    label1: GNU Radio |x|
+    label10: Signal 10
+    label2: Kyttar CORDIC |x|
+    label3: Signal 3
+    label4: Signal 4
+    label5: Signal 5
+    label6: Signal 6
+    label7: Signal 7
+    label8: Signal 8
+    label9: Signal 9
+    legend: 'True'
+    marker1: '-1'
+    marker10: '-1'
+    marker2: '-1'
+    marker3: '-1'
+    marker4: '-1'
+    marker5: '-1'
+    marker6: '-1'
+    marker7: '-1'
+    marker8: '-1'
+    marker9: '-1'
+    name: '"Envelope: stock GNU Radio vs on-chip CORDIC"'
+    nconnections: '2'
+    size: '256'
+    srate: '1'
+    stemplot: 'False'
+    style1: '1'
+    style10: '1'
+    style2: '1'
+    style3: '1'
+    style4: '1'
+    style5: '1'
+    style6: '1'
+    style7: '1'
+    style8: '1'
+    style9: '1'
+    tr_chan: '0'
+    tr_delay: '0'
+    tr_level: '0.0'
+    tr_mode: qtgui.TRIG_MODE_FREE
+    tr_slope: qtgui.TRIG_SLOPE_POS
+    tr_tag: '""'
+    type: float
+    update_time: '0.10'
+    width1: '2'
+    width10: '1'
+    width2: '1'
+    width3: '1'
+    width4: '1'
+    width5: '1'
+    width6: '1'
+    width7: '1'
+    width8: '1'
+    width9: '1'
+    ylabel: magnitude
+    ymax: '1.0'
+    ymin: '0.0'
+    yunit: '""'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1064, 148]
+    rotation: 0
+    state: enabled
+- name: time_arg
+  id: qtgui_time_sink_x
+  parameters:
+    affinity: ''
+    alias: ''
+    alpha1: '1.0'
+    alpha10: '1.0'
+    alpha2: '1.0'
+    alpha3: '1.0'
+    alpha4: '1.0'
+    alpha5: '1.0'
+    alpha6: '1.0'
+    alpha7: '1.0'
+    alpha8: '1.0'
+    alpha9: '1.0'
+    autoscale: 'False'
+    axislabels: 'True'
+    color1: blue
+    color10: dark blue
+    color2: red
+    color3: green
+    color4: black
+    color5: cyan
+    color6: magenta
+    color7: yellow
+    color8: dark red
+    color9: dark green
+    comment: stock GR phase/pi (blue) vs Kyttar CORDIC half-turns (red)
+    ctrlpanel: 'False'
+    entags: 'True'
+    grid: 'True'
+    gui_hint: ''
+    label1: GNU Radio arg/pi
+    label10: Signal 10
+    label2: Kyttar CORDIC arg (half-turns)
+    label3: Signal 3
+    label4: Signal 4
+    label5: Signal 5
+    label6: Signal 6
+    label7: Signal 7
+    label8: Signal 8
+    label9: Signal 9
+    legend: 'True'
+    marker1: '-1'
+    marker10: '-1'
+    marker2: '-1'
+    marker3: '-1'
+    marker4: '-1'
+    marker5: '-1'
+    marker6: '-1'
+    marker7: '-1'
+    marker8: '-1'
+    marker9: '-1'
+    name: '"Phase: stock GNU Radio vs on-chip CORDIC (half-turn units)"'
+    nconnections: '2'
+    size: '256'
+    srate: '1'
+    stemplot: 'False'
+    style1: '1'
+    style10: '1'
+    style2: '1'
+    style3: '1'
+    style4: '1'
+    style5: '1'
+    style6: '1'
+    style7: '1'
+    style8: '1'
+    style9: '1'
+    tr_chan: '0'
+    tr_delay: '0'
+    tr_level: '0.0'
+    tr_mode: qtgui.TRIG_MODE_FREE
+    tr_slope: qtgui.TRIG_SLOPE_POS
+    tr_tag: '""'
+    type: float
+    update_time: '0.10'
+    width1: '2'
+    width10: '1'
+    width2: '1'
+    width3: '1'
+    width4: '1'
+    width5: '1'
+    width6: '1'
+    width7: '1'
+    width8: '1'
+    width9: '1'
+    ylabel: half-turns
+    ymax: '1.2'
+    ymin: '-1.2'
+    yunit: '""'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1064, 512]
+    rotation: 0
+    state: enabled
+
+connections:
+- [src_mag, '0', ksrc_mag, '0']
+- [src_mag, '0', ref_mag, '0']
+- [ksrc_mag, '0', cmag, '0']
+- [cmag, '0', ksink_mag, '0']
+- [ksink_mag, '0', time_mag, '1']
+- [ref_mag, '0', time_mag, '0']
+- [src_arg, '0', ksrc_arg, '0']
+- [src_arg, '0', ref_arg, '0']
+- [ksrc_arg, '0', carg, '0']
+- [carg, '0', ksink_arg, '0']
+- [ksink_arg, '0', time_arg, '1']
+- [ref_arg, '0', ref_arg_scale, '0']
+- [ref_arg_scale, '0', time_arg, '0']
+
+metadata:
+  file_format: 1
+  grc_version: 3.10.12.0

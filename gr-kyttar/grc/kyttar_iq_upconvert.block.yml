@@ -4,9 +4,15 @@ category: '[Kyttar]'
 
 templates:
   imports: from gnuradio import kyttar
-  make: kyttar.iq_upconvert(${device_id}, ${sample_rate}, ${frequency})
+  make: kyttar.iq_upconvert(${device_id}, ${sample_rate}, ${frequency},
+    block_name=${block_name})
 
 parameters:
+- id: block_name
+  label: placeKYT block name
+  dtype: string
+  default: '""'
+  hide: part
 - id: device_id
   label: Device ID
   dtype: string

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Live GNURadio↔placeKYT bridge for the full coherent BPSK receiver (#227).
 
 Drives the proven CoherentRXBlock — hosted on a placeKYT ``SimServer`` — through

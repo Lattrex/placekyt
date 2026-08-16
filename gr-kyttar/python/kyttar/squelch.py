@@ -21,46 +21,46 @@ class squelch(_PassThrough):
     Gates the signal based on power level on the chip.
     GR marker; the real DSP runs on the placeKYT-hosted chip.
 
-    Parameters:
+    Parameters (mirror GNU Radio analog.pwr_squelch_ff VERBATIM):
         device_id: ID of the kyttar.device to use
-        threshold: Power threshold for gating (0.0 to 1.0)
-        hysteresis: Hysteresis amount to prevent rapid cycling
-        attack_alpha: Attack smoothing factor (0-1, higher = faster)
-        release_alpha: Release smoothing factor (0-1, higher = faster)
+        db: threshold in dB for power squelch (GR default -50)
+        alpha: gain of the power averaging filter (GR default 1e-4)
+        ramp: attack/release ramp in samples (0 = disabled)
+        gate: True = drop squelched samples (unsupported); False = emit zeros
     """
 
     def __init__(
         self,
         device_id: str = "kyttar_0",
-        threshold: float = 0.1,
-        hysteresis: float = 0.02,
-        attack_alpha: float = 0.25,
-        release_alpha: float = 0.03,
+        db: float = -50.0,
+        alpha: float = 0.0001,
+        ramp: int = 0,
+        gate: bool = False,
     ):
         super().__init__(name="Kyttar Squelch", n_in=1, n_out=1)
         self._device_id = device_id
-        self._threshold = threshold
-        self._hysteresis = hysteresis
-        self._attack_alpha = attack_alpha
-        self._release_alpha = release_alpha
+        self._db = db
+        self._alpha = alpha
+        self._ramp = int(ramp)
+        self._gate = bool(gate)
         # Advertise params for GRC↔placeKYT sync detection (see dsp_markers).
+        # Names are the SquelchBlock/analog.pwr_squelch_ff class params VERBATIM.
         self._advertise_grc_params(
             device_id, "SquelchBlock",
-            {"threshold": threshold, "hysteresis": hysteresis,
-             "attack_alpha": attack_alpha, "release_alpha": release_alpha})
+            {"db": db, "alpha": alpha, "ramp": int(ramp), "gate": bool(gate)})
 
-    def set_threshold(self, threshold: float):
-        """Set squelch threshold."""
-        self._threshold = threshold
+    def set_db(self, db: float):
+        """Set squelch threshold in dB."""
+        self._db = db
 
-    def set_hysteresis(self, hysteresis: float):
-        """Set hysteresis."""
-        self._hysteresis = hysteresis
+    def set_alpha(self, alpha: float):
+        """Set power-averaging filter gain."""
+        self._alpha = alpha
 
-    def get_threshold(self) -> float:
-        """Get current threshold."""
-        return self._threshold
+    def get_db(self) -> float:
+        """Get current threshold in dB."""
+        return self._db
 
-    def get_hysteresis(self) -> float:
-        """Get current hysteresis."""
-        return self._hysteresis
+    def get_alpha(self) -> float:
+        """Get current averaging alpha."""
+        return self._alpha

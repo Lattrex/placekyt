@@ -1,0 +1,60 @@
+id: kyttar_diff_encoder
+label: 🧪 Kyttar Differential Encoder
+category: '[Kyttar]/Coding'
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.diff_encoder(${device_id}, ${modulus}, ${coding})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+
+- id: modulus
+  label: Modulus
+  dtype: int
+  default: '2'
+
+- id: coding
+  label: Coding
+  dtype: enum
+  options: ['"DIFF_DIFFERENTIAL"', '"DIFF_NRZI"']
+  option_labels: [Differential, NRZI]
+  default: '"DIFF_DIFFERENTIAL"'
+
+inputs:
+- label: sample
+  domain: stream
+  dtype: byte
+
+outputs:
+- label: out
+  domain: stream
+  dtype: byte
+
+documentation: |-
+  🧪 Differential encoder — the DBPSK/DQPSK precoder for differential PSK
+  (PSK31, DBPSK, DQPSK). Exact drop-in for GNU Radio digital.diff_encoder_bb.
+
+  Recurrence (verified against LIVE GNU Radio):
+    DIFF_DIFFERENTIAL (default):  y[n] = (x[n] + y[n-1])     mod M
+    DIFF_NRZI:                    y[n] = (x[n] + y[n-1] + 1)  mod M
+
+  cold-started at y[-1]=0. It is the exact inverse of digital.diff_decoder_bb, so
+  a receiver never needs an absolute phase reference. One cell, one-sample carry
+  state on the chip.
+
+  Ports:
+    sample (in): input symbol x[n] (byte, an int in [0, M-1])
+    out:         encoded symbol y[n] (byte, an int in [0, M-1])
+
+  Parameters:
+    Device ID: which Kyttar device to use
+    Modulus:   M of the code's alphabet (GR default 2 -> DBPSK precoder)
+    Coding:    Differential (GR default) | NRZI (adds +1; modulus 2 only, per GR)
+
+  Mapped by placeKYT (File -> Import GNURadio Flowgraph) to DiffEncoderBlock.
+
+file_format: 1

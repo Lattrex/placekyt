@@ -1,4 +1,5 @@
-"""Project-level Design Rule Checks (the architecture notes §5.2).
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Project-level Design Rule Checks.
 
 This pass validates **project-model invariants** — things computable from the
 placeKYT project graph alone, BEFORE bitstream generation. Per §8 (Week 7-8),

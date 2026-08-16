@@ -15,7 +15,7 @@ The reported number is ``settled_sps`` from ``TraceModel.stream_summary()`` — 
 EXACT field the panel's "Settled rate" column shows.
 
 Run:
-    cd /home/system/placekyt
+    cd <repo root>
     QT_QPA_PLATFORM=offscreen .venv/bin/python verification/simplex_rates.py
 """
 from __future__ import annotations

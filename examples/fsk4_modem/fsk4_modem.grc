@@ -381,11 +381,13 @@ blocks:
     alpha: '0.5'
     comment: "RRC pulse shaper -- placed on chip"
     device_id: '"kyttar_0"'
+    gain: '1.0'
     io_type: float
     maxoutbuf: '0'
     minoutbuf: '0'
-    span: '8'
-    sps: '2'
+    ntaps: '17'
+    sampling_freq: '2.0'
+    symbol_rate: '1.0'
   states:
     bus_sink: false
     bus_source: false
@@ -504,11 +506,13 @@ blocks:
     alpha: '0.5'
     comment: "RRC matched filter -- placed on chip"
     device_id: '"kyttar_0"'
+    gain: '1.0'
     io_type: float
     maxoutbuf: '0'
     minoutbuf: '0'
-    span: '8'
-    sps: '2'
+    ntaps: '17'
+    sampling_freq: '2.0'
+    symbol_rate: '1.0'
   states:
     bus_sink: false
     bus_source: false

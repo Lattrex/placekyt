@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Stimulus generators for the full-duplex BPSK modem demo flowgraph
 (bpsk_modem.grc). Imported as a plain Python module (like coherent_demo_stim) so
 the .grc has no fragile inline epy source. Two streams share one chip:

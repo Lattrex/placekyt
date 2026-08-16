@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """FIRFilterBlock — see :class:`FIRFilterBlock`."""
 import numpy as np
 import math

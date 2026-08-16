@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Block Library panel — categorized tree of available blocks (§3.4).
 
 Populated from the :class:`BlockCatalog`. Items are draggable onto the canvas

@@ -1,0 +1,51 @@
+id: kyttar_raised_cosine_envelope
+label: Kyttar Raised-Cosine Envelope
+category: '[Kyttar]/Ham'
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.raised_cosine_envelope(${device_id}, ${samples_per_symbol})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+- id: samples_per_symbol
+  label: Samples per symbol (N)
+  dtype: int
+  default: '256'
+
+inputs:
+- id: '0'
+  label: sample
+  domain: stream
+  dtype: float
+
+outputs:
+- id: '0'
+  label: out
+  domain: stream
+  dtype: float
+
+documentation: |-
+  PSK31 raised-cosine (half-sine) symbol-shaping envelope — placeKYT-native
+  ([Kyttar]) block; there is NO stock GNU Radio counterpart.
+
+  Generates env[n] = sin((n+0.5)*pi/N) on the fly for ANY samples_per_symbol (N),
+  reusing the proven NCO quarter-wave sine machinery (a 33-entry table independent
+  of N — no sps-sized table). The real shaping runs ON the placeKYT-hosted chip.
+  This GRC block is a placeable pass-through marker carrying the graph so a flowgraph
+  imports + runs.
+
+  Ports:
+    sample (in): symbol values (float, Q15)
+    out:         raised-cosine-shaped samples (float, Q15)
+
+  Parameters (mirror RaisedCosineEnvelopeBlock verbatim):
+    Device ID:          which Kyttar device to use.
+    Samples per symbol: envelope length N (PSK31 default 256).
+
+  Mapped by placeKYT (File -> Import GNURadio Flowgraph) to RaisedCosineEnvelopeBlock.
+
+file_format: 1

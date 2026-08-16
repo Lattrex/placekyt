@@ -1,4 +1,5 @@
-"""Resource path resolution (the architecture notes §6).
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Resource path resolution.
 
 All resource access goes through :func:`resource_path` so it works both in
 development and in a frozen PyInstaller bundle. Lives at the top level so

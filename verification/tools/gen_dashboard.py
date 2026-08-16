@@ -40,6 +40,7 @@ _STATUS_ICON = {
     "in_progress": "🟡 in progress",
     "planned": "⬜ planned",
     "wont_map": "⛔ won't map",
+    "needs_human": "🚧 needs human (quarantined)",
 }
 _TIER_LABEL = {1: "1 · feed-forward", 2: "2 · stateful/loop", 3: "3 · new GRC block"}
 
@@ -54,6 +55,14 @@ def _load_report(kyttar_block: str) -> dict | None:
         return None
 
 
+def _grc_cell(grc_block: str) -> str:
+    """The GNU Radio-equivalent column: a code span, or a plain-language note
+    for blocks with no single-GR-block counterpart."""
+    if not grc_block:
+        return "(Kyttar-native, no single GR block)"
+    return f"`{grc_block}`"
+
+
 def _metrics_cell(report: dict | None) -> str:
     if not report:
         return "—"
@@ -62,7 +71,8 @@ def _metrics_cell(report: dict | None) -> str:
     m = report.get("metric", "")
     if m == "decision":
         n = report.get("n_compared", 0)
-        return f"BER 0 ({n} bits)"
+        # Older reports carry no bit count — omit it rather than print "(0 bits)".
+        return f"BER 0 ({n} bits)" if n else "BER 0"
     mae = report.get("max_abs_err")
     tol = report.get("tolerance")
     nmse = report.get("nmse_db")
@@ -137,7 +147,7 @@ def render(manifest: dict) -> str:
             # Exists and works in a demo, but not yet per-block verified.
             status += " · 🧪 proof-of-concept"
         tier = _TIER_LABEL.get(b.get("tier", 0), str(b.get("tier", "")))
-        grc = f"`{b.get('grc_block', '')}`"
+        grc = _grc_cell(b.get("grc_block", ""))
         lines.append(
             f"| **{b['kyttar_block']}** | {grc} | {tier} | {status} | "
             f"{_metrics_cell(rep)} | {_coverage_cell(rep)} |")
@@ -183,7 +193,7 @@ def render_readme_summary(manifest: dict) -> str:
         for b in done:
             rep = _load_report(b["kyttar_block"])
             lines.append(
-                f"| **{b['kyttar_block']}** | `{b.get('grc_block','')}` | "
+                f"| **{b['kyttar_block']}** | {_grc_cell(b.get('grc_block', ''))} | "
                 f"{_metrics_cell(rep)} |")
     lines.append(_README_END)
     return "\n".join(lines)

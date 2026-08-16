@@ -1,0 +1,24 @@
+{
+  "kyttar_block": "DiffDecoderBlock",
+  "passed": true,
+  "metric": "decision",
+  "n_compared": 48,
+  "max_abs_err": 0,
+  "tolerance": 0,
+  "nmse_db": null,
+  "correlation": null,
+  "bit_errors": 0,
+  "delay_used": 0,
+  "coverage": {
+    "gr_equiv": "digital.diff_decoder_bb",
+    "edge": "all-zeros / all-(M-1) / alternating / full-symbol ramp",
+    "random": 4,
+    "modulus": "2 and 4",
+    "coding": "DIFF_DIFFERENTIAL (default) + DIFF_NRZI (mod2)",
+    "round_trip": "GR diff_encoder_bb -> on-chip decode recovers input (mod 2 and 4)",
+    "mutation": "add-instead-of-subtract / no-state pass-through / wrong initial prev / inverted / +1 shift / wrong modulus / empty",
+    "decision": "y[n]=(x[n]-x[n-1]) mod M, x[-1]=0; NRZI adds +1 (mod2)",
+    "note": "1-cell 1-sample-state (previous INPUT) differential decoder; BIT-EXACT vs diff_decoder_bb, delay 0",
+    "hw_deviation": "modulus must be power-of-two (on-chip modulo is a bitmask); NRZI requires modulus 2 (mirrors GR)"
+  }
+}

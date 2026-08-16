@@ -1,0 +1,31 @@
+{
+  "block": "ComplexToMagBlock",
+  "grc_block": "blocks.complex_to_mag(1)",
+  "tier": 2,
+  "wave": 3,
+  "schema_version": 1,
+  "started_utc": "2026-08-13T20:56:00Z",
+  "ended_utc": "2026-08-13T22:05:00Z",
+  "walltime_sec": 2070.0,
+  "tokens": {
+    "input": 0,
+    "output": 150000,
+    "cache_read": 0,
+    "total": 150000
+  },
+  "turns": 32,
+  "attempts": 1,
+  "human_interventions": 0,
+  "intervention_reasons": [],
+  "prompts": [
+    {
+      "role": "initial",
+      "text": "The CORDIC implementation will unlock a lot of doors as well. (User dispatch, inline session build — CORDIC vectoring engine, built as a PAIR with ComplexToArgBlock in one shared session.)"
+    }
+  ],
+  "verify_passed": true,
+  "quarantined": false,
+  "quarantine_reason": "",
+  "commit_sha": "0c05e71",
+  "notes": "METHODOLOGY (same flag as LMSEqualizerBlock): built INLINE in an interactive session, not via factory_dispatch — tokens are the SESSION BUDGET DELTA (upper bound incl. input/cache), and this block was built AS A PAIR with ComplexToArgBlock in one shared session (shared spikes, shared engine cells, shared test file): the PAIR totals (~295k tokens, ~69 min wall 20:56Z-22:05Z, ~63 turns) are DIVIDED EVENLY across the two records; per-pair totals stated here for reconstruction. BUILD: numeric spike FIRST (3 iterations: overflow found — K*|v| reaches 2.33 and wraps -> prescale 1/4; wrong-metric trap — |v|>1 inputs 'failing' were correct saturation; final cell-exact reference locked before any silicon). ISA notes verified: shift counts are immediate instruction fields (INV-34), GOTO is the only unconditional branch (BR.A = all-ones flag), WRITE/MOVE preserve flags. Architecture decision recorded: UNROLLED one-cell-per-iteration beats looped (loop control + temporaries cannot fit the 32-word cell). ONE debug cycle to chip bit-exact: state registers auto-allocated onto R0-R2 in data-word-less cells (promoted to INV-33 no-data-words corollary). RESULT: chip BIT-EXACT per-sample AND under saturated pipelined drive (first multi-cell DSP chains with NO INV-19 limit); vs GR max 19.7 LSB measured, 40 LSB gate (2x). One harness improvement (per-entry saturation anchor — ingress/egress corridor contention at the default anchor, the single-chip INV-32 cousin) and one layout lesson (serpentine must end with a free egress corridor) recorded in lessons_log."
+}

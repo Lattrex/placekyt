@@ -1,0 +1,46 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# 2P2S dev board — two parallel daisy-chains of two kyttar_10x12 chips each.
+#
+#   FPGA ─chainA_in─▶ [chip0]x16_out ──▶x16_in[chip1] ─chainA_out─▶ FPGA   (chain A)
+#   FPGA ─chainB_in─▶ [chip2]x16_out ──▶x16_in[chip3] ─chainB_out─▶ FPGA   (chain B)
+#
+# Each chain: chip A's x16_out wires ON THE CARRIER to chip B's x16_in (the series
+# link the FPGA never sees); the FPGA only touches each chain's HEAD (chip A x16_in)
+# and TAIL (chip B x16_out). Two such chains run in parallel — the FPGA fans an
+# incoming stream to the right chain's head and merges the two tails.
+#
+# x16 ports only for now (the first plumbing proof). The x1 (slow) ports exist on
+# every chip type but are intentionally left unwired here; an equivalent x1 board +
+# example follows once x16 multiplexing-across-chips is proven.
+board:
+  name: dev2p2s
+  manufacturer: Lattrex
+  version: "1.0"
+  description: >-
+    2P2S prototype dev board: two parallel daisy-chains of two kyttar_10x12 chips.
+    Each chain has its own head (x16_in) and tail (x16_out) on the FPGA; the FPGA
+    handles chain selection and output merge. Series link is on the carrier.
+  bitstream_slots: 4
+  fpga_sram_kb: 512
+
+  chips:
+    - { id: 0, type: kyttar_10x12, label: "A0 (chain A head)" }
+    - { id: 1, type: kyttar_10x12, label: "A1 (chain A tail)" }
+    - { id: 2, type: kyttar_10x12, label: "B0 (chain B head)" }
+    - { id: 3, type: kyttar_10x12, label: "B1 (chain B tail)" }
+
+  # On-carrier series links (chip A x16_out → chip B x16_in), one per chain.
+  chip_connections:
+    - from: { chip: 0, port: x16_out }
+      to:   { chip: 1, port: x16_in }
+      wire_delay: 5.0
+    - from: { chip: 2, port: x16_out }
+      to:   { chip: 3, port: x16_in }
+      wire_delay: 5.0
+
+  # FPGA endpoints: each chain's head input and tail output.
+  fpga_connections:
+    - { name: chainA_in,  fpga_port: fx3_out0, chip: 0, chip_port: x16_in  }
+    - { name: chainA_out, fpga_port: fx3_in0,  chip: 1, chip_port: x16_out }
+    - { name: chainB_in,  fpga_port: fx3_out1, chip: 2, chip_port: x16_in  }
+    - { name: chainB_out, fpga_port: fx3_in1,  chip: 3, chip_port: x16_out }

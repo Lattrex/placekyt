@@ -1,0 +1,22 @@
+{
+  "kyttar_block": "Nlog10Block",
+  "passed": true,
+  "metric": "amplitude",
+  "n_compared": 15,
+  "max_abs_err": 4,
+  "tolerance": 10,
+  "nmse_db": -74.77391314312133,
+  "correlation": 0.9999999914993228,
+  "bit_errors": 0,
+  "delay_used": 0,
+  "coverage": {
+    "edge": true,
+    "random": 3,
+    "param_sweep": 6,
+    "powers_of_two": true,
+    "full_domain": true,
+    "in_le_zero_floor": true,
+    "hw_deviation": true,
+    "mutation": true
+  }
+}

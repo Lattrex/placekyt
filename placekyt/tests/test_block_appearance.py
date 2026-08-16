@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Block appearance + face-sync + icon tests (GUI-review follow-ups).
 
 Covers: per-block colour rotation, manual colour override (+ round-trip),

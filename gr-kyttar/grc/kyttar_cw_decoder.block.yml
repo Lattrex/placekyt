@@ -1,0 +1,130 @@
+id: kyttar_cw_decoder
+label: Kyttar CW Decoder
+category: '[Kyttar]/Ham'
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.cw_decoder(${device_id}, ${threshold}, ${panel_hop}, ${emit_hop}, ${emit_dest},
+    ${emit_entry}, ${unit_samples}, ${read_addr_hop}, ${read_dest}, ${read_entry},
+    ${read_wr_desc}, ${read_jp_desc}, ${out_dest}, ${emit_jump_entry}, ${run_dest},
+    ${run_entry}, ${addr_base})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+- id: threshold
+  label: Envelope threshold
+  dtype: float
+  default: '0.3'
+- id: panel_hop
+  label: Panel hop (@N)
+  dtype: int
+  default: '1'
+- id: emit_hop
+  label: Emit hop (@N)
+  dtype: int
+  default: '1'
+- id: emit_dest
+  label: Emit dest register
+  dtype: int
+  default: '25'
+- id: emit_entry
+  label: Emit entry point
+  dtype: int
+  default: '1'
+
+- id: unit_samples
+  label: unit_samples
+  dtype: int
+  default: 0
+  hide: part
+- id: read_addr_hop
+  label: read_addr_hop
+  dtype: int
+  default: 1
+  hide: part
+- id: read_dest
+  label: read_dest
+  dtype: int
+  default: 5
+  hide: part
+- id: read_entry
+  label: read_entry
+  dtype: int
+  default: 1
+  hide: part
+- id: read_wr_desc
+  label: read_wr_desc
+  dtype: int
+  default: 0
+  hide: part
+- id: read_jp_desc
+  label: read_jp_desc
+  dtype: int
+  default: 0
+  hide: part
+- id: out_dest
+  label: out_dest
+  dtype: int
+  default: 25
+  hide: part
+- id: emit_jump_entry
+  label: emit_jump_entry
+  dtype: raw
+  default: None
+  hide: part
+- id: run_dest
+  label: run_dest
+  dtype: int
+  default: 25
+  hide: part
+- id: run_entry
+  label: run_entry
+  dtype: int
+  default: 1
+  hide: part
+- id: addr_base
+  label: addr_base
+  dtype: int
+  default: 0
+  hide: part
+
+inputs:
+- id: '0'
+  label: sample
+  domain: stream
+  dtype: float
+
+outputs:
+- id: '0'
+  label: out
+  domain: stream
+  dtype: byte
+
+documentation: |-
+  SRAM-backed CW / Morse decoder (ITU-R M.1677) — placeKYT-native ([Kyttar]) block;
+  there is NO stock GNU Radio CW decoder.
+
+  Decodes an ON/OFF keying envelope (the CWKeyerBlock output) back to ASCII text
+  using an adaptive-unit + reverse-Morse LUT held in the SRAM panel (two passes over
+  panel scratch to lock the global-minimum dot unit before classifying dot vs dash).
+  The decode runs ON the placeKYT-hosted chip. This GRC block is a placeable
+  pass-through marker carrying the graph so a flowgraph imports + runs.
+
+  Ports:
+    sample (in): ON/OFF keying envelope samples (float, Q15)
+    out:         decoded ASCII character (byte)
+
+  Parameters (mirror CWDecoderBlock verbatim):
+    Device ID:          which Kyttar device to use.
+    Envelope threshold: ON/OFF keying threshold (fraction of peak).
+    Panel hop:          hops from this cell to the SRAM panel port (@N).
+    Emit hop:           hops to the emit destination cell (@N).
+    Emit dest:          destination register for the emitted ASCII char.
+    Emit entry:         entry point invoked to emit each decoded character.
+
+  Mapped by placeKYT (File -> Import GNURadio Flowgraph) to CWDecoderBlock.
+
+file_format: 1

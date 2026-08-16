@@ -4,7 +4,7 @@ category: '[Kyttar]'
 
 templates:
   imports: from gnuradio import kyttar
-  make: kyttar.soft_demodulator(${device_id}, ${noise_variance}, ${llr_scale})
+  make: kyttar.soft_demodulator(${device_id}, ${constellation}, ${npwr}, ${noise_variance}, ${llr_scale})
 
 parameters:
 - id: device_id
@@ -12,8 +12,23 @@ parameters:
   dtype: string
   default: '"kyttar_0"'
 
+# GR digital.constellation_soft_decoder_cf constellation. 'bpsk' | 'qpsk'.
+- id: constellation
+  label: Constellation
+  dtype: enum
+  options: ['"bpsk"', '"qpsk"']
+  option_labels: [BPSK, QPSK]
+  default: '"bpsk"'
+
+# GR noise power. <0 resolves to GR's stored default (1.0).
+- id: npwr
+  label: Noise Power (npwr)
+  dtype: real
+  default: '-1.0'
+
+# DEPRECATED BPSK-only alias for npwr (σ²), kept for back-compat.
 - id: noise_variance
-  label: Noise Variance
+  label: Noise Variance (deprecated)
   dtype: real
   default: '0.1'
 

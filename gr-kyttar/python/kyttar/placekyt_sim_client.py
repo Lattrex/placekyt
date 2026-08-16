@@ -146,6 +146,60 @@ class ChipProxy:
         _reply, out = self._rpc(h, np.asarray(iq_interleaved, dtype="<f4"))
         return out if out is not None else np.array([], dtype=np.float32)
 
+    def process_batch_multichip(self, streams, max_events_per=40000):
+        """MULTI-CHIP batch: drive a design spread across 2+ chips (the 2P2S
+        board's two parallel daisy-chains) in one RPC, each stream addressed to
+        WHICH chip/chain it feeds. This is the multi-chip analogue of
+        :meth:`process_batch`, talking to the host's ``MultiChipSimServer``.
+
+        ``streams`` is a list of dicts, one per stream::
+
+            {"stream_id": str, "chip_id": int, "out_chip": int,
+             "entry_addr": int, "hop_count": int, "data_addrs": [int, ...],
+             "samples": <float sequence>, "complex": bool, "raw": bool}
+
+        Each stream's ``samples`` are injected on its chip's input head (a routed
+        head is driven WRITE+JUMP by the server), and its chain's recovered words
+        are returned. Returns ``{stream_id: np.ndarray}`` — each chain's output,
+        split by the reply's per-stream ``lengths``. ``chip_id``/``out_chip`` and
+        the landing (entry/hop/data_addrs) come from placeKYT's resolved
+        ``multi_chip_stream_targets`` (placement-derived); the GR source/sink pass
+        them through unchanged."""
+        payload = []
+        stream_hdrs = []
+        for s in streams:
+            samp = np.asarray(s.get("samples", []), dtype="<f4")
+            is_complex = bool(s.get("complex", False))
+            n = (samp.size // 2) if is_complex else samp.size
+            stream_hdrs.append({
+                "stream_id": s.get("stream_id"),
+                "chip_id": int(s.get("chip_id", 0)),
+                "out_chip": int(s.get("out_chip", s.get("chip_id", 0))),
+                "entry_addr": int(s.get("entry_addr", 0)),
+                "hop_count": int(s.get("hop_count", 30)),
+                "data_addrs": [int(a) for a in s.get("data_addrs", [0])],
+                "complex": is_complex,
+                "raw": bool(s.get("raw", False)),
+                "n_samples": int(n),
+            })
+            payload.append(samp)
+        cat = (np.concatenate(payload) if payload
+               else np.array([], dtype="<f4"))
+        h = {"op": "process_batch_multichip",
+             "streams": stream_hdrs,
+             "max_events_per": int(max_events_per)}
+        reply, out = self._rpc(h, cat)
+        # Split the flat reply payload by the per-stream lengths, keyed by id.
+        result = {}
+        lengths = reply.get("lengths", [])
+        sids = reply.get("stream_ids", [])
+        off = 0
+        arr = out if out is not None else np.array([], dtype=np.float32)
+        for sid, ln in zip(sids, lengths):
+            result[sid] = arr[off:off + int(ln)]
+            off += int(ln)
+        return result
+
     def set_grc_params(self, params_by_block):
         """Advertise this flowgraph's per-block params to the host so placeKYT
         can detect a parameter drift from the placed design (the GRC↔placeKYT

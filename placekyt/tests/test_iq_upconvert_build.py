@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Build the IQUpconvertBlock through the real placeKYT pipeline + run it.
 
 The I/Q passband upconverter (s = I*cos - Q*sin, free-running NCO) is a 6-cell

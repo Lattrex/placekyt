@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Single-cell bus-fed deadlock-safety (§5.3) — input-face != output-face + DRC.
 
 A SINGLE-CELL block on the routing bus (cell_count==1, e.g. BPSKSlicerBlock) has ONE

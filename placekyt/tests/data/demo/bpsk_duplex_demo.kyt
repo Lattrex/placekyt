@@ -55,6 +55,9 @@ blocks:
   library: lattrex.official
   params:
     modulation: bpsk
+    # constellation convention (bit0->-1, bit1->+1) so it chains cleanly with the
+    # GR-correct BPSKSlicer (>=0 -> 1) for a true bits-in == bits-out loopback.
+    bpsk_bit0_positive: false
   placement:
     chip: 0
     cells:

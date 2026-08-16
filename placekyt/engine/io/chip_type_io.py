@@ -1,4 +1,5 @@
-"""Load chip-type definitions from YAML (the architecture notes §2.3).
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Load chip-type definitions from YAML.
 
 Read-only for v1.0: chip types are fixed hardware descriptions provided by
 Lattrex (bundled or dropped into ``~/.placekyt/chips/``), not edited in the IDE.

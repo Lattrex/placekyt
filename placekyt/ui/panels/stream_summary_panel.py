@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """StreamSummaryPanel — per-stream throughput / latency / power summary.
 
 A run-summary view the user can read WITHOUT hand-digging per design: one row

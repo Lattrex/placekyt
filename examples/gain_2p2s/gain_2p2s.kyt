@@ -1,0 +1,145 @@
+project:
+  format_version: 1
+  name: gain_2p2s
+  version: '1.0'
+chip_type: kyttar_10x12
+chips:
+- id: 0
+  label: A0 (chain A head)
+  position: {x: 0.0, y: 0.0}
+- id: 1
+  label: A1 (chain A tail)
+  position: {x: 768.0, y: 0.0}
+- id: 2
+  label: B0 (chain B head)
+  position: {x: 0.0, y: 900.0}
+- id: 3
+  label: B1 (chain B tail)
+  position: {x: 768.0, y: 900.0}
+inter_chip_connections:
+- from: {chip: 0, port: x16_out}
+  to: {chip: 1, port: x16_in}
+- from: {chip: 2, port: x16_out}
+  to: {chip: 3, port: x16_in}
+blocks:
+- name: gain
+  type: GainBlock
+  library: lattrex.official
+  params:
+    gain: 0.5
+    gain_range: 15
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 1, y: 0, face: east}
+- name: gain_1
+  type: GainBlock
+  library: lattrex.official
+  params:
+    gain: 0.5
+    gain_range: 15
+  placement:
+    chip: 1
+    cells:
+    - {cell_id: 0, x: 1, y: 0, face: east}
+- name: gain_2
+  type: GainBlock
+  library: lattrex.official
+  params:
+    gain: 0.5
+    gain_range: 15
+  placement:
+    chip: 2
+    cells:
+    - {cell_id: 0, x: 1, y: 0, face: east}
+- name: gain_3
+  type: GainBlock
+  library: lattrex.official
+  params:
+    gain: 0.5
+    gain_range: 15
+  placement:
+    chip: 3
+    cells:
+    - {cell_id: 0, x: 1, y: 0, face: east}
+connections:
+- name: gain_to_x16_out
+  from: {block: gain, port: out}
+  to: {chip_port: {chip: 0, port: x16_out}}
+  route:
+  - {x: 1, y: 0}
+  - {x: 2, y: 0}
+  - {x: 3, y: 0}
+  - {x: 4, y: 0}
+  - {x: 5, y: 0}
+  - {x: 6, y: 0}
+  - {x: 7, y: 0}
+  - {x: 8, y: 0}
+  - {x: 9, y: 0}
+  out_tag: 5
+- name: gain_1_to_x16_out
+  from: {block: gain_1, port: out}
+  to: {chip_port: {chip: 1, port: x16_out}}
+  route:
+  - {x: 1, y: 0}
+  - {x: 2, y: 0}
+  - {x: 3, y: 0}
+  - {x: 4, y: 0}
+  - {x: 5, y: 0}
+  - {x: 6, y: 0}
+  - {x: 7, y: 0}
+  - {x: 8, y: 0}
+  - {x: 9, y: 0}
+  out_tag: 10
+- name: gain_2_to_x16_out
+  from: {block: gain_2, port: out}
+  to: {chip_port: {chip: 2, port: x16_out}}
+  route:
+  - {x: 1, y: 0}
+  - {x: 2, y: 0}
+  - {x: 3, y: 0}
+  - {x: 4, y: 0}
+  - {x: 5, y: 0}
+  - {x: 6, y: 0}
+  - {x: 7, y: 0}
+  - {x: 8, y: 0}
+  - {x: 9, y: 0}
+  out_tag: 15
+- name: gain_3_to_x16_out
+  from: {block: gain_3, port: out}
+  to: {chip_port: {chip: 3, port: x16_out}}
+  route:
+  - {x: 1, y: 0}
+  - {x: 2, y: 0}
+  - {x: 3, y: 0}
+  - {x: 4, y: 0}
+  - {x: 5, y: 0}
+  - {x: 6, y: 0}
+  - {x: 7, y: 0}
+  - {x: 8, y: 0}
+  - {x: 9, y: 0}
+  out_tag: 20
+- name: x16_in_to_gain
+  from: {chip_port: {chip: 0, port: x16_in}}
+  to: {block: gain, port: sample}
+  route:
+  - {x: 0, y: 0}
+  stream_id: A
+- name: x16_in_to_gain_1
+  from: {chip_port: {chip: 0, port: x16_in}}
+  to: {block: gain_1, port: sample}
+  route:
+  - {x: 0, y: 0}
+  stream_id: B
+- name: x16_in_to_gain_2
+  from: {chip_port: {chip: 2, port: x16_in}}
+  to: {block: gain_2, port: sample}
+  route:
+  - {x: 0, y: 0}
+  stream_id: C
+- name: x16_in_to_gain_3
+  from: {chip_port: {chip: 2, port: x16_in}}
+  to: {block: gain_3, port: sample}
+  route:
+  - {x: 0, y: 0}
+  stream_id: D

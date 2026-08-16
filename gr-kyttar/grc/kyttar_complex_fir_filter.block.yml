@@ -1,0 +1,71 @@
+id: kyttar_complex_fir_filter
+label: Kyttar Complex FIR Filter
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar Complex FIR Filter — complex (I/Q) FIR with ONE shared set of REAL taps,
+  a drop-in for GNU Radio's filter.fir_filter_ccf (complex-in, complex-out, float
+  taps). The SAME real coefficients filter the I and the Q rail independently:
+      out_i = FIR(in_i, coefficients),  out_q = FIR(in_q, coefficients)
+
+  This collapses the GNU-Radio complex_to_float -> 2x fir_filter_fff ->
+  float_to_complex idiom into ONE block, so a ComplexMixer -> ComplexFIR ->
+  IQUpconvert chain stays pure same-source complex packets (no fan-out, no
+  reconvergent fan-in). Verified bit-exact vs fir_filter_ccf fed the same taps
+  (verification/tests: 3/9/31 taps -> 1/5/16 cells).
+
+  This block runs on the Kyttar chip. Place it between a KyttarSource and a
+  KyttarSink block; the device_id must match your KyttarDevice.
+
+  HARDWARE NOTE: a wide (multi-cell) complex FIR REQUIRES Sum|coefficients| <= 1
+  (gain <= ~0.9) — the fused last cell has no headroom for a saturating gain
+  restore; a violation raises a clear ValueError. Coefficient values are Q15
+  ([-1.0, +1.0)).
+
+  Parameters (VERBATIM the GNU Radio fir_filter_ccf names; ``coefficients`` = GR
+  ``taps``):
+    - Device ID:     ID of the KyttarDevice block
+    - Coefficients:  the real FIR taps
+    - Decimation:    output decimation factor (must be 1 — a rate-changing complex
+                     FIR is not supported yet and raises a clear error)
+    - Interpolation: output interpolation factor (must be 1 — see Decimation)
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.complex_fir_filter(device_id=${device_id}, coefficients=${coefficients},
+    decimation=${decimation}, interpolation=${interpolation})
+  callbacks:
+    - set_coefficients(${coefficients})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+  - id: coefficients
+    label: Coefficients
+    dtype: real_vector
+    default: '[0.25, 0.5, 0.25]'
+  - id: decimation
+    label: Decimation
+    dtype: int
+    default: '1'
+  - id: interpolation
+    label: Interpolation
+    dtype: int
+    default: '1'
+
+inputs:
+  - label: in
+    dtype: complex
+
+outputs:
+  - label: out
+    dtype: complex
+
+asserts:
+  - ${ decimation == 1 }
+  - ${ interpolation == 1 }
+
+file_format: 1

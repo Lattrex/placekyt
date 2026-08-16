@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Drawing a route to/from a PARAM-DEPENDENT complex block must resolve the REAL
 port (yi_e / xi / yi_tap …), NOT the param-less default (the real-mode ``out``).
 

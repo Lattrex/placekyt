@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """§1.4 relay emission for >31-hop bus routes.
 
 A single 10x12 chip's max manhattan distance is 20, so a >31-hop route only arises

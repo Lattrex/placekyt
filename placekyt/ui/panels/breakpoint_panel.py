@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """BreakpointPanel — list / add / remove breakpoints (DEBUG_ARCHITECTURE §3.6).
 
 A dock listing the active breakpoints with enable checkboxes + remove buttons,

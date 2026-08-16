@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Shared 'nice' tick generation for the time/value rulers.
 
 Pure math (no Qt) so it can be unit-tested and reused by the waveform ruler,

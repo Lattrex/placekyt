@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Full-duplex modem END-TO-END via the GUI IMPORT + AUTO-P&R path (#334).
 
 This proves the path the USER actually exercises in the GUI: import

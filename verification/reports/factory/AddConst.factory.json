@@ -1,0 +1,31 @@
+{
+  "block": "AddConst",
+  "grc_block": "blocks.add_const_ff",
+  "tier": 3,
+  "wave": 1,
+  "schema_version": 1,
+  "started_utc": "2026-08-07T02:18:32Z",
+  "ended_utc": "2026-08-07T03:26:59Z",
+  "walltime_sec": 668.812,
+  "tokens": {
+    "input": 0,
+    "output": 131035,
+    "cache_read": 0,
+    "total": 131035
+  },
+  "turns": 87,
+  "attempts": 1,
+  "human_interventions": 0,
+  "intervention_reasons": [],
+  "prompts": [
+    {
+      "role": "initial",
+      "text": "factory_dispatch-style prompt for AddConst; isolated worktree; verify vs GR or quarantine."
+    }
+  ],
+  "verify_passed": true,
+  "quarantined": false,
+  "quarantine_reason": "",
+  "commit_sha": "4921c8a",
+  "notes": "1 cell, 1 attempt, autonomous. NEW block (not poc). Saturating Q15 add (INV-25 wrap-analogue handled up front). Peak 0.40 LSB vs GR (const Q15-quant), bit-exact off the sat edge; process_reference saturates. Independently re-verified on merged block-factory (31 tests + mutations)."
+}

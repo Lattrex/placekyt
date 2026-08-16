@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """AppController — the hub between the UI and the model/command/engine layers.
 
 Owns the live :class:`Project`, its :class:`CommandManager`, the
@@ -683,55 +684,99 @@ class AppController(QObject):
         # overlap), never displacing a working serpentine layout. ``channel_slack`` gives
         # the router breathing room between the packed blocks.
         from engine.cpsat_placer import plan_cpsat, CpSatPlacerUnavailable
-        plan = placer.plan(chip)
-        if not self._plan_is_legal(plan, chip, w, h, footprint, port_maps):
-            try:
-                # Compact wirelength-min packing. The auto-P&R loop raises
-                # ``channel_reserve`` on a routing failure; map it to CP-SAT slack so a
-                # dense pack the maze router can't route opens ROUTING CHANNELS between
-                # blocks. A uniform +1 ring is infeasible on 10x12 (inflated tall-block
-                # area > 120), but ONE-AXIS slack fits (proven: slack_x=1 OR slack_y=1
-                # feasible, both together not) — so reserve 2 -> x-slack, 3 -> y-slack,
-                # 4 -> (fallback) x-slack again. reserve 1 = the compact slack-0 pack.
-                cr = int(getattr(self, "_pnr_channel_reserve", 1))
-                # The auto-P&R loop raises ``channel_reserve`` on a routing failure; map
-                # it to a (slack_x, slack_y, tap_reserve) CP-SAT config. reserve 1 = the
-                # compact wirelength pack; higher reserves open ONE-AXIS routing channels
-                # (both-axis slack is infeasible on 10x12) and reserve I/O broker taps so
-                # the maze router always has a tap + corridor. The loop keeps whichever
-                # config routes the most nets (each config is tried + route-scored).
-                sx, sy, tr = {
-                    1: (0, 0, False),
-                    2: (1, 0, "out"),
-                    3: (1, 0, "out+fanin"),   # expose fan-in input cells (IQUpconvert)
-                    4: (0, 1, "out+fanin"),
-                }.get(cr, (0, 0, False))
-                wl = (max(sx, sy) > 0) or bool(tr)
-                seed = getattr(self, "_pnr_seed", None)
-                # A good CP-SAT layout needs a real budget (short budgets give scattered,
-                # unroutable packs). The compact reserve-1 pack gets the full budget; the
-                # seeded looser attempts a moderate one.
+
+        def _cpsat_plan():
+            # Compact wirelength-min packing. The auto-P&R loop raises
+            # ``channel_reserve`` on a routing failure; map it to CP-SAT slack so a
+            # dense pack the maze router can't route opens ROUTING CHANNELS between
+            # blocks. A uniform +1 ring is infeasible on 10x12 (inflated tall-block
+            # area > 120), but ONE-AXIS slack fits (proven: slack_x=1 OR slack_y=1
+            # feasible, both together not) — so reserve 2 -> x-slack, 3 -> y-slack,
+            # 4 -> (fallback) x-slack again. reserve 1 = the compact slack-0 pack.
+            cr = int(getattr(self, "_pnr_channel_reserve", 1))
+            # The auto-P&R loop raises ``channel_reserve`` on a routing failure; map
+            # it to a (slack_x, slack_y, tap_reserve) CP-SAT config. reserve 1 = the
+            # compact wirelength pack; higher reserves open ONE-AXIS routing channels
+            # (both-axis slack is infeasible on 10x12) and reserve I/O broker taps so
+            # the maze router always has a tap + corridor. The loop keeps whichever
+            # config routes the most nets (each config is tried + route-scored).
+            sx, sy, tr = {
+                1: (0, 0, False),
+                2: (1, 0, "out"),
+                3: (1, 0, "out+fanin"),   # expose fan-in input cells (IQUpconvert)
+                4: (0, 1, "out+fanin"),
+            }.get(cr, (0, 0, False))
+            wl = (max(sx, sy) > 0) or bool(tr)
+            seed = getattr(self, "_pnr_seed", None)
+            # Solve-time budget per CP-SAT attempt, ADAPTIVE to design weight.
+            # Small models (few single-cell blocks) reach optimal in ~2 s, and
+            # in the INTERLEAVED sweep a slow compact solve starves the cheap
+            # serpentine twins of wall-clock (the bpsk duplex import flake) —
+            # so light designs stay tight. HEAVY designs (many multi-cell
+            # blocks: the QPSK modem at ~50 block cells) genuinely need the
+            # long budget: a flat 10 s cut made its packs time out
+            # (CpSatPlacerUnavailable) on every attempt and the import that
+            # used to route stopped placing at all.
+            _cells = sum(len(b.placement.cells) for b in self.project.blocks
+                         if b.placement is not None)
+            if _cells <= 24:
+                tlimit = 6.0 if seed is not None else 10.0
+            else:
                 tlimit = 15.0 if seed is not None else 25.0
-                # ABUTMENT-FIRST (compact fixed designs): make direct block-to-block
-                # abutment the primary placement goal so linear dataflow chains route
-                # cell-to-cell with NO routing cells, leaving free broker neighbours for
-                # the genuine fan-ins. Set by auto_pnr for the "block" topology (default);
-                # bus/ring leave it off (dynamic-reconfig backbone). The abut objective
-                # lives in the wirelength block, so force wirelength on when it's active.
-                abut = bool(getattr(self, "_pnr_abutment_first", False))
-                plan = plan_cpsat(placer, chip, channel_slack=0,
-                                  slack_x=sx, slack_y=sy, wirelength=wl or abut,
-                                  tap_reserve=(False if abut else tr),
-                                  abutment_first=abut, random_seed=seed,
-                                  max_time_s=tlimit)
-                # CP-SAT emits ABSOLUTE min-corner positions (ports kept free — no
-                # lead-on-port), so clear the serpentine placer's lead-block marker: the
-                # apply step below must translate EVERY block by its min corner, not
-                # anchor a "lead" block's input cell on the port (which would shift the
-                # CP-SAT layout off its solved position).
-                placer._lead_block = None
+            # ABUTMENT-FIRST (compact fixed designs): make direct block-to-block
+            # abutment the primary placement goal so linear dataflow chains route
+            # cell-to-cell with NO routing cells, leaving free broker neighbours for
+            # the genuine fan-ins. Set by auto_pnr for the "block" topology (default);
+            # bus/ring leave it off (dynamic-reconfig backbone). The abut objective
+            # lives in the wirelength block, so force wirelength on when it's active.
+            abut = bool(getattr(self, "_pnr_abutment_first", False))
+            p = plan_cpsat(placer, chip, channel_slack=0,
+                           slack_x=sx, slack_y=sy, wirelength=wl or abut,
+                           tap_reserve=(False if abut else tr),
+                           abutment_first=abut, random_seed=seed,
+                           max_time_s=tlimit)
+            # CP-SAT emits ABSOLUTE min-corner positions (ports kept free — no
+            # lead-on-port), so clear the serpentine placer's lead-block marker: the
+            # apply step below must translate EVERY block by its min corner, not
+            # anchor a "lead" block's input cell on the port (which would shift the
+            # CP-SAT layout off its solved position).
+            placer._lead_block = None
+            return p
+
+        # ABUTMENT-FIRST designs take the CP-SAT abutment pack as the PRIMARY
+        # plan, not the rescue: the serpentine packer's band convention leaves a
+        # reserved routing channel between every pair of blocks — a gap the OLD
+        # router needed for its corridors, pure wasted cells under the
+        # shortest-path router's route-free @1 abutment handoffs (the user-
+        # audited every-other-column gaps in data_link / the audio effects).
+        # Safety is unchanged: auto_pnr's acceptance loop only KEEPS a layout
+        # that fully routes, passes DRC, and builds clean — a CP-SAT pack that
+        # doesn't is swept past exactly like a bad serpentine one, and the
+        # serpentine remains the fallback whenever CP-SAT is unavailable.
+        plan = None
+        used_cpsat = False
+        cpsat_failed = False
+        if bool(getattr(self, "_pnr_abutment_first", False)):
+            try:
+                plan = _cpsat_plan()
+                used_cpsat = True
             except CpSatPlacerUnavailable:
-                pass  # keep the (illegal) serpentine plan; the D1 gate will name it
+                plan = None
+                cpsat_failed = True
+        if plan is None:
+            plan = placer.plan(chip)
+            if (not self._plan_is_legal(plan, chip, w, h, footprint, port_maps)
+                    and not cpsat_failed):
+                # Rescue an illegal serpentine plan with CP-SAT — but only if
+                # CP-SAT didn't ALREADY fail above in this same call: re-solving
+                # after a timeout/absence is a guaranteed-or-likely second
+                # failure that can burn another full solve budget per attempt
+                # (a slow machine's whole auto_pnr wall clock went to these).
+                try:
+                    plan = _cpsat_plan()
+                    used_cpsat = True
+                except CpSatPlacerUnavailable:
+                    pass  # keep the (illegal) serpentine plan; the D1 gate will name it
         used_bus_snake = False  # bus-snake pre-bake removed; compact pack is topology-agnostic
         # The INPUT-FED lead block (first in flow order, anchored at the port) must
         # land its INPUT/landing CELL on the port — not its min corner. The port
@@ -786,7 +831,12 @@ class AppController(QObject):
         # so it is skipped in bus-snake mode — the snake places single-cell blocks WITH an
         # input-face != output-face split itself (the backbone dips under them), and a moved
         # terminal would desync the spine the router threads.
-        if not used_bus_snake:
+        # ... and it is SKIPPED for a CP-SAT plan: the model already enforces the
+        # single-cell in!=out face split (the _sign_bits constraints), and
+        # re-seating a block INTO an optimally tight pack lands it on another
+        # block — the QPSK import died at the legality gate on exactly this
+        # (the re-seat is a serpentine-era patch for serpentine layouts).
+        if not used_bus_snake and not used_cpsat:
             cmds.extend(self._abut_single_cell_terminals(chip, plan, lead))
         # LEGALITY GATE (D1/D2): the placer must NEVER commit an off-grid or
         # overlapping placement (the router would otherwise only catch it later as
@@ -1259,6 +1309,54 @@ class AppController(QObject):
         cache[key] = result
         return result
 
+    def _port_fanout_abuts_port(self, chip: int) -> bool:
+        """True when a FAN-OUT chip input port (≥2 conns to DIFFERENT blocks) has
+        some fed block's INPUT CELL directly adjacent to the port cell — the
+        INV-24-unroutable geometry: the port's single ``fwd_face`` must point INTO
+        the abutting block for one arm while the sibling arm's corridor cannot
+        transit a block cell, so no sound shared-exit routing exists (the maze
+        escalation then ships a silently-wrong two-direction port). Used as an
+        auto-P&R acceptance gate; the CP-SAT placer carries the matching hard
+        keep-off constraint."""
+        from model.connection import BlockEndpoint, ChipPortEndpoint
+
+        by_port: dict = {}
+        for conn in self.project.connections:
+            if (isinstance(conn.source, ChipPortEndpoint)
+                    and conn.source.chip == chip
+                    and isinstance(conn.target, BlockEndpoint)):
+                by_port.setdefault(conn.source.port, []).append(conn)
+        for port_name, conns in by_port.items():
+            if len({c.target.block for c in conns}) < 2:
+                continue
+            pc = self._chip_port_cell(chip, port_name)
+            if pc is None:
+                continue
+            for conn in conns:
+                blk = self.project.block(conn.target.block)
+                if blk is None or blk.placement is None:
+                    continue
+                try:
+                    pm = self.catalog.port_map(blk.type, blk.params,
+                                               library=blk.library)
+                    entry = next((p for p in pm.ports
+                                  if p.name == conn.target.port), None)
+                    cell = (blk.placement.cell(entry.cell_id)
+                            if entry is not None else None)
+                except Exception:  # noqa: BLE001
+                    cell = None
+                if cell is None:
+                    cells = blk.placement.cells
+                    cell = cells[0] if cells else None
+                if cell is None:
+                    continue
+                if abs(cell.x - pc[0]) + abs(cell.y - pc[1]) <= 1:
+                    # <= 1: a fan-out landing ON the port cell (distance 0) is
+                    # just as unroutable-sound as an abutting one — the port
+                    # cannot both inject locally and forward the sibling arm.
+                    return True
+        return False
+
     def _chip_port_cell(self, chip: int, port_name: str):
         """(cell_x, cell_y) of a chip port — for the flyline-minimising orienter to
         score block I/O against the actual chip I/O port cells. None if unknown."""
@@ -1652,10 +1750,42 @@ class AppController(QObject):
         _t0 = _time.monotonic()
 
         cts = chip_types or self.chip_types()
-        ct = cts.get(self.project.chip(chip).type_name if self.project.chip(chip)
-                     else self.project.chip_type)
+        want_type = (self.project.chip(chip).type_name if self.project.chip(chip)
+                     else self.project.chip_type) or self.project.chip_type
+        ct = cts.get(want_type)
+        if ct is None:
+            # FAIL FAST with a NAMED reason. A missing chip type used to limp through
+            # the whole sweep (ct=None degrades routing + DRC silently) and come back
+            # ok=False with confusing per-net reasons — e.g. a caller keying the map
+            # by chip INDEX ({0: ct}) instead of by TYPE NAME ({'kyttar_10x12': ct}).
+            from engine.errors import PlacementError
+            raise PlacementError(
+                f"auto_pnr: no chip type for {want_type!r} in chip_types "
+                f"(got keys {sorted(map(repr, cts))}); the map must be keyed by "
+                f"chip TYPE NAME, e.g. {{'kyttar_10x12': <ChipType>}}")
+
+        # SRAM-PANEL designs (INV-31) use the TEMPLATE place-and-route, not the
+        # generic sweep: the embedded controller cell must sit AT the panel's
+        # x1_out port cell, the push-read return corridor must be drawn from
+        # x1_in, and the input/egress corridors CROSS (a CrossoverBlock is
+        # inserted). The template pins + routes the panel plumbing (the proven
+        # engine/sram_demo.py corridor class) and derives the placement-dependent
+        # params (crossover tracks, push-read descriptors); the remaining
+        # block->block DSP nets are routed by the normal auto_route_all.
+        from engine.panel_pnr import (apply_panel_template, panel_backed_blocks,
+                                      synthesize_panel)
+        if panel_backed_blocks(self.project, self.catalog):
+            synthesize_panel(self.project, self.catalog)
+            corridor_results, _notes = apply_panel_template(
+                self.project, self.catalog, ct, chip=chip)
+            report = self.auto_route_all(cts, use_bus="never",
+                                         auto_orient=False, register=register)
+            report.results = list(corridor_results) + list(report.results)
+            self.pnr_in_progress = False
+            return report
 
         best = None
+        best_clean = None   # (route_excess, n_routed, reserve, report, snapshot)
         place_fail = None   # last PlacementError, if a reserve packs illegally
         # ABUTMENT-FIRST placement is the DEFAULT for the block-to-block topology (compact
         # FIXED designs — Weaver/AM/FM): the placer chains dataflow blocks adjacent so most
@@ -1663,7 +1793,25 @@ class AppController(QObject):
         # topologies (dynamic reconfig) keep the wirelength-only pack + backbone. auto_place
         # reads this flag when it invokes the CP-SAT placer.
         topology = self._select_topology(use_bus)
-        self._pnr_abutment_first = (topology == "block")
+        # The compact CP-SAT abutment pack is the primary placement for BOTH
+        # topologies since 2026-08-12 (multi-filament/duplex designs kept the
+        # sprawling per-filament serpentine bands, which forced functionally-
+        # correct but visually wandering wrap-around corridors — the audio_meter
+        # agc/nlog10 report). The auto-P&R acceptance loop (route + DRC + build
+        # clean + route-quality scoring) gates it identically either way.
+        self._pnr_abutment_first = True
+        # KNOWN LIMITS (2026-08-11/12) — keep the serpentine layout for:
+        #  * StreamSplitterBlock designs: the abutted compact pack intermittently
+        #    breaks the splitter's replicated exit tail (test_fanout_chains
+        #    fanout3: builds ok, ZERO output on some packings);
+        #  * SRAM-panel designs: their duplex corridors are TEMPLATE-routed
+        #    (engine/panel_pnr.py) around the proven placement shapes — a
+        #    repacked layout invalidates the hand-tuned corridor templates.
+        if self._pnr_abutment_first and (
+                getattr(self.project, "panels", None)
+                or any(b.type == "StreamSplitterBlock"
+                       for b in self.project.blocks)):
+            self._pnr_abutment_first = False
         # Integrated place<->route sweep. Each attempt is a (reserve, seed): the reserve
         # picks the CP-SAT slack/tap config (tight compact -> looser channels + I/O taps),
         # the seed diversifies the layout among equal-cost packings (a compact pack routes
@@ -1671,11 +1819,72 @@ class AppController(QObject):
         # routes with a clean DRC; else the best partial. reserve 1 is the compact pack
         # (a single seed suffices — the wirelength optimum is stable); the looser
         # reserves' feasibility models vary a lot, so we try several seeds each.
-        attempts = ([(1, None)]
-                    + [(2, s) for s in range(3)]
-                    + [(3, s) for s in range(3)]
-                    + [(4, s) for s in range(2)])
-        for attempt_i, (reserve, seed) in enumerate(attempts):
+        # Seed depth: the acceptance gates below REJECT layouts the build would
+        # hard-fail (crossover plan, dual-input faces, single-cell in==out), so
+        # a shallow pool sometimes exhausted every seed on rejected layouts and
+        # accepted a dirty best — a flaky auto-P&R (the channel_selector regen
+        # failed ~1-in-3). A deeper pool costs nothing on a lucky early accept
+        # (the sweep breaks at the first clean layout) and the wall-clock
+        # budget still bounds the unlucky path.
+        # INTERLEAVED tiers: each (reserve, seed) runs as a COMPACT (CP-SAT
+        # abutment) attempt immediately followed by its SERPENTINE twin (the
+        # proven layout family, abutment pack OFF). Interleaving — not
+        # tier-then-tier — is load-bearing: the compact CP-SAT solves are slow
+        # (up to 25 s each), so a compact-first tier exhausted the wall-clock
+        # budget before any serpentine attempt ran, and a design whose compact
+        # packs all wall a net (the bpsk duplex's twin x16_out egresses, 5-of-6
+        # imports) FAILED outright instead of degrading. With the twin adjacent,
+        # the quality selection still prefers the compact layout whenever it
+        # routes (lower route excess; near-optimal accepts break early).
+        _abut0 = bool(getattr(self, "_pnr_abutment_first", False))
+        _sweep = ([(1, None)]
+                  + [(2, s) for s in range(6)]
+                  + [(3, s) for s in range(6)]
+                  + [(4, s) for s in range(4)])
+        if _abut0:
+            attempts = []
+            for (r, s) in _sweep:
+                attempts.append((r, s, True))
+                attempts.append((r, s, False))
+        else:
+            attempts = [(r, s, False) for (r, s) in _sweep]
+        import copy as _copy
+        # FULL PRE-SWEEP STATE (placements + routes): restored verbatim when the
+        # whole sweep fails to place, so a re-P&R on an already-placed design
+        # can never MANGLE it (the sweep clears routes per attempt — without
+        # this, a total failure left a shipped .kyt with zero routes).
+        _pre_state = (
+            {b.name: _copy.deepcopy(b.placement)
+             for b in self.project.blocks if b.placement is not None},
+            {c.name: (_copy.deepcopy(c.route), c.out_tag)
+             for c in self.project.connections})
+        # CANONICAL ORIENTATIONS: the planners (serpentine _wh + CP-SAT
+        # footprints) model each block's CANONICAL (as-authored) shape, and the
+        # apply step applies a plan's orientation kind as a RELATIVE transform
+        # on the block's CURRENT orientation. Blocks in a re-opened .kyt still
+        # carry the PREVIOUS P&R's rotation, so every applied plan was
+        # double-rotated — feasible CP-SAT packs landed as overlapping/off-grid
+        # placements on EVERY attempt (the shipped-qpsk re-P&R failure).
+        # Resetting to canonical makes relative == absolute; imports are
+        # already canonical (a no-op) and the sweep re-orients everything
+        # downstream exactly as before.
+        self._canonicalize_block_orientations(chip)
+        # VIRGIN geometry (pre-sweep placements): the SERPENTINE placer's flow
+        # order reads CURRENT block positions (it is not idempotent), so an
+        # earlier compact attempt's scattered pack contaminates every later
+        # serpentine attempt — the interleaved sweep re-planned the duplex
+        # modem from moved blocks and its proven layout family stopped
+        # routing. Restore the import-time placements before EVERY attempt so
+        # each one plans from the same starting point (there is no project
+        # snapshot API; placements are the only cross-attempt state the
+        # placers read — routes are cleared per attempt already).
+        _virgin = {b.name: _copy.deepcopy(b.placement)
+                   for b in self.project.blocks if b.placement is not None}
+        for attempt_i, (reserve, seed, _abut_now) in enumerate(attempts):
+            self._pnr_abutment_first = _abut_now
+            for _b in self.project.blocks:
+                if _b.name in _virgin:
+                    _b.placement = _copy.deepcopy(_virgin[_b.name])
             # Progress + event-loop pump so the GUI's cancellable dialog stays live and the
             # window does not read as frozen while attempts grind. Runs BEFORE the budget/
             # cancel checks so the bar reaches 100% (or the cancel latches) promptly.
@@ -1716,7 +1925,7 @@ class AppController(QObject):
                 continue
             report = self.auto_route_all(cts, use_bus=use_bus, auto_orient=False,
                                          register=False)
-            # PART B — perturb a BOXED multi-cell output (the §ROUTING_TOPOLOGIES CM
+            # PART B — perturb a BOXED multi-cell output (the ROUTING_TOPOLOGIES
             # mandate). The bus router surfaces a net whose multi-cell source OUTPUT cell
             # has no free neighbour to tap the bus as an ``output-boxed:<block>`` NAMED
             # failure (the Costas `rotate` cell buried in its own snake). RE-FOLD that
@@ -1760,6 +1969,19 @@ class AppController(QObject):
                         clean = False
                 except Exception:  # noqa: BLE001
                     pass
+            # Reject a layout where a FAN-OUT input port has a fed block's INPUT
+            # CELL abutting the port cell (INV-24 geometry): the port's single
+            # fwd_face must point INTO the abutting block for one arm while the
+            # other arm's corridor cannot transit a block cell — no sound routing
+            # exists, and the maze escalation ships a silently-wrong two-direction
+            # port (the tremolo 200-zeros bug). The CP-SAT keep-off constraint
+            # prevents it there; this gate also covers the serpentine path.
+            if ok and clean:
+                try:
+                    if self._port_fanout_abuts_port(chip):
+                        clean = False
+                except Exception:  # noqa: BLE001
+                    pass
             n_routed = sum(1 for r in report.results if r.ok)
             # Capture this iteration's CONCRETE result (placement geometry + routes) so
             # the accepted one can be re-applied deterministically as registered commands.
@@ -1772,8 +1994,24 @@ class AppController(QObject):
             if best is None or n_routed > best[0]:
                 best = (n_routed, reserve, report, snapshot)
             if ok and clean:
-                best = (n_routed, reserve, report, snapshot)
-                break
+                # ROUTE-QUALITY selection among CLEAN layouts (the shortest-path
+                # mandate at the placement level): first-clean-wins let a lottery
+                # placement ship 20-cells-for-manhattan-2 corridors (the tremolo
+                # regen). Score a clean layout by its TOTAL route excess (routed
+                # length over endpoint manhattan, summed); accept immediately only
+                # when near-optimal, otherwise keep sweeping (budget-bounded) and
+                # take the best clean layout found.
+                excess = 0
+                for _r in report.results:
+                    if _r.ok and _r.points and len(_r.points) >= 2:
+                        _m = (abs(_r.points[0][0] - _r.points[-1][0])
+                              + abs(_r.points[0][1] - _r.points[-1][1]))
+                        excess += max(0, len(_r.points) - 1 - _m)
+                if best_clean is None or excess < best_clean[0]:
+                    best_clean = (excess, n_routed, reserve, report, snapshot)
+                if excess <= 4:
+                    best = (n_routed, reserve, report, snapshot)
+                    break
             # Not accepted — revert this exploration iteration before the next.
             if snap is not None:
                 self.project.restore(snap)
@@ -1783,6 +2021,12 @@ class AppController(QObject):
                 # overwriting positions and SetConnectionRouteCommand overwriting routes.
                 pass
 
+        # A clean layout found during the sweep (but not near-optimal enough to
+        # break early) beats any partial ``best``: apply the LOWEST-route-excess
+        # clean candidate.
+        if best_clean is not None:
+            best = (best_clean[1], best_clean[2], best_clean[3], best_clean[4])
+
         # Every reserve failed to PLACE legally (the design does not fit the array as
         # packed, at any looseness) — surface the NAMED placement failure, never a
         # silent build. The pnr loop's monotone looseness is exhausted; the caller
@@ -1791,6 +2035,20 @@ class AppController(QObject):
             self._pnr_channel_reserve = 1
             self._pnr_seed = None
             self.pnr_in_progress = False   # P&R done (failed) — allow rehost
+            # RESTORE the pre-sweep design verbatim (placements + routes): the
+            # sweep cleared routes per attempt, and a total failure must never
+            # leave an already-placed design mangled — the user keeps exactly
+            # what they had, plus the NAMED failure below.
+            _placements, _routes = _pre_state
+            for b in self.project.blocks:
+                if b.name in _placements:
+                    b.placement = _copy.deepcopy(_placements[b.name])
+            for c in self.project.connections:
+                if c.name in _routes:
+                    r, tag = _routes[c.name]
+                    c.route = _copy.deepcopy(r)
+                    c.out_tag = tag
+            self.changed.emit()
             if place_fail is not None:
                 raise place_fail
             raise PlacementError(
@@ -1810,8 +2068,32 @@ class AppController(QObject):
             report = best[2]
         self._pnr_channel_reserve = 1
         self._pnr_seed = None
+        self._pnr_abutment_first = _abut0   # loop may have flipped to the fallback tier
         self.pnr_in_progress = False   # P&R settled — server may rehost now
         return report
+
+    _D4_INVERSE = {"cw": "ccw", "ccw": "cw",
+                   "mirror_h": "mirror_h", "mirror_v": "mirror_v"}
+
+    def _canonicalize_block_orientations(self, chip: int) -> None:
+        """Reset every placed block on ``chip`` to its CANONICAL (as-authored)
+        orientation, in place (same min corner — ``Placement.transform``
+        re-anchors). Applies the INVERSE of the stored D4 op list, so the
+        canonicalized ``orientation`` history collapses to the identity.
+
+        Auto-P&R planners model canonical footprints and their plans' orientation
+        kinds are applied as RELATIVE transforms — the sweep must start from
+        canonical orientation (see auto_pnr). Direct model mutation (no undo
+        command): only auto_pnr calls this, inside its unregistered exploration."""
+        for blk in self.project.blocks:
+            pl = blk.placement
+            if pl is None or pl.chip != chip or not pl.cells:
+                continue
+            kinds = list(getattr(pl, "orientation", None) or [])
+            if not kinds or any(k not in self._D4_INVERSE for k in kinds):
+                continue
+            for k in reversed(kinds):
+                pl.transform(self._D4_INVERSE[k])
 
     def auto_route_all(self, chip_types: dict | None = None, *,
                        auto_orient: bool = True, use_cpsat: str = "auto",

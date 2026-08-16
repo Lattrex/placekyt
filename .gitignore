@@ -50,3 +50,4 @@ verification/kyttar/workflows/
 
 # Pre-fix .kyt backups (personal snapshots kept locally, not shipped)
 *.orig.kyt
+verification/tests/proto_*.py

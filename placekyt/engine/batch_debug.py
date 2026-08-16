@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """BatchDebugHooks — make the GUI debug controls first-class during a GRC batch.
 
 A GRC flowgraph drives the placeKYT-hosted chip by sending a whole burst in one

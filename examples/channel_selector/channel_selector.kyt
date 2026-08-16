@@ -1,0 +1,183 @@
+project:
+  format_version: 1
+  name: Complex channel selector (freq-xlating FIR front end)
+  version: '1.0'
+chip_type: kyttar_10x12
+chips:
+- id: 0
+  label: Chip 0
+  position: {x: 0.0, y: 0.0}
+blocks:
+- name: floattocomplex
+  type: FloatToComplexBlock
+  library: lattrex.official
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 0, y: 2, face: south}
+    orientation:
+    - cw
+- name: freqxlatingfir
+  type: FreqXlatingFIRBlock
+  library: lattrex.official
+  params:
+    decimation: 1
+    taps:
+    - 0.0
+    - 0.018715
+    - 0.099838
+    - 0.226239
+    - 0.290416
+    - 0.226239
+    - 0.099838
+    - 0.018715
+    - 0.0
+    center_freq: 9000.0
+    sampling_freq: 32000.0
+    pipeline_lock: false
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: phase, x: 0, y: 3, face: south}
+    - {cell_id: sin_fold, x: 0, y: 4, face: south}
+    - {cell_id: sin_even, x: 0, y: 5, face: south}
+    - {cell_id: sin_odd, x: 0, y: 6, face: south}
+    - {cell_id: sin_interp, x: 0, y: 7, face: south}
+    - {cell_id: relay, x: 0, y: 8, face: east}
+    - {cell_id: cos_fold, x: 1, y: 8, face: north}
+    - {cell_id: cos_even, x: 1, y: 7, face: north}
+    - {cell_id: cos_odd, x: 1, y: 6, face: north}
+    - {cell_id: cos_interp, x: 1, y: 5, face: north}
+    - {cell_id: mixer, x: 1, y: 4, face: east}
+    - {cell_id: fhead, x: 2, y: 4, face: east}
+    - {cell_id: q0, x: 3, y: 4, face: east}
+    - {cell_id: q1, x: 4, y: 4, face: east}
+    - {cell_id: q2, x: 5, y: 4, face: south}
+    - {cell_id: i0, x: 5, y: 5, face: west}
+    - {cell_id: i1, x: 4, y: 5, face: west}
+    - {cell_id: i2, x: 3, y: 5, face: west}
+- name: complexlowpassfilter
+  type: ComplexLowPassFilter
+  library: lattrex.official
+  params:
+    gain: 0.9
+    samp_rate: 32000.0
+    cutoff_freq: 1200.0
+    transition_width: 2500.0
+    window: hamming
+    beta: 6.76
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 6, y: 5, face: east}
+    - {cell_id: 1, x: 7, y: 5, face: east}
+    - {cell_id: 2, x: 8, y: 5, face: east}
+    - {cell_id: 3, x: 9, y: 5, face: north}
+    - {cell_id: 4, x: 9, y: 4, face: west}
+    - {cell_id: 5, x: 8, y: 4, face: west}
+    - {cell_id: 6, x: 7, y: 4, face: west}
+    - {cell_id: 7, x: 6, y: 4, face: north}
+    - {cell_id: 8, x: 6, y: 3, face: east}
+    - {cell_id: 9, x: 7, y: 3, face: east}
+    - {cell_id: 10, x: 8, y: 3, face: east}
+    - {cell_id: 11, x: 9, y: 3, face: north}
+    - {cell_id: 12, x: 9, y: 2, face: west}
+    - {cell_id: 13, x: 8, y: 2, face: west}
+    - {cell_id: 14, x: 7, y: 2, face: west}
+    - {cell_id: 15, x: 6, y: 2, face: west}
+    orientation:
+    - ccw
+- name: multiplyconstcomplex
+  type: MultiplyConstComplex
+  library: lattrex.official
+  params:
+    re: 0.6
+    im: 0.35
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: mul, x: 6, y: 1, face: east}
+    - {cell_id: sat, x: 7, y: 1, face: east}
+- name: conjugate
+  type: ConjugateBlock
+  library: lattrex.official
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 7, y: 0, face: west}
+    orientation:
+    - mirror_h
+- name: complextoimag
+  type: ComplexToImagBlock
+  library: lattrex.official
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 8, y: 0, face: west}
+    orientation:
+    - mirror_h
+connections:
+- name: net1
+  from: {chip_port: {chip: 0, port: x16_in}}
+  to: {block: floattocomplex, port: re}
+  route:
+  - {x: 0, y: 0}
+  - {x: 0, y: 1}
+  stream_id: rf
+- name: net2
+  from: {block: floattocomplex, port: out_re}
+  to: {block: freqxlatingfir, port: xi}
+  route: abutment
+- name: net3
+  from: {block: freqxlatingfir, port: yi}
+  to: {block: complexlowpassfilter, port: xi}
+  route:
+  - {x: 3, y: 5}
+  - {x: 3, y: 6}
+  - {x: 4, y: 6}
+  - {x: 5, y: 6}
+  - {x: 6, y: 6}
+- name: net4
+  from: {block: complexlowpassfilter, port: out_i}
+  to: {block: multiplyconstcomplex, port: xi}
+  route: abutment
+- name: net5
+  from: {block: multiplyconstcomplex, port: yi}
+  to: {block: conjugate, port: re}
+  route: abutment
+- name: net6
+  from: {block: conjugate, port: out_re}
+  to: {block: complextoimag, port: re}
+  route: abutment
+- name: net7
+  from: {block: complextoimag, port: out}
+  to: {chip_port: {chip: 0, port: x16_out}}
+  route:
+  - {x: 8, y: 0}
+  - {x: 9, y: 0}
+  out_tag: 8
+- name: net8
+  from: {block: floattocomplex, port: out_im}
+  to: {block: freqxlatingfir, port: xq}
+  route: abutment
+- name: net9
+  from: {block: freqxlatingfir, port: yq}
+  to: {block: complexlowpassfilter, port: xq}
+  route:
+  - {x: 3, y: 5}
+  - {x: 3, y: 6}
+  - {x: 4, y: 6}
+  - {x: 5, y: 6}
+  - {x: 6, y: 6}
+- name: net10
+  from: {block: complexlowpassfilter, port: out_q}
+  to: {block: multiplyconstcomplex, port: xq}
+  route: abutment
+- name: net11
+  from: {block: multiplyconstcomplex, port: yq}
+  to: {block: conjugate, port: im}
+  route: abutment
+- name: net12
+  from: {block: conjugate, port: out_im}
+  to: {block: complextoimag, port: im}
+  route: abutment

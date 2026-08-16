@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """ConnectionItem — draws a connection's route or fly line (§3.2).
 
 A routed connection is a solid poly-line through its waypoint cell centres; an

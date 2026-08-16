@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """TimelineScrubber — the shared time cursor made draggable (DEBUG §3.4).
 
 A thin horizontal time axis spanning the whole run. Dragging it moves the one

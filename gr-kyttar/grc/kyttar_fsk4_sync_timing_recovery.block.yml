@@ -4,13 +4,20 @@ category: '[Kyttar]'
 
 templates:
   imports: from gnuradio import kyttar
-  make: kyttar.fsk4_sync_timing_recovery(${device_id})
+  make: kyttar.fsk4_sync_timing_recovery(${device_id}, ${threshold})
 
 parameters:
 - id: device_id
   label: Device ID
   dtype: string
   default: '"kyttar_0"'
+- id: threshold
+  label: Sync lock threshold
+  dtype: int
+  # Absolute sync-correlation lock threshold (THRESH_FRAC·SYNC_LEN·ideal-peak =
+  # 0.45·8·4096 ≈ 14745). Deviate only to match a different RX gain (the
+  # correlation scales linearly with the input level).
+  default: '14745'
 
 inputs:
 - label: sample
@@ -48,6 +55,9 @@ documentation: |-
 
   Parameters:
     Device ID: which Kyttar device to use
+    Sync lock threshold: absolute sync-correlation lock threshold
+      (default ≈ 0.45·SYNC_LEN·ideal-peak = 14745). Deviate only to match a
+      different RX gain; the correlation scales linearly with the input level.
 
   Mapped by placeKYT (File -> Import GNURadio Flowgraph) to
   FSK4SyncTimingRecoveryBlock.

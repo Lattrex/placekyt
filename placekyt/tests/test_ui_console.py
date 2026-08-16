@@ -1,4 +1,5 @@
-"""Embedded console tests (the architecture notes §3.1). Offscreen Qt.
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Embedded console tests. Offscreen Qt.
 
 Drive the REPL via ``ConsolePanel.submit(line)`` (what Enter calls) and assert
 on the captured widget text / namespace effects.

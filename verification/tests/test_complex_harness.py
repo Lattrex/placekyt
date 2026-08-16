@@ -67,11 +67,26 @@ def _s16(v):
 # COMPLEX path — ComplexRRCMatchedFilterBlock (I/Q in, I/Q out)
 # =============================================================================
 
+# The complex harness exercises the block as a GR fir_filter_ccf drop-in. Run it at
+# a gain that keeps Σ|h| ≤ 1 (headroom shift S=0) — the bit-clean GR-equivalence
+# regime (INV-14: a normalised filter has no headroom precision loss). At S=0 the
+# on-chip Q15 taps ARE the firdes RRC taps quantised (no restore in the datapath),
+# so the DUT is a true drop-in for fir_filter_ccf fed those taps. (The rigorous
+# GR-equivalence + tap-parity + overload/rail suite is
+# test_complex_rrc_matched_filter.py; this file is the harness/structure proof.)
+_S0_GAIN = 0.6
+
+
+def _s0_block():
+    return ComplexRRCMatchedFilterBlock("ref", gain=_S0_GAIN)
+
+
 def _scaled_taps_float():
-    """The block's EXACT on-chip taps (unit-energy sqrt-RRC, pre-scaled /2^S) as
-    floats — the coefficients GNU Radio's fir_filter_ccf must use to be the same
-    filter. The block stores these Q15-quantized; we read them straight off it."""
-    b = ComplexRRCMatchedFilterBlock("ref")
+    """The block's on-chip taps as floats — at S=0 these are the firdes RRC taps
+    (no headroom scaling), i.e. the coefficients GNU Radio's fir_filter_ccf must use
+    to be the same filter. The block stores them Q15-quantized; read them off it."""
+    b = _s0_block()
+    assert b._head_shift == 0, "harness runs the block in the S=0 GR-exact regime"
     return [_s16(t) / 32768.0 for t in b.coeff_q15]
 
 
@@ -97,7 +112,7 @@ def _block_ref_iq(stim):
     """The block's bit-exact COEFFICIENT-HEADROOM Q15 reference, as float I/Q
     channels (so they feed straight into the complex comparator, which re-quantizes
     to Q15). Models the exact on-chip wrapping MACQ datapath."""
-    b = ComplexRRCMatchedFilterBlock("ref")
+    b = _s0_block()
 
     def fq(f):
         return _s16(int(round(max(-1.0, min(0.999, f)) * 32768.0)) & 0xFFFF)
@@ -117,8 +132,8 @@ def _complex_stim(seed, n, amp=0.6):
 
 def _run_complex_dut(stim):
     dut = run_block_dut_complex(
-        "ComplexRRCMatchedFilterBlock", stim, params={}, chip_yaml=CHIP_YAML,
-        in_ports=("xi", "xq"), words_per_sample=2)
+        "ComplexRRCMatchedFilterBlock", stim, params={"gain": _S0_GAIN},
+        chip_yaml=CHIP_YAML, in_ports=("xi", "xq"), words_per_sample=2)
     assert dut.ok, dut.reason
     assert dut.words_per_sample == 2, (
         f"complex output should be 2 words/sample, got {dut.words_per_sample}")
@@ -174,51 +189,26 @@ def test_complex_bitexact_reference():
 
 
 @pytest.mark.parametrize("M", [2, 4])
-def test_complex_decimation_matches_reference(M):
-    """The MF ``decimation=M`` (GR fir_filter_ccf(M)) emits phase 0 — every M-th
-    filtered output (full_output[0::M]) — on chip, BIT-EXACT to the block's own
-    decimated Q15 reference on BOTH channels. The on-chip mod-M output gate (the
-    proven FIR decimator gate on the last I-rail cell) runs the FIR every sample
-    but writes+triggers only on phase 0; the harness records the M-1 dropped
-    samples as ``None`` (no egress), so the emitted (non-None) values are the
-    decimated stream."""
-    def _s16(v):
-        v = int(v) & 0xFFFF
-        return v - 0x10000 if v & 0x8000 else v
-
-    def _fq(f):
-        return _s16(int(round(max(-1.0, min(0.999, f)) * 32768.0)) & 0xFFFF)
-
-    stim = _complex_stim(seed=7, n=64, amp=0.5)
-    dut = run_block_dut_complex(
-        "ComplexRRCMatchedFilterBlock", stim, params={"decimation": M},
-        chip_yaml=CHIP_YAML, in_ports=("xi", "xq"), words_per_sample=2)
-    assert dut.ok, dut.reason
-    emitted_i = [_s16(v) for v in dut.i_q15 if v is not None]
-    emitted_q = [_s16(v) for v in dut.q_q15 if v is not None]
-
-    ref = ComplexRRCMatchedFilterBlock("ref", decimation=M).process_reference(
-        np.array([complex(_fq(s.real), _fq(s.imag)) for s in stim]))
-    ref_i = [_s16(a) for a, b in ref]
-    ref_q = [_s16(b) for a, b in ref]
-
-    # rate/M output: the chip emits len(stim)//M (phase-0) samples.
-    n = min(len(emitted_i), len(ref_i))
-    assert n >= len(stim) // M - 1, (
-        f"decim={M}: only {len(emitted_i)} emitted (expected ~{len(stim)//M})")
-    assert emitted_i[:n] == ref_i[:n], (
-        f"decim={M} I channel mismatch:\n chip={emitted_i[:8]}\n ref ={ref_i[:8]}")
-    assert emitted_q[:n] == ref_q[:n], (
-        f"decim={M} Q channel mismatch:\n chip={emitted_q[:8]}\n ref ={ref_q[:8]}")
+def test_complex_decimation_gt_one_rejected(M):
+    """decimation=M>1 is a DOCUMENTED HARDWARE LIMIT (guard test): a decimating
+    complex MF overflows the last I-rail cell — the 2-word yi/yq complex emit + the
+    Q15 saturating restore leave no room for the mod-M output gate ("No register
+    space for d0"). It RAISES rather than silently mis-building. (The prior PoC
+    "accepted" decim>1 but emitted the FULL rate — never actually decimated — so
+    this replaces a test of that broken behaviour.) The coherent RX runs its loops
+    at full rate (decimation=1); compose a separate complex decimator if needed."""
+    with pytest.raises(ValueError, match=r"decimation"):
+        ComplexRRCMatchedFilterBlock("ref", decimation=M)
 
 
 def test_complex_decimation_is_no_op_at_M1():
     """decimation=1 is the plain MF (the un-gated path) — unchanged, bit-exact."""
     stim = _complex_stim(seed=3, n=48, amp=0.6)
     d1 = run_block_dut_complex(
-        "ComplexRRCMatchedFilterBlock", stim, params={"decimation": 1},
+        "ComplexRRCMatchedFilterBlock", stim,
+        params={"gain": _S0_GAIN, "decimation": 1},
         chip_yaml=CHIP_YAML, in_ports=("xi", "xq"), words_per_sample=2)
-    d0 = _run_complex_dut(stim)   # default params (no decimation)
+    d0 = _run_complex_dut(stim)   # same gain, no decimation kwarg
     assert d1.ok and d0.ok
     assert [v for v in d1.i_q15 if v is not None] == \
         [v for v in d0.i_q15 if v is not None]

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Build the GardnerTimingRecovery block through the real placeKYT pipeline.
 
 The 3-cell timing-recovery loop (resampler -> ted -> loop_filter) with the period

@@ -23,11 +23,14 @@ documentation: |-
   - Window: design window (Hamming default, Hann, Blackman, Rectangular,
     Blackman-Harris, Kaiser)
   - Beta: Kaiser window beta (used only when Window = Kaiser)
+  - Decimation: GR decim (M) — emit every M-th output (fir_filter_fff)
+  - Interpolation: GR interp (L) — zero-stuff by L (interp_fir_filter_fff)
 
 templates:
   imports: from gnuradio import kyttar
   make: kyttar.high_pass_filter(device_id=${device_id}, gain=${gain}, samp_rate=${samp_rate},
-    cutoff_freq=${cutoff_freq}, transition_width=${transition_width}, window=${window}, beta=${beta})
+    cutoff_freq=${cutoff_freq}, transition_width=${transition_width}, window=${window}, beta=${beta},
+    decimation=${decimation}, interpolation=${interpolation})
   callbacks:
     - set_cutoff_freq(${cutoff_freq})
     - set_transition_width(${transition_width})
@@ -63,6 +66,14 @@ parameters:
     label: Beta
     dtype: real
     default: '6.76'
+  - id: decimation
+    label: Decimation
+    dtype: int
+    default: '1'
+  - id: interpolation
+    label: Interpolation
+    dtype: int
+    default: '1'
 
 inputs:
   - label: in

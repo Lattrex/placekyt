@@ -1,6 +1,7 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Block catalog — metadata adapter over the existing KyttarBlock classes.
 
-placeKYT does NOT define its own block library (the architecture notes §0.1). The 25+
+placeKYT does NOT define its own block library. The 25+
 production DSP blocks already exist as ``KyttarBlock`` subclasses in
 ``gr_kyttar.placement.kyttar_block``. This adapter discovers them and
 exposes their metadata to the UI (library panel §3.4), the build pipeline
@@ -45,6 +46,28 @@ _EXCLUDED_BLOCKS = frozenset({
     "ViterbiK7DecoderBlock",
     "BlockInterleaverBlock",
 })
+
+# Manifest aliases: a handful of DONE blocks carry a LEGACY short name in the
+# verification manifest (``verification/manifest.json`` ``kyttar_block``) that
+# predates the class being renamed with a ``Block`` suffix — e.g. the manifest
+# says ``AddConst`` but the class (and thus the catalog ``type_name = cls.__name__``)
+# is ``AddConstBlock``. The manifest name is authoritative for verification (the
+# gate, the per-block report file, the dashboard all key on it) and MUST NOT change,
+# and the class name is authoritative for the DSP tests (``run_block_dut("AddConstBlock",
+# ...)``) and MUST NOT change either. So the catalog registers the spec under BOTH:
+# the class name (its real ``type_name``) AND the legacy manifest name as an alias,
+# and honors the manifest name when applying the verification badge. This is what
+# un-hides these blocks in the palette and makes ``catalog.get(<manifest name>)``
+# resolve — the INV-22 GRC-binding gate keys on the manifest name.
+#   class type_name -> legacy manifest name
+_MANIFEST_ALIASES = {
+    "AddConstBlock": "AddConst",
+    "FreqXlatingFIRBlock": "FreqXlatingFIR",
+    "QuadratureDemodBlock": "QuadratureDemod",
+}
+# Reverse: legacy manifest name -> class type_name, so ``catalog.get(<manifest
+# name>)`` resolves to the one registered spec (no second palette entry).
+_ALIAS_TO_TYPE_NAME = {v: k for k, v in _MANIFEST_ALIASES.items()}
 
 
 # Verification state of a block (from the manifest). Drives the palette allowlist
@@ -249,8 +272,16 @@ class BlockCatalog:
                 and obj.__name__ not in _EXCLUDED_BLOCKS
             ):
                 spec = _build_spec(obj)
+                # A block whose class name is NOT in the manifest may still be a
+                # DONE block listed under a LEGACY short name — honor that alias so
+                # its verified badge (and palette visibility) apply. See _MANIFEST_ALIASES.
+                alias = _MANIFEST_ALIASES.get(spec.type_name)
                 if status is not None:
-                    verify = status.get(spec.type_name, VERIFY_UNCURATED)
+                    verify = status.get(spec.type_name)
+                    if verify is None and alias is not None:
+                        verify = status.get(alias)
+                    if verify is None:
+                        verify = VERIFY_UNCURATED
                     # A block NOT in the curated manifest is HIDDEN from the
                     # palette (but still resolvable, so designs referencing it
                     # load). Carry the verification state for the trust badge.
@@ -286,7 +317,12 @@ class BlockCatalog:
 
         If ``library`` is given, an exact ``(library, type_name)`` match is
         required. If omitted, search all libraries by precedence.
+
+        A LEGACY manifest alias (e.g. ``AddConst`` for the class ``AddConstBlock``)
+        resolves to the one registered spec — the block is not double-listed in the
+        palette. See ``_MANIFEST_ALIASES``.
         """
+        type_name = _ALIAS_TO_TYPE_NAME.get(type_name, type_name)
         if library is not None:
             return self._specs.get((library, type_name))
         for lib in _LIBRARY_PRECEDENCE:
@@ -297,6 +333,15 @@ class BlockCatalog:
         for (lib, name), spec in self._specs.items():
             if name == type_name:
                 return spec
+        # MANIFEST-NAME fallback: the curated manifest names a few blocks by their
+        # GR-aligned short name WITHOUT the ``Block`` suffix (e.g. ``QuadratureDemod``,
+        # ``AddConst``, ``FreqXlatingFIR``) while the concrete class — and therefore the
+        # catalog ``type_name`` — carries it (``QuadratureDemodBlock`` …). Resolve the
+        # short name to the ``…Block`` spec so the manifest name is usable everywhere
+        # (GRC-binding gate, importer, build). Purely additive: only reached after every
+        # exact match failed, and never removes an existing resolution.
+        if not type_name.endswith("Block"):
+            return self.get(type_name + "Block", library)
         return None
 
     def search(self, query: str) -> list[BlockSpec]:

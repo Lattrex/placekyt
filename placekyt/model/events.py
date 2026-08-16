@@ -1,8 +1,9 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Deferred-delivery event bus for the placeKYT data model.
 
 The model layer emits events (``cell_placed``, ``connection_added``,
 ``param_changed``, ...) and the UI layer registers callbacks that update Qt
-widgets. This keeps ``model/`` free of any Qt dependency (the architecture notes §6).
+widgets. This keeps ``model/`` free of any Qt dependency.
 
 **Deferred delivery (§6):** ``emit()`` does NOT invoke callbacks. It appends the
 event to an internal queue. Callbacks fire only when ``flush()`` is called. This

@@ -1,0 +1,57 @@
+id: kyttar_map_bb
+label: 🧪 Kyttar Map (map_bb)
+category: '[Kyttar]'
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.map_bb(${device_id}, ${map})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+
+- id: map
+  label: Map
+  dtype: int_vector
+  default: '[0, 1]'
+
+inputs:
+- label: sample
+  domain: stream
+  dtype: byte
+
+outputs:
+- label: out
+  domain: stream
+  dtype: byte
+
+documentation: |-
+  🧪 Per-symbol lookup remap — the Kyttar drop-in for GNU Radio digital.map_bb.
+
+  Memoryless byte-to-byte lookup: out = map[in] (the input symbol indexes the
+  table). GNU Radio holds an internal 256-entry table seeded to the IDENTITY and
+  overwritten with the user's map (bytes), so out = map[in] for in < len(map) and
+  identity pass-through above. The real remap runs ON the Kyttar chip via a single
+  LOAD-indirect table (the same idiom the constellation LUT-mappers use); this
+  marker carries the byte graph so the flowgraph imports + runs.
+
+  Ports:
+    sample (in): input symbol (byte, 0 .. len(map)-1)
+    out:         map[in] (byte)
+
+  Parameters:
+    Device ID: which Kyttar device to use
+    Map:       the remap vector (list of ints); out = map[in]. Default [0, 1].
+               (GR's map param, verbatim.)
+
+  HARDWARE DEVIATION: GR's map_bb carries a full 256-entry table; on the Kyttar
+  substrate a single cell's LOAD-indirect table is capped at 21 entries (INV-7 +
+  the LOAD 5-bit address limit), covering every power-of-two symbol alphabet up
+  through 16 (BPSK/QPSK/4-PAM/8-ary/16-QAM). A longer map raises (never truncates);
+  a larger alphabet would need a multi-cell table.
+
+  Mapped by placeKYT (File -> Import GNURadio Flowgraph) to MapBBBlock.
+
+file_format: 1

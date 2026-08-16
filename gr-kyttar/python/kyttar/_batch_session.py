@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Shared batch session between kyttar_source and kyttar_sink in SERVER mode.
 
 In the GRC-first demo flowgraph the chain is:
@@ -60,6 +61,42 @@ def get_session(device_id, stream_id=""):
         return s
 
 
+_ENDPOINTS = {}  # device_id -> (host, port) of the last-dispatched placeKYT server
+
+
+def _note_endpoint(device_id, host, port):
+    """Remember where this device's server lives (set at every dispatch), so a
+    mid-run GRC callback can push a LIVE param update to it (push_params_live)."""
+    with _LOCK:
+        _ENDPOINTS[str(device_id)] = (str(host), int(port))
+
+
+def push_params_live(device_id, params):
+    """Fire-and-forget ``set_grc_params`` to the device's last-known server — the
+    LIVE half of a GRC slider callback. The server turns a registered tunable
+    param into a coefficient WRITE on the RUNNING fabric immediately, without
+    waiting for the next burst dispatch (which also carries the value, so a
+    missed push self-heals). Runs on a daemon thread with a short timeout:
+    never blocks the GR/Qt thread, never raises — best-effort by design."""
+    with _LOCK:
+        ep = _ENDPOINTS.get(str(device_id))
+    if ep is None:
+        return  # no dispatch yet this process — the next burst carries the value
+
+    def _post(host=ep[0], port=ep[1], p={k: dict(v) for k, v in params.items()}):
+        try:
+            conn = socket.create_connection((host, port), timeout=1.0)
+            try:
+                _send_message(conn, {"op": "set_grc_params", "params": p})
+                _recv_message(conn)
+            finally:
+                conn.close()
+        except Exception:  # noqa: BLE001 — best-effort by design
+            pass
+
+    threading.Thread(target=_post, daemon=True).start()
+
+
 def get_rendezvous(device_id):
     """One DuplexRendezvous per chip device — coordinates the TX/RX sources of a
     full-duplex flowgraph so they run INTERLEAVED on the shared input port in ONE
@@ -107,7 +144,12 @@ class DuplexRendezvous:
         ``schedule`` ("interleaved"/"sequential") is the GRC-settable timing knob
         (kyttar_source's Duplex schedule dropdown). Both duplex sources carry it;
         whichever names a NON-default ("sequential") wins for the Run, so setting
-        it on either source (or both) works. Reset to the default each new Run."""
+        it on either source (or both) works. Reset to the default each new Run.
+
+        The stream carries only its LOGICAL identity (stream_id); placeKYT resolves
+        which chip/port/landing it maps to. A multi-chip design is handled entirely
+        server-side (the server's stream_targets carry each stream's chip) — the
+        rendezvous + dispatch here are identical for single- and multi-chip."""
         with self._cv:
             self._pending[str(stream_id)] = {
                 "stream_id": str(stream_id), "samples": np.asarray(samples),
@@ -141,7 +183,9 @@ class DuplexRendezvous:
 
     def _dispatch_all(self, host, port):
         """Build + send ONE process_batch_duplex from all pending streams; split
-        the reply per stream into ``self._results``."""
+        the reply per stream into ``self._results``. The server routes each stream
+        to its chip (single- or multi-chip) from its own stream_targets — the
+        client sends only stream_id + samples."""
         with self._cv:
             subs = list(self._pending.values())
             self._pending = {}
@@ -183,6 +227,16 @@ class DuplexRendezvous:
         header = {"op": "process_batch_duplex", "port": "x16_out",
                   "in_port": "x16_in", "streams": streams_hdr, "schedule": _sched,
                   "pipelined": bool(_pipe)}
+        # GRC-sync + LIVE tunables for the duplex path: markers register into the
+        # device's default ('' stream) session — ship its snapshot exactly like
+        # BatchSession.dispatch does for the single-stream path.
+        try:
+            collected = get_session(self.device_id).collected_params()
+            if collected:
+                header["grc_params"] = collected
+        except Exception:  # noqa: BLE001 — advertising is best-effort
+            pass
+        _note_endpoint(self.device_id, host, port)  # enable live param pushes
         conn = socket.create_connection((host, int(port)))
         try:
             _send_message(conn, header, payload)
@@ -330,25 +384,33 @@ class BatchSession:
             # sink still sees a fresh generation.
             self._cv.notify_all()
 
-    def register_params(self, placekyt_type, params):
+    def register_params(self, placekyt_type, params, explicit_name=None):
         """Advertise one DSP marker block's params for GRC↔placeKYT sync.
 
-        The marker knows its placeKYT TYPE (e.g. ``"GainBlock"``) and its current
-        params; it does NOT know the placeKYT block NAME the importer assigned. We
-        reconstruct that name with the SAME scheme ``engine/grc_import`` uses: the
-        first instance of a type gets ``_default_name(type)`` (``GainBlock`` →
-        ``"gain"``), and further instances get ``<base>_2``, ``<base>_3``, … (the
-        importer's ``_unique`` suffix). Markers register in GR construction order,
-        which mirrors the .grc block order the importer walks, so the names line up
-        for the common single-instance-per-type demo. Returns the assigned name.
+        ``explicit_name`` (the marker's ``block_name`` param): the placeKYT block
+        NAME, verbatim — the ROBUST keying. Set it in the .grc whenever a design
+        has several instances of one type: GR's codegen CONSTRUCTION order is NOT
+        the .grc walk order (gain_hw constructs gain_blk_b before gain_blk_a), so
+        the order-based fallback below can key two same-type blocks SWAPPED —
+        harmless for the sync indicator (a no-match), but a LIVE-TUNED param
+        would retune the WRONG cell. An explicit name has no such failure mode.
 
-        NOTE/LIMITATION: this name reconstruction is correct when the placed design
-        was IMPORTED from this flowgraph (so names follow the importer scheme) and
-        the per-type instance ORDER matches. A user who manually RENAMED a block in
-        placeKYT, or hand-built/reordered the design, can desync the keying for
-        that block; the diff then simply won't match that block (no false sync, no
-        crash). Robust per-instance keying needs the GRC instance id, which a
-        ``gr.sync_block`` does not expose to its own Python instance."""
+        Fallback (no explicit name): reconstruct the name with the SAME scheme
+        ``engine/grc_import`` uses — first instance of a type gets
+        ``_default_name(type)`` (``GainBlock`` → ``"gain"``), further instances
+        ``<base>_2``, ``<base>_3``, … (the importer's ``_unique`` suffix), in GR
+        construction order. Correct for the common single-instance-per-type
+        design; a renamed/hand-built/reordered design simply won't match (no
+        false sync, no crash). Returns the assigned name."""
+        if explicit_name:
+            name = str(explicit_name)
+            with self._params_lock:
+                if self.done:
+                    self.grc_params.clear()
+                    self._type_counts.clear()
+                    self.done = False
+                self.grc_params[name] = dict(params or {})
+            return name
         base = _default_block_name(placekyt_type)
         with self._params_lock:
             # New-run boundary: the previous burst already dispatched (``done``),
@@ -365,6 +427,27 @@ class BatchSession:
             name = base if n == 0 else f"{base}_{n + 1}"
             self.grc_params[name] = dict(params or {})
         return name
+
+    def result_consumed(self):
+        """True when the sink has drained the LATEST dispatched generation — the
+        repeat-mode source's re-arm gate: it only accumulates + dispatches the
+        next burst once the previous one has been taken, so a slow sink is never
+        overrun (a new dispatch would overwrite the un-taken result)."""
+        with self._cv:
+            return self._seq <= self._taken_seq
+
+    def update_param(self, name, key, value):
+        """LIVE update of one advertised param (a GRC slider callback mid-run).
+
+        The next burst dispatch ships the new value in its ``grc_params`` header;
+        the placeKYT server turns a registered live-tunable param into a
+        coefficient WRITE on the running fabric (no reflash). Unknown ``name``
+        (e.g. before the first ``start``) is a silent no-op — advertising is
+        best-effort telemetry, never on the data path."""
+        with self._params_lock:
+            p = self.grc_params.get(name)
+            if p is not None:
+                p[key] = value
 
     def collected_params(self):
         """A snapshot of the advertised {block name: params} for dispatch."""
@@ -421,6 +504,7 @@ class BatchSession:
         collected = self.collected_params()
         if collected:
             header["grc_params"] = collected
+        _note_endpoint(self.device_id, host, port)  # enable live param pushes
         conn = socket.create_connection((host, int(port)))
         try:
             _send_message(conn, header, payload)

@@ -1,4 +1,5 @@
-"""ChipCanvas — the QGraphicsView chip display (the architecture notes §3.2).
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""ChipCanvas — the QGraphicsView chip display.
 
 Renders one or more chips' 10×12 grids with zoom/pan. This first version draws
 the grid, chip outlines, and any placed block / transit cells from a
@@ -544,15 +545,67 @@ class ChipCanvas(QGraphicsView):
                     block_name=blk.name))
 
     def _render_inter_chip_connections(self) -> None:
-        """Draw each board-level chip-to-chip wire between its port anchors."""
+        """Draw each board-level chip-to-chip wire between its port anchors, plus
+        a TRANSIT marker on the destination chip's port landing cell.
+
+        The landing cell (e.g. the chain tail's (0,0) for x16_in) IS programmed
+        by the build — a word crosses the transparent wire carrying its hop and
+        self-routes onward from that cell — but no design-level route covers it,
+        so it used to render as an empty cell and the chain read as broken at the
+        seam (user-reported on gain_2p2s's tails; verified functional). The
+        marker faces INTO the chip (opposite the port's outward face), the
+        direction the relayed words continue."""
         from .inter_chip_wire_item import InterChipWireItem
 
-        for ic in self._project.inter_chip_connections:
+        block_cells: dict[int, set] = {}
+        for b in self._project.blocks:
+            if b.placement is not None:
+                block_cells.setdefault(b.placement.chip, set()).update(
+                    (c.x, c.y) for c in b.placement.cells)
+
+        for idx, ic in enumerate(self._project.inter_chip_connections):
             start = self._port_anchor(ic.from_chip, ic.from_port)
             end = self._port_anchor(ic.to_chip, ic.to_port)
             if start is None or end is None:
                 continue
             self._scene.addItem(InterChipWireItem(start, end, ic=ic))
+            # Destination landing-cell transit marker.
+            to_chip = self._project.chip(ic.to_chip)
+            ct = self._chip_type_for(to_chip) if to_chip else None
+            port = ct.port(ic.to_port) if ct else None
+            if port is None:
+                continue
+            x, y = int(port.cell_x), int(port.cell_y)
+            if (x, y) in block_cells.get(ic.to_chip, set()):
+                continue  # a block owns the landing cell — its own drawing wins
+            # Face = the direction the relayed words CONTINUE: toward the
+            # adjacent cell occupied by a block or a route waypoint on this
+            # chip (the bus continuation — e.g. EAST along the top row into
+            # the tail's gain). Fallback: into the chip, away from the edge.
+            occ = set(block_cells.get(ic.to_chip, set()))
+            for conn in self._project.connections:
+                if (conn.is_routed and not conn.is_abutment
+                        and self._route_chip_of(conn) == ic.to_chip
+                        and not isinstance(conn.route, str)):
+                    occ.update((p.x, p.y) for p in conn.route)
+            inward = None
+            for face, (dx, dy) in ((Face.EAST, (1, 0)), (Face.SOUTH, (0, 1)),
+                                   (Face.WEST, (-1, 0)), (Face.NORTH, (0, -1))):
+                if (x + dx, y + dy) in occ:
+                    inward = face
+                    break
+            if inward is None:
+                pf = Face.from_str(port.face.value)
+                inward = (pf.mirrored_h if port.face.value in ("east", "west")
+                          else pf.mirrored_v)
+            item = CellItem(x, y, kind=CellKind.TRANSIT, face=inward,
+                            cell_id=("interchip", idx))
+            item.chip_id = ic.to_chip
+            origin = self._chip_origin(ic.to_chip)
+            sx, sy = chip_cell_to_scene(origin[0], origin[1], x, y)
+            item.setPos(sx, sy)
+            item.setZValue(2)
+            self._scene.addItem(item)
 
     def _waypoint_face(self, pts, i, conn=None, chip_id=0):
         """Face of a routing cell = direction to the NEXT waypoint. The FINAL
@@ -899,14 +952,19 @@ class ChipCanvas(QGraphicsView):
         self._scale = 1.0
 
     def _grid_fit_rect(self):
-        """Bounding rect of the grid CELLS only (excludes port labels/arrows
-        that inflate ``itemsBoundingRect`` and waste fit space). Falls back to
-        the full items rect when there are no cells yet."""
+        """Bounding rect of the grid CELLS plus any SRAM/peripheral PANELS
+        (excludes port labels/arrows that inflate ``itemsBoundingRect`` and
+        waste fit space). A panel-backed design opened fresh must show its
+        panel in the initial view, not just the cell array (user request,
+        2026-08-12). Falls back to the full items rect when there are no
+        cells yet."""
         from PySide6.QtCore import QRectF
+
+        from .panel_item import PanelItem
 
         rect = QRectF()
         for it in self._scene.items():
-            if isinstance(it, CellItem):
+            if isinstance(it, (CellItem, PanelItem)):
                 r = it.sceneBoundingRect()
                 rect = r if rect.isEmpty() else rect.united(r)
         return rect if not rect.isEmpty() else self._scene.itemsBoundingRect()

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Live GR ↔ placeKYT chip_batch test (the headless/live reconciliation, #358).
 
 The bug this guards: kyttar.source/sink are gr.sync_block (1:1 in:out rate), so a
@@ -29,7 +30,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-REPO = Path(__file__).resolve().parents[2]            # /home/system/placekyt
+REPO = Path(__file__).resolve().parents[2]            # <repo root>
 GR_PYTHON = os.environ.get("KYTTAR_GR_PYTHON", "/usr/bin/python3")
 GR_OOT = REPO / "gr-kyttar" / "python"
 

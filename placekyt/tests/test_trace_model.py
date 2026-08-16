@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """TraceModel — the debug data spine (engine-layer, Qt-free)."""
 
 from __future__ import annotations

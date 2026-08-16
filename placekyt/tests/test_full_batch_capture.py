@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Full-batch trace capture (no rolling-window trim) for one-shot server batches.
 
 A GRC-server batch run drives one bounded burst through simKYT (~130k events for a

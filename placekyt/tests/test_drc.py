@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Tests for project-level DRC (engine/drc.py, §5.2).
 
 One positive + one negative per project-level ERROR category (§11.2), plus the

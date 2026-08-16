@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """PreambleCorrelatorBlock — see :class:`PreambleCorrelatorBlock`."""
 import numpy as np
 from ..block import CellProgram, Port, EntryPoint, StateVar, DataWord

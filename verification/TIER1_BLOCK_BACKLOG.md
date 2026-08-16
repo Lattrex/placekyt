@@ -1,6 +1,6 @@
 # Tier-1 block backlog (for the VM agent)
 
-**Scope rule (CM-locked):** the most-used GNU Radio **signal-processing** blocks that
+**Scope rule (maintainer-locked):** the most-used GNU Radio **signal-processing** blocks that
 map cleanly to a chip cell (memoryless or simple-state, fully auto-placeable and
 auto-routable). EXCLUDES host-side flowgraph plumbing that is not a chip block —
 GUI sinks/sources, Throttle, File source/sink, Virtual source/sink, Variable, etc.
@@ -140,5 +140,5 @@ Squelch*  (*= present but Tier-2/verify-pending; not Tier-1 agent work).
 - Two-input blocks (multiply/add) need the complex-burst broker delivery already
   proven for the Costas xi/xq tap — reuse it; don't reinvent fan-in.
 - If a candidate turns out to be multi-cell or to change topology with a param, it
-  is NOT Tier-1 — flag it and move on (it becomes a Tier-2 item for CM).
+  is NOT Tier-1 — flag it and move on (it becomes a Tier-2 item for the maintainer).
 - Commit per block; update the manifest + the generated status dashboard.

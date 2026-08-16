@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Tests for the bitstream disassembler (engine.disasm) — #202.
 
 The strongest check is a round-trip against the real simkyt assembler: every

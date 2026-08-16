@@ -1,0 +1,44 @@
+id: kyttar_keep_one_in_n
+label: Keep 1 in N
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar Keep 1 in N — keep 1 sample of every n (no filter), a drop-in for GNU Radio's
+  blocks.keep_one_in_n.
+
+  A pure pass-through gated by a modulo-n counter (the decimator's emit gate WITHOUT
+  the FIR). Single cell on the Kyttar chip. Matching GR, it keeps the LAST sample of
+  each group of n (phase n-1). EXACT pass-through — the kept samples equal the input
+  bit-for-bit.
+
+  This block runs on the Kyttar chip. Place it between a KyttarSource and KyttarSink
+  block, and ensure the device_id matches your KyttarDevice.
+
+  Parameters:
+  - Device ID: ID of the KyttarDevice block
+  - N: keep factor (keep 1 sample of every N)
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.keep_one_in_n(device_id=${device_id}, n=${n})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+  - id: n
+    label: N
+    dtype: int
+    default: '2'
+
+inputs:
+  - label: in
+    dtype: float
+
+outputs:
+  - label: out
+    dtype: float
+
+file_format: 1

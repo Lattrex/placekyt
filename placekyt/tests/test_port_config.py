@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Tests for engine.port_config — host-side I/O port config derivation."""
 from __future__ import annotations
 import os

@@ -1,0 +1,21 @@
+{
+  "kyttar_block": "DiffEncoderBlock",
+  "passed": true,
+  "metric": "exact",
+  "n_compared": 64,
+  "max_abs_err": 0,
+  "tolerance": 0,
+  "nmse_db": null,
+  "correlation": null,
+  "bit_errors": 0,
+  "delay_used": 0,
+  "coverage": {
+    "modulus": "2 and 4",
+    "coding": "DIFF_DIFFERENTIAL (default) + DIFF_NRZI",
+    "patterns": "random x4 seeds, all-0, all-max, alternating",
+    "mutation": true,
+    "roundtrip": "encode -> diff_decoder_bb == identity (M2/M4, both codings)",
+    "gr_equiv": "digital.diff_encoder_bb(modulus, coding)",
+    "note": "1 cell, 1-sample carry state; y[n]=(x[n]+y[n-1]+bias) mod M, bit-exact"
+  }
+}

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """PanelItem — an SRAM / peripheral panel on the canvas (the SRAM panel notes).
 
 A panel renders like a small chip: a labelled rounded box with x16/x1 port

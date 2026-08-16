@@ -1,0 +1,19 @@
+{
+  "kyttar_block": "ComplexRRCMatchedFilterBlock",
+  "passed": true,
+  "metric": "amplitude",
+  "n_compared": 50,
+  "max_abs_err": 11,
+  "tolerance": 18,
+  "nmse_db": -53.5207811998382,
+  "correlation": 0.9999997174658416,
+  "bit_errors": 0,
+  "delay_used": 0,
+  "coverage": {
+    "edge": true,
+    "random": 3,
+    "param_sweep": 8,
+    "mutation": true,
+    "ntaps": 17
+  }
+}

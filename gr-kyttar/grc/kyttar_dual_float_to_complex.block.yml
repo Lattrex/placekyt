@@ -1,0 +1,44 @@
+id: kyttar_dual_float_to_complex
+label: Float To Complex
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar Dual Float To Complex — pair TWO independent, asynchronously-timed real
+  streams into one complex stream. The PHYSICAL form of GNU Radio's
+  blocks.float_to_complex for the case a single logical Float To Complex cannot cover:
+  the I and Q producers fire at independent times (I from one source, Q from another).
+
+      out[n] = i[n] + j*q[n]   (matched sample-for-sample)
+
+  On the clockless Kyttar array the 1-cell block uses the arbiter LOCK/LOCK_FACE to
+  rendezvous the two rails by ARRIVAL FACE, so matched I/Q pairs form regardless of
+  interleaving (it REQUIRES its two inputs on two distinct faces). The placeKYT
+  importer AUTO-INSERTS this block when it sees a raw blocks.float_to_complex fed by
+  two independent real producers (no null_source on Q); place it explicitly when
+  authoring the design directly.
+
+  This block runs on the Kyttar chip. Place it between a KyttarSource and KyttarSink
+  block, and ensure the device_id matches your KyttarDevice.
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.dual_float_to_complex(device_id=${device_id})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+
+inputs:
+  - label: i
+    dtype: float
+  - label: q
+    dtype: float
+
+outputs:
+  - label: out
+    dtype: complex
+
+file_format: 1

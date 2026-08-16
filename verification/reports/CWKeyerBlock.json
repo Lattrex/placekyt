@@ -1,0 +1,49 @@
+{
+  "kyttar_block": "CWKeyerBlock",
+  "passed": true,
+  "status": "done",
+  "quarantine": false,
+  "sram_backed": true,
+  "metric": "amplitude",
+  "grc_block": "",
+  "golden": "python model of the International Morse code + standard CW timing, both transcribed from ITU-R M.1677-1 (10/2009), Annex 1 Part I (letters/figures/punctuation) + §2 spacing (dot=1, dash=3, intra=1, inter=3, word=7); WPM via PARIS dot_ms=1200/wpm",
+  "bit_exact_vs_golden": true,
+  "through_real_panel_roundtrip": true,
+  "character_set": "E, T, Q, digit 5, word-space (NUL), PARIS (the WPM calibration word), and a message (SOS + word-space + ET) through the real SramPanelDevice/PanelDriver push-read + on-chip run player; plus timing E/T/AN/word-space square-wave ratios and the four run kinds on-chip",
+  "n_compared_chars": 9,
+  "envelope_peak_error_q15_lsb": 0,
+  "envelope_tolerance_q15_lsb": 0,
+  "timing_ratios_exact": "1:3:1:3:7 (dot:dash:intra:inter:word) measured on the real panel-emitted envelope; PARIS=50 dot units; dot_ms=1200/wpm",
+  "edge_shape": "raised-cosine (Hann) 0.5*(1-cos(pi*k/(e+1))), exact in-cell LUT (0 Q15 LSB vs golden through the panel round-trip)",
+  "cell_count": 2,
+  "sram_words_per_run_record": 3,
+  "sram_pack_format": "off-cell schedule = a stream of RUN RECORDS (base, step, count), 3x16-bit words each, computed at build time from the golden (Morse table + dot/dash/gap timing FSM run ONCE off-cell); the packed Morse table itself (morse_sram_table, (count<<8)|elems, address==ASCII code point) is the panel image the run expander walks",
+  "player_cell_instructions": 15,
+  "player_cell_total_words_edge4": 24,
+  "player_cell_total_words_edge8": 28,
+  "player_cell_fits_single_cell": true,
+  "max_onchip_edge": 8,
+  "edge_lut_choice": "SMALL in-cell Hann LUT (2+edge_samples words) baked from the closed-form raised-cosine formula, NOT a cosine recurrence (measured recurrence drift 12.5 Q15 LSB at edge=32 because the 2*cos(w) coefficient exceeds Q15 range and the error compounds). The Morse TABLE is off-cell in the panel; only the tiny constant edge LUT stays in-cell.",
+  "coverage": {
+    "load_phase_autoincrement_streamed": true,
+    "lookup_phase_push_read_per_run": true,
+    "run_kinds_off_flat_rise_fall_onchip": true,
+    "bit_exact_single_chars": true,
+    "bit_exact_paris": true,
+    "bit_exact_message": true,
+    "timing_ratios_exact": true,
+    "edge_within_q15_tol": true,
+    "mutation": true
+  },
+  "resolves_walls": [
+    "REGISTER FOOTPRINT (INV-7): the single-cell timing state machine (element walk + dot/dash/gap + per-sample raised-cosine edge) assembled to ~50 instructions BEFORE any table/edge LUT, overflowing the 32-word cell for every table/edge/1-or-2-cell partition. RESOLVED by running the timing FSM ONCE at build time and moving its output (the keying schedule) off-cell into the SRAM panel as a run-record stream.",
+    "MORSE TABLE (INV-29): the ~48-entry Morse table (which alone exceeded the ~21-entry LOAD-indirect ceiling) is off-cell in the unbounded SRAM panel (morse_sram_table, address==ASCII code point); the run expander walks the packed codewords at build time.",
+    "PER-SAMPLE EMIT: the on-chip cell is a tiny ~15-instruction UNIFIED run player (one loop for OFF/FLAT/RISE/FALL runs, value=LUT[base+step*i]); the panel push-read delivers one run record (base, step, count) per kick."
+  ],
+  "bug_found": "test harness only: a long OFF/word-space run (count up to 7*spd) needs more chip.run() pumps than a fixed cnt+40 budget to surface all samples through the port; replaced with a drain-until-quiescent loop. No block bug -- the player + run-record model were bit-exact on the first on-chip run.",
+  "reusable_pattern": "yes -- the run-record player is the SRAM-backed pattern for any envelope/timing-FSM block whose per-sample state machine overflows a cell: precompute the schedule off-cell, stream (base, step, count) records, play against a small in-cell shape LUT.",
+  "tests": [
+    "verification/tests/test_cw_keyer_sram.py (16 pass)",
+    "verification/tests/test_cw_keyer.py (17 pass)"
+  ]
+}

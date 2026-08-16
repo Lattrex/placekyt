@@ -1,4 +1,5 @@
-"""Command base classes and the CommandManager (the architecture notes §4.2, §6)."""
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Command base classes and the CommandManager."""
 
 from __future__ import annotations
 

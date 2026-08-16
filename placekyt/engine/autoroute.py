@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Auto-route — materialise logical nets into drawn waypoint routes (Phase 3).
 
 This is the first cut of the auto-P&R router (AUTO_PNR_DESIGN §7). It takes the
@@ -144,6 +145,19 @@ class AutoRouteReport:
     @property
     def failed(self) -> list[RouteResult]:
         return [r for r in self.results if not r.ok]
+
+    @property
+    def reason(self) -> str:
+        """A human-readable WHY for a failed route: every failed net named with its
+        per-net reason (never an empty string on ok=False). Empty when ok."""
+        if self.ok:
+            return ""
+        parts = []
+        for r in self.failed:
+            parts.append(f"{r.name}: {r.reason or 'unroutable (no reason recorded)'}")
+        if not parts:
+            return "no nets to route"
+        return "; ".join(parts)
 
 
 class AutoRouter:

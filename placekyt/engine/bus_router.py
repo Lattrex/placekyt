@@ -1,6 +1,7 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Bus/broker auto-router — the §1.2 active-control-fabric model (auto-P&R P3.1).
 
-This is the central router the design (`the auto-P&R design notes` §1.2) calls for and that
+This is the central router the time-multiplexed bus model calls for (see doc/ROUTING_TOPOLOGIES.md) and that
 the BFS corridor router (`autoroute.py`) and the CP-SAT router (`cpsat_router.py`)
 do NOT implement: a **directed bus** of routing cells that snakes input→output along
 the placement spine, with **blocks abutting the bus** and a programmed **BROKER**
@@ -48,6 +49,13 @@ from .autoroute import (AutoRouteReport, AutoRouter, RouteResult, _FACE_STEP,
 # Unit step per fwd_face code (S=0,E=1,W=2,N=3) — screen coords (x-right/y-down).
 _FWD_DELTA = {0: (0, 1), 1: (1, 0), 2: (-1, 0), 3: (0, -1)}
 _NEI = ((1, 0), (-1, 0), (0, 1), (0, -1))
+
+# Per-cell price of one route hop in ``_bus_bfs``. Large enough that every
+# sub-hop tie-break (corridor-sharing preference ≤1/cell, turn penalty ≤1/cell,
+# the +2 emit-face start bonus, on a ≤120-cell array: ≤ 2·120+2) can NEVER add
+# up to a whole extra hop: path LENGTH strictly dominates, preferences only
+# split ties (prefer shared cells, prefer straight runs over staircases).
+_HOP_COST = 512
 # model.enums.Face (string-valued) → fwd_face int code.
 _FACE_CODE = {"south": 0, "east": 1, "west": 2, "north": 3}
 
@@ -177,16 +185,28 @@ def route_all_bus(project, chip_types, port_cell_provider,
             for n in nets:
                 results.append(RouteResult(n[0], False, reason="no chip type"))
             continue
+        # The shortest-path DOMINANCE invariant (see ``_HOP_COST``): the sub-hop
+        # tie-breaks (share/fresh ≤1/cell + turn ≤1/cell + emit-start +2) summed
+        # over the longest possible path must never add up to a whole hop, or a
+        # tie-break could buy a genuinely LONGER route — the exact zigzag/
+        # saturation hazard this router exists to prevent. Chip dims are
+        # YAML-parameterized and >31-hop routes are relay-extended, so guard the
+        # bound against the ACTUAL fabric size instead of trusting the constant.
+        assert _HOP_COST > 2 * (ct.width * ct.height) + 2, (
+            f"_HOP_COST={_HOP_COST} cannot dominate the sub-hop tie-breaks on a "
+            f"{ct.width}x{ct.height} fabric — raise it (needs > "
+            f"{2 * ct.width * ct.height + 2})")
         spine = list(spine_provider(chip_id)) if spine_provider else []
         # SINGLE-BACKBONE v2 first (bus/ring): try the contiguous-backbone router. It
         # is kept ONLY if it routes EVERY net AND the DRC gate passes them all — a
         # partial/failing v2 is DISCARDED so the legacy per-net loop below stays
         # byte-identical on fallback (the proven path is never displaced).
+        v2_full_ok = None
         if topology in ("bus", "ring"):
             v2 = _route_chip_bus_v2(project, ct, chip_id, nets, spine,
                                     port_map_provider=port_map_provider)
             if v2 is not None and len(v2) == len(nets):
-                gated = _drc_gate(v2, chip_types)
+                gated = _drc_gate(v2, chip_types, project)
                 bad = [r for r in gated if not r.ok]
                 # ACCEPT v2 when EVERY remaining failure is a STRUCTURED
                 # ``output-boxed:<block>`` failure (a multi-cell output with no free
@@ -197,9 +217,14 @@ def route_all_bus(project, chip_types, port_cell_provider,
                 # per-net router (which would route the boxed net SHORT, 0-output). A v2
                 # with any OTHER failure is discarded (legacy fallback, unchanged).
                 if all(r.ok for r in gated):
-                    results.extend(gated)
-                    continue
-                if bad and all("output-boxed:" in str(r.reason) for r in bad):
+                    # Fully-ok v2 is kept ONLY if the legacy per-net loop cannot do
+                    # strictly SHORTER total routing (quality gate below): the v2
+                    # backbone threads EVERY block off one contiguous corridor, which
+                    # on a simple pipeline yields the audited up-and-over staircases a
+                    # plain shortest-path per-net route avoids. Structure when it is
+                    # needed, shortness when it is not.
+                    v2_full_ok = gated
+                elif bad and all("output-boxed:" in str(r.reason) for r in bad):
                     results.extend(gated)
                     continue
         # Route ORDER matters under single-fwd_face contention (the bus is a directed
@@ -300,6 +325,18 @@ def route_all_bus(project, chip_types, port_cell_provider,
                 # source→target distance ascending, so nearest brokers first.
                 port_span = abs(s[0] - d[0]) + abs(s[1] - d[1])
                 return (0 if src_is_port else 1, port_span, d, span)
+            if mode == "portfork_far":
+                # The mirror ordering: the FARTHEST port net routes FIRST, committing
+                # its own shortest corridor (it is the straight-riding arm), and each
+                # nearer sibling then BROKERS ON that committed corridor at the cell
+                # abutting its target — the working modem's exact fork shape. This
+                # often beats nearest-first when the near target sits OFF the far
+                # net's natural corridor (the tremolo NCO wall: nearest-first put the
+                # fork on the wrong side of the port and the far net detoured 10
+                # extra cells around the block). Both orderings run; the best-by-
+                # (routed, total-length) result wins.
+                port_span = abs(s[0] - d[0]) + abs(s[1] - d[1])
+                return (0 if src_is_port else 1, -port_span, d, span)
             return (_cls(src_is_port, dst_is_port, mode), d,
                     0 if not src_is_port else 1, span)
 
@@ -317,19 +354,25 @@ def route_all_bus(project, chip_types, port_cell_provider,
 
         modes = ("egress", "blocks", "constrained")
         if has_port_fanout:
-            modes = ("portfork",) + modes
+            modes = ("portfork", "portfork_far") + modes
         if sc_cells:
             modes = modes + ("hazard",)
+        # Keep the ordering that routes the MOST nets; among full ties, the one with
+        # the SMALLEST total corridor length (shortest routing is the objective —
+        # a first-full-ordering early exit used to lock in a longer fork shape).
+        def _quality(res):
+            nok = sum(1 for r in res if r.ok)
+            tot = sum(max(0, len(r.points) - 1)
+                      for r in res if r.ok and r.points)
+            return (nok, -tot)
         best = None
         for mode in modes:
             ordered = sorted(nets, key=lambda n: _key(n, mode))
             res = _route_chip_bus(project, ct, chip_id, ordered, spine,
                                   sc_cells=sc_cells)
-            nok = sum(1 for r in res if r.ok)
-            if best is None or nok > best[0]:
-                best = (nok, res)
-            if nok == len(nets):
-                break
+            q = _quality(res)
+            if best is None or q > best[0]:
+                best = (q, res)
         # FALLBACK (§P3.4 sound failure, not a dead build): if NO safe ordering routes
         # every net — a single-cell hazard block in a geometry too tight to split its
         # input/output faces (e.g. a walled corner sink) — re-route with the hazard
@@ -338,17 +381,28 @@ def route_all_bus(project, chip_types, port_cell_provider,
         # cell (NAMED), blocking the unsafe build rather than failing to route at all.
         # Only used when the safe attempt strictly improves on nothing — a safe route is
         # always preferred when one exists.
-        if sc_cells and best[0] < len(nets):
+        if sc_cells and best[0][0] < len(nets):
             for mode in ("egress", "blocks"):
                 ordered = sorted(nets, key=lambda n: _key(n, mode))
                 res = _route_chip_bus(project, ct, chip_id, ordered, spine,
                                       sc_cells=None)
-                nok = sum(1 for r in res if r.ok)
-                if nok > best[0]:
-                    best = (nok, res)
-                if nok == len(nets):
+                q = _quality(res)
+                if q[0] > best[0][0]:
+                    best = (q, res)
+                if q[0] == len(nets):
                     break
-        chip_results = _drc_gate(best[1], chip_types)
+        chip_results = _drc_gate(best[1], chip_types, project)
+        if v2_full_ok is not None:
+            # Quality gate: prefer the legacy per-net result ONLY when it also
+            # routes every net DRC-clean AND is strictly shorter in total corridor
+            # length; otherwise the proven v2 backbone stands.
+            def _total_len(rs):
+                return sum(max(0, len(r.points) - 1)
+                           for r in rs if r.ok and r.points)
+            legacy_all_ok = chip_results and all(r.ok for r in chip_results)
+            if not (legacy_all_ok
+                    and _total_len(chip_results) < _total_len(v2_full_ok)):
+                chip_results = v2_full_ok
         results.extend(chip_results)
 
     # Preserve the project's connection order in the report.
@@ -483,7 +537,7 @@ def _route_chip_bus_v2(project, ct, chip_id, nets, spine, *, port_map_provider):
             "ord": (fil_of.get(blk.name, 0), fpos.get(blk.name, 1 << 20), 0)})
         ent["conns"].append(name)
 
-    # OUTPUT TAPS (the CM multi-cell-output mandate, doc/ROUTING_TOPOLOGIES.md). For a
+    # OUTPUT TAPS (the multi-cell-output mandate, doc/ROUTING_TOPOLOGIES.md). For a
     # block→block / block→port net whose SOURCE block's OUTPUT cell is DIFFERENT from
     # its input cell (a multi-cell snake) the source must tap the backbone at a FREE
     # cell ABUTTING that output cell — otherwise the build (which hops exit→tap @1) lands
@@ -1275,17 +1329,22 @@ def _route_chip_bus_v2(project, ct, chip_id, nets, spine, *, port_map_provider):
     return out
 
 
-def _drc_gate(results, chip_types):
+def _drc_gate(results, chip_types, project=None):
     """Run the bus DRC (:mod:`engine.bus_drc`) over the SUCCESSFULLY-routed nets and
     DEMOTE any net implicated in a face-conflict / deadlock to a NAMED failure (P3.4:
     a violation is a sound, explained failure, never a silent dead build). Returns the
-    results with offenders re-marked ``ok=False`` carrying the DRC reason."""
+    results with offenders re-marked ``ok=False`` carrying the DRC reason.
+
+    ``project`` (when available) lets the DRC's waits-for graph see THROUGH placed
+    blocks (block supernodes + delivery edges, INV-32) so a deadlock cycle closing
+    through a block's internals — own-block or cross-block — is demoted here instead
+    of shipping as a saturated-drive runtime Deadlock."""
     from .bus_drc import check_bus
 
     routed = {r.name: r.points for r in results if r.ok and r.points}
     if not routed:
         return results
-    viols = check_bus(None, routed, chip_types)
+    viols = check_bus(project, routed, chip_types)
     if not viols:
         return results
     reason_for: dict = {}
@@ -1360,6 +1419,27 @@ def _route_chip_bus(project, ct, chip_id, nets, spine, *, sc_cells=None,
     # it (the rotated complex fan-in that snaked THROUGH x16_out and lost both operands).
     port_cells = {(p.cell_x, p.cell_y) for p in getattr(ct, "ports", [])}
 
+    # DEADLOCK-CYCLE GUARD (the audited data_link floattochar lockup): a block's
+    # OUTPUT corridor must never pass THROUGH a broker that DELIVERS INTO that
+    # same block — the output words then block the cell that feeds the block its
+    # next input, a closed 4-cell wait cycle the sim reports as a hard Deadlock
+    # (per-sample pacing hides it; under continuous flow it locks immediately).
+    # Two symmetric structures track it as nets commit:
+    #   * ``cells_to_block`` — every placed block cell → owning block name;
+    #   * ``brokers_into_block`` — block name → brokers delivering into it
+    #     (a net SOURCED at that block adds these to its forbid_transit);
+    #   * ``out_cells_by_block`` — block name → cells of its committed OUTPUT
+    #     corridors (a broker candidate for a net TARGETING that block must not
+    #     sit on them — the same cycle formed from the other routing order).
+    cells_to_block: dict = {}
+    for blk in project.blocks:
+        pl = blk.placement
+        if pl is not None and pl.chip == chip_id:
+            for c in pl.cells:
+                cells_to_block[(c.x, c.y)] = blk.name
+    brokers_into_block: dict = {}
+    out_cells_by_block: dict = {}
+
     spine_set = {tuple(p) for p in spine if in_bounds(tuple(p))}
     bus: set = set()                  # cells already carrying the bus (preferred)
     # The committed OUTGOING direction of each bus cell. A cell has ONE fwd_face
@@ -1400,6 +1480,46 @@ def _route_chip_bus(project, ct, chip_id, nets, spine, *, sc_cells=None,
     # preference, ``spine_set``) toward the snake, so nets coalesce onto it without a
     # rigid pre-committed backbone that would wall off transverse port nets.
 
+    # ABUTMENT FAST-PATH (the shortest-path mandate at distance 1): a block→block
+    # net whose source EXIT cell directly abuts the target INPUT cell needs NO
+    # corridor at all — the build's abutment machinery synthesises the @1 handoff.
+    # Without this the bus router (which cannot land a broker ON the source cell)
+    # wrapped the ENTIRE source block to reach a far-side broker: the abutted
+    # tremolo stack routed 20 cells for adjacent pairs. CONSERVATIVE conditions
+    # (mirrors the maze router's ``is_abutment``, tightened): every net sourced at
+    # that exit cell must be an abutment to the SAME target input cell (the plain
+    # single rail, or the complex yi/yq packet) — a MIXED abutted+routed fan-out
+    # keeps the fully-routed path (the _apply_brokers mixed re-sequencing is a
+    # known-open defect, see the converter_flavors xfail).
+    abut_results: dict = {}
+    if nets:
+        by_src_exit: dict = {}
+        for n in nets:
+            if isinstance(n[7].source, BlockEndpoint):
+                by_src_exit.setdefault(n[1], []).append(n)
+        for s_cell, group in by_src_exit.items():
+            if not all(isinstance(m[7].target, BlockEndpoint)
+                       and not m[5] and not m[6]
+                       and abs(m[1][0] - m[3][0]) + abs(m[1][1] - m[3][1]) == 1
+                       for m in group):
+                continue
+            if len({m[3] for m in group}) != 1:
+                continue                # rails to different targets: route normally
+            # A SAME-source-PORT duplication (one rail fanning BOTH inputs of a
+            # join, fanin2) must keep the routed broker-reuse path — the abutment
+            # packet transform mis-orders its replicated WRITEs around the single
+            # trigger (a0 paired with a STALE a1). Only DISTINCT rails (the
+            # complex yi/yq packet) — or a lone net — abut.
+            src_ports = [m[7].source.port for m in group]
+            if len(src_ports) != len(set(src_ports)):
+                continue
+            for m in group:
+                abut_results[m[0]] = RouteResult(m[0], True, points=None,
+                                                 abutment=True)
+    if abut_results:
+        out.extend(abut_results.values())
+        nets = [n for n in nets if n[0] not in abut_results]
+
     for (name, s, sface, d, dface, src_is_port, dst_is_port, conn) in nets:
         if not (in_bounds(s) and in_bounds(d)):
             out.append(RouteResult(
@@ -1417,15 +1537,24 @@ def _route_chip_bus(project, ct, chip_id, nets, spine, *, sc_cells=None,
         #     (the §1.2 case that lets different-sink streams share the spine).
         forbid_broker = None
         broker_goal = None      # PORT fan-out straight-ride broker fallback (set below)
+        reuse = None            # existing fan-in broker reuse (block-target branch)
+        avoid_bus = False       # sole-port-net fresh-corridor preference
         if dst_is_port:
             goal = d
             goal_is_block = False
             goal_is_broker = False
-        elif src_is_port and s == d:
-            # The chip input port injects DIRECTLY into the block (the landing cell IS
-            # the port cell) — no route/broker needed, as every existing port→block
-            # build does. (A port whose target is a DIFFERENT cell taps via a broker,
-            # below, like any other stream into that cell.)
+        elif src_is_port and (s == d
+                              or abs(s[0] - d[0]) + abs(s[1] - d[1]) == 1):
+            # The chip input port injects DIRECTLY into the block — the landing
+            # cell IS the port cell, or directly ABUTS it (the word forwards one
+            # hop on the port's fwd_face and lands; physically proven by the
+            # channel_selector injection trace). No broker needed. The ADJACENT
+            # case used to fall into broker selection, find no legal candidate
+            # (the block body walls the neighbours), fail, and escalate to the
+            # maze whose vestigial 1-point route the controller strips — leaving
+            # a WORKING injection rendered as a bare FLY LINE. Emitting the real
+            # [(port), (landing)] route makes the GUI draw the corridor that
+            # actually carries the words.
             goal = d
             goal_is_block = False
             goal_is_broker = False
@@ -1489,11 +1618,39 @@ def _route_chip_bus(project, ct, chip_id, nets, spine, *, sc_cells=None,
                 # Prefer riding the shared bus straight into the block's own input cell
                 # (``d`` is that resolved cell). Attempted first in the BFS section below;
                 # broker is the fallback if the straight ride is walled.
-                straight_goal = d
+                #
+                # ONLY the FARTHEST sibling may ride straight: a straight ride ends
+                # INSIDE the target block cell, committing the shared corridor into a
+                # cell no sibling can transit — a NEARER net riding straight walls
+                # every farther sibling off the port (the effect_echo net1 failure).
+                # This is exactly the portfork ordering's own contract ("the near net
+                # brokers off at the shared fork cell, the farther sibling rides the
+                # shared prefix onward"); enforce it structurally, not just by order.
+                my_span = abs(s[0] - d[0]) + abs(s[1] - d[1])
+                sib_spans = [abs(_s2[0] - _d2[0]) + abs(_s2[1] - _d2[1])
+                             for (_n2, _s2, _sf2, _d2, _df2, _sp2, _dp2, _c2) in nets
+                             if isinstance(_c2.source, ChipPortEndpoint)
+                             and _c2.source.port == src_port
+                             and isinstance(_c2.target, BlockEndpoint)]
+                if my_span >= max(sib_spans, default=my_span):
+                    straight_goal = d
+            # THIS net's own source emit cell is NOT reserved against brokering: the
+            # word the source emits into it IS this net's own delivery, so a broker
+            # there is the natural (shortest) tap — two blocks one free cell apart
+            # hand off through exactly that cell. Only FOREIGN nets' emit cells are
+            # de-prioritised (their egress face would clobber our delivery). Without
+            # this every A→B in a row of blocks staircased up-and-over to a far-side
+            # broker (the audited effect_echo/data_link zigzags).
+            own_emit = None
+            if isinstance(conn.source, BlockEndpoint):
+                _est = _FACE_STEP.get(sface)
+                if _est is not None:
+                    own_emit = (s[0] + _est[0], s[1] + _est[1])
+            foreign_emit_cells = output_emit_cells - {own_emit}
             broker_goal = reuse if reuse is not None else \
                 _free_neighbor(d, dface, occ, bus, spine_set, in_bounds, s,
                                forbid_broker, broker_target, avoid_bus=avoid_bus,
-                               output_emit_cells=output_emit_cells)
+                               output_emit_cells=foreign_emit_cells)
             goal = straight_goal if straight_goal is not None else broker_goal
             goal_is_block = True
             goal_is_broker = straight_goal is None
@@ -1513,44 +1670,93 @@ def _route_chip_bus(project, ct, chip_id, nets, spine, *, sc_cells=None,
         # Reserve every FOREIGN chip port cell (a port cell that is not THIS net's own
         # source or goal): no net may thread its corridor through another net's I/O
         # terminus (the port-egress face would clobber the transit face).
+        # PLUS the deadlock-cycle guard: a net SOURCED at block B must never transit
+        # a broker that DELIVERS INTO B (its output words would block its own input
+        # delivery — the closed wait cycle the data_link f2c lockup proved).
+        own_input_brokers = set()
+        if isinstance(conn.source, BlockEndpoint):
+            own_input_brokers = {b for b in
+                                 brokers_into_block.get(conn.source.block, set())}
         forbid_transit = {pc for pc in port_cells if pc != s and pc != goal}
+        hard_forbid = {b for b in own_input_brokers if b != goal}
 
-        path = _bus_bfs(s, sface, goal, occ, bus, spine_set, in_bounds,
-                        src_is_port, bus_dir=bus_dir, brokers=brokers,
-                        forbid_first=forbid_first,
-                        forbid_broker_transit=forbid_broker_transit,
-                        forbid_transit=forbid_transit)
+        path = None
+        if not goal_is_broker:
+            # Non-broker goal: chip-output-port egress, direct port injection, or the
+            # PORT fan-out STRAIGHT ride into the target's own input cell.
+            path = _bus_bfs(s, sface, goal, occ, bus, spine_set, in_bounds,
+                            src_is_port, bus_dir=bus_dir, brokers=brokers,
+                            forbid_first=forbid_first,
+                            forbid_broker_transit=forbid_broker_transit,
+                            forbid_transit=forbid_transit,
+                            hard_forbid=hard_forbid,
+                            prefer_fresh=avoid_bus)
         # PORT fan-out straight-ride fallback: if the STRAIGHT ride into the target's
         # own input cell was walled (the shared fork cell is committed a direction that
         # doesn't reach this target), fall back to BROKERING off the bus — which lands on
         # the shared fork cell for the sibling that must TURN (a broker there delivers on
         # its own face + forwards transiting words on the bus face). This keeps the fork
         # SHARED (both nets leave the port the same way) instead of diverging at the port.
-        if path is None and not goal_is_broker and broker_goal is not None:
-            goal = broker_goal
-            goal_is_broker = True
-            forbid_transit = {pc for pc in port_cells if pc != s and pc != goal}
-            path = _bus_bfs(s, sface, goal, occ, bus, spine_set, in_bounds,
-                            src_is_port, bus_dir=bus_dir, brokers=brokers,
-                            forbid_first=forbid_first,
-                            forbid_broker_transit=forbid_broker_transit,
-                            forbid_transit=forbid_transit)
-        if path is None and goal_is_broker:
-            # The chosen broker is walled (its only approaches are committed the wrong
-            # way). Try the OTHER free neighbours of the target as broker taps before
-            # giving up — a packed fan-in may need a different abutment face.
-            for alt in _free_neighbors_all(d, dface, occ, in_bounds, s,
-                                           forbid_broker, broker_target):
-                if alt == goal:
-                    continue
-                alt_forbid = {pc for pc in port_cells if pc != s and pc != alt}
-                path = _bus_bfs(s, sface, alt, occ, bus, spine_set, in_bounds,
-                                src_is_port, bus_dir=bus_dir, brokers=brokers,
-                                forbid_first=forbid_first,
-                                forbid_broker_transit=forbid_broker_transit,
-                                forbid_transit=alt_forbid)
-                if path is not None:
-                    goal = alt
+        #
+        # BROKER goal: route to EVERY legal broker candidate and keep the SHORTEST
+        # path (candidate-order breaks ties: the ranked preferred broker first). The
+        # old first-choice-then-fallback picked the broker by bus/spine membership
+        # alone — blind to where the SOURCE is — so a target could get a far-side
+        # broker and the route wrapped clear around the block (the audited
+        # effect_tremolo addconst→multiply 7-for-3 loop). A fan-in REUSE broker
+        # (``reuse``) stays structural: it is the ONLY candidate.
+        if path is None and (goal_is_broker or broker_goal is not None):
+            cands = []
+            if broker_goal is not None:
+                cands.append(broker_goal)
+            if reuse is None:
+                for alt in _free_neighbors_all(d, dface, occ, in_bounds, s,
+                                               forbid_broker, broker_target):
+                    if alt not in cands:
+                        cands.append(alt)
+                # Deadlock-cycle guard, mirror case: a broker DELIVERING INTO
+                # block B must not sit ON B's own committed OUTPUT corridor —
+                # B's output flow would block B's next input delivery (the same
+                # closed wait cycle, formed from the opposite routing order).
+                tgt_blk = cells_to_block.get(d)
+                if tgt_blk is not None:
+                    blocked = out_cells_by_block.get(tgt_blk, set())
+                    cands = [c for c in cands if c not in blocked]
+            # A FOREIGN net's emit cell stays a LAST-RESORT broker (its egress face
+            # would clobber the delivery — the rotated-complex-fan-in bug): shortest-
+            # candidate selection runs over the CLEAN candidates first, and only
+            # falls through to foreign-emit cells when no clean broker routes at all.
+            clean = [c for c in cands if c not in foreign_emit_cells]
+            last_resort = [c for c in cands if c in foreign_emit_cells]
+
+            def _path_rank(p):
+                # Shortest first; among equal lengths fewest TURNS (matching the
+                # BFS's own sub-hop tie-break — comparing raw length here would let
+                # arbitrary candidate order pick the bendier equal-length path).
+                turns = sum(1 for i in range(1, len(p) - 1)
+                            if (p[i][0] - p[i - 1][0], p[i][1] - p[i - 1][1])
+                            != (p[i + 1][0] - p[i][0], p[i + 1][1] - p[i][1]))
+                return (len(p), turns)
+
+            for tier in (clean, last_resort):
+                best_path = None
+                best_goal = None
+                for cand in tier:
+                    cand_forbid = {pc for pc in port_cells
+                                   if pc != s and pc != cand}
+                    cand_hard = {b for b in own_input_brokers if b != cand}
+                    p = _bus_bfs(s, sface, cand, occ, bus, spine_set, in_bounds,
+                                 src_is_port, bus_dir=bus_dir, brokers=brokers,
+                                 forbid_first=forbid_first,
+                                 forbid_broker_transit=forbid_broker_transit,
+                                 forbid_transit=cand_forbid,
+                                 hard_forbid=cand_hard,
+                                 prefer_fresh=avoid_bus)
+                    if p is not None and (best_path is None
+                                          or _path_rank(p) < _path_rank(best_path)):
+                        best_path, best_goal = p, cand
+                if best_path is not None:
+                    path, goal, goal_is_broker = best_path, best_goal, True
                     break
         if path is None:
             out.append(RouteResult(
@@ -1604,14 +1810,20 @@ def _route_chip_bus(project, ct, chip_id, nets, spine, *, sc_cells=None,
         if goal_is_broker:
             brokers.add(path[-1])
             broker_target[path[-1]] = d   # the target input cell this broker serves
-            # The broker forwards transiting (HOP<31) words on its BUS face = the
-            # direction of travel INTO it. A later net transiting this broker must
-            # continue that way (matches the broker's restore face). Record it so the
-            # directional-share check enforces it.
-            if len(path) >= 2:
-                bd = _step_face(path[-2], path[-1])
-                if bd is not None:
-                    bus_dir[path[-1]] = bd
+            # Deadlock-cycle guard bookkeeping: this broker DELIVERS INTO the
+            # block owning ``d`` — the owning block's own output nets must never
+            # transit it (see ``brokers_into_block`` above).
+            _tb = cells_to_block.get(d)
+            if _tb is not None:
+                brokers_into_block.setdefault(_tb, set()).add(path[-1])
+            # The broker's ONWARD (restore) face is deliberately left UNCOMMITTED:
+            # the FIRST net that transits it claims the direction (the path-commit
+            # loop records it), and the build's ``broker_through_face`` restores the
+            # broker to exactly that foreign forwarding direction. Committing the
+            # into-cell travel direction here instead walled every same-source
+            # sibling arm whose corridor must TURN at the shared broker (the 3-arm
+            # splitter fan-out: arm 1's broker abutted the next block, so arms 2/3
+            # were forced straight into a block cell and failed to route).
         if relays:
             # Relay PLACEMENT is computed (§1.4), but the BUILD does not yet program
             # the relay re-launch (storing relays on the connection + patching each
@@ -1637,6 +1849,11 @@ def _route_chip_bus(project, ct, chip_id, nets, spine, *, sc_cells=None,
             of = _step_face(path[0], path[1])
             if of is not None:
                 hazard_out_face.setdefault(s, of)
+
+        # Deadlock-cycle guard bookkeeping: record this block-output corridor so
+        # a LATER input broker for the same block never lands on it.
+        if isinstance(conn.source, BlockEndpoint):
+            out_cells_by_block.setdefault(conn.source.block, set()).update(path)
 
         out.append(RouteResult(name, True, points=path))
 
@@ -1761,7 +1978,8 @@ def _broker_abutting(cell, in_face, brokers, src, forbid_out=None,
 
 def _bus_bfs(src, sface, goal, occ, bus, spine_set, in_bounds, src_is_port,
              *, bus_dir=None, brokers=None, forbid_first=None,
-             forbid_broker_transit=False, forbid_transit=None):
+             forbid_broker_transit=False, forbid_transit=None,
+             hard_forbid=None, prefer_fresh=False):
     """Shortest free-cell path src→goal, PREFERRING bus then spine cells, and only
     SHARING a bus cell when leaving it in its already-committed direction.
 
@@ -1778,10 +1996,12 @@ def _bus_bfs(src, sface, goal, occ, bus, spine_set, in_bounds, src_is_port,
     x16_out and lost both operands).
 
     A block source emits on ``sface`` so the first step leaves on that face; a chip
-    input port injects AT its own cell so BFS starts there. Cells already on the bus
-    or spine are preferred (Dijkstra with cost 0 for bus, 1 for spine, higher for
-    free) so nets coalesce onto a single shared backbone — what makes the densely-
-    packed chain routable where disjoint corridors fail.
+    input port injects AT its own cell so BFS starts there. The path is a STRICT
+    shortest path in hops (``_HOP_COST`` per cell entered); cells already on the bus
+    or spine are preferred only as a sub-hop TIE-BREAK among equal-length paths
+    (``prefer_fresh`` inverts that tie-break for a host-injected port net). Sharing
+    never buys a longer route — the old discounted-bus pricing produced the audited
+    loop-back/zigzag corridors (a saturation hazard).
 
     SOUNDNESS (the single-fwd_face rule, §1.3): a bus cell already carrying traffic
     has ONE committed outgoing direction (``bus_dir[c]``). This net may LEAVE that
@@ -1797,11 +2017,17 @@ def _bus_bfs(src, sface, goal, occ, bus, spine_set, in_bounds, src_is_port,
     bus_dir = bus_dir or {}
     brokers = brokers or set()
     forbid_transit = forbid_transit or set()
+    hard_forbid = hard_forbid or set()
 
     if src == goal:
         return [src]
 
     def free(c):
+        # ``hard_forbid`` cells (the deadlock-cycle guard: this net's own input-
+        # delivery brokers) are NEVER enterable — routing through one ships a
+        # closed wait cycle, so an unroutable net (named failure) is preferred.
+        if c in hard_forbid and c != goal:
+            return False
         return in_bounds(c) and (c == goal or c == src or c not in occ)
 
     def can_leave(c, nxt):
@@ -1829,23 +2055,53 @@ def _bus_bfs(src, sface, goal, occ, bus, spine_set, in_bounds, src_is_port,
             forbid_cell = (src[0] + fdx, src[1] + fdy)
         step = _FACE_STEP.get(sface)
         emit = (src[0] + step[0], src[1] + step[1]) if step else None
-        starts = []
-        if emit is not None and emit != forbid_cell \
-                and (free(emit) or emit == goal):
-            starts.append(emit)
-        for dx, dy in _NEI:
-            n = (src[0] + dx, src[1] + dy)
-            if n == forbid_cell:
-                continue                  # never leave on the input's arrival face
-            if n not in starts and (free(n) or n == goal):
-                starts.append(n)
+        # SAME-SOURCE FAN-OUT (§1.3): once an earlier net from THIS source cell
+        # committed its outgoing direction (bus_dir[src], recorded by the path
+        # commit loop), every later net from the same cell MUST leave the same
+        # way — the cell has ONE fwd_face. All arms share the exit corridor and
+        # peel off at their own brokers (exactly the port fan-out fork rule).
+        # Without this, a 3-arm splitter's second/third arms picked different
+        # first steps and the bus DRC named the source cell a face-conflict.
+        committed = bus_dir.get(src)
+        if committed is not None and int(committed) in _FWD_DELTA:
+            cdx, cdy = _FWD_DELTA[int(committed)]
+            forced = (src[0] + cdx, src[1] + cdy)
+            if forced == forbid_cell or not (free(forced) or forced == goal):
+                return None
+            starts = [forced]
+        else:
+            starts = []
+            if emit is not None and emit != forbid_cell \
+                    and (free(emit) or emit == goal):
+                starts.append(emit)
+            for dx, dy in _NEI:
+                n = (src[0] + dx, src[1] + dy)
+                if n == forbid_cell:
+                    continue              # never leave on the input's arrival face
+                if n not in starts and (free(n) or n == goal):
+                    starts.append(n)
         if not starts:
             return None
 
+    # SHORTEST-PATH pricing (the zigzag/loop-back fix). Path LENGTH dominates:
+    # every cell entered costs one _HOP_COST; corridor sharing is only a sub-hop
+    # TIE-BREAK (a shared/spine cell is preferred among EQUAL-length paths), never
+    # a discount that buys a detour. The old pricing (fresh=4+1 vs bus=0+1) let a
+    # net take up to a ~5x longer route just to ride an existing corridor — the
+    # audited data_link net3 ran 21 cells for a manhattan-5 hop, and audio_meter
+    # net7 25 cells for manhattan 3, weaving back alongside its own path (a
+    # saturation hazard: the longer the corridor, the more in-flight words pile
+    # into it back-to-back). ``prefer_fresh`` inverts the tie-break for a
+    # host-injected PORT input net (the old ``avoid_bus`` semantics: two injected
+    # streams should not share one broker corridor when equally short paths exist).
     def cost(c):
         if c == goal:
-            return 0
-        base = 0 if c in bus else (1 if c in spine_set else 4)
+            return _HOP_COST
+        base = _HOP_COST
+        if prefer_fresh:
+            base += 1 if (c in bus or c in spine_set) else 0
+        else:
+            base += 0 if (c in bus or c in spine_set) else 1
         # A FOREIGN port cell (another net's I/O terminus) is heavily penalised as a
         # TRANSIT cell — the build faces a port-egress cell toward the port exit, which
         # clobbers a transit face routed through it (the rotated complex fan-in that
@@ -1853,25 +2109,42 @@ def _bus_bfs(src, sface, goal, occ, bus, spine_set, in_bounds, src_is_port,
         # hard wall: a net with NO alternative (e.g. a column-9 egress that must pass the
         # x16_out cell to reach x1_out) still routes, but any net with a detour takes it.
         if c in forbid_transit:
-            base += 1000
+            base += 1000 * _HOP_COST
         return base
 
     # Dijkstra from ALL candidate starts; reconstruct start..goal then prepend src.
+    # A block source's authored EMIT-face start is preferred by a sub-hop bonus (the
+    # exit face stays as-authored when it does not lengthen the route); other starts
+    # only win when strictly shorter.
+    emit_start = None
+    if not src_is_port:
+        _st = _FACE_STEP.get(sface)
+        if _st is not None:
+            emit_start = (src[0] + _st[0], src[1] + _st[1])
+    # Direction-aware Dijkstra: states are (cell, arrival_dir) so a TURN can be
+    # priced as a sub-hop tie-break — among equal-length paths a straight run
+    # beats a staircase (the audited equal-cost zigzags were pure tie-break
+    # noise: with no bend preference the heap picked arbitrary staircases).
     pq = []
     dist = {}
     prev = {}
     for start in starts:
-        if cost(start) < dist.get(start, 1 << 30):
-            dist[start] = cost(start)
-            prev[start] = None
-            pq.append((cost(start), start))
+        d0 = cost(start) + (0 if (emit_start is None or start == emit_start) else 2)
+        sd = _step_face(src, start)
+        key = (start, sd)
+        if d0 < dist.get(key, 1 << 30):
+            dist[key] = d0
+            prev[key] = None
+            pq.append((d0, key))
     import heapq as _hq
     _hq.heapify(pq)
+    goal_state = None
     while pq:
-        dcur, cur = heapq.heappop(pq)
+        dcur, (cur, cdir) = heapq.heappop(pq)
         if cur == goal:
+            goal_state = (cur, cdir)
             break
-        if dcur > dist.get(cur, 1 << 30):
+        if dcur > dist.get((cur, cdir), 1 << 30):
             continue
         for dx, dy in _NEI:
             nxt = (cur[0] + dx, cur[1] + dy)
@@ -1889,17 +2162,21 @@ def _bus_bfs(src, sface, goal, occ, bus, spine_set, in_bounds, src_is_port,
                     continue
                 # allow only if we then continue on its bus direction (handled by
                 # can_leave(nxt, ...) on the next expansion); permit entry here.
-            nd = dcur + cost(nxt) + 1     # +1 per hop to bound length
-            if nd < dist.get(nxt, 1 << 30):
-                dist[nxt] = nd
-                prev[nxt] = cur
-                heapq.heappush(pq, (nd, nxt))
-    if goal not in prev:
+            ndir = _step_face(cur, nxt)
+            turn = 1 if (cdir is not None and ndir is not None
+                         and ndir != cdir) else 0
+            nd = dcur + cost(nxt) + turn  # cost() prices one hop; turn is sub-hop
+            key = (nxt, ndir)
+            if nd < dist.get(key, 1 << 30):
+                dist[key] = nd
+                prev[key] = (cur, cdir)
+                heapq.heappush(pq, (nd, key))
+    if goal_state is None:
         return None
     chain = []
-    node = goal
+    node = goal_state
     while node is not None:
-        chain.append(node)
+        chain.append(node[0])
         node = prev[node]
     chain.reverse()
     return [src] + chain if chain[0] != src else chain
@@ -2018,12 +2295,32 @@ def broker_plan(project, chip_id, chip_type, catalog):
     # broker must relay the operand group EXACTLY ONCE. Track which (broker, in_cell)
     # already carries its port-complex group and skip any further rail into it.
     port_complex_done: set = set()
+    _relay_landing: dict[str, bool] = {}
+
+    def _is_relay_landing(bname):
+        if bname not in _relay_landing:
+            tb = project.block(bname)
+            flag = False
+            if tb is not None:
+                try:
+                    gbb = catalog.instantiate(tb.type, "__rl_probe__",
+                                              tb.params, library=tb.library)
+                    flag = bool(getattr(gbb, "RELAY_LANDING", False))
+                except Exception:  # noqa: BLE001
+                    flag = False
+            _relay_landing[bname] = flag
+        return _relay_landing[bname]
+
     for conn in project.connections:
         if not conn.is_routed:
             continue
         if _conn_chip(project, conn) != chip_id:
             continue
         if not isinstance(conn.target, BlockEndpoint):
+            continue
+        # RELAY-LANDING target (the CrossoverBlock): the source lands ON the
+        # relay cell (its track entry runs there) — never brokered.
+        if _is_relay_landing(conn.target.block):
             continue
         # PHYSICAL path: a route drawn ENDING ON the target input cell is stripped to
         # the abutting broker (the always-brokered block→block contract). The
@@ -2050,6 +2347,11 @@ def broker_plan(project, chip_id, chip_type, catalog):
         if df is None:
             continue
         entry, in_reg = target_io(tgt, conn.target.port)
+        # Per-net JUMP-entry override (multi-entry relay target, e.g. the panel
+        # template's crossover track_b egress): the broker delivers into the
+        # net's OWN entry, not the target's default.
+        if getattr(conn, "entry_override", None) is not None:
+            entry = int(conn.entry_override)
         # The source's exit cell is the route's first waypoint when the source is a
         # placed block (the route starts AT the block's output cell). Used to detect
         # a COMPLEX-SAMPLE fan-in: two nets from the SAME source cell into the SAME

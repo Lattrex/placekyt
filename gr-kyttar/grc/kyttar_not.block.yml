@@ -1,0 +1,40 @@
+id: kyttar_not
+label: Kyttar Not
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar Not — bitwise NOT of a byte stream (drop-in for GNU Radio's
+  blocks.not_bb). out = (~in) & 0xFF, over the FULL 8-bit width:
+    0x00 -> 0xFF,  0xFF -> 0x00,  0xAA -> 0x55,  0x0F -> 0xF0.
+
+  On the Kyttar chip this maps to NotBlock: a single memoryless cell that runs
+  the NOT ALU op and masks the result back to a byte (AND 0x00FF) so the width
+  matches not_bb exactly. No parameters (not_bb takes none). Place it between a
+  KyttarSource and KyttarSink and ensure the device_id matches your KyttarDevice.
+  BIT-EXACT-verified vs blocks.not_bb across edge, exhaustive (all 256 bytes),
+  random and mutation stimulus.
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.not_bb(device_id=${device_id})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+
+inputs:
+- id: '0'
+  label: in
+  domain: stream
+  dtype: byte
+
+outputs:
+- id: '0'
+  label: out
+  domain: stream
+  dtype: byte
+
+file_format: 1

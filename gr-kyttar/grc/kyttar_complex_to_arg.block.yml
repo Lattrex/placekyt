@@ -1,0 +1,41 @@
+id: kyttar_complex_to_arg
+label: Kyttar Complex To Arg
+category: '[Kyttar]'
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.complex_to_arg(${device_id}, block_name=${block_name})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+
+- id: block_name
+  label: placeKYT block name
+  dtype: string
+  default: '""'
+  hide: part
+
+inputs:
+- label: in
+  domain: stream
+  dtype: complex
+
+outputs:
+- label: out
+  domain: stream
+  dtype: float
+
+documentation: |-
+  Complex argument atan2(y, x) (CORDIC vectoring, 14 iterations).
+
+  GNU Radio counterpart: blocks.complex_to_arg(1) — GR emits RADIANS; the
+  chip emits the angle in HALF-TURN Q15 units (word/32768 * pi radians,
+  [-1,1) <-> [-pi,pi)), the natural wrapping fixed-point angle. Multiply the
+  sink's float output by pi to get radians. Accuracy vs GR: max 0.006 rad
+  (gate; ~0.003 measured) for |v| >= 0.1 — input-quantization-limited below.
+  Stateless feed-forward pipeline — saturation-safe.
+
+file_format: 1

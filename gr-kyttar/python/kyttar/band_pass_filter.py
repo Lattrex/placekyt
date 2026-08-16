@@ -33,6 +33,8 @@ class band_pass_filter(_PassThrough):
         window: design window ("hamming" default, "hann", "blackman",
             "rectangular", "blackman_harris", "kaiser")
         beta: Kaiser window beta (used only for window="kaiser")
+        decimation: GR `decim` (M) — emit every M-th output (fir_filter_fff).
+        interpolation: GR `interp` (L) — zero-stuff by L (interp_fir_filter_fff).
     """
 
     def __init__(
@@ -45,6 +47,8 @@ class band_pass_filter(_PassThrough):
         transition_width: float = 2000.0,
         window: str = "hamming",
         beta: float = 6.76,
+        decimation: int = 1,
+        interpolation: int = 1,
     ):
         super().__init__(name="Kyttar Band Pass Filter", n_in=1, n_out=1)
         self._device_id = device_id
@@ -55,10 +59,13 @@ class band_pass_filter(_PassThrough):
         self._transition_width = transition_width
         self._window = window
         self._beta = beta
+        self._decimation = decimation
+        self._interpolation = interpolation
         self._advertise_grc_params(device_id, "BandPassFilter", {
             "gain": gain, "samp_rate": samp_rate,
             "low_cutoff_freq": low_cutoff_freq, "high_cutoff_freq": high_cutoff_freq,
-            "transition_width": transition_width, "window": window, "beta": beta})
+            "transition_width": transition_width, "window": window, "beta": beta,
+            "decimation": decimation, "interpolation": interpolation})
 
     def set_low_cutoff_freq(self, low_cutoff_freq: float):
         self._low_cutoff_freq = low_cutoff_freq

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Project-structure commands: add/remove chips + SRAM panels (§4.2)."""
 
 from __future__ import annotations

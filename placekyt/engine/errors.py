@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Engine-layer exceptions (distinct from the file-I/O errors in engine.io)."""
 
 from __future__ import annotations

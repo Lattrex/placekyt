@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """SplitterBlock — see :class:`SplitterBlock`."""
 import numpy as np
 from ..block import CellProgram, Port, EntryPoint, DataWord

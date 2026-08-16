@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Auto-place — flow-ordered SERPENTINE multi-row packing of blocks (auto-P&R §8).
 
 The design's placer (AUTO_PNR_DESIGN §8): because there is no fan-in placement

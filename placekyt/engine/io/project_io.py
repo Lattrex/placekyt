@@ -1,4 +1,5 @@
-"""``.kyt`` project file load/save (the architecture notes §2.1).
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""``.kyt`` project file load/save.
 
 Round-trips through ruamel so unknown fields, key ordering, comments, and
 formatting are preserved (§2.1). The strategy:
@@ -198,6 +199,13 @@ def _panel_from_node(node: Any, *, source: str) -> SramPanel:
         from model.panel import _default_ports
         ports = _default_ports()
     from model.panel import DEFAULT_PANEL_WORDS
+    # ROM image: a list of {base, words} contiguous runs -> the sparse addr map.
+    image: dict[int, int] = {}
+    for i, run in enumerate(opt_seq(node, "image", source)):
+        run = require_mapping(run, f"{source}.image[{i}]")
+        base = int(require(run, "base", f"{source}.image[{i}]"))
+        for j, w in enumerate(require(run, "words", f"{source}.image[{i}]")):
+            image[base + j] = int(w) & 0xFFFF
     return SramPanel(
         id=int(require(node, "id", source)),
         label=str(opt(node, "label", "")),
@@ -206,6 +214,8 @@ def _panel_from_node(node: Any, *, source: str) -> SramPanel:
         size_words=int(opt(node, "size_words", DEFAULT_PANEL_WORDS)),
         ports=ports,
         mirrored=bool(opt(node, "mirrored", False)),
+        image=image,
+        auto_inc_read=bool(opt(node, "auto_inc_read", False)),
     )
 
 
@@ -341,6 +351,9 @@ def _connection_from_node(node: Any, *, source: str) -> Connection:
     # ``kind`` is optional — absent means the default ``data+trigger`` (WRITE+JUMP),
     # so pre-Phase-2 .kyt files load unchanged.
     kind = node.get("kind")
+    # ``entry_override`` is optional — a per-net JUMP-entry selection for a
+    # multi-entry relay target (the panel template's crossover track_b egress).
+    entry_override = node.get("entry_override")
     return Connection(
         name=str(require(node, "name", source)),
         source=_endpoint_from_node(require(node, "from", source), source=f"{source}.from"),
@@ -352,6 +365,8 @@ def _connection_from_node(node: Any, *, source: str) -> Connection:
         out_tag=(int(out_tag) if out_tag is not None else None),
         stream_id=(str(stream_id) if stream_id is not None else None),
         kind=(str(kind) if kind is not None else NET_DATA_TRIGGER),
+        entry_override=(int(entry_override) if entry_override is not None
+                        else None),
     )
 
 
@@ -595,6 +610,7 @@ def _panel_to_node(p: SramPanel, existing: Any = None) -> CommentedMap:
     _set_optional(node, "size_words",
                   p.size_words if p.size_words != DEFAULT_PANEL_WORDS else None)
     _set_optional(node, "mirrored", True if p.mirrored else None)
+    _set_optional(node, "auto_inc_read", True if p.auto_inc_read else None)
     pos = node.get("position")
     if not isinstance(pos, CommentedMap):
         pos = CommentedMap()
@@ -611,6 +627,14 @@ def _panel_to_node(p: SramPanel, existing: Any = None) -> CommentedMap:
         })
         for port in p.ports
     )
+    # ROM image as contiguous {base, words} runs (omitted when empty).
+    if p.image:
+        node["image"] = _seq(
+            _flow_map({"base": base, "words": words})
+            for base, words in p.image_runs()
+        )
+    elif "image" in node:
+        del node["image"]
     return node
 
 
@@ -718,6 +742,7 @@ def _connection_to_node(c: Connection, existing: Any = None) -> CommentedMap:
     # Only emit ``kind`` when non-default, so existing .kyt files stay byte-clean.
     _set_optional(node, "kind",
                   c.kind if c.kind != NET_DATA_TRIGGER else None)
+    _set_optional(node, "entry_override", c.entry_override)
     return node
 
 

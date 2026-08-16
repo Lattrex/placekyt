@@ -1,0 +1,31 @@
+{
+  "block": "VaricodeEncoderBlock",
+  "grc_block": "",
+  "tier": 3,
+  "wave": 4,
+  "schema_version": 1,
+  "started_utc": "2026-08-07T18:25:01Z",
+  "ended_utc": "2026-08-07T18:41:11Z",
+  "walltime_sec": 842.958,
+  "tokens": {
+    "input": 0,
+    "output": 141422,
+    "cache_read": 0,
+    "total": 141422
+  },
+  "turns": 72,
+  "attempts": 1,
+  "human_interventions": 0,
+  "intervention_reasons": [],
+  "prompts": [
+    {
+      "role": "initial",
+      "text": "SRAM-backed re-implementation of the quarantined VaricodeEncoderBlock on the SramController/panel topology; verify bit-exact through the real panel round-trip."
+    }
+  ],
+  "verify_passed": true,
+  "quarantined": false,
+  "quarantine_reason": "",
+  "commit_sha": "68dfd7f",
+  "notes": "RE-BUILT from QUARANTINE to DONE: the FIRST SRAM-backed DSP block. The 128-entry Varicode table lives in the SRAM PANEL (off-cell), killing the INV-29 wall. Pack format: each entry = (length<<10)|code (Varicode <=10 bits) in one 16-bit word. LOAD: persistent SramController streams set_addr(0)+128 writes (auto-increment). LOOKUP: per byte, panel push-reads sram[byte] into a tiny emit cell + kicks its entry (R3/R4 descriptors); emit cell unpacks length + emits that many bits + '00'. BIT-EXACT vs the varicode golden over FULL ASCII 0-127 through the REAL SramPanelDevice/PanelDriver push-read + on-chip emit (test_full_chain_bit_exact_*), + message + random; 3 INV-4 mutations FAIL. 2 cells (emit + controller), 128 SRAM words. Bug: MOVE doesn't set Z on this ISA -> BR.NZ branched on the wrong flag; fixed with OR R0,len. REUSABLE recipe (SRAM_PANEL.md-driven) for Varicode decoder + Morse. Independently re-verified on merged main: 72 tests pass, dashboard --check clean."
+}

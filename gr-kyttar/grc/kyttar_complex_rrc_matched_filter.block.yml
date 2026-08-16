@@ -1,10 +1,12 @@
 id: kyttar_complex_rrc_matched_filter
-label: 🧪 Kyttar Complex RRC Matched Filter
+label: Kyttar Complex RRC Matched Filter
 category: '[Kyttar]'
+flags: [ python ]
 
 templates:
   imports: from gnuradio import kyttar
-  make: kyttar.complex_rrc_matched_filter(${device_id}, ${alpha}, ${span}, ${decimation})
+  make: kyttar.complex_rrc_matched_filter(device_id=${device_id}, gain=${gain}, samp_rate=${samp_rate},
+    sym_rate=${sym_rate}, alpha=${alpha}, ntaps=${ntaps}, decimation=${decimation})
 
 parameters:
 - id: device_id
@@ -12,15 +14,30 @@ parameters:
   dtype: string
   default: '"kyttar_0"'
 
+- id: gain
+  label: Gain
+  dtype: real
+  default: '0.7105'
+
+- id: samp_rate
+  label: Sample Rate (Hz)
+  dtype: real
+  default: '2.0'
+
+- id: sym_rate
+  label: Symbol Rate (Hz)
+  dtype: real
+  default: '1.0'
+
 - id: alpha
   label: Roll-off (alpha)
   dtype: real
   default: '0.35'
 
-- id: span
-  label: Filter Span (symbols)
+- id: ntaps
+  label: Num Taps
   dtype: int
-  default: '8'
+  default: '17'
 
 - id: decimation
   label: Decimation
@@ -28,39 +45,40 @@ parameters:
   default: '1'
 
 inputs:
-- label: xi
+- label: in
   domain: stream
   dtype: complex
 
 outputs:
-- label: yi
+- label: out
   domain: stream
   dtype: complex
 
 documentation: |-
-  🧪 PROOF-OF-CONCEPT: this block works in a demo but has NOT been through
-  per-block GNU Radio-equivalence verification. Use with care.
+  Complex RRC Matched Filter — drop-in for GNU Radio's filter.fir_filter_ccf fed
+  taps from filter.firdes.root_raised_cosine(gain, samp_rate, sym_rate, alpha,
+  ntaps). Complex (I/Q) baseband in, complex out: ONE shared real sqrt-RRC tap set
+  filters BOTH rails (exactly fir_filter_ccf). The RX matched-filter front end;
+  together with the transmit sqrt-RRC pulse shaper it forms a raised-cosine Nyquist
+  response (zero ISI) — the optimal-SNR linear filter for the known pulse in AWGN.
 
-  Complex RRC Matched Filter — receive matched filter front end.
+  This block runs on the Kyttar chip. Place it between a KyttarSource and
+  KyttarSink; the device_id must match your KyttarDevice.
 
-  Takes the COMPLEX baseband (xi = in-phase, xq = quadrature) and applies a
-  sqrt-Raised-Cosine matched filter on BOTH rails, emitting the matched-filtered
-  complex sample (yi = filtered I, yq = filtered Q). Together with the transmit
-  sqrt-RRC pulse shaper this forms a raised-cosine Nyquist response (zero ISI) and
-  is the optimal-SNR linear filter for the known pulse in AWGN.
+  Parameters (mirroring GNU Radio's firdes.root_raised_cosine VERBATIM):
+    Device ID: which Kyttar device to use.
+    Gain:      passband gain (RRC taps normalised so their SUM = gain). Default
+               0.7105 keeps the Q15 datapath in range for the default shape;
+               matched-filtering is gain-invariant for the downstream carrier/
+               timing loops (Costas normalises amplitude).
+    Sample Rate / Symbol Rate: samples-per-symbol = samp_rate / sym_rate.
+    alpha:     RRC roll-off / excess bandwidth (0.2-0.5 typical; 0.35 default).
+    Num Taps:  filter length (forced ODD, like GR). <= 32 (the fold stays <=8 cells
+               across the 10x12 chip; larger raises a clear error).
+    Decimation: output decimation M (GR fir_filter_ccf decim). Currently only M=1
+               is supported (a decimating complex MF overflows the last cell's
+               budget); use M=1 (the coherent RX runs its loops at full rate).
 
-  The port names (xi, xq inputs; yi, yq outputs) and params (alpha, span) match the
-  placeKYT ComplexRRCMatchedFilterBlock interface, so a flowgraph using this block
-  wires up and imports into placeKYT cleanly (File -> Import GNURadio Flowgraph).
-
-  Parameters:
-    Device ID: which Kyttar device to use
-    alpha:     RRC roll-off / excess bandwidth (0.2-0.5 typical; 0.35 default)
-    span:      filter span in symbols (default 8)
-    decimation: output decimation factor M (GR fir_filter_ccf decim; default 1).
-               The filter runs at full input rate; the filtered output is emitted
-               every M-th sample (full_output[0::M]).
-
-  Mapped by placeKYT to ComplexRRCMatchedFilterBlock.
+  Mapped by placeKYT to ComplexRRCMatchedFilterBlock (GR fir_filter_ccf + RRC taps).
 
 file_format: 1

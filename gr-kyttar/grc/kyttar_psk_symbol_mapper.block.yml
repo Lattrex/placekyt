@@ -4,7 +4,7 @@ category: '[Kyttar]'
 
 templates:
   imports: from gnuradio import kyttar
-  make: kyttar.psk_symbol_mapper(${device_id}, ${modulation})
+  make: kyttar.psk_symbol_mapper(${device_id}, ${modulation}, ${symbol_table}, ${dimension}, ${bpsk_bit0_positive})
 
 parameters:
 - id: device_id
@@ -25,6 +25,27 @@ parameters:
   option_attributes:
     out_type: [complex, complex, complex]
   default: '"bpsk"'
+
+# GR-native chunks_to_symbols params. symbol_table: an arbitrary complex
+# constellation (index-in, GR digital.chunks_to_symbols). When empty, the
+# modulation preset above is used (a Kyttar bit-packing extension).
+- id: symbol_table
+  label: Symbol table (GR-native)
+  dtype: complex_vector
+  default: '[]'
+# GR dimension D (entries per index). Only D=1 (one complex symbol per index) is
+# supported on chip; D>1 vector symbols raise.
+- id: dimension
+  label: Dimension
+  dtype: int
+  default: '1'
+# BPSK constellation sign convention. True (default) = bit0->+1,bit1->-1 (GR
+# chunks_to_symbols_bf([1,-1])); False = bit0->-1,bit1->+1 (constellation_bpsk),
+# which chains cleanly with binary_slicer_fb for a true loopback. BPSK-only.
+- id: bpsk_bit0_positive
+  label: 'BPSK bit0->+1'
+  dtype: bool
+  default: 'True'
 
 inputs:
 - label: sample

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Regression: a chip INPUT-port fan-out to >=2 different blocks' input cells must
 route as a COMMON BUS that FORKS at a shared cell BEYOND the port cell — the two
 corridors must NOT diverge AT the port cell.
@@ -8,7 +9,7 @@ cell in DIFFERENT directions (two private corridors), the port's single fwd_face
 only steer one stream; the other is LOST (in the QPSK full-duplex modem the RX chain
 got data and the TX chain got NONE).
 
-Ground truth (examples/qpsk_modem/qpsk_modem_shift_down*.kyt): the WORKING topology
+Ground truth (from the working QPSK full-duplex layouts): the WORKING topology
 routes net6 (0,0)->(0,1)->(1,1) and net8 (0,0)->(0,1)->(0,2): both leave the port
 cell (0,0) SOUTH (one shared direction), share the prefix (0,0)->(0,1), and FORK at
 (0,1) — net6 brokers off there (EAST), net8 transits it onward (SOUTH). The BROKEN

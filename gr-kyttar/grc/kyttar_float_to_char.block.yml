@@ -1,0 +1,50 @@
+id: kyttar_float_to_char
+label: Kyttar Float To Char
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar Float To Char - blocks.float_to_char drop-in
+
+  Converts a float stream to signed 8-bit integers on the Kyttar chip:
+      out = saturate_int8(round_half_even(in * scale))     # int8 in [-128, 127]
+
+  Round-to-nearest with ties to EVEN (matching GNU Radio's lrintf), then int8
+  saturation. Place it between a KyttarSource and KyttarSink; the device_id must
+  match your KyttarDevice.
+
+  Parameters:
+  - Device ID: ID of the KyttarDevice block
+  - Scale: multiplies the input before rounding (GNU Radio 'scale')
+
+  HARDWARE DEVIATION: on the Q15 fabric (input in [-1, 1)) 'scale' must be a
+  NON-NEGATIVE INTEGER — a non-integer/negative scale is not reproducible
+  bit-exactly and the chip block raises. Use e.g. 127 or 128 to map the [-1, 1)
+  range onto the full int8 range. (GNU Radio's own float_to_char takes an
+  arbitrary float scale.)
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.float_to_char(device_id=${device_id}, scale=${scale})
+  callbacks:
+    - set_scale(${scale})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+  - id: scale
+    label: Scale
+    dtype: real
+    default: '1.0'
+
+inputs:
+  - label: in
+    dtype: float
+
+outputs:
+  - label: out
+    dtype: byte
+
+file_format: 1

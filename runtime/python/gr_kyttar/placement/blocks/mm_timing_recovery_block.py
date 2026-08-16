@@ -238,7 +238,7 @@ class MMTimingRecoveryBlock(KyttarBlock):
         # instruction: ``xis`` is ELIMINATED — xi (live in R0 at entry) is forwarded to
         # `land` FIRST via {write:xif} before the W/mu math clobbers R0, so no capture/
         # reload state is needed (a WRITE latches R0 at issue time). And the LOCK-enable
-        # source must have BIT0 SET (simkyt state.rs: ``MOVE [LOCK],Rn`` sets LOCK=(Rn&1)):
+        # source must have BIT0 SET (``MOVE [LOCK],Rn`` sets LOCK=(Rn&1)):
         # the no-strobe sentinel ``nstrobe`` is 0x8001 (bit15 still tags no-strobe for every
         # downstream cell — they gate on mu's SIGN only — and bit0=1 engages the lock), so
         # nstrobe doubles as the lock-enable word, no extra data slot.

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Clean, deterministic placeKYT launch. Guarantees a pristine state every run so
 # leftover processes / stale bytecode / a held server port can NEVER corrupt a
 # session (the "it only works with a magic click sequence" class of bug).

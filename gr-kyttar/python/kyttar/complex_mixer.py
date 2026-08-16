@@ -39,6 +39,7 @@ class complex_mixer(_PassThrough):
         amplitude: float = 1.0,
         offset: float = 0.0,
         phase: float = 0.0,
+        block_name: str = "",
     ):
         # COMPLEX -> COMPLEX, matching the verified GNU Radio equivalent
         # multiply_cc(signal, sig_source_c) (see verification/tests/test_complex_mixer.py).
@@ -53,9 +54,14 @@ class complex_mixer(_PassThrough):
         self._amplitude = amplitude
         self._offset = offset
         self._phase = phase
+        # block_name pins the placeKYT block this instance advertises for —
+        # REQUIRED when a flowgraph carries several mixers with different
+        # params (the SSB TX/RX pair): the per-type registration counter and
+        # the importer's naming can order differently, crossing the pairing.
         self._advertise_grc_params(device_id, "ComplexMixerBlock", {
             "sample_rate": sample_rate, "frequency": frequency,
-            "amplitude": amplitude, "offset": offset, "phase": phase})
+            "amplitude": amplitude, "offset": offset, "phase": phase},
+            block_name=block_name)
 
     def set_frequency(self, frequency: float):
         self._frequency = frequency

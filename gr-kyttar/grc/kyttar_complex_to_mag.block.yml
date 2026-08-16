@@ -1,0 +1,40 @@
+id: kyttar_complex_to_mag
+label: Kyttar Complex To Mag
+category: '[Kyttar]'
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.complex_to_mag(${device_id}, block_name=${block_name})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+
+- id: block_name
+  label: placeKYT block name
+  dtype: string
+  default: '""'
+  hide: part
+
+inputs:
+- label: in
+  domain: stream
+  dtype: complex
+
+outputs:
+- label: out
+  domain: stream
+  dtype: float
+
+documentation: |-
+  True complex magnitude |x + jy| (CORDIC vectoring, 14 iterations).
+
+  GNU Radio counterpart: blocks.complex_to_mag(1). Runs on the placeKYT-hosted
+  Kyttar chip; the chip emits Q15 (1.0 = 32768, the standard kyttar.sink
+  q15/32768 rescale). Accuracy vs GR: max 40 Q15 LSB (gate; ~20 measured).
+  |v| > 1 (Q15 corner inputs) saturates to 0.9999695 by design. Stateless
+  feed-forward pipeline — saturation-safe (bit-exact under pipelined drive).
+
+file_format: 1

@@ -14,7 +14,7 @@ uses::
 equivalent derivative form (``d/dt*atan2(Q,I) = (I*Q'-Q*I')/(I^2+Q^2)``); the two AGREE
 for the constant-|x| (limited/AGC'd) signal a real FM RX operates on.
 
-CONTRACT (RULE #0 algorithm deviation, CM-approved 2026-07-05):
+CONTRACT (RULE #0 algorithm deviation, maintainer-approved 2026-07-05):
   * DUT is BIT-EXACT to process_reference_q15 (the on-chip Q15 discriminator datapath).
   * vs GR the metric is a CORRELATION gate (>=0.999), NOT bit-exact equality to atan2 —
     because GR's literal op (atan2) is hostile to the fabric but the mathematically-

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Route-into-I/O-cell (#270) + fly-line-clears-on-reconnect (#271).
 
 #270: a GRC-imported / auto-routed inter-block connection's route must run INTO the

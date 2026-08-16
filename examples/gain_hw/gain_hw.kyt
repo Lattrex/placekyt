@@ -18,7 +18,7 @@ blocks:
     chip: 0
     cells:
     - {cell_id: 0, x: 4, y: 1, face: east}
-- name: gain_1
+- name: gain_2
   type: GainBlock
   library: lattrex.official
   params:
@@ -42,7 +42,7 @@ connections:
   stream_id: a
 - name: x16_in_to_gain_1
   from: {chip_port: {chip: 0, port: x16_in}}
-  to: {block: gain_1, port: sample}
+  to: {block: gain_2, port: sample}
   route:
   - {x: 0, y: 0}
   - {x: 1, y: 0}
@@ -65,7 +65,7 @@ connections:
   - {x: 9, y: 0}
   out_tag: 0
 - name: gain_1_to_x16_out
-  from: {block: gain_1, port: out}
+  from: {block: gain_2, port: out}
   to: {chip_port: {chip: 0, port: x16_out}}
   route:
   - {x: 4, y: 2}

@@ -168,8 +168,8 @@ SBC Ra, Rb        ; R0 = Ra - Rb - borrow     (multi-word subtract)
 
 ### 4.3 Shifts: SHL (`0xA`) / SHR (`0xB`) — `ROT[11] | CNT[9:6] | SRC[5:0]`
 
-`ROT=0` shifts (fills with 0); `ROT=1` rotates (wraps). `CNT` is a 0–15 immediate,
-or a register holding the count (register mode). Flags: all updated; `C` = the last
+`ROT=0` shifts (fills with 0); `ROT=1` rotates (wraps). `CNT` is a 0–15
+immediate. Flags: all updated; `C` = the last
 bit shifted/rotated out (0 when count is 0); `V` cleared.
 
 ```asm
@@ -178,8 +178,13 @@ SHL Rn, #imm      ; R0 = Rn << imm        (imm 0-15)
 SHR Rn, #imm      ; R0 = Rn >> imm
 ROL Rn, #imm      ; R0 = Rn rotated left  by imm
 ROR Rn, #imm      ; R0 = Rn rotated right by imm
-SHL Rn, [Rm]      ; R0 = Rn << (Rm & 0xF) (register count)
 ```
+
+The shift count is always an immediate instruction field (`CNT[9:6]`, 0-15;
+bit[10] is reserved). Express data-dependent shift amounts with immediate
+constructions: walk a left-aligned working register with fixed
+`SHR #15`/`SHL #1` steps, use `x << b == x + x*b` for a 0/1 count, or loop
+`SHL/SHR #1` under a counter (INV-34).
 
 ### 4.4 MUL (`0xC`) — `MODE[11:10] | SRC_A[9:5] | SRC_B[4:0]`
 

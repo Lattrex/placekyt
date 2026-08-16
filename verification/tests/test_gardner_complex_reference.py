@@ -16,7 +16,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-ROOT = Path("/home/system/placekyt")
+ROOT = Path(__file__).resolve().parents[2]
 for p in (ROOT / "runtime" / "python",):
     if str(p) not in sys.path:
         sys.path.insert(0, str(p))

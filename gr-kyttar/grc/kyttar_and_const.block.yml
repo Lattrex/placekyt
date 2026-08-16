@@ -1,0 +1,46 @@
+id: kyttar_and_const
+label: Kyttar AND Const
+category: '[Kyttar]/Byte Operators'
+flags: [ python ]
+
+documentation: |-
+  Kyttar AND Const — bitwise AND of a byte stream with an immediate constant
+  (drop-in for GNU Radio's blocks.and_const_bb).
+  out[n] = in[n] & constant.
+
+  A masking primitive: constant=1 takes the LSB, 0x0F the low nibble, 0xFF is
+  identity, 0 zeros the stream. Both operands are unsigned bytes (0..255) exactly
+  as GNU Radio's and_const_bb — the constant is applied as an 8-bit byte mask.
+
+  On the Kyttar chip this maps to AndConstBlock (a single LOGIC.AND of the input
+  against a baked immediate). Place it between a KyttarSource and KyttarSink and
+  ensure the device_id matches your KyttarDevice.
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.and_const(device_id=${device_id}, constant=${constant})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+- id: constant
+  label: Constant
+  dtype: int
+  default: '1'
+
+inputs:
+- label: in
+  domain: stream
+  dtype: byte
+
+outputs:
+- label: out
+  domain: stream
+  dtype: byte
+
+asserts:
+- ${ 0 <= constant <= 255 }
+
+file_format: 1

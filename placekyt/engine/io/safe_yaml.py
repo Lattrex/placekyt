@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Hardened ruamel.yaml wrapper for all placeKYT file I/O (§2.1).
 
 Every ``.kyt`` / ``.kbl`` / ``.kdb`` / chip-type YAML load goes through

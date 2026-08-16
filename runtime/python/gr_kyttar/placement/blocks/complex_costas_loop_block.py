@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """ComplexCostasLoopBlock — see :class:`ComplexCostasLoopBlock`."""
 import numpy as np
 import math
@@ -61,10 +62,23 @@ class ComplexCostasLoopBlock(KyttarBlock):
     # 17-entry quarter-wave sine table -> exact 64-entry resolution (as NCOBlock).
     QUARTER_SIZE = 17
 
-    # Landing cell is the phase cell; complex input lands at R0 (xi) and R1 (xq);
-    # the recovered yi is the output.
+    # Landing cell is the phase cell; complex input lands at R0 (xi) and R1 (xq).
+    # The OUTPUT interface is ORDER-DEPENDENT (see the ``interface`` property):
+    #   order 2 (BPSK): a SINGLE real rail (the recovered ``yi_tap``) ->
+    #     output_registers=[0]; the build's single-rail last-WRITE patch steers it.
+    #   order 4 (QPSK): the recovered COMPLEX pair (``yi_tap``, ``yq_tap``) ->
+    #     output_registers=[0, 1]. When the block ABUTS a downstream (the QPSK modem's
+    #     Costas->Gardner), the 2-rail abutment patch steers both rails; when it egresses
+    #     a CHIP PORT (standalone per-block verification), the build patches the last TWO
+    #     tail WRITEs (yi_tap, yq_tap) with distinct tags — NOT the last one only (which
+    #     routed just yq_tap and stranded yi_tap on a stale @1 hop colliding with qpd's
+    #     err->pd_pi handoff, the order-4 egress bug this fixes) and NOT every WRITE
+    #     (which would egress the internal err too).
     _interface = BlockInterface(
         entry_address=1, input_registers=[0, 1], output_registers=[0]
+    )
+    _interface_qpsk = BlockInterface(
+        entry_address=1, input_registers=[0, 1], output_registers=[0, 1]
     )
 
     # Cell ids (string keys), in data/trigger-chain order.
@@ -81,6 +95,13 @@ class ComplexCostasLoopBlock(KyttarBlock):
         "phase", "sin_fold", "cos_fold", "table_sin", "table_cos",
         "rotate", "qpd", "pd_pi",
     ]
+
+    # INV-22: ``pipeline_lock`` is a BUILD/PLACEMENT hint (the INV-20 saturation
+    # serialize-lock on the phase cell's arbiter), NOT a GNU Radio DSP parameter —
+    # ``digital.costas_loop_cc`` has no such param and the DSP result is identical
+    # with it on or off. It is a substrate concern (pipelined vs per-sample drive),
+    # so it is intentionally NOT exposed in GRC.
+    GRC_UNSUPPORTED_PARAMS = ("pipeline_lock",)
 
     def __init__(
         self,
@@ -136,7 +157,10 @@ class ComplexCostasLoopBlock(KyttarBlock):
 
     @property
     def interface(self) -> BlockInterface:
-        return self._interface
+        # order 4 (QPSK) taps the recovered COMPLEX (yi_tap, yq_tap) pair -> two output
+        # registers so the build steers BOTH rails (abutment or port egress); order 2
+        # (BPSK) taps the single recovered I rail.
+        return self._interface_qpsk if self._order == 4 else self._interface
 
     def _quarter_wave_table(self) -> List[int]:
         """17-entry quarter-wave sine table in Q15 (sin 0..90 deg)."""
@@ -283,7 +307,7 @@ out:
         # I can leave the block (e.g. to x16_out / the downstream Gardner) WITHOUT a
         # downstream route having to rewrite the internal yi->pd_pi handoff.
         #
-        # DUAL-FACE EMIT (CM-approved; same primitive as the Gardner loop_filter /
+        # DUAL-FACE EMIT (maintainer-approved; same primitive as the Gardner loop_filter /
         # the CoherentBPSKRx slicer): the INTERNAL yi/yq handoffs to pd_pi and the
         # EXTERNAL yi_tap output go in DIFFERENT directions once the bus router faces
         # this cell toward the yi_tap bus tap. On ONE fwd_face they would all chase
@@ -808,6 +832,54 @@ start:
             freq = u16(s16(freq) + s16(mq(beta, err)))
             phase = u16(s16(phase) + s16(freq) + s16(mq(alpha, err)))
         return np.array(out, dtype=np.int16)
+
+    def process_reference_complex(self, input_samples: np.ndarray):
+        """Reference Q15 complex Costas returning the recovered (yi, yq) pair per
+        sample (order-4 exposes BOTH rails on-chip). Same loop as
+        :meth:`process_reference`; returns a list of ``(yi_i16, yq_i16)`` tuples."""
+        def s16(v): return v - 0x10000 if v & 0x8000 else v
+        def u16(v): return v & 0xFFFF
+        def mq(a, b): return u16((s16(a) * s16(b)) >> 15)
+        qt = self._quarter_wave_table()
+
+        def qw(ph16):
+            fi = (ph16 >> 10) & 0x3F
+            neg = (fi & 32) != 0
+            mir = (fi & 16) != 0
+            lo = fi & 15
+            if mir:
+                lo = 16 - lo
+            v = qt[lo]
+            return u16(-s16(v)) if neg else v
+
+        arr = np.asarray(input_samples)
+        if np.iscomplexobj(arr):
+            iq = [(float_to_q15(c.real), float_to_q15(c.imag)) for c in arr]
+        elif arr.ndim == 2 and arr.shape[1] == 2:
+            iq = [(int(x) & 0xFFFF, int(y) & 0xFFFF) for x, y in arr]
+        else:
+            iq = [(float_to_q15(float(x)), 0) for x in arr]
+
+        alpha = self._alpha_q15
+        beta = self._beta_q15
+        phase = 0
+        freq = 0
+        out = []
+        for (xi, xq) in iq:
+            cosv = qw(u16(phase + 16384))
+            sinv = u16(-s16(qw(phase)))
+            yi = u16(s16(mq(xi, cosv)) - s16(mq(xq, sinv)))
+            yq = u16(s16(mq(xi, sinv)) + s16(mq(xq, cosv)))
+            out.append((s16(yi), s16(yq)))
+            if self._order == 4:
+                term1 = s16(yq) if s16(yi) >= 0 else -s16(yq)
+                term2 = s16(yi) if s16(yq) >= 0 else -s16(yi)
+                err = u16(term1 - term2)
+            else:
+                err = yq if s16(yi) >= 0 else u16(-s16(yq))
+            freq = u16(s16(freq) + s16(mq(beta, err)))
+            phase = u16(s16(phase) + s16(freq) + s16(mq(alpha, err)))
+        return out
 
     def reset(self):
         """Reset reference-model loop state."""

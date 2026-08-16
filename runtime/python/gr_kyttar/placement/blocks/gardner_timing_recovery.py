@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """GardnerTimingRecovery — see :class:`GardnerTimingRecovery`."""
 import numpy as np
 from ..block import CellProgram, Port, EntryPoint, StateVar, DataWord
@@ -183,8 +184,8 @@ class GardnerTimingRecovery(KyttarBlock):
         # runs ONLY on the strobe path (after {jump:val}); the no-strobe ``done`` path
         # never locks, so non-strobe samples keep flowing to advance ``phase``.
         # SERIALIZE-LOCK engage — cost-reduced to fit this budget-tight 7-state landing
-        # cell. The arbiter's CONFIG default LOCK_FACE is 00 = SOUTH (verified in
-        # simkyt config_reg.rs), which is EXACTLY the feedback face (period_relay sits
+        # cell. The arbiter's CONFIG default LOCK_FACE is 00 = SOUTH (verified against
+        # the cell CONFIG reset default), which is EXACTLY the feedback face (period_relay sits
         # SOUTH of the resampler and emits NORTH into it). So LOCK_FACE need NOT be
         # written — the reset default already gates all-but-SOUTH. We only set LOCK=1
         # (any nonzero engages it; reuse ``one_q14``=1<<14, no extra data word). This
@@ -805,7 +806,7 @@ ilo:
                 # FACE-only transit return corridor (period_relay -> qdelay).
                 "transit_fb_0": (0, 1, "north"),
             }
-        """Compact 2x2 fold (CM-approved): resampler(0,0)->ted(1,0) on row 0
+        """Compact 2x2 fold (maintainer-approved): resampler(0,0)->ted(1,0) on row 0
         facing east; the loop_filter folds down to (1,1). It is a DUAL-FACE cell
         (see ``build_cell_programs``): it emits `out` SOUTH (outward, the
         recovered center to a downstream slicer/bus) and `period_fb`/`fb_trig` WEST

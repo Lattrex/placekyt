@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """BPSKSlicerBlock output-packing modes: bit / byte / word.
 
 The slicer takes a signed LLR per sample and emits a hard-decision bit. Emitting
@@ -48,7 +49,8 @@ pytestmark = pytest.mark.skipif(not CT_PATH.exists(), reason="chip yaml absent")
 def test_reference_packing_and_roundtrip(out_mode, bits_per):
     rng = np.random.default_rng(7)
     llrs = rng.integers(-3000, 3000, size=64).astype(np.int16)
-    bits = [1 if v < 0 else 0 for v in llrs]
+    # GNU Radio digital.binary_slicer_fb: v < 0 -> 0, v >= 0 -> 1 (tie -> 1).
+    bits = [0 if v < 0 else 1 for v in llrs]
     words = [int(x) & 0xFFFF for x in
              BPSKSlicerBlock("r", out_mode=out_mode).process_reference(llrs)]
     assert len(words) == 64 // bits_per

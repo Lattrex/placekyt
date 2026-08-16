@@ -1,4 +1,5 @@
-"""Round-3 live-GUI fixes (the architecture notes §2.2, §3.2). Offscreen Qt.
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Round-3 live-GUI fixes. Offscreen Qt.
 
 - required-param blocks (FIR/IIR) placeable via placeholder params
 - library drag anchor normalized to the drop cell

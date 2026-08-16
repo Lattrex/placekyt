@@ -74,6 +74,29 @@ def _xy_iter(x: int, y: int, i: int) -> Tuple[int, int, int]:
     return x, y, sgn
 
 
+def cordic_mag_word(xi: int, xq: int) -> int:
+    """Bit-exact Q15 model of the WHOLE magnitude chain (PRE1 -> PRE2m ->
+    XY0..XY13 -> MAG) for ONE (i, q) word pair -> one magnitude word.
+
+    Shared by :meth:`ComplexToMagBlock.process_reference` and the AGCCCBlock
+    reference (whose loop embeds this exact chain on the chip)."""
+    x, y = _asr_oc(int(xi), 2), _asr_oc(int(xq), 2)
+
+    # PRE2m: |x|, |y| (two's-complement abs via mask+carry).
+    def _abs(v):
+        sgn = v >> 15
+        msk = (0 - sgn) & 0xFFFF
+        return ((v ^ msk) + sgn) & 0xFFFF
+
+    x, y = _abs(x), _abs(y)
+    for i in range(NITER):
+        x, y, _ = _xy_iter(x, y, i)
+    m = (_s16(x) * _s16(KINV_Q15)) >> 15
+    m = min(m * 2, 32767)
+    m = min(m * 2, 32767)
+    return m & 0xFFFF
+
+
 class _CordicBase(KyttarBlock):
     """Shared cell-program builders for the unrolled vectoring chain."""
 
@@ -183,6 +206,67 @@ start:
             assembly_template="start:\n" + head + body + tail + "    {jump:trig}\n",
         )
 
+    @staticmethod
+    def _pre2m_program() -> CellProgram:
+        """PRE2m: |x|, |y| — branchless abs (magnitude is quadrant-invariant).
+        Shared by ComplexToMagBlock and AGCCCBlock (identical cell)."""
+        return CellProgram(
+            inputs=[Port("x", register=1), Port("y", register=2)],
+            outputs=[Port("x"), Port("y"), Port("trig")],
+            entries=[EntryPoint("default")],
+            data=[],
+            state=[StateVar("tmp", register=3), StateVar("msk", register=4)],
+            assembly_template="""\
+start:
+    SHR R{in:x}, #15
+    MOVE R{state:tmp}, R0
+    SUB R0, R{state:tmp}
+    SUB R0, R{state:tmp}
+    MOVE R{state:msk}, R0
+    XOR R{in:x}, R{state:msk}
+    ADD R0, R{state:tmp}
+    {write:x}
+    SHR R{in:y}, #15
+    MOVE R{state:tmp}, R0
+    SUB R0, R{state:tmp}
+    SUB R0, R{state:tmp}
+    MOVE R{state:msk}, R0
+    XOR R{in:y}, R{state:msk}
+    ADD R0, R{state:tmp}
+    {write:y}
+    {jump:trig}
+""",
+        )
+
+    @staticmethod
+    def _mag_program() -> CellProgram:
+        """MAG: gain compensation (MULQ 1/K) + saturating <<2 prescale restore
+        (INV-13). x >= 0 always, so overflow can only clamp HIGH (0x7FFF).
+        Shared by ComplexToMagBlock (exit cell) and AGCCCBlock (mid-chain —
+        the write/jump placeholders resolve per the owning block's wiring)."""
+        return CellProgram(
+            inputs=[Port("x", register=1)],
+            outputs=[Port("mag"), Port("trig")],
+            entries=[EntryPoint("default")],
+            data=[DataWord("kinv", KINV_Q15, address=2),
+                  DataWord("rail", 0x7FFF, address=3)],
+            state=[],
+            assembly_template="""\
+start:
+    MULQ R{data:kinv}, R{in:x}
+    ADD R0, R0
+    BR.NV ok1
+    MOVE R0, R{data:rail}
+ok1:
+    ADD R0, R0
+    BR.NV ok2
+    MOVE R0, R{data:rail}
+ok2:
+    {write:mag}
+    {jump:trig}
+""",
+        )
+
 
 class ComplexToMagBlock(_CordicBase):
     """
@@ -220,55 +304,16 @@ class ComplexToMagBlock(_CordicBase):
     def process_reference(self, samples) -> np.ndarray:
         """Bit-exact Q15 model of the cell chain. ``samples``: iterable of
         (i, q) Q15 word pairs -> one magnitude word per sample."""
-        out = []
-        for (xi, xq) in samples:
-            x, y = _asr_oc(int(xi), 2), _asr_oc(int(xq), 2)
-            # PRE2m: |x|, |y| (two's-complement abs via mask+carry).
-            def _abs(v):
-                sgn = v >> 15
-                msk = (0 - sgn) & 0xFFFF
-                return ((v ^ msk) + sgn) & 0xFFFF
-            x, y = _abs(x), _abs(y)
-            for i in range(NITER):
-                x, y, _ = _xy_iter(x, y, i)
-            m = (_s16(x) * _s16(KINV_Q15)) >> 15
-            m = min(m * 2, 32767)
-            m = min(m * 2, 32767)
-            out.append(m & 0xFFFF)
-        return np.array(out, dtype=np.uint16)
+        return np.array([cordic_mag_word(int(xi), int(xq))
+                         for (xi, xq) in samples], dtype=np.uint16)
 
     # ------------------------------------------------------- cell programs
     def build_cell_programs(self) -> Dict[str, CellProgram]:
         progs: Dict[str, CellProgram] = {"pre1": self._pre1_program()}
 
-        # PRE2m: |x|, |y| — branchless abs, magnitude is quadrant-invariant.
-        progs["pre2"] = CellProgram(
-            inputs=[Port("x", register=1), Port("y", register=2)],
-            outputs=[Port("x"), Port("y"), Port("trig")],
-            entries=[EntryPoint("default")],
-            data=[],
-            state=[StateVar("tmp", register=3), StateVar("msk", register=4)],
-            assembly_template="""\
-start:
-    SHR R{in:x}, #15
-    MOVE R{state:tmp}, R0
-    SUB R0, R{state:tmp}
-    SUB R0, R{state:tmp}
-    MOVE R{state:msk}, R0
-    XOR R{in:x}, R{state:msk}
-    ADD R0, R{state:tmp}
-    {write:x}
-    SHR R{in:y}, #15
-    MOVE R{state:tmp}, R0
-    SUB R0, R{state:tmp}
-    SUB R0, R{state:tmp}
-    MOVE R{state:msk}, R0
-    XOR R{in:y}, R{state:msk}
-    ADD R0, R{state:tmp}
-    {write:y}
-    {jump:trig}
-""",
-        )
+        # PRE2m: |x|, |y| — branchless abs, magnitude is quadrant-invariant
+        # (shared builder — AGCCCBlock embeds the identical cell).
+        progs["pre2"] = self._pre2m_program()
 
         for i in range(NITER):
             progs[f"xy{i}"] = self._xy_program(
@@ -276,28 +321,7 @@ start:
 
         # MAG: gain compensation (MULQ 1/K) + saturating <<2 prescale restore.
         # x >= 0 always, so overflow can only clamp HIGH (0x7FFF).
-        progs["mag"] = CellProgram(
-            inputs=[Port("x", register=1)],
-            outputs=[Port("mag"), Port("trig")],
-            entries=[EntryPoint("default")],
-            data=[DataWord("kinv", KINV_Q15, address=2),
-                  DataWord("rail", 0x7FFF, address=3)],
-            state=[],
-            assembly_template="""\
-start:
-    MULQ R{data:kinv}, R{in:x}
-    ADD R0, R0
-    BR.NV ok1
-    MOVE R0, R{data:rail}
-ok1:
-    ADD R0, R0
-    BR.NV ok2
-    MOVE R0, R{data:rail}
-ok2:
-    {write:mag}
-    {jump:trig}
-""",
-        )
+        progs["mag"] = self._mag_program()
         return progs
 
     # ------------------------------------------------------------- wiring

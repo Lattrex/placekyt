@@ -255,6 +255,15 @@ COMPLEX_2IN2OUT = {
     # apply). Gated here to PROVE the pipelined (back-to-back) output == the per-sample
     # GR-verified output.
     "MultiplyConstComplex": (("xi", "xq"), "yi", {"re": 0.7, "im": 0.5}),
+    # Complex AGC (GR analog.agc_cc): a 20-cell serialize-LOCKED gain-feedback
+    # ring (hold locks, upd's backward WRITE.CFG releases — INV-19). The lock is
+    # LOAD-BEARING: with pipeline_lock=False the saturated stream diverges from
+    # per-sample in ~90% of words (the gain feedback races open-loop, the Costas
+    # dphase failure shape) — pinned in test_agc_cc.py. rate=0.05/reference=0.3
+    # so the feedback actually moves the gain within the 16-sample stimulus.
+    "AGCCCBlock": (("xi", "xq"), "yi_tap",
+                   {"rate": 0.05, "reference": 0.3, "gain": 1.0,
+                    "max_gain": 0.0}),
 }
 
 # Blocks that need bespoke stimulus (documented, reported as skips — no silent gap).

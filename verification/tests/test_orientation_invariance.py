@@ -193,6 +193,18 @@ _CASES = [
     # real RMS word out (words_per_sample=1). Same 4-cell chain as RMSBlock with
     # the |z|^2 front — D4-invariant for the same reasons.
     ("RMSCFBlock", {"alpha": 0.25}, "complex_wps1", ("re", "im", "out")),
+    # Complex AGC (GR analog.agc_cc): complex I/Q in, gain-scaled (yi, yq) out.
+    # 20-cell serialize-LOCKED feedback ring (gain loop through the CORDIC
+    # magnitude chain). ANCHOR (1,2) [5th element]: at the default (1,1) the
+    # mirror_v+cw+cw orientation leaves the input cell adjacent to the
+    # output cell against the contested row-0 corridor and the router (whose
+    # INV-32 own-block-broker guard forbids the short route) wraps BOTH
+    # corridors around the die THROUGH the x16_out port cell — the port-cell
+    # divert does not deliver and the datapath dies. One row lower every
+    # orientation routes cleanly (the ComplexToMag/Arg saturation-anchor
+    # precedent: corridor disjointness is anchor-dependent for big chains).
+    ("AGCCCBlock", {"rate": 0.05, "reference": 0.3, "gain": 1.0,
+                    "max_gain": 0.0}, "complex", ("xi", "xq", "yi_tap"), (1, 2)),
 ]
 
 # No orientation residuals remain: every block in _CASES is invariant in all 8 D4
@@ -207,7 +219,7 @@ def _fq(v: float) -> int:
     return max(-32768, min(32767, q)) & 0xFFFF
 
 
-def _run(btype, params, kind, ports, orient):
+def _run(btype, params, kind, ports, orient, anchor=(1, 1)):
     if kind in ("complex", "complex_wps1"):
         rng = random.Random(3)
         stim = [complex(rng.uniform(-0.5, 0.5), rng.uniform(-0.5, 0.5))
@@ -216,31 +228,37 @@ def _run(btype, params, kind, ports, orient):
         wps = 1 if kind == "complex_wps1" else 2
         return run_block_dut_complex(btype, stim, params=params, chip_yaml=CHIP_YAML,
                                      in_ports=(xi, xq), out_port=out,
-                                     words_per_sample=wps, orient=orient)
+                                     words_per_sample=wps, orient=orient,
+                                     place_xy=anchor)
     rng = random.Random(3)
     inq = [_fq(rng.uniform(-0.6, 0.6)) for _ in range(16)]
     inp, out = ports
     return run_block_dut(btype, inq, params=params, chip_yaml=CHIP_YAML,
-                         in_port=inp, out_port=out, orient=orient)
+                         in_port=inp, out_port=out, orient=orient,
+                         place_xy=anchor)
 
 
 _PARAMS = [
-    pytest.param(btype, params, kind, ports, orient,
-                 id=f"{btype}-{tuple(sorted(params.items()))}-{_label(orient)}")
-    for (btype, params, kind, ports) in _CASES
+    pytest.param(case[0], case[1], case[2], case[3],
+                 case[4] if len(case) > 4 else (1, 1), orient,
+                 id=f"{case[0]}-{tuple(sorted(case[1].items()))}-{_label(orient)}")
+    for case in _CASES
     for orient in D4_ORIENTATIONS[1:]
 ]
 
 
-@pytest.mark.parametrize("btype,params,kind,ports,orient", _PARAMS)
-def test_orientation_invariant(btype, params, kind, ports, orient):
-    """The block's on-chip output under ``orient`` must EQUAL its identity output."""
+@pytest.mark.parametrize("btype,params,kind,ports,anchor,orient", _PARAMS)
+def test_orientation_invariant(btype, params, kind, ports, anchor, orient):
+    """The block's on-chip output under ``orient`` must EQUAL its identity output.
+    ``anchor`` (optional 5th case element, default (1,1)) places the block where
+    every orientation's corridors stay disjoint from the port cells — see the
+    AGCCCBlock case note."""
     if (btype, _label(orient)) in _XFAIL:
         pytest.xfail("known single-block port-input fan-in residual (not a datapath "
                      "bug; block is invariant block->block — see module docstring)")
-    base = _run(btype, params, kind, ports, [])
+    base = _run(btype, params, kind, ports, [], anchor)
     assert getattr(base, "ok", True), \
         f"identity build failed for {btype}: {getattr(base,'reason','?')}"
-    res = _run(btype, params, kind, ports, list(orient))
+    res = _run(btype, params, kind, ports, list(orient), anchor)
     ok, detail = compare_dut_results(base, res)
     assert ok, f"{btype} {_label(orient)}: {detail}"

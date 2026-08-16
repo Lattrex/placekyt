@@ -43,6 +43,7 @@ BUILTIN_BLOCKS = {
     'BandPassFilter': 'band_pass_filter_block',
     'BandRejectFilter': 'band_reject_filter_block',
     'AGCBlock': 'agc_block',
+    'AGCCCBlock': 'agc_cc_block',
     'NCOBlock': 'nco_block',
     'FrequencyModulatorBlock': 'frequency_modulator_block',
     'QuadratureDemodBlock': 'quadrature_demod_block',

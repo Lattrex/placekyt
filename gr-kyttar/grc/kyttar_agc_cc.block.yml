@@ -1,0 +1,75 @@
+id: kyttar_agc_cc
+label: Kyttar AGC (Complex)
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar AGC (Complex) - Automatic Gain Control on a complex stream, a drop-in
+  for GNU Radio analog.agc_cc (VERBATIM params):
+
+      output  = input * gain
+      gain   += rate * (reference - |output|)      (|.| = true complex magnitude)
+      if max_gain > 0: gain = min(gain, max_gain)
+
+  On the chip: a 20-cell serialize-locked feedback ring - a 2-rail Q15 gain
+  multiply on the signal path, the CORDIC vectoring magnitude chain on the
+  emitted output, and a full-precision error-feedback gain accumulator (no
+  small-rate stall at GR's default rate=1e-4).
+
+  HARDWARE DEVIATION (Q15 fabric - ATTENUATING regime only): the gain register
+  is Q15 [0, 1), so gain / reference / max_gain above 1.0 raise (true
+  amplification needs integer gain headroom). max_gain = 0 (GR: unlimited) runs
+  with the Q15 ceiling 32767/32768. rate/reference/gain/max_gain are quantized
+  to Q15; a rate below ~1.5e-5 (quantizes to 0) raises. GR's default rate=1e-4
+  runs as 3/32768 (~8% slower transient; the settled level is unchanged).
+
+  This block runs on the Kyttar chip. Place it between a KyttarSource and
+  KyttarSink block, and ensure the device_id matches your KyttarDevice.
+
+  Parameters (GR analog.agc_cc verbatim):
+  - Device ID: ID of the KyttarDevice block
+  - Rate: update rate of the loop (GR default 1e-4)
+  - Reference: reference value to adjust signal power to (GR default 1.0)
+  - Gain: initial gain value (GR default 1.0)
+  - Max Gain: maximum gain; 0 = unlimited (GR default 0)
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.agc_cc(device_id=${device_id}, rate=${rate}, reference=${reference}, gain=${gain}, max_gain=${max_gain})
+  callbacks:
+    - set_reference(${reference})
+    - set_rate(${rate})
+    - set_gain(${gain})
+    - set_max_gain(${max_gain})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+  - id: rate
+    label: Rate
+    dtype: real
+    default: 1e-4
+  - id: reference
+    label: Reference
+    dtype: real
+    default: 1.0
+  - id: gain
+    label: Gain
+    dtype: real
+    default: 1.0
+  - id: max_gain
+    label: Max Gain
+    dtype: real
+    default: 0.0
+
+inputs:
+  - label: in
+    dtype: complex
+
+outputs:
+  - label: out
+    dtype: complex
+
+file_format: 1

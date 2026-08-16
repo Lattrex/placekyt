@@ -70,6 +70,9 @@ _TYPE_OVERRIDES = {
     # (rx_face/tx_face) — the GRC-facing Splitter is the fan-out relay.
     "kyttar_splitter": "StreamSplitterBlock",
     "kyttar_soft_demodulator": "SoftDemodulatorBlock",
+    # Complex AGC: snake->Pascal gives "AgcCcBlock" (wrong case for both the
+    # AGC acronym and the CC dtype suffix) — pin the CLASS name explicitly.
+    "kyttar_agc_cc": "AGCCCBlock",
     "kyttar_costas_loop": "ComplexCostasLoopBlock",
     "kyttar_gardner_ted": "GardnerTimingRecovery",
     # M&M timing recovery (16-QAM): snake→Pascal gives "MmTimingRecoveryBlock" not

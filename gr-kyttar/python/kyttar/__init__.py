@@ -100,6 +100,7 @@ from .complex_band_reject_filter import complex_band_reject_filter
 from .dc_blocker import dc_blocker
 from .delay import delay
 from .agc import agc
+from .agc_cc import agc_cc
 from .nco import nco
 from .complex_mixer import complex_mixer
 from .freq_xlating_fir import freq_xlating_fir
@@ -207,6 +208,7 @@ __all__ = [
     "complex_band_reject_filter",
     "dc_blocker",
     "agc",
+    "agc_cc",
     "nco",
     "complex_mixer",
     "freq_xlating_fir",

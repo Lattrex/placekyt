@@ -11,6 +11,75 @@ dropped) — append new entries above the oldest ones as before.
 
 ---
 
+## AGCCCBlock — complex AGC; feedback landings must be STATE registers; big rings fold ≤7 wide 2026-08-16
+
+GR `analog.agc_cc` VERBATIM (rate/reference/gain/max_gain; semantics pinned
+LIVE first: `out = in*gain` THEN `gain += rate*(ref − |out|)`, TRUE complex
+magnitude, first sample scaled by the initial gain, `max_gain=0` = unclamped,
+no lower clamp). 20 cells, ONE serpentine RING (7×5 perimeter = exactly 20):
+`hold` (gain state + fed-back increment) → `tap` (2-rail MULQ, the block
+OUTPUT, mid-block dual-FACE = the Costas `rotate` idiom) → the PROVEN
+ComplexToMag CORDIC chain VERBATIM (pre1/pre2m/xy0..13/mag now shared
+builders in `cordic_blocks.py`) on the EMITTED output words → `upd`
+(rate·err with the RMS error-feedback accumulator + backward ginc WRITE +
+WRITE.CFG lock-clear, @1 abutment — the QPSK-Costas pd_pi→phase shape, no
+transit cell). INV-19 serialize-LOCK default ON. 1 attempt, 38-test suite +
+saturation/orientation/legality/binding gates green. Derived settled-tail
+tolerance 24 LSB (20 CORDIC-mag transfer + 2 gain dither + 1 MULQ trunc + 1
+warm-up residual; measured peak 11); derived warm-up `ceil(10/(rate_eff·amp))`.
+Durable lessons:
+
+- **A FEEDBACK-LANDING register must be a pinned STATE var, NEVER an input
+  `Port` (NEW — latent in every brokered-input block).** `resolved_io` counts
+  every input-role register as a host-injected operand, and `broker_plan`'s
+  port-complex expansion relays ONE delivery per such register. With the
+  increment landing declared as an input Port (the Costas `dphase` pattern),
+  any orientation whose input corridor gets BROKERED relayed a stale third
+  word into the feedback register EVERY sample — the loop ran silently OPEN
+  (output == frozen-gain trace; found at cw³ by comparing against a
+  rate≈0 run). Declaring the landing a pinned StateVar (`ginc`@R2, the hole
+  below the data words) keeps the operand group at exactly [xi, xq]; the
+  backward WRITE resolves to the state register by name (state names match
+  before input names — the qpd hazard, used deliberately). NOTE:
+  ComplexCostasLoop's `dphase` input Port carries the same LATENT hazard —
+  its 4×2 fold just never gets its input brokered in the gate orientations.
+- **Fold a big ring ≤ 7 wide on the 10-wide chip — 8 wide passes every
+  identity gate and dies at 180°.** An 8×4 ring leaves 1-cell channels;
+  under cw² the router (whose INV-32 own-block-broker guard forbids the
+  short path) wrapped BOTH corridors around the die and diverted the input
+  THROUGH the x16_out port cell — the port-cell divert (entry stamped on
+  x16_out) does NOT deliver: silent zero output, route reports ok. The same
+  20 cells as a 7×5 perimeter ring leave a 2-column channel and every
+  orientation routes cleanly. Residual: at anchor (1,1) the mirror_v+cw²
+  orientation still forces the wrap (input cell adjacent to the output cell
+  against the contested row-0 corridor); anchor (1,2) is clean for all 8 —
+  the orientation gate now supports a per-case anchor (5th case element),
+  the ComplexToMag/Arg saturation-anchor precedent.
+- **`{write:port}`-FIRST is mandatory when an input lands in R0 and the cell
+  computes before forwarding** (INV-33 sharpened): hold's first draft did
+  `clamps…; MOVE R0, R{in:xi}; write` — but `R{in:xi}` IS R0, long since
+  clobbered; the block forwarded its own gain as the I rail (tap computed
+  g·g). The Costas `phase` cell's `{write:fwd_input}` as the FIRST
+  instruction (WRITE emits and preserves R0) is the correct form.
+- **The RMS error-feedback accumulator is direction-asymmetric under bare
+  MULQ** — floor truncation zeroes only POSITIVE sub-LSB increments (a
+  negative err still steps −1), so the no-accumulator mutant stalls ONLY in
+  the RISING-gain regime (start gain below ref/amp; stalls ~10923 LSB short
+  at rate_q=3). A falling AGC self-repairs and would false-pass the
+  mutation — pin the stall with gain=0.05, not gain=1.0.
+- **A 20-cell chain needs ~4k sim events/sample saturated** — the pipelined
+  harness default 100k-event cap reads as "livelock" at 50 samples; it
+  completes (and is BIT-EXACT vs per-sample) at 200k. The 16-sample generic
+  saturation gate fits the default cap. Unlocked (`pipeline_lock=False`)
+  saturated drive diverges in ~90% of words — the INV-19 hazard is real and
+  pinned in the suite.
+- **Regime mirroring for the GR golden** (the agc_ff lesson, sharpened): run
+  GR at the CHIP-QUANTIZED constants (rate_q/ref_q/gain_q/gmax_q as floats;
+  `max_gain=0` → the Q15 ceiling 32767/32768) over the SAME quantized
+  stimulus; the settled level is then rate-independent and the 137k-sample
+  default-rate (3/32768) convergence is closed model-vs-GR with the chip
+  linked by the bit-exact gate (a >argv-limit stimulus goes to the GR
+  subprocess via a temp file, not argv).
 ## GolayDecoderBlock — SRAM-backed (24,12) syndrome decoder; the e_d-only LUT word and the harmless value-0 collision 2026-08-16
 
 Extended Golay (24,12) hard-decision syndrome decoder (24:12 rate-compressing,

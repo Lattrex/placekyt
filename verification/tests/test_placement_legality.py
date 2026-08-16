@@ -70,6 +70,10 @@ BLOCKS = [
     # change the 1-cell footprint).
     ("BPSKSlicerBlock", {"out_mode": "word"}),
     ("ComplexCostasLoopBlock", {"order": 4}),
+    # 20-cell complex-AGC ring (7x5 perimeter, no internal transit cell): the
+    # serialize-LOCK adds no cells (the feedback is a direct @1 abutment), so
+    # the footprint is param-independent; assert D4 + movement legality anyway.
+    ("AGCCCBlock", {}),
     # Single-cell additive LFSR scrambler — no internal transit cell, no footprint-
     # growing param (count>0 only adds registers, not cells); trivially non-self-
     # overlapping in every D4 orientation and under movement.

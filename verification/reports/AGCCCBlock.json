@@ -1,0 +1,20 @@
+{
+  "kyttar_block": "AGCCCBlock",
+  "passed": true,
+  "metric": "amplitude",
+  "n_compared": 401,
+  "max_abs_err": 11,
+  "tolerance": 24,
+  "nmse_db": -61.92868815615458,
+  "correlation": 0.9999999469745858,
+  "bit_errors": 0,
+  "delay_used": 0,
+  "coverage": {
+    "bit_exact": "edges + 3 seeds + rate{1e-4,1e-2,5e-2} x ref{0.2,0.7} + gain/max_gain combos, chip == model word-for-word",
+    "live_gr_settled": "rate x ref x amp sweep + clamped, derived warm-up, derived 24-LSB budget, both rails",
+    "default_rate": "137k-sample model-vs-GR settled (chip linked bit-exact)",
+    "mutations": "inverted, wrong-reference, |I|+|Q| magnitude, no-feedback, +1 delay, empty, 1-LSB rate, bare-MULQ stall \u2014 all FAIL",
+    "saturation": "COMPLEX_2IN2OUT locked gate green; unlocked divergence pinned",
+    "regime": "attenuating (gain/reference/max_gain <= 1, Q15); out-of-regime params raise"
+  }
+}

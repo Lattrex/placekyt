@@ -903,6 +903,30 @@
    "metric": "amplitude",
    "params": {},
    "notes": "Complex argument atan2(y,x) via CORDIC vectoring - 30 cells, 8x4 serpentine of interleaved XY/Z cells: each XY_i streams its pre-update y to Z_i, Z_i adds +-atan(2^-i)/pi. Angle in HALF-TURN Q15 (word/32768*pi rad): 16-bit wrap IS mod 2pi, the +-pi seam needs no special case (edge-swept). Pre-rotation x<0 -> -+90deg with quadrant flags to Z0 (z seeded +-0.5 half-turn); PRE2's branch paths each end in GOTO (no unconditional branch flag exists - BR.A is 'all-ones', not 'always'). CHIP BIT-EXACT to process_reference per-sample AND under SATURATED pipelined drive (feed-forward/stateless - NO INV-19 limit). Reference vs GR blocks.complex_to_arg: max 0.0026 rad measured for |v|>=0.1, gate 0.006 rad (input-quantization-limited below: 1 input LSB subtends ~1/(|v|*pi) half-turns). Gates: test_cordic_blocks.py (12 tests incl. 3 mutation controls, shared with Mag). Unlocks: FM/PM demod exactness, phase difference, frequency estimation, motor-control (resolver angle)."
+  },
+  {
+   "kyttar_block": "Crc16Block",
+   "grc_block": "",
+   "status": "planned",
+   "tier": 1,
+   "metric": "decision",
+   "notes": "Frame CRC-16 for the data-link protocol demo. BYTE stream in; params poly (default 0x1021, CRC-16/CCITT-FALSE), init (default 0xFFFF), frame_len (bytes per frame, default 8). Rate-REDUCING: consumes frame_len bytes, emits ONE 16-bit CRC word per frame (the PackKBits/rate-reducing harness pattern). NO stock GNU Radio streaming counterpart (GR's CRC blocks are tagged-packet based, a host-scheduler idiom the fabric does not have) -- golden is the published CRC-16/CCITT-FALSE algorithm (ITU-T V.41 family; cross-check against python crcmod/binascii on the SAME parameterization, cite the exact model from the CRC catalogue). Bit-serial LFSR-style datapath (the LFSRScramblerBlock shift/XOR idiom, MSB-first byte feed). Verify: known-vector anchors (e.g. '123456789' -> 0x29B1 for CCITT-FALSE), frame_len sweep, random frames >=3 seeds, poly/init sweep, INV-4 mutations (wrong poly, wrong init, bit-order flip, dropped byte, +1 shift, empty). Byte/word streams are RAW words, not Q15 (XorBlock lesson). Usage note: a receive-side check is two Crc16Blocks (TX-appended CRC vs RX-recomputed) compared with XorBlock == 0."
+  },
+  {
+   "kyttar_block": "HammingEncoderBlock",
+   "grc_block": "",
+   "status": "planned",
+   "tier": 1,
+   "metric": "decision",
+   "notes": "Systematic Hamming(7,4) hard-decision FEC ENCODER for the data-link demo (the Q15-safe block-code path -- deliberately NOT convolutional/Viterbi). BIT stream in (one 0/1 byte per sample, the Pack/Unpack convention): consumes 4 data bits, emits the 7-bit systematic codeword MSB-first (rate-EXPANDING 4:7 -- the UnpackKBits counted-loop / run_block_dut_rate pattern; INV-20 check for the burst emit). NO stock GNU Radio counterpart (gr-fec has no plain Hamming(7,4) factory) -- golden is the standard systematic G matrix (cite: Hamming 1950 / any coding-theory text; state the exact G used and the bit order LOUDLY). Verify: all 16 codewords exhaustively, random >=3 seeds, round-trip with the golden decoder, INV-4 mutations (wrong parity equation, swapped bit order, dropped parity bit, +1 shift, empty). Raw-word streams, not Q15."
+  },
+  {
+   "kyttar_block": "HammingDecoderBlock",
+   "grc_block": "",
+   "status": "planned",
+   "tier": 1,
+   "metric": "decision",
+   "notes": "Systematic Hamming(7,4) hard-decision FEC DECODER: consumes 7 received bits, computes the 3-bit syndrome, corrects any SINGLE bit error via an 8-entry syndrome->flip-position LUT (fits the single-cell LOAD table, MAX_TABLE=21), emits the 4 corrected data bits MSB-first (rate 7:4). Must use the SAME G/H convention + bit order as HammingEncoderBlock (state it LOUDLY; the loopback identity through the golden encoder is the convention pin, the DiffEncoder/Decoder pattern). NO stock GNU Radio counterpart -- golden is the standard syndrome decoder. Verify: all 16 clean codewords, EVERY single-bit error position on every codeword corrected exhaustively (7*16=112 cases), double-bit errors documented as uncorrectable (known limit, not hidden), random >=3 seeds, round-trip golden-encoder->DUT-decoder == identity under 0 and 1 injected errors, INV-4 mutations (no-correction passthrough, wrong syndrome LUT, swapped bit order, +1 shift, empty). Raw-word streams, not Q15."
   }
  ]
 }

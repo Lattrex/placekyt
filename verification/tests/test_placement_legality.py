@@ -100,6 +100,11 @@ BLOCKS = [
     # D4 orientation and under movement.
     ("RMSBlock", {"alpha": 0.25}),
     ("RMSCFBlock", {"alpha": 0.25}),
+    # rows x cols block interleaver: 3-cell vertical column (rgen -> wctl ->
+    # store), no internal transit cell; rows/cols/deinterleave change register
+    # contents only (the footprint is always 1x3) — must stay pairwise-distinct
+    # in every D4 orientation and under movement.
+    ("BlockInterleaverBlock", {"rows": 3, "cols": 4, "deinterleave": True}),
 ]
 
 _LIB = "lattrex.official"

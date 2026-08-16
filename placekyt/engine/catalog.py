@@ -39,12 +39,12 @@ OFFICIAL_LIBRARY = "lattrex.official"
 
 # Blocks excluded from the catalog: never completed, no usable in-array
 # implementation — superseded by external-RAM offload (done off-array, not in
-# the cell fabric). ``ViterbiK7DecoderBlock`` (trellis manipulation) and
-# ``BlockInterleaverBlock`` (symbol interleaving storage) both offload to FPGA
-# RAM rather than running on the array.
+# the cell fabric). ``ViterbiK7DecoderBlock`` (trellis manipulation) offloads
+# to FPGA RAM rather than running on the array. (``BlockInterleaverBlock`` was
+# excluded here while it was an abandoned poc; it is now a real, verified
+# in-array block for small matrices and is catalogued normally.)
 _EXCLUDED_BLOCKS = frozenset({
     "ViterbiK7DecoderBlock",
-    "BlockInterleaverBlock",
 })
 
 # Manifest aliases: a handful of DONE blocks carry a LEGACY short name in the

@@ -113,8 +113,8 @@ class TestMultiCellBlocks:
         assert programmed >= 40  # full serpentine resolved
 
     def test_all_catalog_blocks_build(self, qapp, catalog):
-        # Every catalog block must place + build via the v2 path (excluded
-        # blocks — Viterbi, BlockInterleaver — are already out of the catalog).
+        # Every catalog block must place + build via the v2 path (the one
+        # excluded block — Viterbi — is already out of the catalog).
         # A few blocks document a HARDWARE constraint that their GR-verbatim
         # unity default violates (a multi-cell complex FIR needs Σ|h|≤1; a
         # band-pass/reject at gain 1.0 has Σ|h|≈1.3–1.5). Build those at the
@@ -272,8 +272,15 @@ class TestEditableParams:
 
 
 class TestExcludedBlocks:
-    def test_interleaver_absent(self, qapp, catalog):
-        assert catalog.get("BlockInterleaverBlock") is None
+    def test_viterbi_absent_interleaver_present(self, qapp, catalog):
+        # ViterbiK7DecoderBlock remains excluded (no usable in-array
+        # implementation). BlockInterleaverBlock USED to be excluded as an
+        # abandoned poc; it is now a real, verified in-array block (rows*cols
+        # <= 12, runtime patch-slot store) and must be catalogued.
+        assert catalog.get("ViterbiK7DecoderBlock") is None
+        spec = catalog.get("BlockInterleaverBlock")
+        assert spec is not None
+        assert {p.name for p in spec.params} == {"rows", "cols", "deinterleave"}
 
 
 class TestResolvedIO:

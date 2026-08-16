@@ -11,6 +11,80 @@ dropped) — append new entries above the oldest ones as before.
 
 ---
 
+## BlockInterleaverBlock — row-column matrix interleaver; the RUNTIME PATCH-SLOT computed store 2026-08-16
+
+Bit-exact (metric=exact) rows×cols block interleaver/deinterleaver, 3 cells,
+supported range `rows*cols ≤ MAX_DEPTH = 12` (RAISES beyond — the SRAM-panel
+SCRATCH recipe is the documented, UNSHIPPED growth path). 60-test suite + all
+gates green; 1 attempt. The durable lessons:
+
+- **THE ISA HAS NO INDIRECT STORE — the RUNTIME PATCH-SLOT idiom supplies one
+  (NEW, proven on simKYT).** `LOAD` is the only indirect op (read:
+  `R0 = mem[mem[Rn]&0x1F]`); every WRITE/MOVE destination is an instruction
+  field. A streaming interleaver must store each sample at a COMPUTED address,
+  so: construct the instruction word at runtime — `0x63E0 | dest` is
+  `WRITE @0` (HOP_CNT=31 = LOCAL store, dest field [4:0]) — and WRITE it into
+  a known program slot of the cell that executes it; the slot (a HALT at
+  build) then runs as the computed store. Cost: 1 ADD + the patch WRITE in the
+  producer, 1 slot instruction in the executor. Verified end-to-end incl. the
+  patch arriving as an EXTERNAL WRITE from the neighbouring cell, under
+  saturated back-to-back drive, in all 8 D4 orientations (a memory ADDRESS
+  does not rotate — no is_face words needed). Derive the base constant by
+  assembling `WRITE @0, 0` (0x63E0), don't hand-encode.
+- **Resolver fix that makes the idiom routable:** a dst input `Port` pinned
+  INSIDE the instruction range (the patch slot) was reclassified "instruction"
+  by `classify_addresses`' final sweep, so the router's `_resolve_named_input`
+  couldn't see it and silently fell back to the cell's FIRST input register —
+  patch delivered to R0, zero output, no error. `resolver.py` now lets an
+  explicitly-declared input keep its role inside the instruction range
+  (data/state keep instruction-wins). Regression:
+  `test_block_interleaver.py::test_pinned_input_in_instruction_range_keeps_input_role`.
+- **HARNESS: honor the build's `input_landings` (a brokered input corridor is
+  LEGAL).** At one orientation (mirror_h+cw+cw) the router legitimately ended
+  the port→block corridor at a BROKER cell abutting the block (turn program
+  delivers into the landing); `run_block_dut`'s `len(route)`/manhattan hop
+  consumed the burst AT the broker with the BLOCK's entry → zero output that
+  looked exactly like an orientation failure (INV-23 failure-mode-4 class).
+  Fix: `run_block_dut` now prefers `bres.chips[0].input_landings["in_blk"]`
+  (the LIVE production contract: cell/entry/hop/data_addrs, resolving BOTH the
+  ride-straight and brokered shapes) and falls back to the old derivation.
+  When a rotated multi-cell block gives zero output, check whether the input
+  net ends ON the landing cell or one short at a broker BEFORE suspecting the
+  block.
+- **One column walk IS the transpose permutation — and its wrap detects the
+  block boundary for free.** Reading a row-major r×c buffer column-by-column
+  is `addr += stride; if addr >= N: addr -= (N-1)` with stride = cols
+  (interleave) or rows (deinterleave) — one machinery, both directions.
+  BOUNDARY IDENTITY (saved a whole counter + 2 DataWords): a wrap lands
+  exactly ON `stride` iff it wrapped from `N-1`, the last read of a block
+  (wrap value `ra+stride-(N-1) == stride ⟺ ra == N-1`), so `CMP ra, stride;
+  BR.NZ` after the wrap is the entire end-of-block detector. Verified
+  exhaustively (pure-Python walk == sigma for every legal config) before
+  authoring assembly.
+- **Budget split that fits (3 cells, 1×3 column, I/O co-located):** `rgen`
+  (read-address walk, 18 instr + 4 data + 2 state) → `wctl` (sequential 2N
+  ring write pointer + patch construction, 13 instr) → `store` (2N-word
+  ping-pong buffer @2..1+2N + a 4-instruction engine: patched slot, LOAD,
+  write, jump; the slot IS the entry). Store capacity sets MAX_DEPTH:
+  1+2N ≤ 25 → N ≤ 12. Tricks: accumulator delivery of the sample into store's
+  R0 as wctl's LAST write (INV-33) freed one input register (N 11→12); ALL
+  store consumption (slot, R0, LOAD ra) happens BEFORE the potentially
+  backpressured `{write:out}`, so a stalled egress can't be overtaken by the
+  next sample's deliveries — that ordering is the saturation-safety argument
+  (proven: saturated == per-sample bit-exact incl. full-depth 12×1).
+- **Golden discipline for a no-GR block:** cite the coding text (Sklar ch. 8;
+  Lin & Costello) + state the write/read order LOUDLY + validate the
+  reference IN-TEST against an independent numpy reshape/transpose
+  formulation before holding the DUT to it. Burst-dispersion: the TRUE
+  guarantee is "a burst of ≤ rows consecutive channel symbols corrupts AT
+  MOST ONE symbol per row-codeword after deinterleave" (row ranges of a
+  ≤rows-long read window are disjoint) — the manifest's older "≥ rows apart"
+  phrasing is NOT a theorem (cross-column pairs can be closer); proven
+  exhaustively + demonstrated on-chip with a corrupted channel stream.
+- **The poc file (INV-25) was archaeology only:** its "V2" single-cell
+  fill/drain design required externally-addressed writes (a harness hack, not
+  a streaming block) and its 4-cell V1 was a non-functional sketch. Replaced
+  wholesale; the catalog `_EXCLUDED_BLOCKS` entry (poc-era) lifted.
 ## CONVERTER-FLAVORS DEADLOCK CLOSED — mixed fan-out keeps the routed path; per-port JUMP entries 2026-08-16
 
 The strict xfail on `test_converter_flavors_grc.py::test_runs_live_recovers_input`

@@ -126,6 +126,17 @@ REAL_1IN = {
     # denorm cells have DATA-DEPENDENT run lengths (shift loops) — exactly the
     # kind of jitter only this saturated gate can prove harmless.
     "RMSBlock": ("sample", "out", {"alpha": 0.25}),
+    # rows x cols BLOCK interleaver: 3-cell STRAIGHT feed-forward pipeline
+    # (rgen -> wctl -> store) with a runtime-patched computed-destination store.
+    # STATEFUL (2N-word ping-pong buffer + column-walk/ring pointers) but NO
+    # feedback corridor and NO reconvergent fan-in (a single linear trigger
+    # thread), so the INV-19/20 hazards don't apply — and the store cell
+    # consumes ALL its per-sample deliveries (patch slot, R0 sample, read
+    # address) BEFORE its potentially-backpressured output WRITE, so a stalled
+    # egress cannot be overtaken by the next sample's deliveries. PROBED
+    # saturated == per-sample bit-exact across configs incl. the full-depth
+    # 12x1 (test_block_interleaver.py::test_saturated_pipelined_bit_exact).
+    "BlockInterleaverBlock": ("sample", "out", {"rows": 2, "cols": 3}),
     # PSK31 raised-cosine ENVELOPE shaper (on-the-fly NCO cosine, PATH B): 7-cell
     # feed-forward pipeline (ingest -> phasegen -> NCO sine column -> shape). The sine
     # column reconverges at `shape` like the NCO's, but the datapath is PURELY

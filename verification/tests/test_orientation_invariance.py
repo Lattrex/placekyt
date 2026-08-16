@@ -155,6 +155,15 @@ _CASES = [
     # -> (~in)&0xFF out. Single cell, memoryless, no internal connections / feedback,
     # so its NOT+mask datapath is D4-invariant by construction.
     ("NotBlock", {}, "real", ("sample", "out")),
+    # rows x cols BLOCK interleaver (row-column matrix): single real rail in ->
+    # permuted rail out, 1:1 with an N-sample group delay. 3-cell straight
+    # feed-forward chain (rgen -> wctl -> store) incl. a runtime-patched
+    # computed-destination store; no direction-specific face words (the patch
+    # targets a memory ADDRESS, which does not rotate), so its output word list
+    # must be IDENTICAL in every D4 orientation. NOTE: some orientations route
+    # the input corridor to a BROKER (delivery via the broker's turn program) —
+    # exercised here through the harness's build-resolved input landing.
+    ("BlockInterleaverBlock", {"rows": 2, "cols": 3}, "real", ("sample", "out")),
     # Hamming(7,4) FEC encoder: single real bit rail in -> 7-bit codeword burst out
     # every 4th trigger (None-gaps on the accumulating samples; the harness drains
     # one word per trigger). 2-cell feed-forward chain (pack -> expand), no feedback

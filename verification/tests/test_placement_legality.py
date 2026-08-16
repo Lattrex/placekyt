@@ -78,6 +78,10 @@ BLOCKS = [
     # param (poly/init/frame_len only change register contents); trivially
     # non-self-overlapping in every D4 orientation and under movement.
     ("Crc16Block", {"frame_len": 8}),
+    # Two-complex-stream add/sub: 2-cell chain (rail_i landing -> rail_q emit),
+    # no internal transit cell, no footprint-growing param (num_inputs is pinned).
+    ("AddCCBlock", {}),
+    ("SubCCBlock", {}),
     ("MultiplyConstComplex", {"re": 0.7, "im": 0.5}),
     # Bitwise NOT (GR blocks.not_bb): single-cell, no params, no internal transit
     # cell — trivially non-self-overlapping in every D4 orientation and under movement.

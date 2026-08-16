@@ -82,6 +82,7 @@ from .dsp_markers import (complex_rrc_matched_filter, complex_costas_loop,
 from .gain import gain
 from .multiply import multiply
 from .add import add, subtract
+from .add_cc import add_cc, sub_cc
 from .add_const import add_const
 from .xor import xor
 from .float_to_char import float_to_char
@@ -185,6 +186,8 @@ __all__ = [
     "multiply",
     "add",
     "subtract",
+    "add_cc",
+    "sub_cc",
     "add_const",
     "xor",
     "float_to_char",

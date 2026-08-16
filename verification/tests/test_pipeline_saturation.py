@@ -255,6 +255,18 @@ _CORDIC_COVERAGE = {
 COMPLEX_2IN2OUT.update(_CORDIC_COVERAGE)
 
 NEEDS_BESPOKE = {
+    # Two-EXTERNAL-complex-stream combiners: a sample is 4 operands delivered as
+    # TWO complex packets (two JUMPs) into the landing cell's counting join —
+    # the shared harnesses here (run_block_dut_pipelined & co) emit exactly ONE
+    # JUMP per sample, which would leave the join half-fired. Their saturated
+    # gate is BESPOKE and bit-exact: test_add_sub_cc.test_pipelined_equals_per_
+    # sample (+ the drive-non-vacuity probe) via run_block_dut_complex2_pipelined.
+    "AddCCBlock": "2-complex-stream (two packet JUMPs/sample, counting join); own "
+        "saturated gate test_add_sub_cc.py::test_pipelined_equals_per_sample "
+        "(queue_words drive, bit-exact, non-vacuity probe)",
+    "SubCCBlock": "2-complex-stream (two packet JUMPs/sample, counting join); own "
+        "saturated gate test_add_sub_cc.py::test_pipelined_equals_per_sample "
+        "(queue_words drive, bit-exact, non-vacuity probe)",
     "LMSEqualizerBlock": "PER-SAMPLE CONTRACT (INV-19 RECORDED LIMIT, guarded by "
         "test_lms_equalizer.test_saturated_drive_known_limit_guard): under "
         "saturated drive the backward gradient broadcast races the next "

@@ -947,18 +947,18 @@
   {
    "kyttar_block": "AddCCBlock",
    "grc_block": "blocks.add_cc",
-   "status": "planned",
+   "status": "done",
    "tier": 2,
    "metric": "amplitude",
-   "notes": "Two EXTERNAL complex streams summed: yi=ai+bi, yq=aq+bq. DECOMPOSITION HINT (this kills the deferred 4-operand wall): the math is SEPARABLE PER RAIL -- two independent saturating 2-operand adds (the proven AddBlock datapath + BR.V rail idiom, one cell per rail), each rail pair joined with the counting-join machinery (single-fire on last arrival, any order); emit the (yi,yq) packet from the q-rail cell (INV-17 budget for fan-out). The HARNESS is the real work: extend the two-stream driver to TWO complex streams (4 operands as two (re,im) pairs) -- model on run_block_dut_complex's two-operand transaction + the MultiplyBlock two-stream fan-in lesson. In-range GR-equivalence stimulus (|a+b|<1); saturation proven vs the saturating reference + corner tests (the AddBlock recipe verbatim). Commutative => no swapped-stream mutation; wrong-second-stream + per-rail mutations required. SubCCBlock is the same-module twin (same dispatch)."
+   "notes": "Verified vs GNU Radio blocks.add_cc (2 complex streams, elementwise, GR semantics pinned LIVE: memoryless, strict pairing, delay 0). SEPARABLE PER RAIL as hinted: 2-cell chain -- rail_i (the ONE landing cell: ai@R0,aq@R1,bi@R2,bq@R3; entries[0]=the AddBlock counting-join toggle, single-fires on the 2nd packet JUMP in any order; computes yi=sat(ai+bi) with the BR.NV rail restore; forwards yi,aq,bq + one trig) -> rail_q (yq=sat(aq+bq), emits the (yi,yq) INV-17 packet; 12 words free for the fan-out JUMP -- gated in test_complex_output_fanout). ONE landing cell is LOAD-BEARING: the port map / resolved_io / _iq_sibling (same cell + same entry) only expose inputs from the landing cell, so a per-rail-landing split cannot be wired from GRC -- this plus the counting join is what kills the 4-operand wall. HW-DEVIATION: num_inputs pinned to 2 (a 3rd stream overflows the 32-word landing cell), raises otherwise. Delivery = TWO complex packets per sample; the reusable two-external-complex-stream driver is kyttar_verify.run_block_dut_complex2 (+ _pipelined saturated twin) -- MultiplyCCBlock reuses it unchanged. Gates: GR equivalence per rail (edge + 3 seeds + amp sweep, compare_complex_against_grc), bit-exact vs process_reference_q15 incl. per-rail saturation corners (pins, never wraps), D4 orientation (all 8, bespoke driver), SATURATED queue_words gate bit-exact vs per-sample + drive-non-vacuity probe (NEEDS_BESPOKE in test_pipeline_saturation points here), placement legality, mutations: inverted/wrong-second-stream/per-rail (aq-only, bi-only)/wrong-op/+1-delay/empty all FAIL; commutative => swapped-streams asserted EQUAL (documented, no teeth there). 65 tests green (test_add_sub_cc.py). GRC binding kyttar_add_cc (complex, num_inputs pinned, importer override to class name)."
   },
   {
    "kyttar_block": "SubCCBlock",
    "grc_block": "blocks.sub_cc",
-   "status": "planned",
+   "status": "done",
    "tier": 2,
    "metric": "amplitude",
-   "notes": "Twin of AddCCBlock (SAME dispatch/module, the AddBlock/SubtractBlock pairing): yi=ai-bi, yq=aq-bq, same per-rail decomposition and saturation rails. NON-commutative => the swapped-streams mutation IS required (the SubtractBlock lesson)."
+   "notes": "Twin of AddCCBlock (SAME module add_sub_cc_block.py / dispatch, the AddBlock/SubtractBlock pairing): yi=sat(ai-bi), yq=sat(aq-bq), same 2-cell per-rail topology, counting-join pairing and saturating rails (overflow restores from the MINUEND ai/aq sign -- sub overflow implies sign(a)=-sign(b), result sign = sign(a)). NON-commutative: the swapped-streams mutation IS required and FAILS the gate (DUT(b,a) vs GR(a,b)); in0 is the minuend. All AddCCBlock gates apply (GR per-rail equivalence, bit-exact saturating reference, D4 orientation, bespoke saturated gate + probe, legality, mutation set). HW-DEVIATION: num_inputs pinned to 2 (32-word landing cell), raises otherwise. GRC binding kyttar_sub_cc."
   },
   {
    "kyttar_block": "MultiplyCCBlock",

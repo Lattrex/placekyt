@@ -117,6 +117,9 @@ _COMPLEX_BLOCKS = [
     ("ComplexMixerBlock", {"sample_rate": 32000.0, "frequency": -1500.0, "phase": 0.1}),
     ("NCOBlock", {}),
     ("IQUpconvertBlock", {"sample_rate": 32000.0, "frequency": 6000.0}),
+    # Two-complex-stream add/sub: the rail_q cell emits the (yi, yq) packet.
+    ("AddCCBlock", {}),
+    ("SubCCBlock", {}),
 ]
 
 

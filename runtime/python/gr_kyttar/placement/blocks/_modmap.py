@@ -9,6 +9,8 @@ BUILTIN_BLOCKS = {
     'MultiplyBlock': 'multiply_block',
     'AddBlock': 'add_block',
     'SubtractBlock': 'add_block',
+    'AddCCBlock': 'add_sub_cc_block',
+    'SubCCBlock': 'add_sub_cc_block',
     'AddConstBlock': 'add_const_block',
     'XorBlock': 'xor_block',
     'NotBlock': 'not_block',

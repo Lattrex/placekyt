@@ -106,6 +106,10 @@ _TYPE_OVERRIDES = {
     "kyttar_freq_xlating_fir": "FreqXlatingFIRBlock",
     # Add-Const: class "AddConstBlock", manifest legacy name "AddConst" (catalog alias).
     "kyttar_add_const": "AddConstBlock",
+    # Two-complex-stream add/sub: snake→Pascal gives "AddCcBlock"/"SubCcBlock"
+    # (wrong case for the CC dtype suffix) — pin the CLASS names explicitly.
+    "kyttar_add_cc": "AddCCBlock",
+    "kyttar_sub_cc": "SubCCBlock",
     # Complex FIR (fir_filter_ccf): class == manifest name "ComplexFIRFilterBlock",
     # but snake→Pascal of "kyttar_complex_fir_filter" gives "ComplexFirFilterBlock"
     # (lower-case "ir"), which won't match — pin it explicitly.
@@ -797,6 +801,26 @@ def _resolve_port(catalog, btype, grc_port, *, want_out, params=None):
         # so import stays precise (port 0 → xi, port 1 → xq) instead of collapsing.
         if want.isdigit():
             i = int(want)
+            if not want_out:
+                # TWO-COMPLEX-STREAM blocks (>= 2 complete on-cell I/Q input
+                # pairs — add_cc/sub_cc: ai/aq + bi/bq): GNURadio's numeric
+                # index counts COMPLEX ports, so index 1 is the SECOND STREAM's
+                # I-half (bi), NOT the Q-half of the first (aq). Collapse each
+                # pair to its I-half for indexing; the I/Q split pass then
+                # synthesises the matching Q net per stream. Gated on >= 2
+                # pairs so single-pair blocks (xi/xq, in_i/in_q, the dual's
+                # i/q) keep the raw positional mapping they always had.
+                qhalves = {}
+                for nm in ports:
+                    q = _iq_sibling(catalog, btype, nm, want_out=False,
+                                    params=params)
+                    if q:
+                        qhalves[nm] = q
+                if len(qhalves) >= 2:
+                    qset = set(qhalves.values())
+                    indexable = [nm for nm in ports if nm not in qset]
+                    if 0 <= i < len(indexable):
+                        return indexable[i]
             if 0 <= i < len(ports):
                 return ports[i]
     return ports[0]

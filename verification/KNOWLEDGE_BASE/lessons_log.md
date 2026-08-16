@@ -11,6 +11,64 @@ dropped) — append new entries above the oldest ones as before.
 
 ---
 
+## AddCCBlock + SubCCBlock — the 4-operand wall falls: two-complex-stream combiners + the reusable complex2 driver 2026-08-16
+
+GR `blocks.add_cc` / `blocks.sub_cc` (2 complex streams, elementwise; semantics
+pinned LIVE first: memoryless, strict pairing, delay 0, N-input sub = a0−a1−…).
+Both green in ONE loop (shared module `add_sub_cc_block.py`, the
+AddBlock/SubtractBlock pairing); 67 tests, first-try bit-exact on chip.
+
+- **THE ARCHITECTURE IS FORCED BY THE MACHINERY, not just the math.** Three
+  engine contracts pick the topology for any future multi-stream block:
+  (1) `build_port_map`/`resolved_io` expose external INPUTS only from THE ONE
+  landing cell (first cell with inputs) — a per-rail landing split (ai on one
+  cell, aq on another) is UNWIRABLE from GRC; (2) `_iq_sibling` synthesises a
+  stream's Q net only for a SAME-CELL/SAME-ENTRY pair; (3) `_elect_join_triggers`
+  resolves ONE join address from the landing cell for ALL arms. ⇒ ONE landing
+  cell with all 4 operand regs (ai@R0,aq@R1,bi@R2,bq@R3), entries[0]=join.
+  The manifest's per-rail decomposition then lives DOWNSTREAM of the join:
+  rail_i computes yi=sat(ai±bi) and forwards (yi,aq,bq)+one trig; rail_q
+  computes yq and emits the (yi,yq) INV-17 packet (12 words free for fan-out).
+- **The 2-arm toggle COUNTING JOIN paces two whole PACKETS, not operands:**
+  each source's complex pair is multi-WRITE + ONE JUMP, so two jumps/sample in
+  ANY order single-fire the compute — the AddBlock tail verbatim (jsav
+  save/restore protects R0=ai across both tail runs). A single-cell 4-input
+  form (join 9 + two 6-instr saturating rails + emit) measures ~39 words —
+  over budget; that IS the old 4-operand wall, quantified. num_inputs pinned
+  to 2 (HW-DEVIATION, raises).
+- **Budget tricks that made rail_i fit at 30/32:** `OP R0, R{in:bi}` reads the
+  input latch ONCE and the accumulator-ISA result lands in R0 regardless of
+  operand order (`SUB R{state:asav}, R{in:bq}` in rail_q computes aq−bq into
+  R0 with NO pre-MOVE — dest-register-free subtraction, minuend from state);
+  each input register is read exactly once (the ComplexMixer stale-latch trap).
+  Sub's overflow restore uses the MINUEND's sign (a−b overflow ⇒
+  sign(a)=−sign(b) ⇒ result sign = sign(a)) — same rail serves both ops.
+- **IMPORTER FIX (pinned by test): GRC numeric port index counts COMPLEX
+  ports.** `_resolve_port`'s index branch mapped `[mixb,'0',comb,'1']` to
+  ports[1]=aq — stream b's yi landed on stream a's Q rail and b's imag rail
+  silently vanished. Fix: for blocks with ≥2 complete on-cell input I/Q pairs,
+  numeric indices select I-halves only (aq/bq come from the I/Q split). Gated
+  on ≥2 pairs so every existing single-pair block (xi/xq, in_i/in_q, the
+  dual's i/q, out_re/out_im) keeps raw positional mapping — no regressions
+  (dual/converter/example gates re-run green).
+- **THE DRIVER (the dispatched deliverable): `kyttar_verify.run_block_dut_complex2`
+  (+ `_pipelined`)** — 4 operands as two (re,im) packets, two JUMPs/sample, hop
+  and join entry from the build's corridor-accurate `input_landings`; the
+  saturated twin queue_words the whole two-packet stream and bounds the run
+  (INV-19 harness rule). MultiplyCCBlock (later wave) drives through it
+  unchanged. Saturation coverage is NEEDS_BESPOKE (the shared harnesses emit
+  ONE jump/sample — would leave the join half-fired and the run would FALSELY
+  fail); the bespoke gate asserts saturated == per-sample BIT-EXACT plus a
+  drive-non-vacuity probe (swapped pipelined sub streams must change output).
+- Tolerances: AMPLITUDE vs GR per rail via `compare_complex_against_grc`
+  (op_count=1, delay=0, in-range stimulus |a±b|<1 per rail); EXACT vs
+  `process_reference_q15` including per-rail saturation corners (pins at
+  ±full, never wraps — verified mixed-rail: I pins + while Q pins −).
+  Mutations: inverted / wrong-second-stream / per-rail (aq-only fails Q while
+  I stays clean; bi-only fails I) / wrong-op (Add vs sub_cc golden) /
+  +1-delay / empty all FAIL; sub's swapped-streams FAILS (required), add's
+  swap asserted commutative-equal (documented). All 8 D4 orientations equal
+  identity through the new driver.
 ## RMSBlock + RMSCFBlock — rms_ff/rms_cf pair, error-feedback IIR + quartic sqrt, 2x2 fold 2026-08-16
 
 = GR `blocks.rms_ff` / `blocks.rms_cf` (param `alpha` verbatim, default 1e-4).

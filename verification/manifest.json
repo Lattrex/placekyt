@@ -927,6 +927,94 @@
    "tier": 1,
    "metric": "decision",
    "notes": "Systematic Hamming(7,4) hard-decision FEC DECODER: consumes 7 received bits, computes the 3-bit syndrome, corrects any SINGLE bit error via an 8-entry syndrome->flip-position LUT (fits the single-cell LOAD table, MAX_TABLE=21), emits the 4 corrected data bits MSB-first (rate 7:4). Must use the SAME G/H convention + bit order as HammingEncoderBlock (state it LOUDLY; the loopback identity through the golden encoder is the convention pin, the DiffEncoder/Decoder pattern). NO stock GNU Radio counterpart -- golden is the standard syndrome decoder. Verify: all 16 clean codewords, EVERY single-bit error position on every codeword corrected exhaustively (7*16=112 cases), double-bit errors documented as uncorrectable (known limit, not hidden), random >=3 seeds, round-trip golden-encoder->DUT-decoder == identity under 0 and 1 injected errors, INV-4 mutations (no-correction passthrough, wrong syndrome LUT, swapped bit order, +1 shift, empty). Raw-word streams, not Q15."
+  },
+  {
+   "kyttar_block": "RMSBlock",
+   "grc_block": "blocks.rms_ff",
+   "status": "planned",
+   "tier": 2,
+   "metric": "amplitude",
+   "notes": "RMS of a real stream: out[n] = sqrt(y[n]), y[n] = (1-alpha)*y[n-1] + alpha*x[n]^2 (GR rms_ff verbatim, param alpha). The SQRT is the work: the ISA has no sqrt -- use an unrolled Newton-Raphson reciprocal-sqrt (one iteration per cell, immediate shifts per INV-34, CORDIC-unroll style) with a shift-loop normalize front (the Nlog10Block mantissa/exponent normalize is the template; pick the output representation FIRST so every constant is Q15-representable, the Nlog10 lesson). Single-pole IIR state is INV-19-safe if kept inline in one cell. Verify vs LIVE GR blocks.rms_ff: alpha sweep, settled-tail amplitude metric with a derived warm-up guard (IIR transient), full-scale edges, INV-4 mutations (wrong alpha, no-sqrt passthrough, x-not-squared, +1 shift, empty). SHARE the sqrt/IIR core with RMSCFBlock (same dispatch)."
+  },
+  {
+   "kyttar_block": "RMSCFBlock",
+   "grc_block": "blocks.rms_cf",
+   "status": "planned",
+   "tier": 2,
+   "metric": "amplitude",
+   "notes": "Complex twin of RMSBlock (SAME dispatch/module): y IIR runs on |x|^2 = re^2+im^2 (the proven ComplexToMagSquared front: MULQ re,re + MACQ im,im with the one-sided BR.N saturation), then the shared sqrt core. Real scalar out. Verify vs LIVE GR blocks.rms_cf same protocol; swapped-rail is NOT a corruption (symmetric) -- teeth from wrong-second-rail + no-sqrt mutations."
+  },
+  {
+   "kyttar_block": "AddCCBlock",
+   "grc_block": "blocks.add_cc",
+   "status": "planned",
+   "tier": 2,
+   "metric": "amplitude",
+   "notes": "Two EXTERNAL complex streams summed: yi=ai+bi, yq=aq+bq. DECOMPOSITION HINT (this kills the deferred 4-operand wall): the math is SEPARABLE PER RAIL -- two independent saturating 2-operand adds (the proven AddBlock datapath + BR.V rail idiom, one cell per rail), each rail pair joined with the counting-join machinery (single-fire on last arrival, any order); emit the (yi,yq) packet from the q-rail cell (INV-17 budget for fan-out). The HARNESS is the real work: extend the two-stream driver to TWO complex streams (4 operands as two (re,im) pairs) -- model on run_block_dut_complex's two-operand transaction + the MultiplyBlock two-stream fan-in lesson. In-range GR-equivalence stimulus (|a+b|<1); saturation proven vs the saturating reference + corner tests (the AddBlock recipe verbatim). Commutative => no swapped-stream mutation; wrong-second-stream + per-rail mutations required. SubCCBlock is the same-module twin (same dispatch)."
+  },
+  {
+   "kyttar_block": "SubCCBlock",
+   "grc_block": "blocks.sub_cc",
+   "status": "planned",
+   "tier": 2,
+   "metric": "amplitude",
+   "notes": "Twin of AddCCBlock (SAME dispatch/module, the AddBlock/SubtractBlock pairing): yi=ai-bi, yq=aq-bq, same per-rail decomposition and saturation rails. NON-commutative => the swapped-streams mutation IS required (the SubtractBlock lesson)."
+  },
+  {
+   "kyttar_block": "MultiplyCCBlock",
+   "grc_block": "blocks.multiply_cc",
+   "status": "planned",
+   "tier": 2,
+   "metric": "amplitude",
+   "notes": "TRUE two-external-complex-stream product: yi=ai*bi-aq*bq, yq=ai*bq+aq*bi (4 MULQ + cross terms) -- all FOUR operands must be co-resident, unlike add_cc this does NOT separate per rail. Architecture: a gather/join front (counting join generalized to the 4-operand arrival set, or a 2-cell gather where each stream's pair lands in its own cell and the second cell computes) + the MultiplyConstComplex two-cell mul->sat pattern for the arithmetic (its 13-LSB derived-tolerance analysis applies; here both operands are signals so bound the stimulus |a|,|b|<=0.7 for GR equivalence and document the wrap corner like MultiplyBlock's (-1)*(-1)). Harness: the same two-complex-stream driver as AddCCBlock (build it once, share). This is the HARDEST of the pair-blocks wave: if the 4-operand single-fire cannot be made race-free on the substrate after 2 real attempts, QUARANTINE naming the exact arrival-race mechanism (that is the documented historical wall -- prove or disprove it)."
+  },
+  {
+   "kyttar_block": "BlockInterleaverBlock",
+   "grc_block": "",
+   "status": "planned",
+   "tier": 2,
+   "metric": "decision",
+   "notes": "Classic rows x cols BLOCK (matrix) interleaver for the FEC chain: write row-wise, read column-wise, per rows*cols-symbol block; param deinterleave: bool selects the transpose (one machinery, both directions); rate 1:1 with rows*cols block latency (document the group delay, INV-2 exact-shift alignment). NO stock GR streaming counterpart (gr-fec/gr-dtv interleavers are PDU/tagged) -- golden is the standard row-column interleaver (cite a standard coding text; state the exact write/read order LOUDLY). STATE = rows*cols words: small configs (<= ~12 words) fit ONE cell as a register matrix walked with an index counter; larger configs use the SRAM panel SCRATCH two-phase recipe (INV-29/31, the CWDecoder pass1/pass2 template: write the block in arrival order, read back transposed via computed addresses -- addr = (i%rows)*cols + i//rows). Verify: identity through interleave->deinterleave round-trip on-chip, burst-error dispersion property (a k-long burst lands >= rows apart after deinterleave -- the property the FEC demo needs), exhaustive small-config sweeps, INV-4 mutations (no-transpose passthrough, wrong stride, off-by-one, +1 shift, empty)."
+  },
+  {
+   "kyttar_block": "AGCCCBlock",
+   "grc_block": "analog.agc_cc",
+   "status": "planned",
+   "tier": 3,
+   "metric": "amplitude",
+   "notes": "Complex AGC, GR agc_cc VERBATIM (rate, reference, gain, max_gain): out = in*gain; gain += rate*(reference - |out|); |.| is the TRUE complex magnitude -- reuse the PROVEN CORDIC vectoring magnitude chain (ComplexToMagBlock: prescale 1/4, ones-complement asr identities, MULQ 1/K + saturating <<2 restore; ~17 cells) feeding the gain-update cell, plus a 2-rail complex-gain multiply on the signal path. A FEEDBACK composite (gain state read by the next sample across cells) => INV-19 serialize-LOCK required; check INV-20 for the mag-chain fan-in. Q15 LIMIT like agc_ff: attenuating regime only (gain <= 1) -- documented, tests bound max_gain <= 1, RAISE beyond. Verify vs LIVE GR agc_cc: rate/reference sweeps, recursive-loop derived tolerance with warm-up trim (the agc_ff + audio_meter regime-mirroring lessons: cap GR's max_gain to the chip regime in the golden), INV-4 mutations. BIG composite -- budget cells accordingly; if the mag-chain + loop cannot close the INV-19 lock, quarantine naming the corridor."
+  },
+  {
+   "kyttar_block": "FLLBandEdgeBlock",
+   "grc_block": "digital.fll_band_edge_cc",
+   "status": "planned",
+   "tier": 3,
+   "metric": "decision",
+   "notes": "Band-edge FLL coarse frequency recovery -- the missing stage of the industry RX cascade (MF -> coarse-FLL -> timing -> fine DD carrier). GR fll_band_edge_cc params VERBATIM: samps_per_sym, filter_rolloff, filter_size, bandwidth. Architecture: derotate input by an NCO (reuse the mixer/NCO machinery + INV-20 lock), two BAND-EDGE FIR correlators (reimplement GR's band-edge tap design in pure Python like _firdes, gate the taps Q15-EXACT per INV-16), error = |upper|^2 - |lower|^2 (ComplexToMagSquared per arm), 2nd-order loop -> NCO increment feedback (INV-19 serialize-LOCK; the Costas pd_pi WRITE.CFG recipe). Verify: (1) GOLDEN COMPETENCE FIRST (INV-26): prove LIVE GR fll_band_edge_cc pulls a large foff (well beyond Costas pull-in, e.g. 0.05-0.1 cyc/sample on 2-sps RRC BPSK) to near-zero residual on the chosen channel BEFORE gating the DUT; (2) DUT metric = residual-frequency convergence (the FLL's job is coarse: residual within the downstream Costas pull-in), then an end-to-end FLL->Costas->slicer BER-0 chain gate; mutation gates incl. swapped band edges (sign-flipped S-curve) and no-feedback. THE HARDEST BLOCK OF THIS WAVE -- multi-loop composite; 2 real attempts then quarantine naming the exact wall (that outcome is valuable paper data on the substrate's composite-loop ceiling)."
+  },
+  {
+   "kyttar_block": "GolayEncoderBlock",
+   "grc_block": "",
+   "status": "planned",
+   "tier": 3,
+   "metric": "decision",
+   "notes": "Extended binary Golay (24,12) systematic ENCODER: bit stream in (0/1 words, Pack/Unpack convention), consumes 12 data bits, emits the 24-bit codeword MSB-first (d11..d0 then p11..p0), G=[I12|B] with the STANDARD B matrix (cite MacWilliams & Sloane or Lin & Costello; print B verbatim in the docstring and expose an executable encode_word() golden for the decoder sibling -- the HammingEncoder convention-pin recipe). Each parity bit = parity of a 12-bit masked AND (the P-flag idiom, masks pre-shifted); 12 parity bits + counted-loop burst emit => multi-cell feed-forward (the HammingEncoder 2-cell pattern scaled; INV-7 budget check BEFORE authoring). Verify: structural golden self-checks (min distance 8 on sampled pairs, all-zero/all-one anchors), sampled codeword sweep + random seeds on-chip, round-trip through the golden decoder, INV-4 mutations (wrong B row, swapped bit order, dropped parity, +1 shift, empty)."
+  },
+  {
+   "kyttar_block": "GolayDecoderBlock",
+   "grc_block": "",
+   "status": "planned",
+   "tier": 3,
+   "metric": "decision",
+   "notes": "Extended Golay (24,12) hard-decision DECODER correcting <= 3 bit errors: consumes 24 received bits, syndrome s = H*r (12 bits, parity-mask idiom), error pattern from an SRAM-panel LUT (INV-31 sparse recipe: address = syndrome integer, stored word = a packed error-pattern reference; 2^12 address space, ~2500 populated correctable syndromes; set_addr-per-pair sparse load like VaricodeDecoder; s=0 SKIPS the lookup (no correction) so the stored-value-can-be-0 trap does not bite -- but VERIFY that reasoning explicitly, the CHAR_OFFSET lesson). A 24-bit error pattern does not fit one 16-bit word: split the pattern across TWO panel words (addr 2s / 2s+1, auto-increment read) or store a correction descriptor -- builder's design call, state it loudly. Emit the 12 corrected data bits. MUST use GolayEncoderBlock's exact convention (same dispatch wave; derive from the manifest-pinned G). Per-sample panel contract (the server forces per-sample for panel designs). Verify: clean codewords, exhaustive 1-error (24 positions x sampled words), sampled 2- and 3-error correction, 4-error documented uncorrectable/detectable behavior as a known limit, round-trip vs the golden encoder under 0..3 injected errors, INV-4 mutations (no-correction passthrough, wrong LUT rows, swapped halves, +1 shift, empty)."
+  },
+  {
+   "kyttar_block": "RationalResamplerBlock",
+   "grc_block": "filter.rational_resampler_fff",
+   "status": "planned",
+   "tier": 3,
+   "metric": "amplitude",
+   "notes": "GR rational_resampler_fff (interp L, decim M, taps or auto-designed anti-image low-pass). SUBSTRATE REALITY CHECK FIRST: FIRFilterBlock already implements decimation AND interpolation as params, but the measured single-cell interp burst ceiling is small (L=2 -> 4 taps; L=3,4 -> 2 taps) and the decim>1 & interp>1 COMBO RAISES in the current build. The honest deliverables, in preference order: (a) lift the combo restriction for the small-L/M range that fits (a mod-M gate on the unrolled L-burst emit cell), shipping GR-verbatim params with LOUD HW-DEVIATION raises outside the proven range + a firdes auto-design default like the convenience filters; (b) if the combined gate+burst cannot fit any useful (L,M) cell budget after 2 real attempts, QUARANTINE naming the measured budget arithmetic (a valuable substrate data point) and record the compose-Upsampler->FIR workaround as the documented path. Verify (for whatever range ships) vs LIVE GR rational_resampler_fff: L/M sweep over the supported set, tap parity Q15-EXACT (INV-16), rate-count exactness (ceil(n*L/M) semantics -- probe GR's edge behavior, don't assume), INV-4 mutations."
   }
  ]
 }

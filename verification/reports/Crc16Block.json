@@ -1,0 +1,24 @@
+{
+  "kyttar_block": "Crc16Block",
+  "passed": true,
+  "metric": "exact",
+  "n_compared": 6,
+  "max_abs_err": 0,
+  "tolerance": 0,
+  "nmse_db": null,
+  "correlation": null,
+  "bit_errors": 0,
+  "delay_used": 0,
+  "coverage": {
+    "golden": "published MSB-first CRC-16 (CRC RevEng catalogue, ITU-T V.41 family); binascii.crc_hqx cross-check (poly 0x1021, any init) + 5 catalogue check anchors on-chip",
+    "anchors": "CCITT-FALSE 0x29B1 / XMODEM 0x31C3 / AUG-CCITT 0xE5CC / UMTS 0xFEE8 / CMS 0xAEE7 (b'123456789')",
+    "random": 4,
+    "frame_len_sweep": "1,2,3,4,8,16 bit-exact; trailing partial dropped",
+    "poly_init_sweep": "7 (poly, init) points incl. arbitrary non-catalogue",
+    "mutation": "wrong poly (on-chip) / wrong init (on-chip) / reflected bit order / dropped byte / +1 shift step / +1 word shift / empty",
+    "edge": "high input bits ignored; identical frames re-arm to init",
+    "decision": "one 16-bit CRC word per frame_len bytes (rate-reducing)",
+    "note": "1-cell bit-serial carry-select datapath; EXACT, delay 0, tol 0",
+    "hw_range": "poly/init 16-bit, frame_len 1..65535; out-of-range RAISES"
+  }
+}

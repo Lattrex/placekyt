@@ -113,6 +113,10 @@ _TYPE_OVERRIDES = {
     "kyttar_iir_biquad": "IIRBiquadBlock",
     "kyttar_conv_encoder_k7": "ConvEncoderK7Block",
     "kyttar_lfsr_scrambler": "LFSRScramblerBlock",
+    # Frame CRC-16 (placeKYT-native, no GR counterpart). snake→Pascal of
+    # "kyttar_crc16" happens to give "Crc16Block", but pin it explicitly so the
+    # mapping never depends on the fallback's casing of the digit suffix.
+    "kyttar_crc16": "Crc16Block",
     # pack_k_bits: snake→Pascal gives "PackKBitsBlock" but the mid-word single-letter
     # "k" makes the fallback fragile; pin it explicitly (override uses catalog.get).
     "kyttar_pack_k_bits": "PackKBitsBlock",

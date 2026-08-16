@@ -74,6 +74,10 @@ BLOCKS = [
     # growing param (count>0 only adds registers, not cells); trivially non-self-
     # overlapping in every D4 orientation and under movement.
     ("LFSRScramblerBlock", {"count": 8}),
+    # Single-cell frame CRC-16 — no internal transit cell, no footprint-growing
+    # param (poly/init/frame_len only change register contents); trivially
+    # non-self-overlapping in every D4 orientation and under movement.
+    ("Crc16Block", {"frame_len": 8}),
     ("MultiplyConstComplex", {"re": 0.7, "im": 0.5}),
     # Bitwise NOT (GR blocks.not_bb): single-cell, no params, no internal transit
     # cell — trivially non-self-overlapping in every D4 orientation and under movement.

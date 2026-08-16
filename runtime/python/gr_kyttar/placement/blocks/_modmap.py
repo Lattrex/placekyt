@@ -67,6 +67,7 @@ BUILTIN_BLOCKS = {
     'LMSEqualizerBlock': 'lms_equalizer_block',
     'BlockInterleaverBlock': 'block_interleaver_block',
     'LFSRScramblerBlock': 'lfsr_scrambler_block',
+    'Crc16Block': 'crc16_block',
     'PackKBitsBlock': 'pack_k_bits_block',
     'DiffEncoderBlock': 'diff_encoder_block',
     'DiffDecoderBlock': 'diff_decoder_block',

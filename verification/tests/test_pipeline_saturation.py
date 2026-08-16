@@ -85,6 +85,12 @@ REAL_1IN = {
     # accumulator + bit counter across samples, no feedback loop / no reconvergent
     # fan-in, so saturated egress == per-sample (the None-gap samples are filtered).
     "PackKBitsBlock": ("sample", "out", {"k": 8}),
+    # Rate-REDUCING frame CRC-16 (frame_len bytes -> 1 CRC word): single cell with
+    # a CRC shift register + frame down-counter across samples, no feedback loop /
+    # no reconvergent fan-in, so saturated egress == per-sample (the None-gap
+    # samples are filtered; frame_len=4 on the 16-word stimulus emits 4 REAL CRC
+    # words — a non-empty, init=0xFFFF-seeded stream, so the drive is proven live).
+    "Crc16Block": ("sample", "out", {"frame_len": 4}),
     # Differential decoder: symbol-in symbol-out, 1-sample previous-INPUT state.
     # Single cell serializes the state naturally (no cross-cell feedback), so the
     # saturated stream equals the per-sample output with no lock (INV-19 N/A).

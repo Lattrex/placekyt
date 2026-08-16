@@ -136,6 +136,12 @@ _CASES = [
     # corridor / no reconvergent fan-in), so its per-trigger output word list must be
     # IDENTICAL in every D4 orientation.
     ("PackKBitsBlock", {"k": 8}, "real", ("sample", "out")),
+    # Frame CRC-16 (placeKYT-native, no GR counterpart): single real rail in
+    # (byte) -> one 16-bit CRC word every frame_len triggers (None-gaps on the
+    # accumulating samples). Feed-forward datapath with a CRC shift register +
+    # frame down-counter (no feedback corridor / no reconvergent fan-in), so its
+    # per-trigger output word list must be IDENTICAL in every D4 orientation.
+    ("Crc16Block", {"frame_len": 4}, "real", ("sample", "out")),
     # Differential decoder (GR digital.diff_decoder_bb): single real rail in
     # (symbol) -> decoded symbol out. Single cell, 1-sample previous-INPUT state (no
     # feedback corridor / no reconvergent fan-in), so its on-chip output must be

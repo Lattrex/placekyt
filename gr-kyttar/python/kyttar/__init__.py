@@ -111,6 +111,7 @@ from .viterbi_bmu import viterbi_bmu
 from .viterbi_k7 import viterbi_k7
 from .lfsr_scrambler import lfsr_scrambler
 from .pack_k_bits import pack_k_bits
+from .crc16 import crc16
 from .conv_encoder_k7 import conv_encoder_k7
 from .block_interleaver import block_interleaver
 from .diff_decoder import diff_decoder
@@ -208,6 +209,7 @@ __all__ = [
     "viterbi_k7",
     "lfsr_scrambler",
     "pack_k_bits",
+    "crc16",
     "conv_encoder_k7",
     "block_interleaver",
     "diff_decoder",

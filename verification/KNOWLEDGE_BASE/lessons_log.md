@@ -11,6 +11,49 @@ dropped) — append new entries above the oldest ones as before.
 
 ---
 
+## Crc16Block — frame CRC-16 via the SHL carry flag; the golden-with-no-GR recipe 2026-08-16
+
+Single-cell, rate-reducing (frame_len bytes → ONE 16-bit CRC word), chip
+BIT-EXACT (EXACT, tol 0) on the FIRST build+run attempt — the LFSRScrambler +
+PackKBits shape models plus the accumulated invariants made this a pure
+assembly job. Durable notes:
+
+- **The SHL CARRY flag is the cheap MSB-first CRC select.** `SHL Rcrc, #1`
+  sets `C` = the shifted-out bit 15 (guide §4.3) and `MOVE` preserves flags,
+  so `SHL; MOVE crc,R0; BR.NC skip; XOR crc,poly; MOVE crc,R0` does one
+  polynomial step in 5 words — no 0x8000 mask word, no fb StateVar, no GOTO
+  merge (the LFSRScrambler GOTO-in-tail trap avoided by construction). The
+  branchful AND-mask form costs 11 loop words and overflows the cell (33/32);
+  the carry form fits at **29/32**. When a bit-serial datapath needs the
+  pre-shift MSB/LSB, reach for the shift's C flag before an AND mask.
+- **Decrement in 2 instructions, not 3:** ALU ops are two-source →
+  `SUB Rn, Rone; MOVE Rn, R0` (the shipped LFSR/PackKBits 3-instr
+  `MOVE R0,x; op; MOVE x,R0` form spends a word for nothing). Frame counter
+  and bit counter each saved a word this way.
+- **`crc ^= byte << 8` self-masks the input:** `SHL R{in:sample}, #8` drops
+  bits 8–15 of the input word, so a stray-high-bits guard costs zero
+  instructions (tested: dirty vs clean inputs identical).
+- **The golden-with-no-GR recipe (this block is the template):** (1) cite the
+  exact catalogue model (CRC RevEng: CRC-16/CCITT-FALSE, poly 0x1021 init
+  0xFFFF refin/refout=false xorout=0, check 0x29B1); (2) pin the pure-python
+  golden against an INDEPENDENT stdlib implementation BEFORE any DUT compare
+  (`binascii.crc_hqx(data, init)` IS this engine for poly 0x1021 — crcmod is
+  not installed, crc_hqx is); (3) anchor MULTIPLE catalogue check values
+  on-chip (XMODEM 0x31C3, AUG-CCITT 0xE5CC, UMTS 0xFEE8, CMS 0xAEE7) so the
+  param space is pinned by published vectors, not self-consistency; (4) run
+  the strongest INV-4 mutations as REAL on-chip mutants (wrong-poly DUT,
+  wrong-init DUT), model-level only where a real mutant is impossible
+  (reflected feed, +1 shift step).
+- Raw-word streams throughout (the XorBlock lesson): raw byte injection,
+  EXACT integer equality; the output word IS the CRC (not Q15). Reflected
+  CRC models (ARC/MODBUS/KERMIT) are NOT this engine — documented loudly.
+- Gates: 43-test suite green; saturation REAL_1IN (frame_len=4 → 4 live CRC
+  words on the 16-word stimulus); orientation-invariant 8/8; placement-legal;
+  binding complete (yml + shim + `_TYPE_OVERRIDES` pin of `kyttar_crc16`).
+  `install.sh` (sudo) still needed on the host for the GRC palette refresh.
+
+---
+
 ## QPSK modem: Gardner → MMTimingRecovery swap (certified timing in the flagship) 2026-08-16
 
 The quarantined complex Gardner was replaced by the certified

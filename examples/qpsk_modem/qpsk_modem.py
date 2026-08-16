@@ -7,7 +7,7 @@
 # GNU Radio Python Flow Graph
 # Title: Full-duplex QPSK modem (TX + coherent RX on one array)
 # Author: Lattrex
-# Description: Full-duplex QPSK modem authored in GNU Radio (GRC-first workflow). The TX chain (QPSK symbol mapper -> complex upsampler -> complex RRC pulse shaper -> I/Q upconvert) and the coherent RX chain (complex RRC matched filter -> order-4 complex Costas loop -> complex Gardner timing recovery -> QPSK slicer) live on ONE placeKYT array, sharing ONE input port (x16_in) and ONE output port (x16_out): both TX and RX source blocks map to x16_in and both sink blocks map to x16_out (the shared-port duplex). Built from the REAL DSP blocks so it IMPORTS into placeKYT (File -> Import GNURadio Flowgraph): all 8 blocks get placed + the logical nets are recovered, and the RX chain recovers the 2-bit QPSK symbols at BER 0 on the built bitstream through simKYT (placekyt/tests/test_qpsk_modem_ber.py).
+# Description: Full-duplex QPSK modem authored in GNU Radio (GRC-first workflow). The TX chain (QPSK symbol mapper -> complex upsampler -> complex RRC pulse shaper -> I/Q upconvert) and the coherent RX chain (complex RRC matched filter -> order-4 complex Costas loop -> M&M timing recovery -> QPSK slicer) live on ONE placeKYT array, sharing ONE input port (x16_in) and ONE output port (x16_out): both TX and RX source blocks map to x16_in and both sink blocks map to x16_out (the shared-port duplex). Built from the REAL DSP blocks so it IMPORTS into placeKYT (File -> Import GNURadio Flowgraph): all 8 blocks get placed + the logical nets are recovered, and the RX chain recovers the 2-bit QPSK symbols at BER 0 on the built bitstream through simKYT (placekyt/tests/test_qpsk_modem_ber.py).
 # GNU Radio version: 3.10.12.0
 
 from PyQt5 import Qt
@@ -183,15 +183,15 @@ class qpsk_modem(gr.top_block, Qt.QWidget):
         self.rrc = kyttar.complex_rrc_matched_filter(device_id="kyttar_0", gain=0.7105, samp_rate=2.0, sym_rate=1.0, alpha=0.35, ntaps=17, decimation=1)
         self.mf = kyttar.complex_rrc_matched_filter(device_id="kyttar_0", gain=0.7105, samp_rate=2.0, sym_rate=1.0, alpha=0.35, ntaps=17, decimation=1)
         self.mapper = kyttar.psk_symbol_mapper("kyttar_0", "qpsk", [], 1, True)
-        self.gardner = kyttar.gardner_timing_recovery("kyttar_0", 3, 1, True)
+        self.mmtiming = kyttar.mm_timing_recovery("kyttar_0", 2, 0.02, 1.0)
         self.costas = kyttar.complex_costas_loop("kyttar_0", 0.05, 1.0, 4)
 
 
         ##################################################
         # Connections
         ##################################################
-        self.connect((self.costas, 0), (self.gardner, 0))
-        self.connect((self.gardner, 0), (self.slicer, 0))
+        self.connect((self.costas, 0), (self.mmtiming, 0))
+        self.connect((self.mmtiming, 0), (self.slicer, 0))
         self.connect((self.mapper, 0), (self.up, 0))
         self.connect((self.mf, 0), (self.costas, 0))
         self.connect((self.rrc, 0), (self.upc, 0))

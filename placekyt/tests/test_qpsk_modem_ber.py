@@ -2,21 +2,21 @@
 """PRODUCTION coherent QPSK RX — RRC matched filter front end, auto-P&R, BER 0.
 
 The QPSK analog of ``test_production_rx_mf_ber.py``: FOUR separate catalog blocks —
-ComplexRRCMatchedFilter → ComplexCostasLoop(order=4) → GardnerTimingRecovery(complex)
+ComplexRRCMatchedFilter → ComplexCostasLoop(order=4) → MMTimingRecovery
 → QPSKSlicer — auto-placed + bus/broker-routed by the tool and recovering the 2-bit
 QPSK symbols at BER 0 through simkyt, driven by a full-scale RRC QPSK burst with a
 carrier offset AND a fractional timing offset.
 
 Every internal handoff between the complex blocks is a yi/yq PAIR (2 WRITEs + 1
 trigger): MF emits (yi, yq) → Costas; the order-4 Costas ``qpd`` output cell emits
-(yi_tap, yq_tap) → the complex Gardner; the Gardner ``qout`` emits (yi_e, yq_e) → the
+(yi_tap, yq_tap) → the M&M timing loop, which emits (yi_e, yq_e) → the
 QPSK slicer, which emits the 2-bit Gray symbol (0..3). The QPSK carrier has a 90°
 phase ambiguity, so the BER check tries all four constellation rotations (plus a small
 lag) — exactly the ``_rot``/lag pattern in
-``verification/tests/test_gardner_complex_reference.py::test_complex_reference_recovers_qpsk_ber0``.
+``verification/tests/test_mm_timing_recovery.py`` (the certified timing block).
 
 Design: TX at 2 sps, MF decimation=1 → the carrier/timing loops run at 2 sps (the same
-operating point the complex-Gardner on-chip bit-exact test is proven at).
+operating point the timing block's on-chip bit-exact gates are proven at).
 
 Run:
     QT_QPA_PLATFORM=offscreen \
@@ -156,17 +156,20 @@ def _qpsk_ber(rx, tx, max_lag=20, guard=20):
 
 
 def _build_qpsk_rx(catalog, chip_type):
-    """Place MF → Costas(order=4) → Gardner(complex) → QPSKSlicer, route all nine
+    """Place MF → Costas(order=4) → MMTimingRecovery → QPSKSlicer, route all nine
     forward nets on the bus, build.  Returns (ctrl, bres, mf_entry).
 
     Nets: x16_in→MF.xi/xq (2), MF.yi/yq→Costas.xi/xq (2), Costas.yi_tap/yq_tap→
-    Gardner.xi/xq (2), Gardner.yi_e/yq_e→Slicer.in_i/in_q (2), Slicer.out→x16_out.
+    MM.xi/xq (2), MM.yi_e/yq_e→Slicer.in_i/in_q (2), Slicer.out→x16_out.
 
-    EXPLICIT anchors + ``auto_orient=False``: the order-4 Costas is now the COMPACT
-    4x2 fold (INV-8), and its yi_tap/yq_tap tap egresses SOUTH from the qpd cell, so
-    the Gardner sits directly below the Costas to give both rails a clean corridor.
-    This floorplan recovers BER 0 without the flow-orient pass (the fold routes as
-    authored) — the folded-block acceptance the demo relies on.
+    EXPLICIT anchors + ``auto_orient=False``: the order-4 Costas is the COMPACT
+    4x2 fold (INV-8) with its yi_tap/yq_tap tap egressing SOUTH from the qpd cell;
+    the 14-cell MMTimingRecovery sits below at (2,6) so both tap rails get a clean
+    corridor and its own yi_e/yq_e pair reaches the slicer at (8,9). This floorplan
+    recovers BER 0 without the flow-orient pass. NOTE: MMTiming replaced the
+    quarantined complex Gardner 2026-08-16 at exact BER parity (verified: identical
+    pass/fail map over seeds 5-7 x toff 0.3/0.45/0.7 — both pass 0.45/0.7 BER 0,
+    both fail 0.3 with matching BERs, i.e. the 0.3 failure is upstream of timing).
     """
     ctrl = AppController(catalog=catalog)
     ctrl.new_project("qpskrx", "kyttar_10x12")
@@ -174,19 +177,18 @@ def _build_qpsk_rx(catalog, chip_type):
     mf = ctrl.place_block("ComplexRRCMatchedFilterBlock", 0, 0, 0, library=lib)
     cos = ctrl.place_block("ComplexCostasLoopBlock", 0, 0, 3, library=lib,
                            params={"order": 4})
-    gar = ctrl.place_block("GardnerTimingRecovery", 0, 0, 6, library=lib,
-                           params={"complex": True})
-    sli = ctrl.place_block("QPSKSlicerBlock", 0, 6, 8, library=lib)
+    mm = ctrl.place_block("MMTimingRecoveryBlock", 0, 2, 6, library=lib)
+    sli = ctrl.place_block("QPSKSlicerBlock", 0, 8, 9, library=lib)
 
     R = ctrl.add_route
     R(ChipPortEndpoint(chip=0, port="x16_in"), BlockEndpoint(block=mf, port="xi"), [])
     R(ChipPortEndpoint(chip=0, port="x16_in"), BlockEndpoint(block=mf, port="xq"), [])
     R(BlockEndpoint(block=mf, port="yi"), BlockEndpoint(block=cos, port="xi"), [])
     R(BlockEndpoint(block=mf, port="yq"), BlockEndpoint(block=cos, port="xq"), [])
-    R(BlockEndpoint(block=cos, port="yi_tap"), BlockEndpoint(block=gar, port="xi"), [])
-    R(BlockEndpoint(block=cos, port="yq_tap"), BlockEndpoint(block=gar, port="xq"), [])
-    R(BlockEndpoint(block=gar, port="yi_e"), BlockEndpoint(block=sli, port="in_i"), [])
-    R(BlockEndpoint(block=gar, port="yq_e"), BlockEndpoint(block=sli, port="in_q"), [])
+    R(BlockEndpoint(block=cos, port="yi_tap"), BlockEndpoint(block=mm, port="xi"), [])
+    R(BlockEndpoint(block=cos, port="yq_tap"), BlockEndpoint(block=mm, port="xq"), [])
+    R(BlockEndpoint(block=mm, port="yi_e"), BlockEndpoint(block=sli, port="in_i"), [])
+    R(BlockEndpoint(block=mm, port="yq_e"), BlockEndpoint(block=sli, port="in_q"), [])
     R(BlockEndpoint(block=sli, port="out"),
       ChipPortEndpoint(chip=0, port="x16_out"), [])
 
@@ -207,13 +209,13 @@ def test_qpsk_rx_builds_all_nets(qapp, catalog, chip_type):
     types = {b.type for b in ctrl.project.blocks}
     assert "ComplexRRCMatchedFilterBlock" in types
     assert "ComplexCostasLoopBlock" in types
-    assert "GardnerTimingRecovery" in types
+    assert "MMTimingRecoveryBlock" in types
     assert "QPSKSlicerBlock" in types
 
 
 def test_qpsk_rx_ber_zero(qapp, catalog, chip_type):
     """ACCEPTANCE: a full-scale RRC QPSK burst (carrier + timing offset) through the
-    auto-P&R'd MF → Costas(order=4) → Gardner(complex) → QPSKSlicer chain recovers
+    auto-P&R'd MF → Costas(order=4) → MMTimingRecovery → QPSKSlicer chain recovers
     the 2-bit symbols at BER 0 (rotation- and lag-aligned)."""
     import simkyt
 
@@ -262,35 +264,34 @@ GRC = Path(__file__).resolve().parents[2] / "examples" / "qpsk_modem" / "qpsk_mo
 @pytest.mark.skipif(not GRC.exists(), reason="qpsk_modem.grc absent")
 def test_qpsk_grc_imports(qapp, catalog, chip_type):
     """The shipped FULL-DUPLEX qpsk_modem.grc imports into placeKYT: all 8 real
-    blocks map (both chains), and the QPSK-defining params (order=4 Costas, complex
-    Gardner, qpsk mapper, complex upsampler) coerce from the flowgraph — the
+    blocks map (both chains), and the QPSK-defining params (order=4 Costas, M&M
+    timing, qpsk mapper, complex upsampler) coerce from the flowgraph — the
     GRC-first workflow. The RX chain's on-chip BER-0 recovery through simKYT is gated
     by ``test_qpsk_grc_rx_chain_ber_zero`` below."""
     ctrl = AppController(catalog=catalog)
     res = ctrl.import_grc(str(GRC), chip_type="kyttar_10x12")
     assert res.ok, res.unknown
     types = {b.type for b in ctrl.project.blocks}
-    # both chains present: RX (MF, Costas, Gardner, slicer) + TX (mapper, upsampler,
+    # both chains present: RX (MF, Costas, MMTiming, slicer) + TX (mapper, upsampler,
     # a 2nd ComplexRRC as the shaper, upconvert).
     assert {"ComplexRRCMatchedFilterBlock", "ComplexCostasLoopBlock",
-            "GardnerTimingRecovery", "QPSKSlicerBlock", "PSKSymbolMapperBlock",
+            "MMTimingRecoveryBlock", "QPSKSlicerBlock", "PSKSymbolMapperBlock",
             "ComplexUpsamplerBlock", "IQUpconvertBlock"} <= types
     assert len(ctrl.project.blocks) == 8
     # the QPSK-defining params came from the .grc, not the block defaults
     cos = next(b for b in ctrl.project.blocks if b.type == "ComplexCostasLoopBlock")
-    gar = next(b for b in ctrl.project.blocks if b.type == "GardnerTimingRecovery")
+    mm = next(b for b in ctrl.project.blocks if b.type == "MMTimingRecoveryBlock")
     mp = next(b for b in ctrl.project.blocks if b.type == "PSKSymbolMapperBlock")
     assert cos.params.get("order") == 4
-    assert gar.params.get("complex") is True
+    assert mm.params.get("sps") == 2
     assert mp.params.get("modulation") == "qpsk"
 
 
 @pytest.mark.skipif(not GRC.exists(), reason="qpsk_modem.grc absent")
 def test_qpsk_grc_rx_chain_ber_zero(qapp, catalog, chip_type):
     """ACCEPTANCE (RX chain, explicit floorplan): the QPSK RX chain (folded order-4
-    Costas + folded complex Gardner) recovers the 2-bit symbols at BER 0 through
-    simkyt with ``auto_orient=False``. This pins the folded-block RX recovery; the
-    full-duplex co-resident modem is gated by ``test_qpsk_modem.py``."""
+    Costas + M&M timing recovery) recovers the 2-bit symbols at BER 0 through
+    simkyt with ``auto_orient=False``. This pins the folded-block RX recovery."""
     import simkyt
 
     _ctrl, bres, entry = _build_qpsk_rx(catalog, chip_type)
@@ -327,6 +328,62 @@ def test_qpsk_grc_rx_chain_ber_zero(qapp, catalog, chip_type):
     ber, rot, lag = _qpsk_ber(rx, tx)
     assert len(rx) >= nsym - 10, f"too few recovered symbols: {len(rx)}"
     assert ber == 0.0, f"BER={ber:.4f} (rot={rot}, lag={lag}); {len(rx)} symbols"
+
+
+_SHIPPED_KYT = GRC.parent / "qpsk_modem.kyt"
+
+
+@pytest.mark.skipif(not _SHIPPED_KYT.exists(), reason="qpsk_modem.kyt absent")
+def test_shipped_kyt_recovers_ber_zero(qapp, catalog, chip_type):
+    """The shipped examples/qpsk_modem/qpsk_modem.kyt (as a user opens it) builds
+    and recovers BER 0 — the exact FULL-DUPLEX hosted design, driven through the
+    SAME stream-routed batch path the live SimServer uses (``stream_id 'rx'`` →
+    the RX chain's entry/hop, output demuxed by the rx net's out_tag), NOT a
+    generic port injection (which would also fire the TX chain on the shared
+    port). This is the artifact gate the qpsk example previously lacked."""
+    import numpy as np  # noqa: PLC0415
+    import simkyt  # noqa: PLC0415
+    from engine.port_config import stream_targets  # noqa: PLC0415
+    from engine.sim_bridge import SimServer  # noqa: PLC0415
+
+    ctrl = AppController(catalog=catalog)
+    ctrl.open_project(str(_SHIPPED_KYT))
+    bres = BuildEngine(catalog, str(CT_PATH)).build(
+        ctrl.project, {"kyttar_10x12": chip_type})
+    assert bres.ok, [str(e) for e in bres.errors]
+
+    tgts = stream_targets(ctrl.project, ctrl.registry, catalog, 0,
+                          build_result=bres)
+    assert "rx" in tgts and "tx" in tgts, f"stream targets: {sorted(tgts)}"
+
+    chip = simkyt.Chip.from_yaml(str(CT_PATH))
+    chip.load_bitstream_physical(bres.words(0))
+    srv = SimServer(chip, stream_targets=tgts)
+
+    random.seed(5)
+    nsym, foff, toff = 160, 0.008, 0.45
+    symbols = [(random.randint(0, 1), random.randint(0, 1)) for _ in range(nsym)]
+    xi, xq = _qpsk_tx(symbols, toff=toff, amp=0.7)
+    k = np.arange(len(xi))
+    iq = ((np.asarray(xi) + 1j * np.asarray(xq))
+          * np.exp(1j * 2 * np.pi * foff * k)).astype(np.complex64)
+
+    payload = np.empty(2 * len(iq), dtype="<f4")
+    payload[0::2] = iq.real
+    payload[1::2] = iq.imag
+    header = {"port": "x16_out", "in_port": "x16_in",
+              "streams": [{"stream_id": "rx", "complex": True, "raw": True,
+                           "n_samples": len(iq)}]}
+    reply, out = srv._process_batch_duplex(header, payload)
+    assert reply.get("ok"), reply.get("error")
+    rx = [int(round(float(v))) & 0x3 for v in (out if out is not None else [])]
+
+    tx = [(2 if bq == 0 else 0) | (1 if bi == 0 else 0) for bi, bq in symbols]
+    ber, rot, lag = _qpsk_ber(rx, tx)
+    print(f"\nshipped full-duplex .kyt (rx stream via SimServer batch): "
+          f"BER {ber:.4f}  ({len(rx)} symbols out)")
+    assert len(rx) >= nsym - 12, f"too few recovered symbols: {len(rx)}"
+    assert ber == 0.0, f"shipped .kyt expected BER 0, got {ber:.4f}"
 
 
 if __name__ == "__main__":

@@ -11,6 +11,45 @@ dropped) — append new entries above the oldest ones as before.
 
 ---
 
+## QPSK modem: Gardner → MMTimingRecovery swap (certified timing in the flagship) 2026-08-16
+
+The quarantined complex Gardner was replaced by the certified
+MMTimingRecoveryBlock in the QPSK modem — chain order UNCHANGED
+(MF → Costas(order=4) → timing → slicer; carrier-first, so the DD timing loop
+sees a derotated constellation and the example keeps its foff=0.008 showcase).
+
+- **Drop-in at EXACT parity, no gain stage:** the Costas order-4 output sits at
+  ±0.707 per axis, which the M&M 4-PAM decision device slices consistently to
+  the outer level — decisions are a constant-scaled version of the true
+  symbols, so the TED zero is unmoved. Verified BER 0.0000 (160/160) at
+  seeds 5/6/7 × toff 0.45/0.7 on the programmatic chain, the imported .grc
+  chain, AND the shipped duplex .kyt through the stream-routed SimServer path
+  (a shipped-artifact gate the qpsk example previously lacked — now
+  `test_shipped_kyt_recovers_ber_zero`).
+- **Adding a "nominal-scale" gain stage HURT:** ComplexGain 1.34 between
+  Costas and MM caused double-strobing (~316 outputs for 160 symbols) and BER
+  ~0.65. For a constant-modulus constellation already sliced consistently,
+  do NOT gain-stage toward the 0.949 outer level — that rule is for
+  multilevel (16-QAM) inputs whose 4 levels must each slice correctly.
+- **CHAIN-LEVEL OPERATING ENVELOPE (not a timing-block property):** toff=0.3
+  fails for BOTH Gardner and MMTiming with near-identical BERs
+  (0.43/0.36/0.61 vs 0.43/0.37/0.60 over seeds 5/6/7) while 0.45/0.7 are
+  BER 0 for both — the failure is UPSTREAM of the timing block (the
+  MF/Costas front end at that sampling-phase/foff combination). When a swap
+  candidate matches the incumbent's pass/fail map exactly, the shared
+  failures are the chain's, not the block's. The shipped operating point
+  (toff=0.45) is what the gates pin.
+- **14-cell MMTiming fits the duplex floorplan:** import + auto_pnr placed
+  the full 8-block modem cleanly; route-quality ratchet pinned at +4 (two
+  placement-forced wall detours around the bigger footprint). RX-only
+  explicit anchors: mf(0,0), costas(0,3), mm(2,6), slicer(8,9).
+- **bpsk_modem + coherent_bpsk_rx KEEP Gardner (documented decision):** their
+  chains carry the Costas order-2 SINGLE REAL rail into the timing block;
+  MMTiming is complex-in, so a swap needs a null-Q splice into a mid-chain
+  complex block plus a dangling-yq egress answer — plumbing risk with no
+  behavioral gain (Gardner is BER-0-verified in those demos; the README
+  honesty note stays). Revisit if a real-rail M&M variant ever ships.
+
 ## ISA CONFORMANCE — shift counts are immediate fields; sim + docs aligned to the design (INV-34) 2026-08-13
 
 A design-review pass confirmed the shifter's contract from the silicon up: the

@@ -61,6 +61,11 @@ TOTAL_EXCESS = {
     # input corridor rounds the arg block down the col-0 spine (+2) and its
     # egress joins the shared col-9 north spine behind the arg tap (+2):
     "cordic_polar.kyt": 4,
+    # M&M-timing duplex re-P&R (2026-08-16, Gardner→MMTiming swap): one input
+    # corridor rounds a block edge down col 1 to the RX head (+2) and one
+    # egress jogs along row 6 into the col-9 north highway (+2) — both
+    # placement-forced wall detours around the 14-cell MMTiming footprint:
+    "qpsk_modem.kyt": 4,
 }
 
 

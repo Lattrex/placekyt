@@ -1630,12 +1630,17 @@ class AppController(QObject):
                 break
         # Re-route the live (best) placement once so the project carries the routes for
         # whatever placement is now live (a rejected trial restored its block but left the
-        # routes stale). The live placement is the one that produced best_n, so this
-        # reproduces best_rep.
+        # routes stale). ALWAYS return ``final`` — it is the report that matches the
+        # routes now IN the project. Returning the earlier ``best_rep`` when the
+        # re-route came out worse (the router stack is not perfectly deterministic:
+        # CP-SAT is time-bounded) made auto_pnr ACCEPT a report claiming N routed
+        # nets while the live project held fewer — the accepted layout then failed
+        # at build with "unrouted connection". A worse ``final`` is an honest
+        # not-ok report; the sweep simply tries the next reserve/seed.
         self._clear_chip_routes(chip)
         final = self.auto_route_all(cts, use_bus=use_bus, auto_orient=False,
                                     register=False)
-        return final if _routed(final) >= best_n else best_rep
+        return final
 
     def _collides(self, chip, blk_name) -> bool:
         """True if ``blk_name``'s cells (incl. transit cells) overlap another placed

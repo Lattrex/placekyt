@@ -218,17 +218,42 @@ def _route_chip_maze(project, ct, chip_id, nets, *, distinct_face_cells=None):
     def _adjacent(a, b):
         return abs(a[0] - b[0]) + abs(a[1] - b[1]) == 1
 
+    def _plain_abut(n):
+        return (not n.src_is_port and not n.dst_is_port
+                and isinstance(n.conn.source, BlockEndpoint)
+                and isinstance(n.conn.target, BlockEndpoint)
+                and _adjacent(n.src, n.dst))
+
+    # MIXED FAN-OUT KEEPS THE FULLY-ROUTED PATH (mirrors the bus router's
+    # abutment fast-path rule): a source exit cell fanning out with SOME arm not
+    # a plain adjacent block→block net (a routed corridor, or a port egress)
+    # must route EVERY arm. The exit cell has ONE output face and the INV-17
+    # hop-steered fan-out form sequences all arms down that single face — an
+    # abutted arm whose consumer sits on a DIFFERENT face than the corridor's
+    # first hop makes the routed arm's @hop words land in the abutted consumer
+    # instead (the converter_flavors mixed-shape deadlock: mixer.yq abutted
+    # EAST swallowed mixer.yi's broker-bound write + trigger). All-abutted
+    # groups keep the abutment fast-path unchanged.
+    _mixed_exit_cells: set = set()
+    _by_exit: dict = {}
+    for _m in nets:
+        if isinstance(_m.conn.source, BlockEndpoint) and not _m.src_is_port:
+            _by_exit.setdefault(_m.src, []).append(_m)
+    for _cell, _grp in _by_exit.items():
+        if (len(_grp) > 1 and any(_plain_abut(_m) for _m in _grp)
+                and not all(_plain_abut(_m) for _m in _grp)):
+            _mixed_exit_cells.add(_cell)
+
     def is_abutment(n):
         """A block→block net whose source OUTPUT cell directly abuts the target
         INPUT cell needs NO route: the build's ``abutment_pts`` synthesises the @1
         handoff (the source delivers straight into the input). Leaving it UNROUTED
         (empty route) is correct — and it frees the fabric for the nets that DO need
         a corridor. A chip-port source/target is never an abutment here (the port
-        injects/egresses via its own face — handled by the routed branches)."""
-        return (not n.src_is_port and not n.dst_is_port
-                and isinstance(n.conn.source, BlockEndpoint)
-                and isinstance(n.conn.target, BlockEndpoint)
-                and _adjacent(n.src, n.dst))
+        injects/egresses via its own face — handled by the routed branches). A net
+        from a MIXED fan-out exit cell (some sibling arm routed) is never an
+        abutment — see ``_mixed_exit_cells`` above."""
+        return _plain_abut(n) and n.src not in _mixed_exit_cells
 
     def _free_broker_count(target_in, dface):
         """How many free cells abut ``target_in`` (excluding its own emit face) — a

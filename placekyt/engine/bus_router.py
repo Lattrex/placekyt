@@ -1486,11 +1486,12 @@ def _route_chip_bus(project, ct, chip_id, nets, spine, *, sc_cells=None,
     # Without this the bus router (which cannot land a broker ON the source cell)
     # wrapped the ENTIRE source block to reach a far-side broker: the abutted
     # tremolo stack routed 20 cells for adjacent pairs. CONSERVATIVE conditions
-    # (mirrors the maze router's ``is_abutment``, tightened): every net sourced at
+    # (mirrored by the maze router's ``is_abutment``): every net sourced at
     # that exit cell must be an abutment to the SAME target input cell (the plain
     # single rail, or the complex yi/yq packet) — a MIXED abutted+routed fan-out
-    # keeps the fully-routed path (the _apply_brokers mixed re-sequencing is a
-    # known-open defect, see the converter_flavors xfail).
+    # keeps the fully-routed path (the exit cell has ONE output face, so the
+    # hop-steered fan-out form cannot serve an abutted arm on a different face
+    # than the corridor; see test_mixed_fanout_rails.py).
     abut_results: dict = {}
     if nets:
         by_src_exit: dict = {}
@@ -2278,8 +2279,14 @@ def broker_plan(project, chip_id, chip_type, catalog):
         try:
             pmap = catalog.port_map(block.type, block.params, library=block.library)
             for p in pmap.ports:
-                if p.name == port and p.direction == "in" and p.register is not None:
-                    reg = p.register
+                if p.name == port and p.direction == "in":
+                    if p.register is not None:
+                        reg = p.register
+                    # Per-port ENTRY (a multi-entry rendezvous target — the
+                    # DualFloatToComplex got_i/got_q): the broker's deliver JUMP
+                    # must trigger THIS port's entry, not the block default.
+                    if p.entry is not None:
+                        entry = int(p.entry)
                     break
         except Exception:  # noqa: BLE001
             pass

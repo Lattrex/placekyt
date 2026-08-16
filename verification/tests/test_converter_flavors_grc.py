@@ -182,18 +182,6 @@ def test_routes_and_builds_with_rendezvous_onchip():
     assert found, "built fabric is missing the DualFloatToComplex LOCK-by-face rendezvous"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="PRE-EXISTING at e480404 (found 2026-08-11 by the first full-suite "
-           "run since the fan-out rework): the mixer's MIXED 2-rail fan-out — "
-           "one rail ABUTTED (yq→gain_2 east), one BROKERED (yi→(2,0)→gain "
-           "north) — is not re-sequenced by _apply_brokers' mixed branch; the "
-           "built output cell carries ONE Write{hop 25}/Jump{hop 30} pair, the "
-           "brokered rail never leaves, DualFloatToComplex starves on .i and "
-           "the sim deadlocks (461 events, 0 egress). NOT a router issue "
-           "(reproduced bit-identically at pristine HEAD). Fix belongs in "
-           "engine/build.py _apply_brokers (why the mixed branch never fires "
-           "for this exit cell); see lessons_log 2026-08-11.")
 def test_runs_live_recovers_input():
     """THE LIVE PROOF (source -> chip -> plot): drive a complex burst through the
     hosted chip over the SimServer batch bridge — the exact "Run as GNURadio Server →

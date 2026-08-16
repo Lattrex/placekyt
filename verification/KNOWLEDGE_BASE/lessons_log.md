@@ -11,6 +11,63 @@ dropped) — append new entries above the oldest ones as before.
 
 ---
 
+## CONVERTER-FLAVORS DEADLOCK CLOSED — mixed fan-out keeps the routed path; per-port JUMP entries 2026-08-16
+
+The strict xfail on `test_converter_flavors_grc.py::test_runs_live_recovers_input`
+(live run deadlocks, 0 egress) is FIXED and the xfail removed. The recorded
+diagnosis ("the `_apply_brokers` mixed branch does not fire") was STALE — trace
+forensics (`enable_trace`/`get_trace` per-cell events on the built chip) showed
+the mixed branch DOES fire; the deadlock had TWO independent root causes, and
+every auto-P&R layout hit at least one (which is why the failure looked
+deterministic despite layout randomness):
+
+1. **A mixed fan-out (one rail ABUTTED + one BROKERED) is unbuildable by
+   construction — prevent it at ROUTING, don't re-sequence it.** The exit cell
+   has ONE output face; every fan-out patcher (INV-17) steers arms by HOP down
+   that single face. When the mixer's yq abutted EAST while yi's corridor left
+   NORTH, the yi rail's @hop WRITE and its trigger JUMP sailed EAST into the
+   abutted consumer (trace: the yi data landed in the abutted gain's registers
+   and the trigger halted there), the brokered rail never arrived, and the
+   downstream starved. The BUS router already kept mixed fan-outs fully routed
+   (the round-4 fast-path rule); the MAZE router's `is_abutment` did NOT — it
+   abutted any adjacent block→block net regardless of siblings. FIX
+   (`maze_router._route_chip_maze`): a source exit cell whose fan-out group
+   mixes plain abutments with routed/port arms keeps EVERY arm fully routed
+   (all-abutted groups unchanged). The all-routed fan-out form (arms share one
+   corridor, each peels off at its own broker) is the proven one.
+2. **A multi-entry rendezvous target needs PER-PORT JUMP entries.** The
+   DualFloatToComplex runs DIFFERENT code per input (got_i: latch + relock;
+   got_q: latch + emit), but every entry-resolution site (`resolved_io` →
+   portmap / `bus_router.target_io` / build's abutment + broker patches) gave
+   producers the block's single default entry — so the q arm's delivery JUMPed
+   got_i, got_q never ran, and the rendezvous never emitted (trace: the dual
+   executed pc=got_i for BOTH faces, halted each time). FIX: `Port` gained a
+   declarative `entry` (entry-point NAME); the dual declares
+   `i→got_i, q→got_q`; the PortMap resolves it per port and
+   `target_io`/`_target_port_entry` steer every delivering net's JUMP at the
+   right entry. Ordinary blocks (no declaration) are byte-identical.
+3. **Blast-radius find — `_perturb_boxed_outputs` could return a report the
+   project no longer matched.** Its tail ALWAYS clears + re-routes, but on a
+   worse re-route (the router stack is not perfectly deterministic — CP-SAT is
+   time-bounded) it returned the EARLIER, better report while the project held
+   the worse routes: auto_pnr then accepted a layout claiming N routed nets and
+   the build failed "unrouted connection". It now always returns the report
+   matching the live project; an honestly-worse report just makes the sweep try
+   the next seed. (Surfaced by the cfir Weaver single-chip gate once the maze
+   stopped abutting its mixed TX fan-out.)
+
+Regression pins: `test_mixed_fanout_rails.py` (per-port entries distinct; a
+brokered `dual.q` delivery JUMPs got_q in the built fabric; the maze keeps a
+mixed fan-out fully routed) — all three fail on the pre-fix engine. The live
+converter-flavors run now recovers the input at corr 1.0 on every sampled
+layout (8/8).
+
+Meta-lesson: **a recorded diagnosis is a hypothesis, not evidence — re-derive
+it from the trace before coding.** The xfail's reason text pointed at the wrong
+branch; the per-cell event trace located both true causes in one session.
+
+---
+
 ## AddCCBlock + SubCCBlock — the 4-operand wall falls: two-complex-stream combiners + the reusable complex2 driver 2026-08-16
 
 GR `blocks.add_cc` / `blocks.sub_cc` (2 complex streams, elementwise; semantics

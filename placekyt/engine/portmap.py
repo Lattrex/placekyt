@@ -341,12 +341,27 @@ def build_port_map(
     # index by the full input list, then filter.
     if landing_id is not None:
         dx, dy, face = _norm(landing_id)
+        # Per-port entry: a multi-entry rendezvous cell (DualFloatToComplex
+        # got_i/got_q) declares WHICH entry each input port's producer must JUMP
+        # to (``Port.entry`` = the entry-point NAME). Resolve those names to
+        # addresses once; a port with no declaration keeps the block default.
+        _entry_by_name: dict = {}
+        try:
+            from gr_kyttar.placement.resolver import CellProgramResolver
+            _entry_by_name = CellProgramResolver().compute_entry_addresses(
+                cell_programs[landing_id]) or {}
+        except Exception:  # noqa: BLE001 — fall back to the block default entry
+            _entry_by_name = {}
         for i, p in enumerate(cell_programs[landing_id].inputs):
             if (landing_id, p.name) in internal_dsts:
                 continue
             reg = in_regs[i] if i < len(in_regs) else None
+            p_entry = entry
+            _ename = getattr(p, "entry", None)
+            if _ename and _ename in _entry_by_name:
+                p_entry = int(_entry_by_name[_ename])
             ports.append(PortInfo(p.name, "in", landing_id, dx, dy, face,
-                                  register=reg, entry=entry))
+                                  register=reg, entry=p_entry))
 
     # SRAM-PANEL RETURN PORT: a panel-backed block's push-read consumer input
     # (the Varicode 'word' register on the emit cell, the CW keyer's 'base' on

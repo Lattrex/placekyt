@@ -1049,7 +1049,9 @@ def _apply_routes(cell_map, gr_placement, blocks, connections, chip_type,
                 if tb is not None:
                     t_entry, t_ins = catalog.resolved_io(
                         tb.type, tb.params, library=tb.library)
-                    entry = t_entry
+                    # Per-port entry (multi-entry rendezvous target): the JUMP must
+                    # trigger THIS port's entry (dual.q → got_q), not the default.
+                    entry = _target_port_entry(catalog, tb, tgt.port, t_entry)
                     n_target_ins = len(t_ins) if t_ins else 1
                     rail_idx = _target_port_index(catalog, tb, tgt.port)
                     dest = (t_ins[rail_idx]
@@ -1419,7 +1421,10 @@ def _apply_brokers(cell_map, gr_placement, blocks, connections, project,
             if tb is not None:
                 t_entry, t_ins = catalog.resolved_io(
                     tb.type, tb.params, library=tb.library)
-                a_entry = t_entry
+                # Per-port entry (multi-entry rendezvous target, e.g. dual.q →
+                # got_q), falling back to the block default for ordinary blocks.
+                a_entry = _target_port_entry(catalog, tb, conn.target.port,
+                                             t_entry)
                 _ri = _target_port_index(catalog, tb, conn.target.port)
                 a_dest = (t_ins[_ri] if t_ins and _ri < len(t_ins)
                           else (t_ins[0] if t_ins else 0))
@@ -1651,6 +1656,23 @@ def _apply_brokers(cell_map, gr_placement, blocks, connections, project,
     # (the modem's tx mapper net at (1,1), which the rx corridor pins EAST) must be
     # injected to LAND at that broker's deliver entry — not ridden straight through.
     return dict(conn_entry), dict(conn_burst_reg), fanout_abut_conns
+
+
+def _target_port_entry(catalog, block, port, default):
+    """The JUMP entry a producer into the named target ``port`` must trigger.
+
+    A multi-entry rendezvous cell (the DualFloatToComplex ``got_i``/``got_q``)
+    runs DIFFERENT code per input port, so its ports declare their own entry
+    (``Port.entry`` → resolved into the PortMap). Every ordinary block keeps its
+    single default entry (``default``, from ``resolved_io``)."""
+    try:
+        pmap = catalog.port_map(block.type, block.params, library=block.library)
+        for p in pmap.ports:
+            if p.name == port and p.direction == "in" and p.entry is not None:
+                return int(p.entry)
+    except Exception:  # noqa: BLE001
+        pass
+    return int(default)
 
 
 def _target_port_reg(catalog, block, port, in_regs):

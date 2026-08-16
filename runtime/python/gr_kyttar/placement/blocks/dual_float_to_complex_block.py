@@ -154,7 +154,13 @@ class DualFloatToComplexBlock(KyttarBlock):
             "    HALT\n"
         )
         return {0: CellProgram(
-            inputs=[Port("i", register=0), Port("q", register=0)],
+            # Each input port declares ITS entry: a producer into ``i`` must JUMP
+            # got_i, a producer into ``q`` must JUMP got_q — the two entries run
+            # DIFFERENT code (latch-I-and-relock vs latch-Q-and-emit). Without the
+            # declaration every producer resolves the block's single default entry
+            # (got_i), got_q never runs and the rendezvous deadlocks (0 egress).
+            inputs=[Port("i", register=0, entry="got_i"),
+                    Port("q", register=0, entry="got_q")],
             outputs=[Port("yi"), Port("yq"), Port("trig")],
             # ONLY got_i / got_q — NO arm entry (the cell is pre-locked at cold start).
             entries=[EntryPoint("got_i"), EntryPoint("got_q")],

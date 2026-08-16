@@ -114,6 +114,7 @@ from .pack_k_bits import pack_k_bits
 from .crc16 import crc16
 from .conv_encoder_k7 import conv_encoder_k7
 from .hamming_encoder import hamming_encoder
+from .hamming_decoder import hamming_decoder
 from .block_interleaver import block_interleaver
 from .diff_decoder import diff_decoder
 from .diff_encoder import diff_encoder
@@ -213,6 +214,7 @@ __all__ = [
     "crc16",
     "conv_encoder_k7",
     "hamming_encoder",
+    "hamming_decoder",
     "block_interleaver",
     "diff_decoder",
     "diff_encoder",

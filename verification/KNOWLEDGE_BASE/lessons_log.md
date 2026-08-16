@@ -11,6 +11,66 @@ dropped) — append new entries above the oldest ones as before.
 
 ---
 
+## HammingDecoderBlock — Hamming(7,4) syndrome decoder, BIT-EXACT; the FUSED word+syndrome accumulator 2026-08-16
+
+Systematic Hamming(7,4) hard-decision FEC decoder (7:4 rate-reducing, raw 0/1
+words, tier 1, NO GR counterpart — golden = the standard syndrome decoder,
+Hamming 1950 / Lin & Costello §3.3). CONVENTION (pinned, shared verbatim with
+HammingEncoderBlock): wire = `d3 d2 d1 d0 p2 p1 p0` MSB-first, even parity
+`p2=d3^d2^d1, p1=d3^d2^d0, p0=d3^d1^d0` ⇒ H columns (d3..p0) `[7,6,5,3,4,2,1]`,
+syndrome→flip LUT `[0,1,2,8,4,16,32,64]`. 21 tests; 112/112 single-bit errors
+corrected ON-CHIP; round-trip golden-encoder→DUT identity at 0/1 errors; all
+16×21 double-bit errors GATED as deterministically uncorrectable (distance 3).
+Durable lessons:
+
+- **The naive shape does NOT fit — count words BEFORE authoring.** The obvious
+  single-cell design (pack-7 loop + per-bit column LUT + flip LUT + 4-bit emit
+  loop) needs ~37 instructions + 16 table words + 5 state ≈ 58 of the 30 usable
+  words; even 2-cell splits with a syndrome LOOP over a packed word ran ~33-45.
+  The real budget arithmetic (resolver): instructions sit at `31-N .. 30`, R31
+  is a reserved HALT, data from addr 1, state only in the gap between — so
+  **data + state + instructions ≤ 30** (R0 + R31 are never allocatable).
+- **THE FUSED ACCUMULATOR (the trick that made it fit): one 16-bit register
+  carries the packing word AND the running syndrome.** Store pre-shifted column
+  constants `T[j] = (col[j] << (2+j)) | 1` and update `reg' = (reg<<1) ^
+  bit*T[j]`. The `|1` is the packing bit (bits 6..0); each column contribution
+  enters at bits [2+j,4+j] and the remaining `6-j` shifts align every one at
+  bits [10..8] where the XORs accumulate the syndrome. In-flight, a
+  contribution at step k occupies [2+k,4+k] while the word occupies [0,k-1] —
+  provably disjoint (XOR==OR for the packing bit). After 7 bits: `reg>>8` = the
+  syndrome, `reg&0x7F` = the word — ONE internal operand instead of two, and
+  the whole front cell is 17 instr + 9 data + 3 state. Verified exhaustively
+  (all 128 words fused-model == standard decode) BEFORE building on-chip.
+- **The down-counter IS the LOAD address.** `count` runs 7..1 and directly
+  addresses the T table at 1..7 (`LOAD count`), and `SUB count, one` sets the
+  Z flag for the group boundary — `MOVE` preserves flags, so `SUB; MOVE; BR.NZ`
+  needs NO separate CMP and no `zero`/`addr` words. (Mind: SHL/SHR are ALU ops
+  and DO update flags — no shift may sit between the SUB and the BR.)
+- **`{write:name}` / `{jump:name}` placeholders must be ALONE on their line.**
+  The resolver's regex is `^\s*\{write:(\w+)\}\s*$` — a trailing `;` comment
+  silently un-matches it, the placeholder survives to assembly and the build
+  dies with `Unknown opcode: {WRITE:COMB}`. Comment the line ABOVE, never
+  inline. (First real build failure of this block; everything else ran first
+  try.)
+- **Dual-use DataWords bought the fix cell its budget:** the flip LUT at addr
+  1..8 already contains 1 (`flip[1]`, doubles as `one` AND the table-base
+  offset since flip[s] sits at 1+s) and 4 (`flip[4]`, the emit-counter seed).
+  The emit loop slides a `&0x78` window (bits 6..3) and peels with `SHR #6` —
+  no nibble extraction, no separate window mask beyond 0x78. Input pinned at
+  R0, OUTSIDE the 1..8 table range (the QAM16 table-aliasing trap).
+- **Deliberate no-reset with masked reads:** front does NOT clear the packed
+  word bits between groups (no budget for it) — stale bits climb into reg[7+],
+  but the syndrome window is XOR-cleared each group and every downstream read
+  is masked (`>>8` sees only cleared syndrome bits; the data window is
+  `&0x78`). Document such invariants at the read site, and cover them with a
+  MULTI-GROUP stream test (a single-group test can never see staleness).
+- Feed-forward 2-cell chain: saturation-safe with NO lock (RATE_1IN gate,
+  saturated flat stream == per-sample), D4-invariant 8/8, placement-legal.
+  Metric: raw-word BIT-exact, delay 0, tol 0 (byte blocks are never Q15 — the
+  XorBlock lesson).
+
+---
+
 ## HammingEncoderBlock — systematic Hamming(7,4) FEC encoder, bit-exact 2026-08-16
 
 **THE CONVENTION PIN (verbatim — HammingDecoderBlock MUST derive from this exact

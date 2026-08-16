@@ -176,6 +176,12 @@ RATE_1IN = {
     # (INV-19/20 N/A, no lock) — the saturated flat stream must equal the
     # per-sample flat stream (the burst must neither drop nor duplicate bits).
     "HammingEncoderBlock": ("sample", "out", {}),
+    # Hamming(7,4) syndrome decoder (7:4 rate-REDUCING with a 4-bit burst emit):
+    # 2-cell linear pipeline (fused pack+syndrome front -> LUT-correct/emit fix),
+    # feed-forward, no feedback corridor, no reconvergent fan-in — the saturated
+    # flat bit stream must equal the per-sample flat stream (no dropped or
+    # duplicated group, the 7:4 output-count bar).
+    "HammingDecoderBlock": ("sample", "out", {}),
 }
 
 # COMPLEX-in / COMPLEX-out (yi,yq 2-word egress): (in_ports, out_port, params). Same

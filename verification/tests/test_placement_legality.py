@@ -86,6 +86,10 @@ BLOCKS = [
     # transit cell, no footprint-growing param — its 2x1 footprint must stay
     # pairwise-distinct in every D4 orientation and under movement.
     ("HammingEncoderBlock", {}),
+    # Hamming(7,4) syndrome decoder: 2-cell row (front -> fix), no internal transit
+    # cell, no footprint-growing param — footprint must stay pairwise-distinct under
+    # every D4 orientation and movement.
+    ("HammingDecoderBlock", {}),
 ]
 
 _LIB = "lattrex.official"

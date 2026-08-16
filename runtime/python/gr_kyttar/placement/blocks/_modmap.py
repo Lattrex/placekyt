@@ -75,6 +75,7 @@ BUILTIN_BLOCKS = {
     'HammingEncoderBlock': 'hamming_encoder_block',
     'PSKSymbolMapperBlock': 'psk_symbol_mapper_block',
     'MapBBBlock': 'map_bb_block',
+    'HammingDecoderBlock': 'hamming_decoder_block',
     'VaricodeEncoderBlock': 'varicode_encoder_block',
     'FSK4SymbolMapperBlock': 'fsk4_symbol_mapper_block',
     'FSK4SlicerBlock': 'fsk4_slicer_block',

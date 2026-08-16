@@ -1,0 +1,24 @@
+{
+  "kyttar_block": "HammingDecoderBlock",
+  "passed": true,
+  "metric": "decision",
+  "n_compared": 448,
+  "max_abs_err": 0,
+  "tolerance": 0,
+  "nmse_db": null,
+  "correlation": null,
+  "bit_errors": 0,
+  "delay_used": 0,
+  "coverage": {
+    "gr_equiv": "none (no stock GR Hamming(7,4); golden = standard syndrome decoder, Hamming 1950 / Lin & Costello \u00a73.3)",
+    "convention": "c = d3 d2 d1 d0 p2 p1 p0 MSB-first; p2=d3^d2^d1, p1=d3^d2^d0, p0=d3^d1^d0 (pinned, shared with HammingEncoderBlock)",
+    "edge": "all 16 clean codewords; 7:4 burst framing; trailing partial dropped; input LSB masked",
+    "exhaustive": "112/112 single-bit errors corrected ON-CHIP; all 128 7-bit words block-ref == golden",
+    "random": 3,
+    "round_trip": "golden-encoder -> DUT under 0 and 1 injected errors == identity",
+    "known_limit": "double-bit errors uncorrectable (distance 3): all 16*21 patterns mis-decode (gated), DUT == golden's deterministic miscorrection on-chip",
+    "mutation": "no-correction passthrough / wrong syndrome LUT / swapped bit order / +1 shift / empty / misframed stream",
+    "decision": "rate 7:4, raw 0/1 words, BIT-EXACT, delay 0, tol 0",
+    "note": "2-cell pipeline: fused pack+syndrome accumulator (pre-shifted H columns) -> 8-entry LUT correct + MSB-first 4-bit burst"
+  }
+}

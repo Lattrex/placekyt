@@ -161,6 +161,12 @@ _CASES = [
     # corridor — its per-trigger output word list must be IDENTICAL in every D4
     # orientation.
     ("HammingEncoderBlock", {}, "real", ("sample", "out")),
+    # Hamming(7,4) syndrome decoder: single real rail in (bit) -> corrected data
+    # bits out (7:4, a 4-bit burst every 7th trigger; the harness keeps the last
+    # word per trigger — None-gaps on the 6 accumulating samples). 2-cell linear
+    # feed-forward pipeline (no feedback corridor / no reconvergent fan-in), so
+    # its per-trigger output word list must be IDENTICAL in every D4 orientation.
+    ("HammingDecoderBlock", {}, "real", ("sample", "out")),
 ]
 
 # No orientation residuals remain: every block in _CASES is invariant in all 8 D4

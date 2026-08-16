@@ -3,7 +3,7 @@
 
 # Kyttar block library — status
 
-**80 verified · 0 in progress · 82 targeted.** Each Kyttar block is verified as a drop-in equivalent of its GNU Radio Companion counterpart (same parameters, output matching within Q15 quantization). “Quality” is the measured error of the verified block versus the GNU Radio reference.
+**81 verified · 0 in progress · 93 targeted.** Each Kyttar block is verified as a drop-in equivalent of its GNU Radio Companion counterpart (same parameters, output matching within Q15 quantization). “Quality” is the measured error of the verified block versus the GNU Radio reference.
 
 > **Reading the quality column.** `err N / tol M LSB` — the worst-case sample error (`N`) against the derived pass threshold (`M`), in Q15 **LSBs** (1 LSB = 1/32768 of full scale ≈ 3.05e-5); pass requires `N ≤ M`. `−X dB SNR` — the **NMSE**: the error power is `X` dB below the signal power (more negative = quieter; Q15's floor is ≈ −90 dB). Decision blocks report **BER** instead. To estimate a chain's total noise, convert each block's dB to linear power (`10^(dB/10)`), sum, and convert back (`10·log10`) — the noisiest stage dominates.
 
@@ -53,7 +53,7 @@
 | **QPSKSlicerBlock** | `digital.constellation_decoder_cb(constellation_qpsk())` | 1 · feed-forward | ✅ done | BER 0 (64 bits) | mut |
 | **Crc16Block** | (Kyttar-native, no single GR block) | 1 · feed-forward | ✅ done | err 0 / tol 0 LSB | edge rand×4 mut |
 | **HammingEncoderBlock** | (Kyttar-native, no single GR block) | 1 · feed-forward | ✅ done | BER 0 (112 bits) | edge rand×4 mut |
-| **HammingDecoderBlock** | (Kyttar-native, no single GR block) | 1 · feed-forward | ⬜ planned | — | — |
+| **HammingDecoderBlock** | (Kyttar-native, no single GR block) | 1 · feed-forward | ✅ done | BER 0 (448 bits) | edge rand×3 mut |
 | **IQUpconvertBlock** | `blocks.multiply_cc` | 2 · stateful/loop | ✅ done | err 1 / tol 6 LSB · -85 dB SNR | mut |
 | **ComplexRRCMatchedFilterBlock** | `filter.fir_filter_ccf (rrc taps)` | 2 · stateful/loop | ✅ done · 🧪 proof-of-concept | err 11 / tol 18 LSB · -54 dB SNR | edge rand×3 sweep×8 mut |
 | **AGCBlock** | `analog.agc_ff` | 2 · stateful/loop | ✅ done | err 40 / tol 80 LSB · -57 dB SNR | mut |
@@ -75,6 +75,12 @@
 | **ComplexToMagBlock** | `blocks.complex_to_mag(1)` | 2 · stateful/loop | ✅ done | err 20 / tol 40 LSB | mut |
 | **ComplexToArgBlock** | `blocks.complex_to_arg(1)` | 2 · stateful/loop | ✅ done | err 27 / tol 63 LSB | mut |
 | **GardnerTimingRecovery** | `digital.symbol_sync_cc` | 2 · stateful/loop | 🚧 needs human (quarantined) · 🧪 proof-of-concept | — | — |
+| **RMSBlock** | `blocks.rms_ff` | 2 · stateful/loop | ⬜ planned | — | — |
+| **RMSCFBlock** | `blocks.rms_cf` | 2 · stateful/loop | ⬜ planned | — | — |
+| **AddCCBlock** | `blocks.add_cc` | 2 · stateful/loop | ⬜ planned | — | — |
+| **SubCCBlock** | `blocks.sub_cc` | 2 · stateful/loop | ⬜ planned | — | — |
+| **MultiplyCCBlock** | `blocks.multiply_cc` | 2 · stateful/loop | ⬜ planned | — | — |
+| **BlockInterleaverBlock** | (Kyttar-native, no single GR block) | 2 · stateful/loop | ⬜ planned | — | — |
 | **FSK4SymbolMapperBlock** | `digital.chunks_to_symbols_bf (4FSK level table)` | 3 · new GRC block | ✅ done | err 0 / tol 0 LSB | mut |
 | **FSK4SlicerBlock** | `digital.constellation_decoder (4FSK PAM, inverse of mapper)` | 3 · new GRC block | ✅ done | BER 0 (32 bits) | mut |
 | **FSK4SyncTimingRecoveryBlock** | `sync-word correlation timing recovery (no single GR block)` | 3 · new GRC block | ✅ done | BER 0 (208 bits) | mut |
@@ -91,6 +97,11 @@
 | **SramControllerBlock** | (Kyttar-native, no single GR block) | 3 · new GRC block | ✅ done | BER 0 (21 bits) | edge |
 | **CrossoverBlock** | `(none — routing infrastructure)` | 3 · new GRC block | ✅ done | — | — |
 | **LMSEqualizerBlock** | `digital.linear_equalizer(num_taps, 1, adaptive_algorithm_lms(constellation_qpsk(), step_size))` | 3 · new GRC block | ✅ done | BER 0 (3400 bits) | mut |
+| **AGCCCBlock** | `analog.agc_cc` | 3 · new GRC block | ⬜ planned | — | — |
+| **FLLBandEdgeBlock** | `digital.fll_band_edge_cc` | 3 · new GRC block | ⬜ planned | — | — |
+| **GolayEncoderBlock** | (Kyttar-native, no single GR block) | 3 · new GRC block | ⬜ planned | — | — |
+| **GolayDecoderBlock** | (Kyttar-native, no single GR block) | 3 · new GRC block | ⬜ planned | — | — |
+| **RationalResamplerBlock** | `filter.rational_resampler_fff` | 3 · new GRC block | ⬜ planned | — | — |
 
 **Tiers** reflect verification difficulty (the build order): tier 1 = feed-forward, tier 2 = stateful/loop, tier 3 = new block to build. **🧪 proof-of-concept** blocks exist and work in a demo (e.g. the coherent BPSK receiver) but have NOT yet been through per-block GNU Radio equivalence verification — treat them as demo-quality, not drop-in-verified. **Won't-map** blocks are GRC blocks that do not translate to the Kyttar fabric (with a reason in the manifest).
 

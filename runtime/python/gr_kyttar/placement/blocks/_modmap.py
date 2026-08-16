@@ -79,6 +79,7 @@ BUILTIN_BLOCKS = {
     'PSKSymbolMapperBlock': 'psk_symbol_mapper_block',
     'MapBBBlock': 'map_bb_block',
     'HammingDecoderBlock': 'hamming_decoder_block',
+    'GolayDecoderBlock': 'golay_decoder_block',
     'GolayEncoderBlock': 'golay_encoder_block',
     'VaricodeEncoderBlock': 'varicode_encoder_block',
     'FSK4SymbolMapperBlock': 'fsk4_symbol_mapper_block',

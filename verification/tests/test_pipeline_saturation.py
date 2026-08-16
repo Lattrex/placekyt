@@ -355,8 +355,16 @@ NEEDS_BESPOKE = {
     # cell forms the codeword integer + pulls the panel read trigger on the '00' boundary, and
     # the emit cell consumes the push-read; the full accumulate->panel->emit chain is gated
     # bit-exact + round-trip through real routing in test_varicode_decoder_sram.py.
+    # (a stale duplicate "QUARANTINE (INV-29)" key for VaricodeDecoderBlock used to
+    # follow this entry and, being second, silently WON the dict merge — removed.)
     "VaricodeDecoderBlock": "SRAM-backed (INV-31): accumulate cell forms the codeword + pulls the panel read trigger, emit cell consumes the push-read; own gate test_varicode_decoder_sram.py (full-chain bit-exact + round-trip through real routing)",
-    "VaricodeDecoderBlock": "QUARANTINE (INV-29): 1024-entry reverse map exceeds the LOAD table; golden gated in test_varicode_decoder.py; build RAISES",
+    # GolayDecoder is SRAM-BACKED (INV-31) and rides the PER-SAMPLE PANEL CONTRACT:
+    # the server forces per-sample pacing for panel designs, and every 24-bit codeword
+    # takes a panel push-read round-trip (syndrome -> error-pattern LUT), so the
+    # saturated-flat-stream harness does not model its real drive. Its own gate
+    # (test_golay_decoder.py) proves the full pack->syndrome->panel->emit chain
+    # bit-exact + round-trip vs the golden encoder through the REAL panel.
+    "GolayDecoderBlock": "SRAM-backed (INV-31), per-sample panel contract (the server forces per-sample for panel designs); own gate test_golay_decoder.py (full-chain bit-exact + round-trip vs the golden encoder through the real panel)",
     # CWDecoder is SRAM-BACKED (INV-31): a decision block that consumes a whole keyer
     # ENVELOPE and needs the SRAM panel (LUT + run scratch) + a two-pass decode, so it
     # does not fit the single-rail RATE_1IN/REAL_1IN harnesses. Its per-message

@@ -11,6 +11,76 @@ dropped) — append new entries above the oldest ones as before.
 
 ---
 
+## GolayDecoderBlock — SRAM-backed (24,12) syndrome decoder; the e_d-only LUT word and the harmless value-0 collision 2026-08-16
+
+Extended Golay (24,12) hard-decision syndrome decoder (24:12 rate-compressing,
+raw 0/1 words, tier 3, NO GR counterpart) — SRAM-backed (INV-31), built
+entirely against the GolayEncoderBlock convention pin (`encode_word()` /
+`_column_mask()`; B never re-derived). 45 tests, delay 0, tol 0, first
+attempt green. Durable lessons:
+
+- **STORAGE FORMAT (the design call, stated loudly): ONE panel word per
+  populated syndrome — the 12-bit DATA-half error pattern e_d.** The
+  manifest offered 2s/2s+1 double words or a packed descriptor for the
+  24-bit pattern; neither is needed because the block emits ONLY the 12
+  corrected data bits, so the parity-half pattern e_p is dead state.
+  2026 words populated (2324 non-zero weight-≤3 patterns minus the 298
+  parity-only ones) of the 4096-address space; single push-read per
+  codeword, no double-read sequencing.
+- **The stored-value-can-be-0 trap (CHAR_OFFSET lesson) can dissolve by
+  DESIGN instead of by offset.** With e_d-only storage, a read of 0 is
+  shared by s=0, parity-only correctable errors, and uncorrectable (≥4)
+  syndromes — and all three need the SAME action (XOR nothing). The
+  collision is semantically harmless, so no offset; gated explicitly
+  (parity-only syndromes proven absent from the image AND exact through
+  the chain). GENERAL RULE: before adding an offset, check whether every
+  value-0 collision demands the same downstream action.
+- **The s==0-skips-the-lookup idea was replaced by a UNIFORM single-path
+  lookup:** address 0 is GUARANTEED unpopulated (syndrome 0 ↔ e=0, never
+  stored), so a clean codeword's read returns 0 == no correction. One
+  path = no clean/dirty fork in the correct cell (8 instructions), uniform
+  timing, and no separate direct-kick corridor to the emit cell to verify.
+  Consequence for SHARED panels: the LUT must own its full 4096-address
+  region (a foreign word inside it would masquerade as an error pattern).
+- **Known limit, proven not hand-waved:** weight-4 patterns can NEVER alias
+  a correctable syndrome (XOR with a weight-≤3 pattern would be a weight-≤7
+  codeword; d_min=8) — verified EXHAUSTIVELY over all C(24,4)=10626
+  patterns — so exactly-4-error words always pass the received data half
+  through (no miscorrection). Weight ≥5 CAN miscorrect (bounded-distance);
+  demonstrated with 5 ones of a weight-8 codeword.
+- **Budget arithmetic for a 3-forwarded-word LOAD-table pipeline:** the
+  syndrome re-encode carries (D, P, partial Q) between cells, so the
+  encoder's 7/5 mask split shrinks to 5/4/3 across THREE syn cells (syn2
+  pays an entry MOVE for the partial-Q copy; syn3 trades a mask slot for
+  the final `XOR q, p`). Keeping D and P in their (non-R0, explicitly
+  placed) input registers UNTOUCHED through the loop — `AND R0, R{in:dw}`
+  directly — saves a state register + entry MOVE per cell. The encoder's
+  silent input-register/instruction collision is now an explicit gate
+  (test_register_layout_no_silent_collision: inputs+state strictly between
+  data top and 31−n_instr, every cell).
+- **Full-chain panel harness for a MULTI-CELL driver chain (extends the
+  Varicode two-chip pattern):** chip A = pack→syn1..3→correct with manual
+  ResolvedTargets (@1 abutment, port-exit hop = W−x); the correct cell
+  PARKS D in a panel SCRATCH register (R7 — with addr_regs=1 only R5 is
+  address, so high regs are pure storage) via its real routed egress,
+  time-ordered before the R5 address + R1 trigger; the intercepted
+  push-read then carries dev.reg(7) to the emit chip alongside the real
+  injected push. The parked-scratch word is how a panel round-trip can
+  transport SIDE data without a second port.
+- **The 24-bit group accumulator is one cell:** count down from 24, latch
+  the data half at count==12 (`CMP count, twelve`), forward both at 0;
+  stale bits climb above bit 11 of BOTH halves (D latched with garbage
+  above 11, P's bits 12..15 = top of D) and are killed by ONE
+  `AND 0xFFF` on the syndrome + the emit peel — the masked-read
+  invariant covers a two-word stream, not just one.
+- Per-sample panel contract (server forces per-sample for panel designs) →
+  saturation NEEDS_BESPOKE with that reason; also removed a stale duplicate
+  `VaricodeDecoderBlock` NEEDS_BESPOKE key (the second, stale QUARANTINE
+  string was silently winning the dict literal).
+- Metric: raw-word BIT-exact, delay 0, tol 0 (byte blocks are never Q15).
+
+---
+
 ## MultiplyCCBlock — the 4-operand CO-RESIDENCY wall disproven: full complex product of two external streams 2026-08-16
 
 GR `blocks.multiply_cc` (2 complex streams, elementwise): `yi=ai*bi−aq*bq`,

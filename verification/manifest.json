@@ -1004,7 +1004,7 @@
   {
    "kyttar_block": "GolayDecoderBlock",
    "grc_block": "",
-   "status": "planned",
+   "status": "done",
    "tier": 3,
    "metric": "decision",
    "notes": "Extended Golay (24,12) hard-decision DECODER correcting <= 3 bit errors: consumes 24 received bits, syndrome s = H*r (12 bits, parity-mask idiom), error pattern from an SRAM-panel LUT (INV-31 sparse recipe: address = syndrome integer, stored word = a packed error-pattern reference; 2^12 address space, ~2500 populated correctable syndromes; set_addr-per-pair sparse load like VaricodeDecoder; s=0 SKIPS the lookup (no correction) so the stored-value-can-be-0 trap does not bite -- but VERIFY that reasoning explicitly, the CHAR_OFFSET lesson). A 24-bit error pattern does not fit one 16-bit word: split the pattern across TWO panel words (addr 2s / 2s+1, auto-increment read) or store a correction descriptor -- builder's design call, state it loudly. Emit the 12 corrected data bits. MUST use GolayEncoderBlock's exact convention (same dispatch wave; derive from the manifest-pinned G). Per-sample panel contract (the server forces per-sample for panel designs). Verify: clean codewords, exhaustive 1-error (24 positions x sampled words), sampled 2- and 3-error correction, 4-error documented uncorrectable/detectable behavior as a known limit, round-trip vs the golden encoder under 0..3 injected errors, INV-4 mutations (no-correction passthrough, wrong LUT rows, swapped halves, +1 shift, empty)."

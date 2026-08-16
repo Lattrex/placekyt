@@ -11,6 +11,63 @@ dropped) — append new entries above the oldest ones as before.
 
 ---
 
+## GolayEncoderBlock — extended Golay (24,12) systematic encoder, BIT-EXACT; the silent input-register/instruction collision 2026-08-16
+
+Extended binary Golay (24,12) systematic hard-decision FEC encoder (12:24
+rate-expanding, raw 0/1 words, tier 3, NO GR counterpart — golden = G = [I12|B],
+B = the MacWilliams & Sloane 1977 Ch.2 §6 bordered reverse circulant, printed
+verbatim in the class docstring). CONVENTION (pinned, shared verbatim with the
+future GolayDecoderBlock): wire = `d11..d0 p11..p0` MSB-first, first arriving
+bit = d11, p11..p0 = m·B with B column 0 → p11; executable pin
+`GolayEncoderBlock.encode_word()`. B is SYMMETRIC (rows == columns) with
+B·Bᵀ = I; the test certifies it by the EXHAUSTIVE weight distribution
+1/759/2576/759/1 at weights 0/8/12/16/24 — the decisive fingerprint no wrong/
+shifted/transposed B can fake. 19 tests, delay 0, tol 0. Durable lessons:
+
+- **Budget the cells honestly BEFORE authoring (INV-7): the dispatch guessed
+  ~3 cells, the real answer is 4.** One cell holding all 12 column-mask table
+  words + the parity loop + I/O handoff needs ~35–40 of the 30 usable words;
+  the 12-entry table MUST split across two cells. Final shape: pack (12-bit
+  accumulate, 13 instr) → par1 (7 masks) → par2 (5 masks) → emit (two 12-bit
+  bursts), a 2x2 serpentine (the RMSBlock fold), D+p forwarded as TWO words
+  per hop (the RMS p/s two-word handoff, proven again here).
+- **A non-R0 input register that collides with the instruction region is NOT
+  rejected — it silently reads PROGRAM WORDS.** First build: par2 declared
+  `pw` at register 12 while its 19 instructions resolved to 12..30. No
+  resolver/build error; `{in:pw}` read instruction word 0x4009 (the cell's own
+  first MOVE) as data, and BOTH upstream writes assembled to dest R0 (two
+  identical `0x63c0` WRITE words) so par2's d got par1's p. Symptom: correct
+  burst COUNT, garbage values with a CONSTANT bite (0x4009<<6 = 0x240) in the
+  parity half. Forensics that cracked it in one pass: `read_cell_memory` dumps
+  of all 4 cells after one group — the state registers named the wrong word
+  instantly, no output-inference needed. Count non-R0 INPUT registers in the
+  ≤30 budget, and keep them below `31 - n_instructions` AND outside the LOAD
+  table range (the QAM16 aliasing trap has a new sibling).
+- **The asymmetric 7/5 mask split is budget-forced:** par2 carries one extra
+  entry MOVE (copy the incoming partial parity), so par1 holds 7 masks
+  (9 data + 3 state + 18 instr = 30) and par2 holds 5 (7 data + 3 state +
+  1 input + 19 instr = 30). Both cells resolve to exactly 30 words — legal.
+- **The LOAD-table parity loop scales the P-flag idiom past the constant
+  budget:** per bit `p = (p<<1) | parity(D & T[count])` with the down-counter
+  AS the LOAD address (the HammingDecoder trick) — 12 masks cost 12 DATA words
+  + ONE 10-instruction loop instead of 12 unrolled 4-instruction stanzas.
+- **Deliberate no-reset with masked reads, again:** pack's D and both p
+  registers are never cleared between groups; stale bits climb above bit 11
+  and every read is masked (parity masks are 12-bit; the emit peel is
+  `SHR #11` + `AND 1`). Covered by multi-group streams — and the stale-shift
+  arithmetic ((p_prev<<6)|new matching the observed words EXACTLY) is what
+  proved the mis-wiring hypothesis during debug.
+- **Pick mutation stimulus that EXERCISES the mutated row:** the wrong-B-row
+  gate (row 1 ← row 2) was initially green-on-mutant because all 4 stimulus
+  words happened to have d10=0 (row 1 never used) — algebraically a no-op.
+  The fixed set asserts the sensitivity precondition (`d10 ^ d9` set on some
+  word) before trusting the gate. A mutation gate has its own INV-4 problem.
+- Feed-forward 4-cell chain: saturation-safe with NO lock (RATE_1IN gate,
+  saturated flat stream == per-sample), D4-invariant 8/8, placement-legal.
+  Metric: raw-word BIT-exact, delay 0, tol 0 (byte blocks are never Q15).
+
+---
+
 ## BlockInterleaverBlock — row-column matrix interleaver; the RUNTIME PATCH-SLOT computed store 2026-08-16
 
 Bit-exact (metric=exact) rows×cols block interleaver/deinterleaver, 3 cells,

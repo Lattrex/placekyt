@@ -176,6 +176,13 @@ _CASES = [
     # feed-forward pipeline (no feedback corridor / no reconvergent fan-in), so
     # its per-trigger output word list must be IDENTICAL in every D4 orientation.
     ("HammingDecoderBlock", {}, "real", ("sample", "out")),
+    # Extended Golay (24,12) encoder: single real bit rail in -> 24-bit codeword
+    # burst out every 12th trigger (None-gaps on the accumulating samples; the
+    # harness drains one word per trigger). 4-cell feed-forward 2x2 serpentine
+    # (pack -> par1 -> par2 -> emit), no in-template FACE constants, no feedback
+    # corridor — its per-trigger output word list must be IDENTICAL in every D4
+    # orientation (the LOAD-table parity loops included).
+    ("GolayEncoderBlock", {}, "real", ("sample", "out")),
     # RMS (GR blocks.rms_ff): single real rail in -> RMS word out. 4-cell
     # feed-forward 2x2 fold (power+IIR -> normalize -> quartic -> denorm), no
     # in-template FACE constants, no feedback corridor — all forwarding faces

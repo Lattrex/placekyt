@@ -94,6 +94,10 @@ BLOCKS = [
     # cell, no footprint-growing param — footprint must stay pairwise-distinct under
     # every D4 orientation and movement.
     ("HammingDecoderBlock", {}),
+    # Extended Golay (24,12) encoder: 4-cell 2x2 serpentine fold (pack -> par1 ->
+    # par2 -> emit), no internal transit cell, no params — the 2x2 footprint must
+    # stay pairwise-distinct in every D4 orientation and under movement.
+    ("GolayEncoderBlock", {}),
     # RMS pair: 4-cell 2x2 serpentine fold (pwr -> norm -> poly -> denorm), no
     # internal transit cell, no footprint-growing param (alpha only changes a
     # coefficient word) — the 2x2 footprint must stay pairwise-distinct in every

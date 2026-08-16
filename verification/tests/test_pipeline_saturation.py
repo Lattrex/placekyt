@@ -206,6 +206,14 @@ RATE_1IN = {
     # flat bit stream must equal the per-sample flat stream (no dropped or
     # duplicated group, the 7:4 output-count bar).
     "HammingDecoderBlock": ("sample", "out", {}),
+    # Extended Golay (24,12) encoder: 12 bits -> one 24-bit codeword burst
+    # (12:24 rate-EXPANDING). A straight 4-cell feed-forward chain (pack
+    # accumulator -> par1 -> par2 LOAD-table parity -> emit burst) with NO
+    # feedback corridor and NO reconvergent fan-in (each cell has exactly one
+    # upstream cell; the two-word D/p handoffs ride the same corridor —
+    # INV-19/20 N/A, no lock) — the saturated flat stream must equal the
+    # per-sample flat stream (the burst must neither drop nor duplicate bits).
+    "GolayEncoderBlock": ("sample", "out", {}),
 }
 
 # COMPLEX-in / COMPLEX-out (yi,yq 2-word egress): (in_ports, out_port, params). Same

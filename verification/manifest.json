@@ -996,7 +996,7 @@
   {
    "kyttar_block": "GolayEncoderBlock",
    "grc_block": "",
-   "status": "planned",
+   "status": "done",
    "tier": 3,
    "metric": "decision",
    "notes": "Extended binary Golay (24,12) systematic ENCODER: bit stream in (0/1 words, Pack/Unpack convention), consumes 12 data bits, emits the 24-bit codeword MSB-first (d11..d0 then p11..p0), G=[I12|B] with the STANDARD B matrix (cite MacWilliams & Sloane or Lin & Costello; print B verbatim in the docstring and expose an executable encode_word() golden for the decoder sibling -- the HammingEncoder convention-pin recipe). Each parity bit = parity of a 12-bit masked AND (the P-flag idiom, masks pre-shifted); 12 parity bits + counted-loop burst emit => multi-cell feed-forward (the HammingEncoder 2-cell pattern scaled; INV-7 budget check BEFORE authoring). Verify: structural golden self-checks (min distance 8 on sampled pairs, all-zero/all-one anchors), sampled codeword sweep + random seeds on-chip, round-trip through the golden decoder, INV-4 mutations (wrong B row, swapped bit order, dropped parity, +1 shift, empty)."

@@ -3,7 +3,7 @@
 
 # Kyttar block library — status
 
-**86 verified · 0 in progress · 93 targeted.** Each Kyttar block is verified as a drop-in equivalent of its GNU Radio Companion counterpart (same parameters, output matching within Q15 quantization). “Quality” is the measured error of the verified block versus the GNU Radio reference.
+**87 verified · 0 in progress · 93 targeted.** Each Kyttar block is verified as a drop-in equivalent of its GNU Radio Companion counterpart (same parameters, output matching within Q15 quantization). “Quality” is the measured error of the verified block versus the GNU Radio reference.
 
 > **Reading the quality column.** `err N / tol M LSB` — the worst-case sample error (`N`) against the derived pass threshold (`M`), in Q15 **LSBs** (1 LSB = 1/32768 of full scale ≈ 3.05e-5); pass requires `N ≤ M`. `−X dB SNR` — the **NMSE**: the error power is `X` dB below the signal power (more negative = quieter; Q15's floor is ≈ −90 dB). Decision blocks report **BER** instead. To estimate a chain's total noise, convert each block's dB to linear power (`10^(dB/10)`), sum, and convert back (`10·log10`) — the noisiest stage dominates.
 
@@ -97,9 +97,9 @@
 | **SramControllerBlock** | (Kyttar-native, no single GR block) | 3 · new GRC block | ✅ done | BER 0 (21 bits) | edge |
 | **CrossoverBlock** | `(none — routing infrastructure)` | 3 · new GRC block | ✅ done | — | — |
 | **LMSEqualizerBlock** | `digital.linear_equalizer(num_taps, 1, adaptive_algorithm_lms(constellation_qpsk(), step_size))` | 3 · new GRC block | ✅ done | BER 0 (3400 bits) | mut |
+| **GolayEncoderBlock** | (Kyttar-native, no single GR block) | 3 · new GRC block | ✅ done | BER 0 (288 bits) | edge rand×4 mut |
 | **AGCCCBlock** | `analog.agc_cc` | 3 · new GRC block | ⬜ planned | — | — |
 | **FLLBandEdgeBlock** | `digital.fll_band_edge_cc` | 3 · new GRC block | ⬜ planned | — | — |
-| **GolayEncoderBlock** | (Kyttar-native, no single GR block) | 3 · new GRC block | ⬜ planned | — | — |
 | **GolayDecoderBlock** | (Kyttar-native, no single GR block) | 3 · new GRC block | ⬜ planned | — | — |
 | **RationalResamplerBlock** | `filter.rational_resampler_fff` | 3 · new GRC block | ⬜ planned | — | — |
 

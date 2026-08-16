@@ -1,0 +1,31 @@
+{
+  "block": "GolayDecoderBlock",
+  "grc_block": "",
+  "tier": 3,
+  "wave": 5,
+  "schema_version": 1,
+  "started_utc": "2026-08-16T23:11:55Z",
+  "ended_utc": "2026-08-16T23:40:39Z",
+  "walltime_sec": 1724.0,
+  "tokens": {
+    "input": 0,
+    "output": 252248,
+    "cache_read": 0,
+    "total": 252248
+  },
+  "turns": 113,
+  "attempts": 1,
+  "human_interventions": 0,
+  "intervention_reasons": [],
+  "prompts": [
+    {
+      "role": "initial",
+      "text": "factory_dispatch prompt; isolated worktree; SRAM-panel syndrome LUT against the encoder's executable convention pin."
+    }
+  ],
+  "verify_passed": true,
+  "quarantined": false,
+  "quarantine_reason": "",
+  "commit_sha": "bef7b1b",
+  "notes": "7 cells (pack24 -> 3 syndrome-mask cells -> correct -> emit + embedded SramController), 2026/4096 sparse panel words, 1 attempt, first-build green through the REAL PanelDriver, autonomous. Design call stated loudly: ONE 16-bit panel word per syndrome \u2014 the 12-bit DATA-half error pattern only (the parity-half is dead state since only data bits egress) \u2014 beating the dispatched two-word sketch; and the stored-value-can-be-0 trap DISSOLVES by design (s=0, parity-only, and uncorrectable syndromes all correctly read 0 = no-op), so every codeword takes one uniform panel read. Known limit proven exhaustively: all 10,626 weight-4 patterns never alias (data half passes through); >=5 may miscorrect (bounded-distance). 45 tests incl. exhaustive 1-error through the real panel + corrupted-LUT mutation asserting the exact wrong output. Also fixed a stale duplicate NEEDS_BESPOKE dict key silently shadowing the VaricodeDecoder entry."
+}

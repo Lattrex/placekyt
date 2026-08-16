@@ -120,6 +120,8 @@ _COMPLEX_BLOCKS = [
     # Two-complex-stream add/sub: the rail_q cell emits the (yi, yq) packet.
     ("AddCCBlock", {}),
     ("SubCCBlock", {}),
+    # Two-complex-stream product: the combine cell emits the (yi, yq) packet.
+    ("MultiplyCCBlock", {}),
 ]
 
 

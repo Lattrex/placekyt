@@ -11,6 +11,63 @@ dropped) — append new entries above the oldest ones as before.
 
 ---
 
+## MultiplyCCBlock — the 4-operand CO-RESIDENCY wall disproven: full complex product of two external streams 2026-08-16
+
+GR `blocks.multiply_cc` (2 complex streams, elementwise): `yi=ai*bi−aq*bq`,
+`yq=ai*bq+aq*bi`. Unlike add/sub_cc the math does NOT separate per rail —
+each rail needs ALL FOUR operands — so this was the historically-predicted
+hard case of the pair-blocks wave. Result: first-try bit-exact on chip,
+race-free under saturated drive; 40 tests green (`test_multiply_cc.py`),
+driven through `run_block_dut_complex2`/`_pipelined` UNCHANGED (the AddCC
+driver reuse worked exactly as designed).
+
+- **CO-RESIDENCY PLAN (the durable part): operands meet ONCE — in the
+  landing cell's STATE — and only PRODUCTS travel.** `prods` (landing) runs
+  the AddBlock counting-join tail verbatim, then snapshots `aq/bi/bq` to
+  state with ONE read each (the ComplexMixer stale-latch trap: the next
+  sample's packets can land in the input registers mid-compute; every
+  operand here is consumed by TWO products, so unsaved double-reads would
+  race under saturation). `ai` needs NO extra save — the join's own `jsav`
+  R0-save IS the ai snapshot (on the fire path jsav always holds the fresh
+  ai, whatever the packet order), a free register+instruction. Four MULQs
+  from state → 4 WRITEs + 1 JUMP to `combine` (a 4-value one-burst forward
+  is proven substrate practice — MMTimingRecovery forwards 5). 31/32 words.
+- **HEADROOM: S=0 is the DERIVED optimum for signal×signal.** Both factors
+  are Q15 signals ⇒ every `MULQ` product is ALREADY in `[-1,1)`; only the
+  per-rail combine of two full-scale products can leave range, and a single
+  16-bit ADD/SUB overflow is exactly recoverable from V + the saved
+  MINUEND's sign (the AddCC restore; ADD overflow ⇒ equal signs ⇒ either
+  operand's sign works). So NO prescale at all — the MultiplyConstComplex
+  `/4`+`<<2` pattern the manifest suggested exists because CONSTANTS can
+  exceed Q15 (|k|<2); signals cannot, and skipping it kills the 2^S error
+  amplification AND the whole sat-shift cell. Rails saturate on overload
+  exactly like a Q15 clip. `combine` = 2× (save-minuend / op / BR.NV +3 /
+  3-instr sign restore), 25/32 words, 7 free for the INV-17 fan-out JUMP.
+- **Derived tolerance 3 LSB, measured I=1 / Q=2.** Per rail two truncating
+  MULQs (each err in [0,1) LSB toward −inf): I = p1−p2 ⇒ errors partially
+  cancel, err ∈ (−1,1); Q = p3+p4 ⇒ they stack, err ∈ (−2,0] —
+  `q15_quant_floor(op_count=2, S=0)=3` covers both + comparison
+  quantization. KEY TRICK: SNAP the GR-equivalence stimulus to the Q15 grid
+  (`round(x*32768)/32768`) so GR's float golden computes over EXACTLY the
+  chip's words — input-quantization error (up to ~1.4 LSB extra at 0.7
+  amplitude for a product) then cannot stack on the floor, keeping the
+  derived tolerance tight instead of padded. Generalizes to any
+  signal×signal block.
+- **Wrap corner (the MultiplyBlock `(−1)·(−1)` class), pinned:** only
+  `0x8000*0x8000` wraps MULQ. `a=b=−1−1j` makes all four products wrap;
+  `yi = p1−p2 = 0` — the wraps CANCEL and I is still correct! — but
+  `yq = p3+p4` pins to −full where GR gives +2 (would clip +full). Pinned
+  bit-exact vs the block's own wrap-modelling reference; GR-equivalence
+  stimulus bounded |a|,|b| ≤ 0.7 never reaches it.
+- **Mutation teeth for a product:** swapped STREAMS is vacuous (commutative
+  — asserted EQUAL, documented), so the teeth are: DROPPED-CROSS-TERM
+  golden (yi=ai·bi, yq=aq·bq — a non-rotating separable fake) and
+  SIGN-SWAPPED-CROSS-TERM golden (GR fed conj(b) — the correlator, not the
+  product) — both FAIL the correct DUT; plus wrong-second-stream, swapped
+  I/Q rails, inverted, +1 delay, empty. Same reasoning fixed the saturated
+  non-vacuity probe: conjugate b (don't swap streams) to prove the queued
+  drive is real. Three rotation gates (pure-j = analytic 90° swap, 180°,
+  45°) prove the rotation live on chip.
 ## GolayEncoderBlock — extended Golay (24,12) systematic encoder, BIT-EXACT; the silent input-register/instruction collision 2026-08-16
 
 Extended binary Golay (24,12) systematic hard-decision FEC encoder (12:24

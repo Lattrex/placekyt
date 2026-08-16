@@ -83,6 +83,7 @@ from .gain import gain
 from .multiply import multiply
 from .add import add, subtract
 from .add_cc import add_cc, sub_cc
+from .multiply_cc import multiply_cc
 from .add_const import add_const
 from .xor import xor
 from .float_to_char import float_to_char
@@ -189,6 +190,7 @@ __all__ = [
     "subtract",
     "add_cc",
     "sub_cc",
+    "multiply_cc",
     "add_const",
     "xor",
     "float_to_char",

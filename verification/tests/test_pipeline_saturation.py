@@ -286,6 +286,9 @@ NEEDS_BESPOKE = {
     "SubCCBlock": "2-complex-stream (two packet JUMPs/sample, counting join); own "
         "saturated gate test_add_sub_cc.py::test_pipelined_equals_per_sample "
         "(queue_words drive, bit-exact, non-vacuity probe)",
+    "MultiplyCCBlock": "2-complex-stream (two packet JUMPs/sample, counting join); own "
+        "saturated gate test_multiply_cc.py::test_pipelined_equals_per_sample "
+        "(queue_words drive, bit-exact, conjugate-b non-vacuity probe)",
     "LMSEqualizerBlock": "PER-SAMPLE CONTRACT (INV-19 RECORDED LIMIT, guarded by "
         "test_lms_equalizer.test_saturated_drive_known_limit_guard): under "
         "saturated drive the backward gradient broadcast races the next "

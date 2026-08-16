@@ -1,0 +1,24 @@
+{
+  "kyttar_block": "MultiplyCCBlock",
+  "passed": true,
+  "metric": "amplitude",
+  "n_compared": 10,
+  "max_abs_err": 1,
+  "tolerance": 3,
+  "nmse_db": -87.86366267090798,
+  "correlation": 0.999999999390464,
+  "bit_errors": 0,
+  "delay_used": 0,
+  "coverage": {
+    "edge": true,
+    "random": 3,
+    "amplitude_sweep": 3,
+    "rotation": 3,
+    "bit_exact": true,
+    "saturation": true,
+    "wrap_corner": true,
+    "orientation_d4": true,
+    "pipelined": true,
+    "mutation": true
+  }
+}

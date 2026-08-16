@@ -106,10 +106,12 @@ _TYPE_OVERRIDES = {
     "kyttar_freq_xlating_fir": "FreqXlatingFIRBlock",
     # Add-Const: class "AddConstBlock", manifest legacy name "AddConst" (catalog alias).
     "kyttar_add_const": "AddConstBlock",
-    # Two-complex-stream add/sub: snake→Pascal gives "AddCcBlock"/"SubCcBlock"
-    # (wrong case for the CC dtype suffix) — pin the CLASS names explicitly.
+    # Two-complex-stream add/sub/multiply: snake→Pascal gives "AddCcBlock"/
+    # "SubCcBlock"/"MultiplyCcBlock" (wrong case for the CC dtype suffix) —
+    # pin the CLASS names explicitly.
     "kyttar_add_cc": "AddCCBlock",
     "kyttar_sub_cc": "SubCCBlock",
+    "kyttar_multiply_cc": "MultiplyCCBlock",
     # Complex FIR (fir_filter_ccf): class == manifest name "ComplexFIRFilterBlock",
     # but snake→Pascal of "kyttar_complex_fir_filter" gives "ComplexFirFilterBlock"
     # (lower-case "ir"), which won't match — pin it explicitly.

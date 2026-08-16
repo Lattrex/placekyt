@@ -1,0 +1,31 @@
+{
+  "block": "RMSCFBlock",
+  "grc_block": "blocks.rms_cf",
+  "tier": 2,
+  "wave": 5,
+  "schema_version": 1,
+  "started_utc": "2026-08-16T21:25:50Z",
+  "ended_utc": "2026-08-16T21:55:20Z",
+  "walltime_sec": 1770.0,
+  "tokens": {
+    "input": 0,
+    "output": 0,
+    "cache_read": 0,
+    "total": 0
+  },
+  "turns": 0,
+  "attempts": 1,
+  "human_interventions": 0,
+  "intervention_reasons": [],
+  "prompts": [
+    {
+      "role": "initial",
+      "text": "factory_dispatch prompt; isolated worktree; joint RMS-pair build (shared module, one commit)."
+    }
+  ],
+  "verify_passed": true,
+  "quarantined": false,
+  "quarantine_reason": "",
+  "commit_sha": "80e757d",
+  "notes": "Zero-cost cross-reference: built jointly with RMSBlock in one dispatch/commit; see RMSBlock.factory.json for the pair's full cost record."
+}

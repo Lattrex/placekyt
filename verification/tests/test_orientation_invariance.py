@@ -155,6 +155,12 @@ _CASES = [
     # -> (~in)&0xFF out. Single cell, memoryless, no internal connections / feedback,
     # so its NOT+mask datapath is D4-invariant by construction.
     ("NotBlock", {}, "real", ("sample", "out")),
+    # Hamming(7,4) FEC encoder: single real bit rail in -> 7-bit codeword burst out
+    # every 4th trigger (None-gaps on the accumulating samples; the harness drains
+    # one word per trigger). 2-cell feed-forward chain (pack -> expand), no feedback
+    # corridor — its per-trigger output word list must be IDENTICAL in every D4
+    # orientation.
+    ("HammingEncoderBlock", {}, "real", ("sample", "out")),
 ]
 
 # No orientation residuals remain: every block in _CASES is invariant in all 8 D4

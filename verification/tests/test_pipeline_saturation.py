@@ -170,6 +170,12 @@ RATE_1IN = {
     # counted-loop emit with no cross-sample feedback — memoryless per byte, so the
     # saturated flat stream equals the per-sample flat stream.
     "UnpackKBitsBlock": ("sample", "out", {"k": 8}),
+    # Hamming(7,4) FEC encoder: 4 bits -> one 7-bit codeword burst (4:7 rate-
+    # EXPANDING). A straight 2-cell feed-forward chain (pack accumulator ->
+    # expand burst) with NO feedback corridor and NO reconvergent fan-in
+    # (INV-19/20 N/A, no lock) — the saturated flat stream must equal the
+    # per-sample flat stream (the burst must neither drop nor duplicate bits).
+    "HammingEncoderBlock": ("sample", "out", {}),
 }
 
 # COMPLEX-in / COMPLEX-out (yi,yq 2-word egress): (in_ports, out_port, params). Same

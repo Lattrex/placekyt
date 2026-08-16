@@ -1,0 +1,22 @@
+{
+  "kyttar_block": "HammingEncoderBlock",
+  "passed": true,
+  "metric": "decision",
+  "n_compared": 112,
+  "max_abs_err": 0,
+  "tolerance": 0,
+  "nmse_db": null,
+  "correlation": null,
+  "bit_errors": 0,
+  "delay_used": 0,
+  "coverage": {
+    "gr_equiv": "(none \u2014 systematic Hamming(7,4), Hamming 1950 G matrix)",
+    "edge": true,
+    "exhaustive_nibbles": 16,
+    "random": 4,
+    "mutation": true,
+    "round_trip": "golden syndrome decoder, clean + 1-bit errors",
+    "decision": "c = [d3 d2 d1 d0 p2 p1 p0] MSB-first; p2=d3^d2^d1, p1=d3^d2^d0, p0=d3^d1^d0 (even parity)",
+    "note": "2-cell rate-expanding 4:7 (pack4+p2 -> p1+p0+burst7); bit-exact vs the G-matrix golden, delay 0"
+  }
+}

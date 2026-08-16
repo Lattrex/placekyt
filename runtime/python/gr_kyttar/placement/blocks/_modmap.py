@@ -72,6 +72,7 @@ BUILTIN_BLOCKS = {
     'DiffEncoderBlock': 'diff_encoder_block',
     'DiffDecoderBlock': 'diff_decoder_block',
     'ConvEncoderK7Block': 'conv_encoder_k7_block',
+    'HammingEncoderBlock': 'hamming_encoder_block',
     'PSKSymbolMapperBlock': 'psk_symbol_mapper_block',
     'MapBBBlock': 'map_bb_block',
     'VaricodeEncoderBlock': 'varicode_encoder_block',

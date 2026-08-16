@@ -1,0 +1,52 @@
+id: kyttar_hamming_encoder
+label: 🧪 Kyttar Hamming(7,4) Encoder
+category: '[Kyttar]'
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.hamming_encoder(${device_id})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+
+inputs:
+- label: in
+  domain: stream
+  dtype: byte
+
+outputs:
+- label: out
+  domain: stream
+  dtype: byte
+
+documentation: |-
+  Hamming(7,4) FEC Encoder — systematic hard-decision block code
+  (R. W. Hamming, 1950). No stock GNU Radio counterpart.
+
+  Consumes 4 data bits (one 0/1 byte per item, only the LSB is read — the
+  pack_k_bits convention; the FIRST arriving bit is d3, the most significant)
+  and emits the 7-bit systematic codeword MSB-first, one 0/1 byte per bit.
+  Rate-EXPANDING 4:7. A trailing partial group of fewer than 4 bits is not
+  emitted.
+
+  THE CONVENTION (shared verbatim with the Hamming(7,4) Decoder):
+  codeword MSB-first on the wire = d3 d2 d1 d0 p2 p1 p0, with even parity
+  p2 = d3^d2^d1, p1 = d3^d2^d0, p0 = d3^d1^d0 — the standard systematic
+  generator matrix G = [I4 | P]. Minimum distance 3: the matching syndrome
+  decoder corrects any single bit error per codeword.
+
+  Ports:
+    in  (byte): data bits, one 0/1 byte per item (LSB read)
+    out (byte): codeword bits, MSB-first, one 0/1 byte per item
+
+  Parameters:
+    Device ID: which Kyttar device to use
+
+  BIT-EXACT vs the G-matrix golden (all 16 codewords exhaustively + round-trip
+  through the golden syndrome decoder). Mapped by placeKYT (File -> Import
+  GNURadio Flowgraph) to HammingEncoderBlock.
+
+file_format: 1

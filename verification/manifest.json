@@ -915,7 +915,7 @@
   {
    "kyttar_block": "HammingEncoderBlock",
    "grc_block": "",
-   "status": "planned",
+   "status": "done",
    "tier": 1,
    "metric": "decision",
    "notes": "Systematic Hamming(7,4) hard-decision FEC ENCODER for the data-link demo (the Q15-safe block-code path -- deliberately NOT convolutional/Viterbi). BIT stream in (one 0/1 byte per sample, the Pack/Unpack convention): consumes 4 data bits, emits the 7-bit systematic codeword MSB-first (rate-EXPANDING 4:7 -- the UnpackKBits counted-loop / run_block_dut_rate pattern; INV-20 check for the burst emit). NO stock GNU Radio counterpart (gr-fec has no plain Hamming(7,4) factory) -- golden is the standard systematic G matrix (cite: Hamming 1950 / any coding-theory text; state the exact G used and the bit order LOUDLY). Verify: all 16 codewords exhaustively, random >=3 seeds, round-trip with the golden decoder, INV-4 mutations (wrong parity equation, swapped bit order, dropped parity bit, +1 shift, empty). Raw-word streams, not Q15."

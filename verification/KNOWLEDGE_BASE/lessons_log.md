@@ -11,6 +11,61 @@ dropped) — append new entries above the oldest ones as before.
 
 ---
 
+## HammingEncoderBlock — systematic Hamming(7,4) FEC encoder, bit-exact 2026-08-16
+
+**THE CONVENTION PIN (verbatim — HammingDecoderBlock MUST derive from this exact
+statement):** systematic codeword layout MSB-first on the wire =
+`d3 d2 d1 d0 p2 p1 p0`, where the data nibble arrives MSB-first (d3 first), and
+parity bits are `p2 = d3^d2^d1`, `p1 = d3^d2^d0`, `p0 = d3^d1^d0` (even parity).
+Golden = the standard systematic G = [I4 | P] (Hamming 1950; Lin & Costello);
+executable pin: `HammingEncoderBlock.encode_nibble()`. The test's INDEPENDENT
+G-matrix golden + golden syndrome decoder both live in
+`test_hamming_encoder.py` (min-distance-3 self-check; 112-case
+decoder-inverts-encoder check; DUT round-trip clean AND under a rotating
+single-bit error).
+
+- **Shape = PackKBits(k=4) fused with UnpackKBits(k=7), split 2 cells.** A
+  4:7 rate expander needs BOTH a cross-trigger accumulator and a counted-loop
+  burst emit; the whole thing (accumulate 10 + parity 14 + emit loop 11 + resets)
+  is ~39 instructions — nowhere near one cell's 32-word budget (INV-7 checked
+  BEFORE authoring, per the dispatch). The fit that works: cell `pack` =
+  accumulate + attach p2 (20 instr, 28/32 words), cell `expand` = attach p1+p0 +
+  burst emit (20 instr, 28/32 words). Straight 2×1 fold (nlog10's proven
+  `default_layout` shape) — even column count, I/O co-located (INV-14).
+- **The P (parity) flag IS the parity encoder.** `AND w, mask` sets P = XOR of
+  all result bits, so each parity bit costs 4 instructions (`AND; BR.NP skip;
+  OR bit; MOVE`) with NO per-bit extraction. Masks address the SHIFTED data-bit
+  positions (nibble pre-shifted `<<3` into the codeword frame: m_p2=0x70,
+  m_p1=0x68, m_p0=0x58, all within bits 6..3) so already-attached parity bits
+  (bits 2..0) can never contaminate a later parity. Split the three paritys
+  across the cells by BUDGET, not by concept — p2 rides with the packer, p1/p0
+  with the emitter; the wire format between them is just "codeword with only p2
+  attached".
+- **Register-budget tricks that made it fit:** (a) countdown counter
+  (`StateVar(initial_value=4)` + `SUB;MOVE;BR.NZ`) beats count-up+CMP by 2
+  instructions — MOVE preserves flags, so SUB's Z survives to the branch (no
+  CMP); same trick ends the emit loop. (b) One DataWord `four` = both the p2 OR
+  bit (1<<2) and the counter reload (the INV-19 merge-identical-DataWords
+  trick). (c) NO per-iteration window mask in the emit loop: `SHR #6` then
+  `AND one` isolates bit 6 regardless of garbage above it, so UnpackKBits'
+  `kmask` AND is unnecessary — −1 instr, −1 word.
+- **INV-33 respected by construction:** every StateVar pinned explicitly
+  (data @1..N, state above); first instruction of each cell consumes/copies the
+  R0-landing input before any ALU op clobbers R0.
+- **Saturation (INV-20 checked, as the dispatch demanded):** straight 2-cell
+  feed-forward chain — no feedback corridor, no reconvergent fan-in → no
+  serialize-LOCK. Gated in `test_pipeline_saturation.py` RATE_1IN (saturated
+  flat stream == per-sample flat stream). Orientation: all 8 D4 green;
+  placement legality green.
+- Bit-exact on the FIRST on-chip run (0 errors, all gates): reading the KB
+  first (UnpackKBits counted-loop, PackKBits ALU-lands-in-R0, INV-33/34) is
+  what made that happen. Metric DECISION, tolerance 0, delay 0 (+1-shift
+  mutation fails as required). Raw 0/1 words, NOT Q15; input LSB-masked
+  (`& 1`) with a dedicated stray-high-bits edge test.
+
+---
+
+
 ## Crc16Block — frame CRC-16 via the SHL carry flag; the golden-with-no-GR recipe 2026-08-16
 
 Single-cell, rate-reducing (frame_len bytes → ONE 16-bit CRC word), chip

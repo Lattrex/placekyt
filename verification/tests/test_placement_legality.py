@@ -82,6 +82,10 @@ BLOCKS = [
     # Bitwise NOT (GR blocks.not_bb): single-cell, no params, no internal transit
     # cell — trivially non-self-overlapping in every D4 orientation and under movement.
     ("NotBlock", {}),
+    # Hamming(7,4) FEC encoder: 2-cell straight chain (pack -> expand), no internal
+    # transit cell, no footprint-growing param — its 2x1 footprint must stay
+    # pairwise-distinct in every D4 orientation and under movement.
+    ("HammingEncoderBlock", {}),
 ]
 
 _LIB = "lattrex.official"

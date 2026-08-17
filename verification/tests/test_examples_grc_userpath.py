@@ -30,7 +30,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 _ROOT = Path(__file__).resolve().parents[2]
 for _p in (str(_ROOT / "placekyt"), str(_ROOT / "runtime" / "python"),
            str(_ROOT / "examples" / "cw_transceiver"),
-           str(_ROOT / "examples" / "psk31_transceiver")):
+           str(_ROOT / "examples" / "psk31_transceiver"),
+           str(_ROOT / "examples" / "robust_rx"),
+           str(_ROOT / "examples" / "complex_math")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
@@ -134,6 +136,69 @@ def test_psk31_transceiver_shipped_grc_user_path(qapp):
     reps = -(-len(rx) // len(want))
     assert rx == (want * reps)[:len(rx)], \
         f"RX decoded {rx[:32]!r}... (want repetitions of {want!r})"
+
+
+def test_robust_rx_shipped_grc_user_path(qapp):
+    """Host the SHIPPED robust_rx.kyt, run the SHIPPED .grc's generated top
+    block: the 'rx' sink recovers BER 0 at foff=0.18 while the 'ctl' sink
+    (Costas-only) fails, and both display sinks loop their genuine one-batch
+    result cleanly (server_repeat=True — repetition integrity asserted, not
+    just presence). Complex-input chains emit RAW word floats, so the bit
+    words are read directly."""
+    from robust_rx_demo import CTL_FAIL_BER, KYT_PATH, chain_ber, stim
+
+    grc = _ROOT / "examples" / "robust_rx" / "robust_rx.grc"
+    ctrl, sim = _serve(KYT_PATH)
+    try:
+        sinks = _run_flowgraph(grc)
+    finally:
+        sim.stop_gnuradio_server()
+    bits = stim.tx_bits()
+    n = stim.n_rx_bits()
+    for sink_name, expect_lock in (("rx_sink", True), ("ctl_sink", False)):
+        w = [int(round(v)) & 0xFFFF for v in sinks.get(sink_name, [])]
+        assert len(w) >= n, f"{sink_name} recovered only {len(w)}/{n}"
+        first = w[:n]
+        ber = chain_ber(first, bits)
+        if expect_lock:
+            assert ber == 0.0, f"{sink_name} BER {ber}"
+        else:
+            assert ber > CTL_FAIL_BER, (
+                f"negative control void through the shipped user path: {ber}")
+        # server_repeat integrity: everything after the first batch is a
+        # clean repetition of it (genuine data looped, not a fake stream).
+        reps = len(w) // n
+        for r in range(1, reps):
+            assert w[r * n:(r + 1) * n] == first, \
+                f"{sink_name}: repetition {r} diverges"
+
+
+def test_complex_math_shipped_grc_user_path(qapp):
+    """Host the SHIPPED complex_math.kyt, run the SHIPPED .grc's generated
+    top block: all three sinks recover their block's reference stream
+    BIT-EXACTLY (interleaved I/Q, q15 float convention) with clean
+    server_repeat repetition."""
+    from complex_math_demo import KYT_PATH, references
+
+    grc = _ROOT / "examples" / "complex_math" / "complex_math.grc"
+    ctrl, sim = _serve(KYT_PATH)
+    try:
+        sinks = _run_flowgraph(grc)
+    finally:
+        sim.stop_gnuradio_server()
+    refs = references()
+    for sink_name, ref_name in (("sum_sink", "sum"), ("diff_sink", "diff"),
+                                ("prod_sink", "prod")):
+        w = [v - 0x10000 if v & 0x8000 else v
+             for v in _words(sinks.get(sink_name, []))]
+        ref = refs[ref_name]
+        n = len(ref)
+        assert len(w) >= n, f"{sink_name} recovered only {len(w)}/{n}"
+        assert w[:n] == ref, f"{sink_name} diverges from the block reference"
+        reps = len(w) // n
+        for r in range(1, reps):
+            assert w[r * n:(r + 1) * n] == ref, \
+                f"{sink_name}: repetition {r} diverges"
 
 
 def test_lms_equalizer_shipped_grc_user_path(qapp):

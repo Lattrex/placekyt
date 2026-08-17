@@ -47,7 +47,20 @@ TOTAL_EXCESS = {
     "fsk4_modem.kyt": 6,
     "am_transceiver.kyt": 2,
     "fm_transceiver.kyt": 4,
-    "audio_meter.kyt": 2,
+    # three-stream layout (audio + meter + true-RMS row): the meter head (Abs)
+    # tucks into the DC-blocker pocket at (4,3) — the only routable AND whole-
+    # DRC-clean seat found by exhaustive scan (audio_meter_demo._refine_third_
+    # stream_placement) — and its port ingress corridor rounds the 13-cell
+    # DC-blocker wall (+6 on that one net; every other net shortest-path):
+    "audio_meter.kyt": 6,
+    # the shared x16_in fans out to THREE two-input blocks; the two corridors
+    # to the far MultiplyCC round the AddCC/SubCC row (+2 each, the INV-24
+    # fork detour class):
+    "complex_math.kyt": 4,
+    # the 22-cell FLL ring + two Costas folds: the FLL's own port ingress
+    # rounds the ring edge down col 0 (+2) and the ring→Costas mid corridor
+    # rounds the ctl-chain wall (+2) — both placement-forced wall detours:
+    "robust_rx.kyt": 4,
     # v2 backbone TX thread (duplex SRAM-panel design): one +2 wrap:
     "psk31_transceiver.kyt": 2,
     # abutted pack hugs the input port; the comb's port fan-out far arm rounds

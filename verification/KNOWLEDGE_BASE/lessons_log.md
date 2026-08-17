@@ -11,6 +11,89 @@ dropped) — append new entries above the oldest ones as before.
 
 ---
 
+## robust_rx + complex_math examples, audio_meter true-RMS row — the two-complex-stream CLIENT contract closed 2026-08-16
+
+Three integrations in one pass: `examples/robust_rx/` (FLL→Costas→slicer BER 0
+at foff=0.18 with the Costas-only chain as the ON-CHIP negative control, plus
+the shipped coherent_bpsk_rx.kyt failing the same burst), `examples/
+complex_math/` (AddCC/SubCC/MultiplyCC on two Q15-snapped analytic tones,
+bit-exact vs the blocks' references, mixer bin 10+17=27/256 asserted with
+INV-4 fakes), and a third `rms` stream (RMSBlock, alpha 0.0625) in
+audio_meter. All three: .grc→import→auto_pnr→.kyt, headless demo, §5b gate,
+userpath gate, real-GR-client gate.
+
+- **The AddCC-family GR-client path was NEVER exercised before — three real
+  engine gaps fell out of the first live drive** (the block gates used the
+  bespoke complex2 harness, which hand-addresses registers):
+  1. **Broker port-complex groups were sized to ALL input regs.** For a
+     4-register two-pair block the broker relayed a 4-operand group per net,
+     but each stream injects only ITS pair → the relay protocol broke and
+     the join fired on half-primed garbage. Fix: `bus_router` slices the
+     group to the target port's (I,Q) pair (and keys `done`/`grp` by the reg
+     group so BOTH pairs may divert at one broker); `build`'s broker landing
+     sizes `data_addrs` to the pair.
+  2. **stream_targets handed every stream the block's FULL input register
+     list** — stream b's packet landed on ai/aq and clobbered stream a. Fix:
+     `_target_port_pair_idx` slices the landing's positional `data_addrs` to
+     the net's own pair (only for >2-input-reg blocks; single-pair blocks
+     byte-identical).
+  3. **out_tag ownership was nondeterministic**: both ingress streams of one
+     block walk forward to the same egress net, both claimed its tag, and
+     the duplex demux hands words to the FIRST claimant in client THREAD
+     order. Fix: deterministic ownership — the first ingress stream in
+     project-connection order (the .grc's first-input wire) owns the tag,
+     partners resolve None. CONTRACT: name the sink after the block's
+     FIRST input's stream.
+  The pair slicing is GATED on ``src_complex is True`` (the importer's
+  complex-source marker): the verification harness wires all FOUR rails as
+  separate nets (src_complex None) and expects the legacy single 4-operand
+  broker group — the ungated first cut broke ~100 add/sub/multiply harness
+  tests (regression sweeps are not optional). And ``src_complex`` was NOT
+  serialized to .kyt — the shipped artifact silently lost the contract on
+  load (shipped-kyt gate caught it); it now round-trips in project_io.
+- **Duplex complex egress didn't exist either**: `_process_batch_duplex`
+  matched exact out_tag only, so a complex chain's yq rail (tag+1) parked
+  forever. `complex_out` now rides stream_targets into the duplex demux
+  (tag, tag+1 collected in emit order = interleaved I/Q) — and complex_out
+  detection needed the PROJECT-NET check (the AddCC family declares ONE
+  interface output register, the INV-17 packet emitter, yet the importer
+  synthesizes the real yq→port net; spec-only detection said False).
+- **A complex ingress stream cannot fan out on-chip**: the importer
+  auto-splices a StreamSplitterBlock for a 3-arm source fan-out, but the
+  relay is SINGLE-RAIL (port x) — the Q rail has nowhere to land (and the
+  splitter layout didn't route anyway). Pattern: one source pair per block
+  (fec_link's duplicated-ingress), six streams.
+- **Output-word convention traps, both directions**: a complex-input chain's
+  sink emits RAW word floats (auto mode — the receiver convention), so
+  robust_rx's bit scopes need NO ×32768 (a rescale block shows ±32768) and
+  the client reads raw ints; complex_math's outputs are Q15 VALUES, so its
+  sources must set `output_words: q15` (else the LMS "missing constellation"
+  ±30000 display). Check which convention a chain is in BEFORE wiring scopes.
+- **GR python blocks in a loop segfault**: building a client flowgraph in a
+  loop drops each iteration's Python references; unreferenced py blocks
+  crash the C++ scheduler at start (rc=-11, no Python frame). Keep a
+  `self.keep` list.
+- **audio_meter 3-stream layout needed a 3-cell deterministic nudge**: the
+  compact packer seats the meter head (Abs) on the port row and NO rms
+  placement routes (the port fan-out's third corridor is walled; the full
+  9-attempt auto_pnr sweep exhausts). Exhaustive scan over (Abs, rms 2×2,
+  squelch) seats found ONE whole-DRC-clean routable class: Abs into the
+  DC-blocker pocket (4,3) (+6 excess on its one corridor, pinned in the
+  ratchet), rms in the free lower half, squelch off the x16_out column
+  (its (9,2) seat = the single-cell in==out face hazard). The abs-at-(1,0)
+  seat routes with excess 2 but violates the port-fanout keep-off — DRC
+  said no, so we didn't ship it.
+- robust_rx reused the FLL chain gate's topology/params/stimulus VERBATIM
+  (RC-shaped burst — no MF needed, the symbol instants are ISI-free; the
+  slicer replaces the host-side sign decision at 2 sps with a host-side
+  phase pick). auto_pnr placed the 22-cell ring + 2 Costas + 2 slicers
+  clean on the first try (58/120, no port-cell transit — the demo asserts
+  that hazard check non-vacuously; note `Connection.route` is a
+  `list[RoutePoint]`, not an object with `.points`).
+- audio_meter's RMS row: alpha 0.0625 = 2048/32768 EXACT in Q15 ⇒ chip and
+  GR run the identical time constant and the whole trajectory compares
+  (no warm-up term); bound = the block report's 16 LSB above its 0.18-FS
+  floor, measured 3.
 ## ROUTER+BUILD hardening — used-port-cell transit is a NAMED failure; the locked NCO/FM block-consumer rails un-shifted 2026-08-16
 
 Two engine-level closures, one campaign (no block datapath changed):

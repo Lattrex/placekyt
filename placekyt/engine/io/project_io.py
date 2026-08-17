@@ -354,6 +354,12 @@ def _connection_from_node(node: Any, *, source: str) -> Connection:
     # ``entry_override`` is optional — a per-net JUMP-entry selection for a
     # multi-entry relay target (the panel template's crossover track_b egress).
     entry_override = node.get("entry_override")
+    # ``src_complex`` is optional — does this port-ingress net's SOURCE inject a
+    # complex (I/Q) sample? Set by the GRC importer; load-bearing for a
+    # two-complex-pair block (AddCC family), whose broker groups / injection
+    # data_addrs are sliced to the net's own I/Q pair only when True. Absent
+    # (pre-existing .kyt files) means unknown — legacy behaviour.
+    src_complex = node.get("src_complex")
     return Connection(
         name=str(require(node, "name", source)),
         source=_endpoint_from_node(require(node, "from", source), source=f"{source}.from"),
@@ -367,6 +373,7 @@ def _connection_from_node(node: Any, *, source: str) -> Connection:
         kind=(str(kind) if kind is not None else NET_DATA_TRIGGER),
         entry_override=(int(entry_override) if entry_override is not None
                         else None),
+        src_complex=(bool(src_complex) if src_complex is not None else None),
     )
 
 
@@ -743,6 +750,9 @@ def _connection_to_node(c: Connection, existing: Any = None) -> CommentedMap:
     _set_optional(node, "kind",
                   c.kind if c.kind != NET_DATA_TRIGGER else None)
     _set_optional(node, "entry_override", c.entry_override)
+    # A complex-source ingress net's marker (see the loader note) — emitted only
+    # when set, so existing .kyt files stay byte-clean.
+    _set_optional(node, "src_complex", c.src_complex)
     return node
 
 

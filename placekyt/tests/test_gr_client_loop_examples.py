@@ -42,6 +42,8 @@ from ui.sim_controller import SimController  # noqa: E402
 
 _ROOT = Path(__file__).resolve().parents[2]
 AUDIO_METER_KYT = _ROOT / "examples" / "audio_meter" / "audio_meter.kyt"
+ROBUST_RX_KYT = _ROOT / "examples" / "robust_rx" / "robust_rx.kyt"
+COMPLEX_MATH_KYT = _ROOT / "examples" / "complex_math" / "complex_math.kyt"
 CHANNEL_SEL_KYT = _ROOT / "examples" / "channel_selector" / "channel_selector.kyt"
 EFFECT_ECHO_KYT = _ROOT / "examples" / "audio_effects" / "effect_echo.kyt"
 PSK31_TRX_KYT = _ROOT / "examples" / "psk31_transceiver" / "psk31_transceiver.kyt"
@@ -54,6 +56,8 @@ sys.path.insert(0, str(_ROOT / "examples" / "channel_selector"))
 sys.path.insert(0, str(_ROOT / "examples" / "audio_effects"))
 sys.path.insert(0, str(_ROOT / "examples" / "psk31_transceiver"))
 sys.path.insert(0, str(_ROOT / "examples" / "cw_transceiver"))
+sys.path.insert(0, str(_ROOT / "examples" / "robust_rx"))
+sys.path.insert(0, str(_ROOT / "examples" / "complex_math"))
 
 pytestmark = pytest.mark.skipif(
     not (PSK31_TRX_KYT.exists() and CW_TRX_KYT.exists()
@@ -122,10 +126,25 @@ class top(gr.top_block):
         self.m_out = blocks.vector_sink_f()
         self.connect(self.m_vec, self.m_src, self.env, self.avg, self.db,
                      self.m_snk, self.m_out)
+        # ---- true-RMS stream
+        self.r_vec = blocks.vector_source_f(sig, False, 1, [])
+        self.r_src = _k.source(device_id="kyttar_0", port_name="x16_in",
+                               num_channels=1, server_host="127.0.0.1",
+                               server_port=port, complex_in=False,
+                               burst_len=n, stream_id="rms",
+                               pipelined=True, schedule="interleaved")
+        self.rms = _k.rms(device_id="kyttar_0", alpha=0.0625)
+        self.r_snk = _k.sink(device_id="kyttar_0", port_name="x16_out",
+                             num_channels=1, server_port=port,
+                             server_repeat=False, hold_secs=0.0,
+                             stream_id="rms", in_type=False)
+        self.r_out = blocks.vector_sink_f()
+        self.connect(self.r_vec, self.r_src, self.rms, self.r_snk, self.r_out)
 
 tb = top(); tb.run()
 print("AUDIO_Q15", " ".join(str(int(round(v*32768.0)) & 0xFFFF) for v in tb.a_out.data()))
 print("METER_Q15", " ".join(str(int(round(v*32768.0)) & 0xFFFF) for v in tb.m_out.data()))
+print("RMS_Q15", " ".join(str(int(round(v*32768.0)) & 0xFFFF) for v in tb.r_out.data()))
 """
 
 
@@ -362,6 +381,126 @@ print("RX_Q15", " ".join(str(int(round(v*32768.0)) & 0xFFFF) for v in tb.rx_out.
 """
 
 
+_ROBUST_RX_CLIENT = r"""
+import os, sys
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+sys.path.insert(0, sys.argv[1])
+import kyttar as _k
+from kyttar import robust_demo_stim as stim
+import gnuradio
+gnuradio.kyttar = _k
+sys.modules['gnuradio.kyttar'] = _k
+from gnuradio import gr, blocks
+
+port = int(sys.argv[2])
+sig = stim.rx_burst()
+n = len(sig)
+
+class top(gr.top_block):
+    def __init__(self):
+        gr.top_block.__init__(self, "robust_rx_client")
+        # ---- 'rx': FLL -> Costas -> slicer
+        self.rx_vec = blocks.vector_source_c(sig, False, 1, [])
+        self.rx_src = _k.source(device_id="kyttar_0", port_name="x16_in",
+                                num_channels=1, server_host="127.0.0.1",
+                                server_port=port, complex_in=True,
+                                burst_len=n, stream_id="rx",
+                                pipelined=False, schedule="interleaved")
+        self.fll = _k.fll_band_edge("kyttar_0", 2.0, 0.35, 17, 0.1)
+        self.cos = _k.complex_costas_loop("kyttar_0", 0.05, 1.0, 2)
+        self.sli = _k.bpsk_slicer("kyttar_0", "bit")
+        self.b2f = blocks.uchar_to_float()
+        self.rx_snk = _k.sink(device_id="kyttar_0", port_name="x16_out",
+                              num_channels=1, server_port=port,
+                              server_repeat=False, hold_secs=0.0,
+                              stream_id="rx", in_type=False)
+        self.rx_out = blocks.vector_sink_f()
+        self.connect(self.rx_vec, self.rx_src, self.fll, self.cos, self.sli,
+                     self.b2f, self.rx_snk, self.rx_out)
+        # ---- 'ctl': Costas -> slicer (the negative control)
+        self.ctl_vec = blocks.vector_source_c(sig, False, 1, [])
+        self.ctl_src = _k.source(device_id="kyttar_0", port_name="x16_in",
+                                 num_channels=1, server_host="127.0.0.1",
+                                 server_port=port, complex_in=True,
+                                 burst_len=n, stream_id="ctl",
+                                 pipelined=False, schedule="interleaved")
+        self.ctl_cos = _k.complex_costas_loop("kyttar_0", 0.05, 1.0, 2)
+        self.ctl_sli = _k.bpsk_slicer("kyttar_0", "bit")
+        self.ctl_b2f = blocks.uchar_to_float()
+        self.ctl_snk = _k.sink(device_id="kyttar_0", port_name="x16_out",
+                               num_channels=1, server_port=port,
+                               server_repeat=False, hold_secs=0.0,
+                               stream_id="ctl", in_type=False)
+        self.ctl_out = blocks.vector_sink_f()
+        self.connect(self.ctl_vec, self.ctl_src, self.ctl_cos, self.ctl_sli,
+                     self.ctl_b2f, self.ctl_snk, self.ctl_out)
+
+tb = top(); tb.run()
+# complex-input chains emit RAW word floats (the receiver convention): the
+# slicer's 0/1 bit words arrive as 0.0/1.0.
+print("RX_RAW", " ".join(str(int(round(v)) & 0xFFFF) for v in tb.rx_out.data()))
+print("CTL_RAW", " ".join(str(int(round(v)) & 0xFFFF) for v in tb.ctl_out.data()))
+"""
+
+
+_COMPLEX_MATH_CLIENT = r"""
+import os, sys
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+sys.path.insert(0, sys.argv[1])
+import kyttar as _k
+from kyttar import cmath_demo_stim as stim
+import gnuradio
+gnuradio.kyttar = _k
+sys.modules['gnuradio.kyttar'] = _k
+from gnuradio import gr, blocks
+
+port = int(sys.argv[2])
+a = stim.tone_a()
+b = stim.tone_b()
+n = len(a)
+
+class top(gr.top_block):
+    def __init__(self):
+        gr.top_block.__init__(self, "complex_math_client")
+        self.outs = {}
+        # keep a PYTHON reference to every GR block: loop locals are dropped
+        # each iteration and an unreferenced python block segfaults the C++
+        # scheduler at start.
+        self.keep = []
+        for name, marker, sid_b in (("sum", _k.add_cc, "b_add"),
+                                    ("diff", _k.sub_cc, "b_sub"),
+                                    ("prod", _k.multiply_cc, "b_mul")):
+            av = blocks.vector_source_c(a, False, 1, [])
+            bv = blocks.vector_source_c(b, False, 1, [])
+            asrc = _k.source(device_id="kyttar_0", port_name="x16_in",
+                             num_channels=1, server_host="127.0.0.1",
+                             server_port=port, complex_in=True, burst_len=n,
+                             stream_id=name, pipelined=False,
+                             schedule="interleaved", output_words="q15")
+            bsrc = _k.source(device_id="kyttar_0", port_name="x16_in",
+                             num_channels=1, server_host="127.0.0.1",
+                             server_port=port, complex_in=True, burst_len=n,
+                             stream_id=sid_b, pipelined=False,
+                             schedule="interleaved", output_words="q15")
+            op = marker(device_id="kyttar_0", num_inputs=2)
+            snk = _k.sink(device_id="kyttar_0", port_name="x16_out",
+                          num_channels=1, server_port=port,
+                          server_repeat=False, hold_secs=0.0,
+                          stream_id=name, in_type=True)
+            out = blocks.vector_sink_f()
+            self.connect(av, asrc, (op, 0))
+            self.connect(bv, bsrc, (op, 1))
+            self.connect(op, snk, out)
+            self.keep += [av, bv, asrc, bsrc, op, snk]
+            self.outs[name] = out
+
+tb = top(); tb.run()
+for name, out in tb.outs.items():
+    print(name.upper() + "_Q15",
+          " ".join(str(int(round(v*32768.0)) & 0xFFFF) for v in out.data()))
+"""
+
+
 @pytest.fixture(scope="module")
 def qapp():
     return QApplication.instance() or QApplication([])
@@ -400,15 +539,16 @@ def test_server_refuses_pipelined_for_panel_designs(qapp):
 
 
 
-def test_audio_meter_real_gr_client_two_stream_duplex(qapp, tmp_path):
-    """The genuine GR client loop for the TWO-STREAM analog example — two real
-    kyttar.source/sink pairs ('audio'/'meter') through the DuplexRendezvous on
-    one hosted chip. Both recovered streams must satisfy the example's DERIVED
-    per-block bounds vs the stock-GR golden (the same bounds the headless gate
-    asserts — never widened for the client path)."""
+def test_audio_meter_real_gr_client_three_stream_duplex(qapp, tmp_path):
+    """The genuine GR client loop for the THREE-STREAM analog example — three
+    real kyttar.source/sink pairs ('audio'/'meter'/'rms') through the
+    DuplexRendezvous on one hosted chip. All recovered streams must satisfy
+    the example's DERIVED per-block bounds vs the stock-GR golden (the same
+    bounds the headless gate asserts — never widened for the client path)."""
     from audio_meter_demo import (AUDIO_TOL_LSB, METER_FLOOR, METER_TOL_DB,
-                                  NLOG10_DB_SCALE, SIG, TONE_ONSET,
-                                  TRANSIENT_TRIM, _q15, _s16, gr_golden)
+                                  NLOG10_DB_SCALE, RMS_TOL_LSB, SIG,
+                                  TONE_ONSET, TRANSIENT_TRIM, _q15, _s16,
+                                  gr_golden, rms_worst)
 
     if not AUDIO_METER_KYT.exists():
         pytest.skip("audio_meter.kyt absent")
@@ -420,13 +560,16 @@ def test_audio_meter_real_gr_client_two_stream_duplex(qapp, tmp_path):
                            capture_output=True, text=True, timeout=900)
         lines = {ln.split()[0]: [int(x) for x in ln.split()[1:]]
                  for ln in r.stdout.splitlines()
-                 if ln.startswith(("AUDIO_Q15", "METER_Q15"))}
-        assert r.returncode == 0 and set(lines) == {"AUDIO_Q15", "METER_Q15"}, (
+                 if ln.startswith(("AUDIO_Q15", "METER_Q15", "RMS_Q15"))}
+        assert r.returncode == 0 and set(lines) == {"AUDIO_Q15", "METER_Q15",
+                                                    "RMS_Q15"}, (
             f"GR client failed (rc={r.returncode}):\n{r.stderr[-1500:]}")
         a_chip = [_s16(v) for v in lines["AUDIO_Q15"]]
         m_chip = [_s16(v) for v in lines["METER_Q15"]]
-        a_gold, m_gold = gr_golden(SIG)
+        r_chip = [_s16(v) for v in lines["RMS_Q15"]]
+        a_gold, m_gold, r_gold = gr_golden(SIG)
         assert len(a_chip) == len(a_gold) and len(m_chip) == len(m_gold)
+        assert len(r_chip) == len(r_gold)
         worst_a = max(abs(a_chip[i] - _s16(_q15(a_gold[i])))
                       for i in range(len(a_gold))
                       if not (TONE_ONSET <= i < TONE_ONSET + TRANSIENT_TRIM))
@@ -439,6 +582,77 @@ def test_audio_meter_real_gr_client_two_stream_duplex(qapp, tmp_path):
                                        - m_gold[i]))
             compared += 1
         assert compared > 50 and worst_m <= METER_TOL_DB, (worst_m, compared)
+        worst_r, compared_r = rms_worst(r_chip, r_gold)
+        assert compared_r > 100 and worst_r <= RMS_TOL_LSB, (worst_r,
+                                                             compared_r)
+    finally:
+        sim.stop_gnuradio_server()
+
+
+def test_robust_rx_real_gr_client_duplex(qapp, tmp_path):
+    """The genuine GR client loop for the robust_rx example — two real
+    complex kyttar.source/sink pairs ('rx' = FLL->Costas->slicer, 'ctl' =
+    Costas->slicer) through the DuplexRendezvous against the hosted shipped
+    .kyt. The FLL chain must recover BER 0 at foff=0.18 while the control
+    chain fails — the same verdicts as the headless gate, through the real
+    client stack."""
+    from robust_rx_demo import CTL_FAIL_BER, chain_ber, stim
+
+    if not ROBUST_RX_KYT.exists():
+        pytest.skip("robust_rx.kyt absent")
+    ctrl, sim = _serve(ROBUST_RX_KYT, 58989)
+    try:
+        script = tmp_path / "robust_rx_client.py"
+        script.write_text(_ROBUST_RX_CLIENT)
+        r = subprocess.run([GR_PYTHON, str(script), str(KYTTAR_PKG), "58989"],
+                           capture_output=True, text=True, timeout=900)
+        lines = {ln.split()[0]: [int(x) for x in ln.split()[1:]]
+                 for ln in r.stdout.splitlines()
+                 if ln.startswith(("RX_RAW", "CTL_RAW"))}
+        assert r.returncode == 0 and set(lines) == {"RX_RAW", "CTL_RAW"}, (
+            f"GR client failed (rc={r.returncode}):\n{r.stderr[-1500:]}")
+        bits = stim.tx_bits()
+        n_want = stim.n_rx_bits()
+        assert len(lines["RX_RAW"]) >= n_want - 4, len(lines["RX_RAW"])
+        assert len(lines["CTL_RAW"]) >= n_want - 4, len(lines["CTL_RAW"])
+        assert chain_ber(lines["RX_RAW"], bits) == 0.0
+        ber_ctl = chain_ber(lines["CTL_RAW"], bits)
+        assert ber_ctl > CTL_FAIL_BER, (
+            f"negative control void through the client stack: {ber_ctl}")
+    finally:
+        sim.stop_gnuradio_server()
+
+
+def test_complex_math_real_gr_client_six_streams(qapp, tmp_path):
+    """The genuine GR client loop for the two-complex-stream arithmetic
+    example — SIX real complex kyttar.sources (three block input pairs) and
+    three sinks through the DuplexRendezvous. Every recovered stream must be
+    BIT-EXACT vs its block's own reference (interleaved I/Q via the complex
+    two-tag egress), whatever thread order the rendezvous collected the
+    streams in (the deterministic out_tag-ownership rule)."""
+    from complex_math_demo import references
+
+    if not COMPLEX_MATH_KYT.exists():
+        pytest.skip("complex_math.kyt absent")
+    ctrl, sim = _serve(COMPLEX_MATH_KYT, 58990)
+    try:
+        script = tmp_path / "complex_math_client.py"
+        script.write_text(_COMPLEX_MATH_CLIENT)
+        r = subprocess.run([GR_PYTHON, str(script), str(KYTTAR_PKG), "58990"],
+                           capture_output=True, text=True, timeout=900)
+        lines = {ln.split()[0]: [int(x) for x in ln.split()[1:]]
+                 for ln in r.stdout.splitlines()
+                 if ln.startswith(("SUM_Q15", "DIFF_Q15", "PROD_Q15"))}
+        assert r.returncode == 0 and set(lines) == {"SUM_Q15", "DIFF_Q15",
+                                                    "PROD_Q15"}, (
+            f"GR client failed (rc={r.returncode}):\n{r.stderr[-1500:]}")
+        refs = references()
+        for name in ("sum", "diff", "prod"):
+            got = [v - 0x10000 if v & 0x8000 else v
+                   for v in lines[name.upper() + "_Q15"]]
+            assert got == refs[name], (
+                f"{name}: real-client stream diverges from the block "
+                f"reference ({len(got)} vs {len(refs[name])} words)")
     finally:
         sim.stop_gnuradio_server()
 

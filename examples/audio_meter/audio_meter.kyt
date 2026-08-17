@@ -41,9 +41,9 @@ blocks:
   placement:
     chip: 0
     cells:
-    - {cell_id: 0, x: 5, y: 4, face: north}
+    - {cell_id: 0, x: 4, y: 5, face: south}
     orientation:
-    - ccw
+    - cw
 - name: bandrejectfilter
   type: BandRejectFilter
   library: lattrex.official
@@ -60,19 +60,19 @@ blocks:
   placement:
     chip: 0
     cells:
-    - {cell_id: 0, x: 6, y: 4, face: north}
-    - {cell_id: 1, x: 6, y: 3, face: north}
-    - {cell_id: 2, x: 6, y: 2, face: north}
-    - {cell_id: 3, x: 6, y: 1, face: east}
-    - {cell_id: 4, x: 7, y: 1, face: south}
-    - {cell_id: 5, x: 7, y: 2, face: south}
-    - {cell_id: 6, x: 7, y: 3, face: south}
-    - {cell_id: 7, x: 7, y: 4, face: east}
-    - {cell_id: 8, x: 8, y: 4, face: north}
-    - {cell_id: 9, x: 8, y: 3, face: north}
-    - {cell_id: 10, x: 8, y: 2, face: north}
+    - {cell_id: 0, x: 6, y: 5, face: east}
+    - {cell_id: 1, x: 7, y: 5, face: east}
+    - {cell_id: 2, x: 8, y: 5, face: east}
+    - {cell_id: 3, x: 9, y: 5, face: north}
+    - {cell_id: 4, x: 9, y: 4, face: west}
+    - {cell_id: 5, x: 8, y: 4, face: west}
+    - {cell_id: 6, x: 7, y: 4, face: west}
+    - {cell_id: 7, x: 6, y: 4, face: north}
+    - {cell_id: 8, x: 6, y: 3, face: east}
+    - {cell_id: 9, x: 7, y: 3, face: east}
+    - {cell_id: 10, x: 8, y: 3, face: east}
     orientation:
-    - mirror_v
+    - ccw
 - name: squelch
   type: SquelchBlock
   library: lattrex.official
@@ -84,7 +84,7 @@ blocks:
   placement:
     chip: 0
     cells:
-    - {cell_id: 0, x: 9, y: 2, face: west}
+    - {cell_id: 0, x: 8, y: 2, face: west}
     orientation:
     - mirror_h
 - name: abs
@@ -93,9 +93,9 @@ blocks:
   placement:
     chip: 0
     cells:
-    - {cell_id: 0, x: 2, y: 0, face: west}
+    - {cell_id: 0, x: 4, y: 3, face: south}
     orientation:
-    - mirror_h
+    - cw
 - name: movingaverage
   type: MovingAverageBlock
   library: lattrex.official
@@ -105,8 +105,8 @@ blocks:
   placement:
     chip: 0
     cells:
-    - {cell_id: 0, x: 3, y: 0, face: east}
-    - {cell_id: 1, x: 4, y: 0, face: south}
+    - {cell_id: 0, x: 4, y: 0, face: east}
+    - {cell_id: 1, x: 5, y: 0, face: south}
     orientation:
     - mirror_v
 - name: nlog10
@@ -118,16 +118,29 @@ blocks:
   placement:
     chip: 0
     cells:
-    - {cell_id: norm, x: 5, y: 0, face: east}
-    - {cell_id: poly, x: 6, y: 0, face: east}
+    - {cell_id: norm, x: 7, y: 0, face: east}
+    - {cell_id: poly, x: 8, y: 0, face: east}
+- name: rms
+  type: RMSBlock
+  library: lattrex.official
+  params:
+    alpha: 0.0625
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: pwr, x: 3, y: 7, face: south}
+    - {cell_id: norm, x: 3, y: 8, face: east}
+    - {cell_id: poly, x: 4, y: 8, face: north}
+    - {cell_id: denorm, x: 4, y: 7, face: east}
 connections:
 - name: net1
   from: {chip_port: {chip: 0, port: x16_in}}
   to: {block: dcblocker, port: sample}
   route:
   - {x: 0, y: 0}
-  - {x: 1, y: 0}
+  - {x: 0, y: 1}
   stream_id: audio
+  src_complex: false
 - name: net2
   from: {block: dcblocker, port: out}
   to: {block: agc, port: sample}
@@ -135,7 +148,9 @@ connections:
 - name: net3
   from: {block: agc, port: out}
   to: {block: bandrejectfilter, port: sample}
-  route: abutment
+  route:
+  - {x: 4, y: 5}
+  - {x: 5, y: 5}
 - name: net4
   from: {block: bandrejectfilter, port: out}
   to: {block: squelch, port: sample}
@@ -144,6 +159,7 @@ connections:
   from: {block: squelch, port: out}
   to: {chip_port: {chip: 0, port: x16_out}}
   route:
+  - {x: 8, y: 2}
   - {x: 9, y: 2}
   - {x: 9, y: 1}
   - {x: 9, y: 0}
@@ -153,23 +169,73 @@ connections:
   to: {block: abs, port: x}
   route:
   - {x: 0, y: 0}
-  - {x: 1, y: 0}
-  - {x: 2, y: 0}
+  - {x: 0, y: 1}
+  - {x: 0, y: 2}
+  - {x: 0, y: 3}
+  - {x: 0, y: 4}
+  - {x: 0, y: 5}
+  - {x: 0, y: 6}
+  - {x: 1, y: 6}
+  - {x: 2, y: 6}
+  - {x: 3, y: 6}
+  - {x: 4, y: 6}
+  - {x: 5, y: 6}
+  - {x: 5, y: 5}
+  - {x: 5, y: 4}
+  - {x: 5, y: 3}
   stream_id: meter
+  src_complex: false
 - name: net7
   from: {block: abs, port: out}
   to: {block: movingaverage, port: sample}
-  route: abutment
+  route:
+  - {x: 4, y: 3}
+  - {x: 4, y: 2}
+  - {x: 4, y: 1}
 - name: net8
   from: {block: movingaverage, port: out}
   to: {block: nlog10, port: sample}
-  route: abutment
+  route:
+  - {x: 5, y: 0}
+  - {x: 6, y: 0}
 - name: net9
   from: {block: nlog10, port: out}
   to: {chip_port: {chip: 0, port: x16_out}}
   route:
-  - {x: 6, y: 0}
-  - {x: 7, y: 0}
   - {x: 8, y: 0}
   - {x: 9, y: 0}
   out_tag: 3
+- name: net10
+  from: {chip_port: {chip: 0, port: x16_in}}
+  to: {block: rms, port: sample}
+  route:
+  - {x: 0, y: 0}
+  - {x: 0, y: 1}
+  - {x: 0, y: 2}
+  - {x: 0, y: 3}
+  - {x: 0, y: 4}
+  - {x: 0, y: 5}
+  - {x: 0, y: 6}
+  - {x: 1, y: 6}
+  - {x: 2, y: 6}
+  - {x: 3, y: 6}
+  stream_id: rms
+  src_complex: false
+- name: net11
+  from: {block: rms, port: out}
+  to: {chip_port: {chip: 0, port: x16_out}}
+  route:
+  - {x: 4, y: 7}
+  - {x: 5, y: 7}
+  - {x: 5, y: 6}
+  - {x: 5, y: 5}
+  - {x: 5, y: 4}
+  - {x: 5, y: 3}
+  - {x: 5, y: 2}
+  - {x: 5, y: 1}
+  - {x: 6, y: 1}
+  - {x: 7, y: 1}
+  - {x: 8, y: 1}
+  - {x: 9, y: 1}
+  - {x: 9, y: 0}
+  out_tag: 11

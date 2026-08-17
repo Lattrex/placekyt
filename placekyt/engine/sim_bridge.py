@@ -1222,8 +1222,10 @@ class SimServer:
             hop = int(self._default_hops.get("x16_in", 30)) & 0x1F
             a0, a1, out_tag, in_name = 0, 1, None, "x16_in"
             landings = None
+            complex_out = False
             if sid and sid in self._stream_targets:
                 tgt = self._stream_targets[sid]
+                complex_out = bool(tgt.get("complex_out"))
                 entry = int(tgt["entry_addr"]) & 0xFF
                 hop = int(tgt["hop_count"]) & 0x1F
                 das = list(tgt.get("data_addrs") or [])
@@ -1248,6 +1250,11 @@ class SimServer:
                 "sid": sid, "complex": is_complex, "raw": raw, "n": n,
                 "seg": seg, "entry": entry, "hop": hop, "a0": a0, "a1": a1,
                 "landings": landings,
+                # COMPLEX chain egress: the terminal cell's I and Q rails exit on
+                # tags (out_tag, out_tag+1); this stream owns BOTH, collected in
+                # arrival order (yi then yq — the co-routed emit order), so the
+                # reply is the interleaved I/Q stream the complex sink expects.
+                "complex_out": complex_out,
                 "out_tag": out_tag, "out": [], "port": header.get("port", "x16_out"),
                 # Chip sim-time span of THIS stream's recovered words. Under the
                 # "sequential" schedule the two streams' spans are disjoint (RX fully
@@ -1260,6 +1267,18 @@ class SimServer:
         n_max = max((s["n"] for s in streams), default=0)
         _t0 = time.perf_counter()
         aborted = False
+
+        def _tag_owner(d):
+            """The stream that owns drained-word tag ``d``: its out_tag, or —
+            for a complex-egress chain — the Q rail's sibling tag out_tag+1."""
+            for s2 in streams:
+                t = s2["out_tag"]
+                if t is None:
+                    continue
+                if int(d) == int(t) or (s2.get("complex_out")
+                                        and int(d) == int(t) + 1):
+                    return s2
+            return None
 
         # Drive ONE sample k of stream s (inject xi[/xq] + JUMP, drain + demux by
         # out_tag into each stream's bucket). Shared by both schedules below.
@@ -1306,11 +1325,7 @@ class SimServer:
                 self._capture_tags[(s["port"], float(_t))] = int(d)
                 dst = _solo
                 if dst is None:
-                    for s2 in streams:
-                        if (s2["out_tag"] is not None
-                                and int(d) == int(s2["out_tag"])):
-                            dst = s2
-                            break
+                    dst = _tag_owner(d)
                 if dst is not None:
                     dst["out"].append(float(int(v) & 0xFFFF) if dst["raw"]
                                       else _q15_to_float(int(v)))
@@ -1364,11 +1379,7 @@ class SimServer:
             stream's bucket (same tagging _drive_one uses)."""
             for (v, d, _t) in self._chip.read_port_words_timed(port):
                 self._capture_tags[(port, float(_t))] = int(d)
-                dst = None
-                for s2 in streams:
-                    if s2["out_tag"] is not None and int(d) == int(s2["out_tag"]):
-                        dst = s2
-                        break
+                dst = _tag_owner(d)
                 if dst is not None:
                     dst["out"].append(float(int(v) & 0xFFFF) if dst["raw"]
                                       else _q15_to_float(int(v)))

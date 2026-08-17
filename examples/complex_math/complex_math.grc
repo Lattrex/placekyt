@@ -1,0 +1,902 @@
+options:
+  parameters:
+    author: Lattrex
+    catch_exceptions: 'True'
+    category: '[GRC Hier Blocks]'
+    cmake_opt: ''
+    comment: ''
+    copyright: ''
+    description: 'COMPLEX TWO-STREAM ARITHMETIC on one placeKYT array: two analytic
+      complex tones (f_a = 10/256, f_b = 17/256 cyc/sample) drive three placed
+      two-stream blocks — Add CC (a+b: the two tones superpose into a beat
+      envelope), Sub CC (a-b: the same superposition, second tone flipped) and
+      Multiply CC (a*b: THE MIXER — multiplying analytic tones adds their
+      frequencies, one clean tone at f_a+f_b = 27/256). Each block gets its own
+      ingress stream pair (a complex stream cannot fan out on-chip — the fan-out
+      relay is single-rail), and each landing cell pairs the two per-sample packets
+      with its counting join, in any arrival order (the two-external-complex-stream
+      contract). The wiring pattern to copy for any GRC design that combines two
+      complex streams.'
+    gen_cmake: 'On'
+    gen_linking: dynamic
+    generate_options: qt_gui
+    hier_block_src_path: '.:'
+    id: complex_math
+    max_nouts: '0'
+    output_language: python
+    placement: (0,0)
+    qt_qss_theme: ''
+    realtime_scheduling: ''
+    run: 'True'
+    run_command: '{python} -u {filename}'
+    run_options: prompt
+    sizing_mode: fixed
+    thread_safe_setters: ''
+    title: Complex math — AddCC / SubCC / MultiplyCC (two-tone mixer)
+    window_size: (1600,1000)
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [8, 8]
+    rotation: 0
+    state: enabled
+
+blocks:
+- name: import_stim
+  id: import
+  parameters:
+    alias: ''
+    comment: ''
+    imports: from gnuradio.kyttar import cmath_demo_stim as stim
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [8, 68]
+    rotation: 0
+    state: enabled
+- name: samp_rate
+  id: variable
+  parameters:
+    comment: display sample rate (scope axis only)
+    value: '32000'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [200, 12]
+    rotation: 0
+    state: enabled
+- name: n_pts
+  id: variable
+  parameters:
+    comment: complex samples per burst
+    value: stim.n_samples()
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [320, 12]
+    rotation: 0
+    state: enabled
+- name: a_vec
+  id: blocks_vector_source_x
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'analytic tone A: exp(+j 2pi (10/256) t), Q15-snapped; finite, no repeat'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    repeat: 'False'
+    tags: '[]'
+    type: complex
+    vector: stim.tone_a()
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [32, 172]
+    rotation: 0
+    state: enabled
+- name: b_vec
+  id: blocks_vector_source_x
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'analytic tone B: exp(+j 2pi (17/256) t), Q15-snapped; finite, no repeat'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    repeat: 'False'
+    tags: '[]'
+    type: complex
+    vector: stim.tone_b()
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [32, 420]
+    rotation: 0
+    state: enabled
+- name: a_add_src
+  id: kyttar_source
+  parameters:
+    affinity: ''
+    alias: ''
+    burst_len: n_pts
+    comment: 'tone A -> chip x16_in (stream ''sum'': Add CC first port)'
+    complex_in: complex
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_channels: '1'
+    pipelined: 'no'
+    port_name: '"x16_in"'
+    schedule: '"interleaved"'
+    server_host: '"127.0.0.1"'
+    output_words: '"q15"'
+    server_port: '58950'
+    stream_id: '"sum"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [280, 116]
+    rotation: 0
+    state: enabled
+- name: b_add_src
+  id: kyttar_source
+  parameters:
+    affinity: ''
+    alias: ''
+    burst_len: n_pts
+    comment: 'tone B -> chip x16_in (stream ''b_add'': Add CC second port)'
+    complex_in: complex
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_channels: '1'
+    pipelined: 'no'
+    port_name: '"x16_in"'
+    schedule: '"interleaved"'
+    server_host: '"127.0.0.1"'
+    output_words: '"q15"'
+    server_port: '58950'
+    stream_id: '"b_add"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [280, 212]
+    rotation: 0
+    state: enabled
+- name: a_sub_src
+  id: kyttar_source
+  parameters:
+    affinity: ''
+    alias: ''
+    burst_len: n_pts
+    comment: 'tone A -> chip x16_in (stream ''diff'': Sub CC first port)'
+    complex_in: complex
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_channels: '1'
+    pipelined: 'no'
+    port_name: '"x16_in"'
+    schedule: '"interleaved"'
+    server_host: '"127.0.0.1"'
+    output_words: '"q15"'
+    server_port: '58950'
+    stream_id: '"diff"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [280, 308]
+    rotation: 0
+    state: enabled
+- name: b_sub_src
+  id: kyttar_source
+  parameters:
+    affinity: ''
+    alias: ''
+    burst_len: n_pts
+    comment: 'tone B -> chip x16_in (stream ''b_sub'': Sub CC second port)'
+    complex_in: complex
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_channels: '1'
+    pipelined: 'no'
+    port_name: '"x16_in"'
+    schedule: '"interleaved"'
+    server_host: '"127.0.0.1"'
+    output_words: '"q15"'
+    server_port: '58950'
+    stream_id: '"b_sub"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [280, 404]
+    rotation: 0
+    state: enabled
+- name: a_mul_src
+  id: kyttar_source
+  parameters:
+    affinity: ''
+    alias: ''
+    burst_len: n_pts
+    comment: 'tone A -> chip x16_in (stream ''prod'': Multiply CC first port)'
+    complex_in: complex
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_channels: '1'
+    pipelined: 'no'
+    port_name: '"x16_in"'
+    schedule: '"interleaved"'
+    server_host: '"127.0.0.1"'
+    output_words: '"q15"'
+    server_port: '58950'
+    stream_id: '"prod"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [280, 500]
+    rotation: 0
+    state: enabled
+- name: b_mul_src
+  id: kyttar_source
+  parameters:
+    affinity: ''
+    alias: ''
+    burst_len: n_pts
+    comment: 'tone B -> chip x16_in (stream ''b_mul'': Multiply CC second port)'
+    complex_in: complex
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_channels: '1'
+    pipelined: 'no'
+    port_name: '"x16_in"'
+    schedule: '"interleaved"'
+    server_host: '"127.0.0.1"'
+    output_words: '"q15"'
+    server_port: '58950'
+    stream_id: '"b_mul"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [280, 596]
+    rotation: 0
+    state: enabled
+- name: kadd
+  id: kyttar_add_cc
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: "a + b (per-rail saturating Q15 add) — placed on chip"
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_inputs: '2'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [540, 156]
+    rotation: 0
+    state: enabled
+- name: ksub
+  id: kyttar_sub_cc
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: "a - b (per-rail saturating Q15 subtract) — placed on chip"
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_inputs: '2'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [540, 300]
+    rotation: 0
+    state: enabled
+- name: kmul
+  id: kyttar_multiply_cc
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: "a * b (full complex product: yi = ai*bi - aq*bq, yq = ai*bq + aq*bi) — placed on chip"
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_inputs: '2'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [540, 444]
+    rotation: 0
+    state: enabled
+- name: sum_sink
+  id: kyttar_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: a+b <- chip x16_out (stream 'sum'; I,Q interleaved)
+    device_id: '"kyttar_0"'
+    hold_secs: '8.0'
+    in_type: complex
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_channels: '1'
+    port_name: '"x16_out"'
+    server_port: '58950'
+    server_repeat: 'True'
+    stream_id: '"sum"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [780, 148]
+    rotation: 0
+    state: enabled
+- name: diff_sink
+  id: kyttar_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: a-b <- chip x16_out (stream 'diff'; I,Q interleaved)
+    device_id: '"kyttar_0"'
+    hold_secs: '8.0'
+    in_type: complex
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_channels: '1'
+    port_name: '"x16_out"'
+    server_port: '58950'
+    server_repeat: 'True'
+    stream_id: '"diff"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [780, 292]
+    rotation: 0
+    state: enabled
+- name: prod_sink
+  id: kyttar_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: a*b <- chip x16_out (stream 'prod'; I,Q interleaved)
+    device_id: '"kyttar_0"'
+    hold_secs: '8.0'
+    in_type: complex
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_channels: '1'
+    port_name: '"x16_out"'
+    server_port: '58950'
+    server_repeat: 'True'
+    stream_id: '"prod"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [780, 436]
+    rotation: 0
+    state: enabled
+- name: sum_iq2c
+  id: epy_block
+  parameters:
+    _source_code: "\"\"\"Interleaved I,Q floats -> complex pairs (2:1).\n\nThe kyttar\
+      \ sink emits a complex chain's recovered stream as INTERLEAVED\nI,Q float32\
+      \ (its output port is always float); this embedded block\nreassembles gr_complex\
+      \ for the scope. An embedded block\n(not blocks.float_to_complex)\
+      \ on purpose: stock converter ids are chip-side\nsplice markers to the placeKYT\
+      \ importer, and this display glue must stay\nhost-side.\"\"\"\nimport numpy\
+      \ as np\nfrom gnuradio import gr\n\n\nclass blk(gr.decim_block):\n    def __init__(self):\n\
+      \        gr.decim_block.__init__(self, name='IQ Pairs to Complex',\n       \
+      \                         in_sig=[np.float32],\n                           \
+      \     out_sig=[np.complex64], decim=2)\n\n    def work(self, input_items, output_items):\n\
+      \        n = len(output_items[0])\n        x = input_items[0][:2 * n]\n    \
+      \    output_items[0][:] = x[0::2] + 1j * x[1::2]\n        return n\n"
+    affinity: ''
+    alias: ''
+    comment: interleaved I,Q floats -> gr_complex (host-side display glue)
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    _io_cache: ('IQ Pairs to Complex', 'blk', [], [('0', 'float', 1)], [('0', 'complex',
+      1)], '', [])
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [980, 172]
+    rotation: 0
+    state: enabled
+- name: diff_iq2c
+  id: epy_block
+  parameters:
+    _source_code: "\"\"\"Interleaved I,Q floats -> complex pairs (2:1).\n\nThe kyttar\
+      \ sink emits a complex chain's recovered stream as INTERLEAVED\nI,Q float32\
+      \ (its output port is always float); this embedded block\nreassembles gr_complex\
+      \ for the scope. An embedded block\n(not blocks.float_to_complex)\
+      \ on purpose: stock converter ids are chip-side\nsplice markers to the placeKYT\
+      \ importer, and this display glue must stay\nhost-side.\"\"\"\nimport numpy\
+      \ as np\nfrom gnuradio import gr\n\n\nclass blk(gr.decim_block):\n    def __init__(self):\n\
+      \        gr.decim_block.__init__(self, name='IQ Pairs to Complex',\n       \
+      \                         in_sig=[np.float32],\n                           \
+      \     out_sig=[np.complex64], decim=2)\n\n    def work(self, input_items, output_items):\n\
+      \        n = len(output_items[0])\n        x = input_items[0][:2 * n]\n    \
+      \    output_items[0][:] = x[0::2] + 1j * x[1::2]\n        return n\n"
+    affinity: ''
+    alias: ''
+    comment: interleaved I,Q floats -> gr_complex (host-side display glue)
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    _io_cache: ('IQ Pairs to Complex', 'blk', [], [('0', 'float', 1)], [('0', 'complex',
+      1)], '', [])
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [980, 316]
+    rotation: 0
+    state: enabled
+- name: prod_iq2c
+  id: epy_block
+  parameters:
+    _source_code: "\"\"\"Interleaved I,Q floats -> complex pairs (2:1).\n\nThe kyttar\
+      \ sink emits a complex chain's recovered stream as INTERLEAVED\nI,Q float32\
+      \ (its output port is always float); this embedded block\nreassembles gr_complex\
+      \ for the scope. An embedded block\n(not blocks.float_to_complex)\
+      \ on purpose: stock converter ids are chip-side\nsplice markers to the placeKYT\
+      \ importer, and this display glue must stay\nhost-side.\"\"\"\nimport numpy\
+      \ as np\nfrom gnuradio import gr\n\n\nclass blk(gr.decim_block):\n    def __init__(self):\n\
+      \        gr.decim_block.__init__(self, name='IQ Pairs to Complex',\n       \
+      \                         in_sig=[np.float32],\n                           \
+      \     out_sig=[np.complex64], decim=2)\n\n    def work(self, input_items, output_items):\n\
+      \        n = len(output_items[0])\n        x = input_items[0][:2 * n]\n    \
+      \    output_items[0][:] = x[0::2] + 1j * x[1::2]\n        return n\n"
+    affinity: ''
+    alias: ''
+    comment: interleaved I,Q floats -> gr_complex (host-side display glue)
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    _io_cache: ('IQ Pairs to Complex', 'blk', [], [('0', 'float', 1)], [('0', 'complex',
+      1)], '', [])
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [980, 460]
+    rotation: 0
+    state: enabled
+- name: in_scope
+  id: qtgui_time_sink_x
+  parameters:
+    affinity: ''
+    alias: ''
+    alpha1: '1.0'
+    alpha10: '1.0'
+    alpha2: '1.0'
+    alpha3: '1.0'
+    alpha4: '1.0'
+    alpha5: '1.0'
+    alpha6: '1.0'
+    alpha7: '1.0'
+    alpha8: '1.0'
+    alpha9: '1.0'
+    autoscale: 'False'
+    axislabels: 'True'
+    color1: blue
+    color10: dark blue
+    color2: red
+    color3: green
+    color4: black
+    color5: cyan
+    color6: magenta
+    color7: yellow
+    color8: dark red
+    color9: dark green
+    comment: 'the two source tones (host side): A at 10/256, B at 17/256 cyc/sample'
+    ctrlpanel: 'False'
+    entags: 'True'
+    grid: 'False'
+    gui_hint: ''
+    label1: tone A
+    label10: Signal 10
+    label2: ''
+    label3: tone B
+    label4: ''
+    label5: Signal 5
+    label6: Signal 6
+    label7: Signal 7
+    label8: Signal 8
+    label9: Signal 9
+    legend: 'True'
+    marker1: '-1'
+    marker10: '-1'
+    marker2: '-1'
+    marker3: '-1'
+    marker4: '-1'
+    marker5: '-1'
+    marker6: '-1'
+    marker7: '-1'
+    marker8: '-1'
+    marker9: '-1'
+    name: '"Input tones A (10/256) and B (17/256)"'
+    nconnections: '2'
+    size: n_pts - 16
+    srate: samp_rate
+    stemplot: 'False'
+    style1: '1'
+    style10: '1'
+    style2: '1'
+    style3: '1'
+    style4: '1'
+    style5: '1'
+    style6: '1'
+    style7: '1'
+    style8: '1'
+    style9: '1'
+    tr_chan: '0'
+    tr_delay: '0'
+    tr_level: '0.0'
+    tr_mode: qtgui.TRIG_MODE_FREE
+    tr_slope: qtgui.TRIG_SLOPE_POS
+    tr_tag: '""'
+    type: complex
+    update_time: '0.10'
+    width1: '1'
+    width10: '1'
+    width2: '1'
+    width3: '1'
+    width4: '1'
+    width5: '1'
+    width6: '1'
+    width7: '1'
+    width8: '1'
+    width9: '1'
+    ylabel: level
+    ymax: '0.6'
+    ymin: '-0.6'
+    yunit: '""'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [280, 600]
+    rotation: 0
+    state: enabled
+- name: sum_scope
+  id: qtgui_time_sink_x
+  parameters:
+    affinity: ''
+    alias: ''
+    alpha1: '1.0'
+    alpha10: '1.0'
+    alpha2: '1.0'
+    alpha3: '1.0'
+    alpha4: '1.0'
+    alpha5: '1.0'
+    alpha6: '1.0'
+    alpha7: '1.0'
+    alpha8: '1.0'
+    alpha9: '1.0'
+    autoscale: 'False'
+    axislabels: 'True'
+    color1: blue
+    color10: dark blue
+    color2: red
+    color3: green
+    color4: black
+    color5: cyan
+    color6: magenta
+    color7: yellow
+    color8: dark red
+    color9: dark green
+    comment: 'a + b from the chip: the two tones superpose (beat envelope at (17-10)/256)'
+    ctrlpanel: 'False'
+    entags: 'True'
+    grid: 'False'
+    gui_hint: ''
+    label1: Signal 1
+    label10: Signal 10
+    label2: Signal 2
+    label3: Signal 3
+    label4: Signal 4
+    label5: Signal 5
+    label6: Signal 6
+    label7: Signal 7
+    label8: Signal 8
+    label9: Signal 9
+    legend: 'True'
+    marker1: '-1'
+    marker10: '-1'
+    marker2: '-1'
+    marker3: '-1'
+    marker4: '-1'
+    marker5: '-1'
+    marker6: '-1'
+    marker7: '-1'
+    marker8: '-1'
+    marker9: '-1'
+    name: '"Add CC: a + b (chip) — two-tone beat"'
+    nconnections: '1'
+    size: n_pts
+    srate: samp_rate
+    stemplot: 'False'
+    style1: '1'
+    style10: '1'
+    style2: '1'
+    style3: '1'
+    style4: '1'
+    style5: '1'
+    style6: '1'
+    style7: '1'
+    style8: '1'
+    style9: '1'
+    tr_chan: '0'
+    tr_delay: '0'
+    tr_level: '0.0'
+    tr_mode: qtgui.TRIG_MODE_FREE
+    tr_slope: qtgui.TRIG_SLOPE_POS
+    tr_tag: '""'
+    type: complex
+    update_time: '0.10'
+    width1: '1'
+    width10: '1'
+    width2: '1'
+    width3: '1'
+    width4: '1'
+    width5: '1'
+    width6: '1'
+    width7: '1'
+    width8: '1'
+    width9: '1'
+    ylabel: level
+    ymax: '1'
+    ymin: '-1'
+    yunit: '""'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1180, 132]
+    rotation: 0
+    state: enabled
+- name: diff_scope
+  id: qtgui_time_sink_x
+  parameters:
+    affinity: ''
+    alias: ''
+    alpha1: '1.0'
+    alpha10: '1.0'
+    alpha2: '1.0'
+    alpha3: '1.0'
+    alpha4: '1.0'
+    alpha5: '1.0'
+    alpha6: '1.0'
+    alpha7: '1.0'
+    alpha8: '1.0'
+    alpha9: '1.0'
+    autoscale: 'False'
+    axislabels: 'True'
+    color1: blue
+    color10: dark blue
+    color2: red
+    color3: green
+    color4: black
+    color5: cyan
+    color6: magenta
+    color7: yellow
+    color8: dark red
+    color9: dark green
+    comment: 'a - b from the chip: the same beat with the B tone phase-flipped'
+    ctrlpanel: 'False'
+    entags: 'True'
+    grid: 'False'
+    gui_hint: ''
+    label1: Signal 1
+    label10: Signal 10
+    label2: Signal 2
+    label3: Signal 3
+    label4: Signal 4
+    label5: Signal 5
+    label6: Signal 6
+    label7: Signal 7
+    label8: Signal 8
+    label9: Signal 9
+    legend: 'True'
+    marker1: '-1'
+    marker10: '-1'
+    marker2: '-1'
+    marker3: '-1'
+    marker4: '-1'
+    marker5: '-1'
+    marker6: '-1'
+    marker7: '-1'
+    marker8: '-1'
+    marker9: '-1'
+    name: '"Sub CC: a - b (chip)"'
+    nconnections: '1'
+    size: n_pts
+    srate: samp_rate
+    stemplot: 'False'
+    style1: '1'
+    style10: '1'
+    style2: '1'
+    style3: '1'
+    style4: '1'
+    style5: '1'
+    style6: '1'
+    style7: '1'
+    style8: '1'
+    style9: '1'
+    tr_chan: '0'
+    tr_delay: '0'
+    tr_level: '0.0'
+    tr_mode: qtgui.TRIG_MODE_FREE
+    tr_slope: qtgui.TRIG_SLOPE_POS
+    tr_tag: '""'
+    type: complex
+    update_time: '0.10'
+    width1: '1'
+    width10: '1'
+    width2: '1'
+    width3: '1'
+    width4: '1'
+    width5: '1'
+    width6: '1'
+    width7: '1'
+    width8: '1'
+    width9: '1'
+    ylabel: level
+    ymax: '1'
+    ymin: '-1'
+    yunit: '""'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1180, 316]
+    rotation: 0
+    state: enabled
+- name: prod_scope
+  id: qtgui_time_sink_x
+  parameters:
+    affinity: ''
+    alias: ''
+    alpha1: '1.0'
+    alpha10: '1.0'
+    alpha2: '1.0'
+    alpha3: '1.0'
+    alpha4: '1.0'
+    alpha5: '1.0'
+    alpha6: '1.0'
+    alpha7: '1.0'
+    alpha8: '1.0'
+    alpha9: '1.0'
+    autoscale: 'False'
+    axislabels: 'True'
+    color1: blue
+    color10: dark blue
+    color2: red
+    color3: green
+    color4: black
+    color5: cyan
+    color6: magenta
+    color7: yellow
+    color8: dark red
+    color9: dark green
+    comment: 'a * b from the chip: THE MIXER — one clean tone at f_a + f_b = 27/256 cyc/sample'
+    ctrlpanel: 'False'
+    entags: 'True'
+    grid: 'False'
+    gui_hint: ''
+    label1: Signal 1
+    label10: Signal 10
+    label2: Signal 2
+    label3: Signal 3
+    label4: Signal 4
+    label5: Signal 5
+    label6: Signal 6
+    label7: Signal 7
+    label8: Signal 8
+    label9: Signal 9
+    legend: 'True'
+    marker1: '-1'
+    marker10: '-1'
+    marker2: '-1'
+    marker3: '-1'
+    marker4: '-1'
+    marker5: '-1'
+    marker6: '-1'
+    marker7: '-1'
+    marker8: '-1'
+    marker9: '-1'
+    name: '"Multiply CC: a * b (chip) — the mixer, tone at 27/256"'
+    nconnections: '1'
+    size: n_pts
+    srate: samp_rate
+    stemplot: 'False'
+    style1: '1'
+    style10: '1'
+    style2: '1'
+    style3: '1'
+    style4: '1'
+    style5: '1'
+    style6: '1'
+    style7: '1'
+    style8: '1'
+    style9: '1'
+    tr_chan: '0'
+    tr_delay: '0'
+    tr_level: '0.0'
+    tr_mode: qtgui.TRIG_MODE_FREE
+    tr_slope: qtgui.TRIG_SLOPE_POS
+    tr_tag: '""'
+    type: complex
+    update_time: '0.10'
+    width1: '1'
+    width10: '1'
+    width2: '1'
+    width3: '1'
+    width4: '1'
+    width5: '1'
+    width6: '1'
+    width7: '1'
+    width8: '1'
+    width9: '1'
+    ylabel: level
+    ymax: '0.3'
+    ymin: '-0.3'
+    yunit: '""'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1180, 500]
+    rotation: 0
+    state: enabled
+
+connections:
+- [a_vec, '0', a_add_src, '0']
+- [a_vec, '0', a_sub_src, '0']
+- [a_vec, '0', a_mul_src, '0']
+- [b_vec, '0', b_add_src, '0']
+- [b_vec, '0', b_sub_src, '0']
+- [b_vec, '0', b_mul_src, '0']
+- [a_vec, '0', in_scope, '0']
+- [b_vec, '0', in_scope, '1']
+- [a_add_src, '0', kadd, '0']
+- [a_sub_src, '0', ksub, '0']
+- [a_mul_src, '0', kmul, '0']
+- [b_add_src, '0', kadd, '1']
+- [b_sub_src, '0', ksub, '1']
+- [b_mul_src, '0', kmul, '1']
+- [kadd, '0', sum_sink, '0']
+- [ksub, '0', diff_sink, '0']
+- [kmul, '0', prod_sink, '0']
+- [sum_sink, '0', sum_iq2c, '0']
+- [diff_sink, '0', diff_iq2c, '0']
+- [prod_sink, '0', prod_iq2c, '0']
+- [sum_iq2c, '0', sum_scope, '0']
+- [diff_iq2c, '0', diff_scope, '0']
+- [prod_iq2c, '0', prod_scope, '0']
+
+metadata:
+  file_format: 1
+  grc_version: 3.10.12.0

@@ -1928,6 +1928,14 @@ def _resolve_input_landings(cell_map, blocks, connections, project, chip_id,
             last = BROKER_BURST_REG + int(broker_conn_burst.get(conn.name, 0))
             if _in_regs and len(_in_regs) > 1 and conn.src_complex is not False:
                 n = len(_in_regs)
+                # TWO-COMPLEX-PAIR blocks (AddCC family: 4 input regs = two I/Q
+                # pairs) fed by a GRC COMPLEX source: the broker group planned
+                # for THIS net is its stream's pair only (see bus_router's
+                # src_complex-gated port_complex_regs pair slice), so the host
+                # injects exactly 2 operands. Explicitly-wired per-rail nets
+                # (src_complex None) keep the legacy full-group sizing.
+                if n > 2 and conn.src_complex is True:
+                    n = 2
                 data_addrs = [last - (n - 1) + i for i in range(n)]
             else:
                 data_addrs = [last]

@@ -7,7 +7,7 @@
 # GNU Radio Python Flow Graph
 # Title: Receiver audio tail + S-meter (duplex on one array)
 # Author: Lattrex
-# Description: A receiver AUDIO TAIL + S-METER, two streams full-duplex on one placeKYT chip (shared x16 ports, demuxed by stream tags — the same duplex machinery as the BPSK modem). Stream "audio": DC blocker -> AGC (ref 0.5) -> band-pass 300..2700 Hz -> band-reject 3300..3700 Hz -> power squelch (-25 dB) — the classic voice-channel cleanup. Stream "meter": |x| -> moving average (8) -> 10*log10 dB level (Q15 wire value scaled /64 per the Nlog10 block's documented HW representation). Golden: the IDENTICAL stock-GNU-Radio chains (dc_blocker_ff, agc_ff, firdes band filters, pwr_squelch_ff, abs_ff, moving_average_ff, nlog10_ff) within a tolerance DERIVED from the per-block verified Q15 error bounds.
+# Description: A receiver AUDIO TAIL + S-METER + TRUE-RMS row, three streams full-duplex on one placeKYT chip (shared x16 ports, demuxed by stream tags — the same duplex machinery as the BPSK modem). Stream "audio": DC blocker -> AGC (ref 0.5) -> band-reject 3300..3700 Hz -> power squelch (-25 dB) — the classic voice-channel cleanup. Stream "meter": |x| -> moving average (8) -> 10*log10 dB level (Q15 wire value scaled /64 per the Nlog10 block's documented HW representation). Stream "rms": blocks.rms_ff — the TRUE RMS level (single-pole power average, then square root, alpha = 0.0625 — exactly representable in Q15 so the chip and GR run the identical time constant); compare its steady tone level (~0.6) against the envelope meter's rectified average. Golden: the IDENTICAL stock-GNU-Radio chains (dc_blocker_ff, agc_ff, firdes band filters, pwr_squelch_ff, abs_ff, moving_average_ff, nlog10_ff, rms_ff) within a tolerance DERIVED from the per-block verified Q15 error bounds.
 # GNU Radio version: 3.10.12.0
 
 from PyQt5 import Qt
@@ -75,6 +75,58 @@ class audio_meter(gr.top_block, Qt.QWidget):
 
         self.db = kyttar.nlog10(device_id="kyttar_0", n=10.0, k=0.0)
         self.sq = kyttar.squelch(device_id="kyttar_0", db=(-25), alpha=0.01, ramp=0, gate=False)
+        self.rms_vec = blocks.vector_source_f(sig, False, 1, [])
+        self.rms_scope = qtgui.time_sink_f(
+            256, #size
+            samp_rate, #samp_rate
+            "True RMS (rms_ff, alpha 0.0625)", #name
+            1, #number of inputs
+            None # parent
+        )
+        self.rms_scope.set_update_time(0.10)
+        self.rms_scope.set_y_axis(0, 1)
+
+        self.rms_scope.set_y_label('level', "")
+
+        self.rms_scope.enable_tags(True)
+        self.rms_scope.set_trigger_mode(qtgui.TRIG_MODE_FREE, qtgui.TRIG_SLOPE_POS, 0.0, 0, 0, "")
+        self.rms_scope.enable_autoscale(False)
+        self.rms_scope.enable_grid(False)
+        self.rms_scope.enable_axis_labels(True)
+        self.rms_scope.enable_control_panel(False)
+        self.rms_scope.enable_stem_plot(False)
+
+
+        labels = ['Signal 1', 'Signal 2', 'Signal 3', 'Signal 4', 'Signal 5',
+            'Signal 6', 'Signal 7', 'Signal 8', 'Signal 9', 'Signal 10']
+        widths = [1, 1, 1, 1, 1,
+            1, 1, 1, 1, 1]
+        colors = ['blue', 'red', 'green', 'black', 'cyan',
+            'magenta', 'yellow', 'dark red', 'dark green', 'dark blue']
+        alphas = [1.0, 1.0, 1.0, 1.0, 1.0,
+            1.0, 1.0, 1.0, 1.0, 1.0]
+        styles = [1, 1, 1, 1, 1,
+            1, 1, 1, 1, 1]
+        markers = [-1, -1, -1, -1, -1,
+            -1, -1, -1, -1, -1]
+
+
+        for i in range(1):
+            if len(labels[i]) == 0:
+                self.rms_scope.set_line_label(i, "Data {0}".format(i))
+            else:
+                self.rms_scope.set_line_label(i, labels[i])
+            self.rms_scope.set_line_width(i, widths[i])
+            self.rms_scope.set_line_color(i, colors[i])
+            self.rms_scope.set_line_style(i, styles[i])
+            self.rms_scope.set_line_marker(i, markers[i])
+            self.rms_scope.set_line_alpha(i, alphas[i])
+
+        self._rms_scope_win = sip.wrapinstance(self.rms_scope.qwidget(), Qt.QWidget)
+        self.top_layout.addWidget(self._rms_scope_win)
+        self.rms_out = kyttar.sink(device_id="kyttar_0", port_name="x16_out", num_channels=1, server_port=58950, server_repeat=False, hold_secs=8.0, stream_id="rms", in_type=False)
+        self.rms_in = kyttar.source(device_id="kyttar_0", port_name="x16_in", num_channels=1, server_host="127.0.0.1", server_port=58950, complex_in=False, burst_len=burst_len, stream_id="rms", pipelined=True, schedule="interleaved", repeat=False, output_words="auto")
+        self.rms = kyttar.rms(device_id="kyttar_0", alpha=0.0625)
         self.meter_vec = blocks.vector_source_f(sig, False, 1, [])
         self.meter_scope = qtgui.time_sink_f(
             256, #size
@@ -199,6 +251,10 @@ class audio_meter(gr.top_block, Qt.QWidget):
         self.connect((self.meter_in, 0), (self.env, 0))
         self.connect((self.meter_out, 0), (self.meter_scope, 0))
         self.connect((self.meter_vec, 0), (self.meter_in, 0))
+        self.connect((self.rms, 0), (self.rms_out, 0))
+        self.connect((self.rms_in, 0), (self.rms, 0))
+        self.connect((self.rms_out, 0), (self.rms_scope, 0))
+        self.connect((self.rms_vec, 0), (self.rms_in, 0))
         self.connect((self.sq, 0), (self.audio_out, 0))
 
 
@@ -218,6 +274,7 @@ class audio_meter(gr.top_block, Qt.QWidget):
         self.set_burst_len(len(self.sig))
         self.audio_vec.set_data(self.sig, [])
         self.meter_vec.set_data(self.sig, [])
+        self.rms_vec.set_data(self.sig, [])
 
     def get_samp_rate(self):
         return self.samp_rate
@@ -226,6 +283,7 @@ class audio_meter(gr.top_block, Qt.QWidget):
         self.samp_rate = samp_rate
         self.audio_scope.set_samp_rate(self.samp_rate)
         self.meter_scope.set_samp_rate(self.samp_rate)
+        self.rms_scope.set_samp_rate(self.samp_rate)
 
     def get_burst_len(self):
         return self.burst_len

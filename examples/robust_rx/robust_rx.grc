@@ -6,25 +6,19 @@ options:
     cmake_opt: ''
     comment: ''
     copyright: ''
-    description: 'A receiver AUDIO TAIL + S-METER + TRUE-RMS row, three streams
-      full-duplex on one placeKYT chip (shared x16 ports, demuxed by stream tags —
-      the same duplex machinery as the BPSK modem). Stream "audio": DC blocker ->
-      AGC (ref 0.5) -> band-reject 3300..3700 Hz -> power squelch (-25 dB)
-      — the classic voice-channel cleanup. Stream "meter": |x| -> moving average
-      (8) -> 10*log10 dB level (Q15 wire value scaled /64 per the Nlog10 block''s
-      documented HW representation). Stream "rms": blocks.rms_ff — the TRUE RMS
-      level (single-pole power average, then square root, alpha = 0.0625 — exactly
-      representable in Q15 so the chip and GR run the identical time constant);
-      compare its steady tone level (~0.6) against the envelope meter''s rectified
-      average. Golden: the IDENTICAL stock-GNU-Radio chains (dc_blocker_ff, agc_ff,
-      firdes band filters, pwr_squelch_ff, abs_ff, moving_average_ff, nlog10_ff,
-      rms_ff) within a tolerance DERIVED from the per-block verified Q15 error
-      bounds.'
+    description: 'ROBUST RX — coarse frequency recovery on one placeKYT array. One
+      raised-cosine BPSK burst carries a LARGE carrier offset (0.18 cycles/sample,
+      far beyond a Costas loop''s pull-in) into TWO placed receiver chains: ''rx'' =
+      FLL band-edge (coarse frequency recovery) -> Costas(order 2) -> BPSK slicer,
+      which LOCKS and recovers the bits; ''ctl'' = the same Costas -> slicer WITHOUT
+      the FLL (the classic coherent chain''s carrier-recovery core), which cannot
+      pull the offset — its recovered bits are garbage. The on-screen story: at
+      real-world frequency offsets the old chain dies, the FLL-fronted one locks.'
     gen_cmake: 'On'
     gen_linking: dynamic
     generate_options: qt_gui
     hier_block_src_path: '.:'
-    id: audio_meter
+    id: robust_rx
     max_nouts: '0'
     output_language: python
     placement: (0,0)
@@ -35,7 +29,7 @@ options:
     run_options: prompt
     sizing_mode: fixed
     thread_safe_setters: ''
-    title: Receiver audio tail + S-meter (duplex on one array)
+    title: Robust RX — FLL coarse frequency recovery vs Costas-only
     window_size: (1600,1000)
   states:
     bus_sink: false
@@ -46,12 +40,12 @@ options:
     state: enabled
 
 blocks:
-- name: imports
+- name: import_stim
   id: import
   parameters:
     alias: ''
     comment: ''
-    imports: import math
+    imports: from gnuradio.kyttar import robust_demo_stim as stim
   states:
     bus_sink: false
     bus_source: false
@@ -62,8 +56,8 @@ blocks:
 - name: samp_rate
   id: variable
   parameters:
-    comment: audio sample rate
-    value: '8000'
+    comment: display sample rate (scope axis only)
+    value: '32000'
   states:
     bus_sink: false
     bus_source: false
@@ -71,11 +65,11 @@ blocks:
     coordinate: [200, 12]
     rotation: 0
     state: enabled
-- name: sig
+- name: n_syms
   id: variable
   parameters:
-    comment: 'test signal: a 0.05-DC-offset 1 kHz tone burst, then silence (tone FIRST: a leading silence drives GR agc_ff gain above 1.0, outside the Q15 block envelope)'
-    value: '[0.05 + 0.85*math.sin(2*math.pi*1000*t/8000) for t in range(160)] + [0.0]*520'
+    comment: BPSK symbols in the burst
+    value: '600'
   states:
     bus_sink: false
     bus_source: false
@@ -86,164 +80,37 @@ blocks:
 - name: burst_len
   id: variable
   parameters:
-    comment: samples per stream burst
-    value: len(sig)
+    comment: complex samples per burst (2 sps)
+    value: stim.n_rx(n_syms)
   states:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [560, 12]
+    coordinate: [440, 12]
     rotation: 0
     state: enabled
-- name: audio_vec
+- name: rx_iq
   id: blocks_vector_source_x
   parameters:
     affinity: ''
     alias: ''
-    comment: ''
+    comment: 'RC-shaped BPSK burst, carrier offset foff = 0.18 cyc/sample (far
+      beyond Costas pull-in); finite, no repeat'
     maxoutbuf: '0'
     minoutbuf: '0'
     repeat: 'False'
     tags: '[]'
-    type: float
-    vector: sig
+    type: complex
+    vector: stim.rx_burst(n_syms)
     vlen: '1'
   states:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [60, 140]
+    coordinate: [32, 220]
     rotation: 0
     state: enabled
-- name: audio_in
-  id: kyttar_source
-  parameters:
-    affinity: ''
-    alias: ''
-    comment: ''
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    burst_len: burst_len
-    complex_in: float
-    device_id: '"kyttar_0"'
-    num_channels: '1'
-    pipelined: 'yes'
-    port_name: '"x16_in"'
-    schedule: '"interleaved"'
-    server_host: '"127.0.0.1"'
-    server_port: '58950'
-    stream_id: '"audio"'
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [240, 132]
-    rotation: 0
-    state: enabled
-- name: dcb
-  id: kyttar_dc_blocker
-  parameters:
-    affinity: ''
-    alias: ''
-    comment: ''
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    device_id: '"kyttar_0"'
-    length: '32'
-    long_form: 'False'
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [430, 140]
-    rotation: 0
-    state: enabled
-- name: agc
-  id: kyttar_agc
-  parameters:
-    affinity: ''
-    alias: ''
-    comment: ''
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    device_id: '"kyttar_0"'
-    gain: '0.999'
-    max_gain: '0.999'
-    rate: '0.02'
-    reference: '0.3'
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [580, 140]
-    rotation: 0
-    state: enabled
-- name: brf
-  id: kyttar_band_reject_filter
-  parameters:
-    affinity: ''
-    alias: ''
-    comment: ''
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    device_id: '"kyttar_0"'
-    gain: '0.999'
-    high_cutoff_freq: '3700'
-    low_cutoff_freq: '3300'
-    samp_rate: samp_rate
-    transition_width: '400'
-    window: '"hamming"'
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [900, 140]
-    rotation: 0
-    state: enabled
-- name: sq
-  id: kyttar_squelch
-  parameters:
-    affinity: ''
-    alias: ''
-    comment: ''
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    alpha: '0.01'
-    db: '-25'
-    device_id: '"kyttar_0"'
-    gate: 'False'
-    ramp: '0'
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [1070, 140]
-    rotation: 0
-    state: enabled
-- name: audio_out
-  id: kyttar_sink
-  parameters:
-    affinity: ''
-    alias: ''
-    comment: ''
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    device_id: '"kyttar_0"'
-    hold_secs: '8.0'
-    in_type: float
-    num_channels: '1'
-    port_name: '"x16_out"'
-    server_port: '58950'
-    server_repeat: 'False'
-    stream_id: '"audio"'
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [1220, 132]
-    rotation: 0
-    state: enabled
-- name: audio_scope
+- name: input_scope
   id: qtgui_time_sink_x
   parameters:
     affinity: ''
@@ -270,7 +137,7 @@ blocks:
     color7: yellow
     color8: dark red
     color9: dark green
-    comment: ''
+    comment: 'the offset burst as the antenna sees it (I and Q spinning at 0.18 cyc/sample)'
     ctrlpanel: 'False'
     entags: 'True'
     grid: 'False'
@@ -296,9 +163,9 @@ blocks:
     marker7: '-1'
     marker8: '-1'
     marker9: '-1'
-    name: '"audio out (DC-blocked, AGC, filtered, squelched)"'
+    name: '"RF burst (foff = 0.18 cyc/sample)"'
     nconnections: '1'
-    size: '256'
+    size: burst_len - 16
     srate: samp_rate
     stemplot: 'False'
     style1: '1'
@@ -317,7 +184,7 @@ blocks:
     tr_mode: qtgui.TRIG_MODE_FREE
     tr_slope: qtgui.TRIG_SLOPE_POS
     tr_tag: '""'
-    type: float
+    type: complex
     update_time: '0.10'
     width1: '1'
     width10: '1'
@@ -337,130 +204,130 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [1420, 100]
+    coordinate: [32, 420]
     rotation: 0
     state: enabled
-- name: meter_vec
-  id: blocks_vector_source_x
-  parameters:
-    affinity: ''
-    alias: ''
-    comment: ''
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    repeat: 'False'
-    tags: '[]'
-    type: float
-    vector: sig
-    vlen: '1'
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [60, 380]
-    rotation: 0
-    state: enabled
-- name: meter_in
+- name: fll_src
   id: kyttar_source
   parameters:
     affinity: ''
     alias: ''
-    comment: ''
+    burst_len: burst_len
+    comment: 'the offset burst -> chip x16_in (stream ''rx'': FLL -> Costas -> slicer)'
+    complex_in: complex
+    device_id: '"kyttar_0"'
     maxoutbuf: '0'
     minoutbuf: '0'
-    burst_len: burst_len
-    complex_in: float
-    device_id: '"kyttar_0"'
     num_channels: '1'
-    pipelined: 'yes'
+    pipelined: 'no'
     port_name: '"x16_in"'
     schedule: '"interleaved"'
     server_host: '"127.0.0.1"'
     server_port: '58950'
-    stream_id: '"meter"'
+    stream_id: '"rx"'
   states:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [240, 372]
+    coordinate: [320, 196]
     rotation: 0
     state: enabled
-- name: env
-  id: kyttar_abs
+- name: fll
+  id: kyttar_fll_band_edge
+  parameters:
+    affinity: ''
+    alias: ''
+    bandwidth: '0.1'
+    comment: "coarse frequency recovery (band-edge FLL) — placed on chip"
+    device_id: '"kyttar_0"'
+    filter_size: '17'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    rolloff: '0.35'
+    samps_per_sym: '2.0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [540, 180]
+    rotation: 0
+    state: enabled
+- name: costas
+  id: kyttar_costas_loop
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: "fine carrier recovery (BPSK Costas) — placed on chip"
+    damping: '1.0'
+    device_id: '"kyttar_0"'
+    loop_bw: '0.05'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    order: '2'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [760, 188]
+    rotation: 0
+    state: enabled
+- name: slicer
+  id: kyttar_bpsk_slicer
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: "hard bit decisions — placed on chip"
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    out_mode: '"bit"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [960, 196]
+    rotation: 0
+    state: enabled
+- name: slicer_b2f
+  id: blocks_uchar_to_float
   parameters:
     affinity: ''
     alias: ''
     comment: ''
     maxoutbuf: '0'
     minoutbuf: '0'
-    device_id: '"kyttar_0"'
   states:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [430, 380]
+    coordinate: [1140, 220]
     rotation: 0
     state: enabled
-- name: avg
-  id: kyttar_moving_average
-  parameters:
-    affinity: ''
-    alias: ''
-    comment: ''
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    device_id: '"kyttar_0"'
-    length: '8'
-    scale: '0.125'
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [570, 380]
-    rotation: 0
-    state: enabled
-- name: db
-  id: kyttar_nlog10
-  parameters:
-    affinity: ''
-    alias: ''
-    comment: ''
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    device_id: '"kyttar_0"'
-    k: '0.0'
-    n: '10.0'
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [720, 380]
-    rotation: 0
-    state: enabled
-- name: meter_out
+- name: rx_sink
   id: kyttar_sink
   parameters:
     affinity: ''
     alias: ''
-    comment: ''
-    maxoutbuf: '0'
-    minoutbuf: '0'
+    comment: 'recovered bits <- chip x16_out (stream ''rx''); a complex-input chain
+      emits RAW word floats (the receiver convention), so the 0/1 bits plot directly'
     device_id: '"kyttar_0"'
     hold_secs: '8.0'
     in_type: float
+    maxoutbuf: '0'
+    minoutbuf: '0'
     num_channels: '1'
     port_name: '"x16_out"'
     server_port: '58950'
-    server_repeat: 'False'
-    stream_id: '"meter"'
+    server_repeat: 'True'
+    stream_id: '"rx"'
   states:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [880, 372]
+    coordinate: [1300, 196]
     rotation: 0
     state: enabled
-- name: meter_scope
+- name: fll_bits_scope
   id: qtgui_time_sink_x
   parameters:
     affinity: ''
@@ -487,7 +354,7 @@ blocks:
     color7: yellow
     color8: dark red
     color9: dark green
-    comment: ''
+    comment: 'the FLL-fronted chain LOCKS: clean hard bits after the ~150-symbol acquisition'
     ctrlpanel: 'False'
     entags: 'True'
     grid: 'False'
@@ -513,9 +380,9 @@ blocks:
     marker7: '-1'
     marker8: '-1'
     marker9: '-1'
-    name: '"S-meter (10*log10, scaled /64 on the wire)"'
+    name: '"Recovered bits — FLL + Costas (locks)"'
     nconnections: '1'
-    size: '256'
+    size: stim.n_rx_bits(n_syms)
     srate: samp_rate
     stemplot: 'False'
     style1: '1'
@@ -546,104 +413,118 @@ blocks:
     width7: '1'
     width8: '1'
     width9: '1'
-    ylabel: level
-    ymax: '0.2'
-    ymin: '-1'
+    ylabel: bit
+    ymax: '1.5'
+    ymin: '-0.5'
     yunit: '""'
   states:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [1080, 340]
+    coordinate: [1660, 180]
     rotation: 0
     state: enabled
-
-- name: rms_vec
-  id: blocks_vector_source_x
-  parameters:
-    affinity: ''
-    alias: ''
-    comment: ''
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    repeat: 'False'
-    tags: '[]'
-    type: float
-    vector: sig
-    vlen: '1'
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [60, 620]
-    rotation: 0
-    state: enabled
-- name: rms_in
+- name: ctl_src
   id: kyttar_source
   parameters:
     affinity: ''
     alias: ''
-    comment: ''
+    burst_len: burst_len
+    comment: 'the SAME offset burst -> chip x16_in (stream ''ctl'': Costas -> slicer,
+      NO FLL — the negative control)'
+    complex_in: complex
+    device_id: '"kyttar_0"'
     maxoutbuf: '0'
     minoutbuf: '0'
-    burst_len: burst_len
-    complex_in: float
-    device_id: '"kyttar_0"'
     num_channels: '1'
-    pipelined: 'yes'
+    pipelined: 'no'
     port_name: '"x16_in"'
     schedule: '"interleaved"'
     server_host: '"127.0.0.1"'
     server_port: '58950'
-    stream_id: '"rms"'
+    stream_id: '"ctl"'
   states:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [240, 612]
+    coordinate: [320, 560]
     rotation: 0
     state: enabled
-- name: rms
-  id: kyttar_rms
+- name: ctl_costas
+  id: kyttar_costas_loop
   parameters:
     affinity: ''
     alias: ''
-    comment: 'true RMS (rms_ff): power IIR then sqrt; alpha 0.0625 = 2048/32768 exact in Q15'
+    comment: "the OLD chain: Costas alone (pull-in ~0.12 cyc/sample — 0.18 is out of reach)"
+    damping: '1.0'
+    device_id: '"kyttar_0"'
+    loop_bw: '0.05'
     maxoutbuf: '0'
     minoutbuf: '0'
-    alpha: '0.0625'
-    device_id: '"kyttar_0"'
+    order: '2'
   states:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [430, 620]
+    coordinate: [540, 552]
     rotation: 0
     state: enabled
-- name: rms_out
-  id: kyttar_sink
+- name: ctl_slicer
+  id: kyttar_bpsk_slicer
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    out_mode: '"bit"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [760, 560]
+    rotation: 0
+    state: enabled
+- name: ctl_b2f
+  id: blocks_uchar_to_float
   parameters:
     affinity: ''
     alias: ''
     comment: ''
     maxoutbuf: '0'
     minoutbuf: '0'
-    device_id: '"kyttar_0"'
-    hold_secs: '8.0'
-    in_type: float
-    num_channels: '1'
-    port_name: '"x16_out"'
-    server_port: '58950'
-    server_repeat: 'False'
-    stream_id: '"rms"'
   states:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [590, 612]
+    coordinate: [960, 584]
     rotation: 0
     state: enabled
-- name: rms_scope
+- name: ctl_sink
+  id: kyttar_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'garbage bits <- chip x16_out (stream ''ctl''); raw word floats, 0/1 plots directly'
+    device_id: '"kyttar_0"'
+    hold_secs: '8.0'
+    in_type: float
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_channels: '1'
+    port_name: '"x16_out"'
+    server_port: '58950'
+    server_repeat: 'True'
+    stream_id: '"ctl"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1140, 560]
+    rotation: 0
+    state: enabled
+- name: ctl_bits_scope
   id: qtgui_time_sink_x
   parameters:
     affinity: ''
@@ -660,7 +541,7 @@ blocks:
     alpha9: '1.0'
     autoscale: 'False'
     axislabels: 'True'
-    color1: blue
+    color1: red
     color10: dark blue
     color2: red
     color3: green
@@ -670,7 +551,7 @@ blocks:
     color7: yellow
     color8: dark red
     color9: dark green
-    comment: 'the true-RMS level: rises to ~0.6 on the tone, decays on the tail silence'
+    comment: 'the Costas-only chain NEVER locks at this offset: the bits churn (BER ~0.2)'
     ctrlpanel: 'False'
     entags: 'True'
     grid: 'False'
@@ -696,9 +577,9 @@ blocks:
     marker7: '-1'
     marker8: '-1'
     marker9: '-1'
-    name: '"True RMS (rms_ff, alpha 0.0625)"'
+    name: '"Recovered bits — Costas only (fails)"'
     nconnections: '1'
-    size: '256'
+    size: stim.n_rx_bits(n_syms)
     srate: samp_rate
     stemplot: 'False'
     style1: '1'
@@ -729,36 +610,33 @@ blocks:
     width7: '1'
     width8: '1'
     width9: '1'
-    ylabel: level
-    ymax: '1'
-    ymin: '0'
+    ylabel: bit
+    ymax: '1.5'
+    ymin: '-0.5'
     yunit: '""'
   states:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [790, 580]
+    coordinate: [1480, 544]
     rotation: 0
     state: enabled
 
 connections:
-- [audio_vec, '0', audio_in, '0']
-- [audio_in, '0', dcb, '0']
-- [dcb, '0', agc, '0']
-- [agc, '0', brf, '0']
-- [brf, '0', sq, '0']
-- [sq, '0', audio_out, '0']
-- [audio_out, '0', audio_scope, '0']
-- [meter_vec, '0', meter_in, '0']
-- [meter_in, '0', env, '0']
-- [env, '0', avg, '0']
-- [avg, '0', db, '0']
-- [db, '0', meter_out, '0']
-- [meter_out, '0', meter_scope, '0']
-- [rms_vec, '0', rms_in, '0']
-- [rms_in, '0', rms, '0']
-- [rms, '0', rms_out, '0']
-- [rms_out, '0', rms_scope, '0']
+- [rx_iq, '0', input_scope, '0']
+- [rx_iq, '0', fll_src, '0']
+- [rx_iq, '0', ctl_src, '0']
+- [fll_src, '0', fll, '0']
+- [fll, '0', costas, '0']
+- [costas, '0', slicer, '0']
+- [slicer, '0', slicer_b2f, '0']
+- [slicer_b2f, '0', rx_sink, '0']
+- [rx_sink, '0', fll_bits_scope, '0']
+- [ctl_src, '0', ctl_costas, '0']
+- [ctl_costas, '0', ctl_slicer, '0']
+- [ctl_slicer, '0', ctl_b2f, '0']
+- [ctl_b2f, '0', ctl_sink, '0']
+- [ctl_sink, '0', ctl_bits_scope, '0']
 
 metadata:
   file_format: 1

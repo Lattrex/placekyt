@@ -31,6 +31,31 @@ def _target_port_reg(catalog, block, port, in_regs):
     return int(in_regs[0]) if in_regs else 0
 
 
+def _target_port_pair_idx(catalog, block, port, in_regs):
+    """POSITIONAL indices of the (I, Q) register pair a complex-source net's
+    target ``port`` selects within ``in_regs``, for a block with 2+ complete
+    input I/Q pairs (AddCC/SubCC/MultiplyCC: ai aq bi bq). The importer wires a
+    complex stream's net to the pair's I half ('ai'/'bi'); its Q sibling is the
+    NEXT input register. None if the port can't be resolved (callers keep the
+    full-list legacy behaviour)."""
+    reg = None
+    try:
+        pmap = catalog.port_map(block.type, block.params, library=block.library)
+        for p in pmap.ports:
+            if p.name == port and p.direction == "in" and p.register is not None:
+                reg = int(p.register)
+                break
+    except Exception:  # noqa: BLE001
+        pass
+    if reg is None:
+        return None
+    regs = [int(r) for r in in_regs]
+    if reg not in regs:
+        return None
+    i = regs.index(reg)
+    return [i, i + 1] if i + 1 < len(regs) else [i]
+
+
 def _built_landing(build_result, chip_id, conn_name):
     """The build's corridor-accurate ``{cell, entry, hop, data_addrs}`` landing for
     ``conn_name`` on ``chip_id``, or ``None`` if the design isn't built / the net has
@@ -195,6 +220,8 @@ def stream_targets(project, registry, catalog, chip_id: int = 0,
         if blk.placement.chip != chip_id:
             continue
         land = landings.get(conn.name)
+        entry, in_regs = catalog.resolved_io(
+            blk.type, blk.params, library=blk.library)
         if land is not None:
             # Built-corridor landing: the cell/entry/hop the routed corridor actually
             # delivers to (resolved against built faces + broker entries).
@@ -204,8 +231,6 @@ def stream_targets(project, registry, catalog, chip_id: int = 0,
         else:
             cell0 = blk.placement.cells[0]
             dist = abs(cell0.x - in_port.cell_x) + abs(cell0.y - in_port.cell_y)
-            entry, in_regs = catalog.resolved_io(
-                blk.type, blk.params, library=blk.library)
             entry_addr = int(entry)
             hop_count = 30 - dist
             # A FLOAT source into a complex block delivers ONLY the single rail its
@@ -214,16 +239,43 @@ def stream_targets(project, registry, catalog, chip_id: int = 0,
                 data_addrs = [_target_port_reg(catalog, blk, conn.target.port, in_regs)]
             else:
                 data_addrs = list(in_regs) if in_regs else [0]
+        # TWO-COMPLEX-PAIR blocks (AddCC / SubCC / MultiplyCC: 4 input registers
+        # = two I/Q pairs): a complex source net targets ONE of the pairs, so this
+        # stream must deliver ITS pair only — stream b lands on (bi, bq); handing
+        # it the full 4-register list would make the bridge write b's sample into
+        # ai/aq and clobber stream a (measured: the join fires on two copies of b
+        # and the block egresses nothing meaningful). data_addrs (landing or
+        # resolved) is positional with the block's input registers, so slice the
+        # pair at the target port's register index.
+        if (in_regs is not None and len(in_regs) > 2
+                and len(data_addrs) == len(in_regs)
+                and getattr(conn, "src_complex", None) is True):
+            pair_idx = _target_port_pair_idx(catalog, blk, conn.target.port,
+                                             in_regs)
+            if pair_idx is not None:
+                data_addrs = [data_addrs[i] for i in pair_idx]
         out_tag, term_block = out_tag_of_block.get(blk.name, (None, None))
         # Is the chain's terminal (output-driving) block a COMPLEX-output cell? Then
         # its I and Q rails egress on TWO consecutive tags (out_tag, out_tag+1) — the
         # host reassembles them into an interleaved I/Q stream (mirrors complex input).
+        # Two detections, OR-ed: the spec's declared output registers (NCO/mixer
+        # style), and the PROJECT nets themselves — the AddCC family declares ONE
+        # interface output register (the INV-17 packet emitter) yet the importer
+        # synthesizes a real yq→port sibling net on tag out_tag+1, which is the
+        # ground truth of what egresses.
         complex_out = False
         if term_block is not None:
             tb = project.block(term_block)
             if tb is not None:
                 spec = catalog.get(tb.type, library=tb.library)
                 complex_out = bool(spec) and len(spec.output_registers) > 1
+            if not complex_out and out_tag is not None:
+                complex_out = any(
+                    isinstance(c2.source, BlockEndpoint)
+                    and c2.source.block == term_block
+                    and isinstance(c2.target, ChipPortEndpoint)
+                    and getattr(c2, "out_tag", None) == out_tag + 1
+                    for c2 in project.connections)
         # A JOIN fan-out stream (one stream_id, SEVERAL port→block arms — the
         # audio-effects echo/tremolo/comb) has one landing PER ARM; the bridge
         # must inject every landing per sample. ``landings`` collects them in
@@ -256,6 +308,25 @@ def stream_targets(project, registry, catalog, chip_id: int = 0,
             "complex_out": complex_out,
             "landings": [landing],
         }
+    # TWO-INPUT-STREAM CHAINS (AddCC / SubCC / MultiplyCC): both ingress streams
+    # walk forward to the SAME chain-output net, so both would claim its out_tag
+    # — and the duplex demux hands each drained word to the FIRST claiming
+    # stream in the RPC's submission order, which is client thread order, i.e.
+    # NONDETERMINISTIC. Deterministic contract instead: the FIRST ingress stream
+    # in project-connection order (the .grc's first-input wire) OWNS the chain's
+    # out_tag; later streams sharing it resolve out_tag=None. A flowgraph names
+    # its sink after the block's FIRST input's stream (complex_math's 'sum' /
+    # 'diff'/'prod' sources feed each block's first port).
+    seen_tags: set = set()
+    for cfg in targets.values():
+        tag = cfg.get("out_tag")
+        if tag is None:
+            continue
+        if tag in seen_tags:
+            cfg["out_tag"] = None
+            cfg["complex_out"] = False
+        else:
+            seen_tags.add(tag)
     return targets
 
 

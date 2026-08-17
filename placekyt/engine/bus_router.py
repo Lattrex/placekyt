@@ -2430,15 +2430,32 @@ def broker_plan(project, chip_id, chip_type, catalog):
                                              library=tgt.library)
             if _regs and len(_regs) > 1:
                 port_complex_regs = list(_regs)
+                # TWO-COMPLEX-PAIR blocks (AddCC/SubCC/MultiplyCC: 4 input regs
+                # = two I/Q pairs) fed by a GRC COMPLEX source (src_complex is
+                # True — the importer wires each stream's net to its pair's I
+                # half): each ingress net carries ONE stream's pair, so the
+                # broker group is THAT pair (starting at the net's target
+                # register), not the whole 4-register list — a 4-operand group
+                # would relay two half-primed pairs per stream packet and the
+                # join would fire on stale operands. Explicitly-wired per-rail
+                # nets (src_complex None — the verification harness wires all
+                # four rails) keep the legacy single 4-operand group.
+                if (conn.src_complex is True and len(port_complex_regs) > 2
+                        and in_reg in port_complex_regs):
+                    _i = port_complex_regs.index(in_reg)
+                    port_complex_regs = port_complex_regs[_i:_i + 2]
         if port_complex_regs is not None:
-            # Emit the operand group ONCE per (broker, target input cell). A second
-            # rail (in_xq after in_xi) into the same landing would duplicate the packet
-            # and clobber it with stale operands — skip it.
-            done_key = (last, in_cell)
+            # Emit the operand group ONCE per (broker, target input cell, reg
+            # group). A second rail (in_xq after in_xi) into the same landing
+            # would duplicate the packet and clobber it with stale operands —
+            # skip it. (The reg group is part of the key so a two-pair block's
+            # OTHER stream diverting at the same broker still gets its own
+            # group.)
+            done_key = (last, in_cell, tuple(port_complex_regs))
             if done_key in port_complex_done:
                 continue
             port_complex_done.add(done_key)
-            grp_key = ("port_complex", in_cell)
+            grp_key = ("port_complex", in_cell, tuple(port_complex_regs))
             for _r in port_complex_regs:
                 d = BrokerDelivery(conn=conn.name, in_cell=in_cell, in_reg=_r,
                                    in_entry=entry, deliver_face=df, src_cell=grp_key)

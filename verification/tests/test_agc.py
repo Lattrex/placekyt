@@ -122,6 +122,71 @@ def test_agc_reference_sweep(reference):
     assert res.passed, res.summary()
 
 
+# --- rising-gain regression at the GR DEFAULT rate=1e-4 (fixed 2026-08-16) ----
+
+def test_rising_gain_default_rate_bit_exact_and_alive():
+    """THE BARE-MULQ IIR STALL (regression, fixed 2026-08-16; proven to FAIL on
+    the pre-fix block — INV-4).
+
+    ``gain += MULQ(rate, err)`` truncates every increment with
+    ``|err| < 2^15/rate_q`` to ZERO; at GR's DEFAULT rate=1e-4 (rate_q=3) that
+    is 10923 LSB. The stall is DIRECTION-ASYMMETRIC — floor truncation zeroes
+    only POSITIVE sub-LSB increments (a negative err still steps -1) — so only
+    a RISING gain froze; the falling regime the existing gates drive
+    (gain=0.999 down) self-repaired and hid it (the AGCCC/RMS lesson: pin the
+    stall with a start gain BELOW the settled point).
+
+    Setup: constant 0.9 input, reference=0.5 (settled gain ~0.556), start
+    gain=0.4. There err ~4588 < 10923, so the PRE-FIX loop is completely
+    frozen (constant output ~0.36); the error-feedback fix accumulates the
+    sub-LSB increments and the gain provably RISES (~+150 LSB over 600
+    samples). Asserts BOTH: the output rises, AND the chip is BIT-EXACT
+    against the error-feedback reference model."""
+    n = 600
+    params = dict(rate=1e-4, reference=0.5, gain=0.4, max_gain=_MAXG)
+    inq = [_fq(0.9)] * n
+    dut = run_block_dut("AGCBlock", inq, params=params, chip_yaml=CHIP_YAML,
+                        in_port="sample", out_port="out")
+    assert dut.ok, dut.reason
+
+    def s16(w):
+        w = int(w) & 0xFFFF
+        return w - 0x10000 if w & 0x8000 else w
+
+    rise = s16(dut.outputs_q15[-1]) - s16(dut.outputs_q15[0])
+    assert rise >= 100, (
+        f"rising gain STALLED at rate=1e-4: output moved {rise} LSB over {n} "
+        f"samples (bare-MULQ truncation freezes the loop; the error-feedback "
+        f"accumulator must keep it climbing)")
+
+    # Bit-exact vs the error-feedback reference model (floor-MULQ + 16-bit
+    # frac accumulator + ADC carry — the exact on-chip datapath). Feed the
+    # model the EXACT chip input words (s16/32768 round-trips losslessly
+    # through float_to_q15; the _fq helper's 32767 scale would be 1 LSB off).
+    from gr_kyttar.placement.blocks.agc_block import AGCBlock  # noqa: PLC0415
+    blk = AGCBlock("ref", **params)
+    ref = blk.process_reference([s16(w) / 32768.0 for w in inq])
+    res = compare_against_grc(dut.outputs_q15, list(ref), metric=Metric.EXACT,
+                              delay=0)
+    assert res.passed, f"chip != error-feedback model: {res.summary()}"
+
+
+def test_rising_gain_default_rate_model_converges():
+    """The error-feedback model CONVERGES at rate=1e-4: from gain=0.4 the
+    settled |out| reaches the reference (0.5) within a few LSB — the bare-MULQ
+    form stalls 10923-err LSB short (|out| frozen at ~0.36). Pure-model long
+    run (the chip is linked to this model by the bit-exact gate above — the
+    AGCCC regime-mirroring recipe)."""
+    from gr_kyttar.placement.blocks.agc_block import AGCBlock  # noqa: PLC0415
+    blk = AGCBlock("ref", rate=1e-4, reference=0.5, gain=0.4, max_gain=_MAXG)
+    out = blk.process_reference([0.9] * 130000)
+    tail = out[-2000:]
+    settled = sum(abs(float(v)) for v in tail) / len(tail) * 32768.0
+    assert abs(settled - 16384) <= 4.0, (
+        f"model failed to converge to the reference at rate=1e-4: settled "
+        f"|out| = {settled:.1f} LSB, want 16384 +- 4")
+
+
 # --- MANDATORY negative tests: the gate must DETECT real corruptions ----------
 
 def test_mutation_inverted_output_fails():

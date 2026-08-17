@@ -11,6 +11,76 @@ dropped) — append new entries above the oldest ones as before.
 
 ---
 
+## Latent-defect sweep: AGC bare-MULQ stall, MagSquared wrap corner, Costas dphase landing — three flagged hazards closed 2026-08-16
+
+Maintenance trio — every mechanism was discovered and root-caused by a recent
+factory build (credit: the RMSBlock+RMSCFBlock build flagged the first two, the
+AGCCCBlock build the third); this pass ported the proven fixes to the older
+blocks that carried the same latent bugs, each with an INV-4 regression proven
+to FAIL on the pre-fix block.
+
+- **AGCBlock (agc_ff): the bare-MULQ IIR stall at the GR DEFAULT rate=1e-4 —
+  FIXED with a cheaper exact accumulator than the RMS form.**
+  ``gain += MULQ(rate, err)`` zeroes every increment with
+  ``|err| < 2^15/rate_q`` (10923 LSB at rate_q=3); direction-asymmetric, so
+  only a RISING gain froze (start gain below the settled point to pin it — a
+  falling AGC self-repairs and false-passes). Fix = full-precision error
+  feedback, but NOT the RMS masked 15-bit form: the single 32-word cell can't
+  afford its mask word + hi/t scratch. The ADC IDIOM IS CHEAPER AND EXACT:
+  track ``S = gain<<16 + acc`` and step by ``prod<<1`` —
+  ``MULQ`` (hi) + ``ADD gain``; ``MUL`` (lo16) + ``SHL #1`` + ``ADD acc``
+  (C = carry) + ``ADC gain, zero``. The identity
+  ``prod<<1 == (prod>>15)<<16 + ((lo16<<1)&0xFFFF)`` is exact under MULQ's
+  floor, needs NO mask word, one scratch state, and a 16-bit residual.
+  Register reclaims that made it fit EXACTLY (1 input + 4 data + 3 state + 23
+  instr = 31): emit the output RIGHT AFTER the MULQ (WRITE preserves R0 — the
+  Costas ``{write}``-first idiom), freeing ``out_save``/``abs_save``; re-derive
+  the sign flags after the WRITE with ``OR R0, R0`` (don't rely on WRITE
+  preserving flags). Also fixed the reference model: it claimed MULQ
+  round-to-nearest — MULQ is FLOOR (the 80-LSB GR-loop gates hid the lie; the
+  new chip gate is bit-exact and would have caught it). Regression: 600
+  samples, rate=1e-4, ref=0.5, gain=0.4 rising — pre-fix moved 0 LSB (total
+  freeze), post-fix climbs bit-exactly vs the model; plus a 130k-sample model
+  convergence run (the AGCCC regime-mirroring shape). Watch the harness
+  quantizer: ``_fq`` scales by 32767 but the block by 32768 — feed the
+  reference the CHIP's words (s16/32768) or a 1-LSB input skew masquerades as
+  a datapath mismatch.
+- **ComplexToMagSquaredBlock: the re=im=-1.0 wrap corner — FIXED with the
+  RMSCF per-step guard.** ``0x8000 + 0x8000`` wraps the accumulator to ZERO
+  with N CLEAR, so the single end-check ``BR.N`` emitted 0 for a full-scale
+  input. Per-step guard (``MULQ re,re; BR.N; MACQ im,im; BR.N``) — the wrap
+  requires the FIRST product to already be 0x8000, so checking after each step
+  closes it. The existing bit-exact reference already modelled saturation
+  correctly (unbounded ints + min-clamp) — only the chip wrapped; the derived
+  tolerance and all 21 existing gates unchanged. Corner regression pinned
+  bit-exact (pre-fix emits 0).
+- **ComplexCostasLoopBlock: the ``dphase`` feedback landing was an input Port
+  — converted to a pinned STATE register (the AGCCC ``ginc`` recipe), and the
+  brokered-corridor hazard is now REPRODUCIBLE in a gate.** ``resolved_io``
+  counts input-role registers as host operands; under a DIVERTED input
+  corridor (two x16_in nets sharing a corridor cell — the divert mechanism in
+  ``_resolve_input_landings``) the broker deliver entry relays one delivery
+  per resolved input reg, so a stale third burst word landed in R2 every
+  sample and ran the loop OPEN. The 4x2 fold never gets its input brokered in
+  the single-block gates (probed: all 8 D4 orientations x 5 anchors ride
+  straight) — the hazard needs a SECOND port net: GainBlock@(3,0) pins the
+  row-0 corridor and the Costas@(1,1) ``in_xi`` net diverts at (1,0) → broker
+  landing (burst regs + deliver entry). Regression drives that landing
+  contract and asserts bit-exact vs the closed-loop reference: pre-fix
+  194/200 samples diverge, post-fix 0. The state-var change is byte-identical
+  on the identity build (dphase pinned at the same R2; state names resolve
+  before input names in ``_resolve_named_input`` AND in
+  ``_apply_internal_feedback``'s input-then-state fallback — both paths land
+  on R2); the ONLY bitstream delta is the dormant input broker shrinking from
+  3 relays to 2 (the fix itself). ``reset_per_batch=True`` on the landing (a
+  fresh packet cold-starts with no pending update, like phase/freq).
+  CoherentRXBlock reuses the phase cell verbatim and inherits the fix. NOTE:
+  QAM16ComplexCostasLoopBlock still carries the dphase-as-input pattern
+  (same latency conditions); port the same recipe when it is next touched.
+- All blast-radius gates green with no tolerance or gate adjustment:
+  agc (13) / agc_cc (37) / complex_mag (22) / complex_harness /
+  costas loop+build (58) / orientation+saturation (308) / QPSK-modem BER +
+  coherent-RX (22) / audio_meter.
 ## FLLBandEdgeBlock — the composite-loop ceiling holds a 21-cell RING: coarse-FLL bit-exact, chain-proven 2026-08-16
 
 GR `digital.fll_band_edge_cc` (samps_per_sym, rolloff, filter_size, bandwidth

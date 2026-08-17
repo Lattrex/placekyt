@@ -182,9 +182,24 @@ class ComplexCostasLoopBlock(KyttarBlock):
 
         # --- phase cell: holds phase; phase += dphase (feedback); emit ph_sin
         # (= phase + pi -> -sin), ph_cos (= phase + pi/2); forward xi, xq. ---
+        # ``dphase`` (the feedback landing) is a pinned STATE register at R2, NOT
+        # an input Port (fixed 2026-08-16, the AGCCC ``ginc`` recipe):
+        # ``resolved_io`` counts every input-role register as a host-injected
+        # operand, and ``broker_plan``'s port-complex expansion relays ONE
+        # delivery per such register — with dphase declared as an input, any
+        # arrangement whose INPUT corridor gets BROKERED relayed a stale third
+        # word into the feedback register EVERY sample and the loop ran silently
+        # OPEN (the hazard the AGCCC build proved at cw^3; latent here because
+        # the 4x2 fold never got its input brokered in the gate orientations).
+        # As a state var the landing operand group stays exactly [xi, xq]; the
+        # pd_pi feedback WRITE resolves to the state register BY NAME (state
+        # names match before input names — the qpd/errin convention, used
+        # deliberately) and lands on the SAME R2, so the identity build is
+        # byte-identical. reset_per_batch: a fresh packet cold-starts with no
+        # pending update (dphase=0 = GNU Radio's cold start), exactly like
+        # ``phase``/``freq``.
         phase_cell = CellProgram(
-            inputs=[Port("xi", register=0), Port("xq", register=1),
-                    Port("dphase", register=2)],
+            inputs=[Port("xi", register=0), Port("xq", register=1)],
             outputs=[Port("ph_sin"), Port("ph_cos"),
                      Port("xi_fwd"), Port("xq_fwd"), Port("trig")],
             entries=[EntryPoint("default")],
@@ -203,8 +218,10 @@ class ComplexCostasLoopBlock(KyttarBlock):
             # carrier lock (the derotation angle). A fresh packet must start at phase 0
             # (cold), else the new packet's first samples are derotated by the PREVIOUS
             # packet's converged phase and the bits invert/corrupt until the loop
-            # re-pulls. ``xis``/``xqs`` are per-sample scratch (written before read).
+            # re-pulls. ``dphase`` is the FEEDBACK LANDING (pinned R2 — see above).
+            # ``xis``/``xqs`` are per-sample scratch (written before read).
             state=[StateVar("phase", reset_per_batch=True),
+                   StateVar("dphase", register=2, reset_per_batch=True),
                    StateVar("xis"), StateVar("xqs")],
             # PIPELINE INTERLOCK (blocks MUST run correctly when SATURATED, not just
             # inject-and-flush): after launching a sample down the forward chain, LOCK
@@ -222,7 +239,7 @@ class ComplexCostasLoopBlock(KyttarBlock):
 start:
     MOVE R{state:xis}, R{in:xi}
     MOVE R{state:xqs}, R{in:xq}
-    ADD R{state:phase}, R{in:dphase}
+    ADD R{state:phase}, R{state:dphase}
     MOVE R{state:phase}, R0
     ADD R{state:phase}, R{data:half}
     {write:ph_sin}

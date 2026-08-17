@@ -162,7 +162,7 @@ factory is named in the dashboard so you never have to guess the equivalent.
 | **NCOBlock** | `analog.sig_source_c` | err 9 / tol 12 LSB · -72 dB SNR |
 | **SoftDemodulatorBlock** | `digital.constellation_soft_decoder_cf` | err 1 / tol 2 LSB |
 | **ComplexRRCMatchedFilterBlock** | `filter.fir_filter_ccf (rrc taps)` | err 11 / tol 18 LSB · -54 dB SNR |
-| **AGCBlock** | `analog.agc_ff` | err 40 / tol 80 LSB · -57 dB SNR |
+| **AGCBlock** | `analog.agc_ff` | err 3 / tol 80 LSB · -81 dB SNR |
 | **ComplexCostasLoopBlock** | `digital.costas_loop_cc` | BER 0 |
 | **MMTimingRecoveryBlock** | `digital.symbol_sync_cc` | pass |
 | **BPSKSlicerBlock** | `digital.binary_slicer_fb` | BER 0 (10 bits) |

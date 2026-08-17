@@ -177,6 +177,118 @@ def test_costas_built_bitstream_locks(qapp, catalog, chip_type):
             f"{consistency}/50, |yi|={mag:.0f}")
 
 
+def test_costas_brokered_input_corridor_keeps_loop_closed(qapp, catalog,
+                                                          chip_type):
+    """THE BROKERED-CORRIDOR FEEDBACK HAZARD (regression, fixed 2026-08-16;
+    proven to FAIL on the pre-fix block — INV-4).
+
+    ``dphase`` (the pd_pi->phase feedback landing) used to be an input Port at
+    R2. ``resolved_io`` counts every input-role register as a host-injected
+    operand, and the port-complex expansion (``broker_plan`` /
+    ``_resolve_input_landings``) relays ONE delivery per such register — so
+    whenever the x16_in corridor is DIVERTED to a broker (two port nets sharing
+    a corridor cell, the AGCCC cw^3 mechanism), the broker relayed a THIRD,
+    host-unwritten burst word into R2 EVERY sample, erasing the fed-back dphase:
+    the loop ran silently OPEN. The standalone gates never brokered the 4x2
+    fold's input, so the hazard was LATENT here. Fix: dphase is a pinned STATE
+    register — the operand group is exactly [xi, xq].
+
+    Arrangement (probed): a GainBlock at (3,0) pins the row-0 corridor for its
+    own net, so the Costas (1,1) ``in_xi`` net is DIVERTED at (1,0) and the
+    built input landing resolves to that BROKER's deliver entry + burst regs —
+    the exact hazard shape. Driving the landing contract (WRITE the two burst
+    operands + JUMP the deliver entry, the live bridge's injection), the
+    recovered yi must STILL be BIT-EXACT against the closed-loop reference."""
+    import math
+    import random
+    import simkyt
+    from model.connection import BlockEndpoint, ChipPortEndpoint
+
+    ctrl = AppController(catalog=catalog)
+    ctrl.new_project("CostasBrokered", "kyttar_10x12")
+    g = ctrl.place_block("GainBlock", 0, 3, 0, library="lattrex.official",
+                         params={"gain": 0.5})
+    c = ctrl.place_block("ComplexCostasLoopBlock", 0, 1, 1,
+                         library="lattrex.official", params={"order": 2})
+    ctrl.add_logical_connection(ChipPortEndpoint(chip=0, port="x16_in"),
+                                BlockEndpoint(block=g, port="sample"),
+                                name="in_g")
+    ctrl.add_logical_connection(ChipPortEndpoint(chip=0, port="x16_in"),
+                                BlockEndpoint(block=c, port="xi"), name="in_xi")
+    ctrl.add_logical_connection(ChipPortEndpoint(chip=0, port="x16_in"),
+                                BlockEndpoint(block=c, port="xq"), name="in_xq")
+    ctrl.add_logical_connection(BlockEndpoint(block=c, port="yi_tap"),
+                                ChipPortEndpoint(chip=0, port="x16_out"),
+                                name="o")
+    rep = ctrl.auto_route_all({"kyttar_10x12": chip_type})
+    assert rep.ok, [r for r in rep.results if not r.ok]
+    res = BuildEngine(catalog, str(CT_PATH)).build(
+        ctrl.project, {"kyttar_10x12": chip_type})
+    assert res.ok, [str(e) for e in res.errors]
+
+    # PRECONDITION — the hazard shape: the in_xi landing must resolve to a
+    # BROKER (a corridor cell, not the phase cell). If a router change makes
+    # this arrangement ride straight, the regression no longer covers the
+    # brokered corridor — re-pin a diverted arrangement (probe anchors).
+    landings = res.chips[0].input_landings
+    ld = landings["in_xi"]
+    pl = ctrl.project.block(c).placement
+    phase_pos = (pl.cells[0].x, pl.cells[0].y)
+    assert tuple(ld["cell"]) != phase_pos, (
+        f"arrangement no longer brokers the Costas input (landing {ld}); "
+        f"re-pin a diverted arrangement so this regression keeps covering "
+        f"the brokered-corridor hazard shape")
+    das = list(ld["data_addrs"])
+    hop = int(ld["hop"]) & 0x1F
+    entry = int(ld["entry"])
+
+    def fq(f):
+        return int(round(max(-1, min(0.999, f)) * 32768)) & 0xFFFF
+
+    def s16(v):
+        return v - 0x10000 if v & 0x8000 else v
+
+    # Freq-offset BPSK stimulus (an open loop provably diverges from the
+    # closed-loop trace under a rotating carrier).
+    n, foff = 200, 0.02
+    random.seed(3)
+    words = []
+    for k in range(n):
+        s = random.choice([1, -1])
+        words.append((fq(s * math.cos(2 * math.pi * foff * k)),
+                      fq(s * math.sin(2 * math.pi * foff * k))))
+
+    chip = simkyt.Chip.from_yaml(str(CT_PATH))
+    chip.load_bitstream_physical(res.words(0))
+    chip.set_port_entry_address("x16_in", entry)
+    for (xi, xq) in words:
+        # The live-bridge injection contract: the two complex operands into the
+        # landing's first two data_addrs, then ONE JUMP to the landing entry
+        # (here: the broker's burst regs + deliver entry, which relays the
+        # operand group into the phase cell and triggers it).
+        chip.inject_data_physical([xi], target_hop_cnt=hop, target_addr=das[0])
+        chip.run(max_events=6000)
+        chip.inject_data_physical([xq], target_hop_cnt=hop,
+                                  target_addr=das[1] if len(das) > 1 else das[0] + 1)
+        chip.run(max_events=6000)
+        chip.inject_jump_physical(target_hop_cnt=hop, entry_addr=entry)
+        chip.run(max_events=60000)
+    out = [s16(int(v)) for v, d, t in chip.read_port_words_timed("x16_out")]
+    assert len(out) == n, f"expected {n} recovered words, got {len(out)}"
+
+    # BIT-EXACT against the closed-loop reference: a stale third relay into the
+    # dphase register opens the loop and the trace diverges within samples.
+    from gr_kyttar.placement import ComplexCostasLoopBlock
+    import numpy as np
+    blk = ComplexCostasLoopBlock("ref", order=2)
+    ref = blk.process_reference(np.array(words, dtype=np.int64))
+    mism = sum(1 for a, b in zip(out, ref) if int(a) != int(b))
+    assert mism == 0, (
+        f"brokered-corridor drive diverged from the closed-loop reference on "
+        f"{mism}/{n} samples — the feedback landing is being clobbered by a "
+        f"relayed stale operand (the dphase-as-input-Port hazard)")
+
+
 def test_costas_order4_in_catalog(catalog):
     """The order param exposes the QPSK (order=4) variant: 8 cells (the extra
     ``qpd`` 2-term phase-detector cell), same 2 complex input registers."""

@@ -57,9 +57,11 @@ TOTAL_EXCESS = {
     # to the far MultiplyCC round the AddCC/SubCC row (+2 each, the INV-24
     # fork detour class):
     "complex_math.kyt": 4,
-    # the 22-cell FLL ring + two Costas folds: the FLL's own port ingress
-    # rounds the ring edge down col 0 (+2) and the ring→Costas mid corridor
-    # rounds the ctl-chain wall (+2) — both placement-forced wall detours:
+    # the 22-cell FLL serpentine (7x4, 2026-08-17 re-fold of the old 8x5
+    # ring — same pinned total on the regenerated placement) + two Costas
+    # folds: each Costas→slicer tap corridor rounds its own 4x2 fold's south
+    # edge to reach the col-8 slicer (+2 each) — placement-forced wall
+    # detours:
     "robust_rx.kyt": 4,
     # v2 backbone TX thread (duplex SRAM-panel design): one +2 wrap:
     "psk31_transceiver.kyt": 2,

@@ -97,10 +97,10 @@ _CASES = [
     # placer); its datapath is orientation-invariant by construction.
     ("MMTimingRecoveryBlock", {}, "complex", ("xi", "xq", "yi_e")),
     # FLL band-edge coarse frequency recovery (digital.fll_band_edge_cc): complex
-    # I/Q in, corrected (yi_tap, yq_tap) pair out. Internal-feedback RING composite
-    # (NCO + rotate + fanout + 2 correlator chains + PI, feedback via the ring's
-    # transit return; kept at identity by the placer); lock_face / fanout face words
-    # are is_face so a manual D4 transform must compute IDENTICALLY.
+    # I/Q in, corrected (yi_tap, yq_tap) pair out. Internal-feedback SERPENTINE
+    # composite (NCO + rotate + fanout + 2 correlator chains + PI, feedback via a
+    # short transit corridor; kept at identity by the placer); lock_face / fanout
+    # face words are is_face so a manual D4 transform must compute IDENTICALLY.
     ("FLLBandEdgeBlock", {"filter_size": 5}, "complex", ("xi", "xq", "yi_tap")),
     ("IQUpconvertBlock", {}, "complex_wps1", ("xi", "xq", "out")),
     ("ComplexMixerBlock", {}, "complex", ("xi", "xq", "yi")),

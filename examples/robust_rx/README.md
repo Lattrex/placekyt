@@ -46,7 +46,8 @@ the real pipeline (import → generic auto-P&R → build), plus the shipped
 artifacts:
 
 - The `.grc` imports, places, routes (no corridor transits a chip-port cell —
-  the FLL ring's documented router hazard is explicitly checked) and builds.
+  the documented router hazard from the FLL's former 8-wide ring fold is still
+  explicitly checked) and builds.
 - **BER 0** through the placed FLL→Costas→slicer chain at foff = 0.18.
 - **The negative control CAN fail and does** (INV-4): the same burst into the
   Costas-only chain measures BER ≈ 0.17 — the phase/lag/polarity decision
@@ -74,14 +75,17 @@ $ python examples/robust_rx/robust_rx_demo.py
 RESULT: LOCKED — FLL chain BER 0 at foff=0.18; Costas-only chain fails (negative control)
 ```
 
-58/120 cells, 5 blocks. Not verified: the literal Qt windows (the recovered
+81/120 cells, 5 blocks (the FLL is a compact 7×4 serpentine fold — 22 cells
+with no walled-off interior; the extra count vs the old ring build is route
+corridor cells from the auto-placer's spread of this placement, with the same
+pinned route-quality excess). Not verified: the literal Qt windows (the recovered
 data paths, including what each scope is fed, are gate-covered end to end).
 The FLL does not bring its internal frequency-estimate tap out to GRC (only
 the corrected complex stream), so the demo shows the *effect* of convergence
 — clean bits after the ~150-symbol acquisition — not the estimate itself.
 
 Pacing note: per-sample (`pipelined: 'no'`). The FLL is a fully-serial
-21-cell ring (saturation-proven bespoke in its block gate at ~2500
+21-cell serpentine loop (saturation-proven bespoke in its block gate at ~2500
 events/sample); per-sample is exact on every layout.
 
 ## Run it

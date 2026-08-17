@@ -11,6 +11,72 @@ dropped) — append new entries above the oldest ones as before.
 
 ---
 
+## FLLBandEdgeBlock re-fold: perimeter RING → compact serpentine (no dead interior) 2026-08-17
+
+A design-quality re-fold, DSP untouched: the FLL's `default_layout` was a
+perimeter RING (8×5 at fs=17, 8×8 at the fs=27 ceiling) whose enclosed
+interior (6×3 = 18 cells at fs=17) was walled off from every other block — the
+robust_rx complaint. Re-laid as a compact serpentine: head row of the 7
+fixed cells (phase…fanout, W→E, fanout turns SOUTH) + the 2·n+2 chain cells
+(ci*/cq*/berr/pi) snaking through three boustrophedon column PAIRS
+((6,5),(4,3),(2,1), balanced depths summing to n+1), so `pi` lands at (1,1)
+for n≥2 and one transit at (0,1) closes the loop NORTH into phase's SOUTH
+face. Folds: fs=3 → 7×2 (3 transits, fb @4), fs=5 → 7×2, fs=8/11/14 → 7×3,
+fs=17 → 7×4 (was 8×5), fs=27 → 7×5 (was 8×8) — all ≤7 both dims (the AGCCC
+≤7-wide routability rule), every in-bbox hole on an OPEN edge (verified by
+flood fill), fb corridor @2 for n≥2. All gates unchanged-green: 19 FLL tests
+(bit-exact sweep incl. fs=3/27, saturated==per-sample, acquisition
+0.05/0.10 → ~1e-4, chain BER 0 @0.18), orientation 8/8, legality, binding,
+route ratchet; robust_rx regenerated through the real import→auto_pnr→save
+path (BER 0 / ctl 0.173, userpath + real-GR-client duplex gates green).
+Constraints that BIT during design (all pre-empted, first build worked):
+
+- **The serial trigger chain must remain ONE connected fwd-face path** —
+  the ring's only load-bearing property. Long handoffs (phase→rotate @5,
+  fanout→cq0 @n+1, ci-tail→berr @n+1) ride it as HOP<31 transit words; a
+  serpentine has this property exactly when every consecutive layout slot
+  is face-abutted, which forces the pair-transition geometry (a pair's two
+  columns share their BOTTOM row; pair-to-pair hand-off along row 1).
+- **The chain count 2n+2 is always EVEN, so three column pairs partition it
+  exactly** (a+b+c = n+1) — no padding, no partial-parity trap (INV-14's
+  even-column rule shows up here as "pairs", which sidesteps it entirely).
+- **The loop-closure geometry is pinned by lock_face=SOUTH (reset
+  default):** pi (or the transit run for n=1) must deliver onto phase's
+  SOUTH face, i.e. the corridor must END at (0,1) emitting NORTH — same
+  closure as the ring/Costas 4×2, so the phase/pi programs are UNTOUCHED.
+  `_apply_internal_feedback` traces pi's own fwd_face (WEST along row 1,
+  one NORTH turn) and co-patches the dphase WRITE + lock-clear WRITE.CFG to
+  the same hop — the QAM16 "pi mid-array with divergent hops" trap does not
+  bite because pi's layout face IS the feedback direction and pi's trig is
+  `__terminate__`.
+- **fanout's face words need NO re-authoring:** `_apply_rotate_tap_face`
+  sets `face_internal` from the PLACED layout face (now SOUTH, was EAST)
+  and `face_tap` from the route's first-hop exit — authored values are
+  placeholders. Only the layout moved.
+- **INV-4 on a layout change:** proved the gate SEES the fold by mutating
+  pi's face EAST — the loop never closes, egress 1/80 (a cached/veneer gate
+  would have stayed green).
+- **Example-level honesty:** the regenerated robust_rx placement spreads
+  the blocks more (81/120 cells vs 58 — extra ROUTE corridor cells, not
+  block cells) yet its pinned route-quality TOTAL excess is unchanged at 4
+  (now the two Costas→slicer tap corridors rounding their own 4×2 folds;
+  comment re-pinned). Per the Gardner-refold warning, the fold's effect on
+  the DENSE example was verified end-to-end, not assumed from the block.
+- **A regression test that USES a block as its hazard generator breaks when
+  the block improves:** `test_port_transit_guard.py` built its pinch from
+  the live FLL at (1,1) — the 7-wide fold no longer pinches, so `assert not
+  rep.ok` failed. The guard is a ROUTER property; the fix is to pin the
+  HISTORICAL layout in the test (a `legacy_fll_ring` fixture monkeypatching
+  the old ring `default_layout` verbatim), not to keep the block wide. The
+  named-reason assertion ("port-transit hazard") keeps the pin non-vacuous.
+- Generalization note (NOT done here): AGCCC's 7×5 perimeter ring has the
+  same dead-interior shape (interior 5×3 = 15 cells); its CORDIC chain is
+  one serial run too, so the same head-row + column-pairs scheme should
+  apply, but its `upd`→`hold` @1 abutment and mid-block dual-face `tap`
+  differ enough that it needs its own verified pass.
+
+---
+
 ## Continuous cross-chip route highlight (multi-chip GUI) 2026-08-17
 
 Selecting a block now lights its WHOLE board-level stream path — sibling

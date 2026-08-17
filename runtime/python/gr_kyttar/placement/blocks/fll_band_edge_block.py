@@ -68,8 +68,11 @@ class FLLBandEdgeBlock(KyttarBlock):
        ``bh = 4*beta/pi`` with phase as a 16-bit accumulator (65536 = one turn),
        matching GR's radian-domain loop dynamics.
 
-    Cells (9 + 2*ceil(filter_size/3), laid out as a RING so the loop feedback
-    returns in ~2 hops — see :meth:`default_layout`):
+    Cells (9 + 2*ceil(filter_size/3), laid out as a compact SERPENTINE fold —
+    head row + boustrophedon column pairs, NO enclosed interior — whose last
+    cell (``pi``) lands at/near (1,1) so the loop feedback returns through a
+    short traced corridor into ``phase``'s SOUTH face; see
+    :meth:`default_layout`):
 
       * ``phase``      — NCO phase accumulator; ``phase += dphase`` (feedback);
                          emits sin/cos phase words; forwards xi/xq; INV-19
@@ -95,16 +98,18 @@ class FLLBandEdgeBlock(KyttarBlock):
                          feedback WRITE to ``phase`` + the INV-19 lock-clear
                          ``WRITE.CFG``.
 
-    Execution is FULLY SERIAL per sample (one trigger chain around the ring), so
+    Execution is FULLY SERIAL per sample (one trigger chain along the fold), so
     there is no reconvergent-fan-in race (INV-20); the ``phase`` arbiter LOCK +
     ``pi`` lock-clear (INV-19) serializes samples under saturated drive.
 
     Hardware deviations from ``digital.fll_band_edge_cc`` (all Q15/ISA-forced):
 
     * **filter_size <= 27** (# HARDWARE DEVIATION): each correlator chain cell
-      holds 3 taps and the ring fold must stay <= 8 cells across (INV-9), so
-      ceil(filter_size/3) <= 9. Larger sizes RAISE. (GR commonly runs fine at
-      such sizes; the band-edge S-curve only sharpens with more taps.)
+      holds 3 taps and the serpentine fold keeps both footprint dimensions
+      <= 7 (INV-9 sharpened by the <=7-wide big-block routability lesson), so
+      ceil(filter_size/3) <= 9 — the verified envelope. Larger sizes RAISE.
+      (GR commonly runs fine at such sizes; the band-edge S-curve only
+      sharpens with more taps.)
     * **bandwidth range** (# HARDWARE DEVIATION): the folded Q15 loop gains
       ``4*alpha/pi`` and ``4*beta/pi`` must be < 1 (Q15-representable);
       bandwidth beyond ~0.55 RAISES. Practical FLL bandwidths are << that.
@@ -127,7 +132,7 @@ class FLLBandEdgeBlock(KyttarBlock):
 
     QUARTER_SIZE = 17          # quarter-wave sine table (as ComplexCostasLoop/NCO)
     TAPS_PER_CELL = 3          # per correlator-chain cell (2 tap sets, 1 delay line)
-    MAX_CHAIN_CELLS = 9        # ring fold ceiling (INV-9: <= 8 across)
+    MAX_CHAIN_CELLS = 9        # fold ceiling: the verified envelope (fs <= 27)
     MAX_FILTER_SIZE = TAPS_PER_CELL * MAX_CHAIN_CELLS
     SAT_POS_Q15 = 0x7FFF
 
@@ -412,7 +417,7 @@ start:
 
         # --- fanout: dual-face output cell. INTERNAL: forwards yi -> I-chain
         # head and yq -> Q-chain head (the yq WRITE transits the I chain on the
-        # ring's forward faces), one trigger to the I head. EXTERNAL: taps the
+        # fold's forward faces), one trigger to the I head. EXTERNAL: taps the
         # corrected complex pair out (the LAST TWO WRITEs + tap_trig, so the
         # build's 2-rail port-egress patch steers both rails; the qpd idiom). ---
         fanout_cell = CellProgram(
@@ -648,9 +653,10 @@ start:
             (f"cq{n - 1}", "pa_out", "berr", "Aq"),
             (f"cq{n - 1}", "pb_out", "berr", "Bq"),
             ("berr", "err", "pi", "err"),
-            # FEEDBACK: pi dphase -> phase (loop closure around the ring's
-            # transit return; traced by _apply_internal_feedback, which also
-            # co-patches pi's lock-clear WRITE.CFG hop).
+            # FEEDBACK: pi dphase -> phase (loop closure through the fold's
+            # short transit corridor into phase's SOUTH face; traced by
+            # _apply_internal_feedback, which also co-patches pi's lock-clear
+            # WRITE.CFG hop).
             ("pi", "dphase", "phase", "dphase"),
         ]
         return conns
@@ -680,62 +686,91 @@ start:
         return jumps
 
     # ------------------------------------------------------------------ layout
-    def _ring_geometry(self) -> Tuple[int, int]:
-        """Smallest W x H rectangle (both <= 8, INV-9) whose perimeter holds all
-        program cells + >= 1 feedback transit."""
-        need = self.cell_count + 1
-        best = None
-        for w in range(4, 9):
-            for h in range(3, 9):
-                p = 2 * (w + h) - 4
-                if p >= need:
-                    # Prefer the WIDER aspect: with w >= 8 the fanout output
-                    # cell (ring index 6) stays on the TOP edge with the input
-                    # (phase) — same-edge I/O (INV-8; a narrower ring puts the
-                    # tap on the east edge, which the router can still hook up).
-                    key = (p, w * h, -w)
-                    if best is None or key < best[0]:
-                        best = (key, w, h)
-        if best is None:
-            raise ValueError(
-                f"FLLBandEdgeBlock: {self.cell_count} cells cannot ring-fold "
-                f"within 8x8 (INV-9)")
-        return best[1], best[2]
+    _HEAD_W = 7                # head-row width = the 7 head cells (<= 7, INV-9)
 
-    def _ring_slots(self) -> List[Tuple[int, int, str]]:
-        """Clockwise ring coordinates + forward faces, starting at (0,0)."""
-        w, h = self._ring_geometry()
-        slots: List[Tuple[int, int, str]] = []
-        for x in range(w):                      # top row, west -> east
-            slots.append((x, 0, "east" if x < w - 1 else "south"))
-        for y in range(1, h):                   # east column, downward
-            slots.append((w - 1, y, "south" if y < h - 1 else "west"))
-        for x in range(w - 2, -1, -1):          # bottom row, east -> west
-            slots.append((x, h - 1, "west" if x > 0 else "north"))
-        for y in range(h - 2, 0, -1):           # west column, upward
-            slots.append((0, y, "north"))
-        return slots
+    def _pair_heights(self) -> List[int]:
+        """Balanced depths (a, b, c) of the three chain column PAIRS.
+
+        The 2*n_chain + 2 chain cells (ci*, cq*, berr, pi) fold into up to
+        three boustrophedon column pairs — (6,5), (4,3), (2,1) — each pair
+        holding ``2*h`` cells (down the east column, across, up the west
+        column). ``a + b + c = n_chain + 1`` exactly (the chain count is
+        always even), balanced so the fold stays as SHALLOW as possible:
+        max depth 4 at the fs=27 ceiling -> total height 5 <= 7 (INV-9)."""
+        half = self._n_chain + 1
+        parts = [half // 3] * 3
+        for i in range(half % 3):
+            parts[i] += 1
+        if parts[0] + 1 > 7:   # unreachable at MAX_CHAIN_CELLS=9; guard anyway
+            raise ValueError(
+                f"FLLBandEdgeBlock: chain of {2 * half} cells cannot serpentine "
+                f"within a 7-tall fold (INV-9)")
+        return parts
 
     def default_layout(self) -> Dict[Any, Tuple[int, int, str]]:
-        """RING fold: the sample's fully-serial trigger chain runs clockwise
-        around a W x H rectangle perimeter and the pi -> phase feedback returns
-        through the remaining west-column transit cells — so the loop closure is
-        always a short traced corridor (the Costas 4x2 fold, scaled). The
-        feedback always arrives on phase's SOUTH face (= the lock_face word).
-        I/O: input (phase) and output (fanout) both sit on the TOP edge."""
-        ids = ["phase", "sin_fold", "cos_fold", "table_sin", "table_cos",
-               "rotate", "fanout"]
-        ids += [f"ci{m}" for m in range(self._n_chain)]
-        ids += [f"cq{m}" for m in range(self._n_chain)]
-        ids += ["berr", "pi"]
-        slots = self._ring_slots()
+        """Compact SERPENTINE fold (replaces the perimeter RING, whose enclosed
+        interior was unusable dead area). Both dimensions <= 7 (the <=7-wide
+        big-block routability rule); NO enclosed interior — every non-block
+        cell inside the bounding box sits on an open edge.
+
+        Row 0 holds the 7 head cells west -> east; the chain cells then snake
+        through three column PAIRS right-to-left below it (down the east
+        column of a pair, across, up its west column), so the fully-serial
+        trigger chain is ONE connected face-path with every consecutive
+        handoff @1-abutted — exactly the ring's corridor property, minus the
+        hollow middle. Default fs=17 (n_chain=6, pair depths 3/2/2)::
+
+            col:    0     1     2     3     4     5     6
+            row 0: phase sin_f cos_f tbl_s tbl_c rot   fanout   (all E; fanout S)
+            row 1: fb0   pi    cq4   cq3   cq0   ci5   ci0
+            row 2:       berr  cq5   cq2   cq1   ci4   ci1
+            row 3:                               ci3   ci2
+
+        Long internal handoffs (phase->rotate xi/xq, fanout->cq0 crossing the
+        whole I chain, ci-tail->berr crossing the Q chain) ride this single
+        fwd-face corridor as HOP<31 transit words, unchanged from the ring.
+
+        The LAST chain cell ``pi`` lands at (1,1) whenever the third pair is
+        occupied (n_chain >= 2), i.e. directly WEST of the one transit cell
+        (0,1), whose NORTH face closes the loop into ``phase``'s SOUTH face —
+        the lock_face reset default (INV-19), same closure geometry as the
+        ring and the Costas 4x2. For n_chain=1 (fs<=3) the chain ends earlier
+        on row 1 and the leftover row-1 slots down to (0,1) are declared
+        ``transit_fb_*`` cells (face-only, first-class, last in the layout per
+        INV-33); ``_apply_internal_feedback`` traces the corridor either way.
+
+        I/O: input (phase, (0,0)) and output (fanout, (6,0)) both on the TOP
+        edge — the same bus-facing edge the 8-wide ring presented (INV-8), so
+        an existing placement's port geometry is preserved while the footprint
+        shrinks from 8x5 to 7x4 at fs=17."""
+        heads = ["phase", "sin_fold", "cos_fold", "table_sin", "table_cos",
+                 "rotate", "fanout"]
+        chain = [f"ci{m}" for m in range(self._n_chain)]
+        chain += [f"cq{m}" for m in range(self._n_chain)]
+        chain += ["berr", "pi"]
         layout: Dict[Any, Tuple[int, int, str]] = {}
-        for i, cid in enumerate(ids):
-            layout[cid] = slots[i]
-        # Remaining perimeter slots = the feedback return transits (face-only,
-        # first-class block cells; last in the layout per INV-33).
-        for t, i in enumerate(range(len(ids), len(slots))):
-            layout[f"transit_fb_{t}"] = slots[i]
+        # Head row, west -> east; fanout turns SOUTH into the chain fold.
+        for x, cid in enumerate(heads):
+            layout[cid] = (x, 0, "east" if x < self._HEAD_W - 1 else "south")
+        # Chain slots: boustrophedon column pairs, right to left.
+        slots: List[Tuple[int, int, str]] = []
+        for (ce, cw, h) in zip((6, 4, 2), (5, 3, 1), self._pair_heights()):
+            if h <= 0:
+                break
+            for y in range(1, h + 1):           # down the pair's east column
+                slots.append((ce, y, "south" if y < h else "west"))
+            for y in range(h, 0, -1):           # up the pair's west column
+                slots.append((cw, y, "north" if y > 1 else "west"))
+        assert len(slots) == len(chain), (len(slots), len(chain))
+        for cid, s in zip(chain, slots):
+            layout[cid] = s
+        # Feedback return: pi's WEST neighbours along row 1 down to (0,1),
+        # whose NORTH face lands in phase's SOUTH face (face-only transit
+        # cells — first-class block cells, last in the layout per INV-33).
+        pi_col = layout["pi"][0]
+        for t, x in enumerate(range(pi_col - 1, 0, -1)):
+            layout[f"transit_fb_{t}"] = (x, 1, "west")
+        layout[f"transit_fb_{pi_col - 1}"] = (0, 1, "north")
         return layout
 
     def output_cell_id(self) -> Any:

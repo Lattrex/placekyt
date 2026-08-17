@@ -63,10 +63,60 @@ def _port_cells(catalog):
     return f
 
 
+def _legacy_ring_layout(self):
+    """The FLL's ORIGINAL 8-wide perimeter-RING ``default_layout`` (verbatim,
+    pre-2026-08-17 serpentine re-fold): the geometry of the historical
+    port-pinch finding. The guard under test is a ROUTER property, so the
+    regression keeps pinning the once-shipped pinch layout even though the
+    catalog block now folds ≤7 wide (which no longer pinches)."""
+    need = self.cell_count + 1
+    best = None
+    for w in range(4, 9):
+        for h in range(3, 9):
+            p = 2 * (w + h) - 4
+            if p >= need:
+                key = (p, w * h, -w)
+                if best is None or key < best[0]:
+                    best = (key, w, h)
+    w, h = best[1], best[2]
+    slots = []
+    for x in range(w):                      # top row, west -> east
+        slots.append((x, 0, "east" if x < w - 1 else "south"))
+    for y in range(1, h):                   # east column, downward
+        slots.append((w - 1, y, "south" if y < h - 1 else "west"))
+    for x in range(w - 2, -1, -1):          # bottom row, east -> west
+        slots.append((x, h - 1, "west" if x > 0 else "north"))
+    for y in range(h - 2, 0, -1):           # west column, upward
+        slots.append((0, y, "north"))
+    ids = ["phase", "sin_fold", "cos_fold", "table_sin", "table_cos",
+           "rotate", "fanout"]
+    ids += [f"ci{m}" for m in range(self._n_chain)]
+    ids += [f"cq{m}" for m in range(self._n_chain)]
+    ids += ["berr", "pi"]
+    layout = {cid: slots[i] for i, cid in enumerate(ids)}
+    for t, i in enumerate(range(len(ids), len(slots))):
+        layout[f"transit_fb_{t}"] = slots[i]
+    return layout
+
+
+@pytest.fixture()
+def legacy_fll_ring():
+    """Swap the FLL back to its original 8-wide ring for the pinch tests (and
+    restore after) — see :func:`_legacy_ring_layout`."""
+    from gr_kyttar.placement.blocks.fll_band_edge_block import FLLBandEdgeBlock
+    orig = FLLBandEdgeBlock.default_layout
+    FLLBandEdgeBlock.default_layout = _legacy_ring_layout
+    try:
+        yield
+    finally:
+        FLLBandEdgeBlock.default_layout = orig
+
+
 def _pinched_fll_project(catalog):
-    """The FLLBandEdge pinch verbatim: the 8-wide ring at anchor (1, 1) leaves
-    only row 0 + the corner port columns as channels, so the fanout→Costas
-    corridor's only path wraps through a USED corner port cell."""
+    """The FLLBandEdge pinch verbatim: the (legacy-layout) 8-wide ring at
+    anchor (1, 1) leaves only row 0 + the corner port columns as channels, so
+    the fanout→Costas corridor's only path wraps through a USED corner port
+    cell. Callers MUST hold the ``legacy_fll_ring`` fixture."""
     ctrl = AppController(catalog=catalog)
     ctrl.new_project("fll_pinch", "kyttar_10x12")
     fll = ctrl.place_block("FLLBandEdgeBlock", 0, 1, 1,
@@ -100,7 +150,8 @@ def _used_port_cells(ctrl, ct):
     return used
 
 
-def test_pinched_corridor_never_ships_through_used_port(qapp, catalog, chip_type):
+def test_pinched_corridor_never_ships_through_used_port(qapp, catalog, chip_type,
+                                                        legacy_fll_ring):
     """THE INV-4 PIN (fails pre-fix): the full auto-route pipeline on the FLL
     pinch geometry must NOT return ok with a corridor through a used port cell.
     Pre-fix the maze escalation shipped mid_i as
@@ -130,7 +181,8 @@ def test_pinched_corridor_never_ships_through_used_port(qapp, catalog, chip_type
         assert r.reason, f"failed net '{r.name}' carries no reason (silent failure)"
 
 
-def test_bus_router_names_the_port_transit_hazard(qapp, catalog, chip_type):
+def test_bus_router_names_the_port_transit_hazard(qapp, catalog, chip_type,
+                                                  legacy_fll_ring):
     """The bus router itself (route_all_bus, the named-failure path) explains the
     pinch: the failing net's reason names the port-transit hazard, not a generic
     'no path' (the diagnostic relaxed-probe naming)."""

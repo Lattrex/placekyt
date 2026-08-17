@@ -3,10 +3,11 @@
 
 The band-edge FLL is the COARSE frequency-recovery stage of the industry RX
 cascade (MF -> FLL -> timing -> fine DD carrier), and the hardest composite of
-this wave: a 21+-cell RING (quarter-wave NCO + complex rotate + a dual-face
-fan-out + FOUR real band-edge correlators folded into two systolic chains + the
-band-edge error cell + an error-feedback PI) closed by a transit-return
-feedback corridor, INV-19 serialize-locked.
+this wave: a 21+-cell compact SERPENTINE fold (quarter-wave NCO + complex
+rotate + a dual-face fan-out + FOUR real band-edge correlators folded into two
+systolic chains + the band-edge error cell + an error-feedback PI) closed by a
+short transit-corridor feedback return, INV-19 serialize-locked (re-folded
+2026-08-17 from the original perimeter RING, whose interior was dead area).
 
 Verification tiers (settle-architecture-first, INV-26):
 
@@ -22,8 +23,8 @@ Verification tiers (settle-architecture-first, INV-26):
      exactness above pins it far below a Q15 LSB — INV-16).
   2. ON-CHIP BIT-EXACT — the built + simulated DUT equals process_reference_q15
      EXACTLY across the parameter sweep (incl. the single-cell-chain fs=3, the
-     max 8x8-ring fs=27, the S=1 coefficient-headroom path, sps/bandwidth
-     variants). This is the substrate proof: the ring loop is closed and
+     max 7x5-fold fs=27, the S=1 coefficient-headroom path, sps/bandwidth
+     variants). This is the substrate proof: the folded loop is closed and
      tracking.
   3. ON-CHIP ACQUISITION — the chip (driven SATURATED, which is bit-exact to
      per-sample) pulls foff = 0.05 / 0.10 cyc/sample to a residual measured
@@ -335,9 +336,9 @@ def _ref_pairs(blk, x):
 @pytest.mark.parametrize("params", _SWEEP,
                          ids=[str(sorted(p.items())) for p in _SWEEP])
 def test_on_chip_bit_exact(params):
-    """The built + simulated ring equals process_reference_q15 EXACTLY on BOTH
+    """The built + simulated fold equals process_reference_q15 EXACTLY on BOTH
     corrected rails — the feedback corridor is closed and the loop trajectory
-    tracks — across the parameter sweep (single-cell chains, the max 8x8 ring,
+    tracks — across the parameter sweep (single-cell chains, the max 7x5 fold,
     the S=1 coefficient-headroom restore, sps/bandwidth variants)."""
     rng = np.random.default_rng(7)
     n = 150
@@ -414,7 +415,7 @@ def test_saturated_equals_per_sample():
     """INV-19 (the bespoke saturated gate — see NEEDS_BESPOKE in
     test_pipeline_saturation): the whole burst enqueued back-to-back equals the
     per-sample run BIT-for-BIT on both rails. Budget note: the fully-serial
-    21-cell ring costs ~2500 sim events/sample (measured; linear in depth, no
+    21-cell fold costs ~2500 sim events/sample (measured; linear in depth, no
     avalanche), so the cap is 4000/sample."""
     from kyttar_verify.dut_runner import run_block_dut_pipelined  # noqa: PLC0415
     rng = np.random.default_rng(3)
@@ -448,13 +449,14 @@ def _run_chain_on_chip(x, with_fll):
     """FLL -> Costas placed + routed on ONE chip (or Costas alone), per-sample
     drive, returns the recovered yi word list.
 
-    PLACEMENT NOTE: the 8-wide FLL ring at the top rows pinches both side
-    channels against the corner chip ports; a corridor through the USED x16_in
-    port cell kills injection. Since 2026-08-16 the routers hard-wall used port
-    cells and such a pinch is a NAMED failure (port-transit guard,
-    test_port_transit_guard.py) — so this placement (FLL at (1,4), Costas
+    PLACEMENT NOTE: the FLL's former 8-wide ring at the top rows pinched both
+    side channels against the corner chip ports; a corridor through the USED
+    x16_in port cell kills injection. Since 2026-08-16 the routers hard-wall
+    used port cells and such a pinch is a NAMED failure (port-transit guard,
+    test_port_transit_guard.py) — this placement (FLL at (1,4), Costas
     NORTH of it at (2,0), rows 2-3 as the mid-corridor channel) is the
-    ROUTABLE layout, not just a hazard workaround."""
+    ROUTABLE layout, kept unchanged across the 2026-08-17 serpentine re-fold
+    (now 7x4, one spare column even at the old anchor)."""
     import simkyt  # noqa: PLC0415
     from kyttar_verify.dut_runner import _engine  # noqa: PLC0415
 
@@ -797,7 +799,9 @@ def test_write_report():
             "(samps_per_sym, rolloff, filter_size, bandwidth VERBATIM). "
             "Structure pinned EXACTLY vs live GR 3.10.12 (float model reproduces "
             "GR's own freq/error output streams to float32 rounding; tap "
-            "designer matches print_taps). On-chip: a 9+2*ceil(fs/3)-cell RING "
+            "designer matches print_taps). On-chip: a 9+2*ceil(fs/3)-cell "
+            "compact SERPENTINE fold, <= 7 both dims, no enclosed interior "
+            "(2026-08-17 re-fold of the original perimeter ring) "
             "(quarter-wave NCO derotator, dual-face fanout tap, two 2-tap-set "
             "systolic correlator chains computing all four real band-edge dot "
             "products, err = 4(Ar*Bq - Aq*Br) folded into the loop gains "

@@ -65,6 +65,7 @@ from .rx_batch import rx_batch
 from .chip_batch import chip_batch
 from .dsp_markers import (complex_rrc_matched_filter, complex_costas_loop,
                           gardner_timing_recovery, mm_timing_recovery,
+                          fll_band_edge,
                           lms_equalizer, complex_to_mag, complex_to_arg,
                           bpsk_slicer, qpsk_slicer,
                           psk_symbol_mapper, upsampler, repeat, complex_upsampler,
@@ -148,6 +149,7 @@ __all__ = [
     "complex_costas_loop",
     "gardner_timing_recovery",
     "mm_timing_recovery",
+    "fll_band_edge",
     "lms_equalizer",
     "complex_to_mag",
     "complex_to_arg",

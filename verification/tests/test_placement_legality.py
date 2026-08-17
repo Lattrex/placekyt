@@ -63,6 +63,10 @@ BLOCKS = [
     ("FSK4SyncTimingRecoveryBlock", {}),
     ("GardnerTimingRecovery", {}),
     ("MMTimingRecoveryBlock", {}),
+    # FLL band-edge ring composite: perimeter fold with interior hole + a feedback
+    # transit; assert legality at the default AND the max (8x8 ring) filter_size.
+    ("FLLBandEdgeBlock", {}),
+    ("FLLBandEdgeBlock", {"filter_size": 27}),
     ("IQUpconvertBlock", {}),
     ("ComplexCostasLoopBlock", {}),
     # BPSK hard slicer: single-cell, so it can never self-overlap — but assert the

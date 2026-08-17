@@ -78,6 +78,8 @@ _TYPE_OVERRIDES = {
     # M&M timing recovery (16-QAM): snake→Pascal gives "MmTimingRecoveryBlock" not
     # "MMTimingRecoveryBlock", so pin it explicitly (override table uses catalog.get).
     "kyttar_mm_timing_recovery": "MMTimingRecoveryBlock",
+    # FLL band-edge: snake->Pascal gives "FllBandEdgeBlock" — pin it.
+    "kyttar_fll_band_edge": "FLLBandEdgeBlock",
     # LMS equalizer: snake->Pascal gives "LmsEqualizerBlock" — pin it.
     "kyttar_lms_equalizer": "LMSEqualizerBlock",
     "kyttar_complex_to_mag": "ComplexToMagBlock",

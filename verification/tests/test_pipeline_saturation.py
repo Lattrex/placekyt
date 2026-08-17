@@ -420,6 +420,12 @@ NEEDS_BESPOKE = {
     # test_mm_timing_recovery.test_saturated_equals_per_sample (bit-exact I&Q, 0-diff,
     # toff 0.0/0.3/0.5).
     "MMTimingRecoveryBlock": "2-sps 16-QAM M&M timing loop; own gate test_mm_timing_recovery.test_saturated_equals_per_sample (bit-exact saturated, real RRC channel)",
+    # FLL band-edge: a 21+-cell serialized RING loop (INV-19 lock on phase, cleared
+    # by pi). Saturation-SAFE and bit-exact, but the fully-serial ring costs ~2500
+    # sim events/sample — over this file's shared 2000/sample budget — so it runs
+    # its OWN saturated gate with a justified event budget:
+    # test_fll_band_edge.test_saturated_equals_per_sample (bit-exact I&Q, N=100).
+    "FLLBandEdgeBlock": "serialized ring loop ~2500 events/sample; own gate test_fll_band_edge.test_saturated_equals_per_sample (bit-exact saturated)",
     # Freq-xlating decimating FIR (channelizer): fused NCO down-mixer + real-tap complex
     # FIR + decimation. Its NCO/mixer front has the SAME phase->sin/cos+relay->mixer
     # RECONVERGENT fan-in as ComplexMixer/NCO (INV-20), so it DEADLOCKS under saturated

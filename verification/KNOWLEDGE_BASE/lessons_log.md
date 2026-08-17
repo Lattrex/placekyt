@@ -11,6 +11,83 @@ dropped) — append new entries above the oldest ones as before.
 
 ---
 
+## FLLBandEdgeBlock — the composite-loop ceiling holds a 21-cell RING: coarse-FLL bit-exact, chain-proven 2026-08-16
+
+GR `digital.fll_band_edge_cc` (samps_per_sym, rolloff, filter_size, bandwidth
+VERBATIM). The hardest block of this wave — NCO + complex rotate + FOUR real
+band-edge correlators + squared-magnitude error + 2nd-order loop, all inside
+ONE feedback ring — landed FIRST-TRY bit-exact on chip (the settle-architecture-
+first discipline did its job: every hard decision was settled in Python before
+any silicon). 19 tests green (`test_fll_band_edge.py`) + orientation (8/8) +
+legality + bespoke saturated gate. End-to-end: FLL→Costas placed+routed on ONE
+chip recovers BER 0 at foff=0.18 cyc/sample where the chip Costas-only chain
+fails at BER 0.17 (the negative control), matching GR's competence at GR's own
+operating point (0.05 — see the loop-strength note below).
+
+- **PIN GR LIVE FIRST paid for itself twice.** (1) GR 3.10's `design_filter`
+  normalizes by `sum(tap^2)` (POWER), not `sum(tap)` — older sources differ.
+  (2) GR's out/freq/error streams lag the input by **filter_size samples** —
+  `set_history(filter_size+1)` zero-pads the stream head, and `work()` indexes
+  `in[i]` from the padded start. Compensate the model input by exactly fs
+  zeros and the float model matches GR's own freq/error OUTPUT STREAMS to
+  float32 rounding (max |Δfreq| 2.5e-7 over 3000 samples) — the strongest
+  possible structure pin, far stronger than tap comparison alone (print_taps
+  only prints 4 significant digits). The chip has NO such delay (INV-2: state
+  it, don't lag-search).
+- **The band-edge ALGEBRA collapses 2 complex FIRs to 4 real dot products.**
+  `taps_upper = conj(taps_lower)` elementwise, so with a=Re, b=Im of
+  taps_lower and A=Σa·y, B=Σb·y (complex): `err = |L|²−|U|² = 4(Ar·Bq−Aq·Br)`.
+  Two systolic chains (yi-history, yq-history), each cell holding ONE delay
+  segment + BOTH tap sets (3 taps/cell: 6 data + 4 state + 17 instr = exact
+  fit; the complex-FIR budget mirror-image). The ×4 and the radians→phase-word
+  unit map fold into the STORED gains: `ah = 4α/π`, `bh = 4β/π` (< 1 for
+  bandwidth ≲ 0.55; raise beyond — a documented Q15 HW-deviation).
+- **The RING fold is the general shape for a big loop.** The whole sample pass
+  is ONE serial trigger chain around a W×H rectangle perimeter (interior
+  empty), pi lands next to phase, and the leftover perimeter slots ARE the
+  feedback transits — Costas's 4×2 fold, scaled to 22+ cells. Every internal
+  handoff (including fanout→cq0 crossing the whole I-chain, and I-tail→berr
+  crossing the Q-chain) rides the single fwd-face corridor as HOP<31 transit
+  words. Fully-serial execution ⇒ no INV-20 fan-in race by construction; the
+  INV-19 phase-LOCK + pi WRITE.CFG (Costas idiom verbatim, lock_face=SOUTH
+  reset-default preserved by the ring's return geometry) covers saturation.
+- **The freq integrator NEEDS the RMS error-feedback idiom.** Band-edge error
+  is small (power-normalized taps ⇒ |err| ~0.01–0.12), so `MULQ(bh, err)`
+  truncates to ZERO below |err·bh| < 2^15 and the integrator stalls ~0.006
+  cyc/sample short — the RMS-stall lesson, predicted and pre-empted:
+  `bh·err = (MULQ<<15) + (MUL&0x7FFF)` exactly, fraction accumulates in a
+  15-bit facc. Mutation `test_mut_dropped_error_feedback_accumulator` proves
+  the gate sees it. (Rescaling err up + gains down does NOT help — the
+  truncation floor is a property of the PRODUCT, not the operand split.)
+- **A dual-face "fanout" cell decouples the tap from the compute.** rotate
+  (the proven Costas order-4 cell, sinv=+sin for the FLL's exp(+jφ)) stays a
+  pure internal cell; a cheap 14-instr fanout cell forwards yi/yq into the
+  chains AND taps the corrected pair out (last-two-WRITEs + tap_trig = the
+  qpd 2-rail egress idiom). Trying to fuse the tap into rotate overflows 32
+  words — dedicate the head, as the dispatch warned.
+- **Saturated ≠ livelocked: the serialized ring costs ~2500 sim events/sample
+  (LINEAR in pipeline depth — measured 778/3253/5731/10686 for N=1/2/3/5).**
+  `run_block_dut_pipelined`'s default 2000/sample cap reports a false
+  "livelock"; the block is NEEDS_BESPOKE with its own saturated gate at
+  4000/sample, bit-for-bit equal to per-sample at N=100.
+- **ROUTER HAZARD (open, documented): a corridor may transit the x16_in PORT
+  CELL.** An 8-wide block ring pinches both side channels against the corner
+  chip ports; the router then wrapped the fanout→Costas corridor THROUGH
+  (0,0) x16_in + its delivery broker (0,1) — route "ok", build "ok", chip
+  dead in 6 events (injections swallowed). The INV-32 own-input-broker guard
+  does not cover CHIP-PORT input deliveries. Workaround (chain test): place
+  the consumer NORTH of the ring with 2 free rows; verify `rep` routes never
+  touch port cells. Also: `add_logical_connection` AUTO-SYNTHESISES the
+  yq-sibling of a complex block→block link — wiring BOTH rails by hand
+  double-delivers (the importer's dedupe only sees its own nets).
+- **Loop-strength honesty: the Q15 k=1 Costas is a ~π× stronger loop than GR's
+  float costas at the same loop_bw** (the Costas block's documented direct-Q15
+  gain mapping). Chip Costas-only pulls ~0.12 cyc/sample clean where GR's
+  breaks at ~0.03 — so the chain's negative control lives at 0.18 on-chip vs
+  0.05 for GR. Assert each golden at ITS OWN operating point (INV-26), and
+  remember GR's chain needs ~450 settle symbols at FLL bw=0.1 before its
+  Costas sees a settled residual (a too-short BER skip reads a locked GR
+  chain as BER 0.07 — measured).
 ## RationalResamplerBlock — the interp+decim combo ships as a POLYPHASE cell; GR's D-offset alignment is real and load-bearing 2026-08-16
 
 GR `filter.rational_resampler_fff` (GRC **Rational Resampler**), tier 3. The

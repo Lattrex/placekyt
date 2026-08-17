@@ -1,0 +1,74 @@
+id: kyttar_fll_band_edge
+label: Kyttar FLL Band-Edge
+category: '[Kyttar]'
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.fll_band_edge(${device_id}, ${samps_per_sym}, ${rolloff}, ${filter_size}, ${bandwidth})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+
+- id: samps_per_sym
+  label: Samples Per Symbol
+  dtype: real
+  default: '2.0'
+
+- id: rolloff
+  label: Filter Rolloff Factor
+  dtype: real
+  default: '0.35'
+
+- id: filter_size
+  label: Prototype Filter Size
+  dtype: int
+  default: '17'
+
+- id: bandwidth
+  label: Loop Bandwidth
+  dtype: real
+  default: '0.06'
+
+# Always COMPLEX: the corrected (de-rotated) I/Q pair is carried as ONE
+# gr_complex stream in/out (on-chip xi/xq in + yi_tap/yq_tap out; placeKYT's
+# importer splits the single complex net into the two rails). GR's optional
+# freq/phase/error debug streams are not brought out.
+inputs:
+- label: in
+  domain: stream
+  dtype: complex
+
+outputs:
+- label: out
+  domain: stream
+  dtype: complex
+
+documentation: |-
+  FLL Band-Edge — coarse carrier-frequency recovery (= GNU Radio
+  digital.fll_band_edge_cc). VERIFIED per-block against GNU Radio: the pure
+  band-edge structure is pinned STRUCTURE-EXACT against live GR (the float
+  model reproduces GR's own freq/error output streams to float32 rounding) and
+  the on-chip build is BIT-EXACT to its Q15 reference; the on-chip loop pulls
+  carrier offsets up to 0.1 cycles/sample (far beyond a Costas loop's pull-in)
+  to a residual well inside the downstream Costas capture range
+  (verification/tests/test_fll_band_edge.py).
+
+  The missing coarse stage of the industry receiver cascade: matched filter ->
+  FLL band-edge -> timing recovery -> fine (Costas) carrier recovery. Derives
+  band-edge filters from the signal's excess bandwidth and drives a
+  second-order loop from the upper/lower band-edge power difference.
+
+  Parameters (all GR digital.fll_band_edge_cc verbatim):
+    Device ID: which Kyttar device to use
+    Samples Per Symbol: oversampling ratio of the input signal (> 0)
+    Filter Rolloff Factor: excess bandwidth of the signal's pulse shaping,
+      in [0, 1]
+    Prototype Filter Size: number of band-edge filter taps (hardware ceiling
+      27 on this chip — larger raises at import)
+    Loop Bandwidth: FLL loop bandwidth (Q15 gain ceiling ~0.55 — larger
+      raises at import)
+
+file_format: 1

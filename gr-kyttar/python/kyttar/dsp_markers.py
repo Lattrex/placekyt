@@ -283,6 +283,32 @@ class mm_timing_recovery(_PassThrough):
                                     "damping": float(damping)})
 
 
+class fll_band_edge(_PassThrough):
+    """FLL band-edge coarse frequency recovery — GR marker (maps to
+    FLLBandEdgeBlock = digital.fll_band_edge_cc).
+
+    The coarse carrier stage of the industry RX cascade (MF -> FLL -> timing ->
+    fine DD carrier): pulls a large offset (beyond Costas pull-in) to a residual
+    the downstream Costas captures. Always COMPLEX: the corrected I/Q pair rides
+    as ONE gr_complex stream in/out (the on-chip xi/xq in + yi_tap/yq_tap out
+    pairs; placeKYT's importer splits the single complex net into the two
+    rails). A pure pass-through marker; the real DSP runs on the hosted chip."""
+
+    def __init__(self, device_id="kyttar_0", samps_per_sym=2.0, rolloff=0.35,
+                 filter_size=17, bandwidth=0.06):
+        super().__init__("Kyttar FLL Band-Edge",
+                         in_dtype=np.complex64, out_dtype=np.complex64)
+        self.device_id = device_id
+        self.samps_per_sym = float(samps_per_sym)
+        self.rolloff = float(rolloff)
+        self.filter_size = int(filter_size)
+        self.bandwidth = float(bandwidth)
+        self._advertise_grc_params(
+            device_id, "FLLBandEdgeBlock",
+            {"samps_per_sym": float(samps_per_sym), "rolloff": float(rolloff),
+             "filter_size": int(filter_size), "bandwidth": float(bandwidth)})
+
+
 class bpsk_slicer(_PassThrough):
     """BPSK slicer — GR marker (maps to BPSKSlicerBlock).
 

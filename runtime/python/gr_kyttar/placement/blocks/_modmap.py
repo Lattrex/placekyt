@@ -62,6 +62,7 @@ BUILTIN_BLOCKS = {
     'QAM16ComplexCostasLoopBlock': 'qam16_complex_costas_loop_block',
     'GardnerTimingRecovery': 'gardner_timing_recovery',
     'MMTimingRecoveryBlock': 'mm_timing_recovery_block',
+    'FLLBandEdgeBlock': 'fll_band_edge_block',
     'SoftDemodulatorBlock': 'soft_demodulator_block',
     'BPSKSlicerBlock': 'bpsk_slicer_block',
     'QPSKSlicerBlock': 'qpsk_slicer_block',

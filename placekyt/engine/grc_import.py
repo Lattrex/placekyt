@@ -56,11 +56,13 @@ _F2C_IDS = {"blocks_float_to_complex"}
 _C2F_IDS = {"blocks_complex_to_real", "blocks_complex_to_float"}
 _NULL_SRC_IDS = {"blocks_null_source", "analog_null_source"}
 _NULL_SINK_IDS = {"blocks_null_sink"}
-# byte<->float WIDENING casts: on the chip every stream item is one 16-bit word,
-# so uchar_to_float / float_to_uchar between two chip blocks are IDENTITY on the
-# wire — pure GRC type glue (e.g. diff_encoder(byte) -> psk_symbol_mapper(float)).
+# byte<->float / short<->float WIDENING casts: on the chip every stream item is
+# one 16-bit word, so uchar_to_float / float_to_uchar / short_to_float between
+# two chip blocks are IDENTITY on the wire — pure GRC type glue (e.g.
+# diff_encoder(byte) -> psk_symbol_mapper(float), or crc16(short) -> sink(float)).
 # Spliced transparently: the upstream's own output port wires straight through.
-_PASSTHRU_IDS = {"blocks_uchar_to_float", "blocks_float_to_uchar"}
+_PASSTHRU_IDS = {"blocks_uchar_to_float", "blocks_float_to_uchar",
+                 "blocks_short_to_float", "blocks_float_to_short"}
 _CONVERTER_IDS = (_F2C_IDS | _C2F_IDS | _NULL_SRC_IDS | _NULL_SINK_IDS
                   | _PASSTHRU_IDS)
 
@@ -274,7 +276,12 @@ def _splice_converters(conns, grc_blocks):
 
     kept = []
     spliced_out = set()  # converter names fully consumed
-    for name in conv_names:
+    # Sorted: conv_names is a set, and its iteration order decides the ORDER
+    # rewritten edges are appended — which downstream decides stream-tag
+    # assignment order. Set order varies with PYTHONHASHSEED, so an unsorted
+    # walk made imports differ BETWEEN PROCESSES (the fec_link control's
+    # coin-flip tag collision). Sorted = one deterministic import everywhere.
+    for name in sorted(conv_names):
         gid = _id(name)
         if gid in _NULL_SRC_IDS or gid in _NULL_SINK_IDS:
             spliced_out.add(name)
@@ -704,15 +711,24 @@ def _stream_tag(stream_id: str, used: set | None = None) -> int:
     dropped (found via the audio/meter duplex example; the fixed 'rx'/'tx'
     tags 5/10 always fit, which is why the modems never hit it). Derived tags
     are therefore confined to 2..31, with linear probing over ``used`` to keep
-    two arbitrary stream ids from colliding within one import."""
+    two arbitrary stream ids from colliding within one import.
+
+    Derived tags additionally NEVER land on a FIXED tag, whether or not that
+    fixed id is present yet: a fixed id ('tx') returns its tag
+    UNCONDITIONALLY, so a derived id that hashed onto it ('txcrc' → 10) and
+    happened to be assigned FIRST silently shared the tag — both sinks then
+    demuxed one stream (the fec_link no-interleaver control caught it). The
+    assignment order came from connection-list order, which set-ordered
+    converter splicing made PYTHONHASHSEED-dependent — a per-process coin
+    flip, not even a stable bug."""
     sid = str(stream_id)
     if sid in _STREAM_TAGS:
         return _STREAM_TAGS[sid]
     span = 30                                    # tags 2..31
+    reserved = set(_STREAM_TAGS.values()) | (used or set())
     tag = (sum(ord(c) for c in sid) % span) + 2
-    if used is not None:
-        while tag in used:
-            tag = (tag - 2 + 1) % span + 2
+    while tag in reserved:
+        tag = (tag - 2 + 1) % span + 2
     return tag
 
 
@@ -1043,7 +1059,13 @@ def _coerce_params(params, catalog, btype, variables=None):
             if isinstance(dv, bool):
                 out[k] = s.lower() in ("true", "1", "yes")
             elif isinstance(dv, int):
-                out[k] = int(float(s))
+                try:
+                    out[k] = int(float(s))
+                except ValueError:
+                    # Hex/octal/binary literals ('0x1021', the CRC poly/init
+                    # idiom) — int(float(s)) rejects them, which silently kept
+                    # the block default (the param-drift trap).
+                    out[k] = int(s, 0)
             elif isinstance(dv, float):
                 out[k] = float(s)
             elif isinstance(dv, (list, tuple, dict)):

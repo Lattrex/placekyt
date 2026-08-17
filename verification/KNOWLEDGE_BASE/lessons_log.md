@@ -11,6 +11,79 @@ dropped) — append new entries above the oldest ones as before.
 
 ---
 
+## fec_link example — burst→interleave→correct→CRC-verdict; one out_tag per stream; layout-dependent saturation 2026-08-16
+
+The FEC protocol-link example (`examples/fec_link/`): three streams on one
+chip — 'tx' bytes→Unpack(8)→HammingEncoder(4:7)→BlockInterleaver(4×3),
+'txcrc' the same bytes→Crc16(frame_len=12), 'rx' burst-corrupted channel
+bits→deinterleaver→HammingDecoder→Pack(8). A 2-bit channel burst is dispersed
+into two codewords, corrected, and the chip TX CRC word matches the CRC
+recomputed over the recovered bytes; the on-chip no-interleaver control fails
+both. 9-test gate (incl. the real-GR-client user path on 58950) all green;
+first placed run was already bit-exact end to end. Durable lessons:
+
+- **The GR client contract is ONE tagged egress per source stream** —
+  `port_config.stream_targets` resolves a single `out_tag` per `stream_id`
+  (BFS to the FIRST output net) and `sim_bridge` buckets only that tag per
+  stream; a second egress of the same stream would park unclaimed in
+  `_tag_buf` forever. So the dispatched design's "stream 'tx' port fan-out,
+  2 arms with dual tagged egress" is NOT expressible on the client path: the
+  shipped form is the cordic_polar pattern — the SAME message bytes ride two
+  streams ('tx' and 'txcrc'), the chip port still fans out 3 arms through
+  the INV-24 broker machinery, and every arm's egress has its own claimable
+  tag. Deviation, mechanism, and code sites documented here on purpose.
+- **Interleaver framing arithmetic must include the PIPELINE ZEROS.** The
+  streaming BlockInterleaver emits N zeros per stage (group delay), so two
+  stages put 2N=24 zeros ahead of the coded stream — 24 mod 7 ≠ 0 misframes
+  EVERY Hamming codeword downstream. Fix at the host channel: prepend
+  12·k−2N zeros so the total prefix is whole codewords AND whole decoded
+  bytes (here 60 → prefix 84 = 12 zero codewords = 6 zero bytes). Also pad
+  the TX message (6 zero bytes = a dropped partial CRC frame) so the coded
+  stream stays block-aligned and flushes both stages. Burst spacing:
+  consecutive interleaved bits deinterleave exactly cols(=3) apart, and
+  o, o+3 straddle a codeword boundary iff o mod 7 ∈ {4,5,6} — the first hit
+  is then always a parity bit, the second always a data bit. All derived +
+  asserted at stim import time, and the stim mirrors are gate-checked
+  against the blocks' own `process_reference`.
+- **Chain-level saturation is LAYOUT-dependent — the route-quality ratchet's
+  hazard is real and measurable.** On the compact packer's wirelength-
+  optimal layout the port→crc corridor circumnavigated the array (+14 over
+  manhattan; per-net ratchet cap is +8), and under saturated whole-burst
+  drive the 1:14 rate-EXPANDING tx chain deadlocked at 1/252 words (the
+  2026-07-27 expanding-chain class). On the shortest-path layout (CRC cell
+  nudged beside the input port; total excess 0) the SAME merged three-stream
+  saturated drive is EXACT. The packer's objective doesn't see routed
+  corridor length, so `build_kyt.py` runs a deterministic post-P&R
+  refinement (move the 1-cell CRC, re-route, accept only clean DRC + excess
+  ≤4, verified end-to-end downstream); the .grc still ships per-sample
+  paced for import-path robustness. Both sides pinned in the gate.
+- **Importer coercion traps for FEC params:** an expression param
+  (`stim.crc_frame_len()`) is SILENTLY dropped for the block default (the
+  sps=256 class) — ship literals and pin them in the gate
+  (`test_import_pnr_build_ok` asserts the placed Crc16 got
+  frame_len/poly/init). Hex literals (`0x1021`) now coerce (`int(s, 0)`
+  fallback in `_coerce_params`), and `blocks_short_to_float` /
+  `blocks_float_to_short` joined `_PASSTHRU_IDS` so the crc16(short)→sink
+  display cast splices like the byte casts (pinned by the same test).
+- **REAL IMPORTER BUG the control variant flushed out — a hash-derived
+  stream tag could COLLIDE with the fixed 'tx'/'rx' tags, per-process
+  nondeterministically.** `_stream_tag('txcrc')` hash-derives to 10 == the
+  FIXED 'tx' tag; the fixed path returned 10 unconditionally (no probing),
+  so if the DERIVED id was assigned first both sinks' egress nets carried
+  tag 10 and both GR sinks demuxed ONE stream (the CRC word appeared inside
+  the tx bit stream). Assignment order = connection-list order, and
+  `_splice_converters` iterated a SET — so the winner flipped with
+  PYTHONHASHSEED: the full-suite process failed while 8 isolated repro runs
+  passed, and 2-of-4 parallel processes reproduced it. The shipped .grc was
+  safe only by edge-order luck (its tx sink edge is direct, so 'tx' always
+  registered first). FIX: derived tags now probe past `set(_STREAM_TAGS.
+  values()) | used`, and converter splicing iterates `sorted(conv_names)`
+  (imports are process-deterministic). Pins:
+  `test_stream_tag_never_collides_with_fixed_tags` + the control test's
+  distinct-tags assert. META: when a gate fails ONLY under the full suite,
+  suspect PYTHONHASHSEED/set-order before load or layout lottery — run N
+  PARALLEL single-repro PROCESSES (not N trials in one process, which share
+  one seed) to separate the two.
 ## Latent-defect sweep: AGC bare-MULQ stall, MagSquared wrap corner, Costas dphase landing — three flagged hazards closed 2026-08-16
 
 Maintenance trio — every mechanism was discovered and root-caused by a recent

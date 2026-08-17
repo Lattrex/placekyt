@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """A hand-drawn route that ends ON the target block's input cell still builds + runs.
 
 The user rerouted Costas->Gardner by drawing a path that terminated ON the Gardner

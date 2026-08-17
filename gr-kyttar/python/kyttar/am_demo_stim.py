@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Stimulus generators for the DSB-AM transceiver demo flowgraph
 (examples/am_transceiver/am_transceiver.grc). Imported as a plain Python module
 (like modem_demo_stim) so the .grc has no fragile inline epy source.

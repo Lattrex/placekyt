@@ -7,53 +7,51 @@ documentation: |-
   🧪 NOT YET VERIFIED: this block is queued for GNU Radio-equivalence
   verification but hasn't been validated yet. Use with care.
 
-  Kyttar Squelch - Signal Level Gate
+  Kyttar Squelch - Power Squelch (mirrors GNU Radio analog.pwr_squelch_ff VERBATIM)
 
-  Implements a noise squelch that gates the signal based on power level:
-      if power > threshold: output = input
-      else: output = 0
-
-  Power is estimated using separate attack/release smoothing filters.
-  Hysteresis prevents rapid on/off cycling near the threshold.
+  Gates (zeros) the output when the running signal POWER is below a dB threshold:
+      pwr = (1 - alpha) * pwr + alpha * |x|^2
+      out = x    if pwr >= 10^(db/10)
+      out = 0    otherwise (gate=False: emit zeros below threshold)
 
   This block runs on the Kyttar chip. Place it between a KyttarSource
   and KyttarSink block, and ensure the device_id matches your KyttarDevice.
 
-  Parameters:
+  Parameters (GR analog.pwr_squelch_ff verbatim):
   - Device ID: ID of the KyttarDevice block
-  - Threshold: Power threshold for gating (0.0 to 1.0 in Q15 units)
-  - Hysteresis: Hysteresis amount to prevent rapid cycling
-  - Attack Alpha: Attack smoothing factor (0-1, higher = faster)
-  - Release Alpha: Release smoothing factor (0-1, higher = faster)
+  - dB: threshold in dB for power squelch (GR default -50)
+  - Alpha: gain of the power averaging filter (GR default 1e-4)
+  - Ramp: attack/release raised-cosine ramp in samples (HW limit 4; 0 = disabled)
+  - Gate: True = drop squelched samples (UNSUPPORTED, raises); False = emit zeros
 
 templates:
   imports: from gnuradio import kyttar
-  make: kyttar.squelch(device_id=${device_id}, threshold=${threshold}, hysteresis=${hysteresis}, attack_alpha=${attack_alpha}, release_alpha=${release_alpha})
+  make: kyttar.squelch(device_id=${device_id}, db=${db}, alpha=${alpha}, ramp=${ramp}, gate=${gate})
   callbacks:
-    - set_threshold(${threshold})
-    - set_hysteresis(${hysteresis})
+    - set_db(${db})
+    - set_alpha(${alpha})
 
 parameters:
   - id: device_id
     label: Device ID
     dtype: string
     default: '"kyttar_0"'
-  - id: threshold
-    label: Threshold
+  - id: db
+    label: Threshold (dB)
     dtype: real
-    default: '0.1'
-  - id: hysteresis
-    label: Hysteresis
+    default: '-50.0'
+  - id: alpha
+    label: Alpha
     dtype: real
-    default: '0.02'
-  - id: attack_alpha
-    label: Attack Alpha
-    dtype: real
-    default: '0.25'
-  - id: release_alpha
-    label: Release Alpha
-    dtype: real
-    default: '0.03'
+    default: '0.0001'
+  - id: ramp
+    label: Ramp (samples)
+    dtype: int
+    default: '0'
+  - id: gate
+    label: Gate
+    dtype: bool
+    default: 'False'
 
 inputs:
   - label: in

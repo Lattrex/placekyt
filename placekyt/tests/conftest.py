@@ -1,6 +1,7 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Pytest config: make the placeKYT package root importable.
 
-The flat layout (the architecture notes §6) puts ``model/`` directly under the
+The flat layout puts ``model/`` directly under the
 project root. Adding that root to ``sys.path`` lets tests do ``import model``
 without an installed package, matching the §11.2 ``--cov=placekyt/model`` paths.
 """

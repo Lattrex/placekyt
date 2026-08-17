@@ -1,7 +1,8 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Logical and physical connections between blocks and chip ports.
 
 Mirrors the ``connections:`` and ``inter_chip_connections:`` sections of the
-``.kyt`` schema (the architecture notes §2.1).
+``.kyt`` schema.
 
 A :class:`Connection` endpoint is a tagged union: either a **block port**
 (``{block: agc, port: out}``) or a **chip port** (``{chip_port: {chip: 0,
@@ -66,7 +67,7 @@ ABUTMENT_ROUTE = "abutment"
 
 
 # An inter-block edge is realized on the fabric as a WRITE (data handoff), a JUMP
-# (trigger), or BOTH (a triggered data handoff) — the auto-P&R design notes §4. This is
+# (trigger), or BOTH (a triggered data handoff). This is
 # the LOGICAL ``kind`` of a connection (a ``LogicalNet`` in the design doc); the
 # auto-router uses it to decide what the source cell emits and how the channel
 # (WRITE dest / JUMP entry) is assigned at the destination broker.
@@ -121,7 +122,7 @@ class Connection:
     # Default None ⇒ single-stream net (uses input_port_config).
     stream_id: str | None = None
     # The LOGICAL kind of this edge — ``data`` (WRITE), ``trigger`` (JUMP), or
-    # ``data+trigger`` (both; the auto-P&R design notes §4). Default ``data+trigger``
+    # ``data+trigger`` (both). Default ``data+trigger``
     # matches how every realized inter-block handoff works today (WRITE + JUMP),
     # so existing projects are unchanged. The auto-router reads this to decide
     # what the source emits and how the channel is assigned at the destination.
@@ -137,6 +138,13 @@ class Connection:
     # to size the host-injection ``data_addrs`` per net (a float source into a
     # complex block must NOT report both burst regs — that mis-delivers, corr=nan).
     src_complex: bool | None = None
+    # JUMP-entry override for the target handoff. Normally the source's exit JUMP
+    # triggers the target block's DEFAULT entry (resolved_io). A multi-entry relay
+    # target — the CrossoverBlock's track_a/track_b — needs PER-NET entry
+    # selection: e.g. the panel template's egress net must enter the crossover on
+    # track_b (relay to the output port) while the char-input corridor lands on
+    # track_a (relay to the SRAM controller). ``None`` ⇒ the default entry.
+    entry_override: int | None = None
 
     def __post_init__(self) -> None:
         if self.kind not in _NET_KINDS:

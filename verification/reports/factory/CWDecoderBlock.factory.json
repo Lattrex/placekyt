@@ -1,0 +1,31 @@
+{
+  "block": "CWDecoderBlock",
+  "grc_block": "",
+  "tier": 3,
+  "wave": 4,
+  "schema_version": 1,
+  "started_utc": "2026-08-07T22:56:26Z",
+  "ended_utc": "2026-08-07T23:29:42Z",
+  "walltime_sec": 995.175,
+  "tokens": {
+    "input": 0,
+    "output": 139783,
+    "cache_read": 0,
+    "total": 139783
+  },
+  "turns": 85,
+  "attempts": 1,
+  "human_interventions": 0,
+  "intervention_reasons": [],
+  "prompts": [
+    {
+      "role": "initial",
+      "text": "SRAM-backed conversion of quarantined CWDecoderBlock on the SRAM_PANEL.md recipe."
+    }
+  ],
+  "verify_passed": true,
+  "quarantined": false,
+  "quarantine_reason": "",
+  "commit_sha": "ad6a82d",
+  "notes": "QUARANTINE->DONE SRAM-backed, the HARDEST. SRAM killed WALL1 (reverse Morse LUT off-cell, elem-id addressed). WALL2 (adaptive state) solved by PROVING a single-pass running-min mis-decodes dash-leading chars (needs GLOBAL min before classify) -> TWO-PASS decode with the run buffer in panel SCRATCH: Pass1 streams runs->scratch + running-min unit, Pass2 replays from scratch with final unit. Batch decode so round-trip latency is fine. 100% round-trip vs ITU-R golden through REAL panel. 3 cells (pass1/pass2/controller, ~7 state words each)."
+}

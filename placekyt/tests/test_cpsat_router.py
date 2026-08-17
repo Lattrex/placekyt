@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """CP-SAT bus-sharing router tests (auto-P&R Phase 3, §7).
 
 The heuristic BFS router keeps nets node-disjoint; CP-SAT lets nets SHARE a transit

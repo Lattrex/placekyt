@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Route bus-highlight on I/O-cell select + grab-route-inside-cell (#266 / #268).
 
 Builds the production coherent RX (MF → Costas → Gardner → Slicer, auto-P&R) and

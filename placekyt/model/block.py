@@ -1,6 +1,7 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """A block instance placed in a project.
 
-Mirrors a ``blocks:`` entry in the ``.kyt`` schema (the architecture notes §2.1)::
+Mirrors a ``blocks:`` entry in the ``.kyt`` schema::
 
     blocks:
       - name: agc

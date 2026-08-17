@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """
 Intel HEX format reader/writer for Kyttar bitstreams.
 

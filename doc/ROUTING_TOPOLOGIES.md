@@ -41,7 +41,7 @@ block taps off this single backbone. Rules:
   blocks must appear along the backbone in signal-flow order.** That is the whole
   constraint. Across filaments there is NO ordering constraint — taps may interleave
   freely (RX-block, TX-block, TX-block, RX-block, …) in whatever interleaving minimises
-  the backbone length. (Confirmed by CM 2026-06-29: "the only thing that matters is that
+  the backbone length. (Maintainer-confirmed 2026-06-29: "the only thing that matters is that
   for a particular filament, THEIR blocks are in order with respect to their particular
   filament.")
 - A word destined for a block farther down the backbone simply transits the intervening
@@ -104,7 +104,7 @@ ONE backbone and everything rides it.
   → restore to backbone face), HOP<31 through-traffic forwarded on the backbone face.
 - Source addresses its tap's deliver entry + hop; the build derives taps from the routed
   backbone (broker_plan) and compiles cell programs (build._apply_brokers).
-- >31-hop backbone segments get relay cells (§1.4).
+- >31-hop backbone segments get relay cells (the hop field caps a single corridor at 31 cells — the relay-extension rule).
 - Single-cell blocks that both receive and drive on one cell keep input-face != output-face.
 - Every kept route is a real path; any failure is NAMED, never a silent wrong build.
 
@@ -170,7 +170,7 @@ compact BPSK modem as ONE clean simple-path backbone (crossover empty), via four
   the bus never has to enter a band's clear lane from the right and double back — the
   `mf-walls-column-0 / costas-strands-gardner` simple-path failure. A SINGLE-CELL terminal
   that drives the output port (the slicer) is seated in the CLEAR CHANNEL ROW above its band
-  one cell west of the egress rail, where it has four free faces — the §5.3 bend with full
+  one cell west of the egress rail, where it has four free faces — the in==out-split bend with full
   clearance (no cramped corner pocket beside its driver).
 * **Backtracking DFS tap thread (threader).** The greedy one-candidate-per-tap thread had a
   1-step connectivity guard but NO backtracking, so it bailed when a tap's only candidates
@@ -184,7 +184,7 @@ compact BPSK modem as ONE clean simple-path backbone (crossover empty), via four
   and descended columns instead — the original stranding bug.
 * **Egress-terminal bend (threader).** The last tap, if a single-cell output-driving
   terminal, is pulled off the DFS and threaded as a coupled input-tap → output-cell → egress
-  bend so its bus input and egress leave on DIFFERENT faces (the §5.3 split).
+  bend so its bus input and egress leave on DIFFERENT faces (the in==out split).
 
 `controller.auto_pnr` now also CLEARS routes between iterations (`_clear_chip_routes`) and
 re-applies the accepted iteration's CAPTURED geometry+routes verbatim
@@ -214,11 +214,12 @@ the routing geometry. Pre-existing on main (`test_chip_batch_live`, `test_auto_p
 `test_modem_grc_import_duplex_e2e` all failed on main; this work fixed the routing + several of
 their sub-asserts but not the end-to-end recovery).
 
-### Single-cell in==out split (§5.3) and the remaining BPSK-modem TX-corr limitation
+### The single-cell in==out split rule and the remaining BPSK-modem TX-corr limitation
 
 A SINGLE-CELL block both receives its input and drives its output on its ONE cell. On a
-straight bus lane both transactions land on the SAME face → the §5.3 single-outstanding
-deadlock. The bus router avoids it when the block sits at a backbone **BEND** — abutting
+straight bus lane both transactions land on the SAME face → the single-outstanding
+in==out deadlock (a cell whose bus input and egress use the same face can hold only one
+transaction — the "in==out split" rule below). The bus router avoids it when the block sits at a backbone **BEND** — abutting
 TWO backbone cells (Δindex ≤ 2) on DIFFERENT faces: input is delivered from the earlier,
 output emitted from the nearby later cell (`sc_out_tap`, conditioned on staying upstream of
 the consumer). Single-cell blocks at the band ENDS (the lane→rail bends) get this for free;
@@ -260,7 +261,7 @@ sample corr — honestly not reachable on the auto path for THIS array width).
 
 ### Multi-cell block OUTPUT taps + boxed-output place↔route perturbation (2026-06-30)
 
-The CM mandate: **for BUS/RING every block must tap the bus at BOTH its input cell AND its
+The maintainer mandate: **for BUS/RING every block must tap the bus at BOTH its input cell AND its
 output cell, and it must JUST WORK — no named terminal failure.** A SINGLE-cell block has
 input == output, so its one tap suffices. A MULTI-cell SNAKE block leaves its word at its
 FAR output cell, many cells from its input tap; the build hops `exit→tap @1`, so the source
@@ -276,7 +277,7 @@ cells short (the auto-placed modem's net5/net10/net4/net11 0-output bug). Three 
   ABUTTING its output cell (upstream of the consumer) — the input-tap backbone usually
   already passes one. A single-cell block that also SOURCES a net and whose flow-bias input
   tap collides with its output-drive face is re-tapped at its earliest different-face
-  backbone cell, leaving a downstream cell for the output (the §5.3 split — fixes the mapper
+  backbone cell, leaving a downstream cell for the output (the in==out split — fixes the mapper
   E-in/E-out deadlock the flow bias would otherwise create).
 * **Output-boxed structured failure.** A multi-cell output cell with NO free orthogonal
   neighbour (the Costas `rotate` cell, walled by its own snake) CANNOT tap the bus.
@@ -289,7 +290,7 @@ cells short (the auto-placed modem's net5/net10/net4/net11 0-output bug). Three 
   D4 orientation `mirror_v/mirror_h/cw/ccw`) so its output cell lands on the perimeter with a
   free neighbour, re-routes, and keeps the orientation only if it STRICTLY increases the
   routed count AND **builds DRC-clean** (Part C — the route-level DRC does NOT catch the
-  BUILD-time §5.3 single-cell deadlock, so each candidate is gated by an actual `build()`
+  BUILD-time single-cell in==out deadlock, so each candidate is gated by an actual `build()`
   rejecting `single_cell_inout_deadlock` / `deadlock` / `face_conflict`). If no orientation
   exposes the output, it SPREADS — pushes a neighbouring block out by one cell to open a free
   tap channel adjacent to the buried output — then re-routes. Non-improving perturbations are
@@ -314,9 +315,9 @@ This supersedes the prior "Remaining (out of scope) … NO recovered output" not
   auto TX passband corr > 0.95 vs the proper passband reference
   (`_tx_signal(sps=4) × cos(2π·0.125·n)`); RX recovers bits BER 0; all nets routed.
   **(RX BER 0 + all nets routed MET; TX corr NOT met on THIS 10-wide array — the clean
-  simple-path bus-snake threads all 11 nets crossover-empty, but the §5.3 single-cell bend
+  simple-path bus-snake threads all 11 nets crossover-empty, but the single-cell in==out bend
   budget is one short for the modem's 8 blocks → the deadlock gate falls back to the legacy
-  multi-filament path. Precisely characterised in the §single-cell limitation above.)**
+  multi-filament path. Precisely characterised in the single-cell-limitation section above.)**
 - The full auto-P&R / router / duplex / coherent-RX regression suite stays green.
 - The three topologies each have a focused test (bus multi-filament ordering, ring loop,
   block-to-block abutment minimisation).

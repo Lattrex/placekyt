@@ -25,8 +25,13 @@ class iir_biquad(_PassThrough):
 
     Parameters:
         device_id: ID of the kyttar.device to use
-        b_coeffs: [b0, b1, b2] - feedforward coefficients
+        b_coeffs: [b0, b1, b2] - feedforward coefficients (back-compat biquad API)
         a_coeffs: [a1, a2] - feedback coefficients (normalized, a0=1)
+        fftaps: GR-native feed-forward taps [b0, b1, ...] (iir_filter_ffd). When
+            given, takes precedence over b_coeffs/a_coeffs (any order).
+        fbtaps: GR-native feedback taps [fb0(ignored), a1, a2, ...] (iir_filter_ffd).
+        oldstyle: GR tap-sign convention — feedback ADDS when True (GR default),
+            SUBTRACTS when False.
     """
 
     def __init__(
@@ -34,6 +39,9 @@ class iir_biquad(_PassThrough):
         device_id: str = "kyttar_0",
         b_coeffs: List[float] = None,
         a_coeffs: List[float] = None,
+        fftaps: List[float] = None,
+        fbtaps: List[float] = None,
+        oldstyle: bool = True,
     ):
         super().__init__(name="Kyttar IIR Biquad", n_in=1, n_out=1)
 
@@ -47,10 +55,15 @@ class iir_biquad(_PassThrough):
 
         self._b_coeffs = list(b_coeffs)
         self._a_coeffs = list(a_coeffs)
+        self._fftaps = list(fftaps) if fftaps is not None else None
+        self._fbtaps = list(fbtaps) if fbtaps is not None else None
+        self._oldstyle = oldstyle
         # Advertise params for GRC↔placeKYT sync detection (see dsp_markers).
         self._advertise_grc_params(
             device_id, "IIRBiquadBlock",
-            {"b_coeffs": self._b_coeffs, "a_coeffs": self._a_coeffs})
+            {"b_coeffs": self._b_coeffs, "a_coeffs": self._a_coeffs,
+             "fftaps": self._fftaps, "fbtaps": self._fbtaps,
+             "oldstyle": self._oldstyle})
 
     def set_coefficients(self, b_coeffs: List[float], a_coeffs: List[float]):
         """Set filter coefficients."""

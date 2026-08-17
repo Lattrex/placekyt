@@ -1,4 +1,5 @@
-"""MainWindow — the placeKYT top-level window (the architecture notes §3.1).
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""MainWindow — the placeKYT top-level window.
 
 QMainWindow with the chip canvas as the central widget and dockable panels for
 the block library, inspector, and console. The menu bar carries the
@@ -671,7 +672,14 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("No unrouted nets to route.", 3000)
             return
         try:
-            report = self.controller.auto_route_all()
+            # use_bus="always": the menu shares the QUALITY bus/broker router
+            # with the GRC import dialog. The "auto" default runs the greedy
+            # per-net BFS first, which has no ordering retries or broker-quality
+            # selection — on the coherent RX it deterministically snaked 13
+            # cells for a manhattan-7 hop that the import dialog routed at zero
+            # excess. ("auto" itself must stay greedy-first: the per-block DUT
+            # harness and other programmatic clients depend on its routes.)
+            report = self.controller.auto_route_all(use_bus="always")
         except Exception as exc:  # noqa: BLE001
             self._error("Route All", f"Auto-route failed: {exc}")
             return
@@ -1620,7 +1628,14 @@ class MainWindow(QMainWindow):
             return
         report = None
         try:
-            self.controller.auto_place(use_bus=opts["use_bus"])
+            # NO free-standing auto_place before auto_pnr: auto_pnr places AND
+            # routes, and it snapshots the CURRENT placements as the VIRGIN
+            # geometry every sweep attempt re-plans from. A pre-place here
+            # replaced the import-time geometry with an already-packed layout,
+            # and the position-dependent serpentine planner then derived
+            # overlapping/off-grid plans from it on EVERY attempt — the QPSK
+            # import died at the placement legality gate on exactly this while
+            # the same design routed 16/16 without the pre-place.
             if opts["route"]:                     # full place-and-route
                 # For BUS routing run the FULL place<->route loop (auto_pnr): it routes,
                 # and when a multi-cell block's OUTPUT cell is BOXED (no free neighbour to
@@ -1644,9 +1659,11 @@ class MainWindow(QMainWindow):
                         self._watch_grc_source(path)
                         return
                 else:
+                    self.controller.auto_place(use_bus=opts["use_bus"])
                     report = self.controller.auto_route_all(
                         use_bus=opts["use_bus"], auto_orient=True)
             else:                                 # rough: place + flow-orient only
+                self.controller.auto_place(use_bus=opts["use_bus"])
                 self.controller.auto_orient_for_flow()
         except Exception as exc:  # noqa: BLE001
             self._after_project_loaded()
@@ -1816,10 +1833,44 @@ class MainWindow(QMainWindow):
         self.inspector.set_project(p)
         self.canvas.set_project(p, self.controller.chip_types())
         self.canvas.fit_to_view()
+        # Arrows must show the BUILD-RESOLVED output faces from the first
+        # paint (#135): set_project just rendered the placement-default faces,
+        # and a freshly-opened project has no other trigger that would sync
+        # them (the egress patch/route resolution can point an output cell in
+        # a different direction than its authored default — the "slicer arrow
+        # points north but the functional face is east" report).
+        self._sync_resolved_faces()
         self.console.set_namespace(self._api_namespace())  # rebind to new project
         self._update_title()
         self._refresh_edit_actions()
         self._load_default_stimulus(p)
+        # A running GRC server still hosts the PREVIOUS project's chip(s). The
+        # single-chip server would self-heal on the next batch (per-batch
+        # rebuild), but a single<->multi chip switch needs a DIFFERENT server
+        # class — after opening gain_2p2s then a single-chip .kyt, the stale
+        # MultiChipSimServer answered "unknown op 'process_batch'" and the BPSK
+        # duplex RPC recovered 0 words. Restart on the SAME port so the user's
+        # configured GRC flowgraphs keep working across project switches.
+        # ORDER MATTERS: stop the OLD server BEFORE clearing traces —
+        # stop_gnuradio_server does a final trace drain, which would repopulate
+        # the panel with the previous project's residual right after the clear
+        # (the user-reported stale-BPSK-traces-after-opening-gain_2p2s bug).
+        _server_port_keep = None
+        if self.sim._gr_server is not None:
+            _server_port_keep = self.sim._gr_server.bound_port
+            self.sim.stop_gnuradio_server()
+        # A NEW design's ports/registers/tags mean nothing to the previous
+        # project's trace rows — clear the waveform panel so the user doesn't
+        # have to hand-delete stale traces when switching projects. The next
+        # run auto-seeds this project's default traces.
+        self.waveform_panel.clear_traces()
+        if _server_port_keep is not None:
+            bound = self.sim.start_gnuradio_server(port=_server_port_keep or 58950)
+            if bound is None:
+                self.statusBar().showMessage(
+                    "GNURadio server stopped — the newly-loaded project did "
+                    "not build (fix DRC errors, then re-enable the server).",
+                    8000)
 
     def _load_default_stimulus(self, project) -> None:
         """Load the project's ``default_stimulus`` ``.kbs`` (if any) so plain Run

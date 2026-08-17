@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """QAM16ComplexCostasLoopBlock — see :class:`QAM16ComplexCostasLoopBlock`."""
 import numpy as np
 import math

@@ -1,6 +1,7 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """ChipOutlineItem — the labelled boundary rectangle around a chip's grid.
 
-Drawn beneath the cells (low Z) so cells paint on top (the architecture notes §3.2).
+Drawn beneath the cells (low Z) so cells paint on top.
 """
 
 from __future__ import annotations

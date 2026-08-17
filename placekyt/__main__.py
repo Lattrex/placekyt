@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Entry point for ``python -m placekyt`` — delegates to the CLI."""
 
 import sys

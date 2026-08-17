@@ -36,10 +36,11 @@ options:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [8, 8]
+    coordinate:
+    - 8
+    - 8
     rotation: 0
     state: enabled
-
 blocks:
 - name: carrier
   id: variable
@@ -50,7 +51,9 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [440, 12]
+    coordinate:
+    - 440
+    - 12
     rotation: 0
     state: enabled
 - name: n_bits
@@ -62,7 +65,9 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [800, 12]
+    coordinate:
+    - 800
+    - 12
     rotation: 0
     state: enabled
 - name: n_syms
@@ -74,7 +79,9 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [680, 12]
+    coordinate:
+    - 680
+    - 12
     rotation: 0
     state: enabled
 - name: samp_rate
@@ -86,7 +93,9 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [320, 12]
+    coordinate:
+    - 320
+    - 12
     rotation: 0
     state: enabled
 - name: sps
@@ -98,7 +107,9 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [200, 12]
+    coordinate:
+    - 200
+    - 12
     rotation: 0
     state: enabled
 - name: costas
@@ -117,7 +128,9 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [808, 440.0]
+    coordinate:
+    - 808
+    - 440.0
     rotation: 0
     state: enabled
 - name: gardner
@@ -136,7 +149,9 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [992, 352.0]
+    coordinate:
+    - 992
+    - 352.0
     rotation: 0
     state: enabled
 - name: import_stim
@@ -149,7 +164,9 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [560, 12]
+    coordinate:
+    - 560
+    - 12
     rotation: 0
     state: enabled
 - name: mapper
@@ -166,7 +183,9 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [584, 152.0]
+    coordinate:
+    - 584
+    - 152.0
     rotation: 0
     state: enabled
 - name: mf
@@ -185,7 +204,9 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [568, 336.0]
+    coordinate:
+    - 568
+    - 336.0
     rotation: 0
     state: enabled
 - name: rrc
@@ -196,16 +217,20 @@ blocks:
     alpha: '0.35'
     comment: "RRC pulse shaper \u2014 placed on chip"
     device_id: '"kyttar_0"'
+    gain: '1.0'
     io_type: complex
     maxoutbuf: '0'
     minoutbuf: '0'
-    span: '8'
-    sps: '4'
+    ntaps: '33'
+    sampling_freq: '4.0'
+    symbol_rate: '1.0'
   states:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [992, 128.0]
+    coordinate:
+    - 992
+    - 128.0
     rotation: 0
     state: enabled
 - name: rx_bits
@@ -302,7 +327,9 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [1696, 440.0]
+    coordinate:
+    - 1696
+    - 440.0
     rotation: 0
     state: enabled
 - name: rx_iq
@@ -322,7 +349,9 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [80, 368.0]
+    coordinate:
+    - 80
+    - 368.0
     rotation: 0
     state: enabled
 - name: rx_sink
@@ -345,7 +374,9 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [1392, 340.0]
+    coordinate:
+    - 1392
+    - 340.0
     rotation: 0
     state: enabled
 - name: rx_src
@@ -362,6 +393,7 @@ blocks:
     num_channels: '1'
     pipelined: 'yes'
     port_name: '"x16_in"'
+    schedule: '"interleaved"'
     server_host: '"127.0.0.1"'
     server_port: '58950'
     stream_id: '"rx"'
@@ -369,7 +401,9 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [360, 340.0]
+    coordinate:
+    - 360
+    - 340.0
     rotation: 0
     state: enabled
 - name: slicer
@@ -385,7 +419,9 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [1176, 448.0]
+    coordinate:
+    - 1176
+    - 448.0
     rotation: 0
     state: enabled
 - name: tx_bits
@@ -405,7 +441,9 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [88, 168.0]
+    coordinate:
+    - 88
+    - 168.0
     rotation: 0
     state: enabled
 - name: tx_passband
@@ -502,7 +540,9 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [1680, 208.0]
+    coordinate:
+    - 1680
+    - 208.0
     rotation: 0
     state: enabled
 - name: tx_sink
@@ -525,7 +565,9 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [1392, 100.0]
+    coordinate:
+    - 1392
+    - 100.0
     rotation: 0
     state: enabled
 - name: tx_src
@@ -542,6 +584,7 @@ blocks:
     num_channels: '1'
     pipelined: 'yes'
     port_name: '"x16_in"'
+    schedule: '"interleaved"'
     server_host: '"127.0.0.1"'
     server_port: '58950'
     stream_id: '"tx"'
@@ -549,7 +592,9 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [360, 148.0]
+    coordinate:
+    - 360
+    - 148.0
     rotation: 0
     state: enabled
 - name: up
@@ -567,7 +612,9 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [792, 224.0]
+    coordinate:
+    - 792
+    - 224.0
     rotation: 0
     state: enabled
 - name: upc
@@ -585,26 +632,89 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [1184, 224.0]
+    coordinate:
+    - 1184
+    - 224.0
     rotation: 0
     state: enabled
-
+- name: slicer_b2f
+  id: blocks_uchar_to_float
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 980
+    - 520
+    rotation: 0
+    state: enabled
 connections:
-- [costas, '0', gardner, '0']
-- [gardner, '0', slicer, '0']
-- [mapper, '0', up, '0']
-- [mf, '0', costas, '0']
-- [rrc, '0', upc, '0']
-- [rx_iq, '0', rx_src, '0']
-- [rx_sink, '0', rx_bits, '0']
-- [rx_src, '0', mf, '0']
-- [slicer, '0', rx_sink, '0']
-- [tx_bits, '0', tx_src, '0']
-- [tx_sink, '0', tx_passband, '0']
-- [tx_src, '0', mapper, '0']
-- [up, '0', rrc, '0']
-- [upc, '0', tx_sink, '0']
-
+- - costas
+  - '0'
+  - gardner
+  - '0'
+- - gardner
+  - '0'
+  - slicer
+  - '0'
+- - mapper
+  - '0'
+  - up
+  - '0'
+- - mf
+  - '0'
+  - costas
+  - '0'
+- - rrc
+  - '0'
+  - upc
+  - '0'
+- - rx_iq
+  - '0'
+  - rx_src
+  - '0'
+- - rx_sink
+  - '0'
+  - rx_bits
+  - '0'
+- - rx_src
+  - '0'
+  - mf
+  - '0'
+- - slicer
+  - '0'
+  - slicer_b2f
+  - '0'
+- - tx_bits
+  - '0'
+  - tx_src
+  - '0'
+- - tx_sink
+  - '0'
+  - tx_passband
+  - '0'
+- - tx_src
+  - '0'
+  - mapper
+  - '0'
+- - up
+  - '0'
+  - rrc
+  - '0'
+- - upc
+  - '0'
+  - tx_sink
+  - '0'
+- - slicer_b2f
+  - '0'
+  - rx_sink
+  - '0'
 metadata:
   file_format: 1
   grc_version: 3.10.12.0

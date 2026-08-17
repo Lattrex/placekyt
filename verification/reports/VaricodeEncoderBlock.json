@@ -1,0 +1,39 @@
+{
+  "kyttar_block": "VaricodeEncoderBlock",
+  "passed": true,
+  "status": "done",
+  "quarantine": false,
+  "sram_backed": true,
+  "metric": "bit_exact",
+  "grc_block": "",
+  "golden": "python model of the published G3PLX PSK31 Varicode table (fldigi pskvaricode.cxx via ckoval7/pydigi; ARRL psk31-spec + Wikipedia cross-check)",
+  "bit_exact_vs_golden": true,
+  "through_real_panel_roundtrip": true,
+  "character_set": "FULL ASCII 0..127 through the real SramPanelDevice/PanelDriver push-read + on-chip emit cell; plus a message ('the quick brown fox...' + edge), edge chars, random (3 seeds)",
+  "n_compared": 128,
+  "bit_errors": 0,
+  "cell_count": 2,
+  "sram_words": 128,
+  "sram_pack_format": "(length<<10)|code, 14 bits used per 16-bit word (10 code + 4 length; Varicode codes <=10 bits)",
+  "emit_cell_instructions": 19,
+  "emit_cell_fits_single_cell": true,
+  "coverage": {
+    "load_phase_autoincrement_streamed": true,
+    "lookup_phase_push_read_per_symbol": true,
+    "full_ascii": true,
+    "message": true,
+    "random": 3,
+    "bit_exact": true,
+    "mutation": true
+  },
+  "resolves_walls": [
+    "TABLE SIZE (INV-29): 128-entry table moved off-cell into the unbounded SRAM panel (address == ASCII code point), replacing the ~21-entry LOAD-indirect ceiling.",
+    "VARIABLE-LENGTH EMIT (INV-29): each entry packs into ONE fixed 16-bit word; the panel push-read returns a fixed word per symbol, and the emit cell derives the emit count from the packed length nibble (not a data-dependent burst across the panel port)."
+  ],
+  "bug_found": "emit loop dropped bits: MOVE R0,len does not set the Z flag, so BR.NZ was branching on the last-emitted bit value instead of the counter. Fixed by adding OR R0, R{len} before the branch to set flags from the counter.",
+  "reusable_pattern": "yes -- the load(pack table into panel via controller write path)/lookup(push-read into a small unpack+emit cell) recipe is directly copyable by VaricodeDecoderBlock (1024-entry reverse map) and the CW/Morse table blocks.",
+  "tests": [
+    "verification/tests/test_varicode_encoder_sram.py (31 pass)",
+    "verification/tests/test_varicode_encoder.py (20 pass)"
+  ]
+}

@@ -10,7 +10,7 @@ pattern as the [BPSK modem](../bpsk_modem/), here carrying **2 bits/symbol** and
 
 ```
 TX (stream 'tx'):  bits ─▶ PSKSymbolMapper(qpsk) ─▶ ComplexUpsampler ─▶ ComplexRRC(shaper) ─▶ IQUpconvert ─▶ QPSK passband
-RX (stream 'rx'):  RRC-QPSK I/Q ─▶ ComplexRRCMatchedFilter ─▶ CostasLoop(order=4) ─▶ Gardner(complex) ─▶ QPSKSlicer ─▶ 2-bit symbols
+RX (stream 'rx'):  RRC-QPSK I/Q ─▶ ComplexRRCMatchedFilter ─▶ CostasLoop(order=4) ─▶ MMTimingRecovery ─▶ QPSKSlicer ─▶ 2-bit symbols
 ```
 
 - **TX (modulator):** maps 2-bit symbols to the QPSK constellation (±1/√2 per axis),
@@ -18,9 +18,10 @@ RX (stream 'rx'):  RRC-QPSK I/Q ─▶ ComplexRRCMatchedFilter ─▶ CostasLoop
   pulse-shapes (**ComplexRRCMatchedFilter** as the shaper), and upconverts to a passband.
   The full I/Q path carries genuine I *and* Q.
 - **RX (demodulator):** a complex RRC matched filter, an **order-4 (QPSK) Costas loop**
-  for carrier recovery, **complex (I/Q) Gardner** timing recovery, and a **QPSK
-  hard-decision slicer** — recovers the 2-bit Gray symbols from an RRC-shaped QPSK burst
-  carrying a carrier **and** a fractional timing offset, at **BER 0**.
+  for carrier recovery, **M&M decision-directed timing recovery** (the certified
+  `symbol_sync_cc` M&M-path drop-in — the same block the 16-QAM modem uses), and a
+  **QPSK hard-decision slicer** — recovers the 2-bit Gray symbols from an RRC-shaped
+  QPSK burst carrying a carrier **and** a fractional timing offset, at **BER 0**.
 
 The channel (the carrier + fractional-timing offset) is applied by the host loopback
 in the headless check, as a real RF channel would between a modulator and a demodulator.
@@ -37,7 +38,7 @@ The importer maps these flowgraph blocks by id + params:
 | `kyttar_iq_upconvert` | IQUpconvertBlock | `sample_rate`, `frequency` |
 | `kyttar_complex_rrc_matched_filter` (RX MF) | ComplexRRCMatchedFilterBlock | `span=8`, `decimation=1` |
 | `kyttar_costas_loop` | ComplexCostasLoopBlock | **`order=4`** (QPSK) |
-| `kyttar_gardner_ted` | GardnerTimingRecovery | **`complex=True`** |
+| `kyttar_mm_timing_recovery` | MMTimingRecoveryBlock | `sps=2`, `loop_bw=0.02` |
 | `kyttar_qpsk_slicer` | QPSKSlicerBlock | — |
 
 Every internal handoff between the complex blocks is a **yi/yq pair** (two WRITEs +
@@ -71,6 +72,7 @@ rate.)
 
 | File | What it is |
 |------|------------|
+| `qpsk_modem.kyt` | The pre-placed design — open directly, or import the `.grc` and auto-P&R. |
 | `qpsk_modem.grc` | The GNU Radio flowgraph: a TX source/sink pair and an RX source/sink pair, both targeting the same placeKYT-hosted chip by `stream_id`. Open in **both** placeKYT (to host the chip) and `gnuradio-companion` (to drive it). |
 | `batch_check.py` | A headless verifier: streams a QPSK burst through the hosted chip and reports the recovered symbols + symbol BER. No GNU Radio GUI needed. |
 
@@ -112,7 +114,7 @@ Expect **BER 0** after the loops lock. `--no-plot` prints stats only.
 ## Acceptance test
 
 The acceptance test builds the coherent QPSK RX chain (MF → order-4 Costas → complex
-Gardner → QPSK slicer) on-chip through the real placeKYT place+route+build pipeline
+M&M timing → QPSK slicer) on-chip through the real placeKYT place+route+build pipeline
 and recovers the 2-bit QPSK symbols at **BER 0 through simKYT** — both a programmatic
 build and the GRC-import path. It lives in
 [`placekyt/tests/test_qpsk_modem_ber.py`](../../placekyt/tests/test_qpsk_modem_ber.py).

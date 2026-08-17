@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Application preferences, persisted with QSettings.
 
 placeKYT had no preferences store; this is the first. It is intentionally tiny

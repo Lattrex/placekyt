@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Port markers, route-to-port, drag-move, and footprint preview (§3.2).
 
 Offscreen Qt; real QMouseEvents + pumped event loop (the live-GUI lesson).

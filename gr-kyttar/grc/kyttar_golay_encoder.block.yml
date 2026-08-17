@@ -1,0 +1,55 @@
+id: kyttar_golay_encoder
+label: 🧪 Kyttar Golay(24,12) Encoder
+category: '[Kyttar]'
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.golay_encoder(${device_id})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+
+inputs:
+- label: in
+  domain: stream
+  dtype: byte
+
+outputs:
+- label: out
+  domain: stream
+  dtype: byte
+
+documentation: |-
+  Extended Golay (24,12) FEC Encoder — systematic hard-decision block code
+  (MacWilliams & Sloane, "The Theory of Error-Correcting Codes", 1977).
+  No stock GNU Radio counterpart.
+
+  Consumes 12 data bits (one 0/1 byte per item, only the LSB is read — the
+  pack_k_bits convention; the FIRST arriving bit is d11, the most
+  significant) and emits the 24-bit systematic codeword MSB-first, one 0/1
+  byte per bit. Rate-EXPANDING 12:24. A trailing partial group of fewer
+  than 12 bits is not emitted.
+
+  THE CONVENTION (shared verbatim with the Golay(24,12) Decoder):
+  codeword MSB-first on the wire = d11 .. d0 p11 .. p0, with the parity
+  bits p11..p0 = m . B (mod 2) for the message m = [d11 .. d0] — the
+  standard generator matrix G = [I12 | B], B the MacWilliams-Sloane
+  bordered reverse circulant (symmetric, B.B^T = I). Minimum distance 8:
+  the matching syndrome decoder corrects up to 3 bit errors per codeword.
+
+  Ports:
+    in  (byte): data bits, one 0/1 byte per item (LSB read)
+    out (byte): codeword bits, MSB-first, one 0/1 byte per item
+
+  Parameters:
+    Device ID: which Kyttar device to use
+
+  BIT-EXACT vs the G-matrix golden (structured sweep + random streams +
+  round-trip through a golden nearest-codeword decoder under 1/2/3-bit
+  errors). Mapped by placeKYT (File -> Import GNURadio Flowgraph) to
+  GolayEncoderBlock.
+
+file_format: 1

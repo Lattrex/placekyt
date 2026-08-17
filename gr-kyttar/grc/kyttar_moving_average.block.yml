@@ -1,0 +1,53 @@
+id: kyttar_moving_average
+label: Moving Average
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar Moving Average — running average of the last `length` samples, a drop-in for
+  GNU Radio's blocks.moving_average_ff.
+
+      out[n] = scale * (in[n] + in[n-1] + ... + in[n-length+1])
+
+  A moving average IS a FIR whose `length` taps all equal `scale`, so on the Kyttar
+  chip this maps to the FIR datapath with constant box-car taps (group delay 0,
+  aligned with GR's causal running sum). scale = 1/length is a true average.
+
+  This block runs on the Kyttar chip. Place it between a KyttarSource and KyttarSink
+  block, and ensure the device_id matches your KyttarDevice.
+
+  Parameters:
+  - Device ID: ID of the KyttarDevice block
+  - Length: number of samples in the averaging window
+  - Scale: multiplier applied to the window sum (1/Length for a true average)
+
+  Note (per-cell budget): a single-cell box with scale > 1/length caps at ~3 taps;
+  use scale <= 1/length or a longer/multi-cell length.
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.moving_average(device_id=${device_id}, length=${length}, scale=${scale})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+  - id: length
+    label: Length
+    dtype: int
+    default: '4'
+  - id: scale
+    label: Scale
+    dtype: real
+    default: '0.25'
+
+inputs:
+  - label: in
+    dtype: float
+
+outputs:
+  - label: out
+    dtype: float
+
+file_format: 1

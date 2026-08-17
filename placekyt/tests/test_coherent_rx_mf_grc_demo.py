@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """GRC-first PRODUCTION coherent BPSK RX (RRC matched filter front end), BER 0.
 
 Imports ``coherent_bpsk_rx_mf_demo.grc`` — the customer-facing demo flowgraph with

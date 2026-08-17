@@ -143,6 +143,7 @@ blocks:
     num_channels: '1'
     port_name: '"x16_in"'
     server_host: '"127.0.0.1"'
+    repeat: 'yes'
     server_port: server_port
     stream_id: '"a"'
   states:
@@ -157,6 +158,7 @@ blocks:
   parameters:
     affinity: ''
     alias: ''
+    block_name: '"gain"'
     comment: gain block A (live gain_a slider)
     device_id: '"kyttar_0"'
     gain: gain_a
@@ -183,7 +185,7 @@ blocks:
     num_channels: '1'
     port_name: '"x16_out"'
     server_port: server_port
-    server_repeat: 'False'
+    server_repeat: 'True'
     stream_id: '"a"'
   states:
     bus_sink: false
@@ -230,6 +232,7 @@ blocks:
     num_channels: '1'
     port_name: '"x16_in"'
     server_host: '"127.0.0.1"'
+    repeat: 'yes'
     server_port: server_port
     stream_id: '"b"'
   states:
@@ -244,6 +247,7 @@ blocks:
   parameters:
     affinity: ''
     alias: ''
+    block_name: '"gain_2"'
     comment: gain block B (live gain_b slider)
     device_id: '"kyttar_0"'
     gain: gain_b
@@ -270,7 +274,7 @@ blocks:
     num_channels: '1'
     port_name: '"x16_out"'
     server_port: server_port
-    server_repeat: 'False'
+    server_repeat: 'True'
     stream_id: '"b"'
   states:
     bus_sink: false

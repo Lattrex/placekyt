@@ -1,0 +1,31 @@
+{
+  "block": "AddCCBlock",
+  "grc_block": "blocks.add_cc",
+  "tier": 2,
+  "wave": 5,
+  "schema_version": 1,
+  "started_utc": "2026-08-16T21:25:59Z",
+  "ended_utc": "2026-08-16T22:01:23Z",
+  "walltime_sec": 2124.0,
+  "tokens": {
+    "input": 0,
+    "output": 323892,
+    "cache_read": 0,
+    "total": 323892
+  },
+  "turns": 115,
+  "attempts": 1,
+  "human_interventions": 0,
+  "intervention_reasons": [],
+  "prompts": [
+    {
+      "role": "initial",
+      "text": "factory_dispatch prompt; isolated worktree; joint add_cc/sub_cc pair build with the per-rail decomposition hint + shared 2-complex-stream harness mandate."
+    }
+  ],
+  "verify_passed": true,
+  "quarantined": false,
+  "quarantine_reason": "",
+  "commit_sha": "c9da914",
+  "notes": "JOINT-BUILD record: cost covers AddCCBlock+SubCCBlock (shared module, one commit); SubCCBlock's record is a zero-cost cross-reference. 1 attempt per block, first-try bit-exact, autonomous. The historical 4-operand wall is now QUANTIFIED (~39/32 words single-cell) and DODGED: the engine forces ONE landing cell, so the per-rail decomposition lives downstream of the landing cell's counting join (rail_i computes+forwards, rail_q computes+emits the packet). Landed the reusable two-external-complex-stream harness (run_block_dut_complex2 + _pipelined) for the MultiplyCC dispatch. REAL importer bug found+fixed: GRC numeric port indices count COMPLEX ports but _resolve_port indexed raw scalar ports \u2014 two-stream complex wiring crossed rails (stream b's yi onto stream a's aq). Saturation = NEEDS_BESPOKE with a bespoke saturated==per-sample gate (shared harnesses would half-fire the counting join). 67 tests. Token figure cumulative per harness."
+}

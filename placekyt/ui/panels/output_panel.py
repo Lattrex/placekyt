@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """OutputPanel — the values captured at the design's output port (§3.7).
 
 Shows, per sample, the index, the captured output value (hex / signed / Q15),

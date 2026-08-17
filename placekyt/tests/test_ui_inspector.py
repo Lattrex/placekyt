@@ -1,4 +1,5 @@
-"""Inspector memory/assembly view tests (the architecture notes §3.3). Offscreen Qt."""
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Inspector memory/assembly view tests. Offscreen Qt."""
 
 from __future__ import annotations
 

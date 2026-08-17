@@ -19,36 +19,48 @@ blocks:
   placement:
     chip: 0
     cells:
-    - {cell_id: phase, x: 4, y: 3, face: north}
-    - {cell_id: sin_fold, x: 4, y: 2, face: north}
-    - {cell_id: cos_fold, x: 4, y: 1, face: north}
-    - {cell_id: table_sin, x: 4, y: 0, face: east}
-    - {cell_id: table_cos, x: 5, y: 0, face: south}
-    - {cell_id: rotate, x: 5, y: 1, face: south}
-    - {cell_id: qpd, x: 5, y: 2, face: south}
-    - {cell_id: pd_pi, x: 5, y: 3, face: west}
+    - {cell_id: phase, x: 0, y: 8, face: south}
+    - {cell_id: sin_fold, x: 0, y: 9, face: south}
+    - {cell_id: cos_fold, x: 0, y: 10, face: south}
+    - {cell_id: table_sin, x: 0, y: 11, face: east}
+    - {cell_id: table_cos, x: 1, y: 11, face: north}
+    - {cell_id: rotate, x: 1, y: 10, face: north}
+    - {cell_id: qpd, x: 1, y: 9, face: north}
+    - {cell_id: pd_pi, x: 1, y: 8, face: west}
     orientation:
     - ccw
-- name: gardnertimingrecovery
-  type: GardnerTimingRecovery
+    - mirror_v
+- name: mmtimingrecovery
+  type: MMTimingRecoveryBlock
   library: lattrex.official
   params:
-    kp: 3
-    ki: 1
-    pipeline_lock: true
-    complex: true
+    sps: 2
+    loop_bw: 0.02
+    damping: 1.0
   placement:
     chip: 0
     cells:
-    - {cell_id: qdelay, x: 6, y: 2, face: north}
-    - {cell_id: resampler, x: 6, y: 1, face: north}
-    - {cell_id: ted, x: 6, y: 0, face: east}
-    - {cell_id: loop_filter, x: 7, y: 0, face: east}
-    - {cell_id: qout, x: 8, y: 0, face: east}
-    - {cell_id: period_relay, x: 7, y: 1, face: south}
-    - {cell_id: transit_fb_0, x: 7, y: 2, face: west}
-    orientation:
-    - ccw
+    - {cell_id: counter, x: 3, y: 10, face: north}
+    - {cell_id: land, x: 3, y: 9, face: east}
+    - {cell_id: qland, x: 4, y: 9, face: east}
+    - {cell_id: farrow_q_hi, x: 5, y: 9, face: east}
+    - {cell_id: farrow_q_lo, x: 6, y: 9, face: east}
+    - {cell_id: slice_q, x: 7, y: 9, face: north}
+    - {cell_id: iland, x: 3, y: 8, face: east}
+    - {cell_id: farrow_i_hi, x: 4, y: 8, face: east}
+    - {cell_id: farrow_i_lo, x: 5, y: 8, face: east}
+    - {cell_id: slice_i, x: 6, y: 8, face: east}
+    - {cell_id: ted, x: 7, y: 8, face: east}
+    - {cell_id: loop_filter, x: 8, y: 8, face: south}
+    - {cell_id: qout, x: 9, y: 8, face: south}
+    - {cell_id: period_relay, x: 8, y: 9, face: south}
+    - {cell_id: transit_fb_0, x: 8, y: 10, face: west}
+    - {cell_id: transit_fb_1, x: 7, y: 10, face: west}
+    - {cell_id: transit_fb_2, x: 6, y: 10, face: west}
+    - {cell_id: transit_fb_3, x: 5, y: 10, face: west}
+    - {cell_id: transit_fb_4, x: 4, y: 10, face: south}
+    - {cell_id: transit_fb_5, x: 4, y: 11, face: west}
+    - {cell_id: transit_fb_6, x: 3, y: 11, face: north}
 - name: psksymbolmapper
   type: PSKSymbolMapperBlock
   library: lattrex.official
@@ -56,72 +68,75 @@ blocks:
     modulation: qpsk
     symbol_table:
     dimension: 1
+    bpsk_bit0_positive: true
   placement:
     chip: 0
     cells:
-    - {cell_id: 0, x: 0, y: 3, face: south}
-    - {cell_id: 1, x: 0, y: 4, face: south}
-    orientation:
-    - cw
+    - {cell_id: 0, x: 2, y: 0, face: east}
+    - {cell_id: 1, x: 3, y: 0, face: east}
 - name: complexrrcmatchedfilter
   type: ComplexRRCMatchedFilterBlock
   library: lattrex.official
   params:
-    beta: 0.35
-    sps: 2
-    span: 8
-    headroom_shift: 1
+    gain: 0.7105
+    samp_rate: 2.0
+    sym_rate: 1.0
+    alpha: 0.35
+    ntaps: 17
     decimation: 1
+    beta:
+    sps:
+    span: 8
+    headroom_shift:
   placement:
     chip: 0
     cells:
-    - {cell_id: head, x: 1, y: 1, face: south}
-    - {cell_id: q0, x: 1, y: 2, face: south}
-    - {cell_id: q1, x: 1, y: 3, face: south}
-    - {cell_id: q2, x: 1, y: 4, face: south}
-    - {cell_id: q3, x: 1, y: 5, face: south}
-    - {cell_id: q4, x: 1, y: 6, face: east}
-    - {cell_id: i0, x: 2, y: 6, face: north}
-    - {cell_id: i1, x: 2, y: 5, face: north}
-    - {cell_id: i2, x: 2, y: 4, face: north}
-    - {cell_id: i3, x: 2, y: 3, face: north}
-    - {cell_id: i4, x: 2, y: 2, face: north}
-    orientation:
-    - ccw
-    - mirror_v
+    - {cell_id: head, x: 0, y: 6, face: east}
+    - {cell_id: q0, x: 1, y: 6, face: east}
+    - {cell_id: q1, x: 2, y: 6, face: east}
+    - {cell_id: q2, x: 3, y: 6, face: east}
+    - {cell_id: q3, x: 4, y: 6, face: east}
+    - {cell_id: q4, x: 5, y: 6, face: south}
+    - {cell_id: i0, x: 5, y: 7, face: west}
+    - {cell_id: i1, x: 4, y: 7, face: west}
+    - {cell_id: i2, x: 3, y: 7, face: west}
+    - {cell_id: i3, x: 2, y: 7, face: west}
+    - {cell_id: i4, x: 1, y: 7, face: west}
 - name: complexrrcmatchedfilter_2
   type: ComplexRRCMatchedFilterBlock
   library: lattrex.official
   params:
-    beta: 0.35
-    sps: 2
-    span: 8
-    headroom_shift: 1
+    gain: 0.7105
+    samp_rate: 2.0
+    sym_rate: 1.0
+    alpha: 0.35
+    ntaps: 17
     decimation: 1
+    beta:
+    sps:
+    span: 8
+    headroom_shift:
   placement:
     chip: 0
     cells:
-    - {cell_id: head, x: 0, y: 6, face: south}
-    - {cell_id: q0, x: 0, y: 7, face: south}
-    - {cell_id: q1, x: 0, y: 8, face: south}
-    - {cell_id: q2, x: 0, y: 9, face: south}
-    - {cell_id: q3, x: 0, y: 10, face: south}
-    - {cell_id: q4, x: 0, y: 11, face: east}
-    - {cell_id: i0, x: 1, y: 11, face: north}
-    - {cell_id: i1, x: 1, y: 10, face: north}
-    - {cell_id: i2, x: 1, y: 9, face: north}
-    - {cell_id: i3, x: 1, y: 8, face: north}
-    - {cell_id: i4, x: 1, y: 7, face: north}
-    orientation:
-    - ccw
-    - mirror_v
+    - {cell_id: head, x: 3, y: 2, face: east}
+    - {cell_id: q0, x: 4, y: 2, face: east}
+    - {cell_id: q1, x: 5, y: 2, face: east}
+    - {cell_id: q2, x: 6, y: 2, face: east}
+    - {cell_id: q3, x: 7, y: 2, face: east}
+    - {cell_id: q4, x: 8, y: 2, face: south}
+    - {cell_id: i0, x: 8, y: 3, face: west}
+    - {cell_id: i1, x: 7, y: 3, face: west}
+    - {cell_id: i2, x: 6, y: 3, face: west}
+    - {cell_id: i3, x: 5, y: 3, face: west}
+    - {cell_id: i4, x: 4, y: 3, face: west}
 - name: qpskslicer
   type: QPSKSlicerBlock
   library: lattrex.official
   placement:
     chip: 0
     cells:
-    - {cell_id: 0, x: 8, y: 1, face: south}
+    - {cell_id: 0, x: 9, y: 7, face: south}
     orientation:
     - cw
 - name: complexupsampler
@@ -132,7 +147,7 @@ blocks:
   placement:
     chip: 0
     cells:
-    - {cell_id: 0, x: 0, y: 5, face: north}
+    - {cell_id: 0, x: 3, y: 1, face: north}
     orientation:
     - ccw
 - name: iqupconvert
@@ -144,50 +159,40 @@ blocks:
   placement:
     chip: 0
     cells:
-    - {cell_id: phase, x: 3, y: 7, face: north}
-    - {cell_id: sin_fold, x: 3, y: 6, face: north}
-    - {cell_id: cos_fold, x: 3, y: 5, face: north}
-    - {cell_id: table_sin, x: 3, y: 4, face: east}
-    - {cell_id: table_cos, x: 4, y: 4, face: south}
-    - {cell_id: upmix, x: 4, y: 5, face: south}
-    - {cell_id: transit_unlock_0, x: 4, y: 6, face: south}
-    - {cell_id: transit_unlock_1, x: 4, y: 7, face: west}
-    orientation:
-    - ccw
+    - {cell_id: phase, x: 4, y: 4, face: east}
+    - {cell_id: sin_fold, x: 5, y: 4, face: east}
+    - {cell_id: cos_fold, x: 6, y: 4, face: east}
+    - {cell_id: table_sin, x: 7, y: 4, face: south}
+    - {cell_id: table_cos, x: 7, y: 5, face: west}
+    - {cell_id: upmix, x: 6, y: 5, face: west}
+    - {cell_id: transit_unlock_0, x: 5, y: 5, face: west}
+    - {cell_id: transit_unlock_1, x: 4, y: 5, face: north}
 connections:
 - name: net1
   from: {block: complexcostasloop, port: yi_tap}
-  to: {block: gardnertimingrecovery, port: xi}
+  to: {block: mmtimingrecovery, port: xi}
   route:
-  - {x: 5, y: 2}
-  - {x: 6, y: 2}
+  - {x: 1, y: 9}
+  - {x: 2, y: 9}
+  - {x: 2, y: 10}
 - name: net2
-  from: {block: gardnertimingrecovery, port: yi_e}
+  from: {block: mmtimingrecovery, port: yi_e}
   to: {block: qpskslicer, port: in_i}
-  route:
-  - {x: 8, y: 0}
-  - {x: 8, y: 1}
+  route: abutment
 - name: net3
   from: {block: psksymbolmapper, port: out_i}
   to: {block: complexupsampler, port: xi}
-  route:
-  - {x: 0, y: 4}
-  - {x: 0, y: 5}
+  route: abutment
 - name: net4
   from: {block: complexrrcmatchedfilter, port: yi}
   to: {block: complexcostasloop, port: xi}
   route:
-  - {x: 2, y: 2}
-  - {x: 3, y: 2}
-  - {x: 3, y: 3}
-  - {x: 4, y: 3}
+  - {x: 1, y: 7}
+  - {x: 0, y: 7}
 - name: net5
   from: {block: complexrrcmatchedfilter_2, port: yi}
   to: {block: iqupconvert, port: xi}
-  route:
-  - {x: 1, y: 7}
-  - {x: 2, y: 7}
-  - {x: 3, y: 7}
+  route: abutment
 - name: net6
   from: {chip_port: {chip: 0, port: x16_in}}
   to: {block: complexrrcmatchedfilter, port: xi}
@@ -195,12 +200,23 @@ connections:
   - {x: 0, y: 0}
   - {x: 1, y: 0}
   - {x: 1, y: 1}
+  - {x: 1, y: 2}
+  - {x: 1, y: 3}
+  - {x: 1, y: 4}
+  - {x: 1, y: 5}
+  - {x: 0, y: 5}
+  - {x: 0, y: 6}
   stream_id: rx
 - name: net7
   from: {block: qpskslicer, port: out}
   to: {chip_port: {chip: 0, port: x16_out}}
   route:
-  - {x: 8, y: 1}
+  - {x: 9, y: 7}
+  - {x: 9, y: 6}
+  - {x: 9, y: 5}
+  - {x: 9, y: 4}
+  - {x: 9, y: 3}
+  - {x: 9, y: 2}
   - {x: 9, y: 1}
   - {x: 9, y: 0}
   out_tag: 5
@@ -209,25 +225,21 @@ connections:
   to: {block: psksymbolmapper, port: sample}
   route:
   - {x: 0, y: 0}
-  - {x: 0, y: 1}
-  - {x: 0, y: 2}
-  - {x: 0, y: 3}
+  - {x: 1, y: 0}
   stream_id: tx
 - name: net9
   from: {block: complexupsampler, port: yi}
   to: {block: complexrrcmatchedfilter_2, port: xi}
-  route:
-  - {x: 0, y: 5}
-  - {x: 0, y: 6}
+  route: abutment
 - name: net10
   from: {block: iqupconvert, port: out}
   to: {chip_port: {chip: 0, port: x16_out}}
   route:
-  - {x: 4, y: 5}
-  - {x: 5, y: 5}
   - {x: 6, y: 5}
-  - {x: 7, y: 5}
-  - {x: 8, y: 5}
+  - {x: 6, y: 6}
+  - {x: 7, y: 6}
+  - {x: 8, y: 6}
+  - {x: 9, y: 6}
   - {x: 9, y: 5}
   - {x: 9, y: 4}
   - {x: 9, y: 3}
@@ -237,40 +249,30 @@ connections:
   out_tag: 10
 - name: net11
   from: {block: complexcostasloop, port: yq_tap}
-  to: {block: gardnertimingrecovery, port: xq}
+  to: {block: mmtimingrecovery, port: xq}
   route:
-  - {x: 5, y: 2}
-  - {x: 6, y: 2}
+  - {x: 1, y: 9}
+  - {x: 2, y: 9}
+  - {x: 2, y: 10}
 - name: net12
-  from: {block: gardnertimingrecovery, port: yq_e}
+  from: {block: mmtimingrecovery, port: yq_e}
   to: {block: qpskslicer, port: in_q}
-  route:
-  - {x: 8, y: 0}
-  - {x: 8, y: 1}
+  route: abutment
 - name: net13
   from: {block: psksymbolmapper, port: out_q}
   to: {block: complexupsampler, port: xq}
-  route:
-  - {x: 0, y: 4}
-  - {x: 0, y: 5}
+  route: abutment
 - name: net14
   from: {block: complexrrcmatchedfilter, port: yq}
   to: {block: complexcostasloop, port: xq}
   route:
-  - {x: 2, y: 2}
-  - {x: 3, y: 2}
-  - {x: 3, y: 3}
-  - {x: 4, y: 3}
+  - {x: 1, y: 7}
+  - {x: 0, y: 7}
 - name: net15
   from: {block: complexrrcmatchedfilter_2, port: yq}
   to: {block: iqupconvert, port: xq}
-  route:
-  - {x: 1, y: 7}
-  - {x: 2, y: 7}
-  - {x: 3, y: 7}
+  route: abutment
 - name: net16
   from: {block: complexupsampler, port: yq}
   to: {block: complexrrcmatchedfilter_2, port: xq}
-  route:
-  - {x: 0, y: 5}
-  - {x: 0, y: 6}
+  route: abutment

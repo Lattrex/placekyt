@@ -1,4 +1,5 @@
-"""placeKYT command-line interface (the architecture notes §7.1, §11.4).
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""placeKYT command-line interface.
 
 Headless modes for CI and scripting — no Qt required:
 

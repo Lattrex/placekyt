@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Block-verification for ComplexFIRFilterBlock: memory budget + the S>0 guard.
 
 A multi-cell complex FIR runs an I and a Q delay segment per cell (shared taps)

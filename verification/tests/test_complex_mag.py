@@ -175,6 +175,36 @@ def test_saturates_not_wraps(z):
         f"must saturate to 32767, got {_s16(dut.i_q15[1])}"
 
 
+def test_wrap_corner_re_im_neg_one_saturates():
+    """THE WRAP CORNER (regression, fixed 2026-08-16): re = im = -1.0.
+
+    Both squares are 0x8000, and ``0x8000 + 0x8000`` wraps the 16-bit accumulator
+    to ZERO with N CLEAR — the block's original single end-check ``BR.N`` missed
+    it and emitted 0 for a full-scale input (proven: this test FAILS on the
+    pre-fix block, INV-4). The fix guards N after EACH accumulation step (the
+    RMSCF front form), so the corner pins to +full-scale like every other
+    overflow. Also pins the two single-rail -1.0 corners (first-step N) and
+    bit-exactness vs the saturating reference across the corner stream."""
+    corner = complex(-1.0, -1.0)
+    stim = [complex(0.1, 0.1), corner, complex(-1.0, 0.0), complex(0.0, -1.0),
+            corner, complex(0.3, -0.2)]
+    dut = _run_dut(stim)
+    got = [_s16(w) for w in dut.i_q15]
+    # The wrap corner (and both single-rail -1.0 corners) must PIN, not wrap to 0.
+    assert got[1] == 32767, f"re=im=-1.0 wrapped: got {got[1]}, want 32767"
+    assert got[4] == 32767, f"re=im=-1.0 wrapped: got {got[4]}, want 32767"
+    assert got[2] == 32767 and got[3] == 32767, \
+        f"single-rail -1.0 corners must saturate, got {got[2]}, {got[3]}"
+    # Bit-exact against the saturating Q15 reference over the whole stream.
+    blk = ComplexToMagSquaredBlock("ref")
+    a = [_q15(c.real) for c in stim]
+    b = [_q15(c.imag) for c in stim]
+    ref = blk.process_reference_q15(a, b)
+    res = compare_against_grc(dut.i_q15, [_s16(r) / 32768.0 for r in ref],
+                              metric=Metric.EXACT, delay=0)
+    assert res.passed, res.summary()
+
+
 # --- MANDATORY mutation tests -------------------------------------------------
 # NOTE |z|² = re²+im² is SYMMETRIC in re/im, so a swapped-channel mutation is not a
 # corruption and is intentionally not tested.

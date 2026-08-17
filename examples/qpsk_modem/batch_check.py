@@ -6,7 +6,7 @@
 # FULL coherent QPSK RX — BATCH (run-to-completion) through a chip in placeKYT.
 #
 # This drives the COMPLETE on-chip coherent QPSK receiver: an RRC matched filter,
-# an order-4 (QPSK) Costas loop for carrier recovery, complex Gardner timing
+# an order-4 (QPSK) Costas loop for carrier recovery, M&M decision-directed timing
 # recovery, and a QPSK hard-decision slicer. The input is an RRC pulse-shaped QPSK
 # stream (2 samples/symbol) with BOTH a carrier offset AND a fractional timing
 # offset; the chip output is one decoded 2-bit symbol (0..3) per symbol — a real
@@ -241,7 +241,7 @@ def main():
     ax[0, 1].set_title("Input constellation (RRC QPSK)")
     ax[0, 1].set_aspect("equal"); ax[0, 1].grid(True)
     ax[1, 0].step(range(len(rx)), rx, where="mid", color="tab:green", lw=1.0)
-    ax[1, 0].set_title("Recovered symbols (chip out) — MF+Costas4+Gardner+QPSK slicer")
+    ax[1, 0].set_title("Recovered symbols (chip out) — MF+Costas4+M&M+QPSK slicer")
     ax[1, 0].set_ylim(-0.3, 3.3); ax[1, 0].set_yticks([0, 1, 2, 3])
     ax[1, 0].grid(True)
     a = [_rot(x, rot) for x in rx[lag:]]

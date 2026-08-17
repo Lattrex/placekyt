@@ -65,18 +65,31 @@ from .rx_batch import rx_batch
 from .chip_batch import chip_batch
 from .dsp_markers import (complex_rrc_matched_filter, complex_costas_loop,
                           gardner_timing_recovery, mm_timing_recovery,
+                          fll_band_edge,
+                          lms_equalizer, complex_to_mag, complex_to_arg,
                           bpsk_slicer, qpsk_slicer,
-                          psk_symbol_mapper, upsampler, complex_upsampler,
-                          complex_gain, rrc_pulse_shaper,
+                          psk_symbol_mapper, upsampler, repeat, complex_upsampler,
+                          complex_gain, multiply_const_complex, rrc_pulse_shaper,
+                          unpack_k_bits, not_bb, map_bb, char_to_float,
                           iq_upconvert, complex_to_float,
                           frequency_modulator, quadrature_demod,
                           fsk4_symbol_mapper, fsk4_slicer,
                           fsk4_sync_timing_recovery, complex_to_real,
-                          qam16_symbol_mapper, qam16_slicer, qam16_costas_loop)
+                          qam16_symbol_mapper, qam16_slicer, qam16_costas_loop,
+                          abs_bb, splitter, conjugate, complex_to_imag,
+                          complex_to_mag_squared, float_to_complex,
+                          dual_float_to_complex, keep_one_in_n, moving_average,
+                          rms, rms_cf)
 from .gain import gain
 from .multiply import multiply
 from .add import add, subtract
+from .add_cc import add_cc, sub_cc
+from .multiply_cc import multiply_cc
+from .add_const import add_const
+from .xor import xor
+from .float_to_char import float_to_char
 from .fir_filter import fir_filter
+from .complex_fir_filter import complex_fir_filter
 from .low_pass_filter import low_pass_filter
 from .high_pass_filter import high_pass_filter
 from .band_pass_filter import band_pass_filter
@@ -86,21 +99,43 @@ from .complex_high_pass_filter import complex_high_pass_filter
 from .complex_band_pass_filter import complex_band_pass_filter
 from .complex_band_reject_filter import complex_band_reject_filter
 from .dc_blocker import dc_blocker
+from .delay import delay
 from .agc import agc
+from .agc_cc import agc_cc
 from .nco import nco
 from .complex_mixer import complex_mixer
+from .freq_xlating_fir import freq_xlating_fir
 from .demux import demux
 from .mux import mux
 from .iir_biquad import iir_biquad
 from .decimator import decimator
+from .rational_resampler import rational_resampler
 from .squelch import squelch
 from .costas_loop import costas_loop
 from .soft_demodulator import soft_demodulator
 from .viterbi_bmu import viterbi_bmu
 from .viterbi_k7 import viterbi_k7
 from .lfsr_scrambler import lfsr_scrambler
+from .pack_k_bits import pack_k_bits
+from .crc16 import crc16
 from .conv_encoder_k7 import conv_encoder_k7
+from .hamming_encoder import hamming_encoder
+from .hamming_decoder import hamming_decoder
+from .golay_encoder import golay_encoder
+from .golay_decoder import golay_decoder
 from .block_interleaver import block_interleaver
+from .diff_decoder import diff_decoder
+from .diff_encoder import diff_encoder
+from .and_const import and_const
+from .nlog10 import nlog10
+# SRAM-backed ham blocks + the SRAM controller (placeKYT-native [Kyttar] blocks;
+# no GNU Radio counterpart — still fully placeable in GRC with their params).
+from .varicode_encoder import varicode_encoder
+from .varicode_decoder import varicode_decoder
+from .cw_keyer import cw_keyer
+from .cw_decoder import cw_decoder
+from .raised_cosine_envelope import raised_cosine_envelope
+from .sram_controller import sram_controller
 
 __version__ = "1.9.0"
 __all__ = [
@@ -114,6 +149,10 @@ __all__ = [
     "complex_costas_loop",
     "gardner_timing_recovery",
     "mm_timing_recovery",
+    "fll_band_edge",
+    "lms_equalizer",
+    "complex_to_mag",
+    "complex_to_arg",
     "bpsk_slicer",
     "qpsk_slicer",
     "psk_symbol_mapper",
@@ -125,12 +164,27 @@ __all__ = [
     "qam16_costas_loop",
     "complex_to_real",
     "upsampler",
+    "repeat",
+    "unpack_k_bits",
     "complex_upsampler",
     "complex_gain",
+    "multiply_const_complex",
     "rrc_pulse_shaper",
     "iq_upconvert",
     "frequency_modulator",
     "quadrature_demod",
+    # Simple converters / ops
+    "abs_bb",
+    "splitter",
+    "conjugate",
+    "complex_to_imag",
+    "complex_to_mag_squared",
+    "float_to_complex",
+    "dual_float_to_complex",
+    "keep_one_in_n",
+    "moving_average",
+    "rms",
+    "rms_cf",
     # Routing primitives
     "demux",
     "mux",
@@ -139,7 +193,14 @@ __all__ = [
     "multiply",
     "add",
     "subtract",
+    "add_cc",
+    "sub_cc",
+    "multiply_cc",
+    "add_const",
+    "xor",
+    "float_to_char",
     "fir_filter",
+    "complex_fir_filter",
     "low_pass_filter",
     "high_pass_filter",
     "band_pass_filter",
@@ -150,10 +211,13 @@ __all__ = [
     "complex_band_reject_filter",
     "dc_blocker",
     "agc",
+    "agc_cc",
     "nco",
     "complex_mixer",
+    "freq_xlating_fir",
     "iir_biquad",
     "decimator",
+    "rational_resampler",
     "squelch",
     # Synchronization blocks
     "costas_loop",
@@ -162,8 +226,25 @@ __all__ = [
     "viterbi_bmu",
     "viterbi_k7",
     "lfsr_scrambler",
+    "pack_k_bits",
+    "crc16",
     "conv_encoder_k7",
+    "hamming_encoder",
+    "hamming_decoder",
+    "golay_encoder",
+    "golay_decoder",
     "block_interleaver",
+    "diff_decoder",
+    "diff_encoder",
+    "and_const",
+    "nlog10",
+    # SRAM-backed ham blocks + SRAM controller ([Kyttar]-native, no GR counterpart)
+    "varicode_encoder",
+    "varicode_decoder",
+    "cw_keyer",
+    "cw_decoder",
+    "raised_cosine_envelope",
+    "sram_controller",
     # Registry (internal)
     "KyttarRegistry",
     "get_registry",

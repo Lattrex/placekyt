@@ -1,0 +1,21 @@
+{
+  "kyttar_block": "RMSCFBlock",
+  "passed": true,
+  "metric": "amplitude",
+  "n_compared": 256,
+  "max_abs_err": 3,
+  "tolerance": 16,
+  "nmse_db": -77.60571010150153,
+  "correlation": 0.9999997692074148,
+  "bit_errors": 0,
+  "delay_used": 0,
+  "coverage": {
+    "edge": true,
+    "random": 3,
+    "alpha_sweep": 3,
+    "bitexact": true,
+    "saturation_corner": true,
+    "wrap_corner": true,
+    "mutation": true
+  }
+}

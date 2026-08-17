@@ -1,0 +1,51 @@
+id: kyttar_rms_cf
+label: Kyttar RMS (Complex)
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar RMS (Complex) — running RMS of a complex stream, a drop-in for GNU
+  Radio's blocks.rms_cf:
+
+      avg = (1 - alpha) * avg + alpha * (re^2 + im^2);   out = sqrt(avg)
+
+  (sqrt after the update, avg starts at 0 — exactly GR's per-sample order.)
+  Complex in, ONE real stream out. Same 4-cell chip datapath as Kyttar RMS with
+  a ComplexToMagSquared front (MULQ re,re + MACQ im,im, saturating).
+
+  HARDWARE DEVIATION (Q15 fabric): alpha is quantized to a Q15 coefficient
+  (round(alpha*32768)/32768 — the default 1e-4 runs as 3/32768, ~8% slower
+  transient; the settled RMS value is unchanged). alpha outside (0, 1] or below
+  ~1.5e-5 raises. Instantaneous power |z|^2 >= 1.0 saturates to +full-scale
+  (|z|^2 spans [0, 2) but Q15 holds [0, 1)).
+
+  This block runs on the Kyttar chip. Place it between a KyttarSource and
+  KyttarSink block, and ensure the device_id matches your KyttarDevice.
+
+  Parameters:
+  - Device ID: ID of the KyttarDevice block
+  - alpha: gain of the running-average filter (GR default 0.0001)
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.rms_cf(device_id=${device_id}, alpha=${alpha})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+  - id: alpha
+    label: Alpha
+    dtype: real
+    default: 0.0001
+
+inputs:
+  - label: in
+    dtype: complex
+
+outputs:
+  - label: out
+    dtype: float
+
+file_format: 1

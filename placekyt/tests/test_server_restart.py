@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """The GNURadio server can be stopped and restarted on the SAME port.
 
 stop() used to close the socket but leave the serve thread blocked in accept(),

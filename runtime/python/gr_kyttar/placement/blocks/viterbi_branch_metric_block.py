@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """ViterbiBranchMetricBlock — see :class:`ViterbiBranchMetricBlock`."""
 import numpy as np
 from ..block import CellProgram, Port, EntryPoint, StateVar, DataWord

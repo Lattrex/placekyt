@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Tests for the .kbs bitstream container (engine/io/kbs.py, §5.1)."""
 
 from __future__ import annotations

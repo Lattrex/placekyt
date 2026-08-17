@@ -1,0 +1,64 @@
+id: kyttar_lms_equalizer
+label: Kyttar LMS Equalizer
+category: '[Kyttar]'
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.lms_equalizer(${device_id}, ${num_taps}, ${step_size}, ${sps},
+    block_name=${block_name})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+
+- id: num_taps
+  label: Num. Taps
+  dtype: int
+  default: '5'
+
+- id: step_size
+  label: Step Size (mu)
+  dtype: float
+  default: '0.03'
+
+- id: sps
+  label: Samples per Symbol
+  dtype: int
+  default: '1'
+
+- id: block_name
+  label: placeKYT block name
+  dtype: string
+  default: '""'
+  hide: part
+
+# Always COMPLEX (I/Q): the equalized (yi, yq) pair is carried as ONE
+# gr_complex stream in/out — placeKYT's importer splits the single complex net
+# into the on-chip xi/xq in + yi/yq out rails.
+inputs:
+- label: in
+  domain: stream
+  dtype: complex
+
+outputs:
+- label: out
+  domain: stream
+  dtype: complex
+
+documentation: |-
+  Decision-Directed Complex LMS Adaptive Equalizer (linear FFE)
+
+  GNU Radio counterpart: digital.linear_equalizer(num_taps, sps,
+  adaptive_algorithm_lms(constellation_qpsk(), step_size), ...).
+
+  Runs on the placeKYT-hosted Kyttar chip. Hardware deviations (proven
+  scale-covariant, see verification/tests/test_lms_equalizer.py): decisions
+  at the unit-circle QPSK constellation (alpha = 1/2 of GR's scale; outputs
+  and converged taps equal alpha times GR's), DD-only spike cold start (no
+  on-chip training memory), taps stored halved (tap-gain envelope
+  sum|w_eff| <= 2). sps=1 only. PER-SAMPLE drive contract (INV-19 recorded
+  limit).
+
+file_format: 1

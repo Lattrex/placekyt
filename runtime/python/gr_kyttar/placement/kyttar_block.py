@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Backward-compatible aggregator for the Kyttar block library.
 
 The blocks themselves now live one-per-file under

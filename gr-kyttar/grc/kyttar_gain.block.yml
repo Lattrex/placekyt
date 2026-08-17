@@ -20,7 +20,7 @@ documentation: |-
 
 templates:
   imports: from gnuradio import kyttar
-  make: kyttar.gain(device_id=${device_id}, gain=${gain})
+  make: kyttar.gain(device_id=${device_id}, gain=${gain}, block_name=${block_name})
   callbacks:
     - set_gain(${gain})
 
@@ -33,6 +33,11 @@ parameters:
     label: Gain
     dtype: real
     default: 0.5
+  - id: block_name
+    label: placeKYT block name
+    dtype: string
+    default: '""'
+    hide: part
 
 inputs:
   - label: in

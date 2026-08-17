@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Low-level USB transport to the devkyt FPGA board (ZTEX USB-FPGA Module 2.18b).
+"""Low-level USB transport to the Kyttar dev-kit FPGA board (ZTEX USB-FPGA Module 2.18b).
 
 This is the thin libusb/pyusb layer under :class:`~placekyt.engine.hw_chip.HwChip`.
 It knows nothing about Kyttar semantics (WRITE/DATA/JUMP, hops, tags) — it only moves
@@ -7,11 +7,11 @@ raw 16-bit words to/from the FPGA over the FX3 bulk endpoints, and issues the FX
 control transfers for reset and endpoint discovery.
 
 Grounded 1:1 in ZTEX's own libusb host reference (``ztex/capi/c/memfifo.c`` +
-``ztex.c``) as documented in ``dev_docs/HARDWARE_BACKEND_PLAN.md`` §7. The FPGA side is
-the devkyt gateware (``hs_tx``/``hs_rx`` + fake-gain/router); its ``.bit`` is PRE-FLASHED
+``ztex.c``). The FPGA side is
+the dev-kit gateware; its ``.bit`` is PRE-FLASHED
 to the ZTEX flash (auto-boots on power-up), so this module never uploads the gateware —
 it only speaks the BULK data path + the app-reset control. (EP0 .bit upload, VR 0x31-0x35,
-is deliberately NOT implemented; see the plan §7.)
+is deliberately NOT implemented.)
 
 Words are 16-bit, little-endian on the wire (matches the FX3 ``fd[15:0]`` slave-FIFO and
 the ezusb_io ``DO``/``DI`` streams).

@@ -27,7 +27,7 @@ failure. Every arithmetic stage still runs on the substrate.)
 
 Run:
     KYTTAR_GR_PYTHON=/usr/bin/python3 QT_QPA_PLATFORM=offscreen \
-      /home/system/placekyt/.venv/bin/python -m pytest \
+      .venv/bin/python -m pytest \
       verification/tests/test_ssb_weaver.py -x -q -s
 """
 from __future__ import annotations

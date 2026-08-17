@@ -83,6 +83,8 @@ class source(gr.sync_block):
         stream_id: str = "",
         pipelined: bool = False,
         schedule: str = "interleaved",
+        repeat: bool = False,
+        output_words: str = "auto",
     ):
         # SERVER-BATCH MODE (server_port > 0): drive a placeKYT-hosted chip via ONE
         # process_batch RPC instead of building/owning a local chip. The input is
@@ -126,6 +128,22 @@ class source(gr.sync_block):
         # burst is injected at its own block and its sink (same stream_id) drains
         # only ITS recovered words. Empty ⇒ today's single-stream behavior.
         self._stream_id = str(stream_id or "")
+        # OUTPUT WORD ENCODING of the recovered stream:
+        #   "auto" (legacy): raw int16 words for a COMPLEX-input chain (the
+        #     bit-packing receiver convention — a slicer's decoded bit lives in
+        #     the word LSB, which Q15 scaling would crush), Q15-scaled floats
+        #     for a real-input chain (gain/FIR values).
+        #   "q15": ALWAYS Q15-scaled floats — for a complex-input chain whose
+        #     output is a Q15 VALUE, not packed bits (the LMS equalizer's
+        #     equalized I/Q, the CORDIC magnitude/phase). Without this, a
+        #     value-output complex chain displays raw +-30000 "floats" (the
+        #     missing-constellation report).
+        #   "raw": ALWAYS raw int16 words.
+        _ow = str(output_words or "auto").lower()
+        if _ow not in ("auto", "q15", "raw"):
+            raise ValueError(f"output_words must be auto/q15/raw (got {_ow!r})")
+        self._raw_out = (bool(complex_in) if _ow == "auto"
+                         else (_ow == "raw"))
         # SCHEDULE (timing-analysis knob, no design change): how the two duplex
         # streams are driven on the shared input port.
         #   "interleaved" (default): TX + RX round-robin sample-by-sample, so the
@@ -143,6 +161,15 @@ class source(gr.sync_block):
         # word stream + run to completion) rather than per-sample-to-quiescence. Only
         # safe for a saturation-tolerant (point-to-point-routed) chip design.
         self._pipelined = bool(pipelined)
+        # REPEAT (the live-demo burst loop): after the sink drains a burst's
+        # result, re-arm and dispatch the NEXT burst_len samples — the flowgraph
+        # becomes a continuous burst loop, so scopes refresh every burst and a
+        # LIVE slider change (see gain.set_gain) shows up one burst later
+        # WITHIN the same Run. Off (default) = the classic one-burst-per-Run.
+        # Pair repeat sources with server_repeat sinks (or rely on the sink's
+        # own repeat detection) so the graph does not end between bursts.
+        self._repeat = bool(repeat)
+        self._dispatch_failed = False
         self._inbuf = []          # server mode: accumulated complex burst
         self._dispatched = False
         # streaming (hardware) vs batch (sim) is decided by the SERVER at start();
@@ -218,7 +245,7 @@ class source(gr.sync_block):
             rec = stream_chunk(
                 self._server_host, self._server_port, batch,
                 in_port=self._port_name, complex_=self._complex_in,
-                raw=self._complex_in)
+                raw=self._raw_out)
         except Exception as e:  # noqa: BLE001
             print(f"[kyttar.source] stream chunk failed: {e}", flush=True)
             return
@@ -255,7 +282,7 @@ class source(gr.sync_block):
             rv = get_rendezvous(self._device_id)
             out = rv.submit(self._server_host, self._server_port, self._stream_id,
                             self._inbuf, complex_=self._complex_in,
-                            raw=self._complex_in, schedule=self._schedule,
+                            raw=self._raw_out, schedule=self._schedule,
                             pipelined=self._pipelined)
             with sess._cv:            # deliver to this stream's sink
                 sess._result = out
@@ -264,7 +291,7 @@ class source(gr.sync_block):
         else:
             out = sess.dispatch(self._server_host, self._server_port, self._inbuf,
                                 in_port=self._port_name, complex=self._complex_in,
-                                raw=self._complex_in, stream_id=self._stream_id,
+                                raw=self._raw_out, stream_id=self._stream_id,
                                 pipelined=self._pipelined)
         self._dispatched = True
         print(f"[kyttar.source] SERVER-BATCH: sent {len(self._inbuf)} samples "
@@ -343,8 +370,19 @@ class source(gr.sync_block):
                         self._server_dispatch()
                     except Exception as e:  # noqa: BLE001
                         self._dispatched = True
+                        self._dispatch_failed = True
                         print(f"[kyttar.source] server dispatch failed (degrading, "
                               f"no output): {e}", flush=True)
+            elif self._repeat and not self._dispatch_failed:
+                # REPEAT: re-arm for the next burst once the sink drained the
+                # previous generation (the session gate — never overrun a slow
+                # sink). Samples arriving in between are consumed and dropped
+                # (a repeating vector source keeps producing regardless).
+                from ._batch_session import get_session
+                if get_session(self._device_id,
+                               self._stream_id).result_consumed():
+                    self._dispatched = False
+                    self._inbuf = []
             return n_samples
 
         # NO server configured: harmless pass-through. No chip, no heavy imports.

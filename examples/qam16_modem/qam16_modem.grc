@@ -238,7 +238,7 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [992, 128.0]
+    coordinate: [992, 120.0]
     rotation: 0
     state: enabled
 - name: rx_iq

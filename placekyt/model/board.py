@@ -1,4 +1,5 @@
-"""Dev board configuration (``.kdb``), the architecture notes §2.4.
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Dev board configuration (``.kdb``).
 
 A board describes the physical hardware: which chips are present, how they are
 wired to each other, and how they connect to the FPGA. The project's

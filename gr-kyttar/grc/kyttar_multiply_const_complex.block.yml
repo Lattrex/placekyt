@@ -1,0 +1,72 @@
+id: kyttar_multiply_const_complex
+label: 🧪 Kyttar Multiply Const (Complex)
+category: '[Kyttar]'
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.multiply_const_complex(${device_id}, ${re}, ${im})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+
+- id: re
+  label: Constant (real)
+  dtype: real
+  default: '0.7'
+
+- id: im
+  label: Constant (imag)
+  dtype: real
+  default: '0.5'
+
+inputs:
+- label: in
+  domain: stream
+  dtype: complex
+
+outputs:
+- label: out
+  domain: stream
+  dtype: complex
+
+asserts:
+- ${ -2 < re < 2 }
+- ${ -2 < im < 2 }
+
+documentation: |-
+  Multiply Const (Complex) — the TRUE complex-constant multiply, a drop-in for
+  GNU Radio's blocks.multiply_const_cc fed a COMPLEX constant k = re + im·j.
+
+  Multiplies a complex (I, Q) stream by the complex constant k, which SCALES and
+  ROTATES the constellation:
+
+      out = in · k
+      yi = xi·re − xq·im
+      yq = xi·im + xq·re
+
+  Unlike Kyttar Complex Gain (which scales both rails by the SAME real constant —
+  no rotation), this block carries the cross-terms (−xq·im on I, +xi·im on Q) that
+  produce the rotation. It is the genuine multiply_const_cc with a gr_complex
+  constant.
+
+  The on-chip datapath is Q15 [-1, 1). re/im may exceed 1 (|re|, |im| < 2): the
+  block stores re/4 and im/4 in Q15, forms each rail's two products (always in
+  range), sums them in range, then restores the scale with a SATURATING left-shift
+  by 2 — so it CLIPS on overload exactly like multiply_const_cc (never wraps).
+  |k| up to 2√2 ≈ 2.83 is supported.
+
+  Ports:
+    in (complex): baseband I/Q samples
+    out (complex): in · k  (scaled and rotated)
+
+  Parameters:
+    Device ID:        which Kyttar device to use
+    Constant (real):  Re{k} = re   (−2 < re < 2)
+    Constant (imag):  Im{k} = im   (−2 < im < 2)
+
+  Mapped by placeKYT (File -> Import GNURadio Flowgraph) to MultiplyConstComplex.
+
+file_format: 1

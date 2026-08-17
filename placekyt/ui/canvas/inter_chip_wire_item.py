@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """InterChipWireItem — a board-level chip-to-chip wire (§3.2).
 
 Drawn as a thick dark line between two chips' port anchors (the from-port output
@@ -14,6 +15,7 @@ from PySide6.QtWidgets import QGraphicsItem
 
 _WIRE_COLOR = QColor(180, 180, 190)     # board wire: light gray, thick
 _SELECT_COLOR = QColor(120, 220, 255)   # selected highlight
+_RELATED_COLOR = QColor(255, 200, 80)   # cross-chip path highlight (#266 family)
 _HIT_WIDTH = 16                         # clickable hit area around the wire
 
 
@@ -27,9 +29,23 @@ class InterChipWireItem(QGraphicsItem):
         self._b = QPointF(end)
         # The model InterChipConnection this draws (for selection → delete).
         self.inter_chip = ic
+        # RELATED highlight: lit when a selected block's cross-chip stream path
+        # crosses this wire (the continuous-path highlight). Distinct from
+        # isSelected(), mirroring ConnectionItem's related state.
+        self._related = False
         self.setZValue(4)  # above cells, below intra-chip routes/selection
         self.setFlag(QGraphicsItem.ItemIsSelectable, True)
         self.setAcceptHoverEvents(True)
+
+    @property
+    def is_related(self) -> bool:
+        return self._related
+
+    def set_related(self, on: bool) -> None:
+        on = bool(on)
+        if on != self._related:
+            self._related = on
+            self.update()
 
     def _path(self) -> QPainterPath:
         path = QPainterPath(self._a)
@@ -56,6 +72,11 @@ class InterChipWireItem(QGraphicsItem):
         path = self._path()
         if self.isSelected():
             glow = QPen(_SELECT_COLOR)
+            glow.setWidth(9)
+            painter.setPen(glow)
+            painter.drawPath(path)
+        elif self._related:
+            glow = QPen(_RELATED_COLOR)
             glow.setWidth(9)
             painter.setPen(glow)
             painter.drawPath(path)

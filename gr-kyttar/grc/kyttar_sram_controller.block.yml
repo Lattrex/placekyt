@@ -1,0 +1,75 @@
+id: kyttar_sram_controller
+label: Kyttar SRAM Controller
+category: '[Kyttar]/Memory'
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.sram_controller(${device_id}, ${panel_hop}, ${read_wr_desc}, ${read_jp_desc}, ${primary_entry}, ${addr_base})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+- id: panel_hop
+  label: Panel hop (@N)
+  dtype: int
+  default: '1'
+- id: read_wr_desc
+  label: Read WRITE descriptor
+  dtype: int
+  default: '0'
+- id: read_jp_desc
+  label: Read JUMP descriptor
+  dtype: int
+  default: '0'
+- id: primary_entry
+  label: Primary entry
+  dtype: enum
+  default: '"write"'
+  options: ['"write"', '"lookup"']
+  option_labels: [write, lookup]
+
+- id: addr_base
+  label: addr_base
+  dtype: int
+  default: 0
+  hide: part
+
+inputs:
+- id: '0'
+  label: data
+  domain: stream
+  dtype: byte
+
+outputs:
+- id: '0'
+  label: out
+  domain: stream
+  dtype: byte
+
+documentation: |-
+  Single-cell memory controller for an SRAM panel (verification/SRAM_PANEL.md) —
+  placeKYT-native ([Kyttar]) block; there is NO stock GNU Radio counterpart.
+
+  Sits at (or adjacent to) the panel's port and owns ALL panel sequencing, so
+  upstream blocks just stream data. Auto-increments the write and read addresses
+  internally and drives the SRAM panel register protocol over the chip port it
+  faces. The real controller runs ON the placeKYT-hosted chip; this GRC block is a
+  placeable pass-through marker carrying the graph so a flowgraph imports + runs.
+
+  Ports:
+    data (in): data words to write / read-address triggers (byte)
+    out:       panel-protocol WRITE/JUMP hops (byte)
+
+  Parameters (mirror SramControllerBlock verbatim):
+    Device ID:            which Kyttar device to use.
+    Panel hop:            hops from this cell to exit the panel port (@N). Default 1.
+    Read WRITE descriptor: raw 16-bit WRITE descriptor the panel re-emits on a read
+                           (the push-read WRITE target; SRAM_PANEL.md §3).
+    Read JUMP descriptor:  raw 16-bit JUMP descriptor the panel re-emits on a read
+                           (the push-read JUMP target; SRAM_PANEL.md §3).
+
+  Mapped by placeKYT (File -> Import GNURadio Flowgraph) to SramControllerBlock.
+
+file_format: 1

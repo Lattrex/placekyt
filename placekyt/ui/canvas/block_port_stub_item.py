@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """BlockPortStubItem — a labelled stub marker for a block's external port.
 
 The auto-P&R schematic front-end (P2.3) shows each placed block's external INPUT

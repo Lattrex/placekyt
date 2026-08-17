@@ -58,11 +58,72 @@ BLOCKS = [
     ("RRCPulseShaperBlock", {"sampling_freq": 2.0, "symbol_rate": 1.0,
                              "alpha": 0.5, "ntaps": 17, "gain": 1.0}),
     ("ComplexRRCMatchedFilterBlock", {}),
+    ("FreqXlatingFIRBlock", {"decimation": 2, "taps": [0.1, 0.2, 0.3, 0.2, 0.1],
+                             "center_freq": 2000.0, "sampling_freq": 32000.0}),
     ("FSK4SyncTimingRecoveryBlock", {}),
     ("GardnerTimingRecovery", {}),
     ("MMTimingRecoveryBlock", {}),
+    # FLL band-edge ring composite: perimeter fold with interior hole + a feedback
+    # transit; assert legality at the default AND the max (8x8 ring) filter_size.
+    ("FLLBandEdgeBlock", {}),
+    ("FLLBandEdgeBlock", {"filter_size": 27}),
     ("IQUpconvertBlock", {}),
     ("ComplexCostasLoopBlock", {}),
+    # BPSK hard slicer: single-cell, so it can never self-overlap — but assert the
+    # legal footprint under D4 + movement anyway (a param sweep of out_mode does not
+    # change the 1-cell footprint).
+    ("BPSKSlicerBlock", {"out_mode": "word"}),
+    ("ComplexCostasLoopBlock", {"order": 4}),
+    # 20-cell complex-AGC ring (7x5 perimeter, no internal transit cell): the
+    # serialize-LOCK adds no cells (the feedback is a direct @1 abutment), so
+    # the footprint is param-independent; assert D4 + movement legality anyway.
+    ("AGCCCBlock", {}),
+    # Polyphase rational resampler: single-cell for every supported (L, M, taps)
+    # combination (the params never grow the footprint — over-budget configs
+    # RAISE at construction instead), so it can never self-overlap; assert the
+    # 1-cell footprint stays legal under D4 + movement anyway.
+    ("RationalResamplerBlock", {"interpolation": 2, "decimation": 3,
+                                "taps": [0.4, 0.25, -0.2, 0.1]}),
+    # Single-cell additive LFSR scrambler — no internal transit cell, no footprint-
+    # growing param (count>0 only adds registers, not cells); trivially non-self-
+    # overlapping in every D4 orientation and under movement.
+    ("LFSRScramblerBlock", {"count": 8}),
+    # Single-cell frame CRC-16 — no internal transit cell, no footprint-growing
+    # param (poly/init/frame_len only change register contents); trivially
+    # non-self-overlapping in every D4 orientation and under movement.
+    ("Crc16Block", {"frame_len": 8}),
+    # Two-complex-stream add/sub: 2-cell chain (rail_i landing -> rail_q emit),
+    # no internal transit cell, no footprint-growing param (num_inputs is pinned).
+    ("AddCCBlock", {}),
+    ("SubCCBlock", {}),
+    ("MultiplyCCBlock", {}),
+    ("MultiplyConstComplex", {"re": 0.7, "im": 0.5}),
+    # Bitwise NOT (GR blocks.not_bb): single-cell, no params, no internal transit
+    # cell — trivially non-self-overlapping in every D4 orientation and under movement.
+    ("NotBlock", {}),
+    # Hamming(7,4) FEC encoder: 2-cell straight chain (pack -> expand), no internal
+    # transit cell, no footprint-growing param — its 2x1 footprint must stay
+    # pairwise-distinct in every D4 orientation and under movement.
+    ("HammingEncoderBlock", {}),
+    # Hamming(7,4) syndrome decoder: 2-cell row (front -> fix), no internal transit
+    # cell, no footprint-growing param — footprint must stay pairwise-distinct under
+    # every D4 orientation and movement.
+    ("HammingDecoderBlock", {}),
+    # Extended Golay (24,12) encoder: 4-cell 2x2 serpentine fold (pack -> par1 ->
+    # par2 -> emit), no internal transit cell, no params — the 2x2 footprint must
+    # stay pairwise-distinct in every D4 orientation and under movement.
+    ("GolayEncoderBlock", {}),
+    # RMS pair: 4-cell 2x2 serpentine fold (pwr -> norm -> poly -> denorm), no
+    # internal transit cell, no footprint-growing param (alpha only changes a
+    # coefficient word) — the 2x2 footprint must stay pairwise-distinct in every
+    # D4 orientation and under movement.
+    ("RMSBlock", {"alpha": 0.25}),
+    ("RMSCFBlock", {"alpha": 0.25}),
+    # rows x cols block interleaver: 3-cell vertical column (rgen -> wctl ->
+    # store), no internal transit cell; rows/cols/deinterleave change register
+    # contents only (the footprint is always 1x3) — must stay pairwise-distinct
+    # in every D4 orientation and under movement.
+    ("BlockInterleaverBlock", {"rows": 3, "cols": 4, "deinterleave": True}),
 ]
 
 _LIB = "lattrex.official"

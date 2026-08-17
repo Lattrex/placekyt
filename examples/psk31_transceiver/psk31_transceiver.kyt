@@ -1,0 +1,454 @@
+project:
+  format_version: 1
+  name: PSK31 full transceiver (duplex, shared SRAM panel)
+  version: '1.0'
+chip_type: kyttar_10x12
+chips:
+- id: 0
+  label: Chip 0
+  position: {x: 0.0, y: 0.0}
+panels:
+- id: 0
+  label: Varicode ROM (128 x 16b) + Varicode reverse map (1024, sparse)
+  mirrored: true
+  position: {x: 240.0, y: 840.0}
+  ports:
+  - {name: x16_in, direction: input, width: 16, face: east}
+  - {name: x1_in, direction: input, width: 1, face: east}
+  - {name: x16_out, direction: output, width: 16, face: west}
+  - {name: x1_out, direction: output, width: 1, face: west}
+  image:
+  - {base: 1, words: [33]}
+  - {base: 3, words: [102]}
+  - {base: 5, words: [117]}
+  - {base: 7, words: [112]}
+  - {base: 11, words: [98]}
+  - {base: 13, words: [106]}
+  - {base: 15, words: [111]}
+  - {base: 21, words: [115]}
+  - {base: 23, words: [116]}
+  - {base: 27, words: [109]}
+  - {base: 29, words: [11]}
+  - {base: 31, words: [14]}
+  - {base: 43, words: [105]}
+  - {base: 45, words: [101]}
+  - {base: 47, words: [100]}
+  - {base: 53, words: [46]}
+  - {base: 55, words: [118]}
+  - {base: 59, words: [110]}
+  - {base: 61, words: [103]}
+  - {base: 63, words: [113]}
+  - {base: 85, words: [62]}
+  - {base: 87, words: [47]}
+  - {base: 91, words: [104]}
+  - {base: 93, words: [122]}
+  - {base: 95, words: [99]}
+  - {base: 107, words: [120]}
+  - {base: 109, words: [85]}
+  - {base: 111, words: [84]}
+  - {base: 117, words: [45]}
+  - {base: 119, words: [70]}
+  - {base: 123, words: [119]}
+  - {base: 125, words: [66]}
+  - {base: 127, words: [74]}
+  - {base: 171, words: [80]}
+  - {base: 173, words: [68]}
+  - {base: 175, words: [83]}
+  - {base: 181, words: [69]}
+  - {base: 183, words: [49]}
+  - {base: 187, words: [78]}
+  - {base: 189, words: [50]}
+  - {base: 191, words: [108]}
+  - {base: 213, words: [81]}
+  - {base: 215, words: [77]}
+  - {base: 219, words: [71]}
+  - {base: 221, words: [79]}
+  - {base: 223, words: [121]}
+  - {base: 235, words: [67]}
+  - {base: 237, words: [51]}
+  - {base: 239, words: [10]}
+  - {base: 245, words: [59]}
+  - {base: 247, words: [42]}
+  - {base: 251, words: [41]}
+  - {base: 253, words: [72]}
+  - {base: 255, words: [52]}
+  - {base: 341, words: [73]}
+  - {base: 343, words: [86]}
+  - {base: 347, words: [54]}
+  - {base: 349, words: [88]}
+  - {base: 351, words: [35]}
+  - {base: 363, words: [55]}
+  - {base: 365, words: [96]}
+  - {base: 367, words: [43]}
+  - {base: 373, words: [89]}
+  - {base: 375, words: [53]}
+  - {base: 379, words: [90]}
+  - {base: 381, words: [76]}
+  - {base: 383, words: [40]}
+  - {base: 427, words: [57]}
+  - {base: 429, words: [56]}
+  - {base: 431, words: [48]}
+  - {base: 437, words: [87]}
+  - {base: 439, words: [58]}
+  - {base: 443, words: [125]}
+  - {base: 445, words: [60]}
+  - {base: 447, words: [114]}
+  - {base: 469, words: [123]}
+  - {base: 471, words: [63]}
+  - {base: 475, words: [37]}
+  - {base: 477, words: [82]}
+  - {base: 479, words: [44]}
+  - {base: 491, words: [107]}
+  - {base: 493, words: [61]}
+  - {base: 495, words: [93]}
+  - {base: 501, words: [36]}
+  - {base: 503, words: [92]}
+  - {base: 507, words: [94]}
+  - {base: 509, words: [75]}
+  - {base: 511, words: [34]}
+  - {base: 683, words: [1]}
+  - {base: 685, words: [91]}
+  - {base: 687, words: [64]}
+  - {base: 693, words: [126]}
+  - {base: 695, words: [124]}
+  - {base: 699, words: [39]}
+  - {base: 701, words: [65]}
+  - {base: 703, words: [95]}
+  - {base: 725, words: [38]}
+  - {base: 727, words: [127]}
+  - {base: 731, words: [2]}
+  - {base: 733, words: [13]}
+  - {base: 735, words: [97]}
+  - {base: 747, words: [5]}
+  - {base: 749, words: [3]}
+  - {base: 751, words: [7]}
+  - {base: 757, words: [18]}
+  - {base: 759, words: [17]}
+  - {base: 763, words: [31]}
+  - {base: 765, words: [8]}
+  - {base: 767, words: [9]}
+  - {base: 853, words: [28]}
+  - {base: 855, words: [24]}
+  - {base: 859, words: [21]}
+  - {base: 861, words: [29]}
+  - {base: 863, words: [6]}
+  - {base: 875, words: [22]}
+  - {base: 877, words: [23]}
+  - {base: 879, words: [12]}
+  - {base: 885, words: [15]}
+  - {base: 887, words: [4]}
+  - {base: 891, words: [25]}
+  - {base: 893, words: [26]}
+  - {base: 895, words: [32]}
+  - {base: 939, words: [16]}
+  - {base: 941, words: [19]}
+  - {base: 943, words: [20]}
+  - {base: 949, words: [128]}
+  - {base: 951, words: [27]}
+  - {base: 955, words: [30]}
+  - {base: 1024, words: [43722, 46794, 47946, 56778, 47818, 55242, 48074, 48970, 
+        49098, 61192, 59397, 56266, 46922, 63493, 56650, 60106, 48586, 48458, 
+        60234, 60362, 54986, 56010, 56138, 54730, 57034, 57162, 60874, 54602, 
+        55114, 61130, 48842, 57290, 32769, 65417, 44937, 64137, 60809, 46410, 
+        44746, 49033, 64264, 63240, 46985, 61321, 59911, 54278, 44551, 55177, 
+        46856, 48392, 60680, 65288, 48009, 44425, 46473, 54921, 54665, 56201, 
+        62728, 56969, 63113, 43527, 60297, 43978, 44874, 64007, 60168, 44296, 
+        46344, 60935, 56072, 64776, 43657, 65031, 65161, 48777, 55048, 47880, 
+        56584, 43784, 54536, 61065, 44808, 56839, 55815, 43913, 55945, 44681, 
+        47753, 48521, 43850, 64393, 63369, 64905, 45002, 46729, 47050, 45060, 
+        48647, 48134, 46086, 49154, 62470, 46599, 44038, 53252, 62857, 48904, 
+        55301, 60422, 61444, 57347, 64518, 57225, 43013, 47109, 40963, 56326, 
+        62983, 54791, 57096, 47623, 60041, 44490, 56713, 44362, 46538, 60746]}
+panel_connections:
+- panel: {id: 0, port: x1_in}
+  chip: {id: 0, port: x1_out}
+- panel: {id: 0, port: x1_out}
+  chip: {id: 0, port: x1_in}
+blocks:
+- name: varicodeencoder
+  type: VaricodeEncoderBlock
+  library: lattrex.official
+  params:
+    panel_hop: 2
+    emit_hop: 1
+    emit_dest: 0
+    emit_entry: 23
+    read_wr_desc: 25223
+    read_jp_desc: 29322
+    addr_base: 1024
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 8, y: 11, face: east}
+    - {cell_id: 1, x: 0, y: 1, face: east}
+- name: diffencoder
+  type: DiffEncoderBlock
+  library: lattrex.official
+  params:
+    modulus: 2
+    coding: DIFF_DIFFERENTIAL
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 1, y: 1, face: east}
+- name: psksymbolmapper
+  type: PSKSymbolMapperBlock
+  library: lattrex.official
+  params:
+    modulation: bpsk
+    symbol_table: []
+    dimension: 1
+    bpsk_bit0_positive: true
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 2, y: 1, face: east}
+- name: repeat
+  type: RepeatBlock
+  library: lattrex.official
+  params:
+    interp: 8
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 3, y: 1, face: east}
+- name: raisedcosineenvelope
+  type: RaisedCosineEnvelopeBlock
+  library: lattrex.official
+  params:
+    samples_per_symbol: 8
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 1, y: 3, face: east}
+    - {cell_id: 1, x: 2, y: 3, face: east}
+    - {cell_id: 2, x: 3, y: 3, face: east}
+    - {cell_id: 3, x: 4, y: 3, face: east}
+    - {cell_id: 4, x: 5, y: 3, face: east}
+    - {cell_id: 5, x: 6, y: 3, face: east}
+    - {cell_id: 6, x: 7, y: 3, face: east}
+- name: bpskslicer
+  type: BPSKSlicerBlock
+  library: lattrex.official
+  params:
+    out_mode: bit
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 7, y: 8, face: west}
+- name: diffdecoder
+  type: DiffDecoderBlock
+  library: lattrex.official
+  params:
+    modulus: 2
+    coding: 0
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 6, y: 8, face: west}
+- name: varicodedecoder
+  type: VaricodeDecoderBlock
+  library: lattrex.official
+  params:
+    panel_hop: 2
+    read_addr_hop: 1
+    char_dest: 25
+    emit_entry: 2
+    emit_hop: 11
+    out_dest: 5
+    read_dest: 6
+    read_entry: 16
+    read_wr_desc: 25505
+    read_jp_desc: 29625
+    emit_jump_entry: 23
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 9, y: 9, face: south}
+    - {cell_id: 1, x: 1, y: 10, face: north}
+    - {cell_id: 2, x: 9, y: 10, face: south}
+- name: varicodeencoder_xover
+  type: CrossoverBlock
+  library: lattrex.official
+  params:
+    face_a: south
+    hop_a: 5
+    dest_a: 7
+    entry_a: 18
+    face_b: east
+    hop_b: 8
+    dest_b: 10
+    entry_b: 0
+    face_c: east
+    hop_c: 8
+    entry_c: 0
+    dest_c: 5
+    restore_face: south
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 8, y: 6, face: south}
+connections:
+- name: net1
+  from: {block: varicodeencoder, port: bits}
+  to: {block: diffencoder, port: sample}
+  route:
+  - {x: 0, y: 1}
+  - {x: 1, y: 1}
+- name: net2
+  from: {block: repeat, port: out}
+  to: {block: raisedcosineenvelope, port: sample}
+  route:
+  - {x: 3, y: 1}
+  - {x: 4, y: 1}
+  - {x: 4, y: 2}
+  - {x: 3, y: 2}
+  - {x: 2, y: 2}
+  - {x: 1, y: 2}
+  - {x: 1, y: 3}
+- name: net5
+  from: {block: bpskslicer, port: out}
+  to: {block: diffdecoder, port: sample}
+  route:
+  - {x: 7, y: 8}
+  - {x: 6, y: 8}
+- name: net6
+  from: {block: diffdecoder, port: out}
+  to: {block: varicodedecoder, port: bit}
+  route:
+  - {x: 6, y: 8}
+  - {x: 6, y: 9}
+  - {x: 7, y: 9}
+  - {x: 8, y: 9}
+- name: net7
+  from: {block: psksymbolmapper, port: out}
+  to: {block: repeat, port: x}
+  route:
+  - {x: 2, y: 1}
+  - {x: 3, y: 1}
+- name: net10
+  from: {block: diffencoder, port: out}
+  to: {block: psksymbolmapper, port: sample}
+  route:
+  - {x: 1, y: 1}
+  - {x: 2, y: 1}
+- name: varicodeencoder_panel_return
+  from: {chip_port: {chip: 0, port: x1_in}}
+  to: {block: varicodeencoder, port: word}
+  route:
+  - {x: 0, y: 11}
+  - {x: 0, y: 10}
+  - {x: 0, y: 9}
+  - {x: 0, y: 8}
+  - {x: 0, y: 7}
+  - {x: 0, y: 6}
+  - {x: 0, y: 5}
+  - {x: 0, y: 4}
+  - {x: 0, y: 3}
+  - {x: 0, y: 2}
+  - {x: 0, y: 1}
+- name: varicodedecoder_panel_return
+  from: {chip_port: {chip: 0, port: x1_in}}
+  to: {block: varicodedecoder, port: char}
+  route:
+  - {x: 0, y: 11}
+  - {x: 0, y: 10}
+  entry_override: 26
+- name: in_to_xo
+  from: {chip_port: {chip: 0, port: x16_in}}
+  to: {block: varicodeencoder_xover, port: in}
+  route:
+  - {x: 0, y: 0}
+  - {x: 1, y: 0}
+  - {x: 2, y: 0}
+  - {x: 3, y: 0}
+  - {x: 4, y: 0}
+  - {x: 5, y: 0}
+  - {x: 6, y: 0}
+  - {x: 7, y: 0}
+  - {x: 8, y: 0}
+  - {x: 8, y: 1}
+  - {x: 8, y: 2}
+  - {x: 8, y: 3}
+  - {x: 8, y: 4}
+  - {x: 8, y: 5}
+  - {x: 8, y: 6}
+  stream_id: tx
+- name: xo_to_ctl
+  from: {block: varicodeencoder_xover, port: out}
+  to: {block: varicodeencoder, port: in}
+  route:
+  - {x: 8, y: 6}
+  - {x: 8, y: 7}
+  - {x: 8, y: 8}
+  - {x: 8, y: 9}
+  - {x: 8, y: 10}
+  - {x: 8, y: 11}
+- name: egress_to_xo
+  from: {block: raisedcosineenvelope, port: out}
+  to: {block: varicodeencoder_xover, port: in}
+  route:
+  - {x: 7, y: 3}
+  - {x: 7, y: 4}
+  - {x: 7, y: 5}
+  - {x: 7, y: 6}
+  - {x: 8, y: 6}
+  entry_override: 15
+- name: xo_to_out
+  from: {block: varicodeencoder_xover, port: out}
+  to: {chip_port: {chip: 0, port: x16_out}}
+  route:
+  - {x: 8, y: 6}
+  - {x: 9, y: 6}
+  - {x: 9, y: 5}
+  - {x: 9, y: 4}
+  - {x: 9, y: 3}
+  - {x: 9, y: 2}
+  - {x: 9, y: 1}
+  - {x: 9, y: 0}
+  out_tag: 10
+- name: rxctl_to_panel
+  from: {block: varicodedecoder, port: out}
+  to: {chip_port: {chip: 0, port: x1_out}}
+  route:
+  - {x: 9, y: 10}
+  - {x: 9, y: 11}
+- name: rx_in_to_tap
+  from: {chip_port: {chip: 0, port: x16_in}}
+  to: {block: bpskslicer, port: llr}
+  route:
+  - {x: 0, y: 0}
+  - {x: 1, y: 0}
+  - {x: 2, y: 0}
+  - {x: 3, y: 0}
+  - {x: 4, y: 0}
+  - {x: 5, y: 0}
+  - {x: 6, y: 0}
+  - {x: 7, y: 0}
+  - {x: 8, y: 0}
+  - {x: 8, y: 1}
+  - {x: 8, y: 2}
+  - {x: 8, y: 3}
+  - {x: 8, y: 4}
+  - {x: 8, y: 5}
+  - {x: 8, y: 6}
+  - {x: 8, y: 7}
+  - {x: 8, y: 8}
+  stream_id: rx
+- name: rx_egress
+  from: {block: varicodedecoder, port: out}
+  to: {block: varicodeencoder_xover, port: in}
+  route:
+  - {x: 1, y: 10}
+  - {x: 1, y: 9}
+  - {x: 1, y: 8}
+  - {x: 1, y: 7}
+  - {x: 1, y: 6}
+  - {x: 2, y: 6}
+  - {x: 3, y: 6}
+  - {x: 4, y: 6}
+  - {x: 5, y: 6}
+  - {x: 6, y: 6}
+  - {x: 7, y: 6}
+  - {x: 8, y: 6}
+  out_tag: 5

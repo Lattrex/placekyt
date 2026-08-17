@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """GUI simulation tests: trace-derived cell-state overlay + Run/Reset (§3.2).
 
 Offscreen Qt. The QTimer animation is driven synchronously via ``sim._tick()``

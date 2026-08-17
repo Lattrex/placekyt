@@ -1,4 +1,5 @@
-"""Command pattern + undo/redo for placeKYT (the architecture notes §4.2).
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Command pattern + undo/redo for placeKYT.
 
 Every state-mutating operation is a :class:`Command` executed through the
 :class:`CommandManager`, which owns the undo/redo stacks, flushes the model

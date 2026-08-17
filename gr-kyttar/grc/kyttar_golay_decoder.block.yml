@@ -1,0 +1,96 @@
+id: kyttar_golay_decoder
+label: 🧪 Kyttar Golay(24,12) Decoder
+category: '[Kyttar]'
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.golay_decoder(${device_id}, ${panel_hop}, ${read_addr_hop}, ${read_dest}, ${read_entry}, ${read_wr_desc}, ${read_jp_desc})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+- id: panel_hop
+  label: Panel hop (@N)
+  dtype: int
+  default: '1'
+- id: read_addr_hop
+  label: Read-addr hop (@N)
+  dtype: int
+  default: '1'
+
+- id: read_dest
+  label: read_dest
+  dtype: int
+  default: 5
+  hide: part
+- id: read_entry
+  label: read_entry
+  dtype: int
+  default: 1
+  hide: part
+- id: read_wr_desc
+  label: read_wr_desc
+  dtype: int
+  default: 0
+  hide: part
+- id: read_jp_desc
+  label: read_jp_desc
+  dtype: int
+  default: 0
+  hide: part
+
+inputs:
+- id: '0'
+  label: in
+  domain: stream
+  dtype: byte
+
+outputs:
+- id: '0'
+  label: out
+  domain: stream
+  dtype: byte
+
+documentation: |-
+  Extended Golay (24,12) FEC Decoder — SRAM-backed hard-decision syndrome
+  decoder (the inverse of the Golay(24,12) Encoder; MacWilliams & Sloane,
+  "The Theory of Error-Correcting Codes", 1977). No stock GNU Radio
+  counterpart.
+
+  Consumes 24 received bits (one 0/1 byte per item, only the LSB is read;
+  the FIRST arriving bit is d11) and emits the 12 CORRECTED data bits
+  MSB-first, one 0/1 byte per bit. Corrects any error pattern of up to 3
+  bit errors per codeword (minimum distance 8). Rate-COMPRESSING 24:12; a
+  trailing partial group of fewer than 24 bits is not emitted.
+
+  THE CONVENTION (shared verbatim with the Golay(24,12) Encoder):
+  codeword MSB-first on the wire = d11 .. d0 p11 .. p0, with p11..p0 =
+  m . B (mod 2), G = [I12 | B]. The decoder re-encodes the received data
+  half with the encoder's own parity masks, XORs the received parity half
+  (syndrome s), and looks the data-half error pattern up in an SRAM-panel
+  LUT (one word per populated syndrome; 2026 of 4096 addresses). The
+  syndrome LUT lives in the SRAM panel (verification/SRAM_PANEL.md); the
+  decode runs ON the placeKYT-hosted chip.
+
+  KNOWN LIMIT: exactly 4 errors are never miscorrected — the received data
+  half passes through unchanged (residual errors remain); 5 or more errors
+  may miscorrect (standard bounded-distance behaviour).
+
+  Ports:
+    in  (byte): received codeword bits, one 0/1 byte per item (LSB read)
+    out (byte): corrected data bits, MSB-first, one 0/1 byte per item
+
+  Parameters (mirror GolayDecoderBlock verbatim):
+    Device ID:      which Kyttar device to use
+    Panel hop:      hops from the companion controller cell to the SRAM
+                    panel port (@N)
+    Read-addr hop:  hops from the correct cell to its read target (@N)
+
+  BIT-EXACT vs the convention-pinned golden (exhaustive 1-error coverage,
+  sampled 2/3-error, round-trip through the golden encoder, all through
+  the REAL SRAM panel). Mapped by placeKYT (File -> Import GNURadio
+  Flowgraph) to GolayDecoderBlock.
+
+file_format: 1

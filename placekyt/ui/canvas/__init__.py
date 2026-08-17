@@ -1,4 +1,5 @@
-"""Chip canvas (QGraphicsView) and its custom items (the architecture notes §3.2)."""
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Chip canvas (QGraphicsView) and its custom items."""
 
 from .cell_item import CELL_PX, CellItem, CellKind
 from .chip_canvas import ChipCanvas

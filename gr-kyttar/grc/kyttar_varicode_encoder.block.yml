@@ -1,0 +1,85 @@
+id: kyttar_varicode_encoder
+label: Kyttar Varicode Encoder
+category: '[Kyttar]/Ham'
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.varicode_encoder(${device_id}, ${panel_hop}, ${emit_hop}, ${emit_dest}, ${emit_entry}, ${read_wr_desc}, ${read_jp_desc}, ${addr_base})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+- id: panel_hop
+  label: Panel hop (@N)
+  dtype: int
+  default: '1'
+- id: emit_hop
+  label: Emit hop (@N)
+  dtype: int
+  default: '1'
+- id: emit_dest
+  label: Emit dest register
+  dtype: int
+  default: '25'
+- id: emit_entry
+  label: Emit entry point
+  dtype: int
+  default: '1'
+- id: read_wr_desc
+  label: Read WRITE descriptor
+  dtype: int
+  default: '0'
+- id: read_jp_desc
+  label: Read JUMP descriptor
+  dtype: int
+  default: '0'
+
+- id: addr_base
+  label: addr_base
+  dtype: int
+  default: 0
+  hide: part
+
+inputs:
+- id: '0'
+  label: char
+  domain: stream
+  dtype: byte
+
+outputs:
+- id: '0'
+  label: bits
+  domain: stream
+  dtype: byte
+
+documentation: |-
+  SRAM-backed PSK31 Varicode encoder (G3PLX / Peter Martinez) — placeKYT-native
+  ([Kyttar]) block; there is NO stock GNU Radio Varicode block.
+
+  Each ASCII character maps to a variable-length '1'/'0' code that starts and ends
+  with '1' and contains no two consecutive '0's; characters are separated on the
+  wire by a "00" gap. This is the FIRST SRAM-backed DSP block: the 128-entry
+  variable-length table + data-dependent per-character emit live in an SRAM panel
+  (verification/SRAM_PANEL.md §6); the real encode runs ON the placeKYT-hosted chip.
+  This GRC block is a placeable pass-through marker carrying the byte graph so a
+  flowgraph imports + runs.
+
+  Ports:
+    char (in): ASCII character (byte)
+    bits:      Varicode bit stream (byte, MSB first, "00" between chars)
+
+  Parameters (mirror VaricodeEncoderBlock verbatim):
+    Device ID:  which Kyttar device to use.
+    Panel hop:  hops from this cell to the SRAM panel port (@N).
+    Emit hop:   hops to the emit destination cell (@N).
+    Emit dest:  destination register for the emitted bit burst.
+    Emit entry: entry point invoked to emit each character's bit burst.
+    Read WRITE/JUMP descriptor: raw 16-bit push-read delivery words for the
+      embedded SRAM controller (placement-derived; where each looked-up packed
+      word lands — normally set by placeKYT's route builder, not by hand).
+
+  Mapped by placeKYT (File -> Import GNURadio Flowgraph) to VaricodeEncoderBlock.
+
+file_format: 1

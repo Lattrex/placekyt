@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Bus/broker router tests (auto-P&R Stage 3, §1.2).
 
 The §1.2 bus/broker router lays a shared directional bus where blocks abut a
@@ -120,6 +121,64 @@ def test_two_block_tapped_bus_computes(qapp, catalog, chip_type):
 
 
 # --------------------------------------------------------------------------- #
+# SHORTEST-PATH: two blocks ONE free cell apart hand off through exactly that
+# cell (a broker on the source's OWN emit cell — the staircase fix).
+# --------------------------------------------------------------------------- #
+
+def test_one_gap_pair_brokers_on_own_emit_cell(qapp, catalog, chip_type):
+    """gain(1,1) → gain(3,1): the route must be the minimal 2-point form
+    [(1,1),(2,1)] — a broker ON the source's emit cell — and the built chip must
+    compute 0.25 × in. Before the shortest-path fix the emit cell was reserved
+    against ALL brokering (even this net's own), so every one-gap pair
+    staircased up-and-over to a far-side broker (the audited effect_echo /
+    data_link zigzags)."""
+    import simkyt
+
+    ctrl = AppController(catalog=catalog)
+    ctrl.new_project("gap1", "kyttar_10x12")
+    g1 = ctrl.place_block("GainBlock", 0, 1, 1, params={"gain": 0.5},
+                          library="lattrex.official")
+    g2 = ctrl.place_block("GainBlock", 0, 3, 1, params={"gain": 0.5},
+                          library="lattrex.official")
+    ctrl.add_logical_connection(ChipPortEndpoint(chip=0, port="x16_in"),
+                                BlockEndpoint(block=g1, port="sample"), name="in")
+    ctrl.add_logical_connection(BlockEndpoint(block=g1, port="out"),
+                                BlockEndpoint(block=g2, port="sample"), name="mid")
+    ctrl.add_logical_connection(BlockEndpoint(block=g2, port="out"),
+                                ChipPortEndpoint(chip=0, port="x16_out"), name="out")
+    rep = route_all_bus(ctrl.project, {"kyttar_10x12": chip_type},
+                        _port_cells(catalog))
+    assert rep.ok, [(r.name, r.reason) for r in rep.failed]
+    for r in rep.routed:
+        SetConnectionRouteCommand(ctrl.project, r.name, r.points).execute()
+    mid = [(p.x, p.y) for p in
+           next(c for c in ctrl.project.connections if c.name == "mid").route]
+    assert mid == [(1, 1), (2, 1)], \
+        f"one-gap pair must broker on the source's own emit cell, got {mid}"
+
+    bres = BuildEngine(catalog, str(CT_PATH)).build(
+        ctrl.project, {"kyttar_10x12": chip_type})
+    assert bres.ok, [str(e) for e in bres.errors]
+    entry, _ = catalog.resolved_io("GainBlock")
+    chip = simkyt.Chip.from_yaml(str(CT_PATH))
+    chip.load_bitstream_physical(bres.words(0))
+    chip.set_port_entry_address("x16_in", entry)
+    outs = []
+    for v in (0.6, -0.4):
+        chip.inject_data_physical([_fq(v)], target_hop_cnt=28, target_addr=0)
+        chip.run(max_events=6000)
+        chip.inject_jump_physical(target_hop_cnt=28, entry_addr=entry)
+        chip.run(max_events=120000)
+        while chip.output_available("x16_out"):
+            outs.append(chip.read_port_i16("x16_out").tolist()[-1] / 32768.0)
+            chip.release_output_ack("x16_out")
+            chip.run(max_events=3000)
+    assert len(outs) >= 2, f"only {len(outs)} outputs"
+    for got, v in zip(outs, (0.6, -0.4)):
+        assert abs(got - 0.25 * v) < 0.02, f"{got:.3f} != {0.25 * v:.3f}"
+
+
+# --------------------------------------------------------------------------- #
 # A longer (8-hop) single-broker bus also computes — the broker isn't a 1-off.
 # --------------------------------------------------------------------------- #
 
@@ -199,7 +258,11 @@ def test_different_sink_share_routes_and_builds(qapp, catalog, chip_type):
     sinkB = ctrl.place_block("GainBlock", 0, 4, 2, params={"gain": 1.0},
                              library="lattrex.official")
     # Walls in rows 0 and 3 force BOTH chains through the shared row-1 corridor.
-    for col in range(1, 8):
+    # The row-3 wall stops at col 5 so ``B_out`` keeps ONE southern passage (via
+    # (6,3)) to x1_out — the shortest-path router's tighter broker choices seal
+    # the south completely with the full-width wall, making B_out unroutable;
+    # the (2,2) wall alone still forces net B through the shared row-1 corridor.
+    for col in range(1, 6):
         try:
             ctrl.place_block("AGCBlock", 0, col, 3, library="lattrex.official")
         except Exception:  # noqa: BLE001
@@ -209,6 +272,12 @@ def test_different_sink_share_routes_and_builds(qapp, catalog, chip_type):
             ctrl.place_block("AGCBlock", 0, col, 0, library="lattrex.official")
         except Exception:  # noqa: BLE001
             pass
+    # Wall (2,2) too: the router is now STRICTLY shortest-path (sharing is a
+    # tie-break, never a detour), so with row 2 open net B would take its own
+    # straight row-2 corridor and never NEED the shared bus. Blocking row 2
+    # between gB and sinkB makes the shared row-1 corridor the only (and
+    # shortest) way — the different-sink SHARE capability this test proves.
+    ctrl.place_block("AGCBlock", 0, 2, 2, library="lattrex.official")
     ctrl.add_logical_connection(ChipPortEndpoint(chip=0, port="x16_in"),
                                 BlockEndpoint(block=gA, port="sample"), name="in_A")
     ctrl.add_logical_connection(BlockEndpoint(block=gA, port="out"),
@@ -234,19 +303,56 @@ def test_different_sink_share_routes_and_builds(qapp, catalog, chip_type):
     assert shared, f"the two different-sink nets did not share a bus cell: {A} {B}"
     # Distinct brokers / sinks (the peel-off points differ).
     assert A[-1] != B[-1], "different-sink nets must end at different brokers"
-    # The two different-sink chains SHARE the row-1 corridor and ROUTE — the property
-    # this test exists to prove (CP-SAT cannot). NOTE: ``sinkA`` is a SINGLE-CELL
-    # GainBlock at the walled corner (7,2); the only safe split of its bus-fed input
-    # vs. its x16_out egress is geometrically blocked, so it routes (the router falls
-    # back to a best-effort path) but the SINGLE-CELL input==output DEADLOCK DRC
-    # (§5.3) NAMES it — a sound failure, not a silent unsafe build. We assert the build
-    # is blocked by exactly that named hazard (proving the DRC gate), rather than a
-    # clean build (which would ship the deadlock the corner geometry forces here).
+    # The two different-sink chains SHARE the row-1 corridor, ROUTE, and BUILD —
+    # the property this test exists to prove (CP-SAT cannot). The shortest-path
+    # router's distance-aware broker choice also finds a SAFE input/output face
+    # split for the walled-corner single-cell ``sinkA`` (the old first-fit broker
+    # forced input==output there and this test asserted the named
+    # single_cell_inout_deadlock DRC block; that DRC gate keeps its own dedicated
+    # tests — test_bus_drc_names_deadlock, test_single_cell_bus_safety).
     bres = BuildEngine(catalog, str(CT_PATH)).build(
         ctrl.project, {"kyttar_10x12": chip_type})
-    assert not bres.ok, "the walled-corner single-cell sink must be flagged, not shipped"
-    assert any(e.category == "single_cell_inout_deadlock" for e in bres.errors), \
-        [str(e) for e in bres.errors]
+    assert bres.ok, [str(e) for e in bres.errors]
+
+
+# --------------------------------------------------------------------------- #
+# WALLED CORNER: the hazard-DISABLED fallback path yields a NAMED failure, not
+# a silent unsafe route (restores the coverage the rewritten share test lost).
+# --------------------------------------------------------------------------- #
+
+def test_walled_corner_fallback_demotes_to_named_failure(qapp, catalog,
+                                                         chip_type):
+    """A single-cell sink with exactly ONE free neighbour: its input broker and
+    its output's first hop MUST share that cell, so the safe (hazard-split)
+    attempt cannot route every net and ``route_all_bus`` re-routes with the
+    hazard guard DISABLED. The resulting in==out route is a §5.3 wait 2-cycle
+    (sink -> broker -> sink); the router's own DRC gate must DEMOTE it to a
+    NAMED failure — never return it silently ok (the runtime symptom would be
+    a hard Deadlock only saturated drive exposes)."""
+    ctrl = AppController(catalog=catalog)
+    ctrl.new_project("corner", "kyttar_10x12")
+    g = ctrl.place_block("GainBlock", 0, 4, 5, params={"gain": 0.5},
+                         library="lattrex.official")
+    sink = ctrl.place_block("GainBlock", 0, 0, 5, params={"gain": 1.0},
+                            library="lattrex.official")
+    h = ctrl.place_block("GainBlock", 0, 4, 3, params={"gain": 1.0},
+                         library="lattrex.official")
+    # Wall the sink's north/south neighbours: (1,5) is its ONLY free neighbour.
+    ctrl.place_block("AGCBlock", 0, 0, 4, library="lattrex.official")
+    ctrl.place_block("AGCBlock", 0, 0, 6, library="lattrex.official")
+    ctrl.add_logical_connection(BlockEndpoint(block=g, port="out"),
+                                BlockEndpoint(block=sink, port="sample"),
+                                name="in_s")
+    ctrl.add_logical_connection(BlockEndpoint(block=sink, port="out"),
+                                BlockEndpoint(block=h, port="sample"),
+                                name="out_s")
+    rep = route_all_bus(ctrl.project, {"kyttar_10x12": chip_type},
+                        _port_cells(catalog))
+    assert not rep.ok, "the walled corner must not route silently ok"
+    named = [r for r in rep.results if not r.ok and r.reason]
+    assert named, "failures must carry reasons"
+    assert any("deadlock" in r.reason or "broker" in r.reason
+               for r in named), [(r.name, r.reason) for r in named]
 
 
 # --------------------------------------------------------------------------- #

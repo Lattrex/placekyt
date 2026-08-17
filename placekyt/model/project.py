@@ -1,6 +1,7 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """The project aggregate root — the in-memory model of a ``.kyt`` file.
 
-Mirrors the top-level ``.kyt`` schema (the architecture notes §2.1). This class holds
+Mirrors the top-level ``.kyt`` schema. This class holds
 the complete editable project state: metadata, the chip type, the board
 reference, chip instances, inter-chip connections, blocks, connections, the
 (Phase 2) mode-switching table, and simulation references.

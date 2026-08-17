@@ -1,0 +1,59 @@
+id: kyttar_nlog10
+label: 🧪 Kyttar Nlog10
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  🧪 NOT YET VERIFIED: this block is queued for GNU Radio-equivalence
+  verification but hasn't been validated yet. Use with care.
+
+  Kyttar Nlog10 - power/level to decibels
+
+  Drop-in for GNU Radio blocks.nlog10_ff:
+      out = n * log10(in) + k
+
+  This block runs on the Kyttar chip. Place it between a KyttarSource
+  and KyttarSink block, and ensure the device_id matches your KyttarDevice.
+
+  HARDWARE DEVIATION (Q15 fabric): a "float" sample on the chip is a Q15 value
+  in [-1, 1), but a dB value is ~45x outside that span. The block therefore emits
+  a SCALED dB word: out_word/32768 == (n*log10(in)+k)/db_scale, where db_scale is
+  an auto-derived power of two (64 for the default n=10, k=0). Recover true dB by
+  multiplying the output by db_scale. Inputs in <= 0 map to the most-negative
+  representable dB (the scaled floor), matching GR's clamp-then-log behaviour.
+
+  Parameters:
+  - Device ID: ID of the KyttarDevice block
+  - n: output scale (GR default 10.0 for power dB; 20.0 for amplitude dB)
+  - k: output offset in dB (GR default 0.0)
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.nlog10(device_id=${device_id}, n=${n}, k=${k})
+  callbacks:
+    - set_n(${n})
+    - set_k(${k})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+  - id: n
+    label: n
+    dtype: real
+    default: 10.0
+  - id: k
+    label: k (dB offset)
+    dtype: real
+    default: 0.0
+
+inputs:
+  - label: in
+    dtype: float
+
+outputs:
+  - label: out
+    dtype: float
+
+file_format: 1

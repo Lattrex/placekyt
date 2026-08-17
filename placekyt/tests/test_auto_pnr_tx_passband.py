@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Auto-P&R TX passband regression — the shared-input-port TX net must ROUTE and
 deliver the host bits correctly through the auto-placed + auto-routed BPSK modem.
 

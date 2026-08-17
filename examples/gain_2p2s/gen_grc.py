@@ -72,8 +72,25 @@ def build():
     blocks.append(_blk("burst_len", "variable", {"comment": "", "value": "256"},
                        200, 12))
     blocks.append(_blk("server_port", "variable",
-                       {"comment": "set to the port placeKYT prints", "value": "0"},
+                       {"comment": "placeKYT's default host port (Run as GNURadio "
+                                   "Server binds 58950; change if it prints another)",
+                        "value": "58950"},
                        360, 12))
+
+    # LIVE per-die gain sliders: dragging one retunes ITS chip's gain cell on the
+    # RUNNING fabric (a coefficient WRITE injected at the chain head, riding the
+    # inter-chip wire for the far dies) — no reflash. block_name pins each slider
+    # to its placeKYT block ("gain"/"gain_1"/"gain_2"/"gain_3" in gain_2p2s.kyt):
+    # REQUIRED with four same-type gains (GRC construction order is not the .grc
+    # order, so order-based matching could retune the wrong die).
+    for i, s in enumerate(STREAMS):
+        sid = s["sid"]
+        blocks.append(_blk(f"gain_{sid.lower()}", "variable_qtgui_range", {
+            "comment": f"LIVE gain for stream {sid} (chip{s['gain_chip']}'s cell)",
+            "gui_hint": "", "label": f"gain {sid} (chip{s['gain_chip']}, live)",
+            "min_len": "200", "orient": "Qt.Horizontal", "rangeType": "float",
+            "start": "-1.0", "step": "0.01", "stop": "1.0", "value": "0.5",
+            "widget": "counter_slider"}, 520 + i * 170, 12))
 
     for i, s in enumerate(STREAMS):
         y = 180 + i * 220
@@ -94,11 +111,16 @@ def build():
             "maxoutbuf": "0", "minoutbuf": "0", "num_channels": "1",
             "port_name": '"x16_in"', "server_host": '"127.0.0.1"',
             "server_port": "server_port", "stream_id": f'"{sid}"',
-            "pipelined": "False", "schedule": '"interleaved"'}, 290, y))
-        # kyttar_gain: the DSP block (0.5). placeKYT places it on chip{gain_chip}.
+            "pipelined": "False", "repeat": "'yes'",
+            "schedule": '"interleaved"'}, 290, y))
+        # kyttar_gain: the DSP block, LIVE-tuned by its slider. placeKYT places it
+        # on chip{gain_chip}; block_name pins the slider to that placed block.
+        kyt_name = "gain" if s["gain_chip"] == 0 else f"gain_{s['gain_chip']}"
         blocks.append(_blk(f"gain{sid}", "kyttar_gain", {
-            "affinity": "", "alias": "", "comment": f"gain 0.5 (chip{s['gain_chip']})",
-            "device_id": '"kyttar_0"', "gain": "0.5",
+            "affinity": "", "alias": "",
+            "comment": f"live gain (chip{s['gain_chip']} = {kyt_name})",
+            "device_id": '"kyttar_0"', "gain": f"gain_{sid.lower()}",
+            "block_name": f'"{kyt_name}"',
             "maxoutbuf": "0", "minoutbuf": "0"}, 520, y))
         # kyttar_sink: drains stream {sid}'s recovered words (same stream_id).
         blocks.append(_blk(f"msink{sid}", "kyttar_sink", {
@@ -106,7 +128,7 @@ def build():
             "comment": f"stream {sid} recovered (0.5x)", "device_id": '"kyttar_0"',
             "hold_secs": "8.0", "in_type": "float", "maxoutbuf": "0",
             "minoutbuf": "0", "num_channels": "1", "port_name": '"x16_out"',
-            "server_port": "server_port", "server_repeat": "False",
+            "server_port": "server_port", "server_repeat": "True",
             "stream_id": f'"{sid}"'}, 750, y))
         blocks.append(_time_sink(f"time_sink_{sid}", f"Stream {sid}", s["color"],
                                  980, y))

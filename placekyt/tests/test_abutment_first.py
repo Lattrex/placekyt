@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Abutment-first placement (compact fixed designs).
 
 For a FIXED compact transceiver, the placer should chain dataflow-connected blocks so
@@ -52,12 +53,22 @@ def test_abutment_first_routes_a_linear_datapath():
     rep = ctrl.auto_pnr(time_budget_s=90)
     assert rep.ok, [(_r.name, getattr(_r, "reason", "")) for _r in rep.results
                     if not _r.ok]
-    # Compact: every block->block hop is short (<= 4 cells of route; a scatter would be
-    # much longer). This guards the abutment-first objective from regressing to a
-    # sprawling layout.
+    # Compact: every block->block hop is short (<= 4 cells of route; a scatter would
+    # be much longer) and every route to a FIXED chip port is STRAIGHT (zero excess
+    # over its endpoint manhattan — the abutment-first pack may legitimately hug the
+    # input port, making the egress corridor long but dead straight). This guards the
+    # abutment-first objective from regressing to a sprawling layout.
     for r in rep.results:
         pts = getattr(r, "points", None) or []
-        assert len(pts) <= 4, f"{r.name} routed with {len(pts)} cells (not compact)"
+        if len(pts) >= 2:
+            manh = abs(pts[0][0] - pts[-1][0]) + abs(pts[0][1] - pts[-1][1])
+            assert len(pts) - 1 <= manh + 2, \
+                f"{r.name} routed {len(pts) - 1} cells for manhattan {manh}"
+        conn = ctrl.project.connection(r.name)
+        tgt_is_port = conn is not None and not hasattr(conn.target, "block")
+        if not tgt_is_port:
+            assert len(pts) <= 4, \
+                f"{r.name} routed with {len(pts)} cells (not compact)"
 
 
 def test_abutment_first_flag_on_for_block_topology():

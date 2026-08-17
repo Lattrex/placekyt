@@ -1,0 +1,80 @@
+id: kyttar_crc16
+label: Kyttar CRC-16
+category: '[Kyttar]/FEC'
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.crc16(${device_id}, ${poly}, ${init}, ${frame_len})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+- id: poly
+  label: Polynomial
+  dtype: int
+  default: '0x1021'
+- id: init
+  label: Initial value
+  dtype: int
+  default: '0xFFFF'
+- id: frame_len
+  label: Frame length (bytes)
+  dtype: int
+  default: '8'
+
+inputs:
+- id: '0'
+  label: in
+  domain: stream
+  dtype: byte
+
+outputs:
+- id: '0'
+  label: out
+  domain: stream
+  dtype: short
+
+documentation: |-
+  Frame CRC-16 — a placeKYT-native [Kyttar] data-link block (no stock GNU Radio
+  streaming counterpart; GR's CRC blocks are tagged-PDU/packet blocks).
+
+  Computes the published bit-serial MSB-first (non-reflected) CRC-16 — the
+  ITU-T V.41 / CRC RevEng catalogue family — over fixed-length frames of a byte
+  stream. Consumes frame_len input bytes and emits ONE 16-bit CRC word per
+  frame (rate-REDUCING frame_len:1); the CRC register re-arms to `init` for the
+  next frame. A trailing partial frame is never emitted.
+
+      crc = init
+      for each byte:  crc ^= byte << 8
+                      8x: crc = ((crc << 1) ^ poly) if crc & 0x8000 else crc << 1
+
+  Defaults poly=0x1021, init=0xFFFF are exactly CRC-16/CCITT-FALSE
+  (b"123456789" -> 0x29B1, the catalogue check value; equals Python's
+  binascii.crc_hqx(data, 0xFFFF)). Other catalogued non-reflected models are
+  reachable through the params: XMODEM (init=0), AUG-CCITT (init=0x1D0F),
+  UMTS (poly=0x8005, init=0), CMS (poly=0x8005, init=0xFFFF). Reflected models
+  (ARC/MODBUS/KERMIT) are NOT this block.
+
+  Only the LOW 8 bits of each input word feed the CRC; the output word IS the
+  raw 16-bit CRC value (read it as an int16 word, not Q15-scaled).
+
+  Receive-side check: recompute with a second Kyttar CRC-16 over the received
+  payload and XOR (Kyttar Xor) against the TX-appended CRC word — zero means
+  the frame checks.
+
+  Ports:
+    in  (in):  byte stream (one byte per item, low 8 bits used)
+    out:       16-bit CRC word (one per frame_len input bytes)
+
+  Parameters:
+    Device ID:           Which Kyttar device to use.
+    Polynomial:          16-bit generator polynomial (default 0x1021,
+                         x^16 + x^12 + x^5 + 1).
+    Initial value:       CRC register init per frame (default 0xFFFF).
+    Frame length (bytes): Bytes per frame; one CRC word out per frame. 1..65535.
+
+  Mapped by placeKYT (File -> Import GNURadio Flowgraph) to Crc16Block.
+
+file_format: 1

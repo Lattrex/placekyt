@@ -1,0 +1,880 @@
+options:
+  parameters:
+    author: Lattrex
+    catch_exceptions: 'True'
+    category: '[GRC Hier Blocks]'
+    cmake_opt: ''
+    comment: ''
+    copyright: ''
+    description: 'A FULL PSK31 TRANSCEIVER on one placeKYT chip: TX (chars -> SRAM-backed
+      Varicode encoder -> differential BPSK -> hold x8 -> raised-cosine envelope)
+      and RX (symbols -> BPSK slicer -> diff decoder -> SRAM-backed Varicode DECODER
+      -> chars) duplexed by stream tags, with BOTH Varicode tables SHARING the single
+      SRAM panel (the encoder''s table at addr_base 1024, clear of the decoder''s
+      1..955 reverse map; every panel read carries its own push-read descriptors).
+      PER-SAMPLE PACED (the panel contract; the server enforces it).'
+    gen_cmake: 'On'
+    gen_linking: dynamic
+    generate_options: qt_gui
+    hier_block_src_path: '.:'
+    id: psk31_transceiver
+    max_nouts: '0'
+    output_language: python
+    placement: (0,0)
+    qt_qss_theme: ''
+    realtime_scheduling: ''
+    run: 'True'
+    run_command: '{python} -u {filename}'
+    run_options: prompt
+    sizing_mode: fixed
+    thread_safe_setters: ''
+    title: PSK31 full transceiver (duplex, shared SRAM panel)
+    window_size: (1600,1000)
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 8
+    - 8
+    rotation: 0
+    state: enabled
+blocks:
+- name: samp_rate
+  id: variable
+  parameters:
+    comment: scope display rate (8 sps x 31.25 Bd)
+    value: '250'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 104
+    - 12
+    rotation: 0
+    state: enabled
+- name: imports
+  id: import
+  parameters:
+    alias: ''
+    comment: ''
+    imports: import math
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 8
+    - 68
+    rotation: 0
+    state: enabled
+- name: sps
+  id: variable
+  parameters:
+    comment: TX samples per symbol
+    value: '8'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 200
+    - 12
+    rotation: 0
+    state: enabled
+- name: msg
+  id: variable
+  parameters:
+    comment: TX message chars
+    value: '[ord(c) for c in ''CQ CQ DE KYTTAR'']'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 320
+    - 12
+    rotation: 0
+    state: enabled
+- name: burst_len
+  id: variable
+  parameters:
+    comment: ''
+    value: len(msg)
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 640
+    - 12
+    rotation: 0
+    state: enabled
+- name: rx_sig
+  id: variable
+  parameters:
+    comment: differentially-encoded Varicode symbols for 'R 599 73' at symbol rate,
+      mapped to +/-0.9 soft symbols -- exactly what a coherent PSK31 demodulator hands
+      the slicer. Replace with a live demod feed.
+    value: '[0.9 if int(v) else -0.9 for v in __import__(''itertools'').accumulate([int(c)
+      for c in ''001010111100100101011011001101101110011011011100100110101101001111111100''],
+      lambda a,x:(a+x)%2)]'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 760
+    - 12
+    rotation: 0
+    state: enabled
+- name: rx_burst_len
+  id: variable
+  parameters:
+    comment: ''
+    value: len(rx_sig)
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1000
+    - 12
+    rotation: 0
+    state: enabled
+- name: msg_src
+  id: blocks_vector_source_x
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    repeat: 'False'
+    tags: '[]'
+    type: byte
+    vector: msg
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 40
+    - 150
+    rotation: 0
+    state: enabled
+- name: b2f_in
+  id: blocks_uchar_to_float
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 170
+    - 150
+    rotation: 0
+    state: enabled
+- name: to_raw
+  id: blocks_multiply_const_vxx
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    const: 1.0/32768.0
+    type: float
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 290
+    - 150
+    rotation: 0
+    state: enabled
+- name: tx_src
+  id: kyttar_source
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    burst_len: burst_len
+    complex_in: float
+    device_id: '"kyttar_0"'
+    num_channels: '1'
+    pipelined: 'no'
+    port_name: '"x16_in"'
+    schedule: '"interleaved"'
+    server_host: '"127.0.0.1"'
+    server_port: '58950'
+    stream_id: '"tx"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 410
+    - 140
+    rotation: 0
+    state: enabled
+- name: f2b
+  id: blocks_float_to_uchar
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 560
+    - 150
+    rotation: 0
+    state: enabled
+- name: varicode
+  id: kyttar_varicode_encoder
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    device_id: '"kyttar_0"'
+    panel_hop: '1'
+    emit_hop: '1'
+    emit_dest: '25'
+    emit_entry: '1'
+    read_wr_desc: '0'
+    read_jp_desc: '0'
+    addr_base: '1024'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 680
+    - 150
+    rotation: 0
+    state: enabled
+- name: diff
+  id: kyttar_diff_encoder
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    device_id: '"kyttar_0"'
+    modulus: '2'
+    coding: '"DIFF_DIFFERENTIAL"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 840
+    - 150
+    rotation: 0
+    state: enabled
+- name: b2f
+  id: blocks_uchar_to_float
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 980
+    - 150
+    rotation: 0
+    state: enabled
+- name: mapper
+  id: kyttar_psk_symbol_mapper
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    device_id: '"kyttar_0"'
+    modulation: '"bpsk"'
+    symbol_table: '[]'
+    dimension: '1'
+    bpsk_bit0_positive: 'True'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1100
+    - 150
+    rotation: 0
+    state: enabled
+- name: c2r
+  id: blocks_complex_to_real
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1260
+    - 150
+    rotation: 0
+    state: enabled
+- name: repeat
+  id: blocks_repeat
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    interp: sps
+    type: float
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1380
+    - 150
+    rotation: 0
+    state: enabled
+- name: envelope
+  id: kyttar_raised_cosine_envelope
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    device_id: '"kyttar_0"'
+    samples_per_symbol: sps
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1500
+    - 150
+    rotation: 0
+    state: enabled
+- name: tx_sink
+  id: kyttar_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    device_id: '"kyttar_0"'
+    hold_secs: '8.0'
+    in_type: float
+    num_channels: '1'
+    port_name: '"x16_out"'
+    server_port: '58950'
+    server_repeat: 'False'
+    stream_id: '"tx"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1660
+    - 140
+    rotation: 0
+    state: enabled
+- name: tx_scope
+  id: qtgui_time_sink_x
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    ctrlpanel: 'False'
+    entags: 'True'
+    grid: 'False'
+    gui_hint: ''
+    legend: 'True'
+    autoscale: 'False'
+    axislabels: 'True'
+    name: '"TX baseband (PSK31 shaped)"'
+    nconnections: '1'
+    size: '256'
+    srate: samp_rate
+    stemplot: 'False'
+    tr_chan: '0'
+    tr_delay: '0'
+    tr_level: '0.0'
+    tr_mode: qtgui.TRIG_MODE_FREE
+    tr_slope: qtgui.TRIG_SLOPE_POS
+    tr_tag: '""'
+    type: float
+    update_time: '0.10'
+    ylabel: level
+    ymax: '1'
+    ymin: '-1'
+    yunit: '""'
+    alpha1: '1.0'
+    color1: blue
+    label1: Signal 1
+    marker1: '-1'
+    style1: '1'
+    width1: '1'
+    alpha2: '1.0'
+    color2: red
+    label2: Signal 2
+    marker2: '-1'
+    style2: '1'
+    width2: '1'
+    alpha3: '1.0'
+    color3: green
+    label3: Signal 3
+    marker3: '-1'
+    style3: '1'
+    width3: '1'
+    alpha4: '1.0'
+    color4: black
+    label4: Signal 4
+    marker4: '-1'
+    style4: '1'
+    width4: '1'
+    alpha5: '1.0'
+    color5: cyan
+    label5: Signal 5
+    marker5: '-1'
+    style5: '1'
+    width5: '1'
+    alpha6: '1.0'
+    color6: magenta
+    label6: Signal 6
+    marker6: '-1'
+    style6: '1'
+    width6: '1'
+    alpha7: '1.0'
+    color7: yellow
+    label7: Signal 7
+    marker7: '-1'
+    style7: '1'
+    width7: '1'
+    alpha8: '1.0'
+    color8: dark red
+    label8: Signal 8
+    marker8: '-1'
+    style8: '1'
+    width8: '1'
+    alpha9: '1.0'
+    color9: dark green
+    label9: Signal 9
+    marker9: '-1'
+    style9: '1'
+    width9: '1'
+    alpha10: '1.0'
+    color10: dark blue
+    label10: Signal 10
+    marker10: '-1'
+    style10: '1'
+    width10: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1820
+    - 120
+    rotation: 0
+    state: enabled
+- name: rx_b2f
+  id: blocks_uchar_to_float
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 770
+    - 420
+    rotation: 0
+    state: enabled
+- name: rx_vec
+  id: blocks_vector_source_x
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    repeat: 'False'
+    tags: '[]'
+    type: float
+    vector: rx_sig
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 40
+    - 420
+    rotation: 0
+    state: enabled
+- name: rx_src
+  id: kyttar_source
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    burst_len: rx_burst_len
+    complex_in: float
+    device_id: '"kyttar_0"'
+    num_channels: '1'
+    pipelined: 'no'
+    port_name: '"x16_in"'
+    schedule: '"interleaved"'
+    server_host: '"127.0.0.1"'
+    server_port: '58950'
+    stream_id: '"rx"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 190
+    - 410
+    rotation: 0
+    state: enabled
+- name: slicer
+  id: kyttar_bpsk_slicer
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    device_id: '"kyttar_0"'
+    out_mode: '"bit"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 370
+    - 420
+    rotation: 0
+    state: enabled
+- name: ddec
+  id: kyttar_diff_decoder
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    device_id: '"kyttar_0"'
+    modulus: '2'
+    coding: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 500
+    - 420
+    rotation: 0
+    state: enabled
+- name: vdec
+  id: kyttar_varicode_decoder
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    device_id: '"kyttar_0"'
+    panel_hop: '1'
+    read_addr_hop: '1'
+    char_dest: '25'
+    emit_entry: '2'
+    emit_hop: '1'
+    out_dest: '25'
+    read_dest: '5'
+    read_entry: '1'
+    read_wr_desc: '0'
+    read_jp_desc: '0'
+    emit_jump_entry: None
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 640
+    - 420
+    rotation: 0
+    state: enabled
+- name: rx_sink
+  id: kyttar_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    device_id: '"kyttar_0"'
+    hold_secs: '8.0'
+    in_type: float
+    num_channels: '1'
+    port_name: '"x16_out"'
+    server_port: '58950'
+    server_repeat: 'True'
+    stream_id: '"rx"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 800
+    - 410
+    rotation: 0
+    state: enabled
+- name: rx_scope
+  id: qtgui_time_sink_x
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    ctrlpanel: 'False'
+    entags: 'True'
+    grid: 'False'
+    gui_hint: ''
+    legend: 'True'
+    autoscale: 'False'
+    axislabels: 'True'
+    name: '"RX decoded chars (ASCII codes)"'
+    nconnections: '1'
+    size: '8'
+    srate: samp_rate
+    stemplot: 'False'
+    tr_chan: '0'
+    tr_delay: '0'
+    tr_level: '0.0'
+    tr_mode: qtgui.TRIG_MODE_FREE
+    tr_slope: qtgui.TRIG_SLOPE_POS
+    tr_tag: '""'
+    type: float
+    update_time: '0.10'
+    ylabel: level
+    ymax: '128'
+    ymin: '0'
+    yunit: '""'
+    alpha1: '1.0'
+    color1: blue
+    label1: Signal 1
+    marker1: '-1'
+    style1: '1'
+    width1: '1'
+    alpha2: '1.0'
+    color2: red
+    label2: Signal 2
+    marker2: '-1'
+    style2: '1'
+    width2: '1'
+    alpha3: '1.0'
+    color3: green
+    label3: Signal 3
+    marker3: '-1'
+    style3: '1'
+    width3: '1'
+    alpha4: '1.0'
+    color4: black
+    label4: Signal 4
+    marker4: '-1'
+    style4: '1'
+    width4: '1'
+    alpha5: '1.0'
+    color5: cyan
+    label5: Signal 5
+    marker5: '-1'
+    style5: '1'
+    width5: '1'
+    alpha6: '1.0'
+    color6: magenta
+    label6: Signal 6
+    marker6: '-1'
+    style6: '1'
+    width6: '1'
+    alpha7: '1.0'
+    color7: yellow
+    label7: Signal 7
+    marker7: '-1'
+    style7: '1'
+    width7: '1'
+    alpha8: '1.0'
+    color8: dark red
+    label8: Signal 8
+    marker8: '-1'
+    style8: '1'
+    width8: '1'
+    alpha9: '1.0'
+    color9: dark green
+    label9: Signal 9
+    marker9: '-1'
+    style9: '1'
+    width9: '1'
+    alpha10: '1.0'
+    color10: dark blue
+    label10: Signal 10
+    marker10: '-1'
+    style10: '1'
+    width10: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 960
+    - 390
+    rotation: 0
+    state: enabled
+- name: rx_chars
+  id: blocks_multiply_const_vxx
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: kyttar.sink emits the chip stream as q15/32768 floats; restore the raw
+      word value for display
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    const: '32768.0'
+    type: float
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 560
+    - 660
+    rotation: 0
+    state: enabled
+connections:
+- - msg_src
+  - '0'
+  - b2f_in
+  - '0'
+- - b2f_in
+  - '0'
+  - to_raw
+  - '0'
+- - to_raw
+  - '0'
+  - tx_src
+  - '0'
+- - tx_src
+  - '0'
+  - f2b
+  - '0'
+- - f2b
+  - '0'
+  - varicode
+  - '0'
+- - varicode
+  - '0'
+  - diff
+  - '0'
+- - diff
+  - '0'
+  - b2f
+  - '0'
+- - b2f
+  - '0'
+  - mapper
+  - '0'
+- - mapper
+  - '0'
+  - c2r
+  - '0'
+- - c2r
+  - '0'
+  - repeat
+  - '0'
+- - repeat
+  - '0'
+  - envelope
+  - '0'
+- - envelope
+  - '0'
+  - tx_sink
+  - '0'
+- - tx_sink
+  - '0'
+  - tx_scope
+  - '0'
+- - rx_vec
+  - '0'
+  - rx_src
+  - '0'
+- - rx_src
+  - '0'
+  - slicer
+  - '0'
+- - slicer
+  - '0'
+  - ddec
+  - '0'
+- - ddec
+  - '0'
+  - vdec
+  - '0'
+- - vdec
+  - '0'
+  - rx_b2f
+  - '0'
+- - rx_b2f
+  - '0'
+  - rx_sink
+  - '0'
+- - rx_sink
+  - '0'
+  - rx_chars
+  - '0'
+- - rx_chars
+  - '0'
+  - rx_scope
+  - '0'
+metadata:
+  file_format: 1
+  grc_version: 3.10.9.2

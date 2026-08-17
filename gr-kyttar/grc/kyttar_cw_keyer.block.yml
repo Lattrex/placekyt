@@ -1,0 +1,97 @@
+id: kyttar_cw_keyer
+label: Kyttar CW Keyer
+category: '[Kyttar]/Ham'
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.cw_keyer(${device_id}, ${wpm}, ${samples_per_dot}, ${edge_samples}, ${charset}, ${panel_hop}, ${emit_hop}, ${emit_dest}, ${emit_entry}, ${done_entry}, ${read_wr_desc}, ${read_jp_desc})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+- id: wpm
+  label: Speed (WPM)
+  dtype: int
+  default: '20'
+- id: samples_per_dot
+  label: Samples per dot
+  dtype: int
+  default: '4800'
+- id: edge_samples
+  label: Edge (rise/fall) samples
+  dtype: int
+  default: '8'
+- id: charset
+  label: Charset (blank = full ITU)
+  dtype: raw
+  default: 'None'
+- id: panel_hop
+  label: Panel hop (@N)
+  dtype: int
+  default: '1'
+- id: emit_hop
+  label: Emit hop (@N)
+  dtype: int
+  default: '1'
+- id: emit_dest
+  label: Emit dest register
+  dtype: int
+  default: '0'
+- id: emit_entry
+  label: Emit entry point
+  dtype: int
+  default: '1'
+- id: done_entry
+  label: Done-kick entry
+  dtype: int
+  default: '0'
+- id: read_wr_desc
+  label: Read WRITE descriptor
+  dtype: int
+  default: '0'
+- id: read_jp_desc
+  label: Read JUMP descriptor
+  dtype: int
+  default: '0'
+
+inputs:
+- id: '0'
+  label: char
+  domain: stream
+  dtype: byte
+
+outputs:
+- id: '0'
+  label: samples
+  domain: stream
+  dtype: float
+
+documentation: |-
+  SRAM-backed Morse / CW keyer (ITU-R M.1677 International Morse code + standard CW
+  timing) — placeKYT-native ([Kyttar]) block; there is NO stock GNU Radio CW keyer.
+
+  Turns ASCII text into an ON/OFF keying envelope at the configured WPM (dot=1u,
+  dash=3u, intra-char gap=1u, inter-char gap=3u, word gap=7u). The Morse table +
+  per-character envelope emit live in an SRAM panel; the real keying runs ON the
+  placeKYT-hosted chip. This GRC block is a placeable pass-through marker carrying
+  the graph so a flowgraph imports + runs.
+
+  Ports:
+    char (in): ASCII text (byte)
+    samples:   ON/OFF keying envelope samples (float, Q15)
+
+  Parameters (mirror CWKeyerBlock verbatim):
+    Device ID:       which Kyttar device to use.
+    Speed (WPM):     keying speed in words-per-minute (PARIS standard).
+    Samples per dot: envelope samples per dot unit.
+    Edge samples:    raised-cosine rise/fall length per element edge (samples).
+    Charset:         optional restricted character set (None = full ITU table).
+    Panel hop:       hops from this cell to the SRAM panel port (@N).
+    Emit hop:        hops to the emit destination cell (@N).
+    Emit entry:      entry point invoked to emit each character's envelope.
+
+  Mapped by placeKYT (File -> Import GNURadio Flowgraph) to CWKeyerBlock.
+
+file_format: 1

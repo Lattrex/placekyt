@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Headless GRC flowgraph validator — reports Missing-Block + port type/size errors.
 
 Run with the SYSTEM python that has GNU Radio (NOT the placeKYT .venv), e.g.

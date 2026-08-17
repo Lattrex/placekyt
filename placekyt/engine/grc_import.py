@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """GRC import — build a placeKYT project from a GNURadio .grc flowgraph (P4.2).
 
 The GRC-first end state (AUTO_PNR_DESIGN §8/Phase 4): a user designs an SDR in
@@ -55,16 +56,36 @@ _F2C_IDS = {"blocks_float_to_complex"}
 _C2F_IDS = {"blocks_complex_to_real", "blocks_complex_to_float"}
 _NULL_SRC_IDS = {"blocks_null_source", "analog_null_source"}
 _NULL_SINK_IDS = {"blocks_null_sink"}
-_CONVERTER_IDS = _F2C_IDS | _C2F_IDS | _NULL_SRC_IDS | _NULL_SINK_IDS
+# byte<->float / short<->float WIDENING casts: on the chip every stream item is
+# one 16-bit word, so uchar_to_float / float_to_uchar / short_to_float between
+# two chip blocks are IDENTITY on the wire — pure GRC type glue (e.g.
+# diff_encoder(byte) -> psk_symbol_mapper(float), or crc16(short) -> sink(float)).
+# Spliced transparently: the upstream's own output port wires straight through.
+_PASSTHRU_IDS = {"blocks_uchar_to_float", "blocks_float_to_uchar",
+                 "blocks_short_to_float", "blocks_float_to_short"}
+_CONVERTER_IDS = (_F2C_IDS | _C2F_IDS | _NULL_SRC_IDS | _NULL_SINK_IDS
+                  | _PASSTHRU_IDS)
 
 # Explicit GRC-id → placeKYT-type overrides where snake→Pascal+Block doesn't match.
 _TYPE_OVERRIDES = {
+    # The plain-Pascal "SplitterBlock" is the LEGACY duplex landing cell
+    # (rx_face/tx_face) — the GRC-facing Splitter is the fan-out relay.
+    "kyttar_splitter": "StreamSplitterBlock",
     "kyttar_soft_demodulator": "SoftDemodulatorBlock",
+    # Complex AGC: snake->Pascal gives "AgcCcBlock" (wrong case for both the
+    # AGC acronym and the CC dtype suffix) — pin the CLASS name explicitly.
+    "kyttar_agc_cc": "AGCCCBlock",
     "kyttar_costas_loop": "ComplexCostasLoopBlock",
     "kyttar_gardner_ted": "GardnerTimingRecovery",
     # M&M timing recovery (16-QAM): snake→Pascal gives "MmTimingRecoveryBlock" not
     # "MMTimingRecoveryBlock", so pin it explicitly (override table uses catalog.get).
     "kyttar_mm_timing_recovery": "MMTimingRecoveryBlock",
+    # FLL band-edge: snake->Pascal gives "FllBandEdgeBlock" — pin it.
+    "kyttar_fll_band_edge": "FLLBandEdgeBlock",
+    # LMS equalizer: snake->Pascal gives "LmsEqualizerBlock" — pin it.
+    "kyttar_lms_equalizer": "LMSEqualizerBlock",
+    "kyttar_complex_to_mag": "ComplexToMagBlock",
+    "kyttar_complex_to_arg": "ComplexToArgBlock",
     # QPSKSlicerBlock is hidden in the catalog (uncurated), so the case-insensitive
     # snake→Pascal fallback — which iterates catalog.all() — can't reach it; map it
     # explicitly (the override table uses catalog.get, which sees hidden specs).
@@ -75,15 +96,65 @@ _TYPE_OVERRIDES = {
     "kyttar_fsk4_symbol_mapper": "FSK4SymbolMapperBlock",
     "kyttar_fsk4_slicer": "FSK4SlicerBlock",
     "kyttar_fsk4_sync_timing_recovery": "FSK4SyncTimingRecoveryBlock",
+    # digital.map_bb per-symbol LUT remap. snake→Pascal gives "MapBbBlock" not
+    # "MapBBBlock", so pin it explicitly (the override table uses catalog.get).
+    "kyttar_map_bb": "MapBBBlock",
     # 16-QAM modem blocks — snake→Pascal would give "Qam16..." not "QAM16...", so pin
     # them explicitly (the override table uses catalog.get, which sees hidden specs).
     "kyttar_qam16_symbol_mapper": "QAM16SymbolMapperBlock",
     "kyttar_qam16_slicer": "QAM16SlicerBlock",
     "kyttar_qam16_costas_loop": "QAM16ComplexCostasLoopBlock",
+    # Freq-xlating FIR: the class is "FreqXlatingFIRBlock" but the verification
+    # manifest lists it under the LEGACY short name "FreqXlatingFIR" (which the
+    # catalog registers as an alias, see catalog._MANIFEST_ALIASES). Pin the id to the
+    # concrete CLASS type_name — the whole build/sim/test path speaks class names; the
+    # manifest legacy name is only an alias resolved at catalog.get() boundaries, and the
+    # INV-22 gate treats the two as equivalent via _MANIFEST_ALIASES.
+    "kyttar_freq_xlating_fir": "FreqXlatingFIRBlock",
+    # Add-Const: class "AddConstBlock", manifest legacy name "AddConst" (catalog alias).
+    "kyttar_add_const": "AddConstBlock",
+    # Two-complex-stream add/sub/multiply: snake→Pascal gives "AddCcBlock"/
+    # "SubCcBlock"/"MultiplyCcBlock" (wrong case for the CC dtype suffix) —
+    # pin the CLASS names explicitly.
+    "kyttar_add_cc": "AddCCBlock",
+    "kyttar_sub_cc": "SubCCBlock",
+    "kyttar_multiply_cc": "MultiplyCCBlock",
+    # Complex FIR (fir_filter_ccf): class == manifest name "ComplexFIRFilterBlock",
+    # but snake→Pascal of "kyttar_complex_fir_filter" gives "ComplexFirFilterBlock"
+    # (lower-case "ir"), which won't match — pin it explicitly.
+    "kyttar_complex_fir_filter": "ComplexFIRFilterBlock",
     "kyttar_iir_biquad": "IIRBiquadBlock",
     "kyttar_conv_encoder_k7": "ConvEncoderK7Block",
     "kyttar_lfsr_scrambler": "LFSRScramblerBlock",
+    # Frame CRC-16 (placeKYT-native, no GR counterpart). snake→Pascal of
+    # "kyttar_crc16" happens to give "Crc16Block", but pin it explicitly so the
+    # mapping never depends on the fallback's casing of the digit suffix.
+    "kyttar_crc16": "Crc16Block",
+    # pack_k_bits: snake→Pascal gives "PackKBitsBlock" but the mid-word single-letter
+    # "k" makes the fallback fragile; pin it explicitly (override uses catalog.get).
+    "kyttar_pack_k_bits": "PackKBitsBlock",
     "kyttar_viterbi_bmu": "ViterbiBranchMetricBlock",
+    "kyttar_diff_decoder": "DiffDecoderBlock",
+    # QuadratureDemod (FM demod): the curated manifest names it by the GR-aligned short
+    # name ``QuadratureDemod``, but the concrete class (used everywhere in build/sim) is
+    # ``QuadratureDemodBlock`` — resolve to the CLASS name; the manifest name is a catalog
+    # alias (see _MANIFEST_ALIASES) and the gate treats them as equivalent.
+    "kyttar_quadrature_demod": "QuadratureDemodBlock",
+    # SRAM-backed ham blocks + the SRAM controller ([Kyttar]-native, no GR
+    # counterpart). snake→Pascal gives "CwKeyerBlock"/"CwDecoderBlock" (wrong case
+    # for the CW acronym), so those two MUST be pinned. The others match by name,
+    # but these specs may be uncurated/hidden in the catalog — the case-insensitive
+    # fallback iterates catalog.all() (visible only), so pin all six via the override
+    # table (which uses catalog.get, seeing hidden specs) to be reliable.
+    "kyttar_varicode_encoder": "VaricodeEncoderBlock",
+    "kyttar_varicode_decoder": "VaricodeDecoderBlock",
+    "kyttar_cw_keyer": "CWKeyerBlock",
+    "kyttar_cw_decoder": "CWDecoderBlock",
+    "kyttar_raised_cosine_envelope": "RaisedCosineEnvelopeBlock",
+    "kyttar_sram_controller": "SramControllerBlock",
+    # STOCK GNU Radio blocks.repeat (hold-upsampler) maps 1:1 to RepeatBlock —
+    # a canonical .grc that uses the stock block imports without a kyttar marker.
+    "blocks_repeat": "RepeatBlock",
 }
 
 
@@ -139,6 +210,7 @@ def grc_block_params(path, catalog) -> dict:
     p = Path(path)
     data = yaml.safe_load(p.read_text()) or {}
     grc_blocks = {b["name"]: b for b in data.get("blocks", []) if "name" in b}
+    variables = _grc_variables(grc_blocks)
 
     out: dict = {}
     names_used: list = []
@@ -150,7 +222,7 @@ def grc_block_params(path, catalog) -> dict:
         if btype is None:
             continue
         params = dict(gb.get("parameters", {}) or {})
-        params = _coerce_params(params, catalog, btype)
+        params = _coerce_params(params, catalog, btype, variables)
         if (btype == "BPSKSlicerBlock"
                 and "out_mode" not in (gb.get("parameters") or {})):
             params["out_mode"] = "bit"
@@ -204,7 +276,12 @@ def _splice_converters(conns, grc_blocks):
 
     kept = []
     spliced_out = set()  # converter names fully consumed
-    for name in conv_names:
+    # Sorted: conv_names is a set, and its iteration order decides the ORDER
+    # rewritten edges are appended — which downstream decides stream-tag
+    # assignment order. Set order varies with PYTHONHASHSEED, so an unsorted
+    # walk made imports differ BETWEEN PROCESSES (the fec_link control's
+    # coin-flip tag collision). Sorted = one deterministic import everywhere.
+    for name in sorted(conv_names):
         gid = _id(name)
         if gid in _NULL_SRC_IDS or gid in _NULL_SINK_IDS:
             spliced_out.add(name)
@@ -228,6 +305,16 @@ def _splice_converters(conns, grc_blocks):
                 # f2c in the connection list (its port-0/1 inputs and output edges
                 # stay) and flag it so the block pass places the block for it.
                 dual_f2c.add(name)
+            continue
+        if gid in _PASSTHRU_IDS:
+            # byte<->float glue: wire the upstream's OWN output port straight to
+            # each downstream (identity on the chip wire — words are words).
+            prod = ins.get("0", [])
+            if prod:
+                (usrc, usp) = prod[0]
+                for (d, dp, _sp) in _consumers_of(name):
+                    kept.append([usrc, usp, d, dp])
+                spliced_out.add(name)
             continue
         if gid in _C2F_IDS:
             # complex upstream (port '0') -> each float downstream, transparently.
@@ -273,6 +360,7 @@ def import_grc(path, catalog, chip_type: str = "kyttar_10x12",
     p = Path(path)
     data = yaml.safe_load(p.read_text()) or {}
     grc_blocks = {b["name"]: b for b in data.get("blocks", []) if "name" in b}
+    variables = _grc_variables(grc_blocks)
     conns = data.get("connections", []) or []
     # Splice out LOGICAL-ONLY dtype converters: rewrite the connection list so a
     # converter's upstream wires straight to its downstream (the converter is never
@@ -340,7 +428,7 @@ def import_grc(path, catalog, chip_type: str = "kyttar_10x12",
         from ui.controller import _default_name  # reuse the naming helper
         spec = catalog.get(btype)
         params = dict(gb.get("parameters", {}) or {})
-        params = _coerce_params(params, catalog, btype)
+        params = _coerce_params(params, catalog, btype, variables)
         # GRC flowgraphs are visualization-first: a BPSK slicer feeding a Time
         # Sink wants one 0/1 word per recovered bit (a clean toggle plot), not the
         # block's production default of 16-bit packed words. If the .grc didn't
@@ -385,6 +473,9 @@ def import_grc(path, catalog, chip_type: str = "kyttar_10x12",
     # complex-Q sibling is NOT added when the flowgraph ALREADY wires the Q rail
     # (some demo .grc author the xi/xq + yi/yq rails explicitly — never double-wire).
     wired_pairs: set = set()
+    # Per-import stream-id -> output tag map (deterministic, collision-probed,
+    # confined to the 5-bit DEST field — see _stream_tag).
+    _tag_by_sid: dict = {}
     split_candidates: list = []   # (sname, dname, src, dst) deferred until all wired
     for entry in conns:
         if len(entry) < 4:
@@ -417,7 +508,10 @@ def import_grc(path, catalog, chip_type: str = "kyttar_10x12",
         if drole == "sink":
             ssid = sink_stream.get(dname)
             if ssid:
-                out_tag = _stream_tag(ssid)
+                if ssid not in _tag_by_sid:
+                    _tag_by_sid[ssid] = _stream_tag(ssid,
+                                                    set(_tag_by_sid.values()))
+                out_tag = _tag_by_sid[ssid]
         project.connections.append(Connection(
             f"net{net_idx}", source=src, target=dst, route=None,
             stream_id=(sid or None), out_tag=out_tag, src_complex=scpx))
@@ -487,11 +581,118 @@ def import_grc(path, catalog, chip_type: str = "kyttar_10x12",
             route=None, stream_id=None,
             out_tag=(c.out_tag + 1) if c.out_tag is not None else None))
 
+    # OUTPUT FAN-OUT SPLICE: GNU Radio fans a port out implicitly, but on the
+    # chip every extra arm costs the SOURCE cell exit words (one WRITE+JUMP
+    # pair), and most single-rail blocks are authored tight (GainBlock: 3 exit
+    # words). Splice an explicit StreamSplitterBlock — a near-empty relay authored
+    # with a reserved fan-out tail (up to 8 arms) — whenever a single-rail
+    # block output feeds ≥2 DIFFERENT blocks or ≥3 inputs, so a plain .grc
+    # fan-out just works. Left DIRECT (no splitter): a 2-input same-block
+    # fan-in (the packet form fits even a tight source), complex-rail sources
+    # (the INV-17 two-rail form owns those), and SplitterBlock sources
+    # themselves (their reserved tail IS the fan-out; also keeps this pass
+    # from splicing its own output).
+    by_out: dict = {}
+    for c in project.connections:
+        if (isinstance(c.source, BlockEndpoint)
+                and isinstance(c.target, BlockEndpoint)):
+            by_out.setdefault(("block", c.source.block, c.source.port), []) \
+                .append(c)
+        elif (isinstance(c.source, ChipPortEndpoint)
+                and isinstance(c.target, BlockEndpoint)):
+            # PORT fan-out arms group per (port, stream): a duplex port carries
+            # SEPARATE streams (tx/rx) — those are not a fan-out and keep the
+            # proven ≤2-arm multi-landing injection. ≥3 arms of ONE stream
+            # reduce to port→splitter→arms (each piece individually proven).
+            by_out.setdefault(("port", c.source.port, c.stream_id), []) \
+                .append(c)
+    for key, conns in by_out.items():
+        if len(conns) < 2:
+            continue
+        if key[0] == "port":
+            if len(conns) < 3:
+                continue                  # ≤2 arms: proven multi-landing path
+            sblk_name, sport = None, None
+        else:
+            _k, sblk_name, sport = key
+            sblk = project.block(sblk_name)
+            if sblk is None or sblk.type in ("StreamSplitterBlock", "SplitterBlock"):
+                continue
+            if _iq_sibling(catalog, sblk.type, sport, want_out=True,
+                           params=sblk.params) is not None:
+                continue                  # complex rail — INV-17 territory
+            tgt_blocks = {c.target.block for c in conns}
+            if len(tgt_blocks) < 2 and len(conns) < 3:
+                continue                  # same-target pair: direct packet form
+        from model.block import Block
+        from model.placement import Placement
+        base = sblk_name if sblk_name is not None else key[1].rstrip("_in")
+        sp_name = _unique(f"{base}_split", block_map.values(),
+                          [b.name for b in project.blocks])
+        cells, transit = _default_cells(catalog, "StreamSplitterBlock", {},
+                                        placed_idx)
+        placed_idx += 1
+        sp = Block(sp_name, "StreamSplitterBlock", library=None, params={})
+        sp.placement = Placement(chip=0, cells=cells, transit_cells=transit)
+        project.blocks.append(sp)
+        net_idx += 1
+        if key[0] == "port":
+            # the spliced feed inherits the arms' stream identity (the live
+            # bridge injects by stream_id); the arms become plain block nets.
+            feed_src = ChipPortEndpoint(chip=0, port=key[1])
+            feed = Connection(
+                f"net{net_idx}", source=feed_src,
+                target=BlockEndpoint(block=sp_name, port="x"), route=None,
+                stream_id=conns[0].stream_id,
+                src_complex=getattr(conns[0], "src_complex", False))
+            for c in conns:
+                c.stream_id = None
+        else:
+            feed = Connection(
+                f"net{net_idx}",
+                source=BlockEndpoint(block=sblk_name, port=sport),
+                target=BlockEndpoint(block=sp_name, port="x"), route=None)
+        project.connections.append(feed)
+        for c in conns:
+            c.source = BlockEndpoint(block=sp_name, port="out")
+
+    # JOIN TRIGGER ELECTION: a dataflow JOIN (independent arms into one
+    # multi-input block — Add/Subtract/Multiply) fires once per arm as imported
+    # (each arm's handoff is WRITE+JUMP), double/triple-firing the combiner.
+    # Blocks that declare a ``sink`` (data-only HALT) entry support single-fire
+    # joins: elect the DEEPEST arm (longest upstream cell path — the last to
+    # complete under the per-sample paced drive) as THE trigger and point every
+    # other arm's JUMP at ``sink`` via the existing Connection.entry_override.
+    _elect_join_triggers(project, catalog)
+
+    # SRAM-PANEL SYNTHESIS (INV-31): a panel-backed block (Varicode, CW keyer)
+    # needs the panel + panel_connections + the x1_in push-read return net in the
+    # project, or the downstream placer/router has an incomplete design. The
+    # block class declares what it needs (panel_requirements); the importer
+    # completes the project here so import -> auto_pnr -> build just works.
+    from engine.panel_pnr import synthesize_panel
+    synthesize_panel(project, catalog)
+
     return GrcImportResult(project=project, block_map=block_map,
                            unknown=unknown, dropped=dropped)
 
 
 # -- helpers -------------------------------------------------------------------
+
+
+def _grc_variables(grc_blocks) -> dict:
+    """``{variable name: value string}`` for the flowgraph's ``variable`` blocks,
+    so a param that names a variable (``interp: sps``) resolves to its VALUE at
+    import (see _coerce_params). Values stay strings — coercion happens per-param
+    against the block's default type; an expression value simply fails coercion
+    there (the block default is kept, the pre-existing behavior)."""
+    out = {}
+    for name, gb in grc_blocks.items():
+        if gb.get("id") == "variable":
+            v = (gb.get("parameters") or {}).get("value")
+            if v is not None:
+                out[name] = str(v)
+    return out
 
 # Stable, deterministic out_tag per stream_id for the shared-output-port demux.
 # Known demo ids get fixed tags (rx=5, tx=10);
@@ -501,12 +702,34 @@ def import_grc(path, catalog, chip_type: str = "kyttar_10x12",
 _STREAM_TAGS = {"rx": 5, "tx": 10}
 
 
-def _stream_tag(stream_id: str) -> int:
+def _stream_tag(stream_id: str, used: set | None = None) -> int:
+    """A deterministic output tag for ``stream_id`` that FITS THE WIRE.
+
+    The tag rides in the exit WRITE's DEST field, which is 5 BITS (0..31) — a
+    tag above 31 silently wraps on the chip (tag 36 emitted as dest 4) while
+    the host demux compares the full value, so every word of that stream is
+    dropped (found via the audio/meter duplex example; the fixed 'rx'/'tx'
+    tags 5/10 always fit, which is why the modems never hit it). Derived tags
+    are therefore confined to 2..31, with linear probing over ``used`` to keep
+    two arbitrary stream ids from colliding within one import.
+
+    Derived tags additionally NEVER land on a FIXED tag, whether or not that
+    fixed id is present yet: a fixed id ('tx') returns its tag
+    UNCONDITIONALLY, so a derived id that hashed onto it ('txcrc' → 10) and
+    happened to be assigned FIRST silently shared the tag — both sinks then
+    demuxed one stream (the fec_link no-interleaver control caught it). The
+    assignment order came from connection-list order, which set-ordered
+    converter splicing made PYTHONHASHSEED-dependent — a per-process coin
+    flip, not even a stable bug."""
     sid = str(stream_id)
     if sid in _STREAM_TAGS:
         return _STREAM_TAGS[sid]
-    # Deterministic small nonzero tag (1..63) for an arbitrary stream id.
-    return (sum(ord(c) for c in sid) % 62) + 2
+    span = 30                                    # tags 2..31
+    reserved = set(_STREAM_TAGS.values()) | (used or set())
+    tag = (sum(ord(c) for c in sid) % span) + 2
+    while tag in reserved:
+        tag = (tag - 2 + 1) % span + 2
+    return tag
 
 
 def _endpoint(gname, role, block_map, catalog, grc_port, *, is_src):
@@ -601,9 +824,141 @@ def _resolve_port(catalog, btype, grc_port, *, want_out, params=None):
         # so import stays precise (port 0 → xi, port 1 → xq) instead of collapsing.
         if want.isdigit():
             i = int(want)
+            if not want_out:
+                # TWO-COMPLEX-STREAM blocks (>= 2 complete on-cell I/Q input
+                # pairs — add_cc/sub_cc: ai/aq + bi/bq): GNURadio's numeric
+                # index counts COMPLEX ports, so index 1 is the SECOND STREAM's
+                # I-half (bi), NOT the Q-half of the first (aq). Collapse each
+                # pair to its I-half for indexing; the I/Q split pass then
+                # synthesises the matching Q net per stream. Gated on >= 2
+                # pairs so single-pair blocks (xi/xq, in_i/in_q, the dual's
+                # i/q) keep the raw positional mapping they always had.
+                qhalves = {}
+                for nm in ports:
+                    q = _iq_sibling(catalog, btype, nm, want_out=False,
+                                    params=params)
+                    if q:
+                        qhalves[nm] = q
+                if len(qhalves) >= 2:
+                    qset = set(qhalves.values())
+                    indexable = [nm for nm in ports if nm not in qset]
+                    if 0 <= i < len(indexable):
+                        return indexable[i]
             if 0 <= i < len(ports):
                 return ports[i]
     return ports[0]
+
+
+def _join_entry_addr(catalog, blk, entry_name: str):
+    """The resolved address of ``blk``'s landing-cell ``entry_name`` entry
+    (``join`` = the counting-join entry every arm targets; ``sink`` = the
+    legacy data-only HALT), or None when the block does not declare it — the
+    capability marker for join support."""
+    try:
+        from gr_kyttar.placement.resolver import CellProgramResolver
+        inst = catalog.instantiate(blk.type, "__join_probe__", blk.params,
+                                   library=blk.library)
+        cps = inst.build_cell_programs()
+        cp = next(p for p in cps.values() if getattr(p, "inputs", None))
+        if not any(e.name == entry_name for e in (cp.entries or ())):
+            return None
+        entries = CellProgramResolver().compute_entry_addresses(cp)
+        return int(entries[entry_name])
+    except Exception:  # noqa: BLE001 — unresolvable → no join support
+        return None
+
+
+def _sink_entry_addr(catalog, blk):
+    """Back-compat alias: the legacy ``sink`` entry address (or None)."""
+    return _join_entry_addr(catalog, blk, "sink")
+
+
+def _elect_join_triggers(project, catalog) -> None:
+    """Single-fire JOIN election (see the call site). For every block fed by ≥2
+    nets from ≥2 DISTINCT sources: if it declares a ``sink`` entry, the arm with
+    the LONGEST upstream cell path keeps the default (compute) entry and every
+    other arm gets ``entry_override = sink`` — its JUMP deposits nothing and
+    HALTs, so the combiner fires exactly once per sample, after (under the
+    per-sample paced drive) all operands have landed. Two arms from ONE source
+    (a complex yi/yq pair) are left alone — that pair is already a single
+    multi-WRITE + one-JUMP burst.
+
+    LIMIT (documented): election orders arrivals by path depth, which the
+    per-sample paced drive realizes deterministically; a SATURATED (slammed)
+    drive can race operands across samples — joins are per-sample-paced designs.
+    """
+    from model.connection import BlockEndpoint, ChipPortEndpoint
+
+    blocks = {b.name: b for b in project.blocks}
+    incoming: dict = {}
+    for c in project.connections:
+        if isinstance(c.target, BlockEndpoint) and c.target.block in blocks:
+            incoming.setdefault(c.target.block, []).append(c)
+
+    _cells: dict = {}
+
+    def cell_count(bname):
+        if bname not in _cells:
+            b = blocks[bname]
+            try:
+                _cells[bname] = int(catalog.instantiate(
+                    b.type, "__depth_probe__", b.params,
+                    library=b.library).cell_count)
+            except Exception:  # noqa: BLE001
+                _cells[bname] = 1
+        return _cells[bname]
+
+    _depth: dict = {}
+
+    def depth(bname):
+        """Longest upstream path INTO ``bname`` in placed cells (0 = fed by the
+        chip input port directly)."""
+        if bname in _depth:
+            return _depth[bname]
+        _depth[bname] = 0                      # cycle guard
+        best = 0
+        for c in incoming.get(bname, ()):  # noqa: B023
+            if isinstance(c.source, BlockEndpoint):
+                s = c.source.block
+                if s in blocks:
+                    best = max(best, depth(s) + cell_count(s))
+        _depth[bname] = best
+        return best
+
+    for tname, arms in incoming.items():
+        def _src_key(c):
+            return (c.source.block if isinstance(c.source, BlockEndpoint)
+                    else "__PORT__")
+        if len(arms) < 2 or len({_src_key(c) for c in arms}) < 2:
+            # Arms from ONE source are a single burst (a complex yi/yq pair's
+            # multi-WRITE + one JUMP, or a single-rail packet fan-in) — one
+            # trigger already, no election/counting needed.
+            continue
+        # COUNTING JOIN (preferred): every arm targets the ``join`` entry; the
+        # combiner fires on the LAST arrival in ANY order. Immune to the
+        # equal-depth sibling race (two arms through one splitter) that
+        # deepest-arm election cannot order.
+        join = _join_entry_addr(catalog, blocks[tname], "join")
+        if join is not None:
+            for c in arms:
+                if getattr(c, "entry_override", None) is None:
+                    c.entry_override = join
+            continue
+        # LEGACY election (blocks with only a ``sink`` entry): deepest arm
+        # keeps the compute entry, the rest deposit-and-halt.
+        sink = _sink_entry_addr(catalog, blocks[tname])
+        if sink is None:
+            continue                            # block has no join support
+        def _arm_depth(c):
+            if isinstance(c.source, BlockEndpoint):
+                s = c.source.block
+                return depth(s) + cell_count(s) if s in blocks else 0
+            return 0                            # port arm: no upstream cells
+        trigger = max(arms, key=lambda c: (_arm_depth(c), c.target.port))
+        for c in arms:
+            if c is trigger or getattr(c, "entry_override", None) is not None:
+                continue
+            c.entry_override = sink
 
 
 def _iq_sibling(catalog, btype, port, *, want_out, params=None):
@@ -639,11 +994,21 @@ def _iq_sibling(catalog, btype, port, *, want_out, params=None):
     #     Gardner), where the marker is NOT at the end (a trailing-only rule wrongly
     #     yields ``yi_taq``/``yi_q`` and misses the real Q rail — the QPSK RX import
     #     bug this guards: the Costas/Gardner Q rails silently un-wired).
+    #   * ``re``/``im`` — the CONVERTER-class rails (``re``->``im``,
+    #     ``out_re``->``out_im``: FloatToComplex, Conjugate, ComplexToReal/Imag).
+    #     Without this rule their Q rails silently never get wired: the target
+    #     conjugates/selects against a stale 0 and the source's unpatched Q WRITE
+    #     leaks to the port (the channel_selector all-zeros bug, and the root of
+    #     the long-fragile converter-flavors live recovery).
     cands = []
     if port.endswith("i"):
         cands.append(port[:-1] + "q")
     if len(port) >= 2 and port[0] in ("x", "y") and port[1] == "i":
         cands.append(port[0] + "q" + port[2:])
+    if port == "re":
+        cands.append("im")
+    if port.endswith("_re"):
+        cands.append(port[:-3] + "_im")
     qname = next((c for c in cands if c != port and c in ports), None)
     if qname is None:
         return None
@@ -659,13 +1024,21 @@ def _iq_sibling(catalog, btype, port, *, want_out, params=None):
     return qname
 
 
-def _coerce_params(params, catalog, btype):
+def _coerce_params(params, catalog, btype, variables=None):
     """Keep only the params the block accepts, coercing GRC string values to the
     spec's default TYPE. GRC stores everything as strings; a value that can't be
     coerced to the default's type — a GRC variable name (``fir_taps``) or a Python
     expression (``firdes.low_pass(...)``) we can't safely evaluate — is OMITTED so
     the block keeps its own default. This is the difference between importing a
-    multi-block flowgraph and crashing on a non-scalar/expression param."""
+    multi-block flowgraph and crashing on a non-scalar/expression param.
+
+    ``variables`` maps the flowgraph's ``variable`` block names to their value
+    strings: a param whose value is EXACTLY a variable name is substituted before
+    coercion (one level). Without this, ``interp: sps`` silently kept the block
+    default — the imported PSK31 repeat ran at interp=4 instead of 8 and the
+    envelope at sps=256 instead of 8 (an all-zero TX that LOOKED like a routing
+    bug). Expression-valued variables (``len(message)``) still coerce-fail and
+    keep the default, as before."""
     import ast
 
     spec = catalog.get(btype)
@@ -678,13 +1051,21 @@ def _coerce_params(params, catalog, btype):
         if k not in params:
             continue
         s = str(params[k]).strip().strip("'\"")
+        if variables and s in variables:
+            s = str(variables[s]).strip().strip("'\"")
         if not s:
             continue
         try:
             if isinstance(dv, bool):
                 out[k] = s.lower() in ("true", "1", "yes")
             elif isinstance(dv, int):
-                out[k] = int(float(s))
+                try:
+                    out[k] = int(float(s))
+                except ValueError:
+                    # Hex/octal/binary literals ('0x1021', the CRC poly/init
+                    # idiom) — int(float(s)) rejects them, which silently kept
+                    # the block default (the param-drift trap).
+                    out[k] = int(s, 0)
             elif isinstance(dv, float):
                 out[k] = float(s)
             elif isinstance(dv, (list, tuple, dict)):

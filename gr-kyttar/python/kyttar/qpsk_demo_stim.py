@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """RRC-shaped QPSK burst generator (carrier + timing offset) for the QPSK modem
 demo flowgraph. Imported by qpsk_modem.grc as a plain Python module (the same
 pattern as coherent_demo_stim, so there is no fragile inline epy_module source).

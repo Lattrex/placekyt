@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Connection commands: add/remove logical + inter-chip connections (§4.2)."""
 
 from __future__ import annotations
@@ -139,7 +140,7 @@ class DeleteRouteCommand(Command):
     """Smart-delete a block-to-block route (#267).
 
     Deletes the connection's PHYSICAL route while respecting the time-multiplexed
-    bus (the auto-P&R design notes §1.2):
+    bus (the time-multiplexed bus model — see doc/ROUTING_TOPOLOGIES.md):
 
       * **Sole occupant** — no OTHER routed connection covers any of this route's
         transit cells: the route is removed and those routing cells disappear with

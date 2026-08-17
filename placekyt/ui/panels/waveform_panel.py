@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """WaveformPanel — dock around the WaveformView (DEBUG_ARCHITECTURE §3.3).
 
 Wraps the custom-painted :class:`WaveformView` with:
@@ -134,6 +135,16 @@ class WaveformPanel(QWidget):
         self._refresh_readout()
 
     # -- model ----------------------------------------------------------------
+
+    def clear_traces(self) -> None:
+        """Remove EVERY trace row and forget the auto-seed bookkeeping — called
+        when a DIFFERENT project is opened/imported, so the previous design's
+        traces (its ports/registers/tags mean nothing in the new design) don't
+        have to be deleted by hand. The next run's TraceModel re-seeds the new
+        project's default demuxed traces from scratch."""
+        self.view.clear()
+        self._seeded_port_tags = {}
+        self.set_cursor(None)
 
     def set_trace_model(self, model) -> None:
         self._model = model

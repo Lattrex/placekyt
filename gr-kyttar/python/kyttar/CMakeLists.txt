@@ -33,6 +33,7 @@ GR_PYTHON_INSTALL(
     mux.py
     iir_biquad.py
     decimator.py
+    rational_resampler.py
     squelch.py
     costas_loop.py
     gardner_ted.py
@@ -42,5 +43,6 @@ GR_PYTHON_INSTALL(
     lfsr_scrambler.py
     conv_encoder_k7.py
     block_interleaver.py
+    diff_decoder.py
     DESTINATION ${GR_PYTHON_DIR}/gnuradio/kyttar
 )

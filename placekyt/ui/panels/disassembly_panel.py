@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """DisassemblyPanel — view a bitstream as a mnemonic listing (#184).
 
 A dock that loads a ``.kbs`` bitstream (a chip program or an input/golden

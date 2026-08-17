@@ -1,0 +1,63 @@
+id: kyttar_pack_k_bits
+label: Kyttar Pack K Bits
+category: '[Kyttar]/Byte Operators'
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.pack_k_bits(${device_id}, ${k})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+- id: k
+  label: Bits per byte (k)
+  dtype: int
+  default: '8'
+
+inputs:
+- id: '0'
+  label: in
+  domain: stream
+  dtype: byte
+
+outputs:
+- id: '0'
+  label: out
+  domain: stream
+  dtype: byte
+
+documentation: |-
+  Pack K Bits — GNU Radio blocks.pack_k_bits_bb.
+
+  Consumes k input bytes (each carrying ONE bit in its LSB) and packs them
+  MSB-first (GR's fixed convention) into one output byte:
+
+      byte = (b[0] << (k-1)) | (b[1] << (k-2)) | ... | (b[k-1] << 0)
+
+  i.e. per input bit acc = (acc << 1) | (bit & 1), and a byte is emitted every k
+  bits. The FIRST input bit becomes the MOST significant bit of the output byte.
+  BIT-EXACT-verified vs blocks.pack_k_bits_bb across k = 2..8 (edge / random /
+  k-sweep / mutation stimulus).
+
+  This is a RATE-REDUCING block: k inputs -> 1 output. Like GNU Radio, a trailing
+  partial group of fewer than k bits at the end of the stream is dropped (GR emits
+  floor(nin/k) bytes). Only the LOW bit of each input item is used (GR d_bits & 1),
+  so a stray high bit on an input word is ignored.
+
+  The packed byte is carried in the output word's LSBs (read the raw int16, not
+  Q15-scaled).
+
+  Ports:
+    in  (in):  data bit stream (0/1, one bit per item)
+    out:       packed byte (one per k input bits)
+
+  Parameters (mirror GR pack_k_bits_bb verbatim):
+    Device ID:        Which Kyttar device to use.
+    Bits per byte (k): Number of input bits packed into each output byte
+                       (MSB-first). Range 1..8 (packs into one byte).
+
+  Mapped by placeKYT (File -> Import GNURadio Flowgraph) to PackKBitsBlock.
+
+file_format: 1

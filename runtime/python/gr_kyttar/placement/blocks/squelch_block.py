@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """SquelchBlock — see :class:`SquelchBlock`."""
 import math
 import numpy as np

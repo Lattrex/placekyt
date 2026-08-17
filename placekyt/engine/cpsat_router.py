@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """CP-SAT bus-sharing auto-router (auto-P&R Phase 3, §7).
 
 The heuristic BFS corridor router (``autoroute.py``) keeps every net on its OWN

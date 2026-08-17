@@ -1,0 +1,726 @@
+options:
+  parameters:
+    author: Lattrex
+    catch_exceptions: 'True'
+    category: '[GRC Hier Blocks]'
+    cmake_opt: ''
+    comment: ''
+    copyright: ''
+    description: 'A FULL CW (Morse) TRANSCEIVER on one placeKYT chip: TX (chars ->
+      SRAM-backed keyer -> ITU-R keyed envelope) and RX (keyed audio -> Abs envelope
+      detector -> STREAMING fixed-unit SRAM-backed Morse decoder -> chars) duplexed
+      by stream tags, the keyer ROM and the reverse-Morse LUT (at addr_base 12288)
+      SHARING the single SRAM panel. The decoder is a skimmer locked to the keyer''s
+      configured unit (samples_per_dot == unit_samples). Word gaps decode as character
+      boundaries (no spaces - documented v1 cell-budget limit); terminate an RX burst
+      with an EOT blip. PER-SAMPLE PACED (the panel contract).'
+    gen_cmake: 'On'
+    gen_linking: dynamic
+    generate_options: qt_gui
+    hier_block_src_path: '.:'
+    id: cw_transceiver
+    max_nouts: '0'
+    output_language: python
+    placement: (0,0)
+    qt_qss_theme: ''
+    realtime_scheduling: ''
+    run: 'True'
+    run_command: '{python} -u {filename}'
+    run_options: prompt
+    sizing_mode: fixed
+    thread_safe_setters: ''
+    title: CW full transceiver (duplex, shared SRAM panel)
+    window_size: (1600,1000)
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 8
+    - 8
+    rotation: 0
+    state: enabled
+blocks:
+- name: samp_rate
+  id: variable
+  parameters:
+    comment: scope display rate (samples/s of the keyed envelope)
+    value: '8000'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 104
+    - 12
+    rotation: 0
+    state: enabled
+- name: imports
+  id: import
+  parameters:
+    alias: ''
+    comment: ''
+    imports: import math
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 8
+    - 68
+    rotation: 0
+    state: enabled
+- name: unit
+  id: variable
+  parameters:
+    comment: dot length in samples (keyer samples_per_dot == decoder unit_samples)
+    value: '8'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 200
+    - 12
+    rotation: 0
+    state: enabled
+- name: msg
+  id: variable
+  parameters:
+    comment: TX chars (space -> 0, the keyer's word-gap code)
+    value: '[ord(c) if c != '' '' else 0 for c in ''CQ CQ DE KYTTAR'']'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 420
+    - 12
+    rotation: 0
+    state: enabled
+- name: burst_len
+  id: variable
+  parameters:
+    comment: ''
+    value: len(msg)
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 860
+    - 12
+    rotation: 0
+    state: enabled
+- name: rx_sig
+  id: variable
+  parameters:
+    comment: keyed CW envelope for 'RST 599 73' (rect, unit samples/dot, 1-unit element
+      gaps, 3-unit letter gaps) + tail silence + the EOT blip (>=2*unit silence then
+      >=1 ON sample) that flushes the last letter. Replace with a live keyed-audio
+      feed.
+    value: sum([sum([[1.0]*(unit if e=='.' else 3*unit)+[0.0]*unit for e in m],[])+[0.0]*2*unit
+      for m in ['.-.','...','-','.....','----.','----.','--...','...--']],[]) + [0.0]*3*unit
+      + [0.9]*2
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1000
+    - 12
+    rotation: 0
+    state: enabled
+- name: rx_burst_len
+  id: variable
+  parameters:
+    comment: ''
+    value: len(rx_sig)
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1400
+    - 12
+    rotation: 0
+    state: enabled
+- name: msg_src
+  id: blocks_vector_source_x
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    repeat: 'False'
+    tags: '[]'
+    type: byte
+    vector: msg
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 40
+    - 150
+    rotation: 0
+    state: enabled
+- name: b2f_in
+  id: blocks_uchar_to_float
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 170
+    - 150
+    rotation: 0
+    state: enabled
+- name: to_raw
+  id: blocks_multiply_const_vxx
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    const: 1.0/32768.0
+    type: float
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 290
+    - 150
+    rotation: 0
+    state: enabled
+- name: tx_src
+  id: kyttar_source
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    burst_len: burst_len
+    complex_in: float
+    device_id: '"kyttar_0"'
+    num_channels: '1'
+    pipelined: 'no'
+    port_name: '"x16_in"'
+    schedule: '"interleaved"'
+    server_host: '"127.0.0.1"'
+    server_port: '58950'
+    stream_id: '"tx"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 410
+    - 140
+    rotation: 0
+    state: enabled
+- name: f2b
+  id: blocks_float_to_uchar
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 560
+    - 150
+    rotation: 0
+    state: enabled
+- name: keyer
+  id: kyttar_cw_keyer
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    device_id: '"kyttar_0"'
+    wpm: '20'
+    samples_per_dot: unit
+    edge_samples: '2'
+    charset: None
+    panel_hop: '1'
+    emit_hop: '1'
+    emit_dest: '0'
+    emit_entry: '1'
+    done_entry: '0'
+    read_wr_desc: '0'
+    read_jp_desc: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 690
+    - 150
+    rotation: 0
+    state: enabled
+- name: tx_sink
+  id: kyttar_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    device_id: '"kyttar_0"'
+    hold_secs: '8.0'
+    in_type: float
+    num_channels: '1'
+    port_name: '"x16_out"'
+    server_port: '58950'
+    server_repeat: 'False'
+    stream_id: '"tx"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 860
+    - 140
+    rotation: 0
+    state: enabled
+- name: tx_scope
+  id: qtgui_time_sink_x
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    ctrlpanel: 'False'
+    entags: 'True'
+    grid: 'False'
+    gui_hint: ''
+    legend: 'True'
+    autoscale: 'False'
+    axislabels: 'True'
+    name: '"TX keyed envelope (ITU-R Morse)"'
+    nconnections: '1'
+    size: '256'
+    srate: samp_rate
+    stemplot: 'False'
+    tr_chan: '0'
+    tr_delay: '0'
+    tr_level: '0.0'
+    tr_mode: qtgui.TRIG_MODE_FREE
+    tr_slope: qtgui.TRIG_SLOPE_POS
+    tr_tag: '""'
+    type: float
+    update_time: '0.10'
+    ylabel: level
+    ymax: '1'
+    ymin: '-1'
+    yunit: '""'
+    alpha1: '1.0'
+    color1: blue
+    label1: Signal 1
+    marker1: '-1'
+    style1: '1'
+    width1: '1'
+    alpha2: '1.0'
+    color2: red
+    label2: Signal 2
+    marker2: '-1'
+    style2: '1'
+    width2: '1'
+    alpha3: '1.0'
+    color3: green
+    label3: Signal 3
+    marker3: '-1'
+    style3: '1'
+    width3: '1'
+    alpha4: '1.0'
+    color4: black
+    label4: Signal 4
+    marker4: '-1'
+    style4: '1'
+    width4: '1'
+    alpha5: '1.0'
+    color5: cyan
+    label5: Signal 5
+    marker5: '-1'
+    style5: '1'
+    width5: '1'
+    alpha6: '1.0'
+    color6: magenta
+    label6: Signal 6
+    marker6: '-1'
+    style6: '1'
+    width6: '1'
+    alpha7: '1.0'
+    color7: yellow
+    label7: Signal 7
+    marker7: '-1'
+    style7: '1'
+    width7: '1'
+    alpha8: '1.0'
+    color8: dark red
+    label8: Signal 8
+    marker8: '-1'
+    style8: '1'
+    width8: '1'
+    alpha9: '1.0'
+    color9: dark green
+    label9: Signal 9
+    marker9: '-1'
+    style9: '1'
+    width9: '1'
+    alpha10: '1.0'
+    color10: dark blue
+    label10: Signal 10
+    marker10: '-1'
+    style10: '1'
+    width10: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1020
+    - 120
+    rotation: 0
+    state: enabled
+- name: rx_vec
+  id: blocks_vector_source_x
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    repeat: 'False'
+    tags: '[]'
+    type: float
+    vector: rx_sig
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 40
+    - 420
+    rotation: 0
+    state: enabled
+- name: rx_src
+  id: kyttar_source
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    burst_len: rx_burst_len
+    complex_in: float
+    device_id: '"kyttar_0"'
+    num_channels: '1'
+    pipelined: 'no'
+    port_name: '"x16_in"'
+    schedule: '"interleaved"'
+    server_host: '"127.0.0.1"'
+    server_port: '58950'
+    stream_id: '"rx"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 190
+    - 410
+    rotation: 0
+    state: enabled
+- name: env
+  id: kyttar_abs
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    device_id: '"kyttar_0"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 370
+    - 420
+    rotation: 0
+    state: enabled
+- name: cwdec
+  id: kyttar_cw_decoder
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    device_id: '"kyttar_0"'
+    threshold: '0.3'
+    panel_hop: '1'
+    emit_hop: '1'
+    emit_dest: '25'
+    emit_entry: '1'
+    unit_samples: unit
+    read_addr_hop: '1'
+    read_dest: '5'
+    read_entry: '1'
+    read_wr_desc: '0'
+    read_jp_desc: '0'
+    out_dest: '25'
+    emit_jump_entry: None
+    run_dest: '25'
+    run_entry: '1'
+    addr_base: '16384'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 500
+    - 420
+    rotation: 0
+    state: enabled
+- name: rx_b2f
+  id: blocks_uchar_to_float
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 680
+    - 420
+    rotation: 0
+    state: enabled
+- name: rx_sink
+  id: kyttar_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    device_id: '"kyttar_0"'
+    hold_secs: '8.0'
+    in_type: float
+    num_channels: '1'
+    port_name: '"x16_out"'
+    server_port: '58950'
+    server_repeat: 'True'
+    stream_id: '"rx"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 800
+    - 410
+    rotation: 0
+    state: enabled
+- name: rx_scope
+  id: qtgui_time_sink_x
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    ctrlpanel: 'False'
+    entags: 'True'
+    grid: 'False'
+    gui_hint: ''
+    legend: 'True'
+    autoscale: 'False'
+    axislabels: 'True'
+    name: '"RX decoded chars (ASCII codes)"'
+    nconnections: '1'
+    size: '8'
+    srate: samp_rate
+    stemplot: 'False'
+    tr_chan: '0'
+    tr_delay: '0'
+    tr_level: '0.0'
+    tr_mode: qtgui.TRIG_MODE_FREE
+    tr_slope: qtgui.TRIG_SLOPE_POS
+    tr_tag: '""'
+    type: float
+    update_time: '0.10'
+    ylabel: level
+    ymax: '128'
+    ymin: '0'
+    yunit: '""'
+    alpha1: '1.0'
+    color1: blue
+    label1: Signal 1
+    marker1: '-1'
+    style1: '1'
+    width1: '1'
+    alpha2: '1.0'
+    color2: red
+    label2: Signal 2
+    marker2: '-1'
+    style2: '1'
+    width2: '1'
+    alpha3: '1.0'
+    color3: green
+    label3: Signal 3
+    marker3: '-1'
+    style3: '1'
+    width3: '1'
+    alpha4: '1.0'
+    color4: black
+    label4: Signal 4
+    marker4: '-1'
+    style4: '1'
+    width4: '1'
+    alpha5: '1.0'
+    color5: cyan
+    label5: Signal 5
+    marker5: '-1'
+    style5: '1'
+    width5: '1'
+    alpha6: '1.0'
+    color6: magenta
+    label6: Signal 6
+    marker6: '-1'
+    style6: '1'
+    width6: '1'
+    alpha7: '1.0'
+    color7: yellow
+    label7: Signal 7
+    marker7: '-1'
+    style7: '1'
+    width7: '1'
+    alpha8: '1.0'
+    color8: dark red
+    label8: Signal 8
+    marker8: '-1'
+    style8: '1'
+    width8: '1'
+    alpha9: '1.0'
+    color9: dark green
+    label9: Signal 9
+    marker9: '-1'
+    style9: '1'
+    width9: '1'
+    alpha10: '1.0'
+    color10: dark blue
+    label10: Signal 10
+    marker10: '-1'
+    style10: '1'
+    width10: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 960
+    - 390
+    rotation: 0
+    state: enabled
+- name: rx_chars
+  id: blocks_multiply_const_vxx
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: kyttar.sink emits the chip stream as q15/32768 floats; restore the raw
+      word value for display
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    const: '32768.0'
+    type: float
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 560
+    - 660
+    rotation: 0
+    state: enabled
+connections:
+- - msg_src
+  - '0'
+  - b2f_in
+  - '0'
+- - b2f_in
+  - '0'
+  - to_raw
+  - '0'
+- - to_raw
+  - '0'
+  - tx_src
+  - '0'
+- - tx_src
+  - '0'
+  - f2b
+  - '0'
+- - f2b
+  - '0'
+  - keyer
+  - '0'
+- - keyer
+  - '0'
+  - tx_sink
+  - '0'
+- - tx_sink
+  - '0'
+  - tx_scope
+  - '0'
+- - rx_vec
+  - '0'
+  - rx_src
+  - '0'
+- - rx_src
+  - '0'
+  - env
+  - '0'
+- - env
+  - '0'
+  - cwdec
+  - '0'
+- - cwdec
+  - '0'
+  - rx_b2f
+  - '0'
+- - rx_b2f
+  - '0'
+  - rx_sink
+  - '0'
+- - rx_sink
+  - '0'
+  - rx_chars
+  - '0'
+- - rx_chars
+  - '0'
+  - rx_scope
+  - '0'
+metadata:
+  file_format: 1
+  grc_version: 3.10.9.2

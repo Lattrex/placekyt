@@ -1,0 +1,51 @@
+{
+  "kyttar_block": "CWDecoderBlock",
+  "passed": true,
+  "status": "done",
+  "quarantine": false,
+  "sram_backed": true,
+  "metric": "decision",
+  "grc_block": "",
+  "golden": "pure-Python ITU-R M.1677 CW/Morse decoder cw_decode (adaptive dot-unit estimate + reverse-Morse LUT) in verification/tests/test_cw_decoder.py; envelope from the CWKeyerBlock golden keyer_envelope",
+  "matches_golden": true,
+  "through_real_panel_roundtrip": true,
+  "roundtrip_accuracy_vs_golden": "100% exact over E / E(fast) / PARIS / PARIS(16) / SOS / CQ / HELLO WORLD / 0123456789 / 73 / ABC / Z / THE QUICK BROWN FOX, decoded through the real SramPanelDevice (Pass-1 scratch commits + Pass-2 read-back push-reads + LUT push-reads); 0 character errors vs cw_decode",
+  "n_compared": 12,
+  "char_errors": 0,
+  "cell_count": 3,
+  "cells": {
+    "pass1_threshold_runs": {"words": 29, "fits_single_cell": true, "instructions": 21},
+    "pass2_classify_decode": {"words": 29, "fits_single_cell": true, "instructions": 23},
+    "sram_controller": {"words": 29, "fits_single_cell": true, "instructions": 23}
+  },
+  "sram_lut_words": 36,
+  "sram_lut_addressing": "address == 1-prefixed Morse element id (sparse over 2..63); value == ASCII code",
+  "sram_run_scratch_format": "one 16-bit word per run: bit15 = level (1=ON), bits[14:0] = length samples; scratch base 256",
+  "sram_killed_wall_1": true,
+  "sram_killed_wall_2": true,
+  "wall_2_resolution": "the unbounded run buffer (up to ~100 runs for a 20-char message) moves off-cell into panel SCRATCH; a two-pass decode (Pass 1 stream runs->scratch + running-min unit; Pass 2 replay from scratch with the FINAL global-min unit) makes both FSM cells' persistent state BOUNDED (Pass1: key_prev/run_len/unit; Pass2: elem_buf/unit/tmp), so each fits one 32-word cell",
+  "state_word_count_after_table_offcell": "with the LUT + run-buffer off-cell, Pass-1 = 4 state + 3 data + 21 instr = 29 words; Pass-2 = 3 state + 2 data + 23 instr = 29 words; both <= 32. The single-cell wall was max(id)+1>=23 LUT entries + an unbounded run buffer, NOT the ~7 scalar/state words of the FSM itself.",
+  "coverage": {
+    "all_three_cells_fit_single_cell": true,
+    "load_phase_lut_streamed_via_controller_on_real_chip": true,
+    "roundtrip_through_real_panel": true,
+    "message": true,
+    "mutation": true,
+    "documented_limit_reasserted": true
+  },
+  "resolves_walls": [
+    "WALL 1 reverse-Morse LUT (INV-29): the sparse 1-prefixed element-id -> ASCII map (ids to 63 > MapBBBlock.MAX_TABLE=21) moves off-cell into the unbounded SRAM panel, addressed by element id; a completed character is a panel push-read.",
+    "WALL 2 adaptive-FSM run buffer (INV-29): the GLOBAL-min dot unit needs the WHOLE run sequence buffered (a causal running-min mis-decodes dash-leading chars C/Z/0/7). The unbounded run buffer moves off-cell into panel SCRATCH; a two-pass scratch-buffered decode keeps both FSM cells' state bounded and single-cell-fitting."
+  ],
+  "known_limit": "inherited from the golden (adaptive timing, not a bug): a message made ENTIRELY of single-dash characters carries no 1-unit reference so the dot unit cannot be estimated ('TT' -> 'I'); any 1-unit feature (a dot, or a multi-element char's intra-char gap) locks the unit ('TEA','O' decode correctly).",
+  "mutation_gates": [
+    "wrong LUT word committed to the panel (A->N) mis-decodes 'AN'",
+    "swapped dot/dash boundary mis-decodes 'A'",
+    "dropped inter-char gap boundary merges elements (mis-decodes 'PARIS')"
+  ],
+  "reusable_pattern": "yes -- extends the Varicode load/push-read recipe with (a) a SPARSE-address panel LUT (address == a computed key, not a dense codepoint) and (b) panel SCRATCH as an unbounded working buffer with a two-pass streaming algorithm. This is the template for any block whose blocker is unbounded accumulated state, not just a static table.",
+  "tests": [
+    "verification/tests/test_cw_decoder_sram.py (25 pass)",
+    "verification/tests/test_cw_decoder.py (21 pass)"
+  ]
+}

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """bpsk_demo - generate the BPSK modem demo's stimulus + golden .kbs (#199).
 
 The demo project (``tests/data/demo/bpsk_demo.kyt``) is a symbol-level BPSK

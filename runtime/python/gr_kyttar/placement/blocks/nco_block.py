@@ -84,6 +84,14 @@ class NCOBlock(KyttarBlock):
     _interface = BlockInterface(
         entry_address=1, input_registers=[0, 1], output_registers=[0, 1])
 
+    # INV-22: ``pipeline_lock`` is a BUILD/PLACEMENT hint (the INV-20 saturation
+    # serialize-lock on the phase cell's arbiter), NOT a GNU Radio DSP parameter —
+    # ``analog.sig_source_c`` has no such param and the DSP result is identical with
+    # it on or off. It is a substrate concern (pipelined vs per-sample drive), so it
+    # is intentionally NOT exposed in GRC. (``offset`` + ``phase`` ARE real GR
+    # sig_source_c params and DO appear in the binding.)
+    GRC_UNSUPPORTED_PARAMS = ("pipeline_lock",)
+
     _CELL_IDS = ["phase",
                  "sin_fold", "sin_even", "sin_odd", "sin_interp",
                  "cos_fold", "cos_even", "cos_odd", "cos_interp",

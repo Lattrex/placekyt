@@ -1,0 +1,52 @@
+id: kyttar_rms
+label: Kyttar RMS
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar RMS — running RMS of a real stream, a drop-in for GNU Radio's
+  blocks.rms_ff:
+
+      avg = (1 - alpha) * avg + alpha * in^2;   out = sqrt(avg)
+
+  (sqrt after the update, avg starts at 0 — exactly GR's per-sample order.)
+  On the Kyttar chip this is a 4-cell feed-forward chain: power + single-pole
+  IIR (full-precision error feedback, so even the default alpha=1e-4 advances),
+  then a normalize / quartic-polynomial / denormalize square root.
+
+  HARDWARE DEVIATION (Q15 fabric): alpha is quantized to a Q15 coefficient
+  (round(alpha*32768)/32768 — the default 1e-4 runs as 3/32768, ~8% slower
+  transient; the settled RMS value is unchanged). alpha outside (0, 1] or below
+  ~1.5e-5 raises. Instantaneous power >= 1.0 (|in| = 1) saturates to
+  +full-scale.
+
+  This block runs on the Kyttar chip. Place it between a KyttarSource and
+  KyttarSink block, and ensure the device_id matches your KyttarDevice.
+
+  Parameters:
+  - Device ID: ID of the KyttarDevice block
+  - alpha: gain of the running-average filter (GR default 0.0001)
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.rms(device_id=${device_id}, alpha=${alpha})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+  - id: alpha
+    label: Alpha
+    dtype: real
+    default: 0.0001
+
+inputs:
+  - label: in
+    dtype: float
+
+outputs:
+  - label: out
+    dtype: float
+
+file_format: 1

@@ -7,50 +7,56 @@ documentation: |-
   🧪 NOT YET VERIFIED: this block is queued for GNU Radio-equivalence
   verification but hasn't been validated yet. Use with care.
 
-  Kyttar AGC - Automatic Gain Control
+  Kyttar AGC - Automatic Gain Control (mirrors GNU Radio analog.agc_ff VERBATIM)
 
-  Maintains a target output level by adaptively adjusting gain:
-      output = input * gain
-      if |output| > target: gain -= rate
-      else: gain += rate
+  GNU Radio's float AGC loop:
+      output  = input * gain
+      gain   += rate * (reference - |output|)
+      if max_gain > 0: gain = min(gain, max_gain)
 
   This block runs on the Kyttar chip. Place it between a KyttarSource
   and KyttarSink block, and ensure the device_id matches your KyttarDevice.
 
-  Parameters:
+  Parameters (GR analog.agc_ff verbatim):
   - Device ID: ID of the KyttarDevice block
-  - Target: Target output level (0.0 to 1.0)
-  - Rate: Attack/decay rate (smaller = slower adaptation)
-  - Initial Gain: Starting gain value
+  - Rate: update rate of the loop (GR default 1e-4)
+  - Reference: reference value to adjust signal power to (GR default 1.0)
+  - Gain: initial gain value (GR default 1.0)
+  - Max Gain: maximum gain; 0 = unlimited (GR default 0)
 
-  The AGC automatically adjusts gain to maintain the target level,
+  The AGC automatically adjusts gain to maintain the reference level,
   useful for handling signals with varying amplitude.
 
 templates:
   imports: from gnuradio import kyttar
-  make: kyttar.agc(device_id=${device_id}, target=${target}, rate=${rate}, initial_gain=${initial_gain})
+  make: kyttar.agc(device_id=${device_id}, rate=${rate}, reference=${reference}, gain=${gain}, max_gain=${max_gain})
   callbacks:
-    - set_target(${target})
+    - set_reference(${reference})
     - set_rate(${rate})
-    - set_initial_gain(${initial_gain})
+    - set_gain(${gain})
+    - set_max_gain(${max_gain})
 
 parameters:
   - id: device_id
     label: Device ID
     dtype: string
     default: '"kyttar_0"'
-  - id: target
-    label: Target Level
-    dtype: real
-    default: 0.7
   - id: rate
     label: Rate
     dtype: real
-    default: 0.01
-  - id: initial_gain
-    label: Initial Gain
+    default: 1e-4
+  - id: reference
+    label: Reference
     dtype: real
-    default: 0.5
+    default: 1.0
+  - id: gain
+    label: Gain
+    dtype: real
+    default: 1.0
+  - id: max_gain
+    label: Max Gain
+    dtype: real
+    default: 0.0
 
 inputs:
   - label: in

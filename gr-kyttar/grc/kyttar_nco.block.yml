@@ -23,12 +23,14 @@ documentation: |-
   - Sample Rate: sample rate in Hz
   - Frequency: tone frequency in Hz (NOT an internal freq_word)
   - Amplitude: output amplitude (0..1)
+  - Offset: DC offset added to the real (cos) channel (GR sig_source_c offset)
+  - Initial Phase: initial phase theta_0 in RADIANS (GR sig_source_c phase)
   - Waveform: "cos" (the complex cosine; GR_COS_WAVE)
 
 templates:
   imports: from gnuradio import kyttar
   make: kyttar.nco(device_id=${device_id}, sample_rate=${sample_rate}, frequency=${frequency},
-    amplitude=${amplitude}, waveform=${waveform})
+    amplitude=${amplitude}, offset=${offset}, phase=${phase}, waveform=${waveform})
   callbacks:
     - set_frequency(${frequency})
 
@@ -49,22 +51,36 @@ parameters:
     label: Amplitude
     dtype: real
     default: '0.9'
+  # GR analog.sig_source_c offset: a real DC bias added to the I (cos/real) channel
+  # only (Q unchanged). Default 0 (the common complex-baseband source case).
+  - id: offset
+    label: Offset
+    dtype: real
+    default: '0'
+  # GR analog.sig_source_c initial phase theta_0 in RADIANS; maps to the 16-bit phase
+  # accumulator's start value. Default 0.
+  - id: phase
+    label: Initial Phase
+    dtype: real
+    default: '0'
   - id: waveform
     label: Waveform
     dtype: string
     default: '"cos"'
 
 # The NCO is a SIGNAL SOURCE — like GNU Radio's analog.sig_source_f it has no
-# stream input (it free-runs from its phase accumulator). On the Kyttar chip the
-# oscillator emits TWO real rails from one cell: cos on yi, sin on yq (the I and Q
-# of exp(jθ)). Exposing them as two float outputs lets real blocks tap each rail
-# directly (e.g. an SSB Weaver's cos-mixer and sin-mixer), instead of forcing a
-# complex port that a real Multiply can't consume. (On-chip the cell is trigger-
-# advanced by the sample stream; that is a build-level concern, not a GR stream in.)
+# The oscillator is TRIGGER-DRIVEN, mirroring the chip block: one float input
+# (each sample is a trigger; its value is ignored) keeps the NCO in sample
+# lockstep with the stream that consumes it, and ONE complex output carries
+# amplitude*exp(j*theta_n) (I=cos on yi, Q=sin on yq on-chip). Take the cos
+# rail with a Complex To Real block (the tremolo pattern).
+inputs:
+  - label: trig
+    dtype: float
+
 outputs:
-  - label: cos
-    dtype: float
-  - label: sin
-    dtype: float
+  - label: out
+    dtype: complex
+
 
 file_format: 1

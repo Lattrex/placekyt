@@ -1,6 +1,7 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Chip type definition: fabric geometry, timing, and I/O ports.
 
-Mirrors the chip-type ``.yaml`` (the architecture notes §2.3), e.g.
+Mirrors the chip-type ``.yaml``, e.g.
 ``kyttar_10x12.yaml`` / ``KYT16A120.yaml``. A chip type is a *registry entry*
 shared by all chip instances of that type in a project; instances reference it
 by name.
@@ -15,7 +16,7 @@ from .enums import Face, PortDirection
 
 @dataclass(frozen=True)
 class PortSpec:
-    """A chip I/O port (the architecture notes §2.3 ``ports:``).
+    """A chip I/O port (the chip-type YAML ``ports:`` entry).
 
     ``face`` means "direction data arrives FROM" on input ports and "direction
     data exits TO" on output ports. ``cell`` is the edge cell the port attaches
@@ -68,7 +69,7 @@ class ChipType:
         """Flat cell id for ``(x, y)`` per the simkyt convention.
 
         ``cell_id = y * width + x`` (matches ``read_cell_memory`` addressing in
-        the simkyt API, the architecture notes §4.3).
+        the simkyt API).
         """
         return y * self.width + x
 

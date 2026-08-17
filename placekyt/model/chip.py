@@ -1,6 +1,7 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Project-level chip instance — a placed chip in the multi-chip canvas.
 
-Mirrors the ``chips:`` section of a ``.kyt`` project (the architecture notes §2.1)::
+Mirrors the ``chips:`` section of a ``.kyt`` project::
 
     chips:
       - id: 0

@@ -1,0 +1,1206 @@
+options:
+  parameters:
+    author: Lattrex
+    catch_exceptions: 'True'
+    category: '[GRC Hier Blocks]'
+    cmake_opt: ''
+    comment: ''
+    copyright: ''
+    description: 'FEC protocol link on ONE placeKYT array, three streams on the shared duplex
+      ports: ''tx'' = message bytes -> UnpackKBits(8) -> Hamming(7,4) encoder -> 4x3 block
+      interleaver (the interleaved coded bits egress); ''txcrc'' = the same bytes -> on-chip
+      CRC-16/CCITT-FALSE over the 12-byte frame; ''rx'' = the burst-corrupted channel bits
+      -> deinterleaver -> Hamming syndrome decoder -> PackKBits(8) (the recovered bytes egress).
+      The demo story: a 2-bit channel burst that would be UNCORRECTABLE inside one Hamming
+      codeword is dispersed by the interleaver into two codewords (one correctable error each);
+      the CRC Frame Verdict panel shows the chip-computed TX CRC equal to the CRC recomputed
+      over the recovered bytes.'
+    gen_cmake: 'On'
+    gen_linking: dynamic
+    generate_options: qt_gui
+    hier_block_src_path: '.:'
+    id: fec_link
+    max_nouts: '0'
+    output_language: python
+    placement: (0,0)
+    qt_qss_theme: ''
+    realtime_scheduling: ''
+    run: 'True'
+    run_command: '{python} -u {filename}'
+    run_options: prompt
+    sizing_mode: fixed
+    thread_safe_setters: ''
+    title: FEC protocol link (interleaver + Hamming + CRC on one array)
+    window_size: (1600,1000)
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 8
+    - 8
+    rotation: 0
+    state: enabled
+blocks:
+- name: samp_rate
+  id: variable
+  parameters:
+    comment: display sample rate (scope axis only)
+    value: '32000'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 200
+    - 12
+    rotation: 0
+    state: enabled
+- name: tx_len
+  id: variable
+  parameters:
+    comment: TX chip-input bytes (message + flush pads)
+    value: stim.n_tx_bytes()
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 320
+    - 12
+    rotation: 0
+    state: enabled
+- name: chan_len
+  id: variable
+  parameters:
+    comment: channel bits (alignment prefix + TX bits)
+    value: stim.n_channel_bits()
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 440
+    - 12
+    rotation: 0
+    state: enabled
+- name: import_stim
+  id: import
+  parameters:
+    alias: ''
+    comment: ''
+    imports: from gnuradio.kyttar import fec_demo_stim as stim
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 580
+    - 12
+    rotation: 0
+    state: enabled
+- name: msg_src
+  id: blocks_vector_source_x
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: message + flush pads; finite, no repeat
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    repeat: 'False'
+    tags: '[]'
+    type: byte
+    vector: stim.tx_bytes()
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 32
+    - 172
+    rotation: 0
+    state: enabled
+- name: msg_b2f
+  id: blocks_uchar_to_float
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 224
+    - 172
+    rotation: 0
+    state: enabled
+- name: msg_q15
+  id: blocks_multiply_const_vxx
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: bytes ride as word/32768 floats (q15 words)
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    const: 1.0/32768.0
+    type: float
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 224
+    - 260
+    rotation: 0
+    state: enabled
+- name: tx_src
+  id: kyttar_source
+  parameters:
+    affinity: ''
+    alias: ''
+    burst_len: tx_len
+    comment: 'message bytes -> chip x16_in (stream ''tx''); per-sample paced for import-path
+      robustness: on a wandering auto-P&R corridor the 1:14 rate-EXPANDING coded chain deadlocks
+      saturated (the shipped shortest-path .kyt IS saturated-proven in the gate)'
+    complex_in: float
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_channels: '1'
+    pipelined: 'no'
+    port_name: '"x16_in"'
+    schedule: '"interleaved"'
+    server_host: '"127.0.0.1"'
+    server_port: '58950'
+    stream_id: '"tx"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 416
+    - 148
+    rotation: 0
+    state: enabled
+- name: crc_src
+  id: kyttar_source
+  parameters:
+    affinity: ''
+    alias: ''
+    burst_len: tx_len
+    comment: the same message bytes -> chip x16_in (stream 'txcrc')
+    complex_in: float
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_channels: '1'
+    pipelined: 'no'
+    port_name: '"x16_in"'
+    schedule: '"interleaved"'
+    server_host: '"127.0.0.1"'
+    server_port: '58950'
+    stream_id: '"txcrc"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 416
+    - 636
+    rotation: 0
+    state: enabled
+- name: tx_f2b
+  id: blocks_float_to_uchar
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 656
+    - 172
+    rotation: 0
+    state: enabled
+- name: k_unpack
+  id: kyttar_unpack_k_bits
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: "bytes -> bits, MSB first \u2014 placed on chip"
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    k: '8'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 800
+    - 156
+    rotation: 0
+    state: enabled
+- name: k_henc
+  id: kyttar_hamming_encoder
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: "Hamming(7,4) systematic encoder \u2014 placed on chip"
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 992
+    - 164
+    rotation: 0
+    state: enabled
+- name: henc_b2f
+  id: blocks_uchar_to_float
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1184
+    - 172
+    rotation: 0
+    state: enabled
+- name: k_ileave
+  id: kyttar_block_interleaver
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: "4x3 block interleaver (burst dispersal) \u2014 placed on chip"
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    rows: '4'
+    cols: '3'
+    deinterleave: 'False'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1328
+    - 148
+    rotation: 0
+    state: enabled
+- name: tx_sink
+  id: kyttar_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: interleaved coded bits <- chip x16_out (stream 'tx')
+    device_id: '"kyttar_0"'
+    hold_secs: '8.0'
+    in_type: float
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_channels: '1'
+    port_name: '"x16_out"'
+    server_port: '58950'
+    server_repeat: 'True'
+    stream_id: '"tx"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1568
+    - 156
+    rotation: 0
+    state: enabled
+- name: tx_scale
+  id: blocks_multiply_const_vxx
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: sink emits word/32768 floats -> x32768
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    const: '32768.0'
+    type: float
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1776
+    - 172
+    rotation: 0
+    state: enabled
+- name: tx_bits_scope
+  id: qtgui_time_sink_x
+  parameters:
+    affinity: ''
+    alias: ''
+    alpha1: '1.0'
+    color1: blue
+    label1: Signal 1
+    marker1: '-1'
+    style1: '1'
+    width1: '1'
+    alpha2: '1.0'
+    color2: red
+    label2: Signal 2
+    marker2: '-1'
+    style2: '1'
+    width2: '1'
+    alpha3: '1.0'
+    color3: green
+    label3: Signal 3
+    marker3: '-1'
+    style3: '1'
+    width3: '1'
+    alpha4: '1.0'
+    color4: black
+    label4: Signal 4
+    marker4: '-1'
+    style4: '1'
+    width4: '1'
+    alpha5: '1.0'
+    color5: cyan
+    label5: Signal 5
+    marker5: '-1'
+    style5: '1'
+    width5: '1'
+    alpha6: '1.0'
+    color6: magenta
+    label6: Signal 6
+    marker6: '-1'
+    style6: '1'
+    width6: '1'
+    alpha7: '1.0'
+    color7: yellow
+    label7: Signal 7
+    marker7: '-1'
+    style7: '1'
+    width7: '1'
+    alpha8: '1.0'
+    color8: dark red
+    label8: Signal 8
+    marker8: '-1'
+    style8: '1'
+    width8: '1'
+    alpha9: '1.0'
+    color9: dark green
+    label9: Signal 9
+    marker9: '-1'
+    style9: '1'
+    width9: '1'
+    alpha10: '1.0'
+    color10: dark blue
+    label10: Signal 10
+    marker10: '-1'
+    style10: '1'
+    width10: '1'
+    autoscale: 'False'
+    axislabels: 'True'
+    comment: 'the chip TX egress: interleaved Hamming-coded bits'
+    ctrlpanel: 'False'
+    entags: 'True'
+    grid: 'False'
+    gui_hint: ''
+    legend: 'True'
+    name: '"TX interleaved coded bits (chip)"'
+    nconnections: '1'
+    size: stim.n_tx_bits()
+    srate: samp_rate
+    stemplot: 'False'
+    tr_chan: '0'
+    tr_delay: '0'
+    tr_level: '0.0'
+    tr_mode: qtgui.TRIG_MODE_FREE
+    tr_slope: qtgui.TRIG_SLOPE_POS
+    tr_tag: '""'
+    type: float
+    update_time: '0.10'
+    ylabel: bit
+    ymax: '1.5'
+    ymin: '-0.5'
+    yunit: '""'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1952
+    - 132
+    rotation: 0
+    state: enabled
+- name: crc_f2b
+  id: blocks_float_to_uchar
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 656
+    - 660
+    rotation: 0
+    state: enabled
+- name: k_crc
+  id: kyttar_crc16
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: "frame CRC-16/CCITT-FALSE over the 12 message bytes \u2014 placed on chip"
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    poly: '0x1021'
+    init: '0xFFFF'
+    frame_len: '12'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 800
+    - 636
+    rotation: 0
+    state: enabled
+- name: crc_s2f
+  id: blocks_short_to_float
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    scale: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1008
+    - 660
+    rotation: 0
+    state: enabled
+- name: crc_sink
+  id: kyttar_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: the on-chip TX CRC word <- chip x16_out (stream 'txcrc')
+    device_id: '"kyttar_0"'
+    hold_secs: '8.0'
+    in_type: float
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_channels: '1'
+    port_name: '"x16_out"'
+    server_port: '58950'
+    server_repeat: 'True'
+    stream_id: '"txcrc"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1184
+    - 644
+    rotation: 0
+    state: enabled
+- name: chan_src
+  id: blocks_vector_source_x
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'DETERMINISTIC channel: alignment prefix + TX bits XOR the 2-bit burst at +88/89
+      (stim.error_pattern)'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    repeat: 'False'
+    tags: '[]'
+    type: byte
+    vector: stim.channel_bits()
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 32
+    - 396
+    rotation: 0
+    state: enabled
+- name: chan_b2f
+  id: blocks_uchar_to_float
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 224
+    - 396
+    rotation: 0
+    state: enabled
+- name: chan_q15
+  id: blocks_multiply_const_vxx
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: bits ride as word/32768 floats
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    const: 1.0/32768.0
+    type: float
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 224
+    - 484
+    rotation: 0
+    state: enabled
+- name: rx_src
+  id: kyttar_source
+  parameters:
+    affinity: ''
+    alias: ''
+    burst_len: chan_len
+    comment: burst-corrupted channel bits -> chip x16_in (stream 'rx')
+    complex_in: float
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_channels: '1'
+    pipelined: 'no'
+    port_name: '"x16_in"'
+    schedule: '"interleaved"'
+    server_host: '"127.0.0.1"'
+    server_port: '58950'
+    stream_id: '"rx"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 416
+    - 372
+    rotation: 0
+    state: enabled
+- name: chan_scope
+  id: qtgui_time_sink_x
+  parameters:
+    affinity: ''
+    alias: ''
+    alpha1: '1.0'
+    color1: blue
+    label1: Signal 1
+    marker1: '-1'
+    style1: '1'
+    width1: '1'
+    alpha2: '1.0'
+    color2: red
+    label2: Signal 2
+    marker2: '-1'
+    style2: '1'
+    width2: '1'
+    alpha3: '1.0'
+    color3: green
+    label3: Signal 3
+    marker3: '-1'
+    style3: '1'
+    width3: '1'
+    alpha4: '1.0'
+    color4: black
+    label4: Signal 4
+    marker4: '-1'
+    style4: '1'
+    width4: '1'
+    alpha5: '1.0'
+    color5: cyan
+    label5: Signal 5
+    marker5: '-1'
+    style5: '1'
+    width5: '1'
+    alpha6: '1.0'
+    color6: magenta
+    label6: Signal 6
+    marker6: '-1'
+    style6: '1'
+    width6: '1'
+    alpha7: '1.0'
+    color7: yellow
+    label7: Signal 7
+    marker7: '-1'
+    style7: '1'
+    width7: '1'
+    alpha8: '1.0'
+    color8: dark red
+    label8: Signal 8
+    marker8: '-1'
+    style8: '1'
+    width8: '1'
+    alpha9: '1.0'
+    color9: dark green
+    label9: Signal 9
+    marker9: '-1'
+    style9: '1'
+    width9: '1'
+    alpha10: '1.0'
+    color10: dark blue
+    label10: Signal 10
+    marker10: '-1'
+    style10: '1'
+    width10: '1'
+    autoscale: 'False'
+    axislabels: 'True'
+    comment: 'what the channel delivers: the burst sits at +88/89'
+    ctrlpanel: 'False'
+    entags: 'True'
+    grid: 'False'
+    gui_hint: ''
+    legend: 'True'
+    name: '"Channel bits (2-bit burst)"'
+    nconnections: '1'
+    size: chan_len
+    srate: samp_rate
+    stemplot: 'False'
+    tr_chan: '0'
+    tr_delay: '0'
+    tr_level: '0.0'
+    tr_mode: qtgui.TRIG_MODE_FREE
+    tr_slope: qtgui.TRIG_SLOPE_POS
+    tr_tag: '""'
+    type: float
+    update_time: '0.10'
+    ylabel: bit
+    ymax: '1.5'
+    ymin: '-0.5'
+    yunit: '""'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 416
+    - 520
+    rotation: 0
+    state: enabled
+- name: k_dileave
+  id: kyttar_block_interleaver
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: "4x3 deinterleaver (disperses the burst) \u2014 placed on chip"
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    rows: '4'
+    cols: '3'
+    deinterleave: 'True'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 656
+    - 372
+    rotation: 0
+    state: enabled
+- name: dil_f2b
+  id: blocks_float_to_uchar
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 896
+    - 396
+    rotation: 0
+    state: enabled
+- name: k_hdec
+  id: kyttar_hamming_decoder
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: "Hamming(7,4) syndrome decoder (corrects both dispersed bits) \u2014 placed on\
+      \ chip"
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1040
+    - 388
+    rotation: 0
+    state: enabled
+- name: k_pack
+  id: kyttar_pack_k_bits
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: "bits -> recovered bytes \u2014 placed on chip"
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    k: '8'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1232
+    - 380
+    rotation: 0
+    state: enabled
+- name: pack_b2f
+  id: blocks_uchar_to_float
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1424
+    - 396
+    rotation: 0
+    state: enabled
+- name: rx_sink
+  id: kyttar_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: recovered bytes <- chip x16_out (stream 'rx')
+    device_id: '"kyttar_0"'
+    hold_secs: '8.0'
+    in_type: float
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_channels: '1'
+    port_name: '"x16_out"'
+    server_port: '58950'
+    server_repeat: 'True'
+    stream_id: '"rx"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1568
+    - 380
+    rotation: 0
+    state: enabled
+- name: rx_scale
+  id: blocks_multiply_const_vxx
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: sink emits word/32768 floats -> x32768
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    const: '32768.0'
+    type: float
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1776
+    - 396
+    rotation: 0
+    state: enabled
+- name: rx_bytes_scope
+  id: qtgui_time_sink_x
+  parameters:
+    affinity: ''
+    alias: ''
+    alpha1: '1.0'
+    color1: blue
+    label1: Signal 1
+    marker1: '-1'
+    style1: '1'
+    width1: '1'
+    alpha2: '1.0'
+    color2: red
+    label2: Signal 2
+    marker2: '-1'
+    style2: '1'
+    width2: '1'
+    alpha3: '1.0'
+    color3: green
+    label3: Signal 3
+    marker3: '-1'
+    style3: '1'
+    width3: '1'
+    alpha4: '1.0'
+    color4: black
+    label4: Signal 4
+    marker4: '-1'
+    style4: '1'
+    width4: '1'
+    alpha5: '1.0'
+    color5: cyan
+    label5: Signal 5
+    marker5: '-1'
+    style5: '1'
+    width5: '1'
+    alpha6: '1.0'
+    color6: magenta
+    label6: Signal 6
+    marker6: '-1'
+    style6: '1'
+    width6: '1'
+    alpha7: '1.0'
+    color7: yellow
+    label7: Signal 7
+    marker7: '-1'
+    style7: '1'
+    width7: '1'
+    alpha8: '1.0'
+    color8: dark red
+    label8: Signal 8
+    marker8: '-1'
+    style8: '1'
+    width8: '1'
+    alpha9: '1.0'
+    color9: dark green
+    label9: Signal 9
+    marker9: '-1'
+    style9: '1'
+    width9: '1'
+    alpha10: '1.0'
+    color10: dark blue
+    label10: Signal 10
+    marker10: '-1'
+    style10: '1'
+    width10: '1'
+    autoscale: 'False'
+    axislabels: 'True'
+    comment: 6 alignment zeros, then the recovered message bytes, then pad zeros
+    ctrlpanel: 'False'
+    entags: 'True'
+    grid: 'False'
+    gui_hint: ''
+    legend: 'True'
+    name: '"Recovered bytes (chip)"'
+    nconnections: '1'
+    size: stim.n_rx_bytes()
+    srate: samp_rate
+    stemplot: 'True'
+    tr_chan: '0'
+    tr_delay: '0'
+    tr_level: '0.0'
+    tr_mode: qtgui.TRIG_MODE_FREE
+    tr_slope: qtgui.TRIG_SLOPE_POS
+    tr_tag: '""'
+    type: float
+    update_time: '0.10'
+    ylabel: byte value
+    ymax: '256'
+    ymin: '0'
+    yunit: '""'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1952
+    - 356
+    rotation: 0
+    state: enabled
+- name: crc_check
+  id: epy_block
+  parameters:
+    _source_code: "\"\"\"FRAME VERDICT \u2014 recompute the CRC of the recovered bytes host-side\
+      \ and\nhold it next to the CHIP-computed TX CRC word. Equality = the frame survived\n\
+      the channel burst (dispersed by the interleaver, corrected by the Hamming\ndecoder).\
+      \ An embedded block on purpose: this is host-side display glue, and\nstock converter\
+      \ ids are chip-side splice markers to the placeKYT importer.\n\nin0 = the 'txcrc' kyttar\
+      \ sink output (the chip CRC word as a word/32768\n      float); in1 = the 'rx' kyttar\
+      \ sink output (recovered bytes, word/32768\n      floats; the message starts after n_skip\
+      \ alignment zero bytes).\nout0 = chip CRC (0..65535), out1 = host-recomputed CRC, out2\
+      \ = match flag.\"\"\"\nimport numpy as np\nfrom gnuradio import gr\n\n\nclass blk(gr.basic_block):\n\
+      \    def __init__(self, n_skip=6, frame_len=12):\n        gr.basic_block.__init__(self,\
+      \ name='CRC Frame Verdict',\n                                in_sig=[np.float32, np.float32],\n\
+      \                                out_sig=[np.float32] * 3)\n        self.n_skip = int(n_skip)\n\
+      \        self.frame_len = int(frame_len)\n        self.chip_crc = None\n        self.rx_bytes\
+      \ = []\n\n    def forecast(self, noutput_items, ninputs):\n        return [0] * ninputs\n\
+      \n    @staticmethod\n    def _crc16(data):\n        crc = 0xFFFF                   \
+      \    # CRC-16/CCITT-FALSE\n        for b in data:\n            crc ^= (int(b) & 0xFF)\
+      \ << 8\n            for _ in range(8):\n                crc = (((crc << 1) ^ 0x1021)\
+      \ if crc & 0x8000\n                       else (crc << 1)) & 0xFFFF\n        return\
+      \ crc\n\n    def general_work(self, input_items, output_items):\n        need = self.n_skip\
+      \ + self.frame_len\n        if self.chip_crc is None and len(input_items[0]):\n    \
+      \        w = int(round(float(input_items[0][0]) * 32768.0)) & 0xFFFF\n            self.chip_crc\
+      \ = w\n        if len(self.rx_bytes) < need and len(input_items[1]):\n            take\
+      \ = input_items[1][:need - len(self.rx_bytes)]\n            self.rx_bytes += [int(round(float(v)\
+      \ * 32768.0)) & 0xFF\n                              for v in take]\n        for i in\
+      \ range(2):\n            if len(input_items[i]):\n                self.consume(i, len(input_items[i]))\n\
+      \        if self.chip_crc is None or len(self.rx_bytes) < need:\n            return\
+      \ 0\n        host = self._crc16(self.rx_bytes[self.n_skip:need])\n        n = min(len(o)\
+      \ for o in output_items)\n        output_items[0][:n] = float(self.chip_crc)\n     \
+      \   output_items[1][:n] = float(host)\n        output_items[2][:n] = 1.0 if host ==\
+      \ self.chip_crc else 0.0\n        return n\n"
+    affinity: ''
+    alias: ''
+    comment: chip CRC vs host-recomputed CRC of the recovered bytes
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    n_skip: stim.rx_msg_offset()
+    frame_len: stim.crc_frame_len()
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1568
+    - 560
+    rotation: 0
+    state: enabled
+- name: crc_verdict
+  id: qtgui_number_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    autoscale: 'False'
+    avg: '0'
+    comment: equal CRCs + flag 1 = the frame is verified
+    graph_type: qtgui.NUM_GRAPH_NONE
+    gui_hint: ''
+    max: '65536'
+    min: '0'
+    name: '"CRC frame verdict"'
+    nconnections: '3'
+    type: float
+    update_time: '0.10'
+    color1: ("black", "black")
+    factor1: '1'
+    label1: TX CRC (chip)
+    unit1: ''
+    color2: ("black", "black")
+    factor2: '1'
+    label2: RX CRC (recomputed)
+    unit2: ''
+    color3: ("black", "black")
+    factor3: '1'
+    label3: FRAME OK (1 = match)
+    unit3: ''
+    color4: ("black", "black")
+    factor4: '1'
+    label4: ''
+    unit4: ''
+    color5: ("black", "black")
+    factor5: '1'
+    label5: ''
+    unit5: ''
+    color6: ("black", "black")
+    factor6: '1'
+    label6: ''
+    unit6: ''
+    color7: ("black", "black")
+    factor7: '1'
+    label7: ''
+    unit7: ''
+    color8: ("black", "black")
+    factor8: '1'
+    label8: ''
+    unit8: ''
+    color9: ("black", "black")
+    factor9: '1'
+    label9: ''
+    unit9: ''
+    color10: ("black", "black")
+    factor10: '1'
+    label10: ''
+    unit10: ''
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1808
+    - 560
+    rotation: 0
+    state: enabled
+connections:
+- - msg_src
+  - '0'
+  - msg_b2f
+  - '0'
+- - msg_b2f
+  - '0'
+  - msg_q15
+  - '0'
+- - msg_q15
+  - '0'
+  - tx_src
+  - '0'
+- - msg_q15
+  - '0'
+  - crc_src
+  - '0'
+- - tx_src
+  - '0'
+  - tx_f2b
+  - '0'
+- - tx_f2b
+  - '0'
+  - k_unpack
+  - '0'
+- - k_unpack
+  - '0'
+  - k_henc
+  - '0'
+- - k_henc
+  - '0'
+  - henc_b2f
+  - '0'
+- - henc_b2f
+  - '0'
+  - k_ileave
+  - '0'
+- - k_ileave
+  - '0'
+  - tx_sink
+  - '0'
+- - tx_sink
+  - '0'
+  - tx_scale
+  - '0'
+- - tx_scale
+  - '0'
+  - tx_bits_scope
+  - '0'
+- - crc_src
+  - '0'
+  - crc_f2b
+  - '0'
+- - crc_f2b
+  - '0'
+  - k_crc
+  - '0'
+- - k_crc
+  - '0'
+  - crc_s2f
+  - '0'
+- - crc_s2f
+  - '0'
+  - crc_sink
+  - '0'
+- - chan_src
+  - '0'
+  - chan_b2f
+  - '0'
+- - chan_b2f
+  - '0'
+  - chan_q15
+  - '0'
+- - chan_b2f
+  - '0'
+  - chan_scope
+  - '0'
+- - chan_q15
+  - '0'
+  - rx_src
+  - '0'
+- - rx_src
+  - '0'
+  - k_dileave
+  - '0'
+- - k_dileave
+  - '0'
+  - dil_f2b
+  - '0'
+- - dil_f2b
+  - '0'
+  - k_hdec
+  - '0'
+- - k_hdec
+  - '0'
+  - k_pack
+  - '0'
+- - k_pack
+  - '0'
+  - pack_b2f
+  - '0'
+- - pack_b2f
+  - '0'
+  - rx_sink
+  - '0'
+- - rx_sink
+  - '0'
+  - rx_scale
+  - '0'
+- - rx_scale
+  - '0'
+  - rx_bytes_scope
+  - '0'
+- - crc_sink
+  - '0'
+  - crc_check
+  - '0'
+- - rx_sink
+  - '0'
+  - crc_check
+  - '1'
+- - crc_check
+  - '0'
+  - crc_verdict
+  - '0'
+- - crc_check
+  - '1'
+  - crc_verdict
+  - '1'
+- - crc_check
+  - '2'
+  - crc_verdict
+  - '2'
+metadata:
+  file_format: 1
+  grc_version: 3.10.12.0

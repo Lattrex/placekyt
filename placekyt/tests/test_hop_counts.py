@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Build honors connection routes + per-instruction WRITE/JUMP overrides (§3.3).
 
 The hop count and destination/entry address of a WRITE/JUMP are properties of

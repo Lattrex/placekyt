@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Build + run the full coherent BPSK receiver ``CoherentRXBlock`` through the
 real placeKYT pipeline (catalog -> place -> BuildEngine -> simkyt), end to end.
 

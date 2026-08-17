@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """SRAM / peripheral panels — off-array memory devices on the canvas.
 
 See ``the SRAM panel notes`` for the full architecture. A panel attaches to the cell
@@ -74,6 +75,13 @@ class SramPanel:
     layer, not modelled here. ``mirrored`` tracks a horizontal flip (so its
     ports sit on the opposite edges) for tidy wiring against right-edge chip
     ports.
+
+    ``image`` is the panel's INITIAL memory contents (a sparse ``{addr: word}``
+    map) — a ROM image loaded into the panel device at run start, exactly like a
+    bitstream is loaded into the cells. This is how a table-backed design (the
+    Varicode/Morse tables, INV-31) ships its table INSIDE the ``.kyt``: no
+    streamed on-chip load phase is needed before the chain can run. Serialized
+    in the ``.kyt`` as contiguous ``{base, words}`` runs.
     """
 
     id: int
@@ -83,6 +91,22 @@ class SramPanel:
     size_words: int = DEFAULT_PANEL_WORDS
     ports: list[PanelPort] = field(default_factory=_default_ports)
     mirrored: bool = False     # horizontal flip (ports swap WEST↔EAST edges)
+    image: dict[int, int] = field(default_factory=dict)  # ROM init {addr: word}
+    # READ-side address auto-increment (streaming read): the panel advances its
+    # latched address after each push-read. Lets a sequential consumer (the CW
+    # keyer's 3-word run records) fetch without a per-word R5 write. Default off
+    # (classic latched behaviour).
+    auto_inc_read: bool = False
+
+    def image_runs(self) -> list[tuple[int, list[int]]]:
+        """The image as contiguous ``(base, [words...])`` runs (for serialization)."""
+        runs: list[tuple[int, list[int]]] = []
+        for addr in sorted(self.image):
+            if runs and addr == runs[-1][0] + len(runs[-1][1]):
+                runs[-1][1].append(int(self.image[addr]) & 0xFFFF)
+            else:
+                runs.append((addr, [int(self.image[addr]) & 0xFFFF]))
+        return runs
 
     @property
     def position(self) -> tuple[float, float]:

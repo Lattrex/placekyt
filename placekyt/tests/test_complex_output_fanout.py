@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Complex-output FAN-OUT: the build steers a complex cell's two rails (yi/yq) to
 TWO DIFFERENT downstream blocks, and every complex-output block is budgeted for it.
 
@@ -116,6 +117,11 @@ _COMPLEX_BLOCKS = [
     ("ComplexMixerBlock", {"sample_rate": 32000.0, "frequency": -1500.0, "phase": 0.1}),
     ("NCOBlock", {}),
     ("IQUpconvertBlock", {"sample_rate": 32000.0, "frequency": 6000.0}),
+    # Two-complex-stream add/sub: the rail_q cell emits the (yi, yq) packet.
+    ("AddCCBlock", {}),
+    ("SubCCBlock", {}),
+    # Two-complex-stream product: the combine cell emits the (yi, yq) packet.
+    ("MultiplyCCBlock", {}),
 ]
 
 

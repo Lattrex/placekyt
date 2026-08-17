@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """The GRC-server ORDER (start server vs import flowgraph) must NOT matter.
 
 If the user turns the placeKYT GNURadio server ON before importing/routing a

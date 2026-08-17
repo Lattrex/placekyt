@@ -19,10 +19,15 @@ class ComplexToMagSquaredBlock(KyttarBlock):
     RANGE / SATURATION: with re, im ∈ [-1, 1) the true power is in [0, 2), but Q15
     only represents [0, 1). So |z| ≥ 1 (notably the unit circle) overflows; this
     block SATURATES to +full-scale (production behavior) rather than wrapping. The
-    power is always ≥ 0, so any overflow makes the 16-bit accumulator look negative
-    (bit 15 set) — detected with a single ``BR.N`` and pinned to ``0x7FFF``. The
-    DSP-equivalence stimulus stays inside the unit circle (|z| < 1) where the
-    result is Q15-representable and tracks GR float within the two-op floor.
+    power is always ≥ 0, so an overflow normally makes the 16-bit accumulator look
+    negative (bit 15 set) — but the N flag must be checked after EACH accumulation
+    step, not once at the end: ``re = im = -1.0`` makes BOTH squares 0x8000, and
+    ``0x8000 + 0x8000`` WRAPS TO ZERO with N clear, so a single end-check ``BR.N``
+    emitted 0 for that corner (the wrap corner the RMSCF front pinned; fixed
+    2026-08-16 by copying its per-step guard: ``MULQ re,re; BR.N sat;
+    MACQ im,im; BR.N sat``). The DSP-equivalence stimulus stays inside the unit
+    circle (|z| < 1) where the result is Q15-representable and tracks GR float
+    within the two-op floor; the corner is pinned bit-exact in the suite.
 
     Interface: COMPLEX input (re@R0, im@R1, the proven complex-burst fan-in), ONE
     real output (the power).
@@ -52,9 +57,14 @@ class ComplexToMagSquaredBlock(KyttarBlock):
             outputs=[Port("out")],
             entries=[EntryPoint("default")],
             data=[DataWord("satpos", self.SAT_POS_Q15, address=2)],
+            # Per-step overflow guard (the RMSCF front form): re = -1.0 alone makes
+            # the FIRST product 0x8000 (N set), and re = im = -1.0 would make
+            # 0x8000 + 0x8000 wrap to ZERO with N clear — so N is checked after
+            # EACH step; a single end-check misses the wrap corner.
             assembly_template="""\
 start:
     MULQ R{in:re}, R{in:re}
+    BR.N _sat
     MACQ R{in:im}, R{in:im}
     BR.N _sat
     {write:out}

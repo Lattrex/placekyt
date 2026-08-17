@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Tests for the hardened YAML loader (engine/io/safe_yaml.py, §2.1)."""
 
 from __future__ import annotations

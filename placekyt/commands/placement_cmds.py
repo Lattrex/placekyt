@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Placement commands: place/move/remove blocks and cells (§4.2)."""
 
 from __future__ import annotations

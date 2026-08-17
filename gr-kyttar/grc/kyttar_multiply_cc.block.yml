@@ -1,0 +1,52 @@
+id: kyttar_multiply_cc
+label: Kyttar Multiply CC
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar Multiply CC — elementwise product of two COMPLEX streams (drop-in
+  for GNU Radio's blocks.multiply_cc). out = in0 * in1.
+
+  On the Kyttar chip this maps to MultiplyCCBlock: two cells — the landing
+  cell pairs the two source packets per sample (counting join, any arrival
+  order), snapshots the four operands and forms the four full-scale Q15
+  products; the combine cell computes the saturating rails
+  yi = sat(ai*bi - aq*bq), yq = sat(ai*bq + aq*bi). An out-of-range rail
+  SATURATES to full scale (never wraps); the only datapath wrap is the
+  measure-zero (-1.0)*(-1.0) product corner (documented).
+
+  num_inputs is pinned to 2 — a HARDWARE LIMIT (a third complex stream is a
+  chained complex multiply, a whole second stage that does not fit).
+
+  Place it between two complex sources and a KyttarSink and ensure the
+  device_id matches your KyttarDevice.
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.multiply_cc(device_id=${device_id}, num_inputs=${num_inputs})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+- id: num_inputs
+  label: Num Inputs
+  dtype: int
+  default: '2'
+
+inputs:
+- label: in
+  domain: stream
+  dtype: complex
+  multiplicity: ${ num_inputs }
+
+outputs:
+- label: out
+  domain: stream
+  dtype: complex
+
+asserts:
+- ${ num_inputs == 2 }
+
+file_format: 1

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Tests for the BlockCatalog adapter (engine/catalog.py, §0.1, §2.2, §3.4, §7.2).
 
 These require gr_kyttar (installed editable in the venv) but no Qt, no
@@ -10,7 +11,7 @@ import pytest
 
 from engine.catalog import OFFICIAL_LIBRARY, BlockCatalog
 
-# The 8 categories from the architecture notes §3.2.
+# The 8 block library categories.
 EXPECTED_CATEGORIES = {
     "signal_conditioning",
     "filtering",
@@ -23,6 +24,14 @@ EXPECTED_CATEGORIES = {
     "routing",          # SplitterBlock (full-duplex shared-port fan-out)
     "modulation",       # IQUpconvertBlock (I/Q passband upconvert, s=I·cos−Q·sin)
     "sources",          # NCOBlock (complex Signal Source, analog.sig_source_c)
+    # Categories introduced by the autonomous block-factory batches:
+    "math_operators",   # AddConst, GainBlock, Nlog10 (real arithmetic)
+    "byte_operators",   # AndConst, pack/unpack_k_bits (byte/bit ALU ops)
+    "logic",            # Xor, Not (bitwise logic)
+    "coding",           # LFSR scrambler, diff enc/dec, Varicode (line/differential coding)
+    "type_conversion",  # char<->float, map_bb
+    "modulators",       # RaisedCosineEnvelope / CW keyer (waveform shapers)
+    "digital",          # misc digital blocks (map_bb / slicers family)
 }
 
 
@@ -59,7 +68,11 @@ class TestDiscovery:
     def test_hidden_blocks_still_resolve(self, catalog):
         # Hiding is palette-only: a hidden block must still resolve via get() so a
         # design/demo that references it continues to LOAD.
-        for n in ("DFEEqualizerBlock", "CoherentRXBlock", "SramControllerBlock"):
+        # (SramControllerBlock used to be hidden here; it is now a VERIFIED,
+        # visible memory-interface block. LMSEqualizerBlock likewise graduated
+        # 2026-08-13: the unverified 8-tap PoC scaffolding was REPLACED by the
+        # verified DD complex LMS equalizer — swapped for another hidden PoC.)
+        for n in ("DFEEqualizerBlock", "CoherentRXBlock", "ConvEncoderK7Block"):
             spec = catalog.get(n)
             assert spec is not None and spec.hidden, n
 
@@ -71,7 +84,7 @@ class TestDiscovery:
 
     def test_known_blocks_exist(self, catalog):
         for name in ("AGCBlock", "FIRFilterBlock", "DFEEqualizerBlock",
-                     "CostasLoopBlock", "FpgaRamBlock"):
+                     "CostasLoopBlock", "SramControllerBlock"):
             assert catalog.get(name) is not None, name
 
     def test_viterbi_excluded(self, catalog):

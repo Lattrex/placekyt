@@ -21,7 +21,7 @@ tracked follow-up (the single-real path above is what the SSB Weaver needs).
 
 Run::
 
-    cd /home/system/placekyt
+    cd <repo root>
     QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest \
         verification/tests/test_logical_converters.py -q
 """

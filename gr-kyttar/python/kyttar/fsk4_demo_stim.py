@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """M17 4FSK modem demo stimulus (TX bits + RX FM burst) for fsk4_modem.grc.
 
 Imported by the flowgraph as a plain Python module (same pattern as

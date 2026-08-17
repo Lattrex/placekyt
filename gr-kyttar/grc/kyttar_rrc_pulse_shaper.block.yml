@@ -4,8 +4,8 @@ category: '[Kyttar]'
 
 templates:
   imports: from gnuradio import kyttar
-  make: kyttar.rrc_pulse_shaper(${device_id}, ${alpha}, ${span}, sps=${sps},
-    io_type=${io_type})
+  make: kyttar.rrc_pulse_shaper(${device_id}, gain=${gain}, sampling_freq=${sampling_freq},
+    symbol_rate=${symbol_rate}, alpha=${alpha}, ntaps=${ntaps}, io_type=${io_type})
 
 parameters:
 - id: device_id
@@ -13,25 +13,42 @@ parameters:
   dtype: string
   default: '"kyttar_0"'
 
+# GR-VERBATIM firdes.root_raised_cosine(gain, sampling_freq, symbol_rate, alpha,
+# ntaps) parameters (INV-0). The block's constructor takes EXACTLY these — the older
+# span/sps binding was STALE (a user setting sps here got a param the class no longer
+# accepts). samples-per-symbol is derived on-chip as sampling_freq/symbol_rate.
+
+# firdes gain — the taps are scaled so their SUM == gain (GR firdes convention).
+- id: gain
+  label: Gain
+  dtype: real
+  default: '1.0'
+
+# Sampling frequency; sampling_freq/symbol_rate = samples-per-symbol. Default 4.0
+# (with symbol_rate 1.0 -> 4 sps) keeps the shipped BPSK modem unchanged. A 2-sps
+# modem sets sampling_freq=2, symbol_rate=1.
+- id: sampling_freq
+  label: Sampling Freq
+  dtype: real
+  default: '4.0'
+
+# Symbol rate (same units as sampling_freq).
+- id: symbol_rate
+  label: Symbol Rate
+  dtype: real
+  default: '1.0'
+
 - id: alpha
   label: Roll-off (alpha)
   dtype: real
   default: '0.35'
 
-- id: span
-  label: Filter Span (symbols)
+# Number of taps (GR/firdes force it ODD; the class adds 1 if even). Default 33
+# (= span-8 @ 4 sps: 8*4+1) for back-compat with the shipped BPSK modem.
+- id: ntaps
+  label: Num Taps
   dtype: int
-  default: '8'
-
-# Samples per symbol. The RRC's on-chip length (ntaps = span*sps+1) and its
-# samples/symbol (sampling_freq = sps, symbol_rate = 1) are derived from this, so a
-# 2-sps modem MUST set sps=2 here (else the block keeps its default sps=4 / ntaps=33
-# -> a mismatched filter that garbles a 2-sps chain). Default 4 keeps the shipped
-# BPSK modem unchanged.
-- id: sps
-  label: Samples/Symbol (sps)
-  dtype: int
-  default: '4'
+  default: '33'
 
 # Stream type. The RRC shaper is a real FIR applied per rail; its GRC port dtype
 # must match the chain: REAL for BPSK (interp_fir_filter_fff pulse shaping of the
@@ -65,19 +82,23 @@ documentation: |-
 
   Root-Raised-Cosine (RRC) Pulse Shaper / Matched Filter
 
-  Spatial FIR filter with RRC coefficients (excess-bandwidth factor alpha).
-  Used as the transmit pulse shaper or the receive matched filter. The filter
-  is span*sps+1 taps (odd length, matching GNURadio), distributed across cells
-  (5 taps/cell).
+  Spatial FIR filter with RRC coefficients (excess-bandwidth factor alpha),
+  matching GNU Radio's filter.firdes.root_raised_cosine(gain, sampling_freq,
+  symbol_rate, alpha, ntaps) taps VERBATIM (INV-0). Used as the transmit pulse
+  shaper or the receive matched filter. Distributed across cells (5 taps/cell).
+  samples-per-symbol is derived on-chip as sampling_freq/symbol_rate.
 
   Ports:
     sample (in):  upsampled symbols / received samples
     out:          pulse-shaped / matched-filtered samples
 
-  Parameters:
-    Device ID:    Which Kyttar device to use
-    alpha:        Roll-off / excess bandwidth (0.2-0.5 typical; 0.35 default)
-    span:         Filter span in symbols (default 8)
+  Parameters (GNU Radio firdes.root_raised_cosine, verbatim):
+    Device ID:      Which Kyttar device to use
+    gain:           passband/scale gain (taps sum to gain; 1.0 default)
+    sampling_freq:  sample rate (sampling_freq/symbol_rate = sps; 4.0 default)
+    symbol_rate:    symbol rate (1.0 default)
+    alpha:          roll-off / excess bandwidth (0.2-0.5 typical; 0.35 default)
+    ntaps:          number of taps (forced odd; 33 default = span-8 @ 4 sps)
 
   Mapped by placeKYT (File -> Import GNURadio Flowgraph) to RRCPulseShaperBlock.
 

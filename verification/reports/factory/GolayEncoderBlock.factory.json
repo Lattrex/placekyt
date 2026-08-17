@@ -1,0 +1,31 @@
+{
+  "block": "GolayEncoderBlock",
+  "grc_block": "",
+  "tier": 3,
+  "wave": 5,
+  "schema_version": 1,
+  "started_utc": "2026-08-16T22:30:43Z",
+  "ended_utc": "2026-08-16T23:10:43Z",
+  "walltime_sec": 2400.0,
+  "tokens": {
+    "input": 0,
+    "output": 170818,
+    "cache_read": 0,
+    "total": 170818
+  },
+  "turns": 83,
+  "attempts": 1,
+  "human_interventions": 0,
+  "intervention_reasons": [],
+  "prompts": [
+    {
+      "role": "initial",
+      "text": "factory_dispatch prompt; isolated worktree; extended Golay (24,12) systematic encoder; convention to be pinned for the decoder dispatch."
+    }
+  ],
+  "verify_passed": true,
+  "quarantined": false,
+  "quarantine_reason": "",
+  "commit_sha": "5ab7385",
+  "notes": "4 cells (2x2 serpentine), 1 attempt, autonomous (interrupted once by a session usage limit and resumed; walltime approximate across the interruption, turns counted from the transcript, token figure is the resumed-segment report \u2014 an undercount). Honest INV-7 arithmetic forced a 4th cell (12-entry column-mask table split asymmetrically 7/5 across two parity cells, both exactly 30 words). DEFECT FOUND: a non-R0 input register colliding with the instruction region resolves SILENTLY (read an instruction word as data) \u2014 generalized in the lessons entry. Also fixed a mutation-gate insensitivity (stimulus algebraically blind to the mutated B row \u2014 the fixed set asserts the sensitivity precondition). B matrix certified by the exhaustive weight distribution {0:1,8:759,12:2576,16:759,24:1} + B\u00b7Bt=I. 19 tests, tol 0. Convention pinned executable (encode_word/_column_mask) for the decoder dispatch."
+}

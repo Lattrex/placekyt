@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Bitstream disassembler — turn a list of raw 16-bit Kyttar words into a
 human-readable mnemonic listing (#183/#184).
 

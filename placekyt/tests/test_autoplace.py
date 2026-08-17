@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Auto-place tests (auto-P&R §8): flow-ordered SERPENTINE multi-row packing."""
 
 from __future__ import annotations

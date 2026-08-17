@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """
 Block Definition for Filament Placement
 
@@ -13,9 +14,18 @@ import yaml
 
 @dataclass(frozen=True)
 class Port:
-    """Named input or output port for a new-style CellProgram."""
+    """Named input or output port for a new-style CellProgram.
+
+    ``entry`` (input ports only) names the :class:`EntryPoint` a producer into
+    this port must JUMP to. A multi-entry rendezvous cell (the DualFloatToComplex
+    ``got_i``/``got_q`` pair) runs DIFFERENT code per input port, so the block's
+    single default entry is wrong for every port but the first — the build reads
+    this declaration to steer each delivering net's JUMP at the right entry.
+    ``None`` (the default) keeps the block's default entry.
+    """
     name: str
     register: Optional[int] = None  # None = auto-allocate
+    entry: Optional[str] = None     # entry-point NAME a producer JUMPs to
 
 
 @dataclass(frozen=True)
@@ -56,6 +66,13 @@ class DataWord:
     # block's orientation (a rotated block's absolute output direction rotates
     # with it). Normal coefficients are orientation-invariant (is_face=False).
     is_face: bool = False
+    # True for a COLD-START value another cell overwrites at runtime (e.g. a
+    # tap MIRROR seeded by a same-address DataWord and updated by its master
+    # cell): the host re-writes `value` at every packet boundary, exactly like
+    # a ``reset_per_batch`` StateVar. Plain coefficients stay False — they are
+    # never overwritten by the design, and a batch reset must NOT revert a
+    # live-tuned coefficient.
+    reset_per_batch: bool = False
 
 
 class ConnectionType(Enum):

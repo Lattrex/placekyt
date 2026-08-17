@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Install / resync the GNURadio "kyttar" out-of-tree module + its GRC block
 # definitions so gnuradio-companion (and a python `from gnuradio import kyttar`)
 # use the CANONICAL, source-controlled versions in this repo.

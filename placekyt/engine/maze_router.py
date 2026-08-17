@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Maze router — route ANY legal placement with per-net BFS + rip-up-reroute.
 
 The bus/broker router (:mod:`engine.bus_router`) grows ONE shared directed backbone
@@ -201,6 +202,21 @@ def _route_chip_maze(project, ct, chip_id, nets, *, distinct_face_cells=None):
         block_cells.update((c.x, c.y) for c in pl.cells)
         block_cells.update((t.x, t.y) for t in getattr(pl, "transit_cells", []))
 
+    # USED chip-port cells (ports that are an ENDPOINT of some connection on this
+    # chip) are a HARD wall for every foreign corridor AND for broker reservation
+    # (the FLLBandEdge pinch, 2026-08-16): the port cell's injection/egress
+    # programming and a transiting corridor's face programming destroy each other —
+    # the maze escalation was the router path that shipped the 8-wide-ring wrap
+    # THROUGH x16_in as a silent dead build. A net still uses its OWN port cell as
+    # src/goal; UNUSED port cells stay plain routing cells.
+    _pc_by_name = {p.name: (p.cell_x, p.cell_y) for p in getattr(ct, "ports", [])}
+    used_port_cells: set = set()
+    for _conn in project.connections:
+        for _ep in (_conn.source, _conn.target):
+            if isinstance(_ep, ChipPortEndpoint) and _ep.chip == chip_id \
+                    and _ep.port in _pc_by_name:
+                used_port_cells.add(_pc_by_name[_ep.port])
+
     # A block OUTPUT net drives its egress into the cell just outside its source cell's
     # emit face (the source's first corridor hop). That cell is CLAIMED for egress: a
     # foreign broker must not sit there, or the two roles collide on its single fwd_face
@@ -217,17 +233,42 @@ def _route_chip_maze(project, ct, chip_id, nets, *, distinct_face_cells=None):
     def _adjacent(a, b):
         return abs(a[0] - b[0]) + abs(a[1] - b[1]) == 1
 
+    def _plain_abut(n):
+        return (not n.src_is_port and not n.dst_is_port
+                and isinstance(n.conn.source, BlockEndpoint)
+                and isinstance(n.conn.target, BlockEndpoint)
+                and _adjacent(n.src, n.dst))
+
+    # MIXED FAN-OUT KEEPS THE FULLY-ROUTED PATH (mirrors the bus router's
+    # abutment fast-path rule): a source exit cell fanning out with SOME arm not
+    # a plain adjacent block→block net (a routed corridor, or a port egress)
+    # must route EVERY arm. The exit cell has ONE output face and the INV-17
+    # hop-steered fan-out form sequences all arms down that single face — an
+    # abutted arm whose consumer sits on a DIFFERENT face than the corridor's
+    # first hop makes the routed arm's @hop words land in the abutted consumer
+    # instead (the converter_flavors mixed-shape deadlock: mixer.yq abutted
+    # EAST swallowed mixer.yi's broker-bound write + trigger). All-abutted
+    # groups keep the abutment fast-path unchanged.
+    _mixed_exit_cells: set = set()
+    _by_exit: dict = {}
+    for _m in nets:
+        if isinstance(_m.conn.source, BlockEndpoint) and not _m.src_is_port:
+            _by_exit.setdefault(_m.src, []).append(_m)
+    for _cell, _grp in _by_exit.items():
+        if (len(_grp) > 1 and any(_plain_abut(_m) for _m in _grp)
+                and not all(_plain_abut(_m) for _m in _grp)):
+            _mixed_exit_cells.add(_cell)
+
     def is_abutment(n):
         """A block→block net whose source OUTPUT cell directly abuts the target
         INPUT cell needs NO route: the build's ``abutment_pts`` synthesises the @1
         handoff (the source delivers straight into the input). Leaving it UNROUTED
         (empty route) is correct — and it frees the fabric for the nets that DO need
         a corridor. A chip-port source/target is never an abutment here (the port
-        injects/egresses via its own face — handled by the routed branches)."""
-        return (not n.src_is_port and not n.dst_is_port
-                and isinstance(n.conn.source, BlockEndpoint)
-                and isinstance(n.conn.target, BlockEndpoint)
-                and _adjacent(n.src, n.dst))
+        injects/egresses via its own face — handled by the routed branches). A net
+        from a MIXED fan-out exit cell (some sibling arm routed) is never an
+        abutment — see ``_mixed_exit_cells`` above."""
+        return _plain_abut(n) and n.src not in _mixed_exit_cells
 
     def _free_broker_count(target_in, dface):
         """How many free cells abut ``target_in`` (excluding its own emit face) — a
@@ -320,7 +361,8 @@ def _route_chip_maze(project, ct, chip_id, nets, *, distinct_face_cells=None):
                     continue     # abutment nets claim their face directly (no broker)
                 cands = [c for c in _broker_cells(
                             tgt, g[0].dface, {c: 0 for c in reserved},
-                            in_bounds, None, block_cells, output_emit_cells)
+                            in_bounds, None, block_cells | used_port_cells,
+                            output_emit_cells)
                          if _face_of_neighbour(tgt, c) not in used_faces]
                 if not cands:
                     broker_fail[tgt] = ("no free DISTINCT-face broker for a face-locking "
@@ -334,7 +376,8 @@ def _route_chip_maze(project, ct, chip_id, nets, *, distinct_face_cells=None):
         if tgt in broker_of:
             continue
         cands = _broker_cells(tgt, g[0].dface, {c: 0 for c in reserved},
-                              in_bounds, None, block_cells, output_emit_cells)
+                              in_bounds, None, block_cells | used_port_cells,
+                              output_emit_cells)
         if not cands:
             broker_fail[tgt] = "no free broker cell abutting the target input"
             continue
@@ -388,8 +431,13 @@ def _route_chip_maze(project, ct, chip_id, nets, *, distinct_face_cells=None):
         # direction). Price transit heavily so it's a last resort, never a hard wall
         # (a hard wall made egress/ingress fail when a broker sat on the only corridor).
         foreign = reserved - {broker} if broker is not None else set(reserved)
+        # USED port cells are hard obstacles for every net that does not own them
+        # as its source/goal (the FLLBandEdge pinch — see the wall's derivation
+        # above); merge them into the block-cell obstacle set for this net.
+        walls = block_cells | {pc for pc in used_port_cells
+                               if pc != n.src and pc != goal}
         return _astar_congestion(
-            n.src, n.sface, goal, block_cells, foreign, in_bounds,
+            n.src, n.sface, goal, walls, foreign, in_bounds,
             src_is_port=n.src_is_port, hist=hist, cell_use=cell_use,
             cell_used_dir=cell_used_dir)
 

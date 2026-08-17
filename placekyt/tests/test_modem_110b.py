@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """MIL-STD-188-110B 75-bps 2-chip RX demo (#162).
 
 A 110B receiver across TWO daisy-chained chips: chip 0 filters (RRC matched

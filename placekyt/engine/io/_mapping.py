@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Small helpers for reading fields out of parsed YAML mappings.
 
 ruamel round-trip mode returns ``CommentedMap`` / ``CommentedSeq`` which behave

@@ -1,0 +1,48 @@
+id: kyttar_delay
+label: Delay
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Delay — drop-in for GNU Radio's blocks.delay.
+
+  An integer-sample delay line: delays the stream by ``delay`` samples,
+  y[n] = x[n-delay] (it prepends ``delay`` zeros, then passes the input through
+  unchanged). No filtering, no interpolation — a pure time shift.
+
+  This block runs on the Kyttar chip. Place it between a KyttarSource and
+  KyttarSink block, and ensure the device_id matches your KyttarDevice.
+
+  Parameters (mirroring GNU Radio's blocks.delay verbatim):
+  - Device ID: ID of the KyttarDevice block
+  - Delay: the integer sample delay (default 1).
+
+  Hardware limit: the delay line is held in one cell's registers, so the depth is
+  capped at 12 samples; a larger delay is rejected at placement (a deeper delay
+  needs a fabric FIFO / multi-cell line, not yet supported).
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.delay(device_id=${device_id}, delay=${delay})
+  callbacks:
+    - set_delay(${delay})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+  - id: delay
+    label: Delay
+    dtype: int
+    default: 1
+
+inputs:
+  - label: in
+    dtype: float
+
+outputs:
+  - label: out
+    dtype: float
+
+file_format: 1

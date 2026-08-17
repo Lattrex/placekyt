@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """§1.4 UNIVERSAL routing-cell program (Reading B): every routing cell — including
 a PLAIN TRANSIT spine cell — carries the uniform transmit(+relay) program, so the
 fabric is made of generic, dynamically-repurposable control cells (§4.2).
@@ -5,8 +6,8 @@ fabric is made of generic, dynamically-repurposable control cells (§4.2).
 The load-bearing correctness property (the builds≠computes hazard): programming a
 transit cell must NOT change pass-through — a HOP_CNT<31 word transiting a now-
 programmed cell must behave IDENTICALLY to a face-only cell (forwarded on fwd_face,
-never firing an entry). This is guaranteed by the hardware (``routing.rs::
-route_packet`` decides execute-vs-forward purely on HOP_CNT, never reading memory),
+never firing an entry). This is guaranteed by the hardware routing engine's
+forwarding rule (execute-vs-forward is decided purely on HOP_CNT, never reading memory),
 and proven here against simkyt in a minimal 2-cell forward case.
 """
 

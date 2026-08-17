@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """SramInspectorPanel — a window around :class:`SramInspectorView`.
 
 Opened by double-clicking an SRAM panel on the canvas. Shows the panel's 256×256

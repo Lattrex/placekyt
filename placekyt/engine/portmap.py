@@ -1,8 +1,9 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """PortMap — a block's bus-facing I/O geometry (auto-P&R Phase 2, P2.2).
 
 The auto-router needs, per block, where each EXTERNAL port physically sits and
 which way it faces — for the INPUT landing cell AND the OUTPUT cell (the broker
-symmetry of the auto-P&R design notes §4.1). It also needs the §4.3 hints: which edge of
+symmetry the auto-placer relies on). It also needs the placement hints: which edge of
 the block's footprint faces the routing bus, and whether the input and output are
 co-located on that edge (so the packer can take the cheap 1-D path).
 
@@ -340,12 +341,61 @@ def build_port_map(
     # index by the full input list, then filter.
     if landing_id is not None:
         dx, dy, face = _norm(landing_id)
+        # Per-port entry: a multi-entry rendezvous cell (DualFloatToComplex
+        # got_i/got_q) declares WHICH entry each input port's producer must JUMP
+        # to (``Port.entry`` = the entry-point NAME). Resolve those names to
+        # addresses once; a port with no declaration keeps the block default.
+        _entry_by_name: dict = {}
+        try:
+            from gr_kyttar.placement.resolver import CellProgramResolver
+            _entry_by_name = CellProgramResolver().compute_entry_addresses(
+                cell_programs[landing_id]) or {}
+        except Exception:  # noqa: BLE001 — fall back to the block default entry
+            _entry_by_name = {}
         for i, p in enumerate(cell_programs[landing_id].inputs):
             if (landing_id, p.name) in internal_dsts:
                 continue
             reg = in_regs[i] if i < len(in_regs) else None
+            p_entry = entry
+            _ename = getattr(p, "entry", None)
+            if _ename and _ename in _entry_by_name:
+                p_entry = int(_entry_by_name[_ename])
             ports.append(PortInfo(p.name, "in", landing_id, dx, dy, face,
-                                  register=reg, entry=entry))
+                                  register=reg, entry=p_entry))
+
+    # SRAM-PANEL RETURN PORT: a panel-backed block's push-read consumer input
+    # (the Varicode 'word' register on the emit cell, the CW keyer's 'base' on
+    # the run player) lives on a NON-landing cell, so the landing-cell rule
+    # above misses it. Without it the GUI has no cell to anchor the x1_in
+    # return net to — fly lines float free and the port cannot be routed
+    # interactively (user-reported). Expose it from the block's declared
+    # panel_requirements, with its resolved register + entry.
+    try:
+        _panel_req = block.panel_requirements()
+    except Exception:  # noqa: BLE001 — no panel backing
+        _panel_req = None
+    if (_panel_req and _panel_req.get("return_port")
+            and _panel_req.get("return_cell") in cell_programs):
+        _rc = _panel_req["return_cell"]
+        _rp = str(_panel_req["return_port"])
+        if not any(p.name == _rp and p.direction == "in" for p in ports):
+            _reg = _ent = None
+            try:
+                from gr_kyttar.placement.resolver import CellProgramResolver
+                _r = CellProgramResolver()
+                _cp = cell_programs[_rc]
+                for _a, _info in _r.classify_addresses(_cp).items():
+                    if _info.get("name") == _rp:
+                        _reg = _a
+                        break
+                _ents = _r.compute_entry_addresses(_cp)
+                if _ents:
+                    _ent = min(_ents.values())
+            except Exception:  # noqa: BLE001 — geometry still useful without regs
+                pass
+            _dx, _dy, _face = _norm(_rc)
+            ports.append(PortInfo(_rp, "in", _rc, _dx, _dy, _face,
+                                  register=_reg, entry=_ent))
 
     # External outputs = the output cell(s)' outputs not consumed internally. A
     # block usually has ONE output cell (``output_cell_id``); a block with TWO

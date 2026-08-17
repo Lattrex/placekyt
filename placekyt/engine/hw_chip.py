@@ -1,14 +1,14 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """HwChip — a real-hardware drop-in for ``simkyt.Chip`` behind ``SimServer._chip``.
 
-The seam (see ``dev_docs/HARDWARE_BACKEND_PLAN.md``): ``SimServer`` drives a chip object
+The seam: ``SimServer`` drives a chip object
 through ~13 methods. Today that object is a ``simkyt.Chip`` (the simulator). ``HwChip``
-exposes the SAME method surface but routes the WRITE/DATA/JUMP words over USB to the devkyt
+exposes the SAME method surface but routes the WRITE/DATA/JUMP words over USB to the dev-kit
 FPGA board (via :class:`~placekyt.engine.hw_transport.FX3Transport`). SimServer, the GR wire
 protocol, the injection logic, and the ``.grc`` flowgraphs are all unchanged — ``set_chip``
 swaps the backend.
 
-**The single biggest semantic shift (plan §4.1):** the sim is event-driven
+**The single biggest semantic shift:** the sim is event-driven
 (inject → ``run()`` → quiescence → read); the real chip is asynchronous and free-running.
 So on hardware ``run()`` is a NO-OP, and correctness comes from the FPGA's handshake pacing.
 Concretely, the sim's per-sample call pattern is::
@@ -23,7 +23,7 @@ WRITE + DATA pair per operand), and on ``inject_jump_physical`` emitting the JUM
 FPGA returns. ``run()`` does nothing. This mirrors the fake-gain gateware exactly: WRITE/DATA
 buffer state, JUMP triggers execution + the framed output burst (held-ack paced).
 
-First-bring-up scope (plan §6): single logical chip, stateless GAIN demo (per-batch reset is
+First-bring-up scope: single logical chip, stateless GAIN demo (per-batch reset is
 a no-op), host-monotonic timestamps, run-only. Stateful receivers, multi-chip, and per-batch
 backdoor reset are explicit LATER phases.
 """
@@ -35,7 +35,7 @@ from typing import List, Optional, Sequence, Tuple
 
 from .hw_transport import FX3Transport, HwTransportError
 
-# ---- Kyttar word encoding (from simkyt/src/instruction/encode.rs) ----
+# ---- Kyttar word encoding (per the ISA word encoding) ----
 # [15:12]=opcode, [11]=RSV, [10]=CFG(write only), [9:5]=HOP_CNT, [4:0]=DEST/addr.
 _OP_WRITE = 0x6
 _OP_JUMP = 0x7
@@ -107,7 +107,7 @@ class HwChip:
         """Program the array: stream the ChipBuild WRITE/DATA/JUMP words to the FPGA.
 
         These configure the array (the FPGA relays them in). We reset first so the array
-        starts from a known state (plan §4.7: reset() = global board reset + reprogram).
+        starts from a known state (reset() = global board reset + reprogram).
         """
         self._require_connected()
         self._t.reset(leave=False)
@@ -117,7 +117,7 @@ class HwChip:
         self._drain_stray()
 
     # ------------------------------------------------------------- injection
-    # DECOUPLED write/read (CM's ping-pong): inject/jump ONLY buffer + send words —
+    # DECOUPLED write/read (the ping-pong contract): inject/jump ONLY buffer + send words —
     # they NEVER block waiting for this sample's output. The output is drained
     # independently by drain()/read_port*, so writing and reading run concurrently.
     # This is what unlocks throughput: batch many WRITE/DATA/JUMP into few USB writes,

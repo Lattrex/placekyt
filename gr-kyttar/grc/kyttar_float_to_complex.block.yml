@@ -1,0 +1,43 @@
+id: kyttar_float_to_complex
+label: Float To Complex
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar Float To Complex — join two real rails into one complex stream, a drop-in
+  for GNU Radio's blocks.float_to_complex.
+
+      out[n] = re[n] + j*im[n]
+
+  The complement of Complex to Float and the SAME identity datapath: the two real
+  inputs (re @ R0, im @ R1) are emitted as the two words of one complex sample.
+  EXACT, single cell, words_per_sample=2.
+
+  Use this block when the I and Q rails come from ONE coordinated producer (the
+  common in-chip case). For two INDEPENDENT, asynchronously-timed real producers use
+  the Dual Float To Complex rendezvous instead.
+
+  This block runs on the Kyttar chip. Place it between a KyttarSource and KyttarSink
+  block, and ensure the device_id matches your KyttarDevice.
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.float_to_complex(device_id=${device_id})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+
+inputs:
+  - label: re
+    dtype: float
+  - label: im
+    dtype: float
+
+outputs:
+  - label: out
+    dtype: complex
+
+file_format: 1

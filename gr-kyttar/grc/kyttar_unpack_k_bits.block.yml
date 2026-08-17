@@ -1,0 +1,56 @@
+id: kyttar_unpack_k_bits
+label: 🧪 Kyttar Unpack K Bits
+category: '[Kyttar]'
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.unpack_k_bits(${device_id}, ${k})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+
+- id: k
+  label: Bits per byte (k)
+  dtype: int
+  default: '8'
+
+inputs:
+- label: in
+  domain: stream
+  dtype: byte
+
+outputs:
+- label: out
+  domain: stream
+  dtype: byte
+
+asserts:
+- ${ 1 <= k <= 8 }
+
+documentation: |-
+  Unpack K Bits — GNU Radio blocks.unpack_k_bits_bb(k).
+
+  Takes one input BYTE and emits its LOW k bits MOST-SIGNIFICANT bit FIRST, as k
+  separate output bytes (each 0 or 1):
+
+      out = [(byte >> (k-1)) & 1, (byte >> (k-2)) & 1, ..., (byte >> 0) & 1]
+
+  The exact INVERSE of blocks.pack_k_bits_bb: pack k MSB-first bits into a byte,
+  unpack that byte back into the same k bits. Rate-EXPANDING: one input byte
+  produces k output bytes.
+
+  Ports:
+    in  (byte): packed input bytes
+    out (byte): the unpacked bits, MSB-first, one 0/1 byte each
+
+  Parameters:
+    Device ID: which Kyttar device to use
+    k:         number of bits to unpack from each byte (1-8; default 8)
+
+  BIT-EXACT vs GNU Radio blocks.unpack_k_bits_bb (verified k=2..8). Mapped by
+  placeKYT (File -> Import GNURadio Flowgraph) to UnpackKBitsBlock.
+
+file_format: 1

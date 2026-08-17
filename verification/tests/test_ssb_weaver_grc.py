@@ -17,7 +17,7 @@ The gate (NEVER weakened):
      recovered-audio burst that correlates with the input (> 0.9).
 
 Run:
-    QT_QPA_PLATFORM=offscreen /home/system/placekyt/.venv/bin/python -m pytest \
+    QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest \
       verification/tests/test_ssb_weaver_grc.py -x -q -s
 """
 from __future__ import annotations

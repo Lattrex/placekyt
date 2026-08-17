@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Edit commands: face direction and block parameters (§4.2)."""
 
 from __future__ import annotations

@@ -42,6 +42,32 @@ multi-chip mapping. The `stream_id` is the only contract between them.
 | `gain_2p2s.grc` | The GNU Radio flowgraph — **4 source/gain/sink triples**, one per stream (A/B/C/D). Open in `gnuradio-companion`. |
 | `gen_grc.py` | Regenerates `gain_2p2s.grc`. |
 
+## Continuous burst loop (repeat mode)
+
+The sources ship `Repeat bursts = yes` and the sinks `server_repeat = True`: the
+flowgraph is a CONTINUOUS burst loop — each time a stream's sink drains a burst,
+its source dispatches the next one. The scopes refresh every burst, and a slider
+drag lands **one burst later, within the same Run** (no re-run needed). This is
+the honest batch-simulation answer to "live": the simulator is not real-time, so
+"live" = the next burst reflects the change. On real hardware (streaming mode)
+the same slider retunes the die mid-stream.
+
+## Live per-die gain sliders
+
+The flowgraph carries FOUR sliders — **gain A (chip0) … gain D (chip3)**. Dragging
+one retunes **its die's gain cell on the RUNNING fabric**: the slider's `set_gain`
+callback pushes the value to the placeKYT multi-chip server, which WRITEs the Q15
+coefficient word into that block's cell. For the far dies (chip1/chip3) the WRITE
+enters the **chain head** and self-routes across the transparent inter-chip wire —
+the same composite hop arithmetic the streams ride (29 local, 29−10=19 across the
+wire). No reflash, no rebuild, zero crosstalk between the four dies (gate:
+`placekyt/tests/test_live_coeff_writes.py::test_multichip_live_writes_retune_each_die`).
+
+Each `kyttar_gain` pins its placeKYT block with `block_name`
+(`"gain"`/`"gain_1"`/`"gain_2"`/`"gain_3"`) — REQUIRED with four same-type gains,
+since GRC's codegen construction order is not the .grc order and order-based
+matching could retune the wrong die.
+
 ## Board
 
 Targets `placekyt/resources/boards/dev2p2s.kdb` — 4 chips, chain A (chip0→chip1) +

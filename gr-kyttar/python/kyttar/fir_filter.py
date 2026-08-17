@@ -24,12 +24,16 @@ class fir_filter(_PassThrough):
     Parameters:
         device_id: ID of the kyttar.device to use
         coefficients: List of filter coefficients (taps)
+        decimation: GR `decim` (M) — emit every M-th output (fir_filter_fff(M, taps)).
+        interpolation: GR `interp` (L) — zero-stuff by L (interp_fir_filter_fff(L, taps)).
     """
 
     def __init__(
         self,
         device_id: str = "kyttar_0",
         coefficients: List[float] = None,
+        decimation: int = 1,
+        interpolation: int = 1,
     ):
         super().__init__(name="Kyttar FIR Filter", n_in=1, n_out=1)
 
@@ -41,9 +45,13 @@ class fir_filter(_PassThrough):
 
         self._coefficients = list(coefficients)
         self._num_taps = len(self._coefficients)
+        self._decimation = decimation
+        self._interpolation = interpolation
         # Advertise params for GRC↔placeKYT sync detection (see dsp_markers).
         self._advertise_grc_params(
-            device_id, "FIRFilterBlock", {"coefficients": self._coefficients})
+            device_id, "FIRFilterBlock",
+            {"coefficients": self._coefficients,
+             "decimation": decimation, "interpolation": interpolation})
 
     def set_coefficients(self, coefficients: List[float]):
         """Set filter coefficients."""

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """DCBlockerBlock — see :class:`DCBlockerBlock`."""
 import numpy as np
 from typing import List

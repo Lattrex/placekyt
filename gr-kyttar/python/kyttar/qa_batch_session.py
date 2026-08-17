@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Regression tests for the source<->sink BatchSession (server-batch mode).
 
 These are plain ``unittest`` tests that load ``_batch_session.py`` by file path so

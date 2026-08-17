@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """CP-SAT wirelength-minimising placer (replaces the serpentine band-packer).
 
 The old ``AutoPlacer._pack_compact`` laid blocks in horizontal bands, reserving whole
@@ -387,6 +388,39 @@ def plan_cpsat(placer, chip: int, *, max_time_s: float = 10.0,
                 manhattan(out_cx[b.name], out_cy[b.name],
                           model.NewConstant(int(pout[0])),
                           model.NewConstant(int(pout[1])), CAP)
+        # PORT FAN-OUT keep-off (INV-24 geometry). When ONE chip input port feeds
+        # ≥2 DIFFERENT blocks, every arm must leave the port cell in ONE shared
+        # direction and FORK at a free cell BEYOND it. A fed block whose INPUT
+        # CELL abuts the port makes that geometrically impossible: the port's
+        # single fwd_face must point INTO the abutting block for one arm while
+        # the other arm's corridor cannot transit a block cell — the bus router
+        # soundly fails and the maze escalation then ships a two-direction port
+        # (one arm's injection lands in dead space; the tremolo 200-zeros bug).
+        # Hard-forbid: at a fan-out port, NO fed block's input cell may be
+        # adjacent to the port cell (distance >= 2 leaves the fork cell free).
+        try:
+            from model.connection import BlockEndpoint as _BE2
+            from model.connection import ChipPortEndpoint as _CPE2
+            _port_targets: dict = {}
+            for _conn in placer._project.connections:
+                if isinstance(_conn.source, _CPE2) \
+                        and isinstance(_conn.target, _BE2):
+                    _port_targets.setdefault(_conn.source.port, set()).add(
+                        _conn.target.block)
+            for _port, _tgts in _port_targets.items():
+                if len(_tgts) < 2:
+                    continue
+                for _bn in _tgts:
+                    _pin = placer._in_port_of.get(_bn)
+                    if _pin is None or _bn not in in_cx:
+                        continue
+                    _dx = model.NewIntVar(0, CAP, "")
+                    _dy = model.NewIntVar(0, CAP, "")
+                    model.AddAbsEquality(_dx, in_cx[_bn] - int(_pin[0]))
+                    model.AddAbsEquality(_dy, in_cy[_bn] - int(_pin[1]))
+                    model.Add(_dx + _dy >= 2)
+        except Exception:  # noqa: BLE001 — a malformed graph must not kill placement
+            pass
         # SINGLE-CELL IN != OUT FACE (§5.3 deadlock prevention). A one-cell block that
         # both RECEIVES from an upstream BLOCK and DRIVES a downstream BLOCK has its
         # input arrive and its output leave through the SAME physical cell. Daisy-chaining
@@ -411,9 +445,11 @@ def plan_cpsat(placer, chip: int, *, max_time_s: float = 10.0,
                 continue                              # multi-cell: in/out are distinct cells
             drv = placer._driver_of.get(b.name)       # upstream BLOCK (not a chip port)
             con = _consumer_of.get(b.name)            # downstream BLOCK
-            if drv is None or con is None:
+            pout = placer._out_port_of.get(b.name)    # or a chip OUTPUT-port egress
+            if drv is None or (con is None and pout is None):
                 continue                              # a port-fed or terminal cell is exempt
-            if drv not in out_cx or con not in in_cx or b.name not in in_cx:
+            if drv not in out_cx or b.name not in in_cx \
+                    or (con is not None and con not in in_cx):
                 continue
             cx, cy = in_cx[b.name], in_cy[b.name]     # == out_cx/out_cy (one cell)
             # The DRC face is the ORTHOGONAL step from the cell to the input broker (arrival)
@@ -445,7 +481,18 @@ def plan_cpsat(placer, chip: int, *, max_time_s: float = 10.0,
                 model.Add(ny <= cy).OnlyEnforceIf(gy.Not())
                 return (lx, gx, ly, gy)
             a = _sign_bits(out_cx[drv], out_cy[drv], f"{b.name}_in")
-            d = _sign_bits(in_cx[con], in_cy[con], f"{b.name}_out")
+            # The drive side is the downstream BLOCK's input cell — or, for a
+            # chain tail, the chip OUTPUT PORT cell (a fixed constant): a
+            # single-cell block cornered against the port with its input broker
+            # on the SAME side is the exact single_cell_inout_deadlock the
+            # abutted compact packs kept generating (add_2 at (8,0) egressing
+            # east to x16_out (9,0) with its bus-fed input also arriving east).
+            if con is not None:
+                d = _sign_bits(in_cx[con], in_cy[con], f"{b.name}_out")
+            else:
+                d = _sign_bits(model.NewConstant(int(pout[0])),
+                               model.NewConstant(int(pout[1])),
+                               f"{b.name}_out")
             neqs = []
             for k, (ab, db) in enumerate(zip(a, d)):
                 ne = model.NewBoolVar(f"scl_{b.name}_ne{k}")

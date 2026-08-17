@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """DualFloatToComplexBlock — see :class:`DualFloatToComplexBlock`."""
 import numpy as np
 from typing import Dict
@@ -85,6 +86,14 @@ class DualFloatToComplexBlock(KyttarBlock):
     # No other block sets this (they receive pre-paired complex packets).
     NEEDS_DISTINCT_INPUT_FACES = True
 
+    # GR's blocks.float_to_complex has NO params; this block's ctor args are all
+    # PLACEMENT/ROUTING internals the placer+router reconcile (face_i/face_q are the
+    # two distinct arrival faces the router chooses; hop/dest_i/dest_q/entry are the
+    # brokered output-handoff addresses, "retained for API compatibility"). None are
+    # user-facing DSP params, so NONE are exposed in GRC — exposing them would break
+    # the 1:1 float_to_complex drop-in contract (INV-22 documented HW-deviation).
+    GRC_UNSUPPORTED_PARAMS = ("face_i", "face_q", "hop", "dest_i", "dest_q", "entry")
+
     _FACE = {"south": 0, "east": 1, "west": 2, "north": 3}
 
     def __init__(self, name: str,
@@ -145,7 +154,13 @@ class DualFloatToComplexBlock(KyttarBlock):
             "    HALT\n"
         )
         return {0: CellProgram(
-            inputs=[Port("i", register=0), Port("q", register=0)],
+            # Each input port declares ITS entry: a producer into ``i`` must JUMP
+            # got_i, a producer into ``q`` must JUMP got_q — the two entries run
+            # DIFFERENT code (latch-I-and-relock vs latch-Q-and-emit). Without the
+            # declaration every producer resolves the block's single default entry
+            # (got_i), got_q never runs and the rendezvous deadlocks (0 egress).
+            inputs=[Port("i", register=0, entry="got_i"),
+                    Port("q", register=0, entry="got_q")],
             outputs=[Port("yi"), Port("yq"), Port("trig")],
             # ONLY got_i / got_q — NO arm entry (the cell is pre-locked at cold start).
             entries=[EntryPoint("got_i"), EntryPoint("got_q")],

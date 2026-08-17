@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Captured-output + golden as a ``.kbs`` BITSTREAM, with the WRITE descriptor
 preserved as a generic tag (#185).
 

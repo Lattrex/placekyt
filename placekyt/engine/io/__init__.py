@@ -1,4 +1,5 @@
-"""File serialization for placeKYT (the architecture notes §2).
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""File serialization for placeKYT.
 
 All YAML I/O goes through :mod:`engine.io.safe_yaml`, which enforces the §2.1
 DoS protections (size cap, anchor/alias node-count limit, depth limit) and the

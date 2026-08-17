@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Drag a chip port to the waveform viewer, demultiplexed by channel/tag.
 
 A chip port is a TIME-MULTIPLEXED bus — several logical streams can share it. The

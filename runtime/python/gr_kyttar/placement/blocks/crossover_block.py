@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """CrossoverBlock — see :class:`CrossoverBlock`."""
 import numpy as np
 from ..block import CellProgram, Port, EntryPoint, DataWord
@@ -36,6 +37,12 @@ class CrossoverBlock(KyttarBlock):
     # This block authors its own output WRITE/JUMP hops (the relay @N) — the
     # build must NOT default them to @1 abutment.
     RAW_OUTPUT_HOPS = True
+    # Incoming nets must LAND ON this cell (the track entry runs here) — the
+    # build must not strip the on-target waypoint to an abutting broker (a
+    # broker relay resolves against the block's shifting register map and, in
+    # the duplex-panel build, delivered into the wrong register — the TX
+    # runaway loop).
+    RELAY_LANDING = True
 
     _FACE = {"south": 0, "east": 1, "west": 2, "north": 3}
 
@@ -44,19 +51,32 @@ class CrossoverBlock(KyttarBlock):
                  dest_a: int = 20, entry_a: int = 1,
                  face_b: str = "east", hop_b: int = 1,
                  dest_b: int = 20, entry_b: int = 1,
-                 face_c: str = "south", hop_c: int = 1, entry_c: int = 0):
+                 face_c: str = "south", hop_c: int = 1, entry_c: int = 0,
+                 dest_c=None, restore_face=None):
         super().__init__(name, face_a=face_a, hop_a=hop_a, dest_a=dest_a,
                          entry_a=entry_a, face_b=face_b, hop_b=hop_b,
                          dest_b=dest_b, entry_b=entry_b,
-                         face_c=face_c, hop_c=hop_c, entry_c=entry_c)
+                         face_c=face_c, hop_c=hop_c, entry_c=entry_c,
+                         dest_c=dest_c, restore_face=restore_face)
         self._face_a, self._hop_a = face_a, hop_a
         self._dest_a, self._entry_a = dest_a, entry_a
         self._face_b, self._hop_b = face_b, hop_b
         self._dest_b, self._entry_b = dest_b, entry_b
-        # Track C: a control-only relay (no data) — set face, JUMP onward. Used
-        # e.g. to relay a read-trigger to a controller's read entry. entry_c=0
-        # leaves it as a harmless local no-op JUMP when unused.
+        # Track C: by default a CONTROL-ONLY relay (no data) — set face, JUMP
+        # onward. Used e.g. to relay a read-trigger to a controller's read
+        # entry; entry_c=0 leaves it a harmless local no-op JUMP when unused.
+        # With ``dest_c`` set (an int), track C becomes a FULL DATA track like
+        # a/b (the duplex-panel RX egress needs a third data path through the
+        # shared crossover cell). Default None keeps the control-only program.
         self._face_c, self._hop_c, self._entry_c = face_c, hop_c, entry_c
+        self._dest_c = None if dest_c is None else int(dest_c)
+        # restore_face: when OTHER streams TRANSIT this cell (the duplex-panel
+        # layout: the RX input rides THROUGH the TX crossover), a relay that
+        # leaves the face flipped would misroute the next transit. With
+        # ``restore_face`` set, every track restores the cell's transit face
+        # after its relay (the §1.2 broker's self-restore, applied here).
+        # Default None keeps the historical program (no transits → no restore).
+        self._restore_face = restore_face
 
     @property
     def cell_count(self) -> int:
@@ -71,8 +91,12 @@ class CrossoverBlock(KyttarBlock):
         fa = self._FACE.get(self._face_a, 0)
         fb = self._FACE.get(self._face_b, 1)
         fc = self._FACE.get(self._face_c, 0)
-        # Each data track: set FACE, move relayed value to R0, WRITE it on, JUMP.
-        # Track C is control-only: set FACE, JUMP onward (no data).
+        restore = ("" if self._restore_face is None else
+                   "    MOVE R0, R{data:face_r}\n"
+                   "    MOVE [FACE], R0\n")
+        # Each data track: set FACE, move relayed value to R0, WRITE it on,
+        # JUMP, then (when transits share this cell) restore the transit face.
+        # Track C is control-only unless dest_c is set (then a full data track).
         tmpl = (
             "track_a:\n"
             "    MOVE R0, R{data:face_a}\n"
@@ -80,6 +104,7 @@ class CrossoverBlock(KyttarBlock):
             "    MOVE R0, R{in:relay}\n"
             f"    WRITE @{self._hop_a}, {self._dest_a}\n"
             f"    JUMP @{self._hop_a}, {self._entry_a}\n"
+            + restore +
             "    HALT\n"
             "track_b:\n"
             "    MOVE R0, R{data:face_b}\n"
@@ -87,21 +112,31 @@ class CrossoverBlock(KyttarBlock):
             "    MOVE R0, R{in:relay}\n"
             f"    WRITE @{self._hop_b}, {self._dest_b}\n"
             f"    JUMP @{self._hop_b}, {self._entry_b}\n"
+            + restore +
             "    HALT\n"
             "track_c:\n"
             "    MOVE R0, R{data:face_c}\n"
             "    MOVE [FACE], R0\n"
-            f"    JUMP @{self._hop_c}, {self._entry_c}\n"
+            + (""
+               if self._dest_c is None else
+               "    MOVE R0, R{in:relay}\n"
+               f"    WRITE @{self._hop_c}, {self._dest_c}\n")
+            + f"    JUMP @{self._hop_c}, {self._entry_c}\n"
+            + restore +
             "    HALT\n"
         )
+        data = [DataWord("face_a", fa, address=1),
+                DataWord("face_b", fb, address=2),
+                DataWord("face_c", fc, address=3)]
+        if self._restore_face is not None:
+            data.append(DataWord(
+                "face_r", self._FACE.get(self._restore_face, 0), address=4))
         return {0: CellProgram(
             inputs=[Port("relay")],
             outputs=[Port("out")],
             entries=[EntryPoint("track_a"), EntryPoint("track_b"),
                      EntryPoint("track_c")],
-            data=[DataWord("face_a", fa, address=1),
-                  DataWord("face_b", fb, address=2),
-                  DataWord("face_c", fc, address=3)],
+            data=data,
             state=[],
             assembly_template=tmpl,
         )}

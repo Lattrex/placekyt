@@ -1,4 +1,5 @@
-"""Project-level Design Rule Checks (the architecture notes §5.2).
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Project-level Design Rule Checks.
 
 This pass validates **project-model invariants** — things computable from the
 placeKYT project graph alone, BEFORE bitstream generation. Per §8 (Week 7-8),
@@ -178,6 +179,14 @@ def _check_bus_hazards(project, chip_types, catalog, result: DRCResult) -> None:
                              chip=0, x=cell[0], y=cell[1]))
         elif kind == "dual_input_same_face":
             result.add(error("dual_input_same_face", str(v),
+                             chip=0, x=cell[0], y=cell[1]))
+        elif kind == "port_transit":
+            # A corridor riding through a USED chip-port cell is a silent-dead
+            # build (the port's injection/egress programming and the corridor's
+            # face programming destroy each other — the FLLBandEdge pinch).
+            # Unlike face_conflict, NO downstream build synthesis can resolve
+            # it, so it is a hard error here exactly like the build gate.
+            result.add(error("port_transit", str(v),
                              chip=0, x=cell[0], y=cell[1]))
 
 

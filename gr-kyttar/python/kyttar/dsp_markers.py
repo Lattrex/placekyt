@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Pass-through GR marker blocks for the real coherent-RX DSP blocks.
 
 In the GRC-first workflow a flowgraph is built from the REAL DSP blocks
@@ -14,6 +15,7 @@ which is why a real-block GRC flowgraph could not generate/run.
 """
 
 from gnuradio import gr
+import math
 import numpy as np
 
 
@@ -50,7 +52,8 @@ class _PassThrough(gr.sync_block):
                                in_sig=[in_dtype] * n_in,
                                out_sig=[out_dtype] * n_out)
 
-    def _advertise_grc_params(self, device_id, placekyt_type, params):
+    def _advertise_grc_params(self, device_id, placekyt_type, params,
+                              block_name=""):
         """Record this marker's params for GRC↔placeKYT sync advertising.
 
         Markers call this in ``__init__`` to declare their placeKYT TYPE (e.g.
@@ -59,22 +62,57 @@ class _PassThrough(gr.sync_block):
         run), so the params reach the session fresh each run alongside the source's
         batch dispatch — which sends them to placeKYT for drift detection. Minimal
         and never crashy: a marker that can't determine its type simply records
-        nothing; advertising is best-effort telemetry, not on the data path."""
-        self._grc_advert = (str(device_id), str(placekyt_type), dict(params or {}))
+        nothing; advertising is best-effort telemetry, not on the data path.
+
+        ``block_name``: the placeKYT block name, VERBATIM — the robust keying for
+        designs with several instances of one type (see register_params). Empty ⇒
+        the construction-order fallback."""
+        self._grc_advert = (str(device_id), str(placekyt_type), dict(params or {}),
+                            str(block_name or ""))
 
     def start(self) -> bool:
         # Register the recorded advertisement into the per-device BatchSession
         # each run, so the source's batch dispatch ships current params to placeKYT
         # (GRC↔placeKYT sync indicator). Best-effort: never break the flowgraph.
+        # The session + assigned placeKYT block name are KEPT so a GRC slider
+        # callback (e.g. gain.set_gain) can LIVE-update this block's advertised
+        # params mid-run — the next burst carries the new value and the server
+        # retunes the running fabric (see _update_grc_param).
         advert = getattr(self, "_grc_advert", None)
         if advert is not None:
             try:
                 from ._batch_session import get_session
-                device_id, placekyt_type, params = advert
-                get_session(device_id).register_params(placekyt_type, params)
+                device_id, placekyt_type, params, block_name = advert
+                session = get_session(device_id)
+                self._pk_session = session
+                self._pk_name = session.register_params(
+                    placekyt_type, params, explicit_name=block_name or None)
             except Exception:  # noqa: BLE001 — advertising is best-effort
                 pass
         return True
+
+    def _update_grc_param(self, key, value):
+        """LIVE param update from a GRC callback (slider/entry change mid-run).
+
+        Updates the recorded advertisement (so a later run re-registers the
+        current value) AND the live session entry (so the NEXT burst dispatch
+        ships it — the placeKYT server turns a registered live-tunable param
+        into a coefficient WRITE on the running fabric). Best-effort: before
+        ``start`` there is no session yet and only the advertisement updates."""
+        advert = getattr(self, "_grc_advert", None)
+        if advert is not None:
+            advert[2][key] = value
+        session = getattr(self, "_pk_session", None)
+        name = getattr(self, "_pk_name", None)
+        if session is not None and name is not None:
+            try:
+                session.update_param(name, key, value)
+                # LIVE push: retune the persistently-hosted fabric NOW (server
+                # applies a coefficient WRITE), not just on the next burst.
+                from ._batch_session import push_params_live
+                push_params_live(session.device_id, {name: {key: value}})
+            except Exception:  # noqa: BLE001 — advertising is best-effort
+                pass
 
     def work(self, input_items, output_items):
         n = len(input_items[0])
@@ -97,16 +135,24 @@ class complex_rrc_matched_filter(_PassThrough):
     DSP runs on the chip; this only carries the graph so it imports into placeKYT
     and runs in server-batch mode."""
 
-    def __init__(self, device_id="kyttar_0", alpha=0.35, span=8, decimation=1):
+    def __init__(self, device_id="kyttar_0", gain=0.7105, samp_rate=2.0,
+                 sym_rate=1.0, alpha=0.35, ntaps=17, decimation=1):
         super().__init__("Kyttar Complex RRC Matched Filter", n_in=1, n_out=1,
                          in_dtype=np.complex64, out_dtype=np.complex64)
         self.device_id = device_id
+        self.gain = gain
+        self.samp_rate = samp_rate
+        self.sym_rate = sym_rate
         self.alpha = alpha
-        self.span = span
+        self.ntaps = int(ntaps)
         self.decimation = int(decimation)
-        # placeKYT uses `beta` for the roll-off (GRC marker calls it `alpha`).
+        # GR-verbatim params (firdes.root_raised_cosine): gain/samp_rate/sym_rate/
+        # alpha/ntaps. The placeKYT block designs the SAME firdes RRC taps and runs
+        # them on both rails (GR fir_filter_ccf).
         self._advertise_grc_params(device_id, "ComplexRRCMatchedFilterBlock",
-                                   {"beta": alpha, "span": span,
+                                   {"gain": gain, "samp_rate": samp_rate,
+                                    "sym_rate": sym_rate, "alpha": alpha,
+                                    "ntaps": int(ntaps),
                                     "decimation": int(decimation)})
 
 
@@ -155,6 +201,65 @@ class gardner_timing_recovery(_PassThrough):
                                    {"kp": kp, "ki": ki, "complex": bool(complex)})
 
 
+class lms_equalizer(_PassThrough):
+    """Decision-directed complex LMS adaptive equalizer — GR marker (maps to
+    LMSEqualizerBlock; GR counterpart digital.linear_equalizer with
+    adaptive_algorithm_lms). Always COMPLEX in/out — the recovered (yi, yq)
+    pair rides one gr_complex stream (placeKYT's importer splits the rails).
+
+    HW-DEVIATIONS (documented on the block + proven scale-covariant in
+    verification/tests/test_lms_equalizer.py): decisions at the unit-circle
+    QPSK constellation (alpha = 1/2 of GR's +-1.414-component points — the
+    whole trajectory scales by alpha), DD-only spike cold start (no on-chip
+    training memory), taps stored halved (envelope sum|w_eff| <= 2). A pure
+    pass-through marker; the real DSP runs on the placeKYT-hosted chip."""
+
+    def __init__(self, device_id="kyttar_0", num_taps=5, step_size=0.03,
+                 sps=1, block_name=""):
+        super().__init__("Kyttar LMS Equalizer",
+                         in_dtype=np.complex64, out_dtype=np.complex64)
+        self.device_id = device_id
+        self.num_taps = int(num_taps)
+        self.step_size = float(step_size)
+        self.sps = int(sps)
+        self._advertise_grc_params(device_id, "LMSEqualizerBlock",
+                                   {"num_taps": int(num_taps),
+                                    "step_size": float(step_size),
+                                    "sps": int(sps)},
+                                   block_name=block_name)
+
+
+class complex_to_mag(_PassThrough):
+    """True complex magnitude |x+jy| — GR marker (maps to ComplexToMagBlock,
+    CORDIC vectoring; GR counterpart blocks.complex_to_mag). Complex in, float
+    out. The chip emits Q15 (kyttar.sink rescales q15/32768). |v|>1 saturates
+    to 0.9999695 by design. Stateless feed-forward — saturation-safe. A pure
+    pass-through marker; the real DSP runs on the placeKYT-hosted chip."""
+
+    def __init__(self, device_id="kyttar_0", block_name=""):
+        super().__init__("Kyttar Complex To Mag",
+                         in_dtype=np.complex64, out_dtype=np.float32)
+        self.device_id = device_id
+        self._advertise_grc_params(device_id, "ComplexToMagBlock", {},
+                                   block_name=block_name)
+
+
+class complex_to_arg(_PassThrough):
+    """Complex argument atan2(y,x) — GR marker (maps to ComplexToArgBlock,
+    CORDIC vectoring; GR counterpart blocks.complex_to_arg). Complex in, float
+    out. HW-DEVIATION: the chip emits HALF-TURN Q15 angle (word/32768 * pi
+    radians) — multiply the sink's float by pi for radians; GR emits radians
+    directly. Stateless feed-forward — saturation-safe. A pure pass-through
+    marker; the real DSP runs on the placeKYT-hosted chip."""
+
+    def __init__(self, device_id="kyttar_0", block_name=""):
+        super().__init__("Kyttar Complex To Arg",
+                         in_dtype=np.complex64, out_dtype=np.float32)
+        self.device_id = device_id
+        self._advertise_grc_params(device_id, "ComplexToArgBlock", {},
+                                   block_name=block_name)
+
+
 class mm_timing_recovery(_PassThrough):
     """Mueller & Müller timing recovery — GR marker (maps to MMTimingRecoveryBlock).
 
@@ -178,12 +283,52 @@ class mm_timing_recovery(_PassThrough):
                                     "damping": float(damping)})
 
 
-class bpsk_slicer(_PassThrough):
-    """BPSK slicer — GR marker (maps to BPSKSlicerBlock)."""
+class fll_band_edge(_PassThrough):
+    """FLL band-edge coarse frequency recovery — GR marker (maps to
+    FLLBandEdgeBlock = digital.fll_band_edge_cc).
 
-    def __init__(self, device_id="kyttar_0"):
-        super().__init__("Kyttar BPSK Slicer")
+    The coarse carrier stage of the industry RX cascade (MF -> FLL -> timing ->
+    fine DD carrier): pulls a large offset (beyond Costas pull-in) to a residual
+    the downstream Costas captures. Always COMPLEX: the corrected I/Q pair rides
+    as ONE gr_complex stream in/out (the on-chip xi/xq in + yi_tap/yq_tap out
+    pairs; placeKYT's importer splits the single complex net into the two
+    rails). A pure pass-through marker; the real DSP runs on the hosted chip."""
+
+    def __init__(self, device_id="kyttar_0", samps_per_sym=2.0, rolloff=0.35,
+                 filter_size=17, bandwidth=0.06):
+        super().__init__("Kyttar FLL Band-Edge",
+                         in_dtype=np.complex64, out_dtype=np.complex64)
         self.device_id = device_id
+        self.samps_per_sym = float(samps_per_sym)
+        self.rolloff = float(rolloff)
+        self.filter_size = int(filter_size)
+        self.bandwidth = float(bandwidth)
+        self._advertise_grc_params(
+            device_id, "FLLBandEdgeBlock",
+            {"samps_per_sym": float(samps_per_sym), "rolloff": float(rolloff),
+             "filter_size": int(filter_size), "bandwidth": float(bandwidth)})
+
+
+class bpsk_slicer(_PassThrough):
+    """BPSK slicer — GR marker (maps to BPSKSlicerBlock).
+
+    Mirrors GNU Radio ``digital.binary_slicer_fb``: a recovered real sample ->
+    hard bit (``sample >= 0 -> 1``, ``sample < 0 -> 0``, tie at 0 -> 1). GR emits
+    one byte per sample; ``out_mode="bit"`` reproduces that 1:1 (the GR-equivalent
+    default for imports). ``out_mode="byte"``/``"word"`` are a Kyttar-only ergonomic
+    packing extension (8/16 bits MSB-first per output word — no GR counterpart) to
+    cut output-port pressure in a long receiver chain. A pure pass-through marker;
+    the real DSP runs on the placeKYT chip."""
+
+    def __init__(self, device_id="kyttar_0", out_mode="bit"):
+        # digital.binary_slicer_fb is float-in / BYTE-out (the recovered hard bit) —
+        # declare a float input but a uint8 output so GRC stream connections match.
+        super().__init__("Kyttar BPSK Slicer",
+                         in_dtype=np.float32, out_dtype=np.uint8)
+        self.device_id = device_id
+        self.out_mode = str(out_mode)
+        self._advertise_grc_params(device_id, "BPSKSlicerBlock",
+                                   {"out_mode": str(out_mode)})
 
 
 class qpsk_slicer(_PassThrough):
@@ -214,14 +359,26 @@ class psk_symbol_mapper(_PassThrough):
     COMPLEX end-to-end until the final complex_to_real inside the upconvert — the
     GR-idiomatic BPSK/QPSK transmit."""
 
-    def __init__(self, device_id="kyttar_0", modulation="bpsk"):
+    def __init__(self, device_id="kyttar_0", modulation="bpsk",
+                 symbol_table=None, dimension=1, bpsk_bit0_positive=True):
         # bit in (float) -> COMPLEX symbol out (chunks_to_symbols_bc equivalent).
         super().__init__("Kyttar PSK Symbol Mapper", n_in=1, n_out=1,
                          in_dtype=np.float32, out_dtype=np.complex64)
         self.device_id = device_id
         self.modulation = modulation
-        self._advertise_grc_params(device_id, "PSKSymbolMapperBlock",
-                                   {"modulation": modulation})
+        # GR-native chunks_to_symbols params: an arbitrary complex symbol_table
+        # (index-in) and its dimension D (D=1 on chip). When symbol_table is empty
+        # the modulation preset is used (Kyttar bit-packing extension).
+        self.symbol_table = symbol_table
+        self.dimension = int(dimension)
+        # BPSK sign convention: True=bit0->+1 (chunks_to_symbols_bf([1,-1])),
+        # False=bit0->-1 (constellation_bpsk; pairs with binary_slicer_fb).
+        self.bpsk_bit0_positive = bool(bpsk_bit0_positive)
+        params = {"modulation": modulation, "dimension": int(dimension),
+                  "bpsk_bit0_positive": bool(bpsk_bit0_positive)}
+        if symbol_table:
+            params["symbol_table"] = list(symbol_table)
+        self._advertise_grc_params(device_id, "PSKSymbolMapperBlock", params)
 
 
 class qam16_symbol_mapper(_PassThrough):
@@ -377,6 +534,37 @@ class fsk4_sync_timing_recovery(_PassThrough):
         self._advertise_grc_params(device_id, "FSK4SyncTimingRecoveryBlock", params)
 
 
+class map_bb(_PassThrough):
+    """Per-symbol LUT remap — GR marker (maps to MapBBBlock).
+
+    Byte in -> ``map[in]`` byte out, mirroring GNU Radio ``digital.map_bb``: an
+    internal 256-entry table is seeded to the identity then overwritten with the
+    user's ``map`` (bytes), so ``out = map[in]`` for ``in < len(map)`` and identity
+    pass-through above. The real remap runs ON the chip (a single LOAD-indirect
+    table); this marker carries the byte graph so a GRC flowgraph imports + runs. The
+    ``map`` parameter mirrors GR's ``map`` verbatim (a vector of ints, default
+    ``[0, 1]``)."""
+
+    def __init__(self, device_id="kyttar_0", map=[0, 1]):
+        super().__init__("Kyttar Map (map_bb)", n_in=1, n_out=1,
+                         in_dtype=np.uint8, out_dtype=np.uint8)
+        self.device_id = device_id
+        self.map = list(map)
+        # GR's d_map: 256-entry identity, first len(map) overwritten (bytes).
+        self._d_map = np.arange(256, dtype=np.uint8)
+        for i, v in enumerate(self.map):
+            self._d_map[i] = int(v) & 0xFF
+        self._advertise_grc_params(device_id, "MapBBBlock", {"map": list(self.map)})
+
+    def work(self, input_items, output_items):
+        # Faithful remap so a native GR run of the markers shows the real map_bb output.
+        x = input_items[0]
+        out = output_items[0]
+        n = len(x)
+        out[:n] = self._d_map[np.asarray(x, dtype=np.uint8)]
+        return n
+
+
 class upsampler(_PassThrough):
     """Upsampler — GR marker (maps to UpsamplerBlock).
 
@@ -396,6 +584,52 @@ class upsampler(_PassThrough):
         self.sps = sps
         self.io_type = io_type
         self._advertise_grc_params(device_id, "UpsamplerBlock", {"sps": sps})
+
+
+class repeat(_PassThrough):
+    """Repeat (hold-upsampler) — GR marker (maps to RepeatBlock).
+
+    Each input sample emitted ``interp`` times — GNU Radio ``blocks.repeat``.
+    The symbol-HOLD between a mapper and an amplitude-envelope stage (the PSK31
+    RaisedCosineEnvelope consumes a HELD ±A stream, where the zero-stuffing
+    upsampler would feed it zeros). ``io_type`` selects the stream dtype exactly
+    like the upsampler marker (default float — the PSK31 chain holds a REAL ±A
+    symbol rail)."""
+
+    def __init__(self, device_id="kyttar_0", interp=4, io_type="float"):
+        dt = _io_dtype(io_type)
+        super().__init__("Kyttar Repeat", n_in=1, n_out=1,
+                         in_dtype=dt, out_dtype=dt)
+        self.device_id = device_id
+        self.interp = int(interp)
+        self.io_type = io_type
+        self._advertise_grc_params(device_id, "RepeatBlock",
+                                   {"interp": int(interp)})
+
+    def work(self, input_items, output_items):
+        # Faithful hold so a native GR run of the markers shows the held stream.
+        # The marker is 1:1 (sync_block): each output mirrors its input sample —
+        # the true rate change happens on the chip; this is visual/graph-carrying.
+        n = min(len(output_items[0]), len(input_items[0]))
+        output_items[0][:n] = input_items[0][:n]
+        return n
+
+
+class unpack_k_bits(_PassThrough):
+    """Unpack-k-bits — GR marker (maps to UnpackKBitsBlock).
+
+    Mirrors GNU Radio ``blocks.unpack_k_bits_bb(k)``: one input BYTE -> its low
+    ``k`` bits emitted MSB-first as ``k`` output bytes (each 0 or 1). The exact
+    inverse of ``blocks.pack_k_bits_bb``. Rate-EXPANDING (1 in -> k out); the real
+    DSP runs on the placeKYT chip. Byte stream in/out (this is a bit-manipulation
+    block, not a sample block). ``k`` mirrors GR verbatim (1..8)."""
+
+    def __init__(self, device_id="kyttar_0", k=8):
+        super().__init__("Kyttar Unpack K Bits", n_in=1, n_out=1,
+                         in_dtype=np.uint8, out_dtype=np.uint8)
+        self.device_id = device_id
+        self.k = int(k)
+        self._advertise_grc_params(device_id, "UnpackKBitsBlock", {"k": int(k)})
 
 
 class complex_upsampler(_PassThrough):
@@ -439,6 +673,28 @@ class complex_gain(_PassThrough):
                                    {"gain": float(gain)})
 
 
+class multiply_const_complex(_PassThrough):
+    """TRUE complex-constant multiply — GR marker (maps to MultiplyConstComplex).
+
+    The genuine ``blocks.multiply_const_cc(k)`` with a COMPLEX constant
+    ``k = re + im·j``: multiplies the complex (I, Q) stream by ``k``, which SCALES
+    **and** ROTATES the constellation (yi = xi·re − xq·im, yq = xi·im + xq·re).
+    Unlike :class:`complex_gain` (the same real gain on both rails, NO rotation),
+    this carries the cross-terms that rotate. ``|re|, |im| < 2`` (a Q15 headroom
+    range; the datapath stores re/4, im/4 and restores with a SATURATING <<2, so it
+    CLIPS on overload exactly like GR). A pass-through marker; the real DSP runs on
+    the placeKYT chip."""
+
+    def __init__(self, device_id="kyttar_0", re=0.7, im=0.5):
+        super().__init__("Kyttar Multiply Const Complex", n_in=1, n_out=1,
+                         in_dtype=np.complex64, out_dtype=np.complex64)
+        self.device_id = device_id
+        self.re = float(re)
+        self.im = float(im)
+        self._advertise_grc_params(device_id, "MultiplyConstComplex",
+                                   {"re": float(re), "im": float(im)})
+
+
 class rrc_pulse_shaper(_PassThrough):
     """RRC pulse shaper — GR marker (maps to RRCPulseShaperBlock).
 
@@ -446,8 +702,26 @@ class rrc_pulse_shaper(_PassThrough):
     pulse-shapes the upsampled complex symbol before the I/Q upconvert). The real
     DSP runs on the chip; this only carries the graph."""
 
-    def __init__(self, device_id="kyttar_0", alpha=0.35, span=8, sps=4,
-                 io_type="complex"):
+    def __init__(self, device_id="kyttar_0", gain=1.0, sampling_freq=None,
+                 symbol_rate=1.0, alpha=0.35, ntaps=None, io_type="complex",
+                 # --- back-compat aliases (older .grc / .kyt authored span/sps) ----
+                 span=None, sps=None):
+        # GR-VERBATIM firdes.root_raised_cosine params (gain, sampling_freq,
+        # symbol_rate, alpha, ntaps) — the RRCPulseShaperBlock constructor's params
+        # (INV-0). span/sps are back-compat ALIASES: an older .grc authored span=8,
+        # sps=4; map them onto the GR params (sampling_freq=sps, symbol_rate=1,
+        # ntaps=span*sps+1 per firdes' length convention) so those flowgraphs keep
+        # loading. When both are absent the GR-verbatim defaults apply (33 taps @ 4 sps).
+        if sps is not None:
+            sampling_freq = float(sps)
+            symbol_rate = 1.0
+            if ntaps is None:
+                _span = span if span is not None else 8
+                ntaps = int(_span) * int(sps) + 1
+        if sampling_freq is None:
+            sampling_freq = 4.0
+        if ntaps is None:
+            ntaps = 33
         # io_type selects the stream dtype and MUST equal the .block.yml ``io_type``
         # default + ${io_type} port dtype. Default COMPLEX: the PSK TX chain carries a
         # COMPLEX baseband symbol (GR's interp_fir_filter_ccf). A real-only stream
@@ -456,22 +730,20 @@ class rrc_pulse_shaper(_PassThrough):
         super().__init__("Kyttar RRC Pulse Shaper", n_in=1, n_out=1,
                          in_dtype=dt, out_dtype=dt)
         self.device_id = device_id
+        self.gain = float(gain)
+        self.sampling_freq = float(sampling_freq)
+        self.symbol_rate = float(symbol_rate)
         self.alpha = alpha
-        self.span = span
-        self.sps = int(sps)
+        self.ntaps = int(ntaps)
         self.io_type = io_type
-        # Advertise the placeKYT block's REAL params so the importer sets them (its
-        # ports/taps come from sampling_freq/symbol_rate/alpha/ntaps, NOT beta/span).
-        # RRCPulseShaperBlock derives sps = sampling_freq/symbol_rate; ntaps = span·sps+1
-        # (GNU Radio firdes.root_raised_cosine convention). So sampling_freq = sps and
-        # symbol_rate = 1 gives the intended samples/symbol, and ntaps = span·sps+1
-        # matches the on-chip filter length. Without this, the block kept its default
-        # (sps=4, ntaps=33) even in a 2-sps chain -> a mismatched matched filter.
+        # Advertise the placeKYT block's REAL (GR-verbatim) params so the importer
+        # sets them: ports/taps come from gain/sampling_freq/symbol_rate/alpha/ntaps.
         self._advertise_grc_params(device_id, "RRCPulseShaperBlock",
-                                   {"sampling_freq": float(self.sps),
-                                    "symbol_rate": 1.0,
+                                   {"gain": self.gain,
+                                    "sampling_freq": self.sampling_freq,
+                                    "symbol_rate": self.symbol_rate,
                                     "alpha": alpha,
-                                    "ntaps": span * self.sps + 1})
+                                    "ntaps": self.ntaps})
 
 
 class iq_upconvert(_PassThrough):
@@ -486,16 +758,43 @@ class iq_upconvert(_PassThrough):
     source of every dtype/broker bug)."""
 
     def __init__(self, device_id="kyttar_0", sample_rate=32000.0,
-                 frequency=4000.0):
+                 frequency=4000.0, block_name=""):
         # ONE complex baseband in -> real passband out (multiply_cc -> complex_to_real).
         super().__init__("Kyttar I/Q Upconvert", n_in=1, n_out=1,
                          in_dtype=np.complex64, out_dtype=np.float32)
         self.device_id = device_id
         self.sample_rate = sample_rate
         self.frequency = frequency
+        # block_name pins the placeKYT block this instance advertises for
+        # (multi-instance flowgraphs — see complex_mixer).
         self._advertise_grc_params(device_id, "IQUpconvertBlock",
                                    {"sample_rate": sample_rate,
-                                    "frequency": frequency})
+                                    "frequency": frequency},
+                                   block_name=block_name)
+
+
+class not_bb(_PassThrough):
+    """Bitwise NOT of a byte stream — GR marker (maps to NotBlock).
+
+    Drop-in for GNU Radio ``blocks.not_bb``: ONE byte (uint8) input -> ONE byte
+    output, ``out = (~in) & 0xFF`` over the FULL 8-bit width (``0x00 -> 0xFF``,
+    ``0x0F -> 0xF0``, ``0xAA -> 0x55``). No parameters (not_bb takes none). The real
+    DSP runs on the placeKYT chip; this marker carries the graph for import + a
+    faithful host-side preview."""
+
+    def __init__(self, device_id="kyttar_0"):
+        super().__init__("Kyttar Not", n_in=1, n_out=1,
+                         in_dtype=np.uint8, out_dtype=np.uint8)
+        self.device_id = device_id
+        self._advertise_grc_params(device_id, "NotBlock", {})
+
+    def work(self, input_items, output_items):
+        # Faithful (~in)&0xFF byte NOT so a GR run shows the complemented stream
+        # (the chip computes the identical full-width byte complement).
+        x = input_items[0]
+        n = min(len(output_items[0]), len(x))
+        output_items[0][:n] = (~x[:n].astype(np.int32) & 0xFF).astype(np.uint8)
+        return n
 
 
 class complex_to_float(_PassThrough):
@@ -519,6 +818,41 @@ class complex_to_float(_PassThrough):
         n = min(len(output_items[0]), len(output_items[1]), len(x))
         output_items[0][:n] = x[:n].real
         output_items[1][:n] = x[:n].imag
+        return n
+
+
+class char_to_float(_PassThrough):
+    """Char -> Float type convert — GR marker (maps to CharToFloatBlock).
+
+    Drop-in for GNU Radio ``blocks.char_to_float`` (``out = in / scale``). ONE int8
+    (byte) stream in -> ONE float stream out.
+
+    HW-DEVIATION (Q15): a Kyttar 'float' is a Q15 value in [-1, 1), so the byte's
+    value ``in/scale`` only fits when ``scale >= 128``. GR's default ``scale = 1``
+    is NOT representable on the fabric — the placed CharToFloatBlock RAISES on any
+    ``scale < 128`` (128 maps the int8 range onto the full [-1, 1) span). GR marker
+    only; the real DSP runs on the placeKYT chip."""
+
+    def __init__(self, device_id="kyttar_0", scale=128.0):
+        super().__init__("Kyttar Char To Float", n_in=1, n_out=1,
+                         in_dtype=np.int8, out_dtype=np.float32)
+        self.device_id = device_id
+        self._scale = scale
+        self._advertise_grc_params(device_id, "CharToFloatBlock",
+                                   {"scale": scale})
+
+    def set_scale(self, scale):
+        self._scale = scale
+
+    def get_scale(self):
+        return self._scale
+
+    def work(self, input_items, output_items):
+        # out = in / scale (a faithful char->float convert so a GR run of the
+        # flowgraph matches the chip).
+        x = input_items[0]
+        n = min(len(output_items[0]), len(x))
+        output_items[0][:n] = x[:n].astype(np.float32) / self._scale
         return n
 
 
@@ -610,4 +944,274 @@ class quadrature_demod(_PassThrough):
             prod = x[:n] * np.conj(xp)
             output_items[0][:n] = (float(self.gain) * np.angle(prod)).astype(np.float32)
             self._prev = x[n - 1]
+        return n
+
+
+class splitter(_PassThrough):
+    """Stream splitter — GR marker (maps to SplitterBlock).
+
+    A GNU Radio port fans out natively, so GR-side this is a plain copy; on the
+    chip it is an explicit 1-cell fan-out relay authored with a reserved exit
+    tail (up to 8 arms — one WRITE+JUMP pair per arm). The importer also
+    auto-splices one wherever a .grc fans a single-rail block output to ≥2
+    different blocks (or ≥3 inputs) — place it explicitly to control WHERE the
+    fan-out cell sits, or to tree still-wider fan-outs. GR marker only; the
+    real relay runs on the placeKYT chip."""
+
+    def __init__(self, device_id="kyttar_0"):
+        super().__init__("Kyttar Splitter", n_in=1, n_out=1,
+                         in_dtype=np.float32, out_dtype=np.float32)
+        self.device_id = device_id
+        self._advertise_grc_params(device_id, "StreamSplitterBlock", {})
+
+
+class abs_bb(_PassThrough):
+    """Absolute value — GR marker (maps to AbsBlock).
+
+    Drop-in for GNU Radio ``blocks.abs_ff`` (``out = |in|``): ONE real stream in ->
+    ONE real stream out. Single-cell conditional negate on the chip. GR marker only;
+    the real DSP runs on the placeKYT chip."""
+
+    def __init__(self, device_id="kyttar_0"):
+        super().__init__("Kyttar Abs", n_in=1, n_out=1,
+                         in_dtype=np.float32, out_dtype=np.float32)
+        self.device_id = device_id
+        self._advertise_grc_params(device_id, "AbsBlock", {})
+
+    def work(self, input_items, output_items):
+        x = input_items[0]
+        n = min(len(output_items[0]), len(x))
+        output_items[0][:n] = np.abs(x[:n])
+        return n
+
+
+class conjugate(_PassThrough):
+    """Complex conjugate — GR marker (maps to ConjugateBlock).
+
+    Drop-in for GNU Radio ``blocks.conjugate_cc`` (``out = conj(in) = re - j*im``):
+    ONE complex stream in -> ONE complex stream out. Single cell: pass I, negate Q.
+    GR marker only; the real DSP runs on the placeKYT chip."""
+
+    def __init__(self, device_id="kyttar_0"):
+        super().__init__("Kyttar Conjugate", n_in=1, n_out=1,
+                         in_dtype=np.complex64, out_dtype=np.complex64)
+        self.device_id = device_id
+        self._advertise_grc_params(device_id, "ConjugateBlock", {})
+
+    def work(self, input_items, output_items):
+        x = input_items[0]
+        n = min(len(output_items[0]), len(x))
+        output_items[0][:n] = np.conj(x[:n])
+        return n
+
+
+class complex_to_imag(_PassThrough):
+    """Complex -> Imag (take the imaginary part) — GR marker (maps to
+    ComplexToImagBlock).
+
+    Drop-in for GNU Radio ``blocks.complex_to_imag`` (``out = Im(in)``): ONE complex
+    stream in -> ONE real stream out. Single-cell selector on the chip that forwards
+    the Q rail. GR marker only; the real DSP runs on the placeKYT chip."""
+
+    def __init__(self, device_id="kyttar_0"):
+        super().__init__("Kyttar Complex To Imag", n_in=1, n_out=1,
+                         in_dtype=np.complex64, out_dtype=np.float32)
+        self.device_id = device_id
+        self._advertise_grc_params(device_id, "ComplexToImagBlock", {})
+
+    def work(self, input_items, output_items):
+        x = input_items[0]
+        n = min(len(output_items[0]), len(x))
+        output_items[0][:n] = x[:n].imag
+        return n
+
+
+class complex_to_mag_squared(_PassThrough):
+    """Complex -> Mag^2 (instantaneous power) — GR marker (maps to
+    ComplexToMagSquaredBlock).
+
+    Drop-in for GNU Radio ``blocks.complex_to_mag_squared`` (``out = re^2 + im^2``):
+    ONE complex stream in -> ONE real stream out. Single cell (MULQ + MACQ) on the
+    chip, saturating the [0,2) power range into Q15. GR marker only; the real DSP
+    runs on the placeKYT chip."""
+
+    def __init__(self, device_id="kyttar_0"):
+        super().__init__("Kyttar Complex To Mag^2", n_in=1, n_out=1,
+                         in_dtype=np.complex64, out_dtype=np.float32)
+        self.device_id = device_id
+        self._advertise_grc_params(device_id, "ComplexToMagSquaredBlock", {})
+
+    def work(self, input_items, output_items):
+        x = input_items[0]
+        n = min(len(output_items[0]), len(x))
+        output_items[0][:n] = (x[:n].real ** 2 + x[:n].imag ** 2).astype(np.float32)
+        return n
+
+
+class float_to_complex(_PassThrough):
+    """Float -> Complex join — GR marker (maps to FloatToComplexBlock).
+
+    Drop-in for GNU Radio ``blocks.float_to_complex`` (``out = re + j*im`` from TWO
+    real streams): TWO real streams in (re @ port 0, im @ port 1) -> ONE complex
+    stream out. The complement of complex_to_float and the SAME identity datapath on
+    the chip. GR marker only; the real DSP runs on the placeKYT chip."""
+
+    def __init__(self, device_id="kyttar_0"):
+        super().__init__("Kyttar Float To Complex", n_in=2, n_out=1,
+                         in_dtype=np.float32, out_dtype=np.complex64)
+        self.device_id = device_id
+        self._advertise_grc_params(device_id, "FloatToComplexBlock", {})
+
+    def work(self, input_items, output_items):
+        re = input_items[0]
+        im = input_items[1]
+        n = min(len(output_items[0]), len(re), len(im))
+        output_items[0][:n] = (re[:n] + 1j * im[:n]).astype(np.complex64)
+        return n
+
+
+class dual_float_to_complex(_PassThrough):
+    """Float -> Complex rendezvous — GR marker (maps to DualFloatToComplexBlock).
+
+    The PHYSICAL ``blocks.float_to_complex`` for TWO INDEPENDENT, asynchronously-timed
+    real producers (I from one source, Q from another) feeding a complex block. TWO
+    real streams in (i @ port 0, q @ port 1) -> ONE complex stream out. On the chip a
+    1-cell arbiter-LOCK pairs the two rails by arrival FACE. GR marker only; the real
+    DSP runs on the placeKYT chip.
+
+    The face_i/face_q/hop/dest_i/dest_q/entry placement knobs of the placed block are
+    router-reconciled internals (see DualFloatToComplexBlock.GRC_UNSUPPORTED_PARAMS) and
+    are intentionally NOT exposed to GRC — GNU Radio's float_to_complex has no such
+    params, so exposing them would break the 1:1 drop-in contract."""
+
+    def __init__(self, device_id="kyttar_0"):
+        super().__init__("Kyttar Float To Complex", n_in=2, n_out=1,
+                         in_dtype=np.float32, out_dtype=np.complex64)
+        self.device_id = device_id
+        self._advertise_grc_params(device_id, "DualFloatToComplexBlock", {})
+
+    def work(self, input_items, output_items):
+        i = input_items[0]
+        q = input_items[1]
+        n = min(len(output_items[0]), len(i), len(q))
+        output_items[0][:n] = (i[:n] + 1j * q[:n]).astype(np.complex64)
+        return n
+
+
+class keep_one_in_n(_PassThrough):
+    """Keep 1 in N — GR marker (maps to KeepOneInNBlock).
+
+    Drop-in for GNU Radio ``blocks.keep_one_in_n`` (keep 1 sample of every ``n``, no
+    filter): ONE real stream in -> ONE decimated real stream out. A modulo-``n`` emit
+    gate on the chip (the decimator WITHOUT the FIR). GR marker only; the real DSP
+    runs on the placeKYT chip."""
+
+    def __init__(self, device_id="kyttar_0", n=2):
+        super().__init__("Kyttar Keep 1 in N", n_in=1, n_out=1,
+                         in_dtype=np.float32, out_dtype=np.float32)
+        self.device_id = device_id
+        self.n = int(n)
+        # MARKER CONVENTION (matches the Decimator marker): plain 1:1
+        # pass-through — the REAL decimation runs on the chip and the kyttar
+        # SINK emits the recovered (already-decimated) stream. A sync_block
+        # faking the rate change (set_relative_rate(1/n) + a partial-return
+        # work) DEADLOCKS the client scheduler at flowgraph end: sync work's
+        # return value is both produce AND consume, so the input tail is never
+        # drained and tb.run() hangs (the effect_echo real-client hang).
+        self._advertise_grc_params(device_id, "KeepOneInNBlock", {"n": int(n)})
+
+
+class moving_average(_PassThrough):
+    """Moving Average — GR marker (maps to MovingAverageBlock).
+
+    Drop-in for GNU Radio ``blocks.moving_average_ff`` (``out = scale * sum of the last
+    ``length`` samples``): ONE real stream in -> ONE real stream out. On the chip this
+    is a FIR whose ``length`` taps all equal ``scale`` (the box-car running average).
+    GR marker only; the real DSP runs on the placeKYT chip."""
+
+    def __init__(self, device_id="kyttar_0", length=4, scale=0.25):
+        super().__init__("Kyttar Moving Average", n_in=1, n_out=1,
+                         in_dtype=np.float32, out_dtype=np.float32)
+        self.device_id = device_id
+        self.length = int(length)
+        self.scale = float(scale)
+        self._advertise_grc_params(device_id, "MovingAverageBlock",
+                                   {"length": int(length), "scale": float(scale)})
+
+    def work(self, input_items, output_items):
+        # Faithful box-car moving average: out[k] = scale * sum(x[k-length+1 .. k]).
+        x = input_items[0].astype(np.float64)
+        n = min(len(output_items[0]), len(x))
+        L = max(1, int(self.length))
+        prev = getattr(self, "_hist", np.zeros(L - 1, dtype=np.float64))
+        buf = np.concatenate([prev, x[:n]])
+        csum = np.cumsum(np.concatenate([[0.0], buf]))
+        out = (csum[L:] - csum[:-L])[:n] * float(self.scale)
+        output_items[0][:n] = out.astype(np.float32)
+        self._hist = buf[-(L - 1):] if L > 1 else np.zeros(0, dtype=np.float64)
+        return n
+
+
+class rms(_PassThrough):
+    """RMS (real) — GR marker (maps to RMSBlock).
+
+    Drop-in for GNU Radio ``blocks.rms_ff``: single-pole IIR power average
+    ``avg = (1-alpha)*avg + alpha*x^2`` then ``out = sqrt(avg)``. ONE real
+    stream in -> ONE real stream out. On the chip: a 4-cell feed-forward chain
+    (power+IIR with full-precision error feedback -> normalize -> quartic
+    sqrt -> denormalize). GR marker only; the real DSP runs on the placeKYT
+    chip. HW-DEVIATION: alpha is quantized to Q15 (the default 1e-4 runs as
+    3/32768; the settled RMS is unchanged, only the time constant shifts ~8%)."""
+
+    def __init__(self, device_id="kyttar_0", alpha=0.0001):
+        super().__init__("Kyttar RMS", n_in=1, n_out=1,
+                         in_dtype=np.float32, out_dtype=np.float32)
+        self.device_id = device_id
+        self.alpha = float(alpha)
+        self._advertise_grc_params(device_id, "RMSBlock",
+                                   {"alpha": float(alpha)})
+
+    def work(self, input_items, output_items):
+        x = input_items[0].astype(np.float64)
+        n = min(len(output_items[0]), len(x))
+        avg = float(getattr(self, "_avg", 0.0))
+        a = float(self.alpha)
+        out = np.empty(n, dtype=np.float64)
+        for k in range(n):
+            avg = (1.0 - a) * avg + a * x[k] * x[k]
+            out[k] = math.sqrt(avg)
+        self._avg = avg
+        output_items[0][:n] = out.astype(np.float32)
+        return n
+
+
+class rms_cf(_PassThrough):
+    """RMS (complex) — GR marker (maps to RMSCFBlock).
+
+    Drop-in for GNU Radio ``blocks.rms_cf``: the same single-pole averager run
+    on ``|z|^2 = re^2 + im^2`` with a REAL output. ONE complex stream in -> ONE
+    real stream out. Same 4-cell chip datapath as ``rms`` with a
+    ComplexToMagSquared front. GR marker only; the real DSP runs on the
+    placeKYT chip. HW-DEVIATION: alpha quantized to Q15 (see ``rms``)."""
+
+    def __init__(self, device_id="kyttar_0", alpha=0.0001):
+        super().__init__("Kyttar RMS (Complex)", n_in=1, n_out=1,
+                         in_dtype=np.complex64, out_dtype=np.float32)
+        self.device_id = device_id
+        self.alpha = float(alpha)
+        self._advertise_grc_params(device_id, "RMSCFBlock",
+                                   {"alpha": float(alpha)})
+
+    def work(self, input_items, output_items):
+        z = input_items[0]
+        n = min(len(output_items[0]), len(z))
+        avg = float(getattr(self, "_avg", 0.0))
+        a = float(self.alpha)
+        out = np.empty(n, dtype=np.float64)
+        for k in range(n):
+            p = float(z[k].real) ** 2 + float(z[k].imag) ** 2
+            avg = (1.0 - a) * avg + a * p
+            out[k] = math.sqrt(avg)
+        self._avg = avg
+        output_items[0][:n] = out.astype(np.float32)
         return n

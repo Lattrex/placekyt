@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """TransactionLogPanel — the ordered, timestamped transaction stream (§debug 3.1).
 
 The debug "what happened, in order, when" view, folding in the old Output panel:

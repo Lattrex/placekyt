@@ -1,0 +1,185 @@
+project:
+  format_version: 1
+  name: Scrambled data link (unpack -> NOT/AND/map -> LFSR -> diff -> loopback)
+  version: '1.0'
+chip_type: kyttar_10x12
+chips:
+- id: 0
+  label: Chip 0
+  position: {x: 0.0, y: 0.0}
+blocks:
+- name: unpackkbits
+  type: UnpackKBitsBlock
+  library: lattrex.official
+  params:
+    k: 8
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 1, y: 0, face: east}
+- name: not
+  type: NotBlock
+  library: lattrex.official
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 2, y: 0, face: east}
+- name: andconst
+  type: AndConstBlock
+  library: lattrex.official
+  params:
+    constant: 1
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 3, y: 0, face: south}
+    orientation:
+    - cw
+- name: mapbb
+  type: MapBBBlock
+  library: lattrex.official
+  params:
+    map:
+    - 1
+    - 0
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 4, y: 0, face: east}
+- name: lfsrscrambler
+  type: LFSRScramblerBlock
+  library: lattrex.official
+  params:
+    mask: 138
+    seed: 127
+    len: 7
+    count: 0
+    bits_per_byte: 1
+    reset_tag_key: ''
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 4, y: 1, face: north}
+    orientation:
+    - ccw
+- name: diffencoder
+  type: DiffEncoderBlock
+  library: lattrex.official
+  params:
+    modulus: 2
+    coding: DIFF_DIFFERENTIAL
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 5, y: 1, face: east}
+- name: diffdecoder
+  type: DiffDecoderBlock
+  library: lattrex.official
+  params:
+    modulus: 2
+    coding: 0
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 6, y: 1, face: east}
+- name: lfsrscrambler_2
+  type: LFSRScramblerBlock
+  library: lattrex.official
+  params:
+    mask: 138
+    seed: 127
+    len: 7
+    count: 0
+    bits_per_byte: 1
+    reset_tag_key: ''
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 7, y: 1, face: east}
+- name: chartofloat
+  type: CharToFloatBlock
+  library: lattrex.official
+  params:
+    scale: 128.0
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 7, y: 2, face: east}
+- name: floattochar
+  type: FloatToCharBlock
+  library: lattrex.official
+  params:
+    scale: 128.0
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 8, y: 2, face: west}
+    orientation:
+    - mirror_h
+- name: packkbits
+  type: PackKBitsBlock
+  library: lattrex.official
+  params:
+    k: 8
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 8, y: 1, face: west}
+    orientation:
+    - mirror_h
+connections:
+- name: net1
+  from: {block: chartofloat, port: out}
+  to: {block: floattochar, port: sample}
+  route: abutment
+- name: net2
+  from: {block: diffdecoder, port: out}
+  to: {block: lfsrscrambler_2, port: sample}
+  route: abutment
+- name: net3
+  from: {block: diffencoder, port: out}
+  to: {block: diffdecoder, port: sample}
+  route: abutment
+- name: net4
+  from: {block: lfsrscrambler_2, port: out}
+  to: {block: chartofloat, port: sample}
+  route: abutment
+- name: net5
+  from: {block: floattochar, port: out}
+  to: {block: packkbits, port: sample}
+  route: abutment
+- name: net6
+  from: {block: not, port: out}
+  to: {block: andconst, port: sample}
+  route: abutment
+- name: net7
+  from: {block: andconst, port: out}
+  to: {block: mapbb, port: sample}
+  route: abutment
+- name: net8
+  from: {block: mapbb, port: out}
+  to: {block: lfsrscrambler, port: sample}
+  route: abutment
+- name: net9
+  from: {block: lfsrscrambler, port: out}
+  to: {block: diffencoder, port: sample}
+  route: abutment
+- name: net10
+  from: {block: unpackkbits, port: out}
+  to: {block: not, port: sample}
+  route: abutment
+- name: net11
+  from: {block: packkbits, port: out}
+  to: {chip_port: {chip: 0, port: x16_out}}
+  route:
+  - {x: 8, y: 1}
+  - {x: 8, y: 0}
+  - {x: 9, y: 0}
+  out_tag: 10
+- name: net12
+  from: {chip_port: {chip: 0, port: x16_in}}
+  to: {block: unpackkbits, port: byte}
+  route:
+  - {x: 0, y: 0}
+  - {x: 1, y: 0}
+  stream_id: tx

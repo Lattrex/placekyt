@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Gate-1 on-chip lock check for the DUAL-FACE GardnerTimingRecovery.
 
 Builds, through the REAL placeKYT pipeline, a small chain that drives the Gardner

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """
 CellProgram Resolver
 
@@ -301,6 +302,18 @@ class CellProgramResolver:
             out.setdefault(addr, {"role": "output", "name": name})
 
         for addr in range(base_addr, 31):
+            # An address that is BOTH a declared input port and inside the
+            # instruction range keeps its INPUT role: that is the runtime
+            # patch-slot idiom (another cell WRITEs a constructed instruction
+            # word into a program slot — e.g. BlockInterleaverBlock's computed-
+            # destination store). The router resolves internal-connection
+            # targets through this classification, so reclassifying the pinned
+            # slot as "instruction" would silently misroute the patch WRITE to
+            # the cell's first input register. Data/state keep the historical
+            # instruction-wins behaviour (they are never legitimate in the
+            # instruction range).
+            if out.get(addr, {}).get("role") == "input":
+                continue
             out[addr] = {"role": "instruction", "name": None}
         out[31] = {"role": "halt", "name": None}
         return out

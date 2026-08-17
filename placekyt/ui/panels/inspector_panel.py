@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Inspector panel — context-sensitive details for the selection (§3.3).
 
 Shows the selected cell's coordinates, face, kind, owning block + params, AND —

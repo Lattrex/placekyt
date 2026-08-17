@@ -1,4 +1,5 @@
-"""PortItem — an I/O port marker on a chip edge (the architecture notes §3.2).
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""PortItem — an I/O port marker on a chip edge.
 
 A triangle just outside the port's edge cell, pointing in the port's face
 direction, with a small label (e.g. "x16"). Filled when the port is connected,

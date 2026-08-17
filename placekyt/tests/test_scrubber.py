@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Timeline scrubber tests (DEBUG step 4): span, markers, drag → shared cursor.
 
 Offscreen Qt. Exercises the TimelineScrubber widget directly and its MainWindow

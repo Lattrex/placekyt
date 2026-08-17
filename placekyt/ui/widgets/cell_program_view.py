@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """CellProgramView — a built cell's 32-register program in ONE table (§3.3).
 
 A single register-indexed table: **Addr | Value | Instruction**. Each row is one
@@ -31,7 +32,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtGui import QColor
 
-# ISA mnemonic → short description (from the architecture notes §2.7 quick reference).
+# ISA mnemonic → short description.
 # MIME type for dragging a register from the program view → waveform viewer.
 # Payload: b"chip,x,y,addr".
 REGISTER_MIME = "application/x-placekyt-register"

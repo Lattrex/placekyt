@@ -1,0 +1,174 @@
+project:
+  format_version: 1
+  name: Robust RX — FLL coarse frequency recovery vs Costas-only
+  version: '1.0'
+chip_type: kyttar_10x12
+chips:
+- id: 0
+  label: Chip 0
+  position: {x: 0.0, y: 0.0}
+blocks:
+- name: fllbandedge
+  type: FLLBandEdgeBlock
+  library: lattrex.official
+  params:
+    samps_per_sym: 2.0
+    rolloff: 0.35
+    filter_size: 17
+    bandwidth: 0.1
+    pipeline_lock: true
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: phase, x: 0, y: 5, face: east}
+    - {cell_id: sin_fold, x: 1, y: 5, face: east}
+    - {cell_id: cos_fold, x: 2, y: 5, face: east}
+    - {cell_id: table_sin, x: 3, y: 5, face: east}
+    - {cell_id: table_cos, x: 4, y: 5, face: east}
+    - {cell_id: rotate, x: 5, y: 5, face: east}
+    - {cell_id: fanout, x: 6, y: 5, face: east}
+    - {cell_id: ci0, x: 7, y: 5, face: south}
+    - {cell_id: ci1, x: 7, y: 6, face: south}
+    - {cell_id: ci2, x: 7, y: 7, face: south}
+    - {cell_id: ci3, x: 7, y: 8, face: south}
+    - {cell_id: ci4, x: 7, y: 9, face: west}
+    - {cell_id: ci5, x: 6, y: 9, face: west}
+    - {cell_id: cq0, x: 5, y: 9, face: west}
+    - {cell_id: cq1, x: 4, y: 9, face: west}
+    - {cell_id: cq2, x: 3, y: 9, face: west}
+    - {cell_id: cq3, x: 2, y: 9, face: west}
+    - {cell_id: cq4, x: 1, y: 9, face: west}
+    - {cell_id: cq5, x: 0, y: 9, face: north}
+    - {cell_id: berr, x: 0, y: 8, face: north}
+    - {cell_id: pi, x: 0, y: 7, face: north}
+    - {cell_id: transit_fb_0, x: 0, y: 6, face: north}
+- name: complexcostasloop
+  type: ComplexCostasLoopBlock
+  library: lattrex.official
+  params:
+    loop_bw: 0.05
+    damping: 1.0
+    order: 2
+    pipeline_lock: true
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: phase, x: 6, y: 3, face: north}
+    - {cell_id: sin_fold, x: 6, y: 2, face: north}
+    - {cell_id: cos_fold, x: 6, y: 1, face: north}
+    - {cell_id: table_sin, x: 6, y: 0, face: east}
+    - {cell_id: table_cos, x: 7, y: 0, face: south}
+    - {cell_id: rotate, x: 7, y: 1, face: south}
+    - {cell_id: pd_pi, x: 7, y: 2, face: south}
+    - {cell_id: transit_fb_0, x: 7, y: 3, face: west}
+    orientation:
+    - ccw
+- name: bpskslicer
+  type: BPSKSlicerBlock
+  library: lattrex.official
+  params:
+    out_mode: bit
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 9, y: 1, face: east}
+- name: complexcostasloop_2
+  type: ComplexCostasLoopBlock
+  library: lattrex.official
+  params:
+    loop_bw: 0.05
+    damping: 1.0
+    order: 2
+    pipeline_lock: true
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: phase, x: 2, y: 0, face: east}
+    - {cell_id: sin_fold, x: 3, y: 0, face: east}
+    - {cell_id: cos_fold, x: 4, y: 0, face: east}
+    - {cell_id: table_sin, x: 5, y: 0, face: south}
+    - {cell_id: table_cos, x: 5, y: 1, face: west}
+    - {cell_id: rotate, x: 4, y: 1, face: west}
+    - {cell_id: pd_pi, x: 3, y: 1, face: west}
+    - {cell_id: transit_fb_0, x: 2, y: 1, face: north}
+- name: bpskslicer_2
+  type: BPSKSlicerBlock
+  library: lattrex.official
+  params:
+    out_mode: bit
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 8, y: 2, face: north}
+    orientation:
+    - ccw
+connections:
+- name: net1
+  from: {chip_port: {chip: 0, port: x16_in}}
+  to: {block: fllbandedge, port: xi}
+  route:
+  - {x: 0, y: 0}
+  - {x: 1, y: 0}
+  - {x: 1, y: 1}
+  - {x: 1, y: 2}
+  - {x: 1, y: 3}
+  - {x: 1, y: 4}
+  - {x: 0, y: 4}
+  - {x: 0, y: 5}
+  stream_id: rx
+  src_complex: true
+- name: net2
+  from: {block: fllbandedge, port: yi_tap}
+  to: {block: complexcostasloop, port: xi}
+  route:
+  - {x: 6, y: 5}
+  - {x: 6, y: 4}
+- name: net3
+  from: {block: complexcostasloop, port: yi_tap}
+  to: {block: bpskslicer, port: llr}
+  route:
+  - {x: 7, y: 1}
+  - {x: 8, y: 1}
+- name: net4
+  from: {chip_port: {chip: 0, port: x16_in}}
+  to: {block: complexcostasloop_2, port: xi}
+  route:
+  - {x: 0, y: 0}
+  - {x: 1, y: 0}
+  stream_id: ctl
+  src_complex: true
+- name: net5
+  from: {block: complexcostasloop_2, port: yi_tap}
+  to: {block: bpskslicer_2, port: llr}
+  route:
+  - {x: 4, y: 1}
+  - {x: 4, y: 2}
+  - {x: 4, y: 3}
+  - {x: 4, y: 4}
+  - {x: 5, y: 4}
+  - {x: 6, y: 4}
+  - {x: 7, y: 4}
+  - {x: 8, y: 4}
+  - {x: 8, y: 3}
+- name: net6
+  from: {block: bpskslicer_2, port: out}
+  to: {chip_port: {chip: 0, port: x16_out}}
+  route:
+  - {x: 8, y: 2}
+  - {x: 8, y: 1}
+  - {x: 8, y: 0}
+  - {x: 9, y: 0}
+  out_tag: 25
+- name: net7
+  from: {block: bpskslicer, port: out}
+  to: {chip_port: {chip: 0, port: x16_out}}
+  route:
+  - {x: 9, y: 1}
+  - {x: 9, y: 0}
+  out_tag: 5
+- name: net8
+  from: {block: fllbandedge, port: yq_tap}
+  to: {block: complexcostasloop, port: xq}
+  route:
+  - {x: 6, y: 5}
+  - {x: 6, y: 4}

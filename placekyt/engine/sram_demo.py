@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Full SRAM-panel demo (Qt-free, engine layer) — REAL placed blocks + ports
 + REAL drawn routes that live IN the ``.kyt``.
 

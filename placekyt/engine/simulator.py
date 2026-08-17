@@ -1,4 +1,5 @@
-"""SimulationEngine — thin adapter over simkyt (the architecture notes §4.3).
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""SimulationEngine — thin adapter over simkyt.
 
 v1.0 single-chip path: load a bitstream into ``simkyt.Chip``, inject a
 BITSTREAM stimulus, run, capture output as tagged words, and compare against a
@@ -136,7 +137,7 @@ class SimulationEngine:
 
     def read_cell_registers(self, x: int, y: int) -> dict[int, int]:
         """Read all 32 registers of cell ``(x, y)`` from the engine's live RAM
-        (DEBUG_the architecture notes §3.2 live register view). Unlike trace
+        (live register view). Unlike trace
         reconstruction, this reflects values the cell COMPUTED itself (R0
         accumulator, ALU results), not just externally-written words. Returns
         ``{addr: value}`` (uint16), or ``{}`` if the read is unsupported."""
@@ -445,6 +446,35 @@ class MultiChipSimEngine:
         NOT expose per-cell memory reads, so this returns ``{}`` — the inspector
         falls back to trace reconstruction for multi-chip live state."""
         return {}
+
+    def drain_trace(self) -> list[dict]:
+        """Drain EVERY chip's trace — chip-tagged (``ev["_chip"]``), time-sorted
+        — and RESET the buffers. MultiChipSimulation has no ``clear_trace``, but
+        re-calling ``enable_trace`` starts a FRESH buffer (verified: n → 0 → n on
+        the next run), so this mirrors the single-chip drain+clear cycle the GUI
+        live view depends on (the chip-side buffer never grows unbounded under
+        the repeat-burst loop). ``handshakes()``'s cursors restart with the
+        buffers."""
+        out: list[dict] = []
+        for cid in self._chip_ids:
+            try:
+                events = self._sim.get_trace(_chip_name(cid))
+            except Exception:  # noqa: BLE001 — trace not enabled for this chip
+                continue
+            for ev in events:
+                d = dict(ev)
+                d["_chip"] = cid
+                out.append(d)
+            try:
+                self._sim.enable_trace(_chip_name(cid), None)
+            except Exception:  # noqa: BLE001
+                pass
+            self._trace_cursors[cid] = 0
+        out.sort(key=lambda e: float(e.get("time_ns", 0.0)))
+        return out
+
+    def chip_width(self, chip_id: int) -> int:
+        return int(self._widths.get(chip_id, 10))
 
     def handshakes(self) -> dict:
         """NEW data transfers since the last call → ``{"cells": [(chip,x,y,face),

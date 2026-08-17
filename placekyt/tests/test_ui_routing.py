@@ -1,4 +1,5 @@
-"""Route-drawing tool tests (the architecture notes §3.2). Offscreen Qt.
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Route-drawing tool tests. Offscreen Qt.
 
 Drives the canvas route state machine and pumps the event loop (the live-GUI
 lesson: signal cascades + widget lifetime only surface with a real event loop).

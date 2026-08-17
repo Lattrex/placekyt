@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Host-side SRAM / peripheral panel device (the SRAM panel notes).
 
 A panel is a *host-side* device — it does NOT run inside simkyt. It bridges a
@@ -53,7 +54,7 @@ class _DecodedDescriptor:
 def _decode(word: int) -> _DecodedDescriptor:
     """Decode a 16-bit Kyttar instruction word into (opcode, hop_cnt, dest).
 
-    Layout (encode.rs): ``OP[15:12] | … | HOP_CNT[9:5] | DEST[4:0]``.
+    Layout (ISA descriptor-word encoding): ``OP[15:12] | … | HOP_CNT[9:5] | DEST[4:0]``.
     """
     word &= 0xFFFF
     return _DecodedDescriptor(
@@ -76,6 +77,14 @@ class SramPanelDevice:
 
     size_words: int = 1 << 16
     addr_regs: int = 1
+    # READ-side address auto-increment (a standard SRAM streaming-read feature,
+    # mirroring the WRITE-side auto-increment the controller macro does locally):
+    # after each push-read the latched address advances by one, so a SEQUENTIAL
+    # consumer (the CW keyer's 3-word run records) triggers reads without
+    # rewriting R5 per word — which is what lets a record-fetch controller fit a
+    # 32-word cell. Off by default: the classic latched-address behaviour (every
+    # existing test/demo) is unchanged unless a design opts in.
+    auto_inc_read: bool = False
     # Latched register file. Addresses beyond the named ones are address-extension
     # words (R5, R6, …). Stored as a dict so sparse high addresses are cheap.
     regs: dict[int, int] = field(default_factory=dict)
@@ -149,6 +158,11 @@ class SramPanelDevice:
         value = self.mem.get(addr, 0) & 0xFFFF
         self.reads_issued += 1
         self._activity.append((addr, "r"))
+        if self.auto_inc_read:
+            # Streaming read: advance the latched address for the next trigger.
+            nxt = (addr + 1) % max(1, self.size_words)
+            for i in range(self.addr_regs):
+                self.regs[REG_ADDR_BASE + i] = (nxt >> (16 * i)) & 0xFFFF
         if wr.is_noop:
             return None  # no data delivery requested
         return PushRead(

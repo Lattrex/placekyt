@@ -1,0 +1,104 @@
+id: kyttar_varicode_decoder
+label: Kyttar Varicode Decoder
+category: '[Kyttar]/Ham'
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.varicode_decoder(${device_id}, ${panel_hop}, ${read_addr_hop}, ${char_dest}, ${emit_entry}, ${emit_hop}, ${out_dest}, ${read_dest}, ${read_entry}, ${read_wr_desc}, ${read_jp_desc}, ${emit_jump_entry})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+- id: panel_hop
+  label: Panel hop (@N)
+  dtype: int
+  default: '1'
+- id: read_addr_hop
+  label: Read-addr hop (@N)
+  dtype: int
+  default: '1'
+- id: char_dest
+  label: Codeword dest register
+  dtype: int
+  default: '25'
+- id: emit_entry
+  label: Emit entry point
+  dtype: int
+  default: '2'
+- id: emit_hop
+  label: Emit hop (@N)
+  dtype: int
+  default: '1'
+- id: out_dest
+  label: Output dest register
+  dtype: int
+  default: '25'
+
+- id: read_dest
+  label: read_dest
+  dtype: int
+  default: 5
+  hide: part
+- id: read_entry
+  label: read_entry
+  dtype: int
+  default: 1
+  hide: part
+- id: read_wr_desc
+  label: read_wr_desc
+  dtype: int
+  default: 0
+  hide: part
+- id: read_jp_desc
+  label: read_jp_desc
+  dtype: int
+  default: 0
+  hide: part
+- id: emit_jump_entry
+  label: emit_jump_entry
+  dtype: raw
+  default: None
+  hide: part
+
+inputs:
+- id: '0'
+  label: bit
+  domain: stream
+  dtype: byte
+
+outputs:
+- id: '0'
+  label: out
+  domain: stream
+  dtype: byte
+
+documentation: |-
+  SRAM-backed PSK31 Varicode DECODER (inverse of the encoder; G3PLX / Peter
+  Martinez table) — placeKYT-native ([Kyttar]) block; there is NO stock GNU Radio
+  Varicode block.
+
+  A small in-cell bit-accumulator forms each codeword between "00" delimiters, then
+  does an SRAM push-read (address == codeword integer value, panel word == ASCII
+  char) to fetch + emit the character. The reverse map lives in the SRAM panel
+  (verification/SRAM_PANEL.md §6); the decode runs ON the placeKYT-hosted chip. This
+  GRC block is a placeable pass-through marker carrying the byte graph so a flowgraph
+  imports + runs.
+
+  Ports:
+    bit (in): Varicode bit stream (byte, "00" between chars)
+    out:      decoded ASCII character (byte)
+
+  Parameters (mirror VaricodeDecoderBlock verbatim):
+    Device ID:      which Kyttar device to use.
+    Panel hop:      hops from this cell to the SRAM panel port (@N).
+    Read-addr hop:  hops for the panel read-address descriptor (@N).
+    Codeword dest:  destination register for the assembled codeword read.
+    Emit entry:     entry point invoked to emit each decoded character.
+    Emit hop:       hops to the emit destination cell (@N).
+    Output dest:    destination register for the emitted ASCII char.
+
+  Mapped by placeKYT (File -> Import GNURadio Flowgraph) to VaricodeDecoderBlock.
+
+file_format: 1

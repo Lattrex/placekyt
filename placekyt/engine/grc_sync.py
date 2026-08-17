@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """GRC↔placeKYT parameter-sync detection (Qt-free).
 
 The GRC-first flow imports a GNURadio flowgraph into a placeKYT design (see
@@ -121,6 +122,22 @@ def compute_param_diff(project, catalog, grc_params_by_block: dict) -> dict:
     block's types and compare to the block's current params. A block whose GRC
     params are all equal (after coercion) is in sync and omitted.
 
+    The comparison is over EFFECTIVE values, not raw dict keys (the
+    out-of-sync-banner false-positive class):
+
+      * a key ABSENT from the placed params means "the block default" — an
+        older .kyt that never stored a later-added param is not out of sync
+        when the GRC advertises exactly that default;
+      * a ``None`` on either side means "unset/derived" (dual-namespace blocks
+        like the RRC matched filter accept firdes-style AND friendly params,
+        each defaulting the other to None) — never a real difference;
+      * when a textual difference remains, the two param sets are
+        INSTANTIATED and their resolved cell-program signatures compared —
+        a representation-only difference (friendly ``sps=2`` vs firdes
+        ``samp_rate=2.0``) yields the identical chip config and is
+        suppressed. Only a diff that would actually change the built chip
+        reaches the banner.
+
     Returns ``{block_name: BlockParamDiff}``.
     """
     out: dict = {}
@@ -129,18 +146,67 @@ def compute_param_diff(project, catalog, grc_params_by_block: dict) -> dict:
         if block is None:
             continue  # block deleted since the GRC params were recorded
         coerced = _coerce_grc_params(grc_raw, catalog, block.type, block.library)
+        spec = (catalog.get(block.type, block.library)
+                if catalog is not None else None)
+        defaults = {}
+        if spec is not None:
+            try:
+                defaults = spec.default_params() or {}
+            except Exception:  # noqa: BLE001
+                defaults = {}
+        cur_eff = {**defaults, **{k: v for k, v in (block.params or {}).items()
+                                  if v is not None}}
         changes: dict = {}
         for key, grc_val in coerced.items():
-            cur_val = block.params.get(key)
+            cur_val = cur_eff.get(key)
+            if grc_val is None or cur_val is None:
+                continue  # unset/derived on either side — not a difference
             if not _values_equal(cur_val, grc_val):
-                changes[key] = (cur_val, grc_val)
+                changes[key] = (block.params.get(key), grc_val)
         if not changes:
             continue
+        if _same_resolved_config(catalog, block, coerced):
+            continue  # representation-only difference — identical chip config
         resizes = _would_resize(project, catalog, block, coerced)
         out[block_name] = BlockParamDiff(
             block_name=block_name, grc_params=coerced,
             changes=changes, resizes=resizes)
     return out
+
+
+def _program_signature(catalog, btype, library, params):
+    """A canonical signature of the chip config a param set resolves to:
+    per-cell (template, data words, state inits) + the cell count. Two param
+    sets with equal signatures build the identical block."""
+    blk = catalog.instantiate(btype, "__sync_probe__", dict(params),
+                              library=library)
+    cells = []
+    for cid, cp in (blk.build_cell_programs() or {}).items():
+        data = tuple((dw.name, int(dw.value) & 0xFFFF, dw.address)
+                     for dw in (getattr(cp, "data", None) or []))
+        state = tuple((sv.name, getattr(sv, "initial_value", 0),
+                       getattr(sv, "reset_value", None))
+                      for sv in (getattr(cp, "state", None) or []))
+        cells.append((str(cid), getattr(cp, "assembly_template", ""),
+                      data, state))
+    return (blk.cell_count, tuple(sorted(cells)))
+
+
+def _same_resolved_config(catalog, block, coerced_grc: dict) -> bool:
+    """True when the placed params and the GRC-merged params instantiate to
+    the SAME resolved block (cell programs + data + footprint) — i.e. the
+    textual param difference is representation-only. Conservative: any
+    instantiation/probing failure returns False (the diff stays visible)."""
+    if catalog is None:
+        return False
+    try:
+        cur = _program_signature(catalog, block.type, block.library,
+                                 block.params or {})
+        new = _program_signature(catalog, block.type, block.library,
+                                 merged_params(block, coerced_grc))
+    except Exception:  # noqa: BLE001
+        return False
+    return cur == new
 
 
 def merged_params(block, grc_params: dict) -> dict:

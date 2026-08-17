@@ -50,6 +50,7 @@ What each is for:
 | `python3.12-venv` | create the placeKYT virtual environment (placeKYT requires Python 3.12) |
 | `gnuradio` | GNU Radio 3.10+ and `gnuradio-companion` for the flowgraph demo *(skip if you only want the placeKYT GUI/CLI)* |
 | `libxcb-cursor0` | required by Qt 6.5+ for the placeKYT GUI; without it the GUI aborts with *"Could not load the Qt platform plugin xcb"* |
+| `xterm` | optional — a real terminal for GNU Radio's `x-terminal-emulator` lookup (see the "Harmless warning" note in §3c) |
 
 Confirm Python:
 
@@ -138,8 +139,9 @@ python3 -c "from gnuradio import kyttar; print('kyttar blocks ready')"
 ```
 
 All the demos live in one place: the top-level **[`examples/`](examples/)**
-directory — see [`examples/README.md`](examples/README.md) for the full list
-(gain, coherent BPSK RX, and the AM/FM/SSB/BPSK transceivers), each with its own
+directory — see [`examples/README.md`](examples/README.md) for the full list:
+the complete set — BPSK/QPSK/4FSK/16-QAM modems, AM/FM/SSB/CW/PSK31
+transceivers, a data link, audio effects, and more — each with its own
 walkthrough. Each subdirectory holds the flowgraph (`.grc`), often a placeKYT host
 design (`.kyt`), and a README. We'll use
 [`examples/coherent_bpsk_rx/`](examples/coherent_bpsk_rx/).

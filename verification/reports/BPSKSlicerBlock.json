@@ -1,0 +1,21 @@
+{
+  "kyttar_block": "BPSKSlicerBlock",
+  "passed": true,
+  "metric": "decision",
+  "n_compared": 10,
+  "max_abs_err": 0,
+  "tolerance": 0,
+  "nmse_db": null,
+  "correlation": null,
+  "bit_errors": 0,
+  "delay_used": 0,
+  "coverage": {
+    "gr_equiv": "digital.binary_slicer_fb",
+    "edge": true,
+    "random": 4,
+    "param_sweep": "out_mode bit/byte/word",
+    "mutation": true,
+    "decision": "sign of input: >=0 -> 1 (tie -> 1), <0 -> 0 (GR-exact)",
+    "note": "1-cell memoryless slicer; bit-exact vs binary_slicer_fb, delay 0"
+  }
+}

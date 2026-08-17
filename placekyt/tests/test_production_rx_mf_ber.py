@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """PRODUCTION coherent BPSK RX with an RRC matched filter front end, auto-P&R, BER 0.
 
 This is the production-grade flagship: FOUR separate catalog blocks —

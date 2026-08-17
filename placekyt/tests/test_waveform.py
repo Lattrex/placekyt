@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Waveform viewer tests (DEBUG step 3): streams, radix, cursors, measurement.
 
 Offscreen Qt. Exercises the WaveformView widget directly and the WaveformPanel
@@ -699,3 +700,29 @@ class TestWaveformHeights:
         # render must not raise
         img = QImage(800, 120, QImage.Format_ARGB32)
         v.render(img, QPoint(0, 0))
+
+
+class TestProjectSwitchClearsTraces:
+    """Opening/importing a DIFFERENT project auto-clears the waveform panel —
+    the previous design's port/register/tag traces mean nothing to the new
+    design and used to require hand-deletion (user report, 2026-08-11)."""
+
+    def test_clear_traces_empties_rows_and_seed_state(self, qapp):
+        from ui.panels.waveform_panel import WaveformPanel
+        p = WaveformPanel()
+        p.view.set_streams({(0, "x16_out"): [(0.0, 1), (1.0, 2)]})
+        p._seeded_port_tags[(0, "x16_out")] = frozenset({5, 10})
+        assert p.view.stream_count() == 1
+        p.clear_traces()
+        assert p.view.stream_count() == 0
+        assert p._seeded_port_tags == {}
+
+    def test_after_project_loaded_clears_panel(self, qapp, tmp_path):
+        w = MainWindow(AppController(catalog=BlockCatalog.from_gr_kyttar()))
+        w.controller.new_project("first", "kyttar_10x12")
+        w.waveform_panel.view.set_streams(
+            {(0, "x16_out"): [(0.0, 1), (1.0, 2)]})
+        assert w.waveform_panel.view.stream_count() == 1
+        w.controller.new_project("second", "kyttar_10x12")
+        w._after_project_loaded()
+        assert w.waveform_panel.view.stream_count() == 0

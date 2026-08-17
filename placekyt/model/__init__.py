@@ -1,7 +1,7 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """placeKYT data model — pure-Python project state, no Qt / simkyt deps.
 
-This package is the single source of truth for project state (the architecture notes
-§4.1, §6). The ``engine/``, ``commands/``, and ``ui/`` layers build on it; it
+This package is the single source of truth for project state. The ``engine/``, ``commands/``, and ``ui/`` layers build on it; it
 builds on nothing but the standard library.
 """
 

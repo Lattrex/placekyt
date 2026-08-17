@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """GRC-import strategies: rough-place vs full place-and-route + abutment.
 
 The import dialog (MainWindow._ask_import_options) lets the user pick HOW MUCH

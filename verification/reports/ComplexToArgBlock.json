@@ -1,0 +1,18 @@
+{
+  "kyttar_block": "ComplexToArgBlock",
+  "passed": true,
+  "metric": "amplitude",
+  "n_compared": 2982,
+  "max_abs_err": 27,
+  "tolerance": 63,
+  "nmse_db": null,
+  "correlation": null,
+  "bit_errors": 0,
+  "delay_used": 0,
+  "coverage": {
+    "gr_equiv": "blocks.complex_to_arg(1)",
+    "patterns": "3000 uniform complex points + seam edges; chip bit-exact to reference per-sample AND saturated-pipelined",
+    "mutation": true,
+    "note": "half-turn Q15 angle (word/32768*pi rad); max 0.00260 rad vs GR for |v|>=0.1 (gate 0.006); input-quantization-limited below |v|~0.1"
+  }
+}

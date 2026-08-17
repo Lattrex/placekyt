@@ -1,0 +1,20 @@
+{
+  "kyttar_block": "ComplexGainBlock",
+  "passed": true,
+  "metric": "amplitude",
+  "n_compared": 64,
+  "max_abs_err": 4,
+  "tolerance": 7,
+  "nmse_db": -84.01445534762058,
+  "correlation": 0.9999999987568821,
+  "bit_errors": 0,
+  "delay_used": 0,
+  "coverage": {
+    "edge": true,
+    "random": 3,
+    "param_sweep": 11,
+    "bit_exact": true,
+    "mutation": true,
+    "orientation": true
+  }
+}

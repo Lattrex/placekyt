@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Full TX chain: PSKSymbolMapper(BPSK) -> Upsampler -> RRC -> IQUpconvert.
 
 Gate: N bits -> sps*N full-rate passband samples (NO collapse), values matching

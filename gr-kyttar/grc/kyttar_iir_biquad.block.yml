@@ -14,8 +14,13 @@ documentation: |-
 
   Parameters:
   - Device ID: ID of the KyttarDevice block
-  - B Coefficients: [b0, b1, b2] - feedforward coefficients
+  - B Coefficients: [b0, b1, b2] - feedforward coefficients (back-compat biquad)
   - A Coefficients: [a1, a2] - feedback coefficients (normalized, a0=1)
+  - FF Taps: GR-native feed-forward taps [b0, b1, ...] (iir_filter_ffd);
+    when non-empty overrides B/A Coefficients
+  - FB Taps: GR-native feedback taps [fb0(ignored), a1, a2, ...] (iir_filter_ffd)
+  - Old Style: GR tap-sign convention — feedback ADDS when True (GR default),
+    SUBTRACTS when False
 
   Default coefficients implement a simple lowpass filter at 0.1 * fs.
 
@@ -23,7 +28,8 @@ documentation: |-
 
 templates:
   imports: from gnuradio import kyttar
-  make: kyttar.iir_biquad(device_id=${device_id}, b_coeffs=${b_coeffs}, a_coeffs=${a_coeffs})
+  make: kyttar.iir_biquad(device_id=${device_id}, b_coeffs=${b_coeffs}, a_coeffs=${a_coeffs},
+    fftaps=${fftaps}, fbtaps=${fbtaps}, oldstyle=${oldstyle})
   callbacks:
     - set_coefficients(${b_coeffs}, ${a_coeffs})
 
@@ -40,6 +46,20 @@ parameters:
     label: A Coefficients [a1, a2]
     dtype: real_vector
     default: '[-0.9428, 0.3333]'
+  - id: fftaps
+    label: FF Taps [b0, b1, ...]
+    dtype: raw
+    default: '[]'
+  - id: fbtaps
+    label: FB Taps [fb0, a1, ...]
+    dtype: raw
+    default: '[]'
+  - id: oldstyle
+    label: Old Style (fb ADDS)
+    dtype: bool
+    default: 'True'
+    options: ['True', 'False']
+    option_labels: ['True', 'False']
 
 inputs:
   - label: in

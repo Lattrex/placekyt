@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """
 Face Assignment for Kyttar Placement/Routing
 

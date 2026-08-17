@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """HwChip / hw_transport unit tests — no board required.
 
-Drives HwChip against a FakeTransport that models the devkyt fake_kyttar_gain gateware
+Drives HwChip against a FakeTransport that models the dev-kit gain gateware
 (gain x2, output framed WRITE=0x63C0 / DATA(gained) / JUMP=0x73C0, hop=30). This proves the
 placeKYT-side seam logic — word encoding, WRITE/DATA buffering, JUMP-triggered flush, and
 tagged-output parsing — is correct BEFORE hardware bring-up. When the ZTEX board is flashed,
@@ -48,7 +48,7 @@ def test_encode_fields():
 
 # ------------------------------------------------------- fake gateway transport
 class FakeGainTransport:
-    """Models the devkyt fake_kyttar_gain: WRITE/DATA buffer last_data; JUMP triggers
+    """Models the dev-kit gain gateware: WRITE/DATA buffer last_data; JUMP triggers
     gained = last_data*2 and emits WRITE(0x63C0)/DATA(gained)/JUMP(0x73C0)."""
 
     default_timeout_ms = 1000
@@ -272,7 +272,7 @@ def test_read_port_q15_converts_to_float():
 # ---------------------------------------------------- controller HW-mode wiring
 # Exercises the SimController's hardware-mode methods (mode toggle, program,
 # reset, guards) against a fake HwChip — the UI mode-toggle logic, no board and
-# no Qt event loop. Mirrors the plan §3 Sim<->Hardware toggle behavior.
+# no Qt event loop. Mirrors the Sim<->Hardware toggle behavior.
 
 class _FakeHwChip:
     def __init__(self):

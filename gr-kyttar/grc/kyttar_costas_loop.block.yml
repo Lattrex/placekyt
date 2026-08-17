@@ -45,23 +45,25 @@ outputs:
   dtype: ${ 'complex' if order == 4 else 'float' }
 
 documentation: |-
-  🧪 PROOF-OF-CONCEPT: this block works in a demo but has NOT been through
-  per-block GNU Radio-equivalence verification. Use with care.
-
-  Complex Costas Loop — decision-directed BPSK carrier recovery.
+  Complex Costas Loop — decision-directed carrier recovery (= GNU Radio
+  digital.costas_loop_cc). VERIFIED per-block against GNU Radio: order 2 (BPSK) and
+  order 4 (QPSK) recover the SAME symbol decisions as costas_loop_cc across the
+  loop_bw x frequency-offset sweep, and the on-chip build is BIT-EXACT to its
+  GR-verified Q15 reference (verification/tests/test_complex_costas_loop.py).
 
   Takes the COMPLEX baseband (xi = in-phase, xq = quadrature) and recovers the
-  carrier, emitting yi_tap = the derotated in-phase (the recovered I). The port
-  names (xi, xq, yi_tap) and params (loop_bw, damping) match the placeKYT
-  ComplexCostasLoopBlock interface, so a flowgraph using this block wires up and
-  imports into placeKYT cleanly.
+  carrier. The port names (xi, xq, yi_tap) and params (loop_bw, order) match GNU
+  Radio digital.costas_loop_cc / the placeKYT ComplexCostasLoopBlock interface, so a
+  flowgraph using this block wires up and imports into placeKYT cleanly.
 
   Parameters:
     Device ID: which Kyttar device to use
-    Loop Bandwidth: normalized loop bandwidth (default 0.05)
-    Damping Factor: loop damping (default 1.0)
+    Loop Bandwidth: normalized loop bandwidth (default 0.05) — GR loop_bw
+    Damping Factor: loop damping (default 1.0) — Kyttar loop-shaping (derives the PI
+      alpha/beta from loop_bw; damping=1.0 reproduces GR)
     Constellation Order: 2 = BPSK (default), 4 = QPSK. Matches GNU Radio
-      digital.costas_loop_cc(loop_bw, order). At order=4 the block runs the 2-term
-      QPSK phase detector and taps out BOTH recovered rails (yi_tap + yq_tap).
+      digital.costas_loop_cc(loop_bw, order). order=2 taps the recovered I (yi_tap,
+      float); order=4 runs the 2-term QPSK phase detector and taps out the recovered
+      COMPLEX pair (yi_tap + yq_tap).
 
 file_format: 1

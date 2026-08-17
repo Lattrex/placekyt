@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Shared 16-QAM constellation constants — the EXACT GNU Radio
 ``digital.constellation_16qam()`` point table, used by the QAM16 mapper/slicer.
 

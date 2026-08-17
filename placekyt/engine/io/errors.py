@@ -1,4 +1,5 @@
-"""Exceptions for placeKYT file I/O (the architecture notes §2.1)."""
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Exceptions for placeKYT file I/O."""
 
 from __future__ import annotations
 

@@ -12,8 +12,12 @@ install(FILES
     kyttar_source.block.yml
     kyttar_sink.block.yml
     kyttar_gain.block.yml
+    kyttar_splitter.block.yml
     kyttar_complex_gain.block.yml
     kyttar_fir_filter.block.yml
+    kyttar_complex_fir_filter.block.yml
+    kyttar_add_const.block.yml
+    kyttar_freq_xlating_fir.block.yml
     kyttar_low_pass_filter.block.yml
     kyttar_high_pass_filter.block.yml
     kyttar_band_pass_filter.block.yml
@@ -30,6 +34,7 @@ install(FILES
     kyttar_mux.block.yml
     kyttar_iir_biquad.block.yml
     kyttar_decimator.block.yml
+    kyttar_rational_resampler.block.yml
     kyttar_squelch.block.yml
     kyttar_costas_loop.block.yml
     kyttar_gardner_ted.block.yml
@@ -39,6 +44,7 @@ install(FILES
     kyttar_lfsr_scrambler.block.yml
     kyttar_conv_encoder_k7.block.yml
     kyttar_block_interleaver.block.yml
+    kyttar_diff_decoder.block.yml
     # Modem-example blocks (qpsk / fsk4 / 16-QAM chains) — required so the shipped
     # examples install into GRC. Grouped by the example that introduced them.
     kyttar_rrc_pulse_shaper.block.yml

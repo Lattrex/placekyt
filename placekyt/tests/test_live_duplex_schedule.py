@@ -49,7 +49,7 @@ from pathlib import Path
 
 import pytest
 
-REPO = Path(__file__).resolve().parents[2]            # /home/system/placekyt
+REPO = Path(__file__).resolve().parents[2]            # <repo root>
 GR_PYTHON = os.environ.get("KYTTAR_GR_PYTHON", "/usr/bin/python3")
 GR_OOT = REPO / "gr-kyttar" / "python"
 _KYT = REPO / "examples" / "qam16_modem" / "qam16_modem.kyt"

@@ -1,8 +1,9 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Smart route delete (#267): sole-occupant route removes its cells; a route
 sharing a multiplexed bus keeps the cells, breaks only its own link to a fly
 line, and leaves the co-tenant routed.
 
-The fabric bus is TIME-MULTIPLEXED (the auto-P&R design notes §1.2): two logical
+The fabric bus is TIME-MULTIPLEXED (see doc/ROUTING_TOPOLOGIES.md): two logical
 connections can share the SAME physical routing cells. Deleting one must not rip
 out cells the other still uses.
 

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """GRC↔placeKYT parameter-sync: detection, the 3 preference modes, undoable resync.
 
 Covers:
@@ -79,7 +80,7 @@ def test_none_default_param_does_not_falsely_drift(catalog):
     proj = Project(chip_type="kyttar_10x12")
     blk = Block("mapper0", "PSKSymbolMapperBlock", library=spec.library,
                 params={"modulation": "bpsk", "symbol_table": None,
-                        "dimension": 1})
+                        "dimension": 1, "bpsk_bit0_positive": True})
     blk.placement = Placement(chip=0, cells=[PlacedCell(0, 0, 0, Face.EAST)])
     proj.blocks.append(blk)
     # The GRC baseline (as observe_many seeds it) carries the real placed params,

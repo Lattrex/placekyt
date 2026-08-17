@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Tests for the CLI, chip-type registry, stimulus parser, and sim compare.
 
 CLI tests run in-process via ``cli.main(argv)`` and assert exit codes (§11.4)

@@ -1,0 +1,47 @@
+id: kyttar_char_to_float
+label: Kyttar Char To Float
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar Char To Float — convert an int8 (char) stream to a float stream, a
+  drop-in for GNU Radio's blocks.char_to_float.
+
+      out[n] = in[n] / scale        (GR default scale = 1)
+
+  HARDWARE DEVIATION (Q15): on the Kyttar chip a "float" sample is a Q15 value in
+  [-1.0, 1.0). The byte value in/scale only fits that range for the full int8
+  domain ([-128, 127]) when scale >= 128, so this block requires scale >= 128 and
+  RAISES otherwise. GR's default scale = 1 asks for outputs up to +-127.0 (~127x
+  outside Q15) and is NOT representable on the fabric — use scale >= 128 (128 maps
+  the int8 range onto the full [-1, 1) span). This is the int8 -> Q15 ADC / soft-bit
+  front-end conversion.
+
+  This block runs on the Kyttar chip. Place it between a KyttarSource and
+  KyttarSink block, and ensure the device_id matches your KyttarDevice.
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.char_to_float(device_id=${device_id}, scale=${scale})
+  callbacks:
+    - set_scale(${scale})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+  - id: scale
+    label: Scale
+    dtype: real
+    default: 128.0
+
+inputs:
+  - label: in
+    dtype: byte
+
+outputs:
+  - label: out
+    dtype: float
+
+file_format: 1

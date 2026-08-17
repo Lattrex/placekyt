@@ -1,0 +1,42 @@
+id: kyttar_xor
+label: Kyttar XOR
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar XOR — bitwise XOR of two byte streams (drop-in for GNU Radio's
+  blocks.xor_bb). out = in0 ^ in1.
+
+  On the Kyttar chip this maps to XorBlock (a single native LOGIC XOR:
+  R0 = a ^ b). Bit-exact, no Q15 arithmetic. Place it between a KyttarSource and
+  KyttarSink and ensure the device_id matches your KyttarDevice.
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.xor(device_id=${device_id}, num_inputs=${num_inputs})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+- id: num_inputs
+  label: Num Inputs
+  dtype: int
+  default: '2'
+
+inputs:
+- label: in
+  domain: stream
+  dtype: byte
+  multiplicity: ${ num_inputs }
+
+outputs:
+- label: out
+  domain: stream
+  dtype: byte
+
+asserts:
+- ${ num_inputs == 2 }
+
+file_format: 1

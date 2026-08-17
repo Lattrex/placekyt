@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Burst-chain validation for the IQUpconvert LOCK fix.
 
 1. Upsampler(sps) -> IQUpconvert: N bits -> sps*N correct full-rate outputs,

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """
 Setup script for gr_kyttar - GNURadio blocks for Kyttar simulation.
 

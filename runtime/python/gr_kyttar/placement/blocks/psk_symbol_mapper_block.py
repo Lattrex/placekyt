@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """PSKSymbolMapperBlock — see :class:`PSKSymbolMapperBlock`."""
 import numpy as np
 from ..block import CellProgram, Port, EntryPoint, StateVar, DataWord
@@ -112,6 +113,7 @@ class PSKSymbolMapperBlock(KyttarBlock):
         modulation: str = "8psk",
         symbol_table=None,
         dimension: int = 1,
+        bpsk_bit0_positive: bool = True,
     ):
         """Initialize the symbol mapper — GR ``digital.chunks_to_symbols`` parity.
 
@@ -137,13 +139,23 @@ class PSKSymbolMapperBlock(KyttarBlock):
             modulation: "bpsk"|"qpsk"|"8psk" preset (bit-packing extension).
             symbol_table: arbitrary complex constellation (GR-native, index-in).
             dimension: GR dimension D (entries per index); on chip D=1 only.
+            bpsk_bit0_positive: BPSK constellation sign convention. Default True =
+                ``bit 0 -> +1, bit 1 -> -1`` (GR ``chunks_to_symbols_bf([1, -1])``,
+                the historical/verified default). False = ``bit 0 -> -1, bit 1 -> +1``
+                (GR ``digital.constellation_bpsk()``), which chains cleanly with a
+                GR ``binary_slicer_fb`` (``>=0 -> 1``) for a true bits-in==bits-out
+                loopback. BPSK-only (ignored for qpsk/8psk/symbol_table).
         """
         super().__init__(name, modulation=modulation, symbol_table=symbol_table,
-                         dimension=dimension)
+                         dimension=dimension, bpsk_bit0_positive=bpsk_bit0_positive)
         self._dimension = int(dimension)
+        self._bpsk_bit0_positive = bool(bpsk_bit0_positive)
 
         # --- GR-native index-driven path (arbitrary symbol_table) -------------
-        if symbol_table is not None:
+        # GRC passes an EMPTY list [] for an unset vector param (not None), so treat
+        # empty the same as None -> fall through to the `modulation` preset. Only a
+        # NON-EMPTY symbol_table selects the index-driven path.
+        if symbol_table:
             tbl = [complex(s) for s in symbol_table]
             if self._dimension != 1:
                 raise ValueError(
@@ -237,10 +249,13 @@ class PSKSymbolMapperBlock(KyttarBlock):
             # Cell 0 = bit accumulator, Cell 1 = I+Q table lookup.
             return self._build_qpsk()
 
-        # BPSK: 0→+1, 1→-1. Q is always 0 — single output is sufficient.
+        # BPSK sign convention (bpsk_bit0_positive): default bit0→+1,bit1→-1 (GR
+        # chunks_to_symbols_bf([1,-1])); False → bit0→-1,bit1→+1 (constellation_bpsk).
+        # Q is always 0 — single output is sufficient.
+        _p = 1.0 if self._bpsk_bit0_positive else -1.0
         i_table_vals = [
-            float_to_q15(1.0),       # bit=0: +1
-            float_to_q15(-1.0),      # bit=1: -1
+            float_to_q15(_p),        # bit=0: +1 (default) / -1
+            float_to_q15(-_p),       # bit=1: -1 (default) / +1
         ]
 
         i_table = [DataWord(f"i{i}", val, address=i + 1)
@@ -511,8 +526,11 @@ start:
                 symbol = (symbol << 1) | int(input_bits[bit_start + b])
 
             if self._mode == self.MODE_BPSK:
-                # BPSK: 0 -> +1, 1 -> -1
-                i_out[sym_idx] = 1.0 if symbol == 0 else -1.0
+                # BPSK sign convention (bpsk_bit0_positive): default bit0->+1,bit1->-1
+                # (GR chunks_to_symbols_bf([1,-1])); False -> bit0->-1,bit1->+1 (GR
+                # constellation_bpsk, pairs with binary_slicer_fb for a clean loopback).
+                pos = 1.0 if self._bpsk_bit0_positive else -1.0
+                i_out[sym_idx] = pos if symbol == 0 else -pos
                 q_out[sym_idx] = 0.0
 
             elif self._mode == self.MODE_QPSK:

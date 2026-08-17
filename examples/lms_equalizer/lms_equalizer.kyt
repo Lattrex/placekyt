@@ -1,0 +1,77 @@
+project:
+  format_version: 1
+  name: Kyttar LMS equalizer — multipath QPSK constellation snap
+  version: '1.0'
+chip_type: kyttar_10x12
+chips:
+- id: 0
+  label: Chip 0
+  position: {x: 0.0, y: 0.0}
+blocks:
+- name: lmsequalizer
+  type: LMSEqualizerBlock
+  library: lattrex.official
+  params:
+    num_taps: 5
+    step_size: 0.03
+    sps: 1
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: in, x: 1, y: 1, face: east}
+    - {cell_id: f0, x: 2, y: 1, face: east}
+    - {cell_id: f1, x: 3, y: 1, face: east}
+    - {cell_id: f2, x: 4, y: 1, face: east}
+    - {cell_id: f3, x: 5, y: 1, face: east}
+    - {cell_id: f4, x: 6, y: 1, face: east}
+    - {cell_id: sat, x: 7, y: 1, face: east}
+    - {cell_id: err, x: 8, y: 1, face: south}
+    - {cell_id: bcast, x: 8, y: 2, face: west}
+    - {cell_id: out, x: 1, y: 2, face: east}
+    - {cell_id: u0, x: 2, y: 2, face: west}
+    - {cell_id: u1, x: 3, y: 2, face: west}
+    - {cell_id: u2, x: 4, y: 2, face: west}
+    - {cell_id: u3, x: 5, y: 2, face: west}
+    - {cell_id: u4, x: 6, y: 2, face: west}
+    - {cell_id: transit_w, x: 7, y: 2, face: west}
+connections:
+- name: net1
+  from: {block: lmsequalizer, port: yi}
+  to: {chip_port: {chip: 0, port: x16_out}}
+  route:
+  - {x: 1, y: 2}
+  - {x: 1, y: 3}
+  - {x: 2, y: 3}
+  - {x: 3, y: 3}
+  - {x: 4, y: 3}
+  - {x: 5, y: 3}
+  - {x: 6, y: 3}
+  - {x: 7, y: 3}
+  - {x: 8, y: 3}
+  - {x: 9, y: 3}
+  - {x: 9, y: 2}
+  - {x: 9, y: 1}
+  - {x: 9, y: 0}
+- name: net2
+  from: {chip_port: {chip: 0, port: x16_in}}
+  to: {block: lmsequalizer, port: xi}
+  route:
+  - {x: 0, y: 0}
+  - {x: 0, y: 1}
+- name: net3
+  from: {block: lmsequalizer, port: yq}
+  to: {chip_port: {chip: 0, port: x16_out}}
+  route:
+  - {x: 1, y: 2}
+  - {x: 1, y: 3}
+  - {x: 2, y: 3}
+  - {x: 3, y: 3}
+  - {x: 4, y: 3}
+  - {x: 5, y: 3}
+  - {x: 6, y: 3}
+  - {x: 7, y: 3}
+  - {x: 8, y: 3}
+  - {x: 9, y: 3}
+  - {x: 9, y: 2}
+  - {x: 9, y: 1}
+  - {x: 9, y: 0}

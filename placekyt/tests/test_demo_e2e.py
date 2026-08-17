@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """End-to-end demo test: the full pipeline drives output through the chip.
 
 Closes the gap noted when the CLI landed: a fully connected + routed project
@@ -160,8 +161,11 @@ class TestBpskDuplexDemo:
 
         def s16(v):
             return v - 0x10000 if v & 0x8000 else v
-        exp_rx = [0 if s16(s) >= 0 else 1 for s in RX_SYMBOLS]
-        exp_tx = [Q15_PLUS_ONE if b == 0 else Q15_MINUS_ONE for b in TX_BITS]
+        # RX: BPSKSlicer = GR binary_slicer_fb (sample >= 0 -> bit 1, < 0 -> 0).
+        exp_rx = [1 if s16(s) >= 0 else 0 for s in RX_SYMBOLS]
+        # TX: PSK mapper with bpsk_bit0_positive=false (constellation convention:
+        # bit 0 -> -1 (0x8000), bit 1 -> +1 (0x7FFF)).
+        exp_tx = [Q15_MINUS_ONE if b == 0 else Q15_PLUS_ONE for b in TX_BITS]
         assert rx_bits == exp_rx, f"RX (tag {RX_TAG}): {rx_bits} != {exp_rx}"
         assert tx_syms == exp_tx, f"TX (tag {TX_TAG}): {tx_syms} != {exp_tx}"
 

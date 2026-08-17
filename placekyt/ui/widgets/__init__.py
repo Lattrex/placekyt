@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Reusable Inspector widgets (memory view, assembly view, …)."""
 
 from .cell_program_view import CellProgramView

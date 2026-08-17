@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Captured-output + golden as a .kbs bitstream with the WRITE-descriptor tag
 (#185): encode/decode round-trip + word-by-word tagged compare."""
 

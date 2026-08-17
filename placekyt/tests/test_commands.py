@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Tests for the command layer + model mutators (§4.2, §6, §11.2).
 
 Pure model + commands — no Qt, no engine. Covers execute/undo round-trip for

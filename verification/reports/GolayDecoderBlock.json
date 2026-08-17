@@ -1,0 +1,24 @@
+{
+  "kyttar_block": "GolayDecoderBlock",
+  "passed": true,
+  "metric": "decision",
+  "n_compared": 192,
+  "max_abs_err": 0,
+  "tolerance": 0,
+  "nmse_db": null,
+  "correlation": null,
+  "bit_errors": 0,
+  "delay_used": 0,
+  "coverage": {
+    "random": 3,
+    "gr_equiv": "(none \u2014 extended Golay (24,12) syndrome decoder vs the GolayEncoderBlock convention pin + a brute-force nearest-codeword golden)",
+    "edge": true,
+    "exhaustive_1_error": "24 positions x 3 words (on-chip, real panel)",
+    "sampled_errors": "2/3-error sampled + 3 random seeds + round-trip 0..3 errors x 3 seeds",
+    "known_limit": "weight-4 passthrough (exhaustive no-alias proof) + weight-5 miscorrection documented",
+    "mutation": true,
+    "sram": "syndrome->e_d LUT, ONE word per populated syndrome (2026 of 4096), sparse set_addr load through the REAL SramPanelDevice/PanelDriver",
+    "decision": "s = Q(D) ^ P from the encoder's own column masks; out = D ^ LUT[s]; uniform single-lookup path (s == 0 reads the guaranteed-unpopulated address 0)",
+    "note": "7-cell rate-compressing 24:12 (pack24 -> syn 5/4/3 -> correct -> emit + SramController); per-sample panel contract (NEEDS_BESPOKE saturation entry)"
+  }
+}

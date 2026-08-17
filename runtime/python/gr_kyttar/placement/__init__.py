@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """
 Placement Engine for Kyttar Fabric
 
@@ -40,6 +41,7 @@ from .kyttar_block import (
     AGCBlock,
     NCOBlock,
     ComplexMixerBlock,
+    FreqXlatingFIRBlock,
     IQUpconvertBlock,
     SquelchBlock,
     IIRBiquadBlock,
@@ -57,8 +59,12 @@ from .kyttar_block import (
     LMSEqualizerBlock,
     BlockInterleaverBlock,
     LFSRScramblerBlock,
+    DiffDecoderBlock,
     ConvEncoderK7Block,
     PSKSymbolMapperBlock,
+    VaricodeEncoderBlock,
+    VaricodeDecoderBlock,
+    CWKeyerBlock,
     # MIL-STD-188-110B Frame Structure blocks (Phase 4-5)
     DFEEqualizerBlock,
     PreambleCorrelatorBlock,
@@ -66,6 +72,7 @@ from .kyttar_block import (
     MiniProbeDetectorBlock,
     EOMDetectorBlock,
     RRCPulseShaperBlock,
+    RaisedCosineEnvelopeBlock,
     ComplexRRCMatchedFilterBlock,
     PreambleGeneratorBlock,
     MiniProbeInserterBlock,
@@ -171,6 +178,7 @@ __all__ = [
     'AGCBlock',
     'NCOBlock',
     'ComplexMixerBlock',
+    'FreqXlatingFIRBlock',
     'IQUpconvertBlock',
     'SquelchBlock',
     'IIRBiquadBlock',
@@ -190,6 +198,9 @@ __all__ = [
     'LFSRScramblerBlock',
     'ConvEncoderK7Block',
     'PSKSymbolMapperBlock',
+    'VaricodeEncoderBlock',
+    'VaricodeDecoderBlock',
+    'CWKeyerBlock',
     # MIL-STD-188-110B Frame Structure blocks
     'DFEEqualizerBlock',
     'PreambleCorrelatorBlock',
@@ -197,6 +208,7 @@ __all__ = [
     'MiniProbeDetectorBlock',
     'EOMDetectorBlock',
     'RRCPulseShaperBlock',
+    'RaisedCosineEnvelopeBlock',
     'ComplexRRCMatchedFilterBlock',
     'PreambleGeneratorBlock',
     'MiniProbeInserterBlock',

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Path-traversal protection for file references in placeKYT files (§2.1).
 
 Paths declared inside ``.kyt`` / ``.kbl`` / ``.kdb`` files (stimulus, golden,

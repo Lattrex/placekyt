@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """GRC import tests (auto-P&R P4.2 — the GRC-first flow): a GNURadio .grc
 flowgraph imports as placeKYT blocks + logical nets, then auto-P&Rs + computes."""
 

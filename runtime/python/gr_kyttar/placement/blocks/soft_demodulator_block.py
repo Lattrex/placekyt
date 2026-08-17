@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """SoftDemodulatorBlock — see :class:`SoftDemodulatorBlock`."""
 import math
 from typing import Dict, List, Optional, Sequence, Tuple

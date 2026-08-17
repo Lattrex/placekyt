@@ -9,7 +9,7 @@ options:
     description: 'Full-duplex QPSK modem authored in GNU Radio (GRC-first workflow).
       The TX chain (QPSK symbol mapper -> complex upsampler -> complex RRC pulse shaper
       -> I/Q upconvert) and the coherent RX chain (complex RRC matched filter -> order-4
-      complex Costas loop -> complex Gardner timing recovery -> QPSK slicer) live on ONE
+      complex Costas loop -> M&M timing recovery -> QPSK slicer) live on ONE
       placeKYT array, sharing ONE input port (x16_in) and ONE output port (x16_out):
       both TX and RX source blocks map to x16_in and both sink blocks map to x16_out
       (the shared-port duplex). Built from the REAL DSP blocks so it IMPORTS into placeKYT
@@ -315,18 +315,18 @@ blocks:
     coordinate: [808, 440.0]
     rotation: 0
     state: enabled
-- name: gardner
-  id: kyttar_gardner_ted
+- name: mmtiming
+  id: kyttar_mm_timing_recovery
   parameters:
     affinity: ''
     alias: ''
-    comment: "Complex (I/Q) Gardner timing recovery -- placed on chip"
-    complex: 'True'
+    comment: "M&M decision-directed timing recovery (I/Q) -- placed on chip"
+    damping: '1.0'
     device_id: '"kyttar_0"'
-    ki: '1'
-    kp: '3'
+    loop_bw: '0.02'
     maxoutbuf: '0'
     minoutbuf: '0'
+    sps: '2'
   states:
     bus_sink: false
     bus_source: false
@@ -589,8 +589,8 @@ blocks:
     state: enabled
 
 connections:
-- [costas, '0', gardner, '0']
-- [gardner, '0', slicer, '0']
+- [costas, '0', mmtiming, '0']
+- [mmtiming, '0', slicer, '0']
 - [mapper, '0', up, '0']
 - [mf, '0', costas, '0']
 - [rrc, '0', upc, '0']

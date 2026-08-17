@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Full-duplex BPSK modem GRC import test (#334 — the GRC-first front end).
 
 A GNU Radio .grc flowgraph of the 8 modem DSP blocks (TX: PSK symbol mapper ->

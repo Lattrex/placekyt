@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Full TX chain via AUTO-PLACE + bus/broker auto-route (the folded-block P&R fix).
 
 Same chain as ``test_tx_chain_fullrate.py`` (PSKSymbolMapper(BPSK) -> Upsampler ->

@@ -1,4 +1,5 @@
-"""``.kbs`` bitstream container — writer and hardened reader (the architecture notes §5.1).
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""``.kbs`` bitstream container — writer and hardened reader.
 
 Binary layout::
 

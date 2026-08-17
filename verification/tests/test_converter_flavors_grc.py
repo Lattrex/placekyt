@@ -3,7 +3,7 @@
 
 ``verification/tests/data/converter_flavors.grc`` is ONE importable GNU Radio
 flowgraph that threads EVERY float/complex dtype interaction the placeKYT importer
-must handle, in a single DRIVABLE identity chain (CM: "all of the
+must handle, in a single DRIVABLE identity chain (maintainer: "all of the
 complex/float interactions in a single simple test that is an importable GRC flow
 graph … run in placeKYT both visually and headless"):
 
@@ -28,7 +28,7 @@ This test proves, mechanically (not by reasoning about GNU Radio):
 
 Run::
 
-    cd /home/system/placekyt
+    cd <repo root>
     QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest \
         verification/tests/test_converter_flavors_grc.py -q
 """

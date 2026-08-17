@@ -12,8 +12,8 @@ options:
       \ -> BPSKSlicer get placed + bus-routed; source/sink -> chip ports. The SAME\
       \ flowgraph RUNS linked to the placeKYT-hosted chip: Simulation -> Run as GNURadio\
       \ Server in placeKYT, set server_port below to the printed port, then Execute\
-      \ here. kyttar_source batches the whole I/Q burst through the hosted chip\
-      \ in one RPC. The QT time sinks show the INPUT waveform (top) versus the RECOVERED\
+      \ here. kyttar_source batches the whole I/Q burst through the hosted chip in\
+      \ one RPC. The QT time sinks show the INPUT waveform (top) versus the RECOVERED\
       \ bits (bottom) \u2014 the input-vs-output view."
     gen_cmake: 'On'
     gen_linking: dynamic
@@ -36,10 +36,11 @@ options:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [8, 8]
+    coordinate:
+    - 8
+    - 8
     rotation: 0
     state: enabled
-
 blocks:
 - name: n_syms
   id: variable
@@ -50,7 +51,9 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [200, 80]
+    coordinate:
+    - 200
+    - 80
     rotation: 0
     state: enabled
 - name: server_port
@@ -62,7 +65,9 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [40, 160]
+    coordinate:
+    - 40
+    - 160
     rotation: 0
     state: enabled
 - name: bit_sink
@@ -159,7 +164,9 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [1576, 200.0]
+    coordinate:
+    - 1576
+    - 200.0
     rotation: 0
     state: enabled
 - name: c2f
@@ -175,7 +182,9 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [424, 80]
+    coordinate:
+    - 424
+    - 80
     rotation: 0
     state: enabled
 - name: costas
@@ -193,7 +202,9 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [912, 152.0]
+    coordinate:
+    - 912
+    - 152.0
     rotation: 0
     state: enabled
 - name: gardner
@@ -211,7 +222,9 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [1080, 288.0]
+    coordinate:
+    - 1080
+    - 288.0
     rotation: 0
     state: enabled
 - name: import_stim
@@ -224,7 +237,9 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [304, 24.0]
+    coordinate:
+    - 304
+    - 24.0
     rotation: 0
     state: enabled
 - name: input_sink
@@ -321,7 +336,9 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [648, 56]
+    coordinate:
+    - 648
+    - 56
     rotation: 0
     state: enabled
 - name: mf
@@ -339,7 +356,9 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [688, 328.0]
+    coordinate:
+    - 688
+    - 328.0
     rotation: 0
     state: enabled
 - name: msink
@@ -360,7 +379,9 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [1312, 336.0]
+    coordinate:
+    - 1312
+    - 336.0
     rotation: 0
     state: enabled
 - name: msrc
@@ -384,7 +405,9 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [424, 220]
+    coordinate:
+    - 424
+    - 220
     rotation: 0
     state: enabled
 - name: slicer
@@ -400,7 +423,9 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [1200, 136.0]
+    coordinate:
+    - 1200
+    - 136.0
     rotation: 0
     state: enabled
 - name: src
@@ -424,23 +449,69 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [200, 232]
+    coordinate:
+    - 200
+    - 232
     rotation: 0
     state: enabled
-
+- name: slicer_b2f
+  id: blocks_uchar_to_float
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 980
+    - 420
+    rotation: 0
+    state: enabled
 connections:
-- [c2f, '0', input_sink, '0']
-- [costas, '0', gardner, '0']
-- [gardner, '0', slicer, '0']
-- [mf, '0', costas, '0']
-- [mf, '1', costas, '1']
-- [msink, '0', bit_sink, '0']
-- [msrc, '0', mf, '0']
-- [msrc, '0', mf, '1']
-- [slicer, '0', msink, '0']
-- [src, '0', c2f, '0']
-- [src, '0', msrc, '0']
-
+- - c2f
+  - '0'
+  - input_sink
+  - '0'
+- - costas
+  - '0'
+  - gardner
+  - '0'
+- - gardner
+  - '0'
+  - slicer
+  - '0'
+- - mf
+  - '0'
+  - costas
+  - '0'
+- - msink
+  - '0'
+  - bit_sink
+  - '0'
+- - msrc
+  - '0'
+  - mf
+  - '0'
+- - slicer
+  - '0'
+  - slicer_b2f
+  - '0'
+- - src
+  - '0'
+  - c2f
+  - '0'
+- - src
+  - '0'
+  - msrc
+  - '0'
+- - slicer_b2f
+  - '0'
+  - msink
+  - '0'
 metadata:
   file_format: 1
   grc_version: 3.10.12.0

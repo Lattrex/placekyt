@@ -1,4 +1,5 @@
-"""TraceModel — the debug data spine (DEBUG_the architecture notes §2).
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""TraceModel — the debug data spine.
 
 A single, Qt-free model built from the simulator's trace records. Every debug
 view derives from it; it owns the one global time cursor. Pure data
@@ -19,7 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-# Trace kinds (mirror the Rust engine's trace; DEBUG_the architecture notes §1).
+# Trace kinds (mirror the engine's trace record kinds).
 KIND_PORT_IN = "port_injection"
 KIND_INSTR = "instr_arrival"
 KIND_DATA = "data_arrival"
@@ -77,7 +78,7 @@ def _to_int(v) -> int | None:
 
 @dataclass
 class Transaction:
-    """One normalized trace record (DEBUG_the architecture notes §2)."""
+    """One normalized trace record."""
 
     time_ns: float
     chip: int
@@ -637,7 +638,7 @@ class TraceModel:
         """Per-BLOCK serial-barrier bottleneck — the HONEST "which block throttles
         the sample rate" view, from the simKYT ``stall`` (backpressure) event.
 
-        CM's definition (refined): the culprit is the block where INPUT samples pile
+        The definition (refined): the culprit is the block where INPUT samples pile
         up (its input REQs park) but the OUTPUT is NOT held up — the downstream block
         accepts everything it produces as fast as it's made. That block MANUFACTURES
         the backpressure. A block that merely RELAYS upstream backpressure stalls on
@@ -761,7 +762,7 @@ class TraceModel:
         limit = self.cursor_ns if ns is None else ns
         return [t for t in self.transactions if t.time_ns <= limit]
 
-    # -- state reconstruction (DEBUG_the architecture notes §2 state_at) -------------
+    # -- state reconstruction (state_at) -------------
 
     def cell_pc_at(self, chip: int, x: int, y: int,
                    ns: float | None = None) -> int | None:

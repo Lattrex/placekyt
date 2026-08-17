@@ -1,10 +1,11 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Chip-type registry — resolve a chip-type NAME to its definition + YAML path.
 
 The project model stores ``chip_type`` as a name (e.g. ``"kyttar_10x12"``), but
 ``gr_kyttar.bitstream.BitstreamGenerator`` needs the chip-type YAML *path*,
 and the build/DRC needs the loaded :class:`ChipType`. This registry bridges the
 two: it scans a set of search directories for chip-type ``.yaml`` files, loads
-each, and indexes by ``chip_type.name`` (the architecture notes §2.3, §9.2).
+each, and indexes by ``chip_type.name``.
 
 Search precedence (first match wins, like §2.2's library precedence):
 bundled resources, then ``~/.placekyt/chips``, then any caller-supplied dirs.

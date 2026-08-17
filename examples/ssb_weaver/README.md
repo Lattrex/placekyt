@@ -41,7 +41,7 @@ Summary panel shows.
 | **TX** (modulator)   | 346 kSa/s | 14.4 mW |
 
 Power is total draw (active + idle) while that direction runs alone; **idle ~0.4 mW** —
-the heaviest of the seven demos (~35–38 active cells of complex-FIR filtering). The
+the heaviest of the analog demos (~35–38 active cells of complex-FIR filtering). The
 array is asynchronous — only active cells draw power. To
 reproduce: open the `.kyt`, Run as GNURadio Server, set the Kyttar Source **Full-speed
 (saturated) = Yes** and **Duplex schedule = Sequential**, Run, and read each

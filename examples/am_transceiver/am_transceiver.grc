@@ -332,6 +332,7 @@ blocks:
     num_channels: '1'
     pipelined: 'yes'
     port_name: '"x16_in"'
+    schedule: '"interleaved"'
     server_host: '"127.0.0.1"'
     server_port: server_port
     stream_id: '"rx"'
@@ -549,6 +550,7 @@ blocks:
     num_channels: '1'
     pipelined: 'yes'
     port_name: '"x16_in"'
+    schedule: '"interleaved"'
     server_host: '"127.0.0.1"'
     server_port: server_port
     stream_id: '"tx"'

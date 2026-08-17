@@ -78,7 +78,7 @@ class qam16_modem(gr.top_block, Qt.QWidget):
 
         self.upc = kyttar.iq_upconvert("kyttar_0", 32000, 4000)
         self.up = kyttar.complex_upsampler("kyttar_0", sps)
-        self.tx_src = kyttar.source(device_id="kyttar_0", port_name="x16_in", num_channels=1, server_host="127.0.0.1", server_port=58950, complex_in=False, burst_len=n_bits, stream_id="tx", pipelined=True, schedule="interleaved")
+        self.tx_src = kyttar.source(device_id="kyttar_0", port_name="x16_in", num_channels=1, server_host="127.0.0.1", server_port=58950, complex_in=False, burst_len=n_bits, stream_id="tx", pipelined=True, schedule="interleaved", repeat=False, output_words="auto")
         self.tx_sink = kyttar.sink(device_id="kyttar_0", port_name="x16_out", num_channels=1, server_port=58950, server_repeat=False, hold_secs=8.0, stream_id="tx", in_type=False)
         self.tx_passband = qtgui.time_sink_f(
             stim.tx_pb_points(n_bits), #size
@@ -178,12 +178,12 @@ class qam16_modem(gr.top_block, Qt.QWidget):
 
         self._rx_syms_win = sip.wrapinstance(self.rx_syms.qwidget(), Qt.QWidget)
         self.top_layout.addWidget(self._rx_syms_win)
-        self.rx_src = kyttar.source(device_id="kyttar_0", port_name="x16_in", num_channels=1, server_host="127.0.0.1", server_port=58950, complex_in=True, burst_len=stim.burst_len(n_syms), stream_id="rx", pipelined=True, schedule="interleaved")
+        self.rx_src = kyttar.source(device_id="kyttar_0", port_name="x16_in", num_channels=1, server_host="127.0.0.1", server_port=58950, complex_in=True, burst_len=stim.burst_len(n_syms), stream_id="rx", pipelined=True, schedule="interleaved", repeat=False, output_words="auto")
         self.rx_sink = kyttar.sink(device_id="kyttar_0", port_name="x16_out", num_channels=1, server_port=58950, server_repeat=False, hold_secs=8.0, stream_id="rx", in_type=False)
         self.rx_iq = blocks.vector_source_c(stim.burst(n_syms), False, 1, [])
-        self.rrc = kyttar.complex_rrc_matched_filter("kyttar_0", 0.35, 8, 1)
+        self.rrc = kyttar.complex_rrc_matched_filter(device_id="kyttar_0", gain=0.7105, samp_rate=2.0, sym_rate=1.0, alpha=0.35, ntaps=17, decimation=1)
         self.mm = kyttar.mm_timing_recovery("kyttar_0", sps, 0.02, 1.0)
-        self.mf = kyttar.complex_rrc_matched_filter("kyttar_0", 0.35, 8, 1)
+        self.mf = kyttar.complex_rrc_matched_filter(device_id="kyttar_0", gain=0.7105, samp_rate=2.0, sym_rate=1.0, alpha=0.35, ntaps=17, decimation=1)
         self.mapper = kyttar.qam16_symbol_mapper("kyttar_0")
         self.costas = kyttar.qam16_costas_loop("kyttar_0", 1024, 32)
         self.cgain = kyttar.complex_gain("kyttar_0", 2.4)

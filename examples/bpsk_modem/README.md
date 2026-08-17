@@ -17,7 +17,10 @@ RX (stream 'rx'):  RRC-BPSK I/Q ─▶ ComplexRRCMatchedFilter ─▶ CostasLoop
   of a BPSK link.
 - **RX (demodulator):** an RRC matched filter, a Costas loop for carrier recovery,
   Gardner timing recovery, and a slicer — recovers the bits from an RRC-shaped
-  BPSK burst carrying a carrier **and** a fractional timing offset.
+  BPSK burst carrying a carrier **and** a fractional timing offset. The Gardner
+  timing block is proof-of-concept — verified at BER 0 in this demo, but not yet
+  a certified drop-in for GNU Radio's `symbol_sync_cc`; see
+  [`verification/STATUS.md`](../../verification/STATUS.md).
 
 The RX chain here is the same receiver as [`../coherent_bpsk_rx/`](../coherent_bpsk_rx/);
 this demo adds the matching **transmitter** on the same chip so you can see a whole
@@ -45,25 +48,23 @@ rate.)
 
 | File | What it is |
 |------|------------|
+| `bpsk_modem.kyt` | The pre-placed design — open directly, or import the `.grc` and auto-P&R. |
 | `bpsk_modem.grc` | The GNU Radio flowgraph: a TX source/sink pair and an RX source/sink pair, both targeting the same placeKYT-hosted chip by `stream_id`. Open in **both** placeKYT (to host the chip) and `gnuradio-companion` (to drive it). |
-
-This demo is **flowgraph-first** — it ships the `.grc` and placeKYT auto-places and
-routes it on import (there is no pre-built `.kyt` to open directly).
 
 ## Run it
 
 Two terminals, two commands — run both **from the repo root** (`placekyt/`).
 
-**1. Host the chip** (terminal 1) — launch placeKYT (there's no pre-built `.kyt`,
-so start it blank and import the flowgraph):
+**1. Host the chip** (terminal 1) — open the pre-built design directly:
 
 ```bash
-.venv/bin/python placekyt/main.py
+.venv/bin/python placekyt/main.py examples/bpsk_modem/bpsk_modem.kyt
 ```
 
-In placeKYT: **File → Import GNURadio Flowgraph…** → `examples/bpsk_modem/bpsk_modem.grc`
-(placeKYT places and routes both chains onto one cell array), then **Simulation →
-Run as GNURadio Server** (binds port **58950**). Leave placeKYT running.
+Then **Simulation → Run as GNURadio Server** (binds port **58950**). Leave
+placeKYT running. *(Prefer to auto-P&R it yourself? Launch placeKYT blank and
+**File → Import GNURadio Flowgraph…** → `examples/bpsk_modem/bpsk_modem.grc`
+instead — placeKYT places and routes both chains onto one cell array.)*
 
 **2. Drive it** (terminal 2) — open the flowgraph and press **▶ Run** (F6):
 
@@ -86,5 +87,5 @@ See [`../README.md`](../README.md) for the workflow shared by every demo, and
 
 Set at the top of the flowgraph (GNU Radio variables): `samp_rate = 32000`,
 `sps = 4` (→ 8 kBaud symbol rate), TX `carrier = 8000` Hz, and RRC `alpha = 0.35`,
-`span = 8` on both the pulse shaper and the matched filter. The Costas loop runs at
+`ntaps = 33` (span 8 at 4 sps) on both the pulse shaper and the matched filter. The Costas loop runs at
 `loop_bw = 0.05`.

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """The server rebuild (on a live edit) refreshes the canvas — no phantom routing cells.
 
 After the GNURadio server rebuilds + re-hosts the chip because the design was edited

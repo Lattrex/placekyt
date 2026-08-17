@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Breakpoint tests (DEBUG step 5): model + run-loop pause + 3 entry paths.
 
 The Qt-free model (engine/breakpoints.py) is tested directly; the run-loop

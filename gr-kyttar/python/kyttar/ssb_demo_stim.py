@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Stimulus generators for the SSB Weaver transceiver demo flowgraph
 (examples/ssb_weaver/ssb_weaver.grc). Imported as a plain Python module (like
 am_demo_stim / fm_demo_stim) so the .grc has no fragile inline epy source AND —

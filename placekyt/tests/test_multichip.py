@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Multi-chip canvas: add chip, inter-chip connections, wire rendering (§3.2).
 
 The model/build/DRC/IO already supported multiple chips; this covers the UI/

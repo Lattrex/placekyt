@@ -1,0 +1,37 @@
+id: kyttar_complex_to_imag
+label: Complex to Imag
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar Complex To Imag — the imaginary (Q) rail of a complex stream, a drop-in for
+  GNU Radio's blocks.complex_to_imag.
+
+      out[n] = imag(in[n])   (Q)
+
+  Single cell on the Kyttar chip that selects and forwards the Q operand as the one
+  real output. EXACT (0 LSB), words_per_sample=1. The Im-channel twin of
+  Complex to Real.
+
+  This block runs on the Kyttar chip. Place it between a KyttarSource and KyttarSink
+  block, and ensure the device_id matches your KyttarDevice.
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.complex_to_imag(device_id=${device_id})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+
+inputs:
+  - label: in
+    dtype: complex
+
+outputs:
+  - label: out
+    dtype: float
+
+file_format: 1

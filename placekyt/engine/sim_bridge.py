@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Live GNURadio ↔ placeKYT chip bridge — server side (Qt-free).
 
 placeKYT OWNS the running ``simkyt.Chip`` (with its live debug views); a
@@ -120,8 +121,21 @@ class SimServer:
                  on_activity=None, on_reset=None, on_before_batch=None,
                  default_entries=None, on_grc_params=None, debug_hooks=None,
                  default_hops=None, stream_targets=None,
-                 batch_reset_writes=None, on_new_run=None):
+                 batch_reset_writes=None, on_new_run=None,
+                 force_per_sample: bool = False):
         self._chip = chip
+        # SATURATION SAFETY OVERRIDE: when True, the pipelined (saturated) drive
+        # is REFUSED and every batch runs the per-sample paced path, regardless
+        # of the client's ``pipelined`` header. The host sets this for designs
+        # that are NOT saturation-safe — an SRAM-PANEL chain (Varicode / CW
+        # keyer): back-to-back input at fabric speed races the crossover's
+        # shared relay register and, for the CW keyer, rewrites the ROM region
+        # address mid-character. The pipelined path's own doc says it is 'only
+        # correct for saturation-safe blocks' — this flag makes the server
+        # ENFORCE that precondition instead of trusting the flowgraph header
+        # (the .grc shipped pipelined:'yes' and the GUI Run garbled the keying —
+        # user-reported, reproduced with the real GR client stack).
+        self._force_per_sample = bool(force_per_sample)
         # Optional: called at the start of a new GRC "Run" — detected by STREAM
         # CYCLING, not by socket connection. Evidence (WAVE2 log) showed each GRC
         # Run opens a SEPARATE connection PER STREAM (tx on one socket, rx on
@@ -181,7 +195,8 @@ class SimServer:
         # A GainBlock's live `gain` slider becomes a coeff WRITE to (hop,dest) on the
         # board. Empty by default (single-gain / sim); set at server start for the
         # multiplexed demo. Tracks the last value written so we only write on change.
-        self._coeff_writes: dict[str, tuple] = {}
+        self._coeff_writes: dict[str, dict] = {}
+        self._coeff_seed: dict[str, float] = {}
         self._coeff_last: dict[str, float] = {}
         # Per-batch (packet-boundary) state resets, resolved by the build from the
         # placed design's ``reset_per_batch`` StateVars (engine.build.
@@ -297,34 +312,79 @@ class SimServer:
         simulation). The next client request uses the new chip. Existing client
         connections keep working — they just talk to the new chip."""
         self._chip = chip
+        # A fresh chip carries the DESIGN's built coefficients again — reset the
+        # live-write dedup to the design seed so a still-different advertised
+        # value is re-applied, while a design-matching one stays a no-op.
+        self._coeff_last = {b: dict(v)
+                            for b, v in (getattr(self, "_coeff_seed", {}) or {}).items()}
 
     def set_coeff_writes(self, mapping: dict) -> None:
-        """Register {block_name: (coeff_hop, coeff_dest)} so a live GainBlock `gain`
-        slider becomes a coefficient WRITE to that cell on the board (HW mode)."""
+        """Register the live-tunable params (``engine.port_config.live_coeff_writes``):
+        ``{block_name: {params, hops, to_writes}}``. A CHANGED slider value
+        arriving via ``grc_params`` becomes coefficient WRITE(s) to the block's
+        cell(s) — the running fabric retunes with no reflash, on BOTH backends
+        (sim injects the same WRITE-to-(hop, dest) the hardware path sends over
+        USB). ``to_writes`` raises ShapeChange for a value that would alter the
+        block's compiled shape — such a change is refused, never half-applied.
+
+        The dedup is SEEDED with each block's design values: an advertised value
+        that merely matches the built design never writes — a gratuitous WRITE
+        is not free (misdeliverable on broker-routed layouts), and every
+        gain-bearing example advertises its params on every Run."""
         self._coeff_writes = dict(mapping or {})
-        self._coeff_last = {}
+        self._coeff_seed = {b: dict(s.get("params") or {})
+                            for b, s in self._coeff_writes.items()
+                            if isinstance(s, dict)}
+        self._coeff_last = {b: dict(v) for b, v in self._coeff_seed.items()}
+
+    def _write_coeff(self, hop: int, dest: int, word: int) -> None:
+        """One coefficient WRITE (+ value word) to the hosted chip, backend-aware.
+        No JUMP — the write only reprograms the cell's data word."""
+        chip = self._chip
+        if type(chip).__name__ == "HwChip":
+            from engine.hw_chip import _encode_write
+            chip._t.send_words([_encode_write(int(hop), int(dest)), word & 0xFFFF])
+            chip.drain(timeout_ms=5)  # keep the FIFO moving
+        else:
+            chip.inject_data_physical([word & 0xFFFF], target_hop_cnt=int(hop),
+                                      target_addr=int(dest))
+            chip.run(max_events=4000)  # deliver the write before the next burst
 
     def _apply_live_coeffs(self, params: dict) -> None:
-        """For each block whose `gain` changed, WRITE the new Q15 coefficient to its
-        coeff cell on the board. Only writes on an actual change (idempotent)."""
-        from engine.hw_chip import _encode_write
+        """For each registered block with a CHANGED tunable param, WRITE the new
+        coefficient word(s) to its cell(s). Idempotent (writes only on change);
+        the change cache resets to the design seed whenever the chip is
+        rehosted/rebuilt so a fresh chip is re-tuned on the next batch. A
+        ShapeChange refusal caches the value anyway (no retry storm) but writes
+        nothing — the chip keeps its current shape."""
         for block, p in params.items():
-            if block not in self._coeff_writes or not isinstance(p, dict):
+            spec = self._coeff_writes.get(block)
+            if spec is None or not isinstance(p, dict):
                 continue
-            if "gain" not in p:
+            last = self._coeff_last.setdefault(block, {})
+            changed = {}
+            for pname in (spec.get("params") or {}):
+                if pname not in p:
+                    continue
+                try:
+                    value = float(p[pname])
+                except (TypeError, ValueError):
+                    continue
+                if last.get(pname) != value:
+                    changed[pname] = value
+            if not changed:
                 continue
-            g = float(p["gain"])
-            if self._coeff_last.get(block) == g:
-                continue
-            self._coeff_last[block] = g
-            hop, dest = self._coeff_writes[block]
-            q15 = _float_to_q15(g)
+            merged = {**last, **changed}
             try:
-                # inject the coeff WRITE + DATA (no JUMP — just reprograms the cell)
-                self._chip._t.send_words([_encode_write(int(hop), int(dest)), q15 & 0xFFFF])
-                self._chip.drain(timeout_ms=5)  # keep the FIFO moving
+                writes = spec["to_writes"](merged)
+                hops = spec["hops"]
+                for cid, dest, word in writes:
+                    self._write_coeff(hops[cid], dest, word)
+                last.update(merged)
             except Exception:
-                pass  # never crash the server thread on a slider tweak
+                # ShapeChange (or any failure): refuse, remember the value so a
+                # repeated advert doesn't retry every batch, write nothing.
+                last.update(merged)
 
     def stop(self) -> None:
         """Fully tear down so the SAME port can be re-bound on a restart.
@@ -430,12 +490,13 @@ class SimServer:
                 # ``params`` = {placeKYT block name: {param: value}}. Forwarded to
                 # the host; never touches the chip, so it's safe any time.
                 params = dict(header.get("params", {}) or {})
-                # LIVE COEFFICIENT WRITE (hardware): a GainBlock's `gain` slider change
-                # becomes a coefficient WRITE to that block's coeff cell on the board,
-                # so the gain retunes in real time without a reload. Maps block name ->
-                # coeff dest via _coeff_writes (set at server start from the design).
-                if (self._coeff_writes
-                        and type(self._chip).__name__ == "HwChip"):
+                # LIVE COEFFICIENT WRITE: a tunable param's slider change becomes
+                # a coefficient WRITE to that block's cell, so the block retunes
+                # in real time without a reload — sim AND hardware (the sim
+                # injects the identical WRITE word the board receives over USB).
+                # Maps block name -> {param, hop, dest, to_word} via
+                # _coeff_writes (set at server start from the placed design).
+                if self._coeff_writes:
                     self._apply_live_coeffs(params)
                 if self._on_grc_params is not None:
                     self._on_grc_params(params)
@@ -447,7 +508,7 @@ class SimServer:
                 if self._on_reset is not None:
                     new_chip = self._on_reset()
                     if new_chip is not None:
-                        self._chip = new_chip
+                        self.set_chip(new_chip)  # also clears the live-coeff dedup
                 return {"ok": True}, None
             port = header.get("port")
             if op == "write_port":
@@ -540,7 +601,7 @@ class SimServer:
                     if err is not None:
                         return {"ok": False, "error": str(err)}, None
                     if new_chip is not None:
-                        self._chip = new_chip
+                        self.set_chip(new_chip)  # also clears the live-coeff dedup
                 # ADDITIVE GRC-sync detection (backward compatible): an optional
                 # ``grc_params`` header field lets a client advertise its
                 # flowgraph's per-block params alongside a batch, so the host can
@@ -550,6 +611,13 @@ class SimServer:
                 grc_params = header.get("grc_params")
                 if grc_params and self._on_grc_params is not None:
                     self._on_grc_params(dict(grc_params))
+                # LIVE COEFFICIENT WRITE (batch path): apply a changed tunable
+                # param BEFORE this burst is injected, so the burst runs at the
+                # slider's current value. Runs after the dirty-rebuild above (a
+                # rebuilt chip cleared the dedup via set_chip, so the write is
+                # re-applied to the fresh chip).
+                if grc_params and self._coeff_writes:
+                    self._apply_live_coeffs(dict(grc_params))
                 # PACKET-BOUNDARY LOOP-MEMORY RESET (each process_batch = one fresh
                 # packet). Cold-start every flagged loop-state register BEFORE injecting
                 # the burst, so a persistently-hosted receiver doesn't carry the previous
@@ -740,8 +808,9 @@ class SimServer:
                 # pipeline; the tail demux below splits the two rails by tag.
                 _pipe_tagged_cplx = (out_tag is not None and out_complex
                                      and not is_complex)
-                if bool(header.get("pipelined", False)) and (
-                        out_tag is None or _pipe_tagged_cplx):
+                if (bool(header.get("pipelined", False))
+                        and not self._force_per_sample and (
+                        out_tag is None or _pipe_tagged_cplx)):
                     def _w(a): return (0x6 << 12) | ((hop & 0x1F) << 5) | (int(a) & 0x1F)
                     def _j(): return (0x7 << 12) | ((hop & 0x1F) << 5) | (int(entry) & 0x1F)
                     stream = []
@@ -935,9 +1004,27 @@ class SimServer:
                                     out_vals.append(float(_iv - 0x10000 if _iv >= 0x8000
                                                           else _iv))
                         else:
-                            got = self._chip.read_port(port)
-                            if got is not None and len(got):
-                                out_vals.extend(float(v) for v in got)
+                            # Q15 VALUE stream: drain raw WORDS and convert with
+                            # the host convention (_q15_to_float, /32768). The
+                            # sim's own chip.read_port float path scales by
+                            # /32767 (its Rust Q15_SCALE), which drifts every
+                            # word by up to 1 LSB against the /32768 convention
+                            # the sinks/goldens use — the reply must be the
+                            # EXACT word/32768 so a client can reconstruct the
+                            # word losslessly.
+                            if hasattr(self._chip, "read_port_words_timed"):
+                                for (v, _d, _t) in self._chip.read_port_words_timed(port):
+                                    if _first_out_ns is None:
+                                        _first_out_ns = float(_t)
+                                    _last_out_ns = float(_t)
+                                    out_vals.append(_q15_to_float(int(v)))
+                            elif hasattr(self._chip, "read_port_i16"):
+                                for v in self._chip.read_port_i16(port):
+                                    out_vals.append(_q15_to_float(int(v)))
+                            else:
+                                got = self._chip.read_port(port)
+                                if got is not None and len(got):
+                                    out_vals.extend(float(v) for v in got)
                         # Make the GUI debug controls first-class for this batch
                         # run: after each sample, let the hooks pause on a
                         # breakpoint, block while paused, single-step, and pace by
@@ -1108,6 +1195,10 @@ class SimServer:
         grc_params = header.get("grc_params")
         if grc_params and self._on_grc_params is not None:
             self._on_grc_params(dict(grc_params))
+        # LIVE COEFFICIENT WRITE (duplex path): same as process_batch — apply a
+        # changed tunable param BEFORE the run injects anything.
+        if grc_params and self._coeff_writes:
+            self._apply_live_coeffs(dict(grc_params))
         self._apply_batch_reset()
         # Re-arm the one-shot stop latch for this Run (see process_batch).
         if self._debug_hooks is not None:
@@ -1130,8 +1221,11 @@ class SimServer:
             entry = int(self._default_entries.get("x16_in", 0)) & 0xFF
             hop = int(self._default_hops.get("x16_in", 30)) & 0x1F
             a0, a1, out_tag, in_name = 0, 1, None, "x16_in"
+            landings = None
+            complex_out = False
             if sid and sid in self._stream_targets:
                 tgt = self._stream_targets[sid]
+                complex_out = bool(tgt.get("complex_out"))
                 entry = int(tgt["entry_addr"]) & 0xFF
                 hop = int(tgt["hop_count"]) & 0x1F
                 das = list(tgt.get("data_addrs") or [])
@@ -1140,9 +1234,27 @@ class SimServer:
                     a1 = das[1] if len(das) > 1 else a0 + 1
                 in_name = tgt.get("in_port", in_name)
                 out_tag = tgt.get("out_tag")
+                # JOIN fan-out stream: several port→block arms share this
+                # stream_id (engine.port_config collects one landing per arm,
+                # data-only arms first, trigger arm LAST). _drive_one injects
+                # the sample at EVERY landing; absent (single-arm/legacy) the
+                # top-level entry/hop/a0 path below is used unchanged.
+                _ls = tgt.get("landings")
+                if _ls and len(_ls) > 1:
+                    landings = [
+                        (int(l["hop_count"]) & 0x1F,
+                         int((l.get("data_addrs") or [0])[0]),
+                         int(l["entry_addr"]) & 0xFF)
+                        for l in _ls]
             streams.append({
                 "sid": sid, "complex": is_complex, "raw": raw, "n": n,
                 "seg": seg, "entry": entry, "hop": hop, "a0": a0, "a1": a1,
+                "landings": landings,
+                # COMPLEX chain egress: the terminal cell's I and Q rails exit on
+                # tags (out_tag, out_tag+1); this stream owns BOTH, collected in
+                # arrival order (yi then yq — the co-routed emit order), so the
+                # reply is the interleaved I/Q stream the complex sink expects.
+                "complex_out": complex_out,
                 "out_tag": out_tag, "out": [], "port": header.get("port", "x16_out"),
                 # Chip sim-time span of THIS stream's recovered words. Under the
                 # "sequential" schedule the two streams' spans are disjoint (RX fully
@@ -1156,6 +1268,18 @@ class SimServer:
         _t0 = time.perf_counter()
         aborted = False
 
+        def _tag_owner(d):
+            """The stream that owns drained-word tag ``d``: its out_tag, or —
+            for a complex-egress chain — the Q rail's sibling tag out_tag+1."""
+            for s2 in streams:
+                t = s2["out_tag"]
+                if t is None:
+                    continue
+                if int(d) == int(t) or (s2.get("complex_out")
+                                        and int(d) == int(t) + 1):
+                    return s2
+            return None
+
         # Drive ONE sample k of stream s (inject xi[/xq] + JUMP, drain + demux by
         # out_tag into each stream's bucket). Shared by both schedules below.
         def _drive_one(s, k):
@@ -1168,23 +1292,40 @@ class SimServer:
                 xi = (_float_to_raw_i16(float(seg[k])) if s["raw"]
                       else _float_to_q15(float(seg[k])))
                 xq = None
-            self._chip.inject_data_physical([xi], target_hop_cnt=hop,
-                                            target_addr=int(a0))
-            self._chip.run(max_events=3000)
-            if xq is not None:
-                self._chip.inject_data_physical([xq], target_hop_cnt=hop,
-                                                target_addr=int(a1))
+            if s.get("landings") and xq is None:
+                # JOIN fan-out stream: deposit the sample at EVERY arm's landing
+                # (data-only arms first; each arm's JUMP enters either the join's
+                # ``sink`` or, LAST, the trigger entry that fires the combiner).
+                for (l_hop, l_a0, l_entry) in s["landings"]:
+                    self._chip.inject_data_physical([xi], target_hop_cnt=l_hop,
+                                                    target_addr=int(l_a0))
+                    self._chip.run(max_events=3000)
+                    self._chip.inject_jump_physical(target_hop_cnt=l_hop,
+                                                    entry_addr=l_entry)
+                    self._chip.run(max_events=mx)
+            else:
+                self._chip.inject_data_physical([xi], target_hop_cnt=hop,
+                                                target_addr=int(a0))
                 self._chip.run(max_events=3000)
-            self._chip.inject_jump_physical(target_hop_cnt=hop, entry_addr=entry)
-            self._chip.run(max_events=mx)
+                if xq is not None:
+                    self._chip.inject_data_physical([xq], target_hop_cnt=hop,
+                                                    target_addr=int(a1))
+                    self._chip.run(max_events=3000)
+                self._chip.inject_jump_physical(target_hop_cnt=hop,
+                                                entry_addr=entry)
+                self._chip.run(max_events=mx)
             # Drain + demux by tag into EACH stream's bucket.
+            # SINGLE-UNTAGGED-STREAM FALLBACK: with exactly one stream and no
+            # resolved out_tag (a duplex RPC carrying one plain stream), every
+            # recovered word belongs to it — without this, untagged words were
+            # parked in _tag_buf forever and the RPC returned 0 words.
+            _solo = streams[0] if (len(streams) == 1
+                                   and streams[0]["out_tag"] is None) else None
             for (v, d, _t) in self._chip.read_port_words_timed(s["port"]):
                 self._capture_tags[(s["port"], float(_t))] = int(d)
-                dst = None
-                for s2 in streams:
-                    if s2["out_tag"] is not None and int(d) == int(s2["out_tag"]):
-                        dst = s2
-                        break
+                dst = _solo
+                if dst is None:
+                    dst = _tag_owner(d)
                 if dst is not None:
                     dst["out"].append(float(int(v) & 0xFFFF) if dst["raw"]
                                       else _q15_to_float(int(v)))
@@ -1238,11 +1379,7 @@ class SimServer:
             stream's bucket (same tagging _drive_one uses)."""
             for (v, d, _t) in self._chip.read_port_words_timed(port):
                 self._capture_tags[(port, float(_t))] = int(d)
-                dst = None
-                for s2 in streams:
-                    if s2["out_tag"] is not None and int(d) == int(s2["out_tag"]):
-                        dst = s2
-                        break
+                dst = _tag_owner(d)
                 if dst is not None:
                     dst["out"].append(float(int(v) & 0xFFFF) if dst["raw"]
                                       else _q15_to_float(int(v)))
@@ -1337,6 +1474,19 @@ class SimServer:
         schedule = str(header.get("schedule", "interleaved")).lower()
         sequential = schedule in ("sequential", "simplex", "ordered")
         pipelined = bool(header.get("pipelined", False))
+        if pipelined and self._force_per_sample:
+            # The hosted design is NOT saturation-safe (SRAM-panel chain): the
+            # saturated queue-everything drive races the crossover relay / the
+            # CW ROM region address and garbles the output (user-reported from
+            # the GUI, reproduced with the real GR client). REFUSE the header
+            # and run the per-sample paced drive — the physically representative
+            # regime for these chains.
+            import sys as _sysfp
+            _sysfp.stderr.write(
+                "[placeKYT duplex] pipelined REFUSED: panel-backed design is "
+                "not saturation-safe - running the per-sample paced drive\n")
+            _sysfp.stderr.flush()
+            pipelined = False
         try:
             if pipelined:
                 # SATURATED (the real drive — per-sample-to-quiescence is a demo-only
@@ -1445,6 +1595,62 @@ class MultiChipSimServer:
         self._thread: threading.Thread | None = None
         self._running = False
         self._lock = threading.RLock()
+        # LIVE coefficient writes (multi-chip): see set_coeff_writes.
+        self._coeff_writes: dict[str, dict] = {}
+        self._coeff_seed: dict[str, dict] = {}
+        self._coeff_last: dict[str, dict] = {}
+
+    # -- live coefficient writes (mirrors SimServer, chain-head injected) -----
+    def set_coeff_writes(self, mapping: dict) -> None:
+        """Register the live-tunable params
+        (``engine.port_config.multi_chip_live_coeff_writes``):
+        ``{block_name: {params, hops, to_writes, chip_id}}`` — ``chip_id`` is the
+        block's CHAIN HEAD; a WRITE enters that chip's input port and self-routes
+        across the inter-chip wires exactly like a stream word (composite hop).
+        Dedup semantics identical to the single-chip server (design-value seed;
+        ShapeChange refusals cached, never half-applied)."""
+        self._coeff_writes = dict(mapping or {})
+        self._coeff_seed = {b: dict(s.get("params") or {})
+                            for b, s in self._coeff_writes.items()
+                            if isinstance(s, dict)}
+        self._coeff_last = {b: dict(v) for b, v in self._coeff_seed.items()}
+
+    def _write_coeff(self, chip_id: int, hop: int, dest: int, word: int) -> None:
+        from engine.simulator import _chip_name
+        name = _chip_name(int(chip_id))
+        self._engine._sim.inject_data_physical(name, [word & 0xFFFF],
+                                               int(hop), int(dest))
+        self._engine._sim.run(4000, 80)  # deliver (incl. inter-chip relay)
+
+    def _apply_live_coeffs(self, params: dict) -> None:
+        with self._lock:
+            for block, p in params.items():
+                spec = self._coeff_writes.get(block)
+                if spec is None or not isinstance(p, dict):
+                    continue
+                last = self._coeff_last.setdefault(block, {})
+                changed = {}
+                for pname in (spec.get("params") or {}):
+                    if pname not in p:
+                        continue
+                    try:
+                        value = float(p[pname])
+                    except (TypeError, ValueError):
+                        continue
+                    if last.get(pname) != value:
+                        changed[pname] = value
+                if not changed:
+                    continue
+                merged = {**last, **changed}
+                try:
+                    writes = spec["to_writes"](merged)
+                    hops = spec["hops"]
+                    for cid, dest, word in writes:
+                        self._write_coeff(spec.get("chip_id", 0),
+                                          hops[cid], dest, word)
+                    last.update(merged)
+                except Exception:  # noqa: BLE001 — refuse, cache, never crash
+                    last.update(merged)
 
     # -- lifecycle (mirrors SimServer) ---------------------------------------
     def start(self) -> int:
@@ -1512,13 +1718,31 @@ class MultiChipSimServer:
         try:
             if op == "ping":
                 return {"ok": True, "mode": "batch", "multichip": True}, None
+            if op == "set_grc_params":
+                # LIVE COEFFICIENT WRITE (the slider's push path): a changed
+                # tunable param retunes ITS die immediately — the WRITE enters
+                # the chain head and self-routes across the inter-chip wires.
+                params = dict(header.get("params", {}) or {})
+                if self._coeff_writes:
+                    self._apply_live_coeffs(params)
+                return {"ok": True}, None
             # process_batch_duplex is what the GR rendezvous sends (the client is
             # chip-agnostic — it carries only stream_id). We resolve each stream's
             # chip/landing HERE from the server's stream_targets. Same for the
             # explicit process_batch_multichip op (a client that already knows).
             if op in ("process_batch_duplex", "process_batch_multichip"):
+                # LIVE COEFFICIENT WRITE (header path): apply changed tunables
+                # BEFORE the run injects anything, so the burst runs at the
+                # slider's current values.
+                grc_params = header.get("grc_params")
+                if grc_params and self._coeff_writes:
+                    self._apply_live_coeffs(dict(grc_params))
                 return self._process_batch_multichip(header, payload)
-            return {"ok": False, "error": f"unknown op {op!r} (multichip)"}, None
+            return {"ok": False, "error":
+                    f"unknown op {op!r} (multichip server) — placeKYT is "
+                    f"hosting a MULTI-CHIP design; single-stream flowgraphs "
+                    f"need their single-chip .kyt open (File > Open) so the "
+                    f"server re-hosts it"}, None
         except Exception as exc:  # noqa: BLE001 — surface to the client
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}, None
 

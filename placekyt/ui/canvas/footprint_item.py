@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """FootprintItem — a translucent preview of where cells will land (§3.2).
 
 Shows light-blue cell outlines while dragging a block (move) or dropping one

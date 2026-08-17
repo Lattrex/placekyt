@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Preferences dialog — the app's first persisted settings (QSettings).
 
 Currently exposes one setting: the GRC parameter-change policy (what placeKYT

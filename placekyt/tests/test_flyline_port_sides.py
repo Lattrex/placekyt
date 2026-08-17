@@ -1,4 +1,5 @@
-"""Fly-line clarity for manual routing (CM request).
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Fly-line clarity for manual routing (maintainer request).
 
 Two behaviours make it clear how to hand-route:
   1. An INPUT-port net (chip x16_in -> first cell) draws a fly line — previously it

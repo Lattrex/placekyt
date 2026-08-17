@@ -1,10 +1,13 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 # placeKYT command trace (runnable replay) — replay with:
 #   placekyt --replay this_file.py
 # or inside the placeKYT console where `controller` exists:
 #   exec(open('this_file.py').read())
+from pathlib import Path
+
 ctrl = controller  # the live AppController
 
-ctrl.import_grc(path='/home/system/placekyt/examples/ssb_weaver/ssb_weaver.grc', name='ssb_weaver.grc', chip_type='kyttar_10x12')  # Import GNURadio flowgraph ssb_weaver.grc
+ctrl.import_grc(path=str(Path(__file__).resolve().parent / 'ssb_weaver.grc'), name='ssb_weaver.grc', chip_type='kyttar_10x12')  # Import GNURadio flowgraph ssb_weaver.grc
 ctrl.auto_place(chip=0)  # Auto-place blocks
 ctrl.transform_block(block_name='gain', kind='cw')  # Rotate CW gain
 ctrl.transform_block(block_name='gain', kind='cw')  # Rotate CW gain

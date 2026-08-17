@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Tests for the PortMap — a block's bus-facing I/O geometry (auto-P&R P2.2)."""
 
 from __future__ import annotations
@@ -27,13 +28,34 @@ def catalog(qapp):
 
 # -- builder over every catalog block ------------------------------------------
 
+# A few blocks document a HARDWARE constraint their GR-verbatim default violates, so
+# they RAISE if built at that default. Build those at the minimum valid param the
+# block's own docstring prescribes (same per-block-override pattern as
+# test_data_words.test_all_catalog_blocks_build). The PortMap geometry is independent
+# of these values — this just lets the block instantiate.
+_SAFE_PARAMS = {
+    # char_to_float out=in/scale needs scale>=128 to fit Q15 [-1,1) over int8.
+    "CharToFloatBlock": {"scale": 128},
+    # rational_resampler's empty-taps GR default auto-designs a filter that
+    # exceeds the polyphase cell budget and RAISES; use in-range explicit taps.
+    "RationalResamplerBlock": {"interpolation": 2, "decimation": 3,
+                               "taps": [0.15, 0.3, 0.3, 0.15]},
+}
+
+
+def _pm(catalog, spec):
+    """build_port_map for a spec, using safe params for blocks that RAISE at default."""
+    return build_port_map(catalog, spec.type_name,
+                          _SAFE_PARAMS.get(spec.type_name), library=spec.library)
+
+
 def test_every_catalog_block_builds_a_portmap(catalog):
     """P2.2: a PortMap derives for EVERY catalog block without error, and every
     block exposes at least one input or output port (a block with no external I/O
     would be unreachable)."""
     empty = []
     for spec in catalog.all():
-        pm = build_port_map(catalog, spec.type_name, library=spec.library)
+        pm = _pm(catalog, spec)
         assert isinstance(pm, PortMap)
         if not pm.ports:
             empty.append(spec.type_name)
@@ -43,7 +65,7 @@ def test_every_catalog_block_builds_a_portmap(catalog):
 def test_portmap_offsets_in_footprint(catalog):
     """Every port offset lies within the declared footprint (no port off-block)."""
     for spec in catalog.all():
-        pm = build_port_map(catalog, spec.type_name, library=spec.library)
+        pm = _pm(catalog, spec)
         w, h = pm.footprint
         for p in pm.ports:
             assert 0 <= p.dx <= w and 0 <= p.dy <= h, \
@@ -56,7 +78,7 @@ def test_four_cw_rotations_is_identity(catalog):
     """Four 90° CW rotations return every block's PortMap to its original offsets
     and faces — the transform algebra is consistent (matches Placement.transform)."""
     for spec in catalog.all():
-        pm = build_port_map(catalog, spec.type_name, library=spec.library)
+        pm = _pm(catalog, spec)
         r = pm
         for _ in range(4):
             r = r.transformed("cw")
@@ -66,7 +88,7 @@ def test_four_cw_rotations_is_identity(catalog):
 
 def test_cw_then_ccw_is_identity(catalog):
     for spec in catalog.all():
-        pm = build_port_map(catalog, spec.type_name, library=spec.library)
+        pm = _pm(catalog, spec)
         r = pm.transformed("cw").transformed("ccw")
         for a, b in zip(pm.ports, r.ports):
             assert a.offset == b.offset and a.face == b.face, spec.type_name
@@ -74,7 +96,7 @@ def test_cw_then_ccw_is_identity(catalog):
 
 def test_double_mirror_is_identity(catalog):
     for spec in catalog.all():
-        pm = build_port_map(catalog, spec.type_name, library=spec.library)
+        pm = _pm(catalog, spec)
         for kind in ("mirror_h", "mirror_v"):
             r = pm.transformed(kind).transformed(kind)
             for a, b in zip(pm.ports, r.ports):

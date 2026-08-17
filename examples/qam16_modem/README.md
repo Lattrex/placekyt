@@ -116,7 +116,7 @@ Two terminals, from the repo root.
 **Terminal 1 — placeKYT (host the chip):**
 
 ```
-QT_QPA_PLATFORM=xcb .venv/bin/python -m placekyt.app examples/qam16_modem/qam16_modem.kyt
+.venv/bin/python placekyt/main.py examples/qam16_modem/qam16_modem.kyt
 # then: Simulation → "Run as GNURadio Server"; note the printed port (default 58950).
 ```
 

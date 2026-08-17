@@ -1,16 +1,22 @@
 id: kyttar_bpsk_slicer
-label: 🧪 Kyttar BPSK Slicer
+label: Kyttar BPSK Slicer
 category: '[Kyttar]'
 
 templates:
   imports: from gnuradio import kyttar
-  make: kyttar.bpsk_slicer(${device_id})
+  make: kyttar.bpsk_slicer(${device_id}, ${out_mode})
 
 parameters:
 - id: device_id
   label: Device ID
   dtype: string
   default: '"kyttar_0"'
+- id: out_mode
+  label: Output Packing
+  dtype: string
+  default: '"bit"'
+  options: ['"bit"', '"byte"', '"word"']
+  option_labels: ['bit (1:1, GR-equivalent)', 'byte (8/word)', 'word (16/word)']
 
 inputs:
 - id: '0'
@@ -22,17 +28,18 @@ outputs:
 - id: '0'
   label: out
   domain: stream
-  dtype: float
+  dtype: byte
 
 documentation: |-
-  🧪 PROOF-OF-CONCEPT: this block works in a demo but has NOT been through
-  per-block GNU Radio-equivalence verification. Use with care.
+  BPSK Slicer (hard decision) — GNU Radio digital.binary_slicer_fb.
 
-  BPSK Slicer (hard decision)
+  Maps a recovered real sample (LLR / recovered I) to a hard bit, EXACTLY as
+  GNU Radio digital.binary_slicer_fb does:
+    value <  0 -> bit 0
+    value >= 0 -> bit 1   (INCLUDING value == 0 -> bit 1)
+  Bit-exact-verified vs digital.binary_slicer_fb across edge (exact 0, tiny +/-,
+  full-scale +/-), random and mutation stimulus.
 
-  Maps a soft decision value (LLR / recovered I) to a hard coded bit:
-    value <  0 -> bit 1
-    value >= 0 -> bit 0
   The recovered bit is packed in the output word's LSB (read the raw int16,
   not Q15-scaled).
 
@@ -41,7 +48,11 @@ documentation: |-
     out:       hard BPSK bit (0/1 in the LSB)
 
   Parameters:
-    Device ID: Which Kyttar device to use
+    Device ID:      Which Kyttar device to use
+    Output Packing: out_mode. 'bit' = one word per sample (the GR-equivalent,
+                    verified default). 'byte'/'word' are a Kyttar-only ergonomic
+                    extension (pack 8/16 sliced bits MSB-first per output word to
+                    cut output-port pressure) with NO GNU Radio counterpart.
 
   Mapped by placeKYT (File -> Import GNURadio Flowgraph) to BPSKSlicerBlock.
 

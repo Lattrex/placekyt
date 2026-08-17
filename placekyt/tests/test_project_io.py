@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Tests for .kyt / chip-type / board serialization (engine/io, §2.1–2.4)."""
 
 from __future__ import annotations

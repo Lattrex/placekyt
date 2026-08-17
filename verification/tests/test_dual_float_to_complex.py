@@ -28,7 +28,7 @@ proto_dual_f2c_rendezvous.py.
 
 Run::
 
-    cd /home/system/placekyt
+    cd <repo root>
     QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest \
         verification/tests/test_dual_float_to_complex.py -q
 """

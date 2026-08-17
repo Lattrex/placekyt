@@ -1,4 +1,5 @@
-"""Build pipeline adapter — Project → bitstream (the architecture notes §5.1).
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Build pipeline adapter — Project → bitstream.
 
 This is a THIN ADAPTER over the existing gr_kyttar placement/bitstream code
 (§0.1). It does not re-implement routing, resolving, or bitstream generation —
@@ -44,10 +45,19 @@ from model.project import Project
 from .catalog import BlockCatalog
 from .drc import (DRCError, DRCResult, check_project, error as drc_error,
                   warning as drc_warning)
+from .errors import EngineError
 
 # BuildError is an alias of the shared DRCError so a build surfaces one uniform
 # error type whether the finding came from the DRC pass or from generation.
 BuildError = DRCError
+
+
+class BuildAbort(EngineError):
+    """A generation step hit a condition it must not paper over (e.g. an exit
+    cell that cannot hold its fan-out form). RAISED (unlike :class:`BuildError`,
+    a DRC finding VALUE) and caught by the per-chip build loop, which surfaces
+    it as a named ``build_failed`` error. Raising the DRCError alias was a
+    latent crash — DRCError is a dataclass finding, not an exception."""
 
 
 @dataclass
@@ -145,6 +155,26 @@ class BuildEngine:
         (optional) enables the ``inter_chip_not_wired`` DRC check.
         """
         result = BuildResult()
+
+        # 0. SRAM-panel designs: re-derive every placement-dependent panel
+        # parameter (push-read descriptors, crossover track hops/entries, the
+        # RAW keyer's emit/done targets) from the CURRENT routes — so a user-
+        # moved / hand-rerouted panel chain builds with correct values instead
+        # of silently keeping the ones the auto-P&R baked for the old geometry.
+        # Same philosophy as faces: the routes are the truth; the build derives.
+        if project.panels:
+            try:
+                from .panel_pnr import refresh_panel_params
+                for _n in refresh_panel_params(project, self.catalog):
+                    result.warnings.append(drc_warning(
+                        "panel_param_refreshed",
+                        f"panel parameter re-derived from routes: {_n}",
+                        chip=0, x=0, y=0))
+            except Exception as _pe:  # noqa: BLE001 — surface, never silent
+                result.warnings.append(drc_warning(
+                    "panel_param_refresh_failed",
+                    f"could not re-derive panel parameters from routes: {_pe}",
+                    chip=0, x=0, y=0))
 
         # 1. Project-level DRC. Collect everything; errors block generation.
         # check_project now folds in the BUS DRC (§1.3/§5.3: face conflicts + the
@@ -313,7 +343,7 @@ class BuildEngine:
         # ones. Overrides live on each block's placement, keyed by (cell_id,addr).
         ownership = _apply_instr_overrides(cell_map, blocks_here)
 
-        # §1.4 UNIVERSAL ROUTING-CELL PROGRAM (Reading B, CM-approved): every
+        # UNIVERSAL ROUTING-CELL PROGRAM (Reading B, maintainer-approved): every
         # remaining PLAIN TRANSIT spine cell (a cell with a fwd_face but no program)
         # gets the uniform transmit(+relay) program so the whole fabric is made of
         # generic, dynamically-repurposable control cells (enabling §4.2). Runs LAST
@@ -659,6 +689,39 @@ def _patch_complex_abutment_handoff(cfg, hop, rail_idx, dest, entry=None) -> Non
         cfg.memory[addr] = word & 0xFFFF
 
 
+def _patch_complex_abutment_tail_handoff(cfg, hop, dests, entry=None) -> None:
+    """Abutted COMPLEX pair from an output cell that ALSO carries handoffs (the
+    serialize-LOCKED NCO/FM ``emit``, whose lock-clear ``WRITE.CFG`` sits AFTER
+    the yi/yq rails): steer the LAST ``len(dests)`` DATA WRITEs to the abutting
+    target's OWN input registers (``dests``, in emit order) @``hop``, patch the
+    LAST JUMP to the target ``entry``, and leave every ``WRITE.CFG`` and earlier
+    internal WRITE untouched.
+
+    Without this, the carries-handoffs abutment path ran the SINGLE
+    ``_patch_last_write_handoff`` once per rail net — both rails LAST-WINS into
+    the one final data WRITE, so yi and yq both wrote the target's R0 and the
+    consumer computed (yq·g, 0) (the auto_pnr-abutted locked-FM→ComplexGain
+    zero-Q bug, 2026-08-16). Call ONCE (from the I-rail net)."""
+    hop_cnt = encode_hop_cnt(hop)
+    write_addrs = sorted(a for a, w in cfg.memory.items()
+                         if _is_instruction_addr(cfg, a) and (w & 0xF000) == _WRITE
+                         and not (w & _WRITE_CONFIG_BIT))
+    jump_addrs = sorted(a for a, w in cfg.memory.items()
+                        if _is_instruction_addr(cfg, a) and (w & 0xF000) == _JUMP)
+    tail = write_addrs[-len(dests):]
+    for k, addr in enumerate(tail):
+        word = cfg.memory[addr]
+        word = (word & ~(0x1F << 5)) | (hop_cnt << 5)
+        word = (word & ~0x1F) | (int(dests[k]) & 0x1F)
+        cfg.memory[addr] = word & 0xFFFF
+    if jump_addrs:
+        addr = jump_addrs[-1]
+        word = (cfg.memory[addr] & ~(0x1F << 5)) | (hop_cnt << 5)
+        if entry is not None:
+            word = (word & ~0x1F) | (int(entry) & 0x1F)
+        cfg.memory[addr] = word & 0xFFFF
+
+
 def _patch_complex_output_port_handoff(cfg, hop, base_tag, entry=0) -> None:
     """Patch a COMPLEX-OUTPUT source cell whose two rails (yi, yq) exit the CHIP
     OUTPUT PORT: set the @hop on every WRITE and the JUMP, and give each WRITE its OWN
@@ -884,6 +947,11 @@ def _apply_routes(cell_map, gr_placement, blocks, connections, chip_type,
         pb = gr_placement.placed_blocks.get(block_name)
         return pb.entry_cell if pb is not None else None
 
+    # Complex-pair abutment from a carries-handoffs output cell is patched ONCE
+    # per source cell (both rail nets reach the branch; the tail patch steers
+    # BOTH rails) — track the cells already done.
+    _complex_abut_tail_patched: set = set()
+
     for conn in connections:
         src, tgt = conn.source, conn.target
         # PHYSICAL path. A routed connection: the broker/face/hop geometry from its
@@ -914,13 +982,52 @@ def _apply_routes(cell_map, gr_placement, blocks, connections, chip_type,
             if port is not None:
                 final_face = port[2]            # exit via the port's face
         elif isinstance(tgt, BlockEndpoint):
-            ec = _entry_cell_of(tgt.block)
+            # The target CELL: the block's entry cell by default — but when the
+            # net names a port that lives on a DIFFERENT cell, face toward THAT
+            # cell. The SRAM-panel return net is the canonical case: it targets
+            # the block's panel-return input (e.g. Varicode 'word' on the emit
+            # cell) while the entry/landing cell is the controller at the panel
+            # port on the far side of the chip — facing toward the entry cell
+            # left the final corridor cell unfaced (default EAST) and the panel
+            # push sailed past the consumer.
+            ec = None
+            gb_t = gr_blocks.get(tgt.block)
+            req = None
+            if gb_t is not None:
+                try:
+                    req = gb_t.panel_requirements()
+                except Exception:  # noqa: BLE001
+                    req = None
+            if req and tgt.port == req.get("return_port"):
+                mb = next((b for b in blocks if b.name == tgt.block), None)
+                if mb is not None and mb.placement is not None:
+                    pc = next((c for c in mb.placement.cells
+                               if c.cell_id == req.get("return_cell")), None)
+                    if pc is not None:
+                        ec = (pc.x, pc.y)
+            if ec is None:
+                ec = _entry_cell_of(tgt.block)
             if ec is not None and pts:
                 final_face = _step_face(pts[-1][0], pts[-1][1], ec[0], ec[1])
         # Face each waypoint toward the next; final waypoint toward the target.
         # A waypoint on an EMPTY cell becomes a routing cell (faces only, no
         # program) — that's how the user's drawn path is realised in hardware.
+        # A RAW-hop source (crossover/SRAM controller relays) AUTHORS its own
+        # emit faces (MOVE [FACE] per track) and its static fwd_face is its
+        # TRANSIT face — re-pinning route[0] toward the relay target would
+        # misroute every word transiting the relay cell (the duplex-panel tap:
+        # its abutment to the RX chain pinned it WEST and the TX ctl feed
+        # words riding THROUGH it turned west). Skip route[0] for RAW sources.
+        _skip0 = False
+        if isinstance(src, BlockEndpoint) and src.block in placed:
+            _gb0 = gr_blocks.get(src.block)
+            if _gb0 is not None and getattr(_gb0, "RAW_OUTPUT_HOPS", False):
+                _pb0 = gr_placement.placed_blocks.get(src.block)
+                _skip0 = (_pb0 is not None and pts
+                          and tuple(pts[0]) == tuple(_pb0.exit_cell))
         for i, (x, y) in enumerate(pts):
+            if i == 0 and _skip0:
+                continue
             face = (_step_face(x, y, *pts[i + 1]) if i + 1 < len(pts)
                     else final_face)
             if face is None:
@@ -980,12 +1087,20 @@ def _apply_routes(cell_map, gr_placement, blocks, connections, chip_type,
                 if tb is not None:
                     t_entry, t_ins = catalog.resolved_io(
                         tb.type, tb.params, library=tb.library)
-                    entry = t_entry
+                    # Per-port entry (multi-entry rendezvous target): the JUMP must
+                    # trigger THIS port's entry (dual.q → got_q), not the default.
+                    entry = _target_port_entry(catalog, tb, tgt.port, t_entry)
                     n_target_ins = len(t_ins) if t_ins else 1
                     rail_idx = _target_port_index(catalog, tb, tgt.port)
                     dest = (t_ins[rail_idx]
                             if t_ins and rail_idx < len(t_ins)
                             else (t_ins[0] if t_ins else 0))
+                # Per-net JUMP-entry override: a multi-entry relay target (the
+                # CrossoverBlock) needs each net to pick ITS track — the panel
+                # template's egress enters on track_b while the input corridor
+                # lands on the default track_a.
+                if getattr(conn, "entry_override", None) is not None:
+                    entry = int(conn.entry_override)
             elif conn.out_tag is not None:   # chip-output-port target with a tag
                 dest = conn.out_tag
             # Is the SOURCE a complex-output cell (yi+yq, two output rails)? Its exit
@@ -994,10 +1109,21 @@ def _apply_routes(cell_map, gr_placement, blocks, connections, chip_type,
             # NOTE: resolved_io returns (entry, INPUT regs); OUTPUT-reg count comes from
             # the block SPEC's output_registers.
             src_is_complex_out = False
+            _n_out_regs = 1
             try:
                 _sb = next(b for b in blocks if b.name == src.block)
-                _spec = catalog.get(_sb.type, library=_sb.library)
-                src_is_complex_out = bool(_spec) and len(_spec.output_registers) > 1
+                # Resolve the output-register count WITH the instance's params (INV-6/11):
+                # an ORDER-DEPENDENT interface (the order-4 Costas taps a complex pair,
+                # order-2 a single rail) is complex ONLY at order 4, and the bare-type
+                # spec would mis-read it as order-2 single-rail. Prefer the placed block's
+                # gr instance; fall back to the param-blind spec.
+                _gbx = gr_blocks.get(src.block)
+                if _gbx is not None:
+                    _n_out_regs = len(_gbx.interface.output_registers)
+                else:
+                    _spec = catalog.get(_sb.type, library=_sb.library)
+                    _n_out_regs = len(_spec.output_registers) if _spec else 1
+                src_is_complex_out = _n_out_regs > 1
             except Exception:  # noqa: BLE001
                 pass
             # If the source block declares a MID-block output cell (its output
@@ -1019,6 +1145,14 @@ def _apply_routes(cell_map, gr_placement, blocks, connections, chip_type,
             # EDGE cell at hop_cnt 31 and execute there instead of transiting out — 0 egress,
             # the FM-transceiver symptom that traced to the bus router omitting the exit cell.)
             phys_dist = _phys_distance(conn, pts)
+            # RELAY-LANDING target (the CrossoverBlock): the word must LAND ON
+            # the relay cell itself — its track entry runs there — so undo the
+            # strip-to-abutting-broker hop (the stripped form delivered into a
+            # broker whose relay resolved wrong registers in the duplex build).
+            if isinstance(tgt, BlockEndpoint):
+                _tgb = gr_blocks.get(tgt.block)
+                if _tgb is not None and getattr(_tgb, "RELAY_LANDING", False):
+                    phys_dist += 1
             # CROSS-CHIP OUTPUT (2P2S): if this output port is inter-chip-wired to a
             # downstream chip, the exit word must transit the far chip's bus to the
             # CHAIN TAIL — add the crossing + far bus width so the WRITE/JUMP hop
@@ -1029,8 +1163,30 @@ def _apply_routes(cell_map, gr_placement, blocks, connections, chip_type,
                 not isinstance(tgt, BlockEndpoint) and src_is_complex_out
                 and _cell_write_count(cfg) > 1)
             if _output_cell_carries_handoffs(gb) and not _is_complex_port_egress:
-                _patch_last_write_handoff(cfg, phys_dist, dest=dest)
-                _patch_last_jump_handoff(cfg, phys_dist, entry=entry)
+                if (src_is_complex_out and isinstance(tgt, BlockEndpoint)
+                        and n_target_ins > 1 and _cell_write_count(cfg) > 1):
+                    # COMPLEX pair abutted into a ≥2-register target from a
+                    # carries-handoffs output cell (the serialize-LOCKED NCO/FM
+                    # emit — its lock-clear WRITE.CFG trips the flag). The
+                    # single last-write patch below LAST-WINS both rail nets
+                    # into ONE data WRITE (both rails → target R0; the consumer
+                    # computed (yq·g, 0) — the auto_pnr-abutted locked-FM bug,
+                    # 2026-08-16). Patch ONCE: last N data WRITEs → the
+                    # target's own input regs, last JUMP → its entry; the
+                    # WRITE.CFG keeps its resolved unlock hop.
+                    if (ex, ey) not in _complex_abut_tail_patched:
+                        _complex_abut_tail_patched.add((ex, ey))
+                        try:
+                            dests = [int(r) for r in t_ins][:_n_out_regs]
+                        except Exception:  # noqa: BLE001
+                            dests = [dest]
+                        if len(dests) < 2:
+                            dests = [dest]
+                        _patch_complex_abutment_tail_handoff(
+                            cfg, phys_dist, dests, entry=entry)
+                else:
+                    _patch_last_write_handoff(cfg, phys_dist, dest=dest)
+                    _patch_last_jump_handoff(cfg, phys_dist, entry=entry)
             elif _is_complex_port_egress:
                 # COMPLEX EGRESS to the OUTPUT PORT: the source emits yi+yq (≥2 output
                 # WRITEs) straight to x16_out. This takes PRECEDENCE over the
@@ -1058,8 +1214,19 @@ def _apply_routes(cell_map, gr_placement, blocks, connections, chip_type,
                             and _oc.out_tag is not None):
                         base_tag = min(base_tag, _oc.out_tag)
                 if dest == base_tag:      # this is the I-rail net → patch both rails
-                    _patch_complex_output_port_handoff(cfg, phys_dist, base_tag,
-                                                       entry=0)
+                    if _output_cell_carries_handoffs(gb):
+                        # FUSED output+handoff cell (the order-4 Costas ``qpd``: an
+                        # internal err→pd_pi WRITE FIRST, then the recovered yi_tap/yq_tap
+                        # tail). Patching EVERY WRITE (the plain complex-egress path) would
+                        # egress the internal ``err`` too and break the loop; patch only
+                        # the last N tail WRITEs (the recovered rails) with distinct tags,
+                        # leaving the err WRITE on its @1 hop.
+                        _patch_last_n_write_handoff(cfg, phys_dist, _n_out_regs,
+                                                    base_tag=base_tag)
+                        _patch_last_jump_handoff(cfg, phys_dist, entry=0)
+                    else:
+                        _patch_complex_output_port_handoff(cfg, phys_dist, base_tag,
+                                                           entry=0)
                 # else: the sibling (Q) net — already handled by the I-rail patch.
             elif n_target_ins > 1 and _cell_write_count(cfg) > 1:
                 # COMPLEX PACKET over abutment: the source cell emits ≥2 output
@@ -1212,8 +1379,11 @@ def _apply_brokers(cell_map, gr_placement, blocks, connections, project,
                              _phys_pts)
 
     taps = broker_plan(project, chip_id, chip_type, catalog)
-    if not taps:
-        return {}, {}, set()
+    # NOTE: no early return on empty ``taps`` — a fully-ABUTTED design (the
+    # abutment-first packs) has NO brokers at all, but the abutted fan-out /
+    # replicated-WRITE machinery below must still run: bailing here left a
+    # single-rail source feeding BOTH inputs of an abutted join with ONE
+    # last-wins WRITE (a0 never written — the fanin2 skewed-pair values).
     # Cells where a FOREIGN net merely TRANSITS this broker (the auto-router packed
     # two corridors onto one broker cell). The broker's restore/bus face MUST serve
     # that foreign through-direction or the foreign stream is silently mis-faced and
@@ -1300,25 +1470,40 @@ def _apply_brokers(cell_map, gr_placement, blocks, connections, project,
         if pb is None or (gb is not None and getattr(gb, "RAW_OUTPUT_HOPS", False)):
             continue
         # Resolve the abutted rail's target register + entry (yq -> consumer.xq etc.).
+        # ``a_tgt`` identifies the DESTINATION (block name / port) so the fan-out
+        # classifier below can tell a genuine fan-out (rails to DIFFERENT targets)
+        # from a plain complex pair (both rails abutting ONE consumer).
         a_dest = a_entry = 0
+        a_tgt = None
         if isinstance(conn.target, BlockEndpoint):
+            a_tgt = ("block", conn.target.block)
             tb = next((b for b in blocks if b.name == conn.target.block), None)
             if tb is not None:
                 t_entry, t_ins = catalog.resolved_io(
                     tb.type, tb.params, library=tb.library)
-                a_entry = t_entry
+                # Per-port entry (multi-entry rendezvous target, e.g. dual.q →
+                # got_q), falling back to the block default for ordinary blocks.
+                a_entry = _target_port_entry(catalog, tb, conn.target.port,
+                                             t_entry)
                 _ri = _target_port_index(catalog, tb, conn.target.port)
                 a_dest = (t_ins[_ri] if t_ins and _ri < len(t_ins)
                           else (t_ins[0] if t_ins else 0))
         elif conn.out_tag is not None:
             a_dest = conn.out_tag
+            a_tgt = ("port", getattr(conn.target, "port", None))
         abut_by_src_cell.setdefault(tuple(pb.exit_cell), []).append(
-            (conn.name, a_dest, a_entry))
+            (conn.name, a_dest, a_entry, a_tgt))
     for conn in connections:
         if not conn.is_routed:
             continue
         if not isinstance(conn.source, BlockEndpoint) or conn.source.block not in placed:
             continue
+        # RELAY-LANDING target (CrossoverBlock): the source lands ON the relay
+        # cell directly (see _apply_routes) — no broker delivery for this net.
+        if isinstance(conn.target, BlockEndpoint):
+            _tgb = gr_blocks.get(conn.target.block)
+            if _tgb is not None and getattr(_tgb, "RELAY_LANDING", False):
+                continue
         # PHYSICAL path: a route drawn ENDING ON the target input cell stops at the
         # abutting broker (the trailing input-cell waypoint is stripped), so the source
         # hop reaches the BROKER — not one cell past it, into the block.
@@ -1367,27 +1552,53 @@ def _apply_brokers(cell_map, gr_placement, blocks, connections, project,
         # mixer.yq→abut→gain_Q). Re-sequence ALL rails (a trigger each) in SOURCE PROGRAM
         # ORDER: a routed rail delivers to its broker burst reg @broker-distance/entry; an
         # abutted rail delivers to its target's OWN input reg @1/target-entry.
-        if abut_rails and (len(nets) + len(abut_rails)) > 1:
-            _meta = src_meta.get(ex)
-            if _meta is not None:
-                cfg = _meta[1]
-            else:
-                cfg = cell_map.get_cell(*ex)
+        # A FAN-OUT means rails leaving this cell for ≥2 DIFFERENT destinations
+        # (at least one routed + one abutted, or two abutted targets). BOTH rails
+        # of a plain complex pair abutting ONE consumer are NOT a fan-out — they
+        # are the ordinary complex-packet handoff (WRITE re, WRITE im, ONE JUMP)
+        # patched by the complex-abutment path; re-sequencing them here gave each
+        # rail its own trigger AND double-encoded the @1 hop (encode(30)=1), so
+        # the pair sailed 30 cells past its consumer and leaked out the port with
+        # dests 0/1 — the channel_selector Conjugate-insertion regression.
+        _abut_targets = {t for (_c, _d, _e, t) in abut_rails}
+        _meta = src_meta.get(ex)
+        _mcfg = _meta[1] if _meta is not None else cell_map.get_cell(*ex)
+        _single_write = _mcfg is not None and _cell_write_count(_mcfg) == 1
+        # A single-rail source with ≥2 abutted nets into ONE target (gain.out
+        # abutting BOTH add inputs) is not a fan-out either, but it still needs
+        # the replicated-WRITE treatment — the per-conn abutment patcher would
+        # last-wins its single WRITE. Handle it here alongside the fan-outs.
+        if abut_rails and (nets or len(_abut_targets) > 1
+                           or (_single_write and len(abut_rails) > 1)):
+            cfg = _mcfg
             if cfg is None:
                 continue
-            # (conn_name, hop, dest_reg, entry) per rail, ordered by connection index so
-            # the Nth WRITE (yi, yq, …) gets the Nth target. Abutted rail hop = @1 (30).
+            # (conn_name, hop, dest_reg, entry) per rail, ordered by connection index
+            # so the Nth WRITE (yi, yq, …) gets the Nth target. Hops here are RAW
+            # distances — _patch_fanout_source_handoff encodes them; an abutted rail
+            # is @1 (passing the pre-encoded _HOP1_CNT double-encoded it).
             merged = []
             for (c, d, e, _bc) in nets:
                 merged.append((c, d, BROKER_BURST_REG + int(conn_burst_reg.get(c, 0)), e))
-            for (c, dest, entry) in abut_rails:
-                merged.append((c, _HOP1_CNT, int(dest), int(entry)))
+            for (c, dest, entry, _t) in abut_rails:
+                merged.append((c, 1, int(dest), int(entry)))
             merged.sort(key=lambda t: _conn_order.get(t[0], 1 << 30))
-            _patch_fanout_source_handoff(cfg, [(h, dr, en) for (_c, h, dr, en) in merged])
+            if _single_write:
+                writes = [(h, dr) for (_c, h, dr, _en) in merged]
+                if len(_abut_targets) == 1 and not nets:
+                    # one target, N inputs: packet form — a single trigger
+                    jumps = [(1, merged[0][3])]
+                else:
+                    jumps = [(h, en) for (_c, h, _dr, en)
+                             in sorted(merged, key=lambda t: t[1], reverse=True)]
+                _patch_single_rail_multi_handoff(cfg, writes, jumps)
+            else:
+                _patch_fanout_source_handoff(
+                    cfg, [(h, dr, en) for (_c, h, dr, en) in merged])
             # These abutted rails are now re-sequenced HERE (with their own trigger);
             # _default_unrouted_exit_hops must NOT re-patch them (it would clobber the
             # fan-out sequencing back to a single handoff).
-            for (c, _dest, _entry) in abut_rails:
+            for (c, _dest, _entry, _t) in abut_rails:
                 fanout_abut_conns.add(c)
             continue
         if not nets:
@@ -1409,6 +1620,14 @@ def _apply_brokers(cell_map, gr_placement, blocks, connections, project,
             ordered = sorted(nets, key=lambda n: conn_burst_reg.get(n[0], 0))
             burst_regs = [BROKER_BURST_REG + conn_burst_reg.get(c, i)
                           for i, (c, _d, _e, _bc) in enumerate(ordered)]
+            # SINGLE-rail source feeding N inputs of ONE target (gain.out →
+            # add.a0 AND add.a1): replicate the one WRITE per burst reg, ONE
+            # trigger — the packet form with a duplicated value.
+            if _cell_write_count(cfg) == 1:
+                _patch_single_rail_multi_handoff(
+                    cfg, [(distance, r) for r in burst_regs],
+                    [(distance, b_entry)])
+                continue
             # If the complex output cell ALSO carries internal handoffs (the order-4
             # Costas qpd: err/trig→pd_pi internally AND yi_tap/yq_tap→the bus), patch
             # ONLY the TAIL (external) WRITEs + JUMP so the internal err/trig keep their
@@ -1432,7 +1651,16 @@ def _apply_brokers(cell_map, gr_placement, blocks, connections, project,
         if len(nets) > 1 and len(broker_cells) > 1:
             specs = [(d, BROKER_BURST_REG + int(conn_burst_reg.get(c, 0)), e)
                      for (c, d, e, _bc) in nets]
-            _patch_fanout_source_handoff(cfg, specs)
+            # SINGLE-rail source fanning out to N DIFFERENT targets: replicate
+            # the one WRITE per arm + one JUMP per arm (descending hop — the
+            # INV-17 FACE-transit rule the complex form uses).
+            if _cell_write_count(cfg) == 1:
+                by_hop = sorted(specs, key=lambda s: s[0], reverse=True)
+                _patch_single_rail_multi_handoff(
+                    cfg, [(h, r) for (h, r, _e) in specs],
+                    [(h, e) for (h, _r, e) in by_hop])
+            else:
+                _patch_fanout_source_handoff(cfg, specs)
             continue
         # Single-net source (the ordinary one-operand delivery, unchanged).
         conn_name, distance, b_entry, _bc = nets[0]
@@ -1461,8 +1689,22 @@ def _apply_brokers(cell_map, gr_placement, blocks, connections, project,
         # internal feedback WRITEs keep their @1 hops; else patch the cell's
         # exit WRITE + JUMP together.
         if _output_cell_carries_handoffs(gb):
-            _patch_last_write_handoff(cfg, distance, dest=dest_reg)
-            _patch_last_jump_handoff(cfg, distance, entry=b_entry)
+            if src_is_complex_out:
+                # COMPLEX source whose output cell ALSO carries handoffs (the
+                # serialize-LOCKED NCO/FM emit, the order-4 Costas qpd) wired as a
+                # SINGLE net: BOTH rails must still ride the corridor to
+                # consecutive burst regs (position de-interleave downstream).
+                # Patching only the LAST data write delivered yq alone — the
+                # downstream read (yq, 0), the same rail-shift as the packet-path
+                # WRITE.CFG bug. The packet-last patcher does the right tail-only
+                # treatment (skipping the lock-clear WRITE.CFG and the internal
+                # handoffs) for n = the block's output-register count.
+                n = len(gb.interface.output_registers)
+                _patch_complex_packet_last_handoff(
+                    cfg, distance, [dest_reg + i for i in range(n)], b_entry)
+            else:
+                _patch_last_write_handoff(cfg, distance, dest=dest_reg)
+                _patch_last_jump_handoff(cfg, distance, entry=b_entry)
         elif src_is_complex_out and _cell_write_count(cfg) > 1:
             # COMPLEX-PACKET output cell (yi/yq — ≥2 output WRITEs) delivered as a
             # SINGLE brokered net (only the I rail is wired; the Q rail rides the same
@@ -1488,6 +1730,23 @@ def _apply_brokers(cell_map, gr_placement, blocks, connections, project,
     # (the modem's tx mapper net at (1,1), which the rx corridor pins EAST) must be
     # injected to LAND at that broker's deliver entry — not ridden straight through.
     return dict(conn_entry), dict(conn_burst_reg), fanout_abut_conns
+
+
+def _target_port_entry(catalog, block, port, default):
+    """The JUMP entry a producer into the named target ``port`` must trigger.
+
+    A multi-entry rendezvous cell (the DualFloatToComplex ``got_i``/``got_q``)
+    runs DIFFERENT code per input port, so its ports declare their own entry
+    (``Port.entry`` → resolved into the PortMap). Every ordinary block keeps its
+    single default entry (``default``, from ``resolved_io``)."""
+    try:
+        pmap = catalog.port_map(block.type, block.params, library=block.library)
+        for p in pmap.ports:
+            if p.name == port and p.direction == "in" and p.entry is not None:
+                return int(p.entry)
+    except Exception:  # noqa: BLE001
+        pass
+    return int(default)
 
 
 def _target_port_reg(catalog, block, port, in_regs):
@@ -1573,6 +1832,12 @@ def _resolve_input_landings(cell_map, blocks, connections, project, chip_id,
             dist = abs(cell0.x - in_port.cell_x) + abs(cell0.y - in_port.cell_y)
             entry, in_regs = catalog.resolved_io(
                 blk.type, blk.params, library=blk.library)
+            # A JOIN's non-trigger port arm lands on the block's data-only
+            # ``sink`` entry (Connection.entry_override — the same override the
+            # block→block handoff honors), so host injection deposits the
+            # operand without firing the combiner.
+            if getattr(conn, "entry_override", None) is not None:
+                entry = int(conn.entry_override)
             landings[conn.name] = {
                 "cell": (cell0.x, cell0.y), "entry": int(entry),
                 "hop": (30 - dist) & 0x1F,
@@ -1608,6 +1873,8 @@ def _resolve_input_landings(cell_map, blocks, connections, project, chip_id,
             # Rides straight to the block input cell — deliver operand(s) there.
             entry, in_regs = catalog.resolved_io(
                 blk.type, blk.params, library=blk.library)
+            if getattr(conn, "entry_override", None) is not None:
+                entry = int(conn.entry_override)   # join non-trigger arm → sink
             idx = len(full) - 1                  # block input cell's corridor index
             # A COMPLEX source injects all input regs (xi+xq); a FLOAT source (AM
             # up-converter's ``xi`` rail) injects ONE operand into the single rail its
@@ -1629,6 +1896,8 @@ def _resolve_input_landings(cell_map, blocks, connections, project, chip_id,
                 # a routed net); fall back to the straight block landing.
                 entry, in_regs = catalog.resolved_io(
                     blk.type, blk.params, library=blk.library)
+                if getattr(conn, "entry_override", None) is not None:
+                    entry = int(conn.entry_override)
                 idx = len(full) - 1
                 landings[conn.name] = {
                     "cell": in_cell, "entry": int(entry),
@@ -1659,6 +1928,14 @@ def _resolve_input_landings(cell_map, blocks, connections, project, chip_id,
             last = BROKER_BURST_REG + int(broker_conn_burst.get(conn.name, 0))
             if _in_regs and len(_in_regs) > 1 and conn.src_complex is not False:
                 n = len(_in_regs)
+                # TWO-COMPLEX-PAIR blocks (AddCC family: 4 input regs = two I/Q
+                # pairs) fed by a GRC COMPLEX source: the broker group planned
+                # for THIS net is its stream's pair only (see bus_router's
+                # src_complex-gated port_complex_regs pair slice), so the host
+                # injects exactly 2 operands. Explicitly-wired per-rail nets
+                # (src_complex None) keep the legacy full-group sizing.
+                if n > 2 and conn.src_complex is True:
+                    n = 2
                 data_addrs = [last - (n - 1) + i for i in range(n)]
             else:
                 data_addrs = [last]
@@ -1872,7 +2149,7 @@ def _universal_routing_program(bus_face: int):
         bus (``fwd_face``) with a fresh budget. This is the *explicit program form*
         of transmit-through; the FORWARDING of an ordinary transiting word
         (HOP_CNT<31) is the hardware default via CONFIG[FACE] and does NOT touch
-        this program (``routing.rs::route_packet`` decides execute-vs-forward purely
+        this program (the hardware routing engine decides execute-vs-forward purely
         on HOP_CNT, never reading memory — proven in ``proto_transit2.py``). So this
         entry is reached ONLY when a word is deliberately addressed to land here.
       * ``relay`` — §1.4 #3: re-launch a long (>31-hop) route with a fresh 31-hop
@@ -1941,7 +2218,7 @@ def _universal_routing_program(bus_face: int):
 
 def _apply_routing_cell_programs(cell_map) -> None:
     """Emit the §1.4 UNIVERSAL program into EVERY PLAIN TRANSIT routing cell
-    (Reading B, CM-approved).
+    (Reading B, maintainer-approved).
 
     After all faces/brokers/crossovers are set, a *plain transit* spine cell is a
     cell with a ``fwd_face`` but NO program (``is_routing_only()`` — empty memory,
@@ -1953,8 +2230,8 @@ def _apply_routing_cell_programs(cell_map) -> None:
 
     Pass-through is preserved by construction: the program's entries are reachable
     ONLY at HOP_CNT==31 (a deliberately-landed word); an ordinary transiting word
-    (HOP_CNT<31) is forwarded on ``fwd_face`` by the hardware before the program is
-    consulted (``routing.rs``). The cell's ``fwd_face`` is NOT changed, so the bus
+    (HOP_CNT<31) is forwarded on ``fwd_face`` by the hardware routing engine before
+    the program is consulted. The cell's ``fwd_face`` is NOT changed, so the bus
     direction — and thus the static datapath — is identical to before."""
     for (col, row), cfg in list(cell_map.cells.items()):
         # Only PLAIN TRANSIT cells: a fwd_face is set, but no program yet.
@@ -2229,9 +2506,26 @@ def _apply_port_route_faces_and_hops(cell_map, gr_placement, blocks,
                                                  library=sb.library)
                     except Exception:  # noqa: BLE001
                         gb = None
+                # Is the source a COMPLEX-OUTPUT cell (>1 output register)? Then its
+                # recovered pair (yi_tap, yq_tap) is the program TAIL and BOTH rails must
+                # egress the port with distinct tags. A fused output+handoff cell (the
+                # order-4 Costas qpd: an internal err→pd_pi WRITE, then the yi_tap/yq_tap
+                # tail) can't take the patch-EVERY-WRITE complex path (that would egress
+                # err too); the plain last-write patch routes only yq_tap and strands
+                # yi_tap on a stale hop colliding with err. Patch the last N tail WRITEs.
+                n_out = 1
+                try:
+                    if gb is not None:
+                        n_out = max(1, len(gb.interface.output_registers))
+                except Exception:  # noqa: BLE001
+                    n_out = 1
                 if _output_cell_carries_handoffs(gb):
-                    _patch_last_write_handoff(cfg, _route_distance(conn),
-                                              dest=out_dest)
+                    if n_out > 1:
+                        _patch_last_n_write_handoff(cfg, _route_distance(conn),
+                                                    n_out, base_tag=out_dest)
+                    else:
+                        _patch_last_write_handoff(cfg, _route_distance(conn),
+                                                  dest=out_dest)
                     _patch_last_jump_handoff(cfg, _route_distance(conn), entry=0)
                 else:
                     _patch_cell_handoff(cfg, _route_distance(conn),
@@ -2329,6 +2623,8 @@ def _apply_block_cell_faces(cell_map, blocks: list) -> None:
     the routed CellMap as the baseline. Drawn routes and abutment defaulting run
     afterwards and override the exit cell where a real connection dictates.
     """
+    from model.placement import is_transit_cell
+
     for blk in blocks:
         if blk.placement is None:
             continue
@@ -2336,15 +2632,28 @@ def _apply_block_cell_faces(cell_map, blocks: list) -> None:
             face = getattr(pc, "face", None)
             if face is None:
                 continue
-            cfg = cell_map.get_cell(pc.x, pc.y)
-            if cfg is None:
-                continue
             code = _PORT_FACE_CODE.get(getattr(face, "value", face))
             if code is None and hasattr(face, "name"):
                 code = {"SOUTH": 0, "EAST": 1, "WEST": 2,
                         "NORTH": 3}.get(face.name)
-            if code is not None:
-                cfg.fwd_face = _CM_FACE(code)
+            if code is None:
+                continue
+            cfg = cell_map.get_cell(pc.x, pc.y)
+            if cfg is None:
+                # A block-INTERNAL face-only transit cell (layout_rules §5: a
+                # first-class block cell with a face and NO program) has no
+                # router-created entry — MATERIALIZE it as a routing cell so
+                # its authored face reaches the fabric (and the universal
+                # routing-program pass covers it like any corridor cell).
+                # Without this, a forward-corridor transit (the LMS equalizer's
+                # westbound lane) stays at the reset face and silently deflects
+                # every transiting word. (The Costas feedback transit never hit
+                # this — the feedback TRACER created its entry.)
+                if is_transit_cell(pc):
+                    cell_map.add_routing_cell(pc.x, pc.y, _CM_FACE(code),
+                                              block_name=blk.name)
+                continue
+            cfg.fwd_face = _CM_FACE(code)
 
 
 def _reassert_internal_forward_faces(cell_map, blocks: list, gr_blocks: dict) -> None:
@@ -2760,6 +3069,36 @@ def _patch_last_write_handoff(cfg, hop, dest=None) -> None:
     cfg.memory[addr] = word & 0xFFFF
 
 
+def _patch_last_n_write_handoff(cfg, hop, n, base_tag=0) -> None:
+    """Patch the ``n`` HIGHEST-address WRITEs to ``hop`` and give them CONSECUTIVE
+    output tags ``base_tag, base_tag+1, …`` in ADDRESS order (the emit/rail order).
+
+    This is the COMPLEX-OUTPUT-to-PORT analogue of :func:`_patch_last_write_handoff`
+    for a mid-block output cell that ALSO carries internal handoffs. A fused
+    output+PD cell (the order-4 Costas ``qpd``: an internal ``err``→pd_pi WRITE FIRST,
+    then the recovered ``yi_tap``, ``yq_tap`` tail) must NOT be patched by
+    :func:`_patch_complex_output_port_handoff` (that patches EVERY WRITE, including the
+    ``err`` handoff → err would egress the port and the loop would break). Patching
+    just the last ONE WRITE (plain last-write) routes only ``yq_tap`` and leaves
+    ``yi_tap`` on a stale internal hop that COLLIDES with the ``err`` handoff (the
+    recovered I is lost). Patching the last ``n`` (n = the block's output-register
+    count) steers BOTH tap rails to the port with distinct tags — mirroring the input
+    complex-sample contract (xi→a0, xq→a1) — while the earlier internal ``err`` WRITE
+    keeps its @1 hop. The JUMP is patched separately (``_patch_last_jump_handoff``)."""
+    if n <= 1:
+        return _patch_last_write_handoff(cfg, hop, dest=int(base_tag))
+    hop_cnt = encode_hop_cnt(hop)
+    write_addrs = sorted(a for a, w in cfg.memory.items()
+                         if _is_instruction_addr(cfg, a) and (w & 0xF000) == _WRITE
+                         and not (w & _WRITE_CONFIG_BIT))  # skip a lock-clear WRITE.CFG
+    tail = write_addrs[-n:]
+    for k, addr in enumerate(tail):
+        word = cfg.memory[addr]
+        word = (word & ~(0x1F << 5)) | (hop_cnt << 5)
+        word = (word & ~0x1F) | ((int(base_tag) + k) & 0x1F)
+        cfg.memory[addr] = word & 0xFFFF
+
+
 def _patch_fanout_source_handoff(cfg, specs) -> None:
     """Re-sequence a COMPLEX output cell (``WRITE yi; WRITE yq; JUMP``) into the
     FAN-OUT form (``WRITE yi; WRITE yq; JUMP→A; JUMP→B``) so its two rails reach TWO
@@ -2826,7 +3165,7 @@ def _patch_fanout_source_handoff(cfg, specs) -> None:
             if (cfg.memory.get(a, 0) & 0xFFFF) == 0]
     need = len(specs) - 1
     if len(free) < need:
-        raise BuildError(
+        raise BuildAbort(
             f"complex output cell '{getattr(cfg, 'block_name', '?')}' cannot fan out: "
             f"needs {need} free program word(s) for the extra rail JUMP(s) but has "
             f"{len(free)} — the block's output cell is over-full. INV-17: a complex-"
@@ -2834,6 +3173,72 @@ def _patch_fanout_source_handoff(cfg, specs) -> None:
             f"at block-verification time, so this never surfaces at chip build.")
     for slot, (hop, _dr, entry) in zip(free, by_hop[1:]):
         cfg.memory[slot] = _make_jump(hop, entry)
+
+
+def _patch_single_rail_multi_handoff(cfg, writes, jumps) -> None:
+    """Rewrite a SINGLE-rail source exit tail so its one R0 value reaches N
+    destinations — the block-OUTPUT FAN-OUT form for ordinary (non-complex)
+    blocks (``gain.out → add.a0 AND add.a1``, splitter trees, …).
+
+    A single-rail block authors exactly ``… WRITE; JUMP``: the value is in R0
+    when the WRITE fires and NOTHING between the WRITE and JUMP touches R0, so
+    the WRITE word can simply be REPLICATED — every copy emits the same R0.
+    The tail becomes ``WRITE₁ … WRITE_N; JUMP …`` over the authored WRITE word,
+    the authored JUMP word, and the free (zero) words after it (execution runs
+    into them and halts at the first zero word, exactly the INV-17 fan-out
+    convention).
+
+    ``writes`` = ``[(hop, dest_reg), …]`` one per destination; ``jumps`` =
+    ``[(hop, entry), …]`` — ONE for a packet (N regs on one target), or one
+    per rail for a fan-out, in DESCENDING-hop order (the INV-17 FACE-transit
+    rule: the farthest trigger fires first, transiting nearer brokers while
+    they are still idle). All data words go out before any trigger, so no
+    trigger-diverted broker can mis-route a later rail's data.
+
+    Raises a NAMED error when the tail cannot hold the form (over-full cell,
+    or an authored program whose JUMP is not directly after its WRITE) — the
+    fix is routing through an explicit relay (kyttar_splitter)."""
+    name = getattr(cfg, "block_name", "?")
+    write_addrs = sorted(a for a, w in cfg.memory.items()
+                         if _is_instruction_addr(cfg, a) and (w & 0xF000) == _WRITE)
+    jump_addrs = sorted(a for a, w in cfg.memory.items()
+                        if _is_instruction_addr(cfg, a) and (w & 0xF000) == _JUMP)
+    if len(write_addrs) != 1 or len(jump_addrs) != 1:
+        raise BuildAbort(
+            f"output cell '{name}' fans out to {len(writes)} destinations but "
+            f"authors {len(write_addrs)} WRITEs/{len(jump_addrs)} JUMPs — the "
+            f"single-rail fan-out form needs exactly one of each. Route the "
+            f"extra arms through an explicit splitter (kyttar_splitter).")
+    w0, j0 = write_addrs[0], jump_addrs[0]
+    if j0 != w0 + 1:
+        raise BuildAbort(
+            f"output cell '{name}' cannot take the fan-out form: instruction(s) "
+            f"between its exit WRITE and JUMP could retarget R0, so the WRITE "
+            f"cannot be replicated. Route through an explicit splitter "
+            f"(kyttar_splitter).")
+    slots = [w0, j0]
+    a = j0 + 1
+    while a < 32 and (cfg.memory.get(a, 0) & 0xFFFF) == 0:
+        slots.append(a)
+        a += 1
+    need = len(writes) + len(jumps)
+    if len(slots) < need:
+        raise BuildAbort(
+            f"output cell '{name}' cannot fan out to {len(writes)} destinations: "
+            f"the form needs {need} exit words but only {len(slots)} are "
+            f"available — route some arms through an explicit splitter "
+            f"(kyttar_splitter).")
+    base_write = cfg.memory[w0]
+    seq = []
+    for hop, dest in writes:
+        w = (base_write & ~(0x1F << 5)) | (encode_hop_cnt(hop) << 5)
+        w = (w & ~0x1F) | (int(dest) & 0x1F)
+        seq.append(w & 0xFFFF)
+    for hop, entry in jumps:
+        seq.append((_JUMP | (encode_hop_cnt(hop) << 5)
+                    | (int(entry) & 0x1F)) & 0xFFFF)
+    for addr, word in zip(slots, seq):
+        cfg.memory[addr] = word
 
 
 def _patch_complex_source_handoff(cfg, hop, burst_regs, entry) -> None:
@@ -2882,14 +3287,24 @@ def _patch_complex_packet_last_handoff(cfg, hop, burst_regs, entry) -> None:
 
     This is the complex-packet counterpart of the SINGLE-net
     :func:`_patch_last_write_handoff`/:func:`_patch_last_jump_handoff` pair — the
-    same "patch only the tail" treatment, but for the 2-rail packet form."""
+    same "patch only the tail" treatment, but for the 2-rail packet form.
+
+    A ``WRITE.CFG`` (config bit set) is SKIPPED when selecting the tail: a
+    serialize-LOCKED block (NCO/FM, INV-20) places its backward lock-clear
+    ``WRITE.CFG`` AFTER the yi/yq rails, so counting it as a "last WRITE"
+    steered the CFG word down the data corridor (a stray config write at the
+    broker), left yi unpatched at @1, and delivered the pair SHIFTED one rail
+    (the downstream block read (yq, 0) — the locked-FM→ComplexGain zero-Q bug,
+    2026-08-16). Same treatment as :func:`_patch_last_write_handoff` /
+    :func:`_patch_complex_output_port_handoff` (both already skip it)."""
     hop_cnt = encode_hop_cnt(hop)
     write_addrs = sorted(a for a, w in cfg.memory.items()
-                         if _is_instruction_addr(cfg, a) and (w & 0xF000) == _WRITE)
+                         if _is_instruction_addr(cfg, a) and (w & 0xF000) == _WRITE
+                         and not (w & _WRITE_CONFIG_BIT))
     jump_addrs = sorted(a for a, w in cfg.memory.items()
                         if _is_instruction_addr(cfg, a) and (w & 0xF000) == _JUMP)
     n = len(burst_regs)
-    # The external rail WRITEs are the LAST n WRITEs (emitted after the internal ones).
+    # The external rail WRITEs are the LAST n DATA WRITEs (after the internal ones).
     for i, addr in enumerate(write_addrs[-n:]):
         word = cfg.memory[addr]
         word = (word & ~(0x1F << 5)) | (hop_cnt << 5)
@@ -3209,6 +3624,20 @@ def _resolve_batch_reset_writes(blocks: list, gr_blocks: dict) -> list:
                 continue
             flagged = [sv for sv in getattr(cp, "state", [])
                        if getattr(sv, "reset_per_batch", False)]
+            # COLD-START DataWords another cell overwrites at runtime (e.g. a
+            # tap MIRROR seeded by a same-address DataWord and updated by its
+            # master cell) carry their own reset_per_batch flag — re-write the
+            # authored value at each packet boundary, exactly like flagged
+            # state. Plain coefficients stay unflagged (a batch reset must not
+            # revert a live-tuned coefficient).
+            flagged_data = [dw for dw in getattr(cp, "data", [])
+                            if getattr(dw, "reset_per_batch", False)
+                            and dw.address is not None]
+            if not flagged and not flagged_data:
+                continue
+            for dw in flagged_data:
+                writes.append((int(pc.x), int(pc.y), int(dw.address),
+                               int(dw.value) & 0xFFFF))
             if not flagged:
                 continue
             try:

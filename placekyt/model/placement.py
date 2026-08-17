@@ -1,7 +1,7 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Physical placement of a block's cells on a chip grid.
 
-Mirrors the ``placement:`` section of a block in the ``.kyt`` schema
-(the architecture notes §2.1)::
+Mirrors the ``placement:`` section of a block in the ``.kyt`` schema::
 
     placement:
       chip: 0

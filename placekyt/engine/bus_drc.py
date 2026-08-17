@@ -1,4 +1,5 @@
-"""Bus DRC — face-conflict + deadlock checks over a bus/broker routing (P1.2, §1.3/§5.3).
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Bus DRC — face-conflict + deadlock checks over a bus/broker routing.
 
 The §1.2 bus model shares cells between streams; a cell has ONE ``fwd_face`` (§1.3), so
 two streams may share a cell ONLY if they leave it the SAME way — and a broker mid-flip
@@ -24,8 +25,8 @@ from model.connection import BlockEndpoint, ChipPortEndpoint
 @dataclass
 class Violation:
     """One bus DRC finding. ``cell`` is the offending (x, y); ``kind`` is
-    ``"face_conflict"`` or ``"deadlock"``; ``reason`` explains it; ``nets`` are the
-    connection names involved."""
+    ``"face_conflict"``, ``"deadlock"`` or ``"port_transit"``; ``reason`` explains
+    it; ``nets`` are the connection names involved."""
 
     cell: tuple
     kind: str
@@ -59,9 +60,11 @@ def check_bus(project, routes, chip_types, *, exempt_cells=None,
               egress=None) -> list[Violation]:
     """Validate ``routes`` (``{conn_name: [(x, y), ...]}``) for bus soundness.
 
-    Two checks, per the design:
+    Checks (a) face conflict, (b) waits-for deadlock, (c) own-block delivery
+    cycle (INV-32), (d) used chip-port cell transit. The first two, per the
+    design:
 
-    (a) **Face conflict (§1.3, P1.2):** if two routed nets both leave a cell in
+    (a) **Face conflict:** if two routed nets both leave a cell in
         DIFFERENT directions, the cell's single ``fwd_face`` cannot serve both — the
         static-face build would mis-face one stream (the BPSK-dead-build). Counted as
         a "leave" is an interior TRANSIT (toward the next waypoint) AND a chip-output
@@ -116,6 +119,56 @@ def check_bus(project, routes, chip_types, *, exempt_cells=None,
             if eface is not None:
                 out_dir.setdefault(ecell, {}).setdefault(int(eface), []).append(name)
 
+    # (c) OWN-BLOCK delivery cycle (INV-32, the data_link f2c saturation lockup):
+    # a net SOURCED at block B whose corridor TRANSITS a cell that DELIVERS a net
+    # INTO B closes a wait cycle through B's own internals — B's output words
+    # occupy the single-outstanding link its own NEXT input must cross. This
+    # shape is deadlock-CERTAIN (same stream, causally chained), unlike a general
+    # cell-cycle over independent corridors (the proven-saturated coherent RX
+    # carries harmless topological rings of unrelated segments, so a broader
+    # through-block collapse would false-positive it — scope deliberately kept
+    # to the certain shape; the router additionally hard-forbids it while
+    # routing, and the saturated example gates are the empirical check beyond).
+    # Needs ``project`` for block ownership; bare route-dict callers skip it.
+    if project is not None:
+        blk_of_cell: dict[tuple, str] = {}
+        for blk in getattr(project, "blocks", ()) or ():
+            pl = getattr(blk, "placement", None)
+            if pl is None or not getattr(pl, "cells", None):
+                continue
+            for c in pl.cells:
+                blk_of_cell[(c.x, c.y)] = blk.name
+            for t in getattr(pl, "transit_cells", ()) or ():
+                blk_of_cell[(t.x, t.y)] = blk.name
+        deliver_into: dict[str, dict] = {}   # block -> {broker cell: net name}
+        src_block: dict[str, str] = {}       # net name -> source block name
+        for conn in getattr(project, "connections", ()) or ():
+            name = getattr(conn, "name", "")
+            tgt = getattr(conn, "target", None)
+            pts = routes.get(name)
+            if pts and isinstance(tgt, BlockEndpoint):
+                last = tuple(pts[-1])
+                if blk_of_cell.get(last) != tgt.block:
+                    deliver_into.setdefault(tgt.block, {})[last] = name
+            src = getattr(conn, "source", None)
+            if isinstance(src, BlockEndpoint):
+                src_block[name] = src.block
+        for name, pts in routes.items():
+            b = src_block.get(name)
+            if b is None or b not in deliver_into:
+                continue
+            hits = [(tuple(p), deliver_into[b][tuple(p)])
+                    for p in pts[1:] if tuple(p) in deliver_into[b]]
+            for cell, in_net in hits:
+                violations.append(Violation(
+                    cell=cell, kind="deadlock",
+                    reason=f"net '{name}' (output of block '{b}') transits the "
+                           f"broker cell that DELIVERS net '{in_net}' into "
+                           f"'{b}' — the block's own output words block its "
+                           "next input delivery (own-block wait cycle, "
+                           "INV-32/§5.3)",
+                    nets=tuple(sorted({name, in_net}))))
+
     # (a) face conflict: a cell with >1 distinct outgoing direction across nets,
     #     UNLESS it is an exempt (crossover/broker) cell that serves them legally.
     for cell, dirs in out_dir.items():
@@ -131,6 +184,21 @@ def check_bus(project, routes, chip_types, *, exempt_cells=None,
                        f"({ds}) — a cell has one fwd_face (§1.3)",
                 nets=nets))
 
+    # (d) USED chip-port cell transit (the FLLBandEdge pinch, 2026-08-16): a
+    # corridor threading THROUGH a port cell that some net actually uses as its
+    # I/O terminus is a SILENT-DEAD build, not a routable cell. A used INPUT
+    # port cell's programming delivers the host-injected words toward the block
+    # (a wide block ring that pinches the side channels against a corner port
+    # made the router wrap a block→block corridor through x16_in — route "ok",
+    # build "ok", injections swallowed in 6 sim events); a used OUTPUT port
+    # cell's egress faces off-chip, which no in-fabric transit can share (the
+    # rotated complex fan-in that snaked through x16_out and lost both
+    # operands). Only the port's OWN nets may touch the cell (source nets start
+    # there; egress nets end there). UNUSED port cells are plain routing cells
+    # and stay legal (the documented column-9 passage) — the routers merely
+    # soft-discourage them.
+    violations.extend(check_port_transits(project, routes, chip_types))
+
     # (b) deadlock: a directed cycle in the waits-for graph.
     for cycle in _find_cycles(edges):
         nets = tuple(sorted({edge_net.get((cycle[i], cycle[(i + 1) % len(cycle)]), "")
@@ -142,6 +210,102 @@ def check_bus(project, routes, chip_types, *, exempt_cells=None,
             nets=nets))
 
     return violations
+
+
+def used_port_cells(project, chip_types) -> dict:
+    """``{(x, y): (port_name, [net names using it], {chip ids})}`` for every
+    chip-port cell that is an ENDPOINT of some connection (the port actually
+    injects or egresses).
+
+    Usage comes from the LOGICAL connections, not the routes: an input net may
+    legitimately carry no waypoints (direct port injection renders as a fly line)
+    yet its port cell is still live delivery hardware. Cells are (x, y) without a
+    chip id (this module's route convention); the CHIP-id set lets a multichip
+    caller scope the match (chip 1's corridor over its own (0, 0) must not be
+    flagged because chip 0's x16_in at (0, 0) is used)."""
+    if project is None or not chip_types:
+        return {}
+    cell_of: dict[str, tuple] = {}
+    for ct in chip_types.values():
+        for p in getattr(ct, "ports", ()) or ():
+            cell_of[p.name] = (p.cell_x, p.cell_y)
+    used: dict[tuple, tuple] = {}
+    for conn in getattr(project, "connections", ()) or ():
+        for ep in (getattr(conn, "source", None), getattr(conn, "target", None)):
+            if isinstance(ep, ChipPortEndpoint) and ep.port in cell_of:
+                cell = cell_of[ep.port]
+                entry = used.setdefault(cell, (ep.port, [], set()))
+                entry[1].append(getattr(conn, "name", ""))
+                entry[2].add(getattr(ep, "chip", 0))
+    return used
+
+
+def check_port_transits(project, routes, chip_types) -> list[Violation]:
+    """The check-(d) body (see :func:`check_bus`): every occupation of a USED
+    chip-port cell by a net that does not OWN the port (its own source/target)
+    is a named ``port_transit`` violation — whether mid-corridor (a transit that
+    the port programming re-faces into dead space) or terminal (a broker landed
+    ON the port cell). Standalone so router escalation paths (maze/heuristic)
+    can demote offenders without running the full bus DRC."""
+    if project is None:
+        return []
+    used = used_port_cells(project, chip_types)
+    if not used:
+        return []
+    # Cells of each placed block (a block may sit ON a port cell — the direct
+    # port-injection idiom — and its own nets then legitimately start/end there),
+    # plus each block's chip id (to scope multichip (x, y) collisions).
+    cells_of_block: dict[str, set] = {}
+    chip_of_block: dict[str, int] = {}
+    for blk in getattr(project, "blocks", ()) or ():
+        pl = getattr(blk, "placement", None)
+        if pl is None or not getattr(pl, "cells", None):
+            continue
+        cs = {(c.x, c.y) for c in pl.cells}
+        cs |= {(t.x, t.y) for t in getattr(pl, "transit_cells", ()) or ()}
+        cells_of_block[blk.name] = cs
+        chip_of_block[blk.name] = getattr(pl, "chip", 0)
+    # Port cells a net legitimately touches: the cell of a chip port it is wired
+    # to, or a cell of its own source/target BLOCK (its route terminal) — and the
+    # net's own CHIP id (a corridor on chip 1 never conflicts with chip 0's port).
+    owns: dict[str, set] = {}     # net name -> port cells it legitimately touches
+    chip_of_net: dict[str, int] = {}
+    for conn in getattr(project, "connections", ()) or ():
+        name = getattr(conn, "name", "")
+        for ep in (getattr(conn, "source", None), getattr(conn, "target", None)):
+            if isinstance(ep, ChipPortEndpoint):
+                chip_of_net.setdefault(name, getattr(ep, "chip", 0))
+                for cell, (pname, _nets, _chips) in used.items():
+                    if pname == ep.port:
+                        owns.setdefault(name, set()).add(cell)
+            elif isinstance(ep, BlockEndpoint):
+                if ep.block in chip_of_block:
+                    chip_of_net.setdefault(name, chip_of_block[ep.block])
+                for cell in cells_of_block.get(ep.block, ()):
+                    if cell in used:
+                        owns.setdefault(name, set()).add(cell)
+    out: list[Violation] = []
+    for name, pts in routes.items():
+        allowed = owns.get(name, set())
+        for p in pts:
+            c = tuple(p)
+            if c in used and c not in allowed \
+                    and chip_of_net.get(name, 0) in used[c][2]:
+                pname, port_nets, _chips = used[c]
+                others = sorted(set(port_nets) - {name})
+                out.append(Violation(
+                    cell=c, kind="port_transit",
+                    reason=f"net '{name}' rides through chip port cell {c} "
+                           f"('{pname}', used by net(s) {others or port_nets}) — "
+                           "the port's injection/egress programming and the "
+                           "corridor's face programming destroy each other "
+                           "(silent dead chip); route around the port or fail "
+                           "named",
+                    # ONLY the riding net: the port's own nets are innocent (a
+                    # demotion pass keyed on ``nets`` must not fail them too).
+                    nets=(name,)))
+                break                      # one violation per net is enough
+    return out
 
 
 def _find_cycles(edges: dict[tuple, set]) -> list[list]:

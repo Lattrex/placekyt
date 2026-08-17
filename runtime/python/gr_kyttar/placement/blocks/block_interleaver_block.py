@@ -1,305 +1,370 @@
-"""BlockInterleaverBlock — see :class:`BlockInterleaverBlock`."""
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""BlockInterleaverBlock — see the class docstring."""
+from typing import Any, Dict, List, Tuple
+
 import numpy as np
-from ..block import CellProgram, Port, EntryPoint, StateVar, DataWord
-from typing import Dict
-from ._base import KyttarBlock, BlockInterface, assemble_to_words, float_to_q15, q15_to_float
+
+from ..block import CellProgram, DataWord, EntryPoint, Port, StateVar
+from ._base import BlockInterface, KyttarBlock
+
+
+def _read_permutation(rows: int, cols: int, deinterleave: bool) -> List[int]:
+    """The per-block READ permutation sigma of the row-column interleaver.
+
+    GOLDEN DEFINITION (the classic block/matrix interleaver of the coding
+    literature — e.g. B. Sklar, *Digital Communications: Fundamentals and
+    Applications*, 2nd ed., ch. 8 "Interleaving"; S. Lin & D. J. Costello,
+    *Error Control Coding*, block-interleaving section):
+
+      * The interleaver WRITES each block of ``rows*cols`` symbols into a
+        ``rows x cols`` matrix ROW BY ROW (row-major, arrival order) and READS
+        it out COLUMN BY COLUMN (column-major).  So the i-th symbol READ comes
+        from matrix position (row = i mod rows, col = i div rows), i.e. from
+        row-major (arrival) index
+
+            sigma(i) = (i mod rows) * cols + (i div rows).
+
+      * The deinterleaver is the exact transpose: it writes the received
+        symbols row-major (arrival order) and reads
+
+            sigma'(i) = (i mod cols) * rows + (i div cols),
+
+        the inverse permutation (sigma(sigma'(i)) == i), so
+        interleave -> deinterleave is the identity (with 2*rows*cols samples of
+        pipeline delay — see the class docstring).
+
+    ``deinterleave`` selects sigma' — ONE machinery, both directions (the two
+    are the same walk with the stride swapped: stride = cols to interleave,
+    stride = rows to deinterleave).
+    """
+    n = rows * cols
+    if deinterleave:
+        return [(i % cols) * rows + (i // cols) for i in range(n)]
+    return [(i % rows) * cols + (i // rows) for i in range(n)]
 
 
 class BlockInterleaverBlock(KyttarBlock):
     """
-    Block Interleaver/Deinterleaver — Loopback Test Placeholder.
+    Classic ``rows x cols`` BLOCK (matrix) interleaver / deinterleaver for the
+    FEC chain.  NO GNU Radio streaming counterpart exists (gr-fec / gr-dtv
+    interleavers are PDU/tagged); the golden reference is the standard
+    row-column interleaver of the coding literature (see
+    :func:`_read_permutation` for the citation and the EXACT write/read order).
 
-    In production, MIL-STD-188-110B interleaver storage (1440 symbols
-    short, 11520 symbols long) is offloaded to FPGA SRAM. The on-chip
-    block becomes a 1-2 cell memory controller that:
-    1. Receives symbols from upstream, WRITEs to FPGA SRAM via x1_out
-    2. After a full block, requests readback in permuted order
-    3. Forwards deinterleaved symbols to downstream
+    WRITE/READ ORDER (stated loudly): symbols are written into the matrix
+    ROW BY ROW in arrival order and read out COLUMN BY COLUMN
+    (``deinterleave=True`` swaps to the transpose read — the inverse
+    permutation), per block of ``rows*cols`` symbols.
 
-    This placeholder uses a reduced 8×16 = 128 symbol depth for
-    loopback testing. It is NOT sufficient for production use.
+    RATE / LATENCY CONTRACT (INV-2): strict 1:1 — one output word per input
+    trigger — with a group delay of EXACTLY ``rows*cols`` samples: the block is
+    double-buffered (ping-pong), so while block ``b`` streams in, block ``b-1``
+    streams out in permuted order.  The first ``rows*cols`` outputs are the
+    initial buffer contents = Q15 zeros.  Formally, with ``N = rows*cols``:
 
-    Cell Layout:
-    ```
-        [MEM0] → [MEM1] → [MEM2] → [MEM3] → Out
-          ↑                           │
-          └─────── write ptr ─────────┘
-    ```
+        y[b*N + i] = x[(b-1)*N + sigma(i)]   for b >= 1,   y[g] = 0 for g < N.
 
-    Total: 4 cells
+    Pure data movement (MOVE/WRITE/LOAD, no arithmetic on the samples), so the
+    output is BIT-EXACT to the input words — the verification gate is exact
+    (0 LSB), like DelayBlock.
 
-    Interface:
-        - Entry: R1
-        - Input: R31
-        - Output: Interleaved/deinterleaved symbols
+    DATAPATH (3 cells, vertical fold, I/O co-located on one edge):
+
+      * ``rgen`` (input landing cell) — the READ-address generator.  Holds the
+        column-walk state: relative read address ``ra`` steps by ``stride``
+        (= cols to interleave, rows to deinterleave) and wraps by ``-(N-1)``
+        when it leaves the block — the classic column-major walk of a row-major
+        buffer.  The block boundary needs NO separate counter: a wrap landing
+        exactly ON ``stride`` can only happen from ``ra == N-1``, the last read
+        of a block (proven identity: wrap value ``ra+stride-(N-1) == stride``
+        iff ``ra == N-1``), and that resets the walk + toggles the read bank
+        (``rbase = sumbase - rbase``).  Forwards {sample, absolute read addr}
+        to ``wctl``.
+      * ``wctl`` — the WRITE controller.  Maintains the sequential write
+        pointer ``wptr`` over the 2N-word ping-pong ring (writes land row-major
+        in arrival order; the ring alternates banks automatically every N
+        samples, opposite to the read bank).  Each sample it CONSTRUCTS the
+        store instruction at runtime — ``0x63E0 | wptr`` is ``WRITE @0``
+        (hop 31 = local, dest = wptr), the ISA's only computed-destination
+        store — and installs it into ``store``'s patch slot, then forwards the
+        read address and finally the sample (accumulator delivery into
+        ``store``'s R0, INV-33) + trigger.
+      * ``store`` — the 2N-word sample memory (register file 2..1+2N) plus a
+        4-instruction engine: the patched slot stores the just-arrived sample
+        at ``wptr`` (self-modifying store — proven on simKYT), then
+        ``LOAD ra`` (the ISA's indirect read) fetches the previous block's
+        sample at the permuted address and emits it.  All consumption (slot,
+        LOAD) happens BEFORE the potentially-backpressured output WRITE, so a
+        stalled egress cannot be overtaken by the next sample's deliveries.
+
+    Hardware deviations (INV-0 — no GR counterpart, but the honest contract):
+      * ``rows * cols <= MAX_DEPTH`` (= 12): the double buffer (2 words per
+        matrix cell) + the store engine must fit ONE 32-word cell
+        (2N <= 24 register-file words).  A larger matrix RAISES ``ValueError``
+        (never silently clamps — a truncated interleaver is a different
+        permutation).  The documented growth path for FEC-realistic depths
+        (e.g. MIL-STD-188-110 1440/11520 symbols) is the SRAM-panel SCRATCH
+        two-phase recipe (INV-29/31, the CWDecoder pass1/pass2 template):
+        write the block to panel SCRATCH in arrival order, read back
+        transposed via computed addresses.  That variant is NOT shipped here
+        because it has not been built/verified — this block refuses, loudly,
+        rather than pretend.
     """
+
     CATEGORY = "fec"
-    TAGS = ["interleaver", "deinterleaver", "fec"]
+    TAGS = ["interleaver", "deinterleaver", "block_interleaver", "fec"]
 
-    _interface = BlockInterface(entry_address=1, input_registers=[31], output_registers=[31])
+    #: Deepest supported matrix (rows*cols).  The store cell holds 2N buffer
+    #: words at registers 2..1+2N plus its 4-instruction engine at 27..30 and
+    #: the ``ra`` input at R1 (R0 is the accumulator-delivered sample), so
+    #: 1 + 2N <= 25 -> N <= 12.
+    MAX_DEPTH = 12
 
-    def __init__(
-        self,
-        name: str,
-        rows: int = 8,
-        cols: int = 16,
-        is_deinterleaver: bool = False,
-    ):
-        """
-        Initialize Block Interleaver.
+    #: ``WRITE @0, 0`` — a LOCAL store (HOP_CNT=31) with dest field [4:0] = 0.
+    #: OR-ing the destination register into the low bits yields the runtime
+    #: computed-destination store instruction (verified against the assembler:
+    #: ``WRITE @0, 5`` assembles to 0x63E5).
+    WRITE_LOCAL_BASE = 0x63E0
 
-        Args:
-            name: Block name
-            rows: Number of rows in interleave matrix
-            cols: Number of columns in interleave matrix
-            is_deinterleaver: If True, deinterleave (reverse operation)
-        """
-        super().__init__(
-            name,
-            rows=rows,
-            cols=cols,
-            is_deinterleaver=is_deinterleaver,
-        )
+    _interface = BlockInterface(entry_address=13, input_registers=[5],
+                                output_registers=[0])
+
+    def __init__(self, name: str, rows: int = 2, cols: int = 2,
+                 deinterleave: bool = False):
+        rows = int(rows)
+        cols = int(cols)
+        if rows < 1 or cols < 1:
+            raise ValueError(
+                f"rows and cols must be >= 1, got rows={rows} cols={cols}")
+        if rows * cols > self.MAX_DEPTH:
+            # HARDWARE DEVIATION: the ping-pong buffer (2*rows*cols words) must
+            # fit the store cell's 32-word register file.  RAISE (never clamp).
+            # Larger matrices are the SRAM-panel growth path (INV-29/31) — not
+            # yet built, so refusing is the only honest behaviour.
+            raise ValueError(
+                f"rows*cols={rows * cols} exceeds the single-cell interleaver "
+                f"buffer budget (MAX_DEPTH={self.MAX_DEPTH}); a deeper matrix "
+                f"needs the SRAM-panel SCRATCH recipe (INV-29/31), which is "
+                f"not yet implemented for this block. This is a HARDWARE "
+                f"limit of the 32-word cell.")
+        super().__init__(name, rows=rows, cols=cols, deinterleave=deinterleave)
         self._rows = rows
         self._cols = cols
-        self._is_deinterleaver = is_deinterleaver
+        self._deinterleave = bool(deinterleave)
         self._depth = rows * cols
+        self._sigma = _read_permutation(rows, cols, self._deinterleave)
 
-        # Buffer for reference implementation
-        self._buffer = np.zeros((rows, cols), dtype=np.float32)
-        self._write_idx = 0
-        self._read_idx = 0
-
+    # ------------------------------------------------------------------ props
     @property
     def cell_count(self) -> int:
-        return 4
+        return 3
+
+    @property
+    def rows(self) -> int:
+        return self._rows
+
+    @property
+    def cols(self) -> int:
+        return self._cols
+
+    @property
+    def deinterleave(self) -> bool:
+        return self._deinterleave
+
+    @property
+    def depth(self) -> int:
+        """The block length N = rows*cols (= the group delay in samples)."""
+        return self._depth
 
     @property
     def interface(self) -> BlockInterface:
         return self._interface
 
-    def _build_cell_program(
-        self,
-        cell_idx: int,
-        is_last: bool,
-        output_hop: int,
-        target_interface: BlockInterface
-    ) -> CellProgram:
-        """Build a single memory cell program."""
-        prog = CellProgram()
+    # ------------------------------------------------------------------ cells
+    def build_cell_programs(self) -> Dict[Any, CellProgram]:
+        n = self._depth
+        stride = self._rows if self._deinterleave else self._cols
+        bank_a = 2                 # store-cell buffer base (bank A)
+        bank_b = bank_a + n        # bank B base
+        sumbase = bank_a + bank_b  # rbase toggle: rbase' = sumbase - rbase
 
-        # Memory layout:
-        # R1-R8: Program
-        # R9-R24: Symbol storage (16 symbols)
-        # R25: Write pointer
-        # R26: Read pointer
-        # R27: Full flag
-        # R28: One constant
-
-        prog.set_memory(25, 9)   # Write pointer starts at R9
-        prog.set_memory(26, 9)   # Read pointer starts at R9
-        prog.set_memory(27, 0)   # Not full
-        prog.set_memory(28, 1)   # One
-
-        target_input = target_interface.input_registers[0]
-        target_entry = target_interface.entry_address
-
-        if is_last:
-            assembly = f"""; Interleaver Cell {cell_idx} (LAST)
-; R9-R24: symbol storage, R25: write_ptr, R26: read_ptr
-
-start:
-    ; Store incoming symbol
-    ; (Simplified - actual impl needs indirect write)
-    MOVE R9, R31
-
-    ; Increment write pointer
-    ADD R25, R28
-    MOVE R25, R0
-
-    ; Check if buffer full (write_ptr >= 24)
-    ; If full, output from read position
-
-    ; Output symbol (simplified)
-    MOVE R0, R9
-    WRITE @{output_hop}, {target_input}
-    JUMP @{output_hop}, {target_entry}
-    HALT
-"""
-        else:
-            assembly = f"""; Interleaver Cell {cell_idx}
-; R9-R24: symbol storage, R25: write_ptr, R26: read_ptr
-
-start:
-    ; Store incoming symbol
-    MOVE R9, R31
-
-    ; Increment write pointer
-    ADD R25, R28
-    MOVE R25, R0
-
-    ; Forward to next cell
-    MOVE R0, R31
-    WRITE @1, 31
-    JUMP @1, 1
-    HALT
-"""
-
-        words = assemble_to_words(assembly, base_addr=1)
-        prog.set_program(1, words)
-
-        return prog
-
-    def build_cell_programs(self) -> Dict[int, CellProgram]:
-        """V2 BlockInterleaver: single-cell LOAD-based matrix interleaver.
-
-        Fill-then-drain protocol with depth = rows × cols.
-
-        Memory layout:
-          R1 .. R{depth}:         Data buffer (filled externally via WRITE)
-          R{depth+1}..R{2*depth}: Permutation table (col-major read order)
-          Constants: one, perm_start, perm_end
-
-        Two program sections:
-          fill_entry (default): No-op — data already written by external WRITE.
-                               Just HALTs (no output during fill).
-          drain_entry:          LOAD perm[drain_ptr] → output, advance ptr.
-                               On last drain, resets drain_ptr for next cycle.
-
-        Test protocol:
-          Fill phase:  WRITE(hop, addr=k+1) + data + JUMP(hop, fill_entry)  × depth
-          Drain phase: WRITE(hop, addr=0)   + dummy + JUMP(hop, drain_entry) × depth
-        """
-        depth = self._depth
-        rows = self._rows
-        cols = self._cols
-
-        # Compute column-major readout permutation
-        # Fill is row-major: index k → row k//cols, col k%cols → buffer addr k+1
-        # Drain is col-major: for c in cols, for r in rows → buffer addr r*cols+c+1
-        if not self._is_deinterleaver:
-            perm = []
-            for c in range(cols):
-                for r in range(rows):
-                    perm.append(r * cols + c + 1)
-        else:
-            # Deinterleaver: fill col-major, drain row-major
-            perm = []
-            for r in range(rows):
-                for c in range(cols):
-                    perm.append(c * rows + r + 1)
-
-        buf_start = 1
-        perm_start = depth + 1
-        perm_end = perm_start + depth  # one past last
-
-        # Data: buffer (init 0) + perm table + constants
-        data_words = []
-        # Buffer slots at addresses 1..depth (init to 0)
-        for k in range(depth):
-            data_words.append(DataWord(f"buf{k}", 0, address=buf_start + k))
-        # Perm table at addresses perm_start..perm_start+depth-1
-        for k in range(depth):
-            data_words.append(DataWord(f"perm{k}", perm[k], address=perm_start + k))
-        # Constants after perm table
-        const_base = perm_start + depth
-        data_words.append(DataWord("one", 1, address=const_base))
-        data_words.append(DataWord("perm_start_val", perm_start, address=const_base + 1))
-        data_words.append(DataWord("perm_end_val", perm_end, address=const_base + 2))
-
-        # Count data+state to determine instruction region.
-        # Data: 2*depth + 3 constants. State: 1 (drain_ptr). No inputs.
-        total_data = 2 * depth + 3
-        total_state = 1
-        # Instructions: 10 (1 HALT for fill + 9 for drain). HALT at R31.
-        n_instr = 10
-        base_addr = 31 - n_instr
-        fill_entry_addr = base_addr       # HALT instruction
-        drain_entry_addr = base_addr + 1  # LOAD instruction
-
-        cell0 = CellProgram(
-            inputs=[],  # No auto-allocated input — fill uses varying external WRITE addrs
-            outputs=[Port("out")],
-            entries=[
-                EntryPoint("fill_entry", address=fill_entry_addr),
-                EntryPoint("drain_entry", address=drain_entry_addr),
+        # --- rgen: read-address generator (input landing cell) --------------
+        # 18 instructions -> base_addr = 13.  Registers: data 1..4, input @5,
+        # state ra@6 rbase@7 (pinned per INV-33; free 8..12).
+        rgen = CellProgram(
+            inputs=[Port("sample", register=5)],
+            outputs=[Port("smp_f"), Port("ra_f"), Port("trig")],
+            entries=[EntryPoint("default")],
+            data=[
+                DataWord("stride", stride, address=1),
+                DataWord("ncnt", n, address=2),
+                DataWord("nm1", n - 1, address=3),
+                DataWord("sumbase", sumbase, address=4),
             ],
             state=[
-                StateVar("drain_ptr", initial_value=perm_start),
+                # Relative read address within the read bank (column walk).
+                StateVar("ra", register=6, initial_value=0,
+                         reset_per_batch=True),
+                # Current read bank base.  Block 0 reads bank B (all zeros)
+                # while the writes fill bank A.
+                StateVar("rbase", register=7, initial_value=bank_b,
+                         reset_per_batch=True, reset_value=bank_b),
             ],
-            data=data_words,
             assembly_template="""\
-fill_entry:
+rentry:
+    MOVE R0, R{in:sample}
+    {write:smp_f}
+    ADD R{state:ra}, R{state:rbase}
+    {write:ra_f}
+    {jump:trig}
+    ; column walk: ra += stride, wrap by -(N-1) when leaving the block
+    ADD R{state:ra}, R{data:stride}
+    MOVE R{state:ra}, R0
+    CMP R{state:ra}, R{data:ncnt}
+    BR.LT rdone
+    SUB R{state:ra}, R{data:nm1}
+    MOVE R{state:ra}, R0
+    ; block boundary iff the wrap landed exactly on `stride` (<=> the walk
+    ; just consumed relative address N-1, the last read of the block)
+    CMP R{state:ra}, R{data:stride}
+    BR.NZ rdone
+    XOR R{state:ra}, R{state:ra}
+    MOVE R{state:ra}, R0
+    SUB R{data:sumbase}, R{state:rbase}
+    MOVE R{state:rbase}, R0
+rdone:
     HALT
-drain_entry:
-    LOAD R{state:drain_ptr}
-    LOAD R0
+""",
+        )
+
+        # --- wctl: write controller / instruction builder --------------------
+        # 13 instructions -> base_addr = 18.  Registers: data 1..4, inputs 5/6,
+        # state wptr@7 (free 8..17).
+        wctl = CellProgram(
+            inputs=[Port("ra_in", register=5), Port("smp_in", register=6)],
+            outputs=[Port("ra_f"), Port("patch_f"), Port("smp_f"),
+                     Port("trig")],
+            entries=[EntryPoint("default")],
+            data=[
+                DataWord("wlbase", self.WRITE_LOCAL_BASE, address=1),
+                DataWord("one", 1, address=2),
+                DataWord("wstart", bank_a, address=3),
+                DataWord("wend", bank_a + 2 * n, address=4),
+            ],
+            state=[
+                # Sequential write pointer over the 2N ping-pong ring
+                # (absolute store-cell address; banks alternate automatically).
+                StateVar("wptr", register=7, initial_value=bank_a,
+                         reset_per_batch=True, reset_value=bank_a),
+            ],
+            assembly_template="""\
+wentry:
+    MOVE R0, R{in:ra_in}
+    {write:ra_f}
+    ; construct the computed-destination store: WRITE @0 (local) | wptr,
+    ; and install it into the store cell's patch slot
+    ADD R{state:wptr}, R{data:wlbase}
+    {write:patch_f}
+    ; the sample goes LAST (accumulator delivery into store's R0), then kick
+    MOVE R0, R{in:smp_in}
+    {write:smp_f}
+    {jump:trig}
+    ; advance the ring pointer
+    ADD R{state:wptr}, R{data:one}
+    MOVE R{state:wptr}, R0
+    CMP R{state:wptr}, R{data:wend}
+    BR.NZ wdone
+    MOVE R{state:wptr}, R{data:wstart}
+wdone:
+    HALT
+""",
+        )
+
+        # --- store: 2N-word sample memory + 4-instruction engine -------------
+        # 4 instructions -> base_addr = 27:
+        #   27  slot:  HALT at build; runtime-patched to `WRITE @0, wptr`
+        #              (stores the accumulator-delivered sample in R0)
+        #   28  LOAD R{in:ra}   (indirect read at the permuted address)
+        #   29  {write:out}
+        #   30  {jump:out}
+        # The patch slot IS the entry (base_addr).  All input consumption
+        # (R0 sample at 27, ra at 28) happens BEFORE the potentially-blocking
+        # output WRITE at 29.
+        buf = [DataWord(f"buf{k}", 0, address=bank_a + k, reset_per_batch=True)
+               for k in range(2 * n)]
+        store = CellProgram(
+            inputs=[Port("smp", register=0),      # accumulator delivery
+                    Port("ra", register=1),
+                    Port("slot", register=27)],   # the patched instruction
+            outputs=[Port("out")],
+            entries=[EntryPoint("default")],
+            data=buf,
+            assembly_template="""\
+slot:
+    HALT
+    LOAD R{in:ra}
     {write:out}
-    ADD R{state:drain_ptr}, R{data:one}
-    MOVE R{state:drain_ptr}, R0
-    CMP R{state:drain_ptr}, R{data:perm_end_val}
-    BR.N drain_done
-    MOVE R{state:drain_ptr}, R{data:perm_start_val}
-drain_done:
     {jump:out}
 """,
         )
 
-        self._fill_entry_addr = fill_entry_addr
-        self._drain_entry_addr = drain_entry_addr
+        return {"rgen": rgen, "wctl": wctl, "store": store}
 
-        return {0: cell0}
+    def internal_connections(self) -> List[Tuple[Any, str, Any, str]]:
+        return [
+            ("rgen", "smp_f", "wctl", "smp_in"),
+            ("rgen", "ra_f", "wctl", "ra_in"),
+            ("wctl", "ra_f", "store", "ra"),
+            ("wctl", "patch_f", "store", "slot"),
+            ("wctl", "smp_f", "store", "smp"),
+        ]
 
-    def process_reference(self, input_symbols: np.ndarray) -> np.ndarray:
+    def internal_jumps(self) -> List[Tuple[Any, str, Any, str]]:
+        return [
+            ("rgen", "trig", "wctl", "default"),
+            ("wctl", "trig", "store", "default"),
+        ]
+
+    def default_layout(self) -> Dict[Any, Tuple[int, int, str]]:
+        # Vertical 3-cell column on one edge: input lands at rgen (0,0), the
+        # output egresses store (0,2) — both on the same (west) edge within the
+        # 2-cell co-location span (INV-8/14).  Every internal handoff is 1 hop
+        # straight down.  Dict order MUST match build_cell_programs (INV-33).
+        return {
+            "rgen": (0, 0, "south"),
+            "wctl": (0, 1, "south"),
+            "store": (0, 2, "west"),
+        }
+
+    # -------------------------------------------------------------- reference
+    def process_reference_q15(self, x_q15) -> List[int]:
+        """The exact per-trigger DUT stream (bit-exact, pure data movement).
+
+        One output word per input trigger: the first N (= rows*cols) outputs
+        are the initial-buffer zeros, then ``y[b*N+i] = x[(b-1)*N+sigma(i)]``.
         """
-        Reference implementation of block interleaver.
+        x = [int(w) & 0xFFFF for w in x_q15]
+        n = self._depth
+        out: List[int] = []
+        for g in range(len(x)):
+            b, i = divmod(g, n)
+            if b == 0:
+                out.append(0)
+            else:
+                out.append(x[(b - 1) * n + self._sigma[i]])
+        return out
 
-        Args:
-            input_symbols: Input symbols
-
-        Returns:
-            Interleaved/deinterleaved symbols
-        """
-        n_symbols = len(input_symbols)
-        output = np.zeros(n_symbols, dtype=np.float32)
-
-        if self._is_deinterleaver:
-            # Deinterleave: read column-by-column, output row-by-row
-            for i, sym in enumerate(input_symbols):
-                col = self._write_idx % self._cols
-                row = self._write_idx // self._cols
-                self._buffer[row, col] = sym
-                self._write_idx += 1
-
-                if self._write_idx == self._depth:
-                    # Buffer full, output row-by-row
-                    for r in range(self._rows):
-                        for c in range(self._cols):
-                            out_idx = i - self._depth + 1 + r * self._cols + c
-                            if 0 <= out_idx < n_symbols:
-                                output[out_idx] = self._buffer[r, c]
-                    self._write_idx = 0
-        else:
-            # Interleave: write row-by-row, read column-by-column
-            for i, sym in enumerate(input_symbols):
-                row = self._write_idx // self._cols
-                col = self._write_idx % self._cols
-                self._buffer[row, col] = sym
-                self._write_idx += 1
-
-                if self._write_idx == self._depth:
-                    # Buffer full, output column-by-column
-                    for c in range(self._cols):
-                        for r in range(self._rows):
-                            out_idx = i - self._depth + 1 + c * self._rows + r
-                            if 0 <= out_idx < n_symbols:
-                                output[out_idx] = self._buffer[r, c]
-                    self._write_idx = 0
-
-        return output
+    def process_reference(self, input_samples) -> np.ndarray:
+        """Float reference: the same permutation/delay applied to floats."""
+        x = np.asarray(input_samples, dtype=np.float32)
+        n = self._depth
+        out = np.zeros(len(x), dtype=np.float32)
+        for g in range(len(x)):
+            b, i = divmod(g, n)
+            if b >= 1:
+                out[g] = x[(b - 1) * n + self._sigma[i]]
+        return out
 
     def reset(self):
-        """Reset interleaver state."""
-        self._buffer = np.zeros((self._rows, self._cols), dtype=np.float32)
-        self._write_idx = 0
-        self._read_idx = 0
+        """Reference-state reset (the reference is stateless — kept for API
+        parity with other stateful blocks)."""

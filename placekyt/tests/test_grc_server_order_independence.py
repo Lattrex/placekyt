@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """FOOLPROOF: any order of {import, place, route, start-server, Run, Reset} must
 give the SAME correct output (RX BER 0).
 

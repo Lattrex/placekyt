@@ -456,6 +456,7 @@ blocks:
   parameters:
     affinity: ''
     alias: ''
+    block_name: '"complexmixer_2"'
     amplitude: '1.0'
     comment: ''
     device_id: '"kyttar_0"'
@@ -543,6 +544,7 @@ blocks:
   parameters:
     affinity: ''
     alias: ''
+    block_name: '"iqupconvert_2"'
     comment: ''
     device_id: '"kyttar_0"'
     frequency: '1500.0'
@@ -686,6 +688,7 @@ blocks:
   parameters:
     affinity: ''
     alias: ''
+    block_name: '"complexmixer"'
     amplitude: '1.0'
     comment: ''
     device_id: '"kyttar_0"'
@@ -773,6 +776,7 @@ blocks:
   parameters:
     affinity: ''
     alias: ''
+    block_name: '"iqupconvert"'
     comment: ''
     device_id: '"kyttar_0"'
     frequency: '6000.0'

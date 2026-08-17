@@ -71,7 +71,7 @@ templates:
     num_channels=${num_channels}, server_host=${server_host},
     server_port=${server_port}, complex_in=${complex_in.make_val}, burst_len=${burst_len},
     stream_id=${stream_id}, pipelined=${pipelined.make_val},
-    schedule=${schedule})
+    schedule=${schedule}, repeat=${repeat.make_val}, output_words=${output_words})
 
 parameters:
   - id: device_id
@@ -139,6 +139,20 @@ parameters:
     option_labels: ['No (per-sample)', 'Yes (pipelined)']
     option_attributes:
       make_val: ['False', 'True']
+  # REPEAT (the live-demo burst loop): after the sink drains a burst, dispatch
+  # the NEXT burst_len samples — the flowgraph becomes a continuous burst loop,
+  # so the scopes refresh every burst and a LIVE slider change (kyttar_gain's
+  # gain) shows up one burst later WITHIN the same Run. No = the classic
+  # one-burst-per-Run capture.
+  - id: repeat
+    label: Repeat bursts
+    dtype: enum
+    default: 'no'
+    options: ['no', 'yes']
+    option_labels: ['No (one burst per Run)', 'Yes (continuous burst loop)']
+    option_attributes:
+      make_val: ['False', 'True']
+    hide: part
   # SCHEDULE (timing-analysis knob, no design change): how the TWO duplex streams
   # (TX + RX sharing one x16_in port) are driven on the chip. GRC-settable BEFORE
   # Run — flip it and re-Run to compare timing with NO edit to the .kyt. Under the
@@ -152,6 +166,21 @@ parameters:
   #     (one direction on the array at a time) — a per-direction timing baseline.
   # Only meaningful with a Stream ID (duplex); a single-stream source ignores it.
   # Set it on either duplex source (or both) — the rendezvous takes the non-default.
+  # OUTPUT WORD ENCODING of the recovered stream:
+  #   Auto (legacy): raw int16 words for a COMPLEX-input chain (the bit-packing
+  #     receiver convention — a slicer's decoded bit lives in the word LSB,
+  #     which Q15 scaling would crush), Q15 floats for a real-input chain.
+  #   Q15 floats: ALWAYS Q15-scaled — for a complex-input chain whose output is
+  #     a Q15 VALUE, not packed bits (the LMS equalizer's equalized I/Q, the
+  #     CORDIC magnitude/phase).
+  #   Raw words: ALWAYS raw int16 words.
+  - id: output_words
+    label: Output words
+    dtype: enum
+    default: '"auto"'
+    options: ['"auto"', '"q15"', '"raw"']
+    option_labels: ['Auto (raw iff complex in)', 'Q15 floats', 'Raw words']
+    hide: part
   - id: schedule
     label: Duplex schedule
     dtype: enum

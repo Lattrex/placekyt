@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """END-TO-END: a real-socket GRC batch through the SimController-hosted server
 must run the CURRENT design after a reroute, even after the GUI's own post-edit
 ``cached_build()`` (which clears ``build_dirty``) has fired.

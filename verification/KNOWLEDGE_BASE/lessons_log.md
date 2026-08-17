@@ -11,6 +11,45 @@ dropped) — append new entries above the oldest ones as before.
 
 ---
 
+## Continuous cross-chip route highlight (multi-chip GUI) 2026-08-17
+
+Selecting a block now lights its WHOLE board-level stream path — sibling
+connections on other chips, the inter-chip wires it crosses, and overlay
+polylines for the segments that have no design-level route (transparent-wire
+transit corridors + far-die deliveries). Closes the 2P2S "broken fly line"
+report.
+
+- **The seed matcher silently excluded cross-chip connections:**
+  `connections_terminating_at_cell` hard-skipped any connection whose
+  `route_chip_of` differed from the selected chip — a far-die input net
+  (source port on chip A, target block on chip B) never seeded, so the
+  far-die block's incoming net stayed dark. Fix: route-ENDPOINT matching
+  stays gated on the route's own chip, but the block-endpoint resolution
+  (which carries its own per-endpoint chip check) now runs for every
+  connection.
+- **The synthesized segments are the physical truth, cheaply derived:** a
+  transit chip's corridor is in-port cell → out-port cell (the `_in` →
+  `_out` twin, the transparent-wire convention — exactly the bus crossings
+  the composite hop arithmetic counts), and the far-die delivery is
+  in-port cell → the block's resolved input cell. Drawn as overlay path
+  items in the related-highlight color (L-bend when unaligned), rebuilt on
+  every selection change, cleared on deselect.
+- **Expansion walk** (`_cross_chip_expansion`): BFS over the seeded names —
+  a chip-spanning connection contributes per-chip transit + delivery
+  segments and its wires; a connection ending at a wired OUTPUT port pulls
+  the wire plus either the continuing connection on the next chip or the
+  synthesized egress transit to the board output; a connection starting at
+  a wired INPUT port pulls the wire + its upstream feeders. Bounded guards
+  throughout (no infinite wire loops).
+- `InterChipWireItem` gained the same related state ConnectionItem has; the
+  canvas now tracks its wire items across re-renders.
+- Gate: `placekyt/tests/test_crosschip_highlight.py` on the SHIPPED
+  gain_2p2s.kyt via the real MainWindow open path — far-die input path
+  (conns + wire + overlays), near-die egress transit, pair isolation
+  (selecting pair-2 never lights pair-1 wires), and deselect-clears.
+
+---
+
 ## robust_rx + complex_math examples, audio_meter true-RMS row — the two-complex-stream CLIENT contract closed 2026-08-16
 
 Three integrations in one pass: `examples/robust_rx/` (FLL→Costas→slicer BER 0

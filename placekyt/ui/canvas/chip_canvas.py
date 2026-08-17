@@ -563,12 +563,18 @@ class ChipCanvas(QGraphicsView):
                 block_cells.setdefault(b.placement.chip, set()).update(
                     (c.x, c.y) for c in b.placement.cells)
 
+        # Tracked so the cross-chip path highlight can light the wires a
+        # selected block's stream crosses (scene.clear() destroys the items,
+        # and this method runs on every full render, so rebuild the list here).
+        self._wire_items = []
         for idx, ic in enumerate(self._project.inter_chip_connections):
             start = self._port_anchor(ic.from_chip, ic.from_port)
             end = self._port_anchor(ic.to_chip, ic.to_port)
             if start is None or end is None:
                 continue
-            self._scene.addItem(InterChipWireItem(start, end, ic=ic))
+            wire = InterChipWireItem(start, end, ic=ic)
+            self._wire_items.append(wire)
+            self._scene.addItem(wire)
             # Destination landing-cell transit marker.
             to_chip = self._project.chip(ic.to_chip)
             ct = self._chip_type_for(to_chip) if to_chip else None
@@ -1751,8 +1757,210 @@ class ChipCanvas(QGraphicsView):
             if not names:
                 names = set(connections_through_cell(
                     self._project, chip, cell.cx, cell.cy))
+        # Cross-chip expansion: extend the highlight along the SELECTED stream's
+        # whole board-level path — sibling connections on other chips, the
+        # inter-chip wires it crosses, and the transparent-wire transit
+        # corridors that have no design-level route (drawn as overlays).
+        wire_ids: set[int] = set()
+        segments: list = []
+        if names:
+            names, wire_ids, segments = self._cross_chip_expansion(names)
         for it in self.connection_items():
             it.set_related(it.connection_name in names if names else False)
+        for w in getattr(self, "_wire_items", []) or []:
+            w.set_related(id(w.inter_chip) in wire_ids)
+        self._set_cross_chip_overlays(segments)
+
+    def _port_cell_xy(self, chip_id: int, port_name: str):
+        """Grid (x, y) of a chip port's edge cell, or None."""
+        if self._project is None:
+            return None
+        chip = self._project.chip(chip_id)
+        ct = self._chip_type_for(chip) if chip else None
+        port = ct.port(port_name) if ct else None
+        if port is None:
+            return None
+        return (int(port.cell_x), int(port.cell_y))
+
+    @staticmethod
+    def _bend(p0, p1):
+        """A cell polyline p0→p1: straight when axis-aligned, else one L-bend."""
+        if p0 is None or p1 is None:
+            return None
+        if p0 == p1:
+            return [p0]
+        if p0[0] == p1[0] or p0[1] == p1[1]:
+            return [p0, p1]
+        return [p0, (p1[0], p0[1]), p1]
+
+    def _cross_chip_expansion(self, seed_names: set):
+        """Expand a set of highlighted connection names into the full BOARD-level
+        stream path (the continuous cross-chip highlight):
+
+          * a connection whose endpoints sit on DIFFERENT chips (the 2P2S far-die
+            input shape) contributes the transparent-wire TRANSIT corridor on
+            each chip it crosses (in-port cell → out-port cell — the physical
+            path the composite hop arithmetic counts) plus the delivery segment
+            on the destination chip (in-port cell → the block's input cell);
+          * a connection ending at a WIRED output port pulls in the wire and
+            either the continuing connection on the next chip (highlighted and
+            recursed) or, when nothing consumes that input port, the synthesized
+            egress transit across the downstream chip(s) to the board output;
+          * a connection starting at a WIRED input port pulls in the wire and
+            the upstream connection(s) feeding it.
+
+        Returns ``(names, wire_ids, segments)`` — the expanded connection-name
+        set, ``id()``s of the crossed InterChipConnections, and overlay
+        polylines as ``(chip_id, [(x, y), ...])`` in grid coordinates."""
+        from model.connection import BlockEndpoint, ChipPortEndpoint
+
+        proj = self._project
+        conns = {c.name: c for c in proj.connections}
+        wire_from = {(ic.from_chip, ic.from_port): ic
+                     for ic in proj.inter_chip_connections}
+        wire_to = {(ic.to_chip, ic.to_port): ic
+                   for ic in proj.inter_chip_connections}
+
+        def _endpoint_chip(ep):
+            if isinstance(ep, ChipPortEndpoint):
+                return ep.chip
+            if isinstance(ep, BlockEndpoint):
+                blk = proj.block(ep.block)
+                if blk is not None and blk.placement is not None:
+                    return blk.placement.chip
+            return None
+
+        def _out_twin(port_name: str) -> str:
+            # The transparent-wire pass-through convention: words entering
+            # x16_in leave on x16_out (same width, _in → _out).
+            return (port_name[:-3] + "_out" if port_name.endswith("_in")
+                    else port_name)
+
+        names = set(seed_names)
+        wires: set[int] = set()
+        segments: list = []
+        work = list(seed_names)
+        guard = 0
+        while work and guard < 64:
+            guard += 1
+            conn = conns.get(work.pop())
+            if conn is None:
+                continue
+            src, tgt = conn.source, conn.target
+            s_chip = _endpoint_chip(src)
+            t_chip = _endpoint_chip(tgt)
+
+            # (a) A single connection spanning chips: synthesize its transit +
+            # delivery path (its model route is a fly point, but the words
+            # physically cross every chip in between).
+            if (isinstance(src, ChipPortEndpoint) and s_chip is not None
+                    and t_chip is not None and s_chip != t_chip):
+                cur, entry = s_chip, src.port
+                hop_guard = 0
+                while cur != t_chip and hop_guard < 8:
+                    hop_guard += 1
+                    ic = wire_from.get((cur, _out_twin(entry)))
+                    if ic is None:
+                        ic = next((w for (ch, _p), w in wire_from.items()
+                                   if ch == cur), None)
+                    if ic is None:
+                        break
+                    seg = self._bend(self._port_cell_xy(cur, entry),
+                                     self._port_cell_xy(cur, ic.from_port))
+                    if seg:
+                        segments.append((cur, seg))
+                    wires.add(id(ic))
+                    cur, entry = ic.to_chip, ic.to_port
+                if cur == t_chip and isinstance(tgt, BlockEndpoint):
+                    _center, bcell = self._block_input_cell_center(tgt, t_chip)
+                    seg = self._bend(self._port_cell_xy(t_chip, entry), bcell)
+                    if seg:
+                        segments.append((t_chip, seg))
+
+            # (b) Ends at a wired OUTPUT port: follow the wire onward.
+            if isinstance(tgt, ChipPortEndpoint):
+                ic = wire_from.get((tgt.chip, tgt.port))
+                if ic is not None:
+                    wires.add(id(ic))
+                    nxt_chip, nxt_port = ic.to_chip, ic.to_port
+                    cont = [c2 for c2 in proj.connections
+                            if isinstance(c2.source, ChipPortEndpoint)
+                            and c2.source.chip == nxt_chip
+                            and c2.source.port == nxt_port]
+                    if cont:
+                        for c2 in cont:
+                            if c2.name not in names:
+                                names.add(c2.name)
+                                work.append(c2.name)
+                    else:
+                        # Nothing consumes the port: the stream transits the
+                        # downstream chip(s) transparently to the board output.
+                        cur, entry = nxt_chip, nxt_port
+                        hop_guard = 0
+                        while hop_guard < 8:
+                            hop_guard += 1
+                            out_port = _out_twin(entry)
+                            seg = self._bend(self._port_cell_xy(cur, entry),
+                                             self._port_cell_xy(cur, out_port))
+                            if not seg:
+                                break
+                            segments.append((cur, seg))
+                            ic2 = wire_from.get((cur, out_port))
+                            if ic2 is None:
+                                break
+                            wires.add(id(ic2))
+                            cur, entry = ic2.to_chip, ic2.to_port
+
+            # (c) Starts at a wired INPUT port: follow the wire upstream.
+            if isinstance(src, ChipPortEndpoint):
+                ic = wire_to.get((src.chip, src.port))
+                if ic is not None:
+                    wires.add(id(ic))
+                    ups = [c2 for c2 in proj.connections
+                           if isinstance(c2.target, ChipPortEndpoint)
+                           and c2.target.chip == ic.from_chip
+                           and c2.target.port == ic.from_port]
+                    for c2 in ups:
+                        if c2.name not in names:
+                            names.add(c2.name)
+                            work.append(c2.name)
+        return names, wires, segments
+
+    def _set_cross_chip_overlays(self, segments: list) -> None:
+        """Replace the transit-corridor overlay polylines (the synthesized parts
+        of the cross-chip path highlight — transparent-wire transits and far-die
+        deliveries that have no design-level route to light up)."""
+        from PySide6.QtGui import QPainterPath, QPen
+        from PySide6.QtWidgets import QGraphicsPathItem
+
+        for it in getattr(self, "_xchip_overlay_items", []) or []:
+            try:
+                if it.scene() is not None:
+                    self._scene.removeItem(it)
+            except RuntimeError:
+                pass  # already destroyed by a scene.clear() re-render
+        self._xchip_overlay_items = []
+        if not segments or self._project is None:
+            return
+        from .connection_item import _RELATED_COLOR
+        for chip_id, pts in segments:
+            if not pts or len(pts) < 2:
+                continue
+            ox, oy = self._chip_origin(chip_id)
+            path = QPainterPath()
+            sx = ox + pts[0][0] * CELL_PX + CELL_PX / 2
+            sy = oy + pts[0][1] * CELL_PX + CELL_PX / 2
+            path.moveTo(sx, sy)
+            for (x, y) in pts[1:]:
+                path.lineTo(ox + x * CELL_PX + CELL_PX / 2,
+                            oy + y * CELL_PX + CELL_PX / 2)
+            item = QGraphicsPathItem(path)
+            pen = QPen(_RELATED_COLOR)
+            pen.setWidth(5)
+            item.setPen(pen)
+            item.setZValue(4.6)  # above wires, below intra-chip routes
+            self._scene.addItem(item)
+            self._xchip_overlay_items.append(item)
 
     def selected_cell(self) -> CellItem | None:
         for it in self._scene.selectedItems():

@@ -138,11 +138,16 @@ def connections_terminating_at_cell(
     OUTPUT cell highlighting the outgoing net — the reported asymmetry)."""
     names: list[str] = []
     for conn in project.connections:
-        if route_chip_of(project, conn) != chip_id:
-            continue
+        # A connection can SPAN chips (a far-die input on a multi-chip board:
+        # source port on chip A, target block on chip B). Route-endpoint
+        # matching is only meaningful on the route's own chip, but the
+        # block-endpoint resolution below carries its own per-endpoint chip
+        # check — so don't skip cross-chip connections outright, or selecting
+        # the far-die block never highlights its incoming net.
+        on_route_chip = route_chip_of(project, conn) == chip_id
         matched = False
         # 1. Routed nets: a route endpoint lands on the cell.
-        rpts = _route_points(conn)
+        rpts = _route_points(conn) if on_route_chip else None
         if rpts:
             ends = (rpts[0], rpts[-1])
             if any(rp.x == x and rp.y == y for rp in ends):

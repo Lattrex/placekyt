@@ -423,6 +423,21 @@ class AutoRouter:
                 if chip is not None:
                     occupied.setdefault(chip, set()).update(
                         (p.x, p.y) for p in conn.route)
+        # USED chip-port cells (ports that are an endpoint of some connection) are
+        # obstacles for every OTHER net (the FLLBandEdge pinch, 2026-08-16): the
+        # port's injection/egress programming and a transiting corridor's face
+        # programming destroy each other (silent dead chip). A net that OWNS the
+        # port still starts/ends there (``_bfs`` exempts its own src and dst);
+        # UNUSED port cells stay plain routing cells.
+        for conn in self._project.connections:
+            for ep in (conn.source, conn.target):
+                if not isinstance(ep, ChipPortEndpoint):
+                    continue
+                ct = self._chip_type(ep.chip)
+                port = ct.port(ep.port) if ct is not None else None
+                if port is not None:
+                    occupied.setdefault(ep.chip, set()).add(
+                        (port.cell_x, port.cell_y))
 
         for conn in self._project.connections:
             if conn.is_routed:

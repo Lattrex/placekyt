@@ -1419,6 +1419,23 @@ def _route_chip_bus(project, ct, chip_id, nets, spine, *, sc_cells=None,
     # it (the rotated complex fan-in that snaked THROUGH x16_out and lost both operands).
     port_cells = {(p.cell_x, p.cell_y) for p in getattr(ct, "ports", [])}
 
+    # USED port cells — ports that are an ENDPOINT of some connection on this chip —
+    # are a HARD wall for every foreign corridor (the FLLBandEdge pinch, 2026-08-16):
+    # a used INPUT port cell's programming delivers the injected words toward the
+    # block, and a corridor threading through it destroys that delivery (route "ok",
+    # build "ok", chip silently dead — injections swallowed); a used OUTPUT port
+    # cell's egress faces off-chip, which no in-fabric transit can share. The soft
+    # +1000 penalty below still covers UNUSED port cells (a plain routing cell; the
+    # documented column-9 passage), but for a USED port "no alternative" must mean a
+    # NAMED failure, never a silent dead build.
+    _pc_by_name = {p.name: (p.cell_x, p.cell_y) for p in getattr(ct, "ports", [])}
+    used_port_cells = set()
+    for _conn in project.connections:
+        for _ep in (_conn.source, _conn.target):
+            if isinstance(_ep, ChipPortEndpoint) and _ep.chip == chip_id \
+                    and _ep.port in _pc_by_name:
+                used_port_cells.add(_pc_by_name[_ep.port])
+
     # DEADLOCK-CYCLE GUARD (the audited data_link floattochar lockup): a block's
     # OUTPUT corridor must never pass THROUGH a broker that DELIVERS INTO that
     # same block — the output words then block the cell that feeds the block its
@@ -1679,7 +1696,8 @@ def _route_chip_bus(project, ct, chip_id, nets, spine, *, sc_cells=None,
             own_input_brokers = {b for b in
                                  brokers_into_block.get(conn.source.block, set())}
         forbid_transit = {pc for pc in port_cells if pc != s and pc != goal}
-        hard_forbid = {b for b in own_input_brokers if b != goal}
+        hard_forbid = {b for b in own_input_brokers if b != goal} \
+            | {pc for pc in used_port_cells if pc != s and pc != goal}
 
         path = None
         if not goal_is_broker:
@@ -1723,6 +1741,10 @@ def _route_chip_bus(project, ct, chip_id, nets, spine, *, sc_cells=None,
                 if tgt_blk is not None:
                     blocked = out_cells_by_block.get(tgt_blk, set())
                     cands = [c for c in cands if c not in blocked]
+            # A broker must never LAND on a used port cell either — the port's
+            # injection/egress programming and the broker programming destroy
+            # each other (same hazard as transiting it).
+            cands = [c for c in cands if c not in used_port_cells]
             # A FOREIGN net's emit cell stays a LAST-RESORT broker (its egress face
             # would clobber the delivery — the rotated-complex-fan-in bug): shortest-
             # candidate selection runs over the CLEAN candidates first, and only
@@ -1745,7 +1767,9 @@ def _route_chip_bus(project, ct, chip_id, nets, spine, *, sc_cells=None,
                 for cand in tier:
                     cand_forbid = {pc for pc in port_cells
                                    if pc != s and pc != cand}
-                    cand_hard = {b for b in own_input_brokers if b != cand}
+                    cand_hard = {b for b in own_input_brokers if b != cand} \
+                        | {pc for pc in used_port_cells
+                           if pc != s and pc != cand}
                     p = _bus_bfs(s, sface, cand, occ, bus, spine_set, in_bounds,
                                  src_is_port, bus_dir=bus_dir, brokers=brokers,
                                  forbid_first=forbid_first,
@@ -1760,8 +1784,34 @@ def _route_chip_bus(project, ct, chip_id, nets, spine, *, sc_cells=None,
                     path, goal, goal_is_broker = best_path, best_goal, True
                     break
         if path is None:
-            out.append(RouteResult(
-                name, False, reason="no bus path from source to the broker tap"))
+            # NAME the port-transit hazard when it is what blocked this net: probe
+            # once with the used-port wall lifted — if a path appears and it rides
+            # a used port cell, the design is PINCHED against a live port (the
+            # FLLBandEdge 8-wide-ring shape). The old soft-penalty router shipped
+            # exactly that route as a silent dead build; now it is a sound,
+            # explained failure the caller can fix by re-placing.
+            reason = "no bus path from source to the broker tap"
+            probe_goal = goal if not goal_is_broker else broker_goal
+            if used_port_cells and probe_goal is not None:
+                relaxed = _bus_bfs(
+                    s, sface, probe_goal, occ, bus, spine_set, in_bounds,
+                    src_is_port, bus_dir=bus_dir, brokers=brokers,
+                    forbid_first=forbid_first,
+                    forbid_broker_transit=forbid_broker_transit,
+                    forbid_transit={pc for pc in port_cells
+                                    if pc != s and pc != probe_goal},
+                    hard_forbid=set(),      # diagnostic: lift EVERY hard wall
+                    prefer_fresh=avoid_bus)
+                hit = [c for c in (relaxed or ())
+                       if c in used_port_cells and c != s and c != probe_goal]
+                if hit:
+                    reason = (
+                        f"the only corridor rides through USED chip port cell(s) "
+                        f"{hit} — their injection/egress programming would destroy "
+                        "the corridor (and the corridor theirs; silent dead chip). "
+                        "Re-place to free a channel off the port (port-transit "
+                        "hazard, bus_drc check (d))")
+            out.append(RouteResult(name, False, reason=reason))
             continue
 
         # Hop budget: source→broker distance (+1 to deliver into the block at the

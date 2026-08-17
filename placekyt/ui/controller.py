@@ -2438,6 +2438,14 @@ class AppController(QObject):
                 return maze
             return report
 
+        def _gate(report):
+            # PORT-TRANSIT BACKSTOP (bus_drc check (d), the FLLBandEdge pinch):
+            # whatever router produced the final report, a route riding through a
+            # USED chip-port cell is a silent dead build — demote it to a NAMED
+            # failure here so no escalation path (maze/heuristic/CP-SAT, which
+            # historically shipped it) can return it as a silent success.
+            return self._demote_port_transits(report, chip_types)
+
         if use_bus == "always":
             report = self._bus_route(port_cells, chip_types, port_maps, topology)
             # The bus/broker router grows ONE shared backbone; it CANNOT route a
@@ -2445,9 +2453,10 @@ class AppController(QObject):
             # corridors. Escalate any residual failures to the MAZE router, which
             # routes any legal placement node-disjoint. Keep it only if it routes more.
             if report.ok:
-                return _validated(report)
+                return _gate(_validated(report))
             maze = self._maze_route(port_cells, chip_types, port_maps)
-            return maze if len(maze.routed) > len(report.routed) else _validated(report)
+            return _gate(maze if len(maze.routed) > len(report.routed)
+                         else _validated(report))
         if use_cpsat == "always":
             report = route_all_cpsat(self.project, chip_types, port_cells)
         else:
@@ -2461,18 +2470,50 @@ class AppController(QObject):
                 except CpSatUnavailable:
                     pass
         if use_bus == "never" or report.ok:
-            return _validated(report)
+            return _gate(_validated(report))
         # CP-SAT/heuristic can't demux DIFFERENT-sink streams — escalate to the
         # bus/broker router, which can. Keep its result only if it routes more.
         bus = self._bus_route(port_cells, chip_types, port_maps, topology)
         if len(bus.routed) > len(report.routed):
             report = bus
         if report.ok:
-            return _validated(report)
+            return _gate(_validated(report))
         # STILL failures (a compact 2-D pack the backbone can't route) — final
         # escalation to the maze router (routes any legal placement node-disjoint).
         maze = self._maze_route(port_cells, chip_types, port_maps)
-        return maze if len(maze.routed) > len(report.routed) else _validated(report)
+        return _gate(maze if len(maze.routed) > len(report.routed)
+                     else _validated(report))
+
+    def _demote_port_transits(self, report, chip_types):
+        """Re-mark any routed net whose corridor occupies a USED chip-port cell it
+        does not own as a NAMED failure (bus_drc ``check_port_transits``). The
+        bus router walls these while routing; this backstop covers the maze /
+        heuristic / CP-SAT escalation paths and hand-mixed route state."""
+        from engine.autoroute import AutoRouteReport, RouteResult
+        from engine.bus_drc import check_port_transits
+
+        routes = {r.name: [tuple(p) for p in r.points]
+                  for r in report.routed if r.points}
+        if not routes:
+            return report
+        viols = check_port_transits(self.project, routes, chip_types)
+        if not viols:
+            return report
+        reason_for: dict = {}
+        for v in viols:
+            for n in v.nets:
+                if n in routes:
+                    reason_for.setdefault(n, str(v))
+        if not reason_for:
+            return report
+        out = []
+        for r in report.results:
+            if r.ok and r.name in reason_for:
+                out.append(RouteResult(r.name, False,
+                                       reason=reason_for[r.name]))
+            else:
+                out.append(r)
+        return AutoRouteReport(out)
 
     def _select_topology(self, use_bus) -> str:
         """Pick the routing topology (doc/ROUTING_TOPOLOGIES.md) for the current

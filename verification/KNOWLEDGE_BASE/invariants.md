@@ -793,11 +793,22 @@ lock needed THREE NCO-specific moves (each was a distinct failure mode found via
 - PROVEN in ISOLATION: locked FM 40 in → 40 unit-circle pairs (|IQ|=1.0), 60/60 + 16/16 BIT-EXACT
   vs `process_reference_q15` under saturated `queue_words` drive. Unlocked stays bit-exact (70/70).
   Gate: NCO in COMPLEX_2IN2OUT, FM in `test_fm_saturation_safe` (real-in/complex-out, driven direct).
-- KNOWN LIMIT: the unlock corridor is proven HAND-PLACED but not yet placement-invariant in
-  an AUTO-ROUTED chain (an auto-placed `transit_unlock` can lose the emit→unlock→landing
-  adjacency and the WRITE.CFG never reaches the landing cell). The shipped fsk4 modem uses the
-  hand-placed `.kyt` (open it, don't import) and runs BER 0; making the corridor survive
-  auto-placement is the follow-up.
+- RESOLVED (2026-08-16) — the former KNOWN LIMIT ("unlock corridor not placement-invariant
+  under auto-P&R") is closed. The corridor itself was ALWAYS rigid: the block's cells (incl.
+  `transit_unlock`) transform as a unit and `_apply_internal_feedback` re-derives the unlock
+  hop from the placed geometry; the old adjacency-loss sightings were the re-fold SET-dedup
+  self-overlap bugs (fixed 2026-07-22). The REAL residual was placement-INDEPENDENT: a locked
+  block feeding a DOWNSTREAM BLOCK delivered SHIFTED rails ((yq, 0) at the consumer) because
+  three build patchers counted/clobbered the emit cell's trailing lock-clear `WRITE.CFG` as a
+  data WRITE (`_patch_complex_packet_last_handoff` tail selection; the single-net
+  complex+carries-handoffs branch; the ABUTTED-pair last-write LAST-WINS that auto_pnr's
+  compact pack triggers). All three now skip config WRITEs / patch the last N DATA writes
+  once (`_patch_complex_abutment_tail_handoff`). GATE:
+  `verification/tests/test_locked_chain_autopnr.py` — locked FM chain saturated bit-exact
+  across ≥3 sampled placements + a full auto_pnr pack, with port-egress AND block-consumer
+  shapes (INV-4 proven: pre-fix every consumer case failed), plus a locked-NCO consumer case.
+  The fsk4 modem's hand-placed `.kyt` remains the shipped form for DENSITY reasons only (a
+  fresh import of the full modem does not route).
 
 ---
 
@@ -1340,6 +1351,24 @@ the auto_pnr attempt by total route length, not the first fully-routed one.
   coverage: `test_walled_corner_fallback_demotes_to_named_failure` forces the
   one-free-neighbour corner and asserts the unsafe route is DEMOTED to a named
   failure by the router's own DRC gate, never returned silently ok.
+
+**Port-input hardening (2026-08-16, the FLLBandEdge pinch):** the own-broker
+guard did NOT cover CHIP-PORT input deliveries, and — the decisive gap — the
+guard lived only in `route_all_bus`: the controller's MAZE/heuristic ESCALATION
+paths had no chip-port awareness at all, so a pinched design (a wide block ring
+sealing the side channels against a corner port) shipped a corridor THROUGH the
+USED x16_in port cell + its delivery broker as a silent success (route ok, build
+ok, injections swallowed). Rule now: **a corridor may not OCCUPY a chip-port
+cell that any connection USES as its I/O terminus unless it owns that port (or
+its source/target block sits ON the cell — the direct-injection idiom); an
+UNUSED port cell stays a plain routing cell (soft-penalized only).** Enforced as
+(1) `bus_drc.check_port_transits` — check (d) in `check_bus`, kind
+`port_transit`, surfaced as a hard error at project DRC/build (covers hand-laid
+routes); (2) hard walls in the bus/maze/heuristic routers (CP-SAT always had
+one) so a detour is taken when one exists; (3) a `_demote_port_transits`
+backstop over `_run_router`'s final report; (4) a named bus-router failure
+reason ("port-transit hazard") via a relaxed diagnostic probe. Gates:
+`placekyt/tests/test_port_transit_guard.py` (INV-4 proven pre-fix).
 
 **Applies to:** every auto-routed design; any future router change must keep
 the ratchet green and the saturated example gates green.

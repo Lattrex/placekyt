@@ -689,6 +689,39 @@ def _patch_complex_abutment_handoff(cfg, hop, rail_idx, dest, entry=None) -> Non
         cfg.memory[addr] = word & 0xFFFF
 
 
+def _patch_complex_abutment_tail_handoff(cfg, hop, dests, entry=None) -> None:
+    """Abutted COMPLEX pair from an output cell that ALSO carries handoffs (the
+    serialize-LOCKED NCO/FM ``emit``, whose lock-clear ``WRITE.CFG`` sits AFTER
+    the yi/yq rails): steer the LAST ``len(dests)`` DATA WRITEs to the abutting
+    target's OWN input registers (``dests``, in emit order) @``hop``, patch the
+    LAST JUMP to the target ``entry``, and leave every ``WRITE.CFG`` and earlier
+    internal WRITE untouched.
+
+    Without this, the carries-handoffs abutment path ran the SINGLE
+    ``_patch_last_write_handoff`` once per rail net — both rails LAST-WINS into
+    the one final data WRITE, so yi and yq both wrote the target's R0 and the
+    consumer computed (yq·g, 0) (the auto_pnr-abutted locked-FM→ComplexGain
+    zero-Q bug, 2026-08-16). Call ONCE (from the I-rail net)."""
+    hop_cnt = encode_hop_cnt(hop)
+    write_addrs = sorted(a for a, w in cfg.memory.items()
+                         if _is_instruction_addr(cfg, a) and (w & 0xF000) == _WRITE
+                         and not (w & _WRITE_CONFIG_BIT))
+    jump_addrs = sorted(a for a, w in cfg.memory.items()
+                        if _is_instruction_addr(cfg, a) and (w & 0xF000) == _JUMP)
+    tail = write_addrs[-len(dests):]
+    for k, addr in enumerate(tail):
+        word = cfg.memory[addr]
+        word = (word & ~(0x1F << 5)) | (hop_cnt << 5)
+        word = (word & ~0x1F) | (int(dests[k]) & 0x1F)
+        cfg.memory[addr] = word & 0xFFFF
+    if jump_addrs:
+        addr = jump_addrs[-1]
+        word = (cfg.memory[addr] & ~(0x1F << 5)) | (hop_cnt << 5)
+        if entry is not None:
+            word = (word & ~0x1F) | (int(entry) & 0x1F)
+        cfg.memory[addr] = word & 0xFFFF
+
+
 def _patch_complex_output_port_handoff(cfg, hop, base_tag, entry=0) -> None:
     """Patch a COMPLEX-OUTPUT source cell whose two rails (yi, yq) exit the CHIP
     OUTPUT PORT: set the @hop on every WRITE and the JUMP, and give each WRITE its OWN
@@ -914,6 +947,11 @@ def _apply_routes(cell_map, gr_placement, blocks, connections, chip_type,
         pb = gr_placement.placed_blocks.get(block_name)
         return pb.entry_cell if pb is not None else None
 
+    # Complex-pair abutment from a carries-handoffs output cell is patched ONCE
+    # per source cell (both rail nets reach the branch; the tail patch steers
+    # BOTH rails) — track the cells already done.
+    _complex_abut_tail_patched: set = set()
+
     for conn in connections:
         src, tgt = conn.source, conn.target
         # PHYSICAL path. A routed connection: the broker/face/hop geometry from its
@@ -1125,8 +1163,30 @@ def _apply_routes(cell_map, gr_placement, blocks, connections, chip_type,
                 not isinstance(tgt, BlockEndpoint) and src_is_complex_out
                 and _cell_write_count(cfg) > 1)
             if _output_cell_carries_handoffs(gb) and not _is_complex_port_egress:
-                _patch_last_write_handoff(cfg, phys_dist, dest=dest)
-                _patch_last_jump_handoff(cfg, phys_dist, entry=entry)
+                if (src_is_complex_out and isinstance(tgt, BlockEndpoint)
+                        and n_target_ins > 1 and _cell_write_count(cfg) > 1):
+                    # COMPLEX pair abutted into a ≥2-register target from a
+                    # carries-handoffs output cell (the serialize-LOCKED NCO/FM
+                    # emit — its lock-clear WRITE.CFG trips the flag). The
+                    # single last-write patch below LAST-WINS both rail nets
+                    # into ONE data WRITE (both rails → target R0; the consumer
+                    # computed (yq·g, 0) — the auto_pnr-abutted locked-FM bug,
+                    # 2026-08-16). Patch ONCE: last N data WRITEs → the
+                    # target's own input regs, last JUMP → its entry; the
+                    # WRITE.CFG keeps its resolved unlock hop.
+                    if (ex, ey) not in _complex_abut_tail_patched:
+                        _complex_abut_tail_patched.add((ex, ey))
+                        try:
+                            dests = [int(r) for r in t_ins][:_n_out_regs]
+                        except Exception:  # noqa: BLE001
+                            dests = [dest]
+                        if len(dests) < 2:
+                            dests = [dest]
+                        _patch_complex_abutment_tail_handoff(
+                            cfg, phys_dist, dests, entry=entry)
+                else:
+                    _patch_last_write_handoff(cfg, phys_dist, dest=dest)
+                    _patch_last_jump_handoff(cfg, phys_dist, entry=entry)
             elif _is_complex_port_egress:
                 # COMPLEX EGRESS to the OUTPUT PORT: the source emits yi+yq (≥2 output
                 # WRITEs) straight to x16_out. This takes PRECEDENCE over the
@@ -1629,8 +1689,22 @@ def _apply_brokers(cell_map, gr_placement, blocks, connections, project,
         # internal feedback WRITEs keep their @1 hops; else patch the cell's
         # exit WRITE + JUMP together.
         if _output_cell_carries_handoffs(gb):
-            _patch_last_write_handoff(cfg, distance, dest=dest_reg)
-            _patch_last_jump_handoff(cfg, distance, entry=b_entry)
+            if src_is_complex_out:
+                # COMPLEX source whose output cell ALSO carries handoffs (the
+                # serialize-LOCKED NCO/FM emit, the order-4 Costas qpd) wired as a
+                # SINGLE net: BOTH rails must still ride the corridor to
+                # consecutive burst regs (position de-interleave downstream).
+                # Patching only the LAST data write delivered yq alone — the
+                # downstream read (yq, 0), the same rail-shift as the packet-path
+                # WRITE.CFG bug. The packet-last patcher does the right tail-only
+                # treatment (skipping the lock-clear WRITE.CFG and the internal
+                # handoffs) for n = the block's output-register count.
+                n = len(gb.interface.output_registers)
+                _patch_complex_packet_last_handoff(
+                    cfg, distance, [dest_reg + i for i in range(n)], b_entry)
+            else:
+                _patch_last_write_handoff(cfg, distance, dest=dest_reg)
+                _patch_last_jump_handoff(cfg, distance, entry=b_entry)
         elif src_is_complex_out and _cell_write_count(cfg) > 1:
             # COMPLEX-PACKET output cell (yi/yq — ≥2 output WRITEs) delivered as a
             # SINGLE brokered net (only the I rail is wired; the Q rail rides the same
@@ -3205,14 +3279,24 @@ def _patch_complex_packet_last_handoff(cfg, hop, burst_regs, entry) -> None:
 
     This is the complex-packet counterpart of the SINGLE-net
     :func:`_patch_last_write_handoff`/:func:`_patch_last_jump_handoff` pair — the
-    same "patch only the tail" treatment, but for the 2-rail packet form."""
+    same "patch only the tail" treatment, but for the 2-rail packet form.
+
+    A ``WRITE.CFG`` (config bit set) is SKIPPED when selecting the tail: a
+    serialize-LOCKED block (NCO/FM, INV-20) places its backward lock-clear
+    ``WRITE.CFG`` AFTER the yi/yq rails, so counting it as a "last WRITE"
+    steered the CFG word down the data corridor (a stray config write at the
+    broker), left yi unpatched at @1, and delivered the pair SHIFTED one rail
+    (the downstream block read (yq, 0) — the locked-FM→ComplexGain zero-Q bug,
+    2026-08-16). Same treatment as :func:`_patch_last_write_handoff` /
+    :func:`_patch_complex_output_port_handoff` (both already skip it)."""
     hop_cnt = encode_hop_cnt(hop)
     write_addrs = sorted(a for a, w in cfg.memory.items()
-                         if _is_instruction_addr(cfg, a) and (w & 0xF000) == _WRITE)
+                         if _is_instruction_addr(cfg, a) and (w & 0xF000) == _WRITE
+                         and not (w & _WRITE_CONFIG_BIT))
     jump_addrs = sorted(a for a, w in cfg.memory.items()
                         if _is_instruction_addr(cfg, a) and (w & 0xF000) == _JUMP)
     n = len(burst_regs)
-    # The external rail WRITEs are the LAST n WRITEs (emitted after the internal ones).
+    # The external rail WRITEs are the LAST n DATA WRITEs (after the internal ones).
     for i, addr in enumerate(write_addrs[-n:]):
         word = cfg.memory[addr]
         word = (word & ~(0x1F << 5)) | (hop_cnt << 5)

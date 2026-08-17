@@ -449,11 +449,12 @@ def _run_chain_on_chip(x, with_fll):
     drive, returns the recovered yi word list.
 
     PLACEMENT NOTE: the 8-wide FLL ring at the top rows pinches both side
-    channels against the corner chip ports (the router will wrap a corridor
-    THROUGH the x16_in port cell, killing injection — a known routing hazard
-    documented in the lessons log). Placing the FLL at (1,4) and the Costas
-    NORTH of it (2,0) keeps every corridor off the port cells, with rows 2-3
-    as the mid-corridor channel."""
+    channels against the corner chip ports; a corridor through the USED x16_in
+    port cell kills injection. Since 2026-08-16 the routers hard-wall used port
+    cells and such a pinch is a NAMED failure (port-transit guard,
+    test_port_transit_guard.py) — so this placement (FLL at (1,4), Costas
+    NORTH of it at (2,0), rows 2-3 as the mid-corridor channel) is the
+    ROUTABLE layout, not just a hazard workaround."""
     import simkyt  # noqa: PLC0415
     from kyttar_verify.dut_runner import _engine  # noqa: PLC0415
 

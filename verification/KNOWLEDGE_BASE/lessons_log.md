@@ -11,6 +11,65 @@ dropped) — append new entries above the oldest ones as before.
 
 ---
 
+## ROUTER+BUILD hardening — used-port-cell transit is a NAMED failure; the locked NCO/FM block-consumer rails un-shifted 2026-08-16
+
+Two engine-level closures, one campaign (no block datapath changed):
+
+**A. The FLL port-cell transit hazard is CLOSED (bus_drc check (d), "port_transit").**
+Reproduced the FLL lessons pinch verbatim (8-wide ring at anchor (1,1), consumer
+south): the shipping path was the MAZE ESCALATION in `_run_router` — `route_all_bus`
+already refused via the INV-32 own-broker guard, but the controller then escalated to
+`route_all_maze`, which had NO chip-port awareness at all and returned
+`(7,1)…(1,0),(0,0),(0,1)…` rep.ok=True (the CP-SAT router, by contrast, always had a
+hard foreign-port constraint). The bus router's own +1000 soft penalty was also
+shippable when pinched (no alternative path ⇒ pays the penalty silently). Closure,
+defense-in-depth: (1) `check_port_transits` in `engine/bus_drc.py` — occupation of a
+USED port cell (a port that is an ENDPOINT of any connection; usage from the LOGICAL
+nets, since input injections may carry no waypoints) by a net that doesn't own it is a
+named violation; folded into `check_bus` (so `_drc_gate` demotes) AND surfaced as a
+hard `port_transit` error at project DRC/build (hand-laid routes); (2) hard walls in
+all four routers (bus `hard_forbid`, maze obstacle set + broker candidates, heuristic
+occ, CP-SAT already had it) so a detour is TAKEN when one exists; (3) a
+`_demote_port_transits` backstop on `_run_router`'s final report, whatever router made
+it; (4) the bus router names the hazard ("port-transit hazard, bus_drc check (d)") via
+a relaxed diagnostic re-probe when the wall is what made a net unroutable. UNUSED port
+cells stay plain routing cells (soft-penalized only) — `test_different_sink_share` and
+the column-9 passage still route. KEY SCOPING TRAP: a block placed ON a port cell
+(direct-injection idiom, `place_block(...,0,0)`) makes the port cell that net's OWN
+terminal — ownership must include the net's source/target BLOCK cells or the guard
+false-positives half the router suite. Gates: `placekyt/tests/test_port_transit_guard.py`
+(INV-4 proven: pre-fix the pinch ships rep.ok=True through (0,0)).
+
+**B. The INV-20 "auto-placed lock corridor" known limit: the corridor was NEVER the
+problem — the tail-WRITE classification was.** Probing locked FM chains across
+placements/orientations/auto_pnr showed the `transit_unlock` adjacency + the
+`_apply_internal_feedback`-derived unlock hop are RIGID under every transform (the old
+adjacency-loss sightings were the 2026-07-22 re-fold SET-dedup self-overlap bugs,
+already fixed). The REAL, placement-independent residual: a locked block feeding a
+DOWNSTREAM BLOCK shipped SHIFTED rails — the consumer read (yq, 0) — in EVERY
+placement, on THREE build paths that all mis-handled the emit cell's lock-clear
+`WRITE.CFG` (which sits AFTER the yi/yq rails):
+  1. `_patch_complex_packet_last_handoff` (routed 2-net packet) counted the WRITE.CFG
+     as one of the "last N WRITEs" → CFG steered down the data corridor, yi stranded
+     @1. Fix: skip config WRITEs in the tail selection (the skip
+     `_patch_last_write_handoff`/`_patch_complex_output_port_handoff` already had).
+  2. The single-net complex + carries-handoffs branch patched ONLY the last data
+     WRITE → only yq delivered. Fix: patch the last `len(output_registers)` data
+     WRITEs to consecutive burst regs (the packet-last form).
+  3. The ABUTTED pair (what auto_pnr's compact pack produces) ran the single
+     `_patch_last_write_handoff` once per rail net — LAST-WINS into one WRITE, both
+     rails → target R0. Fix: `_patch_complex_abutment_tail_handoff`, called ONCE per
+     source cell, steering the last N data WRITEs to the target's own input regs.
+DEBUGGING METHOD that found #3 after #1 looked fixed: dump the BUILT emit cell
+(`bres.chips[0].cells[(x,y)]` + `disassemble_word`) — two `WRITE @1, 0` side by side
+is unarguable. GATE: `verification/tests/test_locked_chain_autopnr.py` — locked FM
+chain saturated bit-exact vs composed references across 3 placements + full auto_pnr,
+with a BLOCK consumer (the INV-4 pin: pre-fix (4320, 0) vs ref (24184, 4320)) and a
+locked-NCO consumer case. The fsk4 modem never saw this because its FM feeds the PORT
+(the 2026-07-22 egress fix); every locked-block→block chain was silently broken.
+
+---
+
 ## fec_link example — burst→interleave→correct→CRC-verdict; one out_tag per stream; layout-dependent saturation 2026-08-16
 
 The FEC protocol-link example (`examples/fec_link/`): three streams on one
@@ -213,14 +272,17 @@ operating point (0.05 — see the loop-strength note below).
   `run_block_dut_pipelined`'s default 2000/sample cap reports a false
   "livelock"; the block is NEEDS_BESPOKE with its own saturated gate at
   4000/sample, bit-for-bit equal to per-sample at N=100.
-- **ROUTER HAZARD (open, documented): a corridor may transit the x16_in PORT
-  CELL.** An 8-wide block ring pinches both side channels against the corner
-  chip ports; the router then wrapped the fanout→Costas corridor THROUGH
+- **ROUTER HAZARD (CLOSED 2026-08-16 — now a NAMED failure, see the
+  ROUTER+BUILD hardening entry / INV-32 port-input hardening): a corridor may
+  transit the x16_in PORT CELL.** An 8-wide block ring pinches both side
+  channels against the corner chip ports; the router (the MAZE escalation —
+  route_all_bus itself refused) wrapped the fanout→Costas corridor THROUGH
   (0,0) x16_in + its delivery broker (0,1) — route "ok", build "ok", chip
-  dead in 6 events (injections swallowed). The INV-32 own-input-broker guard
-  does not cover CHIP-PORT input deliveries. Workaround (chain test): place
-  the consumer NORTH of the ring with 2 free rows; verify `rep` routes never
-  touch port cells. Also: `add_logical_connection` AUTO-SYNTHESISES the
+  dead in 6 events (injections swallowed). Such a route is now impossible to
+  ship (hard walls + `port_transit` DRC); the pinched geometry fails NAMED.
+  The chain test's placement (consumer NORTH of the ring with 2 free rows)
+  remains the correct ROUTABLE layout — the pinch is genuinely unroutable.
+  Also: `add_logical_connection` AUTO-SYNTHESISES the
   yq-sibling of a complex block→block link — wiring BOTH rails by hand
   double-delivers (the importer's dedupe only sees its own nets).
 - **Loop-strength honesty: the Q15 k=1 Costas is a ~π× stronger loop than GR's
@@ -335,7 +397,9 @@ Durable lessons:
   under cw² the router (whose INV-32 own-block-broker guard forbids the
   short path) wrapped BOTH corridors around the die and diverted the input
   THROUGH the x16_out port cell — the port-cell divert (entry stamped on
-  x16_out) does NOT deliver: silent zero output, route reports ok. The same
+  x16_out) does NOT deliver: silent zero output, route reports ok (this
+  silent-ship class is CLOSED 2026-08-16 — used-port transit is now a NAMED
+  failure; the ≤7-wide fold rule stands for ROUTABILITY). The same
   20 cells as a 7×5 perimeter ring leave a 2-column channel and every
   orientation routes cleanly. Residual: at anchor (1,1) the mirror_v+cw²
   orientation still forces the wrap (input cell adjacent to the output cell

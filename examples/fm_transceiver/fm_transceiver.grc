@@ -272,6 +272,7 @@ blocks:
     port_name: '"x16_in"'
     server_host: '"127.0.0.1"'
     server_port: server_port
+    output_words: '"q15"'
     stream_id: '"rx"'
   states:
     bus_sink: false

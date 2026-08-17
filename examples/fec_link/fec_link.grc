@@ -540,7 +540,7 @@ blocks:
       (stim.error_pattern)'
     maxoutbuf: '0'
     minoutbuf: '0'
-    repeat: 'False'
+    repeat: 'True'
     tags: '[]'
     type: byte
     vector: stim.channel_bits()

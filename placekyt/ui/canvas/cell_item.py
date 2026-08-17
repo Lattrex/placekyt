@@ -282,13 +282,29 @@ class CellItem(QGraphicsItem):
                 painter.drawText(rect, Qt.AlignCenter, text)
 
         # I/O interface indicator (border): cyan = input, magenta = output.
+        # A cell that is BOTH (a single-cell block, or a fused landing/emit
+        # cell) draws a SPLIT border — cyan top+left (data enters), magenta
+        # bottom+right (data leaves) — instead of hiding one of the roles.
         # Tells the user where to route on a multi-cell block (§3.2).
         if self.io_role is not None:
-            pen = QPen(_IO_INPUT if self.io_role == "input" else _IO_OUTPUT)
-            pen.setWidth(3)
-            painter.setPen(pen)
+            r = rect.adjusted(2, 2, -2, -2)
             painter.setBrush(Qt.NoBrush)
-            painter.drawRect(rect.adjusted(2, 2, -2, -2))
+            if self.io_role == "inout":
+                pen = QPen(_IO_INPUT)
+                pen.setWidth(3)
+                painter.setPen(pen)
+                painter.drawLine(r.topRight(), r.topLeft())
+                painter.drawLine(r.topLeft(), r.bottomLeft())
+                pen = QPen(_IO_OUTPUT)
+                pen.setWidth(3)
+                painter.setPen(pen)
+                painter.drawLine(r.bottomLeft(), r.bottomRight())
+                painter.drawLine(r.bottomRight(), r.topRight())
+            else:
+                pen = QPen(_IO_INPUT if self.io_role == "input" else _IO_OUTPUT)
+                pen.setWidth(3)
+                painter.setPen(pen)
+                painter.drawRect(r)
 
         # breakpoint marker — a red dot in the top-left corner (DEBUG §3.6).
         if self.has_breakpoint:

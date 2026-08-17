@@ -530,8 +530,15 @@ class ChipCanvas(QGraphicsView):
                 continue
             pmap = self._port_cells_for(blk)
             origin = self._chip_origin(blk.placement.chip)
-            for port_name, (cell_id, direction) in pmap.items():
+            for port_name, entry in pmap.items():
+                cell_id = entry[0]
+                direction = entry[1] if len(entry) > 1 else None
                 cell = blk.placement.cell(cell_id)
+                if cell is None and len(entry) > 2 and entry[2] is not None:
+                    # named-cell PortMap vs positional-id placement bridge
+                    cell = blk.placement.cell(entry[2])
+                    if cell is None and 0 <= int(entry[2]) < len(blk.placement.cells):
+                        cell = blk.placement.cells[int(entry[2])]
                 if cell is None:
                     continue
                 from PySide6.QtCore import QPointF
@@ -767,6 +774,10 @@ class ChipCanvas(QGraphicsView):
             entry = pmap.get(name)
             if entry is not None:
                 cell = blk.placement.cell(entry[0])
+                if cell is None and len(entry) > 2 and entry[2] is not None:
+                    cell = blk.placement.cell(entry[2])
+                    if cell is None and 0 <= int(entry[2]) < len(blk.placement.cells):
+                        cell = blk.placement.cells[int(entry[2])]
         if cell is None:
             return None, None
         origin = self._chip_origin(chip_id)
@@ -868,46 +879,58 @@ class ChipCanvas(QGraphicsView):
             # output border on the wrong cell. Resolve port → cell_id via the same
             # PortMap provider the flylines/stubs use; fall back to first/last only
             # when no provider is available.
-            if len(pl.cells) > 1:
-                pmap = None
-                if self.port_cell_provider is not None:
-                    # Resolve WITH the placed block's params: a scaling block
-                    # (FIR, …) only exposes its true, DISTINCT input vs output
-                    # cells when its PortMap is built for the instance's params.
-                    # The param-less default collapses to the 1-tap case where
-                    # input and output share cell 0, so the input-cell highlight
-                    # got overwritten by output and vanished (the regression).
-                    params = getattr(blk, "params", None)
+            pmap = None
+            if self.port_cell_provider is not None:
+                # Resolve WITH the placed block's params: a scaling block
+                # (FIR, …) only exposes its true, DISTINCT input vs output
+                # cells when its PortMap is built for the instance's params.
+                # The param-less default collapses to the 1-tap case where
+                # input and output share cell 0, so the input-cell highlight
+                # got overwritten by output and vanished (the regression).
+                params = getattr(blk, "params", None)
+                try:
+                    pmap = self.port_cell_provider(
+                        blk.type, blk.library, params) or {}
+                except TypeError:
+                    # Provider without a params arg (older signature).
                     try:
                         pmap = self.port_cell_provider(
-                            blk.type, blk.library, params) or {}
-                    except TypeError:
-                        # Provider without a params arg (older signature).
-                        try:
-                            pmap = self.port_cell_provider(
-                                blk.type, blk.library) or {}
-                        except Exception:  # noqa: BLE001
-                            pmap = None
+                            blk.type, blk.library) or {}
                     except Exception:  # noqa: BLE001
                         pmap = None
-                if pmap:
-                    for pname, entry in pmap.items():
-                        cid = entry[0] if isinstance(entry, (tuple, list)) else entry
-                        direction = (entry[1] if isinstance(entry, (tuple, list))
-                                     and len(entry) > 1 else None)
-                        pc = pl.cell(cid)
-                        if pc is None or direction not in ("in", "out",
-                                                           "input", "output"):
-                            continue
-                        role = "input" if direction in ("in", "input") else "output"
-                        # Don't overwrite an "output" mark with "input" (a folded
-                        # block may share a landing edge); output takes precedence.
-                        cur = io_roles.get((pc.x, pc.y))
-                        if cur != "output":
-                            io_roles[(pc.x, pc.y)] = role
-                else:
-                    io_roles[(pl.cells[0].x, pl.cells[0].y)] = "input"
-                    io_roles[(pl.cells[-1].x, pl.cells[-1].y)] = "output"
+                except Exception:  # noqa: BLE001
+                    pmap = None
+            if pmap:
+                for pname, entry in pmap.items():
+                    cid = entry[0] if isinstance(entry, (tuple, list)) else entry
+                    direction = (entry[1] if isinstance(entry, (tuple, list))
+                                 and len(entry) > 1 else None)
+                    pc = pl.cell(cid)
+                    if pc is None and isinstance(entry, (tuple, list)) \
+                            and len(entry) > 2 and entry[2] is not None:
+                        # NAMED-cell PortMap vs a positional-id placement (or
+                        # vice versa): fall back to the provider's positional
+                        # index into the block's authored cell order.
+                        idx = entry[2]
+                        pc = pl.cell(idx)
+                        if pc is None and 0 <= int(idx) < len(pl.cells):
+                            pc = pl.cells[int(idx)]
+                    if pc is None or direction not in ("in", "out",
+                                                       "input", "output"):
+                        continue
+                    role = "input" if direction in ("in", "input") else "output"
+                    # A cell that is BOTH the block's input and its output (a
+                    # single-cell block, or a fused landing/emit cell) gets the
+                    # combined marker rather than silently dropping one role.
+                    cur = io_roles.get((pc.x, pc.y))
+                    if cur is not None and cur != role:
+                        role = "inout"
+                    io_roles[(pc.x, pc.y)] = role
+            elif len(pl.cells) > 1:
+                io_roles[(pl.cells[0].x, pl.cells[0].y)] = "input"
+                io_roles[(pl.cells[-1].x, pl.cells[-1].y)] = "output"
+            else:
+                io_roles[(pl.cells[0].x, pl.cells[0].y)] = "inout"
 
         for cy in range(ct.height):
             for cx in range(ct.width):

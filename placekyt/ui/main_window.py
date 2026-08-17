@@ -621,6 +621,36 @@ class MainWindow(QMainWindow):
                     block_type, params, library=library)
                 for p in pm.ports:
                     out[p.name] = (p.cell_id, p.direction)
+                # NAMED-cell ↔ POSITIONAL id bridging: a block that names its
+                # cells ('ingest', 'shape', …) exposes string ids in its PortMap,
+                # but a placement loaded from a .kyt may carry plain 0..N-1 ids
+                # (and vice versa) — then Placement.cell() misses and every
+                # consumer (I/O highlight, flyline anchor) silently falls back.
+                # Append the POSITIONAL index (from the catalog's authoritative
+                # cell ORDER — default_layout dict order == build order, the
+                # positional-pairing contract) as a third tuple element so
+                # consumers can resolve EITHER id scheme. entry[0]/entry[1]
+                # access stays backward-compatible.
+                if any(isinstance(v[0], str) for v in out.values()):
+                    try:
+                        order = list(self.controller.catalog.default_layout(
+                            block_type, params, library=library).keys())
+                        named = [v[0] for v in out.values()
+                                 if isinstance(v[0], str)]
+                        if not all(n in order for n in named):
+                            # The layout keys are positional but the PortMap
+                            # names cells: the naming source of truth is
+                            # build_cell_programs() key order (INV-33).
+                            blk = self.controller.catalog.instantiate(
+                                block_type, "__io_probe__", dict(params or {}),
+                                library=library)
+                            order = list((blk.build_cell_programs() or {})
+                                         .keys())
+                        for name, (cid, direction) in list(out.items()):
+                            if isinstance(cid, str) and cid in order:
+                                out[name] = (cid, direction, order.index(cid))
+                    except Exception:  # noqa: BLE001 — keep the string ids
+                        pass
             except Exception:  # noqa: BLE001 — no PortMap ⇒ canvas falls back
                 out = {}
             cache[key] = out

@@ -42,7 +42,7 @@ first command into a terminal, copy the second into another, and you're running.
 | **[complex_math/](complex_math/)** | **Two-stream complex arithmetic** — two analytic tones into **AddCC / SubCC / MultiplyCC** on one chip: superposition, difference, and THE MIXER (multiplying analytic tones adds their frequencies — one clean tone at f_a+f_b, asserted bin-sharp). Bit-exact vs the blocks' references; the wiring pattern to copy for any two-complex-stream GRC design. | 3 | `.grc` or `.kyt` |
 | **[channel_selector/](channel_selector/)** | A **channel selector**: FreqXlatingFIR channelizer → complex low-pass → rotator → conjugate → imag rail. Per-sample paced (the FreqXlatingFIR is saturation-bespoke; see its README). | 6 | `.grc` or `.kyt` |
 | **[lms_equalizer/](lms_equalizer/)** | The **adaptive-equalizer constellation snap** — multipath-smeared QPSK through the on-chip decision-directed **LMS equalizer**: the constellation cloud snaps onto the four clean points *within the burst* (the adaptation runs on the array, per sample). Converged tail **BER 0**. | 1 | `.grc` or `.kyt` |
-| **[cordic_polar/](cordic_polar/)** | **CORDIC polar decomposition** — one AM'd rotating phasor split into the two CORDIC vectoring chains (magnitude → the AM envelope, atan2 → the phase sawtooth), each overlaid on the stock GNU Radio reference block. Guided anchors (see its README): open the `.kyt`. | 2 | `.kyt` (+`.grc`) |
+| **[cordic_polar/](cordic_polar/)** | **CORDIC polar decomposition** — one AM'd rotating phasor split into the two CORDIC vectoring chains (magnitude → the AM envelope, atan2 → the phase sawtooth), each overlaid on the stock GNU Radio reference block. Open the `.kyt` directly (dense guided-anchor placement; a fresh import doesn't route cleanly). | 2 | `.kyt` |
 
 **Open `.kyt`** — the demo ships a pre-placed, pre-routed design you can open
 directly (**File → Open**) and explore on the canvas without importing anything.
@@ -50,13 +50,11 @@ directly (**File → Open**) and explore on the canvas without importing anythin
 Flowgraph…**) and placeKYT auto-places and routes it. Either way, you then **Run
 as GNURadio Server** and drive it from `gnuradio-companion`.
 
-> Three demos are the exception — the **SSB Weaver**, the **FSK4 modem**, and the
-> **16-QAM modem**: they're dense, hand-placed designs the auto-router can't fully
-> route, so you **must open their `.kyt` directly** (importing the `.grc` will leave
-> nets unrouted and the build will fail). Each README explains why. Every other demo
-> places and routes from the `.grc`. The CORDIC demo imports, but place its two
-> blocks at the anchors its README gives (arg at (1,1), mag at (0,6)) before
-> Auto-Route.
+> Four demos are the exception — the **SSB Weaver**, the **FSK4 modem**, the
+> **16-QAM modem**, and the **CORDIC polar** demo: they're dense placements the
+> auto-router can't fully route from a fresh import, so you **must open their
+> `.kyt` directly** (importing the `.grc` can leave nets unrouted). Each README
+> explains why. Every other demo places and routes from the `.grc`.
 
 ## The common workflow (every demo)
 

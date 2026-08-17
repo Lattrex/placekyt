@@ -29,9 +29,10 @@ model (`verification/tests/test_cordic_blocks.py`).
 
 ## Run it
 
-1. Open **`cordic_polar.kyt`** in placeKYT (or import `cordic_polar.grc`:
-   File → Import GNURadio Flowgraph, then place the two blocks at the shipped
-   anchors — arg at (1,1), mag at (0,6) — and Auto-Route).
+1. Open **`cordic_polar.kyt`** in placeKYT. (Open the `.kyt` directly — the
+   two CORDIC chains are dense guided-anchor placements the auto-router does
+   not currently route cleanly from a fresh `.grc` import; an import can end
+   with an unrouted fly line even after the full placement sweep.)
 2. **Run as GNURadio Server** (port 58950).
 3. Open `cordic_polar.grc` in GNU Radio Companion and **Execute**.
 

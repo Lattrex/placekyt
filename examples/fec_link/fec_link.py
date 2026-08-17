@@ -228,7 +228,7 @@ class fec_link(gr.top_block, Qt.QWidget):
         self.crc_s2f = blocks.short_to_float(1, 1)
         self.crc_f2b = blocks.float_to_uchar(1, 1, 0)
         self.crc_check = crc_check.blk(n_skip=stim.rx_msg_offset(), frame_len=stim.crc_frame_len())
-        self.chan_src = blocks.vector_source_b(stim.channel_bits(), False, 1, [])
+        self.chan_src = blocks.vector_source_b(stim.channel_bits(), True, 1, [])
         self.chan_scope = qtgui.time_sink_f(
             chan_len, #size
             samp_rate, #samp_rate

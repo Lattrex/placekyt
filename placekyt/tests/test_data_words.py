@@ -130,6 +130,12 @@ class TestMultiCellBlocks:
             # prescribes scale>=128 and RAISES below it (a documented HW-deviation). Build
             # it at the minimum valid scale, same as the filters above.
             "CharToFloatBlock": {"scale": 128},
+            # rational_resampler's GR-verbatim empty-taps default auto-designs a
+            # >=17-tap Kaiser that exceeds the polyphase cell budget and RAISES
+            # (documented HW-deviation). Build it with explicit small taps in
+            # the shipped supported range (L=2, <=4 taps, sum|h|<=1).
+            "RationalResamplerBlock": {"interpolation": 2, "decimation": 3,
+                                       "taps": [0.15, 0.3, 0.3, 0.15]},
         }
         failures = []
         for spec in catalog.all():

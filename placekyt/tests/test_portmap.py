@@ -36,6 +36,10 @@ def catalog(qapp):
 _SAFE_PARAMS = {
     # char_to_float out=in/scale needs scale>=128 to fit Q15 [-1,1) over int8.
     "CharToFloatBlock": {"scale": 128},
+    # rational_resampler's empty-taps GR default auto-designs a filter that
+    # exceeds the polyphase cell budget and RAISES; use in-range explicit taps.
+    "RationalResamplerBlock": {"interpolation": 2, "decimation": 3,
+                               "taps": [0.15, 0.3, 0.3, 0.15]},
 }
 
 

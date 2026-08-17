@@ -108,6 +108,7 @@ from .demux import demux
 from .mux import mux
 from .iir_biquad import iir_biquad
 from .decimator import decimator
+from .rational_resampler import rational_resampler
 from .squelch import squelch
 from .costas_loop import costas_loop
 from .soft_demodulator import soft_demodulator
@@ -214,6 +215,7 @@ __all__ = [
     "freq_xlating_fir",
     "iir_biquad",
     "decimator",
+    "rational_resampler",
     "squelch",
     # Synchronization blocks
     "costas_loop",

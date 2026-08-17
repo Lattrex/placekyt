@@ -11,6 +11,73 @@ dropped) — append new entries above the oldest ones as before.
 
 ---
 
+## RationalResamplerBlock — the interp+decim combo ships as a POLYPHASE cell; GR's D-offset alignment is real and load-bearing 2026-08-16
+
+GR `filter.rational_resampler_fff` (GRC **Rational Resampler**), tier 3. The
+manifest's substrate-reality-check dispatch resolved to outcome (a): the
+decim>1 & interp>1 combo genuinely fits one cell for a small (L, M) range —
+but only in POLYPHASE form, not the zero-stuff L-burst the dispatch sketched.
+50 tests green vs LIVE GR on the first build attempt (the budget probe grid
+was the "attempt" that set the caps). Durable lessons:
+
+- **Polyphase, not zero-stuff, is what makes the combo fit.** The FIR interp
+  path's unrolled L-burst runs the FULL N-tap MAC L times per input (N·L
+  MACs) over an N-deep stuffed delay line. The polyphase decomposition
+  (`y_full[nL+p] = Σ_m h[p+mL]·x[n-m]`) runs N MACs TOTAL per input over a
+  `K = ceil(N/L)`-deep INPUT-rate delay line shifted ONCE. Same arithmetic,
+  bit-identical (the skipped terms are exact zeros; a wrapping add of 0 is
+  the identity — so the inherited zero-stuff single-cell Q15 reference
+  predicts the polyphase datapath exactly, keeping MAC order oldest-first =
+  descending tap index within each arm). It even beats the pure-interp
+  zero-stuff cap at L=3 (3 taps vs 2).
+- **Measured single-cell budget (probed against the real resolver; program =
+  K + N + 6L + 1 words, data = N+2, state = K+1):** L=1 → 5 taps, L=2 → 4,
+  L=3 → 3, **L≥4 fits NOTHING** (the L·(gate 4 + emit 2) fixed cost alone is
+  ≥26 words). Any M in [1, 32767] (M only changes a data word). The probe
+  grid's failures came back as clean `No register space for state 'dN'` /
+  `Not enough register space: NN instructions` build errors — the resolver
+  allocator IS the budget oracle; the hand arithmetic matched it exactly.
+- **A 4-word countdown mod-M gate:** `SUB c,one; MOVE c,R0; BR.NZ skip;
+  MOVE c,decim(reload)` — 2 words cheaper than the up-counting CMP/XOR gate
+  the FIR decim path uses, because ALU flags SURVIVE `MOVE` (INV-34) so
+  `BR.NZ` reads the `SUB`'s Z through the store-back, and reload-by-MOVE
+  replaces XOR-clear + CMP. Countdown-seeded at D+1 it also encodes the
+  alignment offset for free. Branch targets label the next arm's SUB or the
+  final HALT (real instructions, never a `{write}`/`{jump}` placeholder —
+  the INV-13 miscompile). Emit paths FALL THROUGH the skip label into the
+  next arm (a remote JUMP does not halt the issuer).
+- **GR's output alignment is NOT phase 0 — pin semantics with impulse probes
+  before assuming.** Live GR emits `y_full[D::M]` with `D = L*(ceil(N/L)-1)`
+  (its polyphase arms span x[i..i+K-1] FORWARD). Consequence worth
+  remembering: `rational_resampler_fff(1, M, taps)` is NOT sample-aligned
+  with `fir_filter_fff(M, taps)`, and (1,1,taps) is the plain FIR ADVANCED
+  by N-1 samples. A phase-0 port would have passed a lag-searching gate;
+  the suite pins the alignment with an impulse test + a phase-0 MUTATION
+  that must fail. Also: GR truncates the TAIL (scheduler forecast, deficit
+  ≤2 observed) — the chip's deterministic count is `ceil((n*L - D)/M)`;
+  gate the DUT count by formula and GR as a prefix, never `len(gr)`.
+- **Auto-design is float32-parameter-faithful firdes:** GR gcd-reduces
+  (L, M) FIRST (getters return the reduced values; user taps are NEVER
+  reduced — only an info log), computes rate/trans_width/mid in FLOAT32
+  (a float64 replica lands 1 tap off at e.g. (2,3) and (5,3) — the ntaps
+  rounding crosses a boundary), designs `firdes.low_pass(gain=L', Fs=L',
+  KAISER beta=7)`, and `taps()` zero-pads to a multiple of L'. Replicated
+  via the repo `_firdes` + `np.float32` params: float-bit-exact live, gated
+  Q15-EXACT (INV-16). The design (≥17 taps, gain L') NEVER fits the cell,
+  so the GR-verbatim empty-taps default constructs-and-raises loudly with
+  the compose `Upsampler(L) → FIR(taps, decimation=M)` workaround (which is
+  phase-0 aligned — the raise message says so).
+- **Harness gotcha:** GR's gcd(L,M)>1 user-taps info line goes to STDOUT and
+  corrupts `run_gnuradio_ref`'s JSON channel —
+  `gr.logging().set_default_level(gr.log_levels.off)` in the snippet.
+- Tolerance: derived Q15 amplitude tolerance from `op_count=len(taps)`
+  (max observed 4 LSB at N=5 vs tol 6); DUT additionally bit-exact vs
+  `process_reference_q15` in every case. Saturation: RATE_1IN (feed-forward,
+  no feedback corridor / reconvergent fan-in — INV-19/20 N/A). Orientation:
+  shared gate + a full-burst 8-orientation check in the block's own suite.
+
+---
+
 ## AGCCCBlock — complex AGC; feedback landings must be STATE registers; big rings fold ≤7 wide 2026-08-16
 
 GR `analog.agc_cc` VERBATIM (rate/reference/gain/max_gain; semantics pinned

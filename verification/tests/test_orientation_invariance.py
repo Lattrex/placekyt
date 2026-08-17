@@ -205,6 +205,15 @@ _CASES = [
     # precedent: corridor disjointness is anchor-dependent for big chains).
     ("AGCCCBlock", {"rate": 0.05, "reference": 0.3, "gain": 1.0,
                     "max_gain": 0.0}, "complex", ("xi", "xq", "yi_tap"), (1, 2)),
+    # Polyphase L/M rational resampler (GR rational_resampler_fff): single real
+    # rail in -> a 0..2-word burst per trigger at 2:3 (the harness keeps the last
+    # word per trigger; None-gaps on the non-emitting triggers). Single cell, no
+    # in-template FACE constants, no feedback corridor — must produce the
+    # IDENTICAL per-trigger output in every D4 orientation. The FULL-burst D4
+    # check runs in test_rational_resampler.py::test_orientation_invariant_full_burst.
+    ("RationalResamplerBlock",
+     {"interpolation": 2, "decimation": 3, "taps": [0.4, 0.25, -0.2, 0.1]},
+     "real", ("sample", "out")),
 ]
 
 # No orientation residuals remain: every block in _CASES is invariant in all 8 D4

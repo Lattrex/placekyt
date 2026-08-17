@@ -1,0 +1,69 @@
+id: kyttar_rational_resampler
+label: Kyttar Rational Resampler
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar Rational Resampler - GNU Radio rational_resampler_fff
+
+  Resamples the input by interpolation/decimation (L/M) through one polyphase
+  FIR: conceptually the input is zero-stuffed by L, filtered by the taps, and
+  every M-th full-rate output is emitted, starting at GR's polyphase alignment
+  offset D = L*(ceil(ntaps/L)-1).
+
+  This block runs on the Kyttar chip. Place it between a KyttarSource and
+  KyttarSink block, and ensure the device_id matches your KyttarDevice.
+
+  Parameters:
+  - Device ID: ID of the KyttarDevice block
+  - Interpolation: L (>= 1)
+  - Decimation: M (>= 1, <= 32767)
+  - Taps: FIR taps. sum(|taps|) <= 1 is required on-chip (Q15 headroom);
+    leave EMPTY for GR's auto-designed Kaiser anti-image low-pass — note the
+    auto design (gain L, >= 17 taps) EXCEEDS the single-cell budget and the
+    build raises with a composed Upsampler -> FIR workaround.
+  - Fractional BW: only used when Taps is empty (<= 0 selects GR's 0.4
+    default; must be < 0.5).
+
+  Supported on-chip range (hardware limit, measured): interpolation 1..3 with
+  at most 5/4/3 taps respectively; any decimation up to 32767. Larger
+  configurations raise loudly.
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.rational_resampler(device_id=${device_id}, interpolation=${interpolation},
+    decimation=${decimation}, taps=${taps}, fractional_bw=${fractional_bw})
+  callbacks:
+    - set_taps(${taps})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+  - id: interpolation
+    label: Interpolation
+    dtype: int
+    default: '1'
+  - id: decimation
+    label: Decimation
+    dtype: int
+    default: '1'
+  - id: taps
+    label: Taps
+    dtype: real_vector
+    default: '[]'
+  - id: fractional_bw
+    label: Fractional BW
+    dtype: real
+    default: '0'
+
+inputs:
+  - label: in
+    dtype: float
+
+outputs:
+  - label: out
+    dtype: float
+
+file_format: 1

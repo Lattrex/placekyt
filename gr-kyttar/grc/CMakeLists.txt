@@ -34,6 +34,7 @@ install(FILES
     kyttar_mux.block.yml
     kyttar_iir_biquad.block.yml
     kyttar_decimator.block.yml
+    kyttar_rational_resampler.block.yml
     kyttar_squelch.block.yml
     kyttar_costas_loop.block.yml
     kyttar_gardner_ted.block.yml

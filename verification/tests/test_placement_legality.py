@@ -74,6 +74,12 @@ BLOCKS = [
     # serialize-LOCK adds no cells (the feedback is a direct @1 abutment), so
     # the footprint is param-independent; assert D4 + movement legality anyway.
     ("AGCCCBlock", {}),
+    # Polyphase rational resampler: single-cell for every supported (L, M, taps)
+    # combination (the params never grow the footprint — over-budget configs
+    # RAISE at construction instead), so it can never self-overlap; assert the
+    # 1-cell footprint stays legal under D4 + movement anyway.
+    ("RationalResamplerBlock", {"interpolation": 2, "decimation": 3,
+                                "taps": [0.4, 0.25, -0.2, 0.1]}),
     # Single-cell additive LFSR scrambler — no internal transit cell, no footprint-
     # growing param (count>0 only adds registers, not cells); trivially non-self-
     # overlapping in every D4 orientation and under movement.

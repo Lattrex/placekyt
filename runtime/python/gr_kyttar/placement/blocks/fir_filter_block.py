@@ -155,7 +155,8 @@ class FIRFilterBlock(KyttarBlock):
                 "decimation>1 and interpolation>1 cannot be combined on one FIR "
                 "block (GR uses fir_filter for decim, interp_fir_filter for "
                 f"interp); got decim={decimation}, interp={interpolation}. Use "
-                "two cascaded blocks.")
+                "RationalResamplerBlock (GR rational_resampler_fff) for a "
+                "small L/M combo, or two cascaded blocks.")
         self._decimation = decimation
         self._interpolation = interpolation
         super().__init__(name, coefficients=coefficients)

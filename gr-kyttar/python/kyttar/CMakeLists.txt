@@ -33,6 +33,7 @@ GR_PYTHON_INSTALL(
     mux.py
     iir_biquad.py
     decimator.py
+    rational_resampler.py
     squelch.py
     costas_loop.py
     gardner_ted.py

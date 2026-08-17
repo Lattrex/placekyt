@@ -180,6 +180,14 @@ REAL_2IN = {
 # (drops/duplicates a burst) is caught here.
 RATE_1IN = {
     "UpsamplerBlock": ("x", "out", {}),        # rate-EXPANDING (fixed factor)
+    # Polyphase L/M rational resampler (GR rational_resampler_fff): single cell,
+    # K-deep input-rate delay line + a countdown mod-M gate across the L unrolled
+    # arms. Feed-forward, NO feedback corridor, NO reconvergent fan-in (INV-19/20
+    # N/A) — the saturated flat stream must equal the per-sample flat stream
+    # (2:3 = a genuinely fractional rate; some triggers emit 0 words, some 1..2).
+    "RationalResamplerBlock": ("sample", "out",
+                               {"interpolation": 2, "decimation": 3,
+                                "taps": [0.4, 0.25, -0.2, 0.1]}),
     "RepeatBlock": ("x", "out", {}),           # rate-EXPANDING (hold-upsample)
     "KeepOneInNBlock": ("x", "out", {"n": 2}),  # rate-REDUCING
     # bit-stream -> symbols (emits every N bits) — proven saturated 2026-07-14.

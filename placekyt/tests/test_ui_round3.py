@@ -209,9 +209,9 @@ class TestIOIndicators:
         roles = {c.io_role for c in window.canvas.cell_items() if c.io_role}
         assert roles == {"input", "output"}
 
-    def test_single_cell_block_no_indicator(self, window):
+    def test_single_cell_block_combined_indicator(self, window):
         window.controller.place_block("GainBlock", 0, 1, 1,
                                       library="lattrex.official")
         window.canvas.render_scene()
         gain = [c for c in window.canvas.cell_items() if c.label == "gain"]
-        assert all(c.io_role is None for c in gain)
+        assert gain and all(c.io_role == "inout" for c in gain)

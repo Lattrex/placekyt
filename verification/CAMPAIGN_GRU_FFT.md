@@ -104,8 +104,8 @@ Beyond the normal factory cost record:
 
 ## Reporting rules (non-negotiable)
 
-- Everything runs on the **SHIPPING v0.11 cell**. Never modify the ISA, never 128 words,
-  never 20 bits.
+- Everything runs on the **SHIPPING v0.11 cell**, exactly as it exists. Never modify
+  the ISA or the cell parameters.
 - Report the ugly numbers. A big cell count or a low rate is fine and expected; it is the
   measured floor that makes any future-improvement estimate credible.
 - Provenance sentence for any power/throughput figure: workload activity from the

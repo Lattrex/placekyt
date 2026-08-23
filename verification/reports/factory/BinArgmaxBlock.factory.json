@@ -1,0 +1,30 @@
+{
+ "block": "BinArgmaxBlock",
+ "grc_block": "(Python golden: numpy.argmax over N magnitude bins)",
+ "tier": 2,
+ "wave": 7,
+ "schema_version": 1,
+ "started_utc": "2026-08-23T21:20:00Z",
+ "ended_utc": "2026-08-23T21:55:00Z",
+ "walltime_sec": 2100.0,
+ "tokens": {
+  "total": 210000,
+  "source": "builder_budget_estimate"
+ },
+ "turns": 55,
+ "attempts": 1,
+ "human_interventions": 0,
+ "intervention_reasons": [],
+ "prompts": [
+  {
+   "role": "initial",
+   "text": "factory dispatch prompt (AGENTS.md loop); isolated worktree; framewise argmax over a stream (N:1 raw index word), pinned first-occurrence ties + signed compare + frame reset, numpy golden (no GR counterpart), N in {4,16,64,256} EXACT tol 0."
+  }
+ ],
+ "verify_passed": true,
+ "quarantined": false,
+ "quarantine_reason": "",
+ "commit_sha": "d047dc9",
+ "notes": "BUILDER-side record (token/turn/walltime figures are the builder's own budget accounting, not harness-bracketed; the orchestrator may overwrite with exact <usage> numbers; commit_sha is the worktree-branch commit, landed by the orchestrator). 1 attempt, 38 tests, fully autonomous, EXACT tol 0 -- the FIRST on-chip run matched the numpy golden (no bug iterations). The design decisions that made it clean, both taken from the KB before authoring: (1) the signed running-max compare uses the overflow-corrected SLT branch (CMP maxv,x; BR.GE skip) because the plain N flag mis-orders opposite-sign pairs whose difference overflows 16 bits -- which includes the -32768 re-arm sentinel vs ANY non-negative input, i.e. the first compare of every frame on magnitude data; proven on-chip with mixed +/-full-scale frames. (2) the frame position is recorded as the Crc16-style DOWN-counter snapshot (cm = cnt at the winning sample) and the index recovered at emit as n - cm, so one counter runs the whole frame loop: 14 instructions + 3 data + 4 pinned states, well inside the 31-word budget (ZCR's R31 auto-HALT lesson pre-checked). n supported 1..32768 (2^15) with loud raises.",
+ "walltime": "35m00s"
+}

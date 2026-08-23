@@ -263,6 +263,13 @@ COMPLEX_2IN2OUT = {
     # to INSTANTIATE at high gain — a Σ|h|<=1 build constraint, not a saturation defect).
     "ComplexFIRFilterBlock": (("xi", "xq"), "yi",
                               {"coefficients": [0.2, 0.3, 0.2, 0.1, 0.05]}),
+    # Multi-cell distributed complex delay line (depth 7 = a 2-cell chain, so the
+    # inter-cell forwarding handoff is exercised): a pure feed-forward LINEAR
+    # chain (each cell fed by exactly ONE predecessor — no feedback loop, no
+    # reconvergent fan-in of unequal-length arms, INV-19/20 do not apply), so it
+    # needs no serialize-LOCK; gated here to PROVE the saturated (back-to-back
+    # queue_words) egress is bit-exact to the per-sample GR-verified stream.
+    "ComplexDelayLineBlock": (("xi", "xq"), "out_i", {"depth": 7}),
     # TRUE complex-constant multiply (2 cells: mul -> sat). A FEED-FORWARD wavefront —
     # mul forms both accumulators and forwards them to sat in a single LINEAR handoff
     # (no feedback loop, no reconvergent fan-in of unequal-length arms), so it is

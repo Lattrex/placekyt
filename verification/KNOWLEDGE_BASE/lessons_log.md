@@ -11,6 +11,61 @@ dropped) — append new entries above the oldest ones as before.
 
 ---
 
+## ComplexDelayLineBlock — multi-cell distributed complex delay, ON-FABRIC to depth 64 2026-08-23
+
+The streaming-FFT track's critical enabler, and the answer is the good one: a
+**multi-cell on-fabric complex delay line works, bit-exact, to depth 64 (13
+cells), with NO engine wall and NO SRAM-panel fallback needed anywhere in the
+supported range** — every depth 0..64 is a pure cell chain, so an FFT stage's
+delay memory is genuinely "on the chip". `out[n] = in[n-depth]`, (0,0) zero
+prefill, EXACT tol 0 vs an independent numpy golden (+ a live GR
+`blocks.delay(gr.sizeof_gr_complex, D)` anchor). 43 tests + the three shared
+gates (saturation / orientation / placement legality), first-build clean at
+every depth probed. Lessons:
+
+- **The ComplexFIR forwarding idiom minus the MACs IS a distributed delay
+  line, and the chain adds NO extra sample delay.** Cell m holds an L_m-sample
+  segment per rail (`di*`/`dq*` + ONE shared `osave`); per trigger it captures
+  its oldest I BEFORE the shift, shifts + ingests, forwards the oldest to the
+  next cell's xi, repeats for Q (osave is free again after the I forward), then
+  JUMPs. The handoff rides the SAME trigger wavefront (like the FIR's systolic
+  sample forwarding), so total delay = Σ segments exactly — no per-hop +1. This
+  composability is the durable fact: any per-cell shift register chains across
+  cells with zero timing surprise.
+- **Cost:** a mid cell fits 5 complex samples (2 inputs + 11 pinned state +
+  17-instr program + auto-HALT = 31/32 words — the true dual-rail density
+  ceiling; L=6 needs 35). The OUTPUT cell is capped at 4 so the INV-17 fan-out
+  JUMP always has headroom (L=5 there would be 31+1 = exactly 32 — legal on
+  paper, zero margin; not worth it for one sample). Net:
+  `cells(D) = 1 (D≤4) else ceil((D-4)/5)+1` — depth 32 = 7 cells, 64 = 13.
+- **I/Q skew is designed out, then gated anyway.** Both rails traverse the same
+  cells in the same wavefront with identical per-rail structure, so a skew
+  can't arise structurally — but the gate still includes a complex impulse
+  (must land at index D on BOTH rails simultaneously), a quadrature tone
+  (per-sample pairing preserved), and the single-rail ±1-skew mutations, which
+  the exact pair-compare catches at the first misaligned index. For ANY future
+  dual-rail block: gate the skew explicitly; a rail-swap/skew is invisible to
+  single-rail comparisons and catastrophic downstream.
+- **INV-33's no-data-words corollary bites exactly as documented:** this block
+  has ZERO DataWords, so auto-allocated state would start at R0 and land ON the
+  xi/xq inputs (the DelayBlock echo trap, complex edition). Every StateVar is
+  explicitly pinned (di* at 2..L+1, dq* at L+2..2L+1, osave at 2L+2) and a
+  dedicated test asserts every state register ≥ 2 at several depths.
+- **No serialize-LOCK needed, and that's a checkable structural fact:** the
+  chain is feed-forward LINEAR (each cell fed by exactly one predecessor — no
+  feedback edge, no reconvergent fan-in of unequal-length arms), so INV-19/20
+  do not apply; the COMPLEX_2IN2OUT saturated gate (depth 7, 2 cells) confirms
+  pipelined == per-sample bit-exact with no lock.
+- **Depth 13 is the boundary depth to gate:** it is past the real-rail
+  DelayBlock's single-cell ceiling (12) — proof the chain goes where one cell
+  cannot — and this block's own first 3-cell configuration. The FIR-style fold
+  (FOLD_HEIGHT 4, even-column preference, partial last column accepted, ≤8
+  across) handled 7- and 13-cell footprints with zero routing trouble in all 8
+  D4 orientations.
+- MAX_DEPTH=64 is a VERIFICATION boundary, not a geometric one (the fold could
+  host more cells); the block raises above it rather than ship unverified
+  depths. Deeper lines are SRAM-panel territory (INV-31) only if ever needed.
+
 ## ZeroCrossingRateBlock — windowed ZCR, single cell at exactly 32/32 words 2026-08-23
 
 Windowed zero-crossing rate (tier 3, no GNU Radio streaming counterpart — golden =

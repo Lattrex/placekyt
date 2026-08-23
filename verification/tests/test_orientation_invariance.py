@@ -88,6 +88,11 @@ _CASES = [
     # out. Single cell, feed-forward, no internal connections -> freely orientable;
     # its per-rail MULQ + saturating-restore datapath is D4-invariant by construction.
     ("ComplexGainBlock", {"gain": 2.4}, "complex", ("xi", "xq", "yi")),
+    # Multi-cell distributed complex delay line (depth 7 = 2 cells): pure MOVEs,
+    # feed-forward inter-cell forwarding with faces from default_layout (no
+    # direction-specific internal feedback) -> freely orientable; the delayed
+    # (out_i, out_q) word lists must be IDENTICAL in every D4 orientation.
+    ("ComplexDelayLineBlock", {"depth": 7}, "complex", ("xi", "xq", "out_i")),
     ("ComplexRRCMatchedFilterBlock", {}, "complex", ("xi", "xq", "yi")),
     ("ComplexCostasLoopBlock", {"order": 2}, "complex", ("xi", "xq", "yi_tap")),
     ("ComplexCostasLoopBlock", {"order": 4}, "complex", ("xi", "xq", "yi_tap")),

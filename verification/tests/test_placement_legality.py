@@ -58,6 +58,11 @@ BLOCKS = [
     ("RRCPulseShaperBlock", {"sampling_freq": 2.0, "symbol_rate": 1.0,
                              "alpha": 0.5, "ntaps": 17, "gain": 1.0}),
     ("ComplexRRCMatchedFilterBlock", {}),
+    # Multi-cell distributed complex delay line at its footprint-growing
+    # extremes: depth 32 = 7 cells (2x4 fold, partial last column) and depth 64
+    # = 13 cells (4x4 fold, partial last column) — the deepest supported chain.
+    ("ComplexDelayLineBlock", {"depth": 32}),
+    ("ComplexDelayLineBlock", {"depth": 64}),
     ("FreqXlatingFIRBlock", {"decimation": 2, "taps": [0.1, 0.2, 0.3, 0.2, 0.1],
                              "center_freq": 2000.0, "sampling_freq": 32000.0}),
     ("FSK4SyncTimingRecoveryBlock", {}),

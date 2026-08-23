@@ -1,0 +1,61 @@
+id: kyttar_complex_delay_line
+label: Complex Delay Line
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Complex Delay Line — a pure delay of ``depth`` COMPLEX samples:
+      out[n] = in[n - depth]      (out[n] = 0 for n < depth)
+
+  Both I and Q rails are delayed by exactly the same amount, sample-for-sample
+  (no I/Q skew — gated explicitly), and the first ``depth`` outputs are complex
+  zero (the zero-prefill contract). Bit-exact: the datapath is pure data
+  movement, no arithmetic. Behaves like GNU Radio's blocks.delay on a complex
+  stream (delay = depth samples).
+
+  On the chip the line is a MULTI-CELL DISTRIBUTED chain: each cell holds a
+  segment of the I and Q histories and forwards its oldest pair to the next
+  cell inside one trigger wavefront, so deep on-fabric delays are possible
+  (depth 32 = 7 cells, depth 64 = 13 cells — the streaming-FFT stage depths).
+
+  This block runs on the Kyttar chip. Place it between a KyttarSource and a
+  KyttarSink block; the device_id must match your KyttarDevice.
+
+  Parameters:
+  - Device ID: ID of the KyttarDevice block
+  - Depth: the integer complex-sample delay (default 32). depth=0 is the
+    identity pass-through.
+
+  Hardware limit: the on-fabric chain is verified to depth 64 (13 cells); a
+  larger depth is rejected at placement with a clear error (a deeper line needs
+  the SRAM-panel memory tier, not yet built).
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.complex_delay_line(device_id=${device_id}, depth=${depth})
+  callbacks:
+    - set_depth(${depth})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+  - id: depth
+    label: Depth
+    dtype: int
+    default: 32
+
+inputs:
+  - label: in
+    dtype: complex
+
+outputs:
+  - label: out
+    dtype: complex
+
+asserts:
+  - ${ depth >= 0 }
+  - ${ depth <= 64 }
+
+file_format: 1

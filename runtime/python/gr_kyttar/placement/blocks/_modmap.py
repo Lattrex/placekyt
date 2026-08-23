@@ -24,6 +24,7 @@ BUILTIN_BLOCKS = {
     'FloatToCharBlock': 'float_to_char_block',
     'KeepOneInNBlock': 'keep_one_in_n_block',
     'DelayBlock': 'delay_block',
+    'ComplexDelayLineBlock': 'complex_delay_line_block',
     'UpsamplerBlock': 'upsampler_block',
     'RepeatBlock': 'repeat_block',
     'UnpackKBitsBlock': 'unpack_k_bits_block',

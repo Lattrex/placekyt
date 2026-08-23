@@ -28,6 +28,7 @@ EXPECTED_CATEGORIES = {
     "math_operators",   # AddConst, GainBlock, Nlog10 (real arithmetic)
     "byte_operators",   # AndConst, pack/unpack_k_bits (byte/bit ALU ops)
     "logic",            # Xor, Not (bitwise logic)
+    "measurement",      # ZeroCrossingRateBlock (windowed feature measurement)
     "coding",           # LFSR scrambler, diff enc/dec, Varicode (line/differential coding)
     "type_conversion",  # char<->float, map_bb
     "modulators",       # RaisedCosineEnvelope / CW keyer (waveform shapers)

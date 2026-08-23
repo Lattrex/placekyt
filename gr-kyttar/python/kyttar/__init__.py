@@ -101,6 +101,7 @@ from .complex_band_pass_filter import complex_band_pass_filter
 from .complex_band_reject_filter import complex_band_reject_filter
 from .dc_blocker import dc_blocker
 from .delay import delay
+from .complex_delay_line import complex_delay_line
 from .agc import agc
 from .agc_cc import agc_cc
 from .nco import nco
@@ -212,6 +213,8 @@ __all__ = [
     "complex_band_pass_filter",
     "complex_band_reject_filter",
     "dc_blocker",
+    "delay",
+    "complex_delay_line",
     "agc",
     "agc_cc",
     "nco",

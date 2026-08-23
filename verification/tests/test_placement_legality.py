@@ -92,6 +92,11 @@ BLOCKS = [
     # param (poly/init/frame_len only change register contents); trivially
     # non-self-overlapping in every D4 orientation and under movement.
     ("Crc16Block", {"frame_len": 8}),
+    # Single-cell windowed zero-crossing rate — no internal transit cell, no
+    # footprint-growing param (window_size only changes a data word + a shift
+    # immediate); trivially non-self-overlapping in every D4 orientation and
+    # under movement.
+    ("ZeroCrossingRateBlock", {"window_size": 64}),
     # Two-complex-stream add/sub: 2-cell chain (rail_i landing -> rail_q emit),
     # no internal transit cell, no footprint-growing param (num_inputs is pinned).
     ("AddCCBlock", {}),

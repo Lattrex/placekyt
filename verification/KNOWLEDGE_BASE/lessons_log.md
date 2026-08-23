@@ -11,6 +11,55 @@ dropped) — append new entries above the oldest ones as before.
 
 ---
 
+## ZeroCrossingRateBlock — windowed ZCR, single cell at exactly 32/32 words 2026-08-23
+
+Windowed zero-crossing rate (tier 3, no GNU Radio streaming counterpart — golden =
+an independent numpy reference from the pinned contract, the Crc16/Golay pattern).
+Rate-REDUCING N:1: per non-overlapping `window_size` window, crossings/`window_size`
+as ONE Q15 word, `count << (15 − log2 N)` (exact for the power-of-two-only param),
+saturated to 0x7FFF at count==N. 34 tests, EXACT tol 0, first-build-after-fix clean.
+Lessons:
+
+- **The resolver reserves R31 as an auto-HALT, so a cell's REAL budget is data +
+  state + instructions ≤ 31 words — and a pinned StateVar that lands in the
+  instruction region fails SILENTLY.** `CellProgramResolver` packs instructions at
+  `base_addr = 31 − instr_count`; it raises only when *data* collides
+  (`base_addr < next_data_addr`), not when an explicitly-PINNED state register
+  overlaps `[base_addr, 30]`. A 24-instruction first cut pinned `counter` at R7 ==
+  base_addr: the state's initial 0 (= HALT) overwrote the first instruction at
+  load and the block built + routed fine but emitted NOTHING (every trigger None —
+  looks exactly like a routing/hop bug). Budget with the R31 reservation in mind
+  and re-count after pinning (INV-33 sharpened: pin state, then CHECK
+  `1 + data + state + instr ≤ 32` with the auto-HALT counted).
+- **Two HALTs are free if the paths are ordered right:** main emit path falls
+  THROUGH into `_skip:`'s HALT (label on a real instruction — the KeepOneInN /
+  INV-13 branch-target rule), and the `_sat:` tail ends on the auto-HALT at R31
+  (its WRITE/JUMP sit at ≤30, respecting the "no external op at R31" rule). That
+  fall-through ordering is what brought 24 instructions down to 23 = fits.
+- **Branchless sign-change detection:** `XOR prev, x` then `SHR R0, #15` — bit 15
+  of the XOR is "sign bits differ", the logical shift makes it a 0/1 addend for a
+  plain `ADD count, R0`. This also IS the tie convention (exact zero has sign bit
+  0 = non-negative) — no compare/branch anywhere in the count path.
+- **`count == N` must be caught BEFORE the shift:** `N << (15 − log2 N)` = 0x8000 =
+  −1.0. One `CMP count, n; BR.Z _sat` pins the rate-1.0 window to 0x7FFF
+  (1 − 2⁻¹⁵). The dual-emit (`{write}`/`{jump}` duplicated per path) is the
+  standard INV-13 saturation shape and the build patches both fine.
+- **Conventions must be PINNED, and the mutation stimulus must be chosen to
+  EXPOSE the mutant (INV-4 sharpened):** the first "missing boundary carry"
+  mutation (prev reset to 0 per window) COINCIDED with the true golden on the
+  obvious stimulus `[+]*N + [−]*N` — the phantom (0→−) crossing equals the real
+  boundary (+→−) crossing, `[0, 8192] == [0, 8192]`, caught only because the
+  mutation test itself failed. There are TWO distinct no-carry mutants
+  (reset-prev-to-zero vs skip-the-boundary-pair) and each needs its own stimulus
+  (window 1 ending − with window 2 all −, resp. window 1 ending + with window 2
+  all −). Also pinned: implicit-zero predecessor before the stream (constant
+  NEGATIVE input reads 1/N in the FIRST window only — documented, tested), the
+  exact-zero tie (window `[+, 0, 0, −]` = 1/4, mutant zero-as-negative = 3/4),
+  and the off-by-one window mutant (closes one sample early → wrong phase AND
+  wrong words).
+- The float `process_reference` must quantize the input to Q15 BEFORE taking
+  signs (a tiny negative float that rounds to 0 is NON-negative on-chip).
+
 ## FLLBandEdgeBlock re-fold: perimeter RING → compact serpentine (no dead interior) 2026-08-17
 
 A design-quality re-fold, DSP untouched: the FLL's `default_layout` was a

@@ -1,0 +1,49 @@
+id: kyttar_zero_crossing_rate
+label: Zero-Crossing Rate
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar Zero-Crossing Rate — windowed zero-crossing rate of a real stream, a
+  standard signal-analysis feature (speech/music discrimination, noisiness
+  estimation). There is NO stock GNU Radio streaming counterpart, so this is a
+  placeKYT-native ([Kyttar]) block.
+
+  For each non-overlapping window of Window Size samples it counts sign changes
+  between consecutive samples (exact zero counts as NON-negative; the stream is
+  treated as preceded by one implicit zero sample; the last sample of each
+  window carries across the window boundary) and emits ONE value:
+  count / window_size, in [0, 1) — a window with a crossing on every pair reads
+  the Q15 rail 1 - 2^-15. Rate-reducing: window_size samples in, 1 out.
+
+  This block runs on the Kyttar chip. Place it between a KyttarSource and
+  KyttarSink block, and ensure the device_id matches your KyttarDevice.
+
+  Parameters:
+  - Device ID: ID of the KyttarDevice block
+  - Window Size: samples per window; MUST be a power of two in [2, 32768]
+    (the count-to-rate scaling is an exact shift). Other values raise.
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.zero_crossing_rate(device_id=${device_id}, window_size=${window_size})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+  - id: window_size
+    label: Window Size
+    dtype: int
+    default: '64'
+
+inputs:
+  - label: in
+    dtype: float
+
+outputs:
+  - label: out
+    dtype: float
+
+file_format: 1

@@ -1121,6 +1121,26 @@ class keep_one_in_n(_PassThrough):
         self._advertise_grc_params(device_id, "KeepOneInNBlock", {"n": int(n)})
 
 
+class zero_crossing_rate(_PassThrough):
+    """Zero-Crossing Rate — GR marker (maps to ZeroCrossingRateBlock).
+
+    Windowed zero-crossing rate of a real stream (placeKYT-native; no stock GNU
+    Radio streaming counterpart): per non-overlapping window of ``window_size``
+    samples, the crossing count / window_size in [0, 1). Rate-REDUCING
+    (window_size in -> 1 out) on the chip. GR marker only; the real DSP runs on
+    the placeKYT chip — plain 1:1 pass-through here (the keep_one_in_n marker
+    convention: a sync_block faking the rate change deadlocks the client
+    scheduler at flowgraph end)."""
+
+    def __init__(self, device_id="kyttar_0", window_size=64):
+        super().__init__("Kyttar Zero-Crossing Rate", n_in=1, n_out=1,
+                         in_dtype=np.float32, out_dtype=np.float32)
+        self.device_id = device_id
+        self.window_size = int(window_size)
+        self._advertise_grc_params(device_id, "ZeroCrossingRateBlock",
+                                   {"window_size": int(window_size)})
+
+
 class moving_average(_PassThrough):
     """Moving Average — GR marker (maps to MovingAverageBlock).
 

@@ -142,6 +142,13 @@ _CASES = [
     # corridor / no reconvergent fan-in), so its per-trigger output word list must be
     # IDENTICAL in every D4 orientation.
     ("PackKBitsBlock", {"k": 8}, "real", ("sample", "out")),
+    # Windowed zero-crossing rate (placeKYT-native, no GR counterpart): single
+    # real rail in (sample) -> one Q15 rate word every window_size triggers
+    # (None-gaps on the accumulating samples). Feed-forward single cell with a
+    # previous-sample register + crossing counter + window counter (no feedback
+    # corridor / no reconvergent fan-in), so its per-trigger output word list
+    # must be IDENTICAL in every D4 orientation.
+    ("ZeroCrossingRateBlock", {"window_size": 4}, "real", ("sample", "out")),
     # Frame CRC-16 (placeKYT-native, no GR counterpart): single real rail in
     # (byte) -> one 16-bit CRC word every frame_len triggers (None-gaps on the
     # accumulating samples). Feed-forward datapath with a CRC shift register +

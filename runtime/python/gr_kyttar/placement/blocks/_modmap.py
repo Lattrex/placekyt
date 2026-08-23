@@ -107,4 +107,5 @@ BUILTIN_BLOCKS = {
     'ComplexToArgBlock': 'cordic_blocks',
     'RMSBlock': 'rms_block',
     'RMSCFBlock': 'rms_block',
+    'ZeroCrossingRateBlock': 'zero_crossing_rate_block',
 }

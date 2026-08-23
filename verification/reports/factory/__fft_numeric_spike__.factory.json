@@ -1,0 +1,16 @@
+{
+ "block": "__fft_numeric_spike__",
+ "grc_block": "",
+ "wave": 7,
+ "outcome": "passed",
+ "attempts": 1,
+ "human_interventions": 0,
+ "tokens": {
+  "total": 97846,
+  "source": "orchestrator_usage"
+ },
+ "turns": 31,
+ "walltime": "13m31s",
+ "commit_sha": "8b281f77e814a986703d4e866953bb147c9b2453",
+ "notes": "Campaign-style record: pre-dispatch numeric design spike (S3) for the streaming-FFT track. Pinned: unconditional >>1 per stage with round-half-to-even (16-bit-safe formula, never materializes the 17-bit sum; +18 dB on coherent tones vs half-up; hybrid and streaming-BFP REJECTED with mechanisms); trivial-twiddle special-casing (2-6 dB + cells); 4-MULQ complex multiply in the proven ordering (3-mult form rejected on Q15 representability); R2SDF-DIF streaming schedule proven bit-exact vs the direct integer FFT over N in {16,64,128} x 192 configs \u2014 that pair is the composite's golden. SNR floors vs float numpy.fft: N=16 >= 58 dB, N=64 >= 51 dB, N=128 >= 48 dB; honest negative recorded (both-rails-full input degrades to ~16.5 dB \u2014 excluded by contract or 6 dB ingress prescale). Scratchpad-only; consumed by the R2Butterfly/TwiddleMultiply dispatch and the future FFT composite."
+}

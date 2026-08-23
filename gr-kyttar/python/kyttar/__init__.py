@@ -79,7 +79,7 @@ from .dsp_markers import (complex_rrc_matched_filter, complex_costas_loop,
                           abs_bb, splitter, conjugate, complex_to_imag,
                           complex_to_mag_squared, float_to_complex,
                           dual_float_to_complex, keep_one_in_n, moving_average,
-                          zero_crossing_rate,
+                          zero_crossing_rate, bin_argmax,
                           rms, rms_cf)
 from .gain import gain
 from .multiply import multiply
@@ -186,6 +186,7 @@ __all__ = [
     "keep_one_in_n",
     "moving_average",
     "zero_crossing_rate",
+    "bin_argmax",
     "rms",
     "rms_cf",
     # Routing primitives

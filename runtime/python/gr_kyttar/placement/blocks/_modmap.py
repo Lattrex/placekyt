@@ -2,6 +2,7 @@
 # auto-generated: ClassName -> module name
 BUILTIN_BLOCKS = {
     'GainBlock': 'gain_block',
+    'BinArgmaxBlock': 'bin_argmax_block',
     'CharToFloatBlock': 'char_to_float_block',
     'Nlog10Block': 'nlog10_block',
     'CWKeyerBlock': 'cw_keyer_block',

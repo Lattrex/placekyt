@@ -9,6 +9,54 @@ block-specific gotcha. Promote anything that generalizes across block classes in
 and superseded material merged into the surviving entries; no durable lesson was
 dropped) — append new entries above the oldest ones as before.
 
+## BinArgmaxBlock — framewise argmax, the signed running-max in one cell 2026-08-23
+
+Framewise argmax (tier 2, QUEUE B8 / CSS track; no GNU Radio streaming counterpart
+— golden = `numpy.argmax` per frame, first-occurrence ties). Rate-REDUCING n:1: per
+non-overlapping frame of `n` signed Q15 words, ONE raw index word (0..n-1). 38
+tests, EXACT tol 0, first on-chip run matched the golden (no bug iterations).
+Lessons:
+
+- **A signed running-max compare MUST use the SLT branch (`CMP a, b` +
+  `BR.GE`/`BR.LT`), never a bare N-flag test.** `CMP maxv, x` computes a 16-bit
+  difference that OVERFLOWS for opposite-sign pairs wider than 15 bits (the re-arm
+  sentinel −32768 vs any x ≥ 0 included — i.e. the FIRST compare of every frame on
+  magnitude inputs), and N alone then orders them BACKWARDS. SLT = `N ^ V` is the
+  overflow-corrected signed less-than (guide §4.7) and `BR.GE` gives the
+  strictly-greater update + FIRST-occurrence ties in a single branch:
+  `CMP maxv, xs; BR.GE skip; <update>`. Proven on-chip with ±full-scale frames
+  (`[0x8000, 0x7FFF, 0, 0x8000] → 1`, both orders, and −32767-beats−−32768).
+- **Record the frame position as the DOWN-counter snapshot, not an up-counter —
+  one counter runs the whole frame loop.** The Crc16 frame down-counter (`SUB cnt,
+  one; MOVE; BR.NZ done`) already yields the position for free: `cnt` before
+  decrement equals `n − i`, so the update path stores `cm = cnt` and the emit path
+  recovers the index as `n − cm` (one `SUB nfrm, cm` straight into R0, WRITEs
+  immediately). No second position register, no per-sample compare against `n`;
+  16-bit wraparound keeps `n − cm` exact through n = 32768 (`0x8000` down-counter).
+  Result: 14 instructions + 3 data + 4 pinned states — far inside the 31-word
+  budget (the ZCR R31 lesson pre-checked).
+- **The −32768 re-arm sentinel + argmax-register re-arm to index 0 make the
+  all-equal and all-minimum frames correct with NO special case:** an all-(−32768)
+  frame never fires the strictly-greater update, and the re-armed `cm = n` emits
+  `n − n = 0` — exactly numpy's first-occurrence answer. Pin BOTH rails as edge
+  frames (all-0x8000 and all-0x7FFF → index 0).
+- **Pin the GOLDEN's tie convention as its own test** (the INV-26 spirit for a
+  numpy golden): `test_numpy_golden_first_occurrence_tie` asserts
+  `np.argmax([5,5,5]) == 0` etc., so the golden is PROVEN to encode the pinned
+  contract before the DUT is held to it — and a numpy behavior change would
+  surface as a loud gate failure, not silent drift.
+- **Raw-word output (an INDEX, not a Q15 sample) follows the crc16 convention
+  end-to-end:** GRC yml output dtype `short`, marker `out_dtype=np.int16`,
+  compare via direct word-list equality (indices ≤ 32767 also survive the
+  `/32768` float round-trip for `compare_against_grc` reports). Document the
+  ×32768 rescale for value scopes (blank-scope contract).
+- The no-reset-between-frames mutant needs a stimulus whose FIRST frame holds the
+  global maximum (mutant then emits 0 for frame 2 where the truth is ≠ 0); the
+  tie-flip (>=) mutant needs duplicate maxima; the counter-one-early mutant is
+  caught by phase (`outputs[n−2] is None`) AND value on a random stimulus.
+
+---
+
 ---
 
 ## ComplexDelayLineBlock — multi-cell distributed complex delay, ON-FABRIC to depth 64 2026-08-23

@@ -1,0 +1,58 @@
+id: kyttar_bin_argmax
+label: Framewise Argmax
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar Framewise Argmax — the standard peak-picking stage over a magnitude /
+  power bin vector (e.g. the output of a Complex To Mag^2 stage): the emitted
+  index of the winning bin IS the detected symbol / peak position. There is NO
+  stock GNU Radio streaming counterpart, so this is a placeKYT-native ([Kyttar])
+  block.
+
+  For each non-overlapping frame of N consecutive input samples it emits ONE
+  word: the ZERO-BASED index (0..N-1) of the frame's maximum value.
+  Rate-reducing: N samples in, 1 out; a trailing partial frame is never emitted.
+
+  Pinned conventions:
+  - Tie: FIRST occurrence wins (strictly-greater running-max update — exactly
+    numpy.argmax's convention). An all-equal frame emits index 0.
+  - Comparison is SIGNED: negative inputs are legal and compare as signed
+    values. Magnitude/power inputs (all non-negative) get the natural behavior.
+  - State fully resets between frames (adjacent frames are independent).
+
+  The output is a RAW INDEX WORD (an integer 0..N-1, dtype short), NOT a
+  Q15 sample — a float scope fed through a kyttar sink shows index/32768, so
+  put a x32768 rescale in front of a value display.
+
+  This block runs on the Kyttar chip. Place it between a KyttarSource and
+  KyttarSink block, and ensure the device_id matches your KyttarDevice.
+
+  Parameters:
+  - Device ID: ID of the KyttarDevice block
+  - N: frame length; MUST be an integer in [1, 32768] (the 16-bit frame
+    counter / non-negative 16-bit index word cap). Other values raise.
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.bin_argmax(device_id=${device_id}, n=${n})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+  - id: n
+    label: N
+    dtype: int
+    default: '128'
+
+inputs:
+  - label: in
+    dtype: float
+
+outputs:
+  - label: out
+    dtype: short
+
+file_format: 1

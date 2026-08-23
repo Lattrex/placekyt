@@ -197,6 +197,13 @@ RATE_1IN = {
     # stream must equal the per-sample flat stream (window_size=4 on the 16-word
     # stimulus emits 4 real rate words — a live, non-empty drive).
     "ZeroCrossingRateBlock": ("sample", "out", {"window_size": 4}),
+    # Framewise argmax (n samples -> 1 raw index word, rate-REDUCING): single
+    # cell with a running-max register + argmax snapshot + frame down-counter
+    # across samples, feed-forward, NO feedback corridor / NO reconvergent
+    # fan-in (INV-19/20 N/A), so the saturated flat stream must equal the
+    # per-sample flat stream (n=4 on the 16-word stimulus emits 4 real index
+    # words — a live, non-empty drive).
+    "BinArgmaxBlock": ("sample", "out", {"n": 4}),
     # bit-stream -> symbols (emits every N bits) — proven saturated 2026-07-14.
     "PSKSymbolMapperBlock": ("sample", "out_i", {}),
     # M17 4FSK blocks (2026-07-21): 4FSK symbol MAPPER packs 2 bits/symbol (2:1

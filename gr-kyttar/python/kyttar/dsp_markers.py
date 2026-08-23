@@ -1141,6 +1141,27 @@ class zero_crossing_rate(_PassThrough):
                                    {"window_size": int(window_size)})
 
 
+class bin_argmax(_PassThrough):
+    """Framewise Argmax — GR marker (maps to BinArgmaxBlock).
+
+    Framewise argmax of a real stream (placeKYT-native; no stock GNU Radio
+    streaming counterpart): per non-overlapping frame of ``n`` samples, ONE raw
+    integer word = the ZERO-BASED index (0..n-1) of the frame's maximum (ties:
+    FIRST occurrence; comparison is SIGNED). Rate-REDUCING (n in -> 1 out) on
+    the chip. The output is an INDEX word, not a Q15 sample (the crc16 raw-word
+    convention — dtype short). GR marker only; the real DSP runs on the placeKYT
+    chip — plain 1:1 pass-through here (the keep_one_in_n marker convention: a
+    sync_block faking the rate change deadlocks the client scheduler at
+    flowgraph end)."""
+
+    def __init__(self, device_id="kyttar_0", n=128):
+        super().__init__("Kyttar Framewise Argmax", n_in=1, n_out=1,
+                         in_dtype=np.float32, out_dtype=np.int16)
+        self.device_id = device_id
+        self.n = int(n)
+        self._advertise_grc_params(device_id, "BinArgmaxBlock", {"n": int(n)})
+
+
 class moving_average(_PassThrough):
     """Moving Average — GR marker (maps to MovingAverageBlock).
 

@@ -102,6 +102,10 @@ BLOCKS = [
     # immediate); trivially non-self-overlapping in every D4 orientation and
     # under movement.
     ("ZeroCrossingRateBlock", {"window_size": 64}),
+    # Single-cell framewise argmax — no internal transit cell, no footprint-
+    # growing param (n only changes data words + state initial values);
+    # trivially non-self-overlapping in every D4 orientation and under movement.
+    ("BinArgmaxBlock", {"n": 128}),
     # Two-complex-stream add/sub: 2-cell chain (rail_i landing -> rail_q emit),
     # no internal transit cell, no footprint-growing param (num_inputs is pinned).
     ("AddCCBlock", {}),

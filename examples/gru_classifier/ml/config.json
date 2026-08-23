@@ -1,0 +1,14 @@
+{
+  "sample_rate_hz": 32000,
+  "window_n": 32,
+  "feature_rate_hz": 1000,
+  "features": ["rms", "zcr"],
+  "classes": ["ssb", "bpsk", "fsk4", "noise"],
+  "clip_feature_steps": 300,
+  "clips_per_class": 600,
+  "split_per_class": {"train": 400, "val": 80, "test": 120},
+  "snrs_db": ["clean", 20, 10, 5],
+  "gain_range": [0.25, 0.7],
+  "freq_offset_hz": [-100, 100],
+  "seed": 20260817
+}

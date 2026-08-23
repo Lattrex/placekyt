@@ -1,0 +1,104 @@
+{
+  "window_n": 32,
+  "clip_steps": 300,
+  "clips_per_class": 96,
+  "snrs_db": [
+    "clean",
+    20.0,
+    10.0,
+    5.0
+  ],
+  "pairs": {
+    "mag+rms": {
+      "clip_level_logistic_test_acc": 0.9921875,
+      "n_test_clips": 128,
+      "confusion_rows_true_cols_pred": [
+        [
+          31,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          40,
+          0,
+          1
+        ],
+        [
+          0,
+          0,
+          25,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          31
+        ]
+      ]
+    },
+    "mag+zcr": {
+      "clip_level_logistic_test_acc": 1.0,
+      "n_test_clips": 128,
+      "confusion_rows_true_cols_pred": [
+        [
+          31,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          41,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          25,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          31
+        ]
+      ]
+    },
+    "rms+zcr": {
+      "clip_level_logistic_test_acc": 1.0,
+      "n_test_clips": 128,
+      "confusion_rows_true_cols_pred": [
+        [
+          31,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          41,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          25,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          31
+        ]
+      ]
+    }
+  },
+  "best_pair": "mag+zcr"
+}

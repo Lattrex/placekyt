@@ -89,6 +89,17 @@ class ChipBuild:
     # v2 register allocation (so it works for the auto-P&R modem, not just a hand
     # build). Empty when no block flags any reset state.
     batch_reset_writes: list = field(default_factory=list)
+    # RELAY cells consumed by OVER-BUDGET (>31-hop) nets, keyed by connection name:
+    # ``{conn: [(x, y), ...]}`` in route order. A relay is a plain routing cell the
+    # word LANDS on and is re-emitted from with a fresh hop budget (§1.4 #3) — it
+    # costs one array cell per 30 hops of route, so the cost is reported here (and
+    # surfaced by ``relay_cost``) rather than being invisible.
+    relay_cells: dict = field(default_factory=dict)
+
+    @property
+    def relay_cost(self) -> int:
+        """Total array cells spent on >31-hop relays for this chip."""
+        return sum(len(v) for v in self.relay_cells.values())
 
 
 @dataclass
@@ -298,6 +309,18 @@ class BuildEngine:
         _apply_crossovers(cell_map, gr_placement, blocks_here, conns_here,
                           project, chip_id, chip_type, gr_blocks, self.catalog)
 
+        # OVER-BUDGET (>31-hop) ROUTES (§1.4 #3): the hop field is 5 bits, so ONE
+        # WRITE/JUMP pair cannot address a cell more than 31 hops away. Split such a
+        # net at intermediate RELAY cells — the word LANDS on a plain routing cell,
+        # which re-emits it with a FRESH budget toward the rest of the route. Runs
+        # after brokers/crossovers (the source exit now carries its FINAL
+        # dest/entry/hop, which the LAST relay reproduces) and before the universal
+        # transit program (so a relay cell keeps its relay program). Relay cells cost
+        # array area, so the build reports which cells each net consumed.
+        relay_cells = _apply_relays(cell_map, gr_placement, blocks_here,
+                                    conns_here, project, chip_id, chip_type,
+                                    gr_blocks, self.catalog)
+
         # A DUAL-FACE output cell (e.g. the Costas `rotate`) emits its INTERNAL
         # handoffs on one face and its TAP output on a ROUTE-DETERMINED face. The
         # route's exit direction is now on the cell's `fwd_face` (set by routes/
@@ -409,6 +432,7 @@ class BuildEngine:
             cells=_extract_cell_memory(cell_map, ownership, classes),
             input_landings=input_landings,
             batch_reset_writes=batch_reset_writes,
+            relay_cells=relay_cells,
         )
 
         # STRAY-EMISSION DRC (P3.4): a WRITE/JUMP that lands on an EMPTY/unowned
@@ -2047,6 +2071,62 @@ def _crossover_program(tracks):
     return by_conn, dict(resolved.memory)
 
 
+def _relay_program(exit_face, out_hop, out_dest, out_entry):
+    """Assemble a RELAY cell program — the §1.4 #3 long-route re-launch.
+
+    A route longer than the 5-bit HOP_CNT field (31) cannot be delivered by one
+    WRITE/JUMP pair: the source's hop field simply cannot name a cell that far
+    away. The fix is to SPLIT the route: the word is addressed to LAND on an
+    intermediate routing cell (HOP_CNT==31), which re-emits it with a FRESH hop
+    budget toward the remainder of the route.
+
+    This is the SAME primitive :func:`_crossover_program` already proves on-chip
+    (land → flip face → re-emit), specialised to ONE track: a relay is a crossover
+    with a single stream, whose purpose is a fresh hop count rather than a face
+    demux. We reuse the shape rather than invent a second relay opcode.
+
+    The landed word runs:
+      1. ``MOVE [FACE], <exit_face>`` — point at the continuation of the route,
+      2. ``MOVE R0, R{in:burst}`` — take the landed burst,
+      3. ``WRITE @out_hop, out_dest`` — re-emit the PAYLOAD onward,
+      4. ``JUMP  @out_hop, out_entry`` — re-emit the TRIGGER onward,
+      5. ``HALT``.
+
+    Steps 3+4 preserve the WRITE+JUMP pair semantics exactly: the final
+    destination receives the same payload register and the same trigger entry it
+    would have received from a hop-legal single-segment route — only the hop
+    field differs, which is precisely what the relay exists to refresh.
+
+    ``out_dest``/``out_entry`` are the ORIGINAL downstream delivery (read from the
+    source's already-patched exit WRITE/JUMP) when this is the LAST relay on the
+    net; for an intermediate relay they address the NEXT relay's burst reg + entry.
+
+    Returns ``(entry_addr, {addr: word})``."""
+    from gr_kyttar.placement.block import (CellProgram, DataWord, EntryPoint,
+                                             Port)
+    from gr_kyttar.placement.resolver import CellProgramResolver
+
+    prog = CellProgram(
+        inputs=[Port("burst", register=0)],
+        outputs=[Port("out")],
+        entries=[EntryPoint("relay")],
+        data=[DataWord("face", int(exit_face) & 0x3, address=1)],
+        state=[],
+        assembly_template=(
+            "relay:\n"
+            "    MOVE [FACE], R{data:face}\n"
+            "    MOVE R0, R{in:burst}\n"
+            f"    WRITE @{int(out_hop)}, {int(out_dest)}\n"
+            f"    JUMP @{int(out_hop)}, {int(out_entry)}\n"
+            "    HALT\n"
+        ),
+    )
+    resolver = CellProgramResolver()
+    resolved = resolver.resolve(prog)
+    entry_addrs = resolver.compute_entry_addresses(prog)
+    return entry_addrs["relay"], dict(resolved.memory)
+
+
 def _apply_crossovers(cell_map, gr_placement, blocks, connections, project,
                       chip_id, chip_type, gr_blocks, catalog) -> None:
     """Promote single-``fwd_face`` CONFLICT cells to programmed CROSSOVERS (§1.2/§1.3).
@@ -2147,6 +2227,106 @@ def _apply_crossovers(cell_map, gr_placement, blocks, connections, project,
             else:
                 _patch_cell_handoff(scfg, head, dest=BROKER_BURST_REG,
                                     entry=t_entry)
+
+
+def _apply_relays(cell_map, gr_placement, blocks, connections, project,
+                  chip_id, chip_type, gr_blocks, catalog) -> dict:
+    """Program RELAY cells for OVER-BUDGET (>31-hop) routes (§1.4 #3).
+
+    The hop field is 5 bits, so one WRITE/JUMP pair can address a cell at most 31
+    hops away. A longer route is SPLIT: the word is addressed to LAND on an
+    intermediate plain routing cell, which re-emits it with a FRESH budget toward
+    the remainder of the route. :func:`bus_router.relay_plan` derives the cells
+    from the routed project (build-from-design); here each is programmed and the
+    upstream emitter is re-pointed at it.
+
+    Per relay:
+      * the relay cell gets :func:`_relay_program` — land, flip to the exit face,
+        re-emit ``WRITE`` + ``JUMP`` with the next segment's hop budget;
+      * the UPSTREAM emitter (the source block's exit cell for the FIRST relay, the
+        PREVIOUS relay for the rest) is re-pointed to land at this relay: dest =
+        the relay's burst register, entry = the relay's entry, hop = the segment.
+
+    The final relay re-emits the net's ORIGINAL downstream delivery (dest/entry,
+    read from the source's already-patched exit WRITE/JUMP), so the destination
+    receives exactly the payload register + trigger entry a hop-legal route would
+    have delivered — the WRITE+JUMP pair semantics are preserved end to end.
+
+    Runs AFTER :func:`_apply_brokers` and :func:`_apply_crossovers` (the source
+    exit now carries its FINAL dest/entry/hop, which is what the last segment must
+    reproduce) and BEFORE :func:`_apply_routing_cell_programs` (so a relay cell is
+    no longer a "plain transit" cell and keeps its relay program).
+
+    Returns ``{conn_name: [(x, y), ...]}`` — the relay cells used per net, for the
+    build report (relays cost array area, so the cost is made visible).
+    """
+    from model.connection import BlockEndpoint
+    from gr_kyttar.placement.cell_map import CellConfig
+    from .bus_router import BROKER_BURST_REG, relay_plan
+
+    plan = relay_plan(project, chip_id, chip_type, catalog)
+    if not plan:
+        return {}
+
+    placed = {b.name for b in blocks}
+    conn_by_name = {c.name: c for c in connections}
+    used: dict[str, list] = {}
+
+    for conn_name, hops in plan.items():
+        conn = conn_by_name.get(conn_name)
+        if conn is None:
+            continue
+        src = conn.source
+        if not (isinstance(src, BlockEndpoint) and src.block in placed):
+            # A PORT-sourced over-budget net: the host injects at the port, so there
+            # is no block exit WRITE/JUMP to re-point. Leave it to the (still
+            # failing) hop DRC rather than mis-program it.
+            continue
+        pb = gr_placement.placed_blocks.get(src.block)
+        if pb is None:
+            continue
+        scfg = cell_map.get_cell(*pb.exit_cell)
+        gb = gr_blocks.get(src.block)
+        if scfg is None:
+            continue
+        # The net's FINAL downstream delivery (what the last relay must reproduce).
+        dest, entry, _full_hop = _read_source_exit(scfg, gb)
+        out_dest = dest if dest is not None else BROKER_BURST_REG
+        out_entry = entry if entry is not None else 0
+
+        # Program each relay from the LAST backward, so every relay knows the
+        # (already-resolved) entry address of the relay it re-emits into.
+        next_dest, next_entry = out_dest, out_entry
+        resolved = []           # (cell, entry_addr) in reverse route order
+        for hop in reversed(hops):
+            r_entry, memory = _relay_program(hop.exit_face, hop.out_hop,
+                                             next_dest, next_entry)
+            cx, cy = hop.cell
+            cfg = cell_map.get_cell(cx, cy)
+            if cfg is None:
+                cfg = CellConfig(block_name="_relay")
+                cell_map.set_cell(cx, cy, cfg)
+            cfg.memory.update(memory)
+            cfg.entry_addr = r_entry
+            if not getattr(cfg, "block_name", ""):
+                cfg.block_name = "_relay"
+            elif cfg.block_name is None:
+                cfg.block_name = "_relay"
+            resolved.append(((cx, cy), r_entry))
+            # The PREVIOUS emitter must land HERE: burst reg + this relay's entry.
+            next_dest, next_entry = BROKER_BURST_REG, r_entry
+
+        # Re-point the SOURCE at the FIRST relay (``next_dest``/``next_entry`` now
+        # hold it after the reverse walk), at the first segment's distance.
+        first = hops[0]
+        if _output_cell_carries_handoffs(gb):
+            _patch_last_write_handoff(scfg, first.head, dest=next_dest)
+            _patch_last_jump_handoff(scfg, first.head, entry=next_entry)
+        else:
+            _patch_cell_handoff(scfg, first.head, dest=next_dest,
+                                entry=next_entry)
+        used[conn_name] = [c for c, _e in reversed(resolved)]
+    return used
 
 
 # --- §1.4 universal routing-cell program (Reading B) -----------------------

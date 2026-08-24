@@ -1823,24 +1823,16 @@ def _route_chip_bus(project, ct, chip_id, nets, spine, *, sc_cells=None,
             distance += 1          # word must transit the edge cell to exit
         # >31-hop route (§1.4): instead of failing, insert RELAY cells along the
         # path so each segment is ≤31 hops. A relay is a routing cell where the word
-        # lands at HOP==31 and the universal ``relay`` entry re-launches it with a
-        # fresh budget onward. We place a relay every (_MAX_HOPS - 1) waypoints so
-        # the source→relay, relay→relay, and relay→broker segments each fit. The
-        # final +1 (broker deliver or port egress) is absorbed in the last segment.
+        # lands at HOP==31 and a ``relay`` entry re-launches it with a fresh budget
+        # onward. We place a relay every (_MAX_HOPS - 1) waypoints so the
+        # source→relay, relay→relay, and relay→broker segments each fit. The final
+        # +1 (broker deliver or port egress) is absorbed in the last segment.
         relays: list[tuple] = []
         if distance > _MAX_HOPS:
-            seg = _MAX_HOPS - 1            # leave headroom for the deliver/egress +1
-            # path index of each relay: every `seg` hops from the source exit, but
-            # never the source (idx 0) or the final broker/target (last idx).
-            idx = seg
-            while idx < len(path) - 1:
-                relays.append(path[idx])
-                idx += seg
-            if not relays:                 # pathological: couldn't place one — fail
-                out.append(RouteResult(
-                    name, False,
-                    reason=f"bus route is {distance} hops (max {_MAX_HOPS}) and no "
-                           "relay cell could be placed on the path"))
+            relays, why = _plan_relays(path, distance, occ, used_port_cells,
+                                       brokers)
+            if why is not None:
+                out.append(RouteResult(name, False, reason=why))
                 continue
 
         # Commit: this net's cells join the shared bus so later nets coalesce, and
@@ -1875,19 +1867,6 @@ def _route_chip_bus(project, ct, chip_id, nets, spine, *, sc_cells=None,
             # sibling arm whose corridor must TURN at the shared broker (the 3-arm
             # splitter fan-out: arm 1's broker abutted the next block, so arms 2/3
             # were forced straight into a block cell and failed to route).
-        if relays:
-            # Relay PLACEMENT is computed (§1.4), but the BUILD does not yet program
-            # the relay re-launch (storing relays on the connection + patching each
-            # relay's onward hop is the remaining build-side piece). Rather than emit
-            # a route the build would MIS-program (a silent wrong build — forbidden),
-            # fail this net loudly and NAME it, carrying the computed relay cells so a
-            # future build pass can consume them. Sound failure, not a dead build.
-            out.append(RouteResult(
-                name, False, points=path, relays=relays,
-                reason=f"bus route is {distance} hops (>{_MAX_HOPS}); "
-                       f"{len(relays)} relay cell(s) placed at {relays}, but relay "
-                       "programming is not yet emitted by the build"))
-            continue
         # Record this hazard cell's committed face so the OTHER net (routed later) is
         # steered off it. INPUT net -> the input ARRIVAL face (cell -> broker dir);
         # OUTPUT net -> the OUTPUT face (cell -> first waypoint dir).
@@ -1906,7 +1885,8 @@ def _route_chip_bus(project, ct, chip_id, nets, spine, *, sc_cells=None,
         if isinstance(conn.source, BlockEndpoint):
             out_cells_by_block.setdefault(conn.source.block, set()).update(path)
 
-        out.append(RouteResult(name, True, points=path))
+        out.append(RouteResult(name, True, points=path,
+                               relays=relays or None))
 
     return out
 
@@ -2483,6 +2463,66 @@ def broker_plan(project, chip_id, chip_type, catalog):
     return taps
 
 
+def _plan_relays(path, distance, occ, used_port_cells, brokers):
+    """Choose RELAY cells along ``path`` so every segment fits the 31-hop field.
+
+    Returns ``(relays, None)`` on success, or ``([], reason)`` when the route
+    cannot be legally relayed — a NAMED failure, never a silent mis-programmed
+    build.
+
+    A relay must be a PLAIN, FREE routing cell. Three cell classes are hard
+    rejections (each is an established failure class, not a preference):
+
+      * a **block cell** (``occ``) — a corridor may never execute on a DSP
+        block's cell; landing a word there would run the block's program with a
+        routing payload (the used-cell guard, INV-32 / ``test_kyt_route_transits``);
+      * a **used chip-port cell** (``used_port_cells``) — its injection/egress
+        programming and a relay program cannot share the cell (the port_transit
+        hard failure class);
+      * an existing **broker** — it already owns the land-at-31 entry space for
+        its own delivery; overlaying a relay would collide with it.
+
+    Segments are ``_MAX_HOPS - 1`` so the last segment still has room for the
+    broker-deliver / port-egress ``+1``. When a chosen index is illegal we walk
+    BACKWARD to the nearest legal cell (shortening that segment, which is always
+    safe) rather than forward (which would overrun the budget)."""
+    seg = _MAX_HOPS - 1
+    relays: list[tuple] = []
+    illegal = set(occ) | set(used_port_cells) | set(brokers)
+    last = 0                                   # path index of the previous relay
+    idx = seg
+    while idx < len(path) - 1:
+        # Walk backward from idx to the nearest legal, non-source, non-final cell.
+        j = idx
+        while j > last and (path[j] in illegal or path[j] in relays):
+            j -= 1
+        if j <= last:
+            return [], (
+                f"bus route is {distance} hops (>{_MAX_HOPS}) and no free relay "
+                f"cell is available between waypoints {last} and {idx} — every "
+                "candidate is a block cell, a used port cell, or a broker. "
+                "Re-place to free a routing cell on the corridor")
+        relays.append(path[j])
+        last = j
+        idx = j + seg
+    if not relays:
+        return [], (f"bus route is {distance} hops (>{_MAX_HOPS}) and no relay "
+                    "cell could be placed on the path")
+    # Every segment (source→relay, relay→relay, relay→end) must now fit, including
+    # the trailing deliver/egress +1 absorbed in the final segment.
+    marks = [0] + [path.index(r) for r in relays] + [len(path) - 1]
+    tail_extra = distance - (len(path) - 1)     # the broker-deliver / egress +1
+    for k in range(len(marks) - 1):
+        span = marks[k + 1] - marks[k]
+        if k == len(marks) - 2:
+            span += tail_extra
+        if span > _MAX_HOPS:
+            return [], (
+                f"bus route is {distance} hops (>{_MAX_HOPS}); relay segment "
+                f"{k} is {span} hops, still over budget")
+    return relays, None
+
+
 @dataclass
 class CrossoverTrack:
     """One stream a CROSSOVER cell relays: ``conn`` lands here (HOP==31 via its own
@@ -2601,6 +2641,106 @@ def crossover_plan(project, chip_id, chip_type, catalog):
                                              head=head))
         taps[cell] = CrossoverTap(cell=cell, tracks=tracks)
     return taps
+
+
+@dataclass
+class RelayHop:
+    """One RELAY cell on an over-budget net (§1.4 #3).
+
+    ``cell`` is the plain routing cell the word LANDS on (addressed at the 31-hop
+    ceiling by the previous segment). ``head`` is the hop distance from the net's
+    SOURCE exit cell to this relay — what the source's WRITE/JUMP is re-pointed to.
+    ``exit_face`` is the face toward the next waypoint. ``out_hop`` is the fresh
+    budget this relay re-emits with (to the NEXT relay, or the rest of the route)."""
+
+    conn: str
+    cell: tuple
+    head: int
+    exit_face: int
+    out_hop: int
+
+
+def relay_plan(project, chip_id, chip_type, catalog):
+    """Derive RELAY cells for every OVER-BUDGET routed net on one chip.
+
+    The sibling of :func:`broker_plan` / :func:`crossover_plan`, and derived the
+    same way — from the ROUTED project, with no side channel (build-from-design).
+    A net whose delivered distance exceeds the 5-bit hop field (31) cannot be
+    addressed by one WRITE/JUMP pair; it is split into ≤31-hop SEGMENTS by landing
+    the word on intermediate plain routing cells that re-emit it with a fresh
+    budget (:func:`build._relay_program`).
+
+    Returns ``{conn_name: [RelayHop, ...]}`` in route order — empty for the common
+    hop-legal net. A net whose relays cannot be legally placed is ABSENT (the
+    router already NAMED that failure; the build's hop DRC still catches it).
+    """
+    block_cells: set = set()
+    for blk in project.blocks:
+        pl = blk.placement
+        if pl is None or pl.chip != chip_id:
+            continue
+        block_cells.update((c.x, c.y) for c in pl.cells)
+        block_cells.update((t.x, t.y) for t in getattr(pl, "transit_cells", []))
+
+    _pc_by_name = {p.name: (p.cell_x, p.cell_y) for p in getattr(chip_type, "ports", [])}
+    used_port_cells = set()
+    for conn in project.connections:
+        for ep in (conn.source, conn.target):
+            if isinstance(ep, ChipPortEndpoint) and ep.chip == chip_id \
+                    and ep.port in _pc_by_name:
+                used_port_cells.add(_pc_by_name[ep.port])
+
+    brokers = set(broker_plan(project, chip_id, chip_type, catalog).keys())
+
+    out: dict[str, list] = {}
+    for conn in project.connections:
+        if not conn.is_routed or _conn_chip(project, conn) != chip_id:
+            continue
+        pts = _phys_pts(project, conn, catalog)
+        if not pts or len(pts) < 2:
+            continue
+        # The DELIVERED distance the build must address — identical arithmetic to
+        # the router's and to the hop DRC's (waypoint hops, +1 for the broker's
+        # deliver-into-block hop or for a chip-output-port egress).
+        distance = len(pts) - 1
+        if pts[-1] in brokers:
+            distance += 1
+        elif isinstance(conn.target, ChipPortEndpoint) \
+                and conn.target.port.endswith("_out"):
+            distance += 1
+        if distance <= _MAX_HOPS:
+            continue
+
+        cells, why = _plan_relays(pts, distance, block_cells, used_port_cells,
+                                  brokers)
+        if why is not None:
+            continue                    # already a NAMED router failure
+
+        # Segment boundaries along the path: source exit, each relay, final cell.
+        marks = [0] + [pts.index(c) for c in cells] + [len(pts) - 1]
+        tail_extra = distance - (len(pts) - 1)   # broker-deliver / port-egress +1
+        hops = []
+        ok = True
+        for k, c in enumerate(cells):
+            i = marks[k + 1]
+            exit_face = _step_face(pts[i], pts[i + 1])
+            if exit_face is None:
+                ok = False
+                break
+            # ``head`` is the distance of the segment ENDING at this relay — from the
+            # SOURCE exit for the first relay, from the PREVIOUS relay thereafter
+            # (each segment is addressed independently with its own fresh budget).
+            head = marks[k + 1] - marks[k]
+            # ``out_hop`` is the NEXT segment's distance; the LAST relay also carries
+            # the trailing deliver/egress +1.
+            span = marks[k + 2] - marks[k + 1]
+            if k == len(cells) - 1:
+                span += tail_extra
+            hops.append(RelayHop(conn=conn.name, cell=c, head=head,
+                                 exit_face=exit_face, out_hop=span))
+        if ok and hops:
+            out[conn.name] = hops
+    return out
 
 
 def broker_through_face(project, chip_id, chip_type, catalog):

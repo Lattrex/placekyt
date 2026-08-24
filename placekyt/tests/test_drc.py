@@ -172,23 +172,44 @@ class TestHopOverflow:
         # use a tall chip so the route stays in bounds
         assert "hop_overflow" not in _categories(check_project(p, {"t": _chip_type(10, 40)}))
 
-    def test_overflow(self):
-        # 33 waypoints -> distance 32 > 31
+    def test_over_budget_route_is_relayable_not_an_error(self):
+        """INV-36: a >31-hop route is no longer automatically an error — the
+        build SPLITS it at relay cells that re-emit with a fresh budget. With
+        free routing cells on the corridor it is legal."""
+        # 33 waypoints -> distance 32 > 31, but every transit cell is free.
         c = Connection("c", BlockEndpoint("a", "out"), BlockEndpoint("b", "in"),
                        route=[RoutePoint(0, i) for i in range(33)])
         p = _project([_placed("a", 0, 0), _placed("b", 0, 32)], [c])
         r = check_project(p, {"t": _chip_type(10, 40)})
-        assert any(e.category == "hop_overflow" for e in r.errors)
+        assert "hop_overflow" not in _categories(r)
+
+    def test_overflow_when_the_route_cannot_be_relayed(self):
+        """A long route with NO relayable source is still a hard error: only a
+        net sourced at a PLACED BLOCK has an exit WRITE/JUMP to re-point, so a
+        net whose source block is unplaced cannot be segmented (INV-36)."""
+        c = Connection("c", BlockEndpoint("ghost", "out"),
+                       BlockEndpoint("b", "in"),
+                       route=[RoutePoint(0, i) for i in range(33)])
+        p = _project([_placed("b", 0, 32)], [c])
+        r = check_project(p, {"t": _chip_type(10, 40)})
+        assert any(e.category == "hop_overflow" for e in r.errors), \
+            "an unrelayable >31-hop route must still be named"
 
     def test_chip_output_plus_one_rule(self):
-        # 31 waypoints -> distance 30; +1 for chip-output exit -> 31, still OK.
-        # 32 waypoints -> distance 31; +1 -> 32 > 31 -> overflow.
+        """The +1 egress hop still counts toward the budget — but a route that
+        exceeds it is now RELAYED rather than rejected (INV-36). What must not
+        change is the arithmetic: 32 waypoints + 1 egress = 33 delivered hops,
+        which is over budget and therefore must consume a relay."""
+        from engine.bus_router import _plan_relays
+        pts = [(0, i) for i in range(32)]
+        relays, why = _plan_relays(pts, len(pts) + 1, set(), set(), set())
+        assert why is None and relays, "the egress +1 must push it over budget"
         c = Connection("c", BlockEndpoint("a", "out"),
                        ChipPortEndpoint(0, "x16_out"),
                        route=[RoutePoint(0, i) for i in range(32)])
         p = _project([_placed("a", 0, 0)], [c])
         r = check_project(p, {"t": _chip_type(10, 40)})
-        assert any(e.category == "hop_overflow" for e in r.errors)
+        assert "hop_overflow" not in _categories(r)
 
 
 # --- long_route (WARNING) -------------------------------------------------- #

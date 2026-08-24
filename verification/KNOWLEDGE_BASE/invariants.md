@@ -1504,3 +1504,61 @@ with only `transit_*` entries after, and (b) the last program cell is
 `test_egress_relay_is_the_last_program_cell`). This sits alongside the
 ROUTE-TIME FACE RULE (lessons_log, FFT16): that one governs which face a cell
 ends up with, this one governs which CELL a handoff resolves to.
+
+---
+
+## INV-36 — The hop field stops at 31; a longer route must be SPLIT at RELAY cells
+
+A `WRITE`/`JUMP` carries a **5-bit HOP_CNT**, so a single emission can address a
+cell **at most 31 hops away**. This is a hard field limit, not a heuristic: the
+assembler rejects `@32` outright (`Distance must be 0-31`), and a word travels by
+being forwarded until HOP_CNT reaches 31, at which point the arriving cell
+executes it locally instead of forwarding (`execute_locally` in the trace).
+
+So a route longer than 31 hops cannot be delivered by one emission at all. The
+router used to plan relay cells for these and then fail the net, because the
+build never programmed them.
+
+**The fix — segment the route.** The word is addressed to LAND on an intermediate
+plain routing cell, whose relay program flips to the route's continuation face
+and re-emits the payload + trigger with a FRESH budget:
+
+```
+MOVE [FACE], <exit_face>     ; point at the rest of the route
+MOVE R0, R{in:burst}         ; the landed burst
+WRITE @<next_seg>, <dest>    ; re-emit the PAYLOAD
+JUMP  @<next_seg>, <entry>   ; re-emit the TRIGGER
+HALT
+```
+
+This is the SAME land→flip→re-emit primitive the CrossoverBlock demux already
+proves on-chip, specialised to one track — do not invent a second mechanism.
+
+Four rules that make it correct:
+
+1. **Emit the WRITE *and* the JUMP.** A relay that forwards only the payload
+   delivers a silent stream that never triggers the destination. The final relay
+   re-emits the net's ORIGINAL `dest`/`entry` (read from the source's
+   already-patched exit WRITE/JUMP), so the destination sees exactly what a
+   hop-legal route would have delivered.
+2. **Chain backward.** Program the LAST relay first: each relay must address the
+   *resolved entry* of the relay after it, and the SOURCE is finally re-pointed
+   at the FIRST relay. Segments are independent — each carries its own budget.
+3. **Never relay onto a cell that is in use.** A block cell, a USED chip-port
+   cell, or an existing broker is a HARD rejection (INV-32 / the port_transit
+   class) — landing a word on one runs someone else's program with a routing
+   payload. When no free candidate exists the route is a NAMED failure, never a
+   relay overlaid on live programming.
+4. **One planner, three gates.** The router, the build, the DRC's `hop_overflow`,
+   and the controller's `add_route` guard all call the SAME `_plan_relays`, so a
+   long route is never accepted by one and rejected by another.
+
+**Cost is real and must be reported.** A relay consumes one array cell per ~30
+hops of route; `ChipBuild.relay_cells` / `.relay_cost` surface it so the area is
+visible rather than silently spent.
+
+Relays CHAIN, so there is no practical hop ceiling left beyond available array
+area — a measured 96-hop route runs correctly through three relays. Gated by
+`placekyt/tests/test_relay_emit.py`, including the on-chip bit-exactness of a
+relayed net against a hop-legal control (the relay must be transparent to data)
+and the mutations that must fail: relay omitted, stale hop count, mis-faced relay.

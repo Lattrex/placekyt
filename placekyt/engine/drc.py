@@ -283,6 +283,55 @@ def _source_chip(project: Project, conn: Connection) -> int | None:
     return None
 
 
+def _relay_covers(project, conn, points, distance, chip_id, chip_types) -> bool:
+    """True when an over-budget route can be legally RELAYED (§1.4 #3).
+
+    A route longer than the 5-bit hop field is no longer automatically an error:
+    the build splits it at intermediate plain routing cells that re-emit the word
+    with a fresh budget (``build._apply_relays``). It is STILL an error when no
+    legal relay cell exists on the corridor — every candidate being a block cell,
+    a used chip-port cell, or a broker. We ask the SAME planner the build uses, so
+    the DRC and the emitted bitstream can never disagree about which long routes
+    are buildable.
+
+    A source that is not a placed BLOCK (a chip-input-port net) has no exit
+    WRITE/JUMP to re-point, so it cannot be relayed — those stay hop_overflow.
+    """
+    src = conn.source
+    if not isinstance(src, BlockEndpoint):
+        return False
+    blk = project.block(src.block)
+    if blk is None or blk.placement is None:
+        return False
+    try:
+        from .bus_router import _plan_relays
+    except Exception:
+        return False
+
+    block_cells: set = set()
+    for b in project.blocks:
+        pl = b.placement
+        if pl is None or pl.chip != chip_id:
+            continue
+        block_cells.update((c.x, c.y) for c in pl.cells)
+        block_cells.update((t.x, t.y) for t in getattr(pl, "transit_cells", []))
+
+    ct = _chip_type_for(project, chip_id, chip_types) if chip_id is not None else None
+    used_port_cells = set()
+    if ct is not None:
+        by_name = {p.name: (p.cell_x, p.cell_y) for p in getattr(ct, "ports", [])}
+        for c in project.connections:
+            for ep in (c.source, c.target):
+                if isinstance(ep, ChipPortEndpoint) and ep.chip == chip_id \
+                        and ep.port in by_name:
+                    used_port_cells.add(by_name[ep.port])
+
+    pts = [(p.x, p.y) for p in points]
+    _relays, why = _plan_relays(pts, distance, block_cells, used_port_cells,
+                                set())
+    return why is None
+
+
 def _check_connections(project, chip_types, result: DRCResult) -> None:
     for conn in project.connections:
         chip_id = _source_chip(project, conn)
@@ -355,10 +404,13 @@ def _check_connections(project, chip_types, result: DRCResult) -> None:
         distance = max(0, len(points) - 1)
         if _targets_chip_output(conn):
             distance += 1
-        if distance > MAX_HOPS:
+        if distance > MAX_HOPS and not _relay_covers(project, conn, points,
+                                                     distance, chip_id,
+                                                     chip_types):
             result.add(error(
                 "hop_overflow",
-                f"route '{conn.name}' is {distance} hops (max {MAX_HOPS}). "
+                f"route '{conn.name}' is {distance} hops (max {MAX_HOPS}) and "
+                "cannot be relayed (no free routing cell on the corridor). "
                 "Shorten the path or move blocks closer together.",
                 chip=chip_id,
             ))

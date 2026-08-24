@@ -327,12 +327,60 @@ class AppController(QObject):
             self.project, block_name, cell_id, addr,
             None if new.is_empty else new))
 
+    def _route_is_relayable(self, points, distance, source) -> bool:
+        """True when an over-31-hop drawn route can be split by RELAY cells.
+
+        Asks the SAME planner the build uses (``bus_router._plan_relays``), so the
+        UI accepts exactly the long routes the build can actually emit — never a
+        route that would be committed here and then fail at build time. A net that
+        is not sourced at a placed BLOCK has no exit WRITE/JUMP to re-point and so
+        cannot be relayed."""
+        from model.connection import BlockEndpoint, ChipPortEndpoint
+        if not isinstance(source, BlockEndpoint):
+            return False
+        blk = self.project.block(source.block)
+        if blk is None or blk.placement is None:
+            return False
+        chip_id = blk.placement.chip
+        try:
+            from engine.bus_router import _plan_relays
+        except Exception:
+            return False
+
+        block_cells: set = set()
+        for b in self.project.blocks:
+            pl = b.placement
+            if pl is None or pl.chip != chip_id:
+                continue
+            block_cells.update((c.x, c.y) for c in pl.cells)
+            block_cells.update((t.x, t.y) for t in getattr(pl, "transit_cells", []))
+
+        used_port_cells = set()
+        ct = self.chip_types().get(self.project.chip_type)
+        if ct is not None:
+            by_name = {p.name: (p.cell_x, p.cell_y)
+                       for p in getattr(ct, "ports", [])}
+            for c in self.project.connections:
+                for ep in (c.source, c.target):
+                    if isinstance(ep, ChipPortEndpoint) and ep.chip == chip_id \
+                            and ep.port in by_name:
+                        used_port_cells.add(by_name[ep.port])
+
+        pts = [tuple(p) for p in points]
+        _relays, why = _plan_relays(pts, distance, block_cells,
+                                    used_port_cells, set())
+        return why is None
+
     def add_route(self, source, target, points: list, *, name: str | None = None):
         """Route a connection from ``source`` to ``target`` endpoints.
 
         ``points`` is the full waypoint path (incl. source and target cells) as
         ``[(x, y), …]``. Validates the hop count (distance = len(points)-1, +1
-        for a chip-output target — §2.6) and rejects > 31 before committing.
+        for a chip-output target — §2.6). A route over the 31-hop field limit is
+        accepted ONLY when it can be RELAYED (§1.4 #3: the build splits it at
+        intermediate plain routing cells that re-emit with a fresh budget — see
+        ``build._apply_relays``); one that cannot be relayed is still rejected
+        here, before it is committed.
 
         If a LOGICAL connection between these exact endpoints already exists (e.g.
         an unrouted net imported from GRC, or one whose route the user just
@@ -353,9 +401,11 @@ class AppController(QObject):
         distance = max(0, len(points) - 1)
         if isinstance(target, ChipPortEndpoint) and target.port.endswith("_out"):
             distance += 1
-        if distance > 31:
+        if distance > 31 and not self._route_is_relayable(points, distance,
+                                                          source):
             raise ValueError(
-                f"route is {distance} hops (max 31) — shorten the path")
+                f"route is {distance} hops (max 31) and cannot be relayed "
+                "(no free routing cell on the corridor) — shorten the path")
 
         # Reconnect an existing logical net between the same endpoints (frozen
         # endpoints compare by value), rather than duplicating it.

@@ -775,9 +775,38 @@ def test_saturated_equals_per_sample_bit_exact():
 # =============================================================================
 # 8. Report
 # =============================================================================
-def test_zz_write_report():
-    """Emit the dashboard report LAST (name sorts after every gate)."""
+def test_zz_write_report(request):
+    """Emit the dashboard report LAST (the name sorts after every gate).
+
+    THE VERDICT IS DERIVED, NEVER HARDCODED, and the report is DELETED FIRST.
+
+    An earlier version wrote ``"passed": true`` unconditionally. On the run
+    where the saturated gate FAILED, it still emitted a green report — the
+    dashboard would have read a pass that did not happen, which is precisely
+    the "make the gate look green" failure this project exists to eliminate.
+
+    Two changes make that impossible. (1) The report file is UNLINKED at the
+    start of this test, so a failing run can never leave a stale green file
+    behind — if the session dies before the write, there is simply no report,
+    which the dashboard reads as "not verified" rather than "passed". (2) The
+    write only happens if the session reports zero failures, read from
+    pytest's own terminal reporter rather than from anything this module
+    tracks itself.
+
+    A report is EVIDENCE. It must be a function of the session's actual
+    results, and its absence must be the safe state."""
     out = _ROOT / "verification" / "reports" / "FFT64Block.json"
+    if out.exists():
+        out.unlink()                      # (1) absence is the safe state
+
+    # (2) ask pytest what actually happened in this session.
+    rep = request.config.pluginmanager.getplugin("terminalreporter")
+    failed = list(rep.stats.get("failed", [])) + list(rep.stats.get("error", []))
+    if failed:
+        pytest.fail(
+            "NOT writing a report — these gates failed: "
+            + ", ".join(sorted(f.nodeid.split("::")[-1] for f in failed)))
+
     out.parent.mkdir(parents=True, exist_ok=True)
     blk = FFT64Block("probe")
     out.write_text(json.dumps({

@@ -785,7 +785,15 @@ class LargeFFTBlock(KyttarBlock):
                 segs = _delay_segments(D - 1, extra_cells=1)
                 self._parity_padded.append(s)
             self._segs[s] = segs
-        self._layout, self._order, self._spine_col = self._plan()
+        # The plan is a deterministic search over a fixed board, so it is a
+        # pure function of (class, N, stage range) — memoize it (see
+        # _PLAN_CACHE). A cache MISS still runs the real planner, so a
+        # geometry error is raised exactly as before.
+        key = (type(self).__name__, n, self._stage_ids)
+        if key not in LargeFFTBlock._PLAN_CACHE:
+            LargeFFTBlock._PLAN_CACHE[key] = self._plan()
+        layout, order, col = LargeFFTBlock._PLAN_CACHE[key]
+        self._layout, self._order, self._spine_col = dict(layout), list(order), col
 
     # ---------------------------------------------------------------- basics
     @property
@@ -1697,6 +1705,14 @@ class LargeFFTBlock(KyttarBlock):
         chain.append(p + "out")
         _ = D
         return chain
+
+    #: Resolved layouts, keyed by ``(class, N, STAGE_RANGE)``. The plan is a
+    #: pure function of those three — a deterministic search over a fixed
+    #: board — so memoizing it is safe, and it matters: the 84-cell folds cost
+    #: ~26s each under the (correct, router-faithful) corridor check, and the
+    #: suites construct them repeatedly. Cached, a second construction is
+    #: free. Correctness does not depend on this; only wall-clock does.
+    _PLAN_CACHE: Dict[Tuple, Tuple] = {}
 
     def _plan(self):
         """Lay the stages out on a VERTICAL CTL/OUT SPINE and return

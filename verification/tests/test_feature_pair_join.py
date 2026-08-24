@@ -841,9 +841,10 @@ def test_pairs_correctly_from_every_anchor(anchor):
 
 
 def test_emit_report():
-    """Emit the dashboard report. The metric is EXACT (tol 0): this block carries
-    words, it does not transform them — every emitted word must equal the
-    reference bit-for-bit."""
+    """Emit the dashboard report. The metric is EXACT — this block CARRIES words,
+    it does not transform them, so every emitted word must equal the reference
+    bit-for-bit; there is no quantization tolerance to spend and an amplitude
+    metric would be the wrong claim about what was proven."""
     ch, *_ = _build_chain()
     a = [1001, 1003, 1005, 1007, 1009, 1011]
     b = [2001, 2003, 2005, 2007, 2009, 2011]
@@ -854,7 +855,7 @@ def test_emit_report():
     assert ch.out == ref
     res = compare_against_grc(
         ch.out, [((w - 0x10000) if w >= 0x8000 else w) / 32768.0 for w in ref],
-        metric=Metric.AMPLITUDE, delay=0, tolerance=0)
+        metric=Metric.EXACT, delay=0)
     assert res.passed, res.summary()
     write_report("FeaturePairJoinBlock", res, coverage={
         "edge": True, "random": 3, "param_sweep": 0, "mutation": True,

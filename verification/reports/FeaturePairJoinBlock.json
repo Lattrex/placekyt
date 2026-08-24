@@ -1,7 +1,7 @@
 {
   "kyttar_block": "FeaturePairJoinBlock",
   "passed": true,
-  "metric": "amplitude",
+  "metric": "exact",
   "n_compared": 12,
   "max_abs_err": 0,
   "tolerance": 0,

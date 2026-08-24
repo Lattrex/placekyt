@@ -118,6 +118,7 @@ BUILTIN_BLOCKS = {
     'RMSBlock': 'rms_block',
     'SigmoidBlock': 'activation_blocks',
     'TanhBlock': 'activation_blocks',
+    'GRUCellBlock': 'gru_cell_block',
     'RMSCFBlock': 'rms_block',
     'ZeroCrossingRateBlock': 'zero_crossing_rate_block',
 }

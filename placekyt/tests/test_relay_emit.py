@@ -441,6 +441,32 @@ def test_relay_steps_off_a_real_block_cell_end_to_end(env):
     assert res.ok and res.chips[0].relay_cost >= 1
 
 
+def test_segment_arithmetic_holds_for_every_route_length():
+    """EXHAUSTIVE boundary sweep — route lengths 2..199 against both target
+    kinds (block-deliver and port-egress, which differ by the trailing +1).
+    Every over-budget route must relay into segments that are each 1..31 hops,
+    with relays strictly increasing, distinct, and never the source or the final
+    cell. This is where an off-by-one in the tail arithmetic would show up."""
+    from engine.bus_router import _plan_relays
+    for n in range(2, 200):
+        path = [(x % 10, x // 10) for x in range(n)]
+        for extra in (0, 1):
+            distance = (n - 1) + extra
+            if distance <= 31:
+                continue
+            relays, why = _plan_relays(path, distance, set(), set(), set())
+            assert why is None, f"n={n} extra={extra}: refused ({why})"
+            marks = [0] + [path.index(r) for r in relays] + [len(path) - 1]
+            spans = [marks[i + 1] - marks[i] for i in range(len(marks) - 1)]
+            spans[-1] += extra
+            assert all(1 <= s <= 31 for s in spans), \
+                f"n={n} extra={extra}: segments {spans}"
+            idxs = [path.index(r) for r in relays]
+            assert idxs == sorted(set(idxs)), f"n={n}: relays out of order"
+            assert idxs[0] >= 1 and idxs[-1] <= n - 2, \
+                f"n={n}: a relay landed on the source or the final cell"
+
+
 def test_short_route_gets_no_relay(env):
     """The common case must be untouched: a hop-legal net spends zero relay
     cells and takes the identical path it always did."""

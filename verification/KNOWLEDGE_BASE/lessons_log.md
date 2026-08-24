@@ -13,7 +13,7 @@ dropped) — append new entries above the oldest ones as before.
 
 Two substrate primitives built together (wave 7) to unblock a two-feature
 classifier front end: an ORDERED pair join for the toggle-cell consumer
-contract, and a standalone Q15 square root. Both green; 26 + 24 tests.
+contract, and a standalone Q15 square root. Both green; 30 + 31 tests.
 
 ### FeaturePairJoinBlock — two SEQUENTIAL bursts, not a 2-rail packet
 

@@ -9,6 +9,171 @@ block-specific gotcha. Promote anything that generalizes across block classes in
 and superseded material merged into the surviving entries; no durable lesson was
 dropped) — append new entries above the oldest ones as before.
 
+## The 31-hop ceiling is LIFTED — relay emission; and the gru_classifier wall is NOT hop count 2026-08-24
+
+Two linked results: an engine fix that landed and is proven on chip, and an
+example that is still blocked — for a reason the fix does not touch.
+
+### The fix: emit relay programming for >31-hop routes
+
+A `WRITE`/`JUMP` carries a **5-bit HOP_CNT**, so one emission reaches at most 31
+hops. Measured, not assumed: `@31` assembles and delivers; `@32` raises
+`Distance must be 0-31` at assembly time. A word travels by being forwarded and,
+when HOP_CNT hits 31, the arriving cell **executes it locally** instead
+(`execute_locally` in the simulator trace) — that landing behaviour is the hook
+the whole fix hangs on.
+
+The router had ALREADY planned relay cells for over-budget routes and then failed
+the net with *"relay programming is not yet emitted by the build"*. So this was
+mostly a BUILD-side gap, exactly as suspected — worth checking before designing
+anything, because the plan half already existed and was already tested
+(`test_bus_relay.py`).
+
+What was added: the word is addressed to LAND on an intermediate plain routing
+cell, whose relay program flips to the route's continuation face and re-emits the
+payload AND the trigger with a fresh budget:
+
+```
+MOVE [FACE], <exit_face>     ; point at the rest of the route
+MOVE R0, R{in:burst}
+WRITE @<next_seg>, <dest>    ; the PAYLOAD
+JUMP  @<next_seg>, <entry>   ; the TRIGGER
+HALT
+```
+
+That is the CrossoverBlock land→flip→re-emit primitive with one track — a relay
+is a crossover whose purpose is a fresh hop count rather than a face demux. Reuse
+it; do not write a second relay program.
+
+Four things that had to be right:
+
+1. **Emit the JUMP as well as the WRITE.** Forwarding only the payload gives a
+   silent stream that never triggers the destination.
+2. **Chain BACKWARD.** Program the last relay first, because each relay must
+   address the *resolved entry* of the relay after it; the source is re-pointed
+   at the first one last. The final relay reproduces the net's ORIGINAL
+   dest/entry, read from the source's already-patched exit WRITE/JUMP — so the
+   destination cannot tell a relayed delivery from a hop-legal one.
+3. **One planner, four call sites.** `bus_router._plan_relays` is shared by the
+   router, the build, the DRC's `hop_overflow`, and the controller's `add_route`
+   guard. Three separate gates independently enforced "≤31 hops"; if they had
+   been relaxed independently they would have disagreed about which routes are
+   buildable. `relay_plan` DERIVES the cells from the routed project
+   (build-from-design), so hand-placed `.kyt` files get relays too.
+4. **Never relay onto a used cell** — a block cell, a USED chip-port cell, or an
+   existing broker is a hard, NAMED rejection (INV-32 / port_transit).
+
+**Proof.** A 52-hop egress — impossible before — routes, builds and runs
+**bit-exact against a hop-legal short-route control**, which is the strongest
+available statement: the relay is transparent to the data. A 96-hop route chains
+THREE relays (segments 30/30/30/6) and still delivers, so relays compose and no
+practical ceiling remains beyond array area. Cost is ~1 cell per 30 hops and is
+reported (`ChipBuild.relay_cells` / `.relay_cost`) rather than silently spent.
+
+**A mutation-design lesson worth keeping.** The first "wrong exit face" mutation
+LEAKED — output stayed correct. It was not a relay bug: rotating the face
+south→east sent the word into a free neighbouring cell that happened to forward
+it back onto the corridor further along. Two things fixed the gate: mutate the
+face constant **directly in the loaded chip memory** (so nothing else about the
+build can differ), and choose the faces that genuinely leave the route (reverse /
+perpendicular-away) instead of an arbitrary rotation. A mutation that a lucky
+geometry can repair is a weak mutation — verify the mutant actually breaks the
+path, don't just assume a changed word means a changed behaviour.
+
+### The gru_classifier example is still blocked, and NOT by hops
+
+The obvious hypothesis — lifting the ceiling unblocks the classifier — is
+**false**, and it was worth measuring rather than assuming. After the fix: 2160
+fresh layouts (18 legal GRU anchors × randomized small-block placement) plus a
+sweep over four routing MODELS (`auto_orient`, the single-backbone bus/ring v2
+router, orient+bus, cpsat). The result reproduces the prior attempt exactly —
+best is always **exactly one net short**, and the reason is always
+`no bus path from source to the broker tap`. Not one failing net on any layout
+was a `hop_overflow`.
+
+So the wall is **corridor congestion**, not hop budget. The diagnosis for whoever
+picks it up: the blocks total only 65/120 cells, but `GRUCellBlock` is 51 of them
+in a RIGID 7×8 fold that partitions the free area into pockets the 4-block RMS
+arm cannot thread; the `join→GRU` tail alone routes at 72/120. The lever is the
+GRU's FOLD (narrower / reflowable) or an RMS arm with fewer separately-placed
+blocks — not the router. The three known-limit guards are deliberately left in
+place and still hold; they fail the day the geometry gives.
+
+## gru_classifier example — front end DERIVED and verified offline, whole-chain placement BLOCKED one net short 2026-08-24
+
+The end-to-end 4-class modulation classifier (SSB / BPSK / 4-FSK / noise) on one
+10x12 array. The feature front end is fully derived, measured, and bit-exact
+against the trained model's own offline definition; the assembled chain does
+**not** route as one chip. Reporting `needs_human` with the exact shortfall —
+per §5b, an example that has not been observed producing the right output on a
+placed + routed chip is NOT done, and no part of this entry claims otherwise.
+
+- **THE RMS ARM DECOMPOSITION IS CORRECT AND ITS TOLERANCE IS DERIVED, NOT
+  TUNED.** `ComplexToMagSquared -> MovingAverage(32, taps 1/32) -> Sqrt ->
+  KeepOneInN(32)` reproduces `features.py`'s `sqrt(mean |x|^2)` over a
+  non-overlapping 32-sample window. Every stage truncates downward, so the
+  budget is: 2 LSB of power (magsq's two truncating products) + 32 LSB (the 32
+  truncating MA taps; 1024 = 1/32 is exact) = **34 LSB of power deficit**, then
+  `Sqrt`'s own measured `[-4, +1]` LSB. Propagating a power deficit through the
+  root by `dy = dP / (2*sqrt(P))` makes the bound **input-level dependent**:
+  `-(34 * 16384 / y) - 4 <= (chip - ideal) <= +1`, y = the RMS word. Measured
+  over 1600 windows (4 classes x 5 peak levels): **0 violations, tightest case
+  at 0.639 of the bound**. A FLAT tolerance would have been wrong — the same
+  chain reads -13 LSB on a loud window and -218 on a quiet one, and the
+  difference is the arithmetic, not noise.
+- **ZCR is BIT-EXACT (0 / 400 windows) against its PINNED convention** — 32
+  pairs *ending* at the window's samples (so the inter-window boundary pair is
+  included) plus one implicit non-negative predecessor. Against plain
+  `features.py` (31 strictly-interior pairs) it reads +1 crossing = +1024 Q15
+  LSB on 6-51% of windows depending on class. Derived and gateable; not error.
+- **THE Q15 POWER STAGE AND THE TRAINED DISTRIBUTION ARE IN GENUINE TENSION —
+  and this is a MODEL property, not a chip bug.** `ComplexToMagSquared`
+  saturates at full scale, so any `|z| >= 1` clips and biases that window's mean
+  power DOWNWARD. But the model's own training channel sets a clip's *RMS*
+  (`gain_range` 0.25..0.7) while saturation is driven by its *PEAK*, and the
+  classes' crest factors differ sharply (measured, 12 clips each: 4-FSK 1.27,
+  BPSK 1.71, noise 3.10, SSB 3.59 median). Over the shipped training set
+  **`peak|z| > 1` for 100% of SSB and 79% of noise clips.** The float
+  `features.py` never notices; a Q15 front end clips hard — measured error blows
+  from the derived tens-of-LSB to **-1247 LSB** on such clips. Lesson: when a
+  trained model is ported to Q15, check the PEAK distribution of its own
+  training data against the fixed-point rails before trusting any feature
+  tolerance — an offline reference that cannot saturate will not warn you.
+  (Mitigation used here: pin per-segment gains at the low end of the trained
+  range so `peak|z| < 0.95`; the stimulus asserts it rather than assuming it.)
+- **Rescaling the input is NOT a free fix.** ZCR is scale-invariant but RMS is
+  linear in input gain, so a global rescale moves a real feature off the grid
+  the model was trained on. Peak-normalising 4-FSK clips to 0.9 made the
+  *offline* reference vote BPSK — the chain was right and the stimulus was
+  out of distribution. Always check a "fix" against the offline path first.
+- **THE WALL: the chain does not route as one chip — always exactly ONE net
+  short.** GRUCellBlock is 51 cells in a fixed 7x8 fold (56 of the array's 120
+  cell sites) with BOTH its `f` input and its `oout` egress on the WEST edge.
+  Measured: the GRU **alone** costs **64-82 cells including routing** depending
+  on anchor (cheapest (3,1); (0,4)/(1,4)/(3,0) do not route at all). The
+  join-tail — `KeepOneInN + ZCR + FeaturePairJoin + GRU` with both ingress nets
+  and the egress — **does route, at 72 cells**, leaving 48 free. But those 48
+  are split into two pockets by the ingress corridors, and the RMS arm (power 1
+  + boxcar 2x4 + root 2x2 = 11 block cells) must simultaneously reach the port
+  (top-left, walled by the ingress `rr` corridor) and `decim`.
+  **~2500 distinct layouts** were tried across three independent strategies —
+  exhaustive hand-anchor sweeps (`auto_route_all`, deterministic), randomized
+  hand placement over all routable GRU anchors, and `auto_pnr` with the GRU
+  pinned (stochastic, many repeats) — plus `auto_orient=True`. The best result
+  was **never better than one failing net**, and WHICH net fails rotates between
+  `root_decim`, `rms_join`, `zcr_join`, `gru_out` and the ingress trio as blocks
+  move: the signature of a saturated array, not one bad anchor. Two recurring,
+  citable causes: `bus route is N hops (>31)` on the GRU egress (34-36 hops —
+  the 5-bit hop field, and relay programming is not emitted by the build), and
+  `no free broker cell abutting the target input` when a 1-cell block is packed
+  against a wall or the port corner.
+- **What a human should look at.** Either (a) the GRU's west-edge-only I/O — an
+  egress relay reachable from the EAST would remove the wrap that costs the
+  34-hop `gru_out` failures; or (b) a smaller RMS arm (the 7-cell
+  `MovingAverage(32)` is the bulk of the front end); or (c) relay programming
+  for >31-hop bus routes, which the router already plans but the build does not
+  emit. The offline chain, the goldens, the derived tolerances, and the
+  stimulus are all in place and re-usable the moment the geometry gives.
 `LargeFFTBlock` to N=32. Bit-exact on a real built chip, 75 gates green. It is
 enters at. **The cell is EXACTLY full at 32/32 words, and the count gate passes.** This is byte-for-byte
 state at 21 — 30/32 words at P=16 with the entry instruction two words clear of the state, where before they collided. **This also repairs one of

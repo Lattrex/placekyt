@@ -1,0 +1,31 @@
+{
+  "block": "__gru_classifier_example__",
+  "grc_block": "",
+  "tier": 0,
+  "wave": 7,
+  "schema_version": 1,
+  "started_utc": "2026-08-24T15:05:00Z",
+  "ended_utc": "2026-08-24T16:10:00Z",
+  "walltime_sec": 3900.0,
+  "tokens": {
+    "input": 0,
+    "output": 118000,
+    "cache_read": 0,
+    "total": 118000
+  },
+  "turns": 34,
+  "attempts": 2,
+  "human_interventions": 0,
+  "intervention_reasons": [],
+  "prompts": [
+    {
+      "role": "initial",
+      "text": "With the >31-hop routing ceiling lifted, re-attempt the gru_classifier assembly: place and route the full chain on ONE 10x12 chip, ship the full example collateral (.kyt/.grc/.py/golden/demo/README/tests), and gate it end to end on chip."
+    }
+  ],
+  "verify_passed": false,
+  "quarantined": false,
+  "quarantine_reason": "",
+  "commit_sha": "de3973a",
+  "notes": "EXAMPLE-CLASS row (wave 7). STILL BLOCKED, and the relay fix was NOT the missing piece. The example's offline collateral (feature front end, stimulus, goldens, 19 gates) was carried forward from the prior attempt unchanged and re-verified green in this tree; the whole-chain placement is what remains blocked. Independent re-measurement AFTER the hop ceiling was lifted: 2160 fresh layouts (18 legal GRU anchors x randomized small-block placements, deterministic auto_route_all) plus a second sweep across four routing MODELS (auto_orient, the single-backbone bus/ring v2 router, orient+bus, cpsat). The result reproduces the prior finding exactly -- the best layout is always exactly ONE net short, and the failing net's reason is 'no bus path from source to the broker tap', i.e. the RMS arm cannot reach a corridor. That is CORRIDOR CONGESTION, not hop count: no failing net on any attempted layout was a hop_overflow, so INV-36 (relay emission) is orthogonal to this wall and does not move it. Diagnosis for whoever picks this up: blocks total 65/120 cells but GRUCellBlock is 51 of them in a RIGID 7x8 fold, which partitions the free area into pockets; the join->GRU tail alone routes at 72/120. The lever is the GRU's fold (a narrower or reflowable footprint), or an RMS arm with fewer separately-placed blocks -- not the router's hop budget. The three known-limit guard tests in verification/tests/test_gru_classifier_example.py still hold and are deliberately left in place; they fail the day the geometry gives. No .kyt or .grc ships, because neither would run."
+}

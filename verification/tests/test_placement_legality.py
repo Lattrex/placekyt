@@ -71,6 +71,9 @@ BLOCKS = [
     # = 13 cells (4x4 fold, partial last column) — the deepest supported chain.
     ("ComplexDelayLineBlock", {"depth": 32}),
     ("ComplexDelayLineBlock", {"depth": 64}),
+    # 16-point streaming FFT: the largest single block in the catalog (44 cells,
+    # 7x8 footprint — both dims <= 8 per INV-9) with per-stage banded geometry.
+    ("FFT16Block", {}),
     ("FreqXlatingFIRBlock", {"decimation": 2, "taps": [0.1, 0.2, 0.3, 0.2, 0.1],
                              "center_freq": 2000.0, "sampling_freq": 32000.0}),
     ("FSK4SyncTimingRecoveryBlock", {}),

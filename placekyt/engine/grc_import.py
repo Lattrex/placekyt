@@ -125,6 +125,9 @@ _TYPE_OVERRIDES = {
     # depends on the fallback's casing of the digit suffix.
     "kyttar_r2_butterfly": "R2ButterflyBlock",
     "kyttar_twiddle_multiply": "TwiddleMultiplyBlock",
+    # 16-point streaming R2SDF FFT composite (snake->Pascal of "fft16" would
+    # give "Fft16Block" — pin the all-caps class name explicitly).
+    "kyttar_fft16": "FFT16Block",
     # Complex FIR (fir_filter_ccf): class == manifest name "ComplexFIRFilterBlock",
     # but snake→Pascal of "kyttar_complex_fir_filter" gives "ComplexFirFilterBlock"
     # (lower-case "ir"), which won't match — pin it explicitly.

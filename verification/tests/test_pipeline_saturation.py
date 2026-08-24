@@ -317,6 +317,16 @@ COMPLEX_2IN2OUT = {
                              {"twiddles": [1, 0.7071067811865476
                                            - 0.7071067811865476j, -1j,
                                            -0.5 + 0.25j]}),
+    # 16-point streaming R2SDF FFT: FOUR serialize-LOCKed stage rings (each
+    # stage's delay-feedback write-back races the next sample without its
+    # lock — INV-19 by construction). The locks are ALWAYS ON (correctness,
+    # not an option): each stage ctl LOCKs after dispatch; the stage's out
+    # cell clears it (backward WRITE.CFG) only after the stage's packet has
+    # been accepted downstream, so at most one sample is in flight per stage
+    # and the fill/butterfly paths' unequal chain lengths cannot reorder.
+    # Saturated == per-sample bit-exact is THE gate that proves all four
+    # locks release cleanly under back-to-back drive.
+    "FFT16Block": (("xi", "xq"), "out_i", {}),
     # Complex AGC (GR analog.agc_cc): a 20-cell serialize-LOCKED gain-feedback
     # ring (hold locks, upd's backward WRITE.CFG releases — INV-19). The lock is
     # LOAD-BEARING: with pipeline_lock=False the saturated stream diverges from

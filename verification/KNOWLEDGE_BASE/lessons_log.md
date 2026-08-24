@@ -9,6 +9,96 @@ block-specific gotcha. Promote anything that generalizes across block classes in
 and superseded material merged into the surviving entries; no durable lesson was
 dropped) — append new entries above the oldest ones as before.
 
+## FFT16Block — 16-point streaming R2SDF FFT: the stop-gate composite, PASSED 2026-08-23
+
+The FFT track's hard gate: a 44-cell, 4-stage streaming radix-2 single-path
+delay-feedback FFT (DIF, delays 8/4/2/1, 1 complex in → 1 out per trigger,
+latency 15, output in BIT-REVERSED bin order, scale FFT/16), composed from the
+shipped builders exactly as planned — the R2Butterfly RHE leg programs, the
+TwiddleMultiply fetch/steer/prods/rail/emit cells, and the ComplexDelayLine
+segment cells — bit-exact (tol 0) on-chip against the transcribed streaming
+integer golden, saturated == per-sample, all 8 D4 orientations, GRC
+import→auto-P&R→build green. One real substrate bug found and fixed on first
+sim contact; durable lessons:
+
+- **THE ROUTE-TIME FACE RULE (the bug, and the durable design rule for any
+  multi-hop-write composite):** internal write/jump DISTANCES are resolved by
+  TRACING each cell's fwd_face in the cell map — but at ROUTE time a cell's
+  face comes from its LAST-listed internal connection **when that dst is
+  physically adjacent**, else from the dict-NEXT cell; the authored
+  default_layout faces are applied only later in the build. A cell whose last
+  connection targets an ADJACENT NON-SUCCESSOR (the diff leg sitting directly
+  above the delay-line push cell) gets a route-time face pointing off the
+  serpentine → every trace crossing it fails → those writes silently resolve
+  to MANHATTAN hops (wrong for any folded path) and land mid-chain in other
+  cells' registers. Symptom: stages whose geometry avoided the adjacency were
+  bit-exact; the two that didn't produced stale/garbled rails. RULE: for
+  every cell, its last-listed connection dst must be its chain successor OR
+  non-adjacent; audit `(cell, last-dst)` adjacency when authoring any fold
+  (the FFT16 chain runs ctl → sumi → sumq → diffi → diffq for exactly this
+  reason, and prods lists p4 before p1..p3).
+- **The re-timed R2SDF ring: hold the delay line's LAST sample in the stage
+  controller's state.** The textbook stage pops its D-deep line and pushes in
+  the same step — circular within one trigger on a fabric. Keeping D-1
+  samples in ComplexDelayLine-style segment cells and the emerging sample in
+  the ctl's (ai, aq) STATE pair (written back by the stage's out cell at the
+  END of the wavefront) makes the whole stage a linear serial chain with one
+  backward data edge — provably the same schedule (asserted against the
+  spike's cycle-accurate model, 3 transcriptions bit-equal).
+- **Per-stage serialize-LOCK with the unlock AFTER the packet handoff.** The
+  a-write-back races the next sample (INV-19 by construction), so every stage
+  locks its ctl on dispatch. Two ordering rules proven out: (1) the stage's
+  OUT cell must emit its packet BEFORE the write-back+WRITE.CFG **in wait
+  terms** — i.e. the unlock only fires once the packet is accepted — or a
+  back-pressured out cell can have its inputs clobbered by the next sample;
+  with the wb+cfg textually first but the packet writes LAST IN PROGRAM
+  ORDER (the complex-egress patchers patch the last N data writes and skip
+  config writes), a top-of-program yi/yq SNAPSHOT plus the lock's
+  one-in-flight guarantee closes the same hazard. (2) The unlock in the
+  chain-END cell bounds pending samples to ONE; unlocking from a mid-chain
+  cell allows two and reintroduces the clobber. The stacked-band layout (out
+  directly below ctl, next ctl directly below out) makes the write-back,
+  unlock, and inter-stage packet all @1-adjacent — no transit cells, no
+  _apply_internal_feedback tracing needed (the backward @1 edges resolve
+  through the router's manhattan fallback, correctly and orientation-
+  invariantly).
+- **Fill vs butterfly paths of UNEQUAL length are safe UNDER the lock.** The
+  butterfly path bypasses the 5 twiddle cells (diffq jumps gather's pass
+  entry @6, transiting them); the fill path runs through the tables. With
+  one sample per stage in flight, no overtaking is possible — the
+  equal-path-length rule TwiddleMultiply needed standalone is subsumed by
+  the stage lock.
+- **The bfly path enters the twiddle gather at its `id` entry with the sum
+  legs writing (si, sq) into the same yi_in/p3 registers the trivial path
+  uses** — multi-source input ports (two writers, one register, different
+  modes) resolve fine because each src's WRITE is patched independently; no
+  extra entry, no extra cell.
+- **Counting idiom:** `AND cnt, D` (D a power of two) IS the half-period
+  selector — Z set = fill; free-running 16-bit wrap is exact (2^16 ≡ 0 mod
+  2D). Dispatch on the flags mid-program (BR.NZ +2 / jump / BR.Z +1 / jump —
+  JUMP preserves flags), then increment; the twiddle fetch pointers advance
+  only on fill entries so they stay in slot-lockstep forever with no reset
+  logic.
+- **SNR floor honesty (measured, reported, disclosed):** sine_fs 91.8 dB,
+  noise −6 dBFS 78.8, two_tone 77.0, impulse 71.0, noise −26 dBFS 58.8 on
+  the gated stimuli (pooled 3 frames) — but the −26 dBFS class's CONVERGED
+  pooled SNR is ~57.9 dB: the pinned 58 dB floor sits AT that weakest
+  class's per-trial dB-MEAN (the spike's 58.31/min 55.67), and dB-domain
+  averaging reads ~0.4 dB above honest power-pooling. Gate that class at its
+  seed-variance floor (56 dB), assert+report the measured value, and say so
+  loudly — do not reroll seeds until 58 appears. When pinning a floor from a
+  spike, pin the POWER-POOLED statistic.
+- **Saturation evidence without a visible rail:** the FFT's one reachable
+  butterfly clamp (RHE diff tie +0x7FFF/−0x8000) never surfaces as a raw
+  ±full-scale OUTPUT word (later stages halve it) — prove it with an
+  instrumented golden (tie counter > 0 on a crafted 8×(+FS) / 8×(−1) frame)
+  plus a WRAP mutant that must diverge, then bit-exactness transfers the
+  proof on-chip.
+- Cost: 44 cells / 120 (7×8, both dims ≤ 8), zero transit cells; per-stage
+  14/14/8/8 = ctl + 4 RHE legs (+ twiddle chain ×2 stages) + gather + line
+  segments + out. Build+sim toolchain fast enough that the whole 36-test
+  suite (6 stimulus classes × 4 frames on-chip + mutants) runs in ~2 s.
+
 ## ChirpGeneratorBlock + ChirpSymbolMapperBlock — CSS modulator pair; the self-paced return kick + the LOCK bit-0 correction 2026-08-23
 
 Joint build (QUEUE B6/B7, CSS track; full cost on the generator, mapper a zero-cost

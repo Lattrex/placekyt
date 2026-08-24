@@ -15,6 +15,7 @@ BUILTIN_BLOCKS = {
     'MultiplyCCBlock': 'multiply_cc_block',
     'R2ButterflyBlock': 'fft_primitives',
     'TwiddleMultiplyBlock': 'fft_primitives',
+    'FFT16Block': 'fft16_block',
     'AddConstBlock': 'add_const_block',
     'XorBlock': 'xor_block',
     'NotBlock': 'not_block',

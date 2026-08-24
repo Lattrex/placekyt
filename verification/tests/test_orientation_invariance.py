@@ -93,6 +93,12 @@ _CASES = [
     # direction-specific internal feedback) -> freely orientable; the delayed
     # (out_i, out_q) word lists must be IDENTICAL in every D4 orientation.
     ("ComplexDelayLineBlock", {"depth": 7}, "complex", ("xi", "xq", "out_i")),
+    # 16-point streaming R2SDF FFT: 44 cells, four serialize-LOCKed stage rings
+    # (backward a-write-back + WRITE.CFG unlock per stage, all @1-adjacent with
+    # is_face lock/tap words), twiddle tables, multi-hop serpentine writes. The
+    # heaviest D4 case in the catalog: every internal hop distance and face word
+    # must transform rigidly for the streamed frames to stay bit-identical.
+    ("FFT16Block", {}, "complex", ("xi", "xq", "out_i")),
     ("ComplexRRCMatchedFilterBlock", {}, "complex", ("xi", "xq", "yi")),
     ("ComplexCostasLoopBlock", {"order": 2}, "complex", ("xi", "xq", "yi_tap")),
     ("ComplexCostasLoopBlock", {"order": 4}, "complex", ("xi", "xq", "yi_tap")),

@@ -2302,24 +2302,35 @@ class FFT128Block(LargeFFTBlock):
 #: Where the N=128 pipeline is CUT. Die 0 carries stages 0..SPLIT_STAGE, die 1
 #: carries SPLIT_STAGE+1..6.
 #:
-#: WHY STAGE 2 (measured, not chosen for tidiness). Every boundary was costed
-#: with the real chain builder; the constraint is the SPINE HEIGHT (2 rows per
-#: stage in ONE column, 12 available) AND the cell count per die:
+#: WHY STAGE 0 — measured, and NOT the balanced choice. Cell counts alone
+#: suggest cutting in the middle, and that was the first candidate:
 #:
-#:     after stage 0:  30 / 84 cells,   2 / 12 spine rows
+#:     after stage 0:  30 / 84 cells,   2 / 12 spine rows   <- shipped
 #:     after stage 1:  54 / 60 cells,   4 / 10 spine rows
-#:     after stage 2:  70 / 44 cells,   6 /  8 spine rows   <- shipped
+#:     after stage 2:  70 / 44 cells,   6 /  8 spine rows   <- does NOT place
 #:     after stage 3:  84 / 30 cells,   8 /  6 spine rows
-#:     after stage 4:  98 / 30 cells,  10 /  4 spine rows   <- die 0 too big
-#:     after stage 5: 106 / 8 cells,   12 /  2 spine rows   <- die 0 too big
+#:     after stage 4:  98 / 30 cells,  10 /  4 spine rows
+#:     after stage 5: 106 /  8 cells,  12 /  2 spine rows
 #:
-#: Stage 2 is the most balanced boundary that leaves BOTH dies real slack:
-#: neither die approaches the 118 usable cells, and neither spine approaches
-#: the 12-row limit — slack the placer needs, because a fold that FILLS the
-#: array builds and then fails to route. It also puts both OCTANT-FOLD stages
-#: (0 and 1, the only ones needing the 16+16 tables) on the same die, so die 1
-#: is entirely direct-table and trivial stages.
-SPLIT_STAGE = 2
+#: But CELLS ARE NOT THE BINDING CONSTRAINT — SHAPE IS. Cutting after stage 2
+#: puts three chains of 30, 24 and 16 cells around a SIX-row spine, and that
+#: does not place at ANY spine column with ANY reserved egress lane (measured
+#: exhaustively): 70 cells is only 59% of the array, so it fails on the
+#: geometry of long chains folded around a short spine, not on area.
+#:
+#: Cutting after stage 0 places on both dies, and the imbalance is a FEATURE
+#: rather than a cost:
+#:
+#:   * die 0 is the one stage that cannot be anything else — the period-64
+#:     octant fold, which exists only at N=128;
+#:   * die 1 (stages 1..6, 84 cells, a 12-row spine) is the SAME SHAPE as the
+#:     verified FFT64Block, so it inherits geometry that is already proven on
+#:     a real chip and the only genuinely new thing in the design is the
+#:     CROSSING itself.
+#:
+#: The goal is a transform that spans two dies with a correctness argument, so
+#: concentrating the novelty in one place is worth more than an even split.
+SPLIT_STAGE = 0
 
 
 class _FFT128Half(LargeFFTBlock):
@@ -2353,24 +2364,32 @@ class _FFT128Half(LargeFFTBlock):
 
 
 class FFT128Die0(_FFT128Half):
-    """N=128 die 0 — stages 0..2 (delays 64/32/16), 70 cells.
+    """N=128 die 0 — stage 0 alone (delay 64), 30 cells.
 
-    Carries BOTH octant-fold stages (0 and 1; periods 64 and 32) plus the
-    first direct-table stage. Complex in (the transform's input), complex out
-    (the partially transformed stream die 1 consumes — NOT frequency bins).
-    Contributes 112 samples of the transform's 127-sample latency.
+    The period-64 OCTANT FOLD: the one stage of this transform that has no
+    counterpart at N=64, and the reason N=128 needs 16+16 octant tables where
+    N=64 needs 8+8. Complex in (the transform's input), complex out — the
+    partially transformed stream die 1 consumes, NOT frequency bins.
+    Contributes 64 of the transform's 127 samples of latency.
     """
 
     STAGE_RANGE = (0, SPLIT_STAGE)
 
 
 class FFT128Die1(_FFT128Half):
-    """N=128 die 1 — stages 3..6 (delays 8/4/2/1), 44 cells.
+    """N=128 die 1 — stages 1..6 (delays 32/16/8/4/2/1), 84 cells.
 
-    Entirely direct-table and trivial stages — no octant fold. Complex in
-    (die 0's output stream), complex out: THIS die's output is the
-    transform's, in BIT-REVERSED bin order at scale FFT/128. Contributes 15
-    samples of the transform's 127-sample latency.
+    THE SAME SHAPE AS THE VERIFIED FFT64Block: 84 cells over a 12-row spine,
+    six stages, one octant fold at the head followed by direct-table and
+    trivial stages. The delays and twiddle tables are of course N=128's
+    (stage 1 walks the 16+16 octant tables with a STRIDE-2 exponent, which the
+    fold sequencer handles by advancing its slot counter by ``2^s``), but the
+    geometry the placer has to solve is one this repo has already proven on a
+    real chip.
+
+    Complex in (die 0's output stream), complex out: THIS die's output is the
+    transform's, in BIT-REVERSED bin order at scale FFT/128. Contributes 63 of
+    the transform's 127 samples of latency.
     """
 
     STAGE_RANGE = (SPLIT_STAGE + 1, 6)

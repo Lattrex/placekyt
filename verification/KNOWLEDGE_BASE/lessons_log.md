@@ -9,6 +9,55 @@ block-specific gotcha. Promote anything that generalizes across block classes in
 and superseded material merged into the surviving entries; no durable lesson was
 dropped) — append new entries above the oldest ones as before.
 
+## ENGINE FIX (not block work) — the spine planner enumerated PORT-BLIND, so 400 candidate folds all sealed the egress 2026-08-24
+
+Found while placing the N=128 die-0 half, but it is a **placement-engine defect any
+large block would hit**, so it is recorded on its own rather than buried in a block
+entry. Nothing about it is FFT-specific.
+
+- **The mechanism: a post-hoc check can REJECT but cannot STEER.**
+  `_corridors_ok` — "can the router still reach this fold's I/O from the chip
+  ports?" — runs only after EVERY stage has been placed. The candidate generator
+  (`_self_avoiding_paths`) is a fixed-order DFS returning at most
+  `_SPINE_PATH_CANDIDATES` (400) walks, and it knows nothing about the ports. For a
+  LONG chain over a SHORT spine those 400 walks are not 400 different shapes: they
+  are 400 minor variations of ONE shape, a tall wall on one side of the spine
+  spanning every row. Sorting that sample cannot rescue it, because every member of
+  the sample is bad in the same way.
+
+- **The measurement.** Die 0's stage-0 chain is 30 cells over a 2-row spine on the
+  10x12. All 400 enumerated candidates ran WEST of the spine column across all 12
+  rows; **0 of 400 passed the corridor check**. Bounding boxes: 210 spanned cols
+  1..5 rows 0..11, 188 spanned cols 2..5 rows 0..11, 2 spanned cols 3..5 rows 0..11.
+  The asymmetry is the tell — the INPUT corridor was reachable in every case and the
+  OUTPUT corridor in none, because the wall lands between the block exit and the
+  x16_out port. A 30-cell walk from `(4,0)` to `(4,1)` demonstrably EXISTS (the
+  enumerator finds them instantly with the blockage removed), so this was never an
+  infeasible geometry — only an unlucky enumeration order.
+
+- **The fix: port-aware enumeration with a progressively reserved egress lane.** A
+  column between the spine and the output port may be RESERVED — no stage cell may
+  occupy it — which guarantees a free north-south lane for the egress corridor AND
+  forces the enumerator to spend its 400 candidates on walks that leave it alone.
+  Reservations are tried in order `None` first, then each column east of the spine,
+  nearest first, so the change can only ADD solutions. Effect on the failing case:
+  stage 0 went from "no solution at any of 8 spine columns" to placing in **0.2 s**
+  with column 5 reserved.
+
+- **The regression evidence that matters.** Because `None` is tried first, the
+  shipped FFT64 fold resolves exactly as before: still spine column 4, still 84
+  cells, **byte-identical layout** (`s0_ctl (4,0,east)`, `s5_out (4,11,east)`), and
+  its 97 structural gates — the fit-limit suite, FFT16, and the repo-wide
+  reachability gates — stay green. Any change to a placer must carry this kind of
+  evidence: a placement that "still works" is not the same as one that is unchanged.
+
+- **The general lesson.** When a generate-and-test placer fails, ask whether the
+  GENERATOR can see the constraint the TEST enforces. If it cannot, the test is
+  measuring a biased sample and "no solution exists" is an unsafe conclusion. Check
+  it the cheap way first: strip the constraint, ask the generator whether ANY
+  candidate exists, and compare. Here that took one call and turned a presumed
+  geometric wall into an enumeration-order bug.
+
 ## FFT64 chip-scale — two defect classes that BUILD CLEANLY and RUN WRONG: state pinned into instructions, and an unreachable dispatch entry 2026-08-24
 
 The block placed, routed, built and ran all 84 cells (previous entry) and was still

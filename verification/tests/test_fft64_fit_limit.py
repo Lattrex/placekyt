@@ -646,6 +646,9 @@ def test_every_authored_cell_fits_the_word_budget(N):
     blk = object.__new__(cls)
     blk._n = N
     blk._delays = FL.stage_delays(N)
+    # STAGE_RANGE is None for a whole transform, so the local stage index IS
+    # the parent's (a split half sets this to its own range instead).
+    blk._stage_ids = tuple(range(len(blk._delays)))
     blk._tables = [FL.stage_table(N, s) for s in range(len(blk._delays))]
     blk._octC, blk._octS = FL.octant_tables(N)
     blk._segs = {s: FL._delay_segments(D - 1)
@@ -672,6 +675,173 @@ def test_every_authored_cell_fits_the_word_budget(N):
             assert sv.register is not None, f"{cid}: unpinned state {sv.name}"
     assert not over, f"cells over the 32-word budget: {over}"
     assert len(cps) == fft_cells(N), (len(cps), fft_cells(N))
+
+
+def _instruction_region_overlaps(cp):
+    """Data/state addresses that land INSIDE a cell's instruction region.
+
+    Returns ``{name: addr}`` for every data word or state var pinned at or
+    above ``base_addr = 31 - instr_count`` — the address the resolver starts
+    writing instructions at.
+    """
+    from gr_kyttar.placement.resolver import CellProgramResolver  # noqa: PLC0415
+    res = CellProgramResolver()
+    base = 31 - res.count_instructions(cp)
+    bad = {}
+    for d in (cp.data or ()):
+        if d.address is not None and d.address >= base:
+            bad[f"data:{d.name}"] = d.address
+    data_map = res._allocate_data(cp.data)
+    gap = list(range(max(data_map.values(), default=-1) + 1, base))
+    for name, addr in res._allocate_state(cp.state, gap).items():
+        if addr >= base:
+            bad[f"state:{name}"] = addr
+    return bad, base
+
+
+@pytest.mark.parametrize("N", [64, 128])
+def test_no_authored_cell_pins_state_into_its_instruction_region(N):
+    """INV-33, the OVERLAP half — the defect that made FFT64 place, route,
+    build and run all 84 cells while emitting only the FIRST sample's word.
+
+    ``test_every_authored_cell_fits_the_word_budget`` counts WORDS
+    (``max_addr + 1 + instr_count <= 32``) and a cell that is EXACTLY 32/32
+    passes it. But the resolver lays instructions DOWNWARD from address 30 to
+    ``base_addr = 31 - instr_count`` and honours an explicitly-pinned state
+    register wherever it is asked to — so a cell that is one word over
+    silently gets its state pinned ON TOP of its own first instruction. The
+    build succeeds; the first ``MOVE R{state}, R0`` then ZEROES the
+    instruction word the next trigger enters at, and the cell runs exactly
+    once. Two cells were in that state: ``s0_mcalc`` (``t`` at 8, base 8) and
+    ``s1_fetch_d`` (``ptr`` at 21, base 21).
+
+    Nothing in the resolver catches this — its own guard only compares data
+    against ``base_addr``, never state — so it has to be a block gate.
+    """
+    from gr_kyttar.placement.blocks import fft_large as FL  # noqa: PLC0415
+
+    cls = FL.FFT64Block if N == 64 else FL.FFT128Block
+    blk = object.__new__(cls)
+    blk._n = N
+    blk._delays = FL.stage_delays(N)
+    # STAGE_RANGE is None for a whole transform, so the local stage index IS
+    # the parent's (a split half sets this to its own range instead).
+    blk._stage_ids = tuple(range(len(blk._delays)))
+    blk._tables = [FL.stage_table(N, s) for s in range(len(blk._delays))]
+    blk._octC, blk._octS = FL.octant_tables(N)
+    blk._segs = {s: FL._delay_segments(D - 1)
+                 for s, D in enumerate(blk._delays)}
+    order = []
+    for s in range(len(blk._delays)):
+        order += cls._stage_chain(blk, s)
+    blk._order = order
+    cps = cls.build_cell_programs(blk)
+
+    bad = {}
+    for cid, cp in cps.items():
+        over, base = _instruction_region_overlaps(cp)
+        if over:
+            bad[cid] = (over, base)
+    assert not bad, (
+        "cells whose data/state is pinned inside the instruction region "
+        f"(INV-33 overlap): {bad}")
+
+
+def test_instruction_region_overlap_gate_has_teeth():
+    """INV-4: the overlap gate must FAIL on the exact pre-fix shapes.
+
+    Both reductions are re-inflated here — ``mcalc``'s dead ``BR.Z +0`` pad
+    plus its redundant ``CMP``, and ``fetch_d``'s input-register + staging
+    ``MOVE`` — and each must be caught.
+    """
+    from gr_kyttar.placement.block import (  # noqa: PLC0415
+        CellProgram, DataWord, EntryPoint, Port, StateVar)
+    from gr_kyttar.placement.blocks import fft_large as FL  # noqa: PLC0415
+
+    # --- the pre-fix mcalc (23 instructions, state pinned at 8, base 8) ----
+    M = 8
+    legacy_mcalc = CellProgram(
+        inputs=[Port("r", register=1), Port("o", register=2)],
+        outputs=[Port("m_f"), Port("k_f"), Port("trig")],
+        entries=[EntryPoint("default")],
+        data=[DataWord("mconst", M, address=3), DataWord("zero", 0, address=4),
+              DataWord("one", 1, address=5), DataWord("tid", 0x8000, address=6),
+              DataWord("tmj", 0x8001, address=7)],
+        state=[StateVar("t", register=8, initial_value=0)],
+        assembly_template=(
+            "default:\n"
+            "    SUB R{in:r}, R{data:mconst}\n"
+            "    BR.NN +2\n"
+            "    SUB R{data:zero}, R0\n"
+            "    BR.Z +0\n"
+            "    MOVE R{state:t}, R0\n"
+            "    SUB R{data:mconst}, R{state:t}\n"
+            "    MOVE R{state:t}, R0\n"
+            "    CMP R{state:t}, R{data:zero}\n"
+            "    BR.Z triv\n"
+            "    MOVE R0, R{state:t}\n"
+            "    {write:m_f}\n"
+            "    MOVE R0, R{in:o}\n"
+            "    {write:k_f}\n"
+            "    {jump:trig}\n"
+            "    HALT\n"
+            "triv:\n"
+            "    MOVE R0, R{data:one}\n"
+            "    {write:m_f}\n"
+            "    MOVE R0, R{data:tid}\n"
+            "    CMP R{in:o}, R{data:zero}\n"
+            "    BR.Z +1\n"
+            "    MOVE R0, R{data:tmj}\n"
+            "    {write:k_f}\n"
+            "    {jump:trig}\n"),
+    )
+    over, base = _instruction_region_overlaps(legacy_mcalc)
+    assert over == {"state:t": 8} and base == 8, (over, base)
+
+    # --- the pre-fix P=16 fetch_d (the c-word CROSS-FORWARD) ---------------
+    # This is the shape that shipped before either FFT size fixed it: the
+    # table cell also forwards the `c` word handed to it by fetch_c, which
+    # costs an input register plus a staging MOVE and puts the cell at exactly
+    # 32/32 with ptr ON its own entry instruction. Both sizes reached it
+    # independently (N=32 stage 0, N=64 stage 1); the shipped repair removes
+    # the cross-forward entirely so each table cell writes straight into
+    # steer's own input register.
+    words = [c for (_k, _c, c) in FL.stage_table(64, 1)]
+    P, b = len(words), 2
+    data = [DataWord(f"t{i}", FL.u16(w), address=b + i)
+            for i, w in enumerate(words)]
+    data += [DataWord("one", 1, address=b + P),
+             DataWord("pend", b + P, address=b + P + 1),
+             DataWord("pbase", b, address=b + P + 2)]
+    legacy_fetch = CellProgram(
+        inputs=[Port("c", register=1)],
+        outputs=[Port("t_f"), Port("c_f"), Port("trig")],
+        entries=[EntryPoint("default")], data=data,
+        state=[StateVar("ptr", register=b + P + 3, initial_value=b)],
+        assembly_template=(
+            "default:\n"
+            "    LOAD R{state:ptr}\n"
+            "    {write:t_f}\n"
+            "    MOVE R0, R{in:c}\n"
+            "    {write:c_f}\n"
+            "    ADD R{state:ptr}, R{data:one}\n"
+            "    MOVE R{state:ptr}, R0\n"
+            "    CMP R0, R{data:pend}\n"
+            "    BR.NZ +1\n"
+            "    MOVE R{state:ptr}, R{data:pbase}\n"
+            "    {jump:trig}\n"),
+    )
+    over, base = _instruction_region_overlaps(legacy_fetch)
+    assert over == {"state:ptr": 21} and base == 21, (over, base)
+
+    # And the SHIPPED replacements are clean at the very same shapes. The
+    # current _fetch_cell takes ONLY the table (no has_c_input): the
+    # cross-forward is gone, which is the fix.
+    assert _instruction_region_overlaps(
+        FL.FFT64Block._fetch_cell(words))[0] == {}
+    blk = object.__new__(FL.FFT64Block)
+    blk._n = 64
+    assert _instruction_region_overlaps(blk._fold_mcalc_cell())[0] == {}
 
 
 @pytest.mark.parametrize("N,s0", [(64, 23), (128, 29)])
@@ -1075,23 +1245,30 @@ def _state_instruction_overlaps(blk):
     return bad
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "KNOWN DEFECT, root-caused and NOT yet fixed: s0_mcalc (entry 8, state t "
-    "-> 8) and s1_fetch_d (entry 21, state ptr -> 21) each allocate a state "
-    "register ON their own first instruction, so the first write zeroes it "
-    "and the SECOND trigger enters a HALT — which is why FFT64Block emits "
-    "exactly one sample and then goes dead. Both cells are EXACTLY full at "
-    "31/32 words with every data word genuinely used, so the fix is to free a "
-    "word by re-deriving the cell arithmetic (and re-verifying it against the "
-    "fold golden), not to re-pin the register. strict=True: this flips to a "
-    "FAILURE the moment the cells are fixed, which is the signal to delete "
-    "the marker."))
 def test_no_cell_overwrites_its_own_program():
     """Every state register sits BELOW the cell's first instruction.
 
     A violation is silent at build time and fatal at run time: the cell's own
     write to that state word zeroes an instruction, and the next trigger
     enters a HALT.
+
+    THIS WAS A STRICT XFAIL and is now a PASS — the marker was written to flip
+    the moment the two cells were repaired, and both have been:
+
+      * ``s1_fetch_d`` (entry 21, state ptr -> 21) — the ``c``-word
+        CROSS-FORWARD was removed outright, so each direct-table cell writes
+        straight into ``steer``'s own input register. That is the N=32 fix,
+        reached independently at the same P=16 boundary; it leaves the cell at
+        30/32 words with two clear of the state.
+      * ``s0_mcalc`` (entry 8, state t -> 8) — a dead ``BR.Z +0`` pad (the
+        conditional negate only ever needs to skip the negate itself) and a
+        ``CMP`` that re-derived a Z flag the preceding ``SUB`` had already set
+        (MOVE does not touch flags). Proven by exhaustive on-chip equality
+        against the unreduced program: 192 (r, o) pairs at both N, zero
+        mismatches.
+
+    Neither repair changed any arithmetic, which is why the fold goldens are
+    untouched. Keep this gate green.
     """
     blk = _spine_block()
     bad = _state_instruction_overlaps(blk)

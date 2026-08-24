@@ -351,10 +351,24 @@ def run_block_dut_pipelined(
     cap = max_events if max_events is not None else max(50_000, 2_000 * max(1, len(samples)))
     res = chip.run(max_events=cap)
     if isinstance(res, dict) and not res.get("completed", True):
+        # DO NOT name a conclusion here. Cap expiry has TWO causes and this
+        # function cannot tell them apart: a genuine livelock, or a default
+        # budget too small for a big block. The 2000/sample default is sized
+        # for small blocks; a large multi-stage pipeline can legitimately cost
+        # more (measured: FFT64, 84 cells over six serialize-LOCKed stages,
+        # 2873 events/sample), and reporting that as "block livelocks" cost a
+        # real investigation. Distinguish them by MEASURING the per-sample
+        # cost on the per-sample path and re-running with a DERIVED budget: a
+        # livelock never reaches quiescence at any cap; a shortfall completes
+        # as soon as the budget is real.
+        per = cap / max(1, len(samples))
         return RateDUTResult(
             False, reason=f"pipeline did NOT reach quiescence under saturated drive "
             f"(stop_reason={res.get('stop_reason')}, events={res.get('events_processed')}, "
-            f"cap={cap}) — block livelocks when the pipeline is full")
+            f"cap={cap} = {per:.0f}/sample over {len(samples)} samples) — EITHER a "
+            f"livelock OR a budget shortfall. Measure this block's per-sample event "
+            f"cost on the per-sample path and pass max_events derived from it; if it "
+            f"still does not complete, the livelock is real")
 
     flat = [int(v) & 0xFFFF for (v, _d, _t) in chip.read_port_words_timed("x16_out")]
     return RateDUTResult(True, outputs_q15=flat, n_words=len(words),

@@ -1422,6 +1422,75 @@ writes sharing a dest register (the LMS y_i hop was clobbered by the g-fan-out's
 patch). Order broadcast-source cells EARLY in the program dict so their edges
 are FORWARD and the pass never touches them.
 
+**THE OVERLAP HALF — a cell at EXACTLY 32/32 words pins its state ON TOP of its
+own first instruction** (found on FFT64; three cells were in this state). The
+word-count check every block writes,
+``max_addr + 1 + instr_count <= 32``, PASSES a cell that is exactly full. But the
+resolver lays instructions DOWNWARD from address 30 to
+``base_addr = 31 - instr_count``, and it honours an explicitly-pinned
+``StateVar(register=N)`` wherever it is told — *including inside that range*. Its
+own guard (`"Not enough register space"`) only compares DATA against
+``base_addr``; **it never checks state.** So the cell assembles, the bitstream
+loads, the program runs ONCE, and its first ``MOVE R{state}, R0`` zeroes the
+instruction word the next trigger enters at.
+
+*Symptom:* the block emits exactly ONE sample and goes quiescent — which is
+indistinguishable by inspection from a serialize-LOCK that never clears, and cost
+a full dispatch chasing the lock.
+
+*The gate* (static, cheap, catches it before any chip run): for every authored
+cell assert no data address and no state register is
+``>= 31 - instr_count``. Pair it with an INV-4 negative that re-inflates the
+pre-fix shape.
+
+*Freeing a word must not change arithmetic.* Two moves are usually enough, and
+both must be proven by running the reduced cell against the UNREDUCED one over
+its whole input domain: (a) delete provably dead words — a branch pad whose
+target already holds the right value, or a ``CMP`` re-deriving a flag an earlier
+``SUB`` set (MOVE does not touch flags); (b) move a merely-forwarded value to the
+ACCUMULATOR-DELIVERY idiom above — it arrives in R0 and the cell's FIRST
+instruction re-emits it, freeing both the input register and the staging MOVE.
+
+## INV-35 — A dispatch ENTRY that no jump targets is DEAD CODE, and only the chip can tell you
+
+**The rule:** in the multi-entry dispatch idiom (a cell whose PATH identity travels
+as *which entry* the next cell is jumped at — TwiddleMultiply, the octant fold,
+every trivial/numeric split), **every declared ``EntryPoint`` must be the target of
+at least one ``internal_jumps`` edge.** An entry nothing jumps at is unreachable;
+the cell still assembles, still fits its budget, and still runs — down the wrong
+path, forever.
+
+**How it presents (FFT64's octant fold):** ``sign`` declared ``num`` and ``triv``
+entries, but ``swap`` was given ONE jump port wired unconditionally to ``num``. The
+two structurally trivial twiddle slots (``k = 0`` and ``k = N/4``) then emitted
+numeric words instead of the sentinel encoding the downstream cell dispatches on.
+Thirty of thirty-two slots were right, so nothing looked broken — but two wrong
+twiddles per cycle put the ENTIRE odd-bin half of every output frame wrong.
+
+**Three traps that hid it, each general:**
+
+1. **A cell-level harness must read the dispatch decision OFF the cell, never
+   re-decide it.** The standalone fold check chose ``sign``'s entry itself from the
+   control word, so it exercised code the built chip could not reach and reported
+   all 32 slots correct. Derive the decision from observable cell behaviour (here:
+   the ``triv`` exit is the only path that writes no magnitudes) and ASSERT it
+   agrees with the control word.
+2. **Size a streaming gate by what it REACHES, not by how many samples it sends.**
+   An 80-sample FFT64 run was bit-exact and proved nothing: the first valid output
+   is at index ``N-1``, and frame slots ``0..N/2-1`` are the EVEN bins (the sum
+   branch). The twiddled half is not touched until output ``N-1 + N/2``. State the
+   reach of every streaming gate explicitly.
+3. **When no arithmetic model reproduces an on-chip divergence, stop modelling and
+   read the intermediate state off the chip.** Exhaustive searches over wrong
+   twiddle words, slot substitutions, pointer stalls, ring-timing offsets and
+   counter drift ALL failed to reproduce it. Reading the ``steer`` cell's latched
+   twiddle pair after each trigger found it in one run: wrong at exactly triggers
+   0 and 16 — the two trivial slots — and nowhere else.
+
+**Sharpest stimulus for this class:** a single IMPULSE. It makes the ideal output
+a constant across the frame, so a phase error reads directly as a rotation
+(``512 -> (510, -50)``, which is exactly ``512 * W_64^1``) instead of as noise.
+
 ## INV-34 — ISA: shift counts are IMMEDIATE instruction fields; the silicon design is the authority for ISA claims
 
 **The rule:** a shift/rotate word is `OP | ROT[11] | RSVD[10] | CNT[9:6] |

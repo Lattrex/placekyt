@@ -9,6 +9,314 @@ block-specific gotcha. Promote anything that generalizes across block classes in
 and superseded material merged into the surviving entries; no durable lesson was
 dropped) — append new entries above the oldest ones as before.
 
+## MERGING TWO AGENTS' WORK ON ONE PLANNER — a fallback inside a backtracking search is an EXPONENTIAL, and a layout hash is the only proof a merge is safe 2026-08-24
+
+FFT32 and FFT64 were built in parallel against the same `fft_large.py`. Both hit the
+SAME `s1_fetch_d` INV-33 overlap at the P=16 boundary and fixed it differently; both
+improved the spine planner. Merging them surfaced two lessons worth more than the
+merge itself.
+
+- **KEEP THE ROOMIER FIX, NOT YOUR OWN.** FFT64's fix moved `fetch_d`'s `c` forward to
+  the accumulator-delivery idiom (31/32 words); FFT32's REMOVED the cross-forward
+  outright so each table cell writes straight into `steer`'s input register (30/32,
+  two clear). Both are correct and both were separately verified, but shipping two
+  shapes of one builder invites divergence between sizes. The merge kept FFT32's and
+  deleted FFT64's: **one `_fetch_cell`, the roomier shape, no per-size branch.** When
+  two agents fix one defect, the deliverable is ONE fix — pick on margin and
+  simplicity, not on authorship.
+
+- **A FALLBACK PLACED INSIDE A BACKTRACKING SEARCH MULTIPLIES THE TREE.** FFT64's
+  planner gained a height-capped fallback so long chains over short spines stop
+  rediscovering the same wall. It was implemented as a generator yielding SEVERAL
+  candidate batches per stage — which is fine in isolation and catastrophic in
+  recursion: the generator is consulted at EVERY level, so k batches per stage
+  multiplies the search by `k**n_stages`. Measured on the merge: FFT32's sub-second
+  solve had not finished in MINUTES, while its layout was perfectly acceptable
+  (verified directly — main's chip-proven FFT32 fold PASSES the new corridor check, so
+  the check was not the problem). Fix: make the fallback a **whole-search retry**
+  outside the recursion — pass 1 is exactly the original single full-height batch, and
+  only if that finds nothing does pass 2 re-run the entire search with a capped board.
+  Cost for any already-placing size: zero. **A fallback must be reachable only after
+  the original path has fully failed, and "fully" means the whole search, not one
+  node of it.**
+
+- **THE LAYOUT HASH IS THE MERGE GATE.** A planner merge is safe only if every
+  already-verified size produces a BIT-IDENTICAL layout — not "still places", not
+  "still passes its structural gates". A different working layout silently invalidates
+  every on-chip measurement taken against the old one, and nothing in the test suite
+  would say so. Hash it and pin it:
+  `sha256(json.dumps(sorted(layout.items()), sort_keys=True))`. FFT64 held at
+  `e27f020b27441656` through five corridor-check changes, a search-order change, and
+  this merge; FFT32's fold came back byte-identical to main's footprint. Without those
+  two numbers the merge would have been indistinguishable from a silent regression —
+  which is exactly the failure class this campaign exists to eliminate.
+
+## A REPORT THAT HARDCODES ITS OWN VERDICT, and a shared EVENT CAP that calls a healthy block livelocked 2026-08-24
+
+Two test-side defects found in one FFT64 run, both of which would have shipped a
+false result. Neither is FFT-specific.
+
+- **NEVER HARDCODE `"passed": true` IN A REPORT.** The FFT64 report writer emitted
+  `"passed": true` unconditionally. On the run where the saturated gate FAILED, it
+  still wrote a green report — the dashboard would have read a pass that did not
+  happen. This is the "make the gate look green" failure the project exists to
+  eliminate, and it was in freshly written test code, so nobody is immune.
+  **The fix has two halves and both matter:** (1) the report file is UNLINKED at the
+  start of the writer, so a failing *or dying* session cannot leave a stale green file
+  — **absence is the safe state**, and the dashboard reads absence as "not verified";
+  (2) the write happens only when the session reports zero failures, read from
+  pytest's own `terminalreporter` stats rather than from bookkeeping the module keeps
+  itself. Prove it the same way it was proven here: run the writer in a session
+  containing a synthetic failing test and assert it refuses, fails, and leaves NO file.
+
+- **A SHARED EVENT CAP IS A BLOCK-SIZE ASSUMPTION IN DISGUISE.**
+  `run_block_dut_pipelined` caps a saturated run at `max(50_000, 2_000 * n_samples)`
+  and reports expiry as *"block livelocks when the pipeline is full"*. That default is
+  sized for small blocks. FFT64 is 84 cells over six serialize-LOCKed stages and
+  **measured 2873 events per sample on chip** (8 consecutive samples, range
+  2727..2969), so a 127-sample burst needs ~365k events before any margin — against a
+  254k cap. The harness reported a LIVELOCK, the block was healthy, and re-running the
+  identical burst with a real budget completed and matched the golden **254/254 words
+  bit-exact**, all six locks releasing correctly.
+  **The trap is that the message names a conclusion, not a symptom.** "Livelocks when
+  the pipeline is full" reads as a diagnosis, and it cost a commit asserting a defect
+  that did not exist. Distinguish the two cheaply and always: **measure the per-sample
+  event cost on the per-sample path first**, then compare against the cap. A genuine
+  livelock never reaches quiescence at ANY budget; a cap shortfall completes as soon as
+  the budget is real.
+  **Raising a cap is only legitimate when the new number is DERIVED.** Record the
+  measurement next to the constant (here: measured cost x2 as a ceiling on a bounded
+  run), so it is visible as an arithmetic budget rather than a number enlarged until
+  the gate went green. A cap tuned to pass is a loosened tolerance wearing a different
+  hat.
+
+## THE PROXY-GATE FAILURE MODE — a cheap structural check that PASSES where the real thing FAILS 2026-08-24
+
+**The general rule, first, because this is not about FFTs.** A structural pre-check
+that stands in for a real engine — a router, a build, a scheduler — must model that
+engine's **sequencing, its termination condition, AND its resource bounds**. Miss any
+one and it is a PROXY: it will pass placements/designs the real engine rejects, and
+every hour spent trusting it is spent debugging the wrong thing. **When a pre-check
+and the real engine disagree, the real engine is right and the CHECK is the bug.**
+Fix the check; never widen the engine to match a proxy, and never conclude "no
+solution exists" from a proxy's verdict.
+
+This failure mode has now cost this campaign three separate investigations (twice in
+the FFT64/128 work, once in an example that reported `.ok` on every flag while
+emitting garbage), which is why it is written up on its own.
+
+**The concrete instance.** `LargeFFTBlock._corridors_ok` asked "is some NEIGHBOUR of
+each landing 4-connected to a port?", per net, independently. The real pipeline does
+FIVE things that check did not model, and each one alone is enough to make it lie.
+They were found ONE AT A TIME, each by a routing failure the previous fix exposed —
+which is itself the lesson: a proxy usually hides more than one discrepancy, so keep
+re-running the REAL engine after each fix instead of assuming the last one was the
+last one.
+
+1. **Nets are routed SEQUENTIALLY WITH SHARED OCCUPANCY.** The router lays one net at
+   a time and RESERVES each finished corridor against the next. Two nets that are each
+   individually routable can therefore still collide. Measured order matters: the
+   egress net routes FIRST and consumes cells, and only then does the ingress net try.
+   The FFT128 die-0 placement passed the independent check and then failed for real
+   with `no free corridor between the ports`.
+2. **A corridor ends ON the landing cell, not beside it.** The router's BFS walks free
+   cells and terminates AT the destination. Asking only whether a NEIGHBOUR of the
+   landing is reachable passes a placement whose landing is walled in — the corridor
+   can reach the neighbourhood and still have nowhere to finish.
+3. **Hop count is BOUNDED at 31** (a 5-bit HOP_CNT), and an egress corridor spends one
+   extra hop leaving the array. A path can be perfectly connected and still
+   unroutable: the die-0 detour around a tall fold measured 26 hops of pure corridor
+   before the block's own internal hops were counted. Connectivity is not routability.
+4. **The ORDER of the nets is the CALLER'S, not the block's.** Nets are routed in
+   project connection order — whatever the caller happened to add first — and the two
+   orders are not equivalent, because each finished corridor is reserved against the
+   next. A placement validated for one order can fail on the other: the die-0 plan
+   passed a check assuming egress-first and then failed for real on `mid0` when the
+   caller wired ingress first. **Require BOTH orders to succeed**, or a placement is a
+   latent failure waiting for a caller to wire its nets the other way round.
+5. **THE PLACER NORMALISES A LAYOUT TO ITS OWN BOUNDING BOX, and that invalidates
+   every absolute fact the other four rest on.** `place_block(x, y)` emits each cell
+   at `x + dx - min_dx` — it TRANSLATES the footprint so its bounding-box minimum sits
+   at the anchor. A plan whose cells start at `min x = 1` therefore reaches the router
+   SHIFTED ONE COLUMN LEFT when anchored at 0, and every port distance, reserved lane
+   and free column the planner reasoned about describes a layout that no longer
+   exists. Measured: the N=128 die-0 plan sat at `min x = 1`, passed the corridor
+   check, and arrived at the router with block cells on (0,2) and (0,3), sealing the
+   input port.
+
+   **The fix is a DECLARED ANCHOR, not a rejection.** The first attempt here was to
+   reject any plan not already normalised — that was wrong, and measuring it showed
+   why: die 0 *has* to reach column 1 to leave its corridors open, so `min x = 0` is
+   unreachable for it, and the rule threw away the only valid geometry (die 0 failed
+   to place at all; die 1, which satisfies it by luck, was fine). Instead the block
+   DECLARES the anchor at which its plan is reproduced verbatim —
+   `default_anchor = (min_dx, min_dy)` — and callers place it there, which makes
+   `x + dx - min_dx == dx`, the identity. What the router sees is then exactly what
+   was validated.
+
+   The general form: **if a planner reasons in absolute coordinates, the placement API
+   must be told where those coordinates are valid.** A constraint that forces the plan
+   into the API's default frame is the wrong direction of fix — it discards geometry
+   to satisfy a convention. Note also why this hid for so long: the shipped N=64 fold
+   happens to touch x=0 and y=0, so anchoring was a no-op for it and the whole issue
+   was invisible until a SECOND size existed. A contract exercised by exactly one
+   instance is not yet a contract.
+
+`_corridors_ok` now mirrors all three — egress first, then ingress over what the
+egress left, both terminating ON their landing cells, both hop-bounded. Under the
+corrected check the placement that the router had rejected **failed honestly**, which
+is the confirmation that matters: the check and the engine now agree.
+
+**LAYOUT-HASH STABILITY — the regression pattern for ANY planner change.** A placer
+change is not safe because the block "still places". Hash the resolved layout and
+assert it is UNCHANGED for every already-verified size:
+
+```python
+hashlib.sha256(json.dumps(sorted(lay.items()), sort_keys=True).encode()).hexdigest()
+```
+
+The shipped FFT64 fold held at `e27f020b27441656` (spine column 4, 84 cells,
+`s0_ctl (4,0,east)`, `s5_out (4,11,east)`) across BOTH the stricter corridor check and
+the new fallback search. That single number is what licenses a planner change against
+an already-verified block — "it still works" does not, because a DIFFERENT working
+layout silently invalidates every on-chip measurement taken against the old one.
+
+**The height-capped fallback** (see the entry below for why it was needed) is ordered
+so this stays true: **the full-height batch is tried FIRST, always**, so a size that
+already places never generates the extra batches — it pays nothing in time and gets a
+bit-identical layout. Only when full-height yields no placement does the search fall
+back to shrunk boards, shortest viable fold first. Design fallbacks this way: the new
+path must be unreachable for inputs the old path already handled.
+
+## ENGINE FIX (not block work) — the spine planner enumerated PORT-BLIND, so 400 candidate folds all sealed the egress 2026-08-24
+
+Found while placing the N=128 die-0 half, but it is a **placement-engine defect any
+large block would hit**, so it is recorded on its own rather than buried in a block
+entry. Nothing about it is FFT-specific.
+
+- **The mechanism: a post-hoc check can REJECT but cannot STEER.**
+  `_corridors_ok` — "can the router still reach this fold's I/O from the chip
+  ports?" — runs only after EVERY stage has been placed. The candidate generator
+  (`_self_avoiding_paths`) is a fixed-order DFS returning at most
+  `_SPINE_PATH_CANDIDATES` (400) walks, and it knows nothing about the ports. For a
+  LONG chain over a SHORT spine those 400 walks are not 400 different shapes: they
+  are 400 minor variations of ONE shape, a tall wall on one side of the spine
+  spanning every row. Sorting that sample cannot rescue it, because every member of
+  the sample is bad in the same way.
+
+- **The measurement.** Die 0's stage-0 chain is 30 cells over a 2-row spine on the
+  10x12. All 400 enumerated candidates ran WEST of the spine column across all 12
+  rows; **0 of 400 passed the corridor check**. Bounding boxes: 210 spanned cols
+  1..5 rows 0..11, 188 spanned cols 2..5 rows 0..11, 2 spanned cols 3..5 rows 0..11.
+  The asymmetry is the tell — the INPUT corridor was reachable in every case and the
+  OUTPUT corridor in none, because the wall lands between the block exit and the
+  x16_out port. A 30-cell walk from `(4,0)` to `(4,1)` demonstrably EXISTS (the
+  enumerator finds them instantly with the blockage removed), so this was never an
+  infeasible geometry — only an unlucky enumeration order.
+
+- **The fix: port-aware enumeration with a progressively reserved egress lane.** A
+  column between the spine and the output port may be RESERVED — no stage cell may
+  occupy it — which guarantees a free north-south lane for the egress corridor AND
+  forces the enumerator to spend its 400 candidates on walks that leave it alone.
+  Reservations are tried in order `None` first, then each column east of the spine,
+  nearest first, so the change can only ADD solutions. Effect on the failing case:
+  stage 0 went from "no solution at any of 8 spine columns" to placing in **0.2 s**
+  with column 5 reserved.
+
+- **The regression evidence that matters.** Because `None` is tried first, the
+  shipped FFT64 fold resolves exactly as before: still spine column 4, still 84
+  cells, **byte-identical layout** (`s0_ctl (4,0,east)`, `s5_out (4,11,east)`), and
+  its 97 structural gates — the fit-limit suite, FFT16, and the repo-wide
+  reachability gates — stay green. Any change to a placer must carry this kind of
+  evidence: a placement that "still works" is not the same as one that is unchanged.
+
+- **The second fix, once the corridor check was made HONEST: a height-capped
+  fallback.** With `_corridors_ok` corrected to model the router (see the entry
+  above), the reserved-lane fix alone was no longer enough — the die-0 chain still
+  produced only tall folds, and now they were correctly rejected. The enumerator
+  therefore falls back to searching a SHRUNK board: a height cap, starting at the
+  shortest fold the chain can physically make (`h*W >= length`, and at least
+  `2*(s+1)` rows for the spine) and growing. Capping the height is what makes the DFS
+  spend its 400-candidate budget on WIDE, SHORT folds instead of rediscovering the
+  same wall. Die 0 went from unplaceable to placing in **0.2 s**, in rows 0..7,
+  leaving rows 8..11 free as a clean port-to-port corridor.
+
+  **Order it so already-working sizes pay nothing:** the FULL-height batch is tried
+  FIRST, so a size that already places never generates the fallback batches — no time
+  cost, and a bit-identical layout (FFT64 held at `e27f020b27441656`). A fallback that
+  reorders the search for inputs the old path already handled is a regression waiting
+  to happen.
+
+- **The general lesson.** When a generate-and-test placer fails, ask whether the
+  GENERATOR can see the constraint the TEST enforces. If it cannot, the test is
+  measuring a biased sample and "no solution exists" is an unsafe conclusion. Check
+  it the cheap way first: strip the constraint, ask the generator whether ANY
+  candidate exists, and compare. Here that took one call and turned a presumed
+  geometric wall into an enumeration-order bug. And note the ordering of the two
+  fixes: the port-blind enumerator was real, but it was only HALF the problem, and
+  the half that was hiding the other half was the proxy corridor check.
+
+## FFT64 chip-scale — two defect classes that BUILD CLEANLY and RUN WRONG: state pinned into instructions, and an unreachable dispatch entry 2026-08-24
+
+The block placed, routed, built and ran all 84 cells (previous entry) and was still
+wrong. Two independent faults, both of which pass every static check the repo had,
+and both of which generalize well beyond this block.
+
+- **INV-33's OVERLAP half: a cell that is EXACTLY 32/32 words silently pins its
+  STATE on top of its own first instruction.** The word-count gate everyone writes
+  is `max_addr + 1 + instr_count <= 32`, and a cell at exactly 32 passes it. But
+  the resolver lays instructions DOWNWARD from address 30 to
+  `base_addr = 31 - instr_count`, and it honours an explicitly-pinned
+  `StateVar(register=N)` wherever it is told — including inside that range. The
+  resolver's OWN guard only compares DATA against `base_addr`; it never checks
+  state. So the cell assembles, the bitstream loads, the program runs ONCE, and
+  the first `MOVE R{state}, R0` zeroes the instruction word the next trigger enters
+  at. Symptom: the block emits exactly one sample and goes quiescent — which looks
+  identical to a serialize-LOCK that never clears, and cost a whole dispatch chasing
+  the lock. **Three cells were in this state** (`s0_mcalc` t@8/base 8,
+  `s1_fetch_d` ptr@21/base 21, and `tab_d` at M=16 ad@21/base 21).
+  **Gate it directly** (`test_fft64_fit_limit.py`): for every authored cell, assert
+  no data address and no state register is `>= 31 - instr_count`. Cheap, static,
+  and it caught a third instance the chip run had not yet reached.
+  Freeing the word must NOT change arithmetic. Two moves did it here, both
+  proven by running the reduced cell against the UNREDUCED one on real cells over
+  every input: (a) delete genuinely dead words — a `BR.Z +0` pad (a conditional
+  negate only ever needs to skip the negate itself, since the not-taken path
+  already holds the non-negative value) and a `CMP` that re-derives a Z flag an
+  earlier `SUB` already set (MOVE does not touch flags); (b) move a forwarded word
+  to the **accumulator-delivery idiom** — it arrives in R0 and the cell's FIRST
+  instruction re-emits it, freeing both the input register and the staging MOVE.
+  (b) is nearly free whenever a cell merely passes a value through.
+
+- **A dispatch ENTRY that nothing jumps is dead code, and no Python-side check can
+  see it.** In the TwiddleMultiply idiom, path identity travels as WHICH ENTRY the
+  next cell is jumped at. The octant fold's `sign` cell has `num` and `triv`
+  entries, but `swap` was given ONE jump port wired unconditionally to `num`, so
+  `triv` was unreachable and the two structurally trivial slots (k = 0, k = N/4)
+  emitted numeric words instead of the sentinel encoding `steer` dispatches on.
+  Two wrong twiddles per 32-slot cycle put the ENTIRE odd-bin half of every frame
+  wrong while every even bin stayed right.
+  **Three things hid it, each worth remembering:**
+  1. The standalone fold-chain check drove `sign`'s entries BY HAND from the
+     control word, so it exercised code the built chip could not reach. **A
+     cell-level harness must read the dispatch decision OFF the cell** (here: the
+     `triv` exit is the only path that writes no magnitudes) and assert it agrees
+     with the control word — never re-decide it in the harness.
+  2. An 80-sample chip run was clean and looked like proof. It is not: at N = 64
+     the first valid output is 63, and frame slots 0..31 are the EVEN bins (the
+     sum branch). **A run must reach output 95 before it has tested the twiddled
+     half at all.** Size every streaming gate by what it REACHES, not by how many
+     samples it sends.
+  3. Every counter was correct on chip (`seq` p and `ctl` cnt in lockstep), so
+     counter-skew models were a dead end. What found it was reading the `steer`
+     cell's latched `(csav, dsav)` off the running chip trigger by trigger and
+     comparing with the slot the stage should be using — the wrong slot appeared
+     at exactly triggers 0 and 16, the two trivial slots, and nowhere else.
+     **When arithmetic models cannot reproduce an on-chip divergence, stop
+     modelling and read the intermediate state off the chip.**
+  A single impulse is the sharpest stimulus for this class: it makes the ideal
+  output a constant, so a phase error reads directly as a rotation
+  (here `512 -> (510, -50)` = exactly `512 * W_64^1`).
 ## The 31-hop ceiling is LIFTED — relay emission; and the gru_classifier wall is NOT hop count 2026-08-24
 
 Two linked results: an engine fix that landed and is proven on chip, and an

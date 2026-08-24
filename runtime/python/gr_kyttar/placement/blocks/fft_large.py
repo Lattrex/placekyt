@@ -192,6 +192,7 @@ Two constraints do survive, and both are real:
 Constructing a size that does not fit raises :class:`LargeFFTGeometryError`
 with the exact shortfall — a LOUD failure, not a silently-unroutable layout.
 """
+from collections import deque
 from itertools import product as _product
 from typing import Dict, List, Sequence, Tuple
 
@@ -1901,37 +1902,93 @@ class LargeFFTBlock(KyttarBlock):
                 return self._corridors_ok(used, chosen, W, H)
             start, goal = spine[s]
             blocked = set(used) | lane | (all_spine - {start, goal})
-            cands = _self_avoiding_paths(
-                start, goal, len(chains[s]), blocked, W, H,
-                limit=self._SPINE_PATH_CANDIDATES)
-            cands.sort(key=lambda p: (max(abs(c[1] - 2 * s) for c in p),
-                                      sum(abs(c[1] - 2 * s) for c in p)))
-            for path in cands:
-                chosen[s] = path
-                used.update(path)
-                if walk(s + 1):
-                    return True
-                used.difference_update(path)
-                chosen.pop(s, None)
+            for cands in self._stage_candidates(
+                    start, goal, len(chains[s]), blocked, W, H, s):
+                for path in cands:
+                    chosen[s] = path
+                    used.update(path)
+                    if walk(s + 1):
+                        return True
+                    used.difference_update(path)
+                    chosen.pop(s, None)
             return False
 
         return (col, chosen) if walk(0) else None
 
+    def _stage_candidates(self, start, goal, length, blocked, W, H, s):
+        """Yield BATCHES of candidate chains for one stage, shape-diverse.
+
+        WHY BATCHES, AND WHY BY HEIGHT. The enumerator is a fixed-order DFS
+        capped at ``_SPINE_PATH_CANDIDATES``; over a full-height board its cap
+        is spent entirely on ONE shape family — for a long chain over a short
+        spine, a tall wall spanning every row. Those all wall the ports off
+        from each other, so the corridor check rejects every one of them and
+        the stage looks unplaceable when it is only unlucky (measured: 0 of
+        400 candidates routable for the N=128 die-0 chain).
+
+        THE FULL-HEIGHT BATCH IS FIRST, ALWAYS. That keeps the shipped N=64
+        fold bit-identical AND keeps its construction fast: a size that
+        already places pays nothing for this, because the extra batches are
+        never generated. Only when the full-height batch yields no placement
+        does the search fall back to SHRUNK boards — a height cap, shortest
+        viable fold first — which forces the enumerator to spend its budget
+        on WIDE, SHORT folds that leave a free lane along the array instead of
+        rediscovering the same wall.
+
+        A chain of ``length`` cells folded into a strip ``h`` rows tall needs
+        ``h * W >= length``, and the spine itself needs ``2*(s+1)`` rows;
+        together those set the floor the fallback starts from.
+        """
+        def batch(cap):
+            cands = _self_avoiding_paths(
+                start, goal, length, blocked, W, cap,
+                limit=self._SPINE_PATH_CANDIDATES)
+            if not cands:
+                return None
+            cands.sort(key=lambda p: (max(abs(c[1] - 2 * s) for c in p),
+                                      sum(abs(c[1] - 2 * s) for c in p)))
+            return cands
+
+        full = batch(H)
+        if full:
+            yield full
+        floor = max(2 * (s + 1), -(-length // W))
+        for cap in range(floor, H):
+            got = batch(cap)
+            if got:
+                yield got
+
+    #: The router's hop ceiling: a corridor longer than this cannot be
+    #: expressed in the 5-bit HOP_CNT field, so a placement that needs one is
+    #: unroutable however free the cells are.
+    _MAX_CORRIDOR_HOPS = 31
+
     def _corridors_ok(self, used, chosen, W: int, H: int) -> bool:
-        """Can the ROUTER still reach this fold's I/O from the chip ports?
+        """Will the ROUTER actually route this fold's two nets?
 
         A fold that fills the array builds and then fails to route — the
         shipped FFT16 is 7 wide on a 10-wide chip precisely so that free
-        columns remain (INV-8/9). The placement must therefore leave, through
-        cells the block does NOT occupy:
+        columns remain (INV-8/9).
 
-          * a path from the ``x16_in`` port cell to a neighbour of the
-            block's input landing (``s0_ctl``), and
-          * a path from a neighbour of the block's output cell (the last
-            stage's ``out``) to the ``x16_out`` port cell.
+        THIS MIRRORS THE ROUTER, which is not the same as "both ends are
+        connected somewhere". Three things the naive check got wrong, each
+        measured on a real failing placement:
 
-        Checked as 4-connectivity over the free cells, which is exactly the
-        freedom the corridor router has.
+          1. **The two nets SHARE occupancy.** The router lays them one at a
+             time and RESERVES each finished corridor against the next, so
+             two nets that are each individually routable can still collide.
+             Checked in the router's own order: egress first, then ingress
+             over the cells the egress did not take.
+          2. **A corridor ends ON the landing cell, not beside it.** The
+             router's BFS walks free cells and finishes AT the destination,
+             so asking only whether some NEIGHBOUR of the landing is
+             reachable passes placements whose landing is walled in.
+          3. **Hop count is bounded.** A 5-bit HOP_CNT caps a corridor at
+             :data:`_MAX_CORRIDOR_HOPS`; a 26-hop detour around a tall fold
+             can be perfectly connected and still unroutable, and an egress
+             corridor spends one extra hop leaving the array.
+
+        Returns True only when BOTH nets route under those rules.
         """
         block_cells = set(used) - set(self._PORT_CELLS)
         in_cell = chosen[0][0]                       # s0_ctl
@@ -1939,30 +1996,48 @@ class LargeFFTBlock(KyttarBlock):
         ports = sorted(self._PORT_CELLS)
         in_port, out_port = ports[0], ports[-1]
 
-        def reaches(cell, port):
-            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-                nb = (cell[0] + dx, cell[1] + dy)
-                if not (0 <= nb[0] < W and 0 <= nb[1] < H):
-                    continue
-                if nb in block_cells:
-                    continue
-                if nb == port:
-                    return True
-                seen = {nb}
-                stack = [nb]
-                while stack:
-                    cur = stack.pop()
-                    if cur == port:
-                        return True
-                    for ex, ey in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-                        nx = (cur[0] + ex, cur[1] + ey)
-                        if (0 <= nx[0] < W and 0 <= nx[1] < H
-                                and nx not in block_cells and nx not in seen):
-                            seen.add(nx)
-                            stack.append(nx)
+        def bfs(start, goal, blocked):
+            """Shortest free-cell path start -> goal INCLUSIVE, or None. The
+            goal itself is enterable (it is the corridor's last cell); the
+            start is not re-entered."""
+            if start == goal:
+                return [start]
+            prev = {start: None}
+            q = deque([start])
+            while q:
+                cur = q.popleft()
+                for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                    nxt = (cur[0] + dx, cur[1] + dy)
+                    if not (0 <= nxt[0] < W and 0 <= nxt[1] < H):
+                        continue
+                    if nxt in prev:
+                        continue
+                    if nxt != goal and nxt in blocked:
+                        continue
+                    prev[nxt] = cur
+                    if nxt == goal:
+                        path, c = [], nxt
+                        while c is not None:
+                            path.append(c)
+                            c = prev[c]
+                        return path[::-1]
+                    q.append(nxt)
+            return None
+
+        # EGRESS first — the router's order. The block's exit emits onto its
+        # resting-face neighbour, so the corridor starts there; +1 hop for the
+        # word leaving the array at the output port.
+        egress = bfs(out_cell, out_port, block_cells - {out_cell})
+        if egress is None or len(egress) - 1 + 1 > self._MAX_CORRIDOR_HOPS:
             return False
 
-        return reaches(in_cell, in_port) and reaches(out_cell, out_port)
+        # INGRESS over what is left. The input port injects AT its own cell
+        # and the corridor ends ON the landing.
+        taken = block_cells | (set(egress) - {out_cell, out_port})
+        ingress = bfs(in_port, in_cell, taken - {in_port})
+        if ingress is None or len(ingress) - 1 > self._MAX_CORRIDOR_HOPS:
+            return False
+        return True
 
     # ------------------------------------------------------------------ build
     def build_cell_programs(self) -> Dict[str, CellProgram]:

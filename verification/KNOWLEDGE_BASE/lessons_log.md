@@ -9,6 +9,66 @@ block-specific gotcha. Promote anything that generalizes across block classes in
 and superseded material merged into the surviving entries; no durable lesson was
 dropped) — append new entries above the oldest ones as before.
 
+## THE PROXY-GATE FAILURE MODE — a cheap structural check that PASSES where the real thing FAILS 2026-08-24
+
+**The general rule, first, because this is not about FFTs.** A structural pre-check
+that stands in for a real engine — a router, a build, a scheduler — must model that
+engine's **sequencing, its termination condition, AND its resource bounds**. Miss any
+one and it is a PROXY: it will pass placements/designs the real engine rejects, and
+every hour spent trusting it is spent debugging the wrong thing. **When a pre-check
+and the real engine disagree, the real engine is right and the CHECK is the bug.**
+Fix the check; never widen the engine to match a proxy, and never conclude "no
+solution exists" from a proxy's verdict.
+
+This failure mode has now cost this campaign three separate investigations (twice in
+the FFT64/128 work, once in an example that reported `.ok` on every flag while
+emitting garbage), which is why it is written up on its own.
+
+**The concrete instance.** `LargeFFTBlock._corridors_ok` asked "is some NEIGHBOUR of
+each landing 4-connected to a port?", per net, independently. The router does three
+things that check did not model, and each one alone is enough to make it lie:
+
+1. **Nets are routed SEQUENTIALLY WITH SHARED OCCUPANCY.** The router lays one net at
+   a time and RESERVES each finished corridor against the next. Two nets that are each
+   individually routable can therefore still collide. Measured order matters: the
+   egress net routes FIRST and consumes cells, and only then does the ingress net try.
+   The FFT128 die-0 placement passed the independent check and then failed for real
+   with `no free corridor between the ports`.
+2. **A corridor ends ON the landing cell, not beside it.** The router's BFS walks free
+   cells and terminates AT the destination. Asking only whether a NEIGHBOUR of the
+   landing is reachable passes a placement whose landing is walled in — the corridor
+   can reach the neighbourhood and still have nowhere to finish.
+3. **Hop count is BOUNDED at 31** (a 5-bit HOP_CNT), and an egress corridor spends one
+   extra hop leaving the array. A path can be perfectly connected and still
+   unroutable: the die-0 detour around a tall fold measured 26 hops of pure corridor
+   before the block's own internal hops were counted. Connectivity is not routability.
+
+`_corridors_ok` now mirrors all three — egress first, then ingress over what the
+egress left, both terminating ON their landing cells, both hop-bounded. Under the
+corrected check the placement that the router had rejected **failed honestly**, which
+is the confirmation that matters: the check and the engine now agree.
+
+**LAYOUT-HASH STABILITY — the regression pattern for ANY planner change.** A placer
+change is not safe because the block "still places". Hash the resolved layout and
+assert it is UNCHANGED for every already-verified size:
+
+```python
+hashlib.sha256(json.dumps(sorted(lay.items()), sort_keys=True).encode()).hexdigest()
+```
+
+The shipped FFT64 fold held at `e27f020b27441656` (spine column 4, 84 cells,
+`s0_ctl (4,0,east)`, `s5_out (4,11,east)`) across BOTH the stricter corridor check and
+the new fallback search. That single number is what licenses a planner change against
+an already-verified block — "it still works" does not, because a DIFFERENT working
+layout silently invalidates every on-chip measurement taken against the old one.
+
+**The height-capped fallback** (see the entry below for why it was needed) is ordered
+so this stays true: **the full-height batch is tried FIRST, always**, so a size that
+already places never generates the extra batches — it pays nothing in time and gets a
+bit-identical layout. Only when full-height yields no placement does the search fall
+back to shrunk boards, shortest viable fold first. Design fallbacks this way: the new
+path must be unreachable for inputs the old path already handled.
+
 ## ENGINE FIX (not block work) — the spine planner enumerated PORT-BLIND, so 400 candidate folds all sealed the egress 2026-08-24
 
 Found while placing the N=128 die-0 half, but it is a **placement-engine defect any
@@ -51,12 +111,31 @@ entry. Nothing about it is FFT-specific.
   reachability gates — stay green. Any change to a placer must carry this kind of
   evidence: a placement that "still works" is not the same as one that is unchanged.
 
+- **The second fix, once the corridor check was made HONEST: a height-capped
+  fallback.** With `_corridors_ok` corrected to model the router (see the entry
+  above), the reserved-lane fix alone was no longer enough — the die-0 chain still
+  produced only tall folds, and now they were correctly rejected. The enumerator
+  therefore falls back to searching a SHRUNK board: a height cap, starting at the
+  shortest fold the chain can physically make (`h*W >= length`, and at least
+  `2*(s+1)` rows for the spine) and growing. Capping the height is what makes the DFS
+  spend its 400-candidate budget on WIDE, SHORT folds instead of rediscovering the
+  same wall. Die 0 went from unplaceable to placing in **0.2 s**, in rows 0..7,
+  leaving rows 8..11 free as a clean port-to-port corridor.
+
+  **Order it so already-working sizes pay nothing:** the FULL-height batch is tried
+  FIRST, so a size that already places never generates the fallback batches — no time
+  cost, and a bit-identical layout (FFT64 held at `e27f020b27441656`). A fallback that
+  reorders the search for inputs the old path already handled is a regression waiting
+  to happen.
+
 - **The general lesson.** When a generate-and-test placer fails, ask whether the
   GENERATOR can see the constraint the TEST enforces. If it cannot, the test is
   measuring a biased sample and "no solution exists" is an unsafe conclusion. Check
   it the cheap way first: strip the constraint, ask the generator whether ANY
   candidate exists, and compare. Here that took one call and turned a presumed
-  geometric wall into an enumeration-order bug.
+  geometric wall into an enumeration-order bug. And note the ordering of the two
+  fixes: the port-blind enumerator was real, but it was only HALF the problem, and
+  the half that was hiding the other half was the proxy corridor check.
 
 ## FFT64 chip-scale — two defect classes that BUILD CLEANLY and RUN WRONG: state pinned into instructions, and an unreachable dispatch entry 2026-08-24
 

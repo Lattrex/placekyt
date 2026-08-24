@@ -18,6 +18,8 @@ BUILTIN_BLOCKS = {
     'FFT16Block': 'fft16_block',
     'FFT64Block': 'fft_large',
     'FFT128Block': 'fft_large',
+    'FFT128Die0': 'fft_large',
+    'FFT128Die1': 'fft_large',
     'AddConstBlock': 'add_const_block',
     'XorBlock': 'xor_block',
     'NotBlock': 'not_block',

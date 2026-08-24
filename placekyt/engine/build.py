@@ -2870,15 +2870,26 @@ def _apply_rendezvous_input_faces(cell_map, blocks, connections, project,
                                   catalog, gr_blocks) -> None:
     """Reconcile a face-locking rendezvous block's LOCK faces to the ROUTED geometry.
 
-    A block declaring ``NEEDS_DISTINCT_INPUT_FACES`` (the DualFloatToComplex) LOCKs to
-    one arrival FACE at a time to pair two independent async streams — the face IS the
-    stream identity. Its program authors ``face_i`` / ``face_q`` ``is_face`` DataWords
-    (and boots pre-locked via ``initial_lock_face``) with PLACEHOLDER faces, but the
-    router decides the ACTUAL arrival geometry (the placer only guarantees the two land
-    on DIFFERENT faces). So here, AFTER routes/brokers have set every corridor's faces,
-    patch the built cell's ``face_i`` word to the face the ``i`` net actually arrives on,
-    ``face_q`` to the ``q`` net's face, and the cold-start LOCK config to ``face_i`` —
-    else the LOCK gates the wrong faces and the rendezvous stalls (0 egress).
+    A block declaring ``NEEDS_DISTINCT_INPUT_FACES`` (the DualFloatToComplex, the
+    FeaturePairJoin) LOCKs to one arrival FACE at a time to pair two independent async
+    streams — the face IS the stream identity. Its program authors two ``is_face``
+    DataWords (and boots pre-locked via ``initial_lock_face``) with PLACEHOLDER faces,
+    but the router decides the ACTUAL arrival geometry (the placer only guarantees the
+    two land on DIFFERENT faces). So here, AFTER routes/brokers have set every corridor's
+    faces, patch the built cell's FIRST face word to the face the FIRST input net
+    actually arrives on, the SECOND to the second net's face, and the cold-start LOCK
+    config to the first — else the LOCK gates the wrong faces and the rendezvous stalls
+    (0 egress).
+
+    WHICH PORTS/WORDS: the block declares them as
+    ``RENDEZVOUS_FACE_PORTS = ((in_port, face_word), (in_port, face_word))`` in
+    FIRST-ACCEPTED order — the port whose face the cell boots locked to comes first.
+    A block that does not declare it falls back to the DualFloatToComplex names
+    (``i``/``face_i``, ``q``/``face_q``), so the original block is unchanged. Hardcoding
+    those names here made this pass a SILENT NO-OP for any other rendezvous block (its
+    faces kept the authored placeholders, the LOCK gated the wrong faces, and the chain
+    produced ZERO output while building and routing perfectly) — exactly the failure
+    mode this pass exists to prevent.
 
     The arrival face is the direction FROM the rendezvous cell back toward the net's last
     physical waypoint (the word travels waypoint->cell, entering from the opposite side).
@@ -2940,19 +2951,20 @@ def _apply_rendezvous_input_faces(cell_map, blocks, connections, project,
                 return None
             return _step_face(cx, cy, oc[0], oc[1])
 
-        fi = _arrival_face("i")
-        fq = _arrival_face("q")
+        # The block names its own (input port, face DataWord) pairs, FIRST-ACCEPTED
+        # first; default to the DualFloatToComplex names so that block is unchanged.
+        spec = getattr(gb, "RENDEZVOUS_FACE_PORTS",
+                       (("i", "face_i"), ("q", "face_q")))
+        faces = [(_arrival_face(pn), wn) for (pn, wn) in spec]
         # Patch the built memory face words + cold-start LOCK. Only overwrite the 2-bit
         # face field; leave the rest of the word untouched.
-        if fi is not None and "face_i" in fword and fword["face_i"] in cfg.memory:
-            a = fword["face_i"]
-            cfg.memory[a] = (cfg.memory[a] & ~0x3) | (fi & 0x3)
-        if fq is not None and "face_q" in fword and fword["face_q"] in cfg.memory:
-            a = fword["face_q"]
-            cfg.memory[a] = (cfg.memory[a] & ~0x3) | (fq & 0x3)
-        # Cold-start LOCK boots to face_i (the first word of each pair is I).
-        if fi is not None:
-            cfg.initial_lock_face = fi & 0x3
+        for f, wn in faces:
+            if f is not None and wn in fword and fword[wn] in cfg.memory:
+                a = fword[wn]
+                cfg.memory[a] = (cfg.memory[a] & ~0x3) | (f & 0x3)
+        # Cold-start LOCK boots to the FIRST-accepted stream's face.
+        if faces and faces[0][0] is not None:
+            cfg.initial_lock_face = faces[0][0] & 0x3
 
 
 def _net_source_exit_cell(pb, pts, blocks, src_block_name):

@@ -1,0 +1,66 @@
+id: kyttar_feature_pair_join
+label: Kyttar Feature Pair Join
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar Feature Pair Join — pair TWO independent word streams and deliver them
+  to one downstream block in a FIXED order (a first, then b), one pair per
+  timestep.
+
+  There is no stock GNU Radio counterpart, because the problem does not exist in
+  GNU Radio: GR's scheduler aligns two input streams for you. On the clockless
+  Kyttar array a downstream cell that consumes a fixed-order PAIR of words
+  through ONE input port and ONE entry (a "toggle" cell — first trigger is
+  word 0, second is word 1, as in the Kyttar GRU Cell) cannot be fed by simply
+  wiring two connections into it: that builds and routes without error and then
+  silently HALVES the rate, because the toggle reads the two streams as word 0
+  and word 1 of ALTERNATING timesteps.
+
+  Use this block whenever two independently rate-reduced feature arms must be
+  presented to such a consumer as an ordered pair — for example a magnitude arm
+  (Complex To Mag^2 -> Moving Average -> Sqrt -> Keep 1 in N) and a
+  Zero-Crossing-Rate arm feeding a classifier front end.
+
+  On the chip this is ONE cell. The two producers fire at independent,
+  asynchronous times, so the cell tells the streams apart by their ARRIVAL FACE:
+  it uses the arbiter LOCK to accept input from exactly one face at a time,
+  advancing a -> b -> a. A word on the other face is simply held by the arbiter
+  until it is that face's turn, so the pairing survives ANY interleaving. On the
+  b word it emits BOTH words as two sequential bursts into the downstream entry.
+  Because the arrival face IS the stream identity, the two inputs must reach the
+  block on two DIFFERENT faces; the placer arranges this and a design-rule check
+  rejects a layout where both land on one face.
+
+  Semantics: a is always emitted first; no partial pair is ever emitted; a
+  starved arm STALLS the join (it never emits a stale or duplicated pair) and
+  resumes correctly when the missing word arrives. An arm may run at most two
+  timesteps ahead of the other.
+
+  This block runs on the Kyttar chip. Place it between a KyttarSource and
+  KyttarSink block, and ensure the device_id matches your KyttarDevice.
+
+  Parameters:
+  - Device ID: ID of the KyttarDevice block
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.feature_pair_join(device_id=${device_id})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+
+inputs:
+  - label: a
+    dtype: float
+  - label: b
+    dtype: float
+
+outputs:
+  - label: out
+    dtype: float
+
+file_format: 1

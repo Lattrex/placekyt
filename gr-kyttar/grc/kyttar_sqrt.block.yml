@@ -1,0 +1,57 @@
+id: kyttar_sqrt
+label: Kyttar Sqrt
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar Sqrt — elementwise square root of a real stream, a drop-in for GNU
+  Radio's blocks.transcendental("sqrt", "float"):
+
+      out = sqrt(in)
+
+  Typical use is rooting a power / magnitude-squared word back to a magnitude
+  (e.g. an exact boxcar RMS arm: Complex To Mag^2 -> Moving Average -> Sqrt ->
+  Keep 1 in N). This is the square-root stage of the Kyttar RMS block, made
+  available on its own so it can take an EXTERNAL power word — the RMS block
+  fuses power + IIR average + sqrt and cannot.
+
+  On the Kyttar chip this is a 3-cell feed-forward chain: shift-count normalize
+  to [0.5, 1), a quartic least-squares polynomial for sqrt(0.5 + f/2), then
+  denormalize (x 1/sqrt(2) on an odd shift count, then floor(s/2) right shifts).
+  Measured error over ALL 32768 Q15 input words: -4 .. +1 LSB.
+
+  HARDWARE DEVIATIONS (Q15 fabric):
+  - GR's "name" parameter (which libm function to apply) is this block's
+    IDENTITY, not a setting — every other libm function is a different on-chip
+    datapath, and several are not Q15-representable. Use the dedicated Kyttar
+    block for the function you need.
+  - GR's "type" parameter (float/double item type) has no meaning here: every
+    stream word on the fabric is Q15.
+  - A NEGATIVE input has no real square root. GR's libm returns NaN; this block
+    clamps the negative domain to 0.
+
+  This block runs on the Kyttar chip. Place it between a KyttarSource and
+  KyttarSink block, and ensure the device_id matches your KyttarDevice.
+
+  Parameters:
+  - Device ID: ID of the KyttarDevice block
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.sqrt(device_id=${device_id})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+
+inputs:
+  - label: in
+    dtype: float
+
+outputs:
+  - label: out
+    dtype: float
+
+file_format: 1

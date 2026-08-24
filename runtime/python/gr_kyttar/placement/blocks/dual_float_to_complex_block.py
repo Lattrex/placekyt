@@ -85,6 +85,10 @@ class DualFloatToComplexBlock(KyttarBlock):
     # land them on two DISTINCT faces and the build DRC MUST reject same-face landing.
     # No other block sets this (they receive pre-paired complex packets).
     NEEDS_DISTINCT_INPUT_FACES = True
+    # (input port, face DataWord) pairs in FIRST-ACCEPTED order, for the build's
+    # face-reconciliation pass. These ARE the pass's historical defaults; declaring
+    # them explicitly keeps the contract with the block instead of in the engine.
+    RENDEZVOUS_FACE_PORTS = (("i", "face_i"), ("q", "face_q"))
 
     # GR's blocks.float_to_complex has NO params; this block's ctor args are all
     # PLACEMENT/ROUTING internals the placer+router reconcile (face_i/face_q are the

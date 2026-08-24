@@ -284,6 +284,13 @@ _CASES = [
     # come from default_layout, so the chain must compute IDENTICALLY in every
     # D4 orientation (the normalize/denorm shift LOOPS included).
     ("RMSBlock", {"alpha": 0.25}, "real", ("sample", "out")),
+    # sqrt (GR blocks.transcendental 'sqrt'): the RMS sqrt TAIL standalone —
+    # single real word in -> sqrt word out. 3-cell feed-forward L fold
+    # (normalize -> quartic poly -> denorm), no in-template FACE constants and
+    # no feedback corridor, so every forwarding face comes from default_layout
+    # and the chain (both shift LOOPS included) must compute IDENTICALLY in all
+    # 8 D4 orientations.
+    ("SqrtBlock", {}, "real", ("sample", "out")),
     # RMS of a complex stream (GR blocks.rms_cf): complex (re, im) in -> ONE
     # real RMS word out (words_per_sample=1). Same 4-cell chain as RMSBlock with
     # the |z|^2 front — D4-invariant for the same reasons.

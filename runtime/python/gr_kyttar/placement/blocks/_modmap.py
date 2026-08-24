@@ -121,4 +121,6 @@ BUILTIN_BLOCKS = {
     'GRUCellBlock': 'gru_cell_block',
     'RMSCFBlock': 'rms_block',
     'ZeroCrossingRateBlock': 'zero_crossing_rate_block',
+    'SqrtBlock': 'sqrt_block',
+    'FeaturePairJoinBlock': 'feature_pair_join_block',
 }

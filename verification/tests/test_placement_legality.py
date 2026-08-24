@@ -183,6 +183,14 @@ BLOCKS = [
     # D4 orientation and under movement.
     ("RMSBlock", {"alpha": 0.25}),
     ("RMSCFBlock", {"alpha": 0.25}),
+    # sqrt: 3-cell L fold (norm -> poly -> denorm), no internal transit cell and
+    # NO params at all, so the 2x2-bounded footprint must stay pairwise-distinct
+    # in every D4 orientation and under movement.
+    ("SqrtBlock", {}),
+    # ordered two-word rendezvous: ONE cell, but its two input faces are
+    # placement-relevant (NEEDS_DISTINCT_INPUT_FACES) — cover it so a future
+    # footprint change (e.g. an emit-sequencing second cell) is caught here.
+    ("FeaturePairJoinBlock", {}),
     # rows x cols block interleaver: 3-cell vertical column (rgen -> wctl ->
     # store), no internal transit cell; rows/cols/deinterleave change register
     # contents only (the footprint is always 1x3) — must stay pairwise-distinct

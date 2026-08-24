@@ -1497,3 +1497,69 @@ class gru_cell(_PassThrough):
         self._advertise_grc_params(device_id, "GRUCellBlock", {
             "hidden": int(hidden), "inputs": int(inputs),
             "classes": int(classes), "weights_file": str(weights_file)})
+
+
+
+class sqrt(_PassThrough):
+    """Square root — GR marker (maps to SqrtBlock).
+
+    Drop-in for GNU Radio ``blocks.transcendental('sqrt', 'float')``: the
+    elementwise square root of a real stream, ONE real stream in -> ONE real
+    stream out. On the chip: a 3-cell feed-forward chain (shift-count normalize
+    -> quartic LSQ polynomial -> denormalize), the RMS family's proven sqrt tail
+    as a standalone block so an EXTERNAL power/magnitude-squared word can be
+    rooted. GR marker only; the real DSP runs on the placeKYT chip.
+
+    HW-DEVIATIONS (see SqrtBlock.GRC_UNSUPPORTED_PARAMS): GR's ``name`` (the
+    libm function) is this block's IDENTITY, not a parameter — every other libm
+    function is a different on-chip datapath — and GR's ``type`` has no meaning
+    on a Q15 fabric. A NEGATIVE input has no real square root (GR's libm gives
+    NaN); the Kyttar block clamps it to 0, and this marker matches so a
+    flowgraph preview agrees with the chip."""
+
+    def __init__(self, device_id="kyttar_0"):
+        super().__init__("Kyttar Sqrt", n_in=1, n_out=1,
+                         in_dtype=np.float32, out_dtype=np.float32)
+        self.device_id = device_id
+        self._advertise_grc_params(device_id, "SqrtBlock", {})
+
+    def work(self, input_items, output_items):
+        x = input_items[0].astype(np.float64)
+        n = min(len(output_items[0]), len(x))
+        # Match the chip's documented negative-domain clamp (GR returns NaN).
+        out = np.sqrt(np.clip(x[:n], 0.0, None))
+        output_items[0][:n] = out.astype(np.float32)
+        return n
+
+
+class feature_pair_join(_PassThrough):
+    """Ordered two-word pair join — GR marker (maps to FeaturePairJoinBlock).
+
+    placeKYT-NATIVE: there is no stock GNU Radio counterpart, because the
+    problem it solves does not exist in GR. On the clockless array a downstream
+    cell that consumes a FIXED-ORDER pair of words on ONE input port + ONE entry
+    (the toggle-cell contract) cannot be fed by wiring two nets into that entry —
+    that builds and routes cleanly and then silently HALVES the rate. This block
+    accepts one word on ``a`` and one on ``b`` (in ANY relative order, from
+    independently rate-reduced upstreams) and emits them as TWO SEQUENTIAL
+    bursts into a single downstream entry, always ``a`` first.
+
+    RATE / MARKER CONVENTION (the keep_one_in_n convention, and it is
+    load-bearing): on the chip this block is rate-EXPANDING — one (a, b) pair in
+    becomes TWO words out. A ``sync_block`` cannot express that, and a marker
+    that fakes a rate change DEADLOCKS the client scheduler at flowgraph end
+    (sync work's return value is both produce AND consume, so the input tail is
+    never retired). So this marker is a plain 1:1 pass-through of input 0; the
+    REAL join runs on the chip and the kyttar SINK emits the recovered
+    (already-joined) stream.
+
+    The face_a/face_b placement knobs of the placed block are
+    router-reconciled internals (see
+    FeaturePairJoinBlock.GRC_UNSUPPORTED_PARAMS) and are intentionally NOT
+    exposed to GRC."""
+
+    def __init__(self, device_id="kyttar_0"):
+        super().__init__("Kyttar Feature Pair Join", n_in=2, n_out=1,
+                         in_dtype=np.float32, out_dtype=np.float32)
+        self.device_id = device_id
+        self._advertise_grc_params(device_id, "FeaturePairJoinBlock", {})

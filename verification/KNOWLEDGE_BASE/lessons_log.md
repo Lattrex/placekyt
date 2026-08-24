@@ -9,6 +9,150 @@ block-specific gotcha. Promote anything that generalizes across block classes in
 and superseded material merged into the surviving entries; no durable lesson was
 dropped) — append new entries above the oldest ones as before.
 
+## FeaturePairJoinBlock + SqrtBlock — the ordered two-word rendezvous, and the sqrt tail set free 2026-08-24
+
+Two substrate primitives built together (wave 7) to unblock a two-feature
+classifier front end: an ORDERED pair join for the toggle-cell consumer
+contract, and a standalone Q15 square root. Both green; 26 + 24 tests.
+
+### FeaturePairJoinBlock — two SEQUENTIAL bursts, not a 2-rail packet
+
+**The problem, restated because it is invisible until you measure it.** A cell
+that consumes a FIXED-ORDER pair of words through ONE input port and ONE entry
+(the toggle-cell contract — first trigger is word0, second is word1; the
+GRUCellBlock's `fin` is the canonical one) cannot be fed by wiring two nets into
+that entry. That **builds and routes with `ok=True` and silently produces
+garbage**: the toggle reads the two streams as word0/word1 of *alternating*
+timesteps and the rate HALVES. None of the existing primitives fit — the
+importer's `_elect_join_triggers` declines to arbitrate when the target declares
+only an `EntryPoint`; the counting join is explicitly ORDER-FREE; broker
+coalescing collapses two nets into N WRITEs + ONE JUMP into the same `in_reg`
+(the second overwrites the first); and `DualFloatToComplexBlock` has exactly the
+right rendezvous but the wrong OUTPUT SHAPE (a 2-rail packet with one trigger).
+
+**The durable lesson: THE TWO-BURST EMIT NEEDS NO NEW BUILD MACHINERY.** The
+expectation going in was `RAW_OUTPUT_HOPS` plus hand-routing. Neither was
+needed. `_patch_cell_handoff` — the ordinary single-net source patcher, on both
+the abutted and the brokered path — sets **every** WRITE and **every** JUMP in
+the cell to the SAME `(hop, dest, entry)`. So a cell that authors
+
+```
+MOVE R0, as ; {write:out}  ; {jump:trig}
+MOVE R0, bs ; {write:out2} ; {jump:trig2}
+```
+
+builds to `WRITE @h→r; JUMP @h→e; WRITE @h→r; JUMP @h→e` — two INDEPENDENT
+deliveries of one downstream entry, in program order. Exactly the required
+shape, for free. **Two conditions keep that path live, and both are silent
+traps if violated** (the block's suite asserts each):
+
+1. **Declare exactly ONE output register.** With `>1` the build classifies the
+   cell as a COMPLEX 2-rail source and routes it to `_patch_complex_*`, which
+   steers the two WRITEs to CONSECUTIVE registers and fires ONE trigger — i.e.
+   it silently converts your two-burst block back into the Dual's packet shape.
+2. **Keep the output cell free of internal handoffs and inline `WRITE.CFG`.**
+   Otherwise `_output_cell_carries_handoffs` is True and only the LAST
+   WRITE/JUMP is patched, leaving the FIRST burst on a stale hop.
+
+More generally: **when you need N deliveries into ONE entry, author N WRITE+JUMP
+pairs in a single-rail cell and let the ordinary patcher do it.** The complex
+patchers are for N rails into N registers with ONE trigger; do not reach for
+them (or for raw hops) for the sequential case.
+
+**ENGINE BUG FOUND AND FIXED — a per-block pass hardcoded to one block's
+names.** `_apply_rendezvous_input_faces` (build.py) reconciles a face-locking
+block's authored placeholder faces to the geometry the ROUTER actually chose.
+It looked up ports `"i"`/`"q"` and data words `face_i`/`face_q` — the
+DualFloatToComplex's names — so for ANY other `NEEDS_DISTINCT_INPUT_FACES`
+block it was a **silent no-op**: the LOCK kept gating the authored placeholders,
+the real arms were barred by the arbiter, and the chain **built and routed
+perfectly while emitting ZERO output**. Symptom is indistinguishable from a
+datapath bug; the tell is that the *placement DRC is clean* (it was already
+port-name-agnostic) while nothing comes out. Fixed by having the block declare
+`RENDEZVOUS_FACE_PORTS = ((port, face_word), ...)` in first-accepted order, with
+the Dual's names as the fallback and now declared explicitly on the Dual itself.
+**Rule that generalizes: a build pass keyed on PORT or DATA-WORD NAMES is a
+per-block pass wearing a general pass's clothes — make the block declare the
+names, or the second block of that class fails silently.**
+
+**MEASURED SUBSTRATE LIMIT — the arm-overhang depth is 2 (mechanism-wide).** An
+arm may run at most TWO timesteps ahead of the other. At depth 3 the surplus
+words are **LOST, not queued**: the face LOCK bars the running-ahead arm, the
+back-pressure fills its single-outstanding link, its producer wedges, and the
+chain emits nothing even after the other arm catches up. Crucially this is a
+property of the LOCK-BY-FACE MECHANISM, not of the new block — the shipped,
+verified `DualFloatToComplexBlock` hits the IDENTICAL depth-2/depth-3 boundary
+in the same chain, and the suite measures BOTH so the limit is a substrate fact
+rather than an unexplained new-block failure. Harmless for the intended use
+(equal-rate arms off one stream are index-aligned by construction, overhang 0 or
+1), but pinned by `test_known_limit_arm_overhang_depth_is_two` so a future
+change to link depth shows up as a test result instead of silent data loss.
+
+**Verification note worth copying: every proof is a REAL two-upstream chain.**
+No single-block proxy can drive this block (a "sample" is one word on each of two
+DISTINCT faces from two SEPARATE blocks), so the suite builds two independently
+rate-reducing `KeepOneInN` arms → join on a placed + routed chip and drives ONE
+arm at a time, which lets it produce arrival orders the auto-placer never would:
+A-then-B, B-then-A, bursty, random over 3 seeds, and a starved arm. The
+end-to-end gate then runs the WHOLE chain into the REAL consumer (2 arms → join
+→ `GRUCellBlock` → `x16_out`, one 10x12 chip) and asserts the class words are
+BIT-IDENTICAL to feeding that same consumer the ordered pairs directly, at the
+correct 1:1 pair rate — which is what pins the rate-halving failure mode.
+Getting that chain to route needed an anchor-retry loop (auto_pnr is a CP-SAT
+search and is not run-to-run deterministic with a 51-cell ring on the die); the
+retry doubles as coverage, since different anchors give different arrival-face
+geometries.
+
+The MISSING-LOCK mutation is worth the extra thought it took: you cannot simply
+delete the lock and re-run (an unlocked build mis-pairs *nondeterministically*).
+Instead model the unlocked cell as an arrival-order counter, assert it DIVERGES
+from the reference under B-then-A, and assert the real locked block on chip
+MATCHES under the same interleaving. The contrast is the proof the LOCK is
+load-bearing.
+
+### SqrtBlock — lifting a fused stage out, without letting it drift
+
+`sqrt` existed only INSIDE `RMSBlock`'s fused power+IIR+sqrt datapath, so it
+could not take an external power word. The extraction is deliberately a LIFT,
+not a re-derivation: the three cells (`norm` → `poly` → `denorm`) and the frozen
+coefficients are imported from `rms_block.py`, and a gate asserts word-equality
+with `_RMSCoreBlock._sqrt_q15` over all 32768 inputs. **When you factor a stage
+out of a fused block, import it and assert equality over the whole domain — a
+copy-pasted datapath silently diverges the first time either side is tuned.**
+
+Only ONE line differs from the RMS `norm` cell, and it matters: RMS's input is
+an IIR average that is non-negative by construction, while a standalone block
+takes a word from ANY producer. A negative word (bit 15 set) would spin the
+normalize loop forever, so the guard routes `x <= 0` to the existing `s=30`
+sentinel path. **The ISA has no `BR.GT`** (the branch table is C/Z/N/V/P/A/SLT —
+see PROGRAMMING_GUIDE §4.3), so the test is the equivalent signed
+`CMP ys, one; BR.GE`: `ys < 1` covers zero AND every negative word in one
+overflow-correct branch.
+
+**Derived-tolerance practice worth repeating:** the suite MEASURES the bound it
+uses. `test_sqrt_exhaustive_error_bound` sweeps all 32768 words, asserts the
+error interval is exactly `[-4, +1]` LSB, and `TOL_LSB = 5` is `ceil(|bound|)`
+from that. A datapath regression fails the bound test FIRST, so the tolerance
+can never be quietly widened to absorb it. Measured against LIVE GR
+`blocks.transcendental('sqrt','float')`: max 3 LSB, corr 1.0000, NMSE -83 dB.
+
+**GRC-binding gotcha, new class:** GR's `blocks.transcendental` takes a param
+literally named **`name`**, which is structurally inexpressible as a placeKYT
+param — the catalog constructs every block as `cls(name=<instance name>, **params)`
+and `_derive_params` explicitly SKIPS `name`. Combined with the real reason
+(every libm function is a different on-chip datapath), the function is the
+block's IDENTITY, and both `name` and `type` (meaningless on a Q15 fabric) go in
+`GRC_UNSUPPORTED_PARAMS`. **If a GR block's parameter collides with the block
+instance name, it can never be a Kyttar param — say so in
+`GRC_UNSUPPORTED_PARAMS` and in the docstring rather than renaming it.**
+
+Also inherited (and re-guarded at source level here): **no `GOTO` in the EXIT
+cell.** A `GOTO` assembles to a local hop-31 JUMP and the output-handoff pass
+rewrites JUMPs in the exit cell into the external output trigger — the denorm
+shift loop would run exactly once and every `s >= 4` output would come out
+exactly 2x. `test_exit_cell_has_no_goto` asserts it on the template so an edit
+cannot reintroduce it.
+
 ## GRUCellBlock — the recurrent composite: 51 cells, one closed ring, bit-exact h ON CHIP 2026-08-24
 
 The largest single block in the catalog and the first with an INTERNAL

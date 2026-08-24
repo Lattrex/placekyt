@@ -146,6 +146,13 @@ REAL_1IN = {
     # denorm cells have DATA-DEPENDENT run lengths (shift loops) — exactly the
     # kind of jitter only this saturated gate can prove harmless.
     "RMSBlock": ("sample", "out", {"alpha": 0.25}),
+    # sqrt (blocks.transcendental 'sqrt'): the RMS family's sqrt TAIL as a
+    # standalone block (normalize -> quartic poly -> denorm), 3 cells, straight
+    # feed-forward with NO state carried across samples and no reconvergent
+    # fan-in. Like RMSBlock it has DATA-DEPENDENT run lengths (the normalize
+    # shift-count loop and the denorm SHR-#1 loop), so this saturated gate is
+    # exactly what proves that timing jitter harmless under back-to-back drive.
+    "SqrtBlock": ("sample", "out", {}),
     # rows x cols BLOCK interleaver: 3-cell STRAIGHT feed-forward pipeline
     # (rgen -> wctl -> store) with a runtime-patched computed-destination store.
     # STATEFUL (2N-word ping-pong buffer + column-walk/ring pointers) but NO
@@ -429,6 +436,23 @@ NEEDS_BESPOKE = {
     "ComplexBandPassFilter": "Σ|h|>1 firdes build constraint; datapath == ComplexLowPass (gated)",
     "ComplexBandRejectFilter": "Σ|h|>1 firdes build constraint; datapath == ComplexLowPass (gated)",
     "DualFloatToComplexBlock": "2-face rendezvous (own gate proto_dual_f2c)",
+    "FeaturePairJoinBlock": "2-FACE LOCK RENDEZVOUS with TWO INDEPENDENT "
+        "upstream producers: a 'sample' is one word on each of two DISTINCT "
+        "faces from two SEPARATE blocks, so no shared harness can drive it "
+        "(they all inject one stream through one port landing). Its saturated "
+        "behaviour is gated BESPOKE and is stronger than a queue_words replay: "
+        "test_feature_pair_join.py builds the REAL two-upstream chain (two "
+        "independently rate-reducing KeepOneInN arms -> join) on a placed + "
+        "routed chip and drives the arms back-to-back in ADVERSARIAL relative "
+        "orders — A-then-B, B-then-A, bursty, random over 3 seeds, and a "
+        "starved arm — asserting matched, ORDERED pairs every time "
+        "(test_random_interleavings_preserve_pairs_and_order, "
+        "test_back_to_back_timesteps_do_not_mix). The arm-overhang depth limit "
+        "the LOCK mechanism imposes (shared with DualFloatToComplexBlock) is "
+        "pinned by test_known_limit_arm_overhang_depth_is_two. The whole-chain "
+        "saturated proof against the REAL toggle consumer is "
+        "test_real_consumer_chain_matches_the_direct_feed (join -> GRUCellBlock, "
+        "bit-identical class words at the correct 1:1 pair rate).",
     # INV-20 fan-in FIXED (2026-07-21): NCO + FrequencyModulator had the SAME phase->2-arm
     # ->emit reconvergent fan-in as the pre-fix ComplexMixer. The pipeline_lock=True
     # serialize-LOCK (relay arm-serializer + emit dual-FACE unlock + sign-inline interp)

@@ -1,0 +1,19 @@
+{
+  "kyttar_block": "FeaturePairJoinBlock",
+  "passed": true,
+  "metric": "amplitude",
+  "n_compared": 12,
+  "max_abs_err": 0,
+  "tolerance": 0,
+  "nmse_db": null,
+  "correlation": 0.9999999999999998,
+  "bit_errors": 0,
+  "delay_used": 0,
+  "coverage": {
+    "edge": true,
+    "random": 3,
+    "param_sweep": 0,
+    "mutation": true,
+    "on_chip_real_consumer": true
+  }
+}

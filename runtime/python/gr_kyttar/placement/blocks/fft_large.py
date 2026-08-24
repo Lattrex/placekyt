@@ -914,24 +914,30 @@ class LargeFFTBlock(KyttarBlock):
                 segs = _delay_segments(D - 1, extra_cells=1)
                 self._parity_padded.append(s)
             self._segs[s] = segs
-        # The spine solve is a backtracking search over self-avoiding chains
-        # and costs tens of seconds, so it is memoized. The key is
-        # (class, N, stage range) and NOT N alone: the two dies of the N=128
-        # split share N, so an N-keyed cache would serve die 0's layout for
-        # die 1. A cache MISS still runs the real planner, so a geometry error
-        # is raised exactly as before, and the cached value is copied on read
-        # so a caller mutating its layout cannot corrupt it. Pure speed-up,
-        # never a behaviour change — the suite asserts every instance of a
-        # size gets the identical layout.
-        key = (type(self).__name__, n, self._stage_ids)
-        if key not in LargeFFTBlock._PLAN_CACHE:
-            cached = _disk_plan_load(key)
-            if cached is None:
-                cached = self._plan()
-                _disk_plan_store(key, cached)
-            LargeFFTBlock._PLAN_CACHE[key] = cached
-        layout, order, col = LargeFFTBlock._PLAN_CACHE[key]
-        self._layout, self._order, self._spine_col = dict(layout), list(order), col
+        # THE PLAN IS LAZY. Constructing a block must never solve a placement:
+        # the block CATALOG probes one instance of every block just to read its
+        # cell count and port registers, and the spine search costs tens of
+        # seconds per size. Paying it at construction made GUI startup ~35 s on
+        # a fresh install (four FFT sizes x ~23 s, minus overlap) for facts that
+        # do not need a layout at all.
+        #
+        # What IS needed eagerly is cheap and comes straight from the chains:
+        # the cell ORDER (the chain ids, flattened) and hence ``cell_count``.
+        # The (x, y, face) LAYOUT — the expensive part — is computed on first
+        # access to ``default_layout`` / ``_layout`` and then memoized, so
+        # placement, routing and build behave exactly as before while a mere
+        # catalog probe never triggers it.
+        self._plan_key = (type(self).__name__, n, self._stage_ids)
+        self._order = [cid for s in range(self.n_stages)
+                       for cid in self._stage_chain(s)]
+        # The three GEOMETRY guards are pure arithmetic over the chain lengths —
+        # no search — so they still run EAGERLY. A size that cannot exist must
+        # fail at construction, exactly as before the plan went lazy: callers
+        # (and the suite) rely on `FFT128Block(...)` itself raising, not on some
+        # later layout access.
+        self._check_geometry()
+        self._layout_cache: Optional[Dict[str, Tuple]] = None
+        self._spine_col_cache: Optional[int] = None
 
     # ---------------------------------------------------------------- basics
     @property
@@ -992,6 +998,76 @@ class LargeFFTBlock(KyttarBlock):
     def uses_direct(self, s: int) -> bool:
         """Stage ``s`` uses the shipped FFT16 direct-table twiddle chain."""
         return 4 <= self._delays[s] <= DIRECT_TABLE_MAX
+
+
+
+    def _check_geometry(self) -> None:
+        """Cheap, search-free feasibility checks — run at CONSTRUCTION.
+
+        Split out of :meth:`_plan` so an impossible size raises immediately
+        while the expensive spine SEARCH stays lazy. ``_plan`` re-runs the same
+        assertions, so the two can never drift apart.
+        """
+        chains = [self._stage_chain(s) for s in range(self.n_stages)]
+        for s, ch in enumerate(chains):
+            if len(ch) % 2:
+                raise LargeFFTGeometryError(
+                    f"stage {s} has an ODD chain of {len(ch)} cells, so its "
+                    "`out` cannot land edge-adjacent to its `ctl` in ANY "
+                    "fold (the grid parity theorem). __init__'s delay-line "
+                    "parity pad should have prevented this.")
+        W, H = self.CHIP_SCALE_MAX_WIDTH, self.CHIP_SCALE_MAX_HEIGHT
+        rows_needed = 2 * self.n_stages
+        if rows_needed > H:
+            raise LargeFFTGeometryError(
+                f"N={self._n} has {self.n_stages} stages, whose ctl/out spine "
+                f"needs {rows_needed} rows in ONE column, but the array is "
+                f"only {H} tall. Shortfall: {rows_needed - H} rows. Every "
+                "stage's out cell must have its own ctl directly above it and "
+                "the next stage's ctl directly below it, so the spine height "
+                "is not negotiable — the stage-boundary 2-die split is the "
+                "supported topology at this size.")
+        total = sum(len(c) for c in chains)
+        if total > W * H - len(self._PORT_CELLS):
+            raise LargeFFTGeometryError(
+                f"N={self._n} needs {total} cells but the array holds "
+                f"{W * H - len(self._PORT_CELLS)} usable cells.")
+
+    # ------------------------------------------------------- lazy placement
+    def _ensure_plan(self) -> None:
+        """Solve (or fetch) the spine placement — on FIRST USE, never at init.
+
+        Memoized three deep: this instance, the process-wide ``_PLAN_CACHE``,
+        and the on-disk cache keyed by the planner's own source hash. A miss at
+        every level runs the real planner, so a geometry error surfaces exactly
+        as before.
+        """
+        if self._layout_cache is not None:
+            return
+        key = self._plan_key
+        if key not in LargeFFTBlock._PLAN_CACHE:
+            cached = _disk_plan_load(key)
+            if cached is None:
+                cached = self._plan()
+                _disk_plan_store(key, cached)
+            LargeFFTBlock._PLAN_CACHE[key] = cached
+        layout, order, col = LargeFFTBlock._PLAN_CACHE[key]
+        # The planner's order is authoritative (it fixes the positional index
+        # INV-35 depends on); assert the cheap eager order agrees with it.
+        assert list(order) == list(self._order), (
+            f"{key}: planner cell order disagrees with the chain order")
+        self._layout_cache = dict(layout)
+        self._spine_col_cache = col
+
+    @property
+    def _layout(self) -> Dict[str, Tuple]:
+        self._ensure_plan()
+        return self._layout_cache
+
+    @property
+    def _spine_col(self) -> int:
+        self._ensure_plan()
+        return self._spine_col_cache
 
     @property
     def cell_count(self) -> int:

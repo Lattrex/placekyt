@@ -110,16 +110,37 @@ both nets route with real corridors, the build succeeds, and driving it runs
 pipeline that genuinely flows end to end, with no livelock (3.2k events per
 burst, against the 1e6-event runaway that the earlier non-spine folds hit).
 
-**NOT yet working — the honest gap.** Only the FIRST sample's output word
-egresses. Sample 1 runs partially and the chip then goes quiescent (2 events
-per injection = the injection alone), which is the signature of a stage's
-serialize-LOCK never clearing, so no further input is accepted. The
-write-back geometry is measured IDENTICAL to FFT16's (out→ctl manhattan 1,
-direction NORTH, matching the hardcoded ``face_fb``), so the remaining fault
-is in how the lock-clear ``WRITE.CFG`` is resolved for this fold, not in the
-placement. Until that is fixed and the block is bit-exact against
-:func:`sdf_streaming_reference`, **FFT64Block is NOT done** and must not be
-described as working.
+**NOT yet working — the defect, root-caused.** Only the FIRST sample's output
+word egresses; the chip then goes quiescent. The cause is NOT the placement
+and NOT the serialize-LOCK (both measured identical to FFT16's): **two cells
+allocate a STATE register ON their own first instruction and overwrite their
+own program.**
+
+  * ``_fold_mcalc_cell`` — entry address 8, ``StateVar("t")`` resolves to
+    register 8;
+  * ``_fetch_cell`` at N=64 stage 1 (``s1_fetch_d``) — entry 21,
+    ``StateVar("ptr")`` resolves to 21.
+
+The first ``MOVE R{state:...}, R0`` zeroes the instruction the NEXT trigger
+enters at, so sample 1 enters a HALT and the pipeline dies. Proven by dumping
+the cell's memory before and after each driven sample (address 8 goes
+0x9823 → 0x0000 during sample 0) and visible in the trace as
+``exec_tick pc=8 word=0x0000 result=halt`` against a loaded image that holds a
+real instruction there.
+
+This is INV-33 exactly: state auto-allocates into
+``range(max_data_address + 1, 31 - instr_count)``, and both cells are EXACTLY
+full at 31/32 words, so that range collides with the instruction region.
+Note the trap for the next builder: a "every cell fits 32 words" check PASSES
+on both — the word COUNT is fine, it is the OVERLAP that is fatal.
+``test_no_cell_overwrites_its_own_program`` gates it (currently a strict
+xfail; it flips the moment the cells are fixed).
+
+The fix is to free one word in each cell by re-deriving its arithmetic and
+re-verifying that against the fold golden — every data word in both is
+genuinely used, so a re-pin alone cannot work. Until that is done and the
+block is bit-exact against :func:`sdf_streaming_reference`, **FFT64Block is
+NOT done** and must not be described as working.
 
 **THE LAYOUT: a vertical CTL/OUT SPINE** (this REPLACES the stacked-band
 scheme, which did not fit and whose two "walls" were both artefacts of the

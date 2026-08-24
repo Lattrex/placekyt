@@ -1043,3 +1043,86 @@ def test_mutation_wrong_face_breaks_the_hop_trace():
     x, y, f = lay["s0_sumi"]
     lay["s0_sumi"] = (x, y, "north" if f != "north" else "south")
     assert not _spine_predicates(blk, lay)[2]()
+
+
+# =============================================================================
+# 10. INV-33 — no cell may allocate STATE on top of its own INSTRUCTIONS
+#
+# This is DISTINCT from the 32-word budget check above, and the distinction is
+# what a real bug turned on: a cell can total exactly 31 words and STILL place
+# a state register at its entry address, so the first write to that state
+# destroys the instruction the next trigger enters at. The block then runs
+# exactly ONE sample and goes dead — which presents as a serialize-LOCK
+# failure and survives every placement/face/hop audit.
+#
+# Measured instances (both cells exactly full at 31/32):
+#   s0_mcalc     entry 8  and StateVar t   -> register 8
+#   s1_fetch_d   entry 21 and StateVar ptr -> register 21
+# =============================================================================
+def _state_instruction_overlaps(blk):
+    from gr_kyttar.placement.resolver import (  # noqa: PLC0415
+        CellProgramResolver)
+    res = CellProgramResolver()
+    bad = []
+    for cid, cp in blk.build_cell_programs().items():
+        entries = res.compute_entry_addresses(cp)
+        if not entries:
+            continue
+        first_instr = min(entries.values())
+        for name, reg in (res.compute_state_registers(cp) or {}).items():
+            if reg >= first_instr:
+                bad.append((cid, name, reg, first_instr))
+    return bad
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "KNOWN DEFECT, root-caused and NOT yet fixed: s0_mcalc (entry 8, state t "
+    "-> 8) and s1_fetch_d (entry 21, state ptr -> 21) each allocate a state "
+    "register ON their own first instruction, so the first write zeroes it "
+    "and the SECOND trigger enters a HALT — which is why FFT64Block emits "
+    "exactly one sample and then goes dead. Both cells are EXACTLY full at "
+    "31/32 words with every data word genuinely used, so the fix is to free a "
+    "word by re-deriving the cell arithmetic (and re-verifying it against the "
+    "fold golden), not to re-pin the register. strict=True: this flips to a "
+    "FAILURE the moment the cells are fixed, which is the signal to delete "
+    "the marker."))
+def test_no_cell_overwrites_its_own_program():
+    """Every state register sits BELOW the cell's first instruction.
+
+    A violation is silent at build time and fatal at run time: the cell's own
+    write to that state word zeroes an instruction, and the next trigger
+    enters a HALT.
+    """
+    blk = _spine_block()
+    bad = _state_instruction_overlaps(blk)
+    assert not bad, (
+        "cells whose STATE overlaps their INSTRUCTIONS (they overwrite their "
+        f"own program on the first trigger): {bad}")
+
+
+def test_the_overlap_audit_has_teeth():
+    """INV-4 for the gate above: a deliberately over-pinned state register
+    must be caught. (Uses the resolver directly so no shipped cell is
+    mutated.)"""
+    from gr_kyttar.placement.block import (  # noqa: PLC0415
+        CellProgram, DataWord, EntryPoint, Port, StateVar)
+    from gr_kyttar.placement.resolver import (  # noqa: PLC0415
+        CellProgramResolver)
+    bad_cell = CellProgram(
+        inputs=[Port("a", register=1)],
+        outputs=[Port("y")],
+        entries=[EntryPoint("default")],
+        data=[DataWord("one", 1, address=2)],
+        # 30 is inside the instruction region for this tiny program
+        state=[StateVar("t", register=30, initial_value=0)],
+        assembly_template=("default:\n"
+                           "    MOVE R{state:t}, R{in:a}\n"
+                           "    MOVE R0, R{state:t}\n"
+                           "    {write:y}\n"),
+    )
+    res = CellProgramResolver()
+    first = min(res.compute_entry_addresses(bad_cell).values())
+    regs = res.compute_state_registers(bad_cell) or {}
+    assert any(r >= first for r in regs.values()), (
+        "the overlap predicate failed to flag a state register pinned into "
+        "the instruction region")

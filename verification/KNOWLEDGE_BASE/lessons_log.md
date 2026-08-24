@@ -9,6 +9,82 @@ block-specific gotcha. Promote anything that generalizes across block classes in
 and superseded material merged into the surviving entries; no durable lesson was
 dropped) — append new entries above the oldest ones as before.
 
+## gru_classifier example — front end DERIVED and verified offline, whole-chain placement BLOCKED one net short 2026-08-24
+
+The end-to-end 4-class modulation classifier (SSB / BPSK / 4-FSK / noise) on one
+10x12 array. The feature front end is fully derived, measured, and bit-exact
+against the trained model's own offline definition; the assembled chain does
+**not** route as one chip. Reporting `needs_human` with the exact shortfall —
+per §5b, an example that has not been observed producing the right output on a
+placed + routed chip is NOT done, and no part of this entry claims otherwise.
+
+- **THE RMS ARM DECOMPOSITION IS CORRECT AND ITS TOLERANCE IS DERIVED, NOT
+  TUNED.** `ComplexToMagSquared -> MovingAverage(32, taps 1/32) -> Sqrt ->
+  KeepOneInN(32)` reproduces `features.py`'s `sqrt(mean |x|^2)` over a
+  non-overlapping 32-sample window. Every stage truncates downward, so the
+  budget is: 2 LSB of power (magsq's two truncating products) + 32 LSB (the 32
+  truncating MA taps; 1024 = 1/32 is exact) = **34 LSB of power deficit**, then
+  `Sqrt`'s own measured `[-4, +1]` LSB. Propagating a power deficit through the
+  root by `dy = dP / (2*sqrt(P))` makes the bound **input-level dependent**:
+  `-(34 * 16384 / y) - 4 <= (chip - ideal) <= +1`, y = the RMS word. Measured
+  over 1600 windows (4 classes x 5 peak levels): **0 violations, tightest case
+  at 0.639 of the bound**. A FLAT tolerance would have been wrong — the same
+  chain reads -13 LSB on a loud window and -218 on a quiet one, and the
+  difference is the arithmetic, not noise.
+- **ZCR is BIT-EXACT (0 / 400 windows) against its PINNED convention** — 32
+  pairs *ending* at the window's samples (so the inter-window boundary pair is
+  included) plus one implicit non-negative predecessor. Against plain
+  `features.py` (31 strictly-interior pairs) it reads +1 crossing = +1024 Q15
+  LSB on 6-51% of windows depending on class. Derived and gateable; not error.
+- **THE Q15 POWER STAGE AND THE TRAINED DISTRIBUTION ARE IN GENUINE TENSION —
+  and this is a MODEL property, not a chip bug.** `ComplexToMagSquared`
+  saturates at full scale, so any `|z| >= 1` clips and biases that window's mean
+  power DOWNWARD. But the model's own training channel sets a clip's *RMS*
+  (`gain_range` 0.25..0.7) while saturation is driven by its *PEAK*, and the
+  classes' crest factors differ sharply (measured, 12 clips each: 4-FSK 1.27,
+  BPSK 1.71, noise 3.10, SSB 3.59 median). Over the shipped training set
+  **`peak|z| > 1` for 100% of SSB and 79% of noise clips.** The float
+  `features.py` never notices; a Q15 front end clips hard — measured error blows
+  from the derived tens-of-LSB to **-1247 LSB** on such clips. Lesson: when a
+  trained model is ported to Q15, check the PEAK distribution of its own
+  training data against the fixed-point rails before trusting any feature
+  tolerance — an offline reference that cannot saturate will not warn you.
+  (Mitigation used here: pin per-segment gains at the low end of the trained
+  range so `peak|z| < 0.95`; the stimulus asserts it rather than assuming it.)
+- **Rescaling the input is NOT a free fix.** ZCR is scale-invariant but RMS is
+  linear in input gain, so a global rescale moves a real feature off the grid
+  the model was trained on. Peak-normalising 4-FSK clips to 0.9 made the
+  *offline* reference vote BPSK — the chain was right and the stimulus was
+  out of distribution. Always check a "fix" against the offline path first.
+- **THE WALL: the chain does not route as one chip — always exactly ONE net
+  short.** GRUCellBlock is 51 cells in a fixed 7x8 fold (56 of the array's 120
+  cell sites) with BOTH its `f` input and its `oout` egress on the WEST edge.
+  Measured: the GRU **alone** costs **64-82 cells including routing** depending
+  on anchor (cheapest (3,1); (0,4)/(1,4)/(3,0) do not route at all). The
+  join-tail — `KeepOneInN + ZCR + FeaturePairJoin + GRU` with both ingress nets
+  and the egress — **does route, at 72 cells**, leaving 48 free. But those 48
+  are split into two pockets by the ingress corridors, and the RMS arm (power 1
+  + boxcar 2x4 + root 2x2 = 11 block cells) must simultaneously reach the port
+  (top-left, walled by the ingress `rr` corridor) and `decim`.
+  **~2500 distinct layouts** were tried across three independent strategies —
+  exhaustive hand-anchor sweeps (`auto_route_all`, deterministic), randomized
+  hand placement over all routable GRU anchors, and `auto_pnr` with the GRU
+  pinned (stochastic, many repeats) — plus `auto_orient=True`. The best result
+  was **never better than one failing net**, and WHICH net fails rotates between
+  `root_decim`, `rms_join`, `zcr_join`, `gru_out` and the ingress trio as blocks
+  move: the signature of a saturated array, not one bad anchor. Two recurring,
+  citable causes: `bus route is N hops (>31)` on the GRU egress (34-36 hops —
+  the 5-bit hop field, and relay programming is not emitted by the build), and
+  `no free broker cell abutting the target input` when a 1-cell block is packed
+  against a wall or the port corner.
+- **What a human should look at.** Either (a) the GRU's west-edge-only I/O — an
+  egress relay reachable from the EAST would remove the wrap that costs the
+  34-hop `gru_out` failures; or (b) a smaller RMS arm (the 7-cell
+  `MovingAverage(32)` is the bulk of the front end); or (c) relay programming
+  for >31-hop bus routes, which the router already plans but the build does not
+  emit. The offline chain, the goldens, the derived tolerances, and the
+  stimulus are all in place and re-usable the moment the geometry gives.
+
 ## FFT64 chip-scale — the STAGE-BAND wall was NOT real; the VERTICAL CTL/OUT SPINE places and flows, one dynamic fault left 2026-08-24
 
 The previous entry (below) concluded FFT64 "does not fit" on a band cap and a row

@@ -9,6 +9,45 @@ block-specific gotcha. Promote anything that generalizes across block classes in
 and superseded material merged into the surviving entries; no durable lesson was
 dropped) — append new entries above the oldest ones as before.
 
+## A REPORT THAT HARDCODES ITS OWN VERDICT, and a shared EVENT CAP that calls a healthy block livelocked 2026-08-24
+
+Two test-side defects found in one FFT64 run, both of which would have shipped a
+false result. Neither is FFT-specific.
+
+- **NEVER HARDCODE `"passed": true` IN A REPORT.** The FFT64 report writer emitted
+  `"passed": true` unconditionally. On the run where the saturated gate FAILED, it
+  still wrote a green report — the dashboard would have read a pass that did not
+  happen. This is the "make the gate look green" failure the project exists to
+  eliminate, and it was in freshly written test code, so nobody is immune.
+  **The fix has two halves and both matter:** (1) the report file is UNLINKED at the
+  start of the writer, so a failing *or dying* session cannot leave a stale green file
+  — **absence is the safe state**, and the dashboard reads absence as "not verified";
+  (2) the write happens only when the session reports zero failures, read from
+  pytest's own `terminalreporter` stats rather than from bookkeeping the module keeps
+  itself. Prove it the same way it was proven here: run the writer in a session
+  containing a synthetic failing test and assert it refuses, fails, and leaves NO file.
+
+- **A SHARED EVENT CAP IS A BLOCK-SIZE ASSUMPTION IN DISGUISE.**
+  `run_block_dut_pipelined` caps a saturated run at `max(50_000, 2_000 * n_samples)`
+  and reports expiry as *"block livelocks when the pipeline is full"*. That default is
+  sized for small blocks. FFT64 is 84 cells over six serialize-LOCKed stages and
+  **measured 2873 events per sample on chip** (8 consecutive samples, range
+  2727..2969), so a 127-sample burst needs ~365k events before any margin — against a
+  254k cap. The harness reported a LIVELOCK, the block was healthy, and re-running the
+  identical burst with a real budget completed and matched the golden **254/254 words
+  bit-exact**, all six locks releasing correctly.
+  **The trap is that the message names a conclusion, not a symptom.** "Livelocks when
+  the pipeline is full" reads as a diagnosis, and it cost a commit asserting a defect
+  that did not exist. Distinguish the two cheaply and always: **measure the per-sample
+  event cost on the per-sample path first**, then compare against the cap. A genuine
+  livelock never reaches quiescence at ANY budget; a cap shortfall completes as soon as
+  the budget is real.
+  **Raising a cap is only legitimate when the new number is DERIVED.** Record the
+  measurement next to the constant (here: measured cost x2 as a ceiling on a bounded
+  run), so it is visible as an arithmetic budget rather than a number enlarged until
+  the gate went green. A cap tuned to pass is a loosened tolerance wearing a different
+  hat.
+
 ## THE PROXY-GATE FAILURE MODE — a cheap structural check that PASSES where the real thing FAILS 2026-08-24
 
 **The general rule, first, because this is not about FFTs.** A structural pre-check

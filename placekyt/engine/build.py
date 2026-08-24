@@ -623,19 +623,68 @@ def _is_instruction_addr(cfg, addr) -> bool:
     return addr >= cfg.entry_addr
 
 
-def _patch_cell_handoff(cfg, hop, dest=None, entry=None) -> None:
-    """Set every WRITE/JUMP INSTRUCTION in a cell to a specific ``hop`` (in @N
+def _patch_cell_handoff(cfg, hop, dest=None, entry=None,
+                        n_output_writes: int | None = None) -> None:
+    """Set WRITE/JUMP INSTRUCTIONs in a cell to a specific ``hop`` (in @N
     hops-away form) and, when given, the dest register (WRITE) / entry addr
-    (JUMP). Data words are left untouched (see :func:`_is_instruction_addr`)."""
+    (JUMP). Data words are left untouched (see :func:`_is_instruction_addr`).
+
+    ``n_output_writes`` — patch only the cell's LAST N writes (its OUTGOING
+    packet), leaving earlier writes at their resolved hops. This matters
+    whenever the exit cell ALSO carries internal-handoff writes, and it is not
+    a corner case: every R2SDF FFT stage's ``out`` cell writes its emerging
+    pair BACK into its own ``ctl`` and clears that stage's serialize-LOCK with
+    a ``WRITE.CFG``, all at @1, before emitting the outgoing packet.
+
+    N is the number of RAILS the block emits, not 1: a complex block's exit
+    emits ``out_i`` then ``out_q`` from the same cell and BOTH must carry the
+    cross-chip hop. Patching only the last leaves ``out_i`` at its
+    single-chip hop — measured, and it kept the 2-die FFT livelocked even
+    after the feedback writes were correctly preserved.
+
+    Patching all of them was a real defect on the INTER-CHIP path (measured on
+    the 2-die N=128 FFT): the identical die built for ONE chip resolved its
+    exit cell to `WRITE @1 x3` (feedback pair + lock-clear) plus `WRITE @19 x2`
+    and `JUMP @19` (egress), and ran bit-exact; built as chip 0 of a two-chip
+    pair, ALL FIVE writes were rewritten to the cross-chip hop, so the stage's
+    ``ctl`` never received its write-back and its lock was never cleared. The
+    pipeline livelocked from the second trigger and nothing egressed — while
+    the hop and entry were otherwise resolved perfectly, which is what made it
+    look like a wiring fault.
+
+    The single-chip path has honoured this since ``output_at_last_write``
+    existed; this is the inter-chip path catching up. A simple block whose exit
+    cell carries ONLY its output write is unaffected either way, which is why
+    the shipped 2-chip gain example never exposed it.
+    """
     hop_cnt = encode_hop_cnt(hop)
-    for addr, word in list(cfg.memory.items()):
-        if not _is_instruction_addr(cfg, addr):
-            continue
+    addrs = [a for a in cfg.memory
+             if _is_instruction_addr(cfg, a)
+             and (cfg.memory[a] & 0xF000) in (_WRITE, _JUMP)]
+    if n_output_writes:
+        writes = sorted(a for a in addrs
+                        if (cfg.memory[a] & 0xF000) == _WRITE)
+        jumps = [a for a in addrs if (cfg.memory[a] & 0xF000) == _JUMP]
+        # The OUTGOING packet is the LAST n writes the cell emits; the
+        # trailing JUMP is the handshake that carries it on, so it moves too.
+        addrs = writes[-int(n_output_writes):] + jumps
+    # RAIL STEERING: a complex packet's rails go to CONSECUTIVE input
+    # registers of the downstream block (out_i -> in_regs[0], out_q ->
+    # in_regs[1]), exactly as the single-chip abutment path steers them.
+    # Forcing every rail to in_regs[0] lands both words in one register and
+    # the downstream landing cell never sees a complete sample.
+    dests = dest if isinstance(dest, (list, tuple)) else [dest]
+    wi = 0
+    for addr in addrs:
+        word = cfg.memory[addr]
         opcode = word & 0xF000
-        if opcode not in (_WRITE, _JUMP):
-            continue
         word = (word & ~(0x1F << 5)) | (hop_cnt << 5)
-        target = dest if opcode == _WRITE else entry
+        if opcode == _WRITE:
+            target = (dests[wi] if wi < len(dests) else dests[-1]) \
+                if dests and dests[0] is not None else None
+            wi += 1
+        else:
+            target = entry
         if target is not None:
             word = (word & ~0x1F) | (int(target) & 0x1F)
         cfg.memory[addr] = word & 0xFFFF
@@ -2602,14 +2651,49 @@ def _apply_inter_chip_hops(cell_map, gr_placement, blocks, project, chip_id,
         total = _route_distance(conn) + _route_distance(dest_conn)
         entry, in_regs = catalog.resolved_io(
             dest_block.type, dest_block.params, library=dest_block.library)
-        dest_reg = in_regs[0] if in_regs else None
+        # ALL the downstream input registers, in rail order — the patcher
+        # steers rail k to in_regs[k] (see _patch_cell_handoff).
+        dest_reg = list(in_regs) if in_regs else None
         # Patch the source block's EXIT cell.
         pb = gr_placement.placed_blocks.get(src.block)
         if pb is None:
             continue
         cfg = cell_map.get_cell(*pb.exit_cell)
         if cfg is not None:
-            _patch_cell_handoff(cfg, total, dest=dest_reg, entry=entry)
+            # MID-BLOCK EXIT: if the source block's exit cell also carries
+            # internal-handoff WRITEs (an R2SDF stage's out cell writes its
+            # emerging pair back into its own ctl and clears that stage's
+            # serialize-LOCK, all at @1), patch ONLY the last WRITE. Derived
+            # the same way the single-chip path derives output_at_last_write —
+            # a block that declares an output_cell_id() owns a mid-block exit.
+            src_block = project.block(src.block)
+            n_out = None
+            try:
+                gb = catalog.instantiate(
+                    src_block.type, src_block.name,
+                    params=src_block.params, library=src_block.library)
+                if gb.output_cell_id() is not None:
+                    # RAIL COUNT, from the block's own exit-cell program: the
+                    # outgoing packet is the trailing run of writes that are
+                    # NOT internal connections. Everything before them (the
+                    # feedback pair, the lock-clear WRITE.CFG) keeps its hop.
+                    exit_id = gb.output_cell_id()
+                    prog = gb.build_cell_programs()[exit_id]
+                    internal = {sp for (sc, sp, _d, _p)
+                                in gb.internal_connections() if sc == exit_id}
+                    names = [o.name for o in prog.outputs
+                             if not o.name.startswith("t_")
+                             and o.name not in ("trig",)]
+                    n_out = 0
+                    for nm in reversed(names):
+                        if nm in internal:
+                            break
+                        n_out += 1
+                    n_out = n_out or 1
+            except Exception:  # noqa: BLE001 — no such contract → patch all
+                n_out = None
+            _patch_cell_handoff(cfg, total, dest=dest_reg, entry=entry,
+                                n_output_writes=n_out)
 
 
 def _set_cell_hop1(cfg, dest=None, entry=None, preserve_dest_regs=None) -> None:

@@ -1,0 +1,32 @@
+{
+ "block": "ChirpGeneratorBlock",
+ "grc_block": "(Python golden: cyclic-shifted linear up-chirp)",
+ "tier": 2,
+ "wave": 7,
+ "schema_version": 1,
+ "started_utc": "2026-08-23T22:30:00Z",
+ "ended_utc": "2026-08-24T02:55:00Z",
+ "walltime_sec": 15900.0,
+ "tokens": {
+  "total": 500000,
+  "source": "builder context-budget delta (approximate; orchestrator may overwrite with exact usage)"
+ },
+ "turns": 95,
+ "attempts": 1,
+ "human_interventions": 1,
+ "intervention_reasons": [
+  "orchestrator housekeeping: stale worktree base — merge current main before edits (no content intervention)"
+ ],
+ "prompts": [
+  {
+   "role": "initial",
+   "text": "factory dispatch prompt (AGENTS.md loop); isolated worktree; JOINT build of ChirpGeneratorBlock + ChirpSymbolMapperBlock (CSS modulator pair) with the pinned design: double phase accumulator in 16-bit wrap semantics (the wrap IS the mod-BW cyclic shift), NCO cell-program reuse, integer golden + float-SNR report, phase-continuity and bit-order conventions pinned and gated, full mutation set, saturated + 8/8 D4 + placement + GRC binding gates."
+  }
+ ],
+ "verify_passed": true,
+ "quarantined": false,
+ "quarantine_reason": "",
+ "commit_sha": "1f82c5e",
+ "notes": "JOINT-BUILD record: cost covers the ChirpGeneratorBlock+ChirpSymbolMapperBlock pair (one builder, one commit); the mapper's record is a zero-cost cross-reference. 1 attempt; 49 pair tests + shared-gate enrollments; full verification suite (3690) + placekyt suite (1192) green. The DSP was bit-exact on the FIRST on-chip run (per-sample); the real engineering was the ITERATION MECHANISM for a 1:n burst source on the NCO's reconvergent-fan-in datapath: (a) a local emit loop floods the INV-20 fan-in, so the block SELF-PACES via a backward JUMP-only return kick from emit to the sweep cell's second entry, fired AFTER the yi/yq pair drains (strict one-sample-in-flight); (b) the build needed a backward-internal-JUMP pass in _apply_internal_feedback (corridor re-hop + exit-default preservation; the routed-exit pass otherwise rewrites every exit-cell jump — measured as 1-sample-per-symbol); (c) the INV-19 'LOCK engages with ANY nonzero' claim is WRONG — the LOCK CONFIG enable reads BIT 0 (A/B measured 0x1000/0x4000 fail, 1 locks); KB corrected in place; (d) run_block_dut_rate still carried the INV-1 manhattan-hop bug (zero output at two 180-family orientations — a harness masquerade, fixed by porting the corridor-accurate landing derivation). Also worth the record: the 33-entry-table grid makes the chirp interp error VANISH for n<=128 (every phase a multiple of 512; ~91 dB SNR) — the true interp floor (~66 dB) only appears at n>=256, so the SNR must be reported at both regimes.",
+ "walltime": "~4.4h wall (one session; approximate)"
+}

@@ -1993,8 +1993,14 @@ class LargeFFTBlock(KyttarBlock):
           1. **The two nets SHARE occupancy.** The router lays them one at a
              time and RESERVES each finished corridor against the next, so
              two nets that are each individually routable can still collide.
-             Checked in the router's own order: egress first, then ingress
-             over the cells the egress did not take.
+             Worse, the ORDER is not the block's to choose — nets are routed
+             in project connection order, which is whatever the caller
+             happened to add first, and the two orders are not equivalent
+             (measured: the N=128 die-0 placement routed ingress-then-egress
+             and failed on the SECOND net, having passed a check that assumed
+             egress first). So BOTH orders must succeed. A placement that
+             only routes under one connection order is a latent failure
+             waiting for a caller to wire its nets the other way round.
           2. **A corridor ends ON the landing cell, not beside it.** The
              router's BFS walks free cells and finishes AT the destination,
              so asking only whether some NEIGHBOUR of the landing is
@@ -2040,18 +2046,35 @@ class LargeFFTBlock(KyttarBlock):
                     q.append(nxt)
             return None
 
-        # EGRESS first — the router's order. The block's exit emits onto its
-        # resting-face neighbour, so the corridor starts there; +1 hop for the
-        # word leaving the array at the output port.
-        egress = bfs(out_cell, out_port, block_cells - {out_cell})
-        if egress is None or len(egress) - 1 + 1 > self._MAX_CORRIDOR_HOPS:
+        def route_egress(extra):
+            """out_cell -> x16_out. The exit emits onto its resting-face
+            neighbour so the corridor starts there, and the word spends one
+            EXTRA hop leaving the array at the port."""
+            p = bfs(out_cell, out_port, (block_cells | extra) - {out_cell})
+            if p is None or (len(p) - 1) + 1 > self._MAX_CORRIDOR_HOPS:
+                return None
+            return p
+
+        def route_ingress(extra):
+            """x16_in -> in_cell. The port injects AT its own cell and the
+            corridor ends ON the landing."""
+            p = bfs(in_port, in_cell, (block_cells | extra) - {in_port})
+            if p is None or len(p) - 1 > self._MAX_CORRIDOR_HOPS:
+                return None
+            return p
+
+        # BOTH connection orders must work — the block does not get to choose
+        # which net the caller wires first.
+        eg = route_egress(set())
+        if eg is None:
+            return False
+        if route_ingress(set(eg) - {out_cell, out_port}) is None:
             return False
 
-        # INGRESS over what is left. The input port injects AT its own cell
-        # and the corridor ends ON the landing.
-        taken = block_cells | (set(egress) - {out_cell, out_port})
-        ingress = bfs(in_port, in_cell, taken - {in_port})
-        if ingress is None or len(ingress) - 1 > self._MAX_CORRIDOR_HOPS:
+        ing = route_ingress(set())
+        if ing is None:
+            return False
+        if route_egress(set(ing) - {in_cell, in_port}) is None:
             return False
         return True
 

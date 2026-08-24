@@ -1027,10 +1027,10 @@
    "tier": 2,
    "metric": "amplitude",
    "params": {
-    "in_scale": 1.0
+    "dshift": 0
    },
-   "notes": "QUEUE A1 (GRU track). Q15 sigmoid. NOT a 21-entry LUT: use ~16-entry table + linear interpolation with SYMMETRY FOLDING (sigmoid(-x)=1-sigmoid(x) halves the domain for free), or a piecewise/poly fit like Nlog10's fitted cubic. Ancestry: NCO quarter-wave table+interp and RaisedCosineEnvelope, NOT a plain lookup. The block MUST accept an arbitrary fixed INPUT SCALE parameter: upstream MAC rows are prescaled for headroom and this block absorbs the compensation for free by shifting the table/poly domain (costs zero instructions). Golden: numpy. Report max error vs float. SHARED CONSTRAINTS (v0.11 shipping cell, 32 words, 16-bit Q15): MAC operands must be cell-local (no cross-cell operand fetch). sum|coeff|>1 needs the INV-13 headroom prescale. In-cell LOAD-indirect tables cap at ~21 entries (5-bit wall) so big tables are NOT available. Composites keep feedback INTERNAL (GRC flowgraphs are acyclic) using the AGCCC shared-builder model. Feedback landings MUST be pinned STATE registers, never input Ports (AGCCC trap 1). Fold big rings <=7 wide (AGCCC trap 2).",
-   "status": "planned"
+   "notes": "DONE 2026-08-23, JOINT BUILD with TanhBlock (shared module activation_blocks.py; the composite GRU imports its cell builders \u2014 the cordic_blocks shared-builder model). Design (validated by exhaustive bit-exact integer simulation before implementation): 16-interval table + linear interp, 17 Q15 entries, canonical domain [-8,8]; sign fold with wrap-exact 0x8000-y unfold; the queue's arbitrary input-scale requirement is the integer `dshift` param (in_scale = 2^dshift; powers of two only \u2014 a genuine HW limit, shift counts are immediate fields INV-34) folded into the TWO index/fraction shift immediates against the CANONICAL domain. Folding into the table domain instead is a measured accuracy failure for tanh (0.082) \u2014 never do it. 2 cells: fold (sign/|x| clamp/idx/frac, 28-30 words; dshift>0 uses an unsigned domain-cap equivalent of clamp+index-clamp) -> lut (17 entries + interp + RUNTIME PATCH SLOT sign unfold, 31/31 words). The patch slot (BlockInterleaver store-cell idiom: an input Port pinned at an instruction address, fed a pre-assembled MOVE-nop or SUB-negop word per sample) + the addr->R0 accumulator delivery are what fit the 17-entry table in one 32-word cell. Gates: two independently-formulated integer models agree EXHAUSTIVELY (65536 words x dshift {0,+1,+2,-1}); DUT bit-exact dense sweeps at all four dshift (edges, sign-fold boundary, beyond-domain clamp, 3 seeds); float accuracy exhaustive max 0.0030 / RMS 0.0010 (max is dshift-invariant; RMS at dshift<0 rises to 0.0015 \u2014 the pre-shift discards input bits, a derived quantization floor, not tuning); monotone + asymptote edges; saturated==per-sample bit-exact (patch delivery survives pipelining); INV-4 mutations FAIL (wrong-table-entry, off-by-one-clamp, broken-sign-fold, wrong-dshift-patch, inverted, +1-delay, empty); D4 orientation x8; placement legality; resolved_io per-dshift (entry 9/8, INV-6). GRC binding kyttar_sigmoid.",
+   "status": "done"
   },
   {
    "kyttar_block": "TanhBlock",
@@ -1038,10 +1038,10 @@
    "tier": 2,
    "metric": "amplitude",
    "params": {
-    "in_scale": 1.0
+    "dshift": 0
    },
-   "notes": "QUEUE A2 (GRU track). Q15 tanh, same approach as SigmoidBlock. tanh is ODD so symmetry folding halves the domain. Same arbitrary input-scale parameter requirement (absorbs the upstream headroom prescale). Golden: numpy.tanh. Report max error vs float. SHARED CONSTRAINTS (v0.11 shipping cell, 32 words, 16-bit Q15): MAC operands must be cell-local (no cross-cell operand fetch). sum|coeff|>1 needs the INV-13 headroom prescale. In-cell LOAD-indirect tables cap at ~21 entries (5-bit wall) so big tables are NOT available. Composites keep feedback INTERNAL (GRC flowgraphs are acyclic) using the AGCCC shared-builder model. Feedback landings MUST be pinned STATE registers, never input Ports (AGCCC trap 1). Fold big rings <=7 wide (AGCCC trap 2).",
-   "status": "planned"
+   "notes": "DONE 2026-08-23, twin of SigmoidBlock (SAME module activation_blocks.py, identical two-cell engine and identical program text \u2014 only the 17-entry table [tanh over [-4,4], canonical domain], negop=0 [odd: unfold = plain negate] and CANON_K=2 differ; in_scale = 2^dshift, dshift = S-2 compensates an upstream 2^-S headroom prescale). All SigmoidBlock gates apply and pass: exhaustive two-model agreement x4 dshift, DUT bit-exact dense sweeps x4 dshift, float accuracy exhaustive max 0.0060 / RMS 0.0021 (RMS 0.0029 at dshift=-1, derived), monotone/odd edges (out(0)=0 exactly), saturated==per-sample, full INV-4 mutation set FAILS, D4 orientation x8, placement legality, resolved_io per-dshift. The tanh table is the reason the canonical-domain rule exists: tanh curvature lives in [0,2] and a scale-widened table grid starves it. GRC binding kyttar_tanh.",
+   "status": "done"
   },
   {
    "kyttar_block": "DotProductMACBlock",

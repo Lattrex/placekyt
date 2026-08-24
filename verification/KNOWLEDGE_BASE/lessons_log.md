@@ -9,6 +9,54 @@ block-specific gotcha. Promote anything that generalizes across block classes in
 and superseded material merged into the surviving entries; no durable lesson was
 dropped) — append new entries above the oldest ones as before.
 
+## SigmoidBlock + TanhBlock — Q15 activations, the runtime-patch-slot unfold 2026-08-23
+
+Joint build (QUEUE A1/A2, GRU track; shared module `activation_blocks.py`, one
+commit — the RMS/RMSCF convention). No GNU Radio counterpart: goldens = numpy +
+a TRANSCRIBED canonical integer reference; the design (16-interval table +
+interp, 17 Q15 entries, canonical domains ±8/±4, `dshift = S − k` folded into
+the two shift immediates) was pinned by a completed numeric spike and is
+implemented bit-exactly — first on-chip run matched on every probe, all four
+dshift values, zero bug iterations. 48 tests + 3 fleet gates. Lessons:
+
+- **When a cell is 1–2 words over budget, look at the RUNTIME PATCH SLOT
+  (BlockInterleaver `store`-cell idiom) before redesigning the split.** The lut
+  cell (17-entry table + 2 LOADs + interp + sign unfold) is arithmetically 33–34
+  words in every operand encoding of the unfold (`(y^msk)+adj`, `s·y+c`, …) —
+  the sign costs TWO sample-dependent operands because `0x8000−y` is affine, not
+  linear, in y (provably NOT expressible as `s·(y+k)` mod 2^16). Delivering the
+  sign as ONE pre-assembled INSTRUCTION word (pos: `MOVE p, R0` no-op — also the
+  authored slot content; neg: `SUB negop, R0`) into an input Port pinned at an
+  instruction address makes the unfold cost zero operand registers: 31/31 words,
+  every address purposeful. The patch rides the normal 4-word operand packet, so
+  it is orientation-clean (no faces) and saturation-clean (proven bit-exact
+  pipelined). Pair it with the addr→R0 accumulator delivery (`LOAD R0` consumes
+  it as instruction 1) so R0 is a landing slot, not a wasted word.
+- **Two shifts replace an AND-mask: `frac = ((mag << (5+d)) & 0xFFFF) >> 1`.**
+  The left shift flushes the index bits mod 2^16 — no mask data word. For
+  `dshift < 0` a third shift (`>>5, <<4`) also flushes the discarded low bits;
+  proven bit-exact to the canonical mask-and-shift form exhaustively.
+- **For `dshift > 0`, ONE unsigned compare replaces clamp-at-32767 + index
+  clamp:** `mag = min_u(|v|, 2^(15−d))` (CMP borrow + `BR.C`) lands exactly on
+  idx=16/frac=0 and absorbs |−32768| for free (the NOT/ADD negate leaves 0x8000,
+  which the unsigned compare orders correctly). For `dshift ≤ 0` the index clamp
+  is unreachable (mag ≤ 32767 ⇒ idx ≤ 15) — omit it and keep the V-flag negate
+  clamp instead. Output equivalence of the two formulations was proven over all
+  65536 words × 8 dshift values BEFORE any repo code was written; that
+  half-hour of pure-python modeling is why the chip matched on the first run.
+- **The dshift-invariance claim in a spike is about MAX error; re-derive RMS.**
+  At `dshift < 0` the pre-shift discards |d| input bits, so the
+  input-quantization RMS floor rises (sigmoid 0.0010 → 0.0015, tanh 0.0021 →
+  0.0029 at d = −1) while max error stays pinned (0.0030/0.0060). The gate pins
+  BOTH, per sign of dshift — deriving the bar, not tuning it.
+- **Sigmoid's `0x8000 − y` unfold is wrap-exact** (y ≥ 16384 ⇒ result in
+  [1, 16384], no saturation path), and `+0x8000 ≡ ^0x8000 (mod 2^16)` is the
+  identity that keeps such affine unfolds one instruction.
+- The queue note's "arbitrary input-scale parameter" resolved to integer
+  `dshift` (in_scale = 2^dshift): powers of two ONLY is a genuine hardware
+  limit (INV-34 immediate shift counts), documented in both bindings; range
+  [−4, 10] raises outside.
+
 ## R2ButterflyBlock + TwiddleMultiplyBlock — radix-2 FFT primitives, the first TWO-complex-output block 2026-08-23
 
 Joint build (the RMS/RMSCF convention: one shared module

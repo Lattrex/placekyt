@@ -1,0 +1,56 @@
+id: kyttar_tanh
+label: Tanh
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar Tanh — Q15 hyperbolic tangent, out = tanh(a). There is NO stock
+  GNU Radio counterpart, so this is a placeKYT-native ([Kyttar]) block; the
+  golden reference is numpy.tanh.
+
+  The input sample x in [-1, 1) is interpreted with a configurable binary
+  point: a = x * 2^(2 + dshift). The default dshift = 0 is the canonical
+  domain — full-scale input maps to +-4, where tanh is within 6.7e-4 of its
+  asymptote. An upstream dot-product stage that prescaled its coefficients
+  by 2^-S for Q15 headroom is compensated here for free with dshift = S - 2
+  (the shift folds into the on-chip index/fraction shift immediates — zero
+  extra instructions).
+
+  On the chip: the same two-cell engine as Kyttar Sigmoid — sign fold +
+  index/fraction extraction, then a 17-entry table + linear interpolation
+  (tanh is odd, so the unfold is a plain negate). Accuracy vs float
+  (exhaustive over every input word): max abs error 0.0060, RMS 0.0021.
+  Output in (-1, 1); out(0) = 0 exactly. Memoryless, 1:1 rate, delay 0.
+
+  This block runs on the Kyttar chip. Place it between a KyttarSource and
+  KyttarSink block, and ensure the device_id matches your KyttarDevice.
+
+  Parameters:
+  - Device ID: ID of the KyttarDevice block
+  - dshift: integer binary-point shift of the input (default 0 = canonical
+    +-4 domain). Valid range [-4, 10] (shift-immediate hardware limit;
+    other values raise).
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.tanh(device_id=${device_id}, dshift=${dshift})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+  - id: dshift
+    label: dshift (binary point)
+    dtype: int
+    default: '0'
+
+inputs:
+  - label: in
+    dtype: float
+
+outputs:
+  - label: out
+    dtype: float
+
+file_format: 1

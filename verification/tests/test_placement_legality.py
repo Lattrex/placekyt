@@ -110,6 +110,11 @@ BLOCKS = [
     # no internal transit cell, no footprint-growing param (num_inputs is pinned).
     ("AddCCBlock", {}),
     ("SubCCBlock", {}),
+    # Q15 activations: 2-cell straight chain (fold -> lut), no internal
+    # transit cell; dshift never grows the footprint (out-of-range raises),
+    # so the 2x1 footprint must stay pairwise-distinct under D4 + movement.
+    ("SigmoidBlock", {"dshift": 2}),
+    ("TanhBlock", {"dshift": -1}),
     ("MultiplyCCBlock", {}),
     # Radix-2 DIF butterfly: 8-cell 2x4 serpentine (pair -> 4 rail cells ->
     # relay -> sum_out -> diff_out), no internal transit cell, no params — the

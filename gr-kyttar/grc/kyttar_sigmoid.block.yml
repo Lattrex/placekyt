@@ -1,0 +1,56 @@
+id: kyttar_sigmoid
+label: Sigmoid
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar Sigmoid — Q15 logistic sigmoid, out = 1/(1+exp(-a)). There is NO
+  stock GNU Radio counterpart, so this is a placeKYT-native ([Kyttar]) block;
+  the golden reference is numpy.
+
+  The input sample x in [-1, 1) is interpreted with a configurable binary
+  point: a = x * 2^(3 + dshift). The default dshift = 0 is the canonical
+  domain — full-scale input maps to +-8, where sigmoid is within 3.4e-4 of
+  its asymptote. An upstream dot-product stage that prescaled its
+  coefficients by 2^-S for Q15 headroom is compensated here for free with
+  dshift = S - 3 (the shift folds into the on-chip index/fraction shift
+  immediates — zero extra instructions).
+
+  On the chip: two cells — sign fold + index/fraction extraction, then a
+  17-entry table + linear interpolation with a wrap-exact sign unfold.
+  Accuracy vs float (exhaustive over every input word): max abs error
+  0.0030, RMS 0.0010. Output in (0, 1); out(0) = 0.5 exactly. Memoryless,
+  1:1 rate, delay 0.
+
+  This block runs on the Kyttar chip. Place it between a KyttarSource and
+  KyttarSink block, and ensure the device_id matches your KyttarDevice.
+
+  Parameters:
+  - Device ID: ID of the KyttarDevice block
+  - dshift: integer binary-point shift of the input (default 0 = canonical
+    +-8 domain). Valid range [-4, 10] (shift-immediate hardware limit;
+    other values raise).
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.sigmoid(device_id=${device_id}, dshift=${dshift})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+  - id: dshift
+    label: dshift (binary point)
+    dtype: int
+    default: '0'
+
+inputs:
+  - label: in
+    dtype: float
+
+outputs:
+  - label: out
+    dtype: float
+
+file_format: 1

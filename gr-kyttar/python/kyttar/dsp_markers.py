@@ -1162,6 +1162,64 @@ class bin_argmax(_PassThrough):
         self._advertise_grc_params(device_id, "BinArgmaxBlock", {"n": int(n)})
 
 
+class sigmoid(_PassThrough):
+    """Sigmoid — GR marker (maps to SigmoidBlock).
+
+    Q15 logistic sigmoid ``out = 1/(1+exp(-a))`` (placeKYT-native; no stock
+    GNU Radio counterpart). The input sample x in [-1, 1) is interpreted with
+    a configurable binary point: ``a = x * 2**(3 + dshift)`` — the default
+    ``dshift = 0`` maps full-scale input to +-8 (the canonical domain). An
+    upstream dot product prescaled by ``2**-S`` for Q15 headroom is
+    compensated with ``dshift = S - 3`` at zero on-chip instruction cost.
+    On the chip: a two-cell 16-interval table + linear interpolation
+    (max abs error 0.0030 vs float, exhaustive). GR marker only; the real
+    DSP runs on the placeKYT chip."""
+
+    def __init__(self, device_id="kyttar_0", dshift=0):
+        super().__init__("Kyttar Sigmoid", n_in=1, n_out=1,
+                         in_dtype=np.float32, out_dtype=np.float32)
+        self.device_id = device_id
+        self.dshift = int(dshift)
+        self._advertise_grc_params(device_id, "SigmoidBlock",
+                                   {"dshift": int(dshift)})
+
+    def work(self, input_items, output_items):
+        x = input_items[0].astype(np.float64)
+        n = min(len(output_items[0]), len(x))
+        a = x[:n] * float(2.0 ** (3 + self.dshift))
+        output_items[0][:n] = (1.0 / (1.0 + np.exp(-a))).astype(np.float32)
+        return n
+
+
+class tanh(_PassThrough):
+    """Tanh — GR marker (maps to TanhBlock).
+
+    Q15 hyperbolic tangent ``out = tanh(a)`` (placeKYT-native; no stock
+    GNU Radio counterpart). The input sample x in [-1, 1) is interpreted with
+    a configurable binary point: ``a = x * 2**(2 + dshift)`` — the default
+    ``dshift = 0`` maps full-scale input to +-4 (the canonical domain). An
+    upstream dot product prescaled by ``2**-S`` is compensated with
+    ``dshift = S - 2`` at zero on-chip instruction cost. On the chip: the
+    same two-cell 16-interval table + linear interpolation engine as Sigmoid
+    (max abs error 0.0060 vs float, exhaustive). GR marker only; the real
+    DSP runs on the placeKYT chip."""
+
+    def __init__(self, device_id="kyttar_0", dshift=0):
+        super().__init__("Kyttar Tanh", n_in=1, n_out=1,
+                         in_dtype=np.float32, out_dtype=np.float32)
+        self.device_id = device_id
+        self.dshift = int(dshift)
+        self._advertise_grc_params(device_id, "TanhBlock",
+                                   {"dshift": int(dshift)})
+
+    def work(self, input_items, output_items):
+        x = input_items[0].astype(np.float64)
+        n = min(len(output_items[0]), len(x))
+        a = x[:n] * float(2.0 ** (2 + self.dshift))
+        output_items[0][:n] = np.tanh(a).astype(np.float32)
+        return n
+
+
 class moving_average(_PassThrough):
     """Moving Average — GR marker (maps to MovingAverageBlock).
 

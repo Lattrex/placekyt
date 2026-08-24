@@ -111,6 +111,8 @@ BUILTIN_BLOCKS = {
     'ComplexToMagBlock': 'cordic_blocks',
     'ComplexToArgBlock': 'cordic_blocks',
     'RMSBlock': 'rms_block',
+    'SigmoidBlock': 'activation_blocks',
+    'TanhBlock': 'activation_blocks',
     'RMSCFBlock': 'rms_block',
     'ZeroCrossingRateBlock': 'zero_crossing_rate_block',
 }

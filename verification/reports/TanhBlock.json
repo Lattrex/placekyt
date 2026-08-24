@@ -1,0 +1,24 @@
+{
+  "kyttar_block": "TanhBlock",
+  "passed": true,
+  "metric": "exact",
+  "n_compared": 144,
+  "max_abs_err": 0,
+  "tolerance": 0,
+  "nmse_db": null,
+  "correlation": null,
+  "bit_errors": 0,
+  "delay_used": 0,
+  "coverage": {
+    "golden": "numpy float (no stock GR counterpart) + transcribed bit-exact 16-interval table+interp design reference; two independent integer models agree exhaustively",
+    "exhaustive_reference": "65536 words x dshift {0,+1,+2,-1}",
+    "dut_bit_exact": "dense sweep (edges+stride+random), 4 dshift values",
+    "float_accuracy": "max<=0.00603 (dshift-invariant), rms<=0.00208 at dshift>=0 / <=0.00294 at dshift<0 (exhaustive)",
+    "edge": true,
+    "random": 3,
+    "param_sweep": 4,
+    "clamp": "beyond-domain asymptote pinned (dshift>0)",
+    "saturated": "pipelined == per-sample bit-exact (dshift 0,1)",
+    "mutation": "wrong-table-entry / off-by-one-clamp / broken-sign-fold / wrong-dshift-patch / inverted / +1-delay / empty"
+  }
+}

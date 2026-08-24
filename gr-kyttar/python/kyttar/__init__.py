@@ -81,7 +81,8 @@ from .dsp_markers import (complex_rrc_matched_filter, complex_costas_loop,
                           dual_float_to_complex, keep_one_in_n, moving_average,
                           zero_crossing_rate, bin_argmax,
                           rms, rms_cf,
-                          r2_butterfly, twiddle_multiply)
+                          r2_butterfly, twiddle_multiply,
+                          sigmoid, tanh)
 from .gain import gain
 from .multiply import multiply
 from .add import add, subtract
@@ -189,6 +190,8 @@ __all__ = [
     "moving_average",
     "zero_crossing_rate",
     "bin_argmax",
+    "sigmoid",
+    "tanh",
     "rms",
     "rms_cf",
     "r2_butterfly",

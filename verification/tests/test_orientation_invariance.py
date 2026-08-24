@@ -202,6 +202,12 @@ _CASES = [
     ("TwiddleMultiplyBlock",
      {"twiddles": [1, 0.7071067811865476 - 0.7071067811865476j, -1j,
                    -0.5 + 0.25j]}, "complex", ("xi", "xq", "yi")),
+    # Q15 activations: 2-cell fold->lut straight chain, single real rail
+    # in/out, no is_face words, no internal feedback -> freely orientable;
+    # the output word list must be IDENTICAL in every D4 orientation
+    # (dshift=1 also exercises the domain-cap/index-clamp path).
+    ("SigmoidBlock", {"dshift": 1}, "real", ("sample", "out")),
+    ("TanhBlock", {"dshift": 1}, "real", ("sample", "out")),
     # Bitwise NOT of a byte stream (GR blocks.not_bb): single real rail in (sample)
     # -> (~in)&0xFF out. Single cell, memoryless, no internal connections / feedback,
     # so its NOT+mask datapath is D4-invariant by construction.

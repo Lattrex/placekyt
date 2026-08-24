@@ -67,6 +67,13 @@ REAL_1IN = {
     # per-sample stream (INV-19/INV-20 hazards don't apply; no LOCK needed).
     "DelayBlock": ("sample", "out", {"delay": 3}),
     "AbsBlock": ("sample", "out", {}),
+    # Q15 activations (shared two-cell fold->lut engine): feed-forward
+    # straight chain, memoryless, no feedback corridor / no reconvergent
+    # fan-in (INV-19/20 N/A). The lut's runtime patch-slot operand rides the
+    # same 4-word delivery packet as the data operands, so the saturated
+    # stream must equal the per-sample stream bit-for-bit.
+    "SigmoidBlock": ("sample", "out", {"dshift": 0}),
+    "TanhBlock": ("sample", "out", {"dshift": 0}),
     "AddConstBlock": ("sample", "out", {"const": 0.3}),
     "DCBlockerBlock": ("in", "out", {}),
     "MovingAverageBlock": ("in", "out", {}),

@@ -158,6 +158,41 @@ def test_die1_output_stream_equals_fft64_on_the_same_input():
         f"{next(k for k in range(len(f64)) if d1[k] != f64[k])}")
 
 
+@pytest.mark.parametrize("cls,anchor", [(FFT128Die0, (1, 0)),
+                                        (FFT128Die1, (0, 0))])
+def test_declared_anchor_reproduces_the_planned_layout(cls, anchor):
+    """A die must be placed at its DECLARED anchor, not at (0, 0).
+
+    ``place_block(x, y)`` emits each cell at ``x + dx - min_dx``: it
+    NORMALISES the footprint to its own bounding box. Anchoring at
+    ``(min_dx, min_dy)`` makes that the identity, so the router sees exactly
+    the geometry the planner validated; anchoring anywhere else TRANSLATES the
+    fold and invalidates the reserved egress lane, the port distances, and
+    which columns stay free.
+
+    Die 0 has to reach column 1 to leave its corridors open, so its plan sits
+    at ``min x = 1`` and it MUST be anchored at (1, 0) — placed at (0, 0) it
+    arrives one column left with cells on (0,2) and (0,3), sealing the input
+    port, and the route fails. Die 1 declares (0, 0). FFT64 declares (0, 0)
+    too, which is exactly why this contract was invisible until a second size
+    existed."""
+    blk = cls("probe")
+    assert blk.default_anchor == anchor
+    lay = blk.default_layout()
+    mdx = min(v[0] for v in lay.values())
+    mdy = min(v[1] for v in lay.values())
+    assert (mdx, mdy) == anchor
+    # placing AT the declared anchor is the identity transform
+    for cid, (dx, dy, _f) in lay.items():
+        assert (anchor[0] + dx - mdx, anchor[1] + dy - mdy) == (dx, dy), cid
+
+
+def test_fft64_declares_the_origin_anchor():
+    """The shipped FFT64 fold declares (0, 0) — pinned so a future planner
+    change cannot silently move it and invalidate its verified placement."""
+    assert FFT64Block("probe").default_anchor == (0, 0)
+
+
 def test_split_adds_no_cells():
     """Splitting must not cost cells — the two dies together are exactly the
     single-die cell count the fit arithmetic predicts."""

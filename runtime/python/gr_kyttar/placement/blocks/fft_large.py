@@ -2011,34 +2011,28 @@ class LargeFFTBlock(KyttarBlock):
              corridor spends one extra hop leaving the array.
 
         FOURTH, AND IT INVALIDATES THE OTHER THREE IF IGNORED: **the placer
-        NORMALISES a layout to its own bounding box.** ``place_block(anchor)``
-        translates the footprint so its minimum x and y sit at the anchor, so
-        a plan whose cells start at ``min x = 1`` is SHIFTED ONE COLUMN LEFT
-        before the router ever sees it. Every absolute fact this method
-        establishes — distance to a port, a reserved lane, a free column —
-        is then about a layout that no longer exists.
+        NORMALISES a layout to its own bounding box.** ``place_block(x, y)``
+        emits each cell at ``x + dx - min_dx``, so a plan whose cells start at
+        ``min x = 1`` is SHIFTED ONE COLUMN LEFT when anchored at 0 — and
+        every absolute fact this method establishes (port distances, the
+        reserved lane, which columns stay free) is then about a layout that no
+        longer exists. Measured: the N=128 die-0 plan sat at ``min x = 1``,
+        passed this check, and reached the router with block cells on (0,2)
+        and (0,3), sealing column 0.
 
-        That is not hypothetical: the N=128 die-0 plan sat at ``min x = 1``,
-        looked corridor-clean here, and reached the router shifted left with
-        block cells on (0,2) and (0,3), sealing column 0. The shipped N=64
-        fold is immune only because its plan already touches x=0 and y=0, so
-        anchoring is a no-op for it (verified: placed == planned).
+        The fix is NOT to reject un-normalised plans — for a fold that has to
+        touch a specific column to leave its corridors, ``min x = 0`` may be
+        unreachable, and rejecting it throws away valid geometry. The fix is
+        that the block DECLARES the anchor at which its plan is reproduced
+        verbatim (:attr:`default_anchor` = ``(min_dx, min_dy)``), and callers
+        place it there. Anchoring at the declared value makes
+        ``x + dx - min_dx == dx``, i.e. the identity, so what the router sees
+        is exactly what was validated here. The shipped N=64 fold declares
+        (0, 0) and is unaffected.
 
-        So a plan is only accepted if it is ALREADY normalised. Rejecting
-        here is right rather than normalising after the fact, because a
-        translated fold is a DIFFERENT placement — its corridors have to be
-        re-checked, and the cheap way to guarantee that is to only ever
-        validate layouts the placer will not move.
-
-        Returns True only when the layout is normalised AND both nets route.
+        Returns True only when both nets route, in both connection orders.
         """
         block_cells = set(used) - set(self._PORT_CELLS)
-        # The placer anchors on the bounding-box minimum; a plan that does not
-        # already touch x=0 and y=0 will be TRANSLATED, invalidating every
-        # absolute check below.
-        if block_cells and (min(x for x, _ in block_cells) != 0
-                            or min(y for _, y in block_cells) != 0):
-            return False
         in_cell = chosen[0][0]                       # s0_ctl
         out_cell = chosen[len(chosen) - 1][-1]       # last stage's out
         ports = sorted(self._PORT_CELLS)
@@ -2158,6 +2152,31 @@ class LargeFFTBlock(KyttarBlock):
 
     def default_layout(self):
         return dict(self._layout)
+
+    @property
+    def default_anchor(self) -> Tuple[int, int]:
+        """The anchor at which this block's planned layout is reproduced
+        VERBATIM — place it here, not at (0, 0).
+
+        ``place_block(x, y)`` emits each cell at ``x + dx - min_dx``, i.e. it
+        NORMALISES the footprint to its own bounding box. So anchoring at
+        ``(min_dx, min_dy)`` makes that the identity and the router sees
+        exactly the geometry :meth:`_corridors_ok` validated; anchoring
+        anywhere else TRANSLATES the fold and invalidates every absolute fact
+        the plan rests on — the reserved egress lane, the port distances,
+        which columns stay free.
+
+        This is not a nicety. The N=128 die-0 fold has to reach column 1 to
+        leave its corridors open, so its plan sits at ``min x = 1``; anchored
+        at (0, 0) it arrives one column left with cells on (0,2) and (0,3),
+        sealing the input port, and the route fails. Anchored at (1, 0) it
+        routes. The shipped N=64 fold declares (0, 0) and is unaffected —
+        which is precisely why this went unnoticed until a second size
+        existed.
+        """
+        xs = [v[0] for v in self._layout.values()]
+        ys = [v[1] for v in self._layout.values()]
+        return (min(xs), min(ys))
 
     # ------------------------------------------------------- multi-cell wiring
     def _push_cell(self, s: int) -> str:

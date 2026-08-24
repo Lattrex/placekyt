@@ -93,18 +93,32 @@ last one.
    caller wired ingress first. **Require BOTH orders to succeed**, or a placement is a
    latent failure waiting for a caller to wire its nets the other way round.
 5. **THE PLACER NORMALISES A LAYOUT TO ITS OWN BOUNDING BOX, and that invalidates
-   every absolute fact the other four rest on.** `place_block(anchor)` TRANSLATES the
-   footprint so its minimum x and y sit at the anchor. A plan whose cells start at
-   `min x = 1` therefore reaches the router SHIFTED ONE COLUMN LEFT, and every
-   port distance, reserved lane and free column the planner reasoned about is about a
-   layout that no longer exists. Measured: the N=128 die-0 plan sat at `min x = 1`,
-   looked corridor-clean, and arrived at the router with block cells on (0,2) and
-   (0,3), sealing column 0. The shipped N=64 fold is immune only by accident — its
-   plan already touches x=0 and y=0, so anchoring is a no-op (verified: placed ==
-   planned). **If a planner reasons in absolute coordinates, it must REJECT any plan
-   that is not already normalised**, rather than normalising after the fact: a
-   translated fold is a DIFFERENT placement whose corridors need re-checking, and the
-   cheap guarantee is to only ever validate layouts the placer will not move.
+   every absolute fact the other four rest on.** `place_block(x, y)` emits each cell
+   at `x + dx - min_dx` — it TRANSLATES the footprint so its bounding-box minimum sits
+   at the anchor. A plan whose cells start at `min x = 1` therefore reaches the router
+   SHIFTED ONE COLUMN LEFT when anchored at 0, and every port distance, reserved lane
+   and free column the planner reasoned about describes a layout that no longer
+   exists. Measured: the N=128 die-0 plan sat at `min x = 1`, passed the corridor
+   check, and arrived at the router with block cells on (0,2) and (0,3), sealing the
+   input port.
+
+   **The fix is a DECLARED ANCHOR, not a rejection.** The first attempt here was to
+   reject any plan not already normalised — that was wrong, and measuring it showed
+   why: die 0 *has* to reach column 1 to leave its corridors open, so `min x = 0` is
+   unreachable for it, and the rule threw away the only valid geometry (die 0 failed
+   to place at all; die 1, which satisfies it by luck, was fine). Instead the block
+   DECLARES the anchor at which its plan is reproduced verbatim —
+   `default_anchor = (min_dx, min_dy)` — and callers place it there, which makes
+   `x + dx - min_dx == dx`, the identity. What the router sees is then exactly what
+   was validated.
+
+   The general form: **if a planner reasons in absolute coordinates, the placement API
+   must be told where those coordinates are valid.** A constraint that forces the plan
+   into the API's default frame is the wrong direction of fix — it discards geometry
+   to satisfy a convention. Note also why this hid for so long: the shipped N=64 fold
+   happens to touch x=0 and y=0, so anchoring was a no-op for it and the whole issue
+   was invisible until a SECOND size existed. A contract exercised by exactly one
+   instance is not yet a contract.
 
 `_corridors_ok` now mirrors all three — egress first, then ingress over what the
 egress left, both terminating ON their landing cells, both hop-bounded. Under the

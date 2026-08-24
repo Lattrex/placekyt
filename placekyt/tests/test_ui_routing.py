@@ -70,18 +70,36 @@ class TestAddRoute:
         assert [(p.x, p.y) for p in conn.route] == [(1, 1), (1, 2), (1, 3)]
         assert ctrl.can_undo()
 
-    def test_hop_overflow_rejected(self, window):
+    def test_over_budget_route_is_accepted_when_relayable(self, window):
+        """INV-36: a >31-hop route is no longer rejected outright — the build
+        SPLITS it at relay cells that re-emit with a fresh hop budget. With a
+        placed block source and free corridor cells it is accepted."""
+        name = window.controller.add_route(
+            BlockEndpoint("gain", "out"), BlockEndpoint("dcblocker", "in"),
+            [(0, i) for i in range(35)])          # 34 hops > 31, relayable
+        conn = window.controller.project.connection(name)
+        assert conn is not None and conn.is_routed
+
+    def test_unrelayable_over_budget_route_still_rejected(self, window):
+        """The guard is not gone, only narrowed: a net whose source is NOT a
+        placed block has no exit WRITE/JUMP to re-point, so it cannot be
+        segmented and must still be refused before it is committed."""
         with pytest.raises(ValueError, match="hops"):
             window.controller.add_route(
-                BlockEndpoint("gain", "out"), BlockEndpoint("dcblocker", "in"),
-                [(0, i) for i in range(35)])  # 34 hops > 31
+                ChipPortEndpoint(0, "x16_in"), BlockEndpoint("dcblocker", "in"),
+                [(0, i) for i in range(35)])
 
     def test_chip_output_plus_one(self, window):
-        # 31 waypoints → 30 hops; +1 for chip-output → 31, OK. 32 → 32 > 31.
-        with pytest.raises(ValueError):
-            window.controller.add_route(
-                BlockEndpoint("gain", "out"), ChipPortEndpoint(0, "x16_out"),
-                [(0, i) for i in range(33)])
+        """The egress +1 still counts toward the budget — what changed is that
+        exceeding it is relayed, not rejected. 33 waypoints + 1 egress = 33
+        delivered hops, over budget, so it must consume a relay."""
+        from engine.bus_router import _plan_relays
+        pts = [(0, i) for i in range(33)]
+        relays, why = _plan_relays(pts, len(pts) + 1, set(), set(), set())
+        assert why is None and relays, "the egress +1 must push it over budget"
+        name = window.controller.add_route(
+            BlockEndpoint("gain", "out"), ChipPortEndpoint(0, "x16_out"), pts)
+        assert window.controller.project.connection(name).is_routed
 
 
 # --------------------------------------------------------------------------- #

@@ -81,11 +81,13 @@ direct DIF integer FFT and against float ``numpy.fft.fft`` (SNR floors).
 
 .. _geometry-limit:
 
-⚠️ STATUS — GEOMETRY LIMIT (this module does not yet PLACE)
+⚠️ STATUS — N=64 PLACES AND RUNS BUT IS NOT YET BIT-EXACT
 ------------------------------------------------------------
 
-**What IS done and verified** (gated by
-``verification/tests/test_fft64_fit_limit.py``):
+Read this before trusting the block. Stated precisely, because "it places" is
+NOT "it works":
+
+**Verified** (gated by ``verification/tests/test_fft64_fit_limit.py``):
 
   * the octant fold, exhaustively bit-exact at N=64 and N=128 — including the
     STRIDED stage (N=128 stage 1 walks the same tables with ``k = 2j``) and
@@ -94,47 +96,76 @@ direct DIF integer FFT and against float ``numpy.fft.fft`` (SNR floors).
     ``stage_table`` word;
   * EVERY authored cell of both sizes inside the 32-word budget (resolver-
     measured), with every state var explicitly pinned (INV-33);
-  * the whole-block cell counts: **N=64 = 81 cells, N=128 = 110 cells**.
+  * the whole-block cell counts, WITH the ring-fold parity pads:
+    **N=64 = 84 cells** (81 + 3 pad cells), N=128 = 114.
+  * the SPINE LAYOUT's structural properties, on the real placed block: every
+    consecutive chain pair edge-adjacent; ``ctl`` above ``out`` above the next
+    ``ctl`` for every stage; ZERO ROUTE-TIME FACE RULE violations; and all
+    **349 forward internal edges trace to exactly their chain distance** (the
+    same audit gives FFT16 0/188).
 
-**What does NOT fit: the stacked-band LAYOUT.** Two independent walls, both
-consequences of the @1 stage-ring geometry (``ctl`` at a band's top-left,
-``out`` directly below it) that lets an R2SDF stage close its serialize-LOCK
-write-back with no transit cells at all:
+**Observed on a real built chip** (N=64, anchor (0,0)): the design places,
+both nets route with real corridors, the build succeeds, and driving it runs
+**all 84 cells** with per-stage activity decreasing monotonically s0→s5 — a
+pipeline that genuinely flows end to end, with no livelock (3.2k events per
+burst, against the 1e6-event runaway that the earlier non-spine folds hit).
 
-  1. **The band cap.** A 2-row band on a 10-wide array holds at most 20 cells,
-     and a stage CANNOT spill into a second band (a stage starting at chain
-     index ``a`` has ``out`` below ``ctl`` only when ``L = 2W - 2*(a mod W)``,
-     so the first stage in a band must fill it). Measured stage sizes:
-     N=64 stage 0 = **23** (3 over); N=128 stage 0 = **29**, stage 1 = **23**.
-  2. **The row budget.** One band per stage means 2 rows per stage: N=64 needs
-     **12 rows**, N=128 needs **14**. The x16 ports sit at (0,0) and (9,0), so
-     a sole occupant has at most 11 free rows below them (and a 10-wide block
-     cannot use row 0 at all without its ``ctl`` column landing on the input
-     port cell).
+**NOT yet working — the honest gap.** Only the FIRST sample's output word
+egresses. Sample 1 runs partially and the chip then goes quiescent (2 events
+per injection = the injection alone), which is the signature of a stage's
+serialize-LOCK never clearing, so no further input is accepted. The
+write-back geometry is measured IDENTICAL to FFT16's (out→ctl manhattan 1,
+direction NORTH, matching the hardcoded ``face_fb``), so the remaining fault
+is in how the lock-clear ``WRITE.CFG`` is resolved for this fold, not in the
+placement. Until that is fixed and the block is bit-exact against
+:func:`sdf_streaming_reference`, **FFT64Block is NOT done** and must not be
+described as working.
 
-Cell-shaving was measured and does NOT close the gap: the reachable savings
-total at most 1 cell (letting ``out`` absorb one ring sample — it has 7 spare
-words), against a 3-cell shortfall at N=64. Collapsing any two fold cells
-busts the 32-word budget (all six pairings were tried), and a split-bank
-DIRECT table is strictly worse (its range check busts every cell at every bank
-size tried).
+**THE LAYOUT: a vertical CTL/OUT SPINE** (this REPLACES the stacked-band
+scheme, which did not fit and whose two "walls" were both artefacts of the
+banding rather than fabric rules — see :meth:`LargeFFTBlock._plan`).
 
-The two candidate mechanisms, neither yet built:
+Every R2SDF stage's ``out`` cell needs three @1 neighbours, and the shipped
+FFT16 gets them all from one arrangement that generalises directly:
 
-  * a **4-row band** for an oversized stage with a FEEDBACK TRANSIT COLUMN,
-    so the write-back + lock-clear ``WRITE.CFG`` is resolved by
-    ``engine.build._apply_internal_feedback`` (which handles backward internal
-    edges via corridor re-hop) instead of the @1 abutment. This costs 2 extra
-    rows per oversized stage, which at N=64 pushes the block to 12 rows —
-    so it needs the row wall solved too;
-  * a **2-die stage-boundary split** (feed-forward, a single crossing,
-    hand-placed since cross-chip auto-route is unsupported), which is the
-    authorized fallback for N=128 and would also comfortably hold N=64.
+  * its own ``ctl`` directly ABOVE (the data write-back + serialize-LOCK
+    clear, emitted on the in-program ``face_fb`` = NORTH);
+  * the NEXT stage's ``ctl`` directly BELOW (the forward packet, on the
+    in-program ``face_tap`` = SOUTH, which is also the cell's RESTING face and
+    therefore what the router traces);
+  * for the LAST stage, a free neighbour instead of a next ``ctl``, which the
+    egress corridor starts from.
 
-Constructing :class:`FFT64Block` / :class:`FFT128Block` therefore raises
-:class:`LargeFFTGeometryError` with the exact shortfall — a LOUD failure, not
-a silently-unroutable layout.
+So the whole ``ctl``/``out`` sequence is ONE COLUMN of ``2 * n_stages`` cells.
+That is forced, not stylistic: an internal handoff's hop is resolved by
+TRACING resting faces (``router._get_routing_distance``) and silently falls
+back to Manhattan distance when the trace fails — so a non-traceable
+inter-stage handoff does not error, it ships a wrong hop and the stage spins
+on its own ring forever.
+
+What is NOT forced — and is exactly what the band scheme got wrong — is the
+rest of the stage. Only ``ctl`` and ``out`` are pinned to the spine; a
+stage's other cells merely have to form a connected, face-abutted chain from
+``ctl`` round to ``out``, and may bulge sideways past their own rows. Freed
+of "one full-width 2-row band per stage", N=64 fits.
+
+Two constraints do survive, and both are real:
+
+  1. **PARITY** (:data:`RING_FOLD_NEEDS_EVEN_LENGTH`). A chain of ``L`` cells
+     can land its last cell edge-adjacent to its first only when ``L`` is
+     EVEN — chessboard-colour the array and every step flips the colour. An
+     odd stage is repaired by spreading its delay line over ONE extra cell
+     (:func:`_delay_segments`, ``extra_cells``): same total delay, even chain.
+  2. **SPINE HEIGHT.** ``2 * n_stages`` rows in one column: 12 for N=64, which
+     is exactly the array height (the spine column avoids the port columns, so
+     row 0 IS usable — the old 11-row budget assumed a 10-wide fold); and 14
+     for N=128, which does not exist. **N=128 single-die is ruled out on the
+     spine height**, and the stage-boundary 2-die split is its topology.
+
+Constructing a size that does not fit raises :class:`LargeFFTGeometryError`
+with the exact shortfall — a LOUD failure, not a silently-unroutable layout.
 """
+from itertools import product as _product
 from typing import Dict, List, Sequence, Tuple
 
 import numpy as np
@@ -400,20 +431,223 @@ def fold_slot_words(p: int, n: int, C: Sequence[int], S: Sequence[int]
     return fold_steer(C[m - 1], S[m - 1], o)
 
 
-def _delay_segments(samples: int) -> List[int]:
+def _delay_segments(samples: int, extra_cells: int = 0) -> List[int]:
     """Split a stage line of ``samples`` physical complex samples into
     ComplexDelayLine-density segments (``SAMPLES_PER_CELL`` = 5), balanced so
     no cell is fuller than it must be.
 
     ``samples == 0`` (the last stage, D = 1) returns ``[]`` — that stage uses
     a plain store-and-forward relay, exactly as FFT16 does.
+
+    ``extra_cells`` spreads the SAME total over that many ADDITIONAL cells —
+    the RING-FOLD PARITY fix (see :meth:`LargeFFTBlock._plan`). The segment
+    count changes; ``sum(result)`` does NOT, so the stage's delay — and
+    therefore the whole transform — is bit-identical either way. Raises
+    ``ValueError`` if the split would leave a cell holding no samples.
     """
     per = ComplexDelayLineBlock.SAMPLES_PER_CELL
     if samples <= 0:
+        if extra_cells:
+            raise ValueError(
+                "cannot pad a zero-length delay line (the D=1 stage uses a "
+                "relay, and it is already an EVEN-length stage)")
         return []
-    n = -(-samples // per)                       # ceil
+    n = -(-samples // per) + int(extra_cells)     # ceil, plus the parity pad
+    if n > samples:
+        raise ValueError(
+            f"cannot spread {samples} samples over {n} cells (a delay cell "
+            "must hold at least one sample)")
     base, rem = divmod(samples, n)
     return [base + (1 if i < rem else 0) for i in range(n)]
+
+
+def ring_fold(rows: int, width: int) -> List[Tuple[int, int]]:
+    """The RING FOLD: a serpentine over a ``rows`` x ``width`` box that starts
+    at ``(0, 0)`` and ENDS at ``(0, 1)`` — i.e. the chain's LAST cell lands
+    directly BELOW its FIRST, with every consecutive pair edge-adjacent.
+
+    This generalises the shipped FFT16 2-row band to ANY number of rows, which
+    is what lets a stage longer than ``2 * width`` keep the ``out``-below-
+    ``ctl`` geometry its R2SDF ring depends on (the @1 write-back + lock-clear)
+    instead of being forced into an ever-wider 2-row band.
+
+    The walk is: EAST along row 0; then a column-major boustrophedon over
+    columns ``width-1 .. 1`` covering rows ``1 .. rows-1``; then UP the
+    reserved RETURN LANE (column 0, rows ``rows-1 .. 1``), landing on
+    ``(0, 1)``.
+
+    Legality (asserted, and exhaustively gated by the suite): ``rows == 2`` is
+    valid at any width; ``rows >= 3`` needs an EVEN ``width`` so the
+    boustrophedon over the body ends in the row that steps into the lane.
+    """
+    if rows < 2 or width < 2:
+        raise ValueError(f"ring_fold needs rows>=2 and width>=2 "
+                         f"(got {rows}x{width})")
+    if rows >= 3 and width % 2:
+        raise ValueError(
+            f"ring_fold({rows}, {width}): a box of 3+ rows needs an EVEN "
+            "width — with an odd width the body boustrophedon ends away "
+            "from the return lane and the walk breaks adjacency")
+    path: List[Tuple[int, int]] = [(x, 0) for x in range(width)]
+    down = True
+    for x in range(width - 1, 0, -1):
+        span = range(1, rows) if down else range(rows - 1, 0, -1)
+        path.extend((x, y) for y in span)
+        down = not down
+    path.extend((0, y) for y in range(rows - 1, 0, -1))
+    return path
+
+
+def ring_walks(rows: int, width: int, limit: int = 400):
+    """Enumerate RING WALKS of a ``rows`` x ``width`` box: Hamiltonian paths
+    that start at ``(0, 0)`` and END edge-adjacent to it, so the chain's last
+    cell (the stage's ``out``) abuts its first (the stage's ``ctl``).
+
+    :func:`ring_fold` is ONE such walk — the tidy boustrophedon-plus-return-
+    lane. It is not always the right one: which walk you pick decides which
+    cells end up ADJACENT, and the ROUTE-TIME FACE RULE makes some adjacencies
+    fatal (see :meth:`LargeFFTBlock._face_rule_ok`). Enumerating the family
+    lets the planner choose a walk that is both the right SHAPE and
+    face-clean, instead of being stuck with one canonical shape per box.
+
+    Yields at most ``limit`` walks, each a list of ``rows * width`` cells.
+    """
+    total = rows * width
+    out: List[List[Tuple[int, int]]] = []
+    path = [(0, 0)]
+    seen = {(0, 0)}
+
+    def rec():
+        if len(out) >= limit:
+            return
+        if len(path) == total:
+            ex, ey = path[-1]
+            if abs(ex) + abs(ey) == 1:          # ends adjacent to (0, 0)
+                out.append(list(path))
+            return
+        x, y = path[-1]
+        for dx, dy in ((1, 0), (0, 1), (-1, 0), (0, -1)):
+            nb = (x + dx, y + dy)
+            if 0 <= nb[0] < width and 0 <= nb[1] < rows and nb not in seen:
+                seen.add(nb)
+                path.append(nb)
+                rec()
+                path.pop()
+                seen.discard(nb)
+
+    rec()
+    return out
+
+
+def ring_fold_boxes(length: int, max_rows: int, max_width: int
+                    ) -> List[Tuple[int, int]]:
+    """Every ``(rows, width)`` box of EXACTLY ``length`` cells that fits within
+    ``max_rows`` x ``max_width`` and admits a ring walk, fewest rows first.
+
+    ``length`` must be EVEN (:data:`RING_FOLD_NEEDS_EVEN_LENGTH`) — on an
+    odd-area box no Hamiltonian path can end adjacent to its start. Both
+    dimensions must be at least 2: a single row or column is a LINE, whose
+    ends are the full length apart.
+    """
+    out: List[Tuple[int, int]] = []
+    if length % 2:
+        return out
+    for rows in range(2, max_rows + 1):
+        if length % rows:
+            continue
+        width = length // rows
+        if not (2 <= width <= max_width):
+            continue
+        out.append((rows, width))
+    return out
+
+
+#: Step delta -> the face name a cell rests at to forward along that step.
+_FACE_OF = {(1, 0): "east", (-1, 0): "west",
+            (0, 1): "south", (0, -1): "north"}
+
+
+def _self_avoiding_paths(start, goal, length, blocked, width, height,
+                         limit=400):
+    """Self-avoiding paths of EXACTLY ``length`` cells from ``start`` to
+    ``goal`` on a ``width`` x ``height`` grid, avoiding ``blocked``.
+
+    This is how a stage's chain is laid around the ctl/out spine: consecutive
+    cells are edge-adjacent (so each cell's resting face points at its chain
+    successor and the internal hops trace exactly), the walk never revisits a
+    cell, and it ends on the stage's ``out``.
+
+    The parity prune is the same fact the ring fold rests on: each step flips
+    the chessboard colour, so a path of ``rem`` more cells can only close a
+    Manhattan gap ``d`` when ``d <= rem`` and ``rem - d`` is even.
+    """
+    out: List[List[Tuple[int, int]]] = []
+    path = [start]
+    seen = {start}
+
+    def rec():
+        if len(out) >= limit:
+            return
+        cur = path[-1]
+        rem = length - len(path)
+        if rem == 0:
+            if cur == goal:
+                out.append(list(path))
+            return
+        gap = abs(cur[0] - goal[0]) + abs(cur[1] - goal[1])
+        if gap > rem or (rem - gap) % 2:
+            return
+        for dx, dy in ((0, 1), (1, 0), (0, -1), (-1, 0)):
+            nb = (cur[0] + dx, cur[1] + dy)
+            if not (0 <= nb[0] < width and 0 <= nb[1] < height):
+                continue
+            if nb in seen or nb in blocked:
+                continue
+            if nb == goal and rem != 1:
+                continue                      # only ARRIVE on the last step
+            seen.add(nb)
+            path.append(nb)
+            rec()
+            path.pop()
+            seen.discard(nb)
+            if len(out) >= limit:
+                return
+
+    rec()
+    return out
+
+
+def _shelf_pack(boxes, max_w: int, max_h: int):
+    """Shelf-pack ``(rows, width)`` boxes IN ORDER into ``max_w`` x ``max_h``.
+
+    Shelves run left to right; a box that does not fit the current shelf's
+    remaining width starts a new shelf below the tallest box so far. Returns
+    ``[(rows, width, bx, by), ...]`` or ``None`` if it does not fit.
+    """
+    out = []
+    x = y = shelf_h = 0
+    for (rows, width) in boxes:
+        if width > max_w:
+            return None
+        if x + width > max_w:                    # new shelf
+            y += shelf_h
+            x = shelf_h = 0
+        if y + rows > max_h:
+            return None
+        out.append((rows, width, x, y))
+        x += width
+        shelf_h = max(shelf_h, rows)
+    return out
+
+
+#: A chain of ``L`` cells can place its LAST cell edge-adjacent to its FIRST
+#: only when ``L`` is EVEN. Colour the array like a chessboard: every step to
+#: an edge-adjacent cell FLIPS the colour, so cell ``L-1`` has the start's
+#: colour XOR ``(L-1) % 2``; adjacency demands the OPPOSITE colour, hence
+#: ``L`` even. This is a property of the grid, not of this chip or this fold —
+#: it is WHY the shipped FFT16 (stages 14/14/8/8, all even) folded tidily and
+#: why an odd-length stage needs the parity pad below.
+RING_FOLD_NEEDS_EVEN_LENGTH = True
 
 
 # ---------------------------------------------------------------------------
@@ -456,6 +690,15 @@ class LargeFFTBlock(KyttarBlock):
     #: 10-wide fold has rows 1..11 = 11, not the full 12.
     CHIP_SCALE_USABLE_ROWS = 11
 
+    #: The chip's x16 port cells. The spine may not occupy them, and no stage
+    #: cell may either — a block cell on a port cell costs the block that port.
+    _PORT_CELLS = frozenset({(0, 0), (9, 0)})
+
+    #: How many candidate chains per stage the spine solver enumerates before
+    #: backtracking. The compact ones sort first, so a solution is normally
+    #: found in the first few; the cap bounds a pathological search.
+    _SPINE_PATH_CANDIDATES = 400
+
     #: Concrete subclasses set this.
     N = 0
 
@@ -474,11 +717,34 @@ class LargeFFTBlock(KyttarBlock):
         self._delays = stage_delays(n)
         self._tables = [stage_table(n, s) for s in range(len(self._delays))]
         self._octC, self._octS = octant_tables(n)
-        self._segs = {s: _delay_segments(D - 1)
-                      for s, D in enumerate(self._delays)}
-        self._layout, self._order = self._plan()
+        # RING-FOLD PARITY: a stage whose chain is ODD cannot land its `out`
+        # edge-adjacent to its `ctl` in ANY fold (see
+        # RING_FOLD_NEEDS_EVEN_LENGTH). Spread that stage's delay line over
+        # ONE extra cell — same total delay, even chain, @1 write-back kept.
+        self._segs = {}
+        self._parity_padded = []
+        for s, D in enumerate(self._delays):
+            segs = _delay_segments(D - 1)
+            if (self._chain_length(s, len(segs)) % 2) == 1:
+                segs = _delay_segments(D - 1, extra_cells=1)
+                self._parity_padded.append(s)
+            self._segs[s] = segs
+        self._layout, self._order, self._spine_col = self._plan()
 
     # ---------------------------------------------------------------- basics
+    def _chain_length(self, s: int, n_segs: int) -> int:
+        """Cells in stage ``s``'s chain when its delay line uses ``n_segs``
+        segment cells — the arithmetic form of :meth:`_stage_chain`, usable
+        BEFORE ``self._segs`` exists (the parity decision needs it)."""
+        # ctl + 4 RHE legs + gather + out, plus the twiddle chain, plus the
+        # delay line (or the single relay when there is no line).
+        n = 5 + 1 + 1
+        if self.uses_fold(s):
+            n += 9
+        elif self.uses_direct(s):
+            n += 5
+        return n + (n_segs if n_segs else 1)
+
     @property
     def n_stages(self) -> int:
         return len(self._delays)
@@ -1262,101 +1528,230 @@ class LargeFFTBlock(KyttarBlock):
         return chain
 
     def _plan(self):
-        """Lay the stages out as stacked serpentine BANDS and return
-        ``(layout, order)``.
+        """Lay the stages out on a VERTICAL CTL/OUT SPINE and return
+        ``(layout, order, spine_column)``.
 
-        GEOMETRY (the chip-scale fold):
+        THE GEOMETRY, and why it is forced (this is the correction to the old
+        stage-BAND scheme, which did not fit):
 
-          * Each stage is a 2-row band: the chain runs EAST along the band's
-            top row, drops, and returns WEST along the bottom row, ending at
-            the stage's ``out`` cell directly BELOW its ``ctl`` — so the
-            feedback write-back, the lock-clear, and the next stage's landing
-            are ALL @1-adjacent (no transit cells, no backward-JUMP corridor
-            patching needed; the same property that let FFT16 avoid
-            ``_apply_internal_feedback`` entirely).
-          * Bands are stacked top to bottom in stage order, so the whole block
-            is one column of bands and the final ``out`` is the block egress.
-          * A band is at most ``CHIP_SCALE_MAX_WIDTH`` (10) cells wide — the
-            waived perimeter reservation is exactly what buys the extra two
-            columns over the ordinary 8-cell cap.
-          * ONE BAND PER STAGE — stages are never merged (see
-            ``_plan_bands`` for why merging breaks the ring geometry).
+        Every R2SDF stage's ``out`` cell needs THREE @1 neighbours, and the
+        shipped FFT16 gets all three from one arrangement:
 
-        The anchor (0, 0) is the block's ``s0_ctl``; the caller places the
-        block so that cell is reachable from ``x16_in``.
+          * its own ``ctl`` directly ABOVE it — the data write-back and the
+            serialize-LOCK clear, emitted on the in-program ``face_fb``
+            (NORTH);
+          * the NEXT stage's ``ctl`` directly BELOW it — the forward packet,
+            emitted on the in-program ``face_tap`` (SOUTH), which is also the
+            cell's RESTING face and therefore what the router traces;
+          * (for the last stage) the routed egress instead of a next ``ctl``.
 
-        Raises :class:`LargeFFTGeometryError` if a band or the row budget does
-        not fit — see the module's :ref:`GEOMETRY LIMIT <geometry-limit>`.
+        So the whole ``ctl``/``out`` sequence is ONE COLUMN of ``2 *
+        n_stages`` cells: ``ctl_s`` at ``(C, 2s)``, ``out_s`` at ``(C, 2s+1)``,
+        ``ctl_{s+1}`` at ``(C, 2s+2)``. That is not a convention — an internal
+        handoff's hop is resolved by TRACING resting faces
+        (``router._get_routing_distance``) and SILENTLY falls back to Manhattan
+        distance when the trace fails, so a non-traceable inter-stage handoff
+        does not error: it ships a wrong hop, the packet lands in the wrong
+        cell, and the stage spins on its own ring forever (measured — stage 0
+        alone consumed every simulator event and stage 1 never ran).
+
+        What is NOT forced, and is where the old planner went wrong, is the
+        rest of the stage. Only ``ctl`` and ``out`` are pinned to the spine;
+        the other cells merely have to form a connected, face-abutted chain
+        from ``ctl`` round to ``out``. They do NOT have to sit in the stage's
+        own 2-row band, and once they may bulge sideways past their own rows
+        the block fits: the old scheme's "one full-width 2-row band per stage"
+        cost 12 rows for a 10-wide array it also could not fill, whereas the
+        spine costs ``2 * n_stages`` rows in ONE column and lets the stages
+        interleave around it.
+
+        ROW BUDGET: the spine needs ``2 * n_stages`` rows — 12 for N=64, which
+        is the whole array, and 14 for N=128, which is more than exists. The
+        spine column must avoid columns 0 and 9 so that ROW 0 is free of the
+        x16 ports (a block that is not full-width may use row 0; the old
+        planner's 11-row budget assumed a 10-wide fold, which is what made
+        N=64 look one row short).
+
+        Raises :class:`LargeFFTGeometryError` if no spine placement exists.
         """
-        bands = self._plan_bands()
-        # ROW BUDGET, checked before laying anything out so the message names
-        # the real wall rather than failing at the first oversized band.
-        rows_needed = 2 * len(bands)
-        if rows_needed > self.CHIP_SCALE_USABLE_ROWS:
+        chains = [self._stage_chain(s) for s in range(self.n_stages)]
+        for s, ch in enumerate(chains):
+            if len(ch) % 2:
+                raise LargeFFTGeometryError(
+                    f"stage {s} has an ODD chain of {len(ch)} cells, so its "
+                    "`out` cannot land edge-adjacent to its `ctl` in ANY "
+                    "fold (the grid parity theorem). __init__'s delay-line "
+                    "parity pad should have prevented this.")
+        total = sum(len(c) for c in chains)
+        W, H = self.CHIP_SCALE_MAX_WIDTH, self.CHIP_SCALE_MAX_HEIGHT
+        rows_needed = 2 * self.n_stages
+        if rows_needed > H:
             raise LargeFFTGeometryError(
-                f"N={self._n} needs {len(bands)} stage bands = {rows_needed} "
-                f"rows, but a sole-occupant block has at most "
-                f"{self.CHIP_SCALE_USABLE_ROWS} (the x16 ports sit on row 0 "
-                f"of this {self.CHIP_SCALE_MAX_WIDTH}x"
-                f"{self.CHIP_SCALE_MAX_HEIGHT} array, and a full-width block "
-                "cannot use that row without its ctl column landing on the "
-                "input port cell). Shortfall: "
-                f"{rows_needed - self.CHIP_SCALE_USABLE_ROWS} rows. "
-                "See the module's GEOMETRY LIMIT section.")
+                f"N={self._n} has {self.n_stages} stages, whose ctl/out spine "
+                f"needs {rows_needed} rows in ONE column, but the array is "
+                f"only {H} tall. Shortfall: {rows_needed - H} rows. Every "
+                "stage's out cell must have its own ctl directly above it and "
+                "the next stage's ctl directly below it, so the spine height "
+                "is not negotiable — the stage-boundary 2-die split is the "
+                "supported topology at this size.")
+        if total > W * H - len(self._PORT_CELLS):
+            raise LargeFFTGeometryError(
+                f"N={self._n} needs {total} cells but the array holds "
+                f"{W * H - len(self._PORT_CELLS)} outside the x16 port cells. "
+                f"Shortfall: {total - (W * H - len(self._PORT_CELLS))}.")
+        sol = None
+        for col in self._spine_columns(W):
+            sol = self._solve_spine(chains, col, W, H)
+            if sol is not None:
+                break
+        if sol is None:
+            raise LargeFFTGeometryError(
+                f"N={self._n}: {total} cells fit the {W}x{H} array and the "
+                f"{rows_needed}-row spine fits its height, but no spine "
+                "column admits a set of disjoint, face-abutted stage chains "
+                "around it.")
+        col, paths = sol
+        used_cells = {c for p in paths.values() for c in p}
         layout: Dict[str, Tuple[int, int, str]] = {}
         order: List[str] = []
-        row = 0
-        for band in bands:
-            row = self._emit_band(layout, order, band, row)
-        return layout, order
+        for s, ch in enumerate(chains):
+            path = paths[s]
+            for i, cid in enumerate(ch):
+                if i < len(ch) - 1:
+                    nxt = path[i + 1]
+                elif s < self.n_stages - 1:
+                    nxt = paths[s + 1][0]      # out -> next ctl (SOUTH)
+                else:
+                    # THE BLOCK EXIT. It must NOT rest toward its own ctl: the
+                    # resting face is what the router traces and what the build
+                    # rewrites to the routed egress direction (output_face_addr),
+                    # and a cell resting back into its ctl re-enters the stage
+                    # instead of leaving the block. The shipped FFT16's last out
+                    # rests SOUTH, away from its ctl, into the free cell the
+                    # egress corridor starts from. Pick the free neighbour that
+                    # is not the ctl (the corridor check guarantees one exists).
+                    nxt = self._exit_rest_cell(path[i], path[i - 1] if i else
+                                               path[0], used_cells, W, H)
+                px, py = path[i]
+                layout[cid] = (px, py, _FACE_OF[(nxt[0] - px, nxt[1] - py)])
+                order.append(cid)
+        return layout, order, col
 
-    def _plan_bands(self) -> List[List[str]]:
-        """Group the stage chains into 2-row bands — ONE BAND PER STAGE.
+    @staticmethod
+    def _exit_rest_cell(out_pos, prev_pos, occupied, W: int, H: int):
+        """The cell the block's EXIT rests toward: a neighbour that is free of
+        block cells (so the egress corridor can start there), never the exit's
+        own ``ctl`` and never its chain predecessor."""
+        cx, cy = out_pos[0], out_pos[1] - 1          # this stage's ctl
+        for dx, dy in ((0, 1), (1, 0), (-1, 0), (0, -1)):
+            nb = (out_pos[0] + dx, out_pos[1] + dy)
+            if not (0 <= nb[0] < W and 0 <= nb[1] < H):
+                continue
+            if nb == (cx, cy) or nb == prev_pos or nb in occupied:
+                continue
+            return nb
+        raise LargeFFTGeometryError(
+            f"the block exit at {out_pos} has no free neighbour to rest "
+            "toward — the egress corridor has nowhere to start")
 
-        Stages are NOT merged, and that is a correctness constraint, not a
-        missed optimisation. In a 2-row serpentine of width ``W`` a stage
-        starting at chain index ``a`` has its ``out`` cell directly below its
-        ``ctl`` only when ``L = 2W - 2*(a mod W)``; the FIRST stage in a band
-        has ``a = 0`` and therefore must FILL the band (``L = 2W``). Any
-        second stage sharing the band lands with its ``ctl`` and ``out`` in
-        the SAME row — breaking the @1 write-back + lock-clear geometry that
-        every R2SDF stage ring depends on.
+    def _spine_columns(self, width: int) -> List[int]:
+        """Candidate spine columns, best first.
 
-        The shipped FFT16Block is the proof: 4 stages, 4 bands, 8 rows, with
-        ``ctl`` at ``(0, 2s)`` and ``out`` at ``(0, 2s+1)`` for every stage.
+        The spine may not sit in a column holding an x16 port (that would put
+        a ``ctl`` or ``out`` on the port cell and cost the block row 0), and a
+        middle column leaves usable space on BOTH sides for the stages to
+        bulge into, which is what makes the packing solvable at all.
         """
-        return [self._stage_chain(s) for s in range(self.n_stages)]
+        blocked = {x for (x, _y) in self._PORT_CELLS}
+        mid = width / 2.0
+        return sorted((c for c in range(width) if c not in blocked),
+                      key=lambda c: (abs(c + 0.5 - mid), c))
 
-    def _emit_band(self, layout, order, cells: List[str], row: int) -> int:
-        """Serpentine one band (a list of cell ids) into rows ``row``/``row+1``
-        and return the next free row.
+    def _solve_spine(self, chains, col: int, W: int, H: int):
+        """Place every stage as a self-avoiding, face-abutted chain from its
+        spine ``ctl`` to its spine ``out``, with all stages disjoint.
 
-        The band's width is ``ceil(len/2)``; the chain runs EAST on the top
-        row and WEST on the bottom, so the band's LAST cell lands directly
-        below its FIRST — the @1 feedback geometry each stage's ring needs.
+        Returns ``(col, {stage: [(x, y), ...]})`` or ``None``. Stages are
+        assigned in order with backtracking; among the candidate chains for a
+        stage the ones that stay CLOSEST to its own spine rows are tried
+        first, which keeps each stage compact and leaves the rest of the array
+        contiguous for the stages that follow.
         """
-        n = len(cells)
-        w = -(-n // 2)
-        cap = self.CHIP_SCALE_MAX_WIDTH
-        if w > cap:
-            raise LargeFFTGeometryError(
-                f"stage band of {n} cells needs a {w}-wide 2-row band, but "
-                f"the chip-scale width cap is {cap} (a 2-row band holds at "
-                f"most {2 * cap} cells). Shortfall: {n - 2 * cap} cells. "
-                "A stage cannot spill into a second band without breaking "
-                "the @1 ctl/out write-back geometry every R2SDF stage ring "
-                "depends on — see the module docstring's GEOMETRY LIMIT.")
-        top, bot = cells[:w], cells[w:]
-        for i, cid in enumerate(top):
-            face = "east" if i < len(top) - 1 else "south"
-            layout[cid] = (i, row, face)
-            order.append(cid)
-        for i, cid in enumerate(bot):
-            x = w - 1 - i
-            face = "west" if i < len(bot) - 1 else "south"
-            layout[cid] = (x, row + 1, face)
-            order.append(cid)
-        return row + 2
+        n = len(chains)
+        spine = [((col, 2 * s), (col, 2 * s + 1)) for s in range(n)]
+        all_spine = {p for pair in spine for p in pair}
+        if all_spine & self._PORT_CELLS:
+            return None
+        used = set(self._PORT_CELLS)
+        chosen: Dict[int, List[Tuple[int, int]]] = {}
+
+        def walk(s: int) -> bool:
+            if s == n:
+                return self._corridors_ok(used, chosen, W, H)
+            start, goal = spine[s]
+            blocked = set(used) | (all_spine - {start, goal})
+            cands = _self_avoiding_paths(
+                start, goal, len(chains[s]), blocked, W, H,
+                limit=self._SPINE_PATH_CANDIDATES)
+            cands.sort(key=lambda p: (max(abs(c[1] - 2 * s) for c in p),
+                                      sum(abs(c[1] - 2 * s) for c in p)))
+            for path in cands:
+                chosen[s] = path
+                used.update(path)
+                if walk(s + 1):
+                    return True
+                used.difference_update(path)
+                chosen.pop(s, None)
+            return False
+
+        return (col, chosen) if walk(0) else None
+
+    def _corridors_ok(self, used, chosen, W: int, H: int) -> bool:
+        """Can the ROUTER still reach this fold's I/O from the chip ports?
+
+        A fold that fills the array builds and then fails to route — the
+        shipped FFT16 is 7 wide on a 10-wide chip precisely so that free
+        columns remain (INV-8/9). The placement must therefore leave, through
+        cells the block does NOT occupy:
+
+          * a path from the ``x16_in`` port cell to a neighbour of the
+            block's input landing (``s0_ctl``), and
+          * a path from a neighbour of the block's output cell (the last
+            stage's ``out``) to the ``x16_out`` port cell.
+
+        Checked as 4-connectivity over the free cells, which is exactly the
+        freedom the corridor router has.
+        """
+        block_cells = set(used) - set(self._PORT_CELLS)
+        in_cell = chosen[0][0]                       # s0_ctl
+        out_cell = chosen[len(chosen) - 1][-1]       # last stage's out
+        ports = sorted(self._PORT_CELLS)
+        in_port, out_port = ports[0], ports[-1]
+
+        def reaches(cell, port):
+            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                nb = (cell[0] + dx, cell[1] + dy)
+                if not (0 <= nb[0] < W and 0 <= nb[1] < H):
+                    continue
+                if nb in block_cells:
+                    continue
+                if nb == port:
+                    return True
+                seen = {nb}
+                stack = [nb]
+                while stack:
+                    cur = stack.pop()
+                    if cur == port:
+                        return True
+                    for ex, ey in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                        nx = (cur[0] + ex, cur[1] + ey)
+                        if (0 <= nx[0] < W and 0 <= nx[1] < H
+                                and nx not in block_cells and nx not in seen):
+                            seen.add(nx)
+                            stack.append(nx)
+            return False
+
+        return reaches(in_cell, in_port) and reaches(out_cell, out_port)
 
     # ------------------------------------------------------------------ build
     def build_cell_programs(self) -> Dict[str, CellProgram]:

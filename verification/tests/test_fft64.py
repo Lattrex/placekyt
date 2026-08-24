@@ -537,23 +537,34 @@ def test_trivial_slots_reach_the_chip_as_sentinels():
 # 4. SNR vs float numpy.fft.fft (measured per class, reported)
 # =============================================================================
 def _pooled_snr(kind):
+    """Pooled SNR of output frame f against ``numpy.fft(input window f)/64``.
+
+    FRAME ALIGNMENT (easy to get wrong, and worth stating): output frame f
+    occupies output indices ``LATENCY + f*N .. LATENCY + (f+1)*N - 1``, and it
+    is the transform of INPUT window ``f*N .. (f+1)*N - 1``. The latency is
+    already absorbed by where the frame STARTS in the output stream; adding it
+    again to the input index compares a frame against the wrong window and
+    reads ~0 dB for a perfectly correct block."""
     pairs, dut = _class_run(kind)
     words = _words(pairs)
     ps = pe = 0.0
     for f, frame in enumerate(_frames_of(dut)):
         nat = _natural_bins(frame)
         x = np.array([complex(s16(i), s16(q)) / 32768.0
-                      for (i, q) in words[LATENCY + f * N_FFT:
-                                          LATENCY + (f + 1) * N_FFT]])
+                      for (i, q) in words[f * N_FFT:(f + 1) * N_FFT]])
         ref = np.fft.fft(x) / float(N_FFT)
         ps += float(np.sum(np.abs(ref) ** 2))
         pe += float(np.sum(np.abs(nat - ref) ** 2))
     return 10.0 * np.log10(ps / pe) if pe else float("inf")
 
 
-#: Floors are PINNED, never tuned to pass. Any class that lands below its
-#: floor is DISCLOSED with its measured value (the FFT16 precedent), not
-#: accommodated by loosening the floor.
+#: Floors are PINNED, never tuned to pass. They are DERIVED from the golden
+#: model before any chip run (predicted: sine_fs 86.96, noise_m6 71.35,
+#: two_tone 70.43, impulse 59.95, noise_m26 52.17 dB), and 51 dB sits below
+#: the weakest class with margin. Any class that lands below its floor is
+#: DISCLOSED with its measured value (the FFT16 precedent), never accommodated
+#: by loosening the floor. noise_m26 is the marginal class by construction —
+#: at -26 dBFS the six >>1 stages leave the signal only a few Q15 bits.
 _SNR_FLOORS = {"sine_fs": 51.0, "noise_m6": 51.0, "two_tone": 51.0,
                "impulse": 51.0, "noise_m26": 51.0}
 MEASURED_SNR: dict = {}

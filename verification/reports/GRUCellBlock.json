@@ -15,7 +15,7 @@
     "classes": 4,
     "mutation": true,
     "cells": 51,
-    "footprint": "7x8",
+    "footprint": "8x7",
     "on_chip_steps": 36000,
     "decision_agreement": 1.0,
     "clip_vote_accuracy": 0.9667,

@@ -89,7 +89,7 @@ def main() -> int:
     print("\n4. on-chip placement (measured live)")
     cells = sum(_cell_count(nm, cls_, p) for nm, cls_, p in BLOCK_SPECS)
     print(f"   the chain is {cells} block cells on a 120-cell array "
-          f"(GRUCellBlock alone is 51, in a fixed 7x8 fold)")
+          f"(GRUCellBlock alone is 51, in an 8x7 fold)")
     for label, bad, used in route_report():
         if bad:
             print(f"   {label}: DOES NOT ROUTE — failing nets: {bad}")

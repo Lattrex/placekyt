@@ -162,12 +162,28 @@ def segment_votes(classes, burn: int = 30) -> list[int]:
 # As far as the router is concerned that is an ordinary INV-24 port fan-out —
 # one shared corridor forking at a broker beyond the port cell.
 #
-# THE WALL. GRUCellBlock is 51 cells in a fixed 7x8 fold and, measured, costs
-# 64-82 cells INCLUDING its own two corridors. The join->GRU tail routes at
-# 72/120, leaving 48 free — but split into pockets by the ingress corridors, and
-# the 11-cell RMS arm must reach both the port and `decim` through them. ~2500
-# layouts across three search strategies never routed the whole chain; the best
-# is always exactly ONE net short. See :func:`route_report`.
+# THE WALL. GRUCellBlock is 51 cells — 43% of the array — and costs several more
+# for its own two port corridors. The join->GRU tail routes at 81/120; the RMS
+# arm adds 11 block cells AND four more nets, and each net measured ~8.5 cells of
+# corridor, which is what the remaining budget cannot buy.
+#
+# Two levers have now been measured, and NEITHER closes it:
+#
+#  * THE FOLD. GRUCellBlock was RE-FOLDED (8x7, transposed) so its input (0,0)
+#    and egress (2,0) span the NORTH edge facing the chip's two row-0 ports,
+#    cutting the block's own port-corridor cost from 11 cells to 7 and leaving
+#    five free ROWS instead of three free columns. On the identical lane search
+#    that took the old 7x8 fold to two nets short, the re-fold reaches ONE — a
+#    real, measured improvement that still does not close the last net. 4180
+#    further layouts (exhaustive lanes + guided perturbation from every 1- and
+#    2-short seed) stayed at one.
+#  * THE ARM. Shrinking the RMS arm was measured across boxcar lengths 32/16/8/4
+#    with and without Sqrt: 65 block cells -> 4 nets short, 62 -> 2, 57 -> 1,
+#    56 -> 1. Even a 4-tap boxcar with Sqrt dropped — which is no longer the
+#    model's feature — is one net short.
+#
+# The hop ceiling was ruled out earlier (INV-36; no `hop_overflow` in 5039
+# layouts). See :func:`route_report` and the example gates.
 
 def _engine():
     from PySide6.QtWidgets import QApplication
@@ -215,16 +231,18 @@ def _connect(ctrl, CPE, BE, ids):
 
 
 
-#: the best-known whole-chain layout. It does NOT route (exactly one net short);
-#: it is kept so the wall is reproducible and so the day it lifts is visible.
+#: the best-known whole-chain layout. It does NOT route (exactly one net short —
+#: ``join_gru``); it is kept so the wall is reproducible and so the day it lifts
+#: is visible. Found by the lane search over the RE-FOLDED (8x7) GRU: the six
+#: small blocks laid along row 1 with the GRU below them on rows 5..11.
 BEST_KNOWN_ANCHORS = {
-    "gru": (3, 2), "join": (2, 2), "decim": (2, 1), "zcr": (2, 3),
-    "power": (4, 0), "root": (6, 10), "boxcar": (0, 6),
+    "gru": (0, 5), "power": (2, 1), "boxcar": (3, 1), "root": (5, 1),
+    "decim": (7, 1), "zcr": (8, 1), "join": (9, 1),
 }
 
-#: the join->GRU tail alone DOES route, at 72/120 cells — so the wall is the
-#: RMS arm's corridors, not the rendezvous or the recurrent block.
-TAIL_ANCHORS = {"gru": (3, 2), "join": (2, 2), "decim": (2, 1), "zcr": (2, 3)}
+#: the join->GRU tail alone DOES route, measured at 81/120 cells — so the wall
+#: is the RMS arm's corridors, not the rendezvous or the recurrent block.
+TAIL_ANCHORS = {"gru": (0, 3), "decim": (7, 0), "zcr": (3, 1), "join": (2, 1)}
 
 
 def _hand_place(ctrl, anchors, specs):

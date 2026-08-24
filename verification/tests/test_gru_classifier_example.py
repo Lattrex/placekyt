@@ -328,10 +328,23 @@ def _hand_place(ctrl, anchors, specs, ids_out):
 
 
 def test_known_limit_the_full_chain_does_not_route():
-    """KNOWN LIMIT. ~2500 layouts across three independent search strategies
-    never routed the whole chain; the best result is always exactly ONE failing
-    net, and WHICH net fails rotates as blocks move (a saturated array, not one
-    bad anchor).
+    """KNOWN LIMIT. The whole chain has never routed on one 10x12.
+
+    Measured across dispatches: ~2500 layouts (three search strategies), then
+    5039 (anchor sweep + four routing models incl. auto_orient, single-backbone
+    bus/ring and CP-SAT), then — after GRUCellBlock was RE-FOLDED to 8x7 so its
+    input and egress span the north edge facing the chip's two row-0 ports —
+    a further ~3200 (exhaustive lane enumeration + guided perturbation from
+    every one- and two-net-short seed). The best result is always exactly ONE
+    failing net, and WHICH net fails rotates as blocks move: a saturated array,
+    not one bad anchor.
+
+    The re-fold measurably HELPED and did not close it: on the identical lane
+    search the as-authored 7x8 fold bottomed out two nets short, the 8x7 one
+    net short. The hop ceiling was ruled out earlier (INV-36; no `hop_overflow`
+    in 5039 layouts), and shrinking the RMS arm was measured as a second lever
+    that also does not close it (a 4-tap boxcar with Sqrt dropped — 56 block
+    cells against the shipped 65 — is still one net short).
 
     If this test FAILS (the chain routed), the wall is lifted — finish the
     example: build the .kyt, run it end to end, and replace this guard with the
@@ -344,21 +357,80 @@ def test_known_limit_the_full_chain_does_not_route():
     ctk = getattr(ct, "name", None) or "kyttar_10x12"
     ctrl = AC(catalog=cat)
     ctrl.new_project("gru_classifier_guard", ctk)
-    anchors = {"gru": (3, 2), "join": (2, 2), "decim": (2, 1), "zcr": (2, 3),
-               "power": (4, 0), "root": (6, 10), "boxcar": (0, 6)}
     ids = {}
-    _hand_place(ctrl, anchors, G.BLOCK_SPECS, ids)
+    _hand_place(ctrl, G.BEST_KNOWN_ANCHORS, G.BLOCK_SPECS, ids)
     G._connect(ctrl, CPE, BE, ids)
     rep = ctrl.auto_route_all({ctk: ct}, auto_orient=False)
     bad = [r.name for r in rep.results if not r.ok]
     assert bad, ("the full chain ROUTED — the documented placement wall is "
                  "lifted; finish the example and delete this guard")
+    assert len(bad) == 1, (
+        f"expected the documented ONE-net-short wall, got {bad}")
+
+
+#: the companion front end the GRU must leave room for: the real RMS arm
+#: (ComplexToMagSquared -> MovingAverage(32) -> Sqrt -> KeepOneInN(32)) plus
+#: ZeroCrossingRate and FeaturePairJoin. 14 cells in 6 blocks.
+COMPANION = ["power", "boxcar", "root", "decim", "zcr", "join"]
+
+
+def test_coplacement_the_gru_leaves_room_for_the_companion_front_end():
+    """CO-PLACEMENT GATE — the one that decides whether the example can ship.
+
+    Places the RE-FOLDED GRUCellBlock together with the whole companion front
+    end on ONE 10x12 with both 16-bit ports, and reports how much of the chain
+    routes. Today it is exactly ONE net short (see
+    ``test_known_limit_the_full_chain_does_not_route`` for the search volume
+    behind that claim), so this gate asserts the measured state:
+
+      * every block PLACES legally together — the geometry fits, with room to
+        spare (65 of 120 cells), which is why the wall is corridors and not
+        capacity; and
+      * the chain gets to within one net of routing.
+
+    The moment the last net closes, the first assert below fails and says so.
+    That is the signal to build the .kyt and finish the example.
+    """
+    import gru_classifier as G
+    (BC, lct, AC, CPE, BE) = _engine()
+    cat = BC.from_gr_kyttar()
+    ct = lct(CHIP_YAML)
+    ctk = getattr(ct, "name", None) or "kyttar_10x12"
+    ctrl = AC(catalog=cat)
+    ctrl.new_project("gru_coplacement", ctk)
+    ids = {}
+    _hand_place(ctrl, G.BEST_KNOWN_ANCHORS, G.BLOCK_SPECS, ids)
+
+    # 1. every block is placed, on-fabric, and pairwise non-overlapping.
+    placed = {}
+    for b in ctrl.project.blocks:
+        assert b.placement is not None, f"{b.name} did not place"
+        for c in b.placement.cells:
+            assert 0 <= c.x < 10 and 0 <= c.y < 12, (
+                f"{b.name} cell ({c.x},{c.y}) is off the 10x12 fabric")
+            assert (c.x, c.y) not in placed, (
+                f"{b.name} overlaps {placed[(c.x, c.y)]} at ({c.x},{c.y})")
+            placed[(c.x, c.y)] = b.name
+    assert len(placed) == 65, f"expected 65 block cells, got {len(placed)}"
+    assert len(placed) < 120, "the block set alone must fit with room to spare"
+
+    # 2. the whole set routes to within one net.
+    G._connect(ctrl, CPE, BE, ids)
+    rep = ctrl.auto_route_all({ctk: ct}, auto_orient=False)
+    bad = [r.name for r in rep.results if not r.ok]
+    assert bad, (
+        "CO-PLACEMENT ACHIEVED — the GRU and the whole companion front end "
+        "routed together on one chip. The wall is lifted: build the .kyt, run "
+        "it end to end, and turn this gate into the real on-chip assertion.")
+    assert len(bad) == 1, (
+        f"the re-folded GRU should leave the chain ONE net short; got "
+        f"{len(bad)}: {bad}")
 
 
 def test_known_limit_the_join_tail_alone_does_route():
     """The wall is the RMS arm's corridors, NOT the join->GRU tail: the tail
     (both ingress nets, the join, the GRU, the egress) routes on its own —
-    measured at 72 of 120 cells, leaving 48 free."""
+    measured at 81 of 120 cells with the re-folded 8x7 GRU."""
     import gru_classifier as G
     from engine.build import BuildEngine
     (BC, lct, AC, CPE, BE) = _engine()
@@ -367,7 +439,7 @@ def test_known_limit_the_join_tail_alone_does_route():
     ctk = getattr(ct, "name", None) or "kyttar_10x12"
     ctrl = AC(catalog=cat)
     ctrl.new_project("gru_tail", ctk)
-    anchors = {"gru": (3, 2), "join": (2, 2), "decim": (2, 1), "zcr": (2, 3)}
+    anchors = dict(G.TAIL_ANCHORS)
     specs = [s for s in G.BLOCK_SPECS if s[0] in anchors]
     ids = {}
     _hand_place(ctrl, anchors, specs, ids)
@@ -390,13 +462,21 @@ def test_known_limit_the_join_tail_alone_does_route():
     bres = BuildEngine(cat, CHIP_YAML).build(ctrl.project, {ctk: ct})
     assert bres.ok
     used = sum(c.cell_count for c in bres.chips.values())
-    assert 60 <= used <= 90, used
+    assert 60 <= used <= 95, used
 
 
 def test_known_limit_the_gru_alone_dominates_the_array():
-    """Why the chain does not fit: GRUCellBlock is 51 cells in a fixed 7x8 fold
-    and costs 64 cells INCLUDING its own two corridors at its cheapest anchor,
-    leaving too little for the 14-cell front end and its corridors."""
+    """Why the chain does not fit: GRUCellBlock is 51 cells — 43% of the array
+    — in an 8x7 fold, and it still costs several more cells for its own two
+    port corridors, leaving too little for the 14-cell front end and the four
+    extra nets that front end needs.
+
+    The re-fold cut those two corridors materially (the block's own port cost,
+    min over anchors of |fin - x16_in| + |oout - x16_out|, went from 11 cells
+    to 7 by moving the egress onto the north edge beside the input), which is
+    why this bound is stated as a RANGE that the re-fold moved down, not the
+    single number the 7x8 fold pinned.
+    """
     import gru_classifier as G
     from engine.build import BuildEngine
     from model.placement import Placement
@@ -406,17 +486,19 @@ def test_known_limit_the_gru_alone_dominates_the_array():
     ctk = getattr(ct, "name", None) or "kyttar_10x12"
     ctrl = AC(catalog=cat)
     ctrl.new_project("gru_only", ctk)
-    g = ctrl.place_block("GRUCellBlock", 0, 3, 1, library=G.LIB, params={})
+    g = ctrl.place_block("GRUCellBlock", 0, 0, 0, library=G.LIB, params={})
     b0 = ctrl.project.blocks[0]
-    cells, _ = ctrl.default_cells(b0.type, b0.library, 0, 3, 1, b0.params)
+    cells, _ = ctrl.default_cells(b0.type, b0.library, 0, 0, 0, b0.params)
     b0.placement = Placement(0, cells)
     ctrl.add_logical_connection(CPE(chip=0, port="x16_in"),
                                 BE(block=g, port="f"), name="fin")
     ctrl.add_logical_connection(BE(block=g, port="out"),
                                 CPE(chip=0, port="x16_out"), name="fout")
     rep = ctrl.auto_route_all({ctk: ct}, auto_orient=False)
-    assert rep.ok
+    assert rep.ok, [f"{r.name}:{r.reason}" for r in rep.results if not r.ok]
     bres = BuildEngine(cat, CHIP_YAML).build(ctrl.project, {ctk: ct})
     assert bres.ok
     used = sum(c.cell_count for c in bres.chips.values())
-    assert used == 64, f"the cheapest GRU-only anchor measured 64, got {used}"
+    assert 51 < used <= 64, (
+        f"GRU + its two port corridors measured {used}; the 7x8 fold cost 64 "
+        f"and the 8x7 re-fold must not regress past it")

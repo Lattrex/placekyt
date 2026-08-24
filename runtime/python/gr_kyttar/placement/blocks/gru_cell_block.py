@@ -9,14 +9,21 @@ in pinned STATE registers inside the block and is written back each timestep
 by the block's own cells.
 
 ARCHITECTURE (51 cells: 48 ring + an off-ring egress relay + 2 closure
-transits, folded 7x8)
+transits, folded 8x7)
 -----------------------------------------------------------------------------
-The datapath is ONE closed serial ring (the FLLBandEdge column-pair fold: a
-head row + three boustrophedon column pairs, the chain end closing back into
-the head row's first cell). Every internal WRITE/JUMP rides the ring forward
-at its ring-distance @N (all distances <= 27), so there are no
-against-the-grain corridors anywhere. The class word leaves through an
+The datapath is ONE closed serial ring (the FLLBandEdge column-pair fold,
+transposed: a head column + three boustrophedon row pairs, the chain end
+closing back into the head column's first cell). Every internal WRITE/JUMP
+rides the ring forward at its ring-distance @N (all distances <= 27), so there
+are no against-the-grain corridors anywhere. The class word leaves through an
 OFF-RING relay so the route's face override never lands on a ring cell.
+
+The 8-wide-by-7-tall orientation is deliberate: it puts the input landing
+``fin`` (0, 0) and the egress relay ``oout`` (2, 0) both on the NORTH edge,
+facing the 10x12's two 16-bit ports (which both sit on row 0), and it leaves
+five free rows on the die rather than three free columns. See
+:meth:`_ring_geometry` for the fold, the search that chose it, and the measured
+port-corridor saving.
 
 Two ORDERING rules govern the layout dict and are gated structurally (see
 :meth:`default_layout` and the block's test suite): the program cells come
@@ -25,6 +32,11 @@ router indexes placed cells positionally against the program keys), and the
 egress relay is the LAST program cell (else the router's positional-default
 branch traces the closed ring the long way round under the 180-degree D4
 orientations and the hop overflows its 5-bit field).
+
+A THIRD rule governs the block's three ``is_face=True`` constants (``fin``'s
+LOCK_FACE and ``amx``'s face_out/face_ring): they are DERIVED from the fold,
+never written down (INV-37). Baked as literals they pin the layout — a re-fold
+then builds clean, passes every geometric gate, and computes garbage.
 
 Dataflow per timestep (x = 2 Q15 feature words in, one raw class word out):
 
@@ -191,7 +203,7 @@ class GRUCellBlock(KyttarBlock):
 
     Parameters:
         hidden: hidden state size. HARDWARE-VERIFIED CONFIGURATION: 4 —
-            the placed 7x8 ring, the per-unit engine count, and the common
+            the placed 8x7 ring, the per-unit engine count, and the common
             gate scales are derived and verified for H=4; any other value
             RAISES (never silently reshapes).
         inputs: feature vector size per timestep. Verified configuration: 2.
@@ -226,7 +238,7 @@ class GRUCellBlock(KyttarBlock):
                 int(classes) != self.C:
             raise ValueError(
                 f"HARDWARE-VERIFIED CONFIGURATION: GRUCellBlock is built and "
-                f"verified for hidden=4, inputs=2, classes=4 (the placed 7x8 "
+                f"verified for hidden=4, inputs=2, classes=4 (the placed 8x7 "
                 f"ring and its scales are derived for exactly this shape); "
                 f"got hidden={hidden}, inputs={inputs}, classes={classes}. "
                 f"Not silently reshaping.")
@@ -367,13 +379,21 @@ class GRUCellBlock(KyttarBlock):
         ring-inbound face, so the unlock WRITE.CFG and the h write-back
         transit are admitted while the port corridor is held) and fire
         ``hstr``'s h-stream. Snapshot-first + lock-before-forward keeps the
-        next timestep's port word out of the running program."""
+        next timestep's port word out of the running program.
+
+        ``lockface`` is DERIVED from the fold (:meth:`_fin_lock_face`): it is
+        the direction ``fin``'s ring PREDECESSOR lies in, i.e. the face the h
+        write-back and the unlock WRITE.CFG arrive on. It used to be the
+        literal 0/SOUTH, matching the as-authored fold; a re-fold that moves
+        the closure to another side of ``fin`` then held the WRONG face and
+        deadlocked the barrier."""
         return CellProgram(
             inputs=[Port("f", register=0, entry="feat")],
             outputs=[Port("xf"), Port("goj")],
             entries=[EntryPoint("feat")],
             data=[DataWord("one", 1, address=1),
-                  DataWord("lockface", 0, address=2, is_face=True)],
+                  DataWord("lockface", self._fin_lock_face(), address=2,
+                           is_face=True)],
             state=[StateVar("tog", register=3), StateVar("xs", register=4)],
             assembly_template="""\
 feat:
@@ -609,15 +629,118 @@ ok:
             assembly_template="\n".join(lines) + "\n",
         )
 
+    #: cell-face constants as the bitstream encodes them (see
+    #: ``bitstream/generator``): SOUTH 0, EAST 1, WEST 2, NORTH 3.
+    _FACE_CODE = {"south": 0, "east": 1, "west": 2, "north": 3}
+
+    def _ring_geometry(self) -> Tuple[List[Tuple[int, int]], Tuple[int, int]]:
+        """``(ring positions in ring order, oout position)`` — the FOLD, as
+        pure geometry.
+
+        The 50 ring cells trace a closed serpentine: a head COLUMN of 7 north->
+        south at x = 0, then three boustrophedon ROW pairs (east along row 6 /
+        west along row 5, east 4 / west 3, east 2 / west 1, each over columns
+        1..7), then (1, 0), whose WEST face closes back into the head column's
+        first cell. Footprint 8 wide x 7 tall including the egress relay; both
+        dims <= 8 (INV-9's D4 cap, which the 8-orientation gate makes real) and
+        the five in-bbox holes all sit on the open NORTH edge, so there is no
+        enclosed dead interior.
+
+        THE RE-FOLD. This is the landed FLL column-pair serpentine TRANSPOSED —
+        the same 50-cell closed cycle, the same ring order, every internal @N
+        ring-distance unchanged, laid out 8x7 instead of 7x8. The transpose is
+        what puts the block's two EXTERNAL cells where the chip's ports are:
+        ``fin`` at (0, 0) and the ``oout`` relay at (2, 0), both on the NORTH
+        edge two cells apart, facing the 10x12's two 16-bit ports (which sit at
+        (0, 0) and (9, 0) — BOTH on row 0). The as-authored 7x8 put the input
+        on the north-west corner but buried the egress two rows down the WEST
+        edge pointing away from the output port; the block's own two external
+        nets then cost 11 cells of corridor before reaching a port, against 7
+        (minimum over anchors of ``|fin - x16_in| + |oout - x16_out|``), and
+        ``gru_out`` alone had measured 15-17 cells. Lying 8 wide x 7 tall on a
+        10 wide x 12 tall die also leaves FIVE free rows rather than three free
+        columns — a materially wider lane for a companion front end.
+
+        The transpose was chosen by an exhaustive search over the comb /
+        row-comb / spine-snake closed-cycle families x all 8 D4 images x all
+        100 start-and-direction pairs, keeping only folds that satisfy every
+        rule (closed cycle, <= 8x8, no enclosed interior, the route-time face
+        rule) and ranking the survivors by that port cost. It is the best of
+        the 40 legal same-handed folds.
+
+        This is the SINGLE SOURCE OF TRUTH for the fold: :meth:`default_layout`
+        turns it into placed cells + resting faces, and :meth:`_amx_faces` /
+        :meth:`_fin_lock_face` derive the block's three baked ``is_face``
+        constants from it (INV-37 — bake them as literals and a re-fold builds
+        clean and computes garbage). Changing the fold means changing THIS
+        method and nothing else.
+        """
+        pos: List[Tuple[int, int]] = [(0, c) for c in range(7)]      # 0..6
+        for pair in range(3):                                        # pairs
+            cd = 6 - 2 * pair          # down row
+            cu = cd - 1                # up row
+            pos += [(r, cd) for r in range(1, 8)]
+            pos += [(r, cu) for r in range(7, 0, -1)]
+        pos.append((1, 0))                                           # t_b
+        # the off-ring egress relay abuts ``amx`` on its free side.
+        return pos, (2, 0)
+
+    def _face_from(self, a: Tuple[int, int], b: Tuple[int, int]) -> int:
+        """The face code of the direction from cell ``a`` to adjacent ``b``."""
+        d = (b[0] - a[0], b[1] - a[1])
+        name = {(0, 1): "south", (0, -1): "north",
+                (1, 0): "east", (-1, 0): "west"}[d]
+        return self._FACE_CODE[name]
+
+    def _fin_lock_face(self) -> int:
+        """``fin``'s LOCK_FACE — the direction its ring PREDECESSOR lies in.
+
+        That is the face the recurrence write-back and ``amx``'s unlock
+        WRITE.CFG arrive on, and it must stay ADMITTED while the port corridor
+        is held (INV-19's serialize-LOCK). Derived from the fold, not written
+        down (see :meth:`_ring_geometry`)."""
+        pos, _oout = self._ring_geometry()
+        return self._face_from(pos[0], pos[-1])
+
+    def _amx_faces(self) -> Tuple[int, int]:
+        """``(face_out, face_ring)`` for ``amx``, DERIVED from the fold.
+
+        ``face_out`` points at the off-ring ``oout`` relay; ``face_ring`` at
+        ``amx``'s ring successor. Computed from :meth:`_ring_geometry` (the raw
+        positions) rather than :meth:`default_layout`, because the layout is
+        built from the cell programs and would recurse.
+        """
+        pos, oout = self._ring_geometry()
+        ring = [c for c in self._ring_ids() if c != "oout"] + [
+            "transit_ring_a", "transit_ring_b"]
+        k = ring.index("amx")
+        amx = pos[k]
+        return (self._face_from(amx, oout),
+                self._face_from(amx, pos[(k + 1) % len(pos)]))
+
     def _amx_program(self) -> CellProgram:
         """Running argmax over the 4 serially-arriving head words (the
         BinArgmaxBlock SLT-branch idiom: ``CMP maxv, x`` + ``BR.GE`` is the
         overflow-corrected signed strictly-greater update; first occurrence
         wins), emitting the RAW class index, then clearing ``fin``'s LOCK
         (WRITE.CFG ring-forward — the chain-END unlock bounds in-flight
-        timesteps to ONE). Dual-face: ``out`` on ``face_out`` (route-aimed
-        by the build via ``output_face_addr``), everything else on the
-        resting ring face."""
+        timesteps to ONE). Dual-face: ``out`` on ``face_out``, everything else
+        on the resting ring face. NOTE this block does NOT declare
+        ``output_face_addr``, so ``face_out`` is not rewritten by the route
+        patch — it is the block's own constant, and it must therefore be right
+        by construction, which is what :meth:`_amx_faces` guarantees. (The
+        block's external egress leaves the separate off-ring ``oout`` relay,
+        whose face the route DOES own.)
+
+        BOTH face constants are DERIVED FROM THE FOLD (:meth:`_amx_faces`), not
+        written down: ``face_out`` is the direction of the off-ring ``oout``
+        relay from ``amx``, and ``face_ring`` the direction of ``amx``'s ring
+        SUCCESSOR. Hard-coding them (they used to be the literals 2/WEST and
+        3/NORTH, matching the as-authored fold) silently breaks the block the
+        moment the fold moves either neighbour — the ring resumes on the wrong
+        face, the recurrence write-back never lands, and h freezes at its first
+        timestep while every geometric gate still passes."""
+        face_out, face_ring = self._amx_faces()
         return CellProgram(
             inputs=[Port("w", register=1)],
             outputs=[Port("out_f"), Port("unlock")],
@@ -625,9 +748,9 @@ ok:
             data=[DataWord("one", 1, address=2),
                   DataWord("nfrm", self.C, address=3),
                   DataWord("minw", 0x8000, address=4),
-                  DataWord("face_out", 2, address=self._AMX_FACE_OUT_ADDR,
-                           is_face=True),
-                  DataWord("face_ring", 3, address=6, is_face=True)],
+                  DataWord("face_out", face_out,
+                           address=self._AMX_FACE_OUT_ADDR, is_face=True),
+                  DataWord("face_ring", face_ring, address=6, is_face=True)],
             state=[StateVar("xs", register=7),
                    StateVar("maxv", register=8, initial_value=0x8000),
                    StateVar("cm", register=9, initial_value=self.C),
@@ -811,11 +934,12 @@ start:
         return jumps
 
     def default_layout(self) -> Dict[Any, Tuple[int, int, str]]:
-        """The 7x8 ring serpentine (FLL column-pair fold): head row west->
-        east, three boustrophedon column pairs, the chain end closing back
-        through two transit cells into ``fin``'s SOUTH face. Both dims <= 8
-        (INV-9) and <= 7 wide (the AGCCC big-ring routability rule); the six
-        in-bbox holes all sit on the open WEST edge.
+        """Placed cells + resting faces for the fold.
+
+        The geometry itself lives in :meth:`_ring_geometry` (the 8x7 transposed
+        serpentine, and why it is transposed); this method walks that closed
+        cycle and gives every cell the face pointing at its ring SUCCESSOR,
+        then seats the off-ring ``oout`` relay beside ``amx``.
 
         KEY ORDERING (two independent, both load-bearing):
 
@@ -838,13 +962,7 @@ start:
         """
         ring = [c for c in self._ring_ids() if c != "oout"] + [
             "transit_ring_a", "transit_ring_b"]
-        pos: List[Tuple[int, int]] = [(c, 0) for c in range(7)]      # 0..6
-        for pair in range(3):                                        # pairs
-            cd = 6 - 2 * pair          # down column
-            cu = cd - 1                # up column
-            pos += [(cd, r) for r in range(1, 8)]
-            pos += [(cu, r) for r in range(7, 0, -1)]
-        pos.append((0, 1))                                           # t_b
+        pos, oout_pos = self._ring_geometry()
         assert len(pos) == len(ring) == 50
         faces: Dict[str, Tuple[int, int, str]] = {}
         for k, cid in enumerate(ring):
@@ -859,10 +977,14 @@ start:
             else:
                 face = "west"
             faces[cid] = (x, y, face)
-        # ``oout`` sits at (0, 2), directly WEST of ``amx``, so the class word
-        # rides a plain @1 dual-face abutment off the ring; the route override
-        # owns this cell's face and it is transited by nothing.
-        faces["oout"] = (0, 2, "west")
+        # ``oout`` abuts ``amx``, so the class word rides a plain @1 dual-face
+        # abutment off the ring; the route override owns this cell's face and
+        # it is transited by nothing. Its direction from ``amx`` is the same
+        # one baked into ``amx``'s ``face_out`` word (:meth:`_amx_faces`).
+        ax, ay, _af = faces["amx"]
+        ofx, ofy = oout_pos
+        faces["oout"] = (ofx, ofy, {0: "south", 1: "east", 2: "west",
+                                    3: "north"}[self._amx_faces()[0]])
         # emit: program cells in build_cell_programs order, transits last.
         lay: Dict[Any, Tuple[int, int, str]] = {
             cid: faces[cid] for cid in self._ring_ids()}

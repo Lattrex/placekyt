@@ -9,6 +9,55 @@ block-specific gotcha. Promote anything that generalizes across block classes in
 and superseded material merged into the surviving entries; no durable lesson was
 dropped) — append new entries above the oldest ones as before.
 
+## GRUCellBlock RE-FOLD — a baked `is_face` literal PINS a fold, and the classifier's wall is corridor BUDGET, not fold shape 2026-08-24
+
+Dispatched to re-fold `GRUCellBlock` so the gru_classifier front end could route
+beside it on one 10x12. The fold moved and measurably improved; the wall did not
+fall. Both results are worth more than the one that was asked for.
+
+- **THE REAL BUG THE RE-FOLD FOUND (now INV-37).** Three `is_face=True` data words
+  — `fin`'s `LOCK_FACE`, `amx`'s `face_out`/`face_ring` — were LITERALS matching the
+  as-authored fold. Every re-fold tried (a solid 5x10 Hamiltonian ring, the
+  transpose, a reversed traversal of the same ring) produced a perfectly legal
+  layout — closed cycle, in-cap bbox, clean route-time face rule, right dict order
+  — that BUILT and then computed garbage: 20 of 52 gates failed, the recurrence
+  never landed, `h` froze at its timestep-0 value, and the sim ran to `EventLimit`.
+  The geometry gates cannot see this because the geometry is fine. Deriving the
+  three words from the fold (`_face_from(a, b)` over the ring positions) made the
+  SAME transposed fold pass all 52 unchanged. **A closed ring is direction-free for
+  @N distances but NOT for faces** — reversing the traversal reverses every resting
+  face, which is why "it's just a relabelling" is wrong for any block that MOVEs a
+  literal into `[FACE]`/`[LOCK_FACE]`.
+
+- **THE FOLD THAT SHIPPED: 8x7, the landed serpentine TRANSPOSED.** Chosen by
+  exhaustive search over the comb / row-comb / spine-snake closed-cycle families x
+  8 D4 images x 100 start-and-direction pairs, filtered on every fold rule and
+  ranked by PORT COST — min over anchors of `|fin - x16_in| + |oout - x16_out|`,
+  which matters because the 10x12's two 16-bit ports are BOTH on row 0. The old
+  7x8 put the input on the north-west corner and buried the egress two rows down
+  the WEST edge, pointing away from the output port: cost 11, and `gru_out` alone
+  measured 15-17 corridor cells. The transpose spans the north edge (fin (0,0),
+  oout (2,0)): cost 7, and five free ROWS instead of three free columns. On the
+  identical lane search the old fold bottomed out 2 nets short, the new one 1.
+  BEHAVIOUR IS PRESERVED EXACTLY, re-verified on chip after the re-fold: 36,000
+  on-chip steps at agreement 1.000000 against the golden, clip vote 0.9667
+  on-chip == 0.9667 offline over 120 held-out clips, all 53 gates green.
+
+- **BUT THE FOLD IS NOT THE LEVER, AND NEITHER IS THE ARM.** Under INV-9's 8x8 D4
+  cap a 51-cell block has only three possible bounding boxes (7x8, 8x7, 8x8), and a
+  CLOSED RING can never contain a free through-channel — a cycle cannot jump a gap,
+  so all its free space is perimeter. Free-space quality therefore measured
+  IDENTICAL (29 3x3-anchors, 48 2x2) for every legal fold; only port proximity
+  varies. Shrinking the RMS arm was swept too: 65 block cells -> 4 nets short,
+  62 -> 2, 57 -> 1, 56 -> 1. **The wall is the ten nets' corridor budget.** Measured:
+  65 block cells leave 55 for routing; the tail's six nets already cost 51 (8.5/net),
+  so ten nets want ~85. 4180 further layouts on the re-folded block stayed at
+  exactly one net short.
+
+- **NEXT LEVER, NAMED.** Not the router, not the fold, not the boxcar length: FEWER
+  SEPARATELY PLACED BLOCKS. One fused feature block in place of the four-block RMS
+  arm removes block cells *and three of the ten nets* — and nets, not cells, are
+  what the array has run out of. Otherwise, a two-chip topology.
 ## VERIFY THE PARTS SEPARATELY — how a 2-die split localised its own failure, and 3 engine defects the shipped 2-chip example could never expose 2026-08-24
 
 Splitting the N=128 FFT across two dies produced a system that placed, routed and

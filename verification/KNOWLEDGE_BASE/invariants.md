@@ -1631,3 +1631,67 @@ area — a measured 96-hop route runs correctly through three relays. Gated by
 `placekyt/tests/test_relay_emit.py`, including the on-chip bit-exactness of a
 relayed net against a hop-legal control (the relay must be transparent to data)
 and the mutations that must fail: relay omitted, stale hop count, mis-faced relay.
+
+---
+
+## INV-37 — A baked `is_face=True` constant PINS the fold; derive it from the layout
+
+**Symptom:** a block is re-folded (its `default_layout` reshaped — a different
+serpentine, a transpose, a different start cell on the same closed ring). Every
+*geometric* gate still passes: the ring is a valid closed cycle, both bbox dims
+are within the cap, the route-time face rule is clean, the layout dict ordering
+is right, placement is legal. The build succeeds. And then the block **computes
+the wrong answer** — in the observed case a recurrent block's hidden state froze
+at its first timestep (timestep 0 exactly correct, every later one identical to
+it), and the whole-block simulation ran to `EventLimit` without completing.
+
+**Root cause:** cell programs may carry `DataWord(..., is_face=True)` constants —
+literal face codes (`SOUTH 0, EAST 1, WEST 2, NORTH 3`) the program MOVEs into
+`[FACE]` or `[LOCK_FACE]`. They encode an ABSOLUTE direction that was true of the
+fold **as authored**, e.g.
+
+* an egress cell's `face_out` = "the direction my off-ring output relay lies in",
+* its `face_ring`  = "the direction my ring SUCCESSOR lies in" (the face to
+  resume on after emitting), and
+* an input-landing cell's `LOCK_FACE` = "the direction my ring PREDECESSOR lies
+  in" (the face the feedback write-back and the unlock `WRITE.CFG` arrive on, and
+  which must stay admitted while the port corridor is held — INV-19).
+
+The D4 orientation machinery transforms these correctly when the WHOLE block is
+rotated, which is why the 8-orientation gate does not catch it. But a RE-FOLD
+changes the *relative* geometry — which side of the egress cell its relay sits
+on, which way the ring leaves it, which side the closure re-enters the head cell
+— while the baked literal stays put. The cell then rests on the wrong face: words
+are forwarded into a neighbour that is not their destination, the feedback never
+lands, and the barrier never clears. **Nothing in the geometry gates can see
+this**, because the geometry is fine; only the DATA is wrong.
+
+**Fix — derive every face constant from the fold, never write it down.** Make the
+fold a single source of truth (one method returning the ring positions and the
+off-ring relay position), and compute each `is_face` word from it:
+
+```python
+def _face_from(self, a, b):          # a, b adjacent cells
+    d = (b[0] - a[0], b[1] - a[1])
+    return self._FACE_CODE[{(0, 1): "south", (0, -1): "north",
+                            (1, 0): "east", (-1, 0): "west"}[d]]
+```
+
+Then `face_out = _face_from(egress_cell, relay)`, `face_ring =
+_face_from(egress_cell, ring_successor)`, `LOCK_FACE = _face_from(head,
+ring_predecessor)`. Re-folding is now a one-method change and the constants
+follow. Verified on `GRUCellBlock`: with the three literals baked, three
+independent re-folds (a 5x10 Hamiltonian ring, a transpose, a reversed
+traversal) each failed 20 of 52 gates with h frozen; with them derived, the same
+transposed fold passes all 52 unchanged.
+
+**How to catch it:** the block's own behavioural gates ARE the detector — an
+h-trajectory / state-persistence test that compares more than the final output.
+A re-fold must re-run the FULL suite, not just the layout gates. If a block has
+`is_face=True` words, treat its `default_layout` as load-bearing for CORRECTNESS,
+not just routability, and say so in the layout docstring.
+
+**Applies to:** any block with `is_face=True` data words — dual-face emitters,
+`LOCK_FACE` barriers (INV-19/20 serialize-lock), ring/serpentine folds with an
+off-chain relay. Related: INV-23 (orientation invariance, which does NOT cover
+this), INV-35 (the layout dict is also a positional index).

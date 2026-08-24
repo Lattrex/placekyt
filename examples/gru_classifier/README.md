@@ -41,11 +41,56 @@ unchanged — always **exactly one net short**, and every failing net reports
 was a hop overflow.
 
 So the constraint is corridor *space*, not corridor *length*. The blocks occupy
-only 65 of 120 cells, but `GRUCellBlock` is 51 of them in a **rigid 7×8 fold**
-that splits the remaining area into pockets the four-block RMS arm cannot thread;
-the `join → GRUCell` tail on its own routes fine at 72/120. The lever is
-therefore the GRU's **fold** (a narrower or reflowable footprint) or an RMS arm
-built from fewer separately-placed blocks — not the router.
+only 65 of 120 cells, but `GRUCellBlock` is 51 of them — 43% of the array — and
+each routed net costs ~8.5 cells of corridor (measured: the six-net `join →
+GRUCell` tail routes on its own at 81/120). The RMS arm adds 11 block cells *and
+four more nets*, and that is the budget the array does not have.
+
+### Both named levers have now been measured; neither closes it
+
+**The fold.** `GRUCellBlock` was **re-folded** — the same 50-cell closed ring,
+transposed to **8×7** — so its input `(0,0)` and its egress `(2,0)` span the
+**north edge**, facing the chip's two 16-bit ports (which both sit on row 0).
+That halves the block's own port-corridor cost (11 cells → 7, minimum over
+anchors of `|fin − x16_in| + |oout − x16_out|`) and leaves five free *rows*
+rather than three free columns. On the identical lane search, the old 7×8 fold
+bottomed out **two** nets short and the re-fold reaches **one** — a real,
+measured improvement. A further 4180 layouts (exhaustive lane enumeration plus
+guided perturbation seeded from every one- and two-net-short result) stayed at
+one.
+
+The re-fold is a **placement change only** — behaviour is preserved exactly, and
+that was re-verified on chip afterwards: 36,000 on-chip steps at agreement
+**1.000000** against the golden, clip vote **0.9667 on-chip == 0.9667 offline**
+over 120 held-out clips, all 53 block gates green.
+
+Re-folding also required a real fix, now [INV-37](../../verification/KNOWLEDGE_BASE/invariants.md):
+the block baked three `is_face=True` constants as literals, silently pinning it
+to the authored fold. Every re-fold built clean, passed every geometric gate, and
+computed garbage (the recurrence never landed; `h` froze at timestep 0). Those
+constants are now derived from the fold, with a gate that fails on the old
+literals.
+
+**The arm.** Shrinking the RMS arm was swept over boxcar lengths 32/16/8/4, with
+and without `Sqrt`: 65 block cells → 4 nets short, 62 → 2, 57 → 1, 56 → 1. Even
+a 4-tap boxcar with `Sqrt` dropped — which is no longer the model's feature — is
+still one net short.
+
+### The remaining lever, with its arithmetic
+
+Nets, not cells, are what the array has run out of — so the lever is **fewer
+separately placed blocks**, which removes *nets* as well as cells.
+
+| topology | blocks | nets | block cells | corridor @8.5/net | total |
+|---|---|---|---|---|---|
+| shipped | 7 | 10 | 65 | ~85 | ~150 ✗ |
+| `join → GRU` tail (measured) | 4 | 6 | 54 | 51 | **81** ✓ |
+| one fused feature block + GRU | 2 | 4 | ~65 | ~34 | **~99** |
+
+A single block computing the `(rms, zcr)` pair from `(re, im)` would absorb the
+six front-end blocks and delete **six of the ten nets**, which is where the
+budget actually goes. Failing that, a **two-chip topology** (front end on one
+die, GRU on the other) is the fallback.
 
 ## The chain
 

@@ -432,6 +432,59 @@ def test_ring_distances_all_fit_the_five_bit_hop_field(blk):
     assert worst <= 31, f"longest ring-forward hop {worst} exceeds the field"
 
 
+def test_every_baked_face_word_agrees_with_the_fold(blk):
+    """INV-37. The cells that MOVE a literal into ``[FACE]`` / ``[LOCK_FACE]``
+    carry ``is_face=True`` data words holding an ABSOLUTE direction. Those
+    directions are properties of the FOLD — which side the off-ring egress
+    relay sits on, which way the ring leaves the egress cell, which side the
+    closure re-enters the head cell — so they must be DERIVED from the layout,
+    never written down.
+
+    This is the gate the geometry checks cannot be: a re-fold that moves any of
+    those three neighbours while a literal stays put produces a perfectly legal
+    ring (closed cycle, in-cap bbox, clean face rule, right dict order) that
+    BUILDS and then computes the wrong answer — measured: the recurrence never
+    lands and h freezes at timestep 0. Asserting the words against the placed
+    geometry catches it at author time instead.
+    """
+    lay = blk.default_layout()
+    code = {"south": 0, "east": 1, "west": 2, "north": 3}
+
+    def face_between(a, b):
+        ax, ay, _ = lay[a]
+        bx, by, _ = lay[b]
+        d = (bx - ax, by - ay)
+        assert abs(d[0]) + abs(d[1]) == 1, f"{a} and {b} are not adjacent"
+        return code[{(0, 1): "south", (0, -1): "north",
+                     (1, 0): "east", (-1, 0): "west"}[d]]
+
+    ring = [c for c in blk.build_cell_programs() if c != "oout"] + [
+        "transit_ring_a", "transit_ring_b"]
+    k = ring.index("amx")
+    want_out = face_between("amx", "oout")
+    want_ring = face_between("amx", ring[(k + 1) % len(ring)])
+    want_lock = face_between(ring[0], ring[-1])
+
+    progs = blk.build_cell_programs()
+    got = {}
+    for cid in ("amx", "fin"):
+        for d in progs[cid].data:
+            if getattr(d, "is_face", False):
+                got[(cid, d.name)] = int(d.value)
+
+    assert got[("amx", "face_out")] == want_out, (
+        f"amx.face_out={got[('amx', 'face_out')]} but the fold puts oout "
+        f"{want_out} of amx — the class word would leave on the wrong face")
+    assert got[("amx", "face_ring")] == want_ring, (
+        f"amx.face_ring={got[('amx', 'face_ring')]} but the fold's ring "
+        f"successor is {want_ring} of amx — the ring resumes off-fold and the "
+        f"unlock/write-back corridor mis-resolves")
+    assert got[("fin", "lockface")] == want_lock, (
+        f"fin.lockface={got[('fin', 'lockface')]} but the fold's closure "
+        f"re-enters fin from {want_lock} — the barrier would hold the wrong "
+        f"face and the recurrence write-back is never admitted")
+
+
 def test_feedback_landings_are_state_registers_not_input_ports(blk):
     """AGCCC trap 1: a value that lands OUT OF BAND (a recurrence write-back,
     or an intra-timestep deposit that arrives before its consumer is

@@ -1420,3 +1420,44 @@ class chirp_generator(_PassThrough):
         self._advertise_grc_params(device_id, "ChirpGeneratorBlock",
                                    {"n": int(n), "m": int(m),
                                     "amplitude": float(amplitude)})
+
+
+class conj_chirp_mixer(_PassThrough):
+    """CSS dechirp — GR marker (maps to ConjChirpMixerBlock).
+
+    Multiplies the incoming complex stream by the conjugate of the
+    free-running s=0 reference up-chirp (repeating every n samples, matching
+    ChirpGeneratorBlock's scaling bit-for-bit): a received symbol chirp
+    becomes a constant tone whose frequency encodes the symbol (dechirp ->
+    FFT -> mag^2 -> argmax recovers it). placeKYT-native; no stock GNU Radio
+    streaming counterpart. 1:1 complex in / complex out on the chip. GR
+    marker only; the real DSP runs on the placeKYT chip."""
+
+    def __init__(self, device_id="kyttar_0", n=128):
+        super().__init__("Kyttar Conj Chirp Mixer", n_in=1, n_out=1,
+                         in_dtype=np.complex64, out_dtype=np.complex64)
+        self.device_id = device_id
+        self.n = int(n)
+        self._advertise_grc_params(device_id, "ConjChirpMixerBlock",
+                                   {"n": int(n)})
+
+
+class chirp_sync(_PassThrough):
+    """CSS preamble sync — GR marker (maps to ChirpSyncBlock).
+
+    K-consecutive-equal-argmax run detector on the CSS receive spine's index
+    stream: emits one packed word per input index (1:1) — raw 0xFFFF (-1) =
+    no sync; >= 0 = sync asserted AND the value is the locked bin (the sign
+    bit is the inverted sync flag). Sync asserts on the K-th consecutive
+    equal index, de-asserts when the run breaks; the run counter saturates
+    at K. placeKYT-native; no stock GNU Radio streaming counterpart. Raw
+    index words in/out (dtype short — the crc16/bin_argmax convention). GR
+    marker only; the real DSP runs on the placeKYT chip."""
+
+    def __init__(self, device_id="kyttar_0", k=4):
+        super().__init__("Kyttar Chirp Sync", n_in=1, n_out=1,
+                         in_dtype=np.int16, out_dtype=np.int16)
+        self.device_id = device_id
+        self.k = int(k)
+        self._advertise_grc_params(device_id, "ChirpSyncBlock",
+                                   {"k": int(k)})

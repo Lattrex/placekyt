@@ -1,0 +1,59 @@
+id: kyttar_chirp_sync
+label: Chirp Sync
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar Chirp Sync -- CSS preamble detector (a K-consecutive-equal-argmax
+  run detector). Consumes the Framewise Argmax index stream of the CSS
+  receive spine (dechirp -> FFT -> Complex To Mag^2 -> Framewise Argmax):
+  during a preamble (a run of repeated s=0 up-chirps) the argmax repeats the
+  SAME peak bin frame after frame, so preamble detection is a run-length
+  test. There is NO stock GNU Radio streaming counterpart, so this is a
+  placeKYT-native ([Kyttar]) block (Python golden).
+
+  For each input index word it emits ONE packed word (1:1):
+  - -1 (raw 0xFFFF): NO SYNC (the sign bit is the inverted sync flag);
+  - >= 0: SYNC ASSERTED, and the value IS the locked bin.
+
+  Sync asserts on the K-th consecutive equal index and de-asserts the moment
+  the run breaks; the run counter saturates at K (arbitrarily long
+  preambles). The demod latches the rising edge + locked bin as its symbol
+  reference. Integer-symbol-boundary sync only: fractional timing offset
+  shifts the locked bin (tracked, not corrected).
+
+  The input and output are RAW WORDS (indices, dtype short), not Q15
+  samples -- a float scope fed through a kyttar sink shows word/32768, so
+  put a x32768 rescale in front of a value display.
+
+  This block runs on the Kyttar chip. Place it between a KyttarSource and
+  KyttarSink block, and ensure the device_id matches your KyttarDevice.
+
+  Parameters:
+  - Device ID: ID of the KyttarDevice block
+  - K: run length; sync asserts after K consecutive equal indices. MUST be
+    an integer in [1, 32767]. Other values raise.
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.chirp_sync(device_id=${device_id}, k=${k})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+  - id: k
+    label: K
+    dtype: int
+    default: '4'
+
+inputs:
+  - label: in
+    dtype: short
+
+outputs:
+  - label: out
+    dtype: short
+
+file_format: 1

@@ -66,6 +66,17 @@ BLOCKS = [
     # Single-cell CSS symbol mapper (PackKBits re-parameterized) — no internal
     # transit cell, no footprint-growing param; trivially non-self-overlapping.
     ("ChirpSymbolMapperBlock", {"m": 64}),
+    # CSS dechirp: 13-cell fold (ComplexMixer 2-column NCO + the prods/combine
+    # tail stacked at the top of column 1). NO transit cell in EITHER lock
+    # variant (the locked unlock corridor is the combine->phase @1 west
+    # abutment), but test the locked variant anyway — it is the shipping
+    # saturation-safe form.
+    ("ConjChirpMixerBlock", {"n": 16, "pipeline_lock": True}),
+    ("ConjChirpMixerBlock", {"n": 256}),
+    # Single-cell CSS preamble sync — no internal transit cell, no footprint-
+    # growing param (k only changes a data word); trivially non-self-
+    # overlapping in every D4 orientation and under movement.
+    ("ChirpSyncBlock", {"k": 4}),
     # Multi-cell distributed complex delay line at its footprint-growing
     # extremes: depth 32 = 7 cells (2x4 fold, partial last column) and depth 64
     # = 13 cells (4x4 fold, partial last column) — the deepest supported chain.

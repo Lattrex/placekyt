@@ -1,0 +1,1 @@
+{"example": "css_rx_system", "passed": true, "n_symbols": 1000, "snr_db": 10.0, "attenuation": 0.5, "symbol_errors": 0, "ser": 0.0, "onchip": "full RX spine (dechirp+FFT16+mag2+delay+argmax[+sync]) on one 10x12 chip, saturated queue_words drive", "model_side": "TX (mapper+generator integer goldens, chip-verified in their own suites) and the numpy channel"}

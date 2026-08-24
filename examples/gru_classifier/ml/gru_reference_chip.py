@@ -151,15 +151,23 @@ class GRUChipModel:
 
         # r/z gates: full 7-term rows [Wx_g[i,:] (I), Wh_g[i,:] (H)] + b_g[i]
         # (the reference computes r/z = sigmoid(Wx.x + Wh.h + b) — one row).
+        # ONE scale S_rz COMMON to BOTH gates: on-chip each hidden unit's r
+        # and z words share one sigmoid table+interp engine, whose dshift is
+        # baked per instance — a shared engine forces a shared scale (the
+        # weight-grid sweep shows the model is insensitive to the coarser
+        # grid this costs the r rows).
         self.gate_S = {}
         self.gate_rows = {}
+        rz_rows = []
         for g in ("r", "z"):
             Wx = deq_mat(lp["Wx"][g])
             Wh = deq_mat(lp["Wh"][g])
             b = np.asarray(lp["b"][g], dtype=np.float64) / 32768.0
-            rows = [(list(Wx[i]) + list(Wh[i]), float(b[i]))
-                    for i in range(H)]
-            self.gate_S[g], self.gate_rows[g] = common_scale_rows(rows)
+            rz_rows.append([(list(Wx[i]) + list(Wh[i]), float(b[i]))
+                            for i in range(H)])
+        S_rz, both = common_scale_rows(rz_rows[0] + rz_rows[1])
+        self.gate_S["r"] = self.gate_S["z"] = S_rz
+        self.gate_rows["r"], self.gate_rows["z"] = both[:H], both[H:]
 
         # n gate: the reference applies the reset gate AFTER the matmul —
         # n = tanh(Wxn.x + r ⊙ (Whn.h) + bn) (the standard/PyTorch GRU form;

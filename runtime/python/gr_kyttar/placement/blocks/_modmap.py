@@ -30,6 +30,8 @@ BUILTIN_BLOCKS = {
     'DelayBlock': 'delay_block',
     'ChirpGeneratorBlock': 'chirp_generator_block',
     'ChirpSymbolMapperBlock': 'chirp_symbol_mapper_block',
+    'ConjChirpMixerBlock': 'conj_chirp_mixer_block',
+    'ChirpSyncBlock': 'chirp_sync_block',
     'ComplexDelayLineBlock': 'complex_delay_line_block',
     'UpsamplerBlock': 'upsampler_block',
     'RepeatBlock': 'repeat_block',

@@ -83,7 +83,8 @@ from .dsp_markers import (complex_rrc_matched_filter, complex_costas_loop,
                           rms, rms_cf,
                           r2_butterfly, twiddle_multiply,
                           sigmoid, tanh,
-                          chirp_symbol_mapper, chirp_generator)
+                          chirp_symbol_mapper, chirp_generator,
+                          conj_chirp_mixer, chirp_sync)
 from .gain import gain
 from .multiply import multiply
 from .add import add, subtract
@@ -196,6 +197,8 @@ __all__ = [
     "tanh",
     "chirp_symbol_mapper",
     "chirp_generator",
+    "conj_chirp_mixer",
+    "chirp_sync",
     "rms",
     "rms_cf",
     "r2_butterfly",

@@ -1,0 +1,56 @@
+id: kyttar_conj_chirp_mixer
+label: Conj Chirp Mixer (Dechirp)
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar Conjugate Chirp Mixer -- the CSS DECHIRP. Multiplies the incoming
+  complex stream by the conjugate of the free-running s=0 reference up-chirp
+  (the Chirp Generator's base chirp, repeating every N samples):
+
+      yi = xi*cos + xq*sin,  yq = xq*cos - xi*sin   (saturating rails)
+
+  After the dechirp a received symbol chirp (cyclic shift s) becomes a
+  CONSTANT tone at s/m of the bandwidth -- an N-point FFT concentrates it in
+  one bin and the winning bin index IS the symbol. The CSS receive spine is
+  dechirp -> FFT -> Complex To Mag^2 -> Framewise Argmax -> Chirp Sync.
+
+  There is NO stock GNU Radio streaming counterpart, so this is a
+  placeKYT-native ([Kyttar]) block (Python golden). The reference chirp
+  matches the Chirp Generator's scaling bit-for-bit (rate word 65536/N); the
+  reference is free-running from the FIRST input sample, so symbol boundaries
+  sit at sample indices that are multiples of N. Fractional-timing alignment
+  is NOT performed (a timing offset shifts the post-FFT peak bin; the demod
+  tracks the Chirp Sync locked bin as the symbol reference).
+
+  This block runs on the Kyttar chip. Place it between a KyttarSource and
+  KyttarSink block, and ensure the device_id matches your KyttarDevice.
+
+  Parameters:
+  - Device ID: ID of the KyttarDevice block
+  - N: samples per chirp symbol; MUST be a power of two in [2, 65536] and
+    MUST equal the transmitter's N. Other values raise.
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.conj_chirp_mixer(device_id=${device_id}, n=${n})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+  - id: n
+    label: N
+    dtype: int
+    default: '128'
+
+inputs:
+  - label: in
+    dtype: complex
+
+outputs:
+  - label: out
+    dtype: complex
+
+file_format: 1

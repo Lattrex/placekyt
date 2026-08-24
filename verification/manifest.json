@@ -1181,16 +1181,26 @@
    "status": "done"
   },
   {
-   "kyttar_block": "ChirpSyncBlock",
-   "grc_block": "(Python golden: preamble correlation / chirp sync detect)",
-   "tier": 3,
-   "metric": "decision",
+   "kyttar_block": "ConjChirpMixerBlock",
+   "grc_block": "(Python golden: multiply by the conjugate reference up-chirp — the CSS dechirp)",
+   "tier": 2,
+   "metric": "exact",
    "params": {
-    "n": 128,
-    "preamble_len": 8
+    "n": 128
    },
-   "notes": "QUEUE B9 (CSS track). Detects the CSS preamble (repeated base up-chirps) and establishes symbol timing. Correlation against the known preamble. Ancestry: FSK4SyncTimingRecoveryBlock (sync-word correlation timing recovery, already verified). Hardest of the CSS blocks after the FFT. SHARED CONSTRAINTS (v0.11 shipping cell, 32 words, 16-bit Q15): MAC operands must be cell-local (no cross-cell operand fetch). sum|coeff|>1 needs the INV-13 headroom prescale. In-cell LOAD-indirect tables cap at ~21 entries (5-bit wall) so big tables are NOT available. Composites keep feedback INTERNAL (GRC flowgraphs are acyclic) using the AGCCC shared-builder model. Feedback landings MUST be pinned STATE registers, never input Ports (AGCCC trap 1). Fold big rings <=7 wide (AGCCC trap 2).",
-   "status": "planned"
+   "notes": "QUEUE B9a (CSS track) - DONE (zero-cost cross-reference of the ChirpSyncBlock joint build). The CSS dechirp: multiplies the incoming complex stream by the CONJUGATE free-running s=0 reference up-chirp (repeats every n samples: n*(65536/n) = 0 mod 2^16, the generator's wraparound insight — no counter, no reset) so a received symbol chirp becomes a constant tone at s*(65536/m); FFT+argmax recovers s. HONEST DECOMPOSITION: 13 cells = ComplexMixer's verified NCO front (fold/even/odd/interp columns + relay, inherited unchanged) + the ChirpGenerator double accumulator in the phase cell (freq becomes a state reg init 0x8000 + one ADD/MOVE pair; the generator's burst/self-pacing machinery NOT needed — 1:1 block) + MultiplyCC's prods->combine SATURATING tail with the conjugate as one ADD<->SUB swap per rail (yi=sat(P1+P2), yq=sat(P3-P4)). THE SATURATING RAILS ARE A REAL DIVERGENCE from ComplexMixer's wrapping combine and are CORRECTNESS here: the dechirped signal is unit-magnitude by design, MULQ floor-truncation pushes a true -1.0 rail to -32769, and the wrap sign-flips it full-scale (measured: the s=4/n=16 dechirp spectrum grew 1/3-peak spurs; saturating restores the clean tone; wrap-mutant golden gated to FAIL). Scaling matches ChirpGeneratorBlock bit-for-bit (rate word 65536/n; boundary-return gated): gen(s) x conj-ref is a constant tone for EVERY s, chip bit-exact vs the composed goldens, worst tone SNR 86.1 dB at n=m=16. MULQ (-1)(-1) wrap corner UNREACHABLE (table rails are +/-32767). pipeline_lock opt-in (INV-20 serialize-LOCK; unlock corridor = the combine(1,0)->phase(0,0) @1 west abutment, NO transit cell; locked bit-exact per-sample AND saturated). 30 tests EXACT tol 0 + mutations (non-conjugated, rate +/-1, wrong n, 1-sample ref misalignment, wrapping combine, swapped/negated rails, +1 delay, empty); D4 8/8; saturated COMPLEX_2IN2OUT; placement-legal both variants; GRC binding kyttar_conj_chirp_mixer. System gate: test_css_rx_system.py (SER 0/1000 at 10 dB, full RX spine on-chip).",
+   "status": "done"
+  },
+  {
+   "kyttar_block": "ChirpSyncBlock",
+   "grc_block": "(Python golden: K-consecutive-equal-argmax preamble run detector)",
+   "tier": 3,
+   "metric": "exact",
+   "params": {
+    "k": 4
+   },
+   "notes": "QUEUE B9 (CSS track) - DONE (joint build with ConjChirpMixerBlock, full cost here; the manifest's original correlation scheme was re-pinned by dispatch to the simpler argmax-run detector — honest and sufficient downstream of dechirp->FFT->argmax). Consumes the BinArgmax index stream; per input index ONE packed word (1:1): 0xFFFF (raw -1) = no sync (sign bit = inverted sync flag), >= 0 = sync asserted AND the value IS the locked bin (legal indices 0..32767 never collide). Asserts on the K-th consecutive EQUAL index, de-asserts the moment the run breaks; run counter SATURATES at K (arbitrarily long preambles, no overflow); mismatch fully re-arms on the new value; K=1 = degenerate pass-through. Single cell: 4 data + 3 pinned states + 18 instructions (previous-index register + saturating run counter — the ZCR/BinArgmax idioms; exact-equality via SUB/BR.Z; both compares the overflow-corrected SLT branch; two-path duplicated write/jump + terminal HALT, conditional branches only in the exit cell). HONEST LIMITATION (documented): integer-symbol-boundary sync only — NO fractional-timing alignment; a timing offset shifts the peak bin, and the demod tracks the LOCKED BIN as the symbol reference. k integer 1..32767 (loud raise outside). 34 tests EXACT tol 0 vs an independent golden state machine (preambles at 4 offsets, absent, broken K-1 runs, mid-run changes, 3 seeds x K sweep, locked-bin report, 32767-saturation bounds); INV-4 mutations all FAIL (on-chip K off-by-one, equality->inequality, no-reset-on-mismatch, counter-overflow model, +1 delay, empty); saturated == per-sample incl. a bespoke LOCK-asserting stimulus (the shared REAL_1IN stimulus only exercises the sentinel path — noted in the registry); D4 8/8; placement-legal; GRC binding kyttar_chirp_sync (short in/out, raw-word convention). SYSTEM GATE (the pair's reason to exist): test_css_rx_system.py — the WHOLE RX spine (ConjChirpMixer -> FFT16 -> ComplexToMagSquared -> Delay(1) -> BinArgmax -> ChirpSync) placed/routed/built as ONE 10x12 chip, driven per-sample AND saturated, BIT-EXACT vs the composed integer goldens; all 16 symbols decode (s = brev4(idx), the Delay(1) aligns argmax frames to FFT frames — latency 15 = -1 mod 16, no-delay mutant FAILS); preamble locks on-chip (bin 0) and de-asserts on data; mapper bits->symbols round-trip; SER 0/1000 symbols at 10 dB SNR (atten 0.5) with the full RX on-chip under queue_words drive, -10 dB negative control SER > 0.2. Boundary: TX (mapper+generator integer goldens, chip-verified in their own suites) + numpy channel; ALL RX DSP on-chip.",
+   "status": "done"
   }
  ]
 }

@@ -163,6 +163,19 @@ _CASES = [
     # 2n-word-burst 8-D4 gate is bespoke in test_chirp_generator.py::
     # test_orientation_invariant_full_burst (the RationalResampler precedent).
     ("ChirpGeneratorBlock", {"n": 16, "m": 4}, "real", ("s", "yi")),
+    # CSS dechirp (multiply by the conjugate reference up-chirp): complex I/Q
+    # in, complex (yi, yq) out. The ComplexMixer NCO fold with a free-running
+    # double-accumulator phase cell and the MultiplyCC saturating prods/combine
+    # tail — feed-forward at identity (the lock is opt-in and off here), faces
+    # from default_layout, so its on-chip output must be IDENTICAL in every D4
+    # orientation.
+    ("ConjChirpMixerBlock", {"n": 16}, "complex", ("xi", "xq", "yi")),
+    # CSS preamble sync (K-consecutive-equal-argmax run detector): single real
+    # rail in (raw index words) -> one packed sync word out per trigger (1:1).
+    # Feed-forward single cell with a previous-index register + saturating run
+    # counter (no feedback corridor / no reconvergent fan-in), so its output
+    # word list must be IDENTICAL in every D4 orientation.
+    ("ChirpSyncBlock", {"k": 2}, "real", ("idx", "out")),
     # Windowed zero-crossing rate (placeKYT-native, no GR counterpart): single
     # real rail in (sample) -> one Q15 rate word every window_size triggers
     # (None-gaps on the accumulating samples). Feed-forward single cell with a

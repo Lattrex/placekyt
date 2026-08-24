@@ -103,6 +103,14 @@ REAL_1IN = {
     # samples are filtered; frame_len=4 on the 16-word stimulus emits 4 REAL CRC
     # words — a non-empty, init=0xFFFF-seeded stream, so the drive is proven live).
     "Crc16Block": ("sample", "out", {"frame_len": 4}),
+    # CSS preamble sync (K-consecutive-equal-argmax run detector): 1:1 raw
+    # index word in -> packed sync word out. Single cell with a previous-index
+    # register + saturating run counter, feed-forward, NO feedback corridor /
+    # NO reconvergent fan-in (INV-19/20 N/A). NOTE: the shared _STIM has no
+    # equal-adjacent pair, so this entry exercises the sentinel/re-arm path
+    # only; the LOCK-asserting saturated gate (repeated-index stimulus) is
+    # bespoke in test_chirp_sync.py::test_saturated_equals_per_sample_with_real_runs.
+    "ChirpSyncBlock": ("idx", "out", {"k": 2}),
     # Differential decoder: symbol-in symbol-out, 1-sample previous-INPUT state.
     # Single cell serializes the state naturally (no cross-cell feedback), so the
     # saturated stream equals the per-sample output with no lock (INV-19 N/A).
@@ -271,6 +279,14 @@ COMPLEX_2IN2OUT = {
     # importer/net-resolution keep the 11-cell footprint); this gate proves the LOCKED
     # path is bit-exact under saturation so consumers can opt in for high-rate pipelines.
     "ComplexMixerBlock": (("xi", "xq"), "yi", {"pipeline_lock": True}),
+    # CSS dechirp: the ComplexMixer reconvergent fan-in (phase -> 2 NCO arms +
+    # relay -> prods) with the free-running double-accumulator phase cell and
+    # the MultiplyCC saturating prods/combine tail. pipeline_lock=True selects
+    # the serialize-LOCK variant (the combine's @1-abutment WRITE.CFG unlock
+    # into phase) — this gate proves the lock releases cleanly and the
+    # saturated stream is bit-exact under back-to-back drive.
+    "ConjChirpMixerBlock": (("xi", "xq"), "yi",
+                            {"n": 16, "pipeline_lock": True}),
     # NCO: complex TRIGGER in (xi,xq ignored) / complex cos+j·sin out. Same phase->2-arm
     # ->emit reconvergent fan-in as ComplexMixer; the pipeline_lock=True serialize-LOCK
     # (relay arm-serializer + emit dual-FACE unlock) makes it saturation-safe (INV-20).

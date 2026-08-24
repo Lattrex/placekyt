@@ -3,7 +3,7 @@
 
 # Kyttar block library — status
 
-**103 verified · 1 in progress · 108 targeted.** Each Kyttar block is verified as a drop-in equivalent of its GNU Radio Companion counterpart (same parameters, output matching within Q15 quantization). “Quality” is the measured error of the verified block versus the GNU Radio reference.
+**105 verified · 1 in progress · 109 targeted.** Each Kyttar block is verified as a drop-in equivalent of its GNU Radio Companion counterpart (same parameters, output matching within Q15 quantization). “Quality” is the measured error of the verified block versus the GNU Radio reference.
 
 > **Reading the quality column.** `err N / tol M LSB` — the worst-case sample error (`N`) against the derived pass threshold (`M`), in Q15 **LSBs** (1 LSB = 1/32768 of full scale ≈ 3.05e-5); pass requires `N ≤ M`. `−X dB SNR` — the **NMSE**: the error power is `X` dB below the signal power (more negative = quieter; Q15's floor is ≈ −90 dB). Decision blocks report **BER** instead. To estimate a chain's total noise, convert each block's dB to linear power (`10^(dB/10)`), sum, and convert back (`10·log10`) — the noisiest stage dominates.
 
@@ -88,6 +88,7 @@
 | **ComplexDelayLineBlock** | `(Python golden: numpy complex delay of N samples)` | 2 · stateful/loop | ✅ done | err 0 / tol 0 LSB | edge rand×3 sweep×9 mut |
 | **ChirpGeneratorBlock** | `(Python golden: cyclic-shifted linear up-chirp)` | 2 · stateful/loop | ✅ done | err 0 / tol 0 LSB | sweep×6 mut |
 | **BinArgmaxBlock** | `(Python golden: numpy.argmax over N magnitude bins)` | 2 · stateful/loop | ✅ done | err 0 / tol 0 LSB | edge rand×3 sweep×7 mut |
+| **ConjChirpMixerBlock** | `(Python golden: multiply by the conjugate reference up-chirp — the CSS dechirp)` | 2 · stateful/loop | ✅ done | err 0 / tol 0 LSB | sweep×3 mut |
 | **GardnerTimingRecovery** | `digital.symbol_sync_cc` | 2 · stateful/loop | 🚧 needs human (quarantined) · 🧪 proof-of-concept | — | — |
 | **FSK4SymbolMapperBlock** | `digital.chunks_to_symbols_bf (4FSK level table)` | 3 · new GRC block | ✅ done | err 0 / tol 0 LSB | mut |
 | **FSK4SlicerBlock** | `digital.constellation_decoder (4FSK PAM, inverse of mapper)` | 3 · new GRC block | ✅ done | BER 0 (32 bits) | mut |
@@ -113,10 +114,10 @@
 | **DotProductMACBlock** | (Kyttar-native, no single GR block) | 3 · new GRC block | ✅ done | BER 0 (60 bits) | edge rand×4 mut |
 | **ZeroCrossingRateBlock** | (Kyttar-native, no single GR block) | 3 · new GRC block | ✅ done | err 0 / tol 0 LSB | edge rand×3 sweep×5 mut |
 | **FFT16Block** | `numpy.fft.fft (N=16)` | 3 · new GRC block | ✅ done | err 0.0 / tol 0.0 LSB | edge rand×3 mut |
+| **ChirpSyncBlock** | `(Python golden: K-consecutive-equal-argmax preamble run detector)` | 3 · new GRC block | ✅ done | err 0 / tol 0 LSB | edge rand×3 sweep×4 mut |
 | **GRUCellBlock** | `(Python golden: a float GRU in gr-kyttar, H=4 I=2, + 4-class readout)` | 3 · new GRC block | 🟡 in progress | — | — |
-| **FFT64Block** | `numpy.fft.fft (N=64)` | 3 · new GRC block | 🚧 needs human (quarantined) | — | — |
-| **FFT128Block** | `numpy.fft.fft (N=128)` | 3 · new GRC block | 🚧 needs human (quarantined) | — | — |
-| **ChirpSyncBlock** | `(Python golden: preamble correlation / chirp sync detect)` | 3 · new GRC block | ⬜ planned | — | — |
+| **FFT64Block** | `numpy.fft.fft (N=64)` | 3 · new GRC block | ⬜ planned | — | — |
+| **FFT128Block** | `numpy.fft.fft (N=128)` | 3 · new GRC block | ⬜ planned | — | — |
 
 **Tiers** reflect verification difficulty (the build order): tier 1 = feed-forward, tier 2 = stateful/loop, tier 3 = new block to build. **🧪 proof-of-concept** blocks exist and work in a demo (e.g. the coherent BPSK receiver) but have NOT yet been through per-block GNU Radio equivalence verification — treat them as demo-quality, not drop-in-verified. **Won't-map** blocks are GRC blocks that do not translate to the Kyttar fabric (with a reason in the manifest).
 

@@ -9,6 +9,70 @@ block-specific gotcha. Promote anything that generalizes across block classes in
 and superseded material merged into the surviving entries; no durable lesson was
 dropped) — append new entries above the oldest ones as before.
 
+## ConjChirpMixerBlock + ChirpSyncBlock — the CSS receive spine closes; wrap-vs-saturate is USE-CASE-dependent 2026-08-24
+
+Joint build (QUEUE B9a/B9, CSS track; full cost on ChirpSync, mixer a
+zero-cost cross-reference). Dechirp = ComplexMixer NCO front + ChirpGenerator
+double accumulator + MultiplyCC saturating tail; sync = a 1-cell
+K-consecutive-equal-argmax run detector. Both bit-exact on first sim contact;
+the SYSTEM gate runs the whole RX spine (dechirp → FFT16 → mag² → Delay(1) →
+argmax → sync) as ONE placed+routed 10x12 chip, saturated, SER 0/1000 at
+10 dB. Durable lessons:
+
+- **A parent block's Q15 corner convention does NOT transfer to a subclass
+  whose USE CASE changes the operating point — re-derive it.** ComplexMixer's
+  wrapping (non-saturating) rail combine is fine under its documented
+  |rail| < 1 stimulus contract; the dechirp's PRIMARY input is a full-scale
+  unit chirp, so its output rails graze ±1.0 BY DESIGN, and MULQ floor
+  truncation (each product ≤ true, ≥ true−1 LSB) pushes a true −1.0 rail to
+  −32769 → the wrap sign-flips it full-scale. Measured: the s=4/n=16 dechirp
+  turned the exact bin-4 tone into a spectrum with 1/3-peak spurs (every 4th
+  sample flipped, exactly the samples where the tone crosses a rail axis) —
+  s ≡ 0 (mod 4) symbols hit it constantly, off-axis symbols never. Fix:
+  swap the fused mixer cell for MultiplyCC's prods→combine saturating pair
+  (V-flag minuend-sign restore). Gate: a wrap-combine mutant golden must
+  FAIL, and the diff must be the full-scale sign flip (not a 1-LSB nit).
+- **A free-running double accumulator IS the repeating reference** —
+  n·(65536/n) ≡ 0 (mod 2^16), so the s=0 chirp reference re-arms its
+  frequency word every n samples with no counter, no compare, no reset (the
+  generator's wraparound-is-the-cyclic-shift insight, applied to a 1:1
+  block: the burst/self-pacing machinery deletes cleanly). Gate the boundary
+  return (freq word == 0x8000 at every k·n) explicitly.
+- **The INV-20 unlock corridor can be a DIRECT @1 abutment** — folding the
+  saturating tail as prods(1,1)+combine(1,0) puts the exit cell directly
+  EAST of phase(0,0): unlock_face=WEST, authored @1, NO transit cell in the
+  locked variant (13 cells both ways), and I/O co-locate on the top edge for
+  free. `XOR satpos, satpos` supplies the WRITE.CFG's R0=0 without a
+  dedicated zero word.
+- **Composing a streaming FFT with a framewise consumer needs an ALIGNMENT
+  DELAY: latency N−1 ≡ −1 (mod N).** FFT16's frames occupy outputs
+  [15+16f .. 30+16f] while BinArgmax frames occupy [16g .. 16g+15] — the
+  frames STRADDLE, and one argmax frame can contain peaks from TWO adjacent
+  FFT frames (ambiguous). ONE extra real-rail sample (DelayBlock(1)) lands
+  every argmax frame exactly on one FFT frame; the decode map is then
+  s = brev4(index), frame 0 is the deterministic zero-startup frame, and
+  frame f+1 carries symbol f (decoding the last symbol needs one flush
+  symbol). The no-delay mutant golden must FAIL — pin the framing as a
+  system-level mutation.
+- **The whole 5-block RX spine fits and routes on ONE 10x12 chip** (mixer
+  2x6 at col 0-1, FFT16 6x8 mid-die, the four 1-cell tail blocks along the
+  bottom rows; ~60 cells) — auto_route_all + build on the FIRST placement
+  attempt, and the saturated queue_words drive of the whole chain is
+  bit-exact vs the composed integer goldens at ~40 symbols/0.5 s sim wall —
+  fast enough that the ≥1000-symbol SER number is measured with the full RX
+  ON-CHIP, not on a golden proxy (boundary: TX goldens + numpy channel).
+- **A run detector's counter must SATURATE at K, not count** — `CMP run,k;
+  BR.GE locked` BEFORE the increment short-circuits an already-locked run,
+  so arbitrarily long preambles can never overflow the 16-bit counter; the
+  packed-word output (sign bit = inverted sync flag, value = locked bin,
+  0xFFFF sentinel) keeps the block 1-output and collision-free since legal
+  indices are 0..32767.
+- **Shared-registry honesty:** the shared REAL_1IN saturation stimulus has
+  no equal-adjacent pair, so for ChirpSync it exercises only the sentinel
+  path — say so in the registry comment and gate the LOCK-asserting
+  saturated case bespokely (repeated-index stimulus, ≥6 locked frames
+  premise asserted).
+
 ## FFT64Block / FFT128Block — the single-block PLACEMENT wall, quarantined at the FIT CHECK 2026-08-23
 
 The first queue item stopped BEFORE authoring, on arithmetic alone — and that

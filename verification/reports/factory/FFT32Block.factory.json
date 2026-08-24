@@ -1,0 +1,30 @@
+{
+ "block": "FFT32Block",
+ "grc_block": "numpy.fft.fft (N=32)",
+ "tier": 3,
+ "wave": 7,
+ "schema_version": 1,
+ "started_utc": "2026-08-24T12:05:00Z",
+ "ended_utc": "2026-08-24T13:55:00Z",
+ "walltime_sec": 6600.0,
+ "tokens": {
+  "total": 0,
+  "source": "not_recorded_by_builder (orchestrator_usage is the only trustworthy source; the builder agent must not self-report)"
+ },
+ "turns": 0,
+ "attempts": 1,
+ "human_interventions": 0,
+ "intervention_reasons": [],
+ "prompts": [
+  {
+   "role": "initial",
+   "text": "factory dispatch (wave 7); isolated worktree; build and fully verify FFT32Block, completing the FFT family (16 shipped, 64 in progress, 128 planned). Compute the honest cell budget from measured constants first; check stage parity BEFORE authoring; prefer the simplest layout that works (bands if they fit, spine otherwise); state whether the octant fold was needed. Full gate battery including bit-exactness, per-class SNR with a derived floor, INV-4 mutations, saturation, placement legality, port reachability end-to-end on a real built chip, and GRC binding. Honest negative required on failure."
+  }
+ ],
+ "verify_passed": true,
+ "quarantined": false,
+ "quarantine_reason": "",
+ "commit_sha": null,
+ "notes": "THE EASIEST SIZE ON ARITHMETIC, THE ONE THAT FOUND THE MOST BUGS. 60 cells / 120, 5 R2SDF stages, bit-exact (tol 0) on a real built chip, 74-test suite plus every shared gate. LAYOUT SCHEME = the VERTICAL CTL/OUT SPINE (the landed LargeFFTBlock planner parameterised to N=32), NOT the FFT16 per-stage bands. Bands were tried FIRST and are impossible here for a reason that is about HEIGHT, not area: 2*n_stages = 10 spine rows against the ordinary 8-row layout cap, while the 60 cells themselves would have fitted 8x8's 64. So the block declares CHIP_SCALE, but it is a modest one (9 wide x 10 tall, leaving column 9 and rows 10-11 free for the port corridors) rather than a die-filler. OCTANT FOLD = NOT NEEDED, and not close: every N=32 stage's twiddle period is at most 16 = DIRECT_TABLE_MAX, so all three twiddle stages use the shipped DIRECT-table chain and the 9-cell fold N=64/128 need is never reached (gated, not assumed). That is what makes N=32 24 cells cheaper than N=64 for half the transform: the FOLD, not the stage count, is what makes N=64 expensive. TWO REAL DEFECTS FOUND AND FIXED, both invisible to the word-count gate and to 'it builds'. (1) INV-33 STATE/INSTRUCTION OVERLAP at the P=16 direct-table boundary: N=32 stage 0 is the family's first 16-entry table, and FFT16's fetch_d cross-forwards the c word, costing 2 instructions that push the resolved ptr state ONTO the cell's own entry instruction (31/32 words - the COUNT gate PASSES). Fix removes the cross-forward so each table cell writes straight into steer; this ALSO repairs one of FFT64's two overlapping cells (s1_fetch_d) for free, leaving only its s0_mcalc fold cell. (2) ROUTE-TIME FACE VIOLATION produced by the placement SEARCH: every stage's diffq landed edge-adjacent to its own d0 (the delay push) - byte-for-byte the hazard FFT16 avoids BY HAND. The chip ran EXACTLY 4 SAMPLES and went quiescent while every static audit was green, INCLUDING 0 hop mismatches across all 241 forward edges: the hopcheck traces forward edges, it does not ask where a cell RESTS. Fix implements LargeFFTBlock._face_rule_ok - which the module docstring already REFERENCED but nobody had written - and calls it INSIDE _solve_spine, so a mis-facing chain is rejected during the search rather than audited afterwards. Same 60 cells, same spine column; the solver just picks a different walk. GENERAL LESSON (promoted to lessons_log): a geometric rule a hand-placed block satisfies by craftsmanship becomes a CONSTRAINT the moment the layout is searched; and a shared cell builder safe at every size shipped so far can be fatal at the next size, because the word budget interacts with a PARAMETER - re-measure the overlap at the LARGEST parameter value. SNR vs numpy.fft/32, floors DERIVED as the measured minimum over 40 seeds per class rounded down (never tuned): sine_fs 83.44 measured / 81 floor, noise -6dBFS 74.47/72, two_tone 73.16/72, impulse 66.77/63, noise -26dBFS 54.59/53. The weakest class (53 dB) sits BETWEEN the N=16 floor (58) and the N=64 design floor (51), exactly as one more scaled stage predicts. DISCLOSED, and it CORRECTS a claim about the shipped block: 3 of 40 noise -6dBFS seeds reach the twiddle-multiply saturating combine and collapse to ~32 dB (correct pinned behaviour), and instrumenting the SAME drive at N=16 shows FFT16 reaches it on 2 of 20 seeds - its published 78.8 dB used a non-clamping seed. Property of the pinned numerics at both sizes, not an N=32 regression; gated on a measured non-clamping seed with both halves asserted. Also measured: WHICH clamp is reachable changes with N (N=16's RHE diff tie is unreachable at N=32; the twiddle combine fires 15-21x per run instead) - a clamp gate copied from the previous size would have certified nothing. STRATEGIES REJECTED, with reasons: (a) per-stage BANDS - busts the 8-row ordinary cap on spine height, as above; (b) a POW2-MASK slot pointer to free the overlapping word - measured WORSE (needs a second state register, 11 instructions, overlaps at both table cells); (c) SPLITTING the P=16 table across two 8-entry cells - would have worked but costs +2 cells per twiddle stage and changes the chain parity, versus zero cells for removing the cross-forward; (d) the OCTANT FOLD for stage 0 - 9 cells to replace 2, and unnecessary since P=16 fits a direct table with 9 words to spare. Zero human interventions; a single build attempt, with two measure-diagnose-fix cycles inside it (both defects were caught by gates written before the fix, and both now have INV-4 negatives proving those gates fail on the pre-fix shape). The spine solve is a ~65 s backtracking search, now memoized per N (_PLAN_CACHE) with a determinism gate.",
+ "walltime": "110m"
+}

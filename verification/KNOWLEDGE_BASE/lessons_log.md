@@ -9,6 +9,166 @@ block-specific gotcha. Promote anything that generalizes across block classes in
 and superseded material merged into the surviving entries; no durable lesson was
 dropped) — append new entries above the oldest ones as before.
 
+## FFT32Block — the family's third size: no fold needed, and the two INVISIBLE defects the P=16 boundary exposes 2026-08-24
+
+A 60-cell, 5-stage streaming R2SDF FFT (delays 16/8/4/2/1, latency 31, output
+in BIT-REVERSED bin order, scale FFT/32), built by parameterising the landed
+`LargeFFTBlock` to N=32. Bit-exact on a real built chip, 74 gates green. It is
+the EASIEST size in the family on arithmetic and the one that found the most
+bugs — because N=32 is the first size that hits the P=16 direct-table
+boundary, and because its layout comes from a SEARCH rather than by hand.
+
+**THE COST ANSWER: no octant fold, and it was not close.** Every N=32 stage's
+twiddle period is at most 16 = `DIRECT_TABLE_MAX`, so all three twiddle stages
+use the shipped DIRECT-table chain and the 9-cell octant fold that N=64 needs
+is never reached (gated, not assumed: `uses_fold(s)` is False for every stage
+and no `seq`/`mcalc`/`tab_*`/`swap`/`sign` cell exists in the block). Measured
+budget: 5 stages x (7-cell spine + 5 twiddle or 0) + delay cells, with two
+PARITY PADS, = 16+14+14+8+8 = **60 cells**. That is 24 fewer than N=64 for
+half the transform — the fold, not the stage count, is what makes N=64
+expensive.
+
+**PER-STAGE BANDS vs THE SPINE: the spine, and the reason is HEIGHT not area.**
+60 cells would have fitted the ordinary 8x8 = 64-cell cap comfortably, and the
+FFT16 band scheme was the first thing tried. It cannot work: `2 * n_stages` =
+**10 rows** of ctl/out spine against an 8-row ordinary cap. So FFT32 is
+CHIP_SCALE — but a modest one (9 wide x 10 tall, leaving column 9 and rows
+10-11 free for the port corridors), not a die-filler. The honest statement is
+that this block is chip-scale on the SPINE HEIGHT alone, and the suite asserts
+exactly that justification (`test_the_spine_is_why_this_size_is_chip_scale`)
+so it cannot rot into folklore.
+
+### DEFECT 1 — the P=16 direct table cell OVERWRITES ITS OWN PROGRAM (INV-33)
+
+The N=32 stage 0 is the first stage in the family with a 16-entry direct
+twiddle table. The shipped FFT16 `fetch_d` also CROSS-FORWARDS the `c` word
+it receives from `fetch_c`, which costs 2 instructions. At P=16 that makes the
+cell 1 input + 19 data + 10 instructions:
+
+    instruction base = 31 - 10 = 21
+    the single remaining gap register = 21
+    -> the resolved `ptr` state IS the entry instruction
+
+The cell's first `MOVE R{state:ptr}, R0` destroys the word the next trigger
+enters at. **The 32-word COUNT gate passes at 31/32.** This is byte-for-byte
+the defect the FFT64 entry below root-caused, and it is why that entry's
+durable lesson matters: *"every cell fits the budget" is not the same check as
+"no cell's state overlaps its instructions"* — and a cell that is EXACTLY full
+is the danger case.
+
+The fix is to remove the cross-forward: each table cell now writes its word
+DIRECTLY into `steer`'s own `c` / `d` input register (a 2-hop and a 1-hop
+write, traced along the chain's resting faces exactly like the sum legs'
+multi-hop write into `gather`). Both cells drop to 8 instructions, base 23,
+state at 21 — 23/32 words at P=16, comfortable. **This also repairs one of
+FFT64's two overlapping cells for free** (`s1_fetch_d`); its `s0_mcalc` fold
+cell still overlaps, so FFT64 remains needs_human, but it is now one defect
+rather than two.
+
+New GENERAL lesson, on top of the FFT64 one: a shared cell builder that is
+safe at every size shipped SO FAR can be fatal at the next size, because the
+budget interacts with a PARAMETER (here the table length). When
+parameterising a proven builder, re-measure the overlap at the LARGEST
+parameter value, not the one already in service. The gate
+(`test_no_state_overlaps_instructions`) is cheap and is now shown to FAIL on
+the pre-fix shape (`test_state_instruction_overlap_gate_has_teeth`
+reconstructs it), which is the only way to know it has teeth.
+
+### DEFECT 2 — the ROUTE-TIME FACE RULE must be a placement CONSTRAINT, not an audit
+
+With the overlap fixed, the block built, routed, and ran **exactly 4 samples**
+on a real chip, then went quiescent. Every static gate was green: 60/60 cells
+placed, ctl/out/next-ctl stacked for every stage, all consecutive chain pairs
+adjacent, and **0 hop mismatches across all 241 forward internal edges**.
+
+The `hopcheck` audit passed and the block still did not run, which is the part
+worth remembering. The audit only traces FORWARD edges from source to
+destination; it does not ask whether a cell's RESTING face points where the
+chain needs it. The searched fold had placed every stage's `diffq`
+edge-adjacent to its own `d0` (the delay push). `diffq`'s LAST-listed internal
+connection is `v_f -> d0`, so the router set `diffq`'s route-time face toward
+`d0` instead of toward its chain successor — and any trace passing THROUGH
+`diffq` then diverges, silently, via the Manhattan fallback.
+
+This is precisely the hazard the shipped FFT16 avoids BY HAND (its
+`_stage_cells` comment: *"a diff leg sitting directly beside its delay-push
+target mis-faced the whole ring and silently shipped Manhattan hops"*). FFT16
+gets it right because a human placed those cells. **A searched fold has no
+such guarantee, and `fft_large`'s docstring already referenced a
+`_face_rule_ok` that was never implemented** — a dangling reference that was
+exactly the missing constraint.
+
+The fix implements it and calls it INSIDE `_solve_spine`, so candidate chains
+that would mis-face are rejected during the search rather than audited
+afterwards. Cost: the same 60 cells and the same spine column; the solver just
+picks a different walk. The four structural audits then read 0/0/0 and
+0 mismatches / 241 edges, and the chip runs the whole stream bit-exact.
+
+Durable form: **a geometric rule that a hand-placed block satisfies by
+craftsmanship becomes a CONSTRAINT the moment the layout is searched.** Every
+such rule in a planner needs to be a predicate the search consults, not a test
+that runs after. And an audit that passes while the chip stalls is telling you
+the audit checks a different thing than the one that is broken — here,
+forward-edge hops vs resting faces.
+
+### SNR: measured, and where N=32 sits in the family
+
+Floors are the measured MINIMUM over 40 seeds per class (model-side; the chip
+is bit-exact to the model), rounded down — derived, never tuned:
+
+    class        gate seed   min/40   mean/40   pinned floor
+    sine_fs         83.44     81.33     86.95        81
+    noise_m6        74.47     73.02*    72.48*       72   (*unclamped seeds)
+    noise_m26       54.59     53.68     54.69        53
+    two_tone        73.16     72.59     73.42        72
+    impulse         66.77     63.44     66.03        63
+
+The weakest class (noise at -26 dBFS, floor 53 dB) sits BETWEEN the shipped
+N=16 floor (58 dB) and the N=64 design floor (51 dB) — one more scaled stage,
+monotonically more accumulated quantization noise.
+
+**DISCLOSED, and it corrects a claim about the shipped block.** 3 of 40
+noise-at--6-dBFS seeds reach the TWIDDLE-MULTIPLY saturating combine in an
+intermediate stage and their pooled SNR collapses to ~32 dB. That is CORRECT
+pinned behaviour (a saturating rail), and instrumenting the same drive level
+at N=16 shows **the shipped FFT16 reaches the same clamp on 2 of 20 seeds** —
+its published 78.8 dB figure for that class simply used a seed that did not
+clamp. So this is a property of the pinned numerics at both sizes, not an N=32
+regression. The class is gated on a seed measured NOT to clamp, and both
+halves of the statement are asserted
+(`test_noise_m6_clamp_reachability_is_disclosed`) so the fact cannot be lost.
+
+Related measurement worth recording: **which clamp is reachable changes with
+N.** At N=16 the one reachable clamp was the butterfly's RHE diff-leg tie; at
+N=32 that tie is unreachable on every gated class (asserted as an explicit
+negative), and the reachable clamp is the twiddle combine, fired 15-21 times
+per run by the both-rails-full class. A clamp gate copied from the previous
+size would have certified nothing — check which path your stimulus actually
+reaches before writing the gate.
+
+### Two smaller things
+
+- **A 1-LSB twiddle corruption is usually INVISIBLE.** The twiddle multiply is
+  four FLOOR MULQs, so a 1-LSB coefficient change is frequently absorbed by
+  the truncation. Measured on the gate stimulus: only slots {1,2,6,9} of
+  stage 0, {2,3} of stage 1 and {1,3} of stage 2 are detectable. A mutation
+  test that picks "the first non-trivial slot" therefore fails as a
+  NO-TEETH assertion, not as a block defect. The gate now measures which
+  slots are detectable, gates ALL of them, and asserts every twiddle stage
+  has at least one — which is a stronger test than the arbitrary single slot
+  it replaced.
+- **Frame-boundary carry means the opposite of what it sounds like.** For a
+  windowed transform, frame B's SETTLED output must be INDEPENDENT of the
+  frame that preceded it; a pipeline leaking state across the boundary would
+  break that. The teeth live in the predecessor's own window: crafted
+  adjacent frames differ in EXACTLY the 32 outputs of the A window and
+  nowhere else. Asserting "B differs after a different A" is the wrong test
+  and will fail on a correct block.
+
+The spine solve is a backtracking search costing ~65 s, so it is now memoized
+per N (`_PLAN_CACHE`); every instance of a size gets the identical layout,
+which the suite asserts (`test_layout_is_deterministic`).
+
 ## gru_classifier example — front end DERIVED and verified offline, whole-chain placement BLOCKED one net short 2026-08-24
 
 The end-to-end 4-class modulation classifier (SSB / BPSK / 4-FSK / noise) on one

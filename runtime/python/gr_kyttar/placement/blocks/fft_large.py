@@ -1,22 +1,38 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Large-N streaming R2SDF FFT — the CHIP-SCALE block class (N = 64, 128).
+"""Large-N streaming R2SDF FFT — the SPINE-FOLD block class (N = 32, 64, 128).
 
 This module generalises the shipped :mod:`fft16_block` architecture to the
-transform sizes that only fit a die as its SOLE OCCUPANT. Everything that made
-FFT16 bit-exact is reused VERBATIM — the ``R2ButterflyBlock`` RHE leg programs,
-the ``TwiddleMultiply`` steer/prods/rail/gather cells, the ``ComplexDelayLine``
-segment cells, the re-timed R2SDF ring, and the per-stage serialize-LOCK. Two
-things are NEW, and only two:
+transform sizes whose ``ctl``/``out`` spine no longer fits the ordinary 8x8
+layout cap. Everything that made FFT16 bit-exact is reused VERBATIM — the
+``R2ButterflyBlock`` RHE leg programs, the ``TwiddleMultiply``
+steer/prods/rail/gather cells, the ``ComplexDelayLine`` segment cells, the
+re-timed R2SDF ring, and the per-stage serialize-LOCK. Three things are NEW:
 
 1. **The octant-fold twiddle chain** for the stages whose twiddle period
    ``P >= 32`` busts a 32-word direct fetch cell (stage 0 at N=64; stages 0
-   and 1 at N=128). See :ref:`the fold <octant-fold>` below.
-2. **The chip-scale placement class** (``CHIP_SCALE = True``): the block may
+   and 1 at N=128). **N=32 does NOT need it** — its largest period is exactly
+   :data:`DIRECT_TABLE_MAX`, so every one of its twiddle stages uses the
+   shipped direct-table chain. See :ref:`the fold <octant-fold>` below.
+2. **The vertical CTL/OUT SPINE fold** and its placement SEARCH, with the
+   parity pad and the route-time-face constraint (:meth:`_face_rule_ok`).
+3. **The chip-scale placement class** (``CHIP_SCALE = True``): the block may
    be the full 10 columns wide and use the full panel height, the perimeter
    routing-channel reservation is waived, and the D4 rotation requirement is
-   waived (a 10-wide block cannot rotate on a 10x12). The ONLY placement
-   contract is that the block's input and output are REACHABLE from the
-   chip's x16 input/output ports — gated end to end on a real built chip.
+   waived. The ONLY placement contract is that the block's input and output
+   are REACHABLE from the chip's x16 input/output ports — gated end to end on
+   a real built chip.
+
+⚠️ SIZE STATUS AT A GLANCE (read before trusting any of them):
+
+  * **N=32 — DONE.** 60 cells, bit-exact on a real built chip, 74 gates green
+    (``verification/tests/test_fft32.py``). No octant fold. Chip-scale on the
+    SPINE HEIGHT alone (10 rows vs the ordinary 8-row cap); 60 cells would
+    have fitted 8x8 on area.
+  * **N=64 — NOT DONE** (places, routes, builds and flows, but is not
+    bit-exact: one cell still hits the INV-33 state/instruction overlap). See
+    the STATUS section below.
+  * **N=128 — NOT BUILDABLE on this array**: its 14-row spine exceeds the
+    12-row panel; construction raises :class:`LargeFFTGeometryError`.
 
 .. _octant-fold:
 
@@ -110,37 +126,29 @@ both nets route with real corridors, the build succeeds, and driving it runs
 pipeline that genuinely flows end to end, with no livelock (3.2k events per
 burst, against the 1e6-event runaway that the earlier non-spine folds hit).
 
-**NOT yet working — the defect, root-caused.** Only the FIRST sample's output
-word egresses; the chip then goes quiescent. The cause is NOT the placement
-and NOT the serialize-LOCK (both measured identical to FFT16's): **two cells
-allocate a STATE register ON their own first instruction and overwrite their
-own program.**
+**NOT yet working — the honest gap, now ROOT-CAUSED.** Only the FIRST
+sample's output word egresses; the chip then goes quiescent, which LOOKS like
+a stage's serialize-LOCK never clearing but is not. Two cells hit the INV-33
+**state/instruction OVERLAP**: the resolver packs instructions downward from
+address 31 and allocates state upward from the data, so a cell that is exactly
+full has its state land ON its own entry instruction — the first
+``MOVE R{state:...}, R0`` destroys the word the next trigger enters at, and
+the second sample enters a HALT. The 32-word COUNT gate passes at 31/32; only
+a state-vs-instruction overlap check catches it.
 
-  * ``_fold_mcalc_cell`` — entry address 8, ``StateVar("t")`` resolves to
-    register 8;
-  * ``_fetch_cell`` at N=64 stage 1 (``s1_fetch_d``) — entry 21,
-    ``StateVar("ptr")`` resolves to 21.
+  * ``s1_fetch_d`` — **FIXED** (2026-08-24). It was the P=16 direct-table
+    cell whose ``c``-word cross-forward cost the two instructions that caused
+    the overlap. Removing that cross-forward (see :meth:`_fetch_cell`) was
+    required for N=32, which hits the same P=16 boundary, and repairs N=64
+    here for free.
+  * ``s0_mcalc`` — **STILL BROKEN**. 2 inputs + 5 data + 1 state + 23
+    instructions = 31 words with data ending at 7, so entry 8 and
+    ``StateVar("t")`` both resolve to 8. Every data word is genuinely used, so
+    the repair is an instruction or data-word re-FIT, not a re-pin.
 
-The first ``MOVE R{state:...}, R0`` zeroes the instruction the NEXT trigger
-enters at, so sample 1 enters a HALT and the pipeline dies. Proven by dumping
-the cell's memory before and after each driven sample (address 8 goes
-0x9823 → 0x0000 during sample 0) and visible in the trace as
-``exec_tick pc=8 word=0x0000 result=halt`` against a loaded image that holds a
-real instruction there.
-
-This is INV-33 exactly: state auto-allocates into
-``range(max_data_address + 1, 31 - instr_count)``, and both cells are EXACTLY
-full at 31/32 words, so that range collides with the instruction region.
-Note the trap for the next builder: a "every cell fits 32 words" check PASSES
-on both — the word COUNT is fine, it is the OVERLAP that is fatal.
-``test_no_cell_overwrites_its_own_program`` gates it (currently a strict
-xfail; it flips the moment the cells are fixed).
-
-The fix is to free one word in each cell by re-deriving its arithmetic and
-re-verifying that against the fold golden — every data word in both is
-genuinely used, so a re-pin alone cannot work. Until that is done and the
-block is bit-exact against :func:`sdf_streaming_reference`, **FFT64Block is
-NOT done** and must not be described as working.
+Until that lands and the block is bit-exact against
+:func:`sdf_streaming_reference` on a real chip, **FFT64Block is NOT done** and
+must not be described as working.
 
 **THE LAYOUT: a vertical CTL/OUT SPINE** (this REPLACES the stacked-band
 scheme, which did not fit and whose two "walls" were both artefacts of the
@@ -207,13 +215,14 @@ DIRECT_TABLE_MAX = 16
 
 
 class LargeFFTGeometryError(NotImplementedError):
-    """Raised when an authored size does not fit the chip-scale FOLD geometry.
+    """Raised when an authored size does not fit the SPINE fold geometry.
 
-    The block's ARITHMETIC and CELL PROGRAMS are complete and verified at both
-    N = 64 and N = 128 (every cell inside the 32-word budget; the octant fold
-    bit-exact against the shipped twiddle tables). What does not yet fit is
-    the stacked-2-row-band LAYOUT — see the module docstring's GEOMETRY LIMIT
-    section for the exact shortfall and the two candidate mechanisms.
+    The block's ARITHMETIC and CELL PROGRAMS are complete at every authored N
+    (every cell inside the 32-word budget; the octant fold bit-exact against
+    the shipped twiddle tables). What can fail is the LAYOUT, and at N=128 it
+    does: the ``ctl``/``out`` spine needs ``2 * n_stages`` rows in ONE column,
+    which is 14 against a 12-row panel. The exception names the exact
+    shortfall.
 
     This is deliberately a LOUD failure rather than a silently-wrong layout:
     a block that builds but does not route looks identical to a working one
@@ -676,11 +685,12 @@ RING_FOLD_NEEDS_EVEN_LENGTH = True
 # ---------------------------------------------------------------------------
 
 class LargeFFTBlock(KyttarBlock):
-    """N-point streaming R2SDF FFT for the CHIP-SCALE sizes (N = 64, 128).
+    """N-point streaming R2SDF FFT for the SPINE-FOLD sizes (N = 32, 64, 128).
 
-    See the module docstring for the architecture, the octant fold, the pinned
-    numerics, the BIT-REVERSED output order, the ``FFT/N`` scale, the ``N-1``
-    latency, and the per-stage serialize-LOCK. Concrete sizes are the
+    See the module docstring for the architecture, the octant fold (needed
+    only from N=64 up), the pinned numerics, the BIT-REVERSED output order,
+    the ``FFT/N`` scale, the ``N-1`` latency, the per-stage serialize-LOCK,
+    and the PER-SIZE STATUS. Concrete sizes are the :class:`FFT32Block` /
     :class:`FFT64Block` / :class:`FFT128Block` subclasses.
 
     CHIP-SCALE PLACEMENT CLASS (``CHIP_SCALE = True``): the fold may be the
@@ -723,15 +733,18 @@ class LargeFFTBlock(KyttarBlock):
     #: Concrete subclasses set this.
     N = 0
 
+    #: Memoized spine solves, keyed by N (the solve depends on nothing else).
+    _PLAN_CACHE: Dict[int, Tuple] = {}
+
     _interface = BlockInterface(
         entry_address=1, input_registers=[1, 2], output_registers=[0, 1])
 
     def __init__(self, name: str, **kwargs):
         super().__init__(name, **kwargs)
         n = int(self.N)
-        if n not in (64, 128):
+        if n not in (32, 64, 128):
             raise ValueError(
-                f"LargeFFTBlock: N must be 64 or 128 (got {n}). Smaller "
+                f"LargeFFTBlock: N must be 32, 64 or 128 (got {n}). Smaller "
                 "transforms are the shipped FFT16Block (44 cells, not "
                 "chip-scale); larger ones do not fit this array.")
         self._n = n
@@ -750,7 +763,16 @@ class LargeFFTBlock(KyttarBlock):
                 segs = _delay_segments(D - 1, extra_cells=1)
                 self._parity_padded.append(s)
             self._segs[s] = segs
-        self._layout, self._order, self._spine_col = self._plan()
+        # The spine solve is a backtracking search over self-avoiding chains
+        # and costs tens of seconds; it depends ONLY on N, so memoize it per
+        # class. Every instance of a size gets the identical layout (which the
+        # suite asserts), so this is a pure speed-up, never a behaviour change.
+        cached = LargeFFTBlock._PLAN_CACHE.get(n)
+        if cached is None:
+            cached = self._plan()
+            LargeFFTBlock._PLAN_CACHE[n] = cached
+        layout, order, col = cached
+        self._layout, self._order, self._spine_col = dict(layout), list(order), col
 
     # ---------------------------------------------------------------- basics
     def _chain_length(self, s: int, n_segs: int) -> int:
@@ -1169,9 +1191,30 @@ class LargeFFTBlock(KyttarBlock):
         )
 
     @staticmethod
-    def _fetch_cell(table_words: Sequence[int], has_c_input: bool
-                    ) -> CellProgram:
-        """A DIRECT twiddle table cell (FFT16 ``_fetch_cell``, verbatim)."""
+    def _fetch_cell(table_words: Sequence[int]) -> CellProgram:
+        """A DIRECT twiddle table cell: LOAD the slot word, forward it, advance
+        the slot pointer with period wrap. Triggered ONLY on fill samples, so
+        the pointer walks slot 0..P-1 exactly in step with the stage's fill
+        phase — no separate sync.
+
+        ⚠️ NO CROSS-FORWARD (the ONE divergence from the shipped
+        ``fft16_block._fetch_cell``, and it is an INV-33 CORRECTNESS fix, not a
+        style choice). FFT16's ``fetch_d`` also forwards the ``c`` word handed
+        to it by ``fetch_c``, which costs 2 extra instructions. At P = 16 — the
+        largest direct table, reached by the N=32 stage 0 and the N=64 stage 1
+        — that makes the cell 1 input + 19 data + 10 instructions: the
+        instruction base is 21 AND the single remaining gap register is 21, so
+        the resolved ``ptr`` state lands ON the cell's own entry instruction and
+        the first ``MOVE R{state:ptr}, R0`` overwrites it. The 32-word COUNT
+        gate passes (31/32) — only a state-vs-instruction OVERLAP check catches
+        it. Measured: this is one of the two cells that stalled FFT64 after a
+        single sample.
+
+        With the forward removed, both table cells are 8 instructions (base 23,
+        ``ptr`` at 21, 23/32 words even at P = 16) and each writes its word
+        DIRECTLY into ``steer``'s own ``c`` / ``d`` input register — a 2-hop and
+        a 1-hop write traced along the chain's resting faces, exactly like the
+        sum legs' multi-hop write into ``gather``."""
         P = len(table_words)
         base = 2
         data = [DataWord(f"t{i}", u16(w), address=base + i)
@@ -1180,17 +1223,8 @@ class LargeFFTBlock(KyttarBlock):
                  DataWord("pend", base + P, address=base + P + 1),
                  DataWord("pbase", base, address=base + P + 2)]
         ptr_reg = base + P + 3
-        if has_c_input:
-            inputs = [Port("c", register=1)]
-            fwd = ("    MOVE R0, R{in:c}\n"
-                   "    {write:c_f}\n")
-            outs = [Port("t_f"), Port("c_f"), Port("trig")]
-        else:
-            inputs = []
-            fwd = ""
-            outs = [Port("t_f"), Port("trig")]
         return CellProgram(
-            inputs=inputs, outputs=outs,
+            inputs=[], outputs=[Port("t_f"), Port("trig")],
             entries=[EntryPoint("default")],
             data=data,
             state=[StateVar("ptr", register=ptr_reg, initial_value=base)],
@@ -1198,7 +1232,6 @@ class LargeFFTBlock(KyttarBlock):
                 "default:\n"
                 "    LOAD R{state:ptr}\n"
                 "    {write:t_f}\n"
-                + fwd +
                 "    ADD R{state:ptr}, R{data:one}\n"
                 "    MOVE R{state:ptr}, R0\n"
                 "    CMP R0, R{data:pend}\n"
@@ -1705,6 +1738,7 @@ class LargeFFTBlock(KyttarBlock):
             return None
         used = set(self._PORT_CELLS)
         chosen: Dict[int, List[Tuple[int, int]]] = {}
+        placed: Dict[str, Tuple[int, int]] = {}
 
         def walk(s: int) -> bool:
             if s == n:
@@ -1717,15 +1751,74 @@ class LargeFFTBlock(KyttarBlock):
             cands.sort(key=lambda p: (max(abs(c[1] - 2 * s) for c in p),
                                       sum(abs(c[1] - 2 * s) for c in p)))
             for path in cands:
+                # THE ROUTE-TIME FACE RULE is a CONSTRAINT, not an audit: a
+                # chain that rests a cell toward an adjacent non-successor
+                # ships wrong hops with no error (see _face_rule_ok).
+                if not self._face_rule_ok(s, path, chains[s], placed):
+                    continue
+                placed.update(zip(chains[s], path))
                 chosen[s] = path
                 used.update(path)
                 if walk(s + 1):
                     return True
                 used.difference_update(path)
                 chosen.pop(s, None)
+                for cid in chains[s]:
+                    placed.pop(cid, None)
             return False
 
         return (col, chosen) if walk(0) else None
+
+    def _last_internal_dst(self) -> Dict[str, str]:
+        """``{src_cell: the LAST-listed internal-connection dst}`` — what the
+        router uses to pick a cell's ROUTE-TIME face when that dst is
+        physically adjacent."""
+        last: Dict[str, str] = {}
+        for (src, _sp, dst, _dp) in self.internal_connections():
+            last[src] = dst
+        return last
+
+    def _face_rule_ok(self, s: int, path: Sequence[Tuple[int, int]],
+                      chain: Sequence[str], placed: Dict[str, Tuple[int, int]]
+                      ) -> bool:
+        """THE ROUTE-TIME FACE RULE, as a placement CONSTRAINT.
+
+        The router derives a cell's route-time face from its LAST-listed
+        internal connection **when that dst is edge-adjacent**, and every
+        internal write/jump distance is then resolved by TRACING those faces
+        (``router._get_routing_distance``, which SILENTLY falls back to
+        Manhattan when the trace fails). So a cell whose last-listed dst is
+        an adjacent NON-successor rests the wrong way: its own forward packets
+        still leave, but every trace that passes THROUGH it diverges, and the
+        stage spins on its own ring with no error anywhere.
+
+        FFT16 avoids this by hand — its diff legs are deliberately placed
+        NON-adjacent to the delay-push cell they target. A searched fold has
+        no such guarantee: measured at N=32, the first compact solution put
+        each stage's ``diffq`` edge-adjacent to its own ``d0`` (the delay
+        push), which is byte-for-byte the hazard FFT16's ``_stage_cells``
+        comment describes. Checking it here — rather than only auditing it
+        afterwards — is what makes the planner produce a fold that RUNS.
+
+        The ONE allowed exception is a stage's ``out``→``ctl`` write-back
+        (adjacent and backward by construction): the trace terminates in one
+        hop and nothing transits an ``out`` cell at route time.
+        """
+        pos = dict(placed)
+        pos.update({cid: p for cid, p in zip(chain, path)})
+        succ = {chain[i]: chain[i + 1] for i in range(len(chain) - 1)}
+        allowed = (f"s{s}_out", f"s{s}_ctl")
+        for src, dst in self._last_internal_dst().items():
+            if src not in chain:
+                continue
+            if dst == succ.get(src) or (src, dst) == allowed:
+                continue
+            if src not in pos or dst not in pos:
+                continue                  # a later stage: checked when placed
+            (sx, sy), (dx, dy) = pos[src], pos[dst]
+            if abs(sx - dx) + abs(sy - dy) == 1:
+                return False
+        return True
 
     def _corridors_ok(self, used, chosen, W: int, H: int) -> bool:
         """Can the ROUTER still reach this fold's I/O from the chip ports?
@@ -1802,9 +1895,9 @@ class LargeFFTBlock(KyttarBlock):
             elif self.uses_direct(s):
                 tab = self._tables[s]
                 made[p + "fetch_c"] = self._fetch_cell(
-                    [c for (_k, c, _d) in tab], False)
+                    [c for (_k, c, _d) in tab])
                 made[p + "fetch_d"] = self._fetch_cell(
-                    [d for (_k, _c, d) in tab], True)
+                    [d for (_k, _c, d) in tab])
                 made[p + "steer"] = self._steer_cell()
                 made[p + "prods"] = self._prods_cell()
                 made[p + "rail"] = self._rail_cell()
@@ -1899,10 +1992,17 @@ class LargeFFTBlock(KyttarBlock):
                     (p + "sign", "c_f", p + "steer", "c"),
                 ]
             elif self.uses_direct(s):
+                # NO cross-forward (see ``_fetch_cell``'s INV-33 note): each
+                # table cell writes STRAIGHT into ``steer``'s own input
+                # register. fetch_c's write is 2 hops (through fetch_d, its
+                # chain successor); fetch_d's is 1. Both are traced along the
+                # chain's resting faces, and neither cell's last-listed dst is
+                # an adjacent non-successor (fetch_c's only dst, ``steer``, is
+                # NON-adjacent, so its route-time face falls back to the
+                # dict-next cell = fetch_d — the route-time-face rule).
                 conns += [
-                    (p + "fetch_c", "t_f", p + "fetch_d", "c"),
+                    (p + "fetch_c", "t_f", p + "steer", "c"),
                     (p + "fetch_d", "t_f", p + "steer", "d"),
-                    (p + "fetch_d", "c_f", p + "steer", "c"),
                 ]
             if has_tw:
                 conns += [
@@ -2059,6 +2159,39 @@ class LargeFFTBlock(KyttarBlock):
         out = sdf_streaming_reference(self._n, words)
         return np.array([complex(s16(i) / 32768.0, s16(q) / 32768.0)
                          for (i, q) in out], dtype=np.complex64)
+
+
+class FFT32Block(LargeFFTBlock):
+    """32-point streaming R2SDF FFT — the SMALLEST spine-fold size.
+
+    5 stages (delays 16/8/4/2/1), one complex sample in -> one out per trigger,
+    latency 31, output in BIT-REVERSED bin order, scale FFT/32. **60 cells.**
+
+    NO OCTANT FOLD. Every stage's twiddle period is at most 16, which is
+    exactly :data:`DIRECT_TABLE_MAX`, so all three twiddle stages (D = 16, 8,
+    4) use the shipped DIRECT-table chain; stage 3 (D = 2) is the kind-word
+    stage and stage 4 (D = 1) is pure identity. The 9-cell octant fold that
+    N=64 and N=128 need is simply not reached here — measured, not assumed
+    (:meth:`uses_fold` is False for every stage, gated).
+
+    LAYOUT: the VERTICAL CTL/OUT SPINE, the same planner N=64 uses, because
+    ``2 * 5 = 10`` rows in one column busts the ordinary 8x8 layout cap on
+    HEIGHT (not on area: 60 cells would fit 8x8's 64). The solved fold is 9
+    columns x 10 rows on the 10x12 array, leaving column 9 and rows 10-11 free
+    for the port corridors. Stages 0 and 2 carry a delay-line PARITY PAD (one
+    extra delay cell, identical total delay) so their chains are EVEN and their
+    ``out`` can land edge-adjacent to their ``ctl``.
+
+    Params: NONE (``n`` is pinned at 32; scale, order, and latency are fixed
+    contracts documented on the module).
+    """
+
+    N = 32
+
+    #: A 9-wide fold on a 10-wide array cannot rotate (the rotated 9-tall
+    #: footprint would need 9 of the 12 rows AND a 10-row spine). Identity is
+    #: what ships; the suite gates exactly this set.
+    CHIP_SCALE_ORIENTATIONS = ((),)
 
 
 class FFT64Block(LargeFFTBlock):

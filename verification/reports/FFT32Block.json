@@ -1,0 +1,46 @@
+{
+  "kyttar_block": "FFT32Block",
+  "passed": true,
+  "metric": "exact",
+  "n_compared": 256,
+  "max_abs_err": 0.0,
+  "tolerance": 0.0,
+  "nmse_db": null,
+  "correlation": null,
+  "bit_errors": 0,
+  "delay_used": 0,
+  "coverage": {
+    "edge": true,
+    "random": 3,
+    "classes": 6,
+    "frames_per_class": 3,
+    "mutation": true,
+    "cells": 60,
+    "latency": 31,
+    "stages": 5,
+    "layout": "vertical ctl/out spine (9x10), chip-scale",
+    "octant_fold_needed": false,
+    "twiddle_scheme": "direct tables (max period 16)",
+    "parity_padded_stages": [
+      0,
+      2
+    ],
+    "output_order": "bit_reversed",
+    "scale": "fft_over_32",
+    "snr_db_measured": {
+      "impulse": 66.77,
+      "noise_m26": 54.59,
+      "noise_m6": 74.47,
+      "sine_fs": 83.44,
+      "two_tone": 73.16
+    },
+    "snr_floors_db": {
+      "impulse": 63.0,
+      "noise_m26": 53.0,
+      "noise_m6": 72.0,
+      "sine_fs": 81.0,
+      "two_tone": 72.0
+    },
+    "snr_floor_note": "floors are the measured minimum over 40 seeds per class, rounded down. The weakest class (noise -26 dBFS, 53 dB) sits between the N=16 floor (58 dB) and the N=64 design floor (51 dB). DISCLOSED: 3 of 40 noise -6 dBFS seeds reach the twiddle-multiply saturating combine and drop to ~32 dB \u2014 correct pinned behaviour, reachable at N=16 too (2 of 20 seeds), and gated explicitly by test_noise_m6_clamp_reachability_is_disclosed"
+  }
+}

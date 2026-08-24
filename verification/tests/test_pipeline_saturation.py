@@ -350,6 +350,12 @@ COMPLEX_2IN2OUT = {
     # Saturated == per-sample bit-exact is THE gate that proves all four
     # locks release cleanly under back-to-back drive.
     "FFT16Block": (("xi", "xq"), "out_i", {}),
+    # 32-point streaming R2SDF FFT: the same FIVE always-on serialize-LOCKed
+    # stage rings, folded on the vertical CTL/OUT SPINE. Anchored at (0, 0) —
+    # a 9-wide x 10-tall CHIP-SCALE fold does not fit the default (1, 1)
+    # placement, and the spine deliberately leaves column 9 and rows 10-11
+    # free for the port corridors.
+    "FFT32Block": (("xi", "xq"), "out_i", {}, (0, 0)),
     # Complex AGC (GR analog.agc_cc): a 20-cell serialize-LOCKED gain-feedback
     # ring (hold locks, upd's backward WRITE.CFG releases — INV-19). The lock is
     # LOAD-BEARING: with pipeline_lock=False the saturated stream diverges from
@@ -378,6 +384,22 @@ _CORDIC_COVERAGE = {
 COMPLEX_2IN2OUT.update(_CORDIC_COVERAGE)
 
 NEEDS_BESPOKE = {
+    "FFT64Block": "NOT DONE — manifest status needs_human. The block places, "
+        "routes and builds, but is NOT yet bit-exact on chip (see the lessons "
+        "log: two cells hit the INV-33 state/instruction OVERLAP and stall the "
+        "pipeline after one sample). A saturation gate on a block that is not "
+        "even correct per-sample would certify nothing. Its coverage is "
+        "test_fft64_fit_limit.py (structural + arithmetic only, explicitly NOT "
+        "an on-chip correctness claim). NOTE: the P=16 half of that overlap is "
+        "the SAME defect FFT32 hit and fixed (the direct table cell's "
+        "cross-forward, removed in fft_large._fetch_cell), so FFT64's s1_fetch_d "
+        "is already repaired; its s0_mcalc fold cell is not. Move this entry "
+        "into COMPLEX_2IN2OUT when the block reaches done.",
+    "FFT128Block": "NOT DONE — manifest status needs_human, and it does not "
+        "even construct on this array: 7 stages need a 14-row ctl/out spine "
+        "against a 12-row panel, so the constructor raises "
+        "LargeFFTGeometryError. There is nothing to drive. The stage-boundary "
+        "2-die split is its supported topology and is not built.",
     "GRUCellBlock": "RATE-REDUCING 2:1 on ONE port (two Q15 feature words per "
         "timestep in -> one RAW class-index word out) with an INTERNAL "
         "recurrence, so it fits neither the 1:1 REAL_1IN harness nor the "

@@ -698,3 +698,348 @@ def test_measured_fold_cost_exceeds_the_original_lower_bound():
     assert OCTANT_TW_CELLS == 9
     # And the correction is what moved N=64 from the old "77+" to 81.
     assert fft_cells(64) == 81
+
+
+# =============================================================================
+# 9. THE SPINE FOLD — the structural gates that make the layout trustworthy
+#
+# The stage-BAND arithmetic above pins the OLD analysis (kept: it is what the
+# fold arithmetic must not drift from). These gates pin the fold that actually
+# ships. Each one is a property the shipped FFT16 has and that the layouts
+# which FAILED on chip did not — so each has been observed to fail.
+# =============================================================================
+def test_parity_theorem_last_cell_abuts_first_only_when_even():
+    """A chain of L cells can land its LAST cell edge-adjacent to its FIRST
+    only when L is EVEN.
+
+    Chessboard-colour the array: every step to an edge-adjacent cell flips the
+    colour, so cell L-1 carries the start's colour XOR ((L-1) % 2) while
+    adjacency demands the OPPOSITE colour. Asserted here by EXHAUSTIVE SEARCH
+    over self-avoiding walks, not by restating the argument. This is why the
+    shipped FFT16 (stages 14/14/8/8, all even) folds with no effort, and why an
+    odd stage needs the delay-line parity pad.
+    """
+    def reachable(L, dim=4):
+        cells = [(0, 0)]
+        seen = {(0, 0)}
+        found = [False]
+
+        def walk():
+            if found[0]:
+                return
+            if len(cells) == L:
+                a, b = cells[0], cells[-1]
+                if abs(a[0] - b[0]) + abs(a[1] - b[1]) == 1:
+                    found[0] = True
+                return
+            x, y = cells[-1]
+            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                n = (x + dx, y + dy)
+                if n in seen or not (0 <= n[0] < dim and 0 <= n[1] < dim):
+                    continue
+                seen.add(n)
+                cells.append(n)
+                walk()
+                cells.pop()
+                seen.discard(n)
+        walk()
+        return found[0]
+
+    for L in range(2, 13):
+        assert reachable(L) == (L % 2 == 0), (
+            f"L={L}: parity theorem violated")
+
+
+def test_parity_pad_preserves_the_delay_exactly():
+    """The odd-stage repair spreads the SAME total delay over one MORE cell,
+    so the transform is bit-identical either way. A pad that changed the delay
+    would silently change the FFT."""
+    from gr_kyttar.placement.blocks import fft_large as FL  # noqa: PLC0415
+    for samples in (3, 7, 15, 31, 63):
+        base = FL._delay_segments(samples)
+        padded = FL._delay_segments(samples, extra_cells=1)
+        assert sum(base) == sum(padded) == samples
+        assert len(padded) == len(base) + 1
+        assert min(padded) >= 1
+
+
+def _spine_block():
+    from gr_kyttar.placement.blocks import fft_large as FL  # noqa: PLC0415
+    return FL.FFT64Block("probe")
+
+
+def test_fft64_places_on_one_die():
+    """N=64 constructs — the fold exists. (N=128 does not; see below.)"""
+    blk = _spine_block()
+    lay = blk.default_layout()
+    assert len(lay) == blk.cell_count == 84
+    xs = [v[0] for v in lay.values()]
+    ys = [v[1] for v in lay.values()]
+    assert max(xs) < CHIP_W and max(ys) < CHIP_H
+
+
+def test_fft128_single_die_is_ruled_out_on_the_SPINE_HEIGHT():
+    """N=128's obstacle is the spine height (7 stages x 2 = 14 rows in ONE
+    column, against a 12-row array), NOT area. Pinning the REASON matters: the
+    old analysis blamed area/rows-per-band and was wrong about both."""
+    from gr_kyttar.placement.blocks import fft_large as FL  # noqa: PLC0415
+    with pytest.raises(FL.LargeFFTGeometryError) as ei:
+        FL.FFT128Block("probe")
+    msg = str(ei.value)
+    assert "spine" in msg and "14" in msg
+
+
+def test_spine_geometry_ctl_above_out_above_next_ctl():
+    """THE load-bearing geometry: every stage's out has its own ctl directly
+    ABOVE (the write-back, in-program face_fb = NORTH) and the next stage's
+    ctl directly BELOW (the forward packet, face_tap = SOUTH). The shipped
+    FFT16 satisfies exactly this."""
+    blk = _spine_block()
+    lay = blk.default_layout()
+    col = None
+    for s in range(blk.n_stages):
+        cx, cy, _ = lay[f"s{s}_ctl"]
+        ox, oy, _ = lay[f"s{s}_out"]
+        assert (ox, oy) == (cx, cy + 1), f"s{s}: out is not below ctl"
+        col = cx if col is None else col
+        assert cx == col, f"s{s}: ctl left the spine column"
+        if s + 1 < blk.n_stages:
+            nx, ny, _ = lay[f"s{s+1}_ctl"]
+            assert (nx, ny) == (ox, oy + 1), (
+                f"s{s}: next ctl is not below out")
+    assert col not in {0, CHIP_W - 1}, (
+        "the spine column must avoid the x16 port columns, else the block "
+        "loses row 0 and no longer fits")
+
+
+def test_spine_chain_is_face_abutted_end_to_end():
+    """Every consecutive cell of every stage chain is edge-adjacent, so each
+    cell's resting face points at its chain successor and the internal hops
+    trace exactly. Break this and writes silently fall back to Manhattan."""
+    blk = _spine_block()
+    lay = blk.default_layout()
+    for s in range(blk.n_stages):
+        ch = blk._stage_chain(s)
+        for a, b in zip(ch, ch[1:]):
+            (ax, ay, _), (bx, by, _) = lay[a], lay[b]
+            assert abs(ax - bx) + abs(ay - by) == 1, (
+                f"{a} -> {b} not adjacent")
+
+
+def test_spine_route_time_face_audit():
+    """The FFT16 route-time-face rule, on the spine fold: every cell's
+    last-listed internal dst must be its chain successor or NON-adjacent, the
+    one exception being each stage's own out->ctl write-back."""
+    blk = _spine_block()
+    lay = blk.default_layout()
+    order = list(blk.build_cell_programs())
+    nxt = {order[i]: order[i + 1] for i in range(len(order) - 1)}
+    last = {}
+    for (src, _sp, dst, _dp) in blk.internal_connections():
+        last[src] = dst
+    allowed = {(f"s{s}_out", f"s{s}_ctl") for s in range(blk.n_stages)}
+    bad = []
+    for src, dst in last.items():
+        if dst == nxt.get(src) or (src, dst) in allowed:
+            continue
+        (sx, sy, _), (dx, dy, _) = lay[src], lay[dst]
+        if abs(sx - dx) + abs(sy - dy) == 1:
+            bad.append((src, dst))
+    assert not bad, f"adjacent non-successor last edges (mis-face): {bad}"
+
+
+def test_spine_every_forward_edge_traces_to_its_chain_distance():
+    """THE gate that the failing folds could not pass, and the one that makes
+    a silent failure loud.
+
+    An internal hop is resolved by TRACING resting faces
+    (``router._get_routing_distance``) and SILENTLY falls back to MANHATTAN
+    distance when the trace fails — so a bad fold does not error, it ships a
+    wrong hop and the stage spins on its own ring. Here every FORWARD internal
+    edge (connection and jump) is traced along the authored faces and must
+    equal its chain distance. The shipped FFT16 scores 0 mismatches / 188.
+    """
+    delta = {"east": (1, 0), "west": (-1, 0),
+             "south": (0, 1), "north": (0, -1)}
+    blk = _spine_block()
+    lay = blk.default_layout()
+    order = list(blk.build_cell_programs())
+    idx = {c: i for i, c in enumerate(order)}
+    at = {(v[0], v[1]): c for c, v in lay.items()}
+    edges = [(s, d) for (s, _p, d, _q) in blk.internal_connections()]
+    edges += [(s, d) for (s, _p, d, _e) in blk.internal_jumps()]
+    bad = []
+    for (src, dst) in edges:
+        if src not in lay or dst not in lay or idx[dst] <= idx[src]:
+            continue                       # backward: the feedback patcher's
+        pos, hops, seen = (lay[src][0], lay[src][1]), None, set()
+        for n in range(1, 80):
+            here = at.get(pos)
+            if here is None or pos in seen:
+                break
+            seen.add(pos)
+            dx, dy = delta[lay[here][2]]
+            pos = (pos[0] + dx, pos[1] + dy)
+            if pos == (lay[dst][0], lay[dst][1]):
+                hops = n
+                break
+        if hops != idx[dst] - idx[src]:
+            bad.append((src, dst, hops, idx[dst] - idx[src]))
+    assert not bad, f"forward edges whose traced hop != chain distance: {bad}"
+
+
+def test_spine_leaves_routing_corridors_to_both_ports():
+    """A fold that FILLS the array builds and then fails to route ("no free
+    corridor between the ports" — observed). Free, non-block cells must still
+    connect the input landing to x16_in and the exit to x16_out."""
+    blk = _spine_block()
+    lay = blk.default_layout()
+    occupied = {(v[0], v[1]) for v in lay.values()}
+    in_port, out_port = (0, 0), (CHIP_W - 1, 0)
+    assert in_port not in occupied and out_port not in occupied
+
+    def connects(cell, port):
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            start = (cell[0] + dx, cell[1] + dy)
+            if not (0 <= start[0] < CHIP_W and 0 <= start[1] < CHIP_H):
+                continue
+            if start in occupied:
+                continue
+            seen, stack = {start}, [start]
+            while stack:
+                cur = stack.pop()
+                if cur == port:
+                    return True
+                for ex, ey in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                    n = (cur[0] + ex, cur[1] + ey)
+                    if (0 <= n[0] < CHIP_W and 0 <= n[1] < CHIP_H
+                            and n not in occupied and n not in seen):
+                        seen.add(n)
+                        stack.append(n)
+        return False
+
+    ctl = lay["s0_ctl"][:2]
+    out = lay[f"s{blk.n_stages - 1}_out"][:2]
+    assert connects(ctl, in_port), "no free corridor from x16_in to s0_ctl"
+    assert connects(out, out_port), "no free corridor from the exit to x16_out"
+
+
+def test_spine_exit_does_not_rest_toward_its_own_ctl():
+    """The block EXIT's resting face is what the build rewrites to the routed
+    egress and what the router traces; resting back into its own ctl re-enters
+    the stage instead of leaving the block (observed). FFT16's last out rests
+    away from its ctl, into the cell the egress corridor starts from."""
+    blk = _spine_block()
+    lay = blk.default_layout()
+    last = f"s{blk.n_stages - 1}_out"
+    ox, oy, face = lay[last]
+    cx, cy, _ = lay[f"s{blk.n_stages - 1}_ctl"]
+    delta = {"east": (1, 0), "west": (-1, 0),
+             "south": (0, 1), "north": (0, -1)}
+    dx, dy = delta[face]
+    assert (ox + dx, oy + dy) != (cx, cy), (
+        "the block exit rests toward its own ctl")
+
+
+def test_spine_cells_are_pairwise_distinct():
+    """No stage may overlap another (INV-25): the fold is built by a search,
+    so this is a real risk, not a formality."""
+    blk = _spine_block()
+    lay = blk.default_layout()
+    seen = {}
+    for cid, (x, y, _f) in lay.items():
+        assert (x, y) not in seen, f"{cid} overlaps {seen[(x, y)]} at {(x, y)}"
+        seen[(x, y)] = cid
+
+
+# ---------------------------------------------------------------- INV-4
+# The spine gates above are worthless until they are shown to FAIL. Each
+# mutation corrupts the layout in the way one real failure mode did and
+# asserts the corresponding predicate rejects it.
+def _spine_predicates(blk, lay):
+    """(stacking_ok, adjacency_ok, hops_ok) evaluated on an ARBITRARY layout
+    dict — the same three checks the gates above make, factored so a mutated
+    layout can be pushed through them."""
+    ns = blk.n_stages
+
+    def stacking():
+        for s in range(ns):
+            cx, cy, _ = lay[f"s{s}_ctl"]
+            ox, oy, _ = lay[f"s{s}_out"]
+            if (ox, oy) != (cx, cy + 1):
+                return False
+            if s + 1 < ns:
+                nx, ny, _ = lay[f"s{s+1}_ctl"]
+                if (nx, ny) != (ox, oy + 1):
+                    return False
+        return True
+
+    def adjacency():
+        for s in range(ns):
+            ch = blk._stage_chain(s)
+            for a, b in zip(ch, ch[1:]):
+                (ax, ay, _), (bx, by, _) = lay[a], lay[b]
+                if abs(ax - bx) + abs(ay - by) != 1:
+                    return False
+        return True
+
+    def hops():
+        delta = {"east": (1, 0), "west": (-1, 0),
+                 "south": (0, 1), "north": (0, -1)}
+        order = list(blk.build_cell_programs())
+        idx = {c: i for i, c in enumerate(order)}
+        at = {(v[0], v[1]): c for c, v in lay.items()}
+        edges = [(s, d) for (s, _p, d, _q) in blk.internal_connections()]
+        edges += [(s, d) for (s, _p, d, _e) in blk.internal_jumps()]
+        for (src, dst) in edges:
+            if src not in lay or dst not in lay or idx[dst] <= idx[src]:
+                continue
+            pos, h, seen = (lay[src][0], lay[src][1]), None, set()
+            for n in range(1, 80):
+                here = at.get(pos)
+                if here is None or pos in seen:
+                    break
+                seen.add(pos)
+                dx, dy = delta[lay[here][2]]
+                pos = (pos[0] + dx, pos[1] + dy)
+                if pos == (lay[dst][0], lay[dst][1]):
+                    h = n
+                    break
+            if h != idx[dst] - idx[src]:
+                return False
+        return True
+
+    return stacking, adjacency, hops
+
+
+def test_mutation_broken_ctl_out_stacking_fails():
+    """Shift one stage's out off the spine — the stacking gate must reject."""
+    blk = _spine_block()
+    lay = dict(blk.default_layout())
+    assert _spine_predicates(blk, lay)[0]()
+    x, y, f = lay["s2_out"]
+    lay["s2_out"] = (x + 1, y, f)
+    assert not _spine_predicates(blk, lay)[0]()
+
+
+def test_mutation_broken_chain_adjacency_fails():
+    """Teleport a mid-chain cell — the adjacency gate must reject."""
+    blk = _spine_block()
+    lay = dict(blk.default_layout())
+    assert _spine_predicates(blk, lay)[1]()
+    x, y, f = lay["s1_sumq"]
+    lay["s1_sumq"] = (x, min(y + 4, CHIP_H - 1), f)
+    assert not _spine_predicates(blk, lay)[1]()
+
+
+def test_mutation_wrong_face_breaks_the_hop_trace():
+    """Point ONE cell the wrong way. Nothing about the POSITIONS changes — but
+    the traced hops no longer match the chain distances, which is exactly the
+    silent corruption the fabric would ship (a failed trace falls back to
+    Manhattan). The hop gate must reject."""
+    blk = _spine_block()
+    lay = dict(blk.default_layout())
+    assert _spine_predicates(blk, lay)[2]()
+    x, y, f = lay["s0_sumi"]
+    lay["s0_sumi"] = (x, y, "north" if f != "north" else "south")
+    assert not _spine_predicates(blk, lay)[2]()

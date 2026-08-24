@@ -9,6 +9,114 @@ block-specific gotcha. Promote anything that generalizes across block classes in
 and superseded material merged into the surviving entries; no durable lesson was
 dropped) — append new entries above the oldest ones as before.
 
+## FFT64 chip-scale — the STAGE-BAND wall was NOT real; the VERTICAL CTL/OUT SPINE places and flows, one dynamic fault left 2026-08-24
+
+The previous entry (below) concluded FFT64 "does not fit" on a band cap and a row
+budget. **Both walls were artefacts of the layout convention, not the fabric.** 84
+cells in a 120-cell array is 70% utilisation; the cells always fit, the assumed
+rectangles did not. What follows is the corrected geometry, the two constraints
+that ARE real, and an honest statement of what still does not work.
+
+- **THE PARITY THEOREM (new, general — promote-worthy).** A chain of `L` cells can
+  land its LAST cell edge-adjacent to its FIRST only when `L` is EVEN. Chessboard-
+  colour the array: every step to an edge-adjacent cell flips the colour, so cell
+  `L-1` has the start's colour XOR `(L-1) % 2`, while adjacency demands the
+  opposite colour. Proven by the argument AND by exhaustive search over all
+  self-avoiding walks for L = 2..12. This is WHY the shipped FFT16 (stages
+  14/14/8/8, all even) folded tidily with no effort, and why the old planner's
+  `L = 2W - 2*(a mod W)` condition looked like a band rule: it is the parity
+  theorem seen through one particular rectangle. **Any block whose last cell must
+  abut its first inherits this.** The repair is cheap when the chain contains a
+  delay line: spread it over ONE extra cell (`_delay_segments(..., extra_cells=1)`)
+  — identical total delay, even chain. N=64 pads 3 of 6 stages, 81 -> 84 cells.
+- **THE REAL GEOMETRY: a stage's `out` needs THREE @1 neighbours, so the whole
+  ctl/out sequence is ONE COLUMN.** FFT16 gets all three from one arrangement and
+  it generalises exactly: its own `ctl` directly ABOVE (write-back + lock-clear on
+  the in-program `face_fb` = NORTH); the NEXT stage's `ctl` directly BELOW (forward
+  packet on `face_tap` = SOUTH, which is ALSO the resting face, hence what the
+  router traces); and for the last stage a free neighbour the egress corridor
+  starts from. So the spine is `2 * n_stages` rows in one column.
+- **WHY that is forced, and the trap that hides it: a bad internal hop does NOT
+  error.** `router._get_routing_distance` traces resting faces and **silently falls
+  back to MANHATTAN distance** when the trace fails. A non-traceable inter-stage
+  handoff therefore ships a WRONG hop; the packet lands in the wrong cell and the
+  stage spins on its own ring. Measured: with the stages shelf-packed side by side
+  (out facing its own ctl, next ctl elsewhere) stage 0 alone consumed 1e6 simulator
+  events and stage 1 never ran. A `hopcheck` audit — trace every forward internal
+  edge and compare with its chain distance — turns this into a static gate: FFT16
+  scores 0 mismatches / 188 edges, and the fold is only trustworthy at 0/349.
+- **The ROW BUDGET was over-charged by one.** The old note used 11 usable rows
+  because "a 10-wide block cannot use row 0 without its ctl column landing on the
+  port cell". True for a 10-wide fold — but the spine only needs its OWN column to
+  avoid columns 0 and 9, and then **row 0 IS usable**. N=64's 6 stages need 12 rows
+  and the array is 12 tall: it fits exactly. N=128's 7 stages need 14 and is ruled
+  out on the spine height (not on area) — the 2-die split is its topology.
+- **Packing tightly is a routing bug.** The first spine solution filled all 12 rows
+  and failed with "no free corridor between the ports" / "endpoint cell is off the
+  array grid". The placement must itself check that free (non-block) cells still
+  connect the input landing to `x16_in` and the exit to `x16_out` — the same reason
+  the shipped FFT16 is 7 wide on a 10-wide array. Added as `_corridors_ok`, a
+  4-connectivity check over the free cells, run as the last step of the solve.
+- **The block EXIT must not rest toward its own ctl.** The resting face is what the
+  build rewrites to the routed egress (`output_face_addr`) and what the router
+  traces; a last `out` resting back into its ctl re-enters the stage instead of
+  leaving the block. FFT16's last `out` rests SOUTH, away from its ctl, into the
+  cell the egress corridor starts from.
+- **A general Hamiltonian-walk search is a WORSE fold than a boustrophedon.** Given
+  freedom, the search returns face-rule-clean walks that zig-zag between two
+  columns — and those pack the delay line, `out` and `ctl` into a maze of touching
+  cells. Prefer wide-and-short boxes and the straightest walk; "clean by the stated
+  rule" is not the same as "behaves like the shipped block".
+
+**WHAT IS VERIFIED** (74 gates green: 37 arithmetic + FFT16's 37 unregressed):
+the octant fold bit-exact at both N; every cell inside 32 words; and, on the REAL
+built chip at N=64, that the design places, both nets route with real corridors,
+the build succeeds, and driving it executes **all 84 cells** with per-stage activity
+decreasing monotonically s0->s5. Structural audits are clean: every consecutive
+pair adjacent, ctl/out/next-ctl stacked for every stage, ZERO route-time-face
+violations, **0 hop mismatches across all 349 forward internal edges**.
+
+**THE REMAINING BUG, ROOT-CAUSED: two cells OVERWRITE THEIR OWN PROGRAM — an
+INV-33 state/instruction OVERLAP, and it is an arithmetic bug, not a layout one.**
+
+Symptom: only the FIRST sample's word egresses; sample 1 runs stage 0 as far as
+`s0_mcalc` and everything downstream never executes; by sample 2 the input
+corridor is back-pressured and the chip is quiescent.
+
+Found by dumping the cell's memory BEFORE and AFTER each driven sample: during
+sample 0, `s0_mcalc`'s address **8 changes from 0x9823 (its FIRST INSTRUCTION) to
+0x0000**. The cell's entry address is 8 AND its `StateVar("t")` resolves to
+register 8 — so the first `MOVE R{state:t}, R0` destroys the instruction the next
+trigger will enter at, and the second sample enters a HALT. The trace says this
+outright once you know to look: `s0_mcalc exec_tick pc=8 word=0x0000 result=halt`,
+while the *loaded* image at address 8 is a real instruction.
+
+INV-33 predicts it exactly: state auto-lands in
+`range(max_data_address + 1, 31 - instr_count)`, and `mcalc` is 2 inputs + 5 data
++ 1 state + 23 instructions = 31 words with data ending at 7 — so state lands at
+8 and the instructions ALSO start at 8. A second cell has the identical defect:
+`s1_fetch_d` (1 input + 19 data + 1 state + 10 instructions), entry 21, `ptr` at
+21. An audit over every cell of both sizes finds exactly these two.
+
+**Two durable lessons:**
+- **"Every cell fits the 32-word budget" is NOT the same check as "no cell's state
+  overlaps its instructions."** The prior dispatch gated the word COUNT and passed;
+  a cell can total 31 words and still allocate state on top of its own program.
+  The correct gate compares `min(entry addresses)` against every resolved state
+  register — added to the suite. A cell that is EXACTLY full is the danger case.
+- **A self-overwriting cell looks exactly like a fabric/handshake problem.** It
+  presents as "runs once then the pipeline goes dead", which is the classic
+  serialize-LOCK signature, and it survived every static audit (placement, faces,
+  hops, lock-clear patching — all measured correct and identical to FFT16). Only a
+  BEFORE/AFTER memory diff of the stalling cell distinguishes them. When a block
+  runs exactly one sample, diff its cell memory before blaming the lock.
+
+**FFT64Block is therefore NOT done**; it must not be described as working, and the
+module docstring says so. The fix is to re-fit the two cells (each is at 31/32
+words with every data word genuinely used, so it needs an instruction or a data
+word removed, not a re-pin) and then re-run the on-chip gates. FFT128Block
+correctly raises with the spine-height shortfall.
+
 ## FeaturePairJoinBlock + SqrtBlock — the ordered two-word rendezvous, and the sqrt tail set free 2026-08-24
 
 Two substrate primitives built together (wave 7) to unblock a two-feature

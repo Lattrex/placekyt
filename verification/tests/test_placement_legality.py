@@ -58,6 +58,14 @@ BLOCKS = [
     ("RRCPulseShaperBlock", {"sampling_freq": 2.0, "symbol_rate": 1.0,
                              "alpha": 0.5, "ntaps": 17, "gain": 1.0}),
     ("ComplexRRCMatchedFilterBlock", {}),
+    # CSS chirp generator: the NCO 2x5 fold + a backward emit->sweep kick over
+    # the @1 abutment (NO transit cell); params never grow the 10-cell
+    # footprint (out-of-range n/m raise), so the fold must stay
+    # pairwise-distinct under D4 + movement.
+    ("ChirpGeneratorBlock", {"n": 16, "m": 4}),
+    # Single-cell CSS symbol mapper (PackKBits re-parameterized) — no internal
+    # transit cell, no footprint-growing param; trivially non-self-overlapping.
+    ("ChirpSymbolMapperBlock", {"m": 64}),
     # Multi-cell distributed complex delay line at its footprint-growing
     # extremes: depth 32 = 7 cells (2x4 fold, partial last column) and depth 64
     # = 13 cells (4x4 fold, partial last column) — the deepest supported chain.

@@ -688,8 +688,13 @@ the SATURATION GATE MUST assert BIT-equality (sign), not word-equality. Also: us
    valid for the UN-rotated layout; if auto-orient rotates the block, restore the is_face lock_face
    DataWord + the two LOCK_FACE writes (needs 2 more slots freed).
 2. **Merge two DataWords that hold the IDENTICAL value into one** (Gardner: `inc` and `one_q14`
-   were both 1<<14 → one word, freeing a slot). Also: LOCK engages with ANY nonzero, so reuse any
-   existing nonzero data word for the `MOVE [LOCK],Rn` — no dedicated `one` word needed.
+   were both 1<<14 → one word, freeing a slot). ~~Also: LOCK engages with ANY nonzero, so reuse any
+   existing nonzero data word for the `MOVE [LOCK],Rn` — no dedicated `one` word needed.~~
+   **CORRECTED (2026-08-23, measured on the ChirpGenerator):** the LOCK CONFIG enable reads
+   **BIT 0** of the written value — `MOVE [LOCK], R{rate=0x1000}` left the cell UNLOCKED
+   (saturated symbols barged into a mid-flight iteration; A/B: value 0x4000 fails, value 1
+   locks). Reuse an existing data word for the lock-set ONLY if its **bit 0 is set**;
+   otherwise spend the dedicated `one` word. (Matches PROGRAMMING_GUIDE §3's "write 1".)
 
 ---
 

@@ -147,6 +147,16 @@ _CASES = [
     # corridor / no reconvergent fan-in), so its per-trigger output word list must be
     # IDENTICAL in every D4 orientation.
     ("PackKBitsBlock", {"k": 8}, "real", ("sample", "out")),
+    # CSS symbol mapper — PackKBits re-parameterized (m = 2^k alphabet, raw
+    # symbol word out): the identical single-cell MSB-first packer, so its
+    # per-trigger output word list (None-gaps on accumulating samples) must be
+    # IDENTICAL in every D4 orientation.
+    ("ChirpSymbolMapperBlock", {"m": 16}, "real", ("sample", "out")),
+    # CSS chirp generator (1 symbol -> n complex samples): rate-EXPANDING, so
+    # this harness (last word per trigger) is only a weak probe — the FULL
+    # 2n-word-burst 8-D4 gate is bespoke in test_chirp_generator.py::
+    # test_orientation_invariant_full_burst (the RationalResampler precedent).
+    ("ChirpGeneratorBlock", {"n": 16, "m": 4}, "real", ("s", "yi")),
     # Windowed zero-crossing rate (placeKYT-native, no GR counterpart): single
     # real rail in (sample) -> one Q15 rate word every window_size triggers
     # (None-gaps on the accumulating samples). Feed-forward single cell with a

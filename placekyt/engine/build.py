@@ -2631,6 +2631,10 @@ def _set_cell_hop1(cfg, dest=None, entry=None, preserve_dest_regs=None) -> None:
             continue
         if opcode == _WRITE and (word & 0x1F) in preserve:
             continue  # keep the feedback WRITE's resolved hop + dest
+        if opcode == _JUMP and ("jump", word & 0x1F) in preserve:
+            continue  # keep a backward return-kick JUMP (resolved by the
+            # internal-feedback pass; tagged ("jump", entry) to keep the
+            # WRITE-register namespace separate)
         word = (word & ~(0x1F << 5)) | (_HOP1_CNT << 5)
         target = dest if opcode == _WRITE else entry
         if target is not None:
@@ -3544,6 +3548,14 @@ def _apply_internal_feedback(cell_map, gr_placement, blocks, gr_blocks,
                 # path.
                 hops = _trace_feedback_via_transit(cell_map, src_pos, dst_pos,
                                                    transit_pos)
+            if hops is None and (abs(src_pos[0] - dst_pos[0])
+                                 + abs(src_pos[1] - dst_pos[1])) == 1:
+                # DIRECT-ABUTMENT feedback: src and dst are edge-adjacent and the
+                # src emits the return via an in-program FACE flip toward dst (the
+                # dual-face idiom), so neither the fwd_face trace nor a transit
+                # trace applies — the corridor is the 1-hop abutment itself,
+                # rigid under D4 (e.g. the ChirpGenerator emit -> sweep kick).
+                hops = 1
             if hops is None:
                 continue  # no traceable return path — leave as-is, don't guess
             cfg = cell_map.get_cell(*src_pos)
@@ -3598,6 +3610,66 @@ def _apply_internal_feedback(cell_map, gr_placement, blocks, gr_blocks,
                 # (standalone Costas @2 vs CoherentRX @8). ``_LOCK_CFG_ADDR`` (4) is the
                 # CONFIG LOCK register; the WRITE.CFG's dest low-5 = 4, config bit set.
                 _patch_one_handoff(cfg, _WRITE, _LOCK_CFG_ADDR, hops, config=True)
+
+        # 3. Resolve each BACKWARD internal JUMP (a self-paced RETURN KICK — e.g.
+        # the ChirpGenerator emit cell firing the sweep cell's `iternext` entry
+        # once a sample's yi/yq pair has fully left the pipeline). The router
+        # already resolved the jump's ENTRY by name and its hop by the trace/
+        # manhattan fallback; here we re-derive the hop from the placed corridor
+        # (transit trace, else the 1-hop direct abutment) and RECORD the jump as
+        # (src_pos, ("jump", entry)) so the exit-default (_set_cell_hop1)
+        # PRESERVES it — an exit cell's jumps are otherwise rewritten to the
+        # abutting consumer's entry, which would silently kill the iteration.
+        # Inert for every block that declares no backward internal jump (the
+        # whole prior catalog).
+        ij = getattr(gb, "internal_jumps", None)
+        jlist = ij() if callable(ij) else []
+        for (jsrc, _jport, jdst, jentry) in jlist:
+            if jsrc not in idx_of or jdst not in idx_of:
+                continue
+            if idx_of[jdst] >= idx_of[jsrc]:
+                continue  # forward trigger — the resolver already set it
+            src_pos = pos_of.get(jsrc)
+            dst_pos = pos_of.get(jdst)
+            if src_pos is None or dst_pos is None:
+                continue
+            hops = _trace_transit_hops(cell_map, src_pos, dst_pos)
+            if hops is None:
+                hops = _trace_feedback_via_transit(cell_map, src_pos, dst_pos,
+                                                   transit_pos)
+            if hops is None and (abs(src_pos[0] - dst_pos[0])
+                                 + abs(src_pos[1] - dst_pos[1])) == 1:
+                hops = 1  # direct abutment (in-program FACE flip toward dst)
+            if hops is None:
+                continue
+            cfg = cell_map.get_cell(*src_pos)
+            if cfg is None:
+                continue
+            try:
+                from gr_kyttar.placement.resolver import CellProgramResolver
+                entry_addr = CellProgramResolver().compute_entry_addresses(
+                    cps[jdst]).get(jentry)
+            except Exception:  # noqa: BLE001
+                entry_addr = None
+            if entry_addr is None:
+                continue
+            # RESTORE, don't just re-hop: the routed-exit patch pass rewrites
+            # EVERY jump in the exit cell to the output corridor (hop + the
+            # consumer's entry), so matching the kick by its resolved entry can
+            # fail — its dest may already be clobbered. The kick is authored as
+            # the cell's LAST jump (after the yi/yq tail — the one-sample-at-a-
+            # time contract), so restore the HIGHEST-ADDRESS JUMP instruction to
+            # the corridor hop + the named backward entry, unconditionally.
+            jaddrs = [a for a, w in cfg.memory.items()
+                      if _is_instruction_addr(cfg, a) and (w & 0xF000) == _JUMP]
+            if not jaddrs:
+                continue
+            ka = max(jaddrs)
+            hop_cnt = encode_hop_cnt(hops)
+            cfg.memory[ka] = (_JUMP | (hop_cnt << 5)
+                              | (int(entry_addr) & 0x1F)) & 0xFFFF
+            feedback_blocks.setdefault(blk.name, set()).add(
+                (src_pos, ("jump", int(entry_addr) & 0x1F)))
     return feedback_blocks
 
 

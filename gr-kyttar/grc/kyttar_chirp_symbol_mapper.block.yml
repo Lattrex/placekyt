@@ -1,0 +1,58 @@
+id: kyttar_chirp_symbol_mapper
+label: Chirp Symbol Mapper (CSS)
+category: '[Kyttar]/Modulators'
+flags: [ python ]
+
+documentation: |-
+  Kyttar Chirp Symbol Mapper — pack log2(M) bits into one RAW CSS symbol word.
+
+  Consumes k = log2(M) input bits (one 0/1 item each; only the LSB is read,
+  exactly like GNU Radio pack_k_bits_bb) and emits ONE raw symbol word in
+  0..M-1, MSB-FIRST (the first input bit becomes the symbol's most
+  significant bit — pinned and mutation-gated). The output feeds the Chirp
+  Generator's raw-symbol input directly.
+
+  Honest ancestry: this IS GNU Radio blocks.pack_k_bits_bb(log2 M)
+  re-parameterized for CSS — the identical single-cell MSB-first packer, with
+  the GR 8-bit output-byte cap lifted (a symbol is a raw 16-bit word, so M up
+  to 32768). For M <= 256 it is verified BIT-EXACT against the live
+  pack_k_bits_bb; larger M against the numpy golden.
+
+  Rate-REDUCING: k inputs -> 1 output; a trailing partial group of fewer than
+  k bits is never emitted (GR's floor(nin/k) convention).
+
+  The output is a RAW symbol word (dtype short), NOT a Q15 sample — a float
+  scope fed through a kyttar sink shows symbol/32768; put a x32768 rescale in
+  front of a value display.
+
+  This block runs on the Kyttar chip. Place it between a KyttarSource and
+  KyttarSink block, and ensure the device_id matches your KyttarDevice.
+
+  Parameters:
+  - Device ID: ID of the KyttarDevice block
+  - M: symbol alphabet size; MUST be a power of two in [2, 32768] (matches
+    the Chirp Generator's M). Other values raise.
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.chirp_symbol_mapper(device_id=${device_id}, m=${m})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+  - id: m
+    label: M (alphabet size)
+    dtype: int
+    default: '128'
+
+inputs:
+  - label: in
+    dtype: byte
+
+outputs:
+  - label: out
+    dtype: short
+
+file_format: 1

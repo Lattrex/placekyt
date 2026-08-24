@@ -3,7 +3,7 @@
 
 # Kyttar block library — status
 
-**100 verified · 0 in progress · 108 targeted.** Each Kyttar block is verified as a drop-in equivalent of its GNU Radio Companion counterpart (same parameters, output matching within Q15 quantization). “Quality” is the measured error of the verified block versus the GNU Radio reference.
+**102 verified · 0 in progress · 108 targeted.** Each Kyttar block is verified as a drop-in equivalent of its GNU Radio Companion counterpart (same parameters, output matching within Q15 quantization). “Quality” is the measured error of the verified block versus the GNU Radio reference.
 
 > **Reading the quality column.** `err N / tol M LSB` — the worst-case sample error (`N`) against the derived pass threshold (`M`), in Q15 **LSBs** (1 LSB = 1/32768 of full scale ≈ 3.05e-5); pass requires `N ≤ M`. `−X dB SNR` — the **NMSE**: the error power is `X` dB below the signal power (more negative = quieter; Q15's floor is ≈ −90 dB). Decision blocks report **BER** instead. To estimate a chain's total noise, convert each block's dB to linear power (`10^(dB/10)`), sum, and convert back (`10·log10`) — the noisiest stage dominates.
 
@@ -56,7 +56,7 @@
 | **HammingDecoderBlock** | (Kyttar-native, no single GR block) | 1 · feed-forward | ✅ done | BER 0 (448 bits) | edge rand×3 mut |
 | **R2ButterflyBlock** | `(Python golden: radix-2 DIF butterfly, RHE scale-by-2)` | 1 · feed-forward | ✅ done | err 0.0 / tol 0.0 LSB | edge rand×3 mut |
 | **TwiddleMultiplyBlock** | `(Python golden: complex multiply by a per-sample table-selected Q15 twiddle)` | 1 · feed-forward | ✅ done | err 0.0 / tol 0.0 LSB | edge rand×3 mut |
-| **ChirpSymbolMapperBlock** | `(Python golden: symbol -> chirp start offset)` | 1 · feed-forward | ⬜ planned | — | — |
+| **ChirpSymbolMapperBlock** | `(Python golden: pack log2(m) bits MSB-first into one raw symbol word; == blocks.pack_k_bits_bb for m <= 256)` | 1 · feed-forward | ✅ done | err 0 / tol 0 LSB | sweep×4 mut |
 | **IQUpconvertBlock** | `blocks.multiply_cc` | 2 · stateful/loop | ✅ done | err 1 / tol 6 LSB · -85 dB SNR | mut |
 | **ComplexRRCMatchedFilterBlock** | `filter.fir_filter_ccf (rrc taps)` | 2 · stateful/loop | ✅ done · 🧪 proof-of-concept | err 11 / tol 18 LSB · -54 dB SNR | edge rand×3 sweep×8 mut |
 | **AGCBlock** | `analog.agc_ff` | 2 · stateful/loop | ✅ done | err 3 / tol 80 LSB · -81 dB SNR | mut |
@@ -86,9 +86,9 @@
 | **SigmoidBlock** | `(Python golden: 1/(1+exp(-x)) in Q15)` | 2 · stateful/loop | ✅ done | err 0 / tol 0 LSB | edge rand×3 sweep×4 mut |
 | **TanhBlock** | `(Python golden: numpy.tanh in Q15)` | 2 · stateful/loop | ✅ done | err 0 / tol 0 LSB | edge rand×3 sweep×4 mut |
 | **ComplexDelayLineBlock** | `(Python golden: numpy complex delay of N samples)` | 2 · stateful/loop | ✅ done | err 0 / tol 0 LSB | edge rand×3 sweep×9 mut |
+| **ChirpGeneratorBlock** | `(Python golden: cyclic-shifted linear up-chirp)` | 2 · stateful/loop | ✅ done | err 0 / tol 0 LSB | sweep×6 mut |
 | **BinArgmaxBlock** | `(Python golden: numpy.argmax over N magnitude bins)` | 2 · stateful/loop | ✅ done | err 0 / tol 0 LSB | edge rand×3 sweep×7 mut |
 | **GardnerTimingRecovery** | `digital.symbol_sync_cc` | 2 · stateful/loop | 🚧 needs human (quarantined) · 🧪 proof-of-concept | — | — |
-| **ChirpGeneratorBlock** | `(Python golden: cyclic-shifted linear up-chirp)` | 2 · stateful/loop | ⬜ planned | — | — |
 | **FSK4SymbolMapperBlock** | `digital.chunks_to_symbols_bf (4FSK level table)` | 3 · new GRC block | ✅ done | err 0 / tol 0 LSB | mut |
 | **FSK4SlicerBlock** | `digital.constellation_decoder (4FSK PAM, inverse of mapper)` | 3 · new GRC block | ✅ done | BER 0 (32 bits) | mut |
 | **FSK4SyncTimingRecoveryBlock** | `sync-word correlation timing recovery (no single GR block)` | 3 · new GRC block | ✅ done | BER 0 (208 bits) | mut |

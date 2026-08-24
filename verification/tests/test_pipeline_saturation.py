@@ -92,6 +92,11 @@ REAL_1IN = {
     # accumulator + bit counter across samples, no feedback loop / no reconvergent
     # fan-in, so saturated egress == per-sample (the None-gap samples are filtered).
     "PackKBitsBlock": ("sample", "out", {"k": 8}),
+    # CSS symbol mapper — PackKBits re-parameterized (m = 2^k alphabet, raw
+    # 16-bit symbol word out, GR byte cap lifted): the identical single-cell
+    # accumulator/counter datapath, so saturated egress == per-sample for the
+    # same reason (None-gap samples filtered).
+    "ChirpSymbolMapperBlock": ("sample", "out", {"m": 16}),
     # Rate-REDUCING frame CRC-16 (frame_len bytes -> 1 CRC word): single cell with
     # a CRC shift register + frame down-counter across samples, no feedback loop /
     # no reconvergent fan-in, so saturated egress == per-sample (the None-gap
@@ -391,6 +396,7 @@ NEEDS_BESPOKE = {
     # drives 2 in-ports, so FM has its OWN saturated gate (test_fm_saturation_safe below);
     # its datapath is NCO's (verified in COMPLEX_2IN2OUT) with only the phase cell changed.
     "FrequencyModulatorBlock": "real-in/complex-out; own gate test_fm_saturation_safe (locked, bit-exact)",
+    "ChirpGeneratorBlock": "rate-EXPANDING (1 symbol -> n complex samples) real-in/complex-out burst source — fits no shared harness; own bespoke saturated gate test_chirp_generator.py::test_saturated_equals_per_sample (queue_words whole burst, one bounded run, bit-exact + exact 2n count; exercises the always-on arbiter serialize-LOCK + the self-paced emit->sweep return kick)",
     "ComplexUpsamplerBlock": "rate-EXPANDING complex (2-rail zero-stuff), no complex-rate harness; MEMORYLESS (no feedback/state carried across samples) so per-sample == saturated by construction — cf. UpsamplerBlock (RATE_1IN, gated)",
     "ComplexGainBlock": "complex (2-rail) fixed-gain scaler, no complex-in/complex-out per-sample harness; MEMORYLESS (no feedback/state across samples) so per-sample == saturated by construction — cf. GainBlock (REAL_1IN, gated). Driven SATURATED end-to-end in the qam16_modem BER-0 acceptance test (pipelined RX gain-stage).",
     "BPSKSlicerBlock": "GR-equiv 'bit' mode is MEMORYLESS (sign slice, no state across samples) so per-sample == saturated by construction — cf. GainBlock (REAL_1IN). The optional 'byte'/'word' packing carries a bit-counter across samples; that path is driven SATURATED end-to-end in the coherent BPSK RX BER-0 chain (test_slicer_out_mode packed RX). GR digital.binary_slicer_fb takes no params + emits 1 byte/sample = the 'bit' mode.",

@@ -1149,24 +1149,25 @@
    "kyttar_block": "ChirpGeneratorBlock",
    "grc_block": "(Python golden: cyclic-shifted linear up-chirp)",
    "tier": 2,
-   "metric": "amplitude",
+   "metric": "exact",
    "params": {
     "n": 128,
-    "shift": 0
+    "m": 128,
+    "amplitude": 1.0
    },
-   "notes": "QUEUE B6 (CSS track). Generates a cyclic-shifted linear up-chirp of length N. Ancestry: NCOBlock, but with a SWEPT phase increment rather than a constant one (phase accumulator whose increment itself increments). The cyclic shift encodes the symbol. Golden: numpy. SHARED CONSTRAINTS (v0.11 shipping cell, 32 words, 16-bit Q15): MAC operands must be cell-local (no cross-cell operand fetch). sum|coeff|>1 needs the INV-13 headroom prescale. In-cell LOAD-indirect tables cap at ~21 entries (5-bit wall) so big tables are NOT available. Composites keep feedback INTERNAL (GRC flowgraphs are acyclic) using the AGCCC shared-builder model. Feedback landings MUST be pinned STATE registers, never input Ports (AGCCC trap 1). Fold big rings <=7 wide (AGCCC trap 2).",
-   "status": "planned"
+   "notes": "QUEUE B6 (CSS track) - DONE. Cyclic-shifted linear up-chirp CSS modulator: 1 raw symbol word (0..m-1) in -> n complex samples out (rate-expanding). DOUBLE phase accumulator in 16-bit wrap arithmetic: freq word s*(65536/m)+0x8000 increments by rate=65536/n per sample; the 16-bit wraparound IS the mod-BW cyclic shift (zero-cost, mutation-gated vs a clamped golden). Feeds the verified NCO quarter-wave table+interp pipeline (10 cells, NCO 2x5 fold reused; FrequencyModulator subclass pattern). PINNED: phase CARRIES across symbols (never reset; gated - with n even and m|n each symbol advances the carried phase by exactly pi). Iteration is a SELF-PACED return kick: emit fires a backward JUMP-only kick to the sweep cell's iternext entry AFTER yi/yq drain (strict one-sample-in-flight - immune to the INV-20 fan-in class); always-on arbiter serialize-LOCK holds the next symbol (LOCK CONFIG reads BIT 0 - 'any nonzero' is NOT sufficient, measured). Chip BIT-EXACT vs the integer golden (all m symbols at n=32, spot to n=256, saturated queue_words drive, 8/8 D4 full-burst, abutted-chain kick-survival regression). SNR vs ideal float chirp: ~91 dB for n<=128 (all phases land on the 33-entry table grid - multiples of 512), ~66 dB at n=256 (true interp floor). n,m powers of two, 2<=m<=n<=65536 (verified 16..256); amplitude 0..1. Build: _apply_internal_feedback grew a backward-internal-JUMP pass (direct-abutment corridor + exit-default preservation), inert for all prior blocks. Joint build with ChirpSymbolMapperBlock (full cost here).",
+   "status": "done"
   },
   {
    "kyttar_block": "ChirpSymbolMapperBlock",
-   "grc_block": "(Python golden: symbol -> chirp start offset)",
+   "grc_block": "(Python golden: pack log2(m) bits MSB-first into one raw symbol word; == blocks.pack_k_bits_bb for m <= 256)",
    "tier": 1,
    "metric": "exact",
    "params": {
-    "n": 128
+    "m": 128
    },
-   "notes": "QUEUE B7 (CSS track). Maps an input symbol (0..N-1) to the chirp cyclic-shift offset. Ancestry: PSKSymbolMapperBlock, a small map. Trivial. SHARED CONSTRAINTS (v0.11 shipping cell, 32 words, 16-bit Q15): MAC operands must be cell-local (no cross-cell operand fetch). sum|coeff|>1 needs the INV-13 headroom prescale. In-cell LOAD-indirect tables cap at ~21 entries (5-bit wall) so big tables are NOT available. Composites keep feedback INTERNAL (GRC flowgraphs are acyclic) using the AGCCC shared-builder model. Feedback landings MUST be pinned STATE registers, never input Ports (AGCCC trap 1). Fold big rings <=7 wide (AGCCC trap 2).",
-   "status": "planned"
+   "notes": "QUEUE B7 (CSS track) - DONE (zero-cost cross-reference of the ChirpGeneratorBlock joint build). HONEST ANCESTRY: this IS PackKBitsBlock (GR blocks.pack_k_bits_bb) re-parameterized - the identical single-cell MSB-first packer program with the alphabet as m (k=log2 m derived) and the GR uint8 OUTPUT-item cap lifted (raw 16-bit symbol word, m up to 32768; k=10 proven on-chip). Packs k bits (LSB read, GR semantics) MSB-FIRST into one raw symbol word 0..m-1 feeding the chirp generator. For m<=256 gated BIT-EXACT vs the LIVE pack_k_bits_bb; exhaustive roundtrip for m in {4,16,64}; LSB-first mutant golden FAILS (bit order pinned); partial-group/LSB-mask GR conventions gated. 1 cell.",
+   "status": "done"
   },
   {
    "kyttar_block": "BinArgmaxBlock",

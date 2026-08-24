@@ -1376,3 +1376,47 @@ class twiddle_multiply(_PassThrough):
         out[:n] = x[:n] * w
         self._n = (self._n + n) % P
         return n
+
+
+class chirp_symbol_mapper(_PassThrough):
+    """CSS symbol mapper — GR marker (maps to ChirpSymbolMapperBlock).
+
+    Packs k = log2(m) input bits (LSB of each item, GR pack_k_bits_bb
+    semantics) MSB-first into one RAW symbol word 0..m-1 — GNU Radio
+    ``blocks.pack_k_bits_bb(log2 m)`` re-parameterized for CSS with the uint8
+    output cap lifted (raw 16-bit symbol word, m up to 32768). Rate-REDUCING
+    (k in -> 1 out) on the chip; a trailing partial group is dropped. GR
+    marker only; the real DSP runs on the placeKYT chip — plain 1:1
+    pass-through here (the keep_one_in_n marker convention: a sync_block
+    faking the rate change deadlocks the client scheduler at flowgraph end)."""
+
+    def __init__(self, device_id="kyttar_0", m=128):
+        super().__init__("Kyttar Chirp Symbol Mapper", n_in=1, n_out=1,
+                         in_dtype=np.uint8, out_dtype=np.int16)
+        self.device_id = device_id
+        self.m = int(m)
+        self._advertise_grc_params(device_id, "ChirpSymbolMapperBlock",
+                                   {"m": int(m)})
+
+
+class chirp_generator(_PassThrough):
+    """CSS chirp generator — GR marker (maps to ChirpGeneratorBlock).
+
+    For each RAW symbol word s (0..m-1) the chip emits n complex samples of
+    the cyclic-shifted linear up-chirp starting at (s/m - 1/2)*BW and sweeping
+    upward by BW with the mod-BW wrap (the 16-bit double phase accumulator;
+    phase CARRIES across symbols). Rate-EXPANDING (1 in -> n complex out) on
+    the chip. GR marker only; the real DSP runs on the placeKYT chip — plain
+    1:1 pass-through here (the keep_one_in_n marker convention: a sync_block
+    faking the rate change deadlocks the client scheduler at flowgraph end)."""
+
+    def __init__(self, device_id="kyttar_0", n=128, m=128, amplitude=1.0):
+        super().__init__("Kyttar Chirp Generator", n_in=1, n_out=1,
+                         in_dtype=np.int16, out_dtype=np.complex64)
+        self.device_id = device_id
+        self.n = int(n)
+        self.m = int(m)
+        self.amplitude = float(amplitude)
+        self._advertise_grc_params(device_id, "ChirpGeneratorBlock",
+                                   {"n": int(n), "m": int(m),
+                                    "amplitude": float(amplitude)})

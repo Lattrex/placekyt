@@ -9,6 +9,69 @@ block-specific gotcha. Promote anything that generalizes across block classes in
 and superseded material merged into the surviving entries; no durable lesson was
 dropped) — append new entries above the oldest ones as before.
 
+## ChirpGeneratorBlock + ChirpSymbolMapperBlock — CSS modulator pair; the self-paced return kick + the LOCK bit-0 correction 2026-08-23
+
+Joint build (QUEUE B6/B7, CSS track; full cost on the generator, mapper a zero-cost
+cross-reference). Generator = 1 raw symbol word in → n complex chirp samples out
+(BIT-EXACT chip vs the integer golden: exhaustive symbols at n=32, spot to n=256,
+saturated, 8/8 D4 full-burst, abutted-chain regression). Mapper = PackKBits
+re-parameterized (see below). Durable lessons:
+
+- **The 16-bit wraparound IS the mod-BW cyclic shift.** The CSS chirp's frequency
+  wrap at +BW/2 needs NO compare: the freq word (s·(65536/m)+0x8000, +65536/n per
+  sample) wraps mod 2^16 exactly at the band edge. Same trick counts the samples:
+  `cnt += rate` wraps to 0 after exactly n kicks — no count constant, no CMP.
+  Gate the wrap with a saturate-instead-of-wrap mutant golden (it must FAIL on a
+  symbol near m−1, which wraps within its first samples).
+- **A 1:n burst generator on the NCO datapath CANNOT loop locally — it must
+  SELF-PACE via a backward return kick.** Looping the sweep cell floods the NCO's
+  reconvergent fan-in (the proven INV-20 deadlock, now internally generated). The
+  working shape: the sweep cell emits ONE sample per activation; `emit` fires a
+  backward JUMP-only kick to the sweep's second entry (`iternext`) AFTER the yi/yq
+  pair has left the cell — strict one-sample-in-flight, paced by the output-port
+  drain. Kick placement matters twice: (a) BEFORE yi/yq → 2-sample co-residency
+  (deadlock class); (b) as a data WRITE after yi/yq → the exit patchers rewrite
+  the highest-address WRITE into the output corridor and the iteration dies. A
+  bare JUMP after the writes threads the needle: the data-write tail stays the
+  canonical complex-egress shape, and a JUMP-only kick reliably re-fires a full
+  program cell (the INV-20 "trigger-only relay" caveat is about relay CELLS, not
+  jump delivery).
+- **Backward internal JUMPs are now first-class in the build** (`build.py
+  _apply_internal_feedback` step 3): a `(src, port, dst, entry)` internal_jumps
+  entry with dst EARLIER in dict order is re-hop-patched from the placed corridor
+  (transit trace, else the NEW 1-hop direct-abutment fallback) and RECORDED as
+  `(src_pos, ("jump", entry))` so `_set_cell_hop1` PRESERVES it — the routed-exit
+  pass otherwise rewrites EVERY exit-cell jump to the consumer's entry (measured:
+  1 sample per symbol, silently). The restore targets the HIGHEST-address JUMP
+  (the kick is authored last), since its dest may already be clobbered. Inert for
+  every prior block (none declares a backward internal jump). Regression:
+  test_chirp_generator.py::test_kick_survives_abutted_exit_defaulting.
+- **THE LOCK CONFIG ENABLE READS BIT 0 — "any nonzero" is WRONG** (INV-19 trick
+  #2 corrected in place). `MOVE [LOCK], R{rate=0x1000}` left the sweep cell
+  unlocked: saturated symbols barged into mid-flight iterations and the run
+  deadlocked with 1 pair out; A/B-measured (0x4000 fails, 1 locks). Spend the
+  `one` word (or reuse a data word whose bit 0 is set).
+- **The 33-entry-table grid interacts with the chirp sizes:** for n ≤ 128 every
+  phase is a multiple of 512 (= the table grid) so the interp error vanishes —
+  SNR vs the ideal float chirp ~91 dB; n = 256 hits half-grid phases and shows
+  the true interp floor (~66 dB ≈ the NCO's 11-LSB bound). Report BOTH; an
+  SNR measured only at n ≤ 128 would overstate the block fourfold.
+- **Phase-continuity convention pinned CARRY (never reset)** — zero instructions,
+  phase-continuous TX, invisible to the magnitude CSS receiver. With n even and
+  m | n each symbol advances the carried phase by exactly π, so the carry-vs-reset
+  gate is a robust sign flip on odd symbols.
+- **Harness: `run_block_dut_rate` still had the INV-1 manhattan hop** — the
+  180°-family D4 orientations of the single-real-rail generator returned ZERO
+  output until the corridor-accurate landing derivation (input_landings → route
+  length → manhattan) was ported from `run_block_dut`. Same masquerade as the
+  historical "NCO anti-orientation failure": suspect the harness hop first.
+- **ChirpSymbolMapperBlock decomposes to trivial reuse — say so:** it IS
+  PackKBitsBlock with m = 2^k and the GR uint8 OUTPUT cap lifted (raw 16-bit
+  symbol word; k = 10 proven on-chip). For m ≤ 256 it is gated against the LIVE
+  `pack_k_bits_bb` (a real GR golden); the dtype gate needed a documented
+  `_DTYPE_DEVIATIONS` entry (byte-in/short-out — the lifted cap is the deviation).
+  MSB-first pinned by an LSB-first mutant golden.
+
 ## SigmoidBlock + TanhBlock — Q15 activations, the runtime-patch-slot unfold 2026-08-23
 
 Joint build (QUEUE A1/A2, GRU track; shared module `activation_blocks.py`, one

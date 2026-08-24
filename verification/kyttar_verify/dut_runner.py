@@ -442,16 +442,38 @@ def run_block_dut_rate(
     words = bres.words(0)
     entry, ins = cat.resolved_io(block_type, params or {})
     data_addr = ins[0] if ins else 0
-    port = ct.port("x16_in")
-    blk_obj = ctrl.project.block(blk)
-    landing = (blk_obj.placement.cells[0]
-               if blk_obj and blk_obj.placement and blk_obj.placement.cells
-               else None)
-    if landing is not None:
-        dist = abs(landing.x - port.cell_x) + abs(landing.y - port.cell_y) + 1
+    # Placement-dependent hop, CORRIDOR-accurate (INV-1 refinement — the same
+    # derivation as run_block_dut): prefer the build's own resolved landing
+    # (BuildResult.input_landings — covers the brokered delivery shape), then the
+    # routed corridor length, then the manhattan fallback. The bare manhattan
+    # span stops the injected word SHORT whenever the auto-router SNAKES the
+    # input corridor (the 180°-family D4 orientations of a single-real-rail
+    # block: NCO historically, ChirpGenerator's rate gate concretely) — a
+    # harness bug that masquerades as an orientation failure of the block.
+    _chip_build = (getattr(bres, "chips", {}) or {}).get(0)
+    land = (getattr(_chip_build, "input_landings", {}) or {}).get("in_blk")
+    if land:
+        hop = int(land["hop"]) & 0x1F
+        entry = int(land["entry"])
+        data_addr = (list(land.get("data_addrs")) or [data_addr])[0]
     else:
-        dist = abs(px - port.cell_x) + abs(py - port.cell_y) + 1
-    hop = max(0, 31 - dist)
+        port = ct.port("x16_in")
+        port_cell = (port.cell_x, port.cell_y)
+        blk_obj = ctrl.project.block(blk)
+        landing = (blk_obj.placement.cells[0]
+                   if blk_obj and blk_obj.placement and blk_obj.placement.cells
+                   else None)
+        in_conn = next((c for c in ctrl.project.connections
+                        if c.name == "in_blk"), None)
+        route = getattr(in_conn, "route", None) if in_conn is not None else None
+        if (isinstance(route, list) and route
+                and (route[0].x, route[0].y) == port_cell):
+            dist = len(route)
+        elif landing is not None:
+            dist = abs(landing.x - port.cell_x) + abs(landing.y - port.cell_y) + 1
+        else:
+            dist = abs(px - port.cell_x) + abs(py - port.cell_y) + 1
+        hop = max(0, 31 - dist)
 
     chip = simkyt.Chip.from_yaml(chip_yaml)
     chip.load_bitstream_physical(words)

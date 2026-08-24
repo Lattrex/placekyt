@@ -258,6 +258,11 @@ _DTYPE_DEVIATIONS = {
     # constellation_soft_decoder_cf takes complex; the Kyttar BPSK soft demod takes
     # the REAL recovered-symbol rail (single 'sample' input on chip) and emits LLRs.
     "SoftDemodulatorBlock": ("float", "float"),
+    # pack_k_bits_bb is byte-out; the CSS mapper deliberately LIFTS the uint8
+    # output cap — a symbol is a RAW 16-bit word (m up to 32768, k up to 15), so
+    # the output rail is short (dtype short in the yml and int16 in the marker;
+    # documented in the class + binding).
+    "ChirpSymbolMapperBlock": ("byte", "short"),
 }
 
 

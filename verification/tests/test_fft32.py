@@ -35,7 +35,8 @@ here as regressions because each is INVISIBLE to the word-count and the
     which at P=16 makes the cell 1 input + 19 data + 10 instructions: entry
     address 21 AND the resolved ``ptr`` state at 21, so the cell's first
     ``MOVE R{state:ptr}, R0`` overwrites its own entry instruction. The word
-    COUNT is 31/32 and passes. The fix removes the cross-forward (each table
+    COUNT is 32/32 — EXACTLY full, which is precisely why the two collide —
+    and the count gate passes. The fix removes the cross-forward (each table
     cell writes straight into ``steer``); ``test_no_state_overlaps_instructions``
     is the gate, and it is shown to FAIL on the pre-fix shape.
   * **A ROUTE-TIME FACE violation the spine planner could produce.** The
@@ -687,12 +688,17 @@ def _pooled_snr(kind):
 # the TWIDDLE-MULTIPLY saturating combine (``fft_primitives.sat_combine``) in
 # an intermediate stage and their pooled SNR collapses to ~32 dB. That is the
 # CORRECT, pinned behaviour (a saturating rail, not an error), and it is NOT a
-# property of N=32: instrumented at the same drive level, N=16 reaches the SAME
-# clamp on 2 of 20 seeds — the shipped FFT16 figure of 78.8 dB for this class
-# simply used a seed that did not clamp. The class is therefore gated on a
-# seed measured NOT to clamp, and the clamp reachability is asserted
-# explicitly by ``test_noise_m6_clamp_reachability_is_disclosed`` so the fact
-# cannot be quietly lost.
+# property of N=32. Measured over 400 seeds at the same drive level, the clamp
+# fires on 12.5% of N=32 runs and 7.8% of N=16 runs; MATCHED FOR SAMPLE COUNT
+# (N=16 x 8 frames is the same 128 samples) N=16 is 15.8% — slightly MORE often
+# than N=32 per sample. Both suites' gated noise_m6 seeds (FFT16's 101 and this
+# suite's 201) measure ZERO clamp events, so FFT16's published 78.8 dB for this
+# class is likewise a non-clamping seed rather than evidence that N=16 is
+# immune. The class is therefore gated on a seed measured NOT to clamp, and
+# both halves of the disclosure are asserted
+# (``test_noise_m6_clamp_reachability_is_disclosed`` and
+# ``test_the_same_clamp_is_reachable_at_n16_...``) so the fact cannot be
+# quietly lost.
 _SNR_FLOORS = {"sine_fs": 81.0, "noise_m6": 72.0, "noise_m26": 53.0,
                "two_tone": 72.0, "impulse": 63.0}
 #: The weakest gated class's floor, and the family-position claim it supports.
@@ -760,6 +766,94 @@ def test_noise_m6_clamp_reachability_is_disclosed():
         f"the gated noise_m6 seed now clamps ({hits_gate} events) — re-pick "
         "the seed or re-derive the floor; do NOT lower it")
     assert snr_gate >= _SNR_FLOORS["noise_m6"]
+
+
+def test_the_same_clamp_is_reachable_at_n16_so_it_is_not_an_n32_regression():
+    """The OTHER half of the disclosure, and the part that stops it being read
+    as an N=32 defect: run the SAME -6 dBFS drive through the SHIPPED FFT16
+    and count its twiddle-combine overflows.
+
+    Measured over 400 seeds (see the module note): the clamp fires on 12.5% of
+    N=32 runs and 7.8% of N=16 runs, and MATCHED FOR SAMPLE COUNT — N=16 with
+    8 frames is the same 128 samples as N=32 with 4 — N=16 is 15.8%, slightly
+    MORE often than N=32. Meanwhile FFT16's OWN gated noise_m6 seed (its suite
+    uses ``100 + index``, so 101) has ZERO events, which is why its published
+    78.8 dB for that class is high.
+
+    Gated here rather than only narrated, because a claim about ANOTHER
+    block's published number must be reproducible. A 100-seed window is used
+    so the assertion is about a RATE, not about one lucky seed."""
+    import gr_kyttar.placement.blocks.fft_primitives as FP
+    from gr_kyttar.placement.blocks.fft16_block import (
+        N_FFT as N16, fft16_streaming_reference)
+
+    count = [0]
+    orig = FP.sat_combine
+
+    def traced(p_min, p_other, sign):
+        r = s16(p_min) + sign * s16(p_other)
+        if r > 32767 or r < -32768:
+            count[0] += 1
+        return orig(p_min, p_other, sign)
+
+    def n16_noise_m6(seed, frames):
+        rng = np.random.default_rng(seed)
+        t = np.arange(N16 * frames)
+        z = rng.normal(0, 0.5, len(t)) + 1j * rng.normal(0, 0.5, len(t))
+        z = np.clip(z.real, -A_FS, A_FS) + 1j * np.clip(z.imag, -A_FS, A_FS)
+        return [(_q15(c.real), _q15(c.imag)) for c in z]
+
+    def clamps16(seed, frames=FRAMES):
+        FP.sat_combine = traced
+        try:
+            count[0] = 0
+            fft16_streaming_reference(n16_noise_m6(seed, frames))
+            return count[0]
+        finally:
+            FP.sat_combine = orig
+
+    seeds = list(range(5000, 5100))
+    rate16 = sum(1 for s in seeds if clamps16(s)) / len(seeds)
+    assert rate16 > 0.02, (
+        f"the shipped FFT16 reaches the twiddle clamp on only {rate16:.1%} of "
+        "100 seeds — the disclosure's cross-size claim needs re-deriving")
+    # MATCHED FOR SAMPLE COUNT (N=16 x 8 frames == N=32 x 4 frames == 128
+    # samples), N=16 is not the safer size — it clamps at least as often. This
+    # is the assertion that makes "not an N=32 regression" a measured claim.
+    rate16_matched = sum(1 for s in seeds
+                         if clamps16(s, frames=2 * FRAMES)) / len(seeds)
+    rate32 = sum(1 for s in seeds
+                 if _n32_clamp_events(s)) / len(seeds)
+    assert rate16_matched >= rate32, (
+        f"matched for sample count, N=16 clamps on {rate16_matched:.1%} of "
+        f"seeds vs N=32's {rate32:.1%} — N=32 is now the WORSE size for this "
+        "clamp and the disclosure must be rewritten, not kept")
+    # FFT16's own gated seed for this class is clean, which is exactly why its
+    # published figure is high.
+    assert clamps16(101) == 0, (
+        "FFT16's gated noise_m6 seed now clamps — its published SNR figure "
+        "for that class would need re-measuring")
+
+
+def _n32_clamp_events(seed: int) -> int:
+    """Twiddle-combine overflow count for one noise_m6 seed at N=32."""
+    import gr_kyttar.placement.blocks.fft_primitives as FP
+
+    count = [0]
+    orig = FP.sat_combine
+
+    def traced(p_min, p_other, sign):
+        r = s16(p_min) + sign * s16(p_other)
+        if r > 32767 or r < -32768:
+            count[0] += 1
+        return orig(p_min, p_other, sign)
+
+    FP.sat_combine = traced
+    try:
+        sdf_streaming_reference(N_FFT, _words(_make_class("noise_m6", seed)))
+        return count[0]
+    finally:
+        FP.sat_combine = orig
 
 
 # =============================================================================
@@ -1069,8 +1163,14 @@ def test_state_instruction_overlap_gate_has_teeth():
     assert len(d_words) == 16 == DIRECT_TABLE_MAX
     prefix = prefix_fetch_cell(d_words, True)
     # THE POINT: the pre-fix cell PASSES the word-count gate and FAILS the
-    # overlap gate. That is exactly why the count alone did not catch it.
-    assert words(prefix) <= 32, words(prefix)
+    # overlap gate. That is exactly why the count alone did not catch it — and
+    # the cell is EXACTLY full (32/32), which is the mechanism: the resolver
+    # packs instructions down from 31 and state up from the data, so at exact
+    # occupancy the two meet on one address.
+    assert words(prefix) == 32, (
+        f"the pre-fix P=16 cell is {words(prefix)}/32, not exactly full — the "
+        "documented mechanism (exact occupancy makes state and instructions "
+        "collide) needs re-deriving")
     assert overlaps(prefix), (
         "the pre-fix P=16 cross-forwarding cell no longer overlaps — the "
         "overlap gate has lost its teeth")
@@ -1509,6 +1609,10 @@ def test_emit_report():
                       "the N=64 design floor (51 dB). DISCLOSED: 3 of 40 "
                       "noise -6 dBFS seeds reach the twiddle-multiply "
                       "saturating combine and drop to ~32 dB — correct pinned "
-                      "behaviour, reachable at N=16 too (2 of 20 seeds), and "
-                      "gated explicitly by "
-                      "test_noise_m6_clamp_reachability_is_disclosed")})
+                      "behaviour, and NOT an N=32 phenomenon: measured over "
+                      "400 seeds it fires on 12.5% of N=32 runs vs 7.8% of "
+                      "N=16 runs, and MATCHED FOR SAMPLE COUNT N=16 is 15.8% "
+                      "— slightly MORE often. Both suites' gated seeds "
+                      "measure 0 clamps. Gated by "
+                      "test_noise_m6_clamp_reachability_is_disclosed and "
+                      "test_the_same_clamp_is_reachable_at_n16_...")})

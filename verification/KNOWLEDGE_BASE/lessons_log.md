@@ -9,6 +9,32 @@ block-specific gotcha. Promote anything that generalizes across block classes in
 and superseded material merged into the surviving entries; no durable lesson was
 dropped) — append new entries above the oldest ones as before.
 
+`LargeFFTBlock` to N=32. Bit-exact on a real built chip, 75 gates green. It is
+enters at. **The cell is EXACTLY full at 32/32 words, and the count gate passes.** This is byte-for-byte
+state at 21 — 30/32 words at P=16 with the entry instruction two words clear of the state, where before they collided. **This also repairs one of
+at N=16 over the SAME 40 seeds shows **the shipped FFT16 reaches the same
+clamp on 3 of 40 — the identical rate** — and FFT16's OWN gated seed (101)
+measures ZERO clamps, so its published 78.8 dB figure for that class simply
+used a seed that did not clamp. So this is a property of the pinned numerics at both sizes, not an N=32
+The spine solve is a backtracking search costing ~28 s, so it is now memoized
+### A block that CANNOT be constructed must leave the CATALOG, not just fail
+
+Found while regression-testing this build, and PRE-EXISTING on main (verified
+by re-running at the parent commit): six tests across `test_data_words.py` and
+`test_portmap.py` were red, all with the same cause — `FFT128Block` is
+catalogued, and every "build/portmap each catalog block" sweep instantiates it,
+and its constructor correctly raises `LargeFFTGeometryError` (14 spine rows
+against a 12-row panel). A LOUD constructor failure is the right design; being
+in the catalog while having no in-array implementation is not. It is now in
+`catalog._EXCLUDED_BLOCKS` — which is exactly what that list is for — with the
+2-die-split condition for removing it recorded next to the entry, and its
+`NEEDS_BESPOKE` saturation reason kept so that re-catalogueing it can never
+silently skip a gate. Six tests green, none of them weakened.
+
+The general form: an "every catalog block" sweep is a good gate, and the way to
+keep it honest is to make the catalog mean "can be instantiated on this array",
+not to add exceptions inside the sweep.
+
 ## FFT32Block — the family's third size: no fold needed, and the two INVISIBLE defects the P=16 boundary exposes 2026-08-24
 
 A 60-cell, 5-stage streaming R2SDF FFT (delays 16/8/4/2/1, latency 31, output

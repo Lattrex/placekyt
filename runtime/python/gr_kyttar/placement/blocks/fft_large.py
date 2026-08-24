@@ -24,7 +24,7 @@ re-timed R2SDF ring, and the per-stage serialize-LOCK. Three things are NEW:
 
 ⚠️ SIZE STATUS AT A GLANCE (read before trusting any of them):
 
-  * **N=32 — DONE.** 60 cells, bit-exact on a real built chip, 74 gates green
+  * **N=32 — DONE.** 60 cells, bit-exact on a real built chip, 75 gates green
     (``verification/tests/test_fft32.py``). No octant fold. Chip-scale on the
     SPINE HEIGHT alone (10 rows vs the ordinary 8-row cap); 60 cells would
     have fitted 8x8 on area.
@@ -1205,16 +1205,19 @@ class LargeFFTBlock(KyttarBlock):
         — that makes the cell 1 input + 19 data + 10 instructions: the
         instruction base is 21 AND the single remaining gap register is 21, so
         the resolved ``ptr`` state lands ON the cell's own entry instruction and
-        the first ``MOVE R{state:ptr}, R0`` overwrites it. The 32-word COUNT
-        gate passes (31/32) — only a state-vs-instruction OVERLAP check catches
-        it. Measured: this is one of the two cells that stalled FFT64 after a
-        single sample.
+        the first ``MOVE R{state:ptr}, R0`` overwrites it. The cell is EXACTLY
+        full at 32/32 words — which is precisely why the two collide — so the
+        32-word COUNT gate PASSES; only a state-vs-instruction OVERLAP check
+        catches it. Measured: this is one of the two cells that stalled FFT64
+        after a single sample.
 
         With the forward removed, both table cells are 8 instructions (base 23,
-        ``ptr`` at 21, 23/32 words even at P = 16) and each writes its word
-        DIRECTLY into ``steer``'s own ``c`` / ``d`` input register — a 2-hop and
-        a 1-hop write traced along the chain's resting faces, exactly like the
-        sum legs' multi-hop write into ``gather``."""
+        ``ptr`` at 21), so at P = 16 the cell occupies 30/32 words with the
+        entry instruction two words CLEAR of the state — where the
+        cross-forwarding shape put them on the same address. Each cell then
+        writes its word DIRECTLY into ``steer``'s own ``c`` / ``d`` input
+        register — a 2-hop and a 1-hop write traced along the chain's resting
+        faces, exactly like the sum legs' multi-hop write into ``gather``."""
         P = len(table_words)
         base = 2
         data = [DataWord(f"t{i}", u16(w), address=base + i)
@@ -1804,11 +1807,17 @@ class LargeFFTBlock(KyttarBlock):
         (adjacent and backward by construction): the trace terminates in one
         hop and nothing transits an ``out`` cell at route time.
         """
+        # internal_connections() is invariant during the solve and this
+        # predicate runs once per CANDIDATE path, so build the map once.
+        last = getattr(self, "_last_dst_cache", None)
+        if last is None:
+            last = self._last_internal_dst()
+            self._last_dst_cache = last
         pos = dict(placed)
         pos.update({cid: p for cid, p in zip(chain, path)})
         succ = {chain[i]: chain[i + 1] for i in range(len(chain) - 1)}
         allowed = (f"s{s}_out", f"s{s}_ctl")
-        for src, dst in self._last_internal_dst().items():
+        for src, dst in last.items():
             if src not in chain:
                 continue
             if dst == succ.get(src) or (src, dst) == allowed:

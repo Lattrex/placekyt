@@ -399,7 +399,10 @@ NEEDS_BESPOKE = {
         "even construct on this array: 7 stages need a 14-row ctl/out spine "
         "against a 12-row panel, so the constructor raises "
         "LargeFFTGeometryError. There is nothing to drive. The stage-boundary "
-        "2-die split is its supported topology and is not built.",
+        "2-die split is its supported topology and is not built. It is also "
+        "in catalog._EXCLUDED_BLOCKS for exactly this reason, so it no longer "
+        "reaches this coverage sweep — the entry is kept as the documented "
+        "reason, and so re-catalogueing it can never silently skip the gate.",
     "GRUCellBlock": "RATE-REDUCING 2:1 on ONE port (two Q15 feature words per "
         "timestep in -> one RAW class-index word out) with an INTERNAL "
         "recurrence, so it fits neither the 1:1 REAL_1IN harness nor the "

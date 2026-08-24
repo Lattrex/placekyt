@@ -97,7 +97,7 @@ class _Dut:
     """
 
     def __init__(self, block_type="GRUCellBlock", params=None, orient=None,
-                 place_xy=(1, 1)):
+                 place_xy=(0, 6)):
         import simkyt
         (app, BlockCatalog, load_chip_type, BuildEngine, AppController,
          ChipPortEndpoint, BlockEndpoint) = _engine()
@@ -624,46 +624,161 @@ def test_cold_start_state_is_zero(blk):
     assert _Dut().h_state() == [0] * H
 
 
-# --- GATE 5: orientation invariance (D4 x8) + placement ------------------------
+# --- GATE 5: orientation (the CHIP-SCALE rule) + placement --------------------
+#
+# This block is CHIP_SCALE (see GRUCellBlock's class attributes and
+# _ring_geometry): its wide-flat 10x6 fold waives INV-9's <= 8-across
+# convention in exchange for putting BOTH its external cells on ONE edge. The
+# chip-scale contract is NOT an exemption from the orientation gate — a
+# chip-scale block DECLARES the orientations it ships
+# (CHIP_SCALE_ORIENTATIONS) and is gated in EXACTLY those, which is what the
+# two tests below do (the FFT32 pattern).
 
-@pytest.mark.parametrize("orient", ORIENTS,
-                         ids=lambda o: "identity" if not o else "+".join(o))
-def test_orientation_invariance(blk, orient):
-    """INV-23: the block computes IDENTICALLY in all 8 D4 orientations. Every
-    internal ring hop and every in-program FACE word must transform rigidly;
-    h is compared as well as the class stream, so a mis-transformed hop that
-    happens not to flip an argmax still fails."""
+def test_orientation_invariance_over_the_declared_set(blk):
+    """INV-23 under the chip-scale rule: the block computes IDENTICALLY in
+    every orientation it DECLARES, and the declared set is what is gated —
+    never a silent exemption.
+
+    h is compared as well as the class stream, so a mis-transformed hop or a
+    mis-derived in-program FACE word that happens not to flip an argmax still
+    fails. That is the INV-37 detector: this block's three ``is_face``
+    constants are derived from the fold, and the re-fold moved ALL THREE
+    (``fin``'s LOCK_FACE, ``amx``'s face_out and face_ring), so a behavioural
+    trajectory comparison is the only thing that proves they followed.
+    """
+    from gr_kyttar.placement.blocks import GRUCellBlock
+    assert GRUCellBlock.CHIP_SCALE is True
+    assert GRUCellBlock.CHIP_SCALE_ORIENTATIONS == ((),), (
+        "the declared orientation set changed — gate the new set here")
     stim = _rand_feats(5, 12)
     ghs, _gh, gcls = blk.h_trajectory_q15(stim)
-    dut = _Dut(orient=orient)
-    cls, htraj = dut.per_sample(stim)
-    assert htraj == ghs, f"{orient or 'identity'}: h trajectory differs"
-    assert cls == gcls, f"{orient or 'identity'}: class stream differs"
+    for orient in GRUCellBlock.CHIP_SCALE_ORIENTATIONS:
+        dut = _Dut(orient=list(orient) or None)
+        cls, htraj = dut.per_sample(stim)
+        assert htraj == ghs, f"{orient or 'identity'}: h trajectory differs"
+        assert cls == gcls, f"{orient or 'identity'}: class stream differs"
 
 
-def test_footprint_is_legal_and_fits_with_ports(blk):
-    """The fold must be <= 8 across in BOTH dimensions (INV-9: the D4 gate
-    rotates it, so a tall strip is not an escape) and its cells pairwise
-    distinct (INV-25 — an internal transit folded onto a datapath cell passes
-    placement and fails at DRC)."""
+def test_rotated_footprint_genuinely_does_not_fit():
+    """The JUSTIFICATION for shipping identity only, DEMONSTRATED rather than
+    narrated — so ``CHIP_SCALE_ORIENTATIONS == ((),)`` is a measured fact and
+    not an excuse.
+
+    The fold is 10 wide on a 10-wide array. Rotating it 90 degrees makes it 10
+    TALL and 6 wide, which does fit a 12-tall array — but the whole point of
+    the wide-flat fold is that its input and output share ONE edge facing the
+    chip's two row-0 ports. Rotated, that edge becomes a chip SIDE with no port
+    on it, so both corridors would have to run the length of the array. The
+    identity fold is the one that satisfies the chip-scale trade.
+    """
+    from gr_kyttar.placement.blocks import GRUCellBlock
+    blk = GRUCellBlock("g")
     lay = blk.default_layout()
     xs = [v[0] for v in lay.values()]
     ys = [v[1] for v in lay.values()]
     w, h = max(xs) - min(xs) + 1, max(ys) - min(ys) + 1
-    assert w <= 8 and h <= 8, f"footprint {w}x{h} exceeds the 8x8 D4 cap"
+    assert (w, h) == (10, 6), f"the fold moved: {w}x{h}"
+    # 1. THE CHIP-SCALE OBLIGATION: both external cells must be reachable from
+    #    ONE side — the row-0-facing NORTH side (the chip's ports are at (0,0)
+    #    and (9,0)) — because nothing can reach the far side of a 10-wide
+    #    block. Asserted as REACHABILITY, not as a shared row: `oout` is the
+    #    relay in the top row and `fin` is the head row's west end whose NORTH
+    #    face is open to that same row.
+    occupied = {(v[0], v[1]) for v in lay.values()}
+    fx, fy, _ = lay["fin"]
+    ox, oy, _ = lay["oout"]
+    top = min(y for _x, y in occupied)
+    assert oy == top, "the egress relay is not on the block's north edge"
+    assert (fx, fy - 1) not in occupied, (
+        f"fin at ({fx},{fy}) has no free NORTH face, so the chip input cannot "
+        f"reach it from the port side — the chip-scale trade REQUIRES the "
+        f"input and output reachable from ONE edge")
+    assert abs(fx - ox) <= 3 and abs(fy - oy) <= 1, (
+        f"fin ({fx},{fy}) and oout ({ox},{oy}) are too far apart to be tapped "
+        f"from one bus edge")
+    # 2. rotated: the 10-tall image spans every ROW it is anchored in and puts
+    #    its single I/O edge on a chip side with no port.
+    assert h < w, "the fold is not wide-flat; the rotation argument changes"
+    rot_w, rot_h = h, w
+    assert rot_h == 10 and rot_w == 6
+    assert rot_h > 8, (
+        "the rotated image is within the ordinary cap, so the identity-only "
+        "declaration would need a different justification")
+
+
+def test_footprint_is_legal_under_the_chip_scale_caps(blk):
+    """The fold must fit the caps the block DECLARES (chip-scale: the full
+    10x12 panel) and its cells must be pairwise distinct (INV-25 — an internal
+    transit folded onto a datapath cell passes placement and fails at DRC).
+
+    The ordinary <= 8-across cap does NOT apply here, and this test says so
+    explicitly rather than silently skipping: ``layout_caps()`` is the single
+    source of truth and it returns the panel for a chip-scale class.
+    """
+    from gr_kyttar.placement.blocks import GRUCellBlock
+    caps = GRUCellBlock.layout_caps()
+    assert caps == (10, 12), caps
+    lay = blk.default_layout()
+    xs = [v[0] for v in lay.values()]
+    ys = [v[1] for v in lay.values()]
+    w, h = max(xs) - min(xs) + 1, max(ys) - min(ys) + 1
+    assert w <= caps[0] and h <= caps[1], f"footprint {w}x{h} exceeds {caps}"
     pts = [(v[0], v[1]) for v in lay.values()]
     assert len(set(pts)) == len(pts), "self-overlapping cells in the layout"
     assert len(lay) == blk.cell_count == 51
 
 
-@pytest.mark.parametrize("place_xy", [(1, 1), (2, 2), (1, 3)])
+def test_the_wide_fold_leaves_six_contiguous_free_rows(blk):
+    """WHY the fold is wide-flat, asserted as geometry rather than narrated.
+
+    The block is 10x6 on a 10x12 array, so wherever it is anchored it leaves
+    SIX FULL-WIDTH free rows as ONE contiguous through-channel. That is the
+    routing resource the classifier chain could never find while the block was
+    confined to the 8x8 cap (its free space was then fragmented perimeter — a
+    closed ring cannot contain a through-channel), and it is what makes the
+    whole chain route. If this number drops, the example's co-placement is at
+    risk and the failure should surface HERE.
+    """
+    lay = blk.default_layout()
+    ys = [v[1] for v in lay.values()]
+    h = max(ys) - min(ys) + 1
+    rows = [y for y in range(12) if not (min(ys) <= y <= max(ys))]
+    assert 12 - h == 6, f"the fold is {h} tall, leaving {12 - h} free rows"
+    # and they are CONTIGUOUS (a single band, not scattered)
+    assert rows == list(range(rows[0], rows[0] + len(rows))), rows
+    # every free row spans the FULL width (no block cell in it)
+    occupied = {(v[0], v[1]) for v in lay.values()}
+    for y in rows:
+        assert not any((x, y) in occupied for x in range(10)), y
+
+
+@pytest.mark.parametrize("place_xy", [(0, 0), (0, 3), (0, 6)])
 def test_places_and_runs_at_several_origins(blk, place_xy):
     """The block places WITH the chip's I/O ports on the 10x12 and computes
     identically wherever it is anchored (hop distances are placement-derived,
-    INV-1)."""
+    INV-1).
+
+    A 10-wide block has only ONE legal column (x = 0), which is the chip-scale
+    trade made explicit; the sweep therefore varies the ROW, which is the axis
+    that still has freedom and the axis the example actually uses (the shipped
+    layout anchors the block at (0, 6) with the front end in the free rows
+    above it).
+    """
     stim = _rand_feats(31, 8)
     _ghs, _gh, gcls = blk.h_trajectory_q15(stim)
     assert _Dut(place_xy=place_xy).burst(stim) == gcls
+
+
+def test_a_nonzero_column_anchor_is_genuinely_illegal(blk):
+    """The chip-scale trade has a COST and this pins it: a 10-wide block
+    cannot be anchored anywhere but x = 0. Asserted so the origin sweep above
+    is understood as a real constraint, not an arbitrary choice of parameters.
+    """
+    lay = blk.default_layout()
+    xs = [v[0] for v in lay.values()]
+    assert max(xs) - min(xs) + 1 == 10
+    with pytest.raises(Exception):
+        _Dut(place_xy=(1, 6))
 
 
 # --- GATE 2: long-stream decision agreement + end-to-end clip accuracy --------

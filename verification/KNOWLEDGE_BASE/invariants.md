@@ -1801,3 +1801,79 @@ This is not really about JSON. Any file, dashboard row, or status string that
 be **absent** when the verification did not complete. A green default is a lie
 waiting for a crash. If you cannot compute the verdict, emit nothing.
 
+
+---
+
+## INV-40 — A dominant block's free space has a SHAPE; widening it (CHIP_SCALE) can buy a through-channel the ≤8-across cap forbids
+
+**Symptom:** a chain whose blocks fit comfortably (measured: 65 of 120 cells)
+will not route, and is *always exactly one net short* — with WHICH net fails
+rotating as blocks move. Every obvious lever measures as ruled out: not
+capacity, not the hop ceiling (INV-36), not the size of the small blocks. Every
+legal fold of the dominant block measures IDENTICAL free-space quality.
+
+**Root cause — the free space is the wrong SHAPE, and the cap chose the shape.**
+INV-9's ≤ 8-across convention exists so a bus can pass a block on either side,
+which makes I/O placement forgiving. But it also bounds a large block's possible
+bounding boxes very tightly: a 51-cell block has only THREE (7×8, 8×7, 8×8).
+Within that set, a CLOSED-RING block's free space is all perimeter — a cycle
+cannot jump a gap, so it can never enclose a free through-channel — and
+perimeter fragments around an 8-wide body. Ten nets looking for a corridor find
+none.
+
+Going **wider than the cap** changes the shape, not the amount: a 10-wide block
+on a 10-wide array leaves its free rows as *whole rows*, i.e. one contiguous
+through-channel. Measured on `GRUCellBlock`: the 8×7 fold left five free rows
+fragmented by the block's body and the chain stayed one net short across ~8200
+layouts; the 10×6 wide-flat fold left six FULL-WIDTH free rows and the same
+chain, with the same 65 block cells and the same ten nets, routed and built at
+**102/120**.
+
+**The mechanism — `CHIP_SCALE`, declared per class.** `KyttarBlock.CHIP_SCALE`
+(with `CHIP_SCALE_ORIENTATIONS` and `layout_caps()`) already existed for the FFT
+family. It is **never a global loosening**: a block that does not declare it
+stays bound by the ordinary cap and the full 8-orientation D4 gate.
+
+**The trade is mandatory, not optional.** The ≤8-across cap is what makes I/O
+placement forgiving — with a free channel on each side, any edge will do. At
+full width there is no way to reach the far side, so a chip-scale block **MUST
+put its input and output on ONE edge**, and that edge must face the chip's
+ports. State it in the fold's docstring and assert it in the block's suite
+(`GRUCellBlock`: `fin` and `oout` three cells apart on the north edge, facing
+the 10×12's two row-0 ports).
+
+**Do not measure the wrong thing.** A wide fold is not necessarily cheaper for
+its OWN port corridors, and judging it that way inverts the result. Measured:
+the wide `GRUCellBlock` costs 58 cells (block + both corridors) at its best
+anchor against 64 for the 8×7 — but the chain seats it 6 rows down, where it
+costs 70, precisely to give the front end the port-side rows. **The figure that
+settles a fold is the WHOLE CHAIN's, not the block's.** Quote a block's port
+cost at its best anchor and document the trade separately.
+
+**Orientation coverage must not fall through the gap.** A full-width fold cannot
+rotate, so a chip-scale block is removed from the shared full-D4 sweep and gated
+on its DECLARED `CHIP_SCALE_ORIENTATIONS` in its own suite (the FFT32 pattern) —
+plus a `test_rotated_footprint_genuinely_does_not_fit` that DEMONSTRATES rather
+than narrates why the other images are not shipped. Removing it from both places
+leaves it gated NOWHERE while every suite stays green;
+`verification/tests/test_chip_scale_blocks_are_gated_elsewhere.py` is the
+coverage gate that makes that state impossible.
+
+**Expect to pay in the SMALL blocks' route quality.** A full-width block confines
+every other block to the remaining rows, so their corridors lose lanes and take
+placement-forced wall detours. Measured on the classifier: `test_route_quality`
+failed the new `.kyt` at +6 total excess, both detours traceable to the
+confinement (one corridor rounds a 2×4 footprint, another drops to the single
+free row between the front end and the wide block and climbs back). That is a
+legitimate re-pin *with the explanation written down* — never a reason to loosen
+`MAX_NET_EXCESS`.
+
+**When to reach for this:** a block that is a large fraction of the array, whose
+chain will not route, and whose free space you have measured to be fragmented
+perimeter. Before fusing blocks to delete nets (a much larger change), ask
+whether the dominant block's free space can be made contiguous instead.
+
+**Applies to:** any block approaching the array's width. Related: INV-9 (the
+convention this deliberately waives, per class), INV-23/`CHIP_SCALE_ORIENTATIONS`
+(orientation), INV-37 (derive `is_face` constants from the fold — without which a
+re-fold this large is a silent-garbage trap rather than a one-method change).

@@ -76,6 +76,116 @@ This sweep asked the obvious follow-up — *how many others?* — and the answer
   which is not the same as wrong, and most are certainly fine. The honest move is
   to name them (see the audit in the accompanying report) and re-run their suites,
   not to delete them wholesale and not to quietly keep trusting them.
+## gru_classifier example SHIPPED — a WIDE-FLAT (chip-scale) fold turned "one net short" into 102/120 2026-08-24
+
+The classifier chain had never routed on one 10x12 across four dispatches and
+~8200 measured layouts; the best result was always exactly ONE failing net, with
+WHICH net failed rotating as blocks moved. It routes now, builds at **102/120**,
+and classifies the shipped stimulus on the real chip at **agreement 1.000000**
+against the offline chip-exact golden. The fix was one method on `GRUCellBlock`.
+
+- **THE DIAGNOSIS THAT WAS RIGHT, AND THE CONCLUSION THAT WAS TOO NARROW.** The
+  previous dispatch measured the wall carefully and ruled out capacity (65/120
+  block cells), the hop ceiling (INV-36; no `hop_overflow` in 5039 layouts) and
+  the arm (boxcar 32/16/8/4 with and without Sqrt: 65 cells -> 4 short, 62 -> 2,
+  57 -> 1, 56 -> 1). It then argued no FOLD could close it either, from a sound
+  structural fact: **a closed ring can never contain a free through-channel** (a
+  cycle cannot jump a gap), so all of its free space is perimeter — and
+  free-space quality measured IDENTICAL across every legal fold. The fact is
+  true. The conclusion silently inherited INV-9's <= 8-across cap, under which a
+  51-cell block has only THREE legal bounding boxes. **Waive the cap and the
+  perimeter of a 10-wide block IS six contiguous full-width rows.** Lesson: when
+  a proof says "no X can do Y", check what quantified the space of X.
+
+- **THE FOLD.** 50 ring cells as a closed row-comb Hamiltonian cycle over a 10x5
+  box (fully covered, no holes, no enclosed interior), re-indexed so `fin` lands
+  at the head row's west end and `amx` three cells along it, with the off-ring
+  `oout` relay one row above. 10 wide x 6 tall. Chosen by enumerating the
+  closed-cycle comb/row-comb families at every cell-count-dividing box within the
+  chip-scale caps x every start-and-direction re-indexing x every free relay
+  slot, keeping only candidates satisfying EVERY rule — closed cycle, bbox in
+  caps, no enclosed interior, a free relay slot at `amx`, the ROUTE-TIME FACE
+  RULE over the block's real `internal_connections`, every ring distance <= 31 —
+  and ranking the **24 survivors** by port cost then contiguous free rows.
+
+- **`CHIP_SCALE` IS A TRADE, NOT A LOOSENING.** The flag is declared per class
+  (`_base.py`'s existing machinery, as FFT32/FFT64 use it) and buys width in
+  exchange for a hard obligation: nothing can reach the far side of a 10-wide
+  block, so **its input and output must share ONE edge**. `fin` and `oout` are
+  three cells apart on the north edge, facing the chip's two row-0 ports.
+
+- **THE WIDE FOLD IS NOT CHEAPER FOR ITS OWN CORRIDORS — and saying so matters.**
+  At its BEST anchor (row 0) the block plus its two port corridors builds in 58
+  cells, against 64 for the 8x7. But the example seats it at row 6 (**70** cells;
+  the cost rises +2 per row of descent) precisely so the front end gets the six
+  port-side rows. **The fold wins on the SHAPE of the free space it leaves, not
+  on its own cost.** A gate that measured only the block's port cost at the
+  example's anchor would have read this as a regression and been right about the
+  number and wrong about the outcome; it is now stated at the best anchor with
+  the trade documented beside it.
+
+- **BEHAVIOUR PRESERVED EXACTLY, and INV-37 is why it was a one-method change.**
+  All 49 `test_gru_cell.py` gates green: 36,000 on-chip steps at agreement
+  1.000000, clip vote 0.9667 on-chip == 0.9667 offline over 120 held-out clips.
+  The three `is_face` constants all MOVED (`fin` LOCK_FACE 2->1, `amx` faces
+  (2,3)->(3,2)) and followed automatically because the previous dispatch had
+  already derived them from the fold. Re-folding a block whose faces are derived
+  costs one method; with them baked it is a silent-garbage trap.
+
+- **A CHIP-SCALE BLOCK MUST STILL BE ORIENTATION-GATED, SOMEWHERE.** It cannot
+  run the shared full-D4 sweep (a full-width fold has no room to rotate), so it
+  is removed from `test_orientation_invariance.py` and gated on its DECLARED
+  `CHIP_SCALE_ORIENTATIONS` in its own suite (the FFT32 pattern). That leaves an
+  obvious hole — drop it from the shared list, forget the per-block gate, and it
+  is gated NOWHERE while everything stays green. New
+  `test_chip_scale_blocks_are_gated_elsewhere.py` closes it: every chip-scale
+  class must name the suite that gates it or be listed as quarantined, and a
+  quarantined one that reaches manifest-`done` fails.
+
+- **THE EXAMPLE'S REAL BUG WAS IN THE DRIVER, NOT THE CHIP: a complex pair is ONE
+  delivery.** With the chain routed, the first end-to-end run classified 9/12
+  instead of exactly. `in_re` and `in_im` share ONE corridor ending at a BROKER
+  one cell short of the power cell, and `in_re`'s landing carries BOTH staging
+  registers in its `data_addrs`; `in_im`'s landing describes the FINAL
+  destination. Driving them as two independent deliveries wrote Im into the power
+  cell's **Re** register: `im` stayed 0, power silently became `re^2`, and every
+  downstream stage still looked plausible (the sqrt trio, the decimator and the
+  ZCR arm were all individually correct). **When a complex consumer is fed from a
+  port, drive the BROKER landing, not the per-rail one** — and read the landings,
+  do not assume the rail count. Now an on-chip mutation gate.
+
+- **THE WIDE FOLD COSTS THE FRONT END SOME ROUTE QUALITY, and the ratchet said
+  so.** `test_route_quality.py` failed the new `.kyt` at +6 total excess against
+  a new file's implicit budget of 0. Both detours are the placement-forced
+  wall-detour class and are a DIRECT consequence of the fold: with the GRU
+  holding rows 6-11 across the full width, the whole front end is confined to
+  rows 1-4, so `pow_mean` rounds the boxcar's 2x4 footprint (+2) and
+  `root_decim` cannot run straight along row 2 (walled by sqrt/boxcar cells at
+  (6,2),(7,2),(8,2)) and drops to the free row 5 and back (+4). Pinned
+  CONSCIOUSLY with that explanation, per the ratchet's own instruction — the
+  placement is not free to improve, since a 400-layout search found exactly ONE
+  arrangement that routes AND builds. Worth recording as a cost of the trade:
+  buying a contiguous through-channel for the big block spends some of the small
+  blocks' lane freedom.
+
+- **THE EXAMPLE.** 34 gates. On-chip: 480 windows, agreement 1.000000, segment
+  votes [0,1,2,3], per-step accuracy ssb 1.000 / bpsk 0.811 / fsk4 0.856 / noise
+  1.000, asserted EQUAL to the offline model's on the same clip. Ships `.kyt` +
+  `.grc` (port 58950, scopes sized below the burst) + golden + demo + a
+  self-contained `kyttar.gru_demo_stim` whose clip is asserted identical to
+  `gru_stimulus.py`. Hand-placed, like FSK4/QAM16: a 400-layout search found
+  exactly ONE arrangement that routes AND builds, so **open the `.kyt`, do not
+  import the `.grc`**.
+
+- **THE FUSED FEATURE BLOCK WAS NOT NEEDED.** The standing recommendation was to
+  fuse the six front-end blocks into one `FeatureExtractorBlock` to delete six of
+  the ten nets (estimated ~99/120). It was designed (14 cells, a 7x2 fold with
+  both external cells on the port-facing edge) and abandoned unbuilt once the
+  wide fold routed the ORIGINAL six-block chain at 102/120. Recorded because the
+  net-count arithmetic behind it is still sound and is the right lever if a
+  future chain saturates the array again — but the cheaper lever is to ask
+  whether a dominant block's FREE SPACE has the right shape.
+
 ## GRUCellBlock RE-FOLD — a baked `is_face` literal PINS a fold, and the classifier's wall is corridor BUDGET, not fold shape 2026-08-24
 
 Dispatched to re-fold `GRUCellBlock` so the gru_classifier front end could route

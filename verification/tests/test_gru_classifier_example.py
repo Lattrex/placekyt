@@ -1,27 +1,42 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Gates for the GRU modulation-classifier example.
 
-STATUS — read this before trusting anything here. The feature front end is
-DERIVED and verified against the trained model's own offline definition, and the
-join->GRU tail routes on a real chip. The WHOLE chain does **not** place and
-route as one chip: it is always exactly one net short (see the lessons_log entry
-"gru_classifier example ... BLOCKED one net short"). So this file gates:
+STATUS: SHIPPED and verified END TO END on a real placed + routed + built chip.
+This file gates:
 
 * the feature front end, bit-exact / within a DERIVED bound vs ``ml/features.py``;
-* the offline chain into the chip-exact GRU golden, on the shipped stimulus;
 * the stimulus' load-bearing properties (headroom, trained distribution);
-* the mutations that must fail (swapped word order, wrong weights);
-* the placement wall itself, as an explicit KNOWN-LIMIT guard — so the day the
-  geometry gives, the guard fails and tells us to finish the example.
+* the offline chain into the chip-exact GRU golden;
+* **the ON-CHIP run** — the shipped stimulus driven through the real bitstream,
+  its class stream asserted against the shipped golden AND against the offline
+  chip-exact model, plus the per-class verdict;
+* the shipped ``.kyt`` / ``.grc`` / golden and their agreement with the design
+  this module builds;
+* the mutations that must fail (swapped word order, wrong weights, zero
+  features, a saturating stimulus).
 
-There is deliberately NO test asserting a working end-to-end on-chip run. That
-would be the example's real gate and it does not pass yet.
+WHAT CHANGED. For four dispatches the chain was always exactly ONE net short and
+this file carried KNOWN-LIMIT guards pinning that wall. The wall was lifted by
+re-folding ``GRUCellBlock`` WIDE-FLAT under the ``CHIP_SCALE`` placement class
+(10 wide x 6 tall, I/O on one edge), which leaves six full-width free rows as a
+contiguous through-channel. The guards are now the real on-chip assertions they
+were always meant to become; the history is preserved in
+``gru_classifier.py``'s ROUTING HISTORY note and the lessons_log entry.
+
+WHAT THIS FILE DOES **NOT** GATE, stated so the coverage is not overread: the
+``.grc`` is checked by ``test_examples_grc_instantiate.py`` (it opens,
+GRC-generates and instantiates), but there is no live-hosted-server run of it
+here the way ``test_examples_grc_userpath.py`` does for the transceivers, and no
+pixel-probe of the scopes. The end-to-end evidence below is the headless on-chip
+run through the real built bitstream — the stronger claim about the CHIP. The
+GUI display path is a separate claim and this file does not make it.
 """
 from __future__ import annotations
 
 import hashlib
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -295,12 +310,337 @@ def test_mutation_saturating_stimulus_breaks_the_rms_bound(stim):
 
 
 # --------------------------------------------------------------------------- #
-#  KNOWN LIMIT — the whole chain does not route as one chip                    #
+#  THE EXAMPLE'S REAL GATE — the whole chain, on a real placed + routed chip   #
+# --------------------------------------------------------------------------- #
+
+@pytest.fixture(scope="module")
+def onchip(stim):
+    """The shipped stimulus driven through the REAL built bitstream.
+
+    Module-scoped because it is the expensive one (15360 samples through 102
+    cells, ~40 s); every on-chip assertion below reads this ONE run, so they
+    are all statements about the same measured artefact rather than about
+    separate re-runs that could disagree.
+    """
+    from gru_classifier import run_on_chip
+    iq, _ = stim
+    words, cells = run_on_chip(iq)
+    return words, cells
+
+
+def test_the_whole_chain_routes_and_builds_as_one_chip():
+    """The wall is LIFTED: every net routes and the design builds, as ONE chip.
+
+    This is the assertion the four KNOWN-LIMIT guards this file used to carry
+    were waiting to become. If it fails, the chain has regressed to the
+    one-net-short state — check ``GRUCellBlock``'s fold first (see
+    ``gru_classifier.py``'s ROUTING HISTORY).
+    """
+    from gru_classifier import route_chain
+    bad, used = route_chain()
+    assert not bad, f"the chain no longer routes: {bad}"
+    assert used is not None
+    # 65 block cells + the corridors. Bounded, not pinned to the exact number,
+    # so a routing improvement is not a failure — but a blow-out is.
+    assert 65 < used <= 120, used
+    assert used <= 110, (
+        f"the build used {used}/120 cells; it measured 102 when shipped, and "
+        f"the headroom above that is small — investigate before accepting")
+
+
+def test_on_chip_matches_the_offline_chip_exact_golden(stim, onchip):
+    """THE END-TO-END GATE. The class stream the REAL chip emits must equal the
+    offline chip-exact model's, word for word.
+
+    This is what makes the example an example rather than a composition: the
+    stimulus enters through the chip's real input port, crosses the placed
+    corridors into the placed blocks, and the class words come out of the real
+    output port. Running each block separately and composing in Python would
+    still pass with a broken ``.kyt``; this would not.
+    """
+    from gru_classifier import golden_classes
+    iq, _ = stim
+    words, _cells = onchip
+    gold = golden_classes(iq)
+    assert len(words) == len(gold), (
+        f"RATE: chip emitted {len(words)} class words, the model expects "
+        f"{len(gold)} (one per {WINDOW_N}-sample window)")
+    bad = [(i, a, b) for i, (a, b) in enumerate(zip(words, gold)) if a != b]
+    assert not bad, (
+        f"{len(bad)}/{len(gold)} class words differ from the golden; "
+        f"first few: {bad[:8]}")
+
+
+def test_on_chip_classifies_every_segment_correctly(stim, onchip):
+    """Every class segment's majority vote is its TRUE class, ON CHIP."""
+    from gru_classifier import segment_votes
+    from gru_stimulus import CLASSES
+    _iq, _truth = stim
+    words, _cells = onchip
+    votes = segment_votes(words)
+    assert votes == list(range(len(CLASSES))), (
+        f"on-chip segment votes {votes}, expected {list(range(len(CLASSES)))}")
+
+
+def test_on_chip_step_accuracy_is_recorded(stim, onchip):
+    """Per-step accuracy after the per-segment burn-in, ON CHIP. Pinned below
+    the measured values so it gates a REGRESSION, not the exact numbers
+    (measured when shipped: ssb 1.000, bpsk 0.811, fsk4 0.856, noise 1.000)."""
+    from gru_classifier import SEGMENT_STEPS
+    from gru_stimulus import CLASSES
+    words, _cells = onchip
+    cls = np.asarray(words)
+    accs = []
+    for ci in range(len(CLASSES)):
+        seg = cls[ci * SEGMENT_STEPS + 30:(ci + 1) * SEGMENT_STEPS]
+        accs.append(float(np.mean(seg == ci)))
+    assert min(accs) > 0.60, dict(zip(CLASSES, accs))
+    assert float(np.mean(accs)) > 0.85, accs
+
+
+def test_on_chip_equals_offline_accuracy_exactly(stim, onchip):
+    """The chip is not merely 'about as good' as the offline model — it is the
+    SAME. Stated as its own gate because 'on-chip vs offline accuracy' is the
+    number the example reports, and an equal-accuracy claim built from two
+    different word streams would be a coincidence, not a proof."""
+    from gru_classifier import SEGMENT_STEPS, golden_classes
+    from gru_stimulus import CLASSES
+    iq, _ = stim
+    words, _cells = onchip
+    gold = golden_classes(iq)
+
+    def accs(stream):
+        s = np.asarray(stream)
+        return [float(np.mean(s[ci * SEGMENT_STEPS + 30:
+                                (ci + 1) * SEGMENT_STEPS] == ci))
+                for ci in range(len(CLASSES))]
+
+    assert accs(words) == accs(gold)
+
+
+# --------------------------------------------------------------------------- #
+#  ON-CHIP MUTATIONS — the on-chip gate must FAIL on a corrupted run (INV-4)  #
 # --------------------------------------------------------------------------- #
 #
-# GUARD tests in the FIRFilterBlock tap-ceiling sense: they pin the wall so it
-# cannot be forgotten, and they FAIL the day it is lifted — which is the signal
-# to finish the example. These run a REAL place + route (a few seconds each).
+# The offline mutations above prove the MODEL gate discriminates. These prove
+# the ON-CHIP gate does — a gate never shown to fail certifies nothing, and the
+# on-chip path has its own failure modes the offline one cannot reach.
+
+def _run_on_chip_mutated(iq, mutate=None, n_samples=32 * 40):
+    """Drive a SHORT clip through the real bitstream, optionally corrupting the
+    per-sample ingress burst. Returns the emitted class words."""
+    import simkyt
+
+    import gru_classifier as G
+    from gru_stimulus import to_q15
+    clip = iq[:n_samples]
+    _ctrl, bres, _ids, bad = G.build_chain()
+    assert not bad, bad
+    land = dict(bres.chips[0].input_landings)
+    chip = simkyt.Chip.from_yaml(G.CHIP_YAML)
+    chip.load_bitstream_physical(bres.words(0))
+    chip.set_port_entry_address("x16_in", int(land["in_re"]["entry"]))
+    re = to_q15(np.real(clip)).tolist()
+    im = to_q15(np.imag(clip)).tolist()
+    stream = []
+    for r, i in zip(re, im):
+        if mutate == "swap_rails":
+            burst = G._sample_burst(land, int(i), int(r))
+        else:
+            burst = G._sample_burst(land, int(r), int(i))
+            if mutate == "drop_zcr_trigger":
+                burst = burst[:-1]     # ZCR word written but never fired
+        stream += burst
+    chip.queue_words_physical("x16_in", stream)
+    chip.run(max_events=6_000_000)
+    return [int(v) & 0xFFFF
+            for (v, _d, _t) in chip.read_port_words_timed("x16_out")]
+
+
+@pytest.fixture(scope="module")
+def short_golden(stim):
+    from gru_classifier import golden_classes
+    iq, _ = stim
+    return golden_classes(iq[:32 * 40])
+
+
+def test_on_chip_short_clip_is_exact_before_mutating(stim, short_golden):
+    """The mutations below are only meaningful against an EXACT baseline."""
+    iq, _ = stim
+    got = _run_on_chip_mutated(iq)
+    assert got == short_golden, "the unmutated short clip is not exact"
+
+
+def test_on_chip_mutation_swapped_iq_rails_fails(stim, short_golden):
+    """Feeding Im where Re belongs must NOT still classify correctly. This is
+    the real bug this example's driver hit: the complex pair is ONE delivery
+    into a shared broker, and getting it wrong left Im stuck at 0 while every
+    downstream stage still looked plausible."""
+    iq, _ = stim
+    got = _run_on_chip_mutated(iq, "swap_rails")
+    assert got != short_golden, (
+        "swapping the I/Q rails still produced the golden class stream — the "
+        "on-chip gate cannot tell the correct ingress from a transposed one")
+
+
+def test_on_chip_mutation_starved_zcr_arm_fails(stim, short_golden):
+    """Withholding the ZCR arm's trigger must break the run, not silently emit
+    a stale or half-formed pair. The rendezvous is specified to STALL rather
+    than mis-pair, so the expected outcome is NO output at all."""
+    iq, _ = stim
+    got = _run_on_chip_mutated(iq, "drop_zcr_trigger")
+    assert got != short_golden
+    assert not got, (
+        f"a starved rendezvous emitted {len(got)} words; it is specified to "
+        f"STALL, never to emit a partial or stale pair")
+
+
+# --------------------------------------------------------------------------- #
+#  The shipped artefacts                                                      #
+# --------------------------------------------------------------------------- #
+def test_shipped_golden_matches_the_on_chip_run(onchip):
+    """The committed golden must BE the measured on-chip stream — not a
+    plausible-looking file that nothing re-derives."""
+    from gru_classifier import GOLDEN
+    words, cells = onchip
+    g = json.loads(GOLDEN.read_text())
+    assert g["class_words"] == [int(v) for v in words], (
+        "the shipped golden differs from the current on-chip run")
+    assert g["n_windows"] == len(words)
+    assert g["cells_used"] == cells
+    assert g["agreement_vs_offline_golden"] == 1.0
+
+
+def test_shipped_kyt_exists_and_is_the_design_this_module_builds():
+    """The ``.kyt`` must be the SAME placement this module routes — a stale
+    ``.kyt`` beside a working builder is exactly the "ships a demo that cannot
+    run" failure the example bar forbids."""
+    from engine.io.project_io import load_project
+
+    from gru_classifier import BEST_KNOWN_ANCHORS, KYT
+    assert KYT.is_file(), f"{KYT} missing — run build_kyt.py"
+    proj = load_project(str(KYT))
+    assert len(proj.blocks) == len(BEST_KNOWN_ANCHORS), (
+        f"{KYT} has {len(proj.blocks)} blocks, the design has "
+        f"{len(BEST_KNOWN_ANCHORS)}")
+    # every block is placed, on fabric, and pairwise non-overlapping
+    seen = {}
+    for b in proj.blocks:
+        assert b.placement is not None, f"{b.name} is unplaced in the .kyt"
+        for c in b.placement.cells:
+            assert 0 <= c.x < 10 and 0 <= c.y < 12, (b.name, c.x, c.y)
+            assert (c.x, c.y) not in seen, (b.name, seen[(c.x, c.y)], c.x, c.y)
+            seen[(c.x, c.y)] = b.name
+    assert len(seen) == 65, f"expected 65 block cells in the .kyt, got {len(seen)}"
+
+
+def test_the_shipped_kyt_FILE_itself_computes_the_golden():
+    """THE STRONGEST ARTEFACT CLAIM: load the committed ``.kyt`` FROM DISK,
+    build THAT project, and run the shipped stimulus through the resulting
+    bitstream — the class stream must equal the shipped golden.
+
+    ``test_shipped_kyt_exists_and_is_the_design_this_module_builds`` compares
+    the file's GEOMETRY to the design; this one closes the remaining gap by
+    proving the FILE computes. A ``.kyt`` that matched on geometry but had, say,
+    a stale routed corridor would pass that gate and fail this one. It is what
+    the user actually opens, so it is what has to work.
+    """
+    import simkyt
+    from engine.build import BuildEngine
+    from engine.io.project_io import load_project
+
+    import gru_classifier as G
+    from gru_stimulus import make_stimulus, to_q15
+    (BC, lct, _AC, _CPE, _BE) = _engine()
+    cat = BC.from_gr_kyttar()
+    ct = lct(CHIP_YAML)
+    ctk = getattr(ct, "name", None) or "kyttar_10x12"
+
+    proj = load_project(str(G.KYT))
+    res = BuildEngine(cat, CHIP_YAML).build(proj, {ctk: ct})
+    assert res.ok, f"the shipped .kyt does not build: {res.errors[:3]}"
+    used = sum(c.cell_count for c in res.chips.values())
+
+    land = dict(res.chips[0].input_landings)
+    chip = simkyt.Chip.from_yaml(CHIP_YAML)
+    chip.load_bitstream_physical(res.words(0))
+    chip.set_port_entry_address("x16_in", int(land["in_re"]["entry"]))
+    iq, _truth = make_stimulus()
+    re_q = to_q15(np.real(iq)).tolist()
+    im_q = to_q15(np.imag(iq)).tolist()
+    stream = []
+    for r, i in zip(re_q, im_q):
+        stream += G._sample_burst(land, int(r), int(i))
+    chip.queue_words_physical("x16_in", stream)
+    chip.run(max_events=40_000_000)
+    words = [int(v) & 0xFFFF
+             for (v, _d, _t) in chip.read_port_words_timed("x16_out")]
+
+    golden = json.loads(G.GOLDEN.read_text())
+    assert used == golden["cells_used"], (
+        f"the shipped .kyt builds in {used} cells, the golden records "
+        f"{golden['cells_used']}")
+    assert words == golden["class_words"], (
+        "the SHIPPED .kyt does not reproduce the shipped golden — the file a "
+        "user opens is not the design that was verified")
+
+
+def test_shipped_grc_targets_the_gui_default_server_port():
+    """``server_port: 0`` silently no-ops (the kyttar_source never connects and
+    the window stays blank with a plausible axis). Every kyttar source/sink in
+    the shipped flowgraph must name the GUI's default host port."""
+    from gru_classifier import GRC
+    assert GRC.is_file(), f"{GRC} missing"
+    text = GRC.read_text()
+    ports = re.findall(r"^\s*server_port:\s*'?(\d+)'?\s*$", text, flags=re.M)
+    assert ports, "no server_port found in the shipped .grc"
+    assert set(ports) == {"58950"}, (
+        f"the shipped .grc must use the GUI's default port 58950; found "
+        f"{sorted(set(ports))}")
+
+
+def test_shipped_grc_scopes_are_sized_to_actually_paint():
+    """A QT time_sink draws NOTHING until a FULL ``size`` buffer arrives, and
+    the GR scheduler strands the tail of a finite stream — so a scope sized
+    >= its burst NEVER paints. Both scopes must be sized BELOW the burst."""
+    from gru_classifier import GRC
+    text = GRC.read_text()
+    sizes = re.findall(r"^\s*size:\s*(.+)$", text, flags=re.M)
+    assert sizes, "no time-sink size found in the shipped .grc"
+    for s in sizes:
+        assert "n_windows" in s and "-" in s, (
+            f"scope size {s!r} is not derived BELOW the burst length; a scope "
+            f"sized >= its burst never draws")
+
+
+def test_the_installed_stimulus_module_is_the_examples_stimulus():
+    """The flowgraph imports ``kyttar.gru_demo_stim`` (the installed package
+    cannot reach the example tree), so that copy MUST produce the identical
+    clip. Asserted rather than trusted — a drifted copy would make the GUI demo
+    show a different signal from the one every gate here measures."""
+    import importlib.util
+
+    from gru_stimulus import make_stimulus
+    src = (_ROOT / "gr-kyttar" / "python" / "kyttar" / "gru_demo_stim.py")
+    assert src.is_file(), f"{src} missing — the shipped .grc imports it"
+    # load the FILE directly: importing the package pulls in gnuradio, which
+    # the verification venv deliberately does not have.
+    spec = importlib.util.spec_from_file_location("_gru_demo_stim", src)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    a_iq, a_truth = make_stimulus()
+    b_iq, b_truth = mod.make_stimulus()
+    assert np.array_equal(a_iq, b_iq), (
+        "the installed stimulus module produces a DIFFERENT clip from "
+        "examples/gru_classifier/gru_stimulus.py")
+    assert np.array_equal(a_truth, b_truth)
+    assert mod.n_samples() == len(a_iq)
+    assert mod.n_windows() == len(a_truth)
+
+
+# --------------------------------------------------------------------------- #
+#  Placement detail                                                           #
+# --------------------------------------------------------------------------- #
 
 def _engine():
     from PySide6.QtWidgets import QApplication
@@ -327,69 +667,24 @@ def _hand_place(ctrl, anchors, specs, ids_out):
         b.placement = Placement(0, cells)
 
 
-def test_known_limit_the_full_chain_does_not_route():
-    """KNOWN LIMIT. The whole chain has never routed on one 10x12.
+def test_coplacement_the_gru_leaves_room_for_the_front_end():
+    """CO-PLACEMENT — the gate that used to decide whether the example could
+    ship, now asserting that it does.
 
-    Measured across dispatches: ~2500 layouts (three search strategies), then
-    5039 (anchor sweep + four routing models incl. auto_orient, single-backbone
-    bus/ring and CP-SAT), then — after GRUCellBlock was RE-FOLDED to 8x7 so its
-    input and egress span the north edge facing the chip's two row-0 ports —
-    a further ~3200 (exhaustive lane enumeration + guided perturbation from
-    every one- and two-net-short seed). The best result is always exactly ONE
-    failing net, and WHICH net fails rotates as blocks move: a saturated array,
-    not one bad anchor.
+    Places the wide-flat GRUCellBlock together with the whole feature front end
+    on ONE 10x12 with both 16-bit ports, and asserts:
 
-    The re-fold measurably HELPED and did not close it: on the identical lane
-    search the as-authored 7x8 fold bottomed out two nets short, the 8x7 one
-    net short. The hop ceiling was ruled out earlier (INV-36; no `hop_overflow`
-    in 5039 layouts), and shrinking the RMS arm was measured as a second lever
-    that also does not close it (a 4-tap boxcar with Sqrt dropped — 56 block
-    cells against the shipped 65 — is still one net short).
+      * every block places legally together — on fabric, pairwise
+        non-overlapping, 65 of 120 cells; and
+      * EVERY net routes.
 
-    If this test FAILS (the chain routed), the wall is lifted — finish the
-    example: build the .kyt, run it end to end, and replace this guard with the
-    real on-chip gate.
-    """
-    import gru_classifier as G
-    (BC, lct, AC, CPE, BE) = _engine()
-    cat = BC.from_gr_kyttar()
-    ct = lct(CHIP_YAML)
-    ctk = getattr(ct, "name", None) or "kyttar_10x12"
-    ctrl = AC(catalog=cat)
-    ctrl.new_project("gru_classifier_guard", ctk)
-    ids = {}
-    _hand_place(ctrl, G.BEST_KNOWN_ANCHORS, G.BLOCK_SPECS, ids)
-    G._connect(ctrl, CPE, BE, ids)
-    rep = ctrl.auto_route_all({ctk: ct}, auto_orient=False)
-    bad = [r.name for r in rep.results if not r.ok]
-    assert bad, ("the full chain ROUTED — the documented placement wall is "
-                 "lifted; finish the example and delete this guard")
-    assert len(bad) == 1, (
-        f"expected the documented ONE-net-short wall, got {bad}")
-
-
-#: the companion front end the GRU must leave room for: the real RMS arm
-#: (ComplexToMagSquared -> MovingAverage(32) -> Sqrt -> KeepOneInN(32)) plus
-#: ZeroCrossingRate and FeaturePairJoin. 14 cells in 6 blocks.
-COMPANION = ["power", "boxcar", "root", "decim", "zcr", "join"]
-
-
-def test_coplacement_the_gru_leaves_room_for_the_companion_front_end():
-    """CO-PLACEMENT GATE — the one that decides whether the example can ship.
-
-    Places the RE-FOLDED GRUCellBlock together with the whole companion front
-    end on ONE 10x12 with both 16-bit ports, and reports how much of the chain
-    routes. Today it is exactly ONE net short (see
-    ``test_known_limit_the_full_chain_does_not_route`` for the search volume
-    behind that claim), so this gate asserts the measured state:
-
-      * every block PLACES legally together — the geometry fits, with room to
-        spare (65 of 120 cells), which is why the wall is corridors and not
-        capacity; and
-      * the chain gets to within one net of routing.
-
-    The moment the last net closes, the first assert below fails and says so.
-    That is the signal to build the .kyt and finish the example.
+    For four dispatches the second assertion was its negation: the chain was
+    always exactly ONE net short, and this gate pinned that wall so the day it
+    lifted would be visible. It lifted when GRUCellBlock was re-folded WIDE-FLAT
+    under the CHIP_SCALE placement class (see gru_classifier.py's ROUTING
+    HISTORY). The block-cell count is UNCHANGED at 65 — the fix was the shape
+    of the free space, not its size, which is why the count is still asserted
+    exactly here.
     """
     import gru_classifier as G
     (BC, lct, AC, CPE, BE) = _engine()
@@ -412,25 +707,50 @@ def test_coplacement_the_gru_leaves_room_for_the_companion_front_end():
                 f"{b.name} overlaps {placed[(c.x, c.y)]} at ({c.x},{c.y})")
             placed[(c.x, c.y)] = b.name
     assert len(placed) == 65, f"expected 65 block cells, got {len(placed)}"
-    assert len(placed) < 120, "the block set alone must fit with room to spare"
 
-    # 2. the whole set routes to within one net.
+    # 2. and EVERY net routes.
     G._connect(ctrl, CPE, BE, ids)
     rep = ctrl.auto_route_all({ctk: ct}, auto_orient=False)
-    bad = [r.name for r in rep.results if not r.ok]
-    assert bad, (
-        "CO-PLACEMENT ACHIEVED — the GRU and the whole companion front end "
-        "routed together on one chip. The wall is lifted: build the .kyt, run "
-        "it end to end, and turn this gate into the real on-chip assertion.")
-    assert len(bad) == 1, (
-        f"the re-folded GRU should leave the chain ONE net short; got "
-        f"{len(bad)}: {bad}")
+    bad = [f"{r.name}:{r.reason}" for r in rep.results if not r.ok]
+    assert not bad, f"the chain no longer co-places and routes: {bad}"
+
+
+def test_the_wide_fold_is_what_makes_the_front_end_fit():
+    """WHY it fits, asserted as geometry rather than narrated.
+
+    The GRU is 10 wide x 6 tall, so it leaves six FULL-WIDTH free rows as one
+    contiguous through-channel — and the six front-end blocks all live in that
+    band. Under the previous <= 8-across fold the block was 8 wide and its free
+    space was fragmented perimeter, which is the difference the ROUTING HISTORY
+    note explains. If the fold narrows again, this fails with the reason.
+    """
+    import gru_classifier as G
+    from gr_kyttar.placement.blocks import GRUCellBlock
+    assert GRUCellBlock.CHIP_SCALE is True, (
+        "GRUCellBlock is no longer chip-scale; the wide-flat fold is what "
+        "makes this example fit")
+    lay = GRUCellBlock("g").default_layout()
+    xs = [v[0] for v in lay.values()]
+    ys = [v[1] for v in lay.values()]
+    w, h = max(xs) - min(xs) + 1, max(ys) - min(ys) + 1
+    assert (w, h) == (10, 6), f"the GRU fold moved to {w}x{h}"
+    # the GRU occupies a solid band; the front end lives entirely outside it.
+    gy = G.BEST_KNOWN_ANCHORS["gru"][1]
+    band = range(gy, gy + h)
+    for nm, (ax, ay) in G.BEST_KNOWN_ANCHORS.items():
+        if nm == "gru":
+            continue
+        assert ay not in band, (
+            f"front-end block {nm} is anchored inside the GRU's row band "
+            f"{list(band)}")
 
 
 def test_known_limit_the_join_tail_alone_does_route():
     """The wall is the RMS arm's corridors, NOT the join->GRU tail: the tail
     (both ingress nets, the join, the GRU, the egress) routes on its own —
-    measured at 81 of 120 cells with the re-folded 8x7 GRU."""
+    measured at 81 of 120 cells. Kept as a REGRESSION SPLIT: if the whole chain
+    ever stops routing, this says immediately whether the tail or the RMS arm
+    is responsible."""
     import gru_classifier as G
     from engine.build import BuildEngine
     (BC, lct, AC, CPE, BE) = _engine()
@@ -465,17 +785,23 @@ def test_known_limit_the_join_tail_alone_does_route():
     assert 60 <= used <= 95, used
 
 
-def test_known_limit_the_gru_alone_dominates_the_array():
-    """Why the chain does not fit: GRUCellBlock is 51 cells — 43% of the array
-    — in an 8x7 fold, and it still costs several more cells for its own two
-    port corridors, leaving too little for the 14-cell front end and the four
-    extra nets that front end needs.
+def test_the_gru_alone_dominates_the_array():
+    """The scale of the problem, pinned: GRUCellBlock is 51 cells — 43% of the
+    array — and costs several more for its own two port corridors, leaving the
+    14-cell front end and its four extra nets to fit in what remains. That is
+    why the example was blocked for four dispatches, and why it is still tight
+    (the whole chain builds at 102 of 120).
 
-    The re-fold cut those two corridors materially (the block's own port cost,
-    min over anchors of |fin - x16_in| + |oout - x16_out|, went from 11 cells
-    to 7 by moving the egress onto the north edge beside the input), which is
-    why this bound is stated as a RANGE that the re-fold moved down, not the
-    single number the 7x8 fold pinned.
+    MEASURED AT THE BLOCK'S BEST ANCHOR, which is the honest way to state a
+    fold's port cost: seated at row 0 the wide-flat fold and its two corridors
+    build in 58 cells, against 64 for the 8x7 fold it replaced.
+
+    The example does NOT use that anchor — it seats the block at row 6 (58 ->
+    70 cells for this measurement, +2 per row) precisely so the front end gets
+    the six port-side rows. That trade is deliberate and it is what
+    ``test_the_wide_fold_is_what_makes_the_front_end_fit`` covers: the wide
+    fold wins on the SHAPE of the free space it leaves, not on its own corridor
+    cost, and the whole-chain figure (102/120) is the number that settles it.
     """
     import gru_classifier as G
     from engine.build import BuildEngine
@@ -486,9 +812,12 @@ def test_known_limit_the_gru_alone_dominates_the_array():
     ctk = getattr(ct, "name", None) or "kyttar_10x12"
     ctrl = AC(catalog=cat)
     ctrl.new_project("gru_only", ctk)
-    g = ctrl.place_block("GRUCellBlock", 0, 0, 0, library=G.LIB, params={})
+    # the block's BEST anchor: a 10-wide block has exactly one legal column,
+    # and row 0 puts its single I/O edge alongside the chip's two row-0 ports.
+    gx, gy = 0, 0
+    g = ctrl.place_block("GRUCellBlock", 0, gx, gy, library=G.LIB, params={})
     b0 = ctrl.project.blocks[0]
-    cells, _ = ctrl.default_cells(b0.type, b0.library, 0, 0, 0, b0.params)
+    cells, _ = ctrl.default_cells(b0.type, b0.library, 0, gx, gy, b0.params)
     b0.placement = Placement(0, cells)
     ctrl.add_logical_connection(CPE(chip=0, port="x16_in"),
                                 BE(block=g, port="f"), name="fin")
@@ -500,5 +829,11 @@ def test_known_limit_the_gru_alone_dominates_the_array():
     assert bres.ok
     used = sum(c.cell_count for c in bres.chips.values())
     assert 51 < used <= 64, (
-        f"GRU + its two port corridors measured {used}; the 7x8 fold cost 64 "
-        f"and the 8x7 re-fold must not regress past it")
+        f"GRU + its two port corridors measured {used} at its best anchor; the "
+        f"7x8 fold cost 64 and the wide-flat fold measured 58, so no re-fold "
+        f"may regress past that ceiling")
+    # and the trade the example actually takes is +2 cells per row of descent,
+    # which is why seating it low is affordable at all.
+    assert used <= 60, (
+        f"the wide-flat fold measured 58 at row 0; {used} means the block's "
+        f"own corridors got materially more expensive")

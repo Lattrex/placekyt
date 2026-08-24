@@ -8,89 +8,89 @@ Both features are computed by library DSP blocks, and the recurrent network
 itself — gates, activation tables, hidden state, and the 4-class readout — is one
 placed block whose weights come from the trained model in [`ml/`](ml/).
 
-## Status — read this first
+## Status — shipped and verified end to end
 
-**This example is NOT finished, and it is not shipped as a runnable demo.** The
-chain does not yet place and route as one chip, so there is no `.kyt`, no `.grc`,
-and no end-to-end on-chip run. What *is* done, and gated:
+**This example runs on a real placed and routed chip.** The whole chain builds
+as one design at **102 of 120 cells** and classifies the shipped stimulus with
+its class stream **bit-identical** to the offline chip-exact model.
 
 | | Status |
 |---|---|
 | Feature front end (RMS + ZCR arms) vs the trained model's own `ml/features.py` | **verified** — ZCR bit-exact, RMS inside a derived bound |
-| The classifier on the shipped stimulus, through the bit-exact GRU golden | **verified** — all four segments voted correctly |
-| The `FeaturePairJoin → GRUCell` tail, placed and routed on a real chip | **verified** — routes at 72/120 cells |
-| The **whole chain** placed and routed on one chip | **BLOCKED** — always exactly one net short |
-| End-to-end run on a placed + routed array | **not done** |
+| The whole chain placed and routed on one chip | **verified** — every net routes, builds at 102/120 |
+| End-to-end run on the placed + routed array | **verified** — 480 windows, agreement **1.000000** vs the golden |
+| On-chip classification of all four classes | **verified** — segment votes `[0, 1, 2, 3]`, on-chip == offline |
+| The `.grc` under the real GRC compiler | **verified** — opens, generates, instantiates |
 
-Per [`../../AGENTS.md`](../../AGENTS.md) §5b an example is not done until it has
-been observed producing the correct output on a real placed and routed chip.
-This one has not. The measured shortfall, the search that established it, and
-what a human should look at are in the `gru_classifier example` entry of
-[`../../verification/KNOWLEDGE_BASE/lessons_log.md`](../../verification/KNOWLEDGE_BASE/lessons_log.md).
+On-chip per-step accuracy after burn-in: SSB **1.000**, BPSK **0.811**,
+4-FSK **0.856**, noise **1.000** — mean **0.917**, and *exactly equal* to the
+offline model's on the same clip (asserted, not eyeballed: the gate compares the
+two accuracy vectors).
 
-### The wall is corridor congestion, not the hop budget
+**What is NOT verified.** The `.grc` is gated by
+`test_examples_grc_instantiate.py` — it opens, GRC-generates, and instantiates
+against the repo ymls with the repo markers. It has **not** been run against a
+live hosted server the way the transceivers are by
+`test_examples_grc_userpath.py`, and no one has watched the scopes paint in the
+GUI. The end-to-end evidence above is the headless on-chip run through the real
+built bitstream, which is the stronger claim about the *chip*; the GUI display
+path is a separate claim and is not made here.
 
-One plausible cause has since been **ruled out by measurement**. The 31-hop
-routing ceiling was a real engine limit and has since been lifted (relay
-emission, INV-36) — but that is *not* what blocks this chain. Re-measured
-afterwards: 2160 fresh layouts (every legal `GRUCellBlock` anchor × randomized
-small-block placement) plus a sweep across four routing models (`auto_orient`,
-the single-backbone bus/ring router, both together, and CP-SAT). The outcome is
-unchanged — always **exactly one net short**, and every failing net reports
-`no bus path from source to the broker tap`. **Not one** failure on any layout
-was a hop overflow.
+### How it got unblocked: the fold, not the chain
 
-So the constraint is corridor *space*, not corridor *length*. The blocks occupy
-only 65 of 120 cells, but `GRUCellBlock` is 51 of them — 43% of the array — and
-each routed net costs ~8.5 cells of corridor (measured: the six-net `join →
-GRUCell` tail routes on its own at 81/120). The RMS arm adds 11 block cells *and
-four more nets*, and that is the budget the array does not have.
+For four dispatches this chain was **always exactly one net short**, and which
+net failed rotated as blocks moved — the signature of a saturated array rather
+than one bad anchor. Three explanations were measured and ruled out:
 
-### Both named levers have now been measured; neither closes it
+* **Not capacity.** The blocks total 65 of 120 cells.
+* **Not the hop ceiling.** INV-36 lifted the 31-hop limit; no `hop_overflow` in
+  5039 measured layouts.
+* **Not the arm.** Shrinking the RMS arm was swept over boxcar lengths
+  32/16/8/4 with and without `Sqrt`: 65 block cells → 4 nets short, 62 → 2,
+  57 → 1, 56 → 1. Even a 4-tap boxcar with `Sqrt` dropped — no longer the
+  model's feature — was one net short.
 
-**The fold.** `GRUCellBlock` was **re-folded** — the same 50-cell closed ring,
-transposed to **8×7** — so its input `(0,0)` and its egress `(2,0)` span the
-**north edge**, facing the chip's two 16-bit ports (which both sit on row 0).
-That halves the block's own port-corridor cost (11 cells → 7, minimum over
-anchors of `|fin − x16_in| + |oout − x16_out|`) and leaves five free *rows*
-rather than three free columns. On the identical lane search, the old 7×8 fold
-bottomed out **two** nets short and the re-fold reaches **one** — a real,
-measured improvement. A further 4180 layouts (exhaustive lane enumeration plus
-guided perturbation seeded from every one- and two-net-short result) stayed at
-one.
+The fourth explanation was the **fold**, and it was right but under-scoped.
+`GRUCellBlock` was first re-folded to **8×7** (I/O on the north edge facing the
+chip's two row-0 ports, port cost 11 → 7 cells), which took the search from two
+nets short to **one**; 4180 further layouts stayed at one. The conclusion drawn
+then was that no fold could close it, resting on a sound structural argument:
+**a closed ring can never contain a free through-channel** — a cycle cannot jump
+a gap — so all of its free space is perimeter, and free-space quality measured
+*identical* across every legal fold.
 
-The re-fold is a **placement change only** — behaviour is preserved exactly, and
-that was re-verified on chip afterwards: 36,000 on-chip steps at agreement
-**1.000000** against the golden, clip vote **0.9667 on-chip == 0.9667 offline**
-over 120 held-out clips, all 53 block gates green.
+That argument is correct. Its **conclusion** was scoped to the three bounding
+boxes [INV-9](../../verification/KNOWLEDGE_BASE/invariants.md)'s ≤ 8-across
+convention allowed for a 51-cell block. Waiving that convention for this block —
+the **`CHIP_SCALE` placement class**, declared per class and never a global
+loosening — admits a **10 × 5** box, and the perimeter free space of a 10-wide
+block *is* six contiguous full-width rows. That is the through-channel the ten
+nets could never find.
 
-Re-folding also required a real fix, now [INV-37](../../verification/KNOWLEDGE_BASE/invariants.md):
-the block baked three `is_face=True` constants as literals, silently pinning it
-to the authored fold. Every re-fold built clean, passed every geometric gate, and
-computed garbage (the recurrence never landed; `h` froze at timestep 0). Those
-constants are now derived from the fold, with a gate that fails on the old
-literals.
+`CHIP_SCALE` comes with an explicit trade, and the block honours it: nothing can
+reach the far side of a 10-wide block, so **its input and output must share one
+edge**. `GRUCellBlock`'s `fin` and `oout` sit three cells apart on its north
+edge.
 
-**The arm.** Shrinking the RMS arm was swept over boxcar lengths 32/16/8/4, with
-and without `Sqrt`: 65 block cells → 4 nets short, 62 → 2, 57 → 1, 56 → 1. Even
-a 4-tap boxcar with `Sqrt` dropped — which is no longer the model's feature — is
-still one net short.
+The wide fold is **not** cheaper for the block's own corridors at the anchor the
+example uses. Measured at its best anchor (row 0) the block plus its two port
+corridors builds in **58 cells**, against 64 for the 8×7 — but the example seats
+it at row 6 (**70 cells**, +2 per row of descent) precisely so the front end gets
+the six port-side rows. The fold wins on the **shape** of the free space it
+leaves, not on its own cost, and 102/120 for the whole chain is the number that
+settles it.
 
-### The remaining lever, with its arithmetic
+Both re-folds preserved behaviour **exactly**, re-verified on chip each time:
+36,000 on-chip steps at agreement **1.000000**, clip vote **0.9667 on-chip ==
+0.9667 offline** over 120 held-out clips, all block gates green.
 
-Nets, not cells, are what the array has run out of — so the lever is **fewer
-separately placed blocks**, which removes *nets* as well as cells.
-
-| topology | blocks | nets | block cells | corridor @8.5/net | total |
-|---|---|---|---|---|---|
-| shipped | 7 | 10 | 65 | ~85 | ~150 ✗ |
-| `join → GRU` tail (measured) | 4 | 6 | 54 | 51 | **81** ✓ |
-| one fused feature block + GRU | 2 | 4 | ~65 | ~34 | **~99** |
-
-A single block computing the `(rms, zcr)` pair from `(re, im)` would absorb the
-six front-end blocks and delete **six of the ten nets**, which is where the
-budget actually goes. Failing that, a **two-chip topology** (front end on one
-die, GRU on the other) is the fallback.
+Re-folding also required a real fix, now
+[INV-37](../../verification/KNOWLEDGE_BASE/invariants.md): the block baked three
+`is_face=True` constants as literals, silently pinning it to the authored fold.
+Every re-fold built clean, passed every geometric gate, and computed garbage
+(the recurrence never landed; `h` froze at timestep 0). Those constants are
+derived from the fold now — which is exactly why this second, much larger
+re-fold was a one-method change.
 
 ## The chain
 
@@ -111,8 +111,12 @@ die, GRU on the other) is the fallback.
 | `KeepOneInNBlock(32)` | 1 | one RMS word per window (phase 31) |
 | `ZeroCrossingRateBlock(32)` | 1 | the ZCR feature, one word per window |
 | `FeaturePairJoinBlock` | 1 | orders the two features into one timestep |
-| `GRUCellBlock` | 51 | the GRU + 4-class readout + argmax |
-| **total** | **65** | of a 120-cell array |
+| `GRUCellBlock` | 51 | the GRU + 4-class readout + argmax (wide-flat 10×6) |
+| **total** | **65** | of a 120-cell array — **102** with the routed corridors |
+
+On the array the GRU occupies a solid band across rows 6–11 and the six
+front-end blocks live in the free rows above it, between the chip's row-0 ports
+and the GRU's north-edge input.
 
 ### Why the RMS arm is four blocks
 
@@ -136,16 +140,46 @@ at one word each per 32 input samples, so no re-synchroniser is needed.
 feeds the trained weights a transposed feature vector; the suite proves that
 mutation fails.
 
-## Run what exists
+## Run it
+
+**The demo (headless, ~1 minute)** — prints the stimulus, the feature
+measurements, the placement measured live, and the **on-chip classification**:
 
 ```sh
 PYTHONPATH=runtime/python:placekyt QT_QPA_PLATFORM=offscreen \
     .venv/bin/python examples/gru_classifier/gru_classifier_demo.py
 ```
 
-This prints the stimulus, the feature-equivalence measurements, the classifier
-verdict, and — measured live, not quoted — the placement status of both the tail
-and the whole chain.
+**In the GUI / GNU Radio Companion.** Open `gru_classifier.kyt` in placeKYT
+(**open it — do not import the `.grc`**; the design is hand-placed, see below),
+start its server, then open `gru_classifier.grc` in GRC and run it. The
+**Class index over time** scope is fed the chip's verdict and should track the
+stimulus as it walks SSB → BPSK → 4-FSK → noise, beside a **TRUE class** scope
+showing the ground truth. The flowgraph targets **port 58950**, placeKYT's
+default host port — `server_port: 0` silently no-ops and leaves a blank window
+with a plausible axis — and both scopes are sized below their burst, because a
+QT time sink draws nothing until a full `size` buffer arrives and the GR
+scheduler strands the tail of a finite stream.
+
+> This GUI path has **not** been run: the `.grc` is gated only as far as
+> opening, generating and instantiating (see *What is NOT verified* above).
+> Everything the chip does is verified headlessly; the display is not.
+
+**Rebuild the `.kyt`:**
+
+```sh
+PYTHONPATH=runtime/python:placekyt QT_QPA_PLATFORM=offscreen \
+    .venv/bin/python examples/gru_classifier/build_kyt.py
+```
+
+### Why the design is hand-placed
+
+The chain fills 102 of 120 cells and a 400-layout random search over the free
+band found **exactly one** arrangement that both routes and builds. The generic
+auto-placer does not find it, so the anchors are pinned in
+`gru_classifier.BEST_KNOWN_ANCHORS` and `build_kyt.py` writes that design out.
+This is the same convention the FSK4 and 16-QAM modems use: **open the `.kyt`,
+don't import the `.grc`**.
 
 ## The stimulus
 
@@ -201,17 +235,43 @@ chain reads −14 LSB on a loud window and −218 on a quiet one.
 
 ## Verification
 
-`verification/tests/test_gru_classifier_example.py` — **19 tests, all green**:
-the stimulus' properties, the two feature arms against `ml/features.py`, the
-classifier verdict, four mutations proven to **fail** (swapped word order, wrong
-weights, zero features, a saturating clip breaking the RMS bound), and three
-known-limit guards that pin the placement wall and will **fail the day it lifts**.
+`verification/tests/test_gru_classifier_example.py` — **34 tests, all green**:
+
+* the stimulus' load-bearing properties (Q15 headroom, trained distribution);
+* the two feature arms against `ml/features.py` — ZCR bit-exact, RMS inside the
+  derived level-dependent bound, plus a proof the bound is **not vacuous**;
+* the offline chain into the chip-exact GRU golden;
+* **the on-chip run**: 480 windows through the real bitstream, asserted
+  word-for-word against the offline golden and against the shipped golden file,
+  every segment vote correct, and on-chip accuracy asserted *equal* to offline;
+* **the shipped `.kyt` FILE itself** — loaded from disk, built, and simulated:
+  it reproduces the golden exactly. (A separate gate checks its geometry
+  matches the design; this one closes the gap by proving the *file* computes,
+  since the file is what a user opens.)
+* the other shipped artefacts — the `.grc` targets port 58950 and sizes its
+  scopes below the burst so they actually paint, and the installed
+  `kyttar.gru_demo_stim` produces a clip **identical** to `gru_stimulus.py`;
+* **seven mutations proven to fail** — four offline (swapped word order, wrong
+  weights, zero features, a saturating clip breaking the RMS bound) and three
+  **on-chip** (swapped I/Q rails, a starved rendezvous arm, and the exact-
+  baseline check that makes those two meaningful).
+
+The on-chip rail-swap mutation is not hypothetical: it is the bug this example
+actually hit. The complex `(Re, Im)` pair is **one** delivery into a shared
+broker, not two independent ones, and driving it as two left `Im` stuck at 0 —
+power silently became `re²`, every downstream stage still looked plausible, and
+the clip classified 9/12 instead of exactly. See the INGRESS PROTOCOL note in
+`gru_classifier.py`.
 
 ## Files
 
 | File | What |
 |---|---|
-| `gru_classifier.py` | the chain: topology, feature references, goldens, live route measurement |
+| `gru_classifier.kyt` | **the shipped design** — placed, routed, built, 102/120 cells |
+| `gru_classifier.grc` | the GNU Radio Companion flowgraph (server port 58950) |
+| `gru_classifier_golden.json` | the class stream the chip produces for the shipped stimulus |
+| `gru_classifier.py` | the chain: topology, anchors, the on-chip runner, feature references |
 | `gru_stimulus.py` | the shipped 4-segment stimulus |
-| `gru_classifier_demo.py` | what runs today, including the placement status |
+| `build_kyt.py` | regenerates the `.kyt` from the pinned anchors |
+| `gru_classifier_demo.py` | the headless end-to-end demo |
 | `ml/` | the offline pipeline: signals, features, training, references |

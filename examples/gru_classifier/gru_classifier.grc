@@ -1,0 +1,648 @@
+options:
+  parameters:
+    author: Lattrex
+    catch_exceptions: 'True'
+    category: '[GRC Hier Blocks]'
+    cmake_opt: ''
+    comment: ''
+    copyright: ''
+    description: 'GRU modulation classifier on ONE placeKYT array. A complex baseband
+      stream enters the chip and a class index (0..3 = SSB / BPSK / 4-FSK / noise)
+      comes back, one word per 32-sample window. The whole chain is on chip: the RMS
+      arm (ComplexToMagSquared -> MovingAverage(32) -> Sqrt -> KeepOneInN(32)), the
+      ZeroCrossingRate(32) arm on the real rail, a FeaturePairJoin rendezvous that
+      emits the ordered (rms, zcr) pair, and a GRUCellBlock (H=4, I=2) with its
+      4-class readout head and an INTERNAL recurrence. 102 of 120 cells. The shipped
+      stimulus walks all four classes in order and the Class Index scope shows the
+      chip tracking them.'
+    gen_cmake: 'On'
+    gen_linking: dynamic
+    generate_options: qt_gui
+    hier_block_src_path: '.:'
+    id: gru_classifier
+    max_nouts: '0'
+    output_language: python
+    placement: (0,0)
+    qt_qss_theme: ''
+    realtime_scheduling: ''
+    run: 'True'
+    run_command: '{python} -u {filename}'
+    run_options: prompt
+    sizing_mode: fixed
+    thread_safe_setters: ''
+    title: GRU modulation classifier (features + recurrent net on one array)
+    window_size: (1600,1000)
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 8
+    - 8
+    rotation: 0
+    state: enabled
+blocks:
+- name: samp_rate
+  id: variable
+  parameters:
+    comment: the trained model's sample rate (scope axis)
+    value: '32000'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 200
+    - 12
+    rotation: 0
+    state: enabled
+- name: window_n
+  id: variable
+  parameters:
+    comment: samples per feature window (config.json window_n)
+    value: '32'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 320
+    - 12
+    rotation: 0
+    state: enabled
+- name: n_samples
+  id: variable
+  parameters:
+    comment: shipped stimulus length (complex samples)
+    value: stim.n_samples()
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 440
+    - 12
+    rotation: 0
+    state: enabled
+- name: n_windows
+  id: variable
+  parameters:
+    comment: class words the chip returns (n_samples / window_n)
+    value: stim.n_windows()
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 580
+    - 12
+    rotation: 0
+    state: enabled
+- name: import_stim
+  id: import
+  parameters:
+    alias: ''
+    comment: ''
+    imports: from gnuradio.kyttar import gru_demo_stim as stim
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 740
+    - 12
+    rotation: 0
+    state: enabled
+- name: iq_src
+  id: blocks_vector_source_x
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'the SHIPPED stimulus: four contiguous class segments (ssb, bpsk, fsk4,
+      noise), peak |z| = 0.862 so the Q15 power stage never saturates'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    repeat: 'False'
+    tags: '[]'
+    type: complex
+    vector: stim.iq()
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 96
+    - 148
+    rotation: 0
+    state: enabled
+- name: chip_src
+  id: kyttar_source
+  parameters:
+    affinity: ''
+    alias: ''
+    burst_len: n_samples
+    comment: complex baseband -> chip x16_in
+    complex_in: complex
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_channels: '1'
+    pipelined: 'no'
+    port_name: '"x16_in"'
+    repeat: 'no'
+    schedule: '"interleaved"'
+    server_host: '"127.0.0.1"'
+    server_port: '58950'
+    stream_id: '"cls"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 384
+    - 132
+    rotation: 0
+    state: enabled
+- name: power
+  id: kyttar_complex_to_mag_squared
+  parameters:
+    affinity: ''
+    alias: ''
+    block_name: '""'
+    comment: '|z|^2 (on chip)'
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 664
+    - 92
+    rotation: 0
+    state: enabled
+- name: boxcar
+  id: kyttar_moving_average
+  parameters:
+    affinity: ''
+    alias: ''
+    block_name: '""'
+    comment: boxcar mean of the last 32 power samples = the window mean power
+    device_id: '"kyttar_0"'
+    length: '32'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    scale: 1.0/32
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 856
+    - 84
+    rotation: 0
+    state: enabled
+- name: root
+  id: kyttar_sqrt
+  parameters:
+    affinity: ''
+    alias: ''
+    block_name: '""'
+    comment: sqrt(mean power) = windowed RMS (on chip)
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1064
+    - 92
+    rotation: 0
+    state: enabled
+- name: decim
+  id: kyttar_keep_one_in_n
+  parameters:
+    affinity: ''
+    alias: ''
+    block_name: '""'
+    comment: keep phase 31 — the sample where the boxcar has consumed one whole window
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    n: '32'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1240
+    - 92
+    rotation: 0
+    state: enabled
+- name: zcr
+  id: kyttar_zero_crossing_rate
+  parameters:
+    affinity: ''
+    alias: ''
+    block_name: '""'
+    comment: zero-crossing rate of the real rail over the same 32-sample window
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    window_size: '32'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 664
+    - 268
+    rotation: 0
+    state: enabled
+- name: c2real
+  id: blocks_complex_to_real
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: the ZCR arm reads the REAL rail
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 480
+    - 276
+    rotation: 0
+    state: enabled
+- name: join
+  id: kyttar_feature_pair_join
+  parameters:
+    affinity: ''
+    alias: ''
+    block_name: '""'
+    comment: 'ordered rendezvous: word 0 = RMS (arm a), word 1 = ZCR (arm b) — the
+      order config.json pins and the trained weights expect'
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1416
+    - 176
+    rotation: 0
+    state: enabled
+- name: gru
+  id: kyttar_gru_cell
+  parameters:
+    affinity: ''
+    alias: ''
+    block_name: '""'
+    classes: '4'
+    comment: 'GRU timestep (H=4, I=2) + 4-class readout, recurrence INTERNAL; 51 cells
+      in a wide-flat 10x6 fold. weights_file empty = the bundled trained model.'
+    device_id: '"kyttar_0"'
+    hidden: '4'
+    inputs: '2'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    weights_file: '""'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1592
+    - 176
+    rotation: 0
+    state: enabled
+- name: cls_s2f
+  id: blocks_short_to_float
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'the GRU marker emits SHORT (a RAW class index 0..3, not a Q15 sample —
+      the BinArgmax raw-word convention), and kyttar_sink takes float/complex; this
+      is the type bridge, scale 1 because the word is already the index'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    scale: '1'
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1760
+    - 264
+    rotation: 0
+    state: enabled
+- name: chip_sink
+  id: kyttar_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: class words <- chip x16_out
+    device_id: '"kyttar_0"'
+    hold_secs: '8.0'
+    in_type: float
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_channels: '1'
+    port_name: '"x16_out"'
+    server_port: '58950'
+    server_repeat: 'True'
+    stream_id: '"cls"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1800
+    - 184
+    rotation: 0
+    state: enabled
+- name: cls_scale
+  id: blocks_multiply_const_vxx
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'kyttar.sink emits word/32768 FLOATS; the class word is a RAW index
+      (0..3), so x32768 turns it back into the index the scope should show'
+    const: '32768'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    type: float
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 2000
+    - 192
+    rotation: 0
+    state: enabled
+- name: cls_scope
+  id: qtgui_time_sink_x
+  parameters:
+    affinity: ''
+    alias: ''
+    alpha1: '1.0'
+    autoscale: 'False'
+    axislabel: 'True'
+    color1: '"blue"'
+    comment: 'CLASS INDEX over time. 0 = SSB, 1 = BPSK, 2 = 4-FSK, 3 = noise. The
+      stimulus walks the four in order, so a correct chip draws four ascending
+      plateaus. size is deliberately BELOW the burst (see the README): a QT time
+      sink draws NOTHING until a FULL size buffer arrives, and the GR scheduler
+      strands the tail of a finite stream, so a scope sized >= its burst never
+      paints.'
+    ctrlpanel: 'False'
+    entags: 'True'
+    grid: 'True'
+    gui_hint: ''
+    label1: class index
+    label10: Signal 10
+    label2: Signal 2
+    label3: Signal 3
+    label4: Signal 4
+    label5: Signal 5
+    label6: Signal 6
+    label7: Signal 7
+    label8: Signal 8
+    label9: Signal 9
+    legend: 'True'
+    marker1: '0'
+    marker10: '-1'
+    marker2: '-1'
+    marker3: '-1'
+    marker4: '-1'
+    marker5: '-1'
+    marker6: '-1'
+    marker7: '-1'
+    marker8: '-1'
+    marker9: '-1'
+    name: '"Class index over time (0=SSB 1=BPSK 2=4FSK 3=noise)"'
+    nconnections: '1'
+    size: n_windows - 16
+    srate: samp_rate/window_n
+    stemplot: 'False'
+    style1: '1'
+    style10: '1'
+    style2: '1'
+    style3: '1'
+    style4: '1'
+    style5: '1'
+    style6: '1'
+    style7: '1'
+    style8: '1'
+    style9: '1'
+    tr_chan: '0'
+    tr_delay: '0'
+    tr_level: '0.0'
+    tr_mode: qtgui.TRIG_MODE_FREE
+    tr_slope: qtgui.TRIG_SLOPE_POS
+    tr_tag: '""'
+    type: float
+    update_time: '0.10'
+    width1: '2'
+    width10: '1'
+    width2: '1'
+    width3: '1'
+    width4: '1'
+    width5: '1'
+    width6: '1'
+    width7: '1'
+    width8: '1'
+    width9: '1'
+    ylabel: class
+    ymax: '3.5'
+    ymin: '-0.5'
+    yunit: '""'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 2192
+    - 132
+    rotation: 0
+    state: enabled
+- name: truth_src
+  id: blocks_vector_source_x
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: the stimulus' TRUE class per window, for side-by-side comparison
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    repeat: 'True'
+    tags: '[]'
+    type: float
+    vector: stim.truth()
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 2000
+    - 340
+    rotation: 0
+    state: enabled
+- name: truth_scope
+  id: qtgui_time_sink_x
+  parameters:
+    affinity: ''
+    alias: ''
+    alpha1: '1.0'
+    autoscale: 'False'
+    axislabel: 'True'
+    color1: '"green"'
+    comment: the TRUE class per window — compare with the chip's verdict above
+    ctrlpanel: 'False'
+    entags: 'True'
+    grid: 'True'
+    gui_hint: ''
+    label1: true class
+    label10: Signal 10
+    label2: Signal 2
+    label3: Signal 3
+    label4: Signal 4
+    label5: Signal 5
+    label6: Signal 6
+    label7: Signal 7
+    label8: Signal 8
+    label9: Signal 9
+    legend: 'True'
+    marker1: '0'
+    marker10: '-1'
+    marker2: '-1'
+    marker3: '-1'
+    marker4: '-1'
+    marker5: '-1'
+    marker6: '-1'
+    marker7: '-1'
+    marker8: '-1'
+    marker9: '-1'
+    name: '"TRUE class per window (ground truth)"'
+    nconnections: '1'
+    size: n_windows - 16
+    srate: samp_rate/window_n
+    stemplot: 'False'
+    style1: '1'
+    style10: '1'
+    style2: '1'
+    style3: '1'
+    style4: '1'
+    style5: '1'
+    style6: '1'
+    style7: '1'
+    style8: '1'
+    style9: '1'
+    tr_chan: '0'
+    tr_delay: '0'
+    tr_level: '0.0'
+    tr_mode: qtgui.TRIG_MODE_FREE
+    tr_slope: qtgui.TRIG_SLOPE_POS
+    tr_tag: '""'
+    type: float
+    update_time: '0.10'
+    width1: '2'
+    width10: '1'
+    width2: '1'
+    width3: '1'
+    width4: '1'
+    width5: '1'
+    width6: '1'
+    width7: '1'
+    width8: '1'
+    width9: '1'
+    ylabel: class
+    ymax: '3.5'
+    ymin: '-0.5'
+    yunit: '""'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 2192
+    - 316
+    rotation: 0
+    state: enabled
+connections:
+- - iq_src
+  - '0'
+  - chip_src
+  - '0'
+- - chip_src
+  - '0'
+  - power
+  - '0'
+- - chip_src
+  - '0'
+  - c2real
+  - '0'
+- - c2real
+  - '0'
+  - zcr
+  - '0'
+- - power
+  - '0'
+  - boxcar
+  - '0'
+- - boxcar
+  - '0'
+  - root
+  - '0'
+- - root
+  - '0'
+  - decim
+  - '0'
+- - decim
+  - '0'
+  - join
+  - '0'
+- - zcr
+  - '0'
+  - join
+  - '1'
+- - join
+  - '0'
+  - gru
+  - '0'
+- - gru
+  - '0'
+  - cls_s2f
+  - '0'
+- - cls_s2f
+  - '0'
+  - chip_sink
+  - '0'
+- - chip_sink
+  - '0'
+  - cls_scale
+  - '0'
+- - cls_scale
+  - '0'
+  - cls_scope
+  - '0'
+- - truth_src
+  - '0'
+  - truth_scope
+  - '0'
+
+metadata:
+  file_format: 1
+  grc_version: 3.10.9.2

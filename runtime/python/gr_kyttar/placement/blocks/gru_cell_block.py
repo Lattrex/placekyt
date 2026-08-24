@@ -9,21 +9,26 @@ in pinned STATE registers inside the block and is written back each timestep
 by the block's own cells.
 
 ARCHITECTURE (51 cells: 48 ring + an off-ring egress relay + 2 closure
-transits, folded 8x7)
+transits, folded 10 wide x 6 tall)
 -----------------------------------------------------------------------------
-The datapath is ONE closed serial ring (the FLLBandEdge column-pair fold,
-transposed: a head column + three boustrophedon row pairs, the chain end
-closing back into the head column's first cell). Every internal WRITE/JUMP
-rides the ring forward at its ring-distance @N (all distances <= 27), so there
-are no against-the-grain corridors anywhere. The class word leaves through an
-OFF-RING relay so the route's face override never lands on a ring cell.
+The datapath is ONE closed serial ring (a row-comb Hamiltonian cycle: a head
+row + five boustrophedon column pairs, the chain end closing back into the
+head row's first cell). Every internal WRITE/JUMP rides the ring forward at
+its ring-distance @N (all distances <= 27), so there are no against-the-grain
+corridors anywhere. The class word leaves through an OFF-RING relay so the
+route's face override never lands on a ring cell.
 
-The 8-wide-by-7-tall orientation is deliberate: it puts the input landing
-``fin`` (0, 0) and the egress relay ``oout`` (2, 0) both on the NORTH edge,
-facing the 10x12's two 16-bit ports (which both sit on row 0), and it leaves
-five free rows on the die rather than three free columns. See
-:meth:`_ring_geometry` for the fold, the search that chose it, and the measured
-port-corridor saving.
+The WIDE-FLAT shape is deliberate and is what made the classifier example
+possible. The block declares ``CHIP_SCALE`` (waiving INV-9's <= 8-across
+convention for this class only) and takes the trade that comes with it: at 10
+wide nothing can reach its far side, so its input landing ``fin`` and its
+egress relay ``oout`` sit three cells apart on ONE edge — the block's NORTH
+edge, facing the 10x12's two 16-bit ports, which are both on row 0. Lying 10
+wide x 6 tall leaves SIX FULL-WIDTH FREE ROWS as one contiguous
+through-channel, which is exactly the routing resource the classifier's ten
+nets could never find under the 8x8 cap. See :meth:`_ring_geometry` for the
+fold, the search that chose it, and the measured result (the whole chain
+routes and builds at 102 of 120 cells).
 
 Two ORDERING rules govern the layout dict and are gated structurally (see
 :meth:`default_layout` and the block's test suite): the program cells come
@@ -231,6 +236,48 @@ class GRUCellBlock(KyttarBlock):
     H = 4
     I = 2
     C = 4
+
+    # ---------------------------------------------------------- placement class
+    #
+    # THE CHIP-SCALE DECLARATION (see ``KyttarBlock.CHIP_SCALE``). This block's
+    # 50-cell closed ring is 43% of the array; INV-9's <= 8-across convention
+    # confined it to three possible bounding boxes, and in ALL of them the free
+    # space it left was fragmented perimeter rather than a contiguous
+    # through-channel — which is why the classifier chain never routed. The
+    # chip-scale class waives the width cap for THIS class only, in exchange
+    # for an explicit trade the block honours:
+    #
+    #   * the fold may span the full 10-wide array, AND
+    #   * because nothing can then reach its far side, its INPUT and OUTPUT
+    #     must be on ONE edge — ``fin`` and ``oout`` are three cells apart on
+    #     the block's NORTH edge (see :meth:`_ring_geometry`), facing the
+    #     10x12's two 16-bit ports, which are both on row 0.
+    #
+    # This is never a global loosening: a block that does not declare the flag
+    # stays bound by the ordinary cap and the full 8-orientation D4 gate.
+    CHIP_SCALE = True
+
+    # A 10-wide fold on a 10-wide array has exactly ONE orientation that is
+    # guaranteed to exist — the identity. (The 90-degree images are 10 TALL and
+    # 6 wide, which does fit a 12-tall array, but they put the block's single
+    # I/O edge on a chip EDGE with no port on it, so they are not shipped.)
+    CHIP_SCALE_ORIENTATIONS = ((),)
+
+    #: the wide-flat fold's box (see :meth:`_ring_geometry`). 10 x 5 = 50 = the
+    #: ring's cell count exactly, so the box is fully covered and there is no
+    #: enclosed dead interior. The egress relay adds one more row.
+    _FOLD_W = 10
+    _FOLD_H = 5
+
+    #: ``amx``'s index within the 50-long ring order — the cell the off-ring
+    #: egress relay abuts. It is a CACHED, ASSERTED copy of what
+    #: :meth:`_ring_ids` says, not an independent constant: :meth:`_ring_order`
+    #: recomputes the order and checks this value, so re-ordering the ring
+    #: without updating it FAILS LOUDLY instead of seating the relay against
+    #: the wrong cell (the INV-37 failure mode — a legal fold that computes
+    #: garbage). :meth:`_ring_geometry` uses it to avoid recursing through
+    #: :meth:`_ring_ids` while the layout is being built.
+    _AMX_RING_INDEX = 47
 
     def __init__(self, name: str, hidden: int = 4, inputs: int = 2,
                  classes: int = 4, weights_file: str = ""):
@@ -637,53 +684,117 @@ ok:
         """``(ring positions in ring order, oout position)`` — the FOLD, as
         pure geometry.
 
-        The 50 ring cells trace a closed serpentine: a head COLUMN of 7 north->
-        south at x = 0, then three boustrophedon ROW pairs (east along row 6 /
-        west along row 5, east 4 / west 3, east 2 / west 1, each over columns
-        1..7), then (1, 0), whose WEST face closes back into the head column's
-        first cell. Footprint 8 wide x 7 tall including the egress relay; both
-        dims <= 8 (INV-9's D4 cap, which the 8-orientation gate makes real) and
-        the five in-bbox holes all sit on the open NORTH edge, so there is no
-        enclosed dead interior.
+        THE WIDE-FLAT FOLD (10 wide x 5 tall + the egress relay). The 50 ring
+        cells trace a closed ROW-COMB cycle over a 10x5 box: a head ROW of 10
+        cells along row 0, then five boustrophedon COLUMN pairs (south down
+        column 9 / north up column 8, south 7 / north 6, … south 1 / north 0),
+        the last of which closes back edge-adjacent into the head row's first
+        cell. The ring is then RE-INDEXED (traversed in the reverse direction
+        from cell index 0) so ``fin`` lands at the west end of the head row and
+        ``amx`` three cells along it; the off-ring ``oout`` relay sits directly
+        NORTH of ``amx``, one row above the box.
 
-        THE RE-FOLD. This is the landed FLL column-pair serpentine TRANSPOSED —
-        the same 50-cell closed cycle, the same ring order, every internal @N
-        ring-distance unchanged, laid out 8x7 instead of 7x8. The transpose is
-        what puts the block's two EXTERNAL cells where the chip's ports are:
-        ``fin`` at (0, 0) and the ``oout`` relay at (2, 0), both on the NORTH
-        edge two cells apart, facing the 10x12's two 16-bit ports (which sit at
-        (0, 0) and (9, 0) — BOTH on row 0). The as-authored 7x8 put the input
-        on the north-west corner but buried the egress two rows down the WEST
-        edge pointing away from the output port; the block's own two external
-        nets then cost 11 cells of corridor before reaching a port, against 7
-        (minimum over anchors of ``|fin - x16_in| + |oout - x16_out|``), and
-        ``gru_out`` alone had measured 15-17 cells. Lying 8 wide x 7 tall on a
-        10 wide x 12 tall die also leaves FIVE free rows rather than three free
-        columns — a materially wider lane for a companion front end.
+        Total footprint 10 wide x 6 tall including the relay row. The 10x5 box
+        is FULLY covered — 50 cells, no holes, hence no enclosed dead interior
+        — and the relay row holds exactly one cell.
 
-        The transpose was chosen by an exhaustive search over the comb /
-        row-comb / spine-snake closed-cycle families x all 8 D4 images x all
-        100 start-and-direction pairs, keeping only folds that satisfy every
-        rule (closed cycle, <= 8x8, no enclosed interior, the route-time face
-        rule) and ranking the survivors by that port cost. It is the best of
-        the 40 legal same-handed folds.
+        WHY WIDE, AND WHY THIS IS THE FOLD THAT UNBLOCKED THE CLASSIFIER
+        ---------------------------------------------------------------------
+        This block is declared ``CHIP_SCALE`` (see the class attributes), which
+        waives INV-9's ≤8-across convention in exchange for an explicit trade:
+        a block that spans the full 10-wide array cannot be reached from its
+        far side, so its input and output ports MUST sit on ONE edge. They do —
+        both are reached from the block's NORTH side, three columns apart:
+        ``fin`` is the west end of the head row (relative (0, 1), its north face
+        open to the relay row) and ``oout`` is the relay itself at (3, 0). Both
+        therefore face the 10x12's two 16-bit ports, which BOTH sit on row 0.
+
+        The payoff is CONTIGUOUS FREE ROWS. The previous 8x7 fold left five
+        free rows and two free columns, but its free space was fragmented by
+        the block's own 8-wide body: with the block on rows 0..6 the routing
+        had to squeeze past it. At 10 wide x 6 tall the block occupies a solid
+        band and leaves SIX FULL 10-WIDE ROWS as one contiguous through-channel
+        — which is exactly what the classifier's ten nets could never find.
+
+        MEASURED, not argued. The classifier chain (the 51-cell GRU plus the
+        six-block feature front end, 65 block cells and ten nets) had never
+        routed on one 10x12 across four dispatches and ~8200 measured layouts;
+        the best result was always exactly ONE failing net, with WHICH net
+        failed rotating as blocks moved — the signature of a saturated array.
+        The prior diagnosis concluded the wall was the net count and that no
+        fold could close it, resting on the argument that a CLOSED RING can
+        never contain a free through-channel so all its free space is
+        perimeter. That argument is sound but its conclusion was scoped to the
+        three bounding boxes INV-9's 8x8 cap allowed. Waiving the cap admits
+        the 10x5 box, whose perimeter free space IS six contiguous rows. With
+        this fold the whole chain ROUTES AND BUILDS at 102 of 120 cells
+        (65 block + 37 corridor), the GRU anchored at (0, 6) with the front end
+        in the free rows above it. See ``examples/gru_classifier``.
+
+        The fold was chosen by enumerating the closed-cycle comb / row-comb
+        families at every cell-count-dividing box within the chip-scale caps,
+        x every start-and-direction re-indexing, x every free relay slot,
+        keeping only candidates that satisfy EVERY rule — closed Hamiltonian
+        cycle, bbox within the declared caps, no enclosed dead interior, a free
+        relay slot adjacent to ``amx``, the ROUTE-TIME FACE RULE over the
+        block's real ``internal_connections``, and every internal ring distance
+        <= 31 (INV-36) — and ranking the 24 survivors by PORT COST (minimum
+        over anchors of ``|fin - x16_in| + |oout - x16_out|``) then by
+        contiguous free rows. This is the best of them: port cost 7 (equal to
+        the 8x7 fold it replaces) with six free rows instead of five.
 
         This is the SINGLE SOURCE OF TRUTH for the fold: :meth:`default_layout`
         turns it into placed cells + resting faces, and :meth:`_amx_faces` /
-        :meth:`_fin_lock_face` derive the block's three baked ``is_face``
-        constants from it (INV-37 — bake them as literals and a re-fold builds
-        clean and computes garbage). Changing the fold means changing THIS
-        method and nothing else.
+        :meth:`_fin_lock_face` derive the block's three ``is_face`` constants
+        from it (INV-37 — bake them as literals and a re-fold builds clean and
+        computes garbage; this re-fold moved all three, and the block's full
+        behavioural suite is what proves they followed). Changing the fold
+        means changing THIS method and nothing else.
         """
-        pos: List[Tuple[int, int]] = [(0, c) for c in range(7)]      # 0..6
-        for pair in range(3):                                        # pairs
-            cd = 6 - 2 * pair          # down row
-            cu = cd - 1                # up row
-            pos += [(r, cd) for r in range(1, 8)]
-            pos += [(r, cu) for r in range(7, 0, -1)]
-        pos.append((1, 0))                                           # t_b
-        # the off-ring egress relay abuts ``amx`` on its free side.
-        return pos, (2, 0)
+        # the 10x5 closed row-comb cycle, in its natural traversal order
+        cyc: List[Tuple[int, int]] = [(x, 0) for x in range(self._FOLD_W)]
+        for pair in range(self._FOLD_W // 2):
+            xd = self._FOLD_W - 1 - 2 * pair      # the "down" (south) column
+            xu = xd - 1                           # the "up" (north) column
+            cyc += [(xd, y) for y in range(1, self._FOLD_H)]
+            cyc += [(xu, y) for y in range(self._FOLD_H - 1, 0, -1)]
+        # RE-INDEX: traverse the same closed cycle backwards from index 0, so
+        # ``fin`` (ring index 0) lands at the head row's west end and ``amx``
+        # (ring index 47) three cells east of it — both on the north edge,
+        # facing the chip's two row-0 ports.
+        n = len(cyc)
+        pos = [cyc[(-i) % n] for i in range(n)]
+        # the off-ring egress relay sits directly NORTH of ``amx``, in the one
+        # extra row above the box. Shift everything down by that row so no
+        # coordinate is negative and the block's anchor is its north-west
+        # corner like every other block.
+        pos = [(x, y + 1) for x, y in pos]
+        ax, ay = pos[self._AMX_RING_INDEX]
+        return pos, (ax, ay - 1)
+
+    def _ring_order(self) -> List[str]:
+        """The 50 ring cell ids in ring order (the 48 on-ring program cells
+        then the two face-only closure transits), with
+        :attr:`_AMX_RING_INDEX` ASSERTED against it.
+
+        The relay seat in :meth:`_ring_geometry` is expressed as a ring INDEX
+        so the geometry does not have to recurse through the cell programs.
+        That index is only safe while it agrees with the real ring order, so
+        this method is the one place that checks — re-ordering the ring without
+        updating the constant raises here instead of quietly seating the egress
+        relay against the wrong cell, which is precisely the INV-37 failure
+        mode (a perfectly legal fold that builds and computes garbage).
+        """
+        ring = [c for c in self._ring_ids() if c != "oout"] + [
+            "transit_ring_a", "transit_ring_b"]
+        if ring[self._AMX_RING_INDEX] != "amx":
+            raise AssertionError(
+                f"FOLD/RING DESYNC: _AMX_RING_INDEX={self._AMX_RING_INDEX} "
+                f"names {ring[self._AMX_RING_INDEX]!r}, not 'amx'. The egress "
+                f"relay would be seated against the wrong cell and the block "
+                f"would build cleanly and compute garbage (INV-37). Update the "
+                f"constant to {ring.index('amx')}.")
+        return ring
 
     def _face_from(self, a: Tuple[int, int], b: Tuple[int, int]) -> int:
         """The face code of the direction from cell ``a`` to adjacent ``b``."""
@@ -711,9 +822,7 @@ ok:
         built from the cell programs and would recurse.
         """
         pos, oout = self._ring_geometry()
-        ring = [c for c in self._ring_ids() if c != "oout"] + [
-            "transit_ring_a", "transit_ring_b"]
-        k = ring.index("amx")
+        k = self._ring_order().index("amx")
         amx = pos[k]
         return (self._face_from(amx, oout),
                 self._face_from(amx, pos[(k + 1) % len(pos)]))
@@ -960,8 +1069,7 @@ start:
           assembler rejects before the patcher can run. Found by the
           8-orientation gate (cw+cw and mirror_h+cw+cw failed to build).
         """
-        ring = [c for c in self._ring_ids() if c != "oout"] + [
-            "transit_ring_a", "transit_ring_b"]
+        ring = self._ring_order()
         pos, oout_pos = self._ring_geometry()
         assert len(pos) == len(ring) == 50
         faces: Dict[str, Tuple[int, int, str]] = {}

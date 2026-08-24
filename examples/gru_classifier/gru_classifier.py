@@ -1,12 +1,18 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The GRU modulation-classifier chain: topology, feature references, goldens.
 
-STATUS: the feature front end and the trained model are verified (see the gate,
-``verification/tests/test_gru_classifier_example.py``). The assembled chain does
-NOT yet place and route as one chip — it is always exactly one net short — so
-this example has never been run end to end on a real array and ships no ``.kyt``
-or ``.grc``. :func:`route_report` measures that wall live; the README's "Status"
-section and the ``gru_classifier example`` lessons_log entry give the detail.
+STATUS: SHIPPED. The whole chain places, routes and builds as ONE chip at 102
+of 120 cells, and classifies the shipped stimulus end to end on the real placed
+and routed array. The gate is
+``verification/tests/test_gru_classifier_example.py``; :func:`route_report`
+measures the placement live.
+
+What unblocked it was a re-fold of ``GRUCellBlock``, not a change to this
+chain: the block now declares ``CHIP_SCALE`` and folds WIDE-FLAT (10 wide x 6
+tall, input and egress both on its north edge), which leaves six full-width
+free rows as ONE contiguous through-channel. Under the previous <= 8-across
+convention the block's free space was fragmented perimeter and the chain was
+always exactly one net short. See ``ROUTING HISTORY`` below.
 
 The design is ONE classifier on ONE array — a complex baseband stream in, one
 class word (0..3 = SSB / BPSK / 4-FSK / noise) per 32-sample window out::
@@ -60,9 +66,11 @@ CHIP_YAML = str(ROOT / "placekyt" / "resources" / "chips"
                 / "kyttar_10x12.yaml")
 LIB = "lattrex.official"
 WEIGHTS = HERE / "ml" / "weights_single.json"
-# NOTE: there is deliberately no .kyt / .grc here. The chain does not yet place
-# and route as one chip (see README "Status" and the lessons_log entry), so
-# shipping either would advertise a demo that cannot run.
+#: the shipped, placed-and-routed design and its GRC flowgraph.
+KYT = HERE / "gru_classifier.kyt"
+GRC = HERE / "gru_classifier.grc"
+#: the golden class stream the shipped stimulus produces ON CHIP.
+GOLDEN = HERE / "gru_classifier_golden.json"
 
 #: the chain's blocks, in dataflow order, with the params that define it
 BLOCK_SPECS = [
@@ -162,28 +170,44 @@ def segment_votes(classes, burn: int = 30) -> list[int]:
 # As far as the router is concerned that is an ordinary INV-24 port fan-out —
 # one shared corridor forking at a broker beyond the port cell.
 #
-# THE WALL. GRUCellBlock is 51 cells — 43% of the array — and costs several more
-# for its own two port corridors. The join->GRU tail routes at 81/120; the RMS
-# arm adds 11 block cells AND four more nets, and each net measured ~8.5 cells of
-# corridor, which is what the remaining budget cannot buy.
+# ROUTING HISTORY — why this took five dispatches, and what actually fixed it.
 #
-# Two levers have now been measured, and NEITHER closes it:
+# GRUCellBlock is 51 cells, 43% of the array. For four dispatches the assembled
+# chain was ALWAYS exactly one net short, and WHICH net failed rotated as blocks
+# moved — the signature of a saturated array rather than one bad anchor. Three
+# explanations were measured and ruled out:
 #
-#  * THE FOLD. GRUCellBlock was RE-FOLDED (8x7, transposed) so its input (0,0)
-#    and egress (2,0) span the NORTH edge facing the chip's two row-0 ports,
-#    cutting the block's own port-corridor cost from 11 cells to 7 and leaving
-#    five free ROWS instead of three free columns. On the identical lane search
-#    that took the old 7x8 fold to two nets short, the re-fold reaches ONE — a
-#    real, measured improvement that still does not close the last net. 4180
-#    further layouts (exhaustive lanes + guided perturbation from every 1- and
-#    2-short seed) stayed at one.
-#  * THE ARM. Shrinking the RMS arm was measured across boxcar lengths 32/16/8/4
-#    with and without Sqrt: 65 block cells -> 4 nets short, 62 -> 2, 57 -> 1,
-#    56 -> 1. Even a 4-tap boxcar with Sqrt dropped — which is no longer the
-#    model's feature — is one net short.
+#  * NOT CAPACITY. The blocks total 65 of 120 cells.
+#  * NOT THE HOP CEILING. INV-36 lifted the 31-hop limit; no `hop_overflow` in
+#    5039 measured layouts.
+#  * NOT THE ARM. Shrinking the RMS arm was swept across boxcar lengths
+#    32/16/8/4 with and without Sqrt: 65 block cells -> 4 nets short, 62 -> 2,
+#    57 -> 1, 56 -> 1. Even a 4-tap boxcar with Sqrt dropped — no longer the
+#    model's feature — was one net short.
 #
-# The hop ceiling was ruled out earlier (INV-36; no `hop_overflow` in 5039
-# layouts). See :func:`route_report` and the example gates.
+# The fourth explanation was the fold, and it was RIGHT but under-scoped. The
+# GRU was re-folded 8x7 (input and egress on the north edge facing the chip's
+# two row-0 ports, port cost 11 -> 7), which took the search from two nets short
+# to one; 4180 further layouts stayed at one. The conclusion drawn then was that
+# no fold could close it, resting on a sound structural argument: a CLOSED RING
+# can never contain a free through-channel (a cycle cannot jump a gap), so all
+# of its free space is perimeter, and free-space quality measured IDENTICAL
+# across every legal fold.
+#
+# That argument is correct. Its CONCLUSION was scoped to the three bounding
+# boxes INV-9's <= 8-across convention allowed for a 51-cell block. Waiving that
+# convention for this block — the CHIP_SCALE placement class, declared per class
+# and never a global loosening — admits a 10x5 box, and the perimeter free space
+# of a 10-wide block IS six contiguous full-width rows. That is the
+# through-channel the ten nets could never find.
+#
+# The trade CHIP_SCALE demands is explicit and the block honours it: nothing can
+# reach the far side of a 10-wide block, so its input and output must share ONE
+# edge. GRUCellBlock's `fin` and `oout` are three cells apart on its north edge.
+#
+# RESULT: the whole chain routes and builds at 102/120 (65 block + 37 corridor)
+# with the GRU on rows 6..11 and the front end in the free rows above it. The
+# join->GRU tail alone still routes at 81/120, as before.
 
 def _engine():
     from PySide6.QtWidgets import QApplication
@@ -231,17 +255,25 @@ def _connect(ctrl, CPE, BE, ids):
 
 
 
-#: the best-known whole-chain layout. It does NOT route (exactly one net short —
-#: ``join_gru``); it is kept so the wall is reproducible and so the day it lifts
-#: is visible. Found by the lane search over the RE-FOLDED (8x7) GRU: the six
-#: small blocks laid along row 1 with the GRU below them on rows 5..11.
+#: THE SHIPPED LAYOUT — the whole chain, placed and routed and built on ONE
+#: 10x12 at 102 of 120 cells (65 block + 37 corridor).
+#:
+#: The wide-flat GRU occupies rows 6..11 across the full width; the six
+#: front-end blocks live in the six free rows above it, between the chain's
+#: ingress and the GRU's north-edge input. This is the layout the ``.kyt``
+#: ships and the gates assert.
+#:
+#: It is TIGHT: a 400-layout random search over the free band found exactly one
+#: arrangement that routes AND builds, which is why these anchors are pinned
+#: rather than left to the auto-placer. See ``ROUTING HISTORY`` below.
 BEST_KNOWN_ANCHORS = {
-    "gru": (0, 5), "power": (2, 1), "boxcar": (3, 1), "root": (5, 1),
-    "decim": (7, 1), "zcr": (8, 1), "join": (9, 1),
+    "gru": (0, 6), "power": (3, 2), "boxcar": (6, 1), "root": (8, 1),
+    "decim": (4, 2), "zcr": (1, 1), "join": (2, 1),
 }
 
-#: the join->GRU tail alone DOES route, measured at 81/120 cells — so the wall
-#: is the RMS arm's corridors, not the rendezvous or the recurrent block.
+#: the join->GRU tail alone, measured at 81/120 cells. Kept now that the whole
+#: chain routes as a REGRESSION SPLIT: if the full chain ever stops routing,
+#: this says immediately whether the tail or the RMS arm is responsible.
 TAIL_ANCHORS = {"gru": (0, 3), "decim": (7, 0), "zcr": (3, 1), "join": (2, 1)}
 
 
@@ -261,12 +293,13 @@ def _hand_place(ctrl, anchors, specs):
     return ids
 
 
-def route_chain(anchors=None):
-    """Hand-place the WHOLE chain and auto-route it.
+def build_chain(anchors=None):
+    """Hand-place, route and BUILD the whole chain at ``anchors``.
 
-    Returns ``(failed_net_names, cells_used)``. ``failed_net_names == []`` means
-    the chain routed — which, as of this writing, has never happened: see
-    :data:`BEST_KNOWN_ANCHORS` and the lessons_log entry.
+    Returns ``(ctrl, build_result, ids, failed_net_names)``. This is the single
+    place the design is assembled: :func:`route_chain` reports on it,
+    :func:`run_on_chip` simulates it, and ``build_kyt.py`` saves it, so all
+    three can never drift from one another.
     """
     from engine.build import BuildEngine
 
@@ -281,11 +314,141 @@ def route_chain(anchors=None):
     rep = ctrl.auto_route_all({ctk: ct}, auto_orient=False)
     bad = [r.name for r in rep.results if not r.ok]
     if bad:
-        return bad, None
+        return ctrl, None, ids, bad
     bres = BuildEngine(cat, CHIP_YAML).build(ctrl.project, {ctk: ct})
     if not bres.ok:
-        return ["build:" + str(bres.errors[0])], None
+        return ctrl, bres, ids, ["build:" + str(bres.errors[0])]
+    return ctrl, bres, ids, []
+
+
+def route_chain(anchors=None):
+    """Hand-place the WHOLE chain and auto-route it.
+
+    Returns ``(failed_net_names, cells_used)``. ``failed_net_names == []``
+    means the chain routed; at :data:`BEST_KNOWN_ANCHORS` it does, and builds,
+    at 102 of 120 cells.
+    """
+    _ctrl, bres, _ids, bad = build_chain(anchors)
+    if bad:
+        return bad, None
     return [], sum(c.cell_count for c in bres.chips.values())
+
+
+# --------------------------------------------------------------------------- #
+#  THE ON-CHIP RUN — the example's real gate                                   #
+# --------------------------------------------------------------------------- #
+#
+# INGRESS PROTOCOL. The chip has ONE 16-bit input port and the chain takes
+# THREE nets off it (INV-24 port fan-out): Re -> power.re, Im -> power.im, and
+# Re again -> zcr.sample. The build reports the resolved landings in
+# ``chips[0].input_landings`` keyed by net name.
+#
+# THE COMPLEX PAIR IS ONE DELIVERY, NOT TWO — read the landings, do not assume.
+# ``power`` is a COMPLEX 2-rail consumer, so the router does NOT give its two
+# rails independent deliveries: ``in_re`` and ``in_im`` share ONE corridor
+# ending at a BROKER one cell short of the power cell, and ``in_re``'s landing
+# is that broker with BOTH staging registers in its ``data_addrs``. The broker
+# then hands the pair to the power cell as a single complex packet with ONE
+# trigger.
+#
+# So the correct drive is: write Re AND Im to ``in_re``'s two ``data_addrs`` at
+# ``in_re``'s hop, then fire ``in_re``'s entry ONCE. ``in_im``'s landing entry
+# describes the FINAL destination (the power cell's own registers) and must NOT
+# be driven from the port — writing there delivers Im into the power cell's Re
+# register, which measured as power = re^2 with Im silently stuck at 0 (the
+# whole clip classified 9/12 instead of exactly, and every stage downstream
+# looked plausible). Whenever a complex consumer is fed from a port, drive the
+# BROKER landing, not the per-rail one.
+#
+# The ZCR cell is single-rail and genuinely independent: its own hop, its own
+# entry, its own write. It is driven after the pair.
+
+def _enc_write(hop: int, addr: int) -> int:
+    """WRITE opcode 0x6, hop in [9:5], dest register in [4:0]."""
+    return (0x6 << 12) | ((hop & 0x1F) << 5) | (addr & 0x1F)
+
+
+def _enc_jump(hop: int, entry: int) -> int:
+    """JUMP opcode 0x7, hop in [9:5], entry address in [4:0]."""
+    return (0x7 << 12) | ((hop & 0x1F) << 5) | (entry & 0x1F)
+
+
+def _sample_burst(landings, re_w, im_w):
+    """The word stream that delivers ONE complex input sample to the chain.
+
+    See the INGRESS PROTOCOL note above: the (Re, Im) pair is ONE delivery into
+    the shared complex broker, and the ZCR copy of Re is a second, independent
+    one.
+    """
+    lr, lz = landings["in_re"], landings["in_zcr"]
+    pair_hop = int(lr["hop"]) & 0x1F
+    pair_addrs = list(lr.get("data_addrs") or [])
+    if len(pair_addrs) < 2:
+        raise RuntimeError(
+            f"the complex ingress landing carries {len(pair_addrs)} data "
+            f"address(es), not the 2 a rail PAIR needs: {lr!r}. The router's "
+            f"complex-broker resolution changed; re-read the landings before "
+            f"driving (see the INGRESS PROTOCOL note).")
+    zcr_hop = int(lz["hop"]) & 0x1F
+    zcr_addr = int((list(lz.get("data_addrs")) or [0])[0])
+    return [
+        # the complex pair: BOTH rails into the broker, then ONE trigger
+        _enc_write(pair_hop, int(pair_addrs[0])), re_w & 0xFFFF,
+        _enc_write(pair_hop, int(pair_addrs[1])), im_w & 0xFFFF,
+        _enc_jump(pair_hop, int(lr["entry"])),
+        # the ZCR arm's own copy of Re, on its own net
+        _enc_write(zcr_hop, zcr_addr), re_w & 0xFFFF,
+        _enc_jump(zcr_hop, int(lz["entry"])),
+    ]
+
+
+def run_on_chip(iq, anchors=None, max_events_per_sample=40_000):
+    """Drive the REAL placed + routed + built chip with a complex baseband
+    clip and return the RAW class words it emits.
+
+    This is the example's end-to-end proof: the bitstream is the one
+    :func:`build_chain` produces from the shipped anchors, the stimulus goes in
+    through the chip's real input port, and the class words come out of its real
+    output port. Nothing is composed in Python.
+
+    ``iq`` is a complex array; it is quantized to Q15 exactly as
+    ``gru_stimulus.to_q15`` does. Returns ``(class_words, cells_used)``.
+    """
+    import simkyt
+    from gru_stimulus import to_q15
+
+    _ctrl, bres, _ids, bad = build_chain(anchors)
+    if bad:
+        raise RuntimeError(f"the chain did not build: {bad}")
+    chip_res = bres.chips[0]
+    landings = dict(getattr(chip_res, "input_landings", {}) or {})
+    for k in ("in_re", "in_im", "in_zcr"):
+        if k not in landings:
+            raise RuntimeError(f"no resolved input landing for net {k!r}; "
+                               f"got {sorted(landings)}")
+
+    chip = simkyt.Chip.from_yaml(CHIP_YAML)
+    chip.load_bitstream_physical(bres.words(0))
+    # The port's own entry address is the RE net's entry: that is the net whose
+    # landing the port cell forwards by default. The other two nets carry their
+    # entries in their own JUMP words.
+    chip.set_port_entry_address("x16_in", int(landings["in_re"]["entry"]))
+
+    re_q = to_q15(np.real(iq)).tolist()
+    im_q = to_q15(np.imag(iq)).tolist()
+    stream = []
+    for r, i in zip(re_q, im_q):
+        stream += _sample_burst(landings, int(r), int(i))
+    chip.queue_words_physical("x16_in", stream)
+    res = chip.run(max_events=max(400_000,
+                                  max_events_per_sample * max(1, len(re_q))))
+    if isinstance(res, dict) and not res.get("completed", True):
+        raise RuntimeError(
+            f"LIVELOCK / event cap under saturated drive: {res} — the GRU's "
+            f"timestep barrier did not drain, or a net is mis-delivered")
+    words = [int(v) & 0xFFFF
+             for (v, _d, _t) in chip.read_port_words_timed("x16_out")]
+    return words, chip_res.cell_count
 
 
 def route_tail(anchors=None):

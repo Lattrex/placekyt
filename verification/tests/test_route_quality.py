@@ -81,6 +81,20 @@ TOTAL_EXCESS = {
     # egress jogs along row 6 into the col-9 north highway (+2) — both
     # placement-forced wall detours around the 14-cell MMTiming footprint:
     "qpsk_modem.kyt": 4,
+    # GRU classifier (2026-08-24). The wide-flat 10x6 GRUCellBlock occupies
+    # rows 6-11 across the FULL width, so the entire front end is confined to
+    # rows 1-4 and both detours are that confinement, not router wander:
+    #   * pow_mean +2 — power (3,2) -> boxcar (6,1): the boxcar's own 2x4
+    #     footprint (cols 6-7, rows 1-4) blocks the direct approach, so the
+    #     corridor rounds its south-west corner along row 3.
+    #   * root_decim +4 — sqrt (9,2) -> decim (4,2): a straight row-2 run is
+    #     walled by the sqrt and boxcar cells at (6,2),(7,2),(8,2), so the
+    #     corridor drops to the free row 5 (the only clear lane between the
+    #     front end and the GRU band) and climbs back.
+    # Both are the placement-forced wall-detour class, and the placement is not
+    # free to improve: a 400-layout search over the free band found exactly ONE
+    # arrangement that routes AND builds at all (102/120).
+    "gru_classifier.kyt": 6,
 }
 
 

@@ -99,15 +99,19 @@ _CASES = [
     # heaviest D4 case in the catalog: every internal hop distance and face word
     # must transform rigidly for the streamed frames to stay bit-identical.
     ("FFT16Block", {}, "complex", ("xi", "xq", "out_i")),
-    # GRU classifier cell: 51 cells, ONE closed ring serpentine with an
-    # internal recurrence, a timestep-barrier arbiter LOCK cleared by a
-    # ring-forward WRITE.CFG, and an off-ring egress relay. Every ring hop and
-    # every in-program FACE word must transform rigidly. (The shared stimulus
-    # is signed full-range rather than the block's [0, 1) feature contract —
-    # that is fine and deliberate here: invariance is a property of the
-    # datapath for ANY word pattern, and the in-contract feature drive is
-    # gated bit-exactly per orientation in test_gru_cell.py.)
-    ("GRUCellBlock", {}, "real", ("f", "out")),
+    # GRUCellBlock is NOT in this list: it is a CHIP_SCALE block (a wide-flat
+    # 10x6 fold that spans the full array width), so the full-D4 sweep this
+    # suite runs does not apply to it. That is not an exemption from the
+    # orientation gate — per the chip-scale rules a block DECLARES the
+    # orientations it ships (``CHIP_SCALE_ORIENTATIONS``) and is gated in
+    # EXACTLY those, which happens in test_gru_cell.py
+    # (``test_orientation_invariance_over_the_declared_set``, plus
+    # ``test_rotated_footprint_genuinely_does_not_fit``, which DEMONSTRATES
+    # rather than narrates why the rotated images are not shipped). The same
+    # convention keeps FFT32Block out of this list. See
+    # ``verification/tests/test_chip_scale_blocks_are_gated_elsewhere.py`` for
+    # the coverage assertion that stops a chip-scale block being dropped from
+    # BOTH places.
     ("ComplexRRCMatchedFilterBlock", {}, "complex", ("xi", "xq", "yi")),
     ("ComplexCostasLoopBlock", {"order": 2}, "complex", ("xi", "xq", "yi_tap")),
     ("ComplexCostasLoopBlock", {"order": 4}, "complex", ("xi", "xq", "yi_tap")),

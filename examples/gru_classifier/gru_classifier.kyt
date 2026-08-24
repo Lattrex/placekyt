@@ -1,0 +1,227 @@
+project:
+  format_version: 1
+  name: gru_classifier
+  version: '1.0'
+chip_type: kyttar_10x12
+chips:
+- id: 0
+  label: Chip 0
+  position: {x: 0.0, y: 0.0}
+blocks:
+- name: complextomagsquared
+  type: ComplexToMagSquaredBlock
+  library: lattrex.official
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 3, y: 2, face: east}
+- name: movingaverage
+  type: MovingAverageBlock
+  library: lattrex.official
+  params:
+    length: 32
+    scale: 0.03125
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 6, y: 1, face: south}
+    - {cell_id: 1, x: 6, y: 2, face: south}
+    - {cell_id: 2, x: 6, y: 3, face: south}
+    - {cell_id: 3, x: 6, y: 4, face: east}
+    - {cell_id: 4, x: 7, y: 4, face: north}
+    - {cell_id: 5, x: 7, y: 3, face: north}
+    - {cell_id: 6, x: 7, y: 2, face: north}
+- name: sqrt
+  type: SqrtBlock
+  library: lattrex.official
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: norm, x: 8, y: 1, face: south}
+    - {cell_id: poly, x: 8, y: 2, face: east}
+    - {cell_id: denorm, x: 9, y: 2, face: north}
+- name: keeponeinn
+  type: KeepOneInNBlock
+  library: lattrex.official
+  params:
+    n: 32
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 4, y: 2, face: east}
+- name: zerocrossingrate
+  type: ZeroCrossingRateBlock
+  library: lattrex.official
+  params:
+    window_size: 32
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 1, y: 1, face: east}
+- name: featurepairjoin
+  type: FeaturePairJoinBlock
+  library: lattrex.official
+  params:
+    face_a: west
+    face_b: south
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 2, y: 1, face: east}
+- name: grucell
+  type: GRUCellBlock
+  library: lattrex.official
+  params:
+    weights_file: ''
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: fin, x: 0, y: 7, face: south}
+    - {cell_id: hstr, x: 0, y: 8, face: south}
+    - {cell_id: r0, x: 0, y: 9, face: south}
+    - {cell_id: u0, x: 0, y: 10, face: south}
+    - {cell_id: xc0, x: 0, y: 11, face: east}
+    - {cell_id: z0, x: 1, y: 11, face: north}
+    - {cell_id: r1, x: 1, y: 10, face: north}
+    - {cell_id: u1, x: 1, y: 9, face: north}
+    - {cell_id: xc1, x: 1, y: 8, face: east}
+    - {cell_id: z1, x: 2, y: 8, face: south}
+    - {cell_id: r2, x: 2, y: 9, face: south}
+    - {cell_id: u2, x: 2, y: 10, face: south}
+    - {cell_id: xc2, x: 2, y: 11, face: east}
+    - {cell_id: z2, x: 3, y: 11, face: north}
+    - {cell_id: r3, x: 3, y: 10, face: north}
+    - {cell_id: u3, x: 3, y: 9, face: north}
+    - {cell_id: xc3, x: 3, y: 8, face: east}
+    - {cell_id: z3, x: 4, y: 8, face: south}
+    - {cell_id: sf0, x: 4, y: 9, face: south}
+    - {cell_id: sl0, x: 4, y: 10, face: south}
+    - {cell_id: umA0, x: 4, y: 11, face: east}
+    - {cell_id: tf0, x: 5, y: 11, face: north}
+    - {cell_id: tl0, x: 5, y: 10, face: north}
+    - {cell_id: umB0, x: 5, y: 9, face: north}
+    - {cell_id: sf1, x: 5, y: 8, face: east}
+    - {cell_id: sl1, x: 6, y: 8, face: south}
+    - {cell_id: umA1, x: 6, y: 9, face: south}
+    - {cell_id: tf1, x: 6, y: 10, face: south}
+    - {cell_id: tl1, x: 6, y: 11, face: east}
+    - {cell_id: umB1, x: 7, y: 11, face: north}
+    - {cell_id: sf2, x: 7, y: 10, face: north}
+    - {cell_id: sl2, x: 7, y: 9, face: north}
+    - {cell_id: umA2, x: 7, y: 8, face: east}
+    - {cell_id: tf2, x: 8, y: 8, face: south}
+    - {cell_id: tl2, x: 8, y: 9, face: south}
+    - {cell_id: umB2, x: 8, y: 10, face: south}
+    - {cell_id: sf3, x: 8, y: 11, face: east}
+    - {cell_id: sl3, x: 9, y: 11, face: north}
+    - {cell_id: umA3, x: 9, y: 10, face: north}
+    - {cell_id: tf3, x: 9, y: 9, face: north}
+    - {cell_id: tl3, x: 9, y: 8, face: north}
+    - {cell_id: umB3, x: 9, y: 7, face: west}
+    - {cell_id: hcol, x: 8, y: 7, face: west}
+    - {cell_id: hd0, x: 7, y: 7, face: west}
+    - {cell_id: hd1, x: 6, y: 7, face: west}
+    - {cell_id: hd2, x: 5, y: 7, face: west}
+    - {cell_id: hd3, x: 4, y: 7, face: west}
+    - {cell_id: amx, x: 3, y: 7, face: west}
+    - {cell_id: oout, x: 3, y: 6, face: north}
+    - {cell_id: transit_ring_a, x: 2, y: 7, face: west}
+    - {cell_id: transit_ring_b, x: 1, y: 7, face: west}
+connections:
+- name: in_re
+  from: {chip_port: {chip: 0, port: x16_in}}
+  to: {block: complextomagsquared, port: re}
+  route:
+  - {x: 0, y: 0}
+  - {x: 0, y: 1}
+  - {x: 0, y: 2}
+  - {x: 1, y: 2}
+  - {x: 2, y: 2}
+- name: in_im
+  from: {chip_port: {chip: 0, port: x16_in}}
+  to: {block: complextomagsquared, port: im}
+  route:
+  - {x: 0, y: 0}
+  - {x: 0, y: 1}
+  - {x: 0, y: 2}
+  - {x: 1, y: 2}
+  - {x: 2, y: 2}
+- name: in_zcr
+  from: {chip_port: {chip: 0, port: x16_in}}
+  to: {block: zerocrossingrate, port: sample}
+  route:
+  - {x: 0, y: 0}
+  - {x: 0, y: 1}
+- name: pow_mean
+  from: {block: complextomagsquared, port: out}
+  to: {block: movingaverage, port: sample}
+  route:
+  - {x: 3, y: 2}
+  - {x: 3, y: 3}
+  - {x: 4, y: 3}
+  - {x: 5, y: 3}
+  - {x: 5, y: 2}
+  - {x: 5, y: 1}
+- name: mean_root
+  from: {block: movingaverage, port: out}
+  to: {block: sqrt, port: sample}
+  route:
+  - {x: 7, y: 2}
+  - {x: 7, y: 1}
+- name: root_decim
+  from: {block: sqrt, port: out}
+  to: {block: keeponeinn, port: x}
+  route:
+  - {x: 9, y: 2}
+  - {x: 9, y: 3}
+  - {x: 9, y: 4}
+  - {x: 9, y: 5}
+  - {x: 8, y: 5}
+  - {x: 7, y: 5}
+  - {x: 6, y: 5}
+  - {x: 5, y: 5}
+  - {x: 4, y: 5}
+  - {x: 4, y: 4}
+  - {x: 4, y: 3}
+- name: rms_join
+  from: {block: keeponeinn, port: out}
+  to: {block: featurepairjoin, port: a}
+  route:
+  - {x: 4, y: 2}
+  - {x: 4, y: 1}
+  - {x: 4, y: 0}
+  - {x: 3, y: 0}
+  - {x: 2, y: 0}
+- name: zcr_join
+  from: {block: zerocrossingrate, port: out}
+  to: {block: featurepairjoin, port: b}
+  route: abutment
+- name: join_gru
+  from: {block: featurepairjoin, port: out}
+  to: {block: grucell, port: f}
+  route:
+  - {x: 2, y: 1}
+  - {x: 2, y: 2}
+  - {x: 2, y: 3}
+  - {x: 2, y: 4}
+  - {x: 2, y: 5}
+  - {x: 2, y: 6}
+  - {x: 1, y: 6}
+  - {x: 0, y: 6}
+- name: gru_out
+  from: {block: grucell, port: out}
+  to: {chip_port: {chip: 0, port: x16_out}}
+  route:
+  - {x: 3, y: 6}
+  - {x: 3, y: 5}
+  - {x: 3, y: 4}
+  - {x: 3, y: 3}
+  - {x: 4, y: 3}
+  - {x: 5, y: 3}
+  - {x: 5, y: 2}
+  - {x: 5, y: 1}
+  - {x: 5, y: 0}
+  - {x: 6, y: 0}
+  - {x: 7, y: 0}
+  - {x: 8, y: 0}
+  - {x: 9, y: 0}

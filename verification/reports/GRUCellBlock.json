@@ -60,5 +60,6 @@
     "weight_manifest": "GRUCellBlock.weights.json",
     "weight_words_mapped": 104,
     "golden": "examples/gru_classifier/ml/gru_reference_chip (independent chip-exact integer model; no GNU Radio counterpart exists \u2014 a GRU recurrence cannot be expressed as an acyclic GR chain)"
-  }
+  },
+  "provenance": "session"
 }

@@ -816,23 +816,10 @@ def test_zz_write_report(request):
 
     A report is EVIDENCE. It must be a function of the session's actual
     results, and its absence must be the safe state."""
-    out = _ROOT / "verification" / "reports" / "FFT64Block.json"
-    if out.exists():
-        out.unlink()                      # (1) absence is the safe state
+    from kyttar_verify.session_report import write_session_report
 
-    # (2) ask pytest what actually happened in this session.
-    rep = request.config.pluginmanager.getplugin("terminalreporter")
-    failed = list(rep.stats.get("failed", [])) + list(rep.stats.get("error", []))
-    if failed:
-        pytest.fail(
-            "NOT writing a report — these gates failed: "
-            + ", ".join(sorted(f.nodeid.split("::")[-1] for f in failed)))
-
-    out.parent.mkdir(parents=True, exist_ok=True)
     blk = FFT64Block("probe")
-    out.write_text(json.dumps({
-        "kyttar_block": "FFT64Block",
-        "passed": True,
+    write_session_report("FFT64Block", {
         "metric": "exact",
         "n_compared": len(CLASSES) * CLASS_LEN * 2,
         "max_abs_err": 0.0,
@@ -859,5 +846,4 @@ def test_zz_write_report(request):
             "snr_db_measured": MEASURED_SNR,
             "snr_floor_db": _SNR_FLOORS,
         },
-    }, indent=2) + "\n")
-    assert out.exists()
+    })

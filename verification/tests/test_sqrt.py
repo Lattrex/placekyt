@@ -385,6 +385,24 @@ def test_exit_cell_has_no_goto():
         f"will turn it into a stray external JUMP:\n{tmpl}")
 
 
+@pytest.mark.parametrize("place_xy", [(1, 1), (2, 3), (4, 5), (6, 2), (7, 8),
+                                      (0, 0), (3, 9)])
+def test_routes_and_computes_from_every_anchor(place_xy):
+    """PLACEMENT ROBUSTNESS. 3 cells has NO even-full-column fold, so this block
+    is deliberately NOT I/O-co-located (``io_colocated=False``) — INV-14 forbids
+    PADDING the last column to force it, because a relay in the egress path makes
+    the source-exit WRITE land one cell short and the block emits NOTHING. The
+    contract is therefore "get close, then let the router hook it up", and THIS
+    test is what makes that claim honest: the block must route AND compute
+    correctly from anchors all over the die, not just the harness default."""
+    xs = [0, 1, 1000, 8192, 20000, 32767]
+    dut = run_block_dut("SqrtBlock", xs, chip_yaml=CHIP_YAML,
+                        in_port="sample", out_port="out", place_xy=place_xy)
+    assert dut.ok, f"anchor {place_xy}: {dut.reason}"
+    assert list(dut.outputs_q15) == _sqrt_block().process_reference_q15(xs), (
+        f"anchor {place_xy} computed the wrong words: {dut.outputs_q15}")
+
+
 def test_emit_report():
     """Emit the dashboard report (records the verified metrics + coverage)."""
     dut = _run(EDGE)

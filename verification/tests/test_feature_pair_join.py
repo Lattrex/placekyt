@@ -779,6 +779,67 @@ def test_drc_rejects_same_face_input_landing():
         f"the DRC MUST fire on a same-face landing; got {[v.kind for v in viols]}")
 
 
+@pytest.mark.parametrize("anchor", _ANCHORS)
+def test_pairs_correctly_from_every_anchor(anchor):
+    """PLACEMENT ROBUSTNESS. The join's correctness must not depend on a lucky
+    layout: each anchor gives the two arms a DIFFERENT arrival-face geometry, and
+    the build's face-reconciliation pass has to patch the authored placeholder
+    faces to whatever the router chose in each case. An anchor that routes must
+    also PAIR — if a layout ever routes and then emits nothing, that is the
+    face-reconciliation no-op signature (builds and routes clean, zero output).
+
+    Anchors that do not route on a given CP-SAT run are skipped, not failed;
+    routability of a given hand-anchor is a placer property, pairing is this
+    block's."""
+    import simkyt
+    BlockCatalog, load_chip_type, AppController, CPE, BE = _engine()
+    (ka_xy, kb_xy, j_xy) = anchor
+    built = None
+    for _attempt in range(3):
+        cat = BlockCatalog.from_gr_kyttar()
+        ct = load_chip_type(CHIP_YAML)
+        ctk = getattr(ct, "name", None) or "kyttar_10x12"
+        ctrl = AppController(catalog=cat)
+        ctrl.new_project("fpj_anchor", ctk)
+        ka = ctrl.place_block("KeepOneInNBlock", 0, *ka_xy, library=LIB,
+                              params={"n": _ARM_N})
+        kb = ctrl.place_block("KeepOneInNBlock", 0, *kb_xy, library=LIB,
+                              params={"n": _ARM_N})
+        j = ctrl.place_block("FeaturePairJoinBlock", 0, *j_xy, library=LIB,
+                             params={})
+        ctrl.add_logical_connection(CPE(chip=0, port="x16_in"),
+                                    BE(block=ka, port="sample"), name="n0")
+        ctrl.add_logical_connection(CPE(chip=0, port="x16_in"),
+                                    BE(block=kb, port="sample"), name="n1")
+        ctrl.add_logical_connection(BE(block=ka, port="out"),
+                                    BE(block=j, port="a"), name="n2")
+        ctrl.add_logical_connection(BE(block=kb, port="out"),
+                                    BE(block=j, port="b"), name="n3")
+        ctrl.add_logical_connection(BE(block=j, port="out"),
+                                    CPE(chip=0, port="x16_out"), name="n4")
+        if not ctrl.auto_pnr({ctk: ct}).ok:
+            continue
+        bres = ctrl.build()
+        if not bres.ok:
+            continue
+        il = bres.chips[0].input_landings
+        if "n0" not in il or "n1" not in il:
+            continue
+        chip = simkyt.Chip.from_yaml(CHIP_YAML)
+        chip.load_bitstream_physical(bres.words(0))
+        chip.set_port_entry_address("x16_in", int(il["n0"]["entry"]))
+        built = _Chain(bres, chip, il["n0"], il["n1"])
+        break
+    if built is None:
+        pytest.skip(f"anchor {anchor} did not route on this run")
+    a, b = [1001, 1003, 1005], [2001, 2003, 2005]
+    for av, bv in zip(a, b):
+        built.emit("a", av)
+        built.emit("b", bv)
+    assert built.out == _join_ref(a, b), (
+        f"anchor {anchor} routed but did NOT pair correctly: {built.out}")
+
+
 def test_emit_report():
     """Emit the dashboard report. The metric is EXACT (tol 0): this block carries
     words, it does not transform them — every emitted word must equal the

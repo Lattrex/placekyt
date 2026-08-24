@@ -1,0 +1,30 @@
+{
+ "block": "DotProductMACBlock",
+ "grc_block": "",
+ "tier": 3,
+ "wave": 5,
+ "schema_version": 1,
+ "started_utc": "2026-08-23T20:55:00Z",
+ "ended_utc": "2026-08-24T01:43:53Z",
+ "walltime_sec": 17333.0,
+ "tokens": {
+  "total": 314084,
+  "source": "orchestrator_usage"
+ },
+ "turns": 228,
+ "attempts": 1,
+ "human_interventions": 0,
+ "intervention_reasons": [],
+ "prompts": [
+  {
+   "role": "initial",
+   "text": "AGENTS.md-loop dispatch: build + verify DotProductMACBlock (fixed-coefficient K-vector dot product, correlator pattern; pinned INV-13 scale schedule with post-rounding guard; raw/restored output modes; numpy-golden, no GR counterpart)."
+  }
+ ],
+ "verify_passed": true,
+ "quarantined": false,
+ "quarantine_reason": "",
+ "commit_sha": "b6ebfe38ab074d63f07699924a2f49e74d5eb688",
+ "notes": "Bit-exact on-chip on the FIRST build (raw single cell 28/32 words at K=7; restored S>0 = 2-cell mac->restore row). 59-test suite: K=2..7 both modes, S=0..3, guard edge, rails pinned, saturated==per-sample, 8/8 D4 both shapes, INV-4 mutations incl. guard-removal wrap. tokens/turns are 0 here because the builder cannot observe the harness accounting; the orchestrator should overwrite them from its usage report. walltime_sec spans a mid-run session interruption while the regression suites ran in the background; active build+verify time was well under an hour.",
+ "walltime": "~48m (spans a session-limit interruption; approximate)"
+}

@@ -840,6 +840,75 @@ def test_pairs_correctly_from_every_anchor(anchor):
         f"anchor {anchor} routed but did NOT pair correctly: {built.out}")
 
 
+def test_arms_with_DIFFERENT_decimation_rates_still_pair():
+    """GENUINELY INDEPENDENT rate reduction: arm A decimates by 2, arm B by 4, so
+    the two arms consume raw samples at different rates and emit at different
+    wall-clock spacings. The join pairs EMISSIONS, not raw samples, so the
+    output must still be exactly [a0,b0,a1,b1,...].
+
+    This is the shape the block is actually for (two feature arms reduced
+    independently off one stream), and it is a stronger claim than the
+    equal-rate tests above: nothing about the pairing may depend on the two
+    arms sharing a rate."""
+    import simkyt
+    BlockCatalog, load_chip_type, AppController, CPE, BE = _engine()
+    n_a, n_b = 2, 4
+    built = None
+    for (ka_xy, kb_xy, j_xy) in _ANCHORS:
+        for _attempt in range(3):
+            cat = BlockCatalog.from_gr_kyttar()
+            ct = load_chip_type(CHIP_YAML)
+            ctk = getattr(ct, "name", None) or "kyttar_10x12"
+            ctrl = AppController(catalog=cat)
+            ctrl.new_project("fpj_rates", ctk)
+            ka = ctrl.place_block("KeepOneInNBlock", 0, *ka_xy, library=LIB,
+                                  params={"n": n_a})
+            kb = ctrl.place_block("KeepOneInNBlock", 0, *kb_xy, library=LIB,
+                                  params={"n": n_b})
+            j = ctrl.place_block("FeaturePairJoinBlock", 0, *j_xy, library=LIB,
+                                 params={})
+            ctrl.add_logical_connection(CPE(chip=0, port="x16_in"),
+                                        BE(block=ka, port="sample"), name="n0")
+            ctrl.add_logical_connection(CPE(chip=0, port="x16_in"),
+                                        BE(block=kb, port="sample"), name="n1")
+            ctrl.add_logical_connection(BE(block=ka, port="out"),
+                                        BE(block=j, port="a"), name="n2")
+            ctrl.add_logical_connection(BE(block=kb, port="out"),
+                                        BE(block=j, port="b"), name="n3")
+            ctrl.add_logical_connection(BE(block=j, port="out"),
+                                        CPE(chip=0, port="x16_out"), name="n4")
+            if not ctrl.auto_pnr({ctk: ct}).ok:
+                continue
+            bres = ctrl.build()
+            if not bres.ok:
+                continue
+            il = bres.chips[0].input_landings
+            if "n0" not in il or "n1" not in il:
+                continue
+            chip = simkyt.Chip.from_yaml(CHIP_YAML)
+            chip.load_bitstream_physical(bres.words(0))
+            chip.set_port_entry_address("x16_in", int(il["n0"]["entry"]))
+            built = _Chain(bres, chip, il["n0"], il["n1"])
+            break
+        if built is not None:
+            break
+    if built is None:
+        pytest.skip("the unequal-rate chain did not route on this run")
+
+    a = [1001, 1003, 1005]
+    b = [2001, 2003, 2005]
+    for av, bv in zip(a, b):
+        for _ in range(n_a - 1):        # arm A: n_a raw samples per emission
+            built.raw("a", 0)
+        built.raw("a", av)
+        for _ in range(n_b - 1):        # arm B: n_b raw samples per emission
+            built.raw("b", 0)
+        built.raw("b", bv)
+    assert built.out == _join_ref(a, b), (
+        f"unequal-rate arms (n_a={n_a}, n_b={n_b}) must still pair "
+        f"emission-for-emission; got {built.out}")
+
+
 def test_emit_report():
     """Emit the dashboard report. The metric is EXACT — this block CARRIES words,
     it does not transform them, so every emitted word must equal the reference

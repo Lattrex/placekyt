@@ -1,30 +1,16 @@
 {
-  "block": "FFT128Block",
-  "grc_block": "numpy.fft.fft (N=128)",
-  "tier": 3,
-  "wave": 8,
-  "schema_version": 1,
-  "started_utc": "2026-08-24T02:45:00Z",
-  "ended_utc": "2026-08-24T03:45:00Z",
-  "walltime_sec": 0.0,
-  "tokens": {
-    "total": 0,
-    "source": "cross_reference"
-  },
-  "turns": 0,
-  "attempts": 1,
-  "human_interventions": 0,
-  "intervention_reasons": [],
-  "prompts": [
-    {
-      "role": "initial",
-      "text": "joint with FFT64Block (build only if FFT64 fits with headroom -- it does not fit at all)."
-    }
-  ],
-  "verify_passed": false,
-  "quarantined": true,
-  "quarantine_reason": "A fortiori with FFT64Block (joint fit check): the 7-stage single-block floor is 102+ cells = 85% of the entire 120-cell array before any routing channel or port, 38+ over the 8x8=64-cell single-block cap. See FFT64Block.factory.json.",
-  "commit_sha": "",
-  "notes": "Zero-cost cross-reference: the fit check and the octant-fold collateral covered both sizes in one dispatch (verification/tests/test_fft64_fit_limit.py asserts the N=128 floor AND the N=128 16+16-word octant fold bit-exactness). Full cost is recorded on FFT64Block.factory.json. N=128-specific facts pinned: floor = spine 7x7=49 + delay/relay 13+7+3+2+1+1+1=28 + twiddle 25+ (s0 and s1 both octant-folded at the unattainable 2-table-cell bound); as a future stage-split cascade it would also be the first design to exercise the verified ComplexDelayLine depth-64 (13-cell) chain in anger.",
-  "walltime": "0m00s"
+ "block": "FFT128Block",
+ "grc_block": "",
+ "wave": 7,
+ "outcome": "needs_human",
+ "attempts": 2,
+ "human_interventions": 0,
+ "tokens": {
+  "total": 0,
+  "source": "joint_analysis_cross_reference"
+ },
+ "turns": 0,
+ "walltime": "(joint)",
+ "commit_sha": "4fdf1bb2324d21ba51ada76e8e21b4b9eb5bfaaf",
+ "notes": "Zero-cost cross-reference: analyzed jointly with FFT64Block. Single-die ruled out by arithmetic (110 cells / 14 rows vs 110 area / 11 rows). Authorized path is the 2-die stage-boundary split (feed-forward, single crossing, hand-placed, multi-chip-engine verified). See FFT64Block.factory.json."
 }

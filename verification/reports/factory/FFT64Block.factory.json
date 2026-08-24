@@ -1,30 +1,16 @@
 {
  "block": "FFT64Block",
- "grc_block": "numpy.fft.fft (N=64)",
- "tier": 3,
- "wave": 8,
- "schema_version": 1,
- "started_utc": "2026-08-24T02:45:00Z",
- "ended_utc": "2026-08-24T03:45:00Z",
- "walltime_sec": 3600.0,
- "tokens": {
-  "total": 219085,
-  "source": "orchestrator_usage"
- },
- "turns": 55,
- "attempts": 1,
+ "grc_block": "",
+ "wave": 7,
+ "outcome": "needs_human",
+ "attempts": 2,
  "human_interventions": 0,
- "intervention_reasons": [],
- "prompts": [
-  {
-   "role": "initial",
-   "text": "factory dispatch; isolated worktree; post-stop-gate build of FFT64Block (and FFT128Block only if FFT64 fits with headroom); MANDATE: compute the honest placement budget FIRST and stop with the exact arithmetic if N=64 does not fit the 10x12 WITH ports; octant-fold twiddle tables are the pinned big-N growth path and must be re-proven bit-exact."
-  }
- ],
- "verify_passed": false,
- "quarantined": true,
- "quarantine_reason": "PLACEMENT wall, caught at the mandated pre-authoring fit check: the single-block N=64 streaming R2SDF floors at 77+ cells (computed from shipped measured builder constants; the same accounting reproduces FFT16's 44 exactly) vs the 8x8=64-cell max routable D4-safe single-block footprint on the 10x12 (INV-9 + the mandatory 8-orientation gate binds BOTH dims at 8). Even a free-lunch bound charging ZERO cells for all N=64-specific twiddle machinery is 67 > 64; banded at 8 wide the pipeline needs 11 rows on the 12-tall chip. Geometric, not numeric: the octant-fold twiddle path was proven bit-exact exhaustively (N=64 and N=128) before quarantining.",
- "commit_sha": "7d4c5fce920e3cb56e3ec740bb16c1f2d11bc3c9",
- "notes": "QUARANTINE (needs_human) at the FIT CHECK, before any block code was authored -- the outcome the dispatch explicitly legitimized. ZERO doomed build time spent: ~1h of arithmetic + collateral replaced a multi-day unroutable build. Deliverables: (1) verification/tests/test_fft64_fit_limit.py, 7 green tests = the executable wall (floor formula calibrated against the shipped FFT16Block: floor 43 + 1 documented layout-padding cell = 44) + the exhaustive octant-fold bit-exactness re-proof at N=64 AND N=128 (two octant tables over (0, pi/4], 8+8 / 16+16 words, index fold o=k//(N/8), m=|k-round_{N/4}(k)|, per-octant sign/swap steering; INV-4 negatives: wrong-quadrant-sign and un-reflected-quadrant folds break the equality) -- proving big-N table STORAGE was never the blocker; (2) manifest rows FFT64Block + FFT128Block -> needs_human with the full arithmetic; (3) lessons_log entry (headline: pre-build planning estimates ~49-57 / ~65-75 cells were both ~50% low -- once one calibrated instance ships, re-derive every scaling estimate from its measured per-stage costs BEFORE starting the next size). The guard test FLIPS if MAX_CELLS_ACROSS or SAMPLES_PER_CELL grow = the un-quarantine signal. Unblock options (human product call): a 2-3 stage-block GRC-wired cascade (each segment under the 64-cell cap; needs an inter-block serialize-LOCK handoff contract + a composite gate) or a bigger array. FFT128Block: joint fit check, zero-cost cross-ref record.",
- "walltime": "15m19s"
+ "tokens": {
+  "total": 532329,
+  "source": "orchestrator_usage (two dispatches: 219,085 fit-analysis + 313,244 chip-scale build)"
+ },
+ "turns": 259,
+ "walltime": "~72m across two dispatches",
+ "commit_sha": "4fdf1bb2324d21ba51ada76e8e21b4b9eb5bfaaf",
+ "notes": "HONEST PARTIAL across two dispatches. Dispatch 1 (pre-policy): fit arithmetic before authoring showed FFT64 could not meet the then-current 8x8 caps; quarantined with an executable wall test. Owner then declared a CHIP-SCALE BLOCK CLASS (sole-occupant transform blocks may use the full panel; perimeter-channel reservation and D4 rotation waived; the ONLY contract is I/O reachable from the x16 ports). Dispatch 2 built that class and re-derived the budget from the real CellProgramResolver (same accounting reproduces FFT16's measured 44): FFT64 = 81 cells needing 12 rows vs 11 available (worst stage s0 = 23 vs a 20-cell band); FFT128 = 110 cells needing 14 rows - exactly the available area with zero slack, ruled out single-die by arithmetic. TWO CORRECTIONS to the earlier estimate, both load-bearing: (a) the octant fold costs 9 cells not 5 - the prior note charged an explicitly 'unattainable' lower bound, and an unattainable bound is not a budget; all six pairwise merges bust the 32-word budget; (b) stages can never share or split 2-row bands (verified against FFT16's shipped 4-band layout), hiding 2 rows. SHIPPED AND GATED (37 tests): CHIP_SCALE flag + layout_caps() (declaring classes get the full panel; every other block still asserted at (8,8) - not a global loosening) with CHIP_SCALE_ORIENTATIONS making the rotation waiver explicit; octant-fold twiddle math bit-exact at both N in the landed 4-way form AND a cell-shaped factorisation (swap = o0 XOR o1, c sign = o1, d always negative) incl. the strided N=128 stage-1 case and both trivial encodings, with INV-4 negatives; the whole fold chain simulated cell-by-cell reproducing every shipped stage_table word; all cells within 32 words, state pinned; m==0 proven unreachable so the fold needs no saturating combine. NOT DONE, stated plainly: no chip ever ran an FFT64/128 - no on-chip bit-exactness, SNR, port-reachability, GRC binding, saturation or orientation gates, all blocked on placement. Construction raises LargeFFTGeometryError with the exact shortfall rather than emitting a silently-unroutable layout. Cell-shaving measured insufficient (~1 cell vs a 3-cell shortfall). REMAINING MECHANISMS, neither built: a 4-row band with a feedback transit column (costs 2 more rows), or the 2-die stage-boundary split (the authorized N=128 fallback; correctly not reached for before the N=64 question was settled). EMPIRICAL FINDING: the router accepts a landing cell on the x16_in port cell (FFT16 at (0,0) routes and runs), but anchor choice is routability-sensitive in non-obvious ways ((3,0) fails where (0,0) and (2,0) succeed) - hence gating the class contract on a real built chip."
 }

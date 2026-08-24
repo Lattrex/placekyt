@@ -9,6 +9,68 @@ block-specific gotcha. Promote anything that generalizes across block classes in
 and superseded material merged into the surviving entries; no durable lesson was
 dropped) — append new entries above the oldest ones as before.
 
+## FFT64 chip-scale — two defect classes that BUILD CLEANLY and RUN WRONG: state pinned into instructions, and an unreachable dispatch entry 2026-08-24
+
+The block placed, routed, built and ran all 84 cells (previous entry) and was still
+wrong. Two independent faults, both of which pass every static check the repo had,
+and both of which generalize well beyond this block.
+
+- **INV-33's OVERLAP half: a cell that is EXACTLY 32/32 words silently pins its
+  STATE on top of its own first instruction.** The word-count gate everyone writes
+  is `max_addr + 1 + instr_count <= 32`, and a cell at exactly 32 passes it. But
+  the resolver lays instructions DOWNWARD from address 30 to
+  `base_addr = 31 - instr_count`, and it honours an explicitly-pinned
+  `StateVar(register=N)` wherever it is told — including inside that range. The
+  resolver's OWN guard only compares DATA against `base_addr`; it never checks
+  state. So the cell assembles, the bitstream loads, the program runs ONCE, and
+  the first `MOVE R{state}, R0` zeroes the instruction word the next trigger enters
+  at. Symptom: the block emits exactly one sample and goes quiescent — which looks
+  identical to a serialize-LOCK that never clears, and cost a whole dispatch chasing
+  the lock. **Three cells were in this state** (`s0_mcalc` t@8/base 8,
+  `s1_fetch_d` ptr@21/base 21, and `tab_d` at M=16 ad@21/base 21).
+  **Gate it directly** (`test_fft64_fit_limit.py`): for every authored cell, assert
+  no data address and no state register is `>= 31 - instr_count`. Cheap, static,
+  and it caught a third instance the chip run had not yet reached.
+  Freeing the word must NOT change arithmetic. Two moves did it here, both
+  proven by running the reduced cell against the UNREDUCED one on real cells over
+  every input: (a) delete genuinely dead words — a `BR.Z +0` pad (a conditional
+  negate only ever needs to skip the negate itself, since the not-taken path
+  already holds the non-negative value) and a `CMP` that re-derives a Z flag an
+  earlier `SUB` already set (MOVE does not touch flags); (b) move a forwarded word
+  to the **accumulator-delivery idiom** — it arrives in R0 and the cell's FIRST
+  instruction re-emits it, freeing both the input register and the staging MOVE.
+  (b) is nearly free whenever a cell merely passes a value through.
+
+- **A dispatch ENTRY that nothing jumps is dead code, and no Python-side check can
+  see it.** In the TwiddleMultiply idiom, path identity travels as WHICH ENTRY the
+  next cell is jumped at. The octant fold's `sign` cell has `num` and `triv`
+  entries, but `swap` was given ONE jump port wired unconditionally to `num`, so
+  `triv` was unreachable and the two structurally trivial slots (k = 0, k = N/4)
+  emitted numeric words instead of the sentinel encoding `steer` dispatches on.
+  Two wrong twiddles per 32-slot cycle put the ENTIRE odd-bin half of every frame
+  wrong while every even bin stayed right.
+  **Three things hid it, each worth remembering:**
+  1. The standalone fold-chain check drove `sign`'s entries BY HAND from the
+     control word, so it exercised code the built chip could not reach. **A
+     cell-level harness must read the dispatch decision OFF the cell** (here: the
+     `triv` exit is the only path that writes no magnitudes) and assert it agrees
+     with the control word — never re-decide it in the harness.
+  2. An 80-sample chip run was clean and looked like proof. It is not: at N = 64
+     the first valid output is 63, and frame slots 0..31 are the EVEN bins (the
+     sum branch). **A run must reach output 95 before it has tested the twiddled
+     half at all.** Size every streaming gate by what it REACHES, not by how many
+     samples it sends.
+  3. Every counter was correct on chip (`seq` p and `ctl` cnt in lockstep), so
+     counter-skew models were a dead end. What found it was reading the `steer`
+     cell's latched `(csav, dsav)` off the running chip trigger by trigger and
+     comparing with the slot the stage should be using — the wrong slot appeared
+     at exactly triggers 0 and 16, the two trivial slots, and nowhere else.
+     **When arithmetic models cannot reproduce an on-chip divergence, stop
+     modelling and read the intermediate state off the chip.**
+  A single impulse is the sharpest stimulus for this class: it makes the ideal
+  output a constant, so a phase error reads directly as a rotation
+  (here `512 -> (510, -50)` = exactly `512 * W_64^1`).
+
 ## FFT64 chip-scale — the STAGE-BAND wall was NOT real; the VERTICAL CTL/OUT SPINE places and flows, one dynamic fault left 2026-08-24
 
 The previous entry (below) concluded FFT64 "does not fit" on a band cap and a row

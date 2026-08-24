@@ -1,0 +1,67 @@
+id: kyttar_fft64
+label: FFT64 (streaming, chip-scale)
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  FFT64 — 64-point STREAMING radix-2 FFT (single-path delay feedback, DIF).
+  Complex in, complex out, one output sample per input sample.
+
+  ⚠️ CHIP-SCALE BLOCK: 84 cells. It is the SOLE OCCUPANT of a die — it uses
+  the full panel height and cannot be placed alongside other DSP blocks, and
+  it does not rotate (a spine fold of this height has no legal D4 image on a
+  10x12 array). Give it its own chip.
+
+  ⚠️ OUTPUT ORDER IS BIT-REVERSED (standard DIF): output slot k of each
+  64-sample frame carries frequency bin bit_reverse_6(k) — slot 0 -> bin 0,
+  slot 1 -> bin 32, slot 2 -> bin 16, slot 3 -> bin 48, and so on. The map is
+  an involution, so applying it twice returns the natural order.
+
+  There is deliberately NO reorder buffer in this block — a consumer that
+  needs natural bin order applies the index map above.
+
+  SCALE: output = FFT/64 (one >>1 per stage over six stages, round-half-to-
+  even, with saturating combines). LATENCY: 63 samples — the first 63 outputs
+  are the deterministic startup values of the zero-initialized pipeline;
+  frame f occupies output samples 63+64f .. 126+64f, aligned to the absolute
+  sample count since configuration.
+
+  Stage 0's twiddle period (32) does not fit a direct table cell, so that
+  stage reconstructs its twiddles from two 8-word octant tables by index fold
+  plus sign/swap steering — bit-exact, including the two structurally trivial
+  slots (k = 0 and k = N/4).
+
+  The block is saturation-safe (each of the six stages carries a
+  serialize-LOCK on its delay-feedback ring) and verified bit-exact against
+  the streaming integer reference, which itself matches float numpy.fft.fft
+  within the design's Q15 SNR floor.
+
+  Both output rails must be WIRED (to a downstream block or a chip port);
+  terminate an unused output — a dangling complex pair mis-fires its
+  default-resolved writes into neighbouring cells.
+
+  This block runs on the Kyttar chip. Place it between a KyttarSource and a
+  KyttarSink block; the device_id must match your KyttarDevice.
+
+  Parameters:
+  - Device ID: ID of the KyttarDevice block
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.fft64(device_id=${device_id})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+
+inputs:
+  - label: in
+    dtype: complex
+
+outputs:
+  - label: out
+    dtype: complex
+
+file_format: 1

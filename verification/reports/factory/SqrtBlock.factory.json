@@ -1,0 +1,16 @@
+{
+ "block": "SqrtBlock",
+ "grc_block": "blocks.transcendental('sqrt','float')",
+ "wave": 7,
+ "outcome": "passed",
+ "attempts": 1,
+ "human_interventions": 0,
+ "tokens": {
+  "total": 0,
+  "source": "joint_build_cross_reference (see FeaturePairJoinBlock.factory.json)"
+ },
+ "turns": 0,
+ "walltime": "(joint)",
+ "commit_sha": "0a6bb94376813187ecc6a1ca9954b0157c1ade3e",
+ "notes": "Zero-cost cross-reference of the FeaturePairJoinBlock joint dispatch. 3 cells, tier 1, golden = LIVE GR blocks.transcendental('sqrt','float'). Extracted from RMSBlock's fused power+IIR+sqrt path so a standalone power word can be square-rooted (the boxcar RMS arm needs it): norm -> quartic-LSQ poly -> denorm cells IMPORTED (not copied) with a gate asserting word-equality with _RMSCoreBlock._sqrt_q15 over all 32768 inputs. One line differs: x<=0 routes to the s=30 sentinel via signed CMP/BR.GE against 1 (the ISA has no BR.GT). TOLERANCE IS DERIVED, NOT CHOSEN: exhaustive sweep over all 32768 words gives [-4,+1] LSB, re-asserted every run, so TOL=5; measured vs live GR max 3 LSB, corr 1.0000, NMSE -83 dB. 31 tests incl. 5 dense magnitude-decade sweeps (every shift count, both parities, on chip), 7-anchor placement robustness, and INV-4 mutations (dropped denormalize, perturbed poly c1, swapped odd/even shift branch, inverted, +1 delay, empty) all FAIL. HW-DEVIATION: GR's 'name' param is the block's identity (every libm function is a different datapath, and 'name' would collide with the catalog's cls(name=...)); 'type' is meaningless on Q15 \u2014 both in GRC_UNSUPPORTED_PARAMS. Caught a real regression mid-build via placekyt/tests: CATEGORY 'math' is not in EXPECTED_CATEGORIES, fixed to math_operators."
+}

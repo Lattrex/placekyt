@@ -1089,24 +1089,28 @@
   },
   {
    "kyttar_block": "R2ButterflyBlock",
-   "grc_block": "(Python golden: radix-2 butterfly, complex add/sub pair)",
+   "grc_block": "(Python golden: radix-2 DIF butterfly, RHE scale-by-2)",
    "tier": 1,
    "metric": "exact",
    "params": {},
-   "notes": "QUEUE B2 (FFT track). Radix-2 butterfly: given complex a,b emit a+b and a-b. Ancestry: AddCCBlock / SubCCBlock, already verified. Trivial. Watch the growth: a butterfly can grow magnitude by 2x, which is why the per-stage scaling schedule (pinned by the numeric spike) matters. SHARED CONSTRAINTS (v0.11 shipping cell, 32 words, 16-bit Q15): MAC operands must be cell-local (no cross-cell operand fetch). sum|coeff|>1 needs the INV-13 headroom prescale. In-cell LOAD-indirect tables cap at ~21 entries (5-bit wall) so big tables are NOT available. Composites keep feedback INTERNAL (GRC flowgraphs are acyclic) using the AGCCC shared-builder model. Feedback landings MUST be pinned STATE registers, never input Ports (AGCCC trap 1). Fold big rings <=7 wide (AGCCC trap 2).",
-   "status": "planned"
+   "notes": "QUEUE B2 (FFT track) \u2014 DONE, joint build with TwiddleMultiplyBlock (shared module fft_primitives.py; its cell builders + bit-exact integer reference helpers are importable by the future composite streaming-FFT block). Radix-2 DIF butterfly with the PINNED unconditional scale-by-2: sum=(a+b)>>1, diff=(a-b)>>1 per rail, ROUND-HALF-TO-EVEN via the 16-bit-safe decomposition (the 17-bit sum is never materialized): k = MACQ-chain floor(a/2)+floor(b/2)+((a&b)&1) [diff: MULQ/MSUQ with -(~a&b)&1], corr = ((a^b)&k)&1. The RHE form FIT the budget \u2014 the spike's 'mixed' fallback was NOT needed (measured: sum leg 11 instr, diff leg 16 instr incl. the saturating combine; rail cells 24-25/32 words). Saturating combine on the diff rails is live and gated (the exact tie a=+0x7FFF,b=-0x8000 clamps to +0x7FFF); the sum leg provably cannot overflow (exhaustive corner gate). 8 cells, 2x4 serpentine, fully serial chain (counting join over the two source packets; no lock needed). FIRST block with TWO complex OUTPUT pairs (sum/diff on separate output cells): needed per-net exit-cell handoff patching in the build (build._net_source_exit_cell, both patch sites) + per-exit-cell out_tag grouping + the GRC importer's numeric-OUTPUT-index complex-pair collapse. Bit-exact (tol 0) vs the transcribed spike reference, cross-checked against an independent true-17-bit RHE; half-up and dropped-saturation mutations FAIL at the tie points; saturated (queue_words) == per-sample per tagged stream; all 8 D4 orientations (dest-tag demux \u2014 the two packets' port interleave legitimately varies with corridor length). Both outputs should be CONNECTED in a flowgraph (an unwired output pair's default-resolved writes are inert at best).",
+   "status": "done"
   },
   {
    "kyttar_block": "TwiddleMultiplyBlock",
-   "grc_block": "(Python golden: complex multiply by a stored constant)",
+   "grc_block": "(Python golden: complex multiply by a per-sample table-selected Q15 twiddle)",
    "tier": 1,
    "metric": "amplitude",
    "params": {
-    "twiddle_re": 1.0,
-    "twiddle_im": 0.0
+    "twiddles": [
+     [
+      1.0,
+      0.0
+     ]
+    ]
    },
-   "notes": "QUEUE B3 (FFT track). Complex multiply by a stored Q15 twiddle constant. Ancestry: MultiplyConstComplex, already verified. Per-stage twiddles are cell-local constants. SHARED CONSTRAINTS (v0.11 shipping cell, 32 words, 16-bit Q15): MAC operands must be cell-local (no cross-cell operand fetch). sum|coeff|>1 needs the INV-13 headroom prescale. In-cell LOAD-indirect tables cap at ~21 entries (5-bit wall) so big tables are NOT available. Composites keep feedback INTERNAL (GRC flowgraphs are acyclic) using the AGCCC shared-builder model. Feedback landings MUST be pinned STATE registers, never input Ports (AGCCC trap 1). Fold big rings <=7 wide (AGCCC trap 2).",
-   "status": "planned"
+   "notes": "QUEUE B3 (FFT track) \u2014 DONE, joint build with R2ButterflyBlock (zero-cost cross-reference; shared module fft_primitives.py). y[n] = x[n] * twiddles[n mod P] \u2014 the streaming DIF FFT stage's twiddle rotator. PINNED numerics: coefficients stored round(32768*x) (round-half-even, FULL scale \u2014 never 0x7FFF-as-one, a measured 2-6 dB cost); TRIVIAL entries special-cased structurally at build time (exactly 1 -> pass-through untouched; exactly -1j -> rail swap + saturating negate, -32768 -> +32767); non-trivial = 4 MULQ + 2 V-restore saturating combines in the pinned p1-p2/p3+p4 MultiplyCC ordering (3-mult Karatsuba REJECTED \u2014 its constants hit +/-sqrt(2) in Q15). 6 cells, 2x3 serpentine, FULLY SERIAL: every sample transits every cell whatever its kind (trivial slots take pass-through ENTRIES of the same cells \u2014 path identity travels as WHICH ENTRY each cell is jumped at), so trivial/non-trivial paths have equal chain length: no reconvergent fan-in, no lock. Table encoding: C-table sentinel 0x8000 marks a trivial slot (never a legal non-trivial coefficient), D word disambiguates identity (0) vs -j (sign bit). HW-DEVIATION: period P is 1..12 (the two table cells share their 32-word cells with the fetch programs; every N=16 stage needs P<=8) \u2014 RAISES beyond, never truncates. HW-DEVIATION: a NON-trivial twiddle with a rail quantizing to +/-32768 (e.g. W=-1) RAISES (unrepresentable at full Q15 scale). The octant-fold growth path for big-N stages (two <=16-entry quarter tables) is the documented composite-FFT extension, deliberately NOT part of this block. Bit-exact (tol 0) incl. the N=16 stage-0 table, adversarial full-scale corners and both trivial paths; wrong-table-index / 0x7FFF-as-one / dropped-saturation mutations FAIL; all 8 D4 orientations (shared gate); saturated via the shared COMPLEX_2IN2OUT gate.",
+   "status": "done"
   },
   {
    "kyttar_block": "FFT16Block",

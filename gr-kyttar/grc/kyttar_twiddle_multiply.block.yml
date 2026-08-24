@@ -1,0 +1,55 @@
+id: kyttar_twiddle_multiply
+label: Kyttar Twiddle Multiply
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar Twiddle Multiply — complex multiply by a per-sample TABLE-SELECTED
+  Q15 twiddle constant (the streaming radix-2 DIF FFT stage's rotator):
+
+      y[n] = x[n] * twiddles[n mod P],   P = len(twiddles)
+
+  Twiddles are stored round(32768*x) at FULL Q15 scale (round-half-even) and
+  TRIVIAL entries are special-cased structurally on the chip: exactly 1
+  passes the sample through untouched; exactly -1j is a rail swap plus a
+  saturating negate. Anything else is the pinned 4-MULQ + 2 saturating-
+  combine complex multiply.
+
+  HARDWARE LIMITS (the block raises, never truncates/clamps):
+    * 1 <= P <= 12 (the two in-cell twiddle tables share their 32-word cells
+      with the fetch programs). Every N=16 FFT stage needs P <= 8.
+    * a NON-trivial twiddle whose real or imaginary rail would quantize to
+      +/-32768 (e.g. -1, or values rounding to +/-1.0) is unrepresentable at
+      full Q15 scale.
+
+  Twiddles: a Python list of complex values, e.g.
+  [1, 0.7071-0.7071j, -1j, -0.7071-0.7071j].
+
+  There is no GNU Radio counterpart block; the reference is the bit-exact
+  Python golden shipped with the block (the FFT-primitive module).
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.twiddle_multiply(device_id=${device_id}, twiddles=${twiddles})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+- id: twiddles
+  label: Twiddles
+  dtype: raw
+  default: '[1]'
+
+inputs:
+- label: in
+  domain: stream
+  dtype: complex
+
+outputs:
+- label: out
+  domain: stream
+  dtype: complex
+
+file_format: 1

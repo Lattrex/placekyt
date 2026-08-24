@@ -190,6 +190,18 @@ _CASES = [
     # input (out = map[in], LOAD-indirect table). Memoryless — must emit the
     # IDENTICAL output word list in every D4 orientation.
     ("MapBBBlock", {"map": [3, 2, 1, 0]}, "real", ("sample", "out")),
+    # Per-sample table-selected twiddle rotator (radix-2 FFT primitive, no GR
+    # counterpart — Python golden): complex I/Q in, complex (yi, yq) out. A
+    # fully SERIAL 6-cell 2x3 serpentine (two LOAD-table fetch cells -> kind
+    # steer -> products -> yi rail -> emit) with per-kind ENTRY chains and no
+    # in-template FACE constants / feedback corridor — its output word list
+    # (incl. mixed trivial + non-trivial slots) must be IDENTICAL in every D4
+    # orientation. (The R2ButterflyBlock sibling has TWO input packets + TWO
+    # output pairs, which this harness cannot drive — its full 8-D4 gate is
+    # bespoke in test_r2_butterfly.py::test_orientation_invariant.)
+    ("TwiddleMultiplyBlock",
+     {"twiddles": [1, 0.7071067811865476 - 0.7071067811865476j, -1j,
+                   -0.5 + 0.25j]}, "complex", ("xi", "xq", "yi")),
     # Bitwise NOT of a byte stream (GR blocks.not_bb): single real rail in (sample)
     # -> (~in)&0xFF out. Single cell, memoryless, no internal connections / feedback,
     # so its NOT+mask datapath is D4-invariant by construction.

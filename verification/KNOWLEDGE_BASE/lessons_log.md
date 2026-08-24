@@ -9,6 +9,113 @@ block-specific gotcha. Promote anything that generalizes across block classes in
 and superseded material merged into the surviving entries; no durable lesson was
 dropped) — append new entries above the oldest ones as before.
 
+## R2ButterflyBlock + TwiddleMultiplyBlock — radix-2 FFT primitives, the first TWO-complex-output block 2026-08-23
+
+Joint build (the RMS/RMSCF convention: one shared module
+`blocks/fft_primitives.py`, one commit; TwiddleMultiplyBlock is the zero-cost
+cross-reference). Numerics were PINNED by a completed FFT design spike —
+implemented, not redesigned; the bit-exact integer reference helpers
+(`rhe_half_sum/diff`, `twiddle_cmul_ref`, `quantize_twiddle`, `mulq`,
+`sat_combine`) live at module level so the future composite streaming-FFT block
+imports the SAME golden + the cell builders (the `cordic_blocks` consumer
+pattern). Both blocks EXACT (tol 0) on first sim contact once placed; all the
+real work was substrate/toolchain, catalogued here.
+
+**R2Butterfly (8 cells, 2x4 serpentine, fully serial, counting join):**
+
+- **The RHE (round-half-to-even) halving fits comfortably — no `mixed`
+  fallback needed.** 16-bit-safe fabric mapping (the 17-bit sum is NEVER
+  materialized): sum leg `k = ((a AND b) AND 1); MACQ a,0x4000; MACQ b,0x4000`
+  (11 instructions), diff leg `MULQ a,0x4000; SUB c0; MSUQ b,0x4000` with
+  `c0 = (NOT a AND b) AND 1` (16 instructions incl. saturation); both legs
+  finish `corr = ((a XOR b) AND k) AND 1; ADD k`. MULQ/MACQ/MSUQ **by 0x4000
+  IS arithmetic-shift-right-by-1** (floor) — the ISA has no ASR (SHR is
+  logical), and this idiom is 1 instruction + one shared data word.
+- **A one-instruction exact saturating clamp for the RHE tie:** the ONLY
+  reachable overflow is `k=+32767, corr=1` (diff leg, a=+0x7FFF b=-0x8000), so
+  `BR.NV +1; MOVE R0, k` restores the exact saturated value — no
+  SHR/ADD-satpos rail rebuild needed. The SUM leg provably cannot overflow
+  (max v=65534 is even ⇒ corr=0); gate that with an exhaustive corner test,
+  do not just assert it in a comment.
+- **TWO complex output pairs on separate cells is now a SUPPORTED shape, and
+  it took three build/import changes** (all no-ops for single-output blocks):
+  1. `build._net_source_exit_cell`: the per-connection exit-face/handoff
+     patches now land on the NET's own output cell (`route[0]`, which every
+     router already anchors at the net's source-port cell) instead of the
+     block-level `pb.exit_cell` — pre-fix, the second net's patch REWROTE the
+     first output cell's WRITE/JUMP with the other route's hops (zero egress).
+     Applied in BOTH patch sites (`_apply_routes` and
+     `_apply_port_route_faces_and_hops`).
+  2. The complex-egress `base_tag` sibling scan groups by EXIT CELL, not by
+     block — a block-wide min mis-based the second pair's tags AND skipped its
+     patch entirely (`dest != block-wide base`).
+  3. The GRC importer's numeric-index pair collapse now works on the OUTPUT
+     side too: `[bfly, '1', ...]` resolves to the SECOND pair's I-half
+     (`do_i`), indexing over I-HALVES ONLY — the out side also exposes
+     per-pair TRIGGER ports (`so_trig`), which are wire-protocol, never
+     GRC-indexable.
+  Declarations on the block: `output_cell_ids()` (plural, portmap),
+  `output_cell_id()` = the mid-chain tap cell (the carries-handoffs flag →
+  last-N-writes patch, the order-4-Costas `qpd` idiom), `output_face_addr()`
+  for the tap cell's dual-face word (build guards it to the block-level output
+  cell only), `interface.output_registers=[0, 1]` (complex-pair egress).
+- **An UNWIRED output pair is a live hazard, not a no-op.** Its default-
+  resolved `@1` WRITE/JUMPs fire into whatever neighbours the layout leaves
+  there; observed failure modes: (a) a jump into a corridor cell re-emitting
+  stored words (phantom extra port words, DATA-DEPENDENT — some stimuli
+  "worked"); (b) a mutual `@1` jump ping-pong between two corridor/broker
+  cells = a self-sustaining livelock that ate 4+ms of sim time (the INV-20
+  `__terminate__`-into-corridor shape, reachable from ANY dangling trigger).
+  A StreamSplitterBlock "dump" consumer just moves the dangling output one
+  block downstream — same hazard. THE FIX: wire BOTH outputs (the DUT runner
+  always does; the GRC docs say to terminate unused outputs).
+- **Per-rail `out_tag`s make a multi-pair port gate order-free.** The two
+  packets' arrival interleave at `x16_out` legitimately varies with corridor
+  length (orientation runs reorder [di,si,dq,sq] ↔ [di,dq,si,sq]) — pin
+  NOTHING about order; tag the four rails 0..3 (`run_block_dut_complex2_dual`,
+  reading `read_port_words_timed`'s dest) and compare demuxed streams.
+- **Independent-reference discipline for a Python-golden block:** the gate
+  cross-checks the block's 16-bit-safe decomposition against a separately
+  transcribed true-17-bit RHE (`k = v >> 1; k + ((v & k) & 1)`, numpy int64)
+  exhaustively over corner words + 20k random pairs, so the formula identity
+  is PROVEN, not assumed; the half-up and wrap mutants FAIL at the tie points.
+
+**TwiddleMultiply (6 cells, 2x3 serpentine, fully serial):**
+
+- **Kind dispatch as ENTRY CHAINS, not per-cell branches.** One CMP against
+  the C-table sentinel in the `steer` cell; from there the path identity
+  travels as WHICH ENTRY each downstream cell is jumped at (`prods.mul` vs
+  `prods.triv`, …, `emit.mul/id/mj`). Downstream cells carry straight-line
+  per-kind code with NO re-dispatch (except one free `SHR #15` sign test on
+  the forwarded d word) — this is what fits 3-way trivial special-casing +
+  4 MULQs + tables into 32-word cells. Every kind transits EVERY cell
+  (trivial slots run pass-through entries), so path lengths are equal: no
+  reconvergent fan-in, no overtaking under saturation, no serialize-LOCK.
+- **Sentinel table encoding buys the kind table for free:** 0x8000 in the C
+  table marks a trivial slot (it can never be a legal non-trivial coefficient
+  — the block RAISES on any value quantizing to ±32768, incl. W=-1); the D
+  word then disambiguates identity (0) vs -j (sign bit set). Two tables, one
+  per fetch cell (each with its own lockstep LOAD pointer), period P ≤ 12.
+- **Keep R0 free by landing inputs at R1+ (the CORDIC precedent):** the fetch
+  cells then LOAD/forward without an R0-save; with data words present the
+  INV-33 no-data-words state-allocation hazard cannot trigger (state still
+  explicitly pinned).
+- **`quantize_twiddle` uses np.round (half-even) and full 32768 scale** — the
+  documented N=16 words (30274/-12540, 23170/-23170, 12540/-30274) are gated
+  verbatim, and the 0x7FFF-as-one mutant (multiply the identity slots by
+  0x7FFF) FAILS, proving the structural pass-through is what ships.
+
+**Shared:** both blocks' budget tests use the REAL rule
+`max_data_address + n_instr ≤ 31` (the resolver packs instructions at
+`31 - instr_count` with R31 auto-HALT — the plain `instr + regs ≤ 32` count
+passes cells the builder rejects). Placement-legality, orientation (shared
+gate for the twiddle; bespoke dest-demux 8-D4 gate for the butterfly),
+saturation (shared COMPLEX_2IN2OUT for the twiddle; bespoke dual-runner
+pipelined gate for the butterfly) and the GRC bindings/import gates are all
+green; full verification suite green after the build/import changes.
+
+---
+
 ## DotProductMACBlock — the correlator (fresh-vector) MAC pattern + the post-rounding headroom guard 2026-08-23
 
 Fixed-coefficient dot product over a K-element vector (weighted sum + bias, K:1

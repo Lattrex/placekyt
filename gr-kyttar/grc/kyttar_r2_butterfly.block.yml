@@ -1,0 +1,56 @@
+id: kyttar_r2_butterfly
+label: Kyttar R2 Butterfly
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar R2 Butterfly — the radix-2 DIF FFT butterfly with the pinned
+  unconditional scale-by-2. Two complex streams in (a, b), two complex
+  streams out:
+
+      sum  = (a + b) / 2        diff = (a - b) / 2
+
+  On the chip each rail is rounded ROUND-HALF-TO-EVEN (worth up to +18 dB of
+  transform SNR over half-up on coherent tones) and the difference rails carry
+  a saturating combine (the exact-full-scale tie a=+0x7FFF, b=-0x8000 clamps
+  to +0x7FFF instead of wrapping). The two source packets are paired per
+  sample by the landing cell's counting join, in any arrival order.
+
+  Output 0 is the SUM pair, output 1 is the DIFFERENCE pair (two
+  physically-separate output cells). Connect BOTH outputs — an unused chip
+  output pair should be terminated, not left dangling.
+
+  There is no GNU Radio counterpart block; the reference is the bit-exact
+  Python golden shipped with the block (the FFT-primitive module). A future
+  composite streaming-FFT block builds from these primitives.
+
+  Place it between two complex sources and complex consumers and ensure the
+  device_id matches your KyttarDevice.
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.r2_butterfly(device_id=${device_id})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+
+inputs:
+- label: a
+  domain: stream
+  dtype: complex
+- label: b
+  domain: stream
+  dtype: complex
+
+outputs:
+- label: sum
+  domain: stream
+  dtype: complex
+- label: diff
+  domain: stream
+  dtype: complex
+
+file_format: 1

@@ -1256,3 +1256,65 @@ class rms_cf(_PassThrough):
         self._avg = avg
         output_items[0][:n] = out.astype(np.float32)
         return n
+
+
+class r2_butterfly(_PassThrough):
+    """Radix-2 DIF butterfly — GR marker (maps to R2ButterflyBlock).
+
+    Two complex streams in (a, b) -> two complex streams out::
+
+        sum  = (a + b) / 2        diff = (a - b) / 2
+
+    the streaming radix-2 FFT primitive with the pinned unconditional
+    scale-by-2 (round-half-to-even on chip; this marker computes the float
+    form for a faithful host-side preview). Output 0 is the SUM pair, output
+    1 is the DIFFERENCE pair. The real DSP runs ON the chip (8-cell 2x4
+    serpentine, both output pairs on their own cells); this carries the
+    graph. Connect BOTH outputs (an unused chip output pair should be
+    terminated, not left dangling)."""
+
+    def __init__(self, device_id="kyttar_0"):
+        super().__init__("Kyttar R2 Butterfly", n_in=2, n_out=2,
+                         in_dtype=np.complex64, out_dtype=np.complex64)
+        self.device_id = device_id
+        self._advertise_grc_params(device_id, "R2ButterflyBlock", {})
+
+    def work(self, input_items, output_items):
+        a = input_items[0]
+        b = input_items[1]
+        n = min(len(a), len(b), len(output_items[0]), len(output_items[1]))
+        output_items[0][:n] = (a[:n] + b[:n]) / 2.0
+        output_items[1][:n] = (a[:n] - b[:n]) / 2.0
+        return n
+
+
+class twiddle_multiply(_PassThrough):
+    """Per-sample table-selected twiddle multiply — GR marker (maps to
+    TwiddleMultiplyBlock).
+
+    ``y[n] = x[n] * twiddles[n mod P]`` with ``P = len(twiddles)`` — the
+    streaming radix-2 DIF FFT stage's twiddle rotator. Twiddles are stored
+    round(32768*x) Q15 on chip; exactly ``1`` and exactly ``-1j`` are
+    structurally special-cased (pass-through / swap + saturating negate) and
+    P is capped at 12 in-cell table entries (the block raises beyond). This
+    marker applies the float table walk for a faithful host-side preview."""
+
+    def __init__(self, device_id="kyttar_0", twiddles=(1,)):
+        super().__init__("Kyttar Twiddle Multiply", n_in=1, n_out=1,
+                         in_dtype=np.complex64, out_dtype=np.complex64)
+        self.device_id = device_id
+        self.twiddles = [complex(w) for w in twiddles]
+        self._n = 0
+        self._advertise_grc_params(device_id, "TwiddleMultiplyBlock",
+                                   {"twiddles": list(self.twiddles)})
+
+    def work(self, input_items, output_items):
+        x = input_items[0]
+        out = output_items[0]
+        n = min(len(x), len(out))
+        P = max(1, len(self.twiddles))
+        w = np.array([self.twiddles[(self._n + k) % P] for k in range(n)],
+                     dtype=np.complex64)
+        out[:n] = x[:n] * w
+        self._n = (self._n + n) % P
+        return n

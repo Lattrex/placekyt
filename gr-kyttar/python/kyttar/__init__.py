@@ -80,7 +80,8 @@ from .dsp_markers import (complex_rrc_matched_filter, complex_costas_loop,
                           complex_to_mag_squared, float_to_complex,
                           dual_float_to_complex, keep_one_in_n, moving_average,
                           zero_crossing_rate, bin_argmax,
-                          rms, rms_cf)
+                          rms, rms_cf,
+                          r2_butterfly, twiddle_multiply)
 from .gain import gain
 from .multiply import multiply
 from .add import add, subtract
@@ -190,6 +191,8 @@ __all__ = [
     "bin_argmax",
     "rms",
     "rms_cf",
+    "r2_butterfly",
+    "twiddle_multiply",
     # Routing primitives
     "demux",
     "mux",

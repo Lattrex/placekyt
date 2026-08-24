@@ -21,7 +21,8 @@ from .dut_runner import (
     run_block_dut, DUTResult, run_block_dut_complex, ComplexDUTResult,
     run_block_dut_rate, RateDUTResult, run_block_dut_nstream,
     run_block_dut_real_to_complex, run_block_dut_complex2,
-    run_block_dut_complex2_pipelined)
+    run_block_dut_complex2_pipelined, run_block_dut_complex2_dual,
+    DualComplexDUTResult)
 from .gnuradio_ref import (
     run_gnuradio_ref, GrResult, q15_to_float, float_to_q15,
     run_gnuradio_ref_complex, GrComplexResult)
@@ -48,6 +49,8 @@ __all__ = [
     "run_block_dut_real_to_complex",
     "run_block_dut_complex2",
     "run_block_dut_complex2_pipelined",
+    "run_block_dut_complex2_dual",
+    "DualComplexDUTResult",
     "run_gnuradio_ref",
     "GrResult",
     "run_gnuradio_ref_complex",

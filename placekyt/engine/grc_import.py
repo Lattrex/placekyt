@@ -119,6 +119,12 @@ _TYPE_OVERRIDES = {
     "kyttar_add_cc": "AddCCBlock",
     "kyttar_sub_cc": "SubCCBlock",
     "kyttar_multiply_cc": "MultiplyCCBlock",
+    # Radix-2 FFT primitives (Python-golden blocks, shared fft_primitives
+    # module). snake->Pascal happens to give the right names ("R2Butterfly" /
+    # "TwiddleMultiply" + Block), but pin them explicitly so the mapping never
+    # depends on the fallback's casing of the digit suffix.
+    "kyttar_r2_butterfly": "R2ButterflyBlock",
+    "kyttar_twiddle_multiply": "TwiddleMultiplyBlock",
     # Complex FIR (fir_filter_ccf): class == manifest name "ComplexFIRFilterBlock",
     # but snake→Pascal of "kyttar_complex_fir_filter" gives "ComplexFirFilterBlock"
     # (lower-case "ir"), which won't match — pin it explicitly.
@@ -846,6 +852,28 @@ def _resolve_port(catalog, btype, grc_port, *, want_out, params=None):
                 if len(qhalves) >= 2:
                     qset = set(qhalves.values())
                     indexable = [nm for nm in ports if nm not in qset]
+                    if 0 <= i < len(indexable):
+                        return indexable[i]
+            else:
+                # TWO-COMPLEX-OUTPUT blocks (>= 2 complete I/Q OUTPUT pairs —
+                # the R2Butterfly sum/diff): GNURadio's numeric index counts
+                # COMPLEX ports on the OUTPUT side too, so index 1 must be the
+                # SECOND pair's I-half (do_i), NOT the first pair's Q-half
+                # (so_q). Same collapse as the input side; the block->block /
+                # block->port I/Q split passes then synthesise each wired
+                # pair's Q net. Gated on >= 2 pairs so single-pair blocks keep
+                # the raw positional mapping.
+                qhalves = {}
+                for nm in ports:
+                    q = _iq_sibling(catalog, btype, nm, want_out=True,
+                                    params=params)
+                    if q:
+                        qhalves[nm] = q
+                if len(qhalves) >= 2:
+                    # Index over the I-HALVES ONLY (declared order): the out
+                    # side also exposes per-pair TRIGGER ports (so_trig /
+                    # do_trig), which are wire-protocol, never GRC-indexable.
+                    indexable = [nm for nm in ports if nm in qhalves]
                     if 0 <= i < len(indexable):
                         return indexable[i]
             if 0 <= i < len(ports):

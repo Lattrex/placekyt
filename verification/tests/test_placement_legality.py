@@ -111,6 +111,16 @@ BLOCKS = [
     ("AddCCBlock", {}),
     ("SubCCBlock", {}),
     ("MultiplyCCBlock", {}),
+    # Radix-2 DIF butterfly: 8-cell 2x4 serpentine (pair -> 4 rail cells ->
+    # relay -> sum_out -> diff_out), no internal transit cell, no params — the
+    # full 2x4 rectangle must stay pairwise-distinct in every D4 orientation
+    # and under movement.
+    ("R2ButterflyBlock", {}),
+    # Twiddle rotator: 6-cell 2x3 serpentine; the table period P changes DATA
+    # WORDS only, never the footprint (P > MAX_PERIOD raises at construction).
+    ("TwiddleMultiplyBlock",
+     {"twiddles": [1, 0.7071067811865476 - 0.7071067811865476j, -1j,
+                   -0.5 + 0.25j]}),
     ("MultiplyConstComplex", {"re": 0.7, "im": 0.5}),
     # Bitwise NOT (GR blocks.not_bb): single-cell, no params, no internal transit
     # cell — trivially non-self-overlapping in every D4 orientation and under movement.

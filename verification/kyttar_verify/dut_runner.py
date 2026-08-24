@@ -1282,3 +1282,215 @@ def run_block_dut_nstream(
 
     return DUTResult(True, outputs_q15=out, n_words=len(words),
                      entry_addr=entry, hop_count=hop)
+
+
+@dataclass
+class DualComplexDUTResult:
+    """Result of a TWO-COMPLEX-OUTPUT DUT run (:func:`run_block_dut_complex2_dual`).
+
+    The block egresses TWO complex pairs on their own nets with per-rail
+    out_tags (pair0 -> dests 0/1, pair1 -> dests 2/3); the drain demuxes by the
+    captured dest, so the four streams are order-free (the two packets'
+    interleave at the port legitimately varies with corridor lengths /
+    orientation)."""
+    ok: bool
+    reason: str = ""
+    # Per-sample lists of (value, dest) tuples (per-sample mode) or the flat
+    # tagged word stream (pipelined mode).
+    raw: list = field(default_factory=list)
+    # Demuxed per-dest word streams: streams[d] = [w0, w1, ...].
+    streams: dict = field(default_factory=dict)
+    n_words: int = 0
+    entry_addr: int = 0
+    hop_count: int = 0
+    in_regs: tuple = ()
+
+
+def run_block_dut_complex2_dual(
+    block_type: str,
+    a_stream,
+    b_stream,
+    *,
+    params: dict | None = None,
+    chip_yaml: str,
+    library: str = "lattrex.official",
+    in_ports: tuple[str, str, str, str] = ("ai", "aq", "bi", "bq"),
+    out_ports: tuple[str, str] = ("so_i", "do_i"),
+    rail_tags: dict | None = None,
+    place_xy: tuple[int, int] = (1, 1),
+    orient: list[str] | None = None,
+    pipelined: bool = False,
+    max_events: int | None = None,
+    data_run: int = 6000,
+    jump_run: int = 200000,
+    drain_run: int = 8000,
+) -> DualComplexDUTResult:
+    """Drive a 2-complex-in / 2-complex-out block (the R2Butterfly shape).
+
+    Input side = :func:`run_block_dut_complex2` (two complex packets per
+    sample, counting-join landing).  Output side: BOTH complex pairs are wired
+    to ``x16_out`` on their own nets (the controller synthesises each pair's
+    Q-half sibling net), and every egress rail is given an explicit
+    ``out_tag`` (default: pair0 -> 0/1, pair1 -> 2/3 via ``rail_tags``) so the
+    captured words demux by dest REGARDLESS of the two packets' arrival
+    interleave (which varies with corridor length / orientation).
+
+    ``pipelined=True`` runs the saturated twin: the whole two-packet burst is
+    enqueued via ``queue_words_physical`` and processed in ONE bounded
+    ``run()`` (a non-completed run is a livelock FAILURE, never a hang —
+    INV-19 harness rule).
+
+    Returns :class:`DualComplexDUTResult`; ``streams[d]`` is dest ``d``'s word
+    list (0/1 = pair0 I/Q, 2/3 = pair1 I/Q with the default tags).
+    """
+    import numpy as np  # noqa: PLC0415
+    import simkyt  # noqa: PLC0415
+
+    (app, BlockCatalog, load_chip_type, BuildEngine, AppController,
+     ChipPortEndpoint, BlockEndpoint) = _engine()
+
+    def _pairs(stream, tag):
+        arr = np.asarray(stream)
+        if np.iscomplexobj(arr):
+            return [(float(c.real), float(c.imag)) for c in arr]
+        if arr.ndim == 2 and arr.shape[1] == 2:
+            return [(float(i), float(q)) for i, q in arr]
+        raise ValueError(f"{tag} must be complex or an (N,2) [i,q] array")
+
+    try:
+        pa, pb = _pairs(a_stream, "a_stream"), _pairs(b_stream, "b_stream")
+    except ValueError as e:
+        return DualComplexDUTResult(False, reason=str(e))
+    if len(pa) != len(pb):
+        return DualComplexDUTResult(
+            False, reason=f"stream length mismatch: a={len(pa)} b={len(pb)}")
+
+    cat = BlockCatalog.from_gr_kyttar()
+    ct = load_chip_type(chip_yaml)
+    ct_key = getattr(ct, "name", None) or "kyttar_10x12"
+    ctrl = AppController(catalog=cat)
+    ctrl.new_project("dut_cplx2_dual", ct_key)
+    px, py = place_xy
+    blk = ctrl.place_block(block_type, 0, px, py, library=library,
+                           params=params or {})
+    for _k in (orient or []):
+        ctrl.project.block(blk).placement.transform(_k)
+
+    for i, ip in enumerate(in_ports):
+        ctrl.add_logical_connection(
+            ChipPortEndpoint(chip=0, port="x16_in"),
+            BlockEndpoint(block=blk, port=ip), name=f"in_{i}")
+    for i, op in enumerate(out_ports):
+        ctrl.add_logical_connection(
+            BlockEndpoint(block=blk, port=op),
+            ChipPortEndpoint(chip=0, port="x16_out"), name=f"out_{i}")
+
+    # Tag every egress rail (incl. the synthesised Q siblings) so the port
+    # demux is order-free.  Default: I-rails keep their pair base, Q siblings
+    # get base+1 (mirrors the .grc importer's out_tag+1 convention).
+    if rail_tags is None:
+        rail_tags = {}
+        for i, op in enumerate(out_ports):
+            rail_tags[op] = 2 * i
+            if op.endswith("i"):
+                rail_tags[op[:-1] + "q"] = 2 * i + 1
+    for c in ctrl.project.connections:
+        sp = getattr(c.source, "port", None)
+        if getattr(c.target, "port", None) == "x16_out" and sp in rail_tags:
+            c.out_tag = int(rail_tags[sp])
+
+    rep = ctrl.auto_route_all({ct_key: ct})
+    if not rep.ok:
+        return DualComplexDUTResult(False, reason="route failed: "
+                                    + "; ".join(f"{r.name}:{r.reason}"
+                                                for r in rep.failed))
+    bres = BuildEngine(cat, chip_yaml).build(ctrl.project, {ct_key: ct})
+    if not bres.ok:
+        return DualComplexDUTResult(False, reason="build failed: "
+                                    + "; ".join(str(e) for e in bres.errors))
+
+    words = bres.words(0)
+    entry, ins = cat.resolved_io(block_type, params or {}, library=library)
+    if len(ins) < 4:
+        return DualComplexDUTResult(
+            False, reason=f"block resolved {len(ins)} input register(s); "
+            "a two-complex-stream block must declare four")
+    regs = [int(ins[k]) for k in range(4)]
+
+    port = ct.port("x16_in")
+    blk_obj = ctrl.project.block(blk)
+    landing = (blk_obj.placement.cells[0]
+               if blk_obj and blk_obj.placement and blk_obj.placement.cells
+               else None)
+    if landing is not None:
+        dist = abs(landing.x - port.cell_x) + abs(landing.y - port.cell_y) + 1
+    else:
+        dist = abs(px - port.cell_x) + abs(py - port.cell_y) + 1
+    hop = max(0, 31 - dist)
+    cb = getattr(bres, "chips", {}).get(0)
+    il = (getattr(cb, "input_landings", {}) or {}) if cb is not None else {}
+    best = None
+    for k in range(4):
+        ld = il.get(f"in_{k}")
+        if ld and ld.get("data_addrs"):
+            if best is None or len(ld["data_addrs"]) > len(best["data_addrs"]):
+                best = ld
+    if best is not None and len(best["data_addrs"]) >= 4:
+        hop = int(best["hop"]) & 0x1F
+        entry = int(best["entry"])
+        regs = [int(a) for a in best["data_addrs"][:4]]
+
+    chip = simkyt.Chip.from_yaml(chip_yaml)
+    chip.load_bitstream_physical(words)
+    chip.set_port_entry_address("x16_in", entry)
+
+    if pipelined:
+        stream: list[int] = []
+        for (a_re, a_im), (b_re, b_im) in zip(pa, pb):
+            for w, r in ((_to_q15(a_re), regs[0]), (_to_q15(a_im), regs[1])):
+                stream.append(_enc_write(hop, r))
+                stream.append(int(w) & 0xFFFF)
+            stream.append(_enc_jump(hop, entry))
+            for w, r in ((_to_q15(b_re), regs[2]), (_to_q15(b_im), regs[3])):
+                stream.append(_enc_write(hop, r))
+                stream.append(int(w) & 0xFFFF)
+            stream.append(_enc_jump(hop, entry))
+        chip.queue_words_physical("x16_in", stream)
+        cap = max_events if max_events is not None else max(
+            50_000, 4_000 * max(1, len(pa)))
+        res = chip.run(max_events=cap)
+        if isinstance(res, dict) and not res.get("completed", True):
+            return DualComplexDUTResult(
+                False, reason="pipeline did NOT reach quiescence under "
+                f"saturated drive (stop_reason={res.get('stop_reason')}, "
+                f"events={res.get('events_processed')}, cap={cap})")
+        raw = [(int(v) & 0xFFFF, int(d))
+               for (v, d, _t) in chip.read_port_words_timed("x16_out")]
+        streams: dict = {}
+        for v, d in raw:
+            streams.setdefault(d, []).append(v)
+        return DualComplexDUTResult(True, raw=raw, streams=streams,
+                                    n_words=len(words), entry_addr=entry,
+                                    hop_count=hop, in_regs=tuple(regs))
+
+    per_sample: list = []
+    streams = {}
+    for (a_re, a_im), (b_re, b_im) in zip(pa, pb):
+        for (re_f, im_f), (r_re, r_im) in (((a_re, a_im), regs[0:2]),
+                                           ((b_re, b_im), regs[2:4])):
+            chip.inject_data_physical([_to_q15(re_f)], target_hop_cnt=hop,
+                                      target_addr=r_re)
+            chip.run(max_events=data_run)
+            chip.inject_data_physical([_to_q15(im_f)], target_hop_cnt=hop,
+                                      target_addr=r_im)
+            chip.run(max_events=data_run)
+            chip.inject_jump_physical(target_hop_cnt=hop, entry_addr=entry)
+            chip.run(max_events=jump_run)
+        got = [(int(v) & 0xFFFF, int(d))
+               for (v, d, _t) in chip.read_port_words_timed("x16_out")]
+        per_sample.append(got)
+        for v, d in got:
+            streams.setdefault(d, []).append(v)
+    return DualComplexDUTResult(True, raw=per_sample, streams=streams,
+                                n_words=len(words), entry_addr=entry,
+                                hop_count=hop, in_regs=tuple(regs))

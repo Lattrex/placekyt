@@ -294,6 +294,17 @@ COMPLEX_2IN2OUT = {
     # apply). Gated here to PROVE the pipelined (back-to-back) output == the per-sample
     # GR-verified output.
     "MultiplyConstComplex": (("xi", "xq"), "yi", {"re": 0.7, "im": 0.5}),
+    # Per-sample table-selected twiddle rotator (radix-2 FFT primitive). A
+    # FULLY SERIAL 6-cell chain — EVERY sample transits every cell whatever
+    # its kind (trivial entries take pass-through ENTRIES of the same cells),
+    # so the trivial and non-trivial paths have EQUAL chain length: no
+    # reconvergent fan-in, no overtaking, no serialize-LOCK (INV-19/20 do not
+    # apply). The mixed table exercises the identity, -j and 4-MULQ paths
+    # back-to-back under saturated drive.
+    "TwiddleMultiplyBlock": (("xi", "xq"), "yi",
+                             {"twiddles": [1, 0.7071067811865476
+                                           - 0.7071067811865476j, -1j,
+                                           -0.5 + 0.25j]}),
     # Complex AGC (GR analog.agc_cc): a 20-cell serialize-LOCKED gain-feedback
     # ring (hold locks, upd's backward WRITE.CFG releases — INV-19). The lock is
     # LOAD-BEARING: with pipeline_lock=False the saturated stream diverges from
@@ -337,6 +348,12 @@ NEEDS_BESPOKE = {
     "MultiplyCCBlock": "2-complex-stream (two packet JUMPs/sample, counting join); own "
         "saturated gate test_multiply_cc.py::test_pipelined_equals_per_sample "
         "(queue_words drive, bit-exact, conjugate-b non-vacuity probe)",
+    "R2ButterflyBlock": "2-complex-stream (two packet JUMPs/sample, counting "
+        "join) AND two complex OUTPUT pairs (sum/diff on separate cells, "
+        "demuxed by per-rail out_tag); own saturated gate "
+        "test_r2_butterfly.py::test_pipelined_equals_per_sample "
+        "(run_block_dut_complex2_dual pipelined, bit-exact per tagged stream, "
+        "non-vacuity probe)",
     "LMSEqualizerBlock": "PER-SAMPLE CONTRACT (INV-19 RECORDED LIMIT, guarded by "
         "test_lms_equalizer.test_saturated_drive_known_limit_guard): under "
         "saturated drive the backward gradient broadcast races the next "

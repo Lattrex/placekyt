@@ -1045,12 +1045,22 @@ def _apply_routes(cell_map, gr_placement, blocks, connections, chip_type,
             pb = gr_placement.placed_blocks.get(src.block)
             if pb is None:
                 continue
-            cfg = cell_map.get_cell(*pb.exit_cell)
+            # PER-NET exit cell: every router anchors an egress route at the
+            # NET's own output cell (route[0] == that net's source-port cell).
+            # A MULTI-OUTPUT block (two physically-separate complex output
+            # cells — the R2Butterfly sum/diff pairs) routes DIFFERENT nets
+            # from DIFFERENT cells; patching the block-level ``pb.exit_cell``
+            # for every net would land BOTH nets' handoffs on ONE cell and
+            # clobber its other output (proven: the butterfly's second net
+            # rewrote the sum tap's WRITE/JUMP with the dump route's hops —
+            # zero egress). For a single-output block ``route[0] ==
+            # pb.exit_cell`` and this is a no-op.
+            ex, ey = _net_source_exit_cell(pb, pts, blocks, src.block)
+            cfg = cell_map.get_cell(ex, ey)
             if cfg is None:
                 continue
-            # Face the source block's EXIT cell toward the first route waypoint
+            # Face the net's exit cell toward the first route waypoint
             # (unless the first waypoint IS the exit cell, then toward the 2nd).
-            ex, ey = pb.exit_cell
             nxt = None
             if pts and pts[0] != (ex, ey):
                 nxt = pts[0]
@@ -1066,8 +1076,10 @@ def _apply_routes(cell_map, gr_placement, blocks, connections, chip_type,
                     # direction so `out` follows the route — else it fires on the
                     # baked-in/rotated face_out and shoots into empty cells (the
                     # stray-exec "phantom route" hazard). See output_face_addr().
+                    # Applies ONLY to the block-level output cell — the face word
+                    # the block declares lives THERE, not on a sibling output cell.
                     ofa = gb.output_face_addr() if gb is not None else None
-                    if ofa is not None:
+                    if ofa is not None and (ex, ey) == tuple(pb.exit_cell):
                         cfg.set_memory(int(ofa), int(f))
             # Resolve the handoff target: a block target → its entry/input reg
             # (so the WRITE lands in the next block's input and the JUMP triggers
@@ -1206,12 +1218,22 @@ def _apply_routes(cell_map, gr_placement, blocks, connections, chip_type,
                 # nets reach this branch, but ONE call patches BOTH rails — so patch
                 # once, from the LOWER (I-rail) tag as the base, and skip the sibling
                 # net (else the second call remaps yi→N+1, yq→N+2 and corrupts it).
+                # MULTI-OUTPUT source: group the sibling scan by the net's EXIT
+                # CELL, not the whole block — a block with TWO output pairs
+                # (R2Butterfly sum/diff) drives the port on nets from TWO cells,
+                # and a block-wide min would (a) mis-base the second pair's tags
+                # and (b) skip its patch entirely (dest != block-wide base).
                 base_tag = dest
                 for _oc in connections:
                     _os, _ot = _oc.source, _oc.target
                     if (isinstance(_os, BlockEndpoint) and _os.block == src.block
                             and not isinstance(_ot, BlockEndpoint)
                             and _oc.out_tag is not None):
+                        _oc_pts = ([(p.x, p.y) for p in _oc.route]
+                                   if getattr(_oc, "route", None) else [])
+                        if _net_source_exit_cell(
+                                pb, _oc_pts, blocks, src.block) != (ex, ey):
+                            continue
                         base_tag = min(base_tag, _oc.out_tag)
                 if dest == base_tag:      # this is the I-rail net → patch both rails
                     if _output_cell_carries_handoffs(gb):
@@ -2491,7 +2513,9 @@ def _apply_port_route_faces_and_hops(cell_map, gr_placement, blocks,
         # share one output port stay distinguishable on the wire (OutWord.tag).
         pb = gr_placement.placed_blocks.get(src.block)
         if pb is not None:
-            cfg = cell_map.get_cell(*pb.exit_cell)
+            # PER-NET exit cell (multi-output source) — see _apply_routes.
+            cfg = cell_map.get_cell(
+                *_net_source_exit_cell(pb, pts, blocks, src.block))
             if cfg is not None:
                 out_dest = conn.out_tag if conn.out_tag is not None else 0
                 # If the source declares a MID-block output cell (its output leaves
@@ -2925,6 +2949,28 @@ def _apply_rendezvous_input_faces(cell_map, blocks, connections, project,
         # Cold-start LOCK boots to face_i (the first word of each pair is I).
         if fi is not None:
             cfg.initial_lock_face = fi & 0x3
+
+
+def _net_source_exit_cell(pb, pts, blocks, src_block_name):
+    """The (x, y) cell a ROUTED net's source WRITE/JUMP actually lives in.
+
+    Every router anchors an egress route at the net's own output cell
+    (``route[0]`` == the source PORT's cell).  For a single-output block that
+    is ``pb.exit_cell`` and this returns it unchanged.  A MULTI-OUTPUT block
+    (two physically-separate output cells, e.g. the R2Butterfly sum/diff
+    pairs) sources different nets from different cells: when ``route[0]`` is a
+    DIFFERENT cell of the SAME source block, the exit-face/handoff patches
+    must land there — patching the block-level exit cell for every net would
+    clobber its other output's egress."""
+    ex, ey = pb.exit_cell
+    if pts:
+        p0 = tuple(pts[0])
+        if p0 != (ex, ey):
+            b = next((b for b in blocks if b.name == src_block_name), None)
+            cells = getattr(getattr(b, "placement", None), "cells", None) or []
+            if any((c.x, c.y) == p0 for c in cells):
+                return p0
+    return (ex, ey)
 
 
 def _output_cell(blk, catalog):

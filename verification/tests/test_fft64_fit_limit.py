@@ -1,40 +1,45 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""FFT64 / FFT128 — the single-block PLACEMENT wall (known-limit guard, INV-style).
+"""FFT64 / FFT128 — the CHIP-SCALE placement class and its fit arithmetic.
 
-VERDICT (2026-08-23, the post-FFT16 fit check): a 64-point streaming R2SDF FFT
-in the pinned FFT16 architecture CANNOT fit this 10x12 chip as ONE block, and
-the reason is GEOMETRY, not numerics. This file is the executable form of that
-finding, in two halves:
+HISTORY. The first version of this file was the executable form of the
+2026-08-23 quarantine: a 64-point single-block streaming R2SDF FFT could not
+fit the 10x12 as ONE block under the ordinary layout conventions (both fold
+dimensions <= 8, i.e. a 64-cell cap), and N=128 a fortiori. Its own docstring
+named the un-quarantine signal: the wall moves if the substrate — or the
+POLICY that sets the cap — changes.
 
-1. **The octant-fold twiddle numerics are PROVEN SOUND** (so nobody mistakes
-   the wall for a table-size problem): every non-trivial twiddle of the N=64
-   and N=128 stage-0 tables is reconstructed BIT-EXACTLY from two octant
-   tables (COS and SIN over (0, pi/4]: 8+8 words for N=64, 16+16 for N=128,
-   each an easy fit for one cell) by index fold + sign/swap steering —
-   asserted exhaustively against the shipped ``quantize_twiddle`` direct
-   values, with an INV-4 negative (a wrong-quadrant fold must break the
-   equality). Big-N twiddle STORAGE was never the blocker.
+THE POLICY CHANGED (2026-08-24), and the signal fired as designed. A
+transform-scale block is typically the SOLE OCCUPANT of a die, so for a
+declared **chip-scale block class** two conventions that exist only to keep
+MULTIPLE blocks co-resident are waived:
 
-2. **The cell-count floor exceeds the max routable single-block footprint.**
-   The floor is computed from SHIPPED, MEASURED builder constants only (the
-   FFT16 per-stage spine, the ComplexDelayLine density, the TwiddleMultiply
-   chain) and the SAME accounting reproduces the shipped FFT16Block's 44
-   cells (floor 43 + its one documented layout-padding delay cell). For N=64
-   the floor is 77+ cells; the largest single-block footprint that routes AND
-   survives the mandatory 8-orientation D4 gate on this 10-wide chip is
-   8 x 8 = 64 cells (INV-9 / layout_rules: a block needs a bus channel on
-   each side of the 10-wide axis, and D4 rotation swaps the dims, so BOTH
-   must be <= 8). 77 > 64 with zero slack for ports. N=128 floors at 102+
-   cells — 85% of the whole 120-cell array before a single routing channel.
+  * the perimeter routing-channel reservation (a chip-scale block may be the
+    FULL 10 columns wide and use the full panel height), and
+  * the D4 rotation requirement (a 10-wide fold cannot rotate on a 10x12).
 
-These are GUARD tests in the FIRFilterBlock-tap-ceiling tradition: they pin
-the limit so it is loud, and they FLIP (start failing) if the substrate grows
-(a wider chip raises ``MAX_CELLS_ACROSS``; a denser delay cell raises
-``SAMPLES_PER_CELL``) — the signal to un-quarantine FFT64Block. The manifest
-rows FFT64Block / FFT128Block are ``needs_human`` citing this file; the
-un-blocking design option (a stage-split cascade of 2-3 CHAINED blocks wired
-in GRC, each under the 64-cell cap) changes the product shape (one block ->
-several) and is a human call, not a builder call.
+THE ONLY PLACEMENT CONTRACT for the class is that the block's input and
+output are REACHABLE from the chip's x16 input/output ports — gated end to
+end on a real built chip, never by inspection.
+
+This file now encodes the NEW class rules, in four parts:
+
+1. **The chip-scale flag is honored, and ONLY for blocks that declare it** —
+   the flag relaxes the layout caps for its own class and changes nothing for
+   any other block (the ordinary 8x8 cap still binds them).
+2. **The octant-fold twiddle numerics are PROVEN SOUND** (unchanged from the
+   original file, and still the reason nobody may mistake a geometry wall for
+   a table-size problem): every non-trivial twiddle of the N=64 and N=128
+   fold stages is reconstructed BIT-EXACTLY from two octant tables by index
+   fold + sign/swap steering, asserted exhaustively with INV-4 negatives.
+3. **The fit arithmetic under the NEW caps**, computed from SHIPPED, MEASURED
+   builder constants, with the same accounting reproducing the shipped
+   FFT16Block. The measured constants CORRECT the original file's
+   deliberately-unattainable lower bound for the fold chain (it charged the
+   fold at 5 cells "so the wall cannot hinge on the fold-cell estimate"); the
+   ATTAINABLE cost, every cell resolver-verified <= 32 words, is 9.
+4. **The band cap that the @1 stage-ring discipline imposes** — the rule that
+   actually decides whether a given N fits, and the one the original
+   whole-block cell count could not see.
 
 Run:
     KYTTAR_GR_PYTHON=/usr/bin/python3 QT_QPA_PLATFORM=offscreen \
@@ -53,29 +58,102 @@ _RUNTIME = Path(__file__).resolve().parents[2] / "runtime" / "python"
 if str(_RUNTIME) not in sys.path:
     sys.path.insert(0, str(_RUNTIME))
 
+from gr_kyttar.placement.blocks._base import KyttarBlock  # noqa: E402
 from gr_kyttar.placement.blocks.complex_delay_line_block import (  # noqa: E402
     ComplexDelayLineBlock)
 from gr_kyttar.placement.blocks.fft16_block import FFT16Block  # noqa: E402
 from gr_kyttar.placement.blocks.fft_primitives import (  # noqa: E402
-    KIND_ID, KIND_MJ, KIND_MUL, quantize_twiddle, s16, u16)
+    KIND_ID, KIND_MJ, KIND_MUL, TRIVIAL_SENTINEL, quantize_twiddle, s16, u16)
 from gr_kyttar.placement.blocks.fir_filter_block import (  # noqa: E402
     FIRFilterBlock)
+from gr_kyttar.placement.blocks.gain_block import GainBlock  # noqa: E402
 
 Q15_ONE = 32768
 
-# The max routable single-block footprint on this chip: both dims <= 8
-# (INV-9 + the D4 orientation gate — rotation swaps the dims, so the 10-wide
-# axis's bus-channel cap binds BOTH).
+# The ORDINARY single-block footprint cap: both dims <= 8 (INV-9 + the D4
+# orientation gate — rotation swaps the dims, so the 10-wide axis's
+# bus-channel reservation binds BOTH).
 _ACROSS = FIRFilterBlock.MAX_CELLS_ACROSS          # 8, chip-size convention
-SINGLE_BLOCK_CELL_CAP = _ACROSS * _ACROSS          # 64 cells
+ORDINARY_CELL_CAP = _ACROSS * _ACROSS              # 64 cells
+
+# This chip.
+CHIP_W, CHIP_H = 10, 12
+# x16_in is at cell (0, 0) and x16_out at (9, 0) — BOTH on row 0 — and a USED
+# chip-port cell is an obstacle to every other net (autoroute reserves it), so
+# a chip-scale block cannot occupy row 0. Rows 1..11 are what a sole-occupant
+# block actually gets.
+CHIP_SCALE_ROWS = CHIP_H - 1                       # 11
+CHIP_SCALE_AREA = CHIP_W * CHIP_SCALE_ROWS         # 110 cells
 
 
 # ---------------------------------------------------------------------------
-# Half 1 — the octant-fold twiddle reconstruction (bit-exact, exhaustive).
+# Part 1 — the chip-scale flag: declared, honored, and NARROW.
+# ---------------------------------------------------------------------------
+
+class _PlainProbe(KyttarBlock):
+    """A block that does NOT declare the chip-scale class."""
+
+    @property
+    def cell_count(self):
+        return 12
+
+    def build_cell_programs(self):
+        return {}
+
+    def process_reference(self, x):
+        return x
+
+
+class _ChipScaleProbe(_PlainProbe):
+    """A block that DOES declare it."""
+
+    CHIP_SCALE = True
+
+
+def test_chip_scale_flag_defaults_off():
+    """The class is OPT-IN: nothing is chip-scale unless it says so. A block
+    that forgets to declare it keeps the ordinary caps — the flag can never
+    relax a check by accident."""
+    assert KyttarBlock.CHIP_SCALE is False
+    assert _PlainProbe("p").CHIP_SCALE is False
+    # Shipped ordinary blocks are unaffected.
+    assert GainBlock("g").CHIP_SCALE is False
+    assert FFT16Block("f").CHIP_SCALE is False
+
+
+def test_chip_scale_flag_relaxes_only_its_own_class():
+    """The flag widens the layout caps for the declaring class ONLY — it is
+    not a global loosening. A non-chip-scale block still gets (8, 8)."""
+    assert _PlainProbe.layout_caps() == (8, 8)
+    assert GainBlock.layout_caps() == (8, 8)
+    assert FFT16Block.layout_caps() == (8, 8)
+    # The chip-scale class gets the full panel.
+    assert _ChipScaleProbe.layout_caps() == (CHIP_W, CHIP_H)
+
+
+def test_chip_scale_waives_the_rotation_requirement_explicitly():
+    """A 10-wide fold cannot rotate on a 10x12, so the class declares the
+    orientations it SHIPS rather than silently skipping the D4 gate. Identity
+    is mandatory and must be present."""
+    assert () in _ChipScaleProbe.CHIP_SCALE_ORIENTATIONS, (
+        "identity orientation is mandatory for a chip-scale block")
+    # The default declaration is identity-only — anything more is opt-in and
+    # must be gated by the block's own suite.
+    assert KyttarBlock.CHIP_SCALE_ORIENTATIONS == ((),)
+
+
+def test_chip_scale_caps_do_not_exceed_the_panel():
+    """The waiver is bounded by the physical array, not unbounded."""
+    w, h = _ChipScaleProbe.layout_caps()
+    assert w <= CHIP_W and h <= CHIP_H
+
+
+# ---------------------------------------------------------------------------
+# Part 2 — the octant-fold twiddle reconstruction (bit-exact, exhaustive).
 # ---------------------------------------------------------------------------
 
 def _direct_words(N: int, k: int):
-    """The shipped build-time quantization for stage-0 slot k (kind, c, d)."""
+    """The shipped build-time quantization for twiddle exponent k."""
     th = 2.0 * np.pi * k / N
     if k == 0:
         return quantize_twiddle(1)
@@ -87,9 +165,8 @@ def _direct_words(N: int, k: int):
 def _octant_tables(N: int):
     """COS and SIN over (0, pi/4]: m = 1..N/8, quantized round(32768*x).
 
-    N=64 -> 8+8 words; N=128 -> 16+16 words. Each table + a fetch program is
-    comfortably one 32-word cell (the FFT16 fetch cell held 8 table words +
-    3 consts + an 8-instruction program at 20/32) — STORAGE is not the wall.
+    N=64 -> 8+8 words; N=128 -> 16+16. Each table + its fetch program is one
+    cell with room to spare — STORAGE is not, and never was, the wall.
     """
     M = N // 8
     C = {m: int(np.round(np.cos(2.0 * np.pi * m / N) * Q15_ONE))
@@ -100,23 +177,20 @@ def _octant_tables(N: int):
 
 
 def _folded_words(N: int, k: int, C, S, *, corrupt: str = ""):
-    """Reconstruct stage-0 slot k's (c, d) from the octant tables.
+    """Reconstruct exponent k's (c, d) from the octant tables.
 
     octant o = k // (N/8); table index m = |k - (nearest multiple of N/4)|;
     steering per octant:  o0: (+C, -S)   o1: (+S, -C)   o2: (-S, -C)
                           o3: (-C, -S)
     (d already carries the DIF conjugation: W = cos - j sin, d = -32768 sin.)
-    ``corrupt`` selects an INV-4 single-fault model.
     """
     M = N // 8
     o = k // M
     t = ((k + M) // (2 * M)) * (2 * M)
     m = abs(k - t)
     if corrupt == "wrong_octant_sign" and o == 2:
-        # fold quadrant 2 with quadrant 1's c sign (the missed negate)
         return u16(S[m]), u16(-C[m])
     if corrupt == "wrong_fold_quadrant" and o == 3:
-        # fold quadrant 3 as if it were quadrant 0 (no reflection)
         return u16(C[m]), u16(-S[m])
     if o == 0:
         c, d = C[m], -S[m]
@@ -129,32 +203,107 @@ def _folded_words(N: int, k: int, C, S, *, corrupt: str = ""):
     return u16(c), u16(d)
 
 
+def _folded_words_swapsign(N: int, k: int, C, S, *, corrupt: str = ""):
+    """The SAME fold, factorised the way a CELL can compute it:
+
+        swap   = o0 XOR o1        -> c takes S and d takes C
+        c sign = o1
+        d sign = ALWAYS negative
+
+    This is the form the fold's steering cells implement; it must agree with
+    the 4-way form word for word.
+    """
+    M = N // 8
+    r = k & (2 * M - 1)
+    m = M - abs(r - M)
+    o = (k // M) & 3
+    o0, o1 = o & 1, (o >> 1) & 1
+    swap = o0 ^ o1
+    if corrupt == "no_swap":
+        swap = 0
+    if corrupt == "d_sign_positive":
+        cm = S[m] if swap else C[m]
+        dm = C[m] if swap else S[m]
+        return u16(-cm if o1 else cm), u16(dm)
+    cm = S[m] if swap else C[m]
+    dm = C[m] if swap else S[m]
+    return u16(-cm if o1 else cm), u16(-dm)
+
+
+def _fold_stage_exponents(N: int):
+    """The twiddle exponents each FOLD stage actually needs.
+
+    Stage s has delay D = (N/2) >> s and exponent k = j * 2^s for slot
+    j = 0..D-1. A stage needs the fold when its period D exceeds what a direct
+    32-word fetch cell holds (16 table words — measured: P=16 with the ``c``
+    forward is exactly 32/32).
+    """
+    out = []
+    bits = int(N).bit_length() - 1
+    for s in range(bits):
+        D = (N // 2) >> s
+        if D > 16:
+            out.append((s, [j << s for j in range(D)]))
+    return out
+
+
 @pytest.mark.parametrize("N", [64, 128])
 def test_octant_fold_bit_exact_exhaustive(N):
-    """EVERY non-trivial stage-0 twiddle word pair reconstructs BIT-EXACTLY
-    from the two octant tables — the direct round(32768*x) values, no
-    off-by-one-LSB anywhere (including the k = N/8 and 3N/8 boundary slots
-    where cos(pi/4) and sin(pi/4) quantize through different float paths)."""
+    """EVERY non-trivial twiddle word pair of EVERY fold stage reconstructs
+    BIT-EXACTLY from the two octant tables — the direct round(32768*x)
+    values, no off-by-one-LSB anywhere (including the k = N/8 and 3N/8
+    boundary slots where cos(pi/4) and sin(pi/4) quantize through different
+    float paths). Covers the STRIDED stage too (N=128 stage 1 walks the same
+    tables with k = 2j)."""
     C, S = _octant_tables(N)
-    trivial = []
-    for k in range(N // 2):
-        kind, c, d = _direct_words(N, k)
-        if kind in (KIND_ID, KIND_MJ):
-            trivial.append(k)
-            continue
-        assert kind == KIND_MUL
-        fc, fd = _folded_words(N, k, C, S)
-        assert (fc, fd) == (c, d), (
-            f"N={N} k={k}: fold gave ({s16(fc)}, {s16(fd)}), "
-            f"direct is ({s16(c)}, {s16(d)})")
-    # exactly two trivial slots: W^0 = 1 and W^(N/4) = -j
-    assert trivial == [0, N // 4]
+    stages = _fold_stage_exponents(N)
+    assert stages, f"N={N} has no fold stage — the fixture is wrong"
+    for s, ks in stages:
+        trivial = []
+        for k in ks:
+            kind, c, d = _direct_words(N, k)
+            if kind in (KIND_ID, KIND_MJ):
+                trivial.append(k)
+                continue
+            assert kind == KIND_MUL
+            assert _folded_words(N, k, C, S) == (c, d), (
+                f"N={N} stage {s} k={k}: 4-way fold mismatch")
+            assert _folded_words_swapsign(N, k, C, S) == (c, d), (
+                f"N={N} stage {s} k={k}: swap/sign fold mismatch")
+        # exactly two trivial exponents: W^0 = 1 and W^(N/4) = -j
+        assert trivial == [0, N // 4], (N, s, trivial)
+
+
+@pytest.mark.parametrize("N", [64, 128])
+def test_octant_table_index_never_zero_on_a_nontrivial_slot(N):
+    """``m == 0`` would need C[0] = 32768, UNREPRESENTABLE in Q15. It occurs
+    at EXACTLY the two trivial exponents (k = 0 and k = N/4), which are
+    dispatched structurally by the sentinel path and never index the tables.
+    This is asserted, not argued — it is what makes the fold safe."""
+    M = N // 8
+    zero_m = [k for k in range(N // 2)
+              if (M - abs((k & (2 * M - 1)) - M)) == 0]
+    assert zero_m == [0, N // 4]
+    for k in zero_m:
+        kind, _c, _d = _direct_words(N, k)
+        assert kind in (KIND_ID, KIND_MJ), (
+            f"N={N} k={k} indexes m=0 but is NOT a trivial slot")
+
+
+@pytest.mark.parametrize("N", [64, 128])
+def test_octant_magnitudes_are_negatable(N):
+    """Every stored magnitude is < 32768, so the fold's negates are exactly
+    representable and the steering needs NO saturating combine. (The largest
+    is C[1]: 32610 at N=64, 32729 at N=128.)"""
+    C, S = _octant_tables(N)
+    assert max(abs(v) for v in C.values()) < Q15_ONE
+    assert max(abs(v) for v in S.values()) < Q15_ONE
 
 
 @pytest.mark.parametrize("corrupt", ["wrong_octant_sign", "wrong_fold_quadrant"])
 def test_octant_fold_equality_gate_has_teeth(corrupt):
-    """INV-4: a corrupted fold (wrong quadrant sign / un-reflected quadrant)
-    must BREAK the exhaustive equality — the gate can fail."""
+    """INV-4: a corrupted 4-way fold (wrong quadrant sign / un-reflected
+    quadrant) must BREAK the exhaustive equality."""
     N = 64
     C, S = _octant_tables(N)
     mismatches = 0
@@ -167,93 +316,385 @@ def test_octant_fold_equality_gate_has_teeth(corrupt):
     assert mismatches > 0, f"corruption {corrupt!r} was invisible to the gate"
 
 
+@pytest.mark.parametrize("corrupt", ["no_swap", "d_sign_positive"])
+def test_swapsign_steering_gate_has_teeth(corrupt):
+    """INV-4 for the CELL-SHAPED factorisation: dropping the swap, or
+    forgetting that d is ALWAYS negated, must break the equality."""
+    N = 64
+    C, S = _octant_tables(N)
+    mismatches = 0
+    for k in range(N // 2):
+        kind, c, d = _direct_words(N, k)
+        if kind != KIND_MUL:
+            continue
+        if _folded_words_swapsign(N, k, C, S, corrupt=corrupt) != (c, d):
+            mismatches += 1
+    assert mismatches > 0, f"corruption {corrupt!r} was invisible to the gate"
+
+
+def _fold_chain_words(N: int, s: int, slot: int, C, S):
+    """Run the AUTHORED fold CHAIN's arithmetic step by step, exactly as the
+    cells compute it — seq -> mcalc -> tab_c/tab_d -> swap -> sign — including
+    the control-word encoding and the trivial-slot path.
+
+    This is a transcription of the shipped cell programs in
+    ``gr_kyttar.placement.blocks.fft_large``; it catches a design error in the
+    fold before any chip run, and pins the encodings the downstream (shipped,
+    proven) steer/prods/rail/gather chain depends on.
+    """
+    M = N // 8
+    log2M = M.bit_length() - 1
+    # seq: the running twiddle exponent, stride 2^s, modulo 4M = N/2.
+    p = (slot * (1 << s)) & (4 * M - 1)
+    o = (p >> log2M) & 3
+    r = p & (2 * M - 1)
+    # mcalc: the triangle index + the trivial-slot mark.
+    m = M - abs(r - M)
+    if m == 0:
+        m_out, k = 1, (0x8000 if o == 0 else 0x8001)
+    else:
+        m_out, k = m, o
+    # tab_c / tab_d (never meaningfully read on a trivial slot).
+    cmag, smag = C[m_out], S[m_out]
+    # swap.
+    if k & 0x8000:
+        cm, dm = cmag, smag
+    else:
+        cm, dm = ((smag, cmag) if (((k >> 1) ^ k) & 1) else (cmag, smag))
+    # sign.
+    if k & 0x8000:
+        return TRIVIAL_SENTINEL, u16(k << 15)
+    return (u16(-cm) if ((k >> 1) & 1) else u16(cm)), u16(-dm)
+
+
+@pytest.mark.parametrize("N", [64, 128])
+def test_fold_chain_reproduces_the_shipped_stage_tables(N):
+    """END TO END over the fold cells' own arithmetic: every slot of every
+    fold stage — trivial slots included — comes out BIT-IDENTICAL to the
+    shipped ``stage_table`` words the direct path would have produced. This
+    is what lets the SHIPPED steer/prods/rail/gather chain consume the fold's
+    output unchanged."""
+    from gr_kyttar.placement.blocks.fft_large import (  # noqa: PLC0415
+        DIRECT_TABLE_MAX, octant_tables, stage_delays, stage_table)
+    Cl, Sl = octant_tables(N)
+    C = {m: Cl[m - 1] for m in range(1, len(Cl) + 1)}
+    S = {m: Sl[m - 1] for m in range(1, len(Sl) + 1)}
+    checked = 0
+    for s, D in enumerate(stage_delays(N)):
+        if D <= DIRECT_TABLE_MAX:
+            continue
+        tab = stage_table(N, s)
+        for slot, (_kind, ec, ed) in enumerate(tab):
+            assert _fold_chain_words(N, s, slot, C, S) == (ec, ed), (
+                f"N={N} stage {s} slot {slot}")
+            checked += 1
+    assert checked > 0
+
+
+def test_fold_chain_gate_has_teeth():
+    """INV-4: perturbing the fold chain's stride must break the equality
+    (the strided N=128 stage 1 is the case a wrong stride would silently
+    corrupt)."""
+    from gr_kyttar.placement.blocks.fft_large import (  # noqa: PLC0415
+        octant_tables, stage_table)
+    N = 128
+    Cl, Sl = octant_tables(N)
+    C = {m: Cl[m - 1] for m in range(1, len(Cl) + 1)}
+    S = {m: Sl[m - 1] for m in range(1, len(Sl) + 1)}
+    tab = stage_table(N, 1)
+    # Walk stage 1 with stage 0's stride (1 instead of 2) — must diverge.
+    mismatches = sum(1 for slot, (_k, ec, ed) in enumerate(tab)
+                     if _fold_chain_words(N, 0, slot, C, S) != (ec, ed))
+    assert mismatches > 0
+
+
 # ---------------------------------------------------------------------------
-# Half 2 — the cell-count floor vs the single-block footprint cap.
+# Part 3 — the fit arithmetic under the NEW caps (measured constants only).
 # ---------------------------------------------------------------------------
 
 # Per-stage spine, measured on the shipped FFT16Block: ctl + the four RHE leg
-# cells (sum legs 24/32, diff legs 25/32 words — two legs cannot share a cell)
+# cells (sum legs 31/32, diff legs 30/32 words — two legs cannot share a cell)
 # + gather + out. Not compressible within the pinned numerics.
-_SPINE_CELLS = 7
-# Direct-table twiddle chain (P <= 16 fits the 32-word fetch cells):
+SPINE_CELLS = 7
+# Direct-table twiddle chain (period P <= 16 fits the 32-word fetch cells):
 # fetch_c + fetch_d + steer + prods + rail. Measured shape, FFT16 stages 0/1.
-_DIRECT_TW_CELLS = 5
-# Octant-fold twiddle chain lower bound: the two octant TABLE cells alone
-# (sequencer/steering charged at ZERO cells — deliberately unattainable, so
-# the wall cannot hinge on the fold-cell estimate) + steer + prods + rail.
-_OCTANT_TW_CELLS_LOWER_BOUND = 2 + 3
+DIRECT_TW_CELLS = 5
+# Largest direct table a fetch cell holds: P=16 with the ``c`` forward is
+# EXACTLY 32/32 words. Above this a stage needs the octant fold.
+DIRECT_TABLE_MAX = 16
+# OCTANT-FOLD twiddle chain, MEASURED (every cell resolver-verified <= 32
+# words): seq + mcalc + tab_c + tab_d + swap + sign + steer + prods + rail.
+#
+# NOTE — this CORRECTS the original file's figure. That version deliberately
+# charged the fold at an UNATTAINABLE 5 ("the two octant TABLE cells alone,
+# sequencer/steering charged at ZERO cells ... so the wall cannot hinge on the
+# fold-cell estimate"). Building it showed the honest cost is 9: the slot
+# sequencer, the |r-M| triangle-index computation, the two table LOADs, the
+# swap select and the sign application each need their own cell to stay inside
+# 32 words. A split-bank DIRECT table (2x16-word banks with a range check) was
+# also measured as an alternative and is WORSE — the range check busts every
+# cell at every bank size tried — so 9 is the efficient construction, not a
+# lazy one.
+OCTANT_TW_CELLS = 9
 
 
 def _delay_cells(samples: int) -> int:
     """Stage line of ``samples`` physical complex samples (D-1; the emerging
-    sample lives in ctl's a-pair). ComplexDelayLine density, floor'd
-    generously: no output-cell cap, min 1 cell (the D=1 stage's relay)."""
+    sample lives in ctl's a-pair). ComplexDelayLine density; min 1 cell (the
+    D=1 stage's relay)."""
     if samples <= 0:
         return 1
     return math.ceil(samples / ComplexDelayLineBlock.SAMPLES_PER_CELL)
 
 
-def _stage_floor(D: int, twiddle: str) -> int:
-    tw = {"direct": _DIRECT_TW_CELLS,
-          "octant": _OCTANT_TW_CELLS_LOWER_BOUND,
-          "none": 0}[twiddle]
-    return _SPINE_CELLS + _delay_cells(D - 1) + tw
+def _twiddle_cells(D: int) -> int:
+    if D > DIRECT_TABLE_MAX:
+        return OCTANT_TW_CELLS
+    if D >= 4:
+        return DIRECT_TW_CELLS
+    return 0                     # the kind-word (D=2) and identity (D=1) stages
 
 
-def _fft_floor(N: int) -> int:
-    """Cell-count floor for an N-point single-block streaming R2SDF FFT.
+def stage_cells(D: int) -> int:
+    """Total cells for one R2SDF stage of delay ``D``."""
+    return SPINE_CELLS + _twiddle_cells(D) + _delay_cells(D - 1)
 
-    Stage s has delay D = (N/2) >> s and twiddle period P = D over W_N^(2^s):
-    P >= 32 needs the octant fold (a direct table busts the 32-word fetch
-    cell); 4 <= P <= 16 is the FFT16 direct-table chain; P = 2 is the
-    kind-word stage (no extra cells); P = 1 is the identity stage.
-    """
-    total = 0
-    D = N // 2
-    while D >= 1:
-        if D >= 32:
-            total += _stage_floor(D, "octant")
-        elif D >= 4:
-            total += _stage_floor(D, "direct")
-        else:
-            total += _stage_floor(D, "none")
-        D //= 2
-    return total
+
+def fft_cells(N: int) -> int:
+    """Cell count for an N-point single-block streaming R2SDF FFT."""
+    return sum(stage_cells((N // 2) >> s)
+               for s in range(int(N).bit_length() - 1))
 
 
 def test_fit_accounting_reproduces_fft16():
-    """The floor formula is calibrated: it reproduces the SHIPPED 44-cell
-    FFT16Block as floor 43 + its one documented layout-padding cell (the
-    stage-1 [2,1] delay split that fills the 7-wide band)."""
-    floor16 = _fft_floor(16)
-    assert floor16 == 43
-    assert floor16 <= FFT16Block("fft16").cell_count <= floor16 + 1
+    """The accounting is CALIBRATED: it reproduces the SHIPPED 44-cell
+    FFT16Block as 43 + its one documented layout-padding cell (the stage-1
+    [2,1] delay split that fills the 7-wide band). A change that breaks this
+    invalidates every number below."""
+    c16 = fft_cells(16)
+    assert c16 == 43
+    assert c16 <= FFT16Block("fft16").cell_count <= c16 + 1
 
 
-def test_fft64_exceeds_single_block_footprint_cap():
-    """THE WALL: the FFT64 floor (77+, with the octant fold charged at an
-    unattainable 2 table cells) exceeds the 8x8 = 64-cell max routable
-    D4-safe single-block footprint by 13+ cells. There is no placement of
-    77+ cells on the 10x12 WITH ports, bus channels, and the mandatory
-    orientation gate. If this test ever FAILS, the substrate grew — revisit
-    the FFT64Block quarantine."""
-    floor64 = _fft_floor(64)
-    assert floor64 >= 77
-    assert floor64 > SINGLE_BLOCK_CELL_CAP, (
-        f"FFT64 floor {floor64} <= cap {SINGLE_BLOCK_CELL_CAP}: "
-        f"the wall has moved — un-quarantine FFT64Block")
-    # Even the absurd free-lunch bound — ZERO cells for ALL N=64-specific
-    # twiddle machinery (stages 0 and 1 rotate for free), keeping only the
-    # two ALREADY-SHIPPED FFT16-shape chains — still busts the cap:
-    free_lunch = (2 * _SPINE_CELLS + _delay_cells(31) + _delay_cells(15)
-                  + _stage_floor(8, "direct") + _stage_floor(4, "direct")
-                  + _stage_floor(2, "none") + _stage_floor(1, "none"))
-    assert free_lunch > SINGLE_BLOCK_CELL_CAP
+def test_fft16_needs_no_fold():
+    """N=16's largest period is 8 — comfortably a direct table. The fold
+    exists only for the chip-scale sizes."""
+    assert all(_twiddle_cells((16 // 2) >> s) != OCTANT_TW_CELLS
+               for s in range(4))
 
 
-def test_fft128_exceeds_single_block_footprint_cap():
-    """N=128 floors at 102+ cells — 85% of the ENTIRE 120-cell array before
-    a single routing channel or port; blocked a fortiori."""
-    floor128 = _fft_floor(128)
-    assert floor128 >= 102
-    assert floor128 > SINGLE_BLOCK_CELL_CAP
+@pytest.mark.parametrize("N,expect", [(64, 81), (128, 110)])
+def test_chip_scale_cell_counts(N, expect):
+    """The measured single-block cell counts at the chip-scale sizes."""
+    assert fft_cells(N) == expect
+
+
+def test_fft64_fits_the_chip_scale_area():
+    """N=64 (81 cells) FITS the sole-occupant area (110 cells over rows
+    1..11) with real slack — the un-quarantine the policy change enables.
+    Under the OLD ordinary cap (64 cells) it did not, which is exactly why
+    the old wall test fired."""
+    n64 = fft_cells(64)
+    assert n64 <= CHIP_SCALE_AREA, (n64, CHIP_SCALE_AREA)
+    assert n64 > ORDINARY_CELL_CAP, (
+        "N=64 would fit the ORDINARY cap — the policy change was unnecessary")
+
+
+def test_fft128_area_is_exactly_the_whole_die():
+    """N=128 (110 cells) consumes the ENTIRE sole-occupant area — 110 of 110,
+    ZERO cells of slack for any layout padding, and 100% of every row the
+    ports leave free. This is the honest headline number for the N=128
+    single-die question."""
+    n128 = fft_cells(128)
+    assert n128 == CHIP_SCALE_AREA
+    assert CHIP_SCALE_AREA - n128 == 0
+
+
+# ---------------------------------------------------------------------------
+# Part 4 — the BAND CAP: what actually decides whether a size fits.
+# ---------------------------------------------------------------------------
+#
+# The whole-block cell count is necessary but NOT sufficient. Each R2SDF stage
+# closes a data-feedback ring (the delay tail returns the emerging sample to
+# the stage controller), so every stage carries the serialize-LOCK whose
+# write-back + lock-clear WRITE.CFG is an @1 backward edge. FFT16 gets that
+# for free from its layout: each stage is ONE 2-row serpentine band with
+# ``ctl`` at the band's top-left and ``out`` directly BELOW it, which also
+# puts the next stage's ``ctl`` @1 below ``out``. That geometry is what let
+# FFT16 ship with ZERO transit cells and no _apply_internal_feedback tracing.
+#
+# A 2-row band on a 10-wide chip holds at most 2 x 10 = 20 cells. So under the
+# @1 stage-ring discipline, 20 CELLS PER STAGE is a hard cap — independent of
+# how much whole-die area is left.
+
+BAND_ROWS = 2
+STAGE_BAND_CAP = BAND_ROWS * CHIP_W                # 20 cells
+
+
+def test_band_cap_is_the_two_row_serpentine():
+    assert STAGE_BAND_CAP == 20
+
+
+def test_fft16_every_stage_fits_a_band():
+    """The shipped FFT16 is comfortably inside the band cap at every stage —
+    which is why the question never arose there."""
+    for s in range(4):
+        assert stage_cells((16 // 2) >> s) <= STAGE_BAND_CAP
+
+
+@pytest.mark.parametrize("N,over", [(64, [0]), (128, [0, 1])])
+def test_chip_scale_stage0_exceeds_the_band_cap(N, over):
+    """THE REMAINING WALL, and it is a BAND wall, not an area wall: the
+    fold stages exceed the 20-cell 2-row band even though the whole block
+    fits the die.
+
+      N=64  stage 0 = 23 cells (spine 7 + fold 9 + line 7)  -> 3 over
+      N=128 stage 0 = 29, stage 1 = 23                      -> 9 and 3 over
+
+    An oversized stage needs either a 4-row fold — which breaks the @1
+    write-back and requires a feedback transit column plus
+    _apply_internal_feedback tracing — or 3+ fewer cells. This test pins the
+    exact shortfall so the next attempt starts from the real number, and it
+    FLIPS the moment a stage is brought under the cap."""
+    bad = [s for s in range(int(N).bit_length() - 1)
+           if stage_cells((N // 2) >> s) > STAGE_BAND_CAP]
+    assert bad == over, (N, bad, over)
+
+
+def test_fft64_stage0_shortfall_is_exactly_three_cells():
+    """The precise N=64 gap, so a future saving can be measured against it."""
+    s0 = stage_cells(32)
+    assert s0 == 23
+    assert s0 - STAGE_BAND_CAP == 3
+
+
+def test_fft128_needs_more_rows_than_the_ports_leave():
+    """Independently of the band cap, N=128 as one stacked column of 2-row
+    bands needs MORE ROWS than a sole occupant has. Its 7 stages merge to 6
+    bands (the two trivial stages, 8 cells each, share one 8-wide band) = 12
+    rows, but the x16 ports sit on row 0 and a used port cell is an obstacle,
+    leaving 11. This is why the N=128 single-die answer is NO and the 2-die
+    stage-boundary split is the authorized path."""
+    delays = [(128 // 2) >> s for s in range(7)]
+    cells = [stage_cells(D) for D in delays]
+    bands, i = [], 0
+    while i < len(cells):
+        if (i + 1 < len(cells) and delays[i] == 2 and delays[i + 1] == 1
+                and cells[i] + cells[i + 1] <= STAGE_BAND_CAP):
+            bands.append(cells[i] + cells[i + 1])
+            i += 2
+        else:
+            bands.append(cells[i])
+            i += 1
+    assert len(bands) == 6
+    assert BAND_ROWS * len(bands) == 12
+    assert BAND_ROWS * len(bands) > CHIP_SCALE_ROWS
+
+
+def test_fft64_row_budget_fits():
+    """N=64 by contrast merges to 5 bands = 10 rows, inside the 11 a sole
+    occupant gets — so N=64's only obstacle is the stage-0 band, not rows."""
+    delays = [(64 // 2) >> s for s in range(6)]
+    cells = [stage_cells(D) for D in delays]
+    bands, i = [], 0
+    while i < len(cells):
+        if (i + 1 < len(cells) and delays[i] == 2 and delays[i + 1] == 1
+                and cells[i] + cells[i + 1] <= STAGE_BAND_CAP):
+            bands.append(cells[i] + cells[i + 1])
+            i += 2
+        else:
+            bands.append(cells[i])
+            i += 1
+    assert len(bands) == 5
+    assert BAND_ROWS * len(bands) == 10 <= CHIP_SCALE_ROWS
+
+
+def test_port_row_is_not_available_to_the_block():
+    """The reachability contract's geometric consequence, pinned: x16_in
+    (0,0) and x16_out (9,0) are both on row 0 and a USED port cell is an
+    obstacle to every other net, so a sole-occupant block gets rows 1..11 —
+    NOT the full 12. Getting this wrong inflates the area budget by a whole
+    row (10 cells)."""
+    assert CHIP_SCALE_ROWS == CHIP_H - 1
+    assert CHIP_SCALE_AREA == CHIP_W * (CHIP_H - 1)
+
+
+def test_old_ordinary_cap_still_binds_non_chip_scale_blocks():
+    """The policy change is NARROW: an ordinary block is still capped at
+    8x8 = 64 cells, and both N=64 and N=128 still bust that cap. Nothing was
+    loosened globally."""
+    assert ORDINARY_CELL_CAP == 64
+    assert fft_cells(64) > ORDINARY_CELL_CAP
+    assert fft_cells(128) > ORDINARY_CELL_CAP
+    assert FFT16Block("f").cell_count <= ORDINARY_CELL_CAP
+
+
+@pytest.mark.parametrize("N", [64, 128])
+def test_every_authored_cell_fits_the_word_budget(N):
+    """The constraint that FORCED the 9-cell fold: every cell of the authored
+    N-point block — spine, fold chain, twiddle chain, delay segments — must
+    fit 32 words (data + state + program). This is measured with the real
+    resolver, and it is why the fold cannot be fewer cells: collapsing any two
+    of seq/mcalc/tab_c/tab_d/swap/sign busts this gate (each was tried).
+
+    It also pins the whole-block cell count, so the fit arithmetic above and
+    the authored block can never drift apart."""
+    from gr_kyttar.placement.resolver import CellProgramResolver  # noqa: PLC0415
+    from gr_kyttar.placement.blocks import fft_large as FL  # noqa: PLC0415
+
+    cls = FL.FFT64Block if N == 64 else FL.FFT128Block
+    blk = object.__new__(cls)
+    blk._n = N
+    blk._delays = FL.stage_delays(N)
+    blk._tables = [FL.stage_table(N, s) for s in range(len(blk._delays))]
+    blk._octC, blk._octS = FL.octant_tables(N)
+    blk._segs = {s: FL._delay_segments(D - 1)
+                 for s, D in enumerate(blk._delays)}
+    order = []
+    for s in range(len(blk._delays)):
+        order += cls._stage_chain(blk, s)
+    blk._order = order
+    cps = cls.build_cell_programs(blk)
+
+    res = CellProgramResolver()
+    over = []
+    for cid, cp in cps.items():
+        n_instr = res.count_instructions(cp)
+        regs = ([p.register for p in cp.inputs]
+                + [d.address for d in (cp.data or ())]
+                + [sv.register for sv in (cp.state or ())])
+        max_addr = max([a for a in regs if a is not None], default=-1)
+        total = max_addr + 1 + n_instr
+        if total > 32:
+            over.append((cid, total))
+        # Every StateVar explicitly pinned (INV-33).
+        for sv in (cp.state or ()):
+            assert sv.register is not None, f"{cid}: unpinned state {sv.name}"
+    assert not over, f"cells over the 32-word budget: {over}"
+    assert len(cps) == fft_cells(N), (len(cps), fft_cells(N))
+
+
+@pytest.mark.parametrize("N,s0", [(64, 23), (128, 29)])
+def test_authored_stage0_matches_the_fit_arithmetic(N, s0):
+    """The authored stage-0 chain is exactly the length the fit arithmetic
+    predicts — the two cannot drift."""
+    from gr_kyttar.placement.blocks import fft_large as FL  # noqa: PLC0415
+    cls = FL.FFT64Block if N == 64 else FL.FFT128Block
+    blk = object.__new__(cls)
+    blk._n = N
+    blk._delays = FL.stage_delays(N)
+    blk._segs = {s: FL._delay_segments(D - 1)
+                 for s, D in enumerate(blk._delays)}
+    assert len(cls._stage_chain(blk, 0)) == s0 == stage_cells(N // 2)
+
+
+def test_measured_fold_cost_exceeds_the_original_lower_bound():
+    """The original file's fold figure was an explicit, documented
+    lower bound (2 table cells + steer/prods/rail = 5, sequencer and steering
+    charged at ZERO). Building it measured 9. Pin the correction so the
+    optimistic number cannot creep back into a future estimate."""
+    ORIGINAL_UNATTAINABLE_BOUND = 2 + 3
+    assert OCTANT_TW_CELLS > ORIGINAL_UNATTAINABLE_BOUND
+    assert OCTANT_TW_CELLS == 9
+    # And the correction is what moved N=64 from the old "77+" to 81.
+    assert fft_cells(64) == 81

@@ -228,6 +228,58 @@ class KyttarBlock(ABC):
             internal_jumps=self.internal_jumps(),
         )
 
+    # ------------------------------------------------------------------
+    # CHIP-SCALE BLOCK CLASS (declared, opt-in, narrow)
+    # ------------------------------------------------------------------
+    # A **chip-scale** block is a transform-scale block that is expected to be
+    # the SOLE OCCUPANT of a die (an N>=64 streaming FFT is the founding
+    # member). For such a block the two layout conventions that exist only to
+    # keep MULTIPLE blocks co-resident on a 10x12 are relaxed — and NOTHING
+    # else:
+    #
+    #   1. **The perimeter routing-channel reservation is WAIVED.** The
+    #      <=8-cells-across convention (layout_rules §3 / INV-9) reserves one
+    #      routing-cell channel on each side of the 10-wide axis so a bus can
+    #      pass a block. A sole occupant has no bus to pass it, so the block
+    #      may be the FULL 10 columns wide and use the full panel height.
+    #   2. **The D4 rotation requirement is WAIVED.** A 10-wide block cannot
+    #      rotate on a 10x12 array (the rotated 10-tall/W-wide footprint may
+    #      still fit, but the 10-wide-in-a-10-wide-array identity fold is the
+    #      only orientation guaranteed to exist). A chip-scale block declares
+    #      the orientations it ships (``CHIP_SCALE_ORIENTATIONS``) and is
+    #      gated in exactly those.
+    #
+    # THE ONLY PLACEMENT CONTRACT FOR THE CLASS: the block's input and output
+    # must be REACHABLE from the chip's x16 input/output ports — gated end to
+    # end on a real built chip (x16_in -> block -> x16_out), never by
+    # inspection. Everything else (register budget, saturation safety, the
+    # route-time-face discipline, bit-exactness, GRC binding) is UNCHANGED.
+    #
+    # This flag is checked ONLY by the layout-cap gates that name it. It is
+    # never a global loosening: a block that does not declare it stays bound by
+    # the ordinary <=8-across cap and the full 8-orientation D4 gate.
+    CHIP_SCALE = False
+
+    # Orientations a chip-scale block ships (D4 op-lists as the DUT runner
+    # takes them). Identity is mandatory; anything else is opt-in and gated.
+    CHIP_SCALE_ORIENTATIONS: Tuple[Tuple[str, ...], ...] = ((),)
+
+    # Full-panel caps a chip-scale block may use (this 10x12 array).
+    CHIP_SCALE_MAX_WIDTH = 10
+    CHIP_SCALE_MAX_HEIGHT = 12
+
+    @classmethod
+    def layout_caps(cls) -> Tuple[int, int]:
+        """(max_width, max_height) this block's fold may occupy, in cells.
+
+        Ordinary blocks: (8, 8) — the INV-9 bus-channel convention on both
+        axes (the D4 gate swaps the dims, so both bind). Chip-scale blocks:
+        the full panel, per the declared class rules above.
+        """
+        if cls.CHIP_SCALE:
+            return (cls.CHIP_SCALE_MAX_WIDTH, cls.CHIP_SCALE_MAX_HEIGHT)
+        return (8, 8)
+
     # Default serpentine row width for the fallback layout.
     DEFAULT_LAYOUT_WIDTH = 8
 

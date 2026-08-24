@@ -9,6 +9,93 @@ block-specific gotcha. Promote anything that generalizes across block classes in
 and superseded material merged into the surviving entries; no durable lesson was
 dropped) — append new entries above the oldest ones as before.
 
+## FFT64/FFT128 under the CHIP-SCALE class — arithmetic DONE, placement blocked by the STAGE-BAND geometry 2026-08-24
+
+The owner un-quarantined FFT64/FFT128 with a policy decision: a transform-scale
+block is typically the SOLE OCCUPANT of a die, so for a declared **chip-scale
+block class** the perimeter routing-channel reservation and the D4 rotation
+requirement are waived, and the only placement contract is that the block's
+input and output are reachable from the x16 ports. The class is now implemented
+and the FFT arithmetic is built and verified at both sizes; **placement is not
+done**, and the reason is a geometry wall the old whole-block cell count could
+not see. Report honestly: `needs_human`, with the exact shortfall.
+
+- **The chip-scale flag is narrow by construction.** `KyttarBlock.CHIP_SCALE`
+  (default `False`) plus `layout_caps()`: a declaring class gets the full
+  panel, every other block still gets `(8, 8)`. `CHIP_SCALE_ORIENTATIONS`
+  makes the rotation waiver EXPLICIT — a 10-wide fold cannot rotate on a
+  10x12, so the class declares the orientations it SHIPS (identity, mandatory)
+  rather than silently skipping the D4 gate. Gated: the flag defaults off, it
+  relaxes only its own class, and both FFT sizes still bust the ordinary cap.
+- **THE MEASURED FOLD COST IS 9 CELLS, NOT 5 — and the old note SAID its
+  number was unattainable.** The prior fit analysis charged the octant fold at
+  "2 table cells + steer/prods/rail", explicitly "deliberately unattainable, so
+  the wall cannot hinge on the fold-cell estimate". Building it measured 9:
+  `seq` (slot counter) → `mcalc` (the `m = M − |r − M|` triangle index +
+  trivial detect) → `tab_c` → `tab_d` → `swap` → `sign` → the shipped
+  steer/prods/rail. The split is FORCED by the 32-word cell budget — all six
+  pairwise merges were tried and every one busts it — and a split-bank DIRECT
+  table is strictly worse (its range check busts every cell at every bank size
+  tried). **Lesson: an "unattainable lower bound" is not a budget. When the
+  bound is doing load-bearing work in a fit decision, build the cheapest real
+  cell before trusting the number** — here the correction moved N=64 from 77+
+  to 81 and, more importantly, moved stage 0 from inside a band to 3 over it.
+- **The 4-way octant steering FACTORISES into three independent decisions,**
+  which is what makes it fit cells at all: `swap = o0 XOR o1` (c takes S,
+  d takes C), `c sign = o1`, and **`d` is ALWAYS negative**. Every stored
+  magnitude is < 32768 (max C[1] = 32610 at N=64, 32729 at N=128), so the
+  negates are exactly representable and the fold needs **no saturating
+  combine** — and `MUL` by `0xFFFF` (low-16) is an exact two's-complement
+  negate, cheaper than a compare-and-branch. `m == 0` — where `C[0] = 32768`
+  would be unrepresentable — occurs at EXACTLY the two trivial exponents
+  (k = 0, k = N/4), both dispatched structurally, so the tables are never
+  indexed there. All of this is asserted exhaustively, not argued.
+- **One sequencer stride serves a strided stage.** N=128 needs the fold on
+  stages 0 AND 1; stage 1's exponent is `k = 2j`. Advancing the slot counter
+  by `2^s` (a build-time immediate, INV-34) lets the SAME 16+16-word octant
+  tables serve both — gated, since a wrong stride is exactly the kind of fault
+  that would silently corrupt only the second fold stage.
+- **THE WALL: a stage cannot spill out of its 2-row band.** In a 2-row
+  serpentine of width W, a stage starting at chain index `a` has its `out`
+  directly below its `ctl` only when `L = 2W − 2·(a mod W)`; the first stage in
+  a band has `a = 0` and must therefore FILL the band. So stages can never be
+  merged or split across bands without breaking the @1 write-back — and the
+  shipped FFT16 layout confirms it (4 stages, 4 bands, `ctl` at (0,2s), `out`
+  at (0,2s+1), no merging). A 2-row band on a 10-wide array holds **20 cells**;
+  N=64 stage 0 is **23**. **Corollary I got wrong first and had to check
+  against the shipped layout: "merge the two trivial stages to save rows" is
+  NOT available.**
+- **The second wall is ROWS, and the port row is the trap.** One band per stage
+  means 2 rows per stage: N=64 needs 12 rows, N=128 needs 14. `x16_in` (0,0)
+  and `x16_out` (9,0) are BOTH on row 0, so a full-width sole occupant gets
+  rows 1..11 = **11**. Getting this wrong inflates the budget by a whole row.
+  (Empirically the router IS happy to have a block's landing cell sit ON the
+  input port cell — FFT16 anchored at (0,0) routes and runs, its `s0_ctl`
+  exactly on (0,0) — but a 10-wide block's column-0 `ctl` column cannot claim
+  row 0 without colliding with the port, and anchor choice turned out to be
+  routability-sensitive in ways only a real built-chip run settles. That is
+  precisely why the class's one contract must be gated end-to-end, never by
+  inspection.)
+- **Cell-shaving does not close it.** Measured spare words: `out` 7 (enough for
+  ONE absorbed ring sample → −1 delay cell), `ctl` 4, `gather_tw` 1,
+  `sum_leg` 1, `rail` 1. Max reachable saving ≈ 1 cell against a 3-cell
+  shortfall. The remaining mechanisms are a 4-row band with a feedback TRANSIT
+  COLUMN (so `_apply_internal_feedback` resolves the backward write-back +
+  lock-clear `WRITE.CFG` by corridor re-hop instead of @1 abutment — but it
+  costs 2 more rows, so it needs the row wall solved too) or the 2-die
+  stage-boundary split.
+- **N=128 single-die is ruled out with arithmetic, not a shrug:** 110 cells is
+  EXACTLY the 110-cell sole-occupant area (zero slack) and it needs 14 rows
+  against 11. The 2-die split is the authorized path.
+- Cost/shape: `fft_large.py` is a parametric `LargeFFTBlock` (+ `FFT64Block` /
+  `FFT128Block`) reusing the FFT16 spine, twiddle and delay cell programs
+  verbatim; N=64 = 81 cells, N=128 = 110, every cell resolver-verified inside
+  32 words with state pinned (INV-33). Constructing either raises
+  `LargeFFTGeometryError` naming the exact shortfall — a LOUD failure, because
+  a block that builds but does not route looks identical to a working one until
+  you run it. 37 gates in `test_fft64_fit_limit.py` (reworked from the old wall
+  test, whose policy-change signal fired exactly as designed).
+
 ## ConjChirpMixerBlock + ChirpSyncBlock — the CSS receive spine closes; wrap-vs-saturate is USE-CASE-dependent 2026-08-24
 
 Joint build (QUEUE B9a/B9, CSS track; full cost on ChirpSync, mixer a

@@ -116,8 +116,8 @@
 | **FFT16Block** | `numpy.fft.fft (N=16)` | 3 · new GRC block | ✅ done | err 0.0 / tol 0.0 LSB | edge rand×3 mut |
 | **ChirpSyncBlock** | `(Python golden: K-consecutive-equal-argmax preamble run detector)` | 3 · new GRC block | ✅ done | err 0 / tol 0 LSB | edge rand×3 sweep×4 mut |
 | **GRUCellBlock** | `(Python golden: a float GRU in gr-kyttar, H=4 I=2, + 4-class readout)` | 3 · new GRC block | 🟡 in progress | — | — |
-| **FFT64Block** | `numpy.fft.fft (N=64)` | 3 · new GRC block | ⬜ planned | — | — |
-| **FFT128Block** | `numpy.fft.fft (N=128)` | 3 · new GRC block | ⬜ planned | — | — |
+| **FFT64Block** | `numpy.fft.fft (N=64)` | 3 · new GRC block | 🚧 needs human (quarantined) | — | — |
+| **FFT128Block** | `numpy.fft.fft (N=128)` | 3 · new GRC block | 🚧 needs human (quarantined) | — | — |
 
 **Tiers** reflect verification difficulty (the build order): tier 1 = feed-forward, tier 2 = stateful/loop, tier 3 = new block to build. **🧪 proof-of-concept** blocks exist and work in a demo (e.g. the coherent BPSK receiver) but have NOT yet been through per-block GNU Radio equivalence verification — treat them as demo-quality, not drop-in-verified. **Won't-map** blocks are GRC blocks that do not translate to the Kyttar fabric (with a reason in the manifest).
 

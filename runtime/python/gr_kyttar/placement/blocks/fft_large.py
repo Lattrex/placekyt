@@ -1,0 +1,1676 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Large-N streaming R2SDF FFT — the CHIP-SCALE block class (N = 64, 128).
+
+This module generalises the shipped :mod:`fft16_block` architecture to the
+transform sizes that only fit a die as its SOLE OCCUPANT. Everything that made
+FFT16 bit-exact is reused VERBATIM — the ``R2ButterflyBlock`` RHE leg programs,
+the ``TwiddleMultiply`` steer/prods/rail/gather cells, the ``ComplexDelayLine``
+segment cells, the re-timed R2SDF ring, and the per-stage serialize-LOCK. Two
+things are NEW, and only two:
+
+1. **The octant-fold twiddle chain** for the stages whose twiddle period
+   ``P >= 32`` busts a 32-word direct fetch cell (stage 0 at N=64; stages 0
+   and 1 at N=128). See :ref:`the fold <octant-fold>` below.
+2. **The chip-scale placement class** (``CHIP_SCALE = True``): the block may
+   be the full 10 columns wide and use the full panel height, the perimeter
+   routing-channel reservation is waived, and the D4 rotation requirement is
+   waived (a 10-wide block cannot rotate on a 10x12). The ONLY placement
+   contract is that the block's input and output are REACHABLE from the
+   chip's x16 input/output ports — gated end to end on a real built chip.
+
+.. _octant-fold:
+
+THE OCTANT FOLD (the pinned, exhaustively proven twiddle reconstruction)
+------------------------------------------------------------------------
+
+A stage with twiddle period ``P`` needs ``W_N^(k)`` for ``k = j * 2^s``,
+``j = 0..P-1``. Storing ``P`` word PAIRS directly costs ``P`` words per table
+cell; a fetch cell holds at most 16 table words (measured: ``P=16`` with the
+``c`` forward is exactly 32/32 words). So ``P >= 32`` needs the fold.
+
+Only TWO tables over the first octant are stored, ``M = N/8`` words each:
+
+    C[m] = round(32768 * cos(2*pi*m/N))     m = 1..M
+    S[m] = round(32768 * sin(2*pi*m/N))     m = 1..M
+
+(N=64 -> 8+8 words; N=128 -> 16+16 — one cell each, with room to spare.)
+
+For slot index ``p`` (the stage's free-running fill-slot counter, and for a
+``P >= 32`` stage ``k == p`` because those stages are always ``s <= 1`` with
+``k = p << s``; the ``s=1`` case is handled by walking the counter in steps of
+2 — see ``_fold_tab_cell``), the fold is
+
+    r = p & (2M - 1)        (position in the up-down cycle; 2M = N/4)
+    m = M - |r - M|         (the triangle walk 0,1..M,M-1..1,0,1..)
+    o = (p >> log2 M) & 3   (the octant, 0..3)
+
+and the steering per octant reconstructs the DIF-conjugated pair
+``(c, d) = (Re W, Im W)`` with ``W = cos(theta) - j*sin(theta)``:
+
+    o = 0:  ( +C[m], -S[m] )        o = 1:  ( +S[m], -C[m] )
+    o = 2:  ( -S[m], -C[m] )        o = 3:  ( -C[m], -S[m] )
+
+This is the SAME fold the landed proof pinned (``o = k // (N/8)``,
+``m = |k - round_{N/4}(k)|``); the branchless ``r``/``|r-M|`` form is an exact
+algebraic restatement, asserted equal slot-for-slot in the test suite. It
+reconstructs EVERY non-trivial ``round(32768*x)`` twiddle BIT-EXACTLY at both
+N=64 and N=128.
+
+``m == 0`` (where ``C[0] = 32768`` would be unrepresentable in Q15) occurs at
+EXACTLY the two trivial slots ``k = 0`` (identity) and ``k = N/4`` (``-j``),
+both of which are dispatched STRUCTURALLY by the sentinel path and never read
+the tables — so the fold never needs an unrepresentable word. This is asserted
+exhaustively, not argued.
+
+NUMERICS, ORDER, SCALE, LATENCY (unchanged contracts from FFT16)
+-----------------------------------------------------------------
+
+  * Unconditional ``>>1`` per stage with round-half-to-even, computed
+    16-bit-safe with saturating combines — the R2Butterfly leg programs.
+    **Output = FFT/N** (``log2 N`` scaled stages).
+  * Output is in **BIT-REVERSED bin order** (``output_bins(N)``); there is
+    deliberately no reorder buffer.
+  * Latency is ``N-1`` samples; one complex output pair per input trigger from
+    the first trigger, startup transient included in the bit-exact contract.
+  * Each stage carries the always-on serialize-LOCK (INV-19).
+
+GOLDEN: the bit-exact streaming integer model :func:`sdf_streaming_reference`
+(the cycle-accurate R2SDF schedule over the shared ``fft_primitives``
+arithmetic), which the suites re-assert against an independently transcribed
+direct DIF integer FFT and against float ``numpy.fft.fft`` (SNR floors).
+
+.. _geometry-limit:
+
+⚠️ STATUS — GEOMETRY LIMIT (this module does not yet PLACE)
+------------------------------------------------------------
+
+**What IS done and verified** (gated by
+``verification/tests/test_fft64_fit_limit.py``):
+
+  * the octant fold, exhaustively bit-exact at N=64 and N=128 — including the
+    STRIDED stage (N=128 stage 1 walks the same tables with ``k = 2j``) and
+    both trivial encodings — with INV-4 negatives;
+  * the whole fold CHAIN simulated cell by cell, reproducing every shipped
+    ``stage_table`` word;
+  * EVERY authored cell of both sizes inside the 32-word budget (resolver-
+    measured), with every state var explicitly pinned (INV-33);
+  * the whole-block cell counts: **N=64 = 81 cells, N=128 = 110 cells**.
+
+**What does NOT fit: the stacked-band LAYOUT.** Two independent walls, both
+consequences of the @1 stage-ring geometry (``ctl`` at a band's top-left,
+``out`` directly below it) that lets an R2SDF stage close its serialize-LOCK
+write-back with no transit cells at all:
+
+  1. **The band cap.** A 2-row band on a 10-wide array holds at most 20 cells,
+     and a stage CANNOT spill into a second band (a stage starting at chain
+     index ``a`` has ``out`` below ``ctl`` only when ``L = 2W - 2*(a mod W)``,
+     so the first stage in a band must fill it). Measured stage sizes:
+     N=64 stage 0 = **23** (3 over); N=128 stage 0 = **29**, stage 1 = **23**.
+  2. **The row budget.** One band per stage means 2 rows per stage: N=64 needs
+     **12 rows**, N=128 needs **14**. The x16 ports sit at (0,0) and (9,0), so
+     a sole occupant has at most 11 free rows below them (and a 10-wide block
+     cannot use row 0 at all without its ``ctl`` column landing on the input
+     port cell).
+
+Cell-shaving was measured and does NOT close the gap: the reachable savings
+total at most 1 cell (letting ``out`` absorb one ring sample — it has 7 spare
+words), against a 3-cell shortfall at N=64. Collapsing any two fold cells
+busts the 32-word budget (all six pairings were tried), and a split-bank
+DIRECT table is strictly worse (its range check busts every cell at every bank
+size tried).
+
+The two candidate mechanisms, neither yet built:
+
+  * a **4-row band** for an oversized stage with a FEEDBACK TRANSIT COLUMN,
+    so the write-back + lock-clear ``WRITE.CFG`` is resolved by
+    ``engine.build._apply_internal_feedback`` (which handles backward internal
+    edges via corridor re-hop) instead of the @1 abutment. This costs 2 extra
+    rows per oversized stage, which at N=64 pushes the block to 12 rows —
+    so it needs the row wall solved too;
+  * a **2-die stage-boundary split** (feed-forward, a single crossing,
+    hand-placed since cross-chip auto-route is unsupported), which is the
+    authorized fallback for N=128 and would also comfortably hold N=64.
+
+Constructing :class:`FFT64Block` / :class:`FFT128Block` therefore raises
+:class:`LargeFFTGeometryError` with the exact shortfall — a LOUD failure, not
+a silently-unroutable layout.
+"""
+from typing import Dict, List, Sequence, Tuple
+
+import numpy as np
+
+from ..block import CellProgram, DataWord, EntryPoint, Port, StateVar
+from ._base import BlockInterface, KyttarBlock
+from .complex_delay_line_block import ComplexDelayLineBlock
+from .fft_primitives import (
+    HALF_Q15, KIND_ID, KIND_MJ, KIND_MUL, SAT_POS_Q15, R2ButterflyBlock,
+    TRIVIAL_SENTINEL, quantize_twiddle, rhe_half_diff, rhe_half_sum, s16,
+    twiddle_cmul_ref, u16)
+
+Q15_ONE = 32768
+
+#: Twiddle period at or above which a direct fetch table busts a 32-word cell
+#: (measured: P=16 with the ``c`` forward is exactly 32/32 words).
+DIRECT_TABLE_MAX = 16
+
+
+class LargeFFTGeometryError(NotImplementedError):
+    """Raised when an authored size does not fit the chip-scale FOLD geometry.
+
+    The block's ARITHMETIC and CELL PROGRAMS are complete and verified at both
+    N = 64 and N = 128 (every cell inside the 32-word budget; the octant fold
+    bit-exact against the shipped twiddle tables). What does not yet fit is
+    the stacked-2-row-band LAYOUT — see the module docstring's GEOMETRY LIMIT
+    section for the exact shortfall and the two candidate mechanisms.
+
+    This is deliberately a LOUD failure rather than a silently-wrong layout:
+    a block that builds but does not route looks identical to a working one
+    until you run it.
+    """
+
+
+def bit_reverse(k: int, bits: int) -> int:
+    """Reverse the low ``bits`` bits of ``k``."""
+    out = 0
+    for _ in range(bits):
+        out = (out << 1) | (k & 1)
+        k >>= 1
+    return out
+
+
+def output_bins(n: int) -> Tuple[int, ...]:
+    """Output slot ``k`` of a frame carries frequency bin ``output_bins(n)[k]``
+    (the standard DIF bit-reversed order)."""
+    bits = int(n).bit_length() - 1
+    return tuple(bit_reverse(k, bits) for k in range(n))
+
+
+def stage_delays(n: int) -> Tuple[int, ...]:
+    """Per-stage delay depth ``D = (n/2) >> s``."""
+    bits = int(n).bit_length() - 1
+    return tuple((n // 2) >> s for s in range(bits))
+
+
+def octant_tables(n: int) -> Tuple[List[int], List[int]]:
+    """The two octant tables ``C[1..M]`` and ``S[1..M]``, ``M = n/8``.
+
+    Returned as 0-based lists (``C_list[m-1] == C[m]``) since the fold's
+    ``m`` is always >= 1 for a non-trivial slot (proven: ``m == 0`` happens
+    only at the two structurally-trivial slots).
+    """
+    M = n // 8
+    C = [int(np.round(np.cos(2.0 * np.pi * m / n) * Q15_ONE))
+         for m in range(1, M + 1)]
+    S = [int(np.round(np.sin(2.0 * np.pi * m / n) * Q15_ONE))
+         for m in range(1, M + 1)]
+    return C, S
+
+
+def fold_index(p: int, n: int) -> Tuple[int, int]:
+    """The branchless fold: return ``(m, o)`` for twiddle exponent ``p``.
+
+    ``m = M - |(p & (2M-1)) - M|`` and ``o = (p >> log2 M) & 3`` with
+    ``M = n/8``. Exactly equal to the landed ``m = |k - round_{N/4}(k)|`` /
+    ``o = k // (N/8)`` formulation (asserted slot-for-slot in the suite).
+    """
+    M = n // 8
+    r = p & (2 * M - 1)
+    m = M - abs(r - M)
+    o = (p // M) & 3
+    return m, o
+
+
+def fold_words(p: int, n: int, C: Sequence[int], S: Sequence[int]
+               ) -> Tuple[int, int]:
+    """Reconstruct the ``(c, d)`` word pair for exponent ``p`` from the octant
+    tables — the per-octant sign/swap steering, bit-exact."""
+    m, o = fold_index(p, n)
+    if m == 0:
+        raise ValueError(
+            f"fold_words: m == 0 at p={p} (n={n}) — that is a TRIVIAL slot "
+            "(k = 0 or k = N/4) and must be dispatched structurally, never "
+            "through the octant tables (C[0] = 32768 is unrepresentable)")
+    c_mag, s_mag = C[m - 1], S[m - 1]
+    if o == 0:
+        c, d = c_mag, -s_mag
+    elif o == 1:
+        c, d = s_mag, -c_mag
+    elif o == 2:
+        c, d = -s_mag, -c_mag
+    else:
+        c, d = -c_mag, -s_mag
+    return u16(c), u16(d)
+
+
+def stage_table(n: int, s: int) -> List[Tuple[str, int, int]]:
+    """Stage ``s``'s twiddle table, ``(kind, c_word, d_word)`` per slot.
+
+    Slot ``j`` (``j = 0..D-1``) holds ``W_n^(j * 2^s)``, with the trivial
+    angles detected by INDEX (``k == 0`` -> identity, ``4k == n`` -> ``-j``)
+    so the special-casing is exact, never a float comparison on cos/sin.
+    """
+    D = (n // 2) >> s
+    rows: List[Tuple[str, int, int]] = []
+    for j in range(D):
+        k = j << s
+        if k == 0:
+            rows.append((KIND_ID, TRIVIAL_SENTINEL, 0x0000))
+        elif 4 * k == n:
+            rows.append((KIND_MJ, TRIVIAL_SENTINEL, TRIVIAL_SENTINEL))
+        else:
+            th = 2.0 * np.pi * k / n
+            rows.append(quantize_twiddle(complex(np.cos(th), -np.sin(th))))
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# Bit-exact streaming golden (the transcribed cycle-accurate R2SDF schedule).
+# ---------------------------------------------------------------------------
+
+class _SDFStageModel:
+    """One R2SDF stage of the golden: delay ``D``, table ``tw`` (D entries)."""
+
+    def __init__(self, D: int, tw: List[Tuple[str, int, int]]):
+        self.D = D
+        self.tw = tw
+        self.line: List[Tuple[int, int]] = [(0, 0)] * D
+        self.t = 0
+
+    def step(self, xi: int, xq: int) -> Tuple[int, int]:
+        D = self.D
+        out_i, out_q = self.line.pop(0)
+        ph = self.t % (2 * D)
+        if ph < D:
+            # FILL/EMIT: push input; twiddle the emerging stored difference.
+            self.line.append((u16(xi), u16(xq)))
+            kind, c, d = self.tw[ph]
+            o_i, o_q = twiddle_cmul_ref(out_i, out_q, kind, c, d)
+        else:
+            # BUTTERFLY: emit the scaled sum, push the scaled difference.
+            s_i = rhe_half_sum(out_i, xi)
+            s_q = rhe_half_sum(out_q, xq)
+            d_i = rhe_half_diff(out_i, xi)
+            d_q = rhe_half_diff(out_q, xq)
+            self.line.append((d_i, d_q))
+            o_i, o_q = s_i, s_q
+        self.t += 1
+        return o_i, o_q
+
+
+def sdf_streaming_reference(n: int, iq_words) -> List[Tuple[int, int]]:
+    """The bit-exact per-trigger output stream of the N-point streaming FFT.
+
+    ``iq_words`` is a list of ``(i, q)`` uint16 Q15 word pairs; the return is
+    one ``(i, q)`` output pair PER INPUT TRIGGER — including the first ``n-1``
+    startup outputs of the zero-initialized pipeline. From output index
+    ``n-1`` on, every ``n`` consecutive outputs are one frame in bit-reversed
+    bin order (:func:`output_bins`), scaled FFT/n.
+    """
+    delays = stage_delays(n)
+    stages = [_SDFStageModel(D, stage_table(n, s))
+              for s, D in enumerate(delays)]
+    out: List[Tuple[int, int]] = []
+    for (xi, xq) in iq_words:
+        vi, vq = u16(xi), u16(xq)
+        for st in stages:
+            vi, vq = st.step(vi, vq)
+        out.append((vi, vq))
+    return out
+
+
+def direct_dif_reference(n: int, iq_words) -> List[Tuple[int, int]]:
+    """An INDEPENDENT transcription: the same FFT computed frame-at-a-time by
+    a direct recursive DIF, not the streaming schedule.
+
+    Used by the suite to re-assert ``streaming == direct`` at each N (the
+    third transcription of the same arithmetic). Consumes whole frames of
+    ``n`` samples and returns ``n`` outputs per frame, in bit-reversed order,
+    with the identical per-stage RHE ``>>1`` and twiddle numerics.
+    """
+    bits = int(n).bit_length() - 1
+    out: List[Tuple[int, int]] = []
+    for f in range(len(iq_words) // n):
+        buf = [(u16(i), u16(q)) for (i, q) in iq_words[f * n:(f + 1) * n]]
+        size = n
+        for s in range(bits):
+            half = size // 2
+            nxt: List[Tuple[int, int]] = [(0, 0)] * n
+            for blk in range(n // size):
+                base = blk * size
+                for j in range(half):
+                    ai, aq = buf[base + j]
+                    bi, bq = buf[base + half + j]
+                    si = rhe_half_sum(ai, bi)
+                    sq = rhe_half_sum(aq, bq)
+                    di = rhe_half_diff(ai, bi)
+                    dq = rhe_half_diff(aq, bq)
+                    kind, c, d = _direct_tw(n, j * (n // size))
+                    ti, tq = twiddle_cmul_ref(di, dq, kind, c, d)
+                    nxt[base + j] = (si, sq)
+                    nxt[base + half + j] = (ti, tq)
+            buf = nxt
+            size = half
+        out.extend(buf)
+    return out
+
+
+def _direct_tw(n: int, k: int) -> Tuple[str, int, int]:
+    if k == 0:
+        return quantize_twiddle(1)
+    if 4 * k == n:
+        return quantize_twiddle(-1j)
+    th = 2.0 * np.pi * k / n
+    return quantize_twiddle(complex(np.cos(th), -np.sin(th)))
+
+
+# ---------------------------------------------------------------------------
+# The octant-fold steering, in the exact form the CELLS implement.
+# ---------------------------------------------------------------------------
+# The 4-way per-octant steering factorises into three INDEPENDENT decisions,
+# which is what makes it fit a cell (asserted equal to the 4-way form, and to
+# the direct quantization, exhaustively at both N):
+#
+#     swap   = o0 XOR o1          (o = 2*o1 + o0)   -> c takes S, d takes C
+#     c sign = o1                 (negative when the high octant bit is set)
+#     d sign = ALWAYS negative
+#
+# and no negate can overflow: the largest stored magnitude is C[1] (32610 at
+# N=64, 32729 at N=128), always < 32768, so -mag is representable and the fold
+# needs NO saturating combine. (m == 0, where C[0] = 32768 WOULD be
+# unrepresentable, is unreachable — it occurs only at the two trivial slots,
+# which never read the tables.)
+
+
+def fold_steer(c_mag: int, s_mag: int, o: int) -> Tuple[int, int]:
+    """The cells' swap/sign steering: ``(c_mag, s_mag, o) -> (c, d)`` words."""
+    o0, o1 = o & 1, (o >> 1) & 1
+    swap = o0 ^ o1
+    cm = s_mag if swap else c_mag
+    dm = c_mag if swap else s_mag
+    return u16(-cm if o1 else cm), u16(-dm)
+
+
+def fold_slot_words(p: int, n: int, C: Sequence[int], S: Sequence[int]
+                    ) -> Tuple[int, int]:
+    """``fold_index`` + table lookup + :func:`fold_steer` — the whole chain as
+    the cells compute it, for exponent ``p``."""
+    m, o = fold_index(p, n)
+    if m == 0:
+        raise ValueError(f"fold_slot_words: trivial slot p={p} (n={n})")
+    return fold_steer(C[m - 1], S[m - 1], o)
+
+
+def _delay_segments(samples: int) -> List[int]:
+    """Split a stage line of ``samples`` physical complex samples into
+    ComplexDelayLine-density segments (``SAMPLES_PER_CELL`` = 5), balanced so
+    no cell is fuller than it must be.
+
+    ``samples == 0`` (the last stage, D = 1) returns ``[]`` — that stage uses
+    a plain store-and-forward relay, exactly as FFT16 does.
+    """
+    per = ComplexDelayLineBlock.SAMPLES_PER_CELL
+    if samples <= 0:
+        return []
+    n = -(-samples // per)                       # ceil
+    base, rem = divmod(samples, n)
+    return [base + (1 if i < rem else 0) for i in range(n)]
+
+
+# ---------------------------------------------------------------------------
+# LargeFFTBlock — the chip-scale streaming R2SDF composite.
+# ---------------------------------------------------------------------------
+
+class LargeFFTBlock(KyttarBlock):
+    """N-point streaming R2SDF FFT for the CHIP-SCALE sizes (N = 64, 128).
+
+    See the module docstring for the architecture, the octant fold, the pinned
+    numerics, the BIT-REVERSED output order, the ``FFT/N`` scale, the ``N-1``
+    latency, and the per-stage serialize-LOCK. Concrete sizes are the
+    :class:`FFT64Block` / :class:`FFT128Block` subclasses.
+
+    CHIP-SCALE PLACEMENT CLASS (``CHIP_SCALE = True``): the fold may be the
+    full 10 columns wide and use the full panel height; the perimeter
+    routing-channel reservation and the D4 rotation requirement are waived for
+    this class ONLY. The ONE placement contract — block input and output
+    reachable from the chip's ``x16_in`` / ``x16_out`` ports — is gated end to
+    end on a real built chip by the verification suite, not by inspection.
+
+    Interface: one complex input (``xi`` @R1, ``xq`` @R2 on ``s0_ctl``), one
+    complex output pair (``out_i``, ``out_q`` on the last stage's ``out``
+    cell). 1:1 rate, one output pair per trigger.
+    """
+
+    CATEGORY = "math_operators"
+    TAGS = ["fft", "spectrum", "radix2", "r2sdf", "dif", "complex",
+            "streaming", "chip_scale", "math_operators"]
+
+    #: The declared chip-scale class (see ``KyttarBlock.CHIP_SCALE``).
+    CHIP_SCALE = True
+    #: A 10-wide fold cannot rotate on a 10x12 array. Identity is what ships;
+    #: the suite gates exactly this set.
+    CHIP_SCALE_ORIENTATIONS = ((),)
+
+    #: Rows a SOLE-OCCUPANT block actually gets. The x16 ports sit at (0,0)
+    #: and (9,0) — both on row 0 — and a full-width block cannot use that row
+    #: without its column-0 ``ctl`` landing on the input port cell, so a
+    #: 10-wide fold has rows 1..11 = 11, not the full 12.
+    CHIP_SCALE_USABLE_ROWS = 11
+
+    #: Concrete subclasses set this.
+    N = 0
+
+    _interface = BlockInterface(
+        entry_address=1, input_registers=[1, 2], output_registers=[0, 1])
+
+    def __init__(self, name: str, **kwargs):
+        super().__init__(name, **kwargs)
+        n = int(self.N)
+        if n not in (64, 128):
+            raise ValueError(
+                f"LargeFFTBlock: N must be 64 or 128 (got {n}). Smaller "
+                "transforms are the shipped FFT16Block (44 cells, not "
+                "chip-scale); larger ones do not fit this array.")
+        self._n = n
+        self._delays = stage_delays(n)
+        self._tables = [stage_table(n, s) for s in range(len(self._delays))]
+        self._octC, self._octS = octant_tables(n)
+        self._segs = {s: _delay_segments(D - 1)
+                      for s, D in enumerate(self._delays)}
+        self._layout, self._order = self._plan()
+
+    # ---------------------------------------------------------------- basics
+    @property
+    def n_stages(self) -> int:
+        return len(self._delays)
+
+    @property
+    def latency(self) -> int:
+        return self._n - 1
+
+    @property
+    def output_bins(self) -> Tuple[int, ...]:
+        return output_bins(self._n)
+
+    def uses_fold(self, s: int) -> bool:
+        """Stage ``s`` needs the octant fold (its twiddle period busts a
+        32-word direct fetch cell)."""
+        return self._delays[s] > DIRECT_TABLE_MAX
+
+    def uses_direct(self, s: int) -> bool:
+        """Stage ``s`` uses the shipped FFT16 direct-table twiddle chain."""
+        return 4 <= self._delays[s] <= DIRECT_TABLE_MAX
+
+    @property
+    def cell_count(self) -> int:
+        return len(self._order)
+
+    @property
+    def interface(self) -> BlockInterface:
+        return self._interface
+
+    # ------------------------------------------------ NEW: the fold chain
+    # SIX cells replace the two direct fetch cells for a P >= 32 stage. Every
+    # one is resolver-verified inside the 32-word budget; the split is forced
+    # BY that budget, not chosen for elegance:
+    #
+    #   seq   — the slot SEQUENCER: a free-running slot counter, emitting the
+    #           in-cycle position ``r = p & (2M-1)`` and the octant ``o``.
+    #   mcalc — the triangle index ``m = M - |r - M|``, plus the trivial-slot
+    #           detect (m == 0) which emits a SAFE index and a marked control
+    #           word so the table cells stay branch-free.
+    #   tab_c — holds C[1..M]; LOADs C[m].
+    #   tab_d — holds S[1..M]; LOADs S[m], forwarding C[m].
+    #   swap  — selects which magnitude feeds c and which feeds d
+    #           (``swap = o0 XOR o1``).
+    #   sign  — applies the signs (c negated on ``o1``, d ALWAYS negated) and
+    #           emits the trivial sentinel pair on the trivial entry.
+    #
+    # Downstream of ``sign`` the words are byte-identical to what a direct
+    # table would have produced, so the SHIPPED steer/prods/rail/gather chain
+    # consumes them unchanged.
+    #
+    # CONTROL WORD ``k``: 0..3 = the octant; bit 15 set = a trivial slot, with
+    # bit 0 selecting identity (0) vs -j (1). The tables are never indexed on
+    # a trivial slot (proven: m == 0 only at k = 0 and k = N/4).
+
+    def _fold_seq_cell(self, s: int) -> CellProgram:
+        """The fold slot sequencer for stage ``s``.
+
+        Emits, per FILL trigger, ``r = p & (2M-1)`` (the position within the
+        up-down octant cycle) and ``o = (p >> log2 M) & 3`` (the octant), then
+        advances the slot counter by ``2^s`` — the stage's twiddle exponent
+        stride, which is what lets one octant table serve a strided stage
+        (N=128 stage 1 walks k = 2j over the same 16+16 words).
+
+        The counter is kept modulo ``4M = N/2`` with one AND, so the windows
+        are exact forever with no reset logic. All shift counts are build-time
+        immediates (INV-34).
+        """
+        n = self._n
+        M = n // 8
+        log2M = M.bit_length() - 1
+        return CellProgram(
+            inputs=[],
+            outputs=[Port("r_f"), Port("o_f"), Port("trig")],
+            entries=[EntryPoint("default")],
+            data=[DataWord("mask", 2 * M - 1, address=2),
+                  DataWord("three", 3, address=3),
+                  DataWord("step", 1 << s, address=4),
+                  DataWord("pmask", 4 * M - 1, address=5)],
+            state=[StateVar("p", register=6, initial_value=0),
+                   StateVar("t", register=7, initial_value=0)],
+            assembly_template=(
+                "default:\n"
+                "    SHR R{state:p}, #%d\n" % log2M +
+                "    MOVE R{state:t}, R0\n"
+                "    AND R{state:t}, R{data:three}\n"
+                "    {write:o_f}\n"
+                "    AND R{state:p}, R{data:mask}\n"
+                "    {write:r_f}\n"
+                "    ADD R{state:p}, R{data:step}\n"
+                "    MOVE R{state:t}, R0\n"
+                "    AND R{state:t}, R{data:pmask}\n"
+                "    MOVE R{state:p}, R0\n"
+                "    {jump:trig}\n"),
+        )
+
+    def _fold_mcalc_cell(self) -> CellProgram:
+        """The triangle index ``m = M - |r - M|`` and the trivial-slot mark.
+
+        ``|r - M|`` is one SUB plus a single conditional negate. When the
+        result is ``m == 0`` the slot is trivial (k = 0 or k = N/4, proven
+        exhaustively); the cell then emits a SAFE table index (1) and sets the
+        control word's bit 15, with bit 0 distinguishing identity from ``-j``
+        — so the two table cells downstream stay straight-line (no branch, no
+        sentinel compare) and simply never USE the value they loaded.
+        """
+        M = self._n // 8
+        return CellProgram(
+            inputs=[Port("r", register=1), Port("o", register=2)],
+            outputs=[Port("m_f"), Port("k_f"), Port("trig")],
+            entries=[EntryPoint("default")],
+            data=[DataWord("mconst", M, address=3),
+                  DataWord("zero", 0, address=4),
+                  DataWord("one", 1, address=5),
+                  DataWord("tid", 0x8000, address=6),
+                  DataWord("tmj", 0x8001, address=7)],
+            state=[StateVar("t", register=8, initial_value=0)],
+            assembly_template=(
+                "default:\n"
+                "    SUB R{in:r}, R{data:mconst}\n"
+                "    BR.NN +2\n"
+                "    SUB R{data:zero}, R0\n"
+                "    BR.Z +0\n"
+                "    MOVE R{state:t}, R0\n"
+                "    SUB R{data:mconst}, R{state:t}\n"
+                "    MOVE R{state:t}, R0\n"
+                "    CMP R{state:t}, R{data:zero}\n"
+                "    BR.Z triv\n"
+                "    MOVE R0, R{state:t}\n"
+                "    {write:m_f}\n"
+                "    MOVE R0, R{in:o}\n"
+                "    {write:k_f}\n"
+                "    {jump:trig}\n"
+                "    HALT\n"
+                "triv:\n"
+                "    MOVE R0, R{data:one}\n"
+                "    {write:m_f}\n"
+                "    MOVE R0, R{data:tid}\n"
+                "    CMP R{in:o}, R{data:zero}\n"
+                "    BR.Z +1\n"
+                "    MOVE R0, R{data:tmj}\n"
+                "    {write:k_f}\n"
+                "    {jump:trig}\n"),
+        )
+
+    @staticmethod
+    def _fold_tab_cell(table: Sequence[int], forward: bool) -> CellProgram:
+        """One octant TABLE cell: ``LOAD`` the ``m``-th word and forward it.
+
+        ``table`` is ``C[1..M]`` or ``S[1..M]`` (M = 8 at N=64, 16 at N=128 —
+        one cell each). ``m`` arrives 1-based and the cell adds its OWN table
+        base, so the two tables can sit at different addresses in their
+        respective cells. Straight-line: no branch, because ``mcalc`` already
+        guaranteed a safe index (the loaded value is simply unused on a
+        trivial slot).
+        """
+        M = len(table)
+        base = 4 if forward else 3
+        data = [DataWord(f"w{i}", u16(w), address=base + i)
+                for i, w in enumerate(table)]
+        # LOAD [Rn] is mem[mem[Rn] & 0x1F]; m is 1-based, so the address of
+        # entry m is base + m - 1.
+        data.append(DataWord("obase", base - 1, address=base + M))
+        state = [StateVar("ad", register=base + M + 1, initial_value=0)]
+        inputs = [Port("m", register=1), Port("k", register=2)]
+        outs = [Port("v_f"), Port("k_f"), Port("trig")]
+        if forward:
+            inputs.append(Port("prev", register=3))
+            outs.append(Port("prev_f"))
+            extra = ("    MOVE R0, R{in:prev}\n"
+                     "    {write:prev_f}\n")
+        else:
+            outs.append(Port("m_f"))
+            extra = ("    MOVE R0, R{in:m}\n"
+                     "    {write:m_f}\n")
+        return CellProgram(
+            inputs=inputs, outputs=outs,
+            entries=[EntryPoint("default")],
+            data=data, state=state,
+            assembly_template=(
+                "default:\n"
+                "    MOVE R{state:ad}, R{in:m}\n"
+                "    ADD R{state:ad}, R{data:obase}\n"
+                "    MOVE R{state:ad}, R0\n"
+                "    LOAD R{state:ad}\n"
+                "    {write:v_f}\n"
+                + extra +
+                "    MOVE R0, R{in:k}\n"
+                "    {write:k_f}\n"
+                "    {jump:trig}\n"),
+        )
+
+    @staticmethod
+    def _fold_swap_cell() -> CellProgram:
+        """Select which magnitude feeds ``c`` and which feeds ``d``.
+
+        ``swap = o0 XOR o1`` (octants 1 and 2 take ``c`` from S and ``d`` from
+        C). A trivial slot (control bit 15) passes straight through on the
+        same ``pass`` path — the magnitudes are ignored downstream.
+        """
+        return CellProgram(
+            inputs=[Port("cmag", register=1), Port("smag", register=2),
+                    Port("k", register=3)],
+            outputs=[Port("cm_f"), Port("dm_f"), Port("k_f"), Port("trig")],
+            entries=[EntryPoint("default")],
+            data=[DataWord("one", 1, address=4)],
+            state=[StateVar("t", register=5, initial_value=0)],
+            assembly_template=(
+                "default:\n"
+                "    MOVE R{state:t}, R{in:k}\n"
+                "    SHR R{state:t}, #15\n"
+                "    BR.NZ pass\n"
+                "    SHR R{in:k}, #1\n"
+                "    MOVE R{state:t}, R0\n"
+                "    XOR R{state:t}, R{in:k}\n"
+                "    MOVE R{state:t}, R0\n"
+                "    AND R{state:t}, R{data:one}\n"
+                "    BR.Z pass\n"
+                "    MOVE R0, R{in:smag}\n"
+                "    {write:cm_f}\n"
+                "    MOVE R0, R{in:cmag}\n"
+                "    {write:dm_f}\n"
+                "    MOVE R0, R{in:k}\n"
+                "    {write:k_f}\n"
+                "    {jump:trig}\n"
+                "    HALT\n"
+                "pass:\n"
+                "    MOVE R0, R{in:cmag}\n"
+                "    {write:cm_f}\n"
+                "    MOVE R0, R{in:smag}\n"
+                "    {write:dm_f}\n"
+                "    MOVE R0, R{in:k}\n"
+                "    {write:k_f}\n"
+                "    {jump:trig}\n"),
+        )
+
+    @staticmethod
+    def _fold_sign_cell() -> CellProgram:
+        """Apply the fold's signs and emit the ``(c, d)`` word pair.
+
+        ``d`` is ALWAYS negated; ``c`` is negated exactly when the octant's
+        high bit is set. Negation is ``MUL`` by ``0xFFFF`` — the low-16 MUL is
+        an EXACT two's-complement negate, and no clamp is needed because every
+        stored magnitude is < 32768 (asserted).
+
+        The trivial path is a SEPARATE ENTRY (the TwiddleMultiply idiom: path
+        identity travels as WHICH entry the cell is jumped at), which is what
+        keeps this cell inside 32 words. It emits the sentinel ``c`` and
+        derives ``d`` branchlessly as ``k << 15`` — 0x8000 for ``-j`` and
+        0x0000 for identity, exactly the shipped trivial encodings.
+        """
+        return CellProgram(
+            inputs=[Port("cm", register=1), Port("dm", register=2),
+                    Port("k", register=3)],
+            outputs=[Port("c_f"), Port("d_f"), Port("t_n"), Port("t_t")],
+            entries=[EntryPoint("num"), EntryPoint("triv")],
+            data=[DataWord("zero", 0, address=4),
+                  DataWord("one", 1, address=5),
+                  DataWord("neg1", 0xFFFF, address=6),
+                  DataWord("sent", TRIVIAL_SENTINEL, address=7)],
+            state=[StateVar("t", register=8, initial_value=0)],
+            assembly_template=(
+                "num:\n"
+                "    MUL R{in:dm}, R{data:neg1}\n"
+                "    {write:d_f}\n"
+                "    SHR R{in:k}, #1\n"
+                "    MOVE R{state:t}, R0\n"
+                "    AND R{state:t}, R{data:one}\n"
+                "    BR.Z cpos\n"
+                "    MUL R{in:cm}, R{data:neg1}\n"
+                "    {write:c_f}\n"
+                "    {jump:t_n}\n"
+                "    HALT\n"
+                "cpos:\n"
+                "    MOVE R0, R{in:cm}\n"
+                "    {write:c_f}\n"
+                "    {jump:t_n}\n"
+                "    HALT\n"
+                "triv:\n"
+                "    MOVE R0, R{data:sent}\n"
+                "    {write:c_f}\n"
+                "    SHL R{in:k}, #15\n"
+                "    {write:d_f}\n"
+                "    {jump:t_t}\n"),
+        )
+
+    # ------------------------ REUSED VERBATIM from the shipped FFT16 builders
+    # These are the proven cell programs; only the per-stage D and the table
+    # words differ. Importing the class and calling its staticmethods keeps
+    # ONE definition of each program (no transcription drift).
+
+    def _ctl_cell(self, s: int) -> CellProgram:
+        """The stage controller / landing cell (FFT16 ``_ctl_cell`` shape).
+
+        Holds the feedback pair (ai, aq — written back by the stage's ``out``
+        cell), the free-running phase counter, and the FILL/BUTTERFLY entry
+        dispatch (``cnt AND D``: D is a power of two, so bit log2(D) of the
+        counter IS the half-period selector, and the free-running 16-bit wrap
+        is exact because 2^16 is a multiple of 2D at every N here). Engages
+        the serialize-LOCK after dispatch.
+
+        The SECOND-TO-LAST stage (D = 2) additionally forwards the fill-slot
+        parity as a kind word to its gather cell (its two fill twiddles are
+        1 and -j) — the FFT16 stage-2 shape, generalised by delay not index.
+        """
+        D = self._delays[s]
+        external = (s == 0)
+        in_names = ("xi", "xq") if external else ("bi", "bq")
+        kw = (D == 2)
+        outputs = [Port("ai_f"), Port("bi_f"), Port("aq_f"), Port("bq_f")]
+        if kw:
+            outputs.append(Port("kw_f"))
+        outputs += [Port("t_fill"), Port("t_bfly")]
+        kw_lines = ("    AND R{state:cnt}, R{data:one}\n"
+                    "    {write:kw_f}\n") if kw else ""
+        return CellProgram(
+            inputs=[Port(in_names[0], register=1),
+                    Port(in_names[1], register=2)],
+            outputs=outputs,
+            entries=[EntryPoint("default")],
+            data=[DataWord("one", 1, address=3),
+                  DataWord("dmask", D, address=4),
+                  DataWord("lock_face", 0, address=5, is_face=True)],
+            state=[StateVar("ai", register=6, initial_value=0),
+                   StateVar("aq", register=7, initial_value=0),
+                   StateVar("cnt", register=8, initial_value=0)],
+            assembly_template=(
+                "default:\n"
+                "    MOVE R0, R{state:ai}\n"
+                "    {write:ai_f}\n"
+                "    MOVE R0, R{in:%s}\n"
+                "    {write:bi_f}\n"
+                "    MOVE R0, R{state:aq}\n"
+                "    {write:aq_f}\n"
+                "    MOVE R0, R{in:%s}\n"
+                "    {write:bq_f}\n" % in_names
+                + kw_lines +
+                "    AND R{state:cnt}, R{data:dmask}\n"
+                "    BR.NZ +2\n"
+                "    {jump:t_fill}\n"
+                "    BR.Z +1\n"
+                "    {jump:t_bfly}\n"
+                "    ADD R{state:cnt}, R{data:one}\n"
+                "    MOVE R{state:cnt}, R0\n"
+                "    MOVE R0, R{data:lock_face}\n"
+                "    MOVE [LOCK_FACE], R0\n"
+                "    MOVE R0, R{data:one}\n"
+                "    MOVE [LOCK], R0\n"),
+        )
+
+    @staticmethod
+    def _sum_leg_cell() -> CellProgram:
+        """RHE sum leg (one rail) — the R2Butterfly program, FFT16 shape."""
+        return CellProgram(
+            inputs=[Port("a", register=1), Port("b", register=2)],
+            outputs=[Port("s_f"), Port("a_pass"), Port("a_f"), Port("b_f"),
+                     Port("t_b"), Port("t_f")],
+            entries=[EntryPoint("bfly"), EntryPoint("fill")],
+            data=[DataWord("one", 1, address=3),
+                  DataWord("half", HALF_Q15, address=4)],
+            state=[StateVar("as_", register=5), StateVar("bs", register=6),
+                   StateVar("tk", register=7)],
+            assembly_template=(
+                "bfly:\n"
+                + R2ButterflyBlock._rhe_sum_lines() +
+                "    {write:s_f}\n"
+                "    MOVE R0, R{state:as_}\n"
+                "    {write:a_f}\n"
+                "    MOVE R0, R{state:bs}\n"
+                "    {write:b_f}\n"
+                "    {jump:t_b}\n"
+                "    HALT\n"
+                "fill:\n"
+                "    MOVE R0, R{in:a}\n"
+                "    {write:a_pass}\n"
+                "    MOVE R0, R{in:b}\n"
+                "    {write:b_f}\n"
+                "    {jump:t_f}\n"),
+        )
+
+    @staticmethod
+    def _diff_leg_cell() -> CellProgram:
+        """RHE difference leg (one rail) — R2Butterfly, FFT16 shape."""
+        return CellProgram(
+            inputs=[Port("a", register=1), Port("b", register=2)],
+            outputs=[Port("v_f"), Port("t_b"), Port("t_f")],
+            entries=[EntryPoint("bfly"), EntryPoint("fill")],
+            data=[DataWord("one", 1, address=3),
+                  DataWord("half", HALF_Q15, address=4)],
+            state=[StateVar("as_", register=5), StateVar("bs", register=6),
+                   StateVar("tk", register=7)],
+            assembly_template=(
+                "bfly:\n"
+                + R2ButterflyBlock._rhe_diff_lines() +
+                "    {write:v_f}\n"
+                "    {jump:t_b}\n"
+                "    HALT\n"
+                "fill:\n"
+                "    MOVE R0, R{in:b}\n"
+                "    {write:v_f}\n"
+                "    {jump:t_f}\n"),
+        )
+
+    @staticmethod
+    def _fetch_cell(table_words: Sequence[int], has_c_input: bool
+                    ) -> CellProgram:
+        """A DIRECT twiddle table cell (FFT16 ``_fetch_cell``, verbatim)."""
+        P = len(table_words)
+        base = 2
+        data = [DataWord(f"t{i}", u16(w), address=base + i)
+                for i, w in enumerate(table_words)]
+        data += [DataWord("one", 1, address=base + P),
+                 DataWord("pend", base + P, address=base + P + 1),
+                 DataWord("pbase", base, address=base + P + 2)]
+        ptr_reg = base + P + 3
+        if has_c_input:
+            inputs = [Port("c", register=1)]
+            fwd = ("    MOVE R0, R{in:c}\n"
+                   "    {write:c_f}\n")
+            outs = [Port("t_f"), Port("c_f"), Port("trig")]
+        else:
+            inputs = []
+            fwd = ""
+            outs = [Port("t_f"), Port("trig")]
+        return CellProgram(
+            inputs=inputs, outputs=outs,
+            entries=[EntryPoint("default")],
+            data=data,
+            state=[StateVar("ptr", register=ptr_reg, initial_value=base)],
+            assembly_template=(
+                "default:\n"
+                "    LOAD R{state:ptr}\n"
+                "    {write:t_f}\n"
+                + fwd +
+                "    ADD R{state:ptr}, R{data:one}\n"
+                "    MOVE R{state:ptr}, R0\n"
+                "    CMP R0, R{data:pend}\n"
+                "    BR.NZ +1\n"
+                "    MOVE R{state:ptr}, R{data:pbase}\n"
+                "    {jump:trig}\n"),
+        )
+
+    @staticmethod
+    def _steer_cell() -> CellProgram:
+        """TwiddleMultiply kind dispatch (FFT16 ``_steer_cell``, verbatim)."""
+        return CellProgram(
+            inputs=[Port("xi", register=1), Port("xq", register=2),
+                    Port("c", register=3), Port("d", register=4)],
+            outputs=[Port("c_f"), Port("d_f"), Port("xi_f"), Port("xq_f"),
+                     Port("t_mul"), Port("t_triv")],
+            entries=[EntryPoint("default")],
+            data=[DataWord("sent", TRIVIAL_SENTINEL, address=5)],
+            state=[StateVar("csav", register=6), StateVar("dsav", register=7)],
+            assembly_template=(
+                "default:\n"
+                "    MOVE R{state:csav}, R{in:c}\n"
+                "    MOVE R{state:dsav}, R{in:d}\n"
+                "    CMP R{state:csav}, R{data:sent}\n"
+                "    BR.Z +10\n"
+                "    MOVE R0, R{state:csav}\n"
+                "    {write:c_f}\n"
+                "    MOVE R0, R{state:dsav}\n"
+                "    {write:d_f}\n"
+                "    MOVE R0, R{in:xi}\n"
+                "    {write:xi_f}\n"
+                "    MOVE R0, R{in:xq}\n"
+                "    {write:xq_f}\n"
+                "    {jump:t_mul}\n"
+                "    HALT\n"
+                "    MOVE R0, R{in:xi}\n"
+                "    {write:xi_f}\n"
+                "    MOVE R0, R{in:xq}\n"
+                "    {write:xq_f}\n"
+                "    MOVE R0, R{state:dsav}\n"
+                "    {write:d_f}\n"
+                "    {jump:t_triv}\n"),
+        )
+
+    @staticmethod
+    def _prods_cell() -> CellProgram:
+        """The four pinned floor-MULQs (FFT16 ``_prods_cell``, verbatim)."""
+        return CellProgram(
+            inputs=[Port("c", register=1), Port("d", register=2),
+                    Port("xi", register=3), Port("xq", register=4)],
+            outputs=[Port("p1"), Port("p2"), Port("p3"), Port("p4"),
+                     Port("t_mul"), Port("t_triv")],
+            entries=[EntryPoint("mul"), EntryPoint("triv")],
+            state=[StateVar("cs", register=5), StateVar("ds", register=6),
+                   StateVar("xis", register=7), StateVar("xqs", register=8)],
+            assembly_template=(
+                "mul:\n"
+                "    MOVE R{state:cs}, R{in:c}\n"
+                "    MOVE R{state:ds}, R{in:d}\n"
+                "    MOVE R{state:xis}, R{in:xi}\n"
+                "    MOVE R{state:xqs}, R{in:xq}\n"
+                "    MULQ R{state:xis}, R{state:cs}\n"
+                "    {write:p1}\n"
+                "    MULQ R{state:xqs}, R{state:ds}\n"
+                "    {write:p2}\n"
+                "    MULQ R{state:xis}, R{state:ds}\n"
+                "    {write:p3}\n"
+                "    MULQ R{state:xqs}, R{state:cs}\n"
+                "    {write:p4}\n"
+                "    {jump:t_mul}\n"
+                "    HALT\n"
+                "triv:\n"
+                "    MOVE R0, R{in:xi}\n"
+                "    {write:p1}\n"
+                "    MOVE R0, R{in:xq}\n"
+                "    {write:p2}\n"
+                "    MOVE R0, R{in:d}\n"
+                "    {write:p3}\n"
+                "    {jump:t_triv}\n"),
+        )
+
+    @staticmethod
+    def _rail_cell() -> CellProgram:
+        """The yi rail / trivial sub-dispatch (FFT16 ``_rail_cell``)."""
+        return CellProgram(
+            inputs=[Port("p1", register=1), Port("p2", register=2),
+                    Port("p3", register=3)],
+            outputs=[Port("yi_f"), Port("p3_f"),
+                     Port("t_mul"), Port("t_id"), Port("t_mj")],
+            entries=[EntryPoint("mul"), EntryPoint("triv")],
+            data=[DataWord("satpos", SAT_POS_Q15, address=5)],
+            state=[StateVar("p1s", register=6)],
+            assembly_template=(
+                "mul:\n"
+                "    MOVE R{state:p1s}, R{in:p1}\n"
+                "    SUB R{state:p1s}, R{in:p2}\n"
+                "    BR.NV +3\n"
+                "    MOVE R0, R{state:p1s}\n"
+                "    SHR R0, #15\n"
+                "    ADD R0, R{data:satpos}\n"
+                "    {write:yi_f}\n"
+                "    MOVE R0, R{in:p3}\n"
+                "    {write:p3_f}\n"
+                "    {jump:t_mul}\n"
+                "    HALT\n"
+                "triv:\n"
+                "    SHR R{in:p3}, #15\n"
+                "    BR.NZ +6\n"
+                "    MOVE R0, R{in:p1}\n"
+                "    {write:yi_f}\n"
+                "    MOVE R0, R{in:p2}\n"
+                "    {write:p3_f}\n"
+                "    {jump:t_id}\n"
+                "    HALT\n"
+                "    MOVE R0, R{in:p1}\n"
+                "    {write:p3_f}\n"
+                "    MOVE R0, R{in:p2}\n"
+                "    {write:yi_f}\n"
+                "    {jump:t_mj}\n"),
+        )
+
+    @staticmethod
+    def _gather_tw_cell() -> CellProgram:
+        """Per-kind combine for a twiddle stage (FFT16 ``_gather_tw_cell``)."""
+        return CellProgram(
+            inputs=[Port("yi_in", register=1), Port("p3", register=2),
+                    Port("p4", register=3)],
+            outputs=[Port("yi"), Port("yq"), Port("trig")],
+            entries=[EntryPoint("mul"), EntryPoint("id"), EntryPoint("mj")],
+            data=[DataWord("zero", 0, address=4),
+                  DataWord("satpos", SAT_POS_Q15, address=5)],
+            state=[StateVar("p3s", register=6)],
+            assembly_template=(
+                "mul:\n"
+                "    MOVE R0, R{in:yi_in}\n"
+                "    {write:yi}\n"
+                "    MOVE R{state:p3s}, R{in:p3}\n"
+                "    ADD R{state:p3s}, R{in:p4}\n"
+                "    BR.NV +3\n"
+                "    MOVE R0, R{state:p3s}\n"
+                "    SHR R0, #15\n"
+                "    ADD R0, R{data:satpos}\n"
+                "    {write:yq}\n"
+                "    {jump:trig}\n"
+                "    HALT\n"
+                "id:\n"
+                "    MOVE R0, R{in:yi_in}\n"
+                "    {write:yi}\n"
+                "    MOVE R0, R{in:p3}\n"
+                "    {write:yq}\n"
+                "    {jump:trig}\n"
+                "    HALT\n"
+                "mj:\n"
+                "    MOVE R0, R{in:yi_in}\n"
+                "    {write:yi}\n"
+                "    SUB R{data:zero}, R{in:p3}\n"
+                "    BR.NV +1\n"
+                "    MOVE R0, R{data:satpos}\n"
+                "    {write:yq}\n"
+                "    {jump:trig}\n"),
+        )
+
+    @staticmethod
+    def _gather_kw_cell() -> CellProgram:
+        """D = 2 combine (FFT16 ``_gather_s2_cell``): BUTTERFLY passes
+        (si, sq); FILL dispatches on the forwarded slot-parity kind word —
+        slot 0 identity, slot 1 the structural ``-j``. No multiply."""
+        return CellProgram(
+            inputs=[Port("si", register=1), Port("sq", register=2),
+                    Port("ai", register=3), Port("aq", register=4),
+                    Port("kw", register=5)],
+            outputs=[Port("yi"), Port("yq"), Port("trig")],
+            entries=[EntryPoint("bfly"), EntryPoint("fill")],
+            data=[DataWord("one", 1, address=6),
+                  DataWord("zero", 0, address=7),
+                  DataWord("satpos", SAT_POS_Q15, address=8)],
+            assembly_template=(
+                "bfly:\n"
+                "    MOVE R0, R{in:si}\n"
+                "    {write:yi}\n"
+                "    MOVE R0, R{in:sq}\n"
+                "    {write:yq}\n"
+                "    {jump:trig}\n"
+                "    HALT\n"
+                "fill:\n"
+                "    AND R{in:kw}, R{data:one}\n"
+                "    BR.NZ fmj\n"
+                "    MOVE R0, R{in:ai}\n"
+                "    {write:yi}\n"
+                "    MOVE R0, R{in:aq}\n"
+                "    {write:yq}\n"
+                "    {jump:trig}\n"
+                "    HALT\n"
+                "fmj:\n"
+                "    MOVE R0, R{in:aq}\n"
+                "    {write:yi}\n"
+                "    SUB R{data:zero}, R{in:ai}\n"
+                "    BR.NV +1\n"
+                "    MOVE R0, R{data:satpos}\n"
+                "    {write:yq}\n"
+                "    {jump:trig}\n"),
+        )
+
+    @staticmethod
+    def _gather_id_cell() -> CellProgram:
+        """D = 1 combine (FFT16 ``_gather_s3_cell``): its only twiddle is
+        W^0 = 1, so FILL is a pure pass-through."""
+        return CellProgram(
+            inputs=[Port("si", register=1), Port("sq", register=2),
+                    Port("ai", register=3), Port("aq", register=4)],
+            outputs=[Port("yi"), Port("yq"), Port("trig")],
+            entries=[EntryPoint("bfly"), EntryPoint("fill")],
+            assembly_template=(
+                "bfly:\n"
+                "    MOVE R0, R{in:si}\n"
+                "    {write:yi}\n"
+                "    MOVE R0, R{in:sq}\n"
+                "    {write:yq}\n"
+                "    {jump:trig}\n"
+                "    HALT\n"
+                "fill:\n"
+                "    MOVE R0, R{in:ai}\n"
+                "    {write:yi}\n"
+                "    MOVE R0, R{in:aq}\n"
+                "    {write:yq}\n"
+                "    {jump:trig}\n"),
+        )
+
+    @staticmethod
+    def _delay_cell(L: int) -> CellProgram:
+        """One delay segment of ``L`` complex samples — the ComplexDelayLine
+        cell program verbatim (FFT16 ``_delay_cell``)."""
+        state = ([StateVar(f"di{i}", register=i + 2, initial_value=0)
+                  for i in range(L)]
+                 + [StateVar(f"dq{i}", register=L + i + 2, initial_value=0)
+                    for i in range(L)])
+        state.append(StateVar("osave", register=2 * L + 2, initial_value=0))
+        lines: List[str] = []
+        lines.append("    MOVE R{state:osave}, R{state:di0}")
+        for i in range(L - 1):
+            lines.append(f"    MOVE R{{state:di{i}}}, R{{state:di{i + 1}}}")
+        lines.append("    MOVE R{state:di%d}, R{in:xi}" % (L - 1))
+        lines.append("    MOVE R0, R{state:osave}")
+        lines.append("    {write:xi_out}")
+        lines.append("    MOVE R{state:osave}, R{state:dq0}")
+        for i in range(L - 1):
+            lines.append(f"    MOVE R{{state:dq{i}}}, R{{state:dq{i + 1}}}")
+        lines.append("    MOVE R{state:dq%d}, R{in:xq}" % (L - 1))
+        lines.append("    MOVE R0, R{state:osave}")
+        lines.append("    {write:xq_out}")
+        lines.append("    {jump:fwd}")
+        return CellProgram(
+            inputs=[Port("xi", register=0), Port("xq", register=1)],
+            outputs=[Port("xi_out"), Port("xq_out"), Port("fwd")],
+            entries=[EntryPoint("default")],
+            data=[], state=state,
+            assembly_template="default:\n" + "\n".join(lines) + "\n",
+        )
+
+    @staticmethod
+    def _relay_cell() -> CellProgram:
+        """The D = 1 stage's depth-0 'delay line': a store-and-forward relay
+        (the pushed value IS the emerging value when D-1 = 0)."""
+        return CellProgram(
+            inputs=[Port("xi", register=1), Port("xq", register=2)],
+            outputs=[Port("xi_out"), Port("xq_out"), Port("fwd")],
+            entries=[EntryPoint("default")],
+            assembly_template=(
+                "default:\n"
+                "    MOVE R0, R{in:xi}\n"
+                "    {write:xi_out}\n"
+                "    MOVE R0, R{in:xq}\n"
+                "    {write:xq_out}\n"
+                "    {jump:fwd}\n"),
+        )
+
+    @staticmethod
+    def _out_cell(external: bool) -> CellProgram:
+        """The stage exit (FFT16 ``_out_cell``, verbatim): snapshot the
+        combine result, write the emerging pair back into ``ctl``'s (ai, aq)
+        and clear ``ctl``'s serialize-LOCK, then emit the complex packet on
+        the tap face. The three ordering rules FFT16 pinned all carry over
+        (yi/yq snapshot first; wb+WRITE.CFG before the packet writes so the
+        packet writes are the LAST data writes for the egress patchers; the
+        FACE restored before the trailing jump)."""
+        oi, oq, tg = (("out_i", "out_q", "trig") if external
+                      else ("oi", "oq", "trig"))
+        return CellProgram(
+            inputs=[Port("yi", register=1), Port("yq", register=2),
+                    Port("awi", register=3), Port("awq", register=4)],
+            outputs=[Port("ai_wb"), Port("aq_wb"),
+                     Port(oi), Port(oq), Port(tg)],
+            entries=[EntryPoint("default")],
+            data=[DataWord("zero", 0, address=5),
+                  DataWord("face_fb", 3, address=6, is_face=True),
+                  DataWord("face_tap", 0, address=7, is_face=True)],
+            state=[StateVar("syi", register=8), StateVar("syq", register=9)],
+            assembly_template=(
+                "default:\n"
+                "    MOVE R{state:syi}, R{in:yi}\n"
+                "    MOVE R{state:syq}, R{in:yq}\n"
+                "    MOVE [FACE], R{data:face_fb}\n"
+                "    MOVE R0, R{in:awi}\n"
+                "    {write:ai_wb}\n"
+                "    MOVE R0, R{in:awq}\n"
+                "    {write:aq_wb}\n"
+                "    MOVE R0, R{data:zero}\n"
+                "    WRITE.CFG @1, 4\n"
+                "    MOVE [FACE], R{data:face_tap}\n"
+                "    MOVE R0, R{state:syi}\n"
+                "    {write:%s}\n"
+                "    MOVE R0, R{state:syq}\n"
+                "    {write:%s}\n"
+                "    {jump:%s}\n" % (oi, oq, tg)),
+        )
+
+    # ---------------------------------------------------------- chain + fold
+    def _stage_chain(self, s: int) -> List[str]:
+        """The ordered cell chain for stage ``s``.
+
+        CHAIN ORDER IS LOAD-BEARING (the ROUTE-TIME FACE RULE): the router
+        derives each cell's route-time face from its LAST-listed internal
+        connection **when that dst is physically adjacent**, else from the
+        dict-NEXT cell, and internal write/jump DISTANCES are resolved by
+        TRACING those faces. So every cell's last-listed dst must be its chain
+        SUCCESSOR or NON-adjacent. Sum legs precede diff legs (so a diff leg
+        is never adjacent to the delay-push cell it targets), exactly as
+        FFT16 pinned after the bug that motivated the rule.
+        """
+        D = self._delays[s]
+        p = f"s{s}_"
+        chain = [p + c for c in ("ctl", "sumi", "sumq", "diffi", "diffq")]
+        if self.uses_fold(s):
+            chain += [p + c for c in ("seq", "mcalc", "tab_c", "tab_d",
+                                      "swap", "sign", "steer", "prods",
+                                      "rail")]
+        elif self.uses_direct(s):
+            chain += [p + c for c in ("fetch_c", "fetch_d", "steer", "prods",
+                                      "rail")]
+        chain.append(p + "gather")
+        segs = self._segs[s]
+        if segs:
+            chain += [p + f"d{i}" for i in range(len(segs))]
+        else:
+            chain.append(p + "relay")
+        chain.append(p + "out")
+        _ = D
+        return chain
+
+    def _plan(self):
+        """Lay the stages out as stacked serpentine BANDS and return
+        ``(layout, order)``.
+
+        GEOMETRY (the chip-scale fold):
+
+          * Each stage is a 2-row band: the chain runs EAST along the band's
+            top row, drops, and returns WEST along the bottom row, ending at
+            the stage's ``out`` cell directly BELOW its ``ctl`` — so the
+            feedback write-back, the lock-clear, and the next stage's landing
+            are ALL @1-adjacent (no transit cells, no backward-JUMP corridor
+            patching needed; the same property that let FFT16 avoid
+            ``_apply_internal_feedback`` entirely).
+          * Bands are stacked top to bottom in stage order, so the whole block
+            is one column of bands and the final ``out`` is the block egress.
+          * A band is at most ``CHIP_SCALE_MAX_WIDTH`` (10) cells wide — the
+            waived perimeter reservation is exactly what buys the extra two
+            columns over the ordinary 8-cell cap.
+          * ONE BAND PER STAGE — stages are never merged (see
+            ``_plan_bands`` for why merging breaks the ring geometry).
+
+        The anchor (0, 0) is the block's ``s0_ctl``; the caller places the
+        block so that cell is reachable from ``x16_in``.
+
+        Raises :class:`LargeFFTGeometryError` if a band or the row budget does
+        not fit — see the module's :ref:`GEOMETRY LIMIT <geometry-limit>`.
+        """
+        bands = self._plan_bands()
+        # ROW BUDGET, checked before laying anything out so the message names
+        # the real wall rather than failing at the first oversized band.
+        rows_needed = 2 * len(bands)
+        if rows_needed > self.CHIP_SCALE_USABLE_ROWS:
+            raise LargeFFTGeometryError(
+                f"N={self._n} needs {len(bands)} stage bands = {rows_needed} "
+                f"rows, but a sole-occupant block has at most "
+                f"{self.CHIP_SCALE_USABLE_ROWS} (the x16 ports sit on row 0 "
+                f"of this {self.CHIP_SCALE_MAX_WIDTH}x"
+                f"{self.CHIP_SCALE_MAX_HEIGHT} array, and a full-width block "
+                "cannot use that row without its ctl column landing on the "
+                "input port cell). Shortfall: "
+                f"{rows_needed - self.CHIP_SCALE_USABLE_ROWS} rows. "
+                "See the module's GEOMETRY LIMIT section.")
+        layout: Dict[str, Tuple[int, int, str]] = {}
+        order: List[str] = []
+        row = 0
+        for band in bands:
+            row = self._emit_band(layout, order, band, row)
+        return layout, order
+
+    def _plan_bands(self) -> List[List[str]]:
+        """Group the stage chains into 2-row bands — ONE BAND PER STAGE.
+
+        Stages are NOT merged, and that is a correctness constraint, not a
+        missed optimisation. In a 2-row serpentine of width ``W`` a stage
+        starting at chain index ``a`` has its ``out`` cell directly below its
+        ``ctl`` only when ``L = 2W - 2*(a mod W)``; the FIRST stage in a band
+        has ``a = 0`` and therefore must FILL the band (``L = 2W``). Any
+        second stage sharing the band lands with its ``ctl`` and ``out`` in
+        the SAME row — breaking the @1 write-back + lock-clear geometry that
+        every R2SDF stage ring depends on.
+
+        The shipped FFT16Block is the proof: 4 stages, 4 bands, 8 rows, with
+        ``ctl`` at ``(0, 2s)`` and ``out`` at ``(0, 2s+1)`` for every stage.
+        """
+        return [self._stage_chain(s) for s in range(self.n_stages)]
+
+    def _emit_band(self, layout, order, cells: List[str], row: int) -> int:
+        """Serpentine one band (a list of cell ids) into rows ``row``/``row+1``
+        and return the next free row.
+
+        The band's width is ``ceil(len/2)``; the chain runs EAST on the top
+        row and WEST on the bottom, so the band's LAST cell lands directly
+        below its FIRST — the @1 feedback geometry each stage's ring needs.
+        """
+        n = len(cells)
+        w = -(-n // 2)
+        cap = self.CHIP_SCALE_MAX_WIDTH
+        if w > cap:
+            raise LargeFFTGeometryError(
+                f"stage band of {n} cells needs a {w}-wide 2-row band, but "
+                f"the chip-scale width cap is {cap} (a 2-row band holds at "
+                f"most {2 * cap} cells). Shortfall: {n - 2 * cap} cells. "
+                "A stage cannot spill into a second band without breaking "
+                "the @1 ctl/out write-back geometry every R2SDF stage ring "
+                "depends on — see the module docstring's GEOMETRY LIMIT.")
+        top, bot = cells[:w], cells[w:]
+        for i, cid in enumerate(top):
+            face = "east" if i < len(top) - 1 else "south"
+            layout[cid] = (i, row, face)
+            order.append(cid)
+        for i, cid in enumerate(bot):
+            x = w - 1 - i
+            face = "west" if i < len(bot) - 1 else "south"
+            layout[cid] = (x, row + 1, face)
+            order.append(cid)
+        return row + 2
+
+    # ------------------------------------------------------------------ build
+    def build_cell_programs(self) -> Dict[str, CellProgram]:
+        """The per-cell programs, emitted in ``self._order`` (the chain order,
+        which the layout also follows — INV-33 requires dict order == layout
+        order)."""
+        made: Dict[str, CellProgram] = {}
+        for s in range(self.n_stages):
+            p = f"s{s}_"
+            D = self._delays[s]
+            made[p + "ctl"] = self._ctl_cell(s)
+            made[p + "sumi"] = self._sum_leg_cell()
+            made[p + "sumq"] = self._sum_leg_cell()
+            made[p + "diffi"] = self._diff_leg_cell()
+            made[p + "diffq"] = self._diff_leg_cell()
+            if self.uses_fold(s):
+                made[p + "seq"] = self._fold_seq_cell(s)
+                made[p + "mcalc"] = self._fold_mcalc_cell()
+                made[p + "tab_c"] = self._fold_tab_cell(self._octC, False)
+                made[p + "tab_d"] = self._fold_tab_cell(self._octS, True)
+                made[p + "swap"] = self._fold_swap_cell()
+                made[p + "sign"] = self._fold_sign_cell()
+                made[p + "steer"] = self._steer_cell()
+                made[p + "prods"] = self._prods_cell()
+                made[p + "rail"] = self._rail_cell()
+                made[p + "gather"] = self._gather_tw_cell()
+            elif self.uses_direct(s):
+                tab = self._tables[s]
+                made[p + "fetch_c"] = self._fetch_cell(
+                    [c for (_k, c, _d) in tab], False)
+                made[p + "fetch_d"] = self._fetch_cell(
+                    [d for (_k, _c, d) in tab], True)
+                made[p + "steer"] = self._steer_cell()
+                made[p + "prods"] = self._prods_cell()
+                made[p + "rail"] = self._rail_cell()
+                made[p + "gather"] = self._gather_tw_cell()
+            elif D == 2:
+                made[p + "gather"] = self._gather_kw_cell()
+            else:
+                made[p + "gather"] = self._gather_id_cell()
+            segs = self._segs[s]
+            if segs:
+                for i, L in enumerate(segs):
+                    made[p + f"d{i}"] = self._delay_cell(L)
+            else:
+                made[p + "relay"] = self._relay_cell()
+            made[p + "out"] = self._out_cell(external=(s == self.n_stages - 1))
+        # Emit in chain order (== layout order).
+        return {cid: made[cid] for cid in self._order}
+
+    def default_layout(self):
+        return dict(self._layout)
+
+    # ------------------------------------------------------- multi-cell wiring
+    def _push_cell(self, s: int) -> str:
+        """The cell the diff legs push the scaled difference into (the head of
+        the stage's delay line, or its relay)."""
+        p = f"s{s}_"
+        return p + ("d0" if self._segs[s] else "relay")
+
+    def _line_tail(self, s: int) -> str:
+        """The delay-line cell that feeds the stage's ``out`` write-back."""
+        p = f"s{s}_"
+        segs = self._segs[s]
+        return p + (f"d{len(segs) - 1}" if segs else "relay")
+
+    def internal_connections(self) -> List[Tuple[str, str, str, str]]:
+        conns: List[Tuple[str, str, str, str]] = []
+        for s in range(self.n_stages):
+            p = f"s{s}_"
+            D = self._delays[s]
+            has_tw = self.uses_fold(s) or self.uses_direct(s)
+            gather = p + "gather"
+            push = self._push_cell(s)
+            a_i_dst, a_q_dst = ((p + "steer", "xi"), (p + "steer", "xq")) \
+                if has_tw else ((gather, "ai"), (gather, "aq"))
+            # ctl operand fan-out (chain-successor edges LAST per cell — the
+            # route-time-face discipline, see _stage_chain).
+            if D == 2:
+                conns.append((p + "ctl", "kw_f", gather, "kw"))
+            conns += [
+                (p + "ctl", "aq_f", p + "sumq", "a"),
+                (p + "ctl", "bq_f", p + "sumq", "b"),
+                (p + "ctl", "ai_f", p + "sumi", "a"),
+                (p + "ctl", "bi_f", p + "sumi", "b"),
+            ]
+            sum_si = ("yi_in" if has_tw else "si")
+            sum_sq = ("p3" if has_tw else "sq")
+            conns += [
+                (p + "sumi", "s_f", gather, sum_si),
+                (p + "sumi", "a_pass", a_i_dst[0], a_i_dst[1]),
+                (p + "sumi", "a_f", p + "diffi", "a"),
+                (p + "sumi", "b_f", p + "diffi", "b"),
+                (p + "sumq", "s_f", gather, sum_sq),
+                (p + "sumq", "a_pass", a_q_dst[0], a_q_dst[1]),
+                (p + "sumq", "a_f", p + "diffq", "a"),
+                (p + "sumq", "b_f", p + "diffq", "b"),
+            ]
+            conns += [
+                (p + "diffi", "v_f", push, "xi"),
+                (p + "diffq", "v_f", push, "xq"),
+            ]
+            if self.uses_fold(s):
+                # The fold chain: idx -> tab_c -> tab_d -> fold -> steer.
+                conns += [
+                    # seq -> mcalc -> tab_c -> tab_d -> swap -> sign -> steer.
+                    # Each cell's LAST-listed dst is its chain successor (the
+                    # ROUTE-TIME FACE RULE, see _stage_chain).
+                    (p + "seq", "o_f", p + "mcalc", "o"),
+                    (p + "seq", "r_f", p + "mcalc", "r"),
+                    (p + "mcalc", "k_f", p + "tab_c", "k"),
+                    (p + "mcalc", "m_f", p + "tab_c", "m"),
+                    (p + "tab_c", "k_f", p + "tab_d", "k"),
+                    (p + "tab_c", "v_f", p + "tab_d", "prev"),
+                    (p + "tab_c", "m_f", p + "tab_d", "m"),
+                    # tab_d hands (c_mag, s_mag, k) to the swap select.
+                    (p + "tab_d", "k_f", p + "swap", "k"),
+                    (p + "tab_d", "v_f", p + "swap", "smag"),
+                    (p + "tab_d", "prev_f", p + "swap", "cmag"),
+                    (p + "swap", "k_f", p + "sign", "k"),
+                    (p + "swap", "dm_f", p + "sign", "dm"),
+                    (p + "swap", "cm_f", p + "sign", "cm"),
+                    (p + "sign", "d_f", p + "steer", "d"),
+                    (p + "sign", "c_f", p + "steer", "c"),
+                ]
+            elif self.uses_direct(s):
+                conns += [
+                    (p + "fetch_c", "t_f", p + "fetch_d", "c"),
+                    (p + "fetch_d", "t_f", p + "steer", "d"),
+                    (p + "fetch_d", "c_f", p + "steer", "c"),
+                ]
+            if has_tw:
+                conns += [
+                    (p + "steer", "c_f", p + "prods", "c"),
+                    (p + "steer", "d_f", p + "prods", "d"),
+                    (p + "steer", "xi_f", p + "prods", "xi"),
+                    (p + "steer", "xq_f", p + "prods", "xq"),
+                    # p4 first: prods' LAST edge must be its successor (rail).
+                    (p + "prods", "p4", gather, "p4"),
+                    (p + "prods", "p1", p + "rail", "p1"),
+                    (p + "prods", "p2", p + "rail", "p2"),
+                    (p + "prods", "p3", p + "rail", "p3"),
+                    (p + "rail", "yi_f", gather, "yi_in"),
+                    (p + "rail", "p3_f", gather, "p3"),
+                ]
+            conns += [
+                (gather, "yi", p + "out", "yi"),
+                (gather, "yq", p + "out", "yq"),
+            ]
+            # The stage line: gather -> d0 -> ... -> dK -> out (write-back).
+            segs = self._segs[s]
+            for i in range(len(segs) - 1):
+                conns += [
+                    (p + f"d{i}", "xi_out", p + f"d{i + 1}", "xi"),
+                    (p + f"d{i}", "xq_out", p + f"d{i + 1}", "xq"),
+                ]
+            tail = self._line_tail(s)
+            conns += [
+                (tail, "xi_out", p + "out", "awi"),
+                (tail, "xq_out", p + "out", "awq"),
+            ]
+            # Inter-stage packet (forward); the last stage's pair is the egress.
+            if s < self.n_stages - 1:
+                conns += [
+                    (p + "out", "oi", f"s{s + 1}_ctl", "bi"),
+                    (p + "out", "oq", f"s{s + 1}_ctl", "bq"),
+                ]
+            # BACKWARD data feedback: the emerging pair returns to ctl's
+            # (ai, aq) STATE registers; the WRITE.CFG lock-clear rides the
+            # same @1 face-flip corridor (out sits directly below ctl).
+            conns += [
+                (p + "out", "ai_wb", p + "ctl", "ai"),
+                (p + "out", "aq_wb", p + "ctl", "aq"),
+            ]
+        return conns
+
+    def internal_jumps(self) -> List[Tuple[str, str, str, str]]:
+        jumps: List[Tuple[str, str, str, str]] = []
+        for s in range(self.n_stages):
+            p = f"s{s}_"
+            D = self._delays[s]
+            has_tw = self.uses_fold(s) or self.uses_direct(s)
+            gather = p + "gather"
+            jumps += [
+                (p + "ctl", "t_fill", p + "sumi", "fill"),
+                (p + "ctl", "t_bfly", p + "sumi", "bfly"),
+                (p + "sumi", "t_f", p + "sumq", "fill"),
+                (p + "sumi", "t_b", p + "sumq", "bfly"),
+                (p + "sumq", "t_f", p + "diffi", "fill"),
+                (p + "sumq", "t_b", p + "diffi", "bfly"),
+                (p + "diffi", "t_f", p + "diffq", "fill"),
+                (p + "diffi", "t_b", p + "diffq", "bfly"),
+            ]
+            if self.uses_fold(s):
+                jumps += [
+                    (p + "diffq", "t_f", p + "seq", "default"),
+                    (p + "diffq", "t_b", gather, "id"),
+                    (p + "seq", "trig", p + "mcalc", "default"),
+                    (p + "mcalc", "trig", p + "tab_c", "default"),
+                    (p + "tab_c", "trig", p + "tab_d", "default"),
+                    (p + "tab_d", "trig", p + "swap", "default"),
+                    # The trivial slot travels as WHICH ENTRY sign is jumped
+                    # at (the TwiddleMultiply idiom) — swap dispatches both.
+                    (p + "swap", "trig", p + "sign", "num"),
+                    (p + "sign", "t_n", p + "steer", "default"),
+                    (p + "sign", "t_t", p + "steer", "default"),
+                ]
+            elif self.uses_direct(s):
+                jumps += [
+                    (p + "diffq", "t_f", p + "fetch_c", "default"),
+                    (p + "diffq", "t_b", gather, "id"),
+                    (p + "fetch_c", "trig", p + "fetch_d", "default"),
+                    (p + "fetch_d", "trig", p + "steer", "default"),
+                ]
+            else:
+                jumps += [
+                    (p + "diffq", "t_f", gather, "fill"),
+                    (p + "diffq", "t_b", gather, "bfly"),
+                ]
+            if has_tw:
+                jumps += [
+                    (p + "steer", "t_mul", p + "prods", "mul"),
+                    (p + "steer", "t_triv", p + "prods", "triv"),
+                    (p + "prods", "t_mul", p + "rail", "mul"),
+                    (p + "prods", "t_triv", p + "rail", "triv"),
+                    (p + "rail", "t_mul", gather, "mul"),
+                    (p + "rail", "t_id", gather, "id"),
+                    (p + "rail", "t_mj", gather, "mj"),
+                ]
+            # gather -> the line -> out
+            segs = self._segs[s]
+            if segs:
+                jumps.append((gather, "trig", p + "d0", "default"))
+                for i in range(len(segs) - 1):
+                    jumps.append((p + f"d{i}", "fwd", p + f"d{i + 1}",
+                                  "default"))
+                jumps.append((p + f"d{len(segs) - 1}", "fwd", p + "out",
+                              "default"))
+            else:
+                jumps += [
+                    (gather, "trig", p + "relay", "default"),
+                    (p + "relay", "fwd", p + "out", "default"),
+                ]
+            if s < self.n_stages - 1:
+                jumps.append((p + "out", "trig", f"s{s + 1}_ctl", "default"))
+            _ = D
+        return jumps
+
+    def output_cell_id(self):
+        """SINGULAR — the block exit is the LAST stage's ``out`` cell: it
+        carries the feedback write-back + lock-clear alongside the external
+        complex packet, so the build must treat exactly this cell as the exit
+        (its packet writes are the LAST data writes; the patchers leave the
+        earlier feedback writes and the config write alone)."""
+        return f"s{self.n_stages - 1}_out"
+
+    def output_cell_ids(self):
+        return [self.output_cell_id()]
+
+    def output_face_addr(self):
+        """The exit is a dual-face cell: its packet rides the in-program
+        ``face_tap`` word (address 7); declaring it lets the build rewrite it
+        to the routed egress direction."""
+        return 7
+
+    # -------------------------------------------------------------- reference
+    def process_reference_q15(self, iq_words) -> List[Tuple[int, int]]:
+        """Bit-exact per-trigger output stream (see
+        :func:`sdf_streaming_reference`): one (i, q) uint16 pair per input
+        trigger, startup transient included, frames in bit-reversed order."""
+        return sdf_streaming_reference(self._n, iq_words)
+
+    def process_reference(self, input_samples) -> np.ndarray:
+        """Float view of the bit-exact stream (complex64, q15/32768 per rail).
+        The contract (order/scale/latency) lives in the Q15 model."""
+        arr = np.asarray(input_samples)
+        if np.iscomplexobj(arr):
+            def q15(x):
+                return int(round(max(-1.0, min(32767 / 32768.0, float(x)))
+                                 * 32768.0)) & 0xFFFF
+            words = [(q15(c.real), q15(c.imag)) for c in arr]
+        else:
+            words = [(int(i) & 0xFFFF, int(q) & 0xFFFF) for (i, q) in arr]
+        out = sdf_streaming_reference(self._n, words)
+        return np.array([complex(s16(i) / 32768.0, s16(q) / 32768.0)
+                         for (i, q) in out], dtype=np.complex64)
+
+
+class FFT64Block(LargeFFTBlock):
+    """64-point streaming R2SDF FFT — the founding CHIP-SCALE block.
+
+    6 stages (delays 32/16/8/4/2/1), one complex sample in -> one out per
+    trigger, latency 63, output in BIT-REVERSED bin order, scale FFT/64.
+    Stage 0's twiddle period (32) busts a direct fetch cell, so it uses the
+    octant fold (8+8 table words); stages 1..3 use the shipped direct-table
+    chain; stages 4 and 5 are the trivial kind-word/identity stages.
+
+    Params: NONE (``n`` is pinned at 64; scale, order, and latency are fixed
+    contracts documented on the module).
+    """
+
+    N = 64
+
+
+class FFT128Block(LargeFFTBlock):
+    """128-point streaming R2SDF FFT — CHIP-SCALE.
+
+    7 stages (delays 64/32/16/8/4/2/1), latency 127, BIT-REVERSED bin order,
+    scale FFT/128. Stages 0 AND 1 need the octant fold (periods 64 and 32);
+    the 16+16-word octant tables serve both (stage 1 walks the same tables
+    with a stride-2 exponent, which the fold sequencer handles by advancing
+    its slot counter by ``2^s``).
+
+    Params: NONE (``n`` is pinned at 128).
+    """
+
+    N = 128

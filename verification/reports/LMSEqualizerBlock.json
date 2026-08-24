@@ -14,5 +14,6 @@
     "patterns": "4000-symbol QPSK through [1, 0.35, -0.15] multipath; chip bit-exact to reference over param sweep + edges; reference == alpha*GR steady state (RMS<0.02, decisions 100%, BER 0, taps within 0.02)",
     "mutation": true,
     "note": "DD-only spike cold start (no on-chip training memory); taps stored halved (envelope sum|w|<=2); PER-SAMPLE drive contract (INV-19 known limit, guarded)"
-  }
+  },
+  "provenance": "session"
 }

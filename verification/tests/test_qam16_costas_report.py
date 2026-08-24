@@ -52,8 +52,11 @@ def test_qam16_costas_chain_ber_zero_and_report():
     assert n_out >= len(tx) - 10, f"too few recovered symbols: {n_out}"
     assert ber == 0.0, f"QAM16 RX chain BER {ber:.4f} (rot={rot}, lag={lag})"
 
-    res = CompareResult(passed=True, metric=Metric.DECISION,
-                        n_compared=n_comp, bit_errors=0, delay_used=int(lag))
+    # DERIVED from the BER measured above, not asserted. (The assert already gates
+    # it; expressing the verdict as the measurement keeps the report an artifact.)
+    res = CompareResult(passed=(ber == 0.0), metric=Metric.DECISION,
+                        n_compared=n_comp, bit_errors=int(round(ber * n_comp)),
+                        delay_used=int(lag))
     write_report("QAM16ComplexCostasLoopBlock", res, coverage={
         "gr_equiv": "digital.constellation_receiver_cb(constellation_16qam) "
                     "(decision-level equivalence)",

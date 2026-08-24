@@ -43,7 +43,8 @@ for p in (str(_PLACEKYT), str(_VERIFY), str(_RUNTIME)):
 
 from kyttar_verify import (  # noqa: E402
     run_block_dut, run_block_dut_complex, run_gnuradio_ref,
-    compare_llr_against_grc, compare_against_grc, write_report, Metric)
+    compare_llr_against_grc, compare_against_grc, write_report, Metric,
+    write_session_report)
 from gr_kyttar.placement.blocks.soft_demodulator_block import (  # noqa: E402
     SoftDemodulatorBlock)
 
@@ -362,7 +363,6 @@ def test_emit_report():
         dut.outputs_q15, gr.floats, delay=0, llr_scale=_llr_scale(blk), op_count=1)
     assert res.passed, res.summary()
     report = {
-        "kyttar_block": "SoftDemodulatorBlock",
         "passed": bool(res.passed),
         "metric": "llr",
         "n_compared": res.n_compared,
@@ -375,5 +375,4 @@ def test_emit_report():
         "coverage": {"random": 4, "param_sweep": 5, "bit_exact": True,
                      "mutation": True},
     }
-    (_VERIFY / "reports").mkdir(exist_ok=True)
-    (_VERIFY / "reports" / "SoftDemodulatorBlock.json").write_text(json.dumps(report))
+    write_session_report("SoftDemodulatorBlock", report)

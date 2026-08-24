@@ -1,1 +1,16 @@
-{"kyttar_block": "FrequencyModulatorBlock", "passed": true, "metric": "correlation", "n_compared": 64, "correlation": 0.9999996451881392, "bit_exact": true, "delay_used": 0, "coverage": {"param_sweep": 4, "bit_exact": true, "mutation": true, "accum_first": true}}
+{
+  "kyttar_block": "FrequencyModulatorBlock",
+  "passed": true,
+  "metric": "correlation",
+  "n_compared": 64,
+  "correlation": 0.9999996451881392,
+  "bit_exact": true,
+  "delay_used": 0,
+  "coverage": {
+    "param_sweep": 4,
+    "bit_exact": true,
+    "mutation": true,
+    "accum_first": true
+  },
+  "provenance": "session"
+}

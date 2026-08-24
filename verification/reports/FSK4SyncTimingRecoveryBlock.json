@@ -16,5 +16,6 @@
     "mutation": true,
     "gr_equiv": "no single GR block; bit-exact to process_reference; dibit BER 0",
     "note": "Replaces Gardner for 4-level FSK (Gardner can't lock 4-PAM)."
-  }
+  },
+  "provenance": "session"
 }

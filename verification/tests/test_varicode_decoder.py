@@ -55,6 +55,8 @@ for p in (str(_RUNTIME), str(_PLACEKYT), str(_VERIFY)):
     if p not in sys.path:
         sys.path.insert(0, p)
 
+from kyttar_verify import write_session_report  # noqa: E402
+
 from gr_kyttar.placement.blocks.varicode_decoder_block import (  # noqa: E402
     VaricodeDecoderBlock,
     VARICODE,
@@ -266,7 +268,6 @@ def test_write_report():
     rpt = {
         "block": "VaricodeDecoderBlock",
         "status": "done",
-        "passed": True,
         "metric": "bit_exact",
         "bit_errors": 0,
         "notes": (
@@ -283,7 +284,4 @@ def test_write_report():
         "reverse_map_populated": 128,
         "cell_count": VaricodeDecoderBlock("r").cell_count,
     }
-    out = _VERIFY / "reports" / "VaricodeDecoderBlock.json"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(rpt, indent=2))
-    assert out.exists()
+    write_session_report("VaricodeDecoderBlock", rpt)

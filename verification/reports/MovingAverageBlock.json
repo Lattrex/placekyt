@@ -16,5 +16,6 @@
     "bit_exact": true,
     "headroom": true,
     "mutation": true
-  }
+  },
+  "provenance": "session"
 }

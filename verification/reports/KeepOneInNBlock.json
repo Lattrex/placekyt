@@ -14,5 +14,6 @@
     "phase_contract": true,
     "bit_exact": true,
     "mutation": true
-  }
+  },
+  "provenance": "session"
 }

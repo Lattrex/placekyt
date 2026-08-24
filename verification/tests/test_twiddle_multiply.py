@@ -344,10 +344,16 @@ def test_orientation_spot(orient):
 def test_emit_report():
     x = _random_stream(7, 24)
     dut = _assert_bitexact(x, _N16_STAGE0)
+    # DERIVED, not asserted: recompute the reference and count the actual
+    # mismatches, so the report's verdict is the measurement (INV-36).
+    yi, yq = _ref(x, _N16_STAGE0)
+    mismatches = sum(1 for a, b in zip(dut.i_q15, yi) if a != b) + \
+        sum(1 for a, b in zip(dut.q_q15, yq) if a != b)
     write_report("TwiddleMultiplyBlock",
-                 CompareResult(passed=True, metric=Metric.EXACT,
+                 CompareResult(passed=(mismatches == 0), metric=Metric.EXACT,
                                n_compared=2 * len(x), max_abs_err=0.0,
-                               tolerance=0.0, delay_used=0),
+                               tolerance=0.0, bit_errors=mismatches,
+                               delay_used=0),
                  coverage={"edge": True, "random": 3, "table_sweep": 5,
                            "n16_stage0": True, "adversarial_full_scale": True,
                            "trivial_paths": True, "saturation": True,

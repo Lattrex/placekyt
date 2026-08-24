@@ -18,5 +18,6 @@
     "decision": "out = (~in) & 0xFF (full 8-bit width, GR-exact)",
     "note": "1-cell memoryless bitwise NOT; BIT-EXACT vs not_bb, delay 0",
     "hw_deviation": "none (no params; pure byte op)"
-  }
+  },
+  "provenance": "session"
 }

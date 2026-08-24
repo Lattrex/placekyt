@@ -16,5 +16,6 @@
     "mutation": true,
     "overload": true,
     "max_verified_taps": 64
-  }
+  },
+  "provenance": "session"
 }

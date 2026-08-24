@@ -1,11 +1,13 @@
 {
+  "kyttar_block": "VaricodeDecoderBlock",
+  "passed": true,
   "block": "VaricodeDecoderBlock",
   "status": "done",
-  "passed": true,
   "metric": "bit_exact",
   "bit_errors": 0,
   "notes": "SRAM-BACKED (INV-31): PSK31 Varicode decoder, no longer quarantined. The 1024-address reverse code->char map (codeword-int -> char, sparse 128 populated) lives in the SRAM PANEL; a small in-cell bit-accumulator + '00'-delimiter state machine forms the codeword integer and issues an SRAM push-read to fetch + emit the char. BIT-EXACT vs the golden decoder over the FULL ASCII 0..127 set + message + random, AND round-trip vs the golden encoder, through the REAL SramPanelDevice/PanelDriver + real simkyt routing (test_varicode_decoder_sram.py). Stored word = char+1 (CHAR_OFFSET) so NUL is distinguishable from an unpopulated read.",
   "reverse_map_addr_space": 1024,
   "reverse_map_populated": 128,
-  "cell_count": 3
+  "cell_count": 3,
+  "provenance": "session"
 }

@@ -20,5 +20,6 @@
     "sram": "syndrome->e_d LUT, ONE word per populated syndrome (2026 of 4096), sparse set_addr load through the REAL SramPanelDevice/PanelDriver",
     "decision": "s = Q(D) ^ P from the encoder's own column masks; out = D ^ LUT[s]; uniform single-lookup path (s == 0 reads the guaranteed-unpopulated address 0)",
     "note": "7-cell rate-compressing 24:12 (pack24 -> syn 5/4/3 -> correct -> emit + SramController); per-sample panel contract (NEEDS_BESPOKE saturation entry)"
-  }
+  },
+  "provenance": "session"
 }

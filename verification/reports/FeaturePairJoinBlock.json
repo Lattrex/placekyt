@@ -15,5 +15,6 @@
     "param_sweep": 0,
     "mutation": true,
     "on_chip_real_consumer": true
-  }
+  },
+  "provenance": "session"
 }

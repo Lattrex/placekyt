@@ -19,5 +19,6 @@
     "mutation": true,
     "gr_equiv": "filter.interp_fir_filter_ccc(sps, [1+0j])",
     "note": "rate-EXPANDING complex (2-rail zero-stuff); bit-exact in Q15"
-  }
+  },
+  "provenance": "session"
 }

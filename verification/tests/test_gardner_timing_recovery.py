@@ -63,6 +63,8 @@ for _p in (str(_PLACEKYT), str(_VERIFY), str(_RUNTIME)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+from kyttar_verify import write_session_report  # noqa: E402
+
 from gr_kyttar.placement.blocks.gardner_timing_recovery import (  # noqa: E402
     GardnerTimingRecovery)
 from gr_kyttar.placement.blocks._base import float_to_q15  # noqa: E402
@@ -330,9 +332,7 @@ def test_write_quarantine_report():
     onchip_ber = _dut_onchip_ber(bits400, 0.3)
 
     report = {
-        "kyttar_block": "GardnerTimingRecovery",
         "grc_block": "digital.symbol_sync_cc (TED_GARDNER)",
-        "passed": False,
         "status": "needs_human",
         "metric": "decision",
         "verdict": "QUARANTINE",
@@ -365,6 +365,6 @@ def test_write_quarantine_report():
             "Gardner is a datapath REDESIGN (a wider TED product without the >>1 "
             "truncation), not a tolerance tweak — quarantined for a human."),
     }
-    out = _VERIFY / "reports" / "GardnerTimingRecovery.json"
-    out.write_text(json.dumps(report, indent=2) + "\n")
-    assert out.exists()
+    # verdict=False: this is a QUARANTINE record. The suite passes (it asserts the
+    # documented failure), but the BLOCK does not work and the report must say so.
+    write_session_report("GardnerTimingRecovery", report, verdict=False)

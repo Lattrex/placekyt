@@ -18,5 +18,6 @@
     "mutation": true,
     "rate_check": true,
     "note": "interpolation is a FIRFilterBlock parameter (GR interp_fir_filter_fff(L,taps)); single-cell unrolled burst"
-  }
+  },
+  "provenance": "session"
 }

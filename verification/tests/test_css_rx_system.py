@@ -61,6 +61,8 @@ for p in (str(_PLACEKYT), str(_VERIFY), str(_RUNTIME)):
     if p not in sys.path:
         sys.path.insert(0, p)
 
+from kyttar_verify import write_session_report  # noqa: E402
+
 from gr_kyttar.placement.blocks.conj_chirp_mixer_block import (  # noqa: E402
     ConjChirpMixerBlock)
 from gr_kyttar.placement.blocks.chirp_generator_block import (  # noqa: E402
@@ -371,16 +373,14 @@ def test_system_ser_10db_1000_symbols():
     assert any(w != 0xFFFF for w in sync[:K + 1]), \
         "preamble failed to lock at 10 dB"
     report = {
-        "example": "css_rx_system", "passed": True,
-        "n_symbols": n_data, "snr_db": 10.0, "attenuation": 0.5,
+        "example": "css_rx_system", "n_symbols": n_data, "snr_db": 10.0, "attenuation": 0.5,
         "symbol_errors": errs, "ser": ser,
         "onchip": "full RX spine (dechirp+FFT16+mag2+delay+argmax[+sync]) on "
                   "one 10x12 chip, saturated queue_words drive",
         "model_side": "TX (mapper+generator integer goldens, chip-verified in "
                       "their own suites) and the numpy channel",
     }
-    (_VERIFY / "reports").mkdir(exist_ok=True)
-    (_VERIFY / "reports" / "CssRxSystem.json").write_text(json.dumps(report))
+    write_session_report("CssRxSystem", report)
 
 
 def test_system_ser_negative_control():

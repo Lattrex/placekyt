@@ -20,5 +20,6 @@
     "decision": "out = input XOR next_bit(); Fibonacci right-shift LFSR (GR-exact)",
     "note": "1-cell bit-serial additive scrambler; BIT-EXACT vs additive_scrambler_bb, delay 0",
     "hw_deviation": "bits_per_byte must be 1; len<=15 (16-bit reg); no reset_tag_key"
-  }
+  },
+  "provenance": "session"
 }

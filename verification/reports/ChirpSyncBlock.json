@@ -19,5 +19,6 @@
     "locked_bin_report": true,
     "saturated_with_locks": true,
     "mutation": true
-  }
+  },
+  "provenance": "session"
 }

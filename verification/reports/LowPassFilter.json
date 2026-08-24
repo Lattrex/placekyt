@@ -16,5 +16,6 @@
     "windows": 6,
     "mutation": true,
     "ntaps": 39
-  }
+  },
+  "provenance": "session"
 }

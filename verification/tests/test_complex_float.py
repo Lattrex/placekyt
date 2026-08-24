@@ -38,7 +38,8 @@ for p in (str(_PLACEKYT), str(_VERIFY), str(_RUNTIME)):
 
 from kyttar_verify import (  # noqa: E402
     run_block_dut_complex, run_gnuradio_ref_complex,
-    compare_complex_against_grc, Metric)
+    compare_complex_against_grc, Metric,
+    write_session_report)
 
 CHIP_YAML = str(_PLACEKYT / "resources" / "chips" / "kyttar_10x12.yaml")
 _GR_AVAILABLE = os.path.exists(os.environ.get("KYTTAR_GR_PYTHON", "/usr/bin/python3"))
@@ -201,18 +202,16 @@ def test_empty_output_fails(variant):
 
 @pytest.mark.parametrize("variant", ["c2f", "f2c"])
 def test_emit_report(variant):
-    import json
     block_type, script = _VARIANTS[variant]
     dut = _run_dut(block_type, EDGE)
     gr = _gr(script, EDGE)
     res = _compare(dut, gr)
     assert res.passed, res.summary()
     report = {
-        "kyttar_block": block_type, "passed": True, "metric": "exact",
+        "metric": "exact",
         "n_compared": res.i.n_compared, "max_abs_err": res.i.max_abs_err,
         "tolerance": res.i.tolerance, "nmse_db": res.i.nmse_db,
         "correlation": res.i.correlation, "bit_errors": 0, "delay_used": 0,
         "coverage": {"edge": True, "random": 3, "bit_exact": True, "mutation": True},
     }
-    (_VERIFY / "reports").mkdir(exist_ok=True)
-    (_VERIFY / "reports" / f"{block_type}.json").write_text(json.dumps(report))
+    write_session_report(block_type, report)

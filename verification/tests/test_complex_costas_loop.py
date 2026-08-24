@@ -61,6 +61,8 @@ for p in (str(_PLACEKYT), str(_VERIFY), str(_RUNTIME)):
     if p not in sys.path:
         sys.path.insert(0, p)
 
+from kyttar_verify import write_session_report  # noqa: E402
+
 from gr_kyttar.placement.blocks.complex_costas_loop_block import (  # noqa: E402
     ComplexCostasLoopBlock,
 )
@@ -402,9 +404,7 @@ def test_write_report():
             assert bit_mis == 0 and sign_mis == 0
 
     report = {
-        "kyttar_block": "ComplexCostasLoopBlock",
         "grc_block": "digital.costas_loop_cc",
-        "passed": True,
         "metric": "decision",
         "coverage": {
             "orders": [2, 4], "loop_bws": _LOOP_BWS, "freq_offsets": _FOFFS,
@@ -433,6 +433,4 @@ def test_write_report():
             "recovered rails) for a fused output+handoff cell egressing a port. The "
             "ABUTTED path (QPSK modem Costas->Gardner, BER 0) was always correct."),
     }
-    out = _VERIFY / "reports" / "ComplexCostasLoopBlock.json"
-    out.write_text(json.dumps(report, indent=2) + "\n")
-    assert out.exists()
+    write_session_report("ComplexCostasLoopBlock", report)

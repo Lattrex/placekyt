@@ -67,6 +67,8 @@ for p in (str(_PLACEKYT), str(_VERIFY), str(_RUNTIME)):
     if p not in sys.path:
         sys.path.insert(0, p)
 
+from kyttar_verify import write_session_report  # noqa: E402
+
 from gr_kyttar.placement.blocks.fll_band_edge_block import (  # noqa: E402
     FLLBandEdgeBlock,
 )
@@ -774,9 +776,7 @@ def test_write_report():
                                round(abs(_resid_cyc(y)), 6)}
 
     report = {
-        "kyttar_block": "FLLBandEdgeBlock",
         "grc_block": "digital.fll_band_edge_cc",
-        "passed": True,
         "metric": "decision",
         "coverage": {
             "param_sweep": [str(sorted(p.items())) for p in _SWEEP],
@@ -819,6 +819,4 @@ def test_write_report():
             "envelope); Q15 error word saturates at +-1.0 (GR <= 3.8 clipped "
             "identically; GR 3.10 float does not)."),
     }
-    out = _VERIFY / "reports" / "FLLBandEdgeBlock.json"
-    out.write_text(json.dumps(report, indent=2) + "\n")
-    assert out.exists()
+    write_session_report("FLLBandEdgeBlock", report)

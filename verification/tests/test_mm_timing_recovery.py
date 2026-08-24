@@ -33,6 +33,8 @@ for _p in (ROOT / "runtime" / "python", ROOT / "verification", ROOT / "placekyt"
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
+from kyttar_verify import write_session_report  # noqa: E402
+
 from gr_kyttar.placement.blocks.mm_timing_recovery_block import (  # noqa: E402
     MMTimingRecoveryBlock,
 )
@@ -337,7 +339,6 @@ def test_write_report():
     report = {
         "block": "MMTimingRecoveryBlock",
         "grc_block": "digital.symbol_sync_cc (TED_MUELLER_AND_MULLER)",
-        "passed": True,
         "metric": "on-chip bit-exact vs GR-verified process_reference",
         "coverage": {"offsets": [0.0, 0.1, 0.3, 0.5, 0.7],
                      "per_sample": True, "saturated": True,
@@ -351,6 +352,4 @@ def test_write_report():
                   "symbol_sync_cc). Unconditionally saturation-safe AND orientation-safe "
                   "via the serialize-LOCK."),
     }
-    out = ROOT / "verification" / "reports" / "MMTimingRecoveryBlock.json"
-    out.write_text(json.dumps(report, indent=2))
-    assert out.exists()
+    write_session_report("MMTimingRecoveryBlock", report)

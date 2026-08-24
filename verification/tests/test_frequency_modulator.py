@@ -55,7 +55,8 @@ for p in (str(_PLACEKYT), str(_VERIFY), str(_RUNTIME)):
 
 from kyttar_verify import (  # noqa: E402
     run_block_dut_real_to_complex, run_gnuradio_ref_complex,
-    compare_complex_against_grc, Metric)
+    compare_complex_against_grc, Metric,
+    write_session_report)
 from gr_kyttar.placement.blocks.frequency_modulator_block import (  # noqa: E402
     FrequencyModulatorBlock)
 
@@ -273,12 +274,9 @@ def test_emit_report():
                                       metric=Metric.EXACT, delay=0)
     assert res.passed, res.summary()
     report = {
-        "kyttar_block": "FrequencyModulatorBlock", "passed": True,
         "metric": "correlation", "n_compared": len(di),
         "correlation": corr, "bit_exact": True, "delay_used": 0,
         "coverage": {"param_sweep": 4, "bit_exact": True, "mutation": True,
                      "accum_first": True},
     }
-    (_VERIFY / "reports").mkdir(exist_ok=True)
-    (_VERIFY / "reports" / "FrequencyModulatorBlock.json").write_text(
-        json.dumps(report))
+    write_session_report("FrequencyModulatorBlock", report)

@@ -19,5 +19,6 @@
     "mutation": true,
     "gr_equiv": "multiply_cc(bb, sig_source_c) -> complex_to_real",
     "note": "I*cos - Q*sin; quantized quarter-wave NCO matches GR to 1 LSB"
-  }
+  },
+  "provenance": "session"
 }

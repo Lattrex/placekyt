@@ -9,6 +9,73 @@ block-specific gotcha. Promote anything that generalizes across block classes in
 and superseded material merged into the surviving entries; no durable lesson was
 dropped) — append new entries above the oldest ones as before.
 
+## Verification-integrity sweep — every report writer in the suite could write a GREEN report for a FAILING session (INV-36) 2026-08-24
+
+Not a block. A repo-wide audit of the code that produces the project's evidence,
+triggered by a real instance: an FFT64 builder found that its own
+`test_zz_write_report` hardcoded `"passed": true`, so a session whose
+saturated-drive gate FAILED still emitted a green
+`verification/reports/FFT64Block.json`. It self-reported and fixed its own writer.
+This sweep asked the obvious follow-up — *how many others?* — and the answer was
+**every one of them, by one route or another.**
+
+- **THE SCOPE, MEASURED, NOT ESTIMATED.** ~100 report-writing functions across 84
+  files. An AST scan of the pre-fix tree classifies them into exactly three
+  shapes, and the guard test now fires on all three (proven by running it against
+  the pre-fix sources: **30 findings across 17 files**; against the fixed tree,
+  zero):
+  * **17 writers hardcoded the verdict** — 14 as a literal `"passed": True` in the
+    payload dict, 4 more as a *fabricated* `CompareResult(passed=True, ...)` handed
+    to the shared `write_report` (`GRUCellBlock`, `QAM16ComplexCostasLoopBlock`,
+    `RaisedCosineEnvelopeBlock`, `TwiddleMultiplyBlock`). The fabricated shape is
+    the dangerous one: the call site reads as correct, because `write_report` *does*
+    derive `passed` from `result.passed` — it just derived it from an invented result.
+  * **~83 writers derived their verdict honestly** from a real `CompareResult` — and
+    were still unsafe, for the reason below.
+- **"DERIVES ITS VERDICT FROM A REAL COMPARISON" IS NOT ENOUGH.** This was the
+  finding that changed the shape of the fix. pytest continues past a failure by
+  default, so a `test_emit_report` that re-runs one comparison and asserts it
+  passes will happily run — and write — in a session where the *mutation*,
+  *orientation*, or *saturation* gate for that same block failed. A per-comparison
+  verdict is not a session verdict. Fixing only the 17 hardcoders would have left
+  the other 83 able to certify a block whose real gates were red.
+- **AND A REPORT NOBODY WRITES IS STILL A CLAIM.** The stalest shape of all: a
+  green report left on disk by an earlier passing session, which a later session
+  that *crashed, was killed, or failed* never removed. The file goes on attesting
+  to a state of the code that was never verified. Hence the load-bearing ordering:
+  **unlink FIRST, before the verdict is even known.** Absence is the safe state.
+- **THE FIX IS ONE HELPER, NOT 100 PATCHES.** `kyttar_verify/session_report.py`
+  implements unlink-first + a zero-failures/zero-errors session gate; the shared
+  `write_report` routes through it (covering the ~83 in one edit) and the 17
+  hand-rolled writers were converted to call it directly. Nothing asserted by any
+  suite changed — only *whether and when* a file appears.
+- **PUT THE SESSION RECORD ON THE PYTEST `Config`, NEVER IN A MODULE GLOBAL.** A
+  global is precisely what a crashed run leaves stale, which defeats the whole
+  point. `Config` is per-session and per-process: safe under parallel invocation,
+  impossible to inherit across processes, and *missing* rather than wrong when the
+  conftest plugin is absent — in which case the writer refuses. There is no
+  "assume it passed" branch anywhere in the module, deliberately.
+- **QUARANTINE REPORTS NEEDED AN EXPLICIT `verdict=False`.** Routing everything
+  through a helper that stamps `passed: True` would have silently flipped
+  `GardnerTimingRecovery`'s honest quarantine record (`passed: False`, a block that
+  demonstrably does not work) into a green one — the same defect, introduced *by
+  the fix for the defect*. Caught in review of the mechanical conversion diff. The
+  session gate still applies in full, so `verdict` can only make a record worse
+  than its session, never better.
+- **THE GATE ON THE GATE (INV-4, applied to the writer).** A writer never shown to
+  REFUSE certifies nothing. `test_report_provenance.py` runs a real writer in a
+  child pytest session containing a synthetic FAILING test and asserts no file
+  appears and the writer fails — plus a passing control (a writer that never writes
+  would trivially satisfy "no file"), an unlink-first case, `-x`, `-p no:randomly`,
+  and a genuinely concurrent parallel case. The repo-wide guard has its own teeth:
+  all three defect shapes are reintroduced in a fixture tree and proven to fire,
+  with a negative control proving the guard stays silent on a correct writer.
+- **THE PROVENANCE PROBLEM IS NOT RETROACTIVELY SOLVABLE.** The mechanism makes
+  every *future* report trustworthy; it cannot retro-certify the 110 already on
+  disk. Those written by a hardcoding writer are unverifiable **by provenance** —
+  which is not the same as wrong, and most are certainly fine. The honest move is
+  to name them (see the audit in the accompanying report) and re-run their suites,
+  not to delete them wholesale and not to quietly keep trusting them.
 ## GRUCellBlock RE-FOLD — a baked `is_face` literal PINS a fold, and the classifier's wall is corridor BUDGET, not fold shape 2026-08-24
 
 Dispatched to re-fold `GRUCellBlock` so the gru_classifier front end could route

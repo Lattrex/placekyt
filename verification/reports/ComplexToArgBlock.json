@@ -14,5 +14,6 @@
     "patterns": "3000 uniform complex points + seam edges; chip bit-exact to reference per-sample AND saturated-pipelined",
     "mutation": true,
     "note": "half-turn Q15 angle (word/32768*pi rad); max 0.00260 rad vs GR for |v|>=0.1 (gate 0.006); input-quantization-limited below |v|~0.1"
-  }
+  },
+  "provenance": "session"
 }

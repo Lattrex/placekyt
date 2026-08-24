@@ -20,5 +20,6 @@
     "saturation": "+/-full-scale -> +127/-128 rails, verified vs GR",
     "mutation": "truncate, wrap-not-saturate, wrong-scale, 1-sample-shift all FAIL",
     "gr_equiv": "blocks.float_to_char(scale)"
-  }
+  },
+  "provenance": "session"
 }

@@ -23,5 +23,6 @@
     "float_accuracy": "<= 1.5K+0.5 LSB of the scaled domain (derived)",
     "hw_range": "k in 2..7 (one-cell coeff+bias+code discipline); S <= 15 (4-bit shift immediate); len==k; all RAISE",
     "note": "scale schedule pinned: S=max(0,ceil(log2(sum|c|+|b|))), store round(v*2^-S*32768), post-rounding guard bumps S; acc preloads scaled bias; intermediate wrap impossible"
-  }
+  },
+  "provenance": "session"
 }

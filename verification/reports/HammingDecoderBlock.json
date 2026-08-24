@@ -20,5 +20,6 @@
     "mutation": "no-correction passthrough / wrong syndrome LUT / swapped bit order / +1 shift / empty / misframed stream",
     "decision": "rate 7:4, raw 0/1 words, BIT-EXACT, delay 0, tol 0",
     "note": "2-cell pipeline: fused pack+syndrome accumulator (pre-shifted H columns) -> 8-entry LUT correct + MSB-first 4-bit burst"
-  }
+  },
+  "provenance": "session"
 }

@@ -49,7 +49,8 @@ for p in (str(_PLACEKYT), str(_VERIFY), str(_RUNTIME)):
 
 from kyttar_verify import (  # noqa: E402
     run_block_dut_complex, run_gnuradio_ref_complex, compare_complex_against_grc,
-    Metric)
+    Metric,
+    write_session_report)
 from gr_kyttar.placement.blocks.complex_mixer_block import ComplexMixerBlock  # noqa: E402
 
 CHIP_YAML = str(_PLACEKYT / "resources" / "chips" / "kyttar_10x12.yaml")
@@ -283,12 +284,11 @@ def test_emit_report():
                                       tolerance=TABLE_FLOOR_LSB)
     assert res.passed, res.summary()
     report = {
-        "kyttar_block": "ComplexMixerBlock", "passed": True, "metric": "amplitude",
+        "metric": "amplitude",
         "n_compared": res.i.n_compared, "max_abs_err": res.i.max_abs_err,
         "tolerance": res.i.tolerance, "nmse_db": res.i.nmse_db,
         "correlation": res.i.correlation, "bit_errors": 0, "delay_used": 0,
         "coverage": {"param_sweep": 5, "bit_exact": True, "mutation": True,
                      "grid_aligned": True, "off_grid": True},
     }
-    (_VERIFY / "reports").mkdir(exist_ok=True)
-    (_VERIFY / "reports" / "ComplexMixerBlock.json").write_text(json.dumps(report))
+    write_session_report("ComplexMixerBlock", report)

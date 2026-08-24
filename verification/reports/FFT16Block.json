@@ -27,5 +27,6 @@
       "two_tone": 76.98
     },
     "snr_floor_note": "noise_m26 gated at 56 dB: the pinned 58 dB floor sits at that class's per-trial dB-mean; converged pooled SNR is ~57.9 dB (documented)"
-  }
+  },
+  "provenance": "session"
 }

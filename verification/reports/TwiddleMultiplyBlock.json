@@ -19,5 +19,6 @@
     "saturation": true,
     "orientation_d4": true,
     "mutation": true
-  }
+  },
+  "provenance": "session"
 }

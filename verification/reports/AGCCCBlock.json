@@ -16,5 +16,6 @@
     "mutations": "inverted, wrong-reference, |I|+|Q| magnitude, no-feedback, +1 delay, empty, 1-LSB rate, bare-MULQ stall \u2014 all FAIL",
     "saturation": "COMPLEX_2IN2OUT locked gate green; unlocked divergence pinned",
     "regime": "attenuating (gain/reference/max_gain <= 1, Q15); out-of-regime params raise"
-  }
+  },
+  "provenance": "session"
 }

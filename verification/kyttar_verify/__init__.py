@@ -33,6 +33,9 @@ from .compare import (
 from .orientation import (
     check_orientation_invariance, compare_dut_results, format_report,
     D4_ORIENTATIONS)
+from .session_report import (
+    write_session_report, report_path, reports_dir, session_failures,
+    NoSessionError)
 
 __all__ = [
     "check_orientation_invariance",
@@ -63,6 +66,11 @@ __all__ = [
     "compare_llr_against_grc",
     "LLRCompareResult",
     "write_report",
+    "write_session_report",
+    "report_path",
+    "reports_dir",
+    "session_failures",
+    "NoSessionError",
     "CompareResult",
     "Metric",
 ]

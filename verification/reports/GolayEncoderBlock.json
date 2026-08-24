@@ -18,5 +18,6 @@
     "round_trip": "brute-force nearest-codeword golden decoder, clean + 1/2/3-bit errors",
     "decision": "c = [d11..d0 p11..p0] MSB-first; p = m.B, B = the MacWilliams-Sloane bordered reverse circulant (symmetric, B.B^T = I); weight dist 1/759/2576/759/1",
     "note": "4-cell rate-expanding 12:24 (pack12 -> par7 -> par5 -> burst24, LOAD-table parity); bit-exact vs the G-matrix golden, delay 0"
-  }
+  },
+  "provenance": "session"
 }

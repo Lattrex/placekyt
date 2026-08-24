@@ -61,6 +61,8 @@ for p in (str(_PLACEKYT), str(_VERIFY), str(_RUNTIME)):
     if p not in sys.path:
         sys.path.insert(0, p)
 
+from kyttar_verify import write_session_report  # noqa: E402
+
 from kyttar_verify import run_block_dut_rate, D4_ORIENTATIONS  # noqa: E402
 from gr_kyttar.placement.blocks.chirp_generator_block import (  # noqa: E402
     ChirpGeneratorBlock)
@@ -502,7 +504,6 @@ def test_emit_report():
     exp = _ref_words(n, m, syms)
     assert dut.outputs_q15 == exp
     report = {
-        "kyttar_block": "ChirpGeneratorBlock", "passed": True,
         "metric": "exact", "n_compared": len(exp), "max_abs_err": 0,
         "tolerance": 0, "bit_errors": 0, "delay_used": 0,
         "snr_db_grid_n128": round(_snr_db(128, 128, [0, 1, 64, 127, 100]), 1),
@@ -511,6 +512,4 @@ def test_emit_report():
                      "saturated": True, "orientation_8d4_full_burst": True,
                      "wrap_midsymbol": True, "phase_carry_pinned": True},
     }
-    (_VERIFY / "reports").mkdir(exist_ok=True)
-    (_VERIFY / "reports" / "ChirpGeneratorBlock.json").write_text(
-        json.dumps(report))
+    write_session_report("ChirpGeneratorBlock", report)

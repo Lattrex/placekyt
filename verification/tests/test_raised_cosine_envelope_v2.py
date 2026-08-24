@@ -334,13 +334,17 @@ def test_onchip_bit_exact_default_sps_256():
 def test_emit_report():
     """Dashboard report: on-chip BIT-EXACT to the exact datapath (0 LSB); the exact
     datapath tracks the cited PSK31 ideal golden within the derived NCO interp floor
-    (<= ENV_TOL_LSB). passed=True — a finished, on-fabric, simKYT-verified block."""
+    (<= ENV_TOL_LSB).
+
+    The verdict is DERIVED from the steady-state error measured here against the
+    DERIVED tolerance — never typed in. A report is an artifact (INV-36)."""
     steady = _steady_state_err(PATTERNS["mixed"] + PATTERNS["mixed"], 8, 0.9)
+    assert steady <= TOL, f"steady-state err {steady} LSB > derived tol {TOL}"
     res = CompareResult(
-        passed=True,
+        passed=(steady <= TOL),
         metric=Metric.AMPLITUDE,
         n_compared=len(PATTERNS["mixed"]) * 8,
-        max_abs_err=0,                        # on-chip == exact datapath, 0 LSB
+        max_abs_err=steady,                   # MEASURED against the exact datapath
         tolerance=TOL,
         delay_used=8,                         # 1-symbol pipeline latency (sps)
     )

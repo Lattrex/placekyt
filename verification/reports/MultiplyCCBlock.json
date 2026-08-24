@@ -20,5 +20,6 @@
     "orientation_d4": true,
     "pipelined": true,
     "mutation": true
-  }
+  },
+  "provenance": "session"
 }

@@ -19,5 +19,6 @@
     "decision": "byte = MSB-first pack of k input LSBs; floor(nin/k) bytes (GR-exact)",
     "note": "1-cell bit-serial packer; BIT-EXACT vs pack_k_bits_bb, delay 0, tol 0",
     "hw_range": "k in 1..8 (packs into one byte); out-of-range RAISES"
-  }
+  },
+  "provenance": "session"
 }

@@ -17,5 +17,6 @@
     "roundtrip": "encode -> diff_decoder_bb == identity (M2/M4, both codings)",
     "gr_equiv": "digital.diff_encoder_bb(modulus, coding)",
     "note": "1 cell, 1-sample carry state; y[n]=(x[n]+y[n-1]+bias) mod M, bit-exact"
-  }
+  },
+  "provenance": "session"
 }

@@ -20,5 +20,6 @@
     "decision": "y[n]=(x[n]-x[n-1]) mod M, x[-1]=0; NRZI adds +1 (mod2)",
     "note": "1-cell 1-sample-state (previous INPUT) differential decoder; BIT-EXACT vs diff_decoder_bb, delay 0",
     "hw_deviation": "modulus must be power-of-two (on-chip modulo is a bitmask); NRZI requires modulus 2 (mirrors GR)"
-  }
+  },
+  "provenance": "session"
 }

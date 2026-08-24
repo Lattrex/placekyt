@@ -16,5 +16,6 @@
     "mutation": true,
     "max_depth": 64,
     "cells_at_depth_64": 13
-  }
+  },
+  "provenance": "session"
 }

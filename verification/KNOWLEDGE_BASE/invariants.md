@@ -1451,7 +1451,7 @@ target already holds the right value, or a ``CMP`` re-deriving a flag an earlier
 ACCUMULATOR-DELIVERY idiom above — it arrives in R0 and the cell's FIRST
 instruction re-emits it, freeing both the input register and the staging MOVE.
 
-## INV-35 — A dispatch ENTRY that no jump targets is DEAD CODE, and only the chip can tell you
+## INV-39 — A dispatch ENTRY that no jump targets is DEAD CODE, and only the chip can tell you
 
 **The rule:** in the multi-entry dispatch idiom (a cell whose PATH identity travels
 as *which entry* the next cell is jumped at — TwiddleMultiply, the octant fold,
@@ -1695,3 +1695,109 @@ not just routability, and say so in the layout docstring.
 `LOCK_FACE` barriers (INV-19/20 serialize-lock), ring/serpentine folds with an
 off-chain relay. Related: INV-23 (orientation invariance, which does NOT cover
 this), INV-35 (the layout dict is also a positional index).
+## INV-38 — A verification report is an ARTIFACT of a verified session, never a literal; ABSENCE must be the safe state
+
+`verification/reports/<Block>.json` is the file the dashboard reads as *"this
+block was verified against GNU Radio."* It is the project's unit of evidence.
+That makes a report writer the one place where a single hardcoded `True` can
+convert a **failing** session into a **green** claim — the exact failure the
+whole verification harness exists to eliminate, arriving through the harness's
+own front door.
+
+**The rule, in one line:** a report file must be a *function of the session that
+produced it*, and if that function cannot be evaluated, **no file must exist**.
+
+### How this was found (the real instance)
+
+A block's `test_zz_write_report` wrote `"passed": true` into its payload
+unconditionally. A session in which the saturated-drive gate **FAILED** still
+emitted a green report, because pytest continues past a failure by default and
+the writer runs in a *later* test. The dashboard would have read a pass that
+never happened. The builder caught it in its own code, deleted the false report,
+and fixed the writer; this invariant generalises that fix to every writer in the
+repository.
+
+### The three shapes of the defect
+
+All three write a green file that the session did not earn. Recognise all three:
+
+1. **The literal.** `report = {"passed": True, ...}` — the author asserts the
+   verdict. Nothing in the session can contradict it.
+2. **The fabricated result.** `write_report(name, CompareResult(passed=True, ...))`
+   — the same literal wearing the harness's own type. The call site looks correct;
+   the *result it is handed was invented*. This is the sneakiest shape, because
+   `write_report` genuinely does derive `passed` from `result.passed`.
+3. **The stale green.** A writer that derives its verdict honestly from ONE
+   comparison while OTHER gates in the same file — mutation, orientation,
+   saturation — failed. And, worse, a report left on disk by an earlier passing
+   session that a later crashed / killed / failing session never removed. The file
+   then attests to a state of the code that was never verified.
+
+Shape 3 is why "the writer asserts `res.passed` first" is **not** sufficient. A
+per-comparison verdict is not a session verdict.
+
+### The mechanism (uniform, in `kyttar_verify/session_report.py`)
+
+Every report goes through `write_session_report(block, payload)`, which does three
+things in this order — the order is load-bearing:
+
+1. **Unlink first.** Delete any existing report for that block *before the verdict
+   is known*. From that moment absence is the state of the world unless the call
+   completes. A crash, a kill, or a later failure all leave **no file**, and the
+   dashboard reads absence as "not verified" — which is true.
+
+   **The one documented limit, measured and gated:** unlink-first happens *inside*
+   the writer, so under `-x` — where the session aborts at the first failure and the
+   writer never runs — a green report from an *earlier* session survives. That is
+   the boundary of what a single-process mechanism can promise, and it is exactly
+   why the provenance audit treats a report as evidence only when its own suite has
+   been re-run **to completion**. A full run (no `-x`) does clear it. See
+   `test_dash_x_leaves_a_pre_existing_report_UNTOUCHED` — the limit is asserted, not
+   assumed, so it cannot be quietly forgotten or quietly regress.
+2. **Ask the session, not the module.** Read the accumulated per-test outcomes
+   recorded by `verification/tests/conftest.py` on the running pytest `Config`.
+   Any failure or any error means **no write**, and the writer itself FAILS,
+   naming the offending gates so a report-less run is never mistaken for a skip.
+3. **Stamp the provenance.** The written body carries `"provenance": "session"`,
+   so an auditor can tell an artifact from a literal by inspection.
+
+`verdict=False` records a **quarantine** — a block that does not work, whose suite
+passes because it asserts the documented failure. The session gate still applies
+in full, so `verdict` can only make a record *worse* than the session, never better.
+
+### Why the record lives on the pytest `Config`
+
+Not in a module-level global. A global is *exactly* the thing a crashed session
+leaves stale, and the whole point is that a dead session must leave nothing usable
+behind. `Config` is created per session, per process: it is invisible to a parallel
+invocation (each worker sees only its own outcomes), it cannot survive the process
+that made it, and if the conftest plugin is absent the record is simply missing —
+in which case the writer **refuses**, rather than assuming success. There is
+deliberately no "assume it passed" path.
+
+### The two gates (`verification/tests/test_report_provenance.py`)
+
+* **MECHANISM.** Runs a real writer in a child pytest session that also contains a
+  synthetic FAILING test, and asserts NO file is produced and the writer fails.
+  With a passing control (a writer that never writes would trivially satisfy "no
+  file"), an unlink-first case (a pre-seeded green report must not survive), and
+  `-x` / `-p no:randomly` / parallel cases. This is INV-4 applied to the writer:
+  **a writer never shown to REFUSE certifies nothing.**
+* **GUARD.** AST-scans `verification/tests/` for all three shapes and fails if a
+  new one appears, with its own INV-4 teeth: each shape is deliberately
+  reintroduced in a fixture tree and the guard is proven to fire on it, plus a
+  negative control proving it stays silent on a correct writer.
+
+### What this does NOT do
+
+It changes only **whether and when a report file is written**. It asserts nothing
+about any DUT and weakens no gate. If a suite was green before, it is green now
+and its report says the same thing — with provenance attached.
+
+### The general rule, for any evidence artifact
+
+This is not really about JSON. Any file, dashboard row, or status string that
+**claims** a verification happened must be produced by the verification, and must
+be **absent** when the verification did not complete. A green default is a lie
+waiting for a crash. If you cannot compute the verdict, emit nothing.
+

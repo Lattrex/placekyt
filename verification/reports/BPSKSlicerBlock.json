@@ -17,5 +17,6 @@
     "mutation": true,
     "decision": "sign of input: >=0 -> 1 (tie -> 1), <0 -> 0 (GR-exact)",
     "note": "1-cell memoryless slicer; bit-exact vs binary_slicer_fb, delay 0"
-  }
+  },
+  "provenance": "session"
 }

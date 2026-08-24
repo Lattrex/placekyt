@@ -48,6 +48,8 @@ for p in (str(_RUNTIME), str(_PLACEKYT), str(_VERIFY)):
     if p not in sys.path:
         sys.path.insert(0, p)
 
+from kyttar_verify import write_session_report  # noqa: E402
+
 from kyttar_verify import run_block_dut  # noqa: E402
 from gr_kyttar.placement.blocks.chirp_symbol_mapper_block import (  # noqa: E402
     ChirpSymbolMapperBlock)
@@ -247,13 +249,10 @@ def test_emit_report():
     gr = _gr_pack(bits, k)
     assert got == list(range(m)) == gr
     report = {
-        "kyttar_block": "ChirpSymbolMapperBlock", "passed": True,
         "metric": "exact", "n_compared": m, "max_abs_err": 0, "tolerance": 0,
         "bit_errors": 0, "delay_used": 0,
         "coverage": {"param_sweep": 4, "exhaustive_m": [4, 16, 64],
                      "gr_bit_exact": True, "lifted_cap_m1024": True,
                      "mutation": True, "msb_first_pinned": True},
     }
-    (_VERIFY / "reports").mkdir(exist_ok=True)
-    (_VERIFY / "reports" / "ChirpSymbolMapperBlock.json").write_text(
-        json.dumps(report))
+    write_session_report("ChirpSymbolMapperBlock", report)

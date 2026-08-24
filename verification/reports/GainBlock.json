@@ -14,5 +14,6 @@
     "random": 3,
     "param_sweep": 4,
     "mutation": true
-  }
+  },
+  "provenance": "session"
 }

@@ -14,5 +14,6 @@
     "patterns": "3000 uniform complex points + rails/axes/seam edges; chip bit-exact to reference per-sample AND saturated-pipelined",
     "mutation": true,
     "note": "CORDIC vectoring, 14 iterations, prescale 1/4, max 19.7 LSB vs GR (gate 40); |v|>1 saturates by design"
-  }
+  },
+  "provenance": "session"
 }

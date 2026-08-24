@@ -14,5 +14,6 @@
     "patterns": "400-symbol random RRC constellation_16qam burst, carrier offset, full MF->gain->MMTiming->Costas->slicer chain",
     "mutation": true,
     "note": "whole-RX-chain BER-0 gate (placekyt/tests/test_qam16_modem_ber.py owns the mutations); DD loops have no sample-exact GR twin \u2014 decision-level recovery is the claim"
-  }
+  },
+  "provenance": "session"
 }

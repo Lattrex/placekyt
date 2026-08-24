@@ -1,7 +1,7 @@
 {
   "kyttar_block": "GardnerTimingRecovery",
-  "grc_block": "digital.symbol_sync_cc (TED_GARDNER)",
   "passed": false,
+  "grc_block": "digital.symbol_sync_cc (TED_GARDNER)",
   "status": "needs_human",
   "metric": "decision",
   "verdict": "QUARANTINE",
@@ -55,5 +55,6 @@
     "dut_worst_reference_ber": 0.122
   },
   "verified_alternative": "MMTimingRecoveryBlock",
-  "notes": "QUARANTINE (INV-25 + the scope steer). GardnerTimingRecovery is NOT a drop-in for digital.symbol_sync_cc(TED_GARDNER) on the industry-standard matched-filter Nyquist 2-sps channel: GR locks BER 0 across the whole fractional-offset sweep; the Q15 Gardner loop recovers at BER ~0.04-0.12 (reference) / ~0.05-0.10 (on-chip) because the TED HALVES the BPSK sample difference (>>1) to fit int16 and the resulting timing jitter closes the Nyquist eye. The block converges BER 0 ONLY on a non-Nyquist synthetic stimulus (its own _make_bpsk_2sps) that GR ITSELF cannot lock (BER ~0.45) \u2014 it was tuned outside GR's regime. Gardner is a BPSK/QPSK-only TED and this matches the documented 4-PAM limit that blocked the M17 4FSK modem. The VERIFIED timing-recovery block for this channel is MMTimingRecoveryBlock (bit-exact vs GR symbol_sync_cc, BER 0). Fixing Gardner is a datapath REDESIGN (a wider TED product without the >>1 truncation), not a tolerance tweak \u2014 quarantined for a human."
+  "notes": "QUARANTINE (INV-25 + the scope steer). GardnerTimingRecovery is NOT a drop-in for digital.symbol_sync_cc(TED_GARDNER) on the industry-standard matched-filter Nyquist 2-sps channel: GR locks BER 0 across the whole fractional-offset sweep; the Q15 Gardner loop recovers at BER ~0.04-0.12 (reference) / ~0.05-0.10 (on-chip) because the TED HALVES the BPSK sample difference (>>1) to fit int16 and the resulting timing jitter closes the Nyquist eye. The block converges BER 0 ONLY on a non-Nyquist synthetic stimulus (its own _make_bpsk_2sps) that GR ITSELF cannot lock (BER ~0.45) \u2014 it was tuned outside GR's regime. Gardner is a BPSK/QPSK-only TED and this matches the documented 4-PAM limit that blocked the M17 4FSK modem. The VERIFIED timing-recovery block for this channel is MMTimingRecoveryBlock (bit-exact vs GR symbol_sync_cc, BER 0). Fixing Gardner is a datapath REDESIGN (a wider TED product without the >>1 truncation), not a tolerance tweak \u2014 quarantined for a human.",
+  "provenance": "session"
 }

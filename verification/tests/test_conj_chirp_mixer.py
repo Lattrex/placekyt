@@ -59,6 +59,8 @@ for p in (str(_PLACEKYT), str(_VERIFY), str(_RUNTIME)):
     if p not in sys.path:
         sys.path.insert(0, p)
 
+from kyttar_verify import write_session_report  # noqa: E402
+
 from kyttar_verify import run_block_dut_complex  # noqa: E402
 from gr_kyttar.placement.blocks.conj_chirp_mixer_block import (  # noqa: E402
     ConjChirpMixerBlock)
@@ -401,7 +403,6 @@ def test_emit_report():
             np.sum(np.abs(ideal) ** 2)
             / max(np.sum(np.abs(seg - ideal) ** 2), 1e-12)))
     report = {
-        "kyttar_block": "ConjChirpMixerBlock", "passed": True,
         "metric": "exact", "n_compared": len(ref) * 2, "max_abs_err": 0,
         "tolerance": 0, "bit_errors": 0, "delay_used": 0,
         "dechirp_tone_snr_db_worst": round(float(min(snrs)), 1),
@@ -410,6 +411,4 @@ def test_emit_report():
                      "all_symbols_dechirp": True, "saturating_rails": True,
                      "locked_variant": True},
     }
-    (_VERIFY / "reports").mkdir(exist_ok=True)
-    (_VERIFY / "reports" / "ConjChirpMixerBlock.json").write_text(
-        json.dumps(report))
+    write_session_report("ConjChirpMixerBlock", report)

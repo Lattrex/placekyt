@@ -20,5 +20,6 @@
     "decision": "one 16-bit CRC word per frame_len bytes (rate-reducing)",
     "note": "1-cell bit-serial carry-select datapath; EXACT, delay 0, tol 0",
     "hw_range": "poly/init 16-bit, frame_len 1..65535; out-of-range RAISES"
-  }
+  },
+  "provenance": "session"
 }

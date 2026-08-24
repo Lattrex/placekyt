@@ -1118,9 +1118,14 @@ def test_write_report(blk, long_run, dataset):
     MANIFEST_PATH.write_text(
         json.dumps(blk.weight_location_manifest(), indent=1) + "\n")
     s = blk.scale_shifts
+    # DERIVED, not asserted: the long run's own measured decision agreement is the
+    # verdict this report carries. (A GRU recurrence has no GR counterpart, so the
+    # golden is the chip-exact integer reference model — see "golden" below.)
+    agreement = float(long_run["agreement"])
+    assert agreement == 1.0, f"on-chip decisions diverged: agreement={agreement}"
     write_report(
         "GRUCellBlock",
-        CompareResult(passed=True, metric=Metric.EXACT,
+        CompareResult(passed=(agreement == 1.0), metric=Metric.EXACT,
                       n_compared=long_run["steps"], max_abs_err=0.0,
                       tolerance=0.0, delay_used=0),
         coverage={

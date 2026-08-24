@@ -1,1 +1,21 @@
-{"kyttar_block": "ConjChirpMixerBlock", "passed": true, "metric": "exact", "n_compared": 512, "max_abs_err": 0, "tolerance": 0, "bit_errors": 0, "delay_used": 0, "dechirp_tone_snr_db_worst": 86.1, "dechirp_tone_snr_db_mean": 87.8, "coverage": {"param_sweep": 3, "bit_exact": true, "mutation": true, "all_symbols_dechirp": true, "saturating_rails": true, "locked_variant": true}}
+{
+  "kyttar_block": "ConjChirpMixerBlock",
+  "passed": true,
+  "metric": "exact",
+  "n_compared": 512,
+  "max_abs_err": 0,
+  "tolerance": 0,
+  "bit_errors": 0,
+  "delay_used": 0,
+  "dechirp_tone_snr_db_worst": 86.1,
+  "dechirp_tone_snr_db_mean": 87.8,
+  "coverage": {
+    "param_sweep": 3,
+    "bit_exact": true,
+    "mutation": true,
+    "all_symbols_dechirp": true,
+    "saturating_rails": true,
+    "locked_variant": true
+  },
+  "provenance": "session"
+}

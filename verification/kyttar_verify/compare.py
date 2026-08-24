@@ -27,12 +27,13 @@ worse than no gate, because the whole value proposition is drop-in equivalence.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
 import numpy as np
+
+from .session_report import report_path, write_session_report
 
 
 class Metric(Enum):
@@ -92,13 +93,24 @@ def write_report(kyttar_block: str, result: "CompareResult", *,
     ``{"edge": True, "random": 3, "param_sweep": 4, "mutation": True}``) so the
     dashboard can show coverage at a glance. Written to
     ``verification/reports/<KyttarBlock>.json`` by default.
+
+    **The file only appears if the SESSION earned it (INV-36).** This function
+    assembles the measured payload; :func:`session_report.write_session_report`
+    decides whether it is written. It unlinks any existing report first (so a
+    failing or dying run leaves NO file rather than a stale green) and writes only
+    when the session's own outcome record shows zero failures and zero errors.
+
+    A ``result`` that did not itself pass is a hard refusal regardless: a report is
+    an artifact of a verified comparison, never a literal.
     """
-    out_dir = Path(reports_dir) if reports_dir else (
-        Path(__file__).resolve().parents[1] / "reports")
-    out_dir.mkdir(parents=True, exist_ok=True)
+    if not result.passed:
+        # Delete first — the caller's own comparison failed, so any pre-existing
+        # report for this block is now unproven and must not survive.
+        report_path(kyttar_block, reports_dir).unlink(missing_ok=True)
+        raise AssertionError(
+            f"NOT writing verification/reports/{kyttar_block}.json — the "
+            f"comparison it would report did not pass: {result.summary()}")
     rec = {
-        "kyttar_block": kyttar_block,
-        "passed": bool(result.passed),
         "metric": result.metric.value,
         "n_compared": result.n_compared,
         "max_abs_err": result.max_abs_err,
@@ -110,9 +122,7 @@ def write_report(kyttar_block: str, result: "CompareResult", *,
         "delay_used": result.delay_used,
         "coverage": coverage or {},
     }
-    path = out_dir / f"{kyttar_block}.json"
-    path.write_text(json.dumps(rec, indent=2) + "\n")
-    return path
+    return write_session_report(kyttar_block, rec, reports_dir=reports_dir)
 
 
 def q15_quant_floor(op_count: int, head_shift: int = 0) -> int:

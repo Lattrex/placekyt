@@ -14,5 +14,6 @@
     "reference_sweep": 3,
     "mutation": true,
     "regime": "attenuating (gain<=1); amplification needs gain headroom"
-  }
+  },
+  "provenance": "session"
 }

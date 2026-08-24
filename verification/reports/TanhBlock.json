@@ -20,5 +20,6 @@
     "clamp": "beyond-domain asymptote pinned (dshift>0)",
     "saturated": "pipelined == per-sample bit-exact (dshift 0,1)",
     "mutation": "wrong-table-entry / off-by-one-clamp / broken-sign-fold / wrong-dshift-patch / inverted / +1-delay / empty"
-  }
+  },
+  "provenance": "session"
 }

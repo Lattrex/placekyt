@@ -16,5 +16,6 @@
     "mutation": true,
     "gr_equiv": "no single GR block; inverse of the M17 mapper (loopback identity)",
     "note": "M17 4FSK RX slicer; 1 level -> 2 bits (b0 LSB, b1 MSB)."
-  }
+  },
+  "provenance": "session"
 }

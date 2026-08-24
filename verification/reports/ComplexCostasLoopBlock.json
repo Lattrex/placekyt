@@ -1,7 +1,7 @@
 {
   "kyttar_block": "ComplexCostasLoopBlock",
-  "grc_block": "digital.costas_loop_cc",
   "passed": true,
+  "grc_block": "digital.costas_loop_cc",
   "metric": "decision",
   "coverage": {
     "orders": [
@@ -76,5 +76,6 @@
     }
   },
   "diag_worst_peak_lsb_rmsnorm": 1513.2,
-  "notes": "Decision-directed complex Costas carrier recovery = digital.costas_loop_cc. order 2 (BPSK, 7 cells, single yi_tap out) + order 4 (QPSK, 8 cells, 4x2 fold, complex yi_tap/yq_tap out). On-chip BIT-EXACT to process_reference (itself sign-exact vs GR costas_loop_cc) on BOTH recovered rails across the order x loop_bw x offset sweep; 0 hard-decision mismatches vs GR. Metric is DECISION: a Q15 loop and GR's float loop reach the SAME symbol decisions along different soft-value trajectories, so the amplitude differs by hundreds of LSB (diag_worst_peak_lsb_rmsnorm) while every hard decision agrees. Saturation-safe (INV-19, pipeline_lock) + orientation-invariant. FIXED PoC bug (INV-25): the order-4 recovered COMPLEX pair failed to egress a CHIP PORT standalone (199/200 wrong) \u2014 the port-egress patch mis-read the order-dependent interface param-blind and, for the fused qpd (err+tap) cell, patched only the last WRITE (yq_tap), stranding yi_tap on a stale @1 hop that collided with the err->pd_pi handoff. Fix (engine/build.py): resolve the complex-out flag WITH params, and patch the last N tail WRITEs (the recovered rails) for a fused output+handoff cell egressing a port. The ABUTTED path (QPSK modem Costas->Gardner, BER 0) was always correct."
+  "notes": "Decision-directed complex Costas carrier recovery = digital.costas_loop_cc. order 2 (BPSK, 7 cells, single yi_tap out) + order 4 (QPSK, 8 cells, 4x2 fold, complex yi_tap/yq_tap out). On-chip BIT-EXACT to process_reference (itself sign-exact vs GR costas_loop_cc) on BOTH recovered rails across the order x loop_bw x offset sweep; 0 hard-decision mismatches vs GR. Metric is DECISION: a Q15 loop and GR's float loop reach the SAME symbol decisions along different soft-value trajectories, so the amplitude differs by hundreds of LSB (diag_worst_peak_lsb_rmsnorm) while every hard decision agrees. Saturation-safe (INV-19, pipeline_lock) + orientation-invariant. FIXED PoC bug (INV-25): the order-4 recovered COMPLEX pair failed to egress a CHIP PORT standalone (199/200 wrong) \u2014 the port-egress patch mis-read the order-dependent interface param-blind and, for the fused qpd (err+tap) cell, patched only the last WRITE (yq_tap), stranding yi_tap on a stale @1 hop that collided with the err->pd_pi handoff. Fix (engine/build.py): resolve the complex-out flag WITH params, and patch the last N tail WRITEs (the recovered rails) for a fused output+handoff cell egressing a port. The ABUTTED path (QPSK modem Costas->Gardner, BER 0) was always correct.",
+  "provenance": "session"
 }

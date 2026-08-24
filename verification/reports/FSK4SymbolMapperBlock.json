@@ -16,5 +16,6 @@
     "mutation": true,
     "gr_equiv": "digital.chunks_to_symbols_bf([+1/3,+1,-1/3,-1], 1) over dibits",
     "note": "M17 4FSK TX mapper; bit-fed (2 LSB-first bits -> 1 PAM level)."
-  }
+  },
+  "provenance": "session"
 }

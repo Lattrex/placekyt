@@ -57,7 +57,8 @@ for p in (str(_PLACEKYT), str(_VERIFY), str(_RUNTIME)):
 
 from kyttar_verify import (  # noqa: E402
     run_block_dut_complex, run_gnuradio_ref_complex, compare_complex_against_grc,
-    Metric)
+    Metric,
+    write_session_report)
 from gr_kyttar.placement.blocks.freq_xlating_fir_block import (  # noqa: E402
     FreqXlatingFIRBlock)
 
@@ -365,7 +366,7 @@ def test_write_report():
                                       tolerance=GR_TOL_LSB)
     assert res.passed, res.summary()
     report = {
-        "kyttar_block": "FreqXlatingFIR", "passed": True, "metric": "amplitude",
+        "metric": "amplitude",
         "n_compared": res.i.n_compared, "max_abs_err": res.i.max_abs_err,
         "tolerance": res.i.tolerance, "nmse_db": res.i.nmse_db,
         "correlation": res.i.correlation, "bit_errors": 0, "delay_used": 0,
@@ -373,5 +374,4 @@ def test_write_report():
                      "center_freq_zero": True, "decimation": [1, 2, 4],
                      "orientation_invariant": True},
     }
-    (_VERIFY / "reports").mkdir(exist_ok=True)
-    (_VERIFY / "reports" / "FreqXlatingFIR.json").write_text(json.dumps(report))
+    write_session_report("FreqXlatingFIR", report)

@@ -16,5 +16,6 @@
     "bit_exact": true,
     "mutation": true,
     "orientation": true
-  }
+  },
+  "provenance": "session"
 }

@@ -1,7 +1,8 @@
 {
+  "kyttar_block": "MMTimingRecoveryBlock",
+  "passed": true,
   "block": "MMTimingRecoveryBlock",
   "grc_block": "digital.symbol_sync_cc (TED_MUELLER_AND_MULLER)",
-  "passed": true,
   "metric": "on-chip bit-exact vs GR-verified process_reference",
   "coverage": {
     "offsets": [
@@ -48,5 +49,6 @@
       "q_mismatches": 0
     }
   },
-  "notes": "M&M decision-directed timing recovery for 16-QAM. Rice Ch.8 modulo-1 counter + cubic Farrow + M&M TED + PI. On-chip 14 cells, 0 mismatches vs process_reference (itself bit-exact vs GR symbol_sync_cc). Unconditionally saturation-safe AND orientation-safe via the serialize-LOCK."
+  "notes": "M&M decision-directed timing recovery for 16-QAM. Rice Ch.8 modulo-1 counter + cubic Farrow + M&M TED + PI. On-chip 14 cells, 0 mismatches vs process_reference (itself bit-exact vs GR symbol_sync_cc). Unconditionally saturation-safe AND orientation-safe via the serialize-LOCK.",
+  "provenance": "session"
 }

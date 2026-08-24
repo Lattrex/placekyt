@@ -9,6 +9,55 @@ block-specific gotcha. Promote anything that generalizes across block classes in
 and superseded material merged into the surviving entries; no durable lesson was
 dropped) — append new entries above the oldest ones as before.
 
+## FFT64Block / FFT128Block — the single-block PLACEMENT wall, quarantined at the FIT CHECK 2026-08-23
+
+The first queue item stopped BEFORE authoring, on arithmetic alone — and that
+is the correct outcome, not a failure: the fit check was run first (as the
+dispatch required), it failed decisively, and the wall is a publishable
+architecture datum. Both rows are `needs_human`; the executable form of the
+finding is `verification/tests/test_fft64_fit_limit.py` (7 tests, green).
+
+- **The wall: a 64-point single-block streaming R2SDF cannot fit the 10x12.**
+  Floor from SHIPPED MEASURED constants only — per-stage spine 7 cells (ctl +
+  4 RHE leg cells at 24-25/32 words each + gather + out), ComplexDelayLine
+  density 5 complex samples/cell, TwiddleMultiply direct chain 5 cells — gives
+  **77+ cells** for N=64 (42 spine + 15 delay/relay + 10 for the two shipped
+  FFT16-shape stages + 5 for the P=16 stage + 5+ for the octant-folded P=32
+  stage) and **102+ for N=128**. The same accounting REPRODUCES the shipped
+  FFT16Block (floor 43 + its one documented layout-padding delay cell = 44) —
+  calibrate a floor formula against a shipped block before trusting it.
+- **The cap is 8x8 = 64 cells, and the D4 gate is what makes it bind BOTH
+  dims.** INV-9's ≤8-across derives from the 10-wide axis (bus channel each
+  side); the mandatory 8-orientation invariance gate rotates a block 90°,
+  swapping its dims — so a "tall" 8x10 fold is not an escape (rotated it is
+  10 wide = zero channels = unroutable). Banded at 8 wide, FFT64 needs 11
+  rows on the 12-tall chip: no top/bottom channels even at identity. The gap
+  is structural, not tunable: even charging ZERO cells for all N=64-specific
+  twiddle machinery leaves 67 > 64.
+- **The wall is GEOMETRIC, not numeric — the octant fold is proven.** The
+  big-N twiddle growth path (two octant tables, COS and SIN over (0, π/4]:
+  8+8 words at N=64, 16+16 at N=128, one cell each) reconstructs every
+  non-trivial `round(32768·x)` twiddle word pair BIT-EXACTLY — asserted
+  exhaustively at both sizes against the shipped `quantize_twiddle`, with
+  INV-4 negatives (wrong-quadrant-sign and un-reflected-quadrant folds break
+  the equality). The fold is `o = k // (N/8)`, `m = |k − round_{N/4}(k)|`,
+  steering per octant (+C,−S)/(+S,−C)/(−S,−C)/(−C,−S); the π/4 boundary slots
+  (k = N/8, 3N/8) quantize identically through cos and sin float paths (both
+  23170), so the boundary octant assignment is free. Table STORAGE was never
+  the blocker — do not let the quarantine be misread as "tables don't fit".
+- **Pre-build estimates in planning notes are not budgets.** The manifest
+  carried "~49-57 cells" (N=64) and "~65-75, should fit" (N=128) — both wrong
+  by ~50%, written before FFT16 existed. Once ONE calibrated instance ships,
+  re-derive every scaling estimate from its measured per-stage costs before
+  starting the next size. Ten minutes of arithmetic saved a doomed multi-day
+  build.
+- **The unblock is a product-shape decision, so it is a HUMAN call:** split
+  the pipeline into 2-3 chained stage-blocks wired in GRC (each under the
+  64-cell cap; needs an inter-block contract for the per-stage serialize-LOCK
+  handoff and a composite gate), or a bigger array. The guard test flips
+  (starts failing) if `MAX_CELLS_ACROSS` or `SAMPLES_PER_CELL` ever grow —
+  that is the un-quarantine signal.
+
 ## FFT16Block — 16-point streaming R2SDF FFT: the stop-gate composite, PASSED 2026-08-23
 
 The FFT track's hard gate: a 44-cell, 4-stage streaming radix-2 single-path

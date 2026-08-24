@@ -42,5 +42,6 @@
       "two_tone": 72.0
     },
     "snr_floor_note": "floors are the measured minimum over 40 seeds per class, rounded down. The weakest class (noise -26 dBFS, 53 dB) sits between the N=16 floor (58 dB) and the N=64 design floor (51 dB). DISCLOSED: 3 of 40 noise -6 dBFS seeds reach the twiddle-multiply saturating combine and drop to ~32 dB \u2014 correct pinned behaviour, and NOT an N=32 phenomenon: measured over 400 seeds it fires on 12.5% of N=32 runs vs 7.8% of N=16 runs, and MATCHED FOR SAMPLE COUNT N=16 is 15.8% \u2014 slightly MORE often. Both suites' gated seeds measure 0 clamps. Gated by test_noise_m6_clamp_reachability_is_disclosed and test_the_same_clamp_is_reachable_at_n16_..."
-  }
+  },
+  "provenance": "session"
 }

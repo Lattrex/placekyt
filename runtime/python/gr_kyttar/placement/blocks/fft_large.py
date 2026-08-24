@@ -220,9 +220,13 @@ Two constraints do survive, and both are real:
 Constructing a size that does not fit raises :class:`LargeFFTGeometryError`
 with the exact shortfall — a LOUD failure, not a silently-unroutable layout.
 """
+import hashlib
+import json
+import os
 from collections import deque
+from pathlib import Path
 from itertools import product as _product
-from typing import Dict, List, Sequence, Tuple
+from typing import Optional, Dict, List, Sequence, Tuple
 
 import numpy as np
 
@@ -720,6 +724,95 @@ RING_FOLD_NEEDS_EVEN_LENGTH = True
 # LargeFFTBlock — the chip-scale streaming R2SDF composite.
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# On-disk plan cache
+# ---------------------------------------------------------------------------
+# The in-memory ``_PLAN_CACHE`` only helps WITHIN one process. Every fresh
+# process — every GUI launch, since the block catalog probes one instance of
+# every block to read its ports — paid the full spine search again: measured
+# 23 s per FFT size, ~35 s for the four sizes, which is the whole of placeKYT's
+# startup time.
+#
+# The plan is a pure function of (class, N, stage range) over a fixed board, so
+# it is safe to persist. The file is keyed by that tuple AND by a fingerprint of
+# the planner source: edit the planner and every entry is invalidated
+# automatically, so a stale layout can never outlive the code that produced it.
+# A miss, a corrupt file, or an unwritable cache directory all fall through to
+# the real planner — the cache is never load-bearing for correctness.
+
+def _planner_fingerprint() -> str:
+    """Hash of this module's source: the cache dies when the planner changes."""
+    global _FINGERPRINT
+    if _FINGERPRINT is None:
+        try:
+            src = Path(__file__).read_bytes()
+        except OSError:  # pragma: no cover - unreadable source
+            src = b""
+        _FINGERPRINT = hashlib.sha256(src).hexdigest()[:16]
+    return _FINGERPRINT
+
+
+_FINGERPRINT: Optional[str] = None
+
+
+def _disk_plan_path() -> Optional[Path]:
+    base = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
+    try:
+        d = Path(base) / "placekyt"
+        d.mkdir(parents=True, exist_ok=True)
+        return d / "fft_spine_plans.json"
+    except OSError:  # pragma: no cover - unwritable cache dir
+        return None
+
+
+def _disk_plan_load(key: Tuple) -> Optional[Tuple]:
+    path = _disk_plan_path()
+    if path is None or not path.exists():
+        return None
+    try:
+        blob = json.loads(path.read_text())
+        if blob.get("fingerprint") != _planner_fingerprint():
+            return None                      # planner changed: entries are void
+        entry = blob.get("plans", {}).get(_key_str(key))
+        if entry is None:
+            return None
+        layout = {k: tuple(v) for k, v in entry["layout"].items()}
+        return layout, list(entry["order"]), entry["col"]
+    except Exception:  # noqa: BLE001 - a corrupt cache must never break a build
+        return None
+
+
+def _disk_plan_store(key: Tuple, plan: Tuple) -> None:
+    path = _disk_plan_path()
+    if path is None:
+        return
+    layout, order, col = plan
+    try:
+        blob = {}
+        if path.exists():
+            try:
+                blob = json.loads(path.read_text())
+            except Exception:  # noqa: BLE001
+                blob = {}
+        if blob.get("fingerprint") != _planner_fingerprint():
+            blob = {"fingerprint": _planner_fingerprint(), "plans": {}}
+        blob.setdefault("plans", {})[_key_str(key)] = {
+            "layout": {k: list(v) for k, v in layout.items()},
+            "order": list(order),
+            "col": col,
+        }
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(blob))
+        tmp.replace(path)                    # atomic: no half-written cache
+    except Exception:  # noqa: BLE001 - caching is best-effort, never required
+        pass
+
+
+def _key_str(key: Tuple) -> str:
+    cls, n, stages = key
+    return f"{cls}|{n}|{','.join(str(s) for s in stages)}"
+
+
 class LargeFFTBlock(KyttarBlock):
     """N-point streaming R2SDF FFT for the SPINE-FOLD sizes (N = 32, 64, 128).
 
@@ -832,7 +925,11 @@ class LargeFFTBlock(KyttarBlock):
         # size gets the identical layout.
         key = (type(self).__name__, n, self._stage_ids)
         if key not in LargeFFTBlock._PLAN_CACHE:
-            LargeFFTBlock._PLAN_CACHE[key] = self._plan()
+            cached = _disk_plan_load(key)
+            if cached is None:
+                cached = self._plan()
+                _disk_plan_store(key, cached)
+            LargeFFTBlock._PLAN_CACHE[key] = cached
         layout, order, col = LargeFFTBlock._PLAN_CACHE[key]
         self._layout, self._order, self._spine_col = dict(layout), list(order), col
 

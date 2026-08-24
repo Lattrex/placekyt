@@ -9,6 +9,53 @@ block-specific gotcha. Promote anything that generalizes across block classes in
 and superseded material merged into the surviving entries; no durable lesson was
 dropped) — append new entries above the oldest ones as before.
 
+## VERIFY THE PARTS SEPARATELY — how a 2-die split localised its own failure, and 3 engine defects the shipped 2-chip example could never expose 2026-08-24
+
+Splitting the N=128 FFT across two dies produced a system that placed, routed and
+built on both chips and emitted NOTHING. What made that tractable was refusing to
+debug it as one thing.
+
+- **DECOMPOSE BEFORE DIAGNOSING.** A feed-forward 2-die design has exactly three
+  independently checkable parts: die 0, die 1, and the CROSSING. Each die was built
+  ALONE on one chip (`x16_in -> die -> x16_out`) and driven:
+  die 0 → **80/80 bit-exact** (16 non-zero outputs past its delay-64 latency);
+  die 1 → **200/200 bit-exact** when fed *die 0's own output stream*, which is what
+  it sees in service. Both halves correct ⇒ the fault is the crossing, established by
+  measurement in two cheap single-chip runs instead of inferred from a dead system.
+  **Feed each stage the stream it actually receives**, not the raw input — otherwise a
+  passing stage-2 gate says nothing about the assembled chain.
+
+- **THEN DIFF THE SAME BLOCK BUILT BOTH WAYS.** The decisive evidence was building
+  the IDENTICAL die for one chip and for two and comparing its exit cell:
+  ```
+  one chip  : WRITE @1 x3 (feedback pair + lock-clear) + WRITE @19 x2 + JUMP @19
+  two chips : ALL FIVE at @23
+  ```
+  Same block, same anchor, same cell — so the difference is the build path, not the
+  design. That diff is worth reaching for whenever a component works in one context
+  and not another.
+
+- **THREE ENGINE DEFECTS, all invisible to the shipped example.** `_patch_cell_handoff`
+  rewrote EVERY WRITE/JUMP in the exit cell to the cross-chip hop, so a block whose
+  exit cell also carries internal handoffs lost them: an R2SDF stage's `out` writes
+  its emerging pair back into its own `ctl` and clears the stage's serialize-LOCK at
+  @1 before emitting. Patching only the LAST write is also wrong (a complex exit emits
+  out_i THEN out_q and both rails need the hop), and both rails were steered to
+  `in_regs[0]` when a complex packet's rails go to CONSECUTIVE registers. The
+  single-chip Router had honoured all of this for as long as `output_at_last_write`
+  existed; the inter-chip path never had. **It hid because the only shipped 2-chip
+  example is a GainBlock, whose exit cell emits nothing but its output write — there
+  was nothing to clobber.** An engine path exercised by exactly one trivial example is
+  untested for every non-trivial one.
+
+- **FIXING WHAT YOU PROVED IS NOT THE SAME AS FIXING THE BUG.** All three defects are
+  real, demonstrated, and fixed (27 multichip tests still pass). The 2-die FFT still
+  livelocks. The commit says so: the exit cell is now provably byte-identical to its
+  working single-chip form, and at least one further fault remains. Landing three
+  proven fixes while stating plainly that the feature does not work is the honest
+  outcome — the alternative, quietly implying the last fix was the fix, is how a
+  broken feature ships.
+
 ## MERGING TWO AGENTS' WORK ON ONE PLANNER — a fallback inside a backtracking search is an EXPONENTIAL, and a layout hash is the only proof a merge is safe 2026-08-24
 
 FFT32 and FFT64 were built in parallel against the same `fft_large.py`. Both hit the

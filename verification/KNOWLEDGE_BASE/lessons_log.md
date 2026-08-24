@@ -9,6 +9,101 @@ block-specific gotcha. Promote anything that generalizes across block classes in
 and superseded material merged into the surviving entries; no durable lesson was
 dropped) — append new entries above the oldest ones as before.
 
+## GRUCellBlock — the recurrent composite: 51 cells, one closed ring, bit-exact h ON CHIP 2026-08-24
+
+The largest single block in the catalog and the first with an INTERNAL
+recurrence over a whole macro-loop: one full GRU timestep (H=4, I=2) plus its
+4-class linear readout head, folded as ONE closed 7x8 ring serpentine (the FLL
+column-pair fold) with 48 ring cells + an off-ring egress relay + two face-only
+ring-closure transits. Bit-exact on chip at BOTH verification levels; 46 tests.
+Durable lessons:
+
+- **THE LAYOUT DICT IS A POSITIONAL INDEX, not just a geometry table — put
+  every PROGRAM cell first, in `build_cell_programs` order, and the FACE-only
+  transit cells LAST.** The router resolves a declared internal handoff by
+  `pb.cells[cell_programs_keys.index(dst)]`; `pb.cells` comes from
+  `default_layout`. Interleaving a transit at its *ring* position (the natural
+  thing to do when the layout function walks the serpentine) shifts every later
+  program cell's resolved destination by the number of preceding transits, and
+  the block builds, routes, and computes garbage. Symptom when it bit: two
+  orientations produced correct h and six did not, with no build error.
+- **A cell whose ONLY output is the block's EXTERNAL egress must be the LAST
+  program cell.** Its hop is stamped later by the build's egress patcher, but
+  until then the router's positional-default branch ("hand this port to the
+  NEXT dict cell") is still live for that port — and that default traces the
+  ROUTE-TIME faces, which on a CLOSED ring can go the LONG way round. Measured:
+  the identity fold traced 6 hops, the two 180-degree D4 orientations traced 44
+  and the assembler rejected `Distance must be 0-31` before the patcher ran.
+  Found ONLY by the 8-orientation gate; nothing at identity hinted at it.
+  Two tempting non-fixes, both measured and both wrong: declaring the port
+  `__terminate__` in `internal_connections` makes the cell an internal-handoff
+  SOURCE, so `_reassert_internal_forward_faces` restores its authored face and
+  KILLS the routed egress (no output at all, the ring stalls with h frozen);
+  and moving the relay off-abutment leaves `amx`'s in-program FACE flip aimed
+  at a Manhattan fallback that does not follow the ring.
+- **Read the STATE, not just the decision — a recurrent block makes this
+  cheap and it is the whole gate.** The four hidden words live in the `umB{i}`
+  cells' pinned `hs` registers, so `read_cell_memory` gives the on-chip h
+  trajectory after every timestep. That is the level where faults show: the
+  gate's random-feature class stream is near-constant (mostly one class), and
+  three of the first mutants PASSED a decision-only comparison while being
+  plainly broken. Two consequences worth carrying: build the mutation stimulus
+  by STITCHING real clips of every class (assert `len(set(golden)) >= 3` so the
+  stimulus is proven multi-valued), and gate each mutant at the level it can
+  actually move — a HEAD-scale fault provably cannot perturb h, since the
+  readout is strictly downstream, so asserting it there is asserting a
+  falsehood.
+- **A trained model can be robust enough that a single perturbed weight word
+  changes nothing you can see at the decision level — say so, don't inflate the
+  mutant.** One coefficient shifted 600 LSB moved h on 239/240 steps but left
+  every clip-level VOTE unchanged on the held-out set. The honest shape is two
+  tests: the manifest's "perturbed weights must degrade accuracy" claim made
+  with genuinely corrupted weights (all r-gate and head coefficients x3/4:
+  37/40 -> 30/40 clips), and the one-word fault pinned at the STATE level where
+  it is observable. Likewise, the "per-row head scales corrupt the argmax"
+  design rule is real but its NAIVE mutant is a NO-OP for the shipped model —
+  all four rows' independently-derived minimal scales happen to equal the
+  common one (S = 4) — so the mutant must FORCE the difference and say why.
+- **The timestep barrier makes a ~50-cell recurrent macro-loop saturation-safe
+  by construction.** `fin` LOCKs its arbiter on the SECOND feature word (the
+  lock face is the ring-inbound face, so the h write-back and the unlock
+  WRITE.CFG are still admitted while the port corridor is held) and `amx` — the
+  chain END — clears it only after the class word has egressed. Exactly one
+  timestep is ever in flight, so saturated == per-sample == golden including the
+  final h, on the first run, with no restructuring: the documented big-ring
+  deadlock class never arises. This is the FFT16 chain-END-unlock rule applied
+  at whole-block scale; run the saturated gate EARLY, it costs nothing.
+- **Force ONE COMMON scale wherever numbers are later COMPARED or SHARE an
+  engine.** r and z share one per-unit sigmoid engine, whose `dshift` is baked
+  per instance, so both gates must quantize at one `S_rz`; the four readout rows
+  feed one argmax over RAW accumulator words, so they must share one `S_head`.
+  Both are derived as `max` over the per-row `scale_schedule` S with the
+  post-rounding guard RE-VERIFIED per row at the common S (bump until it holds)
+  — the guard is not inherited from the per-row derivation.
+- **Split the n-gate row rather than shifting.** `n = tanh(Wxn.x + r*(Whn.h) +
+  bn)` needs the reset gate applied AFTER the Whn matmul (the trained/PyTorch
+  form; elementwise-first computes a different function and collapses
+  accuracy). Holding it as two rows — `u` = `[0,0,Whn[i,:]]` bias 0, `xc` =
+  `[Wxn[i,:],0,0,0,0]` bias bn — makes the combine a plain `MULQ(r,u) + xw`
+  with no shifts, and the no-wrap guard is checked on the COMBINED budget
+  (`sum|u| + sum|xc| + |bias| <= 32767`), not per row.
+- **A shared legality gate that hard-codes a "free" cell breaks on the first
+  block big enough to cover it.** `test_single_cell_move_rejects_overlap`
+  moved a cell to (9, 9) to prove a LEGAL move still succeeds; a 51-cell 7x8
+  block anchored at (3, 3) spans x 3..9 / y 3..10, so (9, 9) is the block's
+  own `xc2` and the gate failed on the BLOCK for a defect in the TEST. Fixed
+  by SEARCHING for a free cell against the chip dims. Worth checking any
+  shared suite for fixed coordinates before adding the catalog's new largest
+  block to it.
+- **Accuracy cost of the 17-entry activation engine, measured end to end:**
+  clip 0.9458 / step 0.9132 on the 480-clip held-out set vs 0.9583 for the
+  1024-entry-LUT training reference — 1.25 points, inside the 2-point budget,
+  and dominated by the tables rather than the MAC quantization. On chip the
+  120-clip vote reads 0.9667, IDENTICAL to the offline model on the same clips
+  (the DUT is bit-exact, so the only honest comparison is same-clips /
+  same-protocol — compute it in the test rather than hard-coding a number a
+  dataset regeneration could silently invalidate).
+
 ## FFT64/FFT128 under the CHIP-SCALE class — arithmetic DONE, placement blocked by the STAGE-BAND geometry 2026-08-24
 
 The owner un-quarantined FFT64/FFT128 with a policy decision: a transform-scale

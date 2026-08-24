@@ -1,0 +1,64 @@
+{
+  "kyttar_block": "GRUCellBlock",
+  "passed": true,
+  "metric": "exact",
+  "n_compared": 36000,
+  "max_abs_err": 0.0,
+  "tolerance": 0.0,
+  "nmse_db": null,
+  "correlation": null,
+  "bit_errors": 0,
+  "delay_used": 0,
+  "coverage": {
+    "edge": true,
+    "random": 3,
+    "classes": 4,
+    "mutation": true,
+    "cells": 51,
+    "footprint": "7x8",
+    "on_chip_steps": 36000,
+    "decision_agreement": 1.0,
+    "clip_vote_accuracy": 0.9667,
+    "clips": 120,
+    "confusion_rows_true_cols_pred": [
+      [
+        35,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        19,
+        0,
+        0
+      ],
+      [
+        2,
+        2,
+        24,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        38
+      ]
+    ],
+    "h_trajectory_bit_exact": true,
+    "saturated_equals_per_sample": true,
+    "state_persists_across_bursts": true,
+    "orientations": 8,
+    "scales": {
+      "S_rz": 4,
+      "S_n": 3,
+      "S_head": 4,
+      "dshift_sigmoid": 1,
+      "dshift_tanh": 1
+    },
+    "weight_manifest": "GRUCellBlock.weights.json",
+    "weight_words_mapped": 104,
+    "golden": "examples/gru_classifier/ml/gru_reference_chip (independent chip-exact integer model; no GNU Radio counterpart exists \u2014 a GRU recurrence cannot be expressed as an acyclic GR chain)"
+  }
+}

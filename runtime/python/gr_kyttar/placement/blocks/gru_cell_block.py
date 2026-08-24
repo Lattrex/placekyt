@@ -8,13 +8,23 @@ wire from the state update back to the gate inputs): the hidden state lives
 in pinned STATE registers inside the block and is written back each timestep
 by the block's own cells.
 
-ARCHITECTURE (48 program cells + 2 closure transits, one 7x8 ring serpentine)
+ARCHITECTURE (51 cells: 48 ring + an off-ring egress relay + 2 closure
+transits, folded 7x8)
 -----------------------------------------------------------------------------
-The whole block is ONE closed serial ring (the FLLBandEdge column-pair fold:
-a head row + three boustrophedon column pairs, the chain end closing back
-into the head row's first cell). Every internal WRITE/JUMP rides the ring
-forward at its ring-distance @N (all distances <= 27), so there are no
-against-the-grain corridors anywhere.
+The datapath is ONE closed serial ring (the FLLBandEdge column-pair fold: a
+head row + three boustrophedon column pairs, the chain end closing back into
+the head row's first cell). Every internal WRITE/JUMP rides the ring forward
+at its ring-distance @N (all distances <= 27), so there are no
+against-the-grain corridors anywhere. The class word leaves through an
+OFF-RING relay so the route's face override never lands on a ring cell.
+
+Two ORDERING rules govern the layout dict and are gated structurally (see
+:meth:`default_layout` and the block's test suite): the program cells come
+first in ``build_cell_programs`` order with the face-only transits last (the
+router indexes placed cells positionally against the program keys), and the
+egress relay is the LAST program cell (else the router's positional-default
+branch traces the closed ring the long way round under the 180-degree D4
+orientations and the hop overflows its 5-bit field).
 
 Dataflow per timestep (x = 2 Q15 feature words in, one raw class word out):
 
@@ -77,6 +87,9 @@ map of which memory word in which cell holds which weight constant — the
 contract a downstream live-weight-swap capability depends on. Schema::
 
     {"format": "gru-cell-weight-map-v1",
+     "weights_file": <repo-relative path, or the bare file name if the file
+                      lives outside the repository — NEVER an absolute path;
+                      the map is a committed artifact>,
      "scales": {"S_rz": int, "S_n": int, "S_head": int,
                 "dshift_sigmoid": int, "dshift_tanh": int},
      "cells": {<cell_id>: {<address>: {"name": <str>, "value": <int>}}}}
@@ -97,7 +110,6 @@ and the float GRU (numpy) — the library's established pattern for
 no-counterpart blocks. Rate: 2 feature words in -> 1 raw class word out.
 """
 import json
-import math
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -675,15 +687,14 @@ start:
         return out
 
     def _ring_ids(self) -> List[str]:
-        """All 48 program cells in ring (= dict = layout) order."""
+        """All 49 program cells in dict (= build_cell_programs) order: the 48
+        ring cells in ring order, then the off-ring ``oout`` relay LAST (see
+        :meth:`default_layout` for why last is load-bearing)."""
         ids = ["fin", "hstr"] + self._chain_ids()
         for i in range(self.H):
             ids += [f"sf{i}", f"sl{i}", f"umA{i}", f"tf{i}", f"tl{i}",
                     f"umB{i}"]
-        # ``oout`` sits mid-dict (before hcol) so that ``amx``'s POSITIONAL
-        # next cell is the first ring-closure transit — the route-time face
-        # fallback then keeps amx's face on the ring (the FFT16 rule).
-        ids += ["oout", "hcol"] + [f"hd{j}" for j in range(self.C)] + ["amx"]
+        ids += ["hcol"] + [f"hd{j}" for j in range(self.C)] + ["amx", "oout"]
         return ids
 
     def build_cell_programs(self) -> Dict[str, CellProgram]:
@@ -713,13 +724,14 @@ start:
             reordered[f"tl{i}"] = activation_lut_program(
                 TANH_TABLE_Q15, 0x0000)
             reordered[f"umB{i}"] = self._umb_program()
-        reordered["oout"] = self._oout_program()
         reordered["hcol"] = self._hcol_program()
         for j in range(self.C):
             cq, bq = self._head_rows[j]
             reordered[f"hd{j}"] = self._row_program(
                 cq, bq, forward=(j != self.C - 1))
         reordered["amx"] = self._amx_program()
+        reordered["oout"] = self._oout_program()   # LAST — see default_layout
+        assert list(reordered) == self._ring_ids()
         return reordered
 
     def internal_connections(self) -> List[Tuple[Any, str, Any, str]]:
@@ -803,29 +815,42 @@ start:
         east, three boustrophedon column pairs, the chain end closing back
         through two transit cells into ``fin``'s SOUTH face. Both dims <= 8
         (INV-9) and <= 7 wide (the AGCCC big-ring routability rule); the six
-        in-bbox holes all sit on the open WEST edge."""
-        ids = self._ring_ids() + ["transit_ring_a", "transit_ring_b"]
+        in-bbox holes all sit on the open WEST edge.
+
+        KEY ORDERING (two independent, both load-bearing):
+
+        * The dict's PROGRAM cells must appear in EXACTLY
+          :meth:`build_cell_programs` order, because the router indexes the
+          placed-cell list POSITIONALLY against the ``cell_programs`` keys
+          (``pb.cells[keys.index(dst)]``). The FACE-only transit cells
+          therefore come LAST, after every program cell — interleaving them at
+          their ring positions silently shifts every later program cell's
+          resolved destination by two.
+        * Within the program cells, the off-ring ``oout`` egress relay is LAST.
+          Its only output port is the block's EXTERNAL egress, whose hop the
+          build's egress patcher stamps; any EARLIER dict slot leaves the
+          router's positional-default branch ("hand this port to the NEXT dict
+          cell") live for that port, and that default traces the ROUTE-TIME
+          faces around the CLOSED ring — short at identity, but the LONG way
+          round (44 > 31) under the 180-degree D4 orientations, which the
+          assembler rejects before the patcher can run. Found by the
+          8-orientation gate (cw+cw and mirror_h+cw+cw failed to build).
+        """
+        ring = [c for c in self._ring_ids() if c != "oout"] + [
+            "transit_ring_a", "transit_ring_b"]
         pos: List[Tuple[int, int]] = [(c, 0) for c in range(7)]      # 0..6
         for pair in range(3):                                        # pairs
             cd = 6 - 2 * pair          # down column
             cu = cd - 1                # up column
             pos += [(cd, r) for r in range(1, 8)]
             pos += [(cu, r) for r in range(7, 0, -1)]
-        # splice the off-ring output relay at its dict position (after
-        # umB3 = ring slot 41) at (0, 2) — a west-edge hole, off the ring.
-        pos.insert(42, (0, 2))
-        assert len(pos) == 50
         pos.append((0, 1))                                           # t_b
-        lay: Dict[Any, Tuple[int, int, str]] = {}
-        for k, cid in enumerate(ids):
+        assert len(pos) == len(ring) == 50
+        faces: Dict[str, Tuple[int, int, str]] = {}
+        for k, cid in enumerate(ring):
             x, y = pos[k]
-            j = (k + 1) % len(pos)
-            if cid == "umB3":
-                j = k + 2          # ring successor skips the off-ring oout
-            nx, ny = pos[j]
-            if cid == "oout":
-                face = "west"      # off-ring; the route override owns it
-            elif (nx, ny) == (x, y + 1):
+            nx, ny = pos[(k + 1) % len(pos)]      # closed ring
+            if (nx, ny) == (x, y + 1):
                 face = "south"
             elif (nx, ny) == (x, y - 1):
                 face = "north"
@@ -833,7 +858,16 @@ start:
                 face = "east"
             else:
                 face = "west"
-            lay[cid] = (x, y, face)
+            faces[cid] = (x, y, face)
+        # ``oout`` sits at (0, 2), directly WEST of ``amx``, so the class word
+        # rides a plain @1 dual-face abutment off the ring; the route override
+        # owns this cell's face and it is transited by nothing.
+        faces["oout"] = (0, 2, "west")
+        # emit: program cells in build_cell_programs order, transits last.
+        lay: Dict[Any, Tuple[int, int, str]] = {
+            cid: faces[cid] for cid in self._ring_ids()}
+        for t in ("transit_ring_a", "transit_ring_b"):
+            lay[t] = faces[t]
         return lay
 
     # ------------------------------------------------------------ reference
@@ -966,7 +1000,22 @@ start:
                 f"head.bo[{j}]", bq)
         return {
             "format": "gru-cell-weight-map-v1",
-            "weights_file": str(self._weights_path),
+            # REPO-RELATIVE (or bare) — never an absolute machine path: this
+            # map is a committed artifact, and an absolute path both leaks the
+            # build environment and is meaningless on any other machine.
+            "weights_file": self._weights_label(),
             "scales": self.scale_shifts,
             "cells": cells,
         }
+
+    def _weights_label(self) -> str:
+        """The weights file as a repo-relative path when it lives inside the
+        repository, else just its file name."""
+        p = self._weights_path.resolve()
+        for parent in p.parents:
+            if (parent / "AGENTS.md").is_file() and (parent / ".git").exists():
+                try:
+                    return p.relative_to(parent).as_posix()
+                except ValueError:      # pragma: no cover — parents guarantee
+                    break
+        return p.name

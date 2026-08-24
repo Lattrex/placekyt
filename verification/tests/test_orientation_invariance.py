@@ -99,6 +99,15 @@ _CASES = [
     # heaviest D4 case in the catalog: every internal hop distance and face word
     # must transform rigidly for the streamed frames to stay bit-identical.
     ("FFT16Block", {}, "complex", ("xi", "xq", "out_i")),
+    # GRU classifier cell: 51 cells, ONE closed ring serpentine with an
+    # internal recurrence, a timestep-barrier arbiter LOCK cleared by a
+    # ring-forward WRITE.CFG, and an off-ring egress relay. Every ring hop and
+    # every in-program FACE word must transform rigidly. (The shared stimulus
+    # is signed full-range rather than the block's [0, 1) feature contract —
+    # that is fine and deliberate here: invariance is a property of the
+    # datapath for ANY word pattern, and the in-contract feature drive is
+    # gated bit-exactly per orientation in test_gru_cell.py.)
+    ("GRUCellBlock", {}, "real", ("f", "out")),
     ("ComplexRRCMatchedFilterBlock", {}, "complex", ("xi", "xq", "yi")),
     ("ComplexCostasLoopBlock", {"order": 2}, "complex", ("xi", "xq", "yi_tap")),
     ("ComplexCostasLoopBlock", {"order": 4}, "complex", ("xi", "xq", "yi_tap")),

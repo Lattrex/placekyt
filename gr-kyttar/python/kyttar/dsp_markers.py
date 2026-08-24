@@ -1461,3 +1461,39 @@ class chirp_sync(_PassThrough):
         self.k = int(k)
         self._advertise_grc_params(device_id, "ChirpSyncBlock",
                                    {"k": int(k)})
+
+
+class gru_cell(_PassThrough):
+    """GRU classifier cell — GR marker (maps to GRUCellBlock).
+
+    ONE full GRU timestep (hidden=4, inputs=2) plus its 4-class linear readout
+    head, with the recurrence entirely INTERNAL. placeKYT-native: a GRC
+    flowgraph is ACYCLIC, so a GRU recurrence cannot be expressed as a wired
+    GR chain at all — there is no stock GNU Radio counterpart to be a drop-in
+    for, and the whole timestep therefore lives inside one block.
+
+    Stream contract: two Q15 feature words per timestep (the front end's
+    ``[rms, zcr]`` window features, both in [0, 1)) in, ONE raw class-index
+    word (0..3) out — rate-REDUCING 2:1 on the chip. The output is an INDEX
+    word, not a Q15 sample (the bin_argmax raw-word convention, dtype short).
+    Hidden state PERSISTS across bursts and is never reset while streaming.
+
+    The trained weights arrive as a FILE (``weights_file``), not as ~104
+    individual GRC parameters; leave it empty to use the bundled trained
+    single-layer model. GR marker only; the real DSP runs on the placeKYT
+    chip — plain 1:1 pass-through here (the keep_one_in_n marker convention:
+    a sync_block faking the rate change deadlocks the client scheduler at
+    flowgraph end)."""
+
+    def __init__(self, device_id="kyttar_0", hidden=4, inputs=2, classes=4,
+                 weights_file=""):
+        super().__init__("Kyttar GRU Cell", n_in=1, n_out=1,
+                         in_dtype=np.float32, out_dtype=np.int16)
+        self.device_id = device_id
+        self.hidden = int(hidden)
+        self.inputs = int(inputs)
+        self.classes = int(classes)
+        self.weights_file = str(weights_file)
+        self._advertise_grc_params(device_id, "GRUCellBlock", {
+            "hidden": int(hidden), "inputs": int(inputs),
+            "classes": int(classes), "weights_file": str(weights_file)})

@@ -1,0 +1,581 @@
+{
+ "format": "gru-cell-weight-map-v1",
+ "weights_file": "examples/gru_classifier/ml/weights_single.json",
+ "scales": {
+  "S_rz": 4,
+  "S_n": 3,
+  "S_head": 4,
+  "dshift_sigmoid": 1,
+  "dshift_tanh": 1
+ },
+ "cells": {
+  "r0": {
+   "1": {
+    "name": "Wx.r[0][0]",
+    "value": 4666
+   },
+   "2": {
+    "name": "Wx.r[0][1]",
+    "value": 2109
+   },
+   "3": {
+    "name": "Wh.r[0][0]",
+    "value": 9
+   },
+   "4": {
+    "name": "Wh.r[0][1]",
+    "value": 58174
+   },
+   "5": {
+    "name": "Wh.r[0][2]",
+    "value": 64347
+   },
+   "6": {
+    "name": "Wh.r[0][3]",
+    "value": 21
+   },
+   "9": {
+    "name": "b.r[0]",
+    "value": 957
+   }
+  },
+  "z0": {
+   "1": {
+    "name": "Wx.z[0][0]",
+    "value": 7986
+   },
+   "2": {
+    "name": "Wx.z[0][1]",
+    "value": 63692
+   },
+   "3": {
+    "name": "Wh.z[0][0]",
+    "value": 63604
+   },
+   "4": {
+    "name": "Wh.z[0][1]",
+    "value": 65369
+   },
+   "5": {
+    "name": "Wh.z[0][2]",
+    "value": 3731
+   },
+   "6": {
+    "name": "Wh.z[0][3]",
+    "value": 5693
+   },
+   "9": {
+    "name": "b.z[0]",
+    "value": 63574
+   }
+  },
+  "u0": {
+   "1": {
+    "name": "pad",
+    "value": 0
+   },
+   "2": {
+    "name": "pad",
+    "value": 0
+   },
+   "3": {
+    "name": "Wh.n[0][0]",
+    "value": 2064
+   },
+   "4": {
+    "name": "Wh.n[0][1]",
+    "value": 62010
+   },
+   "5": {
+    "name": "Wh.n[0][2]",
+    "value": 163
+   },
+   "6": {
+    "name": "Wh.n[0][3]",
+    "value": 3918
+   },
+   "9": {
+    "name": "pad",
+    "value": 0
+   }
+  },
+  "xc0": {
+   "1": {
+    "name": "Wx.n[0][0]",
+    "value": 60302
+   },
+   "2": {
+    "name": "Wx.n[0][1]",
+    "value": 10724
+   },
+   "3": {
+    "name": "pad",
+    "value": 0
+   },
+   "4": {
+    "name": "pad",
+    "value": 0
+   },
+   "5": {
+    "name": "pad",
+    "value": 0
+   },
+   "6": {
+    "name": "pad",
+    "value": 0
+   },
+   "9": {
+    "name": "b.n[0]",
+    "value": 64915
+   }
+  },
+  "r1": {
+   "1": {
+    "name": "Wx.r[1][0]",
+    "value": 2763
+   },
+   "2": {
+    "name": "Wx.r[1][1]",
+    "value": 986
+   },
+   "3": {
+    "name": "Wh.r[1][0]",
+    "value": 355
+   },
+   "4": {
+    "name": "Wh.r[1][1]",
+    "value": 64536
+   },
+   "5": {
+    "name": "Wh.r[1][2]",
+    "value": 65371
+   },
+   "6": {
+    "name": "Wh.r[1][3]",
+    "value": 63888
+   },
+   "9": {
+    "name": "b.r[1]",
+    "value": 64645
+   }
+  },
+  "z1": {
+   "1": {
+    "name": "Wx.z[1][0]",
+    "value": 57555
+   },
+   "2": {
+    "name": "Wx.z[1][1]",
+    "value": 5954
+   },
+   "3": {
+    "name": "Wh.z[1][0]",
+    "value": 63202
+   },
+   "4": {
+    "name": "Wh.z[1][1]",
+    "value": 3856
+   },
+   "5": {
+    "name": "Wh.z[1][2]",
+    "value": 65470
+   },
+   "6": {
+    "name": "Wh.z[1][3]",
+    "value": 341
+   },
+   "9": {
+    "name": "b.z[1]",
+    "value": 36
+   }
+  },
+  "u1": {
+   "1": {
+    "name": "pad",
+    "value": 0
+   },
+   "2": {
+    "name": "pad",
+    "value": 0
+   },
+   "3": {
+    "name": "Wh.n[1][0]",
+    "value": 2028
+   },
+   "4": {
+    "name": "Wh.n[1][1]",
+    "value": 5616
+   },
+   "5": {
+    "name": "Wh.n[1][2]",
+    "value": 1190
+   },
+   "6": {
+    "name": "Wh.n[1][3]",
+    "value": 65162
+   },
+   "9": {
+    "name": "pad",
+    "value": 0
+   }
+  },
+  "xc1": {
+   "1": {
+    "name": "Wx.n[1][0]",
+    "value": 2202
+   },
+   "2": {
+    "name": "Wx.n[1][1]",
+    "value": 57393
+   },
+   "3": {
+    "name": "pad",
+    "value": 0
+   },
+   "4": {
+    "name": "pad",
+    "value": 0
+   },
+   "5": {
+    "name": "pad",
+    "value": 0
+   },
+   "6": {
+    "name": "pad",
+    "value": 0
+   },
+   "9": {
+    "name": "b.n[1]",
+    "value": 1073
+   }
+  },
+  "r2": {
+   "1": {
+    "name": "Wx.r[2][0]",
+    "value": 2248
+   },
+   "2": {
+    "name": "Wx.r[2][1]",
+    "value": 64537
+   },
+   "3": {
+    "name": "Wh.r[2][0]",
+    "value": 4288
+   },
+   "4": {
+    "name": "Wh.r[2][1]",
+    "value": 5450
+   },
+   "5": {
+    "name": "Wh.r[2][2]",
+    "value": 314
+   },
+   "6": {
+    "name": "Wh.r[2][3]",
+    "value": 2019
+   },
+   "9": {
+    "name": "b.r[2]",
+    "value": 64586
+   }
+  },
+  "z2": {
+   "1": {
+    "name": "Wx.z[2][0]",
+    "value": 2766
+   },
+   "2": {
+    "name": "Wx.z[2][1]",
+    "value": 60988
+   },
+   "3": {
+    "name": "Wh.z[2][0]",
+    "value": 2962
+   },
+   "4": {
+    "name": "Wh.z[2][1]",
+    "value": 65386
+   },
+   "5": {
+    "name": "Wh.z[2][2]",
+    "value": 558
+   },
+   "6": {
+    "name": "Wh.z[2][3]",
+    "value": 780
+   },
+   "9": {
+    "name": "b.z[2]",
+    "value": 1026
+   }
+  },
+  "u2": {
+   "1": {
+    "name": "pad",
+    "value": 0
+   },
+   "2": {
+    "name": "pad",
+    "value": 0
+   },
+   "3": {
+    "name": "Wh.n[2][0]",
+    "value": 3354
+   },
+   "4": {
+    "name": "Wh.n[2][1]",
+    "value": 5522
+   },
+   "5": {
+    "name": "Wh.n[2][2]",
+    "value": 5363
+   },
+   "6": {
+    "name": "Wh.n[2][3]",
+    "value": 63964
+   },
+   "9": {
+    "name": "pad",
+    "value": 0
+   }
+  },
+  "xc2": {
+   "1": {
+    "name": "Wx.n[2][0]",
+    "value": 64260
+   },
+   "2": {
+    "name": "Wx.n[2][1]",
+    "value": 64371
+   },
+   "3": {
+    "name": "pad",
+    "value": 0
+   },
+   "4": {
+    "name": "pad",
+    "value": 0
+   },
+   "5": {
+    "name": "pad",
+    "value": 0
+   },
+   "6": {
+    "name": "pad",
+    "value": 0
+   },
+   "9": {
+    "name": "b.n[2]",
+    "value": 1202
+   }
+  },
+  "r3": {
+   "1": {
+    "name": "Wx.r[3][0]",
+    "value": 292
+   },
+   "2": {
+    "name": "Wx.r[3][1]",
+    "value": 63418
+   },
+   "3": {
+    "name": "Wh.r[3][0]",
+    "value": 64615
+   },
+   "4": {
+    "name": "Wh.r[3][1]",
+    "value": 58820
+   },
+   "5": {
+    "name": "Wh.r[3][2]",
+    "value": 244
+   },
+   "6": {
+    "name": "Wh.r[3][3]",
+    "value": 481
+   },
+   "9": {
+    "name": "b.r[3]",
+    "value": 64653
+   }
+  },
+  "z3": {
+   "1": {
+    "name": "Wx.z[3][0]",
+    "value": 61832
+   },
+   "2": {
+    "name": "Wx.z[3][1]",
+    "value": 58108
+   },
+   "3": {
+    "name": "Wh.z[3][0]",
+    "value": 62926
+   },
+   "4": {
+    "name": "Wh.z[3][1]",
+    "value": 65146
+   },
+   "5": {
+    "name": "Wh.z[3][2]",
+    "value": 62942
+   },
+   "6": {
+    "name": "Wh.z[3][3]",
+    "value": 1586
+   },
+   "9": {
+    "name": "b.z[3]",
+    "value": 63520
+   }
+  },
+  "u3": {
+   "1": {
+    "name": "pad",
+    "value": 0
+   },
+   "2": {
+    "name": "pad",
+    "value": 0
+   },
+   "3": {
+    "name": "Wh.n[3][0]",
+    "value": 64445
+   },
+   "4": {
+    "name": "Wh.n[3][1]",
+    "value": 937
+   },
+   "5": {
+    "name": "Wh.n[3][2]",
+    "value": 64809
+   },
+   "6": {
+    "name": "Wh.n[3][3]",
+    "value": 5751
+   },
+   "9": {
+    "name": "pad",
+    "value": 0
+   }
+  },
+  "xc3": {
+   "1": {
+    "name": "Wx.n[3][0]",
+    "value": 24
+   },
+   "2": {
+    "name": "Wx.n[3][1]",
+    "value": 9012
+   },
+   "3": {
+    "name": "pad",
+    "value": 0
+   },
+   "4": {
+    "name": "pad",
+    "value": 0
+   },
+   "5": {
+    "name": "pad",
+    "value": 0
+   },
+   "6": {
+    "name": "pad",
+    "value": 0
+   },
+   "9": {
+    "name": "b.n[3]",
+    "value": 62765
+   }
+  },
+  "hd0": {
+   "1": {
+    "name": "head.Wo[0][0]",
+    "value": 5224
+   },
+   "2": {
+    "name": "head.Wo[0][1]",
+    "value": 7443
+   },
+   "3": {
+    "name": "head.Wo[0][2]",
+    "value": 7956
+   },
+   "4": {
+    "name": "head.Wo[0][3]",
+    "value": 64791
+   },
+   "7": {
+    "name": "head.bo[0]",
+    "value": 1529
+   }
+  },
+  "hd1": {
+   "1": {
+    "name": "head.Wo[1][0]",
+    "value": 59734
+   },
+   "2": {
+    "name": "head.Wo[1][1]",
+    "value": 3833
+   },
+   "3": {
+    "name": "head.Wo[1][2]",
+    "value": 61170
+   },
+   "4": {
+    "name": "head.Wo[1][3]",
+    "value": 2104
+   },
+   "7": {
+    "name": "head.bo[1]",
+    "value": 2619
+   }
+  },
+  "hd2": {
+   "1": {
+    "name": "head.Wo[2][0]",
+    "value": 61900
+   },
+   "2": {
+    "name": "head.Wo[2][1]",
+    "value": 57554
+   },
+   "3": {
+    "name": "head.Wo[2][2]",
+    "value": 272
+   },
+   "4": {
+    "name": "head.Wo[2][3]",
+    "value": 58646
+   },
+   "7": {
+    "name": "head.bo[2]",
+    "value": 63286
+   }
+  },
+  "hd3": {
+   "1": {
+    "name": "head.Wo[3][0]",
+    "value": 3355
+   },
+   "2": {
+    "name": "head.Wo[3][1]",
+    "value": 62946
+   },
+   "3": {
+    "name": "head.Wo[3][2]",
+    "value": 61480
+   },
+   "4": {
+    "name": "head.Wo[3][3]",
+    "value": 5456
+   },
+   "7": {
+    "name": "head.bo[3]",
+    "value": 62368
+   }
+  }
+ }
+}

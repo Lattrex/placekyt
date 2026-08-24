@@ -85,6 +85,11 @@ BLOCKS = [
     # 16-point streaming FFT: the largest single block in the catalog (44 cells,
     # 7x8 footprint — both dims <= 8 per INV-9) with per-stage banded geometry.
     ("FFT16Block", {}),
+    # GRU classifier cell: the LARGEST single block in the catalog (51 cells —
+    # a closed 7x8 ring serpentine with an off-ring egress relay and two
+    # face-only ring-closure transits, both of which must stay distinct from
+    # every datapath cell under D4 AND under an Alt-drag breakout).
+    ("GRUCellBlock", {}),
     ("FreqXlatingFIRBlock", {"decimation": 2, "taps": [0.1, 0.2, 0.3, 0.2, 0.1],
                              "center_freq": 2000.0, "sampling_freq": 32000.0}),
     ("FSK4SyncTimingRecoveryBlock", {}),
@@ -253,8 +258,17 @@ def test_single_cell_move_rejects_overlap(block_type, params):
         ctrl.move_cell(name, a.cell_id, b.x, b.y)   # onto another cell -> rejected
     # The rejected move must not have mutated the placement.
     assert not _overlaps(blk), "a rejected move left the footprint overlapping"
-    # A legal move to an empty cell still works.
-    ctrl.move_cell(name, a.cell_id, 9, 9)
+    # A legal move to an empty cell still works. FIND a free cell rather than
+    # hard-coding one: the biggest blocks (GRUCellBlock is 51 cells at 7x8)
+    # cover most of the array from the (3,3) anchor, so a fixed corner is not
+    # reliably empty and the test would fail on the BLOCK for a defect in the
+    # TEST.
+    w, h = ctrl._chip_dims(0)
+    taken = {(c.x, c.y) for c in blk.placement.cells}
+    free = next(((x, y) for y in range(h) for x in range(w)
+                 if (x, y) not in taken), None)
+    assert free is not None, f"{block_type} leaves no free cell on the {w}x{h}"
+    ctrl.move_cell(name, a.cell_id, *free)
     assert not _overlaps(blk)
 
 

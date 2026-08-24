@@ -1453,3 +1453,54 @@ block for `[Rm]` shift syntax and asserts the assembler rejects it.
 Confirmed-real for contrast: `GOTO label` is assembler sugar for a local
 `JUMP hop_cnt=31`; WRITE/MOVE preserving FLAGS is real hardware behavior
 (only ALU/logic/shift/CMP ops update the flags).
+
+---
+
+## INV-35 — `default_layout` is a POSITIONAL INDEX: program cells first (in program order), transits last; the external-egress cell LAST of all
+
+The layout dict is not just geometry. Two different parts of the toolchain read
+it as an ORDERED list, and a multi-cell block that ignores either ordering
+builds and routes cleanly and then computes garbage.
+
+**1. Program cells come first, in exactly `build_cell_programs()` order;
+FACE-only `transit_*` cells come last.** The router resolves a declared
+internal handoff by indexing the PLACED CELL LIST positionally against the
+`cell_programs` keys — `pb.cells[keys.index(dst_cell_id)]` — and `pb.cells`
+is built from `default_layout`. Emitting a transit at its natural *chain*
+position (the obvious thing to do when the layout function walks a serpentine
+in order) shifts every later program cell's resolved destination by the number
+of preceding transits. Nothing errors: the writes land in some other cell's
+registers.
+
+**2. A cell whose ONLY output port is the block's EXTERNAL egress must be the
+LAST program cell.** Its hop is stamped by the build's egress patcher, but
+until that pass runs the router's positional-default branch ("hand this port
+off to the NEXT dict cell") is still live for the port, and that default
+traces the ROUTE-TIME faces. On a CLOSED ring the trace can go the long way
+round: measured on GRUCellBlock, 6 hops at identity and **44** under the two
+180-degree D4 orientations, which the assembler rejects with
+`Distance must be 0-31` before the patcher can overwrite it. This is invisible
+at identity — only the 8-orientation gate (INV-23) catches it.
+
+Two fixes that look right and are NOT (both measured):
+
+* Declaring the egress port `__terminate__` in `internal_connections` does
+  silence the positional default, but it also makes the cell an
+  internal-handoff SOURCE, so the build's "restore the authored internal
+  forwarding face" pass overwrites the route's face on that cell and the
+  egress dies — no output at all, and a ring that stalls with its state
+  frozen. (`__terminate__` in `internal_jumps` alone is harmless, but it does
+  not address the WRITE.)
+* Moving the egress relay off-abutment leaves the source cell's in-program
+  `MOVE [FACE]` flip aimed at a Manhattan fallback that does not follow the
+  fold.
+
+**Audit it structurally, don't rediscover it.** Assert in the block's own
+suite that (a) `list(default_layout())[:n] == list(build_cell_programs())`
+with only `transit_*` entries after, and (b) the last program cell is
+`output_cell_id()`. Both are one-line tests; see
+`verification/tests/test_gru_cell.py`
+(`test_every_program_cell_precedes_every_transit_in_the_layout`,
+`test_egress_relay_is_the_last_program_cell`). This sits alongside the
+ROUTE-TIME FACE RULE (lessons_log, FFT16): that one governs which face a cell
+ends up with, this one governs which CELL a handoff resolves to.

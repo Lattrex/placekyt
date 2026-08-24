@@ -1,0 +1,89 @@
+id: kyttar_gru_cell
+label: GRU Classifier Cell
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar GRU Classifier Cell — ONE full GRU timestep (hidden = 4, inputs = 2)
+  plus its 4-class linear readout head, with the recurrence entirely INTERNAL
+  to the block.
+
+  There is NO stock GNU Radio counterpart, and there cannot be one: a GRC
+  flowgraph is ACYCLIC, so there is no legal wire from the state update back
+  to the gate inputs. The whole recurrence therefore lives inside this one
+  block (this is a placeKYT-native [Kyttar] block).
+
+  Per timestep the block computes
+
+    r = sigmoid(Wxr x + Whr h + br)
+    z = sigmoid(Wxz x + Whz h + bz)
+    n = tanh   (Wxn x + r * (Whn h) + bn)
+    h = (1 - z) * n + z * h
+    class = argmax(Wo h + bo)          # raw logits; no softmax at inference
+
+  Stream contract:
+  - IN: two Q15 feature words per timestep — the front end's [rms, zcr]
+    window features, both in [0, 1). Rate-REDUCING 2:1.
+  - OUT: ONE raw class-index word (0..3) per timestep. This is an INDEX word,
+    not a Q15 sample (dtype short — the Framewise Argmax convention), so a
+    float scope fed through a kyttar sink shows index/32768; put a x32768
+    rescale in front of a value display.
+
+  State contract: the hidden state is 0 at STREAM START ONLY and is NEVER
+  reset while streaming — it persists across bursts, matching how the model
+  was trained (TBPTT over long stateful streams).
+
+  Weights arrive as a FILE, not as ~104 individual parameters. Leave
+  Weights File empty to use the bundled trained single-layer model. The JSON
+  schema is documented in examples/gru_classifier/ml/README.md; the block
+  resolves every weight to a cell-local constant at build time and can emit a
+  machine-readable map of which memory word in which cell holds which
+  constant.
+
+  This block runs on the Kyttar chip. Place it between a KyttarSource and
+  KyttarSink block, and ensure the device_id matches your KyttarDevice.
+
+  Parameters:
+  - Device ID: ID of the KyttarDevice block
+  - Hidden: hidden state size. The HARDWARE-VERIFIED configuration is 4; any
+    other value raises rather than silently reshaping the placed fold.
+  - Inputs: feature vector size per timestep. Verified configuration: 2.
+  - Classes: readout classes. Verified configuration: 4.
+  - Weights File: path to the trained-model JSON (empty = the bundled model).
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.gru_cell(device_id=${device_id}, hidden=${hidden}, inputs=${inputs},
+    classes=${classes}, weights_file=${weights_file})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+  - id: hidden
+    label: Hidden
+    dtype: int
+    default: '4'
+  - id: inputs
+    label: Inputs
+    dtype: int
+    default: '2'
+  - id: classes
+    label: Classes
+    dtype: int
+    default: '4'
+  - id: weights_file
+    label: Weights File
+    dtype: string
+    default: '""'
+
+inputs:
+  - label: in
+    dtype: float
+
+outputs:
+  - label: out
+    dtype: short
+
+file_format: 1

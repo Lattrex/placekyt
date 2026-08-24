@@ -371,6 +371,21 @@ _CORDIC_COVERAGE = {
 COMPLEX_2IN2OUT.update(_CORDIC_COVERAGE)
 
 NEEDS_BESPOKE = {
+    "GRUCellBlock": "RATE-REDUCING 2:1 on ONE port (two Q15 feature words per "
+        "timestep in -> one RAW class-index word out) with an INTERNAL "
+        "recurrence, so it fits neither the 1:1 REAL_1IN harness nor the "
+        "RATE_1IN one (which assumes a rate set by a decimation param). Its "
+        "saturated gate is BESPOKE and stronger than the shared one: "
+        "test_gru_cell.py drives the whole burst via queue_words_physical and "
+        "asserts saturated == per-sample == golden for BOTH the class stream "
+        "AND the four hidden-state words read straight out of the umB{i} "
+        "cells' pinned hs registers (test_saturated_equals_per_sample_and_"
+        "golden), plus the 2:1 output COUNT under saturation "
+        "(test_saturated_output_count_is_the_2_to_1_rate), 36000 saturated "
+        "on-chip timesteps in the long-stream gate, and a livelock assertion "
+        "on the capped run. The barrier it exercises (fin's arbiter LOCK "
+        "cleared by amx's chain-END WRITE.CFG) is the INV-19/20 serialize-LOCK "
+        "applied to a ~50-cell recurrent macro-loop.",
     # Two-EXTERNAL-complex-stream combiners: a sample is 4 operands delivered as
     # TWO complex packets (two JUMPs) into the landing cell's counting join —
     # the shared harnesses here (run_block_dut_pipelined & co) emit exactly ONE

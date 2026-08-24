@@ -985,43 +985,76 @@ class LargeFFTBlock(KyttarBlock):
         """Select which magnitude feeds ``c`` and which feeds ``d``.
 
         ``swap = o0 XOR o1`` (octants 1 and 2 take ``c`` from S and ``d`` from
-        C). A trivial slot (control bit 15) passes straight through on the
-        same ``pass`` path — the magnitudes are ignored downstream.
+        C).
+
+        THE TRIVIAL SLOT IS A SEPARATE EXIT, and it must be. Path identity in
+        this chain travels as WHICH ENTRY the next cell is jumped at (the
+        shipped TwiddleMultiply idiom) — that is the only reason ``sign``
+        fits 32 words. So this cell has TWO jump ports:
+
+          ``t_num``  -> ``sign``'s ``num`` entry  (a numeric slot)
+          ``t_triv`` -> ``sign``'s ``triv`` entry (k = 0 or k = N/4)
+
+        A single ``trig`` port wired to ``num`` — which is what the first
+        version shipped — leaves ``sign``'s ``triv`` entry UNREACHABLE, and
+        the fold then emits numeric words on the two trivial slots instead of
+        the sentinel encoding the downstream ``steer`` dispatches on. That is
+        invisible on the 30 non-trivial slots and wrong on exactly two, which
+        is why it survived the standalone fold-chain check (which jumped the
+        entries by hand) and only showed up on a real chip, as the ENTIRE
+        odd-bin half of every frame being wrong.
+
+        Note the branch structure: the trivial test (control bit 15) must NOT
+        share the no-swap ``pass`` label, because those two cases now leave
+        through different jumps. ``k`` also has to reach ``sign`` UNMODIFIED
+        on the trivial path — ``sign``'s ``triv`` derives ``d`` as
+        ``k << 15``, so the ``SHR R{in:k}, #1`` of the swap test must stay on
+        the numeric side of the branch (it does: the branch is taken first).
         """
         return CellProgram(
             inputs=[Port("cmag", register=1), Port("smag", register=2),
                     Port("k", register=3)],
-            outputs=[Port("cm_f"), Port("dm_f"), Port("k_f"), Port("trig")],
+            outputs=[Port("cm_f"), Port("dm_f"), Port("k_f"),
+                     Port("t_num"), Port("t_triv")],
             entries=[EntryPoint("default")],
             data=[DataWord("one", 1, address=4)],
             state=[StateVar("t", register=5, initial_value=0)],
             assembly_template=(
+                # TRIVIAL first, and it falls through to NOTHING: it writes
+                # the control word and leaves on its own jump. The two
+                # NUMERIC paths differ only in WHICH magnitude goes where, so
+                # they share the k_f write and the t_num jump (`emit`) — that
+                # sharing is what keeps this cell inside its word budget with
+                # the second exit added.
                 "default:\n"
                 "    MOVE R{state:t}, R{in:k}\n"
                 "    SHR R{state:t}, #15\n"
-                "    BR.NZ pass\n"
+                "    BR.NZ triv\n"
                 "    SHR R{in:k}, #1\n"
                 "    MOVE R{state:t}, R0\n"
                 "    XOR R{state:t}, R{in:k}\n"
                 "    MOVE R{state:t}, R0\n"
                 "    AND R{state:t}, R{data:one}\n"
-                "    BR.Z pass\n"
+                "    BR.Z noswap\n"
                 "    MOVE R0, R{in:smag}\n"
                 "    {write:cm_f}\n"
                 "    MOVE R0, R{in:cmag}\n"
                 "    {write:dm_f}\n"
+                "    BR.NN emit\n"
+                "noswap:\n"
+                "    MOVE R0, R{in:cmag}\n"
+                "    {write:cm_f}\n"
+                "    MOVE R0, R{in:smag}\n"
+                "    {write:dm_f}\n"
+                "emit:\n"
                 "    MOVE R0, R{in:k}\n"
                 "    {write:k_f}\n"
-                "    {jump:trig}\n"
+                "    {jump:t_num}\n"
                 "    HALT\n"
-                "pass:\n"
-                "    MOVE R0, R{in:cmag}\n"
-                "    {write:cm_f}\n"
-                "    MOVE R0, R{in:smag}\n"
-                "    {write:dm_f}\n"
+                "triv:\n"
                 "    MOVE R0, R{in:k}\n"
                 "    {write:k_f}\n"
-                "    {jump:trig}\n"),
+                "    {jump:t_triv}\n"),
         )
 
     @staticmethod
@@ -2021,8 +2054,11 @@ class LargeFFTBlock(KyttarBlock):
                     (p + "tab_c", "trig", p + "tab_d", "default"),
                     (p + "tab_d", "trig", p + "swap", "default"),
                     # The trivial slot travels as WHICH ENTRY sign is jumped
-                    # at (the TwiddleMultiply idiom) — swap dispatches both.
-                    (p + "swap", "trig", p + "sign", "num"),
+                    # at (the TwiddleMultiply idiom) — swap dispatches BOTH.
+                    # Wiring only `num` here leaves sign's `triv` entry dead
+                    # and the fold emits numeric words on k = 0 and k = N/4.
+                    (p + "swap", "t_num", p + "sign", "num"),
+                    (p + "swap", "t_triv", p + "sign", "triv"),
                     (p + "sign", "t_n", p + "steer", "default"),
                     (p + "sign", "t_t", p + "steer", "default"),
                 ]

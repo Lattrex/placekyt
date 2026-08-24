@@ -2010,9 +2010,35 @@ class LargeFFTBlock(KyttarBlock):
              can be perfectly connected and still unroutable, and an egress
              corridor spends one extra hop leaving the array.
 
-        Returns True only when BOTH nets route under those rules.
+        FOURTH, AND IT INVALIDATES THE OTHER THREE IF IGNORED: **the placer
+        NORMALISES a layout to its own bounding box.** ``place_block(anchor)``
+        translates the footprint so its minimum x and y sit at the anchor, so
+        a plan whose cells start at ``min x = 1`` is SHIFTED ONE COLUMN LEFT
+        before the router ever sees it. Every absolute fact this method
+        establishes — distance to a port, a reserved lane, a free column —
+        is then about a layout that no longer exists.
+
+        That is not hypothetical: the N=128 die-0 plan sat at ``min x = 1``,
+        looked corridor-clean here, and reached the router shifted left with
+        block cells on (0,2) and (0,3), sealing column 0. The shipped N=64
+        fold is immune only because its plan already touches x=0 and y=0, so
+        anchoring is a no-op for it (verified: placed == planned).
+
+        So a plan is only accepted if it is ALREADY normalised. Rejecting
+        here is right rather than normalising after the fact, because a
+        translated fold is a DIFFERENT placement — its corridors have to be
+        re-checked, and the cheap way to guarantee that is to only ever
+        validate layouts the placer will not move.
+
+        Returns True only when the layout is normalised AND both nets route.
         """
         block_cells = set(used) - set(self._PORT_CELLS)
+        # The placer anchors on the bounding-box minimum; a plan that does not
+        # already touch x=0 and y=0 will be TRANSLATED, invalidating every
+        # absolute check below.
+        if block_cells and (min(x for x, _ in block_cells) != 0
+                            or min(y for _, y in block_cells) != 0):
+            return False
         in_cell = chosen[0][0]                       # s0_ctl
         out_cell = chosen[len(chosen) - 1][-1]       # last stage's out
         ports = sorted(self._PORT_CELLS)

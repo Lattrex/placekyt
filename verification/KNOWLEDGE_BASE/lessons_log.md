@@ -64,8 +64,12 @@ the FFT64/128 work, once in an example that reported `.ok` on every flag while
 emitting garbage), which is why it is written up on its own.
 
 **The concrete instance.** `LargeFFTBlock._corridors_ok` asked "is some NEIGHBOUR of
-each landing 4-connected to a port?", per net, independently. The router does three
-things that check did not model, and each one alone is enough to make it lie:
+each landing 4-connected to a port?", per net, independently. The real pipeline does
+FIVE things that check did not model, and each one alone is enough to make it lie.
+They were found ONE AT A TIME, each by a routing failure the previous fix exposed —
+which is itself the lesson: a proxy usually hides more than one discrepancy, so keep
+re-running the REAL engine after each fix instead of assuming the last one was the
+last one.
 
 1. **Nets are routed SEQUENTIALLY WITH SHARED OCCUPANCY.** The router lays one net at
    a time and RESERVES each finished corridor against the next. Two nets that are each
@@ -81,6 +85,26 @@ things that check did not model, and each one alone is enough to make it lie:
    extra hop leaving the array. A path can be perfectly connected and still
    unroutable: the die-0 detour around a tall fold measured 26 hops of pure corridor
    before the block's own internal hops were counted. Connectivity is not routability.
+4. **The ORDER of the nets is the CALLER'S, not the block's.** Nets are routed in
+   project connection order — whatever the caller happened to add first — and the two
+   orders are not equivalent, because each finished corridor is reserved against the
+   next. A placement validated for one order can fail on the other: the die-0 plan
+   passed a check assuming egress-first and then failed for real on `mid0` when the
+   caller wired ingress first. **Require BOTH orders to succeed**, or a placement is a
+   latent failure waiting for a caller to wire its nets the other way round.
+5. **THE PLACER NORMALISES A LAYOUT TO ITS OWN BOUNDING BOX, and that invalidates
+   every absolute fact the other four rest on.** `place_block(anchor)` TRANSLATES the
+   footprint so its minimum x and y sit at the anchor. A plan whose cells start at
+   `min x = 1` therefore reaches the router SHIFTED ONE COLUMN LEFT, and every
+   port distance, reserved lane and free column the planner reasoned about is about a
+   layout that no longer exists. Measured: the N=128 die-0 plan sat at `min x = 1`,
+   looked corridor-clean, and arrived at the router with block cells on (0,2) and
+   (0,3), sealing column 0. The shipped N=64 fold is immune only by accident — its
+   plan already touches x=0 and y=0, so anchoring is a no-op (verified: placed ==
+   planned). **If a planner reasons in absolute coordinates, it must REJECT any plan
+   that is not already normalised**, rather than normalising after the fact: a
+   translated fold is a DIFFERENT placement whose corridors need re-checking, and the
+   cheap guarantee is to only ever validate layouts the placer will not move.
 
 `_corridors_ok` now mirrors all three — egress first, then ingress over what the
 egress left, both terminating ON their landing cells, both hop-bounded. Under the

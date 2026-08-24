@@ -1,0 +1,30 @@
+{
+ "block": "R2ButterflyBlock",
+ "grc_block": "(Python golden: radix-2 DIF butterfly, RHE scale-by-2)",
+ "tier": 1,
+ "wave": 7,
+ "schema_version": 1,
+ "started_utc": "2026-08-23T17:30:00Z",
+ "ended_utc": "2026-08-23T23:59:00Z",
+ "walltime_sec": 23340.0,
+ "tokens": {
+  "total": 571000,
+  "source": "orchestrator_usage (cumulative across a session-limit interruption; approximate)"
+ },
+ "turns": 262,
+ "attempts": 1,
+ "human_interventions": 0,
+ "intervention_reasons": [],
+ "prompts": [
+  {
+   "role": "initial",
+   "text": "factory_dispatch prompt; isolated worktree; joint FFT-primitive pair build (R2Butterfly + TwiddleMultiply, shared module, pinned spike numerics, one commit)."
+  }
+ ],
+ "verify_passed": true,
+ "quarantined": false,
+ "quarantine_reason": "",
+ "commit_sha": "283b3e471c2ebb20d86cacea193794bce75e5f44",
+ "notes": "PAIR record (the RMS/RMSCF joint-build convention): tokens/turns/walltime are the WHOLE joint session (both blocks + the substrate work), recorded here in full; TwiddleMultiplyBlock.factory.json is the zero-cost cross-reference. Numerics were PINNED by a completed design spike (implement-not-redesign): the RHE (round-half-to-even) butterfly halving FIT the cell budget (sum leg 11 instr via MACQ-by-0x4000, diff leg 16 incl. a one-instruction BR.NV clamp at the single reachable tie) \u2014 the spike's 'mixed' fallback was NOT needed. The dominant cost was SUBSTRATE work, not DSP: this is the library's first TWO-complex-output-pair block, which surfaced and fixed (a) block-level exit-cell handoff patching clobbering the sibling output net (build._net_source_exit_cell, both patch sites), (b) block-wide complex-egress base_tag grouping (now per exit cell), (c) the GRC importer's numeric OUTPUT index not counting complex pairs (I-halves-only collapse; trigger ports are not indexable), plus the reusable run_block_dut_complex2_dual driver (per-rail out_tags, dest-demuxed \u2014 order-free under orientation). Also found+documented: an UNWIRED output pair's default-resolved writes/jumps are a live hazard (data-dependent phantom port words; a corridor-cell jump ping-pong livelock). Both blocks bit-exact (tol 0) incl. adversarial full-scale + tie-point gates; wrong-rounding (half-up) and dropped-saturation mutants FAIL; saturated == per-sample; 8/8 D4; GRC import gate builds end-to-end.",
+ "walltime": "~90m (spans a session-limit interruption; approximate)"
+}

@@ -1,0 +1,30 @@
+{
+ "block": "TanhBlock",
+ "grc_block": "(Python golden: numpy.tanh in Q15)",
+ "tier": 2,
+ "wave": 7,
+ "schema_version": 1,
+ "started_utc": "2026-08-23T20:20:00Z",
+ "ended_utc": "2026-08-23T23:05:00Z",
+ "walltime_sec": 9900.0,
+ "tokens": {
+  "total": 0,
+  "source": "joint_build_cross_reference"
+ },
+ "turns": 0,
+ "attempts": 1,
+ "human_interventions": 0,
+ "intervention_reasons": [],
+ "prompts": [
+  {
+   "role": "initial",
+   "text": "factory dispatch prompt (AGENTS.md loop); isolated worktree; joint activation-pair build (shared module, one commit)."
+  }
+ ],
+ "verify_passed": true,
+ "quarantined": false,
+ "quarantine_reason": "",
+ "commit_sha": "d1e442f",
+ "notes": "Zero-cost cross-reference: built jointly with SigmoidBlock in one dispatch/commit (shared module activation_blocks.py, identical two-cell engine and program text -- only the 17-entry table, the unfold constant negop=0 and CANON_K=2 differ); see SigmoidBlock.factory.json for the pair's full cost record. Tanh is the block that pins the design's canonical-domain rule: folding the input scale into the table domain is a measured tanh accuracy failure, so the dshift-into-shift-immediates mechanism is load-bearing here, not a convenience.",
+ "walltime": "0 (joint build; costed on SigmoidBlock)"
+}

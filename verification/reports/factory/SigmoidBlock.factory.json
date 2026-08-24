@@ -1,0 +1,30 @@
+{
+ "block": "SigmoidBlock",
+ "grc_block": "(Python golden: 1/(1+exp(-x)) in Q15)",
+ "tier": 2,
+ "wave": 7,
+ "schema_version": 1,
+ "started_utc": "2026-08-23T20:20:00Z",
+ "ended_utc": "2026-08-23T23:05:00Z",
+ "walltime_sec": 9900.0,
+ "tokens": {
+  "total": 361445,
+  "source": "orchestrator_usage (cumulative across two infra session restarts; approximate)"
+ },
+ "turns": 59,
+ "attempts": 1,
+ "human_interventions": 0,
+ "intervention_reasons": [],
+ "prompts": [
+  {
+   "role": "initial",
+   "text": "factory dispatch prompt (AGENTS.md loop); isolated worktree; JOINT build of SigmoidBlock + TanhBlock from a pinned numeric design (16-interval table + interp, 17 Q15 entries, canonical domains, dshift folded into the shift immediates), shared builders module for a future composite, full verification bar incl. bit-exact vs the design reference, four dshift values, and the pinned mutation set."
+  }
+ ],
+ "verify_passed": true,
+ "quarantined": false,
+ "quarantine_reason": "",
+ "commit_sha": "dffbd451b4d029861638856091048f1251428b98",
+ "notes": "JOINT-BUILD record: cost covers the SigmoidBlock+TanhBlock pair (shared module activation_blocks.py, one builder, one commit); TanhBlock's record is a zero-cost cross-reference so aggregate sums stay honest. BUILDER-side figures (budget accounting; orchestrator may overwrite with exact usage). 1 attempt, 48 joint tests + 3 fleet gates, fully autonomous on the WORK (2 infra session restarts -- an output-cap kill and a usage-limit reset -- cost wall-clock and one lost pre-commit worktree, zero content interventions). The FIRST on-chip run was bit-exact on every probe at all four dshift values; zero bug iterations. Why: the whole numeric contract (both cell formulations vs the canonical reference) was proven exhaustively in pure python BEFORE any repo code, and the word-budget crunch was solved on paper first. Findings worth the record: (1) the lut cell is arithmetically 33-34 words under EVERY operand encoding of the sigmoid unfold (0x8000-y is affine-not-linear in y, provably not expressible as s*(y+k) mod 2^16, so it costs two sample-dependent operands) -- the runtime PATCH-SLOT idiom (BlockInterleaver store cell) delivers the unfold as ONE pre-assembled instruction word instead, landing the cell at exactly 31/31; (2) mask-free frac extraction ((mag<<(5+d))>>1) and the dshift>0 unsigned domain-cap each bought the fold cell the words the patch scheme needs; (3) a spike's dshift-invariance claim was max-error only -- the RMS floor at dshift<0 rises with the discarded input bits and the gate had to be re-derived per sign of dshift, not copied.",
+ "walltime": "~60m (spans an output-limit restart and a session-limit restart; approximate)"
+}

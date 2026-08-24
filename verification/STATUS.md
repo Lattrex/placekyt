@@ -3,7 +3,7 @@
 
 # Kyttar block library — status
 
-**97 verified · 0 in progress · 108 targeted.** Each Kyttar block is verified as a drop-in equivalent of its GNU Radio Companion counterpart (same parameters, output matching within Q15 quantization). “Quality” is the measured error of the verified block versus the GNU Radio reference.
+**100 verified · 0 in progress · 108 targeted.** Each Kyttar block is verified as a drop-in equivalent of its GNU Radio Companion counterpart (same parameters, output matching within Q15 quantization). “Quality” is the measured error of the verified block versus the GNU Radio reference.
 
 > **Reading the quality column.** `err N / tol M LSB` — the worst-case sample error (`N`) against the derived pass threshold (`M`), in Q15 **LSBs** (1 LSB = 1/32768 of full scale ≈ 3.05e-5); pass requires `N ≤ M`. `−X dB SNR` — the **NMSE**: the error power is `X` dB below the signal power (more negative = quieter; Q15's floor is ≈ −90 dB). Decision blocks report **BER** instead. To estimate a chain's total noise, convert each block's dB to linear power (`10^(dB/10)`), sum, and convert back (`10·log10`) — the noisiest stage dominates.
 
@@ -54,8 +54,8 @@
 | **Crc16Block** | (Kyttar-native, no single GR block) | 1 · feed-forward | ✅ done | err 0 / tol 0 LSB | edge rand×4 mut |
 | **HammingEncoderBlock** | (Kyttar-native, no single GR block) | 1 · feed-forward | ✅ done | BER 0 (112 bits) | edge rand×4 mut |
 | **HammingDecoderBlock** | (Kyttar-native, no single GR block) | 1 · feed-forward | ✅ done | BER 0 (448 bits) | edge rand×3 mut |
-| **R2ButterflyBlock** | `(Python golden: radix-2 butterfly, complex add/sub pair)` | 1 · feed-forward | ⬜ planned | — | — |
-| **TwiddleMultiplyBlock** | `(Python golden: complex multiply by a stored constant)` | 1 · feed-forward | ⬜ planned | — | — |
+| **R2ButterflyBlock** | `(Python golden: radix-2 DIF butterfly, RHE scale-by-2)` | 1 · feed-forward | ✅ done | err 0.0 / tol 0.0 LSB | edge rand×3 mut |
+| **TwiddleMultiplyBlock** | `(Python golden: complex multiply by a per-sample table-selected Q15 twiddle)` | 1 · feed-forward | ✅ done | err 0.0 / tol 0.0 LSB | edge rand×3 mut |
 | **ChirpSymbolMapperBlock** | `(Python golden: symbol -> chirp start offset)` | 1 · feed-forward | ⬜ planned | — | — |
 | **IQUpconvertBlock** | `blocks.multiply_cc` | 2 · stateful/loop | ✅ done | err 1 / tol 6 LSB · -85 dB SNR | mut |
 | **ComplexRRCMatchedFilterBlock** | `filter.fir_filter_ccf (rrc taps)` | 2 · stateful/loop | ✅ done · 🧪 proof-of-concept | err 11 / tol 18 LSB · -54 dB SNR | edge rand×3 sweep×8 mut |
@@ -88,7 +88,6 @@
 | **ComplexDelayLineBlock** | `(Python golden: numpy complex delay of N samples)` | 2 · stateful/loop | ✅ done | err 0 / tol 0 LSB | edge rand×3 sweep×9 mut |
 | **BinArgmaxBlock** | `(Python golden: numpy.argmax over N magnitude bins)` | 2 · stateful/loop | ✅ done | err 0 / tol 0 LSB | edge rand×3 sweep×7 mut |
 | **GardnerTimingRecovery** | `digital.symbol_sync_cc` | 2 · stateful/loop | 🚧 needs human (quarantined) · 🧪 proof-of-concept | — | — |
-| **DotProductMACBlock** | `(Python golden: numpy.dot, fixed weight row)` | 2 · stateful/loop | ⬜ planned | — | — |
 | **ChirpGeneratorBlock** | `(Python golden: cyclic-shifted linear up-chirp)` | 2 · stateful/loop | ⬜ planned | — | — |
 | **FSK4SymbolMapperBlock** | `digital.chunks_to_symbols_bf (4FSK level table)` | 3 · new GRC block | ✅ done | err 0 / tol 0 LSB | mut |
 | **FSK4SlicerBlock** | `digital.constellation_decoder (4FSK PAM, inverse of mapper)` | 3 · new GRC block | ✅ done | BER 0 (32 bits) | mut |
@@ -111,6 +110,7 @@
 | **GolayEncoderBlock** | (Kyttar-native, no single GR block) | 3 · new GRC block | ✅ done | BER 0 (288 bits) | edge rand×4 mut |
 | **GolayDecoderBlock** | (Kyttar-native, no single GR block) | 3 · new GRC block | ✅ done | BER 0 (192 bits) | edge rand×3 mut |
 | **RationalResamplerBlock** | `filter.rational_resampler_fff` | 3 · new GRC block | ✅ done | err 2 / tol 5 LSB · -76 dB SNR | edge rand×3 sweep×13 mut |
+| **DotProductMACBlock** | (Kyttar-native, no single GR block) | 3 · new GRC block | ✅ done | BER 0 (60 bits) | edge rand×4 mut |
 | **ZeroCrossingRateBlock** | (Kyttar-native, no single GR block) | 3 · new GRC block | ✅ done | err 0 / tol 0 LSB | edge rand×3 sweep×5 mut |
 | **GRUCellBlock** | `(Python golden: a float GRU in gr-kyttar, H=4 I=2, + 4-class readout)` | 3 · new GRC block | ⬜ planned | — | — |
 | **FFT16Block** | `numpy.fft.fft (N=16)` | 3 · new GRC block | ⬜ planned | — | — |

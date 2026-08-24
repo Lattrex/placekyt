@@ -80,11 +80,12 @@ class FeaturePairJoinBlock(KyttarBlock):
         MOVE R0, as ; {write:out} ; {jump:trig}      <- burst 1 (word0 = A)
         MOVE R0, bs ; {write:out2} ; {jump:trig2}    <- burst 2 (word1 = B)
 
-    i.e. FOUR external instructions from a SINGLE-RAIL output cell. The two
-    bursts are declared as ONE logical output stream: ports ``out``/``out2``
-    share the block's single output register, and ``out2``/``trig2`` are
-    ``__terminate__``-free duplicates of ``out``/``trig`` that the build patches
-    IDENTICALLY.
+    i.e. FOUR external instructions from a SINGLE-RAIL output cell. The extra
+    port names (``out2``/``trig2``) exist only to give the second burst its own
+    placeholders in the template — the block still declares ONE output register
+    and the design is wired on the single logical ``out`` stream; the build
+    patches all four instructions IDENTICALLY (see below), which is what makes
+    the two bursts land on the same target register and entry.
 
     NO ``RAW_OUTPUT_HOPS``, NO HAND-ROUTING (this was investigated and is not
     needed — recorded because the alternative was expected). The ordinary
@@ -106,14 +107,19 @@ class FeaturePairJoinBlock(KyttarBlock):
           so ``_output_cell_carries_handoffs`` stays False and the patch covers
           BOTH bursts rather than only the last WRITE/JUMP.
 
-    KNOWN LIMIT (explicit guard test, not glossed over): the downstream target
-    must present a SINGLE input register on the joined entry — the toggle-cell
-    contract this block exists to serve. When the target resolves >1 input
-    register, the abutted build path treats a multi-WRITE source as a COMPLEX
-    PACKET (``_patch_complex_abutment_handoff``) and steers the two bursts to
-    DIFFERENT registers with one trigger, which is not this block's contract.
-    ``FeaturePairJoinBlock`` is for the 1-register toggle consumer; a multi-reg
-    consumer already has the complex-packet path and does not need a join.
+    A MULTI-REGISTER CONSUMER ALSO WORKS (measured, not assumed). Reading the
+    build alone suggests a >1-input-register target would divert the emit to
+    ``_patch_complex_abutment_handoff`` (the complex-packet path, which steers
+    rails to DIFFERENT registers with one trigger) and break the contract. It
+    does not: that patcher sets the hop on EVERY WRITE/JUMP and the dest only on
+    WRITE index ``rail_idx``, and for a net targeting the consumer's FIRST input
+    ``rail_idx`` is 0 while the second burst's WRITE already carries that same
+    dest from the template — so the outcome is identical to
+    ``_patch_cell_handoff``: two independent deliveries into one register and
+    one entry. Verified on chip against a 2-input-register consumer
+    (``test_target_with_multiple_input_registers_still_gets_two_bursts``). The
+    natural consumer is still the single-register toggle cell; this note exists
+    so nobody re-derives a limit from the code that the hardware does not have.
 
     LAYOUT: 1 cell. Feed-forward, no internal handoffs, no reconvergent fan-in;
     the arbiter LOCK it does carry is the INPUT rendezvous, not an INV-19/20

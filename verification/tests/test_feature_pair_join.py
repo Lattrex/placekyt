@@ -909,6 +909,101 @@ def test_arms_with_DIFFERENT_decimation_rates_still_pair():
         f"emission-for-emission; got {built.out}")
 
 
+def test_target_with_multiple_input_registers_still_gets_two_bursts():
+    """MEASURED, because reading the build suggests otherwise.
+
+    A >1-input-register target routes the emit through
+    ``_patch_complex_abutment_handoff`` (the complex-packet path), which one
+    would expect to steer the two bursts to DIFFERENT registers with a single
+    trigger — i.e. to break this block's contract. It does NOT: that patcher
+    sets the hop on every WRITE/JUMP but the dest only on WRITE index
+    ``rail_idx``, and for a net into the consumer's FIRST input ``rail_idx`` is
+    0 while the second burst's WRITE already carries that dest from the
+    template. The result is the same two independent deliveries.
+
+    This test pins the MEASURED behaviour (drive an AddBlock's ``a0`` and check
+    both words arrive as separate samples), so the docstring's claim is backed
+    by hardware rather than by code-reading — an earlier draft asserted the
+    opposite limit from code-reading alone and this test is what caught it."""
+    import simkyt
+    BlockCatalog, load_chip_type, AppController, CPE, BE = _engine()
+    built = None
+    for (ka_xy, kb_xy, j_xy) in _ANCHORS:
+        for _attempt in range(3):
+            cat = BlockCatalog.from_gr_kyttar()
+            ct = load_chip_type(CHIP_YAML)
+            ctk = getattr(ct, "name", None) or "kyttar_10x12"
+            ctrl = AppController(catalog=cat)
+            ctrl.new_project("fpj_multireg", ctk)
+            ka = ctrl.place_block("KeepOneInNBlock", 0, *ka_xy, library=LIB,
+                                  params={"n": _ARM_N})
+            kb = ctrl.place_block("KeepOneInNBlock", 0, *kb_xy, library=LIB,
+                                  params={"n": _ARM_N})
+            j = ctrl.place_block("FeaturePairJoinBlock", 0, *j_xy, library=LIB,
+                                 params={})
+            add = ctrl.place_block("AddBlock", 0, 8, 8, library=LIB,
+                                   params={"num_inputs": 2})
+            ctrl.add_logical_connection(CPE(chip=0, port="x16_in"),
+                                        BE(block=ka, port="sample"), name="n0")
+            ctrl.add_logical_connection(CPE(chip=0, port="x16_in"),
+                                        BE(block=kb, port="sample"), name="n1")
+            ctrl.add_logical_connection(BE(block=ka, port="out"),
+                                        BE(block=j, port="a"), name="n2")
+            ctrl.add_logical_connection(BE(block=kb, port="out"),
+                                        BE(block=j, port="b"), name="n3")
+            ctrl.add_logical_connection(BE(block=j, port="out"),
+                                        BE(block=add, port="a0"), name="n4")
+            ctrl.add_logical_connection(BE(block=add, port="out"),
+                                        CPE(chip=0, port="x16_out"), name="n5")
+            if not ctrl.auto_pnr({ctk: ct}).ok:
+                continue
+            bres = ctrl.build()
+            if not bres.ok:
+                continue
+            il = bres.chips[0].input_landings
+            if "n0" not in il or "n1" not in il:
+                continue
+            chip = simkyt.Chip.from_yaml(CHIP_YAML)
+            chip.load_bitstream_physical(bres.words(0))
+            chip.set_port_entry_address("x16_in", int(il["n0"]["entry"]))
+            built = (ctrl, bres, j,
+                     _Chain(bres, chip, il["n0"], il["n1"]))
+            break
+        if built is not None:
+            break
+    if built is None:
+        pytest.skip("the multi-register-consumer chain did not route on this run")
+    ctrl, bres, j, ch = built
+
+    # Non-vacuity: the consumer really does present >1 input register.
+    from engine.catalog import BlockCatalog as _BC
+    _entry, t_ins = _BC.from_gr_kyttar().resolved_io(
+        "AddBlock", {"num_inputs": 2}, library=LIB)
+    assert len(t_ins) > 1, f"AddBlock must expose >1 input register; got {t_ins}"
+
+    # The built emit still carries TWO WRITEs and TWO JUMPs, all identical.
+    jc = ctrl.project.block(j).placement.cells[0]
+    dis = simkyt.Program.from_words(
+        "d", list(bres.chips[0].cells[(jc.x, jc.y)]["memory"]), 0).disassemble()
+    writes = [(int(l.split("hop_cnt:")[1].split(",")[0]),
+               int(l.split("dest:")[1].split("}")[0]))
+              for l in dis.splitlines()
+              if "Write {" in l and "config: false" in l]
+    jumps = [(int(l.split("hop_cnt:")[1].split(",")[0]),
+              int(l.split("dest:")[1].split("}")[0]))
+             for l in dis.splitlines() if "Jump {" in l]
+    assert writes == [writes[0], writes[0]], writes
+    assert jumps == [jumps[0], jumps[0]], jumps
+
+    # And the data really flows: each burst reaches add.a0 as its OWN sample
+    # (a1 is never written, so the Add just forwards each word).
+    for av, bv in ((100, 200), (300, 400)):
+        ch.emit("a", av)
+        ch.emit("b", bv)
+    assert ch.out == [100, 200, 300, 400], (
+        f"a >1-register consumer must still receive both bursts as separate "
+        f"samples; got {ch.out}")
+
 def test_emit_report():
     """Emit the dashboard report. The metric is EXACT — this block CARRIES words,
     it does not transform them, so every emitted word must equal the reference

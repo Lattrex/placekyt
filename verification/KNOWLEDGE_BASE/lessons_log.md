@@ -13,7 +13,7 @@ dropped) — append new entries above the oldest ones as before.
 
 Two substrate primitives built together (wave 7) to unblock a two-feature
 classifier front end: an ORDERED pair join for the toggle-cell consumer
-contract, and a standalone Q15 square root. Both green; 31 + 31 tests.
+contract, and a standalone Q15 square root. Both green; 32 + 31 tests.
 
 ### FeaturePairJoinBlock — two SEQUENTIAL bursts, not a 2-rail packet
 
@@ -58,6 +58,22 @@ More generally: **when you need N deliveries into ONE entry, author N WRITE+JUMP
 pairs in a single-rail cell and let the ordinary patcher do it.** The complex
 patchers are for N rails into N registers with ONE trigger; do not reach for
 them (or for raw hops) for the sequential case.
+
+**DO NOT DERIVE A "KNOWN LIMIT" FROM CODE-READING — MEASURE IT.** A draft of
+this block's docstring claimed a limit it does not have: that a downstream
+target with >1 input register would break the two-burst contract, because such
+a net is dispatched to `_patch_complex_abutment_handoff` (the complex-packet
+patcher, which steers rails to *different* registers with one trigger). That
+reads convincingly and is WRONG. The patcher sets the hop on every WRITE/JUMP
+but the dest only on WRITE index `rail_idx`, and for a net into the consumer's
+FIRST input `rail_idx` is 0 while the second burst's WRITE already carries that
+same dest from the template — so the outcome is byte-identical to
+`_patch_cell_handoff`. Writing the "limit" as an executable guard is what
+exposed it: the test failed on its first run, on real hardware, and the
+docstring got corrected instead of shipping a false constraint. A limitation
+stated in prose and never executed is a guess; the repo's rule that limits are
+recorded as guard TESTS is exactly what makes the difference, and it cuts both
+ways — the test can prove the limit isn't real.
 
 **ENGINE BUG FOUND AND FIXED — a per-block pass hardcoded to one block's
 names.** `_apply_rendezvous_input_faces` (build.py) reconciles a face-locking

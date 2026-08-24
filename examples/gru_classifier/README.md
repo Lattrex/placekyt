@@ -28,6 +28,25 @@ This one has not. The measured shortfall, the search that established it, and
 what a human should look at are in the `gru_classifier example` entry of
 [`../../verification/KNOWLEDGE_BASE/lessons_log.md`](../../verification/KNOWLEDGE_BASE/lessons_log.md).
 
+### The wall is corridor congestion, not the hop budget
+
+One plausible cause has since been **ruled out by measurement**. The 31-hop
+routing ceiling was a real engine limit and has since been lifted (relay
+emission, INV-36) — but that is *not* what blocks this chain. Re-measured
+afterwards: 2160 fresh layouts (every legal `GRUCellBlock` anchor × randomized
+small-block placement) plus a sweep across four routing models (`auto_orient`,
+the single-backbone bus/ring router, both together, and CP-SAT). The outcome is
+unchanged — always **exactly one net short**, and every failing net reports
+`no bus path from source to the broker tap`. **Not one** failure on any layout
+was a hop overflow.
+
+So the constraint is corridor *space*, not corridor *length*. The blocks occupy
+only 65 of 120 cells, but `GRUCellBlock` is 51 of them in a **rigid 7×8 fold**
+that splits the remaining area into pockets the four-block RMS arm cannot thread;
+the `join → GRUCell` tail on its own routes fine at 72/120. The lever is
+therefore the GRU's **fold** (a narrower or reflowable footprint) or an RMS arm
+built from fewer separately-placed blocks — not the router.
+
 ## The chain
 
 ```

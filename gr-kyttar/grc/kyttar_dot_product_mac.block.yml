@@ -1,0 +1,90 @@
+id: kyttar_dot_product_mac
+label: Kyttar Dot Product MAC
+category: '[Kyttar]/Math'
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.dot_product_mac(device_id=${device_id}, coefficients=${coefficients},
+    bias=${bias}, k=${k}, mode=${mode})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+- id: coefficients
+  label: Coefficients
+  dtype: real_vector
+  default: '[0.25, 0.25, 0.25, 0.25]'
+- id: bias
+  label: Bias
+  dtype: real
+  default: '0.0'
+- id: k
+  label: Vector length K
+  dtype: int
+  default: '4'
+- id: mode
+  label: Output mode
+  dtype: enum
+  options: ['"raw"', '"restored"']
+  option_labels: [Raw (y / 2^S), Restored (saturating << S)]
+  default: '"raw"'
+
+inputs:
+- id: '0'
+  label: in
+  domain: stream
+  dtype: float
+
+outputs:
+- id: '0'
+  label: out
+  domain: stream
+  dtype: float
+
+documentation: |-
+  Fixed-coefficient dot product over a K-element input vector — a
+  correlator-style weighted sum with a bias, the reusable "weight row"
+  primitive. A placeKYT-native [Kyttar] block (no stock GNU Radio
+  counterpart; verified bit-exact against a numpy integer golden).
+
+  Consumes K consecutive input samples as ONE fresh vector and emits one
+  output word per vector (rate-REDUCING K:1; a trailing partial vector is
+  never emitted). There is NO delay line and NO sample aging — each sample
+  contributes to exactly one output (the correlator pattern, not the FIR
+  pattern).
+
+      y = bias + sum(coefficients[i] * x[i])   for i in 0..K-1
+
+  Coefficients and bias are arbitrary floats: the block derives a headroom
+  shift S = max(0, ceil(log2(sum|c| + |bias|))) and stores the constants
+  prescaled by 2^-S (with a post-rounding guard), so the on-chip 16-bit
+  accumulator provably never wraps mid-vector.
+
+  Output mode:
+    Raw (default):  emits the accumulated word UNRESTORED — the Q15 word
+                    represents y / 2^S. Use this when a downstream block
+                    absorbs the 2^S scale into its own shift immediates
+                    (the composite/weight-row use). The derived S is exposed
+                    on the placed block as the read-only `scale_shift`
+                    property.
+    Restored:       shifts left by S with SATURATION before emitting —
+                    plain Q15 clamp(y), the standalone drop-in form. Pins
+                    to +/-full-scale on true overdrive.
+
+  Parameters:
+    Device ID:      Which Kyttar device to use.
+    Coefficients:   The K weights (list of floats).
+    Bias:           Additive constant preloaded into the accumulator.
+    Vector length K: 2..7 (one cell holds the K coefficients + bias + code;
+                    out-of-range K raises). Must equal len(coefficients).
+    Output mode:    raw / restored (see above).
+
+  Ports:
+    in  (in):  float stream (one Q15 sample per item)
+    out:       one float word per K input samples (raw or restored)
+
+  Mapped by placeKYT (File -> Import GNURadio Flowgraph) to DotProductMACBlock.
+
+file_format: 1

@@ -1,0 +1,27 @@
+{
+  "kyttar_block": "DotProductMACBlock",
+  "passed": true,
+  "metric": "decision",
+  "n_compared": 6,
+  "max_abs_err": 0,
+  "tolerance": 0,
+  "nmse_db": null,
+  "correlation": null,
+  "bit_errors": 0,
+  "delay_used": 0,
+  "coverage": {
+    "gr_equiv": "(none \u2014 numpy integer golden; correlator/weighted-sum primitive, FIR-family param names)",
+    "edge": "full-scale 0x7FFF/0x8000/0x8001 words; sum|c| exactly 1.0; the post-rounding-guard rounding-trip set; overdriven rails",
+    "random": 4,
+    "k_sweep": "2..7 bit-exact on-chip, BOTH modes (raw single-cell / restored 2-cell mac->restore)",
+    "s_sweep": "S=0,1,2,3 (sum|c|+|b| 0.9 .. 7.7) bit-exact",
+    "modes": "raw (emit y/2^S, S exposed as scale_shift) / restored (saturating <<S; rails pinned 0x7FFF/0x8000 on overdrive; S=0 restored == raw, single cell)",
+    "rate": "K:1 rate-reducing; floor(n/K) outputs on the K-th samples; trailing partial dropped; fresh-vector (no sample aging)",
+    "saturation": "pipelined == per-sample, both modes (+ RATE_1IN in the global gate)",
+    "orientation": "cw / cw+cw / mirror_h spot checks both modes (full 8 in test_orientation_invariance.py)",
+    "mutation": "guard REMOVED (crafted wrap, sign-flip) / wrong S / swapped coefficients / bias not preloaded / +1 shift / inverted / empty",
+    "float_accuracy": "<= 1.5K+0.5 LSB of the scaled domain (derived)",
+    "hw_range": "k in 2..7 (one-cell coeff+bias+code discipline); S <= 15 (4-bit shift immediate); len==k; all RAISE",
+    "note": "scale schedule pinned: S=max(0,ceil(log2(sum|c|+|b|))), store round(v*2^-S*32768), post-rounding guard bumps S; acc preloads scaled bias; intermediate wrap impossible"
+  }
+}

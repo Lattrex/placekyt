@@ -228,6 +228,16 @@ RATE_1IN = {
     # flat bit stream must equal the per-sample flat stream (no dropped or
     # duplicated group, the 7:4 output-count bar).
     "HammingDecoderBlock": ("sample", "out", {}),
+    # Fixed-coefficient K-vector dot product (correlator pattern, K:1 rate-
+    # REDUCING — one weighted-sum word per K inputs, fresh vector each time, no
+    # delay line). Gated in the RESTORED S>0 config (the 2-cell mac->restore
+    # linear chain): straight feed-forward, NO feedback corridor and NO
+    # reconvergent fan-in (INV-19/20 N/A) — the saturated flat stream must
+    # equal the per-sample flat stream. The raw single-cell config is gated in
+    # test_dot_product_mac.py::test_saturated_equals_per_sample.
+    "DotProductMACBlock": ("sample", "out",
+                           {"coefficients": [0.9, -0.7, 0.8, 0.6],
+                            "bias": 0.2, "k": 4, "mode": "restored"}),
     # Extended Golay (24,12) encoder: 12 bits -> one 24-bit codeword burst
     # (12:24 rate-EXPANDING). A straight 4-cell feed-forward chain (pack
     # accumulator -> par1 -> par2 LOAD-table parity -> emit burst) with NO

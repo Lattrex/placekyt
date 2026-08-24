@@ -133,6 +133,10 @@ _TYPE_OVERRIDES = {
     # pack_k_bits: snake→Pascal gives "PackKBitsBlock" but the mid-word single-letter
     # "k" makes the fallback fragile; pin it explicitly (override uses catalog.get).
     "kyttar_pack_k_bits": "PackKBitsBlock",
+    # Dot-product MAC (placeKYT-native correlator primitive, no GR counterpart):
+    # snake→Pascal of "kyttar_dot_product_mac" gives "DotProductMacBlock" (wrong
+    # case for the MAC acronym) — pin it explicitly.
+    "kyttar_dot_product_mac": "DotProductMACBlock",
     "kyttar_viterbi_bmu": "ViterbiBranchMetricBlock",
     "kyttar_diff_decoder": "DiffDecoderBlock",
     # QuadratureDemod (FM demod): the curated manifest names it by the GR-aligned short

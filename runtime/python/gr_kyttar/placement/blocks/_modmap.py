@@ -83,6 +83,7 @@ BUILTIN_BLOCKS = {
     'HammingEncoderBlock': 'hamming_encoder_block',
     'PSKSymbolMapperBlock': 'psk_symbol_mapper_block',
     'MapBBBlock': 'map_bb_block',
+    'DotProductMACBlock': 'dot_product_mac_block',
     'HammingDecoderBlock': 'hamming_decoder_block',
     'GolayDecoderBlock': 'golay_decoder_block',
     'GolayEncoderBlock': 'golay_encoder_block',

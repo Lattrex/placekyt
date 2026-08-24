@@ -127,6 +127,14 @@ BLOCKS = [
     # par2 -> emit), no internal transit cell, no params — the 2x2 footprint must
     # stay pairwise-distinct in every D4 orientation and under movement.
     ("GolayEncoderBlock", {}),
+    # Fixed-coefficient dot product: MODE/S-dependent footprint — raw (and
+    # restored at S=0) is a single MAC cell; restored with S>0 grows a second
+    # `restore` cell (2x1 row, no internal transit cell). Assert BOTH shapes
+    # stay pairwise-distinct under every D4 orientation and movement.
+    ("DotProductMACBlock", {"coefficients": [0.3, -0.2, 0.2, 0.15],
+                            "bias": 0.05, "k": 4}),
+    ("DotProductMACBlock", {"coefficients": [0.9, -0.7, 0.8, 0.6],
+                            "bias": 0.2, "k": 4, "mode": "restored"}),
     # RMS pair: 4-cell 2x2 serpentine fold (pwr -> norm -> poly -> denorm), no
     # internal transit cell, no footprint-growing param (alpha only changes a
     # coefficient word) — the 2x2 footprint must stay pairwise-distinct in every

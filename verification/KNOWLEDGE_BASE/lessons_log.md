@@ -9,6 +9,61 @@ block-specific gotcha. Promote anything that generalizes across block classes in
 and superseded material merged into the surviving entries; no durable lesson was
 dropped) — append new entries above the oldest ones as before.
 
+## DotProductMACBlock — the correlator (fresh-vector) MAC pattern + the post-rounding headroom guard 2026-08-23
+
+Fixed-coefficient dot product over a K-element vector (weighted sum + bias, K:1
+rate-reducing) — a placeKYT-native primitive with no stock GR counterpart
+(numpy-golden pattern, like Crc16Block). Bit-exact on-chip on the first build;
+59-test suite green. Durable lessons:
+
+- **The correlator pattern is NOT the FIR pattern — and the gate must prove
+  it.** K consecutive samples form one FRESH vector -> one output; no delay
+  line, no sample aging. Structurally this is PackKBits (count + accumulate +
+  emit-and-rearm), not FIR (shift line + full MAC per sample). The
+  `test_fresh_vector_no_sample_aging` gate pins it: feeding [v1, v2] must give
+  [dot(v1), dot(v2)] exactly — an accidental delay-line implementation mixes
+  v1 into v2's output and fails. Cheap and worth copying for any future
+  block-framed (vector-in) primitive.
+- **`idx` doubles as the LOAD address.** With coefficients at addr 1..K in
+  natural order, a single up-counter (init 1) is BOTH the position counter and
+  the LOAD-indirect address — `LOAD R{state:idx}` fetches the right
+  coefficient with zero address arithmetic; `one` doubles as the idx reset.
+  MAC cell = 14 instr + (K+3) data + 3 state, K=7 fits at 28/32.
+- **Snapshot the input BEFORE the LOAD.** The sample lands in R0 and LOAD
+  writes R0 — `MOVE R{state:xs}, R{in:sample}` must be instruction 1 or the
+  sample is destroyed. (`MULQ R0, R{state:xs}` straight off the LOAD result is
+  fine — R0 is a legal MULQ operand, the nlog10 idiom.)
+- **INV-13's scale schedule, correlator form, with the POST-ROUNDING GUARD:**
+  S = max(0, ceil(log2(sum|c| + |b|))); store round(v·2^-S·32768) for coeffs
+  AND bias; if sum|q| > 32767 after rounding, bump S and requantize. The guard
+  is LOAD-BEARING and trips in practice: sum|c| == 1.0 exactly ALWAYS trips it
+  (each 0.25 -> 8192, sum 32768), and a float-sum-<1 set trips it via round-up
+  ([8191.51/32768]*4 + tiny). Crafting a set that actually WRAPS the unguarded
+  16-bit accumulator is subtler than expected: positive overflow is unreachable
+  (truncation eats ~1 LSB per product), and the -32768 rail means sum|q| ==
+  32768 does NOT wrap — you need sum|q| >= 32769 (round-up on >= 5 stored
+  words) driven by a full-scale 0x8000 vector; the mutant then sign-flips
+  (+32767 for a true y = -1.0). Reusable recipe for any guard-removal mutation.
+- **Restored mode's saturating <<S does NOT fit beside the MAC.** The FIR
+  bias-and-shift restore (~12 instr + 2 data + 1 state) + the MAC walk + K
+  coefficients busts 32 words for K > 2 — so restored/S>0 is a 2-cell
+  `mac -> restore` row (the nlog10 2-cell exemplar: named cells,
+  internal_connections + internal_jumps, {write:acc_fwd}/{jump:trig} on the
+  mac, restore is the last/output cell). S == 0 restores nothing: same single
+  cell as raw, and `restored == raw` is gated word-for-word. Param-dependent
+  cell_count (mode + derived S) is fine — FIR precedent; both shapes go into
+  orientation + legality + saturation registries.
+- **The raw/restored contract doubles as the metadata gate.** raw emits the
+  UNRESTORED word (= y/2^S) and exposes S as read-only `scale_shift` (+
+  quantized_coefficients/quantized_bias) for downstream consumers that fold
+  2^S into their own shift immediates (the nlog10 db_scale convention).
+  `clamp(raw << S) == restored-mode on-chip output` is asserted on-chip —
+  the contract a downstream instance depends on, tested as such.
+- Derived float tolerance: (K+1) stored-word roundings (≤0.5 LSB each at
+  |x|≤1) + K truncating MULQs (≤1 LSB) ⇒ ≤ 1.5K+0.5 LSB of the SCALED domain
+  (measured well inside). Bit-exact gate (tol 0) vs process_reference_q15 is
+  the primary bar; the float gate only pins the scale convention.
+
 ## BinArgmaxBlock — framewise argmax, the signed running-max in one cell 2026-08-23
 
 Framewise argmax (tier 2, QUEUE B8 / CSS track; no GNU Radio streaming counterpart

@@ -161,6 +161,20 @@ _CASES = [
     # no reconvergent fan-in), so its per-trigger output word list must be
     # IDENTICAL in every D4 orientation.
     ("BinArgmaxBlock", {"n": 4}, "real", ("sample", "out")),
+    # Fixed-coefficient K-vector dot product (correlator pattern, no GR
+    # counterpart): single real rail in -> one weighted-sum word every k
+    # triggers (None-gaps on the accumulating samples). Feed-forward LOAD-walk
+    # accumulator (no feedback corridor / no reconvergent fan-in) — the
+    # per-trigger output word list must be IDENTICAL in every D4 orientation.
+    # Both shapes gated: raw (single cell) and restored S>0 (the 2-cell
+    # mac->restore chain, whose internal handoff must transform with the fold).
+    ("DotProductMACBlock",
+     {"coefficients": [0.3, -0.2, 0.2, 0.15], "bias": 0.05, "k": 4},
+     "real", ("sample", "out")),
+    ("DotProductMACBlock",
+     {"coefficients": [0.9, -0.7, 0.8, 0.6], "bias": 0.2, "k": 4,
+      "mode": "restored"},
+     "real", ("sample", "out")),
     # Frame CRC-16 (placeKYT-native, no GR counterpart): single real rail in
     # (byte) -> one 16-bit CRC word every frame_len triggers (None-gaps on the
     # accumulating samples). Feed-forward datapath with a CRC shift register +

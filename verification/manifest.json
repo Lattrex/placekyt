@@ -1045,14 +1045,11 @@
   },
   {
    "kyttar_block": "DotProductMACBlock",
-   "grc_block": "(Python golden: numpy.dot, fixed weight row)",
-   "tier": 2,
-   "metric": "amplitude",
-   "params": {
-    "n_terms": 6
-   },
-   "notes": "QUEUE A3 (GRU track). Fixed-weight vector dot product / matvec ROW. CRITICAL: this is the CORRELATOR / dot-product pattern, NOT the FIR pattern. FIRs stream a delay line; a matvec row broadcasts a FRESH input vector against stored weights every timestep. Do NOT graft a delay line. Weights are cell-local constants (~6-8 per cell after program). Apply the INV-13 prescale: sum|w| over a row will exceed 1. Golden: numpy.dot. SHARED CONSTRAINTS (v0.11 shipping cell, 32 words, 16-bit Q15): MAC operands must be cell-local (no cross-cell operand fetch). sum|coeff|>1 needs the INV-13 headroom prescale. In-cell LOAD-indirect tables cap at ~21 entries (5-bit wall) so big tables are NOT available. Composites keep feedback INTERNAL (GRC flowgraphs are acyclic) using the AGCCC shared-builder model. Feedback landings MUST be pinned STATE registers, never input Ports (AGCCC trap 1). Fold big rings <=7 wide (AGCCC trap 2).",
-   "status": "planned"
+   "grc_block": "",
+   "status": "done",
+   "tier": 3,
+   "metric": "decision",
+   "notes": "Fixed-coefficient dot product over a K-element input vector (correlator-style weighted sum + bias) -- the reusable weight-row primitive; placeKYT-native, NO stock GNU Radio counterpart (numpy-golden pattern like Crc16Block; param names follow the FIR family). CORRELATOR pattern, NOT FIR: K consecutive samples = one FRESH vector -> one output (K:1 rate-reducing, floor(n/K) outputs, no delay line / no sample aging -- gated by a fresh-vector independence test). Scale schedule (INV-13 correlator form, PINNED): S=max(0,ceil(log2(sum|c|+|b|))), store round(v*2^-S*32768) for coeffs AND bias, POST-ROUNDING GUARD bumps S if sum|q|>32767 after rounding (rounding really trips it -- sum|c|==1.0 always does, and a crafted <1.0 set does via round-up; the guard-removal mutation shows a 16-bit accumulator wrap sign-flipping the output). Accumulator PRELOADS the scaled bias then K LOAD-indirect MULQ-accumulates (coefficients cell-local at addr 1..K, idx doubles as the LOAD address); intermediate wrap impossible (asserted over 200 random sets incl. full-scale +-1.0). mode=raw (default): emit the accumulator UNRESTORED (word = y/2^S) for downstream consumers that fold 2^S into their own shift immediates; derived S exposed read-only as scale_shift (+ quantized_coefficients/quantized_bias), and raw<<S == restored is gated on-chip. mode=restored: saturating <<S before emit (FIR bias-and-shift idiom; rails pinned 0x7FFF/0x8000 on overdrive); S=0 restored == raw (1 cell), S>0 = 2-cell mac->restore row. Verified: 59-test suite -- bit-exact vs the integer golden over K=2..7 BOTH modes, S=0..3, 4 random seeds + full-scale edges, guard-edge set on-chip, float accuracy <= derived 1.5K+0.5 LSB, emission positions on the K-th samples, saturated==per-sample both modes (+ global RATE_1IN), 8/8 D4 orientation both shapes, placement legality both shapes, INV-4 mutations (guard removed / wrong S / swapped coeffs / bias not preloaded / +1 shift / inverted / empty) all FAIL. HW range: k in 2..7 (one-cell coeff+bias+code discipline), S<=15 (4-bit shift immediate), len(coefficients)==k -- all RAISE, never clamp."
   },
   {
    "kyttar_block": "ZeroCrossingRateBlock",

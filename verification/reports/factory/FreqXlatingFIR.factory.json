@@ -1,31 +1,33 @@
 {
-  "block": "FreqXlatingFIR",
-  "grc_block": "filter.freq_xlating_fir_filter_ccf",
-  "tier": 3,
-  "wave": 2,
-  "schema_version": 1,
-  "started_utc": "2026-08-07T02:18:32Z",
-  "ended_utc": "2026-08-07T03:26:59Z",
-  "walltime_sec": 2464.22,
-  "tokens": {
-    "input": 0,
-    "output": 324834,
-    "cache_read": 0,
-    "total": 324834
-  },
-  "turns": 198,
-  "attempts": 2,
-  "human_interventions": 0,
-  "intervention_reasons": [],
-  "prompts": [
-    {
-      "role": "initial",
-      "text": "factory_dispatch-style prompt for FreqXlatingFIR; isolated worktree; verify vs GR or quarantine."
-    }
-  ],
-  "verify_passed": true,
-  "quarantined": false,
-  "quarantine_reason": "",
-  "commit_sha": "56d0269",
-  "notes": "param-dependent cells (11 NCO + 1 FIR head + 2*ceil(L/4) rails), autonomous. NEW workhorse channelizer (down-mixer + real complex FIR + decimate). Peak 4 LSB vs 16 derived, NMSE -60dB. Real bugs: derived GR's tap-fold initial phase theta0=fwT0*(L-1)/2; fan-in/fan-out rail scramble (added FIR head cell); decimation last-cell overflow (RRC-MF wall, capped gated last cell to 1 tap). PARTIAL WALL: saturated-drive reconvergent fan-in deadlocks (mid-chain mixer unlock rides exit cell) -> pipeline_lock RAISES; per-sample + all decimations verify bit-exact. Re-verified merged."
+ "block": "FreqXlatingFIR",
+ "grc_block": "filter.freq_xlating_fir_filter_ccf",
+ "tier": 3,
+ "wave": 2,
+ "schema_version": 1,
+ "started_utc": "2026-08-07T02:18:32Z",
+ "ended_utc": "2026-08-07T03:26:59Z",
+ "walltime_sec": 2464.22,
+ "tokens": {
+  "input": 0,
+  "output": 324834,
+  "cache_read": 0,
+  "total": 324834
+ },
+ "turns": 198,
+ "attempts": 2,
+ "human_interventions": 0,
+ "intervention_reasons": [],
+ "prompts": [
+  {
+   "role": "initial",
+   "text": "factory_dispatch-style prompt for FreqXlatingFIR; isolated worktree; verify vs GR or quarantine."
+  }
+ ],
+ "verify_passed": true,
+ "quarantined": false,
+ "quarantine_reason": "",
+ "commit_sha": "56d0269",
+ "notes": "param-dependent cells (11 NCO + 1 FIR head + 2*ceil(L/4) rails), autonomous. NEW workhorse channelizer (down-mixer + real complex FIR + decimate). Peak 4 LSB vs 16 derived, NMSE -60dB. Real bugs: derived GR's tap-fold initial phase theta0=fwT0*(L-1)/2; fan-in/fan-out rail scramble (added FIR head cell); decimation last-cell overflow (RRC-MF wall, capped gated last cell to 1 tap). PARTIAL WALL: saturated-drive reconvergent fan-in deadlocks (mid-chain mixer unlock rides exit cell) -> pipeline_lock RAISES; per-sample + all decimations verify bit-exact. Re-verified merged.",
+ "outcome": "passed",
+ "walltime_min": 0
 }

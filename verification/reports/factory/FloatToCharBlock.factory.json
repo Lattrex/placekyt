@@ -1,31 +1,33 @@
 {
-  "block": "FloatToCharBlock",
-  "grc_block": "blocks.float_to_char",
-  "tier": 1,
-  "wave": 1,
-  "schema_version": 1,
-  "started_utc": "2026-08-07T03:40:26Z",
-  "ended_utc": "2026-08-07T04:10:15Z",
-  "walltime_sec": 1061.477,
-  "tokens": {
-    "input": 0,
-    "output": 184445,
-    "cache_read": 0,
-    "total": 184445
-  },
-  "turns": 93,
-  "attempts": 1,
-  "human_interventions": 0,
-  "intervention_reasons": [],
-  "prompts": [
-    {
-      "role": "initial",
-      "text": "factory_dispatch prompt for FloatToCharBlock; isolated worktree."
-    }
-  ],
-  "verify_passed": true,
-  "quarantined": false,
-  "quarantine_reason": "",
-  "commit_sha": "d15d8de",
-  "notes": "1 cell. Matches GR lrintf round-half-to-EVEN (a round-half-up DUT is a proven-failing mutation) + saturate to [-128,127]. HW-DEVIATION: scale must be a non-negative INTEGER (RAISES else). Bug fixed in-loop: input reg R0 read twice, first op clobbered it (+1 error on negatives) -> save sample first. BIT-EXACT vs GR."
+ "block": "FloatToCharBlock",
+ "grc_block": "blocks.float_to_char",
+ "tier": 1,
+ "wave": 1,
+ "schema_version": 1,
+ "started_utc": "2026-08-07T03:40:26Z",
+ "ended_utc": "2026-08-07T04:10:15Z",
+ "walltime_sec": 1061.477,
+ "tokens": {
+  "input": 0,
+  "output": 184445,
+  "cache_read": 0,
+  "total": 184445
+ },
+ "turns": 93,
+ "attempts": 1,
+ "human_interventions": 0,
+ "intervention_reasons": [],
+ "prompts": [
+  {
+   "role": "initial",
+   "text": "factory_dispatch prompt for FloatToCharBlock; isolated worktree."
+  }
+ ],
+ "verify_passed": true,
+ "quarantined": false,
+ "quarantine_reason": "",
+ "commit_sha": "d15d8de",
+ "notes": "1 cell. Matches GR lrintf round-half-to-EVEN (a round-half-up DUT is a proven-failing mutation) + saturate to [-128,127]. HW-DEVIATION: scale must be a non-negative INTEGER (RAISES else). Bug fixed in-loop: input reg R0 read twice, first op clobbered it (+1 error on negatives) -> save sample first. BIT-EXACT vs GR.",
+ "outcome": "passed",
+ "walltime_min": 0
 }

@@ -1,31 +1,33 @@
 {
-  "block": "HammingDecoderBlock",
-  "grc_block": "",
-  "tier": 1,
-  "wave": 4,
-  "schema_version": 1,
-  "started_utc": "2026-08-16T20:53:34Z",
-  "ended_utc": "2026-08-16T21:31:42Z",
-  "walltime_sec": 2288.0,
-  "tokens": {
-    "input": 0,
-    "output": 303093,
-    "cache_read": 0,
-    "total": 303093
-  },
-  "turns": 115,
-  "attempts": 1,
-  "human_interventions": 0,
-  "intervention_reasons": [],
-  "prompts": [
-    {
-      "role": "initial",
-      "text": "factory_dispatch prompt for HammingDecoderBlock; isolated worktree; golden = textbook syndrome decoder; convention pinned in the dispatch shared with the parallel encoder sibling."
-    }
-  ],
-  "verify_passed": true,
-  "quarantined": false,
-  "quarantine_reason": "",
-  "commit_sha": "e902901",
-  "notes": "2 cells, 1 real attempt (one template-syntax fix: a trailing comment on a {write}/{jump} placeholder line un-matches the resolver regex \u2014 the MultiplyBlock lesson re-confirmed), then bit-exact first simulated build. Key idiom: FUSED bit-packer + syndrome accumulator \u2014 one 16-bit register carries both via pre-shifted H-column constants T[j]=(col[j]<<(2+j))|1, in-flight windows proven disjoint over all 128 words BEFORE silicon; the down-counting bit counter doubles as the LOAD-table address. 21 tests: 112/112 single-bit errors corrected EXHAUSTIVELY on-chip; double-bit miscorrection gated as the deterministic known limit. Convention-pin round-trip against the parallel-built encoder held with zero coordination beyond the dispatch text. Token figure cumulative per harness."
+ "block": "HammingDecoderBlock",
+ "grc_block": "",
+ "tier": 1,
+ "wave": 4,
+ "schema_version": 1,
+ "started_utc": "2026-08-16T20:53:34Z",
+ "ended_utc": "2026-08-16T21:31:42Z",
+ "walltime_sec": 2288.0,
+ "tokens": {
+  "input": 0,
+  "output": 303093,
+  "cache_read": 0,
+  "total": 303093
+ },
+ "turns": 115,
+ "attempts": 1,
+ "human_interventions": 0,
+ "intervention_reasons": [],
+ "prompts": [
+  {
+   "role": "initial",
+   "text": "factory_dispatch prompt for HammingDecoderBlock; isolated worktree; golden = textbook syndrome decoder; convention pinned in the dispatch shared with the parallel encoder sibling."
+  }
+ ],
+ "verify_passed": true,
+ "quarantined": false,
+ "quarantine_reason": "",
+ "commit_sha": "e902901",
+ "notes": "2 cells, 1 real attempt (one template-syntax fix: a trailing comment on a {write}/{jump} placeholder line un-matches the resolver regex \u2014 the MultiplyBlock lesson re-confirmed), then bit-exact first simulated build. Key idiom: FUSED bit-packer + syndrome accumulator \u2014 one 16-bit register carries both via pre-shifted H-column constants T[j]=(col[j]<<(2+j))|1, in-flight windows proven disjoint over all 128 words BEFORE silicon; the down-counting bit counter doubles as the LOAD-table address. 21 tests: 112/112 single-bit errors corrected EXHAUSTIVELY on-chip; double-bit miscorrection gated as the deterministic known limit. Convention-pin round-trip against the parallel-built encoder held with zero coordination beyond the dispatch text. Token figure cumulative per harness.",
+ "outcome": "passed",
+ "walltime_min": 0
 }

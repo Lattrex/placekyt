@@ -1,31 +1,33 @@
 {
-  "block": "HammingEncoderBlock",
-  "grc_block": "",
-  "tier": 1,
-  "wave": 4,
-  "schema_version": 1,
-  "started_utc": "2026-08-16T20:51:31Z",
-  "ended_utc": "2026-08-16T21:18:41Z",
-  "walltime_sec": 1630.0,
-  "tokens": {
-    "input": 0,
-    "output": 210713,
-    "cache_read": 0,
-    "total": 210713
-  },
-  "turns": 113,
-  "attempts": 1,
-  "human_interventions": 0,
-  "intervention_reasons": [],
-  "prompts": [
-    {
-      "role": "initial",
-      "text": "factory_dispatch prompt for HammingEncoderBlock; isolated worktree; golden = Hamming 1950 systematic G, convention pinned in the dispatch for the parallel decoder sibling."
-    }
-  ],
-  "verify_passed": true,
-  "quarantined": false,
-  "quarantine_reason": "",
-  "commit_sha": "7a114a7",
-  "notes": "2 cells (28/32 words each), 1 attempt, autonomous \u2014 bit-exact on the first on-chip run. 4:7 rate expander = PackKBits-style accumulate cell + UnpackKBits-style counted-loop burst cell (a single cell needs ~39 instructions, checked BEFORE authoring per INV-7). Each parity bit costs 4 instructions via the P flag of AND w,mask on the pre-shifted nibble. Convention pinned as executable encode_nibble() for the decoder sibling. 18 tests: all 16 codewords on-chip, round-trip through an independent golden syndrome decoder incl. rotating single-bit error, 6 INV-4 mutations. Token figure is the harness-reported cumulative (segment accounting approximate)."
+ "block": "HammingEncoderBlock",
+ "grc_block": "",
+ "tier": 1,
+ "wave": 4,
+ "schema_version": 1,
+ "started_utc": "2026-08-16T20:51:31Z",
+ "ended_utc": "2026-08-16T21:18:41Z",
+ "walltime_sec": 1630.0,
+ "tokens": {
+  "input": 0,
+  "output": 210713,
+  "cache_read": 0,
+  "total": 210713
+ },
+ "turns": 113,
+ "attempts": 1,
+ "human_interventions": 0,
+ "intervention_reasons": [],
+ "prompts": [
+  {
+   "role": "initial",
+   "text": "factory_dispatch prompt for HammingEncoderBlock; isolated worktree; golden = Hamming 1950 systematic G, convention pinned in the dispatch for the parallel decoder sibling."
+  }
+ ],
+ "verify_passed": true,
+ "quarantined": false,
+ "quarantine_reason": "",
+ "commit_sha": "7a114a7",
+ "notes": "2 cells (28/32 words each), 1 attempt, autonomous \u2014 bit-exact on the first on-chip run. 4:7 rate expander = PackKBits-style accumulate cell + UnpackKBits-style counted-loop burst cell (a single cell needs ~39 instructions, checked BEFORE authoring per INV-7). Each parity bit costs 4 instructions via the P flag of AND w,mask on the pre-shifted nibble. Convention pinned as executable encode_nibble() for the decoder sibling. 18 tests: all 16 codewords on-chip, round-trip through an independent golden syndrome decoder incl. rotating single-bit error, 6 INV-4 mutations. Token figure is the harness-reported cumulative (segment accounting approximate).",
+ "outcome": "passed",
+ "walltime_min": 0
 }

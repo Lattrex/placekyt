@@ -1,31 +1,33 @@
 {
-  "block": "ComplexRRCMatchedFilterBlock",
-  "grc_block": "filter.fir_filter_ccf (rrc taps)",
-  "tier": 2,
-  "wave": 2,
-  "schema_version": 1,
-  "started_utc": "2026-08-06T21:42:40Z",
-  "ended_utc": "2026-08-06T22:24:17Z",
-  "walltime_sec": 2335.129,
-  "tokens": {
-    "input": 0,
-    "output": 274494,
-    "cache_read": 0,
-    "total": 274494
-  },
-  "turns": 143,
-  "attempts": 3,
-  "human_interventions": 0,
-  "intervention_reasons": [],
-  "prompts": [
-    {
-      "role": "initial",
-      "text": "Follow AGENTS.md \u00a73 to build and verify ComplexRRCMatchedFilterBlock (filter.fir_filter_ccf, rrc taps; poc:true). Full text reproducible via `python verification/tools/factory_dispatch.py ComplexRRCMatchedFilterBlock`. Isolated worktree; verify vs GNU Radio; quarantine on substrate wall."
-    }
-  ],
-  "verify_passed": true,
-  "quarantined": false,
-  "quarantine_reason": "",
-  "commit_sha": "bb29005",
-  "notes": "subagent_tokens(total)=274494 from orchestrator <usage> (un-fudgeable). PoC had 3 real bugs the modems never caught (INV-25): invented taps (not firdes.root_raised_cosine), non-GR param names, wrapping-not-saturating MACQ (fixed w/ INV-13 headroom restore). Peak 11 LSB vs 18 LSB derived tol, corr 0.99999972. 11 cells, serialized 2-row rail fold. 5 mutation tests proven to FAIL (independently re-verified by orchestrator on merged block-factory state); 31 tests green; BPSK/QPSK/QAM16 modems still BER 0."
+ "block": "ComplexRRCMatchedFilterBlock",
+ "grc_block": "filter.fir_filter_ccf (rrc taps)",
+ "tier": 2,
+ "wave": 2,
+ "schema_version": 1,
+ "started_utc": "2026-08-06T21:42:40Z",
+ "ended_utc": "2026-08-06T22:24:17Z",
+ "walltime_sec": 2335.129,
+ "tokens": {
+  "input": 0,
+  "output": 274494,
+  "cache_read": 0,
+  "total": 274494
+ },
+ "turns": 143,
+ "attempts": 3,
+ "human_interventions": 0,
+ "intervention_reasons": [],
+ "prompts": [
+  {
+   "role": "initial",
+   "text": "Follow AGENTS.md \u00a73 to build and verify ComplexRRCMatchedFilterBlock (filter.fir_filter_ccf, rrc taps; poc:true). Full text reproducible via `python verification/tools/factory_dispatch.py ComplexRRCMatchedFilterBlock`. Isolated worktree; verify vs GNU Radio; quarantine on substrate wall."
+  }
+ ],
+ "verify_passed": true,
+ "quarantined": false,
+ "quarantine_reason": "",
+ "commit_sha": "bb29005",
+ "notes": "subagent_tokens(total)=274494 from orchestrator <usage> (un-fudgeable). PoC had 3 real bugs the modems never caught (INV-25): invented taps (not firdes.root_raised_cosine), non-GR param names, wrapping-not-saturating MACQ (fixed w/ INV-13 headroom restore). Peak 11 LSB vs 18 LSB derived tol, corr 0.99999972. 11 cells, serialized 2-row rail fold. 5 mutation tests proven to FAIL (independently re-verified by orchestrator on merged block-factory state); 31 tests green; BPSK/QPSK/QAM16 modems still BER 0.",
+ "outcome": "passed",
+ "walltime_min": 0
 }

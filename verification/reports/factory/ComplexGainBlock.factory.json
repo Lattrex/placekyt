@@ -1,31 +1,33 @@
 {
-  "block": "ComplexGainBlock",
-  "grc_block": "blocks.multiply_const_cc",
-  "tier": 1,
-  "wave": 1,
-  "schema_version": 1,
-  "started_utc": "2026-08-06T19:12:48Z",
-  "ended_utc": "2026-08-06T19:44:00Z",
-  "walltime_sec": 1812.447,
-  "tokens": {
-    "input": 0,
-    "output": 232490,
-    "cache_read": 0,
-    "total": 232490
-  },
-  "turns": 117,
-  "attempts": 4,
-  "human_interventions": 0,
-  "intervention_reasons": [],
-  "prompts": [
-    {
-      "role": "initial",
-      "text": "Follow AGENTS.md 3 to build+verify ComplexGainBlock (blocks.multiply_const_cc, gain in (0,4)); full loop incl GRC binding, mutation gate, commit."
-    }
-  ],
-  "verify_passed": true,
-  "quarantined": false,
-  "quarantine_reason": "",
-  "commit_sha": "272fa96",
-  "notes": "Found+fixed a real PoC bug: wrapped instead of saturating on gain>1 overload (max err 27525 LSB), hidden because qam16 constellation stayed in range. Fixed via INV-13 coeff-headroom (gain/4 in Q15, MULQ, saturating <<2). 29-test suite, 11-pt (0,4) sweep, orientation-invariant."
+ "block": "ComplexGainBlock",
+ "grc_block": "blocks.multiply_const_cc",
+ "tier": 1,
+ "wave": 1,
+ "schema_version": 1,
+ "started_utc": "2026-08-06T19:12:48Z",
+ "ended_utc": "2026-08-06T19:44:00Z",
+ "walltime_sec": 1812.447,
+ "tokens": {
+  "input": 0,
+  "output": 232490,
+  "cache_read": 0,
+  "total": 232490
+ },
+ "turns": 117,
+ "attempts": 4,
+ "human_interventions": 0,
+ "intervention_reasons": [],
+ "prompts": [
+  {
+   "role": "initial",
+   "text": "Follow AGENTS.md 3 to build+verify ComplexGainBlock (blocks.multiply_const_cc, gain in (0,4)); full loop incl GRC binding, mutation gate, commit."
+  }
+ ],
+ "verify_passed": true,
+ "quarantined": false,
+ "quarantine_reason": "",
+ "commit_sha": "272fa96",
+ "notes": "Found+fixed a real PoC bug: wrapped instead of saturating on gain>1 overload (max err 27525 LSB), hidden because qam16 constellation stayed in range. Fixed via INV-13 coeff-headroom (gain/4 in Q15, MULQ, saturating <<2). 29-test suite, 11-pt (0,4) sweep, orientation-invariant.",
+ "outcome": "passed",
+ "walltime_min": 0
 }

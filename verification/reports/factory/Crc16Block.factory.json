@@ -1,31 +1,33 @@
 {
-  "block": "Crc16Block",
-  "grc_block": "",
-  "tier": 1,
-  "wave": 4,
-  "schema_version": 1,
-  "started_utc": "2026-08-16T20:52:41Z",
-  "ended_utc": "2026-08-16T21:17:40Z",
-  "walltime_sec": 1499.0,
-  "tokens": {
-    "input": 0,
-    "output": 244215,
-    "cache_read": 0,
-    "total": 244215
-  },
-  "turns": 106,
-  "attempts": 1,
-  "human_interventions": 0,
-  "intervention_reasons": [],
-  "prompts": [
-    {
-      "role": "initial",
-      "text": "factory_dispatch prompt for Crc16Block; isolated worktree; golden-vs-published-spec (no GR streaming counterpart)."
-    }
-  ],
-  "verify_passed": true,
-  "quarantined": false,
-  "quarantine_reason": "",
-  "commit_sha": "c9120d0",
-  "notes": "1 cell (29/32 words), 1 attempt, autonomous (two orchestrator nudges were flow-control only \u2014 resume after waiting on the shared-machine full suite \u2014 no technical correction). Golden pinned vs stdlib binascii.crc_hqx + 5 CRC-catalogue anchors proven ON-CHIP. Key idiom: polynomial step selects off the SHL carry flag (C = shifted-out bit 15, preserved across MOVE) \u2014 saves the 0x8000 mask word + fb state; the AND-mask form overflows the cell. 43 tests EXACT tol 0 incl. real on-chip wrong-poly/wrong-init mutants. FEC/protocol wave for the data_link demo (with the Hamming(7,4) pair)."
+ "block": "Crc16Block",
+ "grc_block": "",
+ "tier": 1,
+ "wave": 4,
+ "schema_version": 1,
+ "started_utc": "2026-08-16T20:52:41Z",
+ "ended_utc": "2026-08-16T21:17:40Z",
+ "walltime_sec": 1499.0,
+ "tokens": {
+  "input": 0,
+  "output": 244215,
+  "cache_read": 0,
+  "total": 244215
+ },
+ "turns": 106,
+ "attempts": 1,
+ "human_interventions": 0,
+ "intervention_reasons": [],
+ "prompts": [
+  {
+   "role": "initial",
+   "text": "factory_dispatch prompt for Crc16Block; isolated worktree; golden-vs-published-spec (no GR streaming counterpart)."
+  }
+ ],
+ "verify_passed": true,
+ "quarantined": false,
+ "quarantine_reason": "",
+ "commit_sha": "c9120d0",
+ "notes": "1 cell (29/32 words), 1 attempt, autonomous (two orchestrator nudges were flow-control only \u2014 resume after waiting on the shared-machine full suite \u2014 no technical correction). Golden pinned vs stdlib binascii.crc_hqx + 5 CRC-catalogue anchors proven ON-CHIP. Key idiom: polynomial step selects off the SHL carry flag (C = shifted-out bit 15, preserved across MOVE) \u2014 saves the 0x8000 mask word + fb state; the AND-mask form overflows the cell. 43 tests EXACT tol 0 incl. real on-chip wrong-poly/wrong-init mutants. FEC/protocol wave for the data_link demo (with the Hamming(7,4) pair).",
+ "outcome": "passed",
+ "walltime_min": 0
 }

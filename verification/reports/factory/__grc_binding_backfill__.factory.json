@@ -1,33 +1,35 @@
 {
-  "block": "__grc_binding_backfill__",
-  "grc_block": "",
-  "tier": 0,
-  "wave": 5,
-  "schema_version": 1,
-  "started_utc": "2026-08-08T00:44:03Z",
-  "ended_utc": "2026-08-08T01:15:30Z",
-  "walltime_sec": 810.0,
-  "tokens": {
-    "input": 0,
-    "output": 670292,
-    "cache_read": 0,
-    "total": 670292
-  },
-  "turns": 474,
-  "attempts": 1,
-  "human_interventions": 1,
-  "intervention_reasons": [
-    "merge combined 2 inconsistent manifest-name/class-name fixes -> 5 fm_transceiver regressions; orchestrator fixed the override-resolution consistency"
-  ],
-  "prompts": [
-    {
-      "role": "initial",
-      "text": "6 parallel agents backfilled GRC bindings/params for 35 done blocks to satisfy the new INV-22 gate"
-    }
-  ],
-  "verify_passed": true,
-  "quarantined": false,
-  "quarantine_reason": "",
-  "commit_sha": "45f7e3c",
-  "notes": "GRC-BINDING BACKFILL campaign: an audit (via the new hard gate test_grc_binding_complete.py) found 18 done blocks with NO GRC binding + 17 with param mismatches = a cut corner. 6 parallel family-agents authored 18 new .block.yml+shims and reconciled 17 param sets (added real params like FIR decimation/interpolation + IIR fftaps/fbtaps + FSK4 threshold + NCO offset/phase; renamed stale ones: RRC span/sps->GR-verbatim sampling_freq/symbol_rate/ntaps, AGC initial_gain/target->gain/reference; declared GRC_UNSUPPORTED_PARAMS for pipeline_lock/reset_tag_key/RRC-aliases). Gate now 211/211 green (all 70 done blocks placeable+param-complete in GRC). Merge regression (5 fm_transceiver, from 2 agents solving the manifest-name/class-name mismatch differently) caught by the full suite + fixed by the orchestrator: overrides resolve to CLASS names, manifest name is a catalog alias only. ~670292 tok / 474 turns across 6 agents."
+ "block": "__grc_binding_backfill__",
+ "grc_block": "",
+ "tier": 0,
+ "wave": 5,
+ "schema_version": 1,
+ "started_utc": "2026-08-08T00:44:03Z",
+ "ended_utc": "2026-08-08T01:15:30Z",
+ "walltime_sec": 810.0,
+ "tokens": {
+  "input": 0,
+  "output": 670292,
+  "cache_read": 0,
+  "total": 670292
+ },
+ "turns": 474,
+ "attempts": 1,
+ "human_interventions": 1,
+ "intervention_reasons": [
+  "merge combined 2 inconsistent manifest-name/class-name fixes -> 5 fm_transceiver regressions; orchestrator fixed the override-resolution consistency"
+ ],
+ "prompts": [
+  {
+   "role": "initial",
+   "text": "6 parallel agents backfilled GRC bindings/params for 35 done blocks to satisfy the new INV-22 gate"
+  }
+ ],
+ "verify_passed": true,
+ "quarantined": false,
+ "quarantine_reason": "",
+ "commit_sha": "45f7e3c",
+ "notes": "GRC-BINDING BACKFILL campaign: an audit (via the new hard gate test_grc_binding_complete.py) found 18 done blocks with NO GRC binding + 17 with param mismatches = a cut corner. 6 parallel family-agents authored 18 new .block.yml+shims and reconciled 17 param sets (added real params like FIR decimation/interpolation + IIR fftaps/fbtaps + FSK4 threshold + NCO offset/phase; renamed stale ones: RRC span/sps->GR-verbatim sampling_freq/symbol_rate/ntaps, AGC initial_gain/target->gain/reference; declared GRC_UNSUPPORTED_PARAMS for pipeline_lock/reset_tag_key/RRC-aliases). Gate now 211/211 green (all 70 done blocks placeable+param-complete in GRC). Merge regression (5 fm_transceiver, from 2 agents solving the manifest-name/class-name mismatch differently) caught by the full suite + fixed by the orchestrator: overrides resolve to CLASS names, manifest name is a catalog alias only. ~670292 tok / 474 turns across 6 agents.",
+ "outcome": "passed",
+ "walltime_min": 0
 }

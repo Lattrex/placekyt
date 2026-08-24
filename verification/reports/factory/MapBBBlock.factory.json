@@ -1,31 +1,33 @@
 {
-  "block": "MapBBBlock",
-  "grc_block": "digital.map_bb",
-  "tier": 1,
-  "wave": 1,
-  "schema_version": 1,
-  "started_utc": "2026-08-07T03:40:26Z",
-  "ended_utc": "2026-08-07T04:10:15Z",
-  "walltime_sec": 1026.567,
-  "tokens": {
-    "input": 0,
-    "output": 164238,
-    "cache_read": 0,
-    "total": 164238
-  },
-  "turns": 97,
-  "attempts": 1,
-  "human_interventions": 0,
-  "intervention_reasons": [],
-  "prompts": [
-    {
-      "role": "initial",
-      "text": "factory_dispatch prompt for MapBBBlock; isolated worktree."
-    }
-  ],
-  "verify_passed": true,
-  "quarantined": false,
-  "quarantine_reason": "",
-  "commit_sha": "1d9ab1d",
-  "notes": "1 cell, MAX_TABLE=21 (5-bit LOAD addr mask). GR map_bb is identity-seeded 256-entry table (inputs>=len pass through) + byte-store, NOT bare map[in]; metric must be EXACT not DECISION (DECISION only checks LSB). EXACT vs GR over identity/invert/gray/byte maps."
+ "block": "MapBBBlock",
+ "grc_block": "digital.map_bb",
+ "tier": 1,
+ "wave": 1,
+ "schema_version": 1,
+ "started_utc": "2026-08-07T03:40:26Z",
+ "ended_utc": "2026-08-07T04:10:15Z",
+ "walltime_sec": 1026.567,
+ "tokens": {
+  "input": 0,
+  "output": 164238,
+  "cache_read": 0,
+  "total": 164238
+ },
+ "turns": 97,
+ "attempts": 1,
+ "human_interventions": 0,
+ "intervention_reasons": [],
+ "prompts": [
+  {
+   "role": "initial",
+   "text": "factory_dispatch prompt for MapBBBlock; isolated worktree."
+  }
+ ],
+ "verify_passed": true,
+ "quarantined": false,
+ "quarantine_reason": "",
+ "commit_sha": "1d9ab1d",
+ "notes": "1 cell, MAX_TABLE=21 (5-bit LOAD addr mask). GR map_bb is identity-seeded 256-entry table (inputs>=len pass through) + byte-store, NOT bare map[in]; metric must be EXACT not DECISION (DECISION only checks LSB). EXACT vs GR over identity/invert/gray/byte maps.",
+ "outcome": "passed",
+ "walltime_min": 0
 }

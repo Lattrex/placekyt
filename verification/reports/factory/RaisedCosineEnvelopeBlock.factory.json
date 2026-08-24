@@ -1,31 +1,33 @@
 {
-  "block": "RaisedCosineEnvelopeBlock",
-  "grc_block": "",
-  "tier": 3,
-  "wave": 4,
-  "schema_version": 1,
-  "started_utc": "2026-08-07T22:56:26Z",
-  "ended_utc": "2026-08-07T23:29:42Z",
-  "walltime_sec": 1636.381,
-  "tokens": {
-    "input": 0,
-    "output": 231018,
-    "cache_read": 0,
-    "total": 231018
-  },
-  "turns": 139,
-  "attempts": 1,
-  "human_interventions": 0,
-  "intervention_reasons": [],
-  "prompts": [
-    {
-      "role": "initial",
-      "text": "SRAM-backed conversion of quarantined RaisedCosineEnvelopeBlock on the SRAM_PANEL.md recipe."
-    }
-  ],
-  "verify_passed": true,
-  "quarantined": false,
-  "quarantine_reason": "",
-  "commit_sha": "7c38ba1",
-  "notes": "QUARANTINE->DONE via PATH B (on-the-fly NCO cosine, TABLELESS) \u2014 the right call for a computable smooth function (SRAM is for arbitrary tables). env=sin((n+0.5)pi/N) from the proven NCO 33-entry quarter-wave table+interp, size INDEPENDENT of sps so sps=256 fits. 1-symbol pipeline latency w/ sign-only state (3 regs), not an sps-deep FIFO. Bug: 2-stage pipeline made rev_end always 0 (no taper) - only visible on-chip -> 3-stage. Peak 11 LSB vs tol 12 (NCO interp floor); on-chip bit-exact. 7 cells, NO SRAM."
+ "block": "RaisedCosineEnvelopeBlock",
+ "grc_block": "",
+ "tier": 3,
+ "wave": 4,
+ "schema_version": 1,
+ "started_utc": "2026-08-07T22:56:26Z",
+ "ended_utc": "2026-08-07T23:29:42Z",
+ "walltime_sec": 1636.381,
+ "tokens": {
+  "input": 0,
+  "output": 231018,
+  "cache_read": 0,
+  "total": 231018
+ },
+ "turns": 139,
+ "attempts": 1,
+ "human_interventions": 0,
+ "intervention_reasons": [],
+ "prompts": [
+  {
+   "role": "initial",
+   "text": "SRAM-backed conversion of quarantined RaisedCosineEnvelopeBlock on the SRAM_PANEL.md recipe."
+  }
+ ],
+ "verify_passed": true,
+ "quarantined": false,
+ "quarantine_reason": "",
+ "commit_sha": "7c38ba1",
+ "notes": "QUARANTINE->DONE via PATH B (on-the-fly NCO cosine, TABLELESS) \u2014 the right call for a computable smooth function (SRAM is for arbitrary tables). env=sin((n+0.5)pi/N) from the proven NCO 33-entry quarter-wave table+interp, size INDEPENDENT of sps so sps=256 fits. 1-symbol pipeline latency w/ sign-only state (3 regs), not an sps-deep FIFO. Bug: 2-stage pipeline made rev_end always 0 (no taper) - only visible on-chip -> 3-stage. Peak 11 LSB vs tol 12 (NCO interp floor); on-chip bit-exact. 7 cells, NO SRAM.",
+ "outcome": "passed",
+ "walltime_min": 0
 }

@@ -1,31 +1,33 @@
 {
-  "block": "NotBlock",
-  "grc_block": "blocks.not_bb",
-  "tier": 1,
-  "wave": 1,
-  "schema_version": 1,
-  "started_utc": "2026-08-07T03:40:26Z",
-  "ended_utc": "2026-08-07T04:10:15Z",
-  "walltime_sec": 759.174,
-  "tokens": {
-    "input": 0,
-    "output": 154798,
-    "cache_read": 0,
-    "total": 154798
-  },
-  "turns": 98,
-  "attempts": 1,
-  "human_interventions": 0,
-  "intervention_reasons": [],
-  "prompts": [
-    {
-      "role": "initial",
-      "text": "factory_dispatch prompt for NotBlock; isolated worktree."
-    }
-  ],
-  "verify_passed": true,
-  "quarantined": false,
-  "quarantine_reason": "",
-  "commit_sha": "df91498",
-  "notes": "1 cell. On-chip NOT complements the full 16-bit reg, so the & 0xFF mask is load-bearing (else every value disagrees). BIT-EXACT vs GR incl full-width (0x0F->0xF0), exhaustive 256 bytes."
+ "block": "NotBlock",
+ "grc_block": "blocks.not_bb",
+ "tier": 1,
+ "wave": 1,
+ "schema_version": 1,
+ "started_utc": "2026-08-07T03:40:26Z",
+ "ended_utc": "2026-08-07T04:10:15Z",
+ "walltime_sec": 759.174,
+ "tokens": {
+  "input": 0,
+  "output": 154798,
+  "cache_read": 0,
+  "total": 154798
+ },
+ "turns": 98,
+ "attempts": 1,
+ "human_interventions": 0,
+ "intervention_reasons": [],
+ "prompts": [
+  {
+   "role": "initial",
+   "text": "factory_dispatch prompt for NotBlock; isolated worktree."
+  }
+ ],
+ "verify_passed": true,
+ "quarantined": false,
+ "quarantine_reason": "",
+ "commit_sha": "df91498",
+ "notes": "1 cell. On-chip NOT complements the full 16-bit reg, so the & 0xFF mask is load-bearing (else every value disagrees). BIT-EXACT vs GR incl full-width (0x0F->0xF0), exhaustive 256 bytes.",
+ "outcome": "passed",
+ "walltime_min": 0
 }

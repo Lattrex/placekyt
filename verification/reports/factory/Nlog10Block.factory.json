@@ -1,31 +1,33 @@
 {
-  "block": "Nlog10Block",
-  "grc_block": "blocks.nlog10_ff",
-  "tier": 2,
-  "wave": 3,
-  "schema_version": 1,
-  "started_utc": "2026-08-07T11:43:11Z",
-  "ended_utc": "2026-08-07T12:20:18Z",
-  "walltime_sec": 1883.97,
-  "tokens": {
-    "input": 0,
-    "output": 254279,
-    "cache_read": 0,
-    "total": 254279
-  },
-  "turns": 157,
-  "attempts": 1,
-  "human_interventions": 0,
-  "intervention_reasons": [],
-  "prompts": [
-    {
-      "role": "initial",
-      "text": "factory_dispatch prompt for Nlog10Block; isolated worktree; verify vs GR or Python golden."
-    }
-  ],
-  "verify_passed": true,
-  "quarantined": false,
-  "quarantine_reason": "",
-  "commit_sha": "013410d",
-  "notes": "2 cells (norm->poly). Q15 power-to-dB via mantissa/exponent split + LSQ cubic for log2(mantissa); output scaled by auto-derived pow2 db_scale (dB is ~45x outside Q15) \u2014 HW-DEVIATION documented. Peak 4 LSB / ~0.008 dB vs GR (tol 10 LSB derived from approx error). in<=0 -> scaled floor. Bug: WRITE always sends R0 (sent frac twice) -> load R0 before each WRITE."
+ "block": "Nlog10Block",
+ "grc_block": "blocks.nlog10_ff",
+ "tier": 2,
+ "wave": 3,
+ "schema_version": 1,
+ "started_utc": "2026-08-07T11:43:11Z",
+ "ended_utc": "2026-08-07T12:20:18Z",
+ "walltime_sec": 1883.97,
+ "tokens": {
+  "input": 0,
+  "output": 254279,
+  "cache_read": 0,
+  "total": 254279
+ },
+ "turns": 157,
+ "attempts": 1,
+ "human_interventions": 0,
+ "intervention_reasons": [],
+ "prompts": [
+  {
+   "role": "initial",
+   "text": "factory_dispatch prompt for Nlog10Block; isolated worktree; verify vs GR or Python golden."
+  }
+ ],
+ "verify_passed": true,
+ "quarantined": false,
+ "quarantine_reason": "",
+ "commit_sha": "013410d",
+ "notes": "2 cells (norm->poly). Q15 power-to-dB via mantissa/exponent split + LSQ cubic for log2(mantissa); output scaled by auto-derived pow2 db_scale (dB is ~45x outside Q15) \u2014 HW-DEVIATION documented. Peak 4 LSB / ~0.008 dB vs GR (tol 10 LSB derived from approx error). in<=0 -> scaled floor. Bug: WRITE always sends R0 (sent frac twice) -> load R0 before each WRITE.",
+ "outcome": "passed",
+ "walltime_min": 0
 }

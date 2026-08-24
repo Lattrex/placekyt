@@ -12,5 +12,6 @@
  "turns": 0,
  "walltime": "~28m (joint)",
  "commit_sha": "682d6b82011780d6f68d6d3011c2eb84f5c4ca9f",
- "notes": "Zero-cost cross-reference: built jointly with ChirpSyncBlock in one dispatch/commit; see ChirpSyncBlock.factory.json for the pair's full cost record."
+ "notes": "Zero-cost cross-reference: built jointly with ChirpSyncBlock in one dispatch/commit; see ChirpSyncBlock.factory.json for the pair's full cost record.",
+ "walltime_min": 28
 }

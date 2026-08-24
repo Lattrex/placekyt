@@ -1,31 +1,33 @@
 {
-  "block": "MultiplyCCBlock",
-  "grc_block": "blocks.multiply_cc",
-  "tier": 2,
-  "wave": 5,
-  "schema_version": 1,
-  "started_utc": "2026-08-16T22:32:55Z",
-  "ended_utc": "2026-08-16T23:16:15Z",
-  "walltime_sec": 2600.0,
-  "tokens": {
-    "input": 0,
-    "output": 194175,
-    "cache_read": 0,
-    "total": 194175
-  },
-  "turns": 93,
-  "attempts": 1,
-  "human_interventions": 0,
-  "intervention_reasons": [],
-  "prompts": [
-    {
-      "role": "initial",
-      "text": "factory_dispatch prompt; isolated worktree; two-external-complex-stream product on the AddCC landing-cell/counting-join architecture + shared complex2 harness."
-    }
-  ],
-  "verify_passed": true,
-  "quarantined": false,
-  "quarantine_reason": "",
-  "commit_sha": "5a418c6",
-  "notes": "2 cells (prods 31/32 + combine 25/32), 1 attempt, first-try bit-exact, autonomous (interrupted once by a session usage limit at design stage and resumed; walltime approximate, turns from the transcript, token figure resumed-segment \u2014 an undercount). THE HISTORICALLY-PREDICTED 4-OPERAND CO-RESIDENCY WALL IS DISPROVEN: operands co-reside exactly once in the landing cell's state (join's own jsav carries ai for free; one snapshot read each for aq/bi/bq \u2014 the stale-latch trap), only products travel. Derived headroom S=0 is optimal for signal-x-signal (products already Q15-range; only the combine overflows, exactly V-recoverable \u2014 the /4 prescale is for CONSTANTS exceeding Q15). Tolerance 3 LSB derived, measured I=1/Q=2. Wrap corner a=b=-1-1j pinned vs own reference. 40 tests."
+ "block": "MultiplyCCBlock",
+ "grc_block": "blocks.multiply_cc",
+ "tier": 2,
+ "wave": 5,
+ "schema_version": 1,
+ "started_utc": "2026-08-16T22:32:55Z",
+ "ended_utc": "2026-08-16T23:16:15Z",
+ "walltime_sec": 2600.0,
+ "tokens": {
+  "input": 0,
+  "output": 194175,
+  "cache_read": 0,
+  "total": 194175
+ },
+ "turns": 93,
+ "attempts": 1,
+ "human_interventions": 0,
+ "intervention_reasons": [],
+ "prompts": [
+  {
+   "role": "initial",
+   "text": "factory_dispatch prompt; isolated worktree; two-external-complex-stream product on the AddCC landing-cell/counting-join architecture + shared complex2 harness."
+  }
+ ],
+ "verify_passed": true,
+ "quarantined": false,
+ "quarantine_reason": "",
+ "commit_sha": "5a418c6",
+ "notes": "2 cells (prods 31/32 + combine 25/32), 1 attempt, first-try bit-exact, autonomous (interrupted once by a session usage limit at design stage and resumed; walltime approximate, turns from the transcript, token figure resumed-segment \u2014 an undercount). THE HISTORICALLY-PREDICTED 4-OPERAND CO-RESIDENCY WALL IS DISPROVEN: operands co-reside exactly once in the landing cell's state (join's own jsav carries ai for free; one snapshot read each for aq/bi/bq \u2014 the stale-latch trap), only products travel. Derived headroom S=0 is optimal for signal-x-signal (products already Q15-range; only the combine overflows, exactly V-recoverable \u2014 the /4 prescale is for CONSTANTS exceeding Q15). Tolerance 3 LSB derived, measured I=1/Q=2. Wrap corner a=b=-1-1j pinned vs own reference. 40 tests.",
+ "outcome": "passed",
+ "walltime_min": 0
 }

@@ -81,11 +81,10 @@ direct DIF integer FFT and against float ``numpy.fft.fft`` (SNR floors).
 
 .. _geometry-limit:
 
-⚠️ STATUS — N=64 PLACES AND RUNS BUT IS NOT YET BIT-EXACT
+STATUS — N=64 (read this before trusting the block)
 ------------------------------------------------------------
 
-Read this before trusting the block. Stated precisely, because "it places" is
-NOT "it works":
+Stated precisely, because "it places" is NOT "it works":
 
 **Verified** (gated by ``verification/tests/test_fft64_fit_limit.py``):
 
@@ -104,22 +103,33 @@ NOT "it works":
     **349 forward internal edges trace to exactly their chain distance** (the
     same audit gives FFT16 0/188).
 
-**Observed on a real built chip** (N=64, anchor (0,0)): the design places,
-both nets route with real corridors, the build succeeds, and driving it runs
-**all 84 cells** with per-stage activity decreasing monotonically s0→s5 — a
-pipeline that genuinely flows end to end, with no livelock (3.2k events per
-burst, against the 1e6-event runaway that the earlier non-spine folds hit).
+**THE INV-33 OVERLAP DEFECT, and how it was fixed.** Two cells were EXACTLY
+one word over budget, and the overflow landed on their pinned STATE register:
+``s0_mcalc`` (state ``t`` at address 8, instructions based at 8) and
+``s1_fetch_d`` (state ``ptr`` at 21, instructions based at 21). Because the
+word COUNT gate only checks ``max_addr + 1 + instr_count <= 32``, a cell at
+exactly 32/32 passes it while its state sits ON TOP of its own first
+instruction. The block therefore placed, routed, built and ran all 84 cells —
+and then the first ``MOVE R{state}, R0`` ZEROED the instruction word the next
+trigger enters at, so only the first sample's word egressed.
 
-**NOT yet working — the honest gap.** Only the FIRST sample's output word
-egresses. Sample 1 runs partially and the chip then goes quiescent (2 events
-per injection = the injection alone), which is the signature of a stage's
-serialize-LOCK never clearing, so no further input is accepted. The
-write-back geometry is measured IDENTICAL to FFT16's (out→ctl manhattan 1,
-direction NORTH, matching the hardcoded ``face_fb``), so the remaining fault
-is in how the lock-clear ``WRITE.CFG`` is resolved for this fold, not in the
-placement. Until that is fixed and the block is bit-exact against
-:func:`sdf_streaming_reference`, **FFT64Block is NOT done** and must not be
-described as working.
+Each cell bought its word back WITHOUT changing any arithmetic (both proven
+by exhaustive on-chip equality against the unreduced program):
+
+  * ``mcalc`` — a dead ``BR.Z +0`` pad (the conditional negate only ever has
+    to skip the negate itself) and a ``CMP`` that re-derived a Z flag the
+    preceding ``SUB`` had already set (MOVE does not touch flags). The
+    conditional negate, the triangle walk and the trivial dispatch are
+    untouched.
+  * ``fetch_d`` — the ``c`` forward moved to the INV-33 accumulator-delivery
+    idiom: it arrives in R0 and is re-emitted by the cell's FIRST
+    instruction, which frees both the input register and the staging MOVE.
+    The table walk and the pointer wrap are untouched.
+
+Both are now gated: :func:`~verification.tests.test_fft64_fit_limit` asserts
+NO authored cell pins data or state into its instruction region, with an
+INV-4 negative that re-inflates each pre-fix shape and asserts the gate
+catches it at exactly the addresses above.
 
 **THE LAYOUT: a vertical CTL/OUT SPINE** (this REPLACES the stacked-band
 scheme, which did not fit and whose two "walls" were both artefacts of the
@@ -849,6 +859,26 @@ class LargeFFTBlock(KyttarBlock):
         control word's bit 15, with bit 0 distinguishing identity from ``-j``
         — so the two table cells downstream stay straight-line (no branch, no
         sentinel compare) and simply never USE the value they loaded.
+
+        WORD BUDGET (INV-33). This cell is EXACTLY full, and its state ``t``
+        is PINNED at address 8 — one word below the first instruction. Two
+        redundancies in the first draft were removed to buy that word back,
+        both semantics-preserving and both gated slot-for-slot against the
+        unreduced sequence by ``test_fft64_fit_limit`` :
+
+        1. The conditional negate skipped TWO instructions (``BR.NN +2``) over
+           ``SUB zero, R0`` plus a ``BR.Z +0`` no-op pad. The pad is dead: on
+           the not-taken (``r >= M``) path R0 already holds ``r - M >= 0``,
+           which IS ``|r - M|``, so the branch only ever needs to skip the
+           negate itself — ``BR.NN +1``, one word shorter, same landing.
+        2. ``CMP t, zero`` re-derived a Z flag that ``SUB mconst, t`` had
+           ALREADY set for the very same value: the only instruction between
+           them is a ``MOVE``, and MOVE does not touch the flags. The
+           ``BR.Z triv`` therefore reads an identical Z either way.
+
+        Neither touches the negation or the zero-compare SEMANTICS — the
+        conditional negate, the triangle walk, and the trivial dispatch are
+        bit-identical; only two never-observable words are gone.
         """
         M = self._n // 8
         return CellProgram(
@@ -864,13 +894,11 @@ class LargeFFTBlock(KyttarBlock):
             assembly_template=(
                 "default:\n"
                 "    SUB R{in:r}, R{data:mconst}\n"
-                "    BR.NN +2\n"
+                "    BR.NN +1\n"
                 "    SUB R{data:zero}, R0\n"
-                "    BR.Z +0\n"
                 "    MOVE R{state:t}, R0\n"
                 "    SUB R{data:mconst}, R{state:t}\n"
                 "    MOVE R{state:t}, R0\n"
-                "    CMP R{state:t}, R{data:zero}\n"
                 "    BR.Z triv\n"
                 "    MOVE R0, R{state:t}\n"
                 "    {write:m_f}\n"
@@ -899,9 +927,21 @@ class LargeFFTBlock(KyttarBlock):
         respective cells. Straight-line: no branch, because ``mcalc`` already
         guaranteed a safe index (the loaded value is simply unused on a
         trivial slot).
+
+        WORD BUDGET at M = 16 (INV-33). ``tab_d`` — the FORWARDING cell —
+        carries a THIRD input (``prev``, the C[m] that ``tab_c`` already
+        loaded) plus a staging MOVE, and at N = 128 that makes it exactly one
+        word over: the resolver then pins its ``ad`` state on top of its own
+        first instruction (address 21 with instructions based at 21), which
+        builds cleanly and zeroes itself on the first trigger. It is bought
+        back the same way as ``fetch_d``: ``prev`` arrives in **R0**
+        (INV-33 accumulator delivery) and the cell's FIRST instruction
+        re-emits it, before ``ADD``/``LOAD`` can disturb R0 — freeing the
+        input register and the staging MOVE with the table LOOKUP untouched.
+        N = 64 (M = 8) has slack either way; the two sizes stay one program.
         """
         M = len(table)
-        base = 4 if forward else 3
+        base = 3
         data = [DataWord(f"w{i}", u16(w), address=base + i)
                 for i, w in enumerate(table)]
         # LOAD [Rn] is mem[mem[Rn] & 0x1F]; m is 1-based, so the address of
@@ -911,12 +951,15 @@ class LargeFFTBlock(KyttarBlock):
         inputs = [Port("m", register=1), Port("k", register=2)]
         outs = [Port("v_f"), Port("k_f"), Port("trig")]
         if forward:
-            inputs.append(Port("prev", register=3))
+            # R0 delivery: no input register, no staging MOVE, and the
+            # forward is the FIRST instruction (before ADD/LOAD touch R0).
+            inputs.append(Port("prev", register=0))
             outs.append(Port("prev_f"))
-            extra = ("    MOVE R0, R{in:prev}\n"
-                     "    {write:prev_f}\n")
+            pre = "    {write:prev_f}\n"
+            extra = ""
         else:
             outs.append(Port("m_f"))
+            pre = ""
             extra = ("    MOVE R0, R{in:m}\n"
                      "    {write:m_f}\n")
         return CellProgram(
@@ -925,6 +968,7 @@ class LargeFFTBlock(KyttarBlock):
             data=data, state=state,
             assembly_template=(
                 "default:\n"
+                + pre +
                 "    MOVE R{state:ad}, R{in:m}\n"
                 "    ADD R{state:ad}, R{data:obase}\n"
                 "    MOVE R{state:ad}, R0\n"
@@ -1150,7 +1194,29 @@ class LargeFFTBlock(KyttarBlock):
     @staticmethod
     def _fetch_cell(table_words: Sequence[int], has_c_input: bool
                     ) -> CellProgram:
-        """A DIRECT twiddle table cell (FFT16 ``_fetch_cell``, verbatim)."""
+        """A DIRECT twiddle table cell (the FFT16 ``_fetch_cell`` arithmetic).
+
+        WORD BUDGET at P = 16 (INV-33). FFT16's largest direct table is P = 8,
+        so its ``fetch_d`` had slack; the FIRST P = 16 ``fetch_d`` — FFT64's
+        stage 1 — is EXACTLY one word over, and the overflow lands on the
+        state pointer, which the resolver happily pins ON TOP of the cell's
+        own first instruction (the word count gate passes, the OVERLAP is
+        fatal: the first ``MOVE R{ptr}, R0`` zeroes the instruction the next
+        trigger enters at).
+
+        The word is bought back with the ACCUMULATOR-DELIVERY idiom that
+        INV-33 documents: the ``c`` forward arrives in **R0** rather than in a
+        dedicated input register, and the cell's FIRST instruction re-emits it
+        before any ALU op can disturb R0. That frees BOTH the input register
+        (address 1) and the ``MOVE R0, R{in:c}`` staging instruction — two
+        words — with the table arithmetic, the pointer walk, and the wrap
+        completely untouched.
+
+        The idiom's own precondition is met exactly: ``c_f`` is the first
+        write, so the value is out before ``LOAD`` overwrites R0, and the
+        upstream ``fetch_c`` delivers into R0 as its last write before the
+        trigger.
+        """
         P = len(table_words)
         base = 2
         data = [DataWord(f"t{i}", u16(w), address=base + i)
@@ -1160,9 +1226,10 @@ class LargeFFTBlock(KyttarBlock):
                  DataWord("pbase", base, address=base + P + 2)]
         ptr_reg = base + P + 3
         if has_c_input:
-            inputs = [Port("c", register=1)]
-            fwd = ("    MOVE R0, R{in:c}\n"
-                   "    {write:c_f}\n")
+            # R0 delivery (INV-33 accumulator-delivery): no input register, no
+            # staging MOVE — the forward is the FIRST instruction.
+            inputs = [Port("c", register=0)]
+            fwd = "    {write:c_f}\n"
             outs = [Port("t_f"), Port("c_f"), Port("trig")]
         else:
             inputs = []
@@ -1175,9 +1242,9 @@ class LargeFFTBlock(KyttarBlock):
             state=[StateVar("ptr", register=ptr_reg, initial_value=base)],
             assembly_template=(
                 "default:\n"
+                + fwd +
                 "    LOAD R{state:ptr}\n"
                 "    {write:t_f}\n"
-                + fwd +
                 "    ADD R{state:ptr}, R{data:one}\n"
                 "    MOVE R{state:ptr}, R0\n"
                 "    CMP R0, R{data:pend}\n"

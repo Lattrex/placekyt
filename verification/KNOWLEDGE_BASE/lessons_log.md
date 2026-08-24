@@ -169,6 +169,47 @@ shift loop would run exactly once and every `s >= 4` output would come out
 exactly 2x. `test_exit_cell_has_no_goto` asserts it on the template so an edit
 cannot reintroduce it.
 
+### Harness note — the two SERVER-HOSTING tests are unreliable inside a full run
+
+Not a block lesson, but it cost four separate investigations across two agents
+during this build, so it is recorded here to stop the fifth.
+
+**Symptom.** A full `pytest verification/tests/` run BLOCKS partway through —
+no failure, no output, just a stop. Process state: `State: S (sleeping)`,
+`wchan = poll_schedule_timeout`, ~33 threads, and — the signal that actually
+distinguishes blocked from busy — `utime` and `voluntary_ctxt_switches` FROZEN
+across samples. **Do not use `ps` `pcpu` to judge this**: it is a
+process-LIFETIME average, so it still reads ~100% long after the process stopped
+doing any work. Reading it as "healthy and computing" is how one of these
+investigations went backwards.
+
+**Who.** Exactly two files host a `SimServer` on the fixed port **58950** (the
+`.grc`'s baked bind) and then run a real GNU Radio subprocess against it:
+`test_examples_grc_userpath.py` and `test_fec_link_example.py::
+test_shipped_grc_user_path`. `grep -rln "user_path\|_serve(\|
+stop_gnuradio_server" verification/tests/*.py` is the complete membership test.
+
+**Mechanism (what it is NOT, measured).** It is not missing teardown — both
+files call `sim.stop_gnuradio_server()` in a `finally`. It is not a `TIME_WAIT`
+residue either — `sim_bridge.py` sets `SO_REUSEADDR` on the listener. The
+remaining suspect is a LIVE holder surviving teardown between cases: stopping
+the server does not necessarily reap a `_run_flowgraph` GNU Radio SUBPROCESS
+that is still attached to the socket. Consistent with that, when a run blocks,
+`ss -ltnp` shows the port held by **that run's OWN pytest PID** — i.e. this is
+SELF-contention within one suite, not only cross-talk from a concurrently
+running builder (though a foreign holder produces the same block, and on a busy
+machine you will also see the fast form: `OSError: [Errno 98] Address already in
+use` at the `SimServer` bind).
+
+**What to do.** Run these two STANDALONE on a quiet machine; they pass there.
+For a whole-suite regression signal, run:
+`pytest verification/tests/ --ignore=verification/tests/test_examples_grc_userpath.py
+--deselect verification/tests/test_fec_link_example.py::test_shipped_grc_user_path`
+— DESELECT the single test rather than ignoring the whole `fec_link` file, so its
+INV-32 saturated-exactness and mutation gates still run. This is pre-existing
+harness flakiness, unrelated to any block: triage it as an artifact, and never
+report a block or a build change as regressing on the strength of it.
+
 ## GRUCellBlock — the recurrent composite: 51 cells, one closed ring, bit-exact h ON CHIP 2026-08-24
 
 The largest single block in the catalog and the first with an INTERNAL

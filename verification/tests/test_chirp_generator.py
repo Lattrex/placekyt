@@ -236,7 +236,7 @@ def test_snr_vs_ideal_float_chirp():
     """SNR of the (chip-bit-exact) integer chirp vs the IDEAL float chirp.
     n <= 128 keeps every phase on the 33-entry table grid (multiples of 512):
     measured ~91 dB. n = 256 hits half-grid phases and shows the true
-    linear-interpolation floor of the quarter-wave table (measured ~66 dB,
+    linear-interpolation floor of the quarter-wave table (measured 73.4 dB,
     consistent with the NCO's ~11 LSB worst-case bound). Both asserted against
     DERIVED floors (not tuned): grid >= 85 dB, interpolated >= 60 dB."""
     snr_grid = _snr_db(128, 128, [0, 1, 64, 127, 100])

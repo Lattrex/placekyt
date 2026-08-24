@@ -54,7 +54,7 @@ re-parameterized (see below). Durable lessons:
 - **The 33-entry-table grid interacts with the chirp sizes:** for n ≤ 128 every
   phase is a multiple of 512 (= the table grid) so the interp error vanishes —
   SNR vs the ideal float chirp ~91 dB; n = 256 hits half-grid phases and shows
-  the true interp floor (~66 dB ≈ the NCO's 11-LSB bound). Report BOTH; an
+  the interp-limited regime (73.4 dB measured RMS; worst-case ~11 LSB). Report BOTH; an
   SNR measured only at n ≤ 128 would overstate the block fourfold.
 - **Phase-continuity convention pinned CARRY (never reset)** — zero instructions,
   phase-continuous TX, invisible to the magnitude CSS receiver. With n even and

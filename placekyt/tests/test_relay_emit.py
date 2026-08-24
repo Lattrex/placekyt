@@ -402,6 +402,45 @@ def test_planned_relay_segments_all_fit_the_hop_field():
         assert all(s <= 31 for s in spans), f"n={n}: segments {spans}"
 
 
+def test_relay_steps_off_a_real_block_cell_end_to_end(env):
+    """The used-cell guard through the WHOLE pipeline, not just the planner: park
+    a second block exactly on the natural relay index and confirm the emitted
+    relay moves off it — and that the design still builds."""
+    from engine.build import BuildEngine
+    from engine.bus_router import broker_plan, relay_plan
+    from model.connection import BlockEndpoint, ChipPortEndpoint
+    from ui.controller import AppController
+    cat, ct, key = env
+
+    ctrl = AppController(catalog=cat)
+    ctrl.new_project("relay_guard", key)
+    g = ctrl.place_block("GainBlock", 0, 1, 1, params={"gain": GAIN},
+                         library=LIB)
+    natural = _long_path()[30]          # where an unguarded planner would land
+    ctrl.place_block("GainBlock", 0, *natural, params={"gain": GAIN},
+                     library=LIB)
+    ctrl.add_logical_connection(ChipPortEndpoint(chip=0, port="x16_in"),
+                                BlockEndpoint(block=g, port="in"), name="n_in")
+    ctrl.add_route(BlockEndpoint(block=g, port="out"),
+                   ChipPortEndpoint(chip=0, port="x16_out"),
+                   [p for p in _long_path() if p != natural], name="n_out")
+    ctrl.auto_route_all({key: ct})
+
+    block_cells = {(c.x, c.y) for b in ctrl.project.blocks
+                   for c in b.placement.cells}
+    ports = {(p.cell_x, p.cell_y) for p in ct.ports}
+    brokers = set(broker_plan(ctrl.project, 0, ct, cat).keys())
+    plan = relay_plan(ctrl.project, 0, ct, cat)
+    assert plan, "the long net must still be relayed"
+    for hops in plan.values():
+        for h in hops:
+            assert h.cell not in block_cells, f"relay on a block cell {h.cell}"
+            assert h.cell not in ports, f"relay on a port cell {h.cell}"
+            assert h.cell not in brokers, f"relay on a broker {h.cell}"
+    res = BuildEngine(cat, str(CT_PATH)).build(ctrl.project, {key: ct})
+    assert res.ok and res.chips[0].relay_cost >= 1
+
+
 def test_short_route_gets_no_relay(env):
     """The common case must be untouched: a hop-legal net spends zero relay
     cells and takes the identical path it always did."""

@@ -1,31 +1,30 @@
 {
-  "block": "__hop_relay_emit__",
-  "grc_block": "",
-  "tier": 0,
-  "wave": 7,
-  "schema_version": 1,
-  "started_utc": "2026-08-24T13:20:00Z",
-  "ended_utc": "2026-08-24T15:05:00Z",
-  "walltime_sec": 6300.0,
-  "tokens": {
-    "input": 0,
-    "output": 262000,
-    "cache_read": 0,
-    "total": 262000
-  },
-  "turns": 78,
-  "attempts": 1,
-  "human_interventions": 0,
-  "intervention_reasons": [],
-  "prompts": [
-    {
-      "role": "initial",
-      "text": "Lift the >31-hop routing ceiling: when a planned route exceeds the 5-bit hop field, split it at an intermediate cell and emit the relay program so the packet is forwarded with a fresh hop count. Reuse the existing broker/transmit machinery; preserve payload AND trigger semantics; never consume a cell already used by a block; report the relay area cost. Then use the lifted ceiling to finish the gru_classifier example."
-    }
-  ],
-  "verify_passed": true,
-  "quarantined": false,
-  "quarantine_reason": "",
-  "commit_sha": "de3973a",
-  "notes": "INFRASTRUCTURE (wave 7). The router already PLANNED relay cells for >31-hop routes but the build never programmed them, so the net was failed with 'relay programming is not yet emitted by the build'. Emitted it: build._relay_program (land -> MOVE [FACE] -> re-emit WRITE+JUMP with a fresh budget, the crossover land/flip/re-emit primitive specialised to one track -- no new cell program invented) + build._apply_relays (chained BACKWARD so each relay addresses the resolved entry of the next; the source is re-pointed at the first; the LAST relay reproduces the net's ORIGINAL dest/entry so the destination sees exactly what a hop-legal route would have delivered). bus_router._plan_relays is the SINGLE planner shared by the router, the build, the DRC hop_overflow check and the controller's add_route guard, so no gate can accept a long route another rejects; bus_router.relay_plan DERIVES the cells from the routed project (build-from-design), so hand-placed .kyt files get relays too. Cost is reported via ChipBuild.relay_cells/.relay_cost (~1 cell per 30 hops). VERIFIED ON CHIP, not merely built: a 52-hop egress (previously impossible -- @32 does not even assemble) routes/builds/runs bit-exact against a hop-legal short-route control, and a 96-hop route chains THREE relays (30/30/30/6) and still delivers, so relays compose and no practical ceiling remains beyond array area. Mutations proven to FAIL: relay omitted (pre-fix behaviour, zero output), stale hop count (word stranded), relay mis-faced off the corridor; plus hard rejection of a relay on a block cell / used chip-port cell / existing broker (INV-32, port_transit class). 15 new gates in placekyt/tests/test_relay_emit.py. Two test_drc.py cases asserted the OLD contract (>31 hops always an error) and now assert the new one including that an unrelayable long route is still named. Recorded as INV-36. NOTE: this did NOT unblock gru_classifier -- see __gru_classifier_example__ -- that example's wall is corridor congestion ('no bus path from source to the broker tap'), not hop count."
+ "block": "__hop_relay_emit__",
+ "grc_block": "",
+ "tier": 0,
+ "wave": 7,
+ "schema_version": 1,
+ "started_utc": "2026-08-24T13:20:00Z",
+ "ended_utc": "2026-08-24T15:05:00Z",
+ "walltime_sec": 6300.0,
+ "tokens": {
+  "total": 326773,
+  "source": "orchestrator_usage (joint dispatch: engine fix + example re-attempt)"
+ },
+ "turns": 310,
+ "attempts": 1,
+ "human_interventions": 0,
+ "intervention_reasons": [],
+ "prompts": [
+  {
+   "role": "initial",
+   "text": "Lift the >31-hop routing ceiling: when a planned route exceeds the 5-bit hop field, split it at an intermediate cell and emit the relay program so the packet is forwarded with a fresh hop count. Reuse the existing broker/transmit machinery; preserve payload AND trigger semantics; never consume a cell already used by a block; report the relay area cost. Then use the lifted ceiling to finish the gru_classifier example."
+  }
+ ],
+ "verify_passed": true,
+ "quarantined": false,
+ "quarantine_reason": "",
+ "commit_sha": "c607ba7d0562de718e197f4c83c58a9a4f84d229",
+ "notes": "INFRASTRUCTURE (wave 7). The router already PLANNED relay cells for >31-hop routes but the build never programmed them, so the net was failed with 'relay programming is not yet emitted by the build'. Emitted it: build._relay_program (land -> MOVE [FACE] -> re-emit WRITE+JUMP with a fresh budget, the crossover land/flip/re-emit primitive specialised to one track -- no new cell program invented) + build._apply_relays (chained BACKWARD so each relay addresses the resolved entry of the next; the source is re-pointed at the first; the LAST relay reproduces the net's ORIGINAL dest/entry so the destination sees exactly what a hop-legal route would have delivered). bus_router._plan_relays is the SINGLE planner shared by the router, the build, the DRC hop_overflow check and the controller's add_route guard, so no gate can accept a long route another rejects; bus_router.relay_plan DERIVES the cells from the routed project (build-from-design), so hand-placed .kyt files get relays too. Cost is reported via ChipBuild.relay_cells/.relay_cost (~1 cell per 30 hops). VERIFIED ON CHIP, not merely built: a 52-hop egress (previously impossible -- @32 does not even assemble) routes/builds/runs bit-exact against a hop-legal short-route control, and a 96-hop route chains THREE relays (30/30/30/6) and still delivers, so relays compose and no practical ceiling remains beyond array area. Mutations proven to FAIL: relay omitted (pre-fix behaviour, zero output), stale hop count (word stranded), relay mis-faced off the corridor; plus hard rejection of a relay on a block cell / used chip-port cell / existing broker (INV-32, port_transit class). 15 new gates in placekyt/tests/test_relay_emit.py. Two test_drc.py cases asserted the OLD contract (>31 hops always an error) and now assert the new one including that an unrelayable long route is still named. Recorded as INV-36. NOTE: this did NOT unblock gru_classifier -- see __gru_classifier_example__ -- that example's wall is corridor congestion ('no bus path from source to the broker tap'), not hop count. INFRASTRUCTURE (INV-36): lifted the 31-hop routing ceiling. A WRITE/JUMP carries a 5-bit HOP_CNT so one emission reaches at most 31 hops (measured: @31 delivers, @32 raises). The ROUTER ALREADY PLANNED relay cells and then failed the net with 'relay programming is not yet emitted by the build' \u2014 the gap was almost entirely in the build's EMIT path, as hypothesized. Long routes now split into <=31-hop segments; the word lands on an intermediate plain routing cell whose relay program flips to the continuation face and re-emits payload AND trigger with a fresh budget (the CrossoverBlock land->flip->re-emit primitive specialised to one track; no new cell program invented). FOUR THINGS THAT HAD TO BE RIGHT: emit the JUMP as well as the WRITE (payload-only = a silent stream that never triggers); chain BACKWARD (each relay addresses the resolved entry of the next, source re-pointed last, final relay reproducing the net's original dest/entry); ONE shared planner (_plan_relays) used by router, build, DRC hop_overflow, and the controller's add_route guard \u2014 three gates independently enforced <=31 and would otherwise have disagreed; hard rejection on block/used-port/broker cells (INV-32). PROOF: a 52-hop egress routes, builds and runs BIT-EXACT against a hop-legal short-route control (the relay is transparent to data); a 96-hop route chains THREE relays (30/30/30/6) and still delivers, so relays compose and NO CEILING REMAINS beyond array area. Cost ~1 cell per 30 hops, reported via ChipBuild.relay_cells/.relay_cost. 17 gates. MUTATION-QUALITY LESSON: the builder's first 'wrong face' mutation LEAKED \u2014 not a relay bug but a lucky geometry forwarding the word back onto the corridor; fixed by mutating the face constant directly in loaded chip memory and choosing faces that genuinely leave the route. 'A mutation a geometry can repair is a weak mutation.'",
+ "walltime": "~52m"
 }

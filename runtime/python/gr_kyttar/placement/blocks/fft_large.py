@@ -355,7 +355,8 @@ class _SDFStageModel:
         return o_i, o_q
 
 
-def sdf_streaming_reference(n: int, iq_words) -> List[Tuple[int, int]]:
+def sdf_streaming_reference(n: int, iq_words, stages_range=None
+                            ) -> List[Tuple[int, int]]:
     """The bit-exact per-trigger output stream of the N-point streaming FFT.
 
     ``iq_words`` is a list of ``(i, q)`` uint16 Q15 word pairs; the return is
@@ -363,10 +364,18 @@ def sdf_streaming_reference(n: int, iq_words) -> List[Tuple[int, int]]:
     startup outputs of the zero-initialized pipeline. From output index
     ``n-1`` on, every ``n`` consecutive outputs are one frame in bit-reversed
     bin order (:func:`output_bins`), scaled FFT/n.
+
+    ``stages_range`` — ``(lo, hi)`` INCLUSIVE — runs only that contiguous
+    span of stages, which is what a 2-DIE SPLIT half computes. Because the
+    stages are a pure feed-forward pipeline, running ``(0, k)`` and feeding
+    its output stream into ``(k+1, last)`` is EXACTLY the whole reference:
+    that composition identity is the split's correctness argument, and the
+    suite asserts it word for word rather than taking it on faith.
     """
     delays = stage_delays(n)
-    stages = [_SDFStageModel(D, stage_table(n, s))
-              for s, D in enumerate(delays)]
+    lo, hi = stages_range if stages_range else (0, len(delays) - 1)
+    stages = [_SDFStageModel(delays[s], stage_table(n, s))
+              for s in range(lo, hi + 1)]
     out: List[Tuple[int, int]] = []
     for (xi, xq) in iq_words:
         vi, vq = u16(xi), u16(xq)
@@ -732,6 +741,14 @@ class LargeFFTBlock(KyttarBlock):
     _interface = BlockInterface(
         entry_address=1, input_registers=[1, 2], output_registers=[0, 1])
 
+    #: The CONTIGUOUS range of parent-transform stages this instance carries,
+    #: as ``(lo, hi)`` inclusive, or ``None`` for the whole transform. A
+    #: 2-DIE SPLIT is expressed ENTIRELY through this: each die is the same
+    #: class over a different range, so both halves run the SAME builders,
+    #: the SAME fold, and the SAME spine planner as the whole transform —
+    #: there is no second implementation to drift. See :class:`FFT128Die0`.
+    STAGE_RANGE: Tuple[int, int] = None
+
     def __init__(self, name: str, **kwargs):
         super().__init__(name, **kwargs)
         n = int(self.N)
@@ -741,8 +758,19 @@ class LargeFFTBlock(KyttarBlock):
                 "transforms are the shipped FFT16Block (44 cells, not "
                 "chip-scale); larger ones do not fit this array.")
         self._n = n
-        self._delays = stage_delays(n)
-        self._tables = [stage_table(n, s) for s in range(len(self._delays))]
+        full = stage_delays(n)
+        lo, hi = self.STAGE_RANGE if self.STAGE_RANGE else (0, len(full) - 1)
+        if not (0 <= lo <= hi < len(full)):
+            raise ValueError(
+                f"STAGE_RANGE {(lo, hi)} is not a valid stage range of the "
+                f"{len(full)}-stage N={n} transform")
+        #: PARENT-transform stage index of each local stage. Everything that
+        #: depends on WHICH stage of the transform this is — the twiddle
+        #: table and the fold's exponent stride ``2^s`` — is resolved through
+        #: this, never through the local index.
+        self._stage_ids = tuple(range(lo, hi + 1))
+        self._delays = tuple(full[s] for s in self._stage_ids)
+        self._tables = [stage_table(n, s) for s in self._stage_ids]
         self._octC, self._octS = octant_tables(n)
         # RING-FOLD PARITY: a stage whose chain is ODD cannot land its `out`
         # edge-adjacent to its `ctl` in ANY fold (see
@@ -759,6 +787,14 @@ class LargeFFTBlock(KyttarBlock):
         self._layout, self._order, self._spine_col = self._plan()
 
     # ---------------------------------------------------------------- basics
+    @property
+    def stage_ids(self) -> Tuple[int, ...]:
+        """Parent-transform stage index of each local stage."""
+        return self._stage_ids
+
+    @property
+    def is_split_half(self) -> bool:
+        return self.STAGE_RANGE is not None
     def _chain_length(self, s: int, n_segs: int) -> int:
         """Cells in stage ``s``'s chain when its delay line uses ``n_segs``
         segment cells — the arithmetic form of :meth:`_stage_chain`, usable
@@ -778,10 +814,27 @@ class LargeFFTBlock(KyttarBlock):
 
     @property
     def latency(self) -> int:
-        return self._n - 1
+        """Samples of pipeline latency THIS instance contributes.
+
+        Each R2SDF stage contributes exactly its delay ``D``, so the whole
+        transform is ``sum(D) = N-1`` and a split half is the sum over the
+        stages it carries. The two halves of a split therefore add back to
+        ``N-1`` — asserted in the suite, not assumed."""
+        return sum(self._delays)
 
     @property
     def output_bins(self) -> Tuple[int, ...]:
+        """Bin carried by each output slot.
+
+        Only meaningful for a WHOLE transform: a split half emits a partially
+        transformed stream, not frequency bins."""
+        if self.is_split_half:
+            raise ValueError(
+                f"{type(self).__name__} carries stages "
+                f"{self._stage_ids[0]}..{self._stage_ids[-1]} of an N={self._n} "
+                "transform, not the whole transform — its output is a "
+                "partially transformed stream, not frequency bins. Ask the "
+                "PARENT transform for output_bins.")
         return output_bins(self._n)
 
     def uses_fold(self, s: int) -> bool:
@@ -1793,12 +1846,53 @@ class LargeFFTBlock(KyttarBlock):
         stage the ones that stay CLOSEST to its own spine rows are tried
         first, which keeps each stage compact and leaves the rest of the array
         contiguous for the stages that follow.
+
+        RESERVED EGRESS COLUMN — why the enumerator, not just the final check,
+        has to know about the ports. :meth:`_corridors_ok` runs only after ALL
+        stages are placed, so it can reject but not steer. The enumerator is a
+        fixed-order DFS that returns at most ``_SPINE_PATH_CANDIDATES`` walks,
+        and for a LONG chain in a SHORT spine those walks are all the same
+        shape: a tall wall on one side of the spine spanning every row. On the
+        N=128 die-0 half (a 30-cell stage-0 chain over a 2-row spine) all 400
+        candidates ran west of the spine across all 12 rows, and every single
+        one sealed the exit off from ``x16_out`` — the input corridor was
+        always fine, the OUTPUT corridor never was. Sorting a biased sample
+        cannot fix that.
+
+        So a column between the spine and the output port is RESERVED: no
+        stage cell may occupy it, which guarantees a free north-south lane the
+        egress corridor can always use, and forces the enumerator to produce
+        walks that leave it alone. The reservation is tried progressively —
+        first with no reservation at all (the shipped N=64 fold needs none and
+        must keep its exact placement), then reserving each candidate column
+        in turn — so this can only ADD solutions, never remove one.
         """
+        for reserved in self._egress_reservations(col, W):
+            sol = self._solve_spine_with(chains, col, W, H, reserved)
+            if sol is not None:
+                return sol
+        return None
+
+    @staticmethod
+    def _egress_reservations(col: int, W: int):
+        """Columns to try reserving as a free egress lane, easiest first.
+
+        ``None`` first — no reservation, which is what the shipped N=64 fold
+        resolves with, so its placement is bit-identical to before. Then the
+        columns strictly EAST of the spine (the output port is at the east
+        end of row 0), nearest the spine first: a lane close to the spine
+        costs the stages least room.
+        """
+        return [None] + [c for c in range(col + 1, W)]
+
+    def _solve_spine_with(self, chains, col: int, W: int, H: int, reserved):
         n = len(chains)
         spine = [((col, 2 * s), (col, 2 * s + 1)) for s in range(n)]
         all_spine = {p for pair in spine for p in pair}
         if all_spine & self._PORT_CELLS:
             return None
+        lane = (set() if reserved is None
+                else {(reserved, y) for y in range(H)} - self._PORT_CELLS)
         used = set(self._PORT_CELLS)
         chosen: Dict[int, List[Tuple[int, int]]] = {}
 
@@ -1806,7 +1900,7 @@ class LargeFFTBlock(KyttarBlock):
             if s == n:
                 return self._corridors_ok(used, chosen, W, H)
             start, goal = spine[s]
-            blocked = set(used) | (all_spine - {start, goal})
+            blocked = set(used) | lane | (all_spine - {start, goal})
             cands = _self_avoiding_paths(
                 start, goal, len(chains[s]), blocked, W, H,
                 limit=self._SPINE_PATH_CANDIDATES)
@@ -1885,7 +1979,10 @@ class LargeFFTBlock(KyttarBlock):
             made[p + "diffi"] = self._diff_leg_cell()
             made[p + "diffq"] = self._diff_leg_cell()
             if self.uses_fold(s):
-                made[p + "seq"] = self._fold_seq_cell(s)
+                # PARENT stage index: the fold's exponent stride is 2^s of the
+                # WHOLE transform (a split half's local index is not the
+                # transform's), so the sequencer must be built from stage_ids.
+                made[p + "seq"] = self._fold_seq_cell(self._stage_ids[s])
                 made[p + "mcalc"] = self._fold_mcalc_cell()
                 made[p + "tab_c"] = self._fold_tab_cell(self._octC, False)
                 made[p + "tab_d"] = self._fold_tab_cell(self._octS, True)
@@ -2141,8 +2238,13 @@ class LargeFFTBlock(KyttarBlock):
     def process_reference_q15(self, iq_words) -> List[Tuple[int, int]]:
         """Bit-exact per-trigger output stream (see
         :func:`sdf_streaming_reference`): one (i, q) uint16 pair per input
-        trigger, startup transient included, frames in bit-reversed order."""
-        return sdf_streaming_reference(self._n, iq_words)
+        trigger, startup transient included, frames in bit-reversed order.
+
+        For a SPLIT HALF this runs only that half's stages, so the output is
+        the partially transformed stream the next die consumes."""
+        return sdf_streaming_reference(
+            self._n, iq_words,
+            (self._stage_ids[0], self._stage_ids[-1]))
 
     def process_reference(self, input_samples) -> np.ndarray:
         """Float view of the bit-exact stream (complex64, q15/32768 per rail).
@@ -2155,7 +2257,7 @@ class LargeFFTBlock(KyttarBlock):
             words = [(q15(c.real), q15(c.imag)) for c in arr]
         else:
             words = [(int(i) & 0xFFFF, int(q) & 0xFFFF) for (i, q) in arr]
-        out = sdf_streaming_reference(self._n, words)
+        out = self.process_reference_q15(words)
         return np.array([complex(s16(i) / 32768.0, s16(q) / 32768.0)
                          for (i, q) in out], dtype=np.complex64)
 
@@ -2177,7 +2279,7 @@ class FFT64Block(LargeFFTBlock):
 
 
 class FFT128Block(LargeFFTBlock):
-    """128-point streaming R2SDF FFT — CHIP-SCALE.
+    """128-point streaming R2SDF FFT — CHIP-SCALE, TWO DIES.
 
     7 stages (delays 64/32/16/8/4/2/1), latency 127, BIT-REVERSED bin order,
     scale FFT/128. Stages 0 AND 1 need the octant fold (periods 64 and 32);
@@ -2185,7 +2287,90 @@ class FFT128Block(LargeFFTBlock):
     with a stride-2 exponent, which the fold sequencer handles by advancing
     its slot counter by ``2^s``).
 
+    **Constructing this class RAISES** :class:`LargeFFTGeometryError`: the
+    7-stage ctl/out spine needs 14 rows in ONE column against a 12-row array,
+    and the spine height is not negotiable (see :meth:`LargeFFTBlock._plan`).
+    The supported topology at this size is the STAGE-BOUNDARY 2-DIE SPLIT
+    below — :class:`FFT128Die0` and :class:`FFT128Die1`.
+
     Params: NONE (``n`` is pinned at 128).
     """
 
     N = 128
+
+
+#: Where the N=128 pipeline is CUT. Die 0 carries stages 0..SPLIT_STAGE, die 1
+#: carries SPLIT_STAGE+1..6.
+#:
+#: WHY STAGE 2 (measured, not chosen for tidiness). Every boundary was costed
+#: with the real chain builder; the constraint is the SPINE HEIGHT (2 rows per
+#: stage in ONE column, 12 available) AND the cell count per die:
+#:
+#:     after stage 0:  30 / 84 cells,   2 / 12 spine rows
+#:     after stage 1:  54 / 60 cells,   4 / 10 spine rows
+#:     after stage 2:  70 / 44 cells,   6 /  8 spine rows   <- shipped
+#:     after stage 3:  84 / 30 cells,   8 /  6 spine rows
+#:     after stage 4:  98 / 30 cells,  10 /  4 spine rows   <- die 0 too big
+#:     after stage 5: 106 / 8 cells,   12 /  2 spine rows   <- die 0 too big
+#:
+#: Stage 2 is the most balanced boundary that leaves BOTH dies real slack:
+#: neither die approaches the 118 usable cells, and neither spine approaches
+#: the 12-row limit — slack the placer needs, because a fold that FILLS the
+#: array builds and then fails to route. It also puts both OCTANT-FOLD stages
+#: (0 and 1, the only ones needing the 16+16 tables) on the same die, so die 1
+#: is entirely direct-table and trivial stages.
+SPLIT_STAGE = 2
+
+
+class _FFT128Half(LargeFFTBlock):
+    """Shared base for the two dies of the N=128 split.
+
+    A half is the SAME class over a different ``STAGE_RANGE`` — same cell
+    builders, same octant fold, same spine planner, same golden function. That
+    is the whole point: there is no second FFT implementation to drift from
+    the verified one. Everything that depends on WHICH stage of the transform
+    a stage is (its twiddle table and the fold's ``2^s`` exponent stride) is
+    resolved through :attr:`stage_ids`, never the local index.
+
+    THE SPLIT IS A SINGLE FEED-FORWARD CROSSING. The R2SDF stages are a pure
+    pipeline: stage ``k+1`` consumes stage ``k``'s output stream and nothing
+    flows backwards between stages (the only feedback is INSIDE a stage, from
+    its own ``out`` to its own ``ctl``). So cutting at a stage boundary needs
+    exactly ONE complex stream crossing, in one direction, with no handshake
+    beyond the ordinary packet — and the composition identity
+
+        whole(x) == die1(die0(x))
+
+    holds word for word. The suite asserts that identity rather than arguing
+    it, and the on-chip gate drives the REAL two-chip system.
+    """
+
+    N = 128
+
+    @property
+    def latency(self) -> int:
+        return sum(self._delays)
+
+
+class FFT128Die0(_FFT128Half):
+    """N=128 die 0 — stages 0..2 (delays 64/32/16), 70 cells.
+
+    Carries BOTH octant-fold stages (0 and 1; periods 64 and 32) plus the
+    first direct-table stage. Complex in (the transform's input), complex out
+    (the partially transformed stream die 1 consumes — NOT frequency bins).
+    Contributes 112 samples of the transform's 127-sample latency.
+    """
+
+    STAGE_RANGE = (0, SPLIT_STAGE)
+
+
+class FFT128Die1(_FFT128Half):
+    """N=128 die 1 — stages 3..6 (delays 8/4/2/1), 44 cells.
+
+    Entirely direct-table and trivial stages — no octant fold. Complex in
+    (die 0's output stream), complex out: THIS die's output is the
+    transform's, in BIT-REVERSED bin order at scale FFT/128. Contributes 15
+    samples of the transform's 127-sample latency.
+    """
+
+    STAGE_RANGE = (SPLIT_STAGE + 1, 6)

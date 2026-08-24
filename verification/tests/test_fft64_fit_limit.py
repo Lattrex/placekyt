@@ -646,6 +646,9 @@ def test_every_authored_cell_fits_the_word_budget(N):
     blk = object.__new__(cls)
     blk._n = N
     blk._delays = FL.stage_delays(N)
+    # STAGE_RANGE is None for a whole transform, so the local stage index IS
+    # the parent's (a split half sets this to its own range instead).
+    blk._stage_ids = tuple(range(len(blk._delays)))
     blk._tables = [FL.stage_table(N, s) for s in range(len(blk._delays))]
     blk._octC, blk._octS = FL.octant_tables(N)
     blk._segs = {s: FL._delay_segments(D - 1)
@@ -721,6 +724,9 @@ def test_no_authored_cell_pins_state_into_its_instruction_region(N):
     blk = object.__new__(cls)
     blk._n = N
     blk._delays = FL.stage_delays(N)
+    # STAGE_RANGE is None for a whole transform, so the local stage index IS
+    # the parent's (a split half sets this to its own range instead).
+    blk._stage_ids = tuple(range(len(blk._delays)))
     blk._tables = [FL.stage_table(N, s) for s in range(len(blk._delays))]
     blk._octC, blk._octS = FL.octant_tables(N)
     blk._segs = {s: FL._delay_segments(D - 1)

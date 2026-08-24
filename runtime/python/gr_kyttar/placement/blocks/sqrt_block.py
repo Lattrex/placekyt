@@ -98,7 +98,8 @@ class SqrtBlock(KyttarBlock):
     5 LSB — |max| of the MEASURED interval rounded up to a whole LSB. It is
     derived from the datapath and is never widened to make a test pass.
     """
-    CATEGORY = "math"
+    # Same category as Nlog10Block, the catalog's other transcendental.
+    CATEGORY = "math_operators"
     TAGS = ["sqrt", "transcendental", "magnitude", "math"]
 
     # Both of blocks.transcendental's params are documented HW-deviations (see

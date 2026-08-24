@@ -49,8 +49,14 @@ class SqrtBlock(KyttarBlock):
 
     Because ``sqrt(x/2^15) = sqrt(m'/2^15) * 2^(-s/2)``, the three stages compose
     to the Q15 square root. The composition is EXHAUSTIVELY bounded over ALL
-    32768 input words at ``err in [-4.5, +0.6]`` LSB (the same measured interval
-    RMSBlock's guard test pins — it is literally the same code).
+    32768 input words — two statements of the SAME measurement against two
+    different goldens, so quote whichever the context wants:
+      * vs the ROUNDED ideal ``round(sqrt(x/2^15) * 2^15)`` — ``[-4, +1]`` LSB.
+        This is what ``test_sqrt.py`` re-measures and asserts every run, and
+        what this block's tolerance is derived from.
+      * vs the UNROUNDED float ideal — ``[-4.5, +0.6]`` LSB, the interval
+        RMSBlock's guard test pins. Same code, same errors; the half-LSB
+        difference is only the rounding of the reference.
 
     EXIT-CELL TRAP (inherited, do not "simplify"): ``denorm``'s shift loop uses
     CONDITIONAL branches only. A ``GOTO`` assembles to a local hop-31 JUMP, and
@@ -94,9 +100,12 @@ class SqrtBlock(KyttarBlock):
          documented, deliberate deviation, pinned by a bit-exact edge test.
 
     DERIVED TOLERANCE (NOT tuned): the exhaustive sweep bound of this exact
-    datapath is ``err in [-4.5, +0.6]`` LSB, so the GR-equivalence gate uses
-    5 LSB — |max| of the MEASURED interval rounded up to a whole LSB. It is
-    derived from the datapath and is never widened to make a test pass.
+    datapath is ``err in [-4, +1]`` LSB, so the GR-equivalence gate uses 5 LSB —
+    ``ceil`` of the MEASURED interval's larger magnitude. It is derived from the
+    datapath and is never widened to make a test pass; ``test_sqrt.py``
+    re-measures the bound on every run and FAILS if it moves, so a regression
+    cannot be absorbed by the tolerance. (Measured against live GNU Radio the
+    worst case is 3 LSB, corr 1.0000, NMSE -83 dB.)
     """
     # Same category as Nlog10Block, the catalog's other transcendental.
     CATEGORY = "math_operators"

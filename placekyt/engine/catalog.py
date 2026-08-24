@@ -45,6 +45,17 @@ OFFICIAL_LIBRARY = "lattrex.official"
 # in-array block for small matrices and is catalogued normally.)
 _EXCLUDED_BLOCKS = frozenset({
     "ViterbiK7DecoderBlock",
+    # 128-point streaming FFT: NO in-array implementation on a 10x12. Its
+    # ctl/out spine needs 2 * 7 stages = 14 rows in ONE column against a
+    # 12-row panel, so the class raises LargeFFTGeometryError in its
+    # CONSTRUCTOR — loudly and by design, naming the 2-row shortfall rather
+    # than emitting an unroutable layout. The stage-boundary 2-die split is
+    # its supported topology and is not built. Excluding it here is what the
+    # exclusion list is for: a catalogued block that cannot be instantiated
+    # fails every "build each catalog block" sweep (measured: 6 tests across
+    # test_data_words.py and test_portmap.py) for a reason that has nothing to
+    # do with the sweep. Remove this entry when the 2-die split lands.
+    "FFT128Block",
 })
 
 # Manifest aliases: a handful of DONE blocks carry a LEGACY short name in the

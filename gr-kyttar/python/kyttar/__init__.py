@@ -108,6 +108,7 @@ from .dc_blocker import dc_blocker
 from .delay import delay
 from .complex_delay_line import complex_delay_line
 from .fft16 import fft16
+from .fft32 import fft32
 from .fft64 import fft64
 from .agc import agc
 from .agc_cc import agc_cc
@@ -236,6 +237,7 @@ __all__ = [
     "delay",
     "complex_delay_line",
     "fft16",
+    "fft32",
     "fft64",
     "agc",
     "agc_cc",

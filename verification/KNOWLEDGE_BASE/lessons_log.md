@@ -9,6 +9,48 @@ block-specific gotcha. Promote anything that generalizes across block classes in
 and superseded material merged into the surviving entries; no durable lesson was
 dropped) — append new entries above the oldest ones as before.
 
+## MERGING TWO AGENTS' WORK ON ONE PLANNER — a fallback inside a backtracking search is an EXPONENTIAL, and a layout hash is the only proof a merge is safe 2026-08-24
+
+FFT32 and FFT64 were built in parallel against the same `fft_large.py`. Both hit the
+SAME `s1_fetch_d` INV-33 overlap at the P=16 boundary and fixed it differently; both
+improved the spine planner. Merging them surfaced two lessons worth more than the
+merge itself.
+
+- **KEEP THE ROOMIER FIX, NOT YOUR OWN.** FFT64's fix moved `fetch_d`'s `c` forward to
+  the accumulator-delivery idiom (31/32 words); FFT32's REMOVED the cross-forward
+  outright so each table cell writes straight into `steer`'s input register (30/32,
+  two clear). Both are correct and both were separately verified, but shipping two
+  shapes of one builder invites divergence between sizes. The merge kept FFT32's and
+  deleted FFT64's: **one `_fetch_cell`, the roomier shape, no per-size branch.** When
+  two agents fix one defect, the deliverable is ONE fix — pick on margin and
+  simplicity, not on authorship.
+
+- **A FALLBACK PLACED INSIDE A BACKTRACKING SEARCH MULTIPLIES THE TREE.** FFT64's
+  planner gained a height-capped fallback so long chains over short spines stop
+  rediscovering the same wall. It was implemented as a generator yielding SEVERAL
+  candidate batches per stage — which is fine in isolation and catastrophic in
+  recursion: the generator is consulted at EVERY level, so k batches per stage
+  multiplies the search by `k**n_stages`. Measured on the merge: FFT32's sub-second
+  solve had not finished in MINUTES, while its layout was perfectly acceptable
+  (verified directly — main's chip-proven FFT32 fold PASSES the new corridor check, so
+  the check was not the problem). Fix: make the fallback a **whole-search retry**
+  outside the recursion — pass 1 is exactly the original single full-height batch, and
+  only if that finds nothing does pass 2 re-run the entire search with a capped board.
+  Cost for any already-placing size: zero. **A fallback must be reachable only after
+  the original path has fully failed, and "fully" means the whole search, not one
+  node of it.**
+
+- **THE LAYOUT HASH IS THE MERGE GATE.** A planner merge is safe only if every
+  already-verified size produces a BIT-IDENTICAL layout — not "still places", not
+  "still passes its structural gates". A different working layout silently invalidates
+  every on-chip measurement taken against the old one, and nothing in the test suite
+  would say so. Hash it and pin it:
+  `sha256(json.dumps(sorted(layout.items()), sort_keys=True))`. FFT64 held at
+  `e27f020b27441656` through five corridor-check changes, a search-order change, and
+  this merge; FFT32's fold came back byte-identical to main's footprint. Without those
+  two numbers the merge would have been indistinguishable from a silent regression —
+  which is exactly the failure class this campaign exists to eliminate.
+
 ## A REPORT THAT HARDCODES ITS OWN VERDICT, and a shared EVENT CAP that calls a healthy block livelocked 2026-08-24
 
 Two test-side defects found in one FFT64 run, both of which would have shipped a
@@ -275,6 +317,343 @@ and both of which generalize well beyond this block.
   A single impulse is the sharpest stimulus for this class: it makes the ideal
   output a constant, so a phase error reads directly as a rotation
   (here `512 -> (510, -50)` = exactly `512 * W_64^1`).
+`LargeFFTBlock` to N=32. Bit-exact on a real built chip, 75 gates green. It is
+enters at. **The cell is EXACTLY full at 32/32 words, and the count gate passes.** This is byte-for-byte
+state at 21 — 30/32 words at P=16 with the entry instruction two words clear of the state, where before they collided. **This also repairs one of
+at N=16 over the SAME 40 seeds shows **the shipped FFT16 reaches the same
+clamp on 3 of 40 — the identical rate** — and FFT16's OWN gated seed (101)
+measures ZERO clamps, so its published 78.8 dB figure for that class simply
+used a seed that did not clamp. So this is a property of the pinned numerics at both sizes, not an N=32
+The spine solve is a backtracking search costing ~28 s, so it is now memoized
+### A block that CANNOT be constructed must leave the CATALOG, not just fail
+
+Found while regression-testing this build, and PRE-EXISTING on main (verified
+by re-running at the parent commit): six tests across `test_data_words.py` and
+`test_portmap.py` were red, all with the same cause — `FFT128Block` is
+catalogued, and every "build/portmap each catalog block" sweep instantiates it,
+and its constructor correctly raises `LargeFFTGeometryError` (14 spine rows
+against a 12-row panel). A LOUD constructor failure is the right design; being
+in the catalog while having no in-array implementation is not. It is now in
+`catalog._EXCLUDED_BLOCKS` — which is exactly what that list is for — with the
+2-die-split condition for removing it recorded next to the entry, and its
+`NEEDS_BESPOKE` saturation reason kept so that re-catalogueing it can never
+silently skip a gate. Six tests green, none of them weakened.
+
+The general form: an "every catalog block" sweep is a good gate, and the way to
+keep it honest is to make the catalog mean "can be instantiated on this array",
+not to add exceptions inside the sweep.
+
+## FFT32Block — the family's third size: no fold needed, and the two INVISIBLE defects the P=16 boundary exposes 2026-08-24
+
+A 60-cell, 5-stage streaming R2SDF FFT (delays 16/8/4/2/1, latency 31, output
+in BIT-REVERSED bin order, scale FFT/32), built by parameterising the landed
+`LargeFFTBlock` to N=32. Bit-exact on a real built chip, 74 gates green. It is
+the EASIEST size in the family on arithmetic and the one that found the most
+bugs — because N=32 is the first size that hits the P=16 direct-table
+boundary, and because its layout comes from a SEARCH rather than by hand.
+
+**THE COST ANSWER: no octant fold, and it was not close.** Every N=32 stage's
+twiddle period is at most 16 = `DIRECT_TABLE_MAX`, so all three twiddle stages
+use the shipped DIRECT-table chain and the 9-cell octant fold that N=64 needs
+is never reached (gated, not assumed: `uses_fold(s)` is False for every stage
+and no `seq`/`mcalc`/`tab_*`/`swap`/`sign` cell exists in the block). Measured
+budget: 5 stages x (7-cell spine + 5 twiddle or 0) + delay cells, with two
+PARITY PADS, = 16+14+14+8+8 = **60 cells**. That is 24 fewer than N=64 for
+half the transform — the fold, not the stage count, is what makes N=64
+expensive.
+
+**PER-STAGE BANDS vs THE SPINE: the spine, and the reason is HEIGHT not area.**
+60 cells would have fitted the ordinary 8x8 = 64-cell cap comfortably, and the
+FFT16 band scheme was the first thing tried. It cannot work: `2 * n_stages` =
+**10 rows** of ctl/out spine against an 8-row ordinary cap. So FFT32 is
+CHIP_SCALE — but a modest one (9 wide x 10 tall, leaving column 9 and rows
+10-11 free for the port corridors), not a die-filler. The honest statement is
+that this block is chip-scale on the SPINE HEIGHT alone, and the suite asserts
+exactly that justification (`test_the_spine_is_why_this_size_is_chip_scale`)
+so it cannot rot into folklore.
+
+### DEFECT 1 — the P=16 direct table cell OVERWRITES ITS OWN PROGRAM (INV-33)
+
+The N=32 stage 0 is the first stage in the family with a 16-entry direct
+twiddle table. The shipped FFT16 `fetch_d` also CROSS-FORWARDS the `c` word
+it receives from `fetch_c`, which costs 2 instructions. At P=16 that makes the
+cell 1 input + 19 data + 10 instructions:
+
+    instruction base = 31 - 10 = 21
+    the single remaining gap register = 21
+    -> the resolved `ptr` state IS the entry instruction
+
+The cell's first `MOVE R{state:ptr}, R0` destroys the word the next trigger
+enters at. **The 32-word COUNT gate passes at 31/32.** This is byte-for-byte
+the defect the FFT64 entry below root-caused, and it is why that entry's
+durable lesson matters: *"every cell fits the budget" is not the same check as
+"no cell's state overlaps its instructions"* — and a cell that is EXACTLY full
+is the danger case.
+
+The fix is to remove the cross-forward: each table cell now writes its word
+DIRECTLY into `steer`'s own `c` / `d` input register (a 2-hop and a 1-hop
+write, traced along the chain's resting faces exactly like the sum legs'
+multi-hop write into `gather`). Both cells drop to 8 instructions, base 23,
+state at 21 — 23/32 words at P=16, comfortable. **This also repairs one of
+FFT64's two overlapping cells for free** (`s1_fetch_d`); its `s0_mcalc` fold
+cell still overlaps, so FFT64 remains needs_human, but it is now one defect
+rather than two.
+
+New GENERAL lesson, on top of the FFT64 one: a shared cell builder that is
+safe at every size shipped SO FAR can be fatal at the next size, because the
+budget interacts with a PARAMETER (here the table length). When
+parameterising a proven builder, re-measure the overlap at the LARGEST
+parameter value, not the one already in service. The gate
+(`test_no_state_overlaps_instructions`) is cheap and is now shown to FAIL on
+the pre-fix shape (`test_state_instruction_overlap_gate_has_teeth`
+reconstructs it), which is the only way to know it has teeth.
+
+### DEFECT 2 — the ROUTE-TIME FACE RULE must be a placement CONSTRAINT, not an audit
+
+With the overlap fixed, the block built, routed, and ran **exactly 4 samples**
+on a real chip, then went quiescent. Every static gate was green: 60/60 cells
+placed, ctl/out/next-ctl stacked for every stage, all consecutive chain pairs
+adjacent, and **0 hop mismatches across all 241 forward internal edges**.
+
+The `hopcheck` audit passed and the block still did not run, which is the part
+worth remembering. The audit only traces FORWARD edges from source to
+destination; it does not ask whether a cell's RESTING face points where the
+chain needs it. The searched fold had placed every stage's `diffq`
+edge-adjacent to its own `d0` (the delay push). `diffq`'s LAST-listed internal
+connection is `v_f -> d0`, so the router set `diffq`'s route-time face toward
+`d0` instead of toward its chain successor — and any trace passing THROUGH
+`diffq` then diverges, silently, via the Manhattan fallback.
+
+This is precisely the hazard the shipped FFT16 avoids BY HAND (its
+`_stage_cells` comment: *"a diff leg sitting directly beside its delay-push
+target mis-faced the whole ring and silently shipped Manhattan hops"*). FFT16
+gets it right because a human placed those cells. **A searched fold has no
+such guarantee, and `fft_large`'s docstring already referenced a
+`_face_rule_ok` that was never implemented** — a dangling reference that was
+exactly the missing constraint.
+
+The fix implements it and calls it INSIDE `_solve_spine`, so candidate chains
+that would mis-face are rejected during the search rather than audited
+afterwards. Cost: the same 60 cells and the same spine column; the solver just
+picks a different walk. The four structural audits then read 0/0/0 and
+0 mismatches / 241 edges, and the chip runs the whole stream bit-exact.
+
+Durable form: **a geometric rule that a hand-placed block satisfies by
+craftsmanship becomes a CONSTRAINT the moment the layout is searched.** Every
+such rule in a planner needs to be a predicate the search consults, not a test
+that runs after. And an audit that passes while the chip stalls is telling you
+the audit checks a different thing than the one that is broken — here,
+forward-edge hops vs resting faces.
+
+### SNR: measured, and where N=32 sits in the family
+
+Floors are the measured MINIMUM over 40 seeds per class (model-side; the chip
+is bit-exact to the model), rounded down — derived, never tuned:
+
+    class        gate seed   min/40   mean/40   pinned floor
+    sine_fs         83.44     81.33     86.95        81
+    noise_m6        74.47     73.02*    72.48*       72   (*unclamped seeds)
+    noise_m26       54.59     53.68     54.69        53
+    two_tone        73.16     72.59     73.42        72
+    impulse         66.77     63.44     66.03        63
+
+The weakest class (noise at -26 dBFS, floor 53 dB) sits BETWEEN the shipped
+N=16 floor (58 dB) and the N=64 design floor (51 dB) — one more scaled stage,
+monotonically more accumulated quantization noise.
+
+**DISCLOSED, and it corrects a claim about the shipped block.** 3 of 40
+noise-at--6-dBFS seeds reach the TWIDDLE-MULTIPLY saturating combine in an
+intermediate stage and their pooled SNR collapses to ~32 dB. That is CORRECT
+pinned behaviour (a saturating rail), and instrumenting the same drive level
+at N=16 shows **the shipped FFT16 reaches the same clamp on 2 of 20 seeds** —
+its published 78.8 dB figure for that class simply used a seed that did not
+clamp. So this is a property of the pinned numerics at both sizes, not an N=32
+regression. The class is gated on a seed measured NOT to clamp, and both
+halves of the statement are asserted
+(`test_noise_m6_clamp_reachability_is_disclosed`) so the fact cannot be lost.
+
+Related measurement worth recording: **which clamp is reachable changes with
+N.** At N=16 the one reachable clamp was the butterfly's RHE diff-leg tie; at
+N=32 that tie is unreachable on every gated class (asserted as an explicit
+negative), and the reachable clamp is the twiddle combine, fired 15-21 times
+per run by the both-rails-full class. A clamp gate copied from the previous
+size would have certified nothing — check which path your stimulus actually
+reaches before writing the gate.
+
+### Two smaller things
+
+- **A 1-LSB twiddle corruption is usually INVISIBLE.** The twiddle multiply is
+  four FLOOR MULQs, so a 1-LSB coefficient change is frequently absorbed by
+  the truncation. Measured on the gate stimulus: only slots {1,2,6,9} of
+  stage 0, {2,3} of stage 1 and {1,3} of stage 2 are detectable. A mutation
+  test that picks "the first non-trivial slot" therefore fails as a
+  NO-TEETH assertion, not as a block defect. The gate now measures which
+  slots are detectable, gates ALL of them, and asserts every twiddle stage
+  has at least one — which is a stronger test than the arbitrary single slot
+  it replaced.
+- **Frame-boundary carry means the opposite of what it sounds like.** For a
+  windowed transform, frame B's SETTLED output must be INDEPENDENT of the
+  frame that preceded it; a pipeline leaking state across the boundary would
+  break that. The teeth live in the predecessor's own window: crafted
+  adjacent frames differ in EXACTLY the 32 outputs of the A window and
+  nowhere else. Asserting "B differs after a different A" is the wrong test
+  and will fail on a correct block.
+
+The spine solve is a backtracking search costing ~65 s, so it is now memoized
+per N (`_PLAN_CACHE`); every instance of a size gets the identical layout,
+which the suite asserts (`test_layout_is_deterministic`).
+
+## gru_classifier example — front end DERIVED and verified offline, whole-chain placement BLOCKED one net short 2026-08-24
+
+The end-to-end 4-class modulation classifier (SSB / BPSK / 4-FSK / noise) on one
+10x12 array. The feature front end is fully derived, measured, and bit-exact
+against the trained model's own offline definition; the assembled chain does
+**not** route as one chip. Reporting `needs_human` with the exact shortfall —
+per §5b, an example that has not been observed producing the right output on a
+placed + routed chip is NOT done, and no part of this entry claims otherwise.
+
+- **THE RMS ARM DECOMPOSITION IS CORRECT AND ITS TOLERANCE IS DERIVED, NOT
+  TUNED.** `ComplexToMagSquared -> MovingAverage(32, taps 1/32) -> Sqrt ->
+  KeepOneInN(32)` reproduces `features.py`'s `sqrt(mean |x|^2)` over a
+  non-overlapping 32-sample window. Every stage truncates downward, so the
+  budget is: 2 LSB of power (magsq's two truncating products) + 32 LSB (the 32
+  truncating MA taps; 1024 = 1/32 is exact) = **34 LSB of power deficit**, then
+  `Sqrt`'s own measured `[-4, +1]` LSB. Propagating a power deficit through the
+  root by `dy = dP / (2*sqrt(P))` makes the bound **input-level dependent**:
+  `-(34 * 16384 / y) - 4 <= (chip - ideal) <= +1`, y = the RMS word. Measured
+  over 1600 windows (4 classes x 5 peak levels): **0 violations, tightest case
+  at 0.639 of the bound**. A FLAT tolerance would have been wrong — the same
+  chain reads -13 LSB on a loud window and -218 on a quiet one, and the
+  difference is the arithmetic, not noise.
+- **ZCR is BIT-EXACT (0 / 400 windows) against its PINNED convention** — 32
+  pairs *ending* at the window's samples (so the inter-window boundary pair is
+  included) plus one implicit non-negative predecessor. Against plain
+  `features.py` (31 strictly-interior pairs) it reads +1 crossing = +1024 Q15
+  LSB on 6-51% of windows depending on class. Derived and gateable; not error.
+- **THE Q15 POWER STAGE AND THE TRAINED DISTRIBUTION ARE IN GENUINE TENSION —
+  and this is a MODEL property, not a chip bug.** `ComplexToMagSquared`
+  saturates at full scale, so any `|z| >= 1` clips and biases that window's mean
+  power DOWNWARD. But the model's own training channel sets a clip's *RMS*
+  (`gain_range` 0.25..0.7) while saturation is driven by its *PEAK*, and the
+  classes' crest factors differ sharply (measured, 12 clips each: 4-FSK 1.27,
+  BPSK 1.71, noise 3.10, SSB 3.59 median). Over the shipped training set
+  **`peak|z| > 1` for 100% of SSB and 79% of noise clips.** The float
+  `features.py` never notices; a Q15 front end clips hard — measured error blows
+  from the derived tens-of-LSB to **-1247 LSB** on such clips. Lesson: when a
+  trained model is ported to Q15, check the PEAK distribution of its own
+  training data against the fixed-point rails before trusting any feature
+  tolerance — an offline reference that cannot saturate will not warn you.
+  (Mitigation used here: pin per-segment gains at the low end of the trained
+  range so `peak|z| < 0.95`; the stimulus asserts it rather than assuming it.)
+- **Rescaling the input is NOT a free fix.** ZCR is scale-invariant but RMS is
+  linear in input gain, so a global rescale moves a real feature off the grid
+  the model was trained on. Peak-normalising 4-FSK clips to 0.9 made the
+  *offline* reference vote BPSK — the chain was right and the stimulus was
+  out of distribution. Always check a "fix" against the offline path first.
+- **THE WALL: the chain does not route as one chip — always exactly ONE net
+  short.** GRUCellBlock is 51 cells in a fixed 7x8 fold (56 of the array's 120
+  cell sites) with BOTH its `f` input and its `oout` egress on the WEST edge.
+  Measured: the GRU **alone** costs **64-82 cells including routing** depending
+  on anchor (cheapest (3,1); (0,4)/(1,4)/(3,0) do not route at all). The
+  join-tail — `KeepOneInN + ZCR + FeaturePairJoin + GRU` with both ingress nets
+  and the egress — **does route, at 72 cells**, leaving 48 free. But those 48
+  are split into two pockets by the ingress corridors, and the RMS arm (power 1
+  + boxcar 2x4 + root 2x2 = 11 block cells) must simultaneously reach the port
+  (top-left, walled by the ingress `rr` corridor) and `decim`.
+  **~2500 distinct layouts** were tried across three independent strategies —
+  exhaustive hand-anchor sweeps (`auto_route_all`, deterministic), randomized
+  hand placement over all routable GRU anchors, and `auto_pnr` with the GRU
+  pinned (stochastic, many repeats) — plus `auto_orient=True`. The best result
+  was **never better than one failing net**, and WHICH net fails rotates between
+  `root_decim`, `rms_join`, `zcr_join`, `gru_out` and the ingress trio as blocks
+  move: the signature of a saturated array, not one bad anchor. Two recurring,
+  citable causes: `bus route is N hops (>31)` on the GRU egress (34-36 hops —
+  the 5-bit hop field, and relay programming is not emitted by the build), and
+  `no free broker cell abutting the target input` when a 1-cell block is packed
+  against a wall or the port corner.
+- **What a human should look at.** Either (a) the GRU's west-edge-only I/O — an
+  egress relay reachable from the EAST would remove the wrap that costs the
+  34-hop `gru_out` failures; or (b) a smaller RMS arm (the 7-cell
+  `MovingAverage(32)` is the bulk of the front end); or (c) relay programming
+  for >31-hop bus routes, which the router already plans but the build does not
+  emit. The offline chain, the goldens, the derived tolerances, and the
+  stimulus are all in place and re-usable the moment the geometry gives.
+
+## gru_classifier example — front end DERIVED and verified offline, whole-chain placement BLOCKED one net short 2026-08-24
+
+The end-to-end 4-class modulation classifier (SSB / BPSK / 4-FSK / noise) on one
+10x12 array. The feature front end is fully derived, measured, and bit-exact
+against the trained model's own offline definition; the assembled chain does
+**not** route as one chip. Reporting `needs_human` with the exact shortfall —
+per §5b, an example that has not been observed producing the right output on a
+placed + routed chip is NOT done, and no part of this entry claims otherwise.
+
+- **THE RMS ARM DECOMPOSITION IS CORRECT AND ITS TOLERANCE IS DERIVED, NOT
+  TUNED.** `ComplexToMagSquared -> MovingAverage(32, taps 1/32) -> Sqrt ->
+  KeepOneInN(32)` reproduces `features.py`'s `sqrt(mean |x|^2)` over a
+  non-overlapping 32-sample window. Every stage truncates downward, so the
+  budget is: 2 LSB of power (magsq's two truncating products) + 32 LSB (the 32
+  truncating MA taps; 1024 = 1/32 is exact) = **34 LSB of power deficit**, then
+  `Sqrt`'s own measured `[-4, +1]` LSB. Propagating a power deficit through the
+  root by `dy = dP / (2*sqrt(P))` makes the bound **input-level dependent**:
+  `-(34 * 16384 / y) - 4 <= (chip - ideal) <= +1`, y = the RMS word. Measured
+  over 1600 windows (4 classes x 5 peak levels): **0 violations, tightest case
+  at 0.639 of the bound**. A FLAT tolerance would have been wrong — the same
+  chain reads -13 LSB on a loud window and -218 on a quiet one, and the
+  difference is the arithmetic, not noise.
+- **ZCR is BIT-EXACT (0 / 400 windows) against its PINNED convention** — 32
+  pairs *ending* at the window's samples (so the inter-window boundary pair is
+  included) plus one implicit non-negative predecessor. Against plain
+  `features.py` (31 strictly-interior pairs) it reads +1 crossing = +1024 Q15
+  LSB on 6-51% of windows depending on class. Derived and gateable; not error.
+- **THE Q15 POWER STAGE AND THE TRAINED DISTRIBUTION ARE IN GENUINE TENSION —
+  and this is a MODEL property, not a chip bug.** `ComplexToMagSquared`
+  saturates at full scale, so any `|z| >= 1` clips and biases that window's mean
+  power DOWNWARD. But the model's own training channel sets a clip's *RMS*
+  (`gain_range` 0.25..0.7) while saturation is driven by its *PEAK*, and the
+  classes' crest factors differ sharply (measured, 12 clips each: 4-FSK 1.27,
+  BPSK 1.71, noise 3.10, SSB 3.59 median). Over the shipped training set
+  **`peak|z| > 1` for 100% of SSB and 79% of noise clips.** The float
+  `features.py` never notices; a Q15 front end clips hard — measured error blows
+  from the derived tens-of-LSB to **-1247 LSB** on such clips. Lesson: when a
+  trained model is ported to Q15, check the PEAK distribution of its own
+  training data against the fixed-point rails before trusting any feature
+  tolerance — an offline reference that cannot saturate will not warn you.
+  (Mitigation used here: pin per-segment gains at the low end of the trained
+  range so `peak|z| < 0.95`; the stimulus asserts it rather than assuming it.)
+- **Rescaling the input is NOT a free fix.** ZCR is scale-invariant but RMS is
+  linear in input gain, so a global rescale moves a real feature off the grid
+  the model was trained on. Peak-normalising 4-FSK clips to 0.9 made the
+  *offline* reference vote BPSK — the chain was right and the stimulus was
+  out of distribution. Always check a "fix" against the offline path first.
+- **THE WALL: the chain does not route as one chip — always exactly ONE net
+  short.** GRUCellBlock is 51 cells in a fixed 7x8 fold (56 of the array's 120
+  cell sites) with BOTH its `f` input and its `oout` egress on the WEST edge.
+  Measured: the GRU **alone** costs **64-82 cells including routing** depending
+  on anchor (cheapest (3,1); (0,4)/(1,4)/(3,0) do not route at all). The
+  join-tail — `KeepOneInN + ZCR + FeaturePairJoin + GRU` with both ingress nets
+  and the egress — **does route, at 72 cells**, leaving 48 free. But those 48
+  are split into two pockets by the ingress corridors, and the RMS arm (power 1
+  + boxcar 2x4 + root 2x2 = 11 block cells) must simultaneously reach the port
+  (top-left, walled by the ingress `rr` corridor) and `decim`.
+  **~2500 distinct layouts** were tried across three independent strategies —
+  exhaustive hand-anchor sweeps (`auto_route_all`, deterministic), randomized
+  hand placement over all routable GRU anchors, and `auto_pnr` with the GRU
+  pinned (stochastic, many repeats) — plus `auto_orient=True`. The best result
+  was **never better than one failing net**, and WHICH net fails rotates between
+  `root_decim`, `rms_join`, `zcr_join`, `gru_out` and the ingress trio as blocks
+  move: the signature of a saturated array, not one bad anchor. Two recurring,
+  citable causes: `bus route is N hops (>31)` on the GRU egress (34-36 hops —
+  the 5-bit hop field, and relay programming is not emitted by the build), and
+  `no free broker cell abutting the target input` when a 1-cell block is packed
+  against a wall or the port corner.
+- **What a human should look at.** Either (a) the GRU's west-edge-only I/O — an
+  egress relay reachable from the EAST would remove the wrap that costs the
+  34-hop `gru_out` failures; or (b) a smaller RMS arm (the 7-cell
+  `MovingAverage(32)` is the bulk of the front end); or (c) relay programming
+  for >31-hop bus routes, which the router already plans but the build does not
+  emit. The offline chain, the goldens, the derived tolerances, and the
+  stimulus are all in place and re-usable the moment the geometry gives.
 
 ## FFT64 chip-scale — the STAGE-BAND wall was NOT real; the VERTICAL CTL/OUT SPINE places and flows, one dynamic fault left 2026-08-24
 

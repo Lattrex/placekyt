@@ -128,6 +128,7 @@ _TYPE_OVERRIDES = {
     # 16-point streaming R2SDF FFT composite (snake->Pascal of "fft16" would
     # give "Fft16Block" — pin the all-caps class name explicitly).
     "kyttar_fft16": "FFT16Block",
+    "kyttar_fft32": "FFT32Block",
     # Complex FIR (fir_filter_ccf): class == manifest name "ComplexFIRFilterBlock",
     # but snake→Pascal of "kyttar_complex_fir_filter" gives "ComplexFirFilterBlock"
     # (lower-case "ir"), which won't match — pin it explicitly.

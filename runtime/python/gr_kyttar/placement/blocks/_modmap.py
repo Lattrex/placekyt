@@ -16,6 +16,7 @@ BUILTIN_BLOCKS = {
     'R2ButterflyBlock': 'fft_primitives',
     'TwiddleMultiplyBlock': 'fft_primitives',
     'FFT16Block': 'fft16_block',
+    'FFT32Block': 'fft_large',
     'FFT64Block': 'fft_large',
     'FFT128Block': 'fft_large',
     'FFT128Die0': 'fft_large',

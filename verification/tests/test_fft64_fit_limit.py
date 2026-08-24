@@ -798,7 +798,14 @@ def test_instruction_region_overlap_gate_has_teeth():
     over, base = _instruction_region_overlaps(legacy_mcalc)
     assert over == {"state:t": 8} and base == 8, (over, base)
 
-    # --- the pre-fix P=16 fetch_d (input register + staging MOVE) ----------
+    # --- the pre-fix P=16 fetch_d (the c-word CROSS-FORWARD) ---------------
+    # This is the shape that shipped before either FFT size fixed it: the
+    # table cell also forwards the `c` word handed to it by fetch_c, which
+    # costs an input register plus a staging MOVE and puts the cell at exactly
+    # 32/32 with ptr ON its own entry instruction. Both sizes reached it
+    # independently (N=32 stage 0, N=64 stage 1); the shipped repair removes
+    # the cross-forward entirely so each table cell writes straight into
+    # steer's own input register.
     words = [c for (_k, _c, c) in FL.stage_table(64, 1)]
     P, b = len(words), 2
     data = [DataWord(f"t{i}", FL.u16(w), address=b + i)
@@ -827,9 +834,11 @@ def test_instruction_region_overlap_gate_has_teeth():
     over, base = _instruction_region_overlaps(legacy_fetch)
     assert over == {"state:ptr": 21} and base == 21, (over, base)
 
-    # And the SHIPPED replacements are clean at the very same shapes.
+    # And the SHIPPED replacements are clean at the very same shapes. The
+    # current _fetch_cell takes ONLY the table (no has_c_input): the
+    # cross-forward is gone, which is the fix.
     assert _instruction_region_overlaps(
-        FL.FFT64Block._fetch_cell(words, True))[0] == {}
+        FL.FFT64Block._fetch_cell(words))[0] == {}
     blk = object.__new__(FL.FFT64Block)
     blk._n = 64
     assert _instruction_region_overlaps(blk._fold_mcalc_cell())[0] == {}
@@ -1204,3 +1213,93 @@ def test_mutation_wrong_face_breaks_the_hop_trace():
     x, y, f = lay["s0_sumi"]
     lay["s0_sumi"] = (x, y, "north" if f != "north" else "south")
     assert not _spine_predicates(blk, lay)[2]()
+
+
+# =============================================================================
+# 10. INV-33 — no cell may allocate STATE on top of its own INSTRUCTIONS
+#
+# This is DISTINCT from the 32-word budget check above, and the distinction is
+# what a real bug turned on: a cell can total exactly 31 words and STILL place
+# a state register at its entry address, so the first write to that state
+# destroys the instruction the next trigger enters at. The block then runs
+# exactly ONE sample and goes dead — which presents as a serialize-LOCK
+# failure and survives every placement/face/hop audit.
+#
+# Measured instances (both cells exactly full at 31/32):
+#   s0_mcalc     entry 8  and StateVar t   -> register 8
+#   s1_fetch_d   entry 21 and StateVar ptr -> register 21
+# =============================================================================
+def _state_instruction_overlaps(blk):
+    from gr_kyttar.placement.resolver import (  # noqa: PLC0415
+        CellProgramResolver)
+    res = CellProgramResolver()
+    bad = []
+    for cid, cp in blk.build_cell_programs().items():
+        entries = res.compute_entry_addresses(cp)
+        if not entries:
+            continue
+        first_instr = min(entries.values())
+        for name, reg in (res.compute_state_registers(cp) or {}).items():
+            if reg >= first_instr:
+                bad.append((cid, name, reg, first_instr))
+    return bad
+
+
+def test_no_cell_overwrites_its_own_program():
+    """Every state register sits BELOW the cell's first instruction.
+
+    A violation is silent at build time and fatal at run time: the cell's own
+    write to that state word zeroes an instruction, and the next trigger
+    enters a HALT.
+
+    THIS WAS A STRICT XFAIL and is now a PASS — the marker was written to flip
+    the moment the two cells were repaired, and both have been:
+
+      * ``s1_fetch_d`` (entry 21, state ptr -> 21) — the ``c``-word
+        CROSS-FORWARD was removed outright, so each direct-table cell writes
+        straight into ``steer``'s own input register. That is the N=32 fix,
+        reached independently at the same P=16 boundary; it leaves the cell at
+        30/32 words with two clear of the state.
+      * ``s0_mcalc`` (entry 8, state t -> 8) — a dead ``BR.Z +0`` pad (the
+        conditional negate only ever needs to skip the negate itself) and a
+        ``CMP`` that re-derived a Z flag the preceding ``SUB`` had already set
+        (MOVE does not touch flags). Proven by exhaustive on-chip equality
+        against the unreduced program: 192 (r, o) pairs at both N, zero
+        mismatches.
+
+    Neither repair changed any arithmetic, which is why the fold goldens are
+    untouched. Keep this gate green.
+    """
+    blk = _spine_block()
+    bad = _state_instruction_overlaps(blk)
+    assert not bad, (
+        "cells whose STATE overlaps their INSTRUCTIONS (they overwrite their "
+        f"own program on the first trigger): {bad}")
+
+
+def test_the_overlap_audit_has_teeth():
+    """INV-4 for the gate above: a deliberately over-pinned state register
+    must be caught. (Uses the resolver directly so no shipped cell is
+    mutated.)"""
+    from gr_kyttar.placement.block import (  # noqa: PLC0415
+        CellProgram, DataWord, EntryPoint, Port, StateVar)
+    from gr_kyttar.placement.resolver import (  # noqa: PLC0415
+        CellProgramResolver)
+    bad_cell = CellProgram(
+        inputs=[Port("a", register=1)],
+        outputs=[Port("y")],
+        entries=[EntryPoint("default")],
+        data=[DataWord("one", 1, address=2)],
+        # 30 is inside the instruction region for this tiny program
+        state=[StateVar("t", register=30, initial_value=0)],
+        assembly_template=("default:\n"
+                           "    MOVE R{state:t}, R{in:a}\n"
+                           "    MOVE R0, R{state:t}\n"
+                           "    {write:y}\n"),
+    )
+    res = CellProgramResolver()
+    first = min(res.compute_entry_addresses(bad_cell).values())
+    regs = res.compute_state_registers(bad_cell) or {}
+    assert any(r >= first for r in regs.values()), (
+        "the overlap predicate failed to flag a state register pinned into "
+        "the instruction region")

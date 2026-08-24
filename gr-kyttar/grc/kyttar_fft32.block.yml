@@ -1,0 +1,66 @@
+id: kyttar_fft32
+label: FFT32 (streaming)
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  FFT32 — 32-point STREAMING radix-2 FFT (single-path delay feedback, DIF).
+  Complex in, complex out, one output sample per input sample.
+
+  ⚠️ OUTPUT ORDER IS BIT-REVERSED (standard DIF): output slot k of each
+  32-sample frame carries frequency bin bit_reverse_5(k):
+
+      slot: 0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15
+      bin : 0 16  8 24  4 20 12 28  2 18 10 26  6 22 14 30
+
+      slot:16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31
+      bin : 1 17  9 25  5 21 13 29  3 19 11 27  7 23 15 31
+
+  There is deliberately NO reorder buffer in this block — a consumer that
+  needs natural bin order applies the index map above.
+
+  SCALE: output = FFT/32 (one >>1 per stage, round-half-to-even, with
+  saturating combines). LATENCY: 31 samples — the first 31 outputs are the
+  deterministic startup values of the zero-initialized pipeline; frame f
+  occupies output samples 31+32f .. 62+32f, aligned to the absolute sample
+  count since configuration.
+
+  The block is saturation-safe (each of the five stages carries a
+  serialize-LOCK on its delay-feedback ring) and verified bit-exact against
+  the streaming integer reference, which itself matches float numpy.fft.fft
+  within the design's Q15 SNR floor (measured 53-83 dB depending on signal
+  class; the weakest class is low-level noise, as with every fixed-point FFT).
+
+  ⚠️ CHIP-SCALE BLOCK: the fold is 60 cells over a 9x10 footprint and is
+  expected to be the sole DSP occupant of a die. It ships in the identity
+  orientation only.
+
+  Both output rails must be WIRED (to a downstream block or a chip port);
+  terminate an unused output — a dangling complex pair mis-fires its
+  default-resolved writes into neighbouring cells.
+
+  This block runs on the Kyttar chip. Place it between a KyttarSource and a
+  KyttarSink block; the device_id must match your KyttarDevice.
+
+  Parameters:
+  - Device ID: ID of the KyttarDevice block
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.fft32(device_id=${device_id})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+
+inputs:
+  - label: in
+    dtype: complex
+
+outputs:
+  - label: out
+    dtype: complex
+
+file_format: 1

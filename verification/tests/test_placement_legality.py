@@ -85,6 +85,11 @@ BLOCKS = [
     # 16-point streaming FFT: the largest single block in the catalog (44 cells,
     # 7x8 footprint — both dims <= 8 per INV-9) with per-stage banded geometry.
     ("FFT16Block", {}),
+    # 32-point streaming FFT: 60 cells on the vertical CTL/OUT SPINE (9x10
+    # footprint — CHIP_SCALE, so the INV-9 8-across cap is waived for it). The
+    # fold is produced by a SEARCH, so pairwise-distinctness is a real risk
+    # rather than a formality, and it must survive D4 + an Alt-drag breakout.
+    ("FFT32Block", {}),
     # GRU classifier cell: the LARGEST single block in the catalog (51 cells —
     # a closed 7x8 ring serpentine with an off-ring egress relay and two
     # face-only ring-closure transits, both of which must stay distinct from

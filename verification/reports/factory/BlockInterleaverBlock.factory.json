@@ -1,33 +1,31 @@
 {
- "block": "BlockInterleaverBlock",
- "grc_block": "",
- "tier": 2,
- "wave": 5,
- "schema_version": 1,
- "started_utc": "2026-08-16T22:09:47Z",
- "ended_utc": "2026-08-16T23:04:47Z",
- "walltime_sec": 3300.0,
- "tokens": {
-  "input": 0,
-  "output": 382731,
-  "cache_read": 0,
-  "total": 382731
- },
- "turns": 187,
- "attempts": 1,
- "human_interventions": 0,
- "intervention_reasons": [],
- "prompts": [
-  {
-   "role": "initial",
-   "text": "factory_dispatch prompt; isolated worktree; row-column interleaver, in-cell small-config scope with the SRAM growth path documented."
-  }
- ],
- "verify_passed": true,
- "quarantined": false,
- "quarantine_reason": "",
- "commit_sha": "e613a5e",
- "notes": "3 cells, 1 attempt, autonomous (build interrupted once by a session usage limit and resumed \u2014 no technical intervention; walltime approximate across the interruption, turns counted from the transcript). 60 tests, EXACT 0 LSB, both directions, supported range rows*cols <= MAX_DEPTH=12 with loud raises; SRAM scratch two-phase recipe documented as the growth path. NEW PROVEN IDIOM: runtime patch-slot computed store (construct WRITE@0|dest at runtime and install it in a neighbor's program slot \u2014 the ISA's missing indirect store), proven under saturation and all 8 D4. Two toolchain fixes flushed out: resolver classify_addresses now preserves a pinned input Port's role inside the instruction range; run_block_dut now honors the build's input_landings (a brokered input corridor was mis-driven by the len(route) hop \u2014 the INV-23 failure-mode-4 class).",
- "outcome": "passed",
- "walltime_min": 0
+  "block": "BlockInterleaverBlock",
+  "grc_block": "",
+  "tier": 2,
+  "wave": 5,
+  "schema_version": 1,
+  "started_utc": "2026-08-16T22:09:47Z",
+  "ended_utc": "2026-08-16T23:04:47Z",
+  "walltime_sec": 3300.0,
+  "tokens": {
+    "input": 0,
+    "output": 382731,
+    "cache_read": 0,
+    "total": 382731
+  },
+  "turns": 187,
+  "attempts": 1,
+  "human_interventions": 0,
+  "intervention_reasons": [],
+  "prompts": [
+    {
+      "role": "initial",
+      "text": "factory_dispatch prompt; isolated worktree; row-column interleaver, in-cell small-config scope with the SRAM growth path documented."
+    }
+  ],
+  "verify_passed": true,
+  "quarantined": false,
+  "quarantine_reason": "",
+  "commit_sha": "e613a5e",
+  "notes": "3 cells, 1 attempt, autonomous (build interrupted once by a session usage limit and resumed \u2014 no technical intervention; walltime approximate across the interruption, turns counted from the transcript). 60 tests, EXACT 0 LSB, both directions, supported range rows*cols <= MAX_DEPTH=12 with loud raises; SRAM scratch two-phase recipe documented as the growth path. NEW PROVEN IDIOM: runtime patch-slot computed store (construct WRITE@0|dest at runtime and install it in a neighbor's program slot \u2014 the ISA's missing indirect store), proven under saturation and all 8 D4. Two toolchain fixes flushed out: resolver classify_addresses now preserves a pinned input Port's role inside the instruction range; run_block_dut now honors the build's input_landings (a brokered input corridor was mis-driven by the len(route) hop \u2014 the INV-23 failure-mode-4 class)."
 }

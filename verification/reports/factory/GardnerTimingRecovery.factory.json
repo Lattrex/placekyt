@@ -1,33 +1,31 @@
 {
- "block": "GardnerTimingRecovery",
- "grc_block": "digital.symbol_sync_cc",
- "tier": 2,
- "wave": 2,
- "schema_version": 1,
- "started_utc": "2026-08-07T02:18:32Z",
- "ended_utc": "2026-08-07T03:26:59Z",
- "walltime_sec": 702.043,
- "tokens": {
-  "input": 0,
-  "output": 165652,
-  "cache_read": 0,
-  "total": 165652
- },
- "turns": 52,
- "attempts": 2,
- "human_interventions": 0,
- "intervention_reasons": [],
- "prompts": [
-  {
-   "role": "initial",
-   "text": "factory_dispatch-style prompt for GardnerTimingRecovery; isolated worktree; verify vs GR or quarantine."
-  }
- ],
- "verify_passed": false,
- "quarantined": true,
- "quarantine_reason": "Q15 Gardner TED (>>1 halving to fit int16) jitters too hard to lock the matched-filter Nyquist channel where GR symbol_sync_cc(Gardner) is BER 0; DUT BER ~4-12%. MMTimingRecovery is the verified alternative.",
- "commit_sha": "e0bb4f1",
- "notes": "QUARANTINE (needs_human), 2 attempts, autonomous verdict. poc. KEY FINDING: the block's OLD 'green' tests validated against a synthetic 2sps stimulus GR ITSELF cannot lock (BER ~0.45) -- i.e. it was tuned outside GR's operating regime; per-block GR-equivalence exposed it. New test PROVES both sides on the same channel (GR locks BER 0; DUT does not, reference AND on-chip) + leaves an xfail tripwire to promote if ever fixed. Extends the documented Gardner 4-PAM limit to 2-level BPSK on a Nyquist channel. A paper data point, not a hidden failure.",
- "outcome": "passed",
- "walltime_min": 0
+  "block": "GardnerTimingRecovery",
+  "grc_block": "digital.symbol_sync_cc",
+  "tier": 2,
+  "wave": 2,
+  "schema_version": 1,
+  "started_utc": "2026-08-07T02:18:32Z",
+  "ended_utc": "2026-08-07T03:26:59Z",
+  "walltime_sec": 702.043,
+  "tokens": {
+    "input": 0,
+    "output": 165652,
+    "cache_read": 0,
+    "total": 165652
+  },
+  "turns": 52,
+  "attempts": 2,
+  "human_interventions": 0,
+  "intervention_reasons": [],
+  "prompts": [
+    {
+      "role": "initial",
+      "text": "factory_dispatch-style prompt for GardnerTimingRecovery; isolated worktree; verify vs GR or quarantine."
+    }
+  ],
+  "verify_passed": false,
+  "quarantined": true,
+  "quarantine_reason": "Q15 Gardner TED (>>1 halving to fit int16) jitters too hard to lock the matched-filter Nyquist channel where GR symbol_sync_cc(Gardner) is BER 0; DUT BER ~4-12%. MMTimingRecovery is the verified alternative.",
+  "commit_sha": "e0bb4f1",
+  "notes": "QUARANTINE (needs_human), 2 attempts, autonomous verdict. poc. KEY FINDING: the block's OLD 'green' tests validated against a synthetic 2sps stimulus GR ITSELF cannot lock (BER ~0.45) -- i.e. it was tuned outside GR's operating regime; per-block GR-equivalence exposed it. New test PROVES both sides on the same channel (GR locks BER 0; DUT does not, reference AND on-chip) + leaves an xfail tripwire to promote if ever fixed. Extends the documented Gardner 4-PAM limit to 2-level BPSK on a Nyquist channel. A paper data point, not a hidden failure."
 }

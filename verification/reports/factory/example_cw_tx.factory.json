@@ -1,33 +1,31 @@
 {
- "block": "example_cw_tx",
- "grc_block": "",
- "tier": 0,
- "wave": 6,
- "schema_version": 1,
- "started_utc": "2026-08-08T17:39:00Z",
- "ended_utc": "2026-08-08T18:23:33Z",
- "walltime_sec": 1948.961,
- "tokens": {
-  "input": 0,
-  "output": 224093,
-  "cache_read": 0,
-  "total": 224093
- },
- "turns": 123,
- "attempts": 1,
- "human_interventions": 0,
- "intervention_reasons": [],
- "prompts": [
-  {
-   "role": "initial",
-   "text": "Build the example_cw_tx runnable example (.grc+.kyt+demo+README) proven vs a Python golden."
-  }
- ],
- "verify_passed": true,
- "quarantined": false,
- "quarantine_reason": "",
- "commit_sha": "7026fc7",
- "notes": "EXAMPLE: CW/Morse transmitter (text->keyed envelope, ITU-R M.1677). SRAM-backed: Morse table off-array in the panel as run-records; CWKeyer player is 2 cells on-chip. Envelope BIT-EXACT (Q15) vs the ITU-R golden over PARIS/SOS/'CQ CQ DE KYTTAR' on the REAL built bitstream; timing 1:3:1:3:7 exact, Hann click-edge 0 LSB. Ships .kyt + .grc + .py + cw_tx_demo.py + golden + README + test (8 tests). TX half of a planned CW transceiver.",
- "outcome": "passed",
- "walltime_min": 0
+  "block": "example_cw_tx",
+  "grc_block": "",
+  "tier": 0,
+  "wave": 6,
+  "schema_version": 1,
+  "started_utc": "2026-08-08T17:39:00Z",
+  "ended_utc": "2026-08-08T18:23:33Z",
+  "walltime_sec": 1948.961,
+  "tokens": {
+    "input": 0,
+    "output": 224093,
+    "cache_read": 0,
+    "total": 224093
+  },
+  "turns": 123,
+  "attempts": 1,
+  "human_interventions": 0,
+  "intervention_reasons": [],
+  "prompts": [
+    {
+      "role": "initial",
+      "text": "Build the example_cw_tx runnable example (.grc+.kyt+demo+README) proven vs a Python golden."
+    }
+  ],
+  "verify_passed": true,
+  "quarantined": false,
+  "quarantine_reason": "",
+  "commit_sha": "7026fc7",
+  "notes": "EXAMPLE: CW/Morse transmitter (text->keyed envelope, ITU-R M.1677). SRAM-backed: Morse table off-array in the panel as run-records; CWKeyer player is 2 cells on-chip. Envelope BIT-EXACT (Q15) vs the ITU-R golden over PARIS/SOS/'CQ CQ DE KYTTAR' on the REAL built bitstream; timing 1:3:1:3:7 exact, Hann click-edge 0 LSB. Ships .kyt + .grc + .py + cw_tx_demo.py + golden + README + test (8 tests). TX half of a planned CW transceiver."
 }

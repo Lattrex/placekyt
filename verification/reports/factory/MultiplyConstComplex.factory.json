@@ -1,33 +1,31 @@
 {
- "block": "MultiplyConstComplex",
- "grc_block": "blocks.multiply_const_cc",
- "tier": 3,
- "wave": 2,
- "schema_version": 1,
- "started_utc": "2026-08-07T02:18:32Z",
- "ended_utc": "2026-08-07T03:26:59Z",
- "walltime_sec": 1601.902,
- "tokens": {
-  "input": 0,
-  "output": 223836,
-  "cache_read": 0,
-  "total": 223836
- },
- "turns": 109,
- "attempts": 1,
- "human_interventions": 0,
- "intervention_reasons": [],
- "prompts": [
-  {
-   "role": "initial",
-   "text": "factory_dispatch-style prompt for MultiplyConstComplex; isolated worktree; verify vs GR or quarantine."
-  }
- ],
- "verify_passed": true,
- "quarantined": false,
- "quarantine_reason": "",
- "commit_sha": "53a5a33",
- "notes": "2 cells (mul->sat), 1 attempt + budget pivot 1->2 cells, autonomous. NEW genuine complex-constant multiply (rotate+scale) \u2014 NOT a ComplexGainBlock dup. Real risk handled: two half-scale products can sum past full-scale and wrap the accumulator BEFORE the saturating restore -> restricted |re|,|im|<2 so the sum stays in [-1,1); restore <<2 saturates like GR. Peak 9 LSB vs 13 derived. Cross-term/sat mutations FAIL. Re-verified merged (NOTE: I committed a manifest with conflict markers first, caught it -- invalid JSON -- and amended; process fix logged).",
- "outcome": "passed",
- "walltime_min": 0
+  "block": "MultiplyConstComplex",
+  "grc_block": "blocks.multiply_const_cc",
+  "tier": 3,
+  "wave": 2,
+  "schema_version": 1,
+  "started_utc": "2026-08-07T02:18:32Z",
+  "ended_utc": "2026-08-07T03:26:59Z",
+  "walltime_sec": 1601.902,
+  "tokens": {
+    "input": 0,
+    "output": 223836,
+    "cache_read": 0,
+    "total": 223836
+  },
+  "turns": 109,
+  "attempts": 1,
+  "human_interventions": 0,
+  "intervention_reasons": [],
+  "prompts": [
+    {
+      "role": "initial",
+      "text": "factory_dispatch-style prompt for MultiplyConstComplex; isolated worktree; verify vs GR or quarantine."
+    }
+  ],
+  "verify_passed": true,
+  "quarantined": false,
+  "quarantine_reason": "",
+  "commit_sha": "53a5a33",
+  "notes": "2 cells (mul->sat), 1 attempt + budget pivot 1->2 cells, autonomous. NEW genuine complex-constant multiply (rotate+scale) \u2014 NOT a ComplexGainBlock dup. Real risk handled: two half-scale products can sum past full-scale and wrap the accumulator BEFORE the saturating restore -> restricted |re|,|im|<2 so the sum stays in [-1,1); restore <<2 saturates like GR. Peak 9 LSB vs 13 derived. Cross-term/sat mutations FAIL. Re-verified merged (NOTE: I committed a manifest with conflict markers first, caught it -- invalid JSON -- and amended; process fix logged)."
 }

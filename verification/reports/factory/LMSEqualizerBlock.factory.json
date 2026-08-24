@@ -1,33 +1,31 @@
 {
- "block": "LMSEqualizerBlock",
- "grc_block": "digital.linear_equalizer(num_taps, 1, adaptive_algorithm_lms(constellation_qpsk(), step_size))",
- "tier": 3,
- "wave": 3,
- "schema_version": 1,
- "started_utc": "2026-08-13T19:40:00Z",
- "ended_utc": "2026-08-13T21:05:00Z",
- "walltime_sec": 5100.0,
- "tokens": {
-  "input": 0,
-  "output": 300000,
-  "cache_read": 0,
-  "total": 300000
- },
- "turns": 78,
- "attempts": 1,
- "human_interventions": 0,
- "intervention_reasons": [],
- "prompts": [
-  {
-   "role": "initial",
-   "text": "Build a production grade, GNU Radio qualified LMS block implementation following all of the knowledge base information, just like everything we've built so far. (User dispatch, inline session build.)"
-  }
- ],
- "verify_passed": true,
- "quarantined": false,
- "quarantine_reason": "",
- "commit_sha": "13e39e2",
- "notes": "METHODOLOGY (differs from the dispatched-subagent records, flagged for the paper): built INLINE in an interactive session, not via factory_dispatch \u2014 tokens.total is the SESSION BUDGET DELTA over the build window (~300k, from the harness <total_tokens> markers 14,997k->14,697k; includes all input/cache, so it is an UPPER BOUND on the subagent-equivalent output-token figure the other records report). walltime from on-disk artifact timestamps (design spike 19:54Z ... gate green + docs ~21:05Z, reading/design started ~19:40Z). turns = counted tool rounds (~78). human_interventions=0: the build ran start-to-finish on the single dispatch; two mid-build user messages concerned metrics capture only, no technical correction. BUILD: staged GO/NO-GO spikes BEFORE silicon (float model EXACT vs GR at 5e-7 \u2014 discovered constellation_qpsk() points are +-1.414, outside Q15 -> alpha=1/2 unit-circle scale-covariance; Q15 model RMS 0.006 to alpha*GR); REPLACED the unverified 8-tap PoC (INV-25). ~8 DUT debug cycles to bit-exact, each root-caused via trace forensics (data_raw/word fields, read_cell_memory, watch-memory-across-build-passes bisection): positional program<->layout pairing; R0-as-accumulator input clobbers; resolver register contract (-> NEW INV-33); output_cell_id() for non-last output; internal-feedback pass dest-reg ambiguity (order broadcast cells early); generic transit materialization added to the ENGINE (_apply_block_cell_faces). Word-budget engineering: accumulator-delivery idiom (acc_r arrives IN R0, written first) fits middle taps in 30 words. RESULT: chip BIT-EXACT to process_reference incl. adaptation (num_taps 2..5 x mu sweep + edge rails); 14 gates, 5 failing-mutation controls; INV-19 saturated-drive KNOWN LIMIT recorded + guarded (per-sample contract; serialize-LOCK follow-up).",
- "outcome": "passed",
- "walltime_min": 0
+  "block": "LMSEqualizerBlock",
+  "grc_block": "digital.linear_equalizer(num_taps, 1, adaptive_algorithm_lms(constellation_qpsk(), step_size))",
+  "tier": 3,
+  "wave": 3,
+  "schema_version": 1,
+  "started_utc": "2026-08-13T19:40:00Z",
+  "ended_utc": "2026-08-13T21:05:00Z",
+  "walltime_sec": 5100.0,
+  "tokens": {
+    "input": 0,
+    "output": 300000,
+    "cache_read": 0,
+    "total": 300000
+  },
+  "turns": 78,
+  "attempts": 1,
+  "human_interventions": 0,
+  "intervention_reasons": [],
+  "prompts": [
+    {
+      "role": "initial",
+      "text": "Build a production grade, GNU Radio qualified LMS block implementation following all of the knowledge base information, just like everything we've built so far. (User dispatch, inline session build.)"
+    }
+  ],
+  "verify_passed": true,
+  "quarantined": false,
+  "quarantine_reason": "",
+  "commit_sha": "13e39e2",
+  "notes": "METHODOLOGY (differs from the dispatched-subagent records, flagged for the paper): built INLINE in an interactive session, not via factory_dispatch — tokens.total is the SESSION BUDGET DELTA over the build window (~300k, from the harness <total_tokens> markers 14,997k->14,697k; includes all input/cache, so it is an UPPER BOUND on the subagent-equivalent output-token figure the other records report). walltime from on-disk artifact timestamps (design spike 19:54Z ... gate green + docs ~21:05Z, reading/design started ~19:40Z). turns = counted tool rounds (~78). human_interventions=0: the build ran start-to-finish on the single dispatch; two mid-build user messages concerned metrics capture only, no technical correction. BUILD: staged GO/NO-GO spikes BEFORE silicon (float model EXACT vs GR at 5e-7 — discovered constellation_qpsk() points are +-1.414, outside Q15 -> alpha=1/2 unit-circle scale-covariance; Q15 model RMS 0.006 to alpha*GR); REPLACED the unverified 8-tap PoC (INV-25). ~8 DUT debug cycles to bit-exact, each root-caused via trace forensics (data_raw/word fields, read_cell_memory, watch-memory-across-build-passes bisection): positional program<->layout pairing; R0-as-accumulator input clobbers; resolver register contract (-> NEW INV-33); output_cell_id() for non-last output; internal-feedback pass dest-reg ambiguity (order broadcast cells early); generic transit materialization added to the ENGINE (_apply_block_cell_faces). Word-budget engineering: accumulator-delivery idiom (acc_r arrives IN R0, written first) fits middle taps in 30 words. RESULT: chip BIT-EXACT to process_reference incl. adaptation (num_taps 2..5 x mu sweep + edge rails); 14 gates, 5 failing-mutation controls; INV-19 saturated-drive KNOWN LIMIT recorded + guarded (per-sample contract; serialize-LOCK follow-up)."
 }

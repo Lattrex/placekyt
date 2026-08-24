@@ -1,33 +1,31 @@
 {
- "block": "RationalResamplerBlock",
- "grc_block": "filter.rational_resampler_fff",
- "tier": 3,
- "wave": 5,
- "schema_version": 1,
- "started_utc": "2026-08-16T23:41:47Z",
- "ended_utc": "2026-08-17T00:09:05Z",
- "walltime_sec": 1638.0,
- "tokens": {
-  "input": 0,
-  "output": 278011,
-  "cache_read": 0,
-  "total": 278011
- },
- "turns": 109,
- "attempts": 1,
- "human_interventions": 0,
- "intervention_reasons": [],
- "prompts": [
-  {
-   "role": "initial",
-   "text": "factory_dispatch prompt; isolated worktree; substrate-reality-check dispatch with ranked honest outcomes (lift the combo restriction for the fitting range, or quarantine with budget arithmetic)."
-  }
- ],
- "verify_passed": true,
- "quarantined": false,
- "quarantine_reason": "",
- "commit_sha": "bb9179c",
- "notes": "1 cell, outcome (a) on the first real attempt \u2014 a POLYPHASE single-cell reframing (N MACs/input instead of N*L; K=ceil(N/L) input-rate delay regs; 4-word countdown gate per arm exploiting flags-survive-MOVE) beat the dispatched zero-stuff sketch and lifted the decim&interp combo restriction. Shipped range L=1(<=5 taps)/2(<=4)/3(<=3), any M, Sum|taps|<=1; loud raises + the compose-Upsampler->FIR workaround outside it; budget probe grid matched the allocator's failures exactly (L>=4 fits nothing). GR semantics pinned live: emits y_full[D::M] with D=L*(ceil(N/L)-1) NOT phase 0; float32 design arithmetic; tail truncation. 50 tests vs LIVE GR, max err 2 LSB vs tol 5, bit-exact vs reference. Harness gotcha recorded: GR's gcd log corrupts the ref-runner JSON on stdout \u2014 silence gr logging in the snippet.",
- "outcome": "passed",
- "walltime_min": 0
+  "block": "RationalResamplerBlock",
+  "grc_block": "filter.rational_resampler_fff",
+  "tier": 3,
+  "wave": 5,
+  "schema_version": 1,
+  "started_utc": "2026-08-16T23:41:47Z",
+  "ended_utc": "2026-08-17T00:09:05Z",
+  "walltime_sec": 1638.0,
+  "tokens": {
+    "input": 0,
+    "output": 278011,
+    "cache_read": 0,
+    "total": 278011
+  },
+  "turns": 109,
+  "attempts": 1,
+  "human_interventions": 0,
+  "intervention_reasons": [],
+  "prompts": [
+    {
+      "role": "initial",
+      "text": "factory_dispatch prompt; isolated worktree; substrate-reality-check dispatch with ranked honest outcomes (lift the combo restriction for the fitting range, or quarantine with budget arithmetic)."
+    }
+  ],
+  "verify_passed": true,
+  "quarantined": false,
+  "quarantine_reason": "",
+  "commit_sha": "bb9179c",
+  "notes": "1 cell, outcome (a) on the first real attempt \u2014 a POLYPHASE single-cell reframing (N MACs/input instead of N*L; K=ceil(N/L) input-rate delay regs; 4-word countdown gate per arm exploiting flags-survive-MOVE) beat the dispatched zero-stuff sketch and lifted the decim&interp combo restriction. Shipped range L=1(<=5 taps)/2(<=4)/3(<=3), any M, Sum|taps|<=1; loud raises + the compose-Upsampler->FIR workaround outside it; budget probe grid matched the allocator's failures exactly (L>=4 fits nothing). GR semantics pinned live: emits y_full[D::M] with D=L*(ceil(N/L)-1) NOT phase 0; float32 design arithmetic; tail truncation. 50 tests vs LIVE GR, max err 2 LSB vs tol 5, bit-exact vs reference. Harness gotcha recorded: GR's gcd log corrupts the ref-runner JSON on stdout \u2014 silence gr logging in the snippet."
 }

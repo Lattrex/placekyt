@@ -1,33 +1,31 @@
 {
- "block": "SubCCBlock",
- "grc_block": "blocks.sub_cc",
- "tier": 2,
- "wave": 5,
- "schema_version": 1,
- "started_utc": "2026-08-16T21:25:59Z",
- "ended_utc": "2026-08-16T22:01:23Z",
- "walltime_sec": 2124.0,
- "tokens": {
-  "input": 0,
-  "output": 0,
-  "cache_read": 0,
-  "total": 0
- },
- "turns": 0,
- "attempts": 1,
- "human_interventions": 0,
- "intervention_reasons": [],
- "prompts": [
-  {
-   "role": "initial",
-   "text": "factory_dispatch prompt; isolated worktree; joint add_cc/sub_cc pair build with the per-rail decomposition hint + shared 2-complex-stream harness mandate."
-  }
- ],
- "verify_passed": true,
- "quarantined": false,
- "quarantine_reason": "",
- "commit_sha": "c9da914",
- "notes": "Zero-cost cross-reference: built jointly with AddCCBlock in one dispatch/commit; see AddCCBlock.factory.json for the pair's full cost record. Non-commutative twin: the swapped-streams mutation is load-bearing.",
- "outcome": "passed",
- "walltime_min": 0
+  "block": "SubCCBlock",
+  "grc_block": "blocks.sub_cc",
+  "tier": 2,
+  "wave": 5,
+  "schema_version": 1,
+  "started_utc": "2026-08-16T21:25:59Z",
+  "ended_utc": "2026-08-16T22:01:23Z",
+  "walltime_sec": 2124.0,
+  "tokens": {
+    "input": 0,
+    "output": 0,
+    "cache_read": 0,
+    "total": 0
+  },
+  "turns": 0,
+  "attempts": 1,
+  "human_interventions": 0,
+  "intervention_reasons": [],
+  "prompts": [
+    {
+      "role": "initial",
+      "text": "factory_dispatch prompt; isolated worktree; joint add_cc/sub_cc pair build with the per-rail decomposition hint + shared 2-complex-stream harness mandate."
+    }
+  ],
+  "verify_passed": true,
+  "quarantined": false,
+  "quarantine_reason": "",
+  "commit_sha": "c9da914",
+  "notes": "Zero-cost cross-reference: built jointly with AddCCBlock in one dispatch/commit; see AddCCBlock.factory.json for the pair's full cost record. Non-commutative twin: the swapped-streams mutation is load-bearing."
 }

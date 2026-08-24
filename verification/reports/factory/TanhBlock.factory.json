@@ -26,7 +26,5 @@
  "quarantine_reason": "",
  "commit_sha": "d1e442f",
  "notes": "Zero-cost cross-reference: built jointly with SigmoidBlock in one dispatch/commit (shared module activation_blocks.py, identical two-cell engine and program text -- only the 17-entry table, the unfold constant negop=0 and CANON_K=2 differ); see SigmoidBlock.factory.json for the pair's full cost record. Tanh is the block that pins the design's canonical-domain rule: folding the input scale into the table domain is a measured tanh accuracy failure, so the dshift-into-shift-immediates mechanism is load-bearing here, not a convenience.",
- "walltime": "0 (joint build; costed on SigmoidBlock)",
- "outcome": "passed",
- "walltime_min": 0
+ "walltime": "0 (joint build; costed on SigmoidBlock)"
 }

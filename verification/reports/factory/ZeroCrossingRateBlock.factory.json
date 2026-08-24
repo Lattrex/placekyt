@@ -26,7 +26,5 @@
  "quarantine_reason": "",
  "commit_sha": "f2bed31",
  "notes": "BUILDER-side record (token/turn/walltime figures are the builder's own budget accounting, not harness-bracketed; the orchestrator may overwrite with exact <usage> numbers). 1 attempt, 34 tests, fully autonomous, EXACT tol 0. One real bug found+fixed before first green: a 24-instruction first cut pinned StateVar 'counter' at the instruction base address -- the resolver reserves R31 as auto-HALT (real cell budget = 31 words) and raises only on DATA/instruction collision, so the pinned state silently overwrote the first instruction and the block built+routed but emitted nothing. Fix = 23-instruction restructure (main emit path falls through into _skip's HALT; _sat tail ends on the R31 auto-HALT). Second finding: the obvious no-boundary-carry mutation stimulus [+]*N+[-]*N COINCIDES with the reset-prev-to-zero mutant (phantom 0->neg crossing == real boundary crossing); the gate needed two mutant flavors each with a stimulus chosen to expose it (INV-4 sharpened, lessons-log entry).",
- "walltime": "17m30s",
- "outcome": "passed",
- "walltime_min": 17
+ "walltime": "17m30s"
 }

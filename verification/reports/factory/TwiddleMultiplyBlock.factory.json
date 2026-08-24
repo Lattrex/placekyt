@@ -1,33 +1,31 @@
 {
- "block": "TwiddleMultiplyBlock",
- "grc_block": "(Python golden: complex multiply by a per-sample table-selected Q15 twiddle)",
- "tier": 1,
- "wave": 7,
- "schema_version": 1,
- "started_utc": "2026-08-23T17:30:00Z",
- "ended_utc": "2026-08-23T23:59:00Z",
- "walltime_sec": 23340.0,
- "tokens": {
-  "input": 0,
-  "output": 0,
-  "cache_read": 0,
-  "total": 0
- },
- "turns": 0,
- "attempts": 1,
- "human_interventions": 0,
- "intervention_reasons": [],
- "prompts": [
-  {
-   "role": "initial",
-   "text": "factory_dispatch prompt; isolated worktree; joint FFT-primitive pair build (R2Butterfly + TwiddleMultiply, shared module, pinned spike numerics, one commit)."
-  }
- ],
- "verify_passed": true,
- "quarantined": false,
- "quarantine_reason": "",
- "commit_sha": "25721bd",
- "notes": "Zero-cost cross-reference: built jointly with R2ButterflyBlock in one dispatch/commit (shared module fft_primitives.py); see R2ButterflyBlock.factory.json for the pair's full cost record. Twiddle-specific: 6-cell fully-serial entry-chain kind dispatch (trivial slots run pass-through ENTRIES of the same cells \u2014 equal path length, no lock); sentinel table encoding (C=0x8000 marks trivial, D disambiguates identity/-j); period P 1..12 with loud raises; round(32768*x) half-even full-scale coefficients (0x7FFF-as-one mutant proven to FAIL); bit-exact on the N=16 stage-0 mixed table.",
- "outcome": "passed",
- "walltime_min": 0
+  "block": "TwiddleMultiplyBlock",
+  "grc_block": "(Python golden: complex multiply by a per-sample table-selected Q15 twiddle)",
+  "tier": 1,
+  "wave": 7,
+  "schema_version": 1,
+  "started_utc": "2026-08-23T17:30:00Z",
+  "ended_utc": "2026-08-23T23:59:00Z",
+  "walltime_sec": 23340.0,
+  "tokens": {
+    "input": 0,
+    "output": 0,
+    "cache_read": 0,
+    "total": 0
+  },
+  "turns": 0,
+  "attempts": 1,
+  "human_interventions": 0,
+  "intervention_reasons": [],
+  "prompts": [
+    {
+      "role": "initial",
+      "text": "factory_dispatch prompt; isolated worktree; joint FFT-primitive pair build (R2Butterfly + TwiddleMultiply, shared module, pinned spike numerics, one commit)."
+    }
+  ],
+  "verify_passed": true,
+  "quarantined": false,
+  "quarantine_reason": "",
+  "commit_sha": "25721bd",
+  "notes": "Zero-cost cross-reference: built jointly with R2ButterflyBlock in one dispatch/commit (shared module fft_primitives.py); see R2ButterflyBlock.factory.json for the pair's full cost record. Twiddle-specific: 6-cell fully-serial entry-chain kind dispatch (trivial slots run pass-through ENTRIES of the same cells — equal path length, no lock); sentinel table encoding (C=0x8000 marks trivial, D disambiguates identity/-j); period P 1..12 with loud raises; round(32768*x) half-even full-scale coefficients (0x7FFF-as-one mutant proven to FAIL); bit-exact on the N=16 stage-0 mixed table."
 }

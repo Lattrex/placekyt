@@ -1,33 +1,31 @@
 {
- "block": "FLLBandEdgeBlock",
- "grc_block": "digital.fll_band_edge_cc",
- "tier": 3,
- "wave": 5,
- "schema_version": 1,
- "started_utc": "2026-08-16T23:17:38Z",
- "ended_utc": "2026-08-17T00:19:18Z",
- "walltime_sec": 3700.0,
- "tokens": {
-  "input": 0,
-  "output": 400155,
-  "cache_read": 0,
-  "total": 400155
- },
- "turns": 141,
- "attempts": 1,
- "human_interventions": 0,
- "intervention_reasons": [],
- "prompts": [
-  {
-   "role": "initial",
-   "text": "factory_dispatch prompt; isolated worktree; the hardest block of the wave \u2014 settle-architecture-first discipline mandated (GR live pin -> float exact -> Q15 -> silicon)."
-  }
- ],
- "verify_passed": true,
- "quarantined": false,
- "quarantine_reason": "",
- "commit_sha": "71adb0a",
- "notes": "21 cells at default fs=17 (9 + 2*ceil(fs/3) program cells, 8x5 serialized ring), 1 attempt, FIRST SILICON RUN BIT-EXACT \u2014 the settle-architecture-first discipline held. Float model matches GR's own freq/error streams to float32 rounding. Chip pulls foff 0.05/0.10 to ~1e-4 residual; END-TO-END: FLL->Costas on ONE 10x12 recovers BER 0 at foff=0.18 where the Costas-only chain fails at BER 0.173 (negative control) \u2014 the robust-RX demo result. KEY FINDINGS: band-edge algebra collapses to err=4(Ar*Bq-Aq*Br) (4 real dot products, not 2 complex FIRs); the RMS error-feedback idiom is MANDATORY for the freq integrator (bare MULQ stalls 0.006 short); ~2500 events/sample serialized-ring cost (raise harness caps); OPEN ROUTER HAZARD flagged: a corridor can transit the x16_in port cell when an 8-wide ring pinches the side channels (route-ok, chip dead \u2014 outside the INV-32 guard; follow-up filed). 19 tests.",
- "outcome": "passed",
- "walltime_min": 0
+  "block": "FLLBandEdgeBlock",
+  "grc_block": "digital.fll_band_edge_cc",
+  "tier": 3,
+  "wave": 5,
+  "schema_version": 1,
+  "started_utc": "2026-08-16T23:17:38Z",
+  "ended_utc": "2026-08-17T00:19:18Z",
+  "walltime_sec": 3700.0,
+  "tokens": {
+    "input": 0,
+    "output": 400155,
+    "cache_read": 0,
+    "total": 400155
+  },
+  "turns": 141,
+  "attempts": 1,
+  "human_interventions": 0,
+  "intervention_reasons": [],
+  "prompts": [
+    {
+      "role": "initial",
+      "text": "factory_dispatch prompt; isolated worktree; the hardest block of the wave \u2014 settle-architecture-first discipline mandated (GR live pin -> float exact -> Q15 -> silicon)."
+    }
+  ],
+  "verify_passed": true,
+  "quarantined": false,
+  "quarantine_reason": "",
+  "commit_sha": "71adb0a",
+  "notes": "21 cells at default fs=17 (9 + 2*ceil(fs/3) program cells, 8x5 serialized ring), 1 attempt, FIRST SILICON RUN BIT-EXACT \u2014 the settle-architecture-first discipline held. Float model matches GR's own freq/error streams to float32 rounding. Chip pulls foff 0.05/0.10 to ~1e-4 residual; END-TO-END: FLL->Costas on ONE 10x12 recovers BER 0 at foff=0.18 where the Costas-only chain fails at BER 0.173 (negative control) \u2014 the robust-RX demo result. KEY FINDINGS: band-edge algebra collapses to err=4(Ar*Bq-Aq*Br) (4 real dot products, not 2 complex FIRs); the RMS error-feedback idiom is MANDATORY for the freq integrator (bare MULQ stalls 0.006 short); ~2500 events/sample serialized-ring cost (raise harness caps); OPEN ROUTER HAZARD flagged: a corridor can transit the x16_in port cell when an 8-wide ring pinches the side channels (route-ok, chip dead \u2014 outside the INV-32 guard; follow-up filed). 19 tests."
 }

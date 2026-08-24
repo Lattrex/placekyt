@@ -1,33 +1,31 @@
 {
- "block": "BPSKSlicerBlock",
- "grc_block": "digital.binary_slicer_fb",
- "tier": 2,
- "wave": 2,
- "schema_version": 1,
- "started_utc": "2026-08-07T01:32:07Z",
- "ended_utc": "2026-08-07T02:14:15Z",
- "walltime_sec": 817.1,
- "tokens": {
-  "input": 0,
-  "output": 160829,
-  "cache_read": 0,
-  "total": 160829
- },
- "turns": 104,
- "attempts": 1,
- "human_interventions": 0,
- "intervention_reasons": [],
- "prompts": [
-  {
-   "role": "initial",
-   "text": "Follow AGENTS.md \u00a73: verify poc BPSKSlicerBlock vs digital.binary_slicer_fb, bit-exact, boundary/tie-break focus. Isolated worktree. Full text: `factory_dispatch.py BPSKSlicerBlock`."
-  }
- ],
- "verify_passed": true,
- "quarantined": false,
- "quarantine_reason": "",
- "commit_sha": "75be28c",
- "notes": "subagent_tokens(total)=160829 from orchestrator <usage>. INV-25 latent bug: PoC computed the INVERTED decision (>=0->0, <0->1) with the tie wrong, in bit/byte/word assembly AND process_reference. Hid in the shipped coherent BPSK RX only because every BER metric there is 180-inversion-tolerant (e=min(e,m-e)), so a globally-flipped slicer still scores BER 0 \u2014 no test ever pinned the absolute boundary. Fixed to GR boundary (default bit 1, BR.NN on >=0 incl the 0-tie, fall to 0 on <0); proved the gate sees it (reverted mid-run -> 24/24 bit errors). BIT-EXACT vs GR (0 errors, edge+4 seeds+sweep). 1 cell, no fold. 1 attempt, autonomous. GRC binding needs sudo install to go live (OOT boundary, not a defect). INDEPENDENTLY RE-VERIFIED on merged block-factory: mutation test_mutation_inverted_decision_fails pins the boundary the BER-tolerance hid; full suite green.",
- "outcome": "passed",
- "walltime_min": 0
+  "block": "BPSKSlicerBlock",
+  "grc_block": "digital.binary_slicer_fb",
+  "tier": 2,
+  "wave": 2,
+  "schema_version": 1,
+  "started_utc": "2026-08-07T01:32:07Z",
+  "ended_utc": "2026-08-07T02:14:15Z",
+  "walltime_sec": 817.1,
+  "tokens": {
+    "input": 0,
+    "output": 160829,
+    "cache_read": 0,
+    "total": 160829
+  },
+  "turns": 104,
+  "attempts": 1,
+  "human_interventions": 0,
+  "intervention_reasons": [],
+  "prompts": [
+    {
+      "role": "initial",
+      "text": "Follow AGENTS.md \u00a73: verify poc BPSKSlicerBlock vs digital.binary_slicer_fb, bit-exact, boundary/tie-break focus. Isolated worktree. Full text: `factory_dispatch.py BPSKSlicerBlock`."
+    }
+  ],
+  "verify_passed": true,
+  "quarantined": false,
+  "quarantine_reason": "",
+  "commit_sha": "75be28c",
+  "notes": "subagent_tokens(total)=160829 from orchestrator <usage>. INV-25 latent bug: PoC computed the INVERTED decision (>=0->0, <0->1) with the tie wrong, in bit/byte/word assembly AND process_reference. Hid in the shipped coherent BPSK RX only because every BER metric there is 180-inversion-tolerant (e=min(e,m-e)), so a globally-flipped slicer still scores BER 0 \u2014 no test ever pinned the absolute boundary. Fixed to GR boundary (default bit 1, BR.NN on >=0 incl the 0-tie, fall to 0 on <0); proved the gate sees it (reverted mid-run -> 24/24 bit errors). BIT-EXACT vs GR (0 errors, edge+4 seeds+sweep). 1 cell, no fold. 1 attempt, autonomous. GRC binding needs sudo install to go live (OOT boundary, not a defect). INDEPENDENTLY RE-VERIFIED on merged block-factory: mutation test_mutation_inverted_decision_fails pins the boundary the BER-tolerance hid; full suite green."
 }

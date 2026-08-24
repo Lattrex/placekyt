@@ -1,33 +1,31 @@
 {
- "block": "AndConstBlock",
- "grc_block": "blocks.and_const_bb",
- "tier": 1,
- "wave": 1,
- "schema_version": 1,
- "started_utc": "2026-08-07T03:40:26Z",
- "ended_utc": "2026-08-07T04:10:15Z",
- "walltime_sec": 778.898,
- "tokens": {
-  "input": 0,
-  "output": 137618,
-  "cache_read": 0,
-  "total": 137618
- },
- "turns": 96,
- "attempts": 2,
- "human_interventions": 0,
- "intervention_reasons": [],
- "prompts": [
-  {
-   "role": "initial",
-   "text": "factory_dispatch prompt for AndConstBlock; isolated worktree."
-  }
- ],
- "verify_passed": true,
- "quarantined": false,
- "quarantine_reason": "",
- "commit_sha": "1069f22",
- "notes": "1 cell. Same metric lesson as Xor/Map: gated on EXACT not DECISION (a bit-7 error passes DECISION). This GR build's and_const_bb rejects k outside 0..255. EXACT vs GR full 0..255 range.",
- "outcome": "passed",
- "walltime_min": 0
+  "block": "AndConstBlock",
+  "grc_block": "blocks.and_const_bb",
+  "tier": 1,
+  "wave": 1,
+  "schema_version": 1,
+  "started_utc": "2026-08-07T03:40:26Z",
+  "ended_utc": "2026-08-07T04:10:15Z",
+  "walltime_sec": 778.898,
+  "tokens": {
+    "input": 0,
+    "output": 137618,
+    "cache_read": 0,
+    "total": 137618
+  },
+  "turns": 96,
+  "attempts": 2,
+  "human_interventions": 0,
+  "intervention_reasons": [],
+  "prompts": [
+    {
+      "role": "initial",
+      "text": "factory_dispatch prompt for AndConstBlock; isolated worktree."
+    }
+  ],
+  "verify_passed": true,
+  "quarantined": false,
+  "quarantine_reason": "",
+  "commit_sha": "1069f22",
+  "notes": "1 cell. Same metric lesson as Xor/Map: gated on EXACT not DECISION (a bit-7 error passes DECISION). This GR build's and_const_bb rejects k outside 0..255. EXACT vs GR full 0..255 range."
 }

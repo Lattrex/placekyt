@@ -25,8 +25,6 @@
  "quarantined": false,
  "quarantine_reason": "",
  "commit_sha": "1f82c5e",
- "notes": "Zero-cost cross-reference: built jointly with ChirpGeneratorBlock in one dispatch/commit; see ChirpGeneratorBlock.factory.json for the pair's full cost record. HONEST DECOMPOSITION, stated in the class and manifest: this IS PackKBitsBlock (GR pack_k_bits_bb) re-parameterized \u2014 the inherited single-cell program verbatim, with the alphabet expressed as m and the GR uint8 OUTPUT-item cap lifted (raw 16-bit symbol word; k=10 proven on-chip, beyond pack_k_bits_bb's k<=8). The only novel surface was the binding: the byte-in/short-out rail is a documented _DTYPE_DEVIATIONS entry (the lifted cap IS the deviation). Gated bit-exact vs the LIVE pack_k_bits_bb for m<=256 plus the numpy golden beyond, exhaustive symbol roundtrip, LSB-first mutant golden FAILS (MSB-first pinned).",
- "walltime": "0 (joint build; costed on ChirpGeneratorBlock)",
- "outcome": "passed",
- "walltime_min": 0
+ "notes": "Zero-cost cross-reference: built jointly with ChirpGeneratorBlock in one dispatch/commit; see ChirpGeneratorBlock.factory.json for the pair's full cost record. HONEST DECOMPOSITION, stated in the class and manifest: this IS PackKBitsBlock (GR pack_k_bits_bb) re-parameterized — the inherited single-cell program verbatim, with the alphabet expressed as m and the GR uint8 OUTPUT-item cap lifted (raw 16-bit symbol word; k=10 proven on-chip, beyond pack_k_bits_bb's k<=8). The only novel surface was the binding: the byte-in/short-out rail is a documented _DTYPE_DEVIATIONS entry (the lifted cap IS the deviation). Gated bit-exact vs the LIVE pack_k_bits_bb for m<=256 plus the numpy golden beyond, exhaustive symbol roundtrip, LSB-first mutant golden FAILS (MSB-first pinned).",
+ "walltime": "0 (joint build; costed on ChirpGeneratorBlock)"
 }

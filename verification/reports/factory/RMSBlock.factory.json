@@ -1,33 +1,31 @@
 {
- "block": "RMSBlock",
- "grc_block": "blocks.rms_ff",
- "tier": 2,
- "wave": 5,
- "schema_version": 1,
- "started_utc": "2026-08-16T21:25:50Z",
- "ended_utc": "2026-08-16T21:55:20Z",
- "walltime_sec": 1770.0,
- "tokens": {
-  "input": 0,
-  "output": 296191,
-  "cache_read": 0,
-  "total": 296191
- },
- "turns": 106,
- "attempts": 1,
- "human_interventions": 0,
- "intervention_reasons": [],
- "prompts": [
-  {
-   "role": "initial",
-   "text": "factory_dispatch prompt; isolated worktree; joint RMS-pair build (shared module, one commit)."
-  }
- ],
- "verify_passed": true,
- "quarantined": false,
- "quarantine_reason": "",
- "commit_sha": "80e757d",
- "notes": "JOINT-BUILD record: cost covers the RMSBlock+RMSCFBlock pair (shared module, one builder, one commit); RMSCFBlock's record is a zero-cost cross-reference so aggregate sums stay honest. 1 attempt, 36 tests (both blocks), autonomous. Findings: bare-MULQ IIR STALLS at GR's default alpha=1e-4 (alpha_q=3) \u2014 fixed with a full-precision error-feedback accumulator (30-bit state across two 16-bit words, exact floor-division identity); AGCBlock carries the same stall latent at its 1e-4 default (follow-up flagged). NEW GENERAL TRAP: a GOTO in a block's EXIT cell is rewritten by the output-handoff pass into the external output JUMP \u2014 exit cells must loop with conditional branches only. Quartic Horner sqrt beat the dispatched Newton hint (sub-unity coeffs, exhaustively bounded over all 32768 power words). CF wrap corner re=im=-1.0 guarded per-step; ComplexToMagSquared carries that corner latent (follow-up flagged).",
- "outcome": "passed",
- "walltime_min": 0
+  "block": "RMSBlock",
+  "grc_block": "blocks.rms_ff",
+  "tier": 2,
+  "wave": 5,
+  "schema_version": 1,
+  "started_utc": "2026-08-16T21:25:50Z",
+  "ended_utc": "2026-08-16T21:55:20Z",
+  "walltime_sec": 1770.0,
+  "tokens": {
+    "input": 0,
+    "output": 296191,
+    "cache_read": 0,
+    "total": 296191
+  },
+  "turns": 106,
+  "attempts": 1,
+  "human_interventions": 0,
+  "intervention_reasons": [],
+  "prompts": [
+    {
+      "role": "initial",
+      "text": "factory_dispatch prompt; isolated worktree; joint RMS-pair build (shared module, one commit)."
+    }
+  ],
+  "verify_passed": true,
+  "quarantined": false,
+  "quarantine_reason": "",
+  "commit_sha": "80e757d",
+  "notes": "JOINT-BUILD record: cost covers the RMSBlock+RMSCFBlock pair (shared module, one builder, one commit); RMSCFBlock's record is a zero-cost cross-reference so aggregate sums stay honest. 1 attempt, 36 tests (both blocks), autonomous. Findings: bare-MULQ IIR STALLS at GR's default alpha=1e-4 (alpha_q=3) \u2014 fixed with a full-precision error-feedback accumulator (30-bit state across two 16-bit words, exact floor-division identity); AGCBlock carries the same stall latent at its 1e-4 default (follow-up flagged). NEW GENERAL TRAP: a GOTO in a block's EXIT cell is rewritten by the output-handoff pass into the external output JUMP \u2014 exit cells must loop with conditional branches only. Quartic Horner sqrt beat the dispatched Newton hint (sub-unity coeffs, exhaustively bounded over all 32768 power words). CF wrap corner re=im=-1.0 guarded per-step; ComplexToMagSquared carries that corner latent (follow-up flagged)."
 }

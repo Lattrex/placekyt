@@ -26,7 +26,5 @@
  "quarantine_reason": "",
  "commit_sha": "86d4c218ff54334e1641b11881243481773aca32",
  "notes": "BUILDER-side record (token/turn/walltime figures are the builder's own budget accounting, not harness-bracketed; the orchestrator may overwrite with exact <usage> numbers). 1 attempt, FIRST-BUILD BIT-EXACT at every depth probed (0,1,2,4,5,8,12,13,24,32,64) -- no bug-fix iteration was needed, the rarest outcome in the log. The design de-risking came entirely from reading first: the ComplexFIR forwarding idiom (osave capture-before-shift, shared temp across rails, same-wavefront handoff) is a distributed delay line once the MACs are removed, and the two known traps (INV-33 no-data-words state-on-inputs; INV-17 output-cell fan-out headroom) were designed around up front (all state pinned R2+; output cell capped at 4 samples). KEY RESULT for the FFT track: the on-fabric chain works to depth 64 (13 cells, ~5 complex samples/cell) with NO engine wall -- routing, fan-in, and lock discipline all clean (pure feed-forward linear chain, no serialize-LOCK) -- so no SRAM-panel fallback is needed and the FFT delay memory is genuinely on-chip. 43 tests EXACT tol 0 + saturation/orientation/placement shared gates + full GRC binding.",
- "walltime": "18m23s",
- "outcome": "passed",
- "walltime_min": 18
+ "walltime": "18m23s"
 }

@@ -1,33 +1,31 @@
 {
- "block": "AGCCCBlock",
- "grc_block": "analog.agc_cc",
- "tier": 3,
- "wave": 5,
- "schema_version": 1,
- "started_utc": "2026-08-16T23:04:13Z",
- "ended_utc": "2026-08-16T23:49:07Z",
- "walltime_sec": 2694.0,
- "tokens": {
-  "input": 0,
-  "output": 397706,
-  "cache_read": 0,
-  "total": 397706
- },
- "turns": 134,
- "attempts": 1,
- "human_interventions": 0,
- "intervention_reasons": [],
- "prompts": [
-  {
-   "role": "initial",
-   "text": "factory_dispatch prompt; isolated worktree; complex AGC composite over the proven CORDIC magnitude chain + INV-19 lock."
-  }
- ],
- "verify_passed": true,
- "quarantined": false,
- "quarantine_reason": "",
- "commit_sha": "d373125",
- "notes": "20 cells (7x5 serpentine RING: gain hold -> dual-FACE tap -> the ComplexToMag CORDIC chain VERBATIM as shared builders (cordic_blocks.py) -> update cell with the RMS error-feedback accumulator + WRITE.CFG lock-clear). 1 attempt, bit-exact vs process_reference_q15; saturated == per-sample; unlock-hazard pinned. Derived settled-tail tolerance 24 LSB vs LIVE GR (regime-mirrored goldens at chip-quantized constants); measured peak 11. 38 tests. FINDINGS: feedback landings must be pinned STATE registers, never input Ports (resolved_io counts input-role regs as host operands -> a brokered corridor relays stale words into the loop; ComplexCostasLoop dphase carries the same LATENT hazard - follow-up flagged); big rings fold <=7 wide (an 8-wide ring route-ok'd but silently wrapped both corridors through the x16_out port cell at 180 degrees); the bare-MULQ stall is direction-asymmetric (only a RISING gain stalls - mutations must start below the settled point).",
- "outcome": "passed",
- "walltime_min": 0
+  "block": "AGCCCBlock",
+  "grc_block": "analog.agc_cc",
+  "tier": 3,
+  "wave": 5,
+  "schema_version": 1,
+  "started_utc": "2026-08-16T23:04:13Z",
+  "ended_utc": "2026-08-16T23:49:07Z",
+  "walltime_sec": 2694.0,
+  "tokens": {
+    "input": 0,
+    "output": 397706,
+    "cache_read": 0,
+    "total": 397706
+  },
+  "turns": 134,
+  "attempts": 1,
+  "human_interventions": 0,
+  "intervention_reasons": [],
+  "prompts": [
+    {
+      "role": "initial",
+      "text": "factory_dispatch prompt; isolated worktree; complex AGC composite over the proven CORDIC magnitude chain + INV-19 lock."
+    }
+  ],
+  "verify_passed": true,
+  "quarantined": false,
+  "quarantine_reason": "",
+  "commit_sha": "d373125",
+  "notes": "20 cells (7x5 serpentine RING: gain hold -> dual-FACE tap -> the ComplexToMag CORDIC chain VERBATIM as shared builders (cordic_blocks.py) -> update cell with the RMS error-feedback accumulator + WRITE.CFG lock-clear). 1 attempt, bit-exact vs process_reference_q15; saturated == per-sample; unlock-hazard pinned. Derived settled-tail tolerance 24 LSB vs LIVE GR (regime-mirrored goldens at chip-quantized constants); measured peak 11. 38 tests. FINDINGS: feedback landings must be pinned STATE registers, never input Ports (resolved_io counts input-role regs as host operands -> a brokered corridor relays stale words into the loop; ComplexCostasLoop dphase carries the same LATENT hazard - follow-up flagged); big rings fold <=7 wide (an 8-wide ring route-ok'd but silently wrapped both corridors through the x16_out port cell at 180 degrees); the bare-MULQ stall is direction-asymmetric (only a RISING gain stalls - mutations must start below the settled point)."
 }

@@ -1,33 +1,31 @@
 {
- "block": "example_psk31_tx",
- "grc_block": "",
- "tier": 0,
- "wave": 6,
- "schema_version": 1,
- "started_utc": "2026-08-08T17:39:00Z",
- "ended_utc": "2026-08-08T18:23:33Z",
- "walltime_sec": 2501.306,
- "tokens": {
-  "input": 0,
-  "output": 220674,
-  "cache_read": 0,
-  "total": 220674
- },
- "turns": 95,
- "attempts": 1,
- "human_interventions": 0,
- "intervention_reasons": [],
- "prompts": [
-  {
-   "role": "initial",
-   "text": "Build the example_psk31_tx runnable example (.grc+.kyt+demo+README) proven vs a Python golden."
-  }
- ],
- "verify_passed": true,
- "quarantined": false,
- "quarantine_reason": "",
- "commit_sha": "93c9b4a",
- "notes": "EXAMPLE: PSK31 transmitter (text->Varicode->DBPSK->BPSK map->raised-cosine envelope). Full chain + SRAM panel builds+routes on ONE 10x12 array (50/120 cells). TX output sample-exact vs a Python PSK31 golden over CQ/TEST/e-t-a messages: Varicode through the REAL SRAM panel + DBPSK/map/envelope on real simKYT, composed. Ships .kyt (hand-placed, SRAM panel wired) + .grc + .py + psk31_tx_demo.py + golden + README + test (6 tests). First SRAM-backed EXAMPLE.",
- "outcome": "passed",
- "walltime_min": 0
+  "block": "example_psk31_tx",
+  "grc_block": "",
+  "tier": 0,
+  "wave": 6,
+  "schema_version": 1,
+  "started_utc": "2026-08-08T17:39:00Z",
+  "ended_utc": "2026-08-08T18:23:33Z",
+  "walltime_sec": 2501.306,
+  "tokens": {
+    "input": 0,
+    "output": 220674,
+    "cache_read": 0,
+    "total": 220674
+  },
+  "turns": 95,
+  "attempts": 1,
+  "human_interventions": 0,
+  "intervention_reasons": [],
+  "prompts": [
+    {
+      "role": "initial",
+      "text": "Build the example_psk31_tx runnable example (.grc+.kyt+demo+README) proven vs a Python golden."
+    }
+  ],
+  "verify_passed": true,
+  "quarantined": false,
+  "quarantine_reason": "",
+  "commit_sha": "93c9b4a",
+  "notes": "EXAMPLE: PSK31 transmitter (text->Varicode->DBPSK->BPSK map->raised-cosine envelope). Full chain + SRAM panel builds+routes on ONE 10x12 array (50/120 cells). TX output sample-exact vs a Python PSK31 golden over CQ/TEST/e-t-a messages: Varicode through the REAL SRAM panel + DBPSK/map/envelope on real simKYT, composed. Ships .kyt (hand-placed, SRAM panel wired) + .grc + .py + psk31_tx_demo.py + golden + README + test (6 tests). First SRAM-backed EXAMPLE."
 }

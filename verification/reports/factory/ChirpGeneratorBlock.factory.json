@@ -28,7 +28,5 @@
  "quarantine_reason": "",
  "commit_sha": "dc2cd0ee42dd4a5e18f7ef2df6983a037c65b62a",
  "notes": "JOINT-BUILD record: cost covers the ChirpGeneratorBlock+ChirpSymbolMapperBlock pair (one builder, one commit); the mapper's record is a zero-cost cross-reference. 1 attempt; 49 pair tests + shared-gate enrollments; full verification suite (3690) + placekyt suite (1192) green. The DSP was bit-exact on the FIRST on-chip run (per-sample); the real engineering was the ITERATION MECHANISM for a 1:n burst source on the NCO's reconvergent-fan-in datapath: (a) a local emit loop floods the INV-20 fan-in, so the block SELF-PACES via a backward JUMP-only return kick from emit to the sweep cell's second entry, fired AFTER the yi/yq pair drains (strict one-sample-in-flight); (b) the build needed a backward-internal-JUMP pass in _apply_internal_feedback (corridor re-hop + exit-default preservation; the routed-exit pass otherwise rewrites every exit-cell jump \u2014 measured as 1-sample-per-symbol); (c) the INV-19 'LOCK engages with ANY nonzero' claim is WRONG \u2014 the LOCK CONFIG enable reads BIT 0 (A/B measured 0x1000/0x4000 fail, 1 locks); KB corrected in place; (d) run_block_dut_rate still carried the INV-1 manhattan-hop bug (zero output at two 180-family orientations \u2014 a harness masquerade, fixed by porting the corridor-accurate landing derivation). Also worth the record: the 33-entry-table grid makes the chirp interp error VANISH for n<=128 (every phase a multiple of 512; ~91 dB SNR) \u2014 the interp-limited regime (73.4 dB measured) only appears at n>=256, so the SNR must be reported at both regimes.",
- "walltime": "69m19s",
- "outcome": "passed",
- "walltime_min": 69
+ "walltime": "69m19s"
 }

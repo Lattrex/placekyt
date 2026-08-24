@@ -1,33 +1,31 @@
 {
- "block": "VaricodeDecoderBlock",
- "grc_block": "",
- "tier": 3,
- "wave": 4,
- "schema_version": 1,
- "started_utc": "2026-08-07T22:56:26Z",
- "ended_utc": "2026-08-07T23:29:42Z",
- "walltime_sec": 1336.001,
- "tokens": {
-  "input": 0,
-  "output": 180444,
-  "cache_read": 0,
-  "total": 180444
- },
- "turns": 104,
- "attempts": 1,
- "human_interventions": 0,
- "intervention_reasons": [],
- "prompts": [
-  {
-   "role": "initial",
-   "text": "SRAM-backed conversion of quarantined VaricodeDecoderBlock on the SRAM_PANEL.md recipe."
-  }
- ],
- "verify_passed": true,
- "quarantined": false,
- "quarantine_reason": "",
- "commit_sha": "7e6180b",
- "notes": "QUARANTINE->DONE SRAM-backed. 1024-entry reverse map -> SRAM panel, direct-indexed by codeword INTEGER value (128 distinct, sparse). Bit-exact + round-trip vs golden over full ASCII through REAL panel push-read. Bug: ASCII NUL (char 0) indistinguishable from unpopulated read -> store char+1 (CHAR_OFFSET), emit cell subtracts. 3 cells (accumulate 24-instr + emit + controller); 128 SRAM words in a 1024-space.",
- "outcome": "passed",
- "walltime_min": 0
+  "block": "VaricodeDecoderBlock",
+  "grc_block": "",
+  "tier": 3,
+  "wave": 4,
+  "schema_version": 1,
+  "started_utc": "2026-08-07T22:56:26Z",
+  "ended_utc": "2026-08-07T23:29:42Z",
+  "walltime_sec": 1336.001,
+  "tokens": {
+    "input": 0,
+    "output": 180444,
+    "cache_read": 0,
+    "total": 180444
+  },
+  "turns": 104,
+  "attempts": 1,
+  "human_interventions": 0,
+  "intervention_reasons": [],
+  "prompts": [
+    {
+      "role": "initial",
+      "text": "SRAM-backed conversion of quarantined VaricodeDecoderBlock on the SRAM_PANEL.md recipe."
+    }
+  ],
+  "verify_passed": true,
+  "quarantined": false,
+  "quarantine_reason": "",
+  "commit_sha": "7e6180b",
+  "notes": "QUARANTINE->DONE SRAM-backed. 1024-entry reverse map -> SRAM panel, direct-indexed by codeword INTEGER value (128 distinct, sparse). Bit-exact + round-trip vs golden over full ASCII through REAL panel push-read. Bug: ASCII NUL (char 0) indistinguishable from unpopulated read -> store char+1 (CHAR_OFFSET), emit cell subtracts. 3 cells (accumulate 24-instr + emit + controller); 128 SRAM words in a 1024-space."
 }

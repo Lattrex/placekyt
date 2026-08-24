@@ -1,33 +1,31 @@
 {
- "block": "DiffDecoderBlock",
- "grc_block": "digital.diff_decoder_bb",
- "tier": 1,
- "wave": 1,
- "schema_version": 1,
- "started_utc": "2026-08-07T03:40:26Z",
- "ended_utc": "2026-08-07T04:10:15Z",
- "walltime_sec": 1251.239,
- "tokens": {
-  "input": 0,
-  "output": 180792,
-  "cache_read": 0,
-  "total": 180792
- },
- "turns": 147,
- "attempts": 1,
- "human_interventions": 0,
- "intervention_reasons": [],
- "prompts": [
-  {
-   "role": "initial",
-   "text": "factory_dispatch prompt for DiffDecoderBlock; isolated worktree."
-  }
- ],
- "verify_passed": true,
- "quarantined": false,
- "quarantine_reason": "",
- "commit_sha": "dfe7fc5",
- "notes": "1 cell. Environment trap (not a block bug): a PARALLEL factory agent repointed the shared editable-install finder MAPPING to its own worktree, hiding this block's registration; backed up + restored the finder. BIT-EXACT mod 2 & 4 + NRZI; round-trip vs GR encoder.",
- "outcome": "passed",
- "walltime_min": 0
+  "block": "DiffDecoderBlock",
+  "grc_block": "digital.diff_decoder_bb",
+  "tier": 1,
+  "wave": 1,
+  "schema_version": 1,
+  "started_utc": "2026-08-07T03:40:26Z",
+  "ended_utc": "2026-08-07T04:10:15Z",
+  "walltime_sec": 1251.239,
+  "tokens": {
+    "input": 0,
+    "output": 180792,
+    "cache_read": 0,
+    "total": 180792
+  },
+  "turns": 147,
+  "attempts": 1,
+  "human_interventions": 0,
+  "intervention_reasons": [],
+  "prompts": [
+    {
+      "role": "initial",
+      "text": "factory_dispatch prompt for DiffDecoderBlock; isolated worktree."
+    }
+  ],
+  "verify_passed": true,
+  "quarantined": false,
+  "quarantine_reason": "",
+  "commit_sha": "dfe7fc5",
+  "notes": "1 cell. Environment trap (not a block bug): a PARALLEL factory agent repointed the shared editable-install finder MAPPING to its own worktree, hiding this block's registration; backed up + restored the finder. BIT-EXACT mod 2 & 4 + NRZI; round-trip vs GR encoder."
 }

@@ -427,6 +427,22 @@ NEEDS_BESPOKE = {
         "test_crossover_router.py, verification/tests/test_kyt_route_transits.py) and "
         "ridden end-to-end by the cw/psk31 duplex transceiver corridors (panel-paced "
         "per-sample by construction — the panels cannot saturate).",
+    "FFT64Block": "CHIP-SCALE (84 cells, sole occupant of the die, anchored "
+        "at (0,0)) and — the reason it cannot be a row here — its LATENCY is "
+        "63, while this module's shared stimulus is 16 samples. A 16-sample "
+        "saturated run of a 64-point streaming FFT never reaches a single "
+        "valid output: it exercises only the zero-fill transient and would "
+        "pass VACUOUSLY. Its saturated gate is bespoke and sized by REACH — "
+        "test_fft64.py::test_saturated_equals_per_sample_bit_exact drives "
+        "LATENCY + N = 127 samples (a whole frame past the transient) through "
+        "run_block_dut_pipelined in one bounded run and asserts the saturated "
+        "stream is bit-exact against BOTH the per-sample chip run and the "
+        "streaming golden, so all SIX stage serialize-LOCKs are proven to "
+        "release under back-to-back drive. Same mechanism as FFT16Block "
+        "(gated in COMPLEX_2IN2OUT above), two more stages of it.",
+    "FFT128Block": "not buildable on one die (raises LargeFFTGeometryError: a "
+        "7-stage ctl/out spine needs 14 rows in ONE column against a 12-row "
+        "array). Nothing to drive until the 2-die split ships.",
     "ComplexCostasLoopBlock": "complex I/Q loop; own gate proto_costas_pipe.py (BER0)",
     "CoherentRXBlock": "complex I/Q RX loop; own gate proto_rx_bisect.py (BER0)",
     "GardnerTimingRecovery": "2-sps timing loop; own gate proto_gardner_race.py",

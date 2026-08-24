@@ -126,10 +126,27 @@ by exhaustive on-chip equality against the unreduced program):
     instruction, which frees both the input register and the staging MOVE.
     The table walk and the pointer wrap are untouched.
 
-Both are now gated: :func:`~verification.tests.test_fft64_fit_limit` asserts
-NO authored cell pins data or state into its instruction region, with an
-INV-4 negative that re-inflates each pre-fix shape and asserts the gate
-catches it at exactly the addresses above.
+Both are now gated: ``test_fft64_fit_limit`` and the repo-wide
+``test_cell_program_reachability`` assert NO authored cell pins data or state
+into its instruction region, with an INV-4 negative that re-inflates each
+pre-fix shape and asserts the gate catches it at exactly the addresses above.
+
+**THE SECOND DEFECT: a dead dispatch entry (INV-35).** With the overlap fixed
+the block streamed, and was still wrong — in a way an 80-sample run could not
+see. ``swap`` had ONE jump port, wired unconditionally to ``sign``'s ``num``
+entry, so ``sign``'s ``triv`` entry was UNREACHABLE and the fold emitted
+numeric words on its two structurally trivial slots (``k = 0`` and
+``k = N/4``) instead of the sentinel encoding ``steer`` dispatches on. Thirty
+of thirty-two slots were right; the two wrong ones put the ENTIRE odd-bin
+half of every frame out. It was found by reading the ``steer`` cell's latched
+``(csav, dsav)`` off a running chip trigger by trigger — wrong at exactly
+triggers 0 and 16 and nowhere else. ``swap`` now has ``t_num`` and ``t_triv``
+and both are wired.
+
+Note the reach arithmetic, because it is why this hid: the first valid output
+is at ``N-1 = 63``, and frame slots ``0..31`` are the EVEN bins (stage 0's
+SUM branch). The TWIDDLED half is not reached until output 95, so any run
+shorter than that says nothing about the fold.
 
 **THE LAYOUT: a vertical CTL/OUT SPINE** (this REPLACES the stacked-band
 scheme, which did not fit and whose two "walls" were both artefacts of the

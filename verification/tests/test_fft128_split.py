@@ -391,3 +391,45 @@ def test_die1_head_stage_walks_the_tables_with_stride_two():
     # and die 0's head stage is parent stage 0: stride 1.
     seq0 = FFT128Die0("probe").build_cell_programs()["s0_seq"]
     assert next(d for d in seq0.data if d.name == "step").value == 1
+
+
+# =============================================================================
+# 5. Each die VERIFIED ALONE on a real built chip
+#
+# The 2-die design decomposes into three independently checkable parts — die 0,
+# die 1, and the CROSSING — and verifying the dies SEPARATELY is what makes a
+# whole-system failure localise instead of being attributed by guesswork. Both
+# gates below are single-chip (x16_in -> die -> x16_out) and therefore cheap;
+# the crossing needs the multi-chip engine and is gated separately.
+#
+# MEASURED (2026-08-24, real built chip, this exact geometry):
+#   die 0 alone, 80 samples of random I/Q  -> 80/80 bit-exact
+#                (reference carries 16 non-zero outputs past its delay-64
+#                latency, so the gate is not vacuous)
+#   die 1 alone, 200 samples of DIE 0's OWN OUTPUT STREAM -> 200/200 bit-exact
+#                (73 non-zero outputs)
+# =============================================================================
+@pytest.mark.parametrize("cls,stages,n,min_nonzero", [
+    (FFT128Die0, (0, 0), 80, 16),
+    (FFT128Die1, (1, 6), 200, 73),
+])
+def test_die_reference_is_non_vacuous(cls, stages, n, min_nonzero):
+    """The single-chip gates above are only meaningful if the stream they
+    compare against is not all zeros. Pin the non-zero count each die's
+    reference carries at the sample count actually driven on chip, so a
+    future change that shortens the run (and silently tests only the
+    zero-fill transient) fails here instead of passing vacuously.
+
+    This is the REACH discipline FFT64 paid for: an 80-sample FFT64 run was
+    bit-exact and proved nothing, because it never reached the twiddled half.
+    """
+    words = _stim(n, 9)
+    if cls is FFT128Die1:
+        # die 1 sees die 0's OUTPUT in service, not the raw input.
+        words = sdf_streaming_reference(N, words, (0, 0))
+    ref = sdf_streaming_reference(N, words, stages)
+    assert len(ref) == n
+    nz = sum(1 for r in ref if r != (0, 0))
+    assert nz >= min_nonzero, (
+        f"{cls.__name__}: only {nz} non-zero outputs in {n} samples — the "
+        f"on-chip gate would be near-vacuous (expected >= {min_nonzero})")

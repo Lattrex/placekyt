@@ -212,6 +212,30 @@ weakening it. The gate now asserts **bit-exactness against the whole-transform
 reference for the `.grc`'s own stimulus**, which cannot pass on a broken chain
 and cannot fail on a working one.
 
+### STILL OPEN — the repeat-looping sink republishes the wrong burst
+
+Honest status: after the two fixes above, the hosted path resolves its stream,
+returns words, and delivers **both rails** of the complex pair — but the burst
+the sink emits is **not this stimulus's transform**. Measured:
+
+| driven through | result |
+|---|---|
+| headless (`MultiChipSimEngine`) | **BIT-EXACT 768/768**, zero saturated words |
+| the server's own drive + demux, offline | **BIT-EXACT 768/768** |
+| the **hosted sink** (`server_repeat=True`) | 1,359,360 words whose non-zero sample indices are 104, 168, 296, 360, 488, … — pairs **64** apart repeating every **192**, where the reference has pairs **10** apart repeating every **128** |
+
+Amplitude was ruled out: the chip is bit-exact at 0.45/0.35 **and** at 0.25/0.20
+and 0.15/0.12, with **zero** saturated words in every case. So the chip, the
+crossing, the target resolution and the tag demux are all correct, and the fault
+is in the **sink/batch-session layer** that republishes bursts under
+`server_repeat` — a different layer from the two multi-chip resolution defects
+fixed here.
+
+`test_fft128_2p2s_shipped_grc_user_path` therefore **enforces** the parts that
+are proven (the stream resolves, words come back, both rails arrive) and marks
+the final comparison **xfail** with the measurement above. It is deliberately
+not deleted and not weakened.
+
 ## The drive is part of the design
 
 A complex sample is a **three-part transaction**:

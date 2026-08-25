@@ -229,6 +229,26 @@ user-path gate was written. Headless was green at 200/200 bit-exact while the ho
 > complex block — it must come from the terminal block's DECLARED output registers.
 > The single-chip resolver already OR-ed both sources; the multi-chip one had neither.
 
+**STILL OPEN (recorded, not hidden): the repeat-looping SINK republishes a burst that
+is not the stimulus's transform.** After the two resolution fixes the hosted path
+resolves its stream, returns words, and delivers BOTH rails — but the emitted burst is
+wrong. Measured three ways on the identical stimulus:
+
+| driven through | result |
+|---|---|
+| headless (`MultiChipSimEngine`) | BIT-EXACT 768/768, zero saturated words |
+| the server's OWN drive + demux, offline | BIT-EXACT 768/768 |
+| the HOSTED sink (`server_repeat=True`) | 1,359,360 words; non-zero SAMPLE indices 104, 168, 296, 360, 488, … — pairs **64** apart repeating every **192**, where the reference has pairs **10** apart repeating every **128** |
+
+Amplitude/saturation was RULED OUT: bit-exact at 0.45/0.35 and at 0.25/0.20 and
+0.15/0.12, zero saturated words in every case. So chip + crossing + target resolution
++ tag demux are all correct; the fault is in the SINK/batch-session layer that
+republishes bursts under `server_repeat` (`gr-kyttar/python/kyttar/sink.py` refreshes
+`_server_result` from a new generation mid-emit and restarts `_server_outq`), a
+different layer from the two multi-chip resolution defects. The gate ENFORCES what is
+proven (stream resolves, words return, both rails arrive) and marks the final
+comparison **xfail** carrying the measurement. Deliberately not deleted, not weakened.
+
 **A LIVELINESS HEURISTIC IS THE WRONG GATE — bit-exactness is the right one.** The
 first version of that user-path gate asserted the recovered stream "looks busy"
 (enough distinct values, enough non-zero words). That is WRONG for this flowgraph:

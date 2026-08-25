@@ -1,0 +1,64 @@
+id: kyttar_fft128_die0
+label: FFT128 die0 (stage 0, chip-scale)
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  FFT128 DIE 0 — stage 0 of the 128-point streaming radix-2 FFT (single-path
+  delay feedback, DIF). Complex in, complex out, one output per input.
+
+  ⚠️ THIS IS HALF A TRANSFORM. N=128 does not fit one die: its 7-stage ctl/out
+  spine needs 14 rows in ONE column against a 12-row array. The supported
+  topology is a STAGE-BOUNDARY SPLIT across TWO chips —
+
+      chip 0: FFT128 die0 (this block, stage 0, 30 cells)
+        │  inter-chip wire
+      chip 1: FFT128 die1 (stages 1..6, 84 cells)
+
+  and the two together compute the whole transform: whole(x) == die1(die0(x)),
+  word for word.
+
+  ⚠️ ITS OUTPUT IS NOT FREQUENCY BINS. die0 emits a PARTIALLY transformed
+  stream — exactly what die1 consumes. Reading it as a spectrum gives a
+  plausible-looking wrong answer. Wire it to FFT128 die1 on the next chip.
+
+  Stage 0 is the period-64 OCTANT FOLD: the one stage of this transform with
+  no N=64 counterpart, and the reason N=128 needs 16+16 octant tables where
+  N=64 needs 8+8. It reconstructs its twiddles from those tables by index fold
+  plus sign/swap steering — bit-exact, trivial slots included.
+
+  ⚠️ CHIP-SCALE BLOCK: it is the SOLE OCCUPANT of a die and does not rotate.
+  Give it its own chip, and place it at its declared anchor — a spine fold's
+  plan uses absolute coordinates.
+
+  LATENCY: 64 samples (the pair's 127 = 64 + 63).
+
+  Both output rails must be WIRED (to a downstream block or a chip port);
+  terminate an unused output — a dangling complex pair mis-fires its
+  default-resolved writes into neighbouring cells.
+
+  This block runs on the Kyttar chip. Place it between a KyttarSource and the
+  chip's output port; the device_id must match your KyttarDevice.
+
+  Parameters:
+  - Device ID: ID of the KyttarDevice block
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.fft128_die0(device_id=${device_id})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+
+inputs:
+  - label: in
+    dtype: complex
+
+outputs:
+  - label: out
+    dtype: complex
+
+file_format: 1

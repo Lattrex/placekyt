@@ -30,6 +30,12 @@ CHIP_SCALE_GATES = {
     "FFT32Block": "test_fft32.py",
     "FFT64Block": "test_fft64.py",
     "GRUCellBlock": "test_gru_cell.py",
+    # The two halves of the N=128 split. Both reached manifest-done when the
+    # two-chip crossing was proven bit-exact, so both now carry a real
+    # declared-orientation gate (test_orientation_set_is_declared_and_gated)
+    # rather than sitting in the quarantine list below.
+    "FFT128Die0": "test_fft128_2die_example.py",
+    "FFT128Die1": "test_fft128_2die_example.py",
 }
 
 #: chip-scale classes that are NOT manifest-``done`` and so are not required to
@@ -37,7 +43,7 @@ CHIP_SCALE_GATES = {
 #: it is quarantined, and the registry test RE-CHECKS the manifest — a block
 #: that reaches ``done`` while parked here fails, rather than slipping through
 #: with no orientation coverage at all.
-CHIP_SCALE_QUARANTINED = ("FFT128Block", "FFT128Die0", "FFT128Die1")
+CHIP_SCALE_QUARANTINED = ("FFT128Block",)
 
 
 def _all_chip_scale_blocks():

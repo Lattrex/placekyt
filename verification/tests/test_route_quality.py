@@ -95,6 +95,42 @@ TOTAL_EXCESS = {
     # free to improve: a 400-layout search over the free band found exactly ONE
     # arrangement that routes AND builds at all (102/120).
     "gru_classifier.kyt": 6,
+    # FFT128 two-die split (2026-08-24): die 0's egress, +10 — see
+    # WALLED_IN_NETS below, which proves it is the SHORTEST path that exists.
+    "fft128_2die.kyt": 10,
+}
+
+# Per-net exceptions to MAX_NET_EXCESS. An entry here is a claim that the net's
+# excess is FORCED BY GEOMETRY — that no shorter route exists at all — and the
+# gate PROVES that claim rather than trusting it: ``test_walled_in_nets_really_
+# are_shortest`` re-derives each one with a breadth-first search over the free
+# cells and fails if a shorter path is found, or if the net has quietly become
+# short enough not to need the exception.
+#
+# This is the ONLY legitimate way past MAX_NET_EXCESS. Raising the global cap
+# to admit one walled-in net would blind the ratchet to genuine wander in every
+# other design — which is the thing it exists to catch.
+WALLED_IN_NETS = {
+    # Die 0's period-64 octant fold walls off rows 0-3 across columns 2-8:
+    #
+    #        0123456789
+    #     0  I.#######O      I = x16_in    O = x16_out
+    #     1  ..X######.      X = the egress cell (2,1)
+    #     2  .########.      # = die 0 cell
+    #     3  .########.
+    #     4  ..........      <- the first free lane across
+    #
+    # so the egress cell at (2,1) is BOXED IN: every route to x16_out (9,0)
+    # must escape west to column 0, drop to the free row 4, cross the array and
+    # climb column 9 — 18 cells for a manhattan-8 hop.
+    #
+    # The placement is not free to improve. Die 0 is a CHIP-SCALE block whose
+    # spine plan is validated as a unit, and its declared anchor (1, 0) is
+    # pinned by test_fft128_split.py: one column left it seals the input port
+    # and the design does not route at all. The pair is verified BIT-EXACT end
+    # to end on the real two-chip system, so the +10 buys correct hops rather
+    # than hiding a hazard.
+    ("fft128_2die.kyt", "c0_out"): 10,
 }
 
 
@@ -123,9 +159,10 @@ def test_route_quality(kyt):
     total_excess = 0
     for name, length, manh, pts in rows:
         excess = length - manh
-        assert excess <= MAX_NET_EXCESS, (
+        cap = WALLED_IN_NETS.get((kyt.name, name), MAX_NET_EXCESS)
+        assert excess <= cap, (
             f"{kyt.name} {name}: routed {length} cells for manhattan {manh} "
-            f"(+{excess} > {MAX_NET_EXCESS}) — the router is regressing toward "
+            f"(+{excess} > {cap}) — the router is regressing toward "
             f"the loop-back/zigzag pathology: {pts}")
         assert len(pts) == len(set(pts)), (
             f"{kyt.name} {name}: route REVISITS a cell (literal loop): {pts}")
@@ -134,3 +171,90 @@ def test_route_quality(kyt):
     assert total_excess <= budget, (
         f"{kyt.name}: total route excess {total_excess} exceeds the pinned "
         f"budget {budget} — a route got longer; find out why before re-pinning")
+
+
+@pytest.mark.parametrize("key", sorted(WALLED_IN_NETS), ids=lambda k: f"{k[0]}:{k[1]}")
+def test_walled_in_nets_really_are_shortest(key):
+    """A MAX_NET_EXCESS exception must EARN itself.
+
+    ``WALLED_IN_NETS`` claims a net's excess is forced by geometry. That claim
+    is checkable, so it is checked: flood-fill the free cells (every placed
+    block's cells are obstacles, except the routed net's own endpoints) and
+    assert the shipped route is exactly as long as the shortest one that
+    exists. If a shorter path appears — a re-placement opened a lane, the
+    router improved — this fails and the exception must go, rather than
+    quietly licensing wander forever after.
+    """
+    fname, netname = key
+    kyt = next((p for p in _kyts() if p.name == fname), None)
+    assert kyt is not None, f"{fname} is no longer a shipped example"
+    doc = yaml.safe_load(kyt.read_text())
+
+    conn = next((c for c in (doc.get("connections") or [])
+                 if c.get("name") == netname), None)
+    assert conn is not None, f"{fname} has no net named {netname}"
+    pts = [(p["x"], p["y"]) for p in conn["route"]]
+    src, dst = pts[0], pts[-1]
+
+    # Every placed cell on THIS net's chip is an obstacle. Two subtleties, both
+    # of which produce a bogus "no path at all" if missed:
+    #   * the chip comes from the CONNECTION's own endpoints — two dies of a
+    #     multi-chip design can occupy the same (x, y), so inferring the chip
+    #     by matching a coordinate picks the wrong block half the time;
+    #   * the net's SOURCE is itself a block cell (a route starts AT the
+    #     emitting cell), so both endpoints are exempted — otherwise the search
+    #     begins inside a wall.
+    chip = 0
+    for ep in (conn.get("from") or {}, conn.get("to") or {}):
+        if isinstance(ep, dict) and "chip_port" in ep:
+            chip = (ep["chip_port"] or {}).get("chip", 0)
+            break
+        if isinstance(ep, dict) and "block" in ep:
+            b = next((x for x in (doc.get("blocks") or [])
+                      if x.get("name") == ep["block"]), None)
+            if b is not None:
+                chip = (b.get("placement") or {}).get("chip", 0)
+                break
+    blocked = set()
+    for b in doc.get("blocks") or []:
+        pl = b.get("placement") or {}
+        if pl.get("chip", 0) != chip:
+            continue
+        for c in pl.get("cells") or []:
+            blocked.add((c["x"], c["y"]))
+    blocked -= {src, dst}
+
+    W = H = None
+    for b in doc.get("blocks") or []:
+        for c in ((b.get("placement") or {}).get("cells") or []):
+            W = max(W or 0, c["x"] + 1)
+            H = max(H or 0, c["y"] + 1)
+    W, H = max(W or 10, 10), max(H or 12, 12)
+
+    from collections import deque
+    q, seen = deque([(src, 0)]), {src}
+    shortest = None
+    while q:
+        cur, d = q.popleft()
+        if cur == dst:
+            shortest = d
+            break
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            n = (cur[0] + dx, cur[1] + dy)
+            if (0 <= n[0] < W and 0 <= n[1] < H
+                    and n not in seen and n not in blocked):
+                seen.add(n)
+                q.append((n, d + 1))
+    assert shortest is not None, (
+        f"{fname} {netname}: no free path from {src} to {dst} at all")
+
+    routed = len(pts) - 1
+    manh = abs(src[0] - dst[0]) + abs(src[1] - dst[1])
+    assert routed == shortest, (
+        f"{fname} {netname}: shipped route is {routed} cells but a "
+        f"{shortest}-cell free path EXISTS — the excess is not geometry-"
+        "forced, so this WALLED_IN_NETS exception is not earned")
+    assert shortest - manh > MAX_NET_EXCESS, (
+        f"{fname} {netname}: the shortest path is now +{shortest - manh}, "
+        f"within MAX_NET_EXCESS ({MAX_NET_EXCESS}) — the exception is no "
+        "longer needed; delete it from WALLED_IN_NETS")

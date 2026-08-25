@@ -298,6 +298,25 @@ def _solve_chip(cp_model, ct, occ, chip_nets, max_time_s):
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = float(max_time_s)
     solver.parameters.num_search_workers = 8
+    # DETERMINISM. The objective above has TIES by construction — sharing is free
+    # and many corridors activate the same number of cell-faces — so a design can
+    # have several equally optimal routings. With a parallel portfolio and no seed,
+    # the solver returns whichever equally-optimal solution its workers reach
+    # first, so the SAME design re-routed to a DIFFERENT (equally correct) path on
+    # a repeat build in one process. Measured on the 2-die FFT128: five builds,
+    # identical placement/occupancy/net order, three distinct 17-cell routes for
+    # the one net with tied optima — every other net stable, and every variant
+    # verified bit-exact on chip.
+    #
+    # That is not a correctness bug (the objective value is identical either way),
+    # but it makes builds irreproducible, and it silently defeats any gate that
+    # compares bitstreams across builds. Both settings below constrain only WHICH
+    # optimum is returned, never how good it is:
+    #   * random_seed pins the portfolio's randomisation;
+    #   * interleave_search makes the workers' progress deterministic rather than
+    #     wall-clock dependent, which is what a fixed seed alone cannot fix.
+    solver.parameters.random_seed = 0
+    solver.parameters.interleave_search = True
     status = solver.Solve(m)
 
     out: list[RouteResult] = []

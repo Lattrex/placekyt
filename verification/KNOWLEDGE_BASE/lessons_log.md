@@ -219,6 +219,164 @@ precedent.
 TIME_WAIT for 40-140s after each, so they self-contend under concurrent load
 (and contend with any other agent hosting a chip). Run this gate STANDALONE; a
 bind failure there is contention, not a product fault.
+## FFT128 2-die: the "livelocked crossing" was the DRIVER — and the dies had been verified while the driver never was 2026-08-24
+
+The N=128 two-die split was quarantined `needs_human` with *"0 of 520 words,
+livelocks from trigger 1"*, after three real inter-chip build-path defects had
+been found and fixed. **The crossing was innocent.** Wired together and driven
+correctly the pair is **200/200 bit-exact** on the real two-chip system (73
+non-zero outputs; `examples/fft128_2die/`, gated by
+`verification/tests/test_fft128_2die_example.py`). The remaining fault was in
+the DRIVE, and the way it hid is the durable part.
+
+- **A complex sample is a THREE-PART TRANSACTION, and on the multi-chip path
+  each part must be pumped to quiescence before the next is injected.**
+  `WRITE xi` → pump → `WRITE xq` → pump → `JUMP` → settle. Measured on the
+  identical bitstream, 12 samples:
+
+  | drive shape | words out |
+  |---|---|
+  | all three queued, one settle | **0** of 24 |
+  | two WRITEs queued, then JUMP + settle | **0** of 24 |
+  | one WRITE + one JUMP per WORD (the generic routed-head path) | 48 — **double-fires** |
+  | WRITE, pump, WRITE, pump, JUMP, settle | **24** ✅ |
+
+  Queued back to back, the single-outstanding input handshake is overrun and
+  the system makes no forward progress — indistinguishable, from the outside,
+  from a livelocked crossing. Note the server already had this right
+  (`sim_bridge._process_batch_multichip` paces exactly this way); the
+  investigation drove the engine directly and did not inherit it.
+
+- **VERIFY THE PARTS SEPARATELY — and the DRIVER IS A PART.** The previous
+  entry's decomposition (die 0 alone 80/80, die 1 alone 200/200, therefore the
+  fault is the crossing) was sound reasoning from an incomplete parts list.
+  Both single-die runs went through `run_block_dut_complex`, which paces
+  correctly; the two-die run used a hand-written driver that did not. So the
+  one component that differed between the working and failing configurations
+  was never on the list of suspects. **When "each part works but the assembly
+  doesn't", enumerate what the ASSEMBLY introduced — including the harness —
+  not just the parts it joined.**
+
+- **A LARGER BUDGET CAN HIDE THE BUG IT IS MEANT TO RULE OUT.**
+  `run(events, rounds)` is events-per-chip-per-round × rounds. The original
+  investigation reached for `run(400_000, 4000)`; re-measured here, that shape
+  ran **over an hour on a 70-sample comparison** and had to be killed. It does
+  not merely waste time — it lets one round churn arbitrarily far past the
+  point where a missing pump would have been obvious, converting a crisp
+  "nothing moved" into an ambiguous "still running". The shipped budgets are
+  derived from what a sample has to do: `(60_000, 5)` per operand pump,
+  `(200_000, 50)` for the settle, and 200 samples finish in minutes.
+
+- **The crossing carries a PAIR and ONE trigger — verified, not assumed.**
+  Watched at die 1's landing past die 0's delay-64 latency:
+  `WRITE reg1 = out_i`, `WRITE reg2 = out_q`, `JUMP entry` — matching die 0's
+  output stream word for word. The boundary is a transparent wire (die 0's
+  exit cell emits both rails and the JUMP with the hop composed past the
+  boundary), NOT a value relay that re-triggers per word. A per-word trigger
+  would fire die 1 twice per sample on a half-primed operand pair — the
+  on-chip "matched filter gets xi but never xq" data loss. The API surface
+  invites the wrong conclusion here (`MultiChipSimulation` has no
+  `write_port_multi_i16`, and the generic `MultiChipSimEngine.inject` really
+  does WRITE+JUMP per word — which is why shape (3) above double-fires), so
+  the packet shape is now pinned by a gate rather than inferred from the
+  binding's method list.
+
+- **The three earlier engine fixes were necessary.** They are what makes the
+  paired delivery possible: the exit patcher no longer clobbers a mid-block
+  exit's internal writes, both rails carry the cross-chip hop, and they land
+  in consecutive registers. Without them the pacing alone would not have been
+  enough. Landing proven fixes while stating plainly that the feature still
+  did not work was the right call — this entry is what that honesty bought.
+
+- **AND A SECOND, REPO-WIDE BUG FELL OUT OF GATING IT.** The example's
+  "the shipped `.kyt` rebuilds to the verified bitstream" gate failed on
+  roughly a coin-flip while the design was provably correct. Chasing that
+  rather than loosening it found that **the build was not deterministic**:
+  `cpsat_router` ran `num_search_workers = 8` with **no `random_seed`**, and
+  its objective (minimise active cell-faces; sharing is free) has TIES by
+  construction — so the parallel portfolio returned whichever equally-optimal
+  routing its workers reached first. Measured: five builds, identical
+  placement, occupancy, transit cells, faces and net order, and `_bfs`
+  returning byte-identical results — yet **three distinct 17-cell routes** for
+  the one net with tied optima, every other net stable. Every variant ran
+  bit-exact on chip, so it was never a correctness bug; it made builds
+  irreproducible and silently defeated any gate comparing bitstreams. Fixed at
+  the source (`random_seed = 0` + `interleave_search = True`, which constrain
+  WHICH optimum is returned and never how good it is): six builds now produce
+  identical routes and identical bitstreams on both chips.
+  **The generalisable part: when a gate is flaky, the flake is a finding.**
+  The tempting move — weaken the assertion to "same size" and move on — would
+  have left every CP-SAT-routed design in the repo irreproducible, and would
+  have thrown away the only symptom that pointed at it. Also: *narrow the
+  suspect by measuring inputs, not by reading code*. The router's own BFS
+  looked deterministic and WAS; instrumenting its arguments proved the inputs
+  were identical too, which is what eliminated placement, occupancy, net order
+  and the spine in one step and left the solver as the only remaining variable.
+
+- **AND A THIRD: a repo gate that was CHIP-BLIND, plus the quarantine it had
+  manufactured.** `test_kyt_route_transits.py` built its cell-ownership map
+  keyed on `(x, y)` with **no chip id**, collapsing every die onto one grid. On
+  the first example with blocks on more than one die it reported a route on
+  chip 0 "transiting" a block that is actually on chip 1 at the same
+  coordinate. Fixing that revealed the more interesting half: **the `gain_2p2s`
+  xfail was documenting the same bug.** Its recorded rationale — "the layout
+  runs its tagged egress bus THROUGH gain_3 at (1,0) by original design" — was
+  false. All three of its findings were cross-die (`gain_to_x16_out` is chip
+  0's route; `gain_3` is on chip 3); each chip's egress crosses only its OWN
+  gain, which is its endpoint and correctly excluded. Chip-aware, the example
+  is clean and is gated normally, and `_KNOWN_OPEN` is now empty.
+  **Two lessons.** *A quarantine is only worth its evidence* — this one had
+  outlived its, and would have kept a correct example excluded from its gate
+  indefinitely while reading as diligence. And *a false-positive fix can
+  silently remove teeth*: keying on one GUESSED chip made the check pass
+  everywhere, including where a genuine cross-chip net should still be
+  examined, so the fix checks the route against BOTH endpoint chips and a
+  companion test asserts the repo still contains an example of each shape
+  (blocks on two dies; a net whose endpoints are on different dies) so neither
+  the blind nor the guessed mistake can return unnoticed.
+
+- **A NEW EXAMPLE IS A GATE-COVERAGE TEST, and this one found four gaps.**
+  Beyond the two above, the repo's own ratchets flagged the new design twice,
+  and both were worth fixing properly rather than waiving:
+  (a) **Route quality.** Die 0's egress is +10 over manhattan, past the global
+  `MAX_NET_EXCESS` of 8. It is not wander — die 0's fold walls off rows 0-3
+  across columns 2-8, boxing the egress cell at (2,1) in, so every route must
+  escape west, drop to the free row 4, cross, and climb column 9. The tempting
+  fix (raise the global cap) would blind the ratchet for *every other* design.
+  Instead: a per-net `WALLED_IN_NETS` exception that the gate **proves** —
+  `test_walled_in_nets_really_are_shortest` flood-fills the free cells and
+  fails if a shorter path exists, or if the net later becomes short enough that
+  the exception is no longer needed. **An exception that checks its own premise
+  cannot rot into a licence.**
+  (b) **Saturation coverage.** Both dies needed a `NEEDS_BESPOKE` reason: the
+  shared harness drives a block alone on one chip, and half a transform is only
+  meaningful as half of a pair (die 1's input is die 0's *output*, not a raw
+  signal). The bespoke gate is the stronger one — it asserts bit-exactness, the
+  per-trigger rate AND quiescence on the real two-chip system.
+  (c) INV-38 caught this example's own report writer hardcoding
+  `"passed": True`. The guard was right; the verdict is the session's.
+
+- **WHEN A SUITE REPORTS 120 FAILURES, FIND THE ONE CAUSE BEFORE FIXING 120
+  THINGS.** A full run came back with 120 failures, nearly all
+  `test_emit_report` / `test_write_report`. Every one passed in isolation. The
+  mechanism is by design: `write_session_report` refuses to write if ANY gate
+  failed in the session, so a single genuinely-broken test poisons every report
+  writer downstream of it. Here the seed was 8 errors in an example that
+  imports `PyQt5` (absent from this venv, which has PySide6) — **pre-existing,
+  untouched by the work, and nothing to do with the 112 blocks that "failed"**.
+  Re-running with the report writers deselected cut the noise to 11 real
+  failures, of which exactly two were mine. Two habits fall out: *a cascade has
+  a shape* (all failures in one test-NAME, all passing alone), and *the way to
+  see past it is to deselect the cascading layer*, not to start fixing its
+  victims.
+
+- **Ship the vehicle, not just the verdict.** The two-chip driver that
+  produced the original "0 of 520 words" measurement was never committed, so
+  the next person started from prose. `examples/fft128_2die/` now ships the
+  `.kyt`, the `.grc`, and a demo that reports per-trigger yield, the crossing's
+  traffic and the first non-quiescent trigger — plus `--pattern batched`,
+  which reproduces the failure on demand so the trap stays demonstrable
+  instead of becoming folklore.
 
 ## Verification-integrity sweep — every report writer in the suite could write a GREEN report for a FAILING session (INV-36) 2026-08-24
 

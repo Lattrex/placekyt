@@ -110,6 +110,7 @@ from .complex_delay_line import complex_delay_line
 from .fft16 import fft16
 from .fft32 import fft32
 from .fft64 import fft64
+from .fft128_die import fft128_die0, fft128_die1
 from .agc import agc
 from .agc_cc import agc_cc
 from .nco import nco
@@ -239,6 +240,8 @@ __all__ = [
     "fft16",
     "fft32",
     "fft64",
+    "fft128_die0",
+    "fft128_die1",
     "agc",
     "agc_cc",
     "nco",

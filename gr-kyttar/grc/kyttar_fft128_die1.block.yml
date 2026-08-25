@@ -1,0 +1,66 @@
+id: kyttar_fft128_die1
+label: FFT128 die1 (stages 1..6, chip-scale)
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  FFT128 DIE 1 — stages 1..6 of the 128-point streaming radix-2 FFT (single-
+  path delay feedback, DIF). Complex in, complex out, one output per input.
+
+  ⚠️ THIS IS HALF A TRANSFORM. It consumes FFT128 die0's output stream — the
+  partially transformed stream, NOT a raw signal. Fed the raw input it
+  produces a wrong answer that still looks like a spectrum. The pair is:
+
+      chip 0: FFT128 die0 (stage 0, 30 cells)
+        │  inter-chip wire
+      chip 1: FFT128 die1 (this block, stages 1..6, 84 cells)
+
+  and whole(x) == die1(die0(x)), word for word.
+
+  ⚠️ OUTPUT ORDER IS BIT-REVERSED (standard DIF): with die0 upstream, output
+  slot k of each 128-sample frame carries frequency bin bit_reverse_7(k) —
+  slot 0 -> bin 0, slot 1 -> bin 64, slot 2 -> bin 32, slot 3 -> bin 96, and
+  so on. The map is an involution, so applying it twice returns natural order.
+  There is deliberately NO reorder buffer; a consumer that needs natural bin
+  order applies the index map.
+
+  SCALE: output = FFT/128. LATENCY: 63 samples for this die (the pair's 127).
+
+  Die 1 is structurally the VERIFIED FFT64 shape — 84 cells over a 12-row
+  spine — and it computes exactly the transform FFT64 computes, because the
+  DIF angle identity stage_table(128, s+1) == stage_table(64, s) holds word
+  for word. Its head stage walks the 16+16 octant tables with a STRIDE-2
+  exponent, which is the one genuinely new piece of arithmetic in the split.
+
+  ⚠️ CHIP-SCALE BLOCK: it is the SOLE OCCUPANT of a die and does not rotate.
+  Give it its own chip.
+
+  Both output rails must be WIRED (to a downstream block or a chip port);
+  terminate an unused output — a dangling complex pair mis-fires its
+  default-resolved writes into neighbouring cells.
+
+  This block runs on the Kyttar chip. Place it between the chip's input port
+  and a KyttarSink; the device_id must match your KyttarDevice.
+
+  Parameters:
+  - Device ID: ID of the KyttarDevice block
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.fft128_die1(device_id=${device_id})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+
+inputs:
+  - label: in
+    dtype: complex
+
+outputs:
+  - label: out
+    dtype: complex
+
+file_format: 1

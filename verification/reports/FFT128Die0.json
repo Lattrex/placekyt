@@ -1,0 +1,33 @@
+{
+  "kyttar_block": "FFT128Die0",
+  "passed": true,
+  "metric": "exact",
+  "n_compared": 400,
+  "max_abs_err": 0.0,
+  "tolerance": 0.0,
+  "bit_errors": 0,
+  "delay_used": 0,
+  "coverage": {
+    "edge": false,
+    "random": 1,
+    "mutation": true,
+    "n_fft": 128,
+    "latency": 127,
+    "output_order": "bit_reversed",
+    "scale": "fft_over_128",
+    "chip_scale": true,
+    "two_die": true,
+    "samples_driven": 200,
+    "samples_bit_exact": 200,
+    "nonzero_outputs": 73,
+    "words_egressed": 400,
+    "quiescent_triggers": 200,
+    "words_per_trigger": [
+      2
+    ],
+    "stages": "0",
+    "cells": 62,
+    "bitstream_words": 2698
+  },
+  "provenance": "session"
+}

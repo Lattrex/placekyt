@@ -45,16 +45,22 @@ OFFICIAL_LIBRARY = "lattrex.official"
 # in-array block for small matrices and is catalogued normally.)
 _EXCLUDED_BLOCKS = frozenset({
     "ViterbiK7DecoderBlock",
-    # 128-point streaming FFT: NO in-array implementation on a 10x12. Its
+    # 128-point streaming FFT: NO SINGLE-DIE implementation on a 10x12. Its
     # ctl/out spine needs 2 * 7 stages = 14 rows in ONE column against a
     # 12-row panel, so the class raises LargeFFTGeometryError in its
     # CONSTRUCTOR — loudly and by design, naming the 2-row shortfall rather
-    # than emitting an unroutable layout. The stage-boundary 2-die split is
-    # its supported topology and is not built. Excluding it here is what the
+    # than emitting an unroutable layout. Excluding it here is what the
     # exclusion list is for: a catalogued block that cannot be instantiated
     # fails every "build each catalog block" sweep (measured: 6 tests across
     # test_data_words.py and test_portmap.py) for a reason that has nothing to
-    # do with the sweep. Remove this entry when the 2-die split lands.
+    # do with the sweep.
+    #
+    # THIS ENTRY IS PERMANENT. The 2-die split HAS landed and is verified
+    # bit-exact end to end (examples/fft128_2die/, gated by
+    # test_fft128_2die_example.py), but it ships as the two HALVES —
+    # FFT128Die0 and FFT128Die1, which ARE catalogued and placeable, one per
+    # chip. The whole-transform class stays un-instantiable because a single
+    # die genuinely cannot hold it; that is the fact it exists to state.
     "FFT128Block",
 })
 

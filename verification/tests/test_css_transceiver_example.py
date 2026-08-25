@@ -275,7 +275,7 @@ def test_mutation_non_conjugated_reference_fails(burst):
 
 # --- 5. THE USER PATH: hosted .kyt + the shipped .grc under real GNU Radio ----
 
-def _serve(kyt, wait_secs=180):
+def _serve(kyt, wait_secs=900):
     """Host the .kyt exactly as the GUI's 'Run as GNURadio Server' does.
 
     Port 58950 is the GUI's single default bind, so every example's user-path
@@ -302,10 +302,20 @@ def _serve(kyt, wait_secs=180):
             bound = sim.start_gnuradio_server(port=_PORT)
             if bound == _PORT:
                 return ctrl, sim
+            # A busy port surfaces EITHER as OSError(EADDRINUSE) or as a
+            # None/other return, depending on where the bind fails; treat both
+            # as "not ours yet" and make sure nothing half-started is left.
             last = f"bound {bound} instead"
-            sim.stop_gnuradio_server()
+            try:
+                sim.stop_gnuradio_server()
+            except Exception:  # noqa: BLE001
+                pass
         except OSError as e:            # EADDRINUSE
             last = str(e)
+            try:
+                sim.stop_gnuradio_server()
+            except Exception:  # noqa: BLE001
+                pass
         if time.time() >= deadline:
             pytest.fail(
                 f"port {_PORT} still busy after {wait_secs}s ({last}) — run "

@@ -2,17 +2,19 @@
  "block": "FFT128Block",
  "grc_block": "",
  "wave": 7,
- "attempts": 3,
+ "attempts": 4,
  "human_interventions": 0,
  "tokens": {
-  "total": 703084,
-  "source": "orchestrator_usage (share of the FFT64/128 dispatch chain; FFT64 carries the earlier dispatches)"
+  "input": 0,
+  "output": 1311259,
+  "cache_read": 0,
+  "total": 1311259
  },
- "turns": 714,
+ "turns": 2436,
  "walltime": "~156m (joint with FFT64 verification)",
- "commit_sha": "7c980ff49169a140c216d1f36815436d32ff19e6",
- "notes": "ALL ARITHMETIC VERIFIED ON CHIP; THE CROSSING IS NOT. Split after STAGE 0 (die 0 = 30 cells, the period-64 octant fold; die 1 = 84 cells, stages 1..6). The originally-planned stage-2 cut does NOT place \u2014 SHAPE, not area, is binding.\n\nMEASURED SEPARATELY, so a whole-system failure is never attributed by guesswork:\n  * die 0 alone: 80/80 BIT-EXACT on a real built chip vs sdf_streaming_reference(128, x, (0,0)), incl. 16 non-zero outputs past its delay-64 latency. This is the genuinely NEW arithmetic in FFT128 \u2014 the period-64 fold needing 16+16 octant tables where N=64 needs 8+8, the one stage with no N=64 counterpart.\n  * die 1 alone: 200/200 BIT-EXACT, fed die 0's OWN output stream. Its layout hash is IDENTICAL to FFT64's (e27f020b27441656) and the DIF angle identity stage_table(128,s+1)==stage_table(64,s) means it computes the transform FFT64 already verified \u2014 but it was MEASURED, not asserted.\n  * wired together through MultiChipSimulation: 0 of 520 words, livelocks from trigger 1.\n\nTHREE REAL ENGINE DEFECTS were found and fixed in the inter-chip build path along the way \u2014 all invisible to the shipped 2-chip GainBlock example, which is the only prior exerciser of that path \u2014 and it STILL livelocks, so at least one further fault remains. Marked needs_human with the boundary handshake flagged rather than shipping an unverified crossing.\n\nCOMPOSITION IDENTITY: the split is expressed as a STAGE_RANGE parameter on the same class, so both dies run identical builders/fold/planner as the verified single-die transform, and correctness reduces to whole(x) == die1(die0(x)) \u2014 asserted word-for-word over 511 samples x 3 seeds with INV-4 teeth (26/26 split gates green) rather than argued.\n\nDURABLE LESSONS: 'a contract exercised by exactly one instance is not yet a contract' (the placer's bounding-box normalization was invisible until a second instance needed a non-(0,0) anchor; fixed via a declared anchor after the first fix destroyed die 0's only valid geometry); and 'a large number is not automatically conservative' (sim.run(400_000, 4000) is events-per-chip-per-round x rounds \u2014 an enormous budget, not a safe one; derived down to (20_000, 40), taking a 6-sample run from minutes to ~30s \u2014 the same class of error as the under-budgeted saturated gate, in the opposite direction).",
- "verify_passed": false,
- "needs_human": true,
- "walltime_sec": 9360.0
+ "commit_sha": "23aa7d19dbfd6dbdbeea5c27d04568d2a86172a6",
+ "notes": "RESOLVED \u2014 N=128 computes ACROSS TWO DIES, BIT-EXACT: 200 samples into chip 0, 400 words out of chip 1, every one equal to whole(x), 73 non-zero past the latency-127 transient, on the real placed+routed two-chip build through MultiChipSimulation and through the GRC server op. Split after stage 0 (die 0 = 30 cells, the period-64 octant fold; die 1 = 84 cells, stages 1..6, layout hash identical to the verified FFT64).\n\nTHE CROSSING WAS INNOCENT \u2014 THE FAULT WAS THE DRIVER. A complex sample is a THREE-PART transaction (WRITE xi, WRITE xq, one JUMP) and on the multi-chip path each part must be pumped to quiescence before the next is injected. Measured on the identical bitstream over 12 samples: all-three-queued 0/24 words, two-writes-queued 0/24, WRITE+JUMP-per-word 48/24 (double-fires), PACED 24/24. It hid because both dies were verified through run_block_dut_complex (which paces correctly) while the two-die run used a hand-written driver that did not \u2014 the one component that differed between a passing and a failing run was never a suspect. The three earlier inter-chip engine fixes were necessary and correct; they simply were not the last fault.\n\nTHREE FURTHER BUGS FOUND AND FIXED: (1) THE BUILD WAS NOT DETERMINISTIC \u2014 cpsat_router ran an 8-worker portfolio with no random_seed and its objective has ties, so equal-optimal routings varied between builds (fixed with random_seed + interleave_search; 1211 placekyt tests unregressed); (2) test_kyt_route_transits was CHIP-BLIND, and the gain_2p2s xfail had been documenting that same bug \u2014 _KNOWN_OPEN is now empty, 27 gates green, no xfail; (3) route-quality/saturation/orientation coverage gaps the example exposed, each closed with a proof rather than a waiver (notably a WALLED_IN_NETS exception that FLOOD-FILLS to prove die 0's +10 egress really is the shortest path that exists).\n\nSHIPS AS examples/fft128_2die/ \u2014 an openable two-chip .kyt, a .grc (0 errors under the real GRC compiler), and a demo whose --pattern batched flag REPRODUCES THE ORIGINAL FAILURE ON DEMAND. 18 gates incl. INV-4 teeth and an unpaced-drive guard. Manifest: the un-instantiable FFT128Block row replaced by FFT128Die0 + FFT128Die1, both done with GRC bindings.",
+ "verify_passed": true,
+ "needs_human": false,
+ "walltime_sec": 19100.0
 }

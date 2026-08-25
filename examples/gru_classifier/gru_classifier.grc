@@ -351,7 +351,12 @@ blocks:
   parameters:
     affinity: ''
     alias: ''
-    comment: class words <- chip x16_out
+    comment: 'class words <- chip x16_out. This chain''s source is COMPLEX, so the
+      recovered stream comes back as RAW word floats (output_words=auto ties raw to
+      complex_in) — the class index 0..3 arrives as 0.0..3.0 and goes STRAIGHT to the
+      scope. Do NOT put a x32768 rescale in front of it: that is the q15 convention,
+      which applies to real-input chains, and it drives every sample far off the
+      scope''s 0..3 axis.'
     device_id: '"kyttar_0"'
     hold_secs: '8.0'
     in_type: float
@@ -369,27 +374,6 @@ blocks:
     coordinate:
     - 1800
     - 184
-    rotation: 0
-    state: enabled
-- name: cls_scale
-  id: blocks_multiply_const_vxx
-  parameters:
-    affinity: ''
-    alias: ''
-    comment: 'kyttar.sink emits word/32768 FLOATS; the class word is a RAW index
-      (0..3), so x32768 turns it back into the index the scope should show'
-    const: '32768'
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    type: float
-    vlen: '1'
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate:
-    - 2000
-    - 192
     rotation: 0
     state: enabled
 - name: cls_scope
@@ -631,10 +615,6 @@ connections:
   - chip_sink
   - '0'
 - - chip_sink
-  - '0'
-  - cls_scale
-  - '0'
-- - cls_scale
   - '0'
   - cls_scope
   - '0'

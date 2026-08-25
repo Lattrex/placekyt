@@ -286,10 +286,34 @@ def stream_targets(project, registry, catalog, chip_id: int = 0,
         # every pre-existing design — are byte-identical to before).
         landing = {"entry_addr": entry_addr, "hop_count": hop_count,
                    "data_addrs": data_addrs,
+                   "block": blk.name,
                    "is_trigger": getattr(conn, "entry_override", None) is None}
         key = str(sid)
         if key in targets:
             arms = targets[key]["landings"]
+            # COMPLEX SIBLING-RAIL DEDUPE: a complex source feeding a complex
+            # block imports/hand-builds as TWO port→block nets (the ``re`` and
+            # ``im`` rails). They are not two arms of a fan-out — they are ONE
+            # delivery of ONE complex sample, and the routed corridor resolves
+            # them to ALTERNATIVE landings for the same block (the shared
+            # broker's two burst regs, and the block's own input cell). Driving
+            # both delivers the sample twice and writes Im into the Re register.
+            # Keep the RICHEST landing per target block: the one that carries
+            # BOTH rail addresses, which is the pair delivery the chip expects.
+            prior = next((a for a in arms if a.get("block") == blk.name), None)
+            if prior is not None:
+                if len(landing["data_addrs"]) > len(prior["data_addrs"]):
+                    prior.update(entry_addr=landing["entry_addr"],
+                                 hop_count=landing["hop_count"],
+                                 data_addrs=landing["data_addrs"])
+                if targets[key]["out_tag"] is None and out_tag is not None:
+                    targets[key].update(out_tag=out_tag,
+                                        complex_out=complex_out)
+                first = arms[0]
+                targets[key].update(entry_addr=first["entry_addr"],
+                                    hop_count=first["hop_count"],
+                                    data_addrs=first["data_addrs"])
+                continue
             arms.append(landing)
             arms.sort(key=lambda a: a["is_trigger"])   # data-only first
             first = arms[0]

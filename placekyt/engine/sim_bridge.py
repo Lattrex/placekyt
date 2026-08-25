@@ -1239,11 +1239,14 @@ class SimServer:
                 # data-only arms first, trigger arm LAST). _drive_one injects
                 # the sample at EVERY landing; absent (single-arm/legacy) the
                 # top-level entry/hop/a0 path below is used unchanged.
+                # The WHOLE address list is carried, not just the first: a
+                # COMPLEX arm lands BOTH rails (Re, Im) in one delivery, while
+                # a real-rail arm off the same complex stream takes Re only.
                 _ls = tgt.get("landings")
                 if _ls and len(_ls) > 1:
                     landings = [
                         (int(l["hop_count"]) & 0x1F,
-                         int((l.get("data_addrs") or [0])[0]),
+                         [int(a) for a in (l.get("data_addrs") or [0])],
                          int(l["entry_addr"]) & 0xFF)
                         for l in _ls]
             streams.append({
@@ -1292,14 +1295,25 @@ class SimServer:
                 xi = (_float_to_raw_i16(float(seg[k])) if s["raw"]
                       else _float_to_q15(float(seg[k])))
                 xq = None
-            if s.get("landings") and xq is None:
-                # JOIN fan-out stream: deposit the sample at EVERY arm's landing
+            if s.get("landings"):
+                # MULTI-ARM stream: deposit the sample at EVERY arm's landing
                 # (data-only arms first; each arm's JUMP enters either the join's
                 # ``sink`` or, LAST, the trigger entry that fires the combiner).
-                for (l_hop, l_a0, l_entry) in s["landings"]:
-                    self._chip.inject_data_physical([xi], target_hop_cnt=l_hop,
-                                                    target_addr=int(l_a0))
-                    self._chip.run(max_events=3000)
+                #
+                # A COMPLEX stream fans out to arms of DIFFERENT arity: an arm
+                # into a complex block takes the (Re, Im) PAIR as ONE delivery
+                # (both rails written, then a single JUMP — writing them as two
+                # separate deliveries puts Im into the Re register and the block
+                # silently computes on Re alone), while an arm into a real-rail
+                # block takes Re only. The landing's own address count says
+                # which: 2+ addresses = the pair broker, 1 = the real rail.
+                for (l_hop, l_addrs, l_entry) in s["landings"]:
+                    vals = ([xi, xq] if (xq is not None and len(l_addrs) > 1)
+                            else [xi])
+                    for v, a in zip(vals, l_addrs):
+                        self._chip.inject_data_physical(
+                            [v], target_hop_cnt=l_hop, target_addr=int(a))
+                        self._chip.run(max_events=3000)
                     self._chip.inject_jump_physical(target_hop_cnt=l_hop,
                                                     entry_addr=l_entry)
                     self._chip.run(max_events=mx)
@@ -1355,23 +1369,33 @@ class SimServer:
             hop, a0, a1, entry = s["hop"], s["a0"], s["a1"], s["entry"]
             seg = s["seg"]
 
-            def _w(a):
-                return (0x6 << 12) | ((hop & 0x1F) << 5) | (int(a) & 0x1F)
+            def _w(h, a):
+                return (0x6 << 12) | ((h & 0x1F) << 5) | (int(a) & 0x1F)
 
-            def _j():
-                return (0x7 << 12) | ((hop & 0x1F) << 5) | (int(entry) & 0x1F)
+            def _j(h, e):
+                return (0x7 << 12) | ((h & 0x1F) << 5) | (int(e) & 0x1F)
 
+            # MULTI-ARM stream: one delivery PER ARM, each carrying its own
+            # hop/entry — the same per-arm arity rule _drive_one applies (a 2+
+            # address landing takes the (Re, Im) pair as ONE delivery, a 1
+            # address landing takes Re only). Single-arm streams keep the exact
+            # pre-existing two-write/one-jump shape.
+            arms = s.get("landings") or [(hop, [a0, a1], entry)]
             words = []
-            if s["complex"]:
-                for kk in range(s["n"]):
+            for kk in range(s["n"]):
+                if s["complex"]:
                     xi = _float_to_q15(float(seg[2 * kk]))
                     xq = _float_to_q15(float(seg[2 * kk + 1]))
-                    words += [_w(a0), xi, _w(a1), xq, _j()]
-            else:
-                for kk in range(s["n"]):
+                else:
                     xi = (_float_to_raw_i16(float(seg[kk])) if s["raw"]
                           else _float_to_q15(float(seg[kk])))
-                    words += [_w(a0), xi, _j()]
+                    xq = None
+                for (l_hop, l_addrs, l_entry) in arms:
+                    vals = ([xi, xq] if (xq is not None and len(l_addrs) > 1)
+                            else [xi])
+                    for v, a in zip(vals, l_addrs):
+                        words += [_w(l_hop, a), v]
+                    words.append(_j(l_hop, l_entry))
             return words
 
         def _drain_demux(port):

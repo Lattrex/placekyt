@@ -32,6 +32,7 @@ for _p in (str(_ROOT / "placekyt"), str(_ROOT / "runtime" / "python"),
            str(_ROOT / "examples" / "cw_transceiver"),
            str(_ROOT / "examples" / "psk31_transceiver"),
            str(_ROOT / "examples" / "robust_rx"),
+           str(_ROOT / "examples" / "gru_classifier"),
            str(_ROOT / "examples" / "complex_math")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
@@ -251,3 +252,98 @@ def test_lms_equalizer_shipped_grc_user_path(qapp):
         _r, ref = head_to_rot[key]
         assert burst == ref, (
             f"burst {b} (stimulus rotation {_r}) diverges from its reference")
+
+
+def test_gru_classifier_shipped_grc_user_path(qapp):
+    """THE OWNER'S WORKFLOW, end to end: host the SHIPPED
+    ``gru_classifier.kyt`` on the GUI's default server port, GRC-generate and
+    run the SHIPPED ``gru_classifier.grc``, and assert the class stream the
+    ``cls_scope`` actually receives.
+
+    This example shipped BROKEN precisely because this gate did not exist. Its
+    headless suite was green — ``run_on_chip`` reads the build's
+    ``input_landings`` itself and drives the three ingress arms correctly — while
+    the HOSTED path returned literally nothing. Three independent faults, each
+    invisible to every pre-existing gate:
+
+    1. **The ``.kyt`` carried no ``stream_id``/``out_tag``.** The server resolves
+       an input net's injection landing only for nets that carry a ``stream_id``
+       (``engine.port_config.stream_targets``); with none it fell back to the
+       single-net ``input_port_config``, which resolves the FIRST arm only. The
+       ZeroCrossingRate arm was never injected, so ``FeaturePairJoin`` never
+       rendezvoused and the GRU never ran. Observed: ``stream_targets resolved:
+       {}`` and ``15360 samples -> 0 recovered``.
+    2. **The live bridge could not drive a multi-arm COMPLEX stream.** Its
+       fan-out path was gated on ``xq is None`` (real-rail joins only) and its
+       landings carried one address each, so even a correctly tagged complex
+       stream would have driven one arm. Fixed in ``engine.sim_bridge``.
+    3. **The ``.grc`` rescaled a RAW stream by x32768.** A complex-input chain
+       returns RAW word floats (``output_words='auto'`` ties raw to
+       ``complex_in``), so the class index 0..3 already arrives as 0.0..3.0. The
+       x32768 drove every sample to 0/32768/65536/98304, far off the scope's
+       ``[-0.5, 3.5]`` axis.
+
+    Asserted here: the FIRST burst is bit-exact to the shipped golden, every
+    value lands inside the scope's axis, ``server_repeat`` loops it cleanly, and
+    each of the four segments votes for its own class.
+    """
+    import json
+
+    grc = _ROOT / "examples" / "gru_classifier" / "gru_classifier.grc"
+    kyt = _ROOT / "examples" / "gru_classifier" / "gru_classifier.kyt"
+    gold_path = (_ROOT / "examples" / "gru_classifier"
+                 / "gru_classifier_golden.json")
+    gold_doc = json.loads(gold_path.read_text())
+    gold = [int(w) for w in gold_doc["class_words"]]
+    classes = list(gold_doc["classes"])
+
+    # 90s is comfortably past the ~60s the 15360-sample burst takes through 102
+    # cells; the flowgraph then keeps looping the recovered batch
+    # (server_repeat), so a longer run only adds repetitions.
+    ctrl, sim = _serve(kyt)
+    try:
+        sinks = _run_flowgraph(grc, secs=90)
+    finally:
+        sim.stop_gnuradio_server()
+
+    # The tap sits on the kyttar sink's OWN output — with the x32768 removed
+    # that is exactly the stream cls_scope draws.
+    vals = sinks.get("chip_sink", [])
+    n = len(gold)
+    assert len(vals) >= n, (
+        f"the shipped flowgraph recovered only {len(vals)}/{n} class words "
+        f"through the hosted server — the chain is starved, not merely wrong "
+        f"(this is the shipped-broken signature: 0 recovered)")
+
+    got = [int(round(v)) for v in vals]
+    first = got[:n]
+    assert first == gold, (
+        f"the class stream through the SHIPPED user path diverges from the "
+        f"shipped golden: "
+        f"{sum(1 for a, b in zip(first, gold) if a != b)}/{n} windows differ")
+
+    # DISPLAY: every value must land inside the scope's y-axis (-0.5 .. 3.5), or
+    # the window paints a flat line off-scale even though the chip is correct.
+    assert set(first) <= {0, 1, 2, 3}, (
+        f"class values outside the scope's 0..3 axis: "
+        f"{sorted(set(first) - {0, 1, 2, 3})[:8]} — a rescale crept back in "
+        f"front of a RAW (complex-input) stream")
+    assert all(-0.5 < v < 3.5 for v in vals[:n]), (
+        "recovered values fall outside the cls_scope y-axis")
+
+    # server_repeat=True loops the genuine one-batch result: assert repetition
+    # integrity (real data looped, never a fabricated stream).
+    for r in range(1, len(got) // n):
+        assert got[r * n:(r + 1) * n] == first, \
+            f"server_repeat repetition {r} diverges from the first burst"
+
+    # THE STORY THE SCOPE TELLS: the stimulus walks the four classes in order,
+    # so each segment must vote for its own class (settling window skipped —
+    # the GRU's recurrence needs a few steps after each class boundary).
+    seg = n // len(classes)
+    for ci, name in enumerate(classes):
+        w = first[ci * seg + 30:(ci + 1) * seg]
+        vote = max(set(w), key=w.count)
+        assert vote == ci, (
+            f"segment {ci} ({name}) voted {vote} ({classes[vote]}) through the "
+            f"shipped user path")

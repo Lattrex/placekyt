@@ -137,6 +137,8 @@ connections:
   - {x: 0, y: 2}
   - {x: 1, y: 2}
   - {x: 2, y: 2}
+  stream_id: cls
+  src_complex: true
 - name: in_im
   from: {chip_port: {chip: 0, port: x16_in}}
   to: {block: complextomagsquared, port: im}
@@ -146,12 +148,16 @@ connections:
   - {x: 0, y: 2}
   - {x: 1, y: 2}
   - {x: 2, y: 2}
+  stream_id: cls
+  src_complex: true
 - name: in_zcr
   from: {chip_port: {chip: 0, port: x16_in}}
   to: {block: zerocrossingrate, port: sample}
   route:
   - {x: 0, y: 0}
   - {x: 0, y: 1}
+  stream_id: cls
+  src_complex: true
 - name: pow_mean
   from: {block: complextomagsquared, port: out}
   to: {block: movingaverage, port: sample}
@@ -225,3 +231,4 @@ connections:
   - {x: 7, y: 0}
   - {x: 8, y: 0}
   - {x: 9, y: 0}
+  out_tag: 24

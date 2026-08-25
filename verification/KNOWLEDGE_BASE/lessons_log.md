@@ -129,6 +129,96 @@ burst. Three durable lessons came out of building it.
   named skip for *stale installed ymls*; it now checks the installed **python
   modules** too (`_installed_kyttar_py_stale`), so this reads as the
   install-staleness condition it is rather than a bogus red on the flowgraph.
+## gru_classifier — the example shipped BROKEN in the user's hands with a fully green suite; three faults, none visible to any existing gate 2026-08-24
+
+Not a block. The shipped GRU-classifier example, reported broken by the project
+owner doing exactly what the README says: open `gru_classifier.kyt` in placeKYT,
+open `gru_classifier.grc` in GRC, press Run. The TRUE-class scope drew; the class
+scope was flat; the waveform pane showed real I/Q at `x16_in`; the cell animation
+showed data moving in the top rows and never entering the GRU. All 34 example
+gates were green, including a headless on-chip run at agreement 1.000000.
+
+**Reproduced first, through the real path** (host the shipped `.kyt` on 58950,
+GRC-generate and run the shipped `.grc`): `sent 15360 samples -> 0 recovered`,
+and the server's own startup line said `stream_targets resolved: {}` with every
+input net's `stream_id` = None.
+
+**Fault 1 — the `.kyt` carried no `stream_id`/`out_tag` (the example).**
+`engine.port_config.stream_targets` resolves an input net's injection landing
+ONLY for nets that carry a `stream_id`; `if not sid: continue`. With none, the
+server fell back to `input_port_config`, which breaks on the FIRST `x16_in→block`
+connection and returns ONE `data_addr`. This chain takes THREE nets off the port
+(`in_re`, `in_im`, `in_zcr`), so the ZeroCrossingRate arm was never injected,
+`FeaturePairJoin` never rendezvoused, and the GRU never ran — the owner's "data
+never makes it into the array", precisely. Every other multi-arm example's `.kyt`
+carried `stream_id` because it came from the GRC importer, which sets it; this
+one is HAND-PLACED and its builder never did.
+
+**Fault 2 — the live bridge could not drive a multi-arm COMPLEX stream (the
+ENGINE).** Even correctly tagged, `sim_bridge._drive_one`'s fan-out branch was
+`if s.get("landings") and xq is None:` — real-rail joins only — and the landings
+tuple carried ONE address each. A complex stream fell through to the single
+`(a0, a1)` path and drove one arm. Fixed: the branch is arity-driven, each
+landing carries its whole address list, and the arm's own address count decides
+its shape — **a 2-address landing takes the (Re, Im) pair as ONE delivery, a
+1-address landing takes Re only**. That is the same INGRESS PROTOCOL
+`gru_classifier.run_on_chip` had always hand-implemented; the server just never
+learned it. The saturated `_stream_words` path got the same treatment.
+
+Dedupe needed alongside it (`port_config`): a complex source into a complex block
+is TWO port→block nets (`re`, `im`) that the router resolves to ALTERNATIVE
+landings for the same block — the shared broker's two burst regs (`[1,2]`) and
+the block's own input cell (`[0,1]`). They are one delivery, not two arms.
+Driving both writes Im into the Re register (the bug this example already hit
+once). Rule: **at most one landing per target block; keep the richest one.**
+
+**Fault 3 — the `.grc` rescaled a RAW stream by ×32768 (the display).** A
+complex-input chain returns RAW word floats (`output_words='auto'` ties raw to
+`complex_in`), so the class index 0..3 already arrives as 0.0..3.0. The ×32768 —
+the q15 convention, correct for REAL-input chains — drove every sample to
+0/32768/65536/98304, far outside the scope's `[-0.5, 3.5]` axis. Correct chip
+data, unreadable window. Even after faults 1 and 2 were fixed, the scope would
+still have looked wrong.
+
+**Bonus regression found on the way:** `examples/gru_classifier/gru_classifier.py`
+— the CHAIN module (topology, anchors, `run_on_chip`, feature references) — had
+been silently overwritten by the GRC-GENERATED flowgraph of the same name in an
+unrelated commit. Every `from gru_classifier import ...` then hit
+`ModuleNotFoundError: PyQt5` in the verification venv. Restored. Other examples
+ship the generated `.py` beside a `<name>_demo.py`; here the names collide, so
+this example does not ship the generated file.
+
+**THE METHODOLOGICAL LESSON (the reason all this shipped).** The example was
+gated to "the `.grc` opens / GRC-generates / instantiates" plus a headless
+on-chip run — and the headless runner reads `input_landings` and drives the arms
+ITSELF, so it never exercises the server's stream resolution, which is where all
+three faults lived. **A headless on-chip gate does not imply a hosted gate.** The
+shipping commit even said so in plain words ("NOT verified: the .grc has not been
+run against a live hosted server") and it shipped anyway. If an example's
+documented workflow is "open it in the GUI and press Run", the gate has to be
+that, hosted, or the example is unverified — the example bar in `AGENTS.md` says
+exactly this; it was simply not enforced by a gate.
+
+Now gated by `test_examples_grc_userpath.py::test_gru_classifier_shipped_grc_user_path`
+(demonstrated FAILING against the broken state before the fix; passing after,
+480 words at agreement 1.000000, all four segment votes correct, clean
+`server_repeat` repetition), plus two millisecond-cost structural guards in
+`test_gru_classifier_example.py` so a regenerated `.kyt` losing its metadata or a
+rescale creeping back into the `.grc` fails instantly instead of waiting on the
+100s hosted gate.
+
+**Audited for the same exposure:** every `examples/*/*.kyt`. Exactly one other has
+≥2 input arms without `stream_id` — `coherent_bpsk_rx` — and it is NOT broken:
+both its arms target the SAME complex block on registers 0 and 1, which is what
+the fallback's hardcoded `a0, a1 = 0, 1` happens to be. Verified by running it
+through the real hosted path: BER 0. It works by coincidence, not by resolution;
+noted here so the next multi-arm hand-placed design does not read it as a
+precedent.
+
+**Harness note:** the userpath gates share port 58950 and the socket sits in
+TIME_WAIT for 40-140s after each, so they self-contend under concurrent load
+(and contend with any other agent hosting a chip). Run this gate STANDALONE; a
+bind failure there is contention, not a product fault.
 
 ## Verification-integrity sweep — every report writer in the suite could write a GREEN report for a FAILING session (INV-36) 2026-08-24
 

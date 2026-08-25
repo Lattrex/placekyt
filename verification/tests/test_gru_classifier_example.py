@@ -24,12 +24,23 @@ were always meant to become; the history is preserved in
 ``gru_classifier.py``'s ROUTING HISTORY note and the lessons_log entry.
 
 WHAT THIS FILE DOES **NOT** GATE, stated so the coverage is not overread: the
-``.grc`` is checked by ``test_examples_grc_instantiate.py`` (it opens,
-GRC-generates and instantiates), but there is no live-hosted-server run of it
-here the way ``test_examples_grc_userpath.py`` does for the transceivers, and no
-pixel-probe of the scopes. The end-to-end evidence below is the headless on-chip
-run through the real built bitstream — the stronger claim about the CHIP. The
-GUI display path is a separate claim and this file does not make it.
+end-to-end evidence below is the headless on-chip run through the real built
+bitstream — the strongest claim about the CHIP, but NOT a claim about the hosted
+GUI/GRC path. That path is gated separately by
+``test_examples_grc_userpath.py::test_gru_classifier_shipped_grc_user_path``,
+which hosts the shipped ``.kyt`` on the GUI's default server port and runs the
+shipped ``.grc`` the way a user does.
+
+That separation is not academic: for one release this file was fully green while
+the user path returned NOTHING. ``run_on_chip`` reads the build's
+``input_landings`` and drives the three ingress arms itself, so it never touched
+the server's stream resolution — where all three faults lived (a ``.kyt`` with
+no ``stream_id``, a bridge that could not drive a multi-arm complex stream, and
+a ``.grc`` rescaling a RAW stream off-axis). A headless on-chip gate does not
+imply a hosted gate; keep both.
+
+Still unasserted anywhere: a pixel-probe of the scopes. The userpath gate asserts
+the stream the scope RECEIVES, not the image it renders.
 """
 from __future__ import annotations
 
@@ -534,6 +545,53 @@ def test_shipped_kyt_exists_and_is_the_design_this_module_builds():
     assert len(seen) == 65, f"expected 65 block cells in the .kyt, got {len(seen)}"
 
 
+def test_shipped_kyt_carries_the_stream_metadata_the_hosted_server_needs():
+    """A FAST structural guard for the fault that shipped this example broken.
+
+    The hosted server resolves an input net's injection landing ONLY for nets
+    that carry a ``stream_id`` (``engine.port_config.stream_targets`` skips the
+    rest), and demuxes the recovered words by the egress net's ``out_tag``.
+    Without them the server falls back to the single-net path, resolves the
+    FIRST arm alone, and the other two ingress arms are never injected — the
+    chain starves and the user sees nothing, while every headless gate stays
+    green (``run_on_chip`` reads the landings itself).
+
+    ``test_gru_classifier_shipped_grc_user_path`` proves the whole path, but it
+    needs a live server and 100s. This costs milliseconds and fails the instant
+    a regenerated ``.kyt`` drops the metadata, so the expensive gate never has
+    to be the first thing that notices.
+    """
+    from engine.io.project_io import load_project
+    from model.connection import BlockEndpoint, ChipPortEndpoint
+
+    import gru_classifier as G
+    proj = load_project(str(G.KYT))
+
+    ingress = [c for c in proj.connections
+               if isinstance(c.source, ChipPortEndpoint)
+               and c.source.port == "x16_in"
+               and isinstance(c.target, BlockEndpoint)]
+    assert len(ingress) == 3, (
+        f"expected the 3 ingress arms (re, im, zcr), got {len(ingress)}")
+    missing = [c.name for c in ingress if not getattr(c, "stream_id", None)]
+    assert not missing, (
+        f"ingress nets without a stream_id: {missing} — the hosted server will "
+        f"resolve only the first arm and starve the rest (this is exactly how "
+        f"the example shipped broken)")
+    sids = {c.stream_id for c in ingress}
+    assert sids == {G.STREAM_ID}, (
+        f"ingress arms must share the ONE stream_id the .grc names "
+        f"({G.STREAM_ID!r}); got {sids}")
+
+    egress = [c for c in proj.connections
+              if isinstance(c.source, BlockEndpoint)
+              and isinstance(c.target, ChipPortEndpoint)
+              and c.target.port == "x16_out"]
+    assert len(egress) == 1, f"expected 1 egress net, got {len(egress)}"
+    assert getattr(egress[0], "out_tag", None) is not None, (
+        "the egress net carries no out_tag — the sink cannot demux its words")
+
+
 def test_the_shipped_kyt_FILE_itself_computes_the_golden():
     """THE STRONGEST ARTEFACT CLAIM: load the committed ``.kyt`` FROM DISK,
     build THAT project, and run the shipped stimulus through the resulting
@@ -611,6 +669,39 @@ def test_shipped_grc_scopes_are_sized_to_actually_paint():
         assert "n_windows" in s and "-" in s, (
             f"scope size {s!r} is not derived BELOW the burst length; a scope "
             f"sized >= its burst never draws")
+
+
+def test_shipped_grc_does_not_rescale_the_raw_class_stream():
+    """The class scope must be fed the sink's stream DIRECTLY.
+
+    This chain's source is COMPLEX, so ``output_words='auto'`` ties the recovered
+    stream to the RAW convention: the class index 0..3 arrives as 0.0..3.0,
+    already the value the scope should plot. The shipped .grc used to put a
+    ``x32768`` multiply in front of it — the q15 convention, which applies to
+    REAL-input chains — driving every sample to 0/32768/65536/98304, far outside
+    the scope's ``[-0.5, 3.5]`` y-axis. Correct chip data, unreadable window.
+
+    Guarded statically because it is a one-line edit away from returning, and
+    the expensive user-path gate is the only other thing that would catch it.
+    """
+    import yaml
+
+    from gru_classifier import GRC
+    doc = yaml.safe_load(GRC.read_text())
+    ids = {b["name"]: b["id"] for b in doc["blocks"]}
+    scalers = [n for n, i in ids.items()
+               if i in ("blocks_multiply_const_vxx", "blocks_divide_xx",
+                        "blocks_multiply_xx")]
+    assert not scalers, (
+        f"the shipped .grc rescales again ({scalers}) — a RAW (complex-input) "
+        f"class stream must reach the scope unscaled")
+
+    # and the sink must feed the class scope DIRECTLY (nothing spliced between)
+    conns = [(a, b) for a, _pa, b, _pb in
+             (tuple(c) for c in doc["connections"])]
+    assert ("chip_sink", "cls_scope") in conns, (
+        f"chip_sink no longer feeds cls_scope directly; the class stream is "
+        f"RAW and must not pass through a converter. Connections: {conns}")
 
 
 def test_the_installed_stimulus_module_is_the_examples_stimulus():

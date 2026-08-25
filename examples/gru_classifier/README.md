@@ -27,14 +27,48 @@ On-chip per-step accuracy after burn-in: SSB **1.000**, BPSK **0.811**,
 offline model's on the same clip (asserted, not eyeballed: the gate compares the
 two accuracy vectors).
 
-**What is NOT verified.** The `.grc` is gated by
-`test_examples_grc_instantiate.py` — it opens, GRC-generates, and instantiates
-against the repo ymls with the repo markers. It has **not** been run against a
-live hosted server the way the transceivers are by
-`test_examples_grc_userpath.py`, and no one has watched the scopes paint in the
-GUI. The end-to-end evidence above is the headless on-chip run through the real
-built bitstream, which is the stronger claim about the *chip*; the GUI display
-path is a separate claim and is not made here.
+| The **hosted GUI/GRC user path** | **verified** — the shipped `.kyt` hosted on port 58950, the shipped `.grc` GRC-generated and run: 480 class words, agreement **1.000000** vs the golden |
+
+### The user path shipped broken once — read this before editing the ingress
+
+The first release of this example was gated only to "the `.grc` opens,
+GRC-generates and instantiates". Its headless suite was green while the
+workflow the README tells you to use — open the `.kyt`, open the `.grc`, press
+Run — returned **nothing**: `15360 samples -> 0 recovered`, the class scope flat.
+Three independent faults, none of which any pre-existing gate could see:
+
+1. **The `.kyt` carried no `stream_id`.** The hosted server resolves an input
+   net's injection landing only for nets that carry one
+   (`engine.port_config.stream_targets`); with none it fell back to the
+   single-net path, which resolves the **first** arm only. The
+   `ZeroCrossingRate` arm was never injected, so `FeaturePairJoin` never
+   rendezvoused and the GRU never ran — data reached the input port and stopped
+   there. All three ingress nets now carry `stream_id: cls` and the egress net
+   carries its `out_tag`; `build_kyt.py` writes them (see `STREAM_ID` in
+   `gru_classifier.py`).
+2. **The live bridge could not drive a multi-arm COMPLEX stream.** Its fan-out
+   path was gated on the real-rail case and carried one address per landing, so
+   even a correctly tagged complex stream would have driven one arm. Fixed in
+   `engine.sim_bridge`: each arm is driven at its own landing, and the arm's own
+   address count decides its arity — a 2-address landing takes the `(Re, Im)`
+   pair as **one** delivery, a 1-address landing takes `Re` only. This is the
+   same INGRESS PROTOCOL the headless runner had always implemented by hand.
+3. **The `.grc` rescaled a RAW stream by ×32768.** A complex-input chain returns
+   RAW word floats (`output_words='auto'` ties raw to `complex_in`), so the
+   class index `0..3` already arrives as `0.0..3.0`. The ×32768 drove every
+   sample to `0/32768/65536/98304` — far off the scope's `[-0.5, 3.5]` axis, so
+   even correct data would have painted as a flat off-scale line. The rescale
+   block is gone; the sink feeds the scope directly.
+
+The gate that was missing is now
+`test_examples_grc_userpath.py::test_gru_classifier_shipped_grc_user_path`,
+which hosts the shipped `.kyt` and runs the shipped `.grc` exactly as a user
+does. It was demonstrated to FAIL against the broken state before the fix.
+
+**What is still NOT verified.** No one has watched the scopes paint pixels in
+the GUI. The gate asserts the class stream the scope *receives* (bit-exact to
+the golden, inside the scope's y-axis, cleanly repeated by `server_repeat`) —
+not the rendered image.
 
 ### How it got unblocked: the fold, not the chain
 
@@ -161,9 +195,12 @@ with a plausible axis — and both scopes are sized below their burst, because a
 QT time sink draws nothing until a full `size` buffer arrives and the GR
 scheduler strands the tail of a finite stream.
 
-> This GUI path has **not** been run: the `.grc` is gated only as far as
-> opening, generating and instantiating (see *What is NOT verified* above).
-> Everything the chip does is verified headlessly; the display is not.
+> This path **is** gated now, end to end:
+> `test_examples_grc_userpath.py::test_gru_classifier_shipped_grc_user_path`
+> hosts the shipped `.kyt` on 58950, GRC-generates and runs the shipped `.grc`,
+> and asserts the class stream the scope receives is bit-exact to the golden and
+> inside the scope's y-axis. What is still unasserted is the rendered pixels —
+> see *What is still NOT verified* above.
 
 **Rebuild the `.kyt`:**
 

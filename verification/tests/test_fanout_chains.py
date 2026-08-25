@@ -243,3 +243,133 @@ def test_overfull_direct_fanout_is_named_error(tmp_path):
     assert not bres.ok
     msg = "; ".join(str(e) for e in bres.errors)
     assert "kyttar_splitter" in msg, f"expected the splitter hint, got: {msg}"
+
+
+# --------------------------------------------------------------------------- #
+#  THE LIVE BRIDGE'S MULTI-ARM INJECTION SHAPE                                 #
+# --------------------------------------------------------------------------- #
+#
+# ``SimServer._stream_words`` builds the raw WRITE/DATA/JUMP burst for a whole
+# stream (the saturated/pipelined drive). It grew multi-arm + COMPLEX support so
+# a hosted chip could drive a complex stream that fans out to arms of DIFFERENT
+# arity — the gru_classifier ingress (an (Re, Im) pair into the power broker AND
+# a lone Re into the ZCR arm). Two properties have to hold, and neither is
+# observable from an example-level gate:
+#
+#   1. every SINGLE-ARM stream keeps its exact pre-existing word stream (every
+#      pre-existing design is single-arm — a silent change here would corrupt
+#      all of them at once);
+#   2. the multi-arm COMPLEX shape is the proven INGRESS PROTOCOL: the pair is
+#      ONE delivery (both rails written, then ONE JUMP), the real-rail arm is
+#      its own delivery.
+#
+# The generator is re-derived here rather than imported: _stream_words is a
+# closure over process_batch's locals, so it cannot be called directly. Keeping
+# a mirror honest is the point — if the real one changes shape, the example's
+# hosted gate fails and this explains why.
+
+
+def _bridge_words(complex_, raw, n, seg, hop, a0, a1, entry, landings=None):
+    """Mirror of SimServer._stream_words (engine/sim_bridge.py)."""
+    def _w(h, a):
+        return (0x6 << 12) | ((h & 0x1F) << 5) | (int(a) & 0x1F)
+
+    def _j(h, e):
+        return (0x7 << 12) | ((h & 0x1F) << 5) | (int(e) & 0x1F)
+
+    def _q15v(x):
+        return max(-32768, min(32767, int(round(float(x) * 32768.0)))) & 0xFFFF
+
+    arms = landings or [(hop, [a0, a1], entry)]
+    words = []
+    for kk in range(n):
+        if complex_:
+            xi, xq = _q15v(seg[2 * kk]), _q15v(seg[2 * kk + 1])
+        else:
+            xi = (int(seg[kk]) & 0xFFFF) if raw else _q15v(seg[kk])
+            xq = None
+        for (l_hop, l_addrs, l_entry) in arms:
+            vals = [xi, xq] if (xq is not None and len(l_addrs) > 1) else [xi]
+            for v, a in zip(vals, l_addrs):
+                words += [_w(l_hop, a), v]
+            words.append(_j(l_hop, l_entry))
+    return words
+
+
+def _legacy_words(complex_, raw, n, seg, hop, a0, a1, entry):
+    """The PRE-multi-arm generator, verbatim — the behaviour every existing
+    single-arm design shipped against."""
+    def _w(a):
+        return (0x6 << 12) | ((hop & 0x1F) << 5) | (int(a) & 0x1F)
+
+    def _j():
+        return (0x7 << 12) | ((hop & 0x1F) << 5) | (int(entry) & 0x1F)
+
+    def _q15v(x):
+        return max(-32768, min(32767, int(round(float(x) * 32768.0)))) & 0xFFFF
+
+    words = []
+    if complex_:
+        for kk in range(n):
+            words += [_w(a0), _q15v(seg[2 * kk]),
+                      _w(a1), _q15v(seg[2 * kk + 1]), _j()]
+    else:
+        for kk in range(n):
+            xi = (int(seg[kk]) & 0xFFFF) if raw else _q15v(seg[kk])
+            words += [_w(a0), xi, _j()]
+    return words
+
+
+def test_single_arm_injection_is_byte_identical_to_the_legacy_generator():
+    """A single-arm stream — complex or real, raw or q15 — must produce the
+    EXACT word stream it did before multi-arm support existed. Randomized over
+    the parameter space rather than a couple of hand cases, because a
+    regression here breaks every hosted example simultaneously and silently."""
+    import random
+
+    rng = random.Random(20260824)
+    for trial in range(400):
+        complex_ = rng.choice([True, False])
+        raw = rng.choice([True, False])
+        n = rng.randint(1, 12)
+        hop, a0, a1, entry = (rng.randint(0, 31), rng.randint(0, 31),
+                              rng.randint(0, 31), rng.randint(0, 31))
+        width = 2 * n if complex_ else n
+        seg = ([rng.randint(-32768, 32767) for _ in range(width)] if raw
+               else [rng.uniform(-1.0, 1.0) for _ in range(width)])
+        got = _bridge_words(complex_, raw, n, seg, hop, a0, a1, entry)
+        want = _legacy_words(complex_, raw, n, seg, hop, a0, a1, entry)
+        assert got == want, (
+            f"trial {trial} (complex={complex_} raw={raw} n={n}) diverges from "
+            f"the legacy single-arm word stream")
+
+
+def test_multi_arm_complex_stream_delivers_the_pair_once_then_the_real_rail():
+    """THE INGRESS PROTOCOL, asserted on the generator.
+
+    A complex stream whose arms have different arity must emit, per sample:
+    both rails to the 2-address landing followed by ONE JUMP (the pair is one
+    delivery into the shared broker — writing it as two puts Im into the Re
+    register and the block silently computes on Re alone), then Re alone to the
+    1-address landing with its own JUMP. These are the landings the router
+    resolves for the gru_classifier ingress."""
+    pair, zcr = (26, [1, 2], 23), (29, [1], 25)
+    words = _bridge_words(True, False, 1, [0.5, -0.25], 0, 0, 1, 0,
+                          landings=[pair, zcr])
+
+    def _w(h, a):
+        return (0x6 << 12) | ((h & 0x1F) << 5) | (int(a) & 0x1F)
+
+    def _j(h, e):
+        return (0x7 << 12) | ((h & 0x1F) << 5) | (int(e) & 0x1F)
+
+    i, q = 0x4000, 0xE000          # q15(0.5), q15(-0.25)
+    assert words == [
+        _w(26, 1), i, _w(26, 2), q, _j(26, 23),   # the pair: ONE trigger
+        _w(29, 1), i, _j(29, 25),                 # the ZCR arm's own copy of Re
+    ], f"multi-arm complex burst has the wrong shape: {words}"
+
+    # the pair arm must fire EXACTLY ONE jump, not one per rail
+    assert sum(1 for w in words if (w >> 12) == 0x7) == 2, (
+        "expected exactly 2 JUMPs (one per arm); a JUMP per RAIL would "
+        "double-fire the complex block")

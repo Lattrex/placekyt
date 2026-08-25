@@ -1,0 +1,18 @@
+{
+ "block": "__gru_userpath_fix__",
+ "grc_block": "",
+ "wave": 7,
+ "attempts": 1,
+ "human_interventions": 1,
+ "verify_passed": true,
+ "tokens": {
+  "input": 0,
+  "output": 237671,
+  "cache_read": 0,
+  "total": 237671
+ },
+ "turns": 197,
+ "walltime_sec": 5076.0,
+ "commit_sha": "130f6549b2446ff9154300e42130cd6f7bb7bc7d",
+ "notes": "THE OWNER FOUND THIS, NOT THE SUITE. The shipped gru_classifier example passed 34 headless gates and returned ZERO words the first time he opened the .kyt, ran the .grc and pressed Run. Reproduced through the real hosted path first (15360 samples in -> 0 recovered, server logging 'stream_targets resolved: {}'), then root-caused to THREE INDEPENDENT FAULTS: (1) EXAMPLE \u2014 the hand-built .kyt carried no stream_id/out_tag, so port_config.stream_targets skipped it (`if not sid: continue`) and the server fell back to input_port_config, which BREAKS on the first x16_in->block net and returns ONE data_addr; this chain takes THREE nets off the port, so the ZCR arm was never injected, FeaturePairJoin never rendezvoused, and the GRU never ran \u2014 exactly 'data reaches the port, never enters the array'. Every other multi-arm example gets stream_id from the GRC importer; this one is hand-placed. (2) ENGINE \u2014 the live bridge could not drive a multi-arm COMPLEX stream at all: _drive_one's fan-out branch was gated `landings and xq is None` (real-rail joins only) and landings carried one address each, so even a correctly tagged complex stream would have driven ONE arm. Now arity-driven (a 2-address landing takes the (Re,Im) pair as ONE delivery, a 1-address landing takes Re only), matching the ingress protocol run_on_chip had always hand-implemented; same fix on the saturated path, plus a port_config dedupe so sibling rail nets are alternative landings for ONE delivery rather than two arms. (3) DISPLAY \u2014 the .grc rescaled a RAW stream by x32768, driving every sample to 0/32768/65536/98304 against a [-0.5,3.5] axis, so the scope would have looked wrong even after (1) and (2). WHY IT SHIPPED: the headless runner reads input_landings and drives the arms ITSELF, so it never touches the server's stream resolution \u2014 where all three faults lived. A HEADLESS ON-CHIP GATE DOES NOT IMPLY A HOSTED GATE. The shipping commit even recorded that the .grc had never been run against a live server, and it shipped anyway. FIXED + GATED: test_examples_grc_userpath.py::test_gru_classifier_shipped_grc_user_path, proven failing against the broken state and passing after (480 class words, agreement 1.000000). AUDIT: all 25 example .kyt files checked; exactly one other has >=2 input arms without stream_id (coherent_bpsk_rx) and it works only BY COINCIDENCE \u2014 both arms target the same complex block on registers 0/1, which is what the fallback's hardcoded (0,1) happens to be; confirmed BER 0 through the hosted path and recorded so it is not read as precedent. Also restored examples/gru_classifier/gru_classifier.py, which an unrelated commit had silently overwritten with GRC's generated PyQt5 flowgraph, breaking all 34 gates and the demo on main."
+}

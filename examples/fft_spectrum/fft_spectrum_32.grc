@@ -10,9 +10,13 @@ options:
       \ drives the placed 32-point streaming R2SDF FFT (FFT32, 60 cells) whose complex\
       \ output feeds a placed Complex-to-Mag^2 stage, so the transform AND the per-bin\
       \ power both run ON CHIP. The chip emits bins in BIT-REVERSED (DIF) order; the\
-      \ 'unreverse' block undoes that map and emits a natural-order 32-bin vector,\
-      \ so the demo tone at bin 11 (which leaves the chip at slot 26) appears exactly\
-      \ at 11 on the plot. Open fft_spectrum_32.kyt in placeKYT -> Run as GNURadio Server\
+      \ 'unreverse' block undoes that map and then fftshifts, emitting a 32-bin\
+      \ vector in ascending FREQUENCY order from -samp_rate/2. Bin k of N at rate fs\
+      \ is k*fs/N Hz (bins >= N/2 are the negative frequencies (k-N)*fs/N), so at the\
+      \ default samp_rate = 32000 each bin is 1000 Hz wide and the demo tone at bin 11\
+      \ (which leaves the chip at slot 26) appears at +11000 Hz on the plot. A second\
+      \ scope shows the stimulus itself, so you can see the sinusoid the spike comes\
+      \ from. Open fft_spectrum_32.kyt in placeKYT -> Run as GNURadio Server\
       \ (port 58950), then Execute here."
     gen_cmake: 'On'
     gen_linking: dynamic
@@ -64,6 +68,39 @@ blocks:
     coordinate: [160, 12]
     rotation: 0
     state: enabled
+- name: samp_rate
+  id: variable
+  parameters:
+    comment: "the rate the I/Q stimulus is DECLARED to be sampled at. The array\
+      \ is asynchronous — it has no clock of its own, so it transforms whatever\
+      \ stream you hand it and the sample rate is entirely YOURS to state. It is\
+      \ what turns a bin index into a physical frequency, so the spectrum axis\
+      \ can read in Hz. Change it and the whole axis rescales; the chip does not\
+      \ change at all."
+    value: '32000'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [160, 84]
+    rotation: 0
+    state: enabled
+- name: bin_hz
+  id: variable
+  parameters:
+    comment: "BIN WIDTH = samp_rate / n_fft = 32000/32 = 1000 Hz. Bin k of N at\
+      \ rate fs is centred on k*fs/N, and bins at or above N/2 are NEGATIVE\
+      \ frequencies (k-N)*fs/N. The demo tone at bin 11 is therefore 11*1000 =\
+      \ 11000 Hz — the SAME bin index as the 64-point variant but TWICE the\
+      \ frequency, because a half-length transform has twice the bin width."
+    value: samp_rate / n_fft
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [280, 84]
+    rotation: 0
+    state: enabled
 - name: latency
   id: variable
   parameters:
@@ -105,9 +142,10 @@ blocks:
   id: variable
   parameters:
     comment: "which FFT bin the demo tone sits in. ON-BIN (an integer number\
-      \ of cycles per 64-sample frame) so the answer is a single clean line\
+      \ of cycles per 32-sample frame) so the answer is a single clean line\
       \ with no leakage. The chip emits it at SLOT bit_reverse_5(11) = 26;\
-      \ the unreverse block puts it back at 11."
+      \ the unreverse block puts it back at 11. In Hz that is bin 11 * bin_hz\
+      \ = 11 * 1000 = 11000 Hz, which is where the plot's marker lands."
     value: '11'
   states:
     bus_sink: false
@@ -188,7 +226,7 @@ blocks:
     alias: ''
     burst_len: burst_len
     comment: "I/Q burst -> chip x16_in. ONE burst per Run (repeat = no) so the\
-      \ burst starts at vector index 0 and the 63-sample latency lines the frames\
+      \ burst starts at vector index 0 and the 31-sample latency lines the frames\
       \ up exactly. A REPEAT-burst source re-arms mid-vector — the next burst then\
       \ starts at an arbitrary ROTATION, which slides the frame grid and puts the\
       \ tone on the wrong slot (measured at N=64: a 55-sample rotation moved the peak from\
@@ -278,13 +316,32 @@ blocks:
   id: epy_block
   parameters:
     _source_code: |
-      """UN-REVERSE the chip's bin order — the example's display contract.
+      """UN-REVERSE the chip's bin order and CENTRE it on 0 Hz — the
+      example's display contract.
 
-      The placed FFT emits DIF order with deliberately NO reorder buffer:
-      output slot k of each 32-sample frame carries frequency bin
-      bit_reverse_5(k). Slot 26 is bin 11; slot 1 is bin 16. A plot fed the
-      raw slots is a SCRAMBLED spectrum that still looks plausible, which is
-      exactly why this block exists and why the gate pins the mapping.
+      Two maps, applied in this order.
+
+      1. UN-REVERSE. The placed FFT emits DIF order with deliberately NO
+         reorder buffer: output slot k of each 32-sample frame carries
+         frequency bin bit_reverse_5(k). Slot 26 is bin 11; slot 1 is bin
+         16. A plot fed the raw slots is a SCRAMBLED spectrum that still
+         looks plausible, which is exactly why this block exists and why
+         the gate pins the mapping.
+
+      2. FFTSHIFT, so the x axis can read in Hz and be MONOTONIC. Natural
+         bin k of an N-point transform at sample rate fs is the frequency
+
+             f(k) = k*fs/N          for k <  N/2   (positive frequencies)
+             f(k) = (k-N)*fs/N      for k >= N/2   (negative frequencies)
+
+         i.e. the natural-order vector runs 0 -> +fs/2 and then jumps to
+         -fs/2 -> 0, which no single linear axis can label. Rolling the
+         vector by N/2 puts bin N/2 first, so the emitted vector runs
+         monotonically from -fs/2 in steps of fs/N and the sink's
+         set_x_axis(-samp_rate/2, bin_hz) labels every point correctly.
+         At fs = 32000 and N = 32 the step is 1000 Hz and the demo tone,
+         natural bin 11, lands at index 11 + 16 = 27 -> -16000 + 27*1000 =
+         +11000 Hz = 11*1000. That IS the mapping the README states.
 
       It also strips the block's 31-sample pipeline LATENCY: the first 31
       outputs of a burst are the deterministic startup values of the
@@ -292,7 +349,8 @@ blocks:
       counting samples modulo burst_len, which is what the repeat-burst
       source delivers.
 
-      Emits one natural-order 32-bin power VECTOR per whole frame.
+      Emits one 32-bin power VECTOR per whole frame, in ascending frequency
+      order from -fs/2.
       """
       import numpy as np
       from gnuradio import gr
@@ -313,7 +371,7 @@ blocks:
       class blk(gr.basic_block):
           def __init__(self, n_fft=32, latency=31, burst_len=127):
               gr.basic_block.__init__(
-                  self, name='FFT bin un-reverse',
+                  self, name='FFT bins to centred spectrum',
                   in_sig=[np.float32], out_sig=[(np.float32, int(n_fft))])
               self.n = int(n_fft)
               self.latency = int(latency)
@@ -322,6 +380,10 @@ blocks:
               # permutation both scrambles and unscrambles; applying it to the
               # emitted slots yields natural bin order.
               self.rev = _bitrev(self.n)
+              # natural bin -> position on the CENTRED (-fs/2 .. +fs/2) axis.
+              # This is exactly np.fft.fftshift's permutation, written out so
+              # the mapping is readable in the flowgraph.
+              self.shift = (np.arange(self.n) + self.n // 2) % self.n
               self.buf = np.zeros(0, dtype=np.float32)
               self.pos = 0          # index of buf[0] within the current burst
 
@@ -350,21 +412,24 @@ blocks:
                   self.buf = self.buf[self.n:]
                   self.pos += self.n
                   nat = np.zeros(self.n, dtype=np.float32)
-                  nat[self.rev] = frame
-                  out[made][:] = nat
+                  nat[self.rev] = frame          # slots -> natural bin order
+                  centred = np.zeros(self.n, dtype=np.float32)
+                  centred[self.shift] = nat      # natural bins -> -fs/2 .. +fs/2
+                  out[made][:] = centred
                   made += 1
               return made
     affinity: ''
     alias: ''
     burst_len: burst_len
-    comment: "bit-reversed chip slots -> natural-order 64-bin power vector\
-      \ (and strips the 63-sample startup transient)"
+    comment: "bit-reversed chip slots -> 32-bin power vector in ASCENDING\
+      \ FREQUENCY order from -samp_rate/2 (un-reverse, then fftshift), and\
+      \ strips the 31-sample startup transient"
     latency: latency
     maxoutbuf: '0'
     minoutbuf: '0'
     n_fft: n_fft
   states:
-    _io_cache: ('FFT bin un-reverse', 'blk', [('n_fft', '32'), ('latency', '31'),
+    _io_cache: ('FFT bins to centred spectrum', 'blk', [('n_fft', '32'), ('latency', '31'),
       ('burst_len', '127')], [('0', 'float', 1)], [('0', 'float', 32)], '', ['burst_len',
       'latency', 'n_fft'])
     bus_sink: false
@@ -443,11 +508,16 @@ blocks:
     color7: '"yellow"'
     color8: '"dark red"'
     color9: '"dark green"'
-    comment: "THE SPECTRUM — 32 natural-order bins straight off the chip.\
-      \ The demo tone sits at bin 11 at 0 dBFS."
+    comment: "THE SPECTRUM — 32 bins straight off the chip, on a real\
+      \ FREQUENCY axis. x runs from -samp_rate/2 = -16000 Hz in steps of\
+      \ bin_hz = samp_rate/n_fft = 1000 Hz, so point i is (i - 16)*1000 Hz.\
+      \ The demo tone (natural bin 11) is the line at +11000 Hz, at about\
+      \ -0.9 dBFS; every other bin sits on the -90 dBFS floor.\
+      \ Same bin index as the 64-point variant, but TWICE the frequency —\
+      \ a half-length transform has twice the bin width."
     grid: 'True'
     gui_hint: ''
-    label1: on-chip FFT32 power spectrum
+    label1: on-chip FFT32 power spectrum (bin k = k*samp_rate/32 Hz)
     label10: ''
     label2: ''
     label3: ''
@@ -460,7 +530,7 @@ blocks:
     legend: 'True'
     maxoutbuf: '0'
     minoutbuf: '0'
-    name: '"On-chip FFT32 spectrum (natural bin order, dBFS)"'
+    name: '"On-chip FFT32 spectrum — 1000 Hz/bin, tone at +11000 Hz (dBFS)"'
     nconnections: '1'
     ref_level: '0'
     showports: 'False'
@@ -476,10 +546,10 @@ blocks:
     width7: '1'
     width8: '1'
     width9: '1'
-    x_axis_label: '"FFT bin (natural order)"'
-    x_start: '0'
-    x_step: '1.0'
-    x_units: '""'
+    x_axis_label: '"frequency (Hz) — bin k of 32 at samp_rate = k*samp_rate/32"'
+    x_start: -samp_rate / 2
+    x_step: bin_hz
+    x_units: '"Hz"'
     y_axis_label: '"power (dBFS)"'
     y_units: '""'
     ymax: '5'
@@ -492,8 +562,117 @@ blocks:
     rotation: 0
     state: enabled
 
+- name: stim_scope
+  id: qtgui_time_sink_x
+  parameters:
+    affinity: ''
+    alias: ''
+    alpha1: '1.0'
+    alpha10: '1.0'
+    alpha2: '1.0'
+    alpha3: '1.0'
+    alpha4: '1.0'
+    alpha5: '1.0'
+    alpha6: '1.0'
+    alpha7: '1.0'
+    alpha8: '1.0'
+    alpha9: '1.0'
+    autoscale: 'False'
+    axislabels: 'True'
+    color1: blue
+    color10: dark blue
+    color2: red
+    color3: green
+    color4: black
+    color5: cyan
+    color6: magenta
+    color7: yellow
+    color8: dark red
+    color9: dark green
+    comment: "WHAT THE CHIP IS ACTUALLY BEING FED — the I and Q rails of the\
+      \ stimulus, on a time axis. This answers 'the waveform isn't a sinusoid, so\
+      \ what is it capturing the spike on?'. It IS the sinusoid: an 11000 Hz complex\
+      \ tone, I = cos and Q = sin, one Q15 word per sample. In placeKYT's own\
+      \ waveform pane the same stream appears as fft32.xi / fft32.xq and looks\
+      \ like a STAIRCASE — correctly, because bin 11 of 32 is only 32/11 =\
+      \ 2.9 samples per cycle and a per-word trace draws each sample as a step.\
+      \ This scope plots 4 frames (128 samples = 44 cycles). At N=32 bin 11 is\
+      \ close to Nyquist, so even here the trace is coarse; set tone_bin = 1 for\
+      \ one full cycle per 32-sample frame, the slowest and smoothest stimulus\
+      \ this example can show."
+    ctrlpanel: 'False'
+    entags: 'True'
+    grid: 'True'
+    gui_hint: ''
+    label1: I (xi rail)
+    label10: Signal 10
+    label2: Q (xq rail)
+    label3: Signal 3
+    label4: Signal 4
+    label5: Signal 5
+    label6: Signal 6
+    label7: Signal 7
+    label8: Signal 8
+    label9: Signal 9
+    legend: 'True'
+    marker1: '-1'
+    marker10: '-1'
+    marker2: '-1'
+    marker3: '-1'
+    marker4: '-1'
+    marker5: '-1'
+    marker6: '-1'
+    marker7: '-1'
+    marker8: '-1'
+    marker9: '-1'
+    name: '"Stimulus into x16_in — I/Q of the 11000 Hz tone"'
+    nconnections: '1'
+    size: 4 * n_fft
+    srate: samp_rate
+    stemplot: 'False'
+    style1: '1'
+    style10: '1'
+    style2: '1'
+    style3: '1'
+    style4: '1'
+    style5: '1'
+    style6: '1'
+    style7: '1'
+    style8: '1'
+    style9: '1'
+    tr_chan: '0'
+    tr_delay: '0'
+    tr_level: '0.0'
+    tr_mode: qtgui.TRIG_MODE_FREE
+    tr_slope: qtgui.TRIG_SLOPE_POS
+    tr_tag: '""'
+    type: complex
+    update_time: '0.10'
+    width1: '2'
+    width10: '1'
+    width2: '2'
+    width3: '1'
+    width4: '1'
+    width5: '1'
+    width6: '1'
+    width7: '1'
+    width8: '1'
+    width9: '1'
+    ylabel: amplitude
+    ymax: '1.1'
+    ymin: '-1.1'
+    yunit: '""'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [280, 372]
+    rotation: 0
+    state: enabled
+
 connections:
 - [src, '0', ksrc, '0']
+- [src, '0', stim_scope, '0']
 - [ksrc, '0', fft, '0']
 - [fft, '0', mag2, '0']
 - [mag2, '0', ksink, '0']

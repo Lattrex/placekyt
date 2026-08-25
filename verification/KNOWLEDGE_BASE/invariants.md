@@ -1877,3 +1877,58 @@ whether the dominant block's free space can be made contiguous instead.
 convention this deliberately waives, per class), INV-23/`CHIP_SCALE_ORIENTATIONS`
 (orientation), INV-37 (derive `is_face` constants from the fold — without which a
 re-fold this large is a silent-garbage trap rather than a one-method change).
+
+---
+
+## INV-41 — A complex block port is TWO rails but ONE stored net; never identify a rail by its net alone
+
+**Symptom (display-side).** A complex input port's two waveform traces carry the
+**same label** — measured on `examples/fft_spectrum`, both `x16_in` rails read
+`fft64.xi`. The user cannot tell the real rail from the imaginary one, and the
+design reads as if it were driven by a real signal. The same collision was
+present on every single-net complex input in the shipped examples
+(`channel_selector`'s `floattocomplex.re/.im`, `css_transceiver`'s
+`conjchirpmixer.xi/.xq`, `lms_equalizer`).
+
+**Root cause.** GNU Radio collapses an I/Q pair into ONE complex port, so the
+importer — and `AppController.add_logical_connection` — wires only the **I-half**
+and **SYNTHESISES** the Q-half sibling (`grc_import._iq_sibling`). The project
+therefore stores exactly **one** `Connection` for a port that physically carries
+**two** tagged rails, landing on two consecutive registers of one cell (measured:
+`FFT64Block` entry 12, hop 26, `data_addrs [1, 2]`). Any code that answers "what
+is this tag?" by looking up the nets touching the port and, finding one,
+returning its name, necessarily returns the SAME answer for both rails.
+
+**The rule.** Identify a rail by the **register the word was addressed to**, not
+by the net. The waveform tag for an input injection is `(hop, dest)`; resolve the
+block's ports with its params (INV-6/11) via `catalog.resolved_io(...)` -> the
+ordered input registers, pair the I-half with `_iq_sibling`, and match `dest`
+against `in_regs[0]` / `in_regs[1]`. A port with no sibling (a real scalar input)
+must keep its plain net label — the rule has to be a no-op there or every
+single-rail example grows a phantom second rail.
+
+**Why it matters beyond cosmetics.** "Both rails look like one" is ALSO the
+symptom of a genuine data defect — the un-named-`stream_id` landing bug, where
+I goes to register 0 and Q to register 1 while the block expects `[1, 2]`, so it
+receives a **real** input whose conjugate-symmetric spectrum splits the tone into
+two quarter-power peaks. A clean plot does not distinguish the two causes. So do
+not reason about it: **READ THE RAILS.** Drive the built chip with
+`chip.enable_trace()`, ingest into a `TraceModel`, and pull
+`port_streams_by_tag()` — the same call the GUI plots. Measured on the honest
+chain (N=64, amplitude 0.9 tone at bin 11): `xi = 29491, 13902, -16384, …`,
+`xq = 0, 26009, 24521, …` — cosine and sine, bit-exact vs the reference, with
+`xq[0] = sin(0) = 0` and `xi[0] = round(0.9*32768)` the cheapest check that the
+rails are neither duplicated nor swapped.
+
+**Gate it.** Two separate assertions, because only one of them was ever broken:
+the rails carry **different** words each matching the right half of the stimulus
+(the data claim), and the pane names them **differently** (the label claim). See
+`verification/tests/test_fft_spectrum_example.py`
+(`test_the_two_input_rails_carry_different_data`,
+`test_waveform_labels_the_two_rails_distinguishably`, and the mutation suite that
+rejects duplicated / swapped / empty / one-sample-delayed rails).
+
+**Applies to:** any complex-input block placed from a `.grc` or via
+`add_logical_connection` — i.e. every complex example. Related: INV-6/11 (resolve
+ports WITH params), and the `fft_spectrum` lessons-log entries for the landing
+bug this shares a symptom with.

@@ -23,6 +23,52 @@ THREE CONTRACTS COME FROM THE VERIFIED BLOCK AND ARE NOT NEGOTIABLE HERE
    startup values of the zero-initialized pipeline; frame ``f`` occupies
    output samples ``63 + 64f .. 126 + 64f``.
 
+WHAT FREQUENCY IS A BIN? (the fourth contract — a DISPLAY one)
+--------------------------------------------------------------
+
+A bin index is dimensionless. The array is ASYNCHRONOUS: it has no clock and
+no notion of seconds, so it transforms whatever word stream you hand it and
+the SAMPLE RATE is a property of your stimulus, which you declare. Given a
+declared ``fs`` (:data:`SAMP_RATE`, 32 kHz here, matching both ``.grc``s'
+``samp_rate``), natural bin ``k`` of an ``N``-point transform is::
+
+    f(k) = k*fs/N          for k <  N/2     (positive frequencies)
+    f(k) = (k-N)*fs/N      for k >= N/2     (negative frequencies)
+
+:func:`bin_to_hz` is that map; :func:`bin_hz` is the bin WIDTH ``fs/N``.
+Measured on the real chip at the shipped stimulus: the demo tone at natural
+bin 11 is **5500 Hz at N=64** (500 Hz per bin) and **11000 Hz at N=32**
+(1000 Hz per bin) — the same bin index, twice the frequency, because a
+half-length transform has twice the bin width.
+
+The natural-order vector runs 0 -> +fs/2 and then JUMPS to -fs/2, which no
+single linear axis can label — so the shipped flowgraphs apply
+:func:`fftshift_order` after the un-reversal and plot a MONOTONIC Hz axis from
+``-fs/2`` in ``fs/N`` steps (:func:`axis_hz`). That is why the x axis reads
+"frequency (Hz)" rather than "FFT bin".
+
+WHAT THE placeKYT PORT TRACES SHOW (and why they look like stairs)
+-------------------------------------------------------------------
+
+In placeKYT's waveform pane the ``x16_in`` port carries TWO tagged rails,
+labelled ``fft64.xi`` (real) and ``fft64.xq`` (imaginary) — the block lands
+them on two consecutive registers of one cell (measured: entry 12, hop 26,
+data_addrs [1, 2]).
+
+They are the Q15 WORD stream at the port: ONE 16-bit word per sample, drawn as
+a step per word. A staircase is therefore CORRECT and expected, not a defect —
+bin 11 of 64 is only 64/11 = 5.8 samples per cycle, so a per-word trace has
+under six steps to draw each period. Verified against this module's own
+reference: at N=64 the ``xi`` rail delivers 29491, 13902, -16384, -29349, ...
+and ``xq`` delivers 0, 26009, 24521, -2891, ... — the tone's cosine and sine,
+sample for sample, and demonstrably DIFFERENT streams (a real complex tone).
+``verification/tests/test_fft_spectrum_example.py`` pins both facts.
+
+To SEE the sinusoid rather than the stairs, each ``.grc`` also carries a
+stimulus time scope on the I/Q burst, and lowering the ``tone_bin`` variable
+raises the samples per cycle (``tone_bin = 1`` gives one full cycle per frame
+— the slowest, smoothest stimulus this example can show).
+
 THE PLACEMENT IS PINNED, NOT AUTO-PACKED
 ----------------------------------------
 
@@ -135,6 +181,85 @@ MAG2_FACE = "north"
 #: Coherent-bin power floor as a FRACTION, so a size-agnostic caller can
 #: derive the word threshold itself.
 COHERENT_FRACTION = 0.75
+
+#: The sample rate the stimulus is DECLARED to be sampled at, kept literally in
+#: sync with both ``.grc``s' ``samp_rate`` variable.
+#:
+#: The array is ASYNCHRONOUS — it has no clock of its own and no notion of
+#: seconds. It transforms whatever word stream you hand it, so the sample rate
+#: is a property of YOUR stimulus, not of the chip, and it is what turns a
+#: dimensionless bin index into a physical frequency. 32000 is the repo-wide
+#: example convention (see examples/bpsk_modem, examples/css_transceiver).
+#: Change it and the whole frequency axis rescales; the chip does not change.
+SAMP_RATE = 32000.0
+
+
+def bin_hz(n_fft: int = N_FFT, samp_rate: float = SAMP_RATE) -> float:
+    """BIN WIDTH in Hz: ``samp_rate / n_fft``.
+
+    500 Hz at N=64 and 1000 Hz at N=32, both at the shipped 32 kHz rate — the
+    same bin INDEX is twice the frequency at the smaller size, because a
+    half-length transform has twice the bin width.
+    """
+    return float(samp_rate) / int(n_fft)
+
+
+def bin_to_hz(k: int, n_fft: int = N_FFT, samp_rate: float = SAMP_RATE) -> float:
+    """NATURAL bin index -> frequency in Hz. THE published mapping.
+
+    ``f(k) = k*fs/N`` for ``k < N/2`` (positive frequencies) and
+    ``f(k) = (k-N)*fs/N`` for ``k >= N/2`` (the negative half) — the standard
+    DFT bin map, stated here once so the README, the ``.grc``s' axis config and
+    the gates all cite the SAME arithmetic instead of three copies that can
+    drift apart.
+
+    Measured on the real chip at the shipped stimulus: the demo tone at natural
+    bin 11 reads 5500.0 Hz at N=64 and 11000.0 Hz at N=32.
+    """
+    n = int(n_fft)
+    k = int(k)
+    if not 0 <= k < n:
+        raise ValueError(f"bin {k} is out of range for an {n}-point transform")
+    signed = k if k < n // 2 else k - n
+    return signed * bin_hz(n, samp_rate)
+
+
+def fftshift_order(n_fft: int = N_FFT):
+    """``natural bin -> index on the CENTRED axis`` (numpy's ``fftshift`` map).
+
+    The natural-order vector runs 0 -> +fs/2 and then JUMPS to -fs/2 -> 0, which
+    no single linear axis can label — that is why "FFT bin (natural order)" was
+    the only honest x label the example could carry before. Rolling by N/2 makes
+    the vector monotonic in frequency, so the display can run a real Hz axis
+    from ``-samp_rate/2`` in steps of ``bin_hz``. Both ``.grc``s' display block
+    applies exactly this permutation after the un-reversal.
+    """
+    n = int(n_fft)
+    return [(k + n // 2) % n for k in range(n)]
+
+
+def centred_spectrum(nat, n_fft: int = None):
+    """One NATURAL-order frame -> the CENTRED (``-fs/2 .. +fs/2``) display
+    vector the shipped flowgraphs plot. Index ``i`` is ``-samp_rate/2 +
+    i*bin_hz`` Hz."""
+    n = int(n_fft) if n_fft else len(nat)
+    if len(nat) != n:
+        raise ValueError(f"a frame is {n} bins, got {len(nat)}")
+    out = [0] * n
+    for k, i in enumerate(fftshift_order(n)):
+        out[i] = nat[k]
+    return out
+
+
+def axis_hz(n_fft: int = N_FFT, samp_rate: float = SAMP_RATE):
+    """The CENTRED display axis in Hz — one value per plotted point.
+
+    ``[-samp_rate/2 + i*bin_hz for i in range(n_fft)]``, i.e. exactly what the
+    vector sink's ``set_x_axis(-samp_rate/2, bin_hz)`` labels the points with.
+    """
+    n = int(n_fft)
+    step = bin_hz(n, samp_rate)
+    return [-float(samp_rate) / 2 + i * step for i in range(n)]
 
 
 # ---------------------------------------------------------------- word codecs
@@ -410,9 +535,23 @@ def demo_size(n_fft: int) -> bool:
     print(f"   bit-reversal map: slot {peaks[0][0]} <-> bin {TONE_BIN} "
           f"{'CONFIRMED' if order_ok else 'WRONG'}")
 
-    ok = exact and ok_bins and order_ok and len(frames) == FRAMES
-    print("   RESULT:", "SPECTRUM ON CHIP — the tone lands in its true bin "
-          "after un-reversal, bit-exact vs the block references"
+    # WHAT FREQUENCY the spike is on. A bin index is dimensionless; at the
+    # declared SAMP_RATE bin k of N is k*fs/N Hz, and the shipped .grc plots
+    # that axis directly (centred, so -fs/2 .. +fs/2 in bin_hz steps).
+    nat0 = natural_spectrum(frames[0], n)
+    centred = centred_spectrum(nat0, n)
+    axis = axis_hz(n)
+    i = int(np.argmax(centred))
+    hz = bin_to_hz(TONE_BIN, n)
+    hz_ok = abs(axis[i] - hz) < 1e-9
+    print(f"4. bin -> Hz at samp_rate {SAMP_RATE:.0f}: {bin_hz(n):.0f} Hz per "
+          f"bin, so bin {TONE_BIN} = {hz:.0f} Hz")
+    print(f"   peak on the plotted axis: point {i} = {axis[i]:.0f} Hz "
+          f"{'MATCHES' if hz_ok else 'MISMATCH'}")
+
+    ok = exact and ok_bins and order_ok and hz_ok and len(frames) == FRAMES
+    print("   RESULT:", f"SPECTRUM ON CHIP — the tone lands in its true bin "
+          f"after un-reversal ({hz:.0f} Hz), bit-exact vs the block references"
           if ok else "MISMATCH")
     return ok
 

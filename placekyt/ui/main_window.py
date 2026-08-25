@@ -1055,7 +1055,21 @@ class MainWindow(QMainWindow):
         waveform channel picker. Looks at the project's connections touching this
         port and returns the block-port name of the matching net (e.g. 'xi'/'xq'
         for an input port, the producer port for an output). Returns None when it
-        can't attribute the tag — the picker then shows the bare tag number."""
+        can't attribute the tag — the picker then shows the bare tag number.
+
+        A COMPLEX net counts as TWO channels even though the project holds ONE
+        connection. GNU Radio collapses an I/Q pair into a single complex port, so
+        the importer (and ``add_logical_connection``) wires only the I-half and
+        SYNTHESISES the Q-half; the project therefore has one ``…->blk.xi`` net
+        while the port physically carries two tagged rails, on the block's two
+        consecutive input registers. Naming by net alone then labels BOTH rails
+        ``blk.xi`` — the user-reported "why do both inputs say xi, is this complex
+        or not?" on the FFT spectrum example, where the I and Q rails demonstrably
+        carry DIFFERENT data (measured: the I rail is the tone's cosine, the Q rail
+        its sine, matching the reference sample-for-sample). It was never an
+        ingress fault — purely this label. :meth:`_iq_rail_names` expands the pair
+        so the tag's ``dest`` register picks the right rail name.
+        """
         try:
             from model.connection import ChipPortEndpoint, BlockEndpoint
             nets = []
@@ -1064,18 +1078,64 @@ class MainWindow(QMainWindow):
                     if (isinstance(ep, ChipPortEndpoint) and ep.chip == chip
                             and ep.port == port):
                         if isinstance(other, BlockEndpoint):
-                            nets.append(f"{other.block}.{other.port}")
+                            nets.append((f"{other.block}.{other.port}", other))
                         else:
-                            nets.append(c.name)
+                            nets.append((c.name, None))
             if not nets:
                 return None
-            # A single net on the port → name it regardless of tag. Multiple nets
-            # (a genuinely multiplexed port) → only name confidently when the tag
-            # indexes them in order (0,1,…); else leave to the bare tag number.
+            # A single net on the port → name it regardless of tag, EXCEPT when it
+            # is the I-half of a complex pair: then the port carries two rails and
+            # the tag's register decides which one this is.
             if len(nets) == 1:
-                return nets[0]
+                label, ep = nets[0]
+                if ep is not None:
+                    rail = self._iq_rail_name(ep, tag)
+                    if rail is not None:
+                        return rail
+                return label
             if isinstance(tag, int) and 0 <= tag < len(nets):
-                return nets[tag]
+                return nets[tag][0]
+            return None
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _iq_rail_name(self, ep, tag):
+        """``blk.xi`` / ``blk.xq`` for one tag of a COMPLEX block-input net.
+
+        ``ep`` is the net's :class:`BlockEndpoint` (the I-half the project holds);
+        ``tag`` is the waveform tag, ``(hop, dest)`` for an input injection. The
+        block's resolved input registers are consecutive — ``(r_i, r_q)`` — and the
+        Q-half port name comes from the catalog's I/Q pairing rule, so the register
+        the word was addressed to names the rail exactly as the hardware landed it.
+
+        Returns ``None`` when this is not a complex pair (a real scalar port keeps
+        its plain net label) or when the tag carries no usable register.
+        """
+        try:
+            from engine.grc_import import _iq_sibling
+
+            if not (isinstance(tag, tuple) and len(tag) == 2):
+                return None
+            dest = tag[1]
+            if dest is None:
+                return None
+            blk = self.controller.project.block(ep.block)
+            if blk is None:
+                return None
+            params = getattr(blk, "params", None)
+            q_port = _iq_sibling(self.controller.catalog, blk.type, ep.port,
+                                 want_out=False, params=params)
+            if not q_port:
+                return None
+            _entry, in_regs = self.controller.catalog.resolved_io(
+                blk.type, params, library=blk.library)
+            regs = list(in_regs or ())
+            if len(regs) < 2:
+                return None
+            if int(dest) == int(regs[0]):
+                return f"{ep.block}.{ep.port}"
+            if int(dest) == int(regs[1]):
+                return f"{ep.block}.{q_port}"
             return None
         except Exception:  # noqa: BLE001
             return None

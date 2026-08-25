@@ -58,6 +58,72 @@ visibly missing, the two disjoint, every frame identical across the run — with
 four mutation tests that replay both original defects and prove the gate fails
 on them. 13/13 green. The `.kyt` regenerates byte-identical: the chip never
 changed, only what was drawn about it.
+## fft_spectrum LEGIBILITY pass — a synthesised I/Q sibling has no NET to name a trace after 2026-08-25
+
+Three user reports on the shipped `examples/fft_spectrum` (both sizes), opened
+cold in the GUI. One was a real defect, two were missing explanation. The
+general lesson is the first one, and it applies to **every complex example**.
+
+- **1. LABEL BUG (real, fixed).** "Why do both inputs say `xi`? Is this complex
+  or not?" — the waveform pane labelled BOTH `x16_in` rails `fft64.xi`.
+  Root cause: GNU Radio collapses an I/Q pair into ONE complex port, so the
+  importer (and `add_logical_connection`) wires only the I-half and
+  **SYNTHESISES** the Q-half. The project therefore stores **one** connection
+  (`x16_in -> fft64.xi`) for a port that physically carries **two** tagged
+  rails. `MainWindow._port_tag_name` named a tag by looking up the nets touching
+  the port and, with exactly one net, returned that name **for every tag** — so
+  both rails got the same string. Fix: `_iq_rail_name` resolves the Q-half port
+  via `grc_import._iq_sibling` and picks the rail from the tag's `dest` register
+  against `catalog.resolved_io`'s two input registers. **Generalizes:** any
+  single-net complex block input had this collision — the sweep found it also on
+  `channel_selector` (`floattocomplex.re/.im`), `css_transceiver`
+  (`conjchirpmixer.xi/.xq`) and `lms_equalizer`, all now split correctly. Real
+  scalar ports (`gain.sample`) are untouched, because `_iq_sibling` returns None.
+
+  **The DATA was never wrong** — and that mattered, because the same symptom
+  ("both rails look like one") is also what the un-named-stream landing bug
+  produces, and that one IS a data defect. Distinguish them by READING the rails:
+  drive the built chip with `enable_trace()` and pull
+  `TraceModel.port_streams_by_tag()`. Measured here, N=64:
+  `xi = 29491, 13902, -16384, -29349, …` and `xq = 0, 26009, 24521, -2891, …` —
+  the tone's cosine and sine, bit-exact vs the reference, `xq[0] = sin(0) = 0`.
+  That read is now a gate at both sizes.
+
+- **2. A BIN INDEX IS NOT A FREQUENCY.** The x axis read "FFT bin (natural
+  order)", which is honest but useless — and it was the only honest label
+  available, because natural order runs `0 -> +fs/2` then JUMPS to `-fs/2`, and
+  no linear axis can label a discontinuity. The fix is two halves: publish the
+  map (`f(k) = k*fs/N`, `(k-N)*fs/N` for `k >= N/2`) at a DECLARED sample rate —
+  the array is asynchronous, it has no clock, so `samp_rate` is a property of the
+  stimulus, not the chip — and **fftshift the display vector** so the axis is
+  monotonic and `set_x_axis(-samp_rate/2, bin_hz)` labels it. Measured on the
+  real chip at `samp_rate = 32000`: N=64 peaks at point 43 = **+5500.0 Hz**
+  (500 Hz/bin), N=32 at point 27 = **+11000.0 Hz** (1000 Hz/bin) — same bin
+  index, twice the frequency, because a half-length transform has twice the bin
+  width. Keep ONE copy of the arithmetic (here `bin_to_hz`/`axis_hz` in the demo
+  module) and have the README, the `.grc` axis config and the gates all cite it.
+
+- **3. A PORT TRACE IS A WORD STREAM, SO A STAIRCASE IS CORRECT.** "The waveform
+  isn't a sinusoid." It is — the pane draws the Q15 WORD stream, one step per
+  sample, and the shipped stimulus has `N/tone_bin` samples per cycle: **5.8** at
+  N=64 bin 11, **2.9** at N=32. Under ~10 samples/cycle nothing looks smooth.
+  Don't "fix" the trace; make the example legible instead — ship a `time_sink`
+  on the stimulus itself and document the escape hatch (`tone_bin = 1` gives one
+  whole cycle per frame). **Gotcha:** the ≤ burst−16 scope-sizing rule (a QT
+  `time_sink` paints nothing until a FULL buffer arrives, and the scheduler
+  strands a finite stream's tail) applies only to scopes on the FINITE chip
+  stream. This scope taps the `repeat = True` vector source, which streams
+  forever — measured, a 256-sample scope on the N=64 source receives 768+
+  samples. The first draft of the gate asserted the burst rule here and failed
+  correctly; the real invariant to assert is that the source still repeats.
+
+Gates: `verification/tests/test_fft_spectrum_example.py` 26 -> **51**, all green
+standalone on port 58950 (both live user-path gates included). New mutations
+proven to FAIL: duplicated / swapped / empty / delayed input rails, the old
+single-net namer rule (reverting the fix fails 3 gates with
+`assert 'fft64.xi' != 'fft64.xi'`), a bin->Hz map that ignores the sample rate,
+and an axis read without the fftshift (natural bin 11 on the centred axis reads
+-10500 Hz, not +5500).
 
 ## fft_spectrum example SHIPPED — three LIVE-PATH defects that every headless gate passed 2026-08-24
 

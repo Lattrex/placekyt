@@ -7,7 +7,7 @@
 # GNU Radio Python Flow Graph
 # Title: Kyttar FFT32 spectrum analyzer — the smaller streaming FFT
 # Author: Lattrex
-# Description: LIVE SPECTRUM ANALYZER on the Kyttar array (the SMALLER variant, N=32). A complex I/Q burst drives the placed 32-point streaming R2SDF FFT (FFT32, 60 cells) whose complex output feeds a placed Complex-to-Mag^2 stage, so the transform AND the per-bin power both run ON CHIP. The chip emits bins in BIT-REVERSED (DIF) order; the 'unreverse' block undoes that map and emits a natural-order 32-bin vector, so the demo tone at bin 11 (which leaves the chip at slot 26) appears exactly at 11 on the plot. Open fft_spectrum_32.kyt in placeKYT -> Run as GNURadio Server (port 58950), then Execute here.
+# Description: LIVE SPECTRUM ANALYZER on the Kyttar array (the SMALLER variant, N=32). A complex I/Q burst drives the placed 32-point streaming R2SDF FFT (FFT32, 60 cells) whose complex output feeds a placed Complex-to-Mag^2 stage, so the transform AND the per-bin power both run ON CHIP. The chip emits bins in BIT-REVERSED (DIF) order; the 'unreverse' block undoes that map and then fftshifts, emitting a 32-bin vector in ascending FREQUENCY order from -samp_rate/2. Bin k of N at rate fs is k*fs/N Hz (bins >= N/2 are the negative frequencies (k-N)*fs/N), so at the default samp_rate = 32000 each bin is 1000 Hz wide and the demo tone at bin 11 (which leaves the chip at slot 26) appears at +11000 Hz on the plot. A second scope shows the stimulus itself, so you can see the sinusoid the spike comes from. Open fft_spectrum_32.kyt in placeKYT -> Run as GNURadio Server (port 58950), then Execute here.
 # GNU Radio version: 3.10.12.0
 
 from PyQt5 import Qt
@@ -71,10 +71,12 @@ class fft_spectrum_32(gr.top_block, Qt.QWidget):
         self.latency = latency = 31
         self.frames = frames = 3
         self.tone_bin = tone_bin = 11
+        self.samp_rate = samp_rate = 32000
         self.burst_len = burst_len = latency + n_fft * frames
         self.amplitude = amplitude = 0.9
         self.server_port = server_port = 58950
         self.iq_stim = iq_stim = list(amplitude*np.exp(2j*np.pi*tone_bin*np.arange(burst_len)/n_fft))
+        self.bin_hz = bin_hz = samp_rate / n_fft
 
         ##################################################
         # Blocks
@@ -82,14 +84,65 @@ class fft_spectrum_32(gr.top_block, Qt.QWidget):
 
         self.unreverse = unreverse.blk(n_fft=n_fft, latency=latency, burst_len=burst_len)
         self.to_db = to_db.blk(n_fft=n_fft, floor_db=-90.0)
+        self.stim_scope = qtgui.time_sink_c(
+            (4 * n_fft), #size
+            samp_rate, #samp_rate
+            "Stimulus into x16_in — I/Q of the 11000 Hz tone", #name
+            1, #number of inputs
+            None # parent
+        )
+        self.stim_scope.set_update_time(0.10)
+        self.stim_scope.set_y_axis(-1.1, 1.1)
+
+        self.stim_scope.set_y_label('amplitude', "")
+
+        self.stim_scope.enable_tags(True)
+        self.stim_scope.set_trigger_mode(qtgui.TRIG_MODE_FREE, qtgui.TRIG_SLOPE_POS, 0.0, 0, 0, "")
+        self.stim_scope.enable_autoscale(False)
+        self.stim_scope.enable_grid(True)
+        self.stim_scope.enable_axis_labels(True)
+        self.stim_scope.enable_control_panel(False)
+        self.stim_scope.enable_stem_plot(False)
+
+
+        labels = ['I (xi rail)', 'Q (xq rail)', 'Signal 3', 'Signal 4', 'Signal 5',
+            'Signal 6', 'Signal 7', 'Signal 8', 'Signal 9', 'Signal 10']
+        widths = [2, 2, 1, 1, 1,
+            1, 1, 1, 1, 1]
+        colors = ['blue', 'red', 'green', 'black', 'cyan',
+            'magenta', 'yellow', 'dark red', 'dark green', 'dark blue']
+        alphas = [1.0, 1.0, 1.0, 1.0, 1.0,
+            1.0, 1.0, 1.0, 1.0, 1.0]
+        styles = [1, 1, 1, 1, 1,
+            1, 1, 1, 1, 1]
+        markers = [-1, -1, -1, -1, -1,
+            -1, -1, -1, -1, -1]
+
+
+        for i in range(2):
+            if len(labels[i]) == 0:
+                if (i % 2 == 0):
+                    self.stim_scope.set_line_label(i, "Re{{Data {0}}}".format(i/2))
+                else:
+                    self.stim_scope.set_line_label(i, "Im{{Data {0}}}".format(i/2))
+            else:
+                self.stim_scope.set_line_label(i, labels[i])
+            self.stim_scope.set_line_width(i, widths[i])
+            self.stim_scope.set_line_color(i, colors[i])
+            self.stim_scope.set_line_style(i, styles[i])
+            self.stim_scope.set_line_marker(i, markers[i])
+            self.stim_scope.set_line_alpha(i, alphas[i])
+
+        self._stim_scope_win = sip.wrapinstance(self.stim_scope.qwidget(), Qt.QWidget)
+        self.top_layout.addWidget(self._stim_scope_win)
         self.src = blocks.vector_source_c(iq_stim, True, 1, [])
         self.spectrum_sink = qtgui.vector_sink_f(
             n_fft,
-            0,
-            1.0,
-            "FFT bin (natural order)",
+            (-samp_rate / 2),
+            bin_hz,
+            "frequency (Hz) — bin k of 32 at samp_rate = k*samp_rate/32",
             "power (dBFS)",
-            "On-chip FFT32 spectrum (natural bin order, dBFS)",
+            "On-chip FFT32 spectrum — 1000 Hz/bin, tone at +11000 Hz (dBFS)",
             1, # Number of inputs
             None # parent
         )
@@ -97,12 +150,12 @@ class fft_spectrum_32(gr.top_block, Qt.QWidget):
         self.spectrum_sink.set_y_axis((-95), 5)
         self.spectrum_sink.enable_autoscale(False)
         self.spectrum_sink.enable_grid(True)
-        self.spectrum_sink.set_x_axis_units("")
+        self.spectrum_sink.set_x_axis_units("Hz")
         self.spectrum_sink.set_y_axis_units("")
         self.spectrum_sink.set_ref_level(0)
 
 
-        labels = ['on-chip FFT32 power spectrum', '', '', '', '',
+        labels = ['on-chip FFT32 power spectrum (bin k = k*samp_rate/32 Hz)', '', '', '', '',
             '', '', '', '', '']
         widths = [3, 1, 1, 1, 1,
             1, 1, 1, 1, 1]
@@ -136,6 +189,7 @@ class fft_spectrum_32(gr.top_block, Qt.QWidget):
         self.connect((self.ksrc, 0), (self.fft, 0))
         self.connect((self.mag2, 0), (self.ksink, 0))
         self.connect((self.src, 0), (self.ksrc, 0))
+        self.connect((self.src, 0), (self.stim_scope, 0))
         self.connect((self.to_db, 0), (self.spectrum_sink, 0))
         self.connect((self.unreverse, 0), (self.to_db, 0))
 
@@ -153,6 +207,7 @@ class fft_spectrum_32(gr.top_block, Qt.QWidget):
 
     def set_n_fft(self, n_fft):
         self.n_fft = n_fft
+        self.set_bin_hz(self.samp_rate / self.n_fft)
         self.set_burst_len(self.latency + self.n_fft * self.frames)
         self.set_iq_stim(list(self.amplitude*np.exp(2j*np.pi*self.tone_bin*np.arange(self.burst_len)/self.n_fft)))
 
@@ -177,6 +232,15 @@ class fft_spectrum_32(gr.top_block, Qt.QWidget):
     def set_tone_bin(self, tone_bin):
         self.tone_bin = tone_bin
         self.set_iq_stim(list(self.amplitude*np.exp(2j*np.pi*self.tone_bin*np.arange(self.burst_len)/self.n_fft)))
+
+    def get_samp_rate(self):
+        return self.samp_rate
+
+    def set_samp_rate(self, samp_rate):
+        self.samp_rate = samp_rate
+        self.set_bin_hz(self.samp_rate / self.n_fft)
+        self.spectrum_sink.set_x_axis((-self.samp_rate / 2), self.bin_hz)
+        self.stim_scope.set_samp_rate(self.samp_rate)
 
     def get_burst_len(self):
         return self.burst_len
@@ -204,6 +268,13 @@ class fft_spectrum_32(gr.top_block, Qt.QWidget):
     def set_iq_stim(self, iq_stim):
         self.iq_stim = iq_stim
         self.src.set_data(self.iq_stim, [])
+
+    def get_bin_hz(self):
+        return self.bin_hz
+
+    def set_bin_hz(self, bin_hz):
+        self.bin_hz = bin_hz
+        self.spectrum_sink.set_x_axis((-self.samp_rate / 2), self.bin_hz)
 
 
 

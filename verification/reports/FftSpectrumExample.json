@@ -19,9 +19,14 @@
     "tone_bin": 11,
     "tone_slot": 52,
     "coherent_bin_power": 0.8099,
-    "output_order": "bit_reversed (un-reversed for display)",
+    "output_order": "bit_reversed (un-reversed + fftshifted for display)",
     "scale": "fft_over_64",
-    "user_path": true
+    "user_path": true,
+    "samp_rate": 32000.0,
+    "bin_hz": 500.0,
+    "tone_hz": 5500.0,
+    "tone_hz_32": 11000.0,
+    "complex_ingress": "xi/xq on distinct registers, distinctly labelled"
   },
   "provenance": "session"
 }

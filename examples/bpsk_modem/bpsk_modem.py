@@ -75,7 +75,7 @@ class bpsk_modem(gr.top_block, Qt.QWidget):
         # Blocks
         ##################################################
 
-        self.upc = kyttar.iq_upconvert("kyttar_0", 32000, 8000)
+        self.upc = kyttar.iq_upconvert("kyttar_0", 32000, 8000, block_name="")
         self.up = kyttar.upsampler("kyttar_0", sps, io_type=complex)
         self.tx_src = kyttar.source(device_id="kyttar_0", port_name="x16_in", num_channels=1, server_host="127.0.0.1", server_port=58950, complex_in=False, burst_len=n_bits, stream_id="tx", pipelined=True, schedule="interleaved", repeat=False, output_words="auto")
         self.tx_sink = kyttar.sink(device_id="kyttar_0", port_name="x16_out", num_channels=1, server_port=58950, server_repeat=False, hold_secs=8.0, stream_id="tx", in_type=False)

@@ -204,6 +204,31 @@ is a good template for the general problem: when a visual claim is disputed,
 derive the same structure the renderer consumes from REAL trace data and diff the
 old vs new ordering, rather than arguing from the code.
 
+**TWO LIVE-PATH DEFECTS the headless gates could not see** — found only because the
+user-path gate was written. Headless was green at 200/200 bit-exact while the hosted
+`.grc` returned a stream of two distinct values. Both are in the MULTI-CHIP bridge:
+
+- **A chain continuing across the CARRIER WIRE resolves `out_tag=None`.**
+  `port_config.stream_targets` finds a chain's egress tag by walking block -> block
+  WITHIN ONE CHIP. When the stream's input net is on the head chip and the tagged
+  egress net belongs to the tail chip — joined by an INTER-CHIP WIRE, not a
+  block-to-block net — the walk never reaches it. The tail's words ARE tagged on the
+  fabric, so `None` makes the host demux drop every one: **data flows on chip and the
+  flowgraph shows nothing.** Fixed with `_tail_egress_tag`, applied only when the
+  chain genuinely spans chips (single-chip behaviour untouched).
+- **The multi-chip demux kept only ONE tag of a COMPLEX PAIR.** A complex exit cell
+  emits I then Q from ONE cell on tags `(out_tag, out_tag+1)` — measured at the tail:
+  `{7: 140, 8: 140}`. The single-chip path already owns both (`_tag_owner`); the
+  multi-chip drain matched `d == out_tag` only and discarded every Q word. More
+  dangerous than the first: the stream arrives at HALF LENGTH with the imaginary part
+  gone, which reads as a plausible wrong answer rather than an obvious failure.
+
+> **Generalizable:** only the I rail is wired to a net (wiring a second net to the same
+> port kills egress), so the fabric emits a tag **the project graph never mentions**.
+> Deciding "is this egress complex?" from the NETS alone cannot work for a chip-scale
+> complex block — it must come from the terminal block's DECLARED output registers.
+> The single-chip resolver already OR-ed both sources; the multi-chip one had neither.
+
 **Gate design note:** bit-exactness alone could NEVER have caught this — arrival
 order does not change the arithmetic, so a genuinely batched model would be
 bit-exact and still misrepresent the hardware. That is why

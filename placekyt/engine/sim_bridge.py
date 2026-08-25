@@ -1852,8 +1852,19 @@ class MultiChipSimServer:
             tail = _chip_name(s["out_chip"])
             out_tag = s["out_tag"]
             if out_tag is not None and hasattr(eng._sim, "read_port_words_timed"):
+                # A COMPLEX-egress chain exits on a tag PAIR: the I rail on
+                # out_tag and the Q rail on out_tag+1 (one exit cell emits
+                # both, interleaved on the same corridor). Keeping only
+                # ``d == out_tag`` drops every Q word — the stream arrives
+                # half-length with the imaginary part gone, which for a
+                # transform reads as a plausible-looking wrong answer rather
+                # than an obvious failure. The single-chip path already owns
+                # both tags (see _tag_owner); this is the multi-chip half.
+                want = {int(out_tag)}
+                if s["complex"] or s.get("complex_out"):
+                    want.add(int(out_tag) + 1)
                 for (v, d, _t) in eng._sim.read_port_words_timed(tail, s["out_port"]):
-                    if int(d) == int(out_tag):
+                    if int(d) in want:
                         s["out"].append(float(int(v) & 0xFFFF) if s["raw"]
                                         else _q15_to_float(int(v)))
             else:

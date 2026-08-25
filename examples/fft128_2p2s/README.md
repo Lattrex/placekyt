@@ -169,6 +169,39 @@ Under the old order chip 0 animated alone for the first 29.7% of the run,
 which is precisely the "chip 0 works for a long time, chip 1 idle" that was
 reported. Under the new order the dies alternate from the first step.
 
+## Two LIVE-PATH defects the headless gates could not see
+
+The headless suite drives `MultiChipSimEngine` directly and was green at
+200/200 bit-exact. The **user path** — host the `.kyt`, run the `.grc` through
+the real GR client stack — returned a stream of only two distinct values. Both
+faults are in the multi-chip bridge, and both are invisible to any test that
+does not go through a hosted server.
+
+**1. A chain that continues across the CARRIER WIRE resolved `out_tag=None`.**
+`stream_targets` finds a chain's egress tag by walking **block → block within
+one chip**. In this design the stream's input net is on chip 0 (die 0) while
+the tagged egress net belongs to die 1 on chip 1, joined by an *inter-chip
+wire* rather than a block-to-block net — so the walk never reaches it. The
+tail's words *are* tagged on the fabric, so a `None` here made the host demux
+drop every one of them: **data flowed on chip and the flowgraph showed
+nothing.** Fixed by recovering the tag from the tail chip's own egress net
+(`port_config._tail_egress_tag`), and only when the chain genuinely spans
+chips, so no single-chip behaviour changes.
+
+**2. The multi-chip demux kept only ONE tag of a complex pair.** A complex
+exit cell emits I then Q **from one cell on tags `(out_tag, out_tag+1)`** —
+measured at chain A's tail: `{7: 140, 8: 140}`. The single-chip path already
+owns both tags; the multi-chip drain matched `d == out_tag` only, discarding
+every Q word. That is the more dangerous of the two, because it does not look
+like a failure: the stream arrives at half length with the imaginary part
+gone, which for a transform reads as a plausible wrong answer.
+
+> Note the second fault's shape: **only the I rail is wired to a net** (wiring
+> a second net to the same port kills egress), so the fabric emits a tag the
+> project graph never mentions. Detecting "is this egress complex?" from the
+> nets alone therefore cannot work for a chip-scale complex block — it has to
+> come from the terminal block's declared output registers.
+
 ## The drive is part of the design
 
 A complex sample is a **three-part transaction**:

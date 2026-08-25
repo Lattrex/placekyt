@@ -354,6 +354,50 @@ def stream_targets(project, registry, catalog, chip_id: int = 0,
     return targets
 
 
+def _tail_egress_tag(project, catalog, tail_chip):
+    """``(out_tag, complex_out)`` for the block-driven egress net on
+    ``tail_chip`` — the tag the chain's LAST die stamps on its output words.
+
+    For a chain that spans chips over an inter-chip wire, the tagged egress
+    net belongs to the TAIL chip while the stream's input net belongs to the
+    HEAD chip, so the per-chip block-to-block walk in :func:`stream_targets`
+    never reaches it. This reads it directly off the tail.
+
+    ``complex_out`` mirrors the single-chip detection, OR-ing the same two
+    sources: the terminal block's DECLARED output registers, and a sibling
+    net at ``out_tag + 1``. The declared-registers half is the one that
+    matters here — a complex exit cell emits I then Q from ONE cell on tags
+    ``(out_tag, out_tag+1)``, and only the I rail is wired to a net (wiring
+    a second net to the same port kills egress), so the fabric emits a tag
+    the project graph never mentions. Returns ``(None, False)`` when the
+    tail has no tagged, block-driven egress net.
+    """
+    tags = []
+    term = None
+    for c in project.connections:
+        if not (isinstance(c.source, BlockEndpoint)
+                and isinstance(c.target, ChipPortEndpoint)
+                and c.target.chip == tail_chip
+                and str(c.target.port).endswith("_out")
+                and not str(c.target.port).startswith("x1_")):
+            continue
+        t = getattr(c, "out_tag", None)
+        if t is not None:
+            tags.append(int(t))
+            if term is None or int(t) == min(tags):
+                term = c.source.block
+    if not tags:
+        return None, False
+    base = min(tags)
+    complex_out = (base + 1) in tags
+    if not complex_out and term is not None:
+        tb = project.block(term)
+        if tb is not None:
+            spec = catalog.get(tb.type, library=tb.library)
+            complex_out = bool(spec) and len(spec.output_registers) > 1
+    return base, complex_out
+
+
 def multi_chip_stream_targets(project, registry, catalog, build_result=None):
     """Resolve input streams across ALL chips for the multi-chip GRC bridge.
 
@@ -416,9 +460,29 @@ def multi_chip_stream_targets(project, registry, catalog, build_result=None):
                     break
             entry = dict(tgt)
             entry["chip_id"] = cid
-            entry["out_chip"] = _tail(cid)
+            out_chip = _tail(cid)
+            entry["out_chip"] = out_chip
             entry["routed"] = routed
             entry["stream_id"] = sid
+            # CHAIN THAT CONTINUES ACROSS THE CARRIER WIRE. ``stream_targets``
+            # walks block -> block WITHIN one chip to find the chain's egress
+            # tag, so a chain whose next stage lives on the NEXT CHIP (joined
+            # by an inter-chip wire, not by a block-to-block net) resolves
+            # out_tag=None — e.g. the FFT128 stage-boundary split, where die 0
+            # sits on the chain head and the tagged egress net belongs to die 1
+            # on the chain tail. The tail's words ARE tagged on the fabric, so
+            # a None here makes the host demux drop every one of them: data
+            # flows on chip and the flowgraph shows nothing.
+            #
+            # Recover it from the TAIL chip's own egress net. Only when this
+            # chip did not resolve a tag itself and the chain genuinely spans
+            # chips, so no single-chip behaviour changes.
+            if entry.get("out_tag") is None and out_chip != cid:
+                tail_tag, tail_complex = _tail_egress_tag(
+                    project, catalog, out_chip)
+                if tail_tag is not None:
+                    entry["out_tag"] = tail_tag
+                    entry["complex_out"] = bool(tail_complex)
             key = sid if sid not in merged else f"{cid}:{sid}"
             merged[key] = entry
 

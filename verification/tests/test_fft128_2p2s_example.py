@@ -539,3 +539,79 @@ def test_the_unpaced_drive_is_what_stalls(built):
         "the unpaced drive delivered as much as the paced one — if the "
         "handshake now tolerates queued operands, this gate has outlived "
         "its purpose and the pumps may be revisited")
+
+
+# =============================================================================
+# 5. The LIVE-PATH resolution — what the hosted server would actually demux
+# =============================================================================
+def test_the_cross_wire_chain_resolves_its_tail_egress_tag(built):
+    """A chain that continues across the CARRIER WIRE must resolve its egress
+    tag — and the complex PAIR that goes with it.
+
+    THE DEFECT THIS PINS. ``stream_targets`` finds a chain's egress tag by
+    walking block -> block WITHIN ONE CHIP. Here the stream's input net is on
+    chip 0 (die 0) while the tagged egress net belongs to die 1 on chip 1,
+    joined by an INTER-CHIP WIRE rather than a block-to-block net — so the
+    walk never reached it and ``out_tag`` resolved to None. The tail's words
+    ARE tagged on the fabric, so a None makes the host demux drop every one of
+    them: data flows on chip and the flowgraph shows NOTHING. The headless
+    gates above stay green throughout, which is exactly why this is separate.
+
+    ``complex_out`` matters just as much. A complex exit cell emits I then Q
+    from ONE cell on tags (out_tag, out_tag+1) — measured at this chain's
+    tail: {7: 140 words, 8: 140 words}. Only the I rail is wired to a net
+    (wiring a second net to the same port kills egress), so the fabric emits
+    tag 8 which the project graph never mentions. A demux that keeps only
+    out_tag returns the stream at HALF LENGTH with the imaginary part gone —
+    a plausible-looking wrong answer rather than an obvious failure."""
+    from engine.port_config import multi_chip_stream_targets
+
+    ctrl, bres, _d0, _d1 = built
+    tg = multi_chip_stream_targets(ctrl.project, ctrl.registry,
+                                   ctrl.catalog, build_result=bres)
+    assert EX.STREAM_ID in tg, (
+        f"the '{EX.STREAM_ID}' stream did not resolve at all: {sorted(tg)}")
+    e = tg[EX.STREAM_ID]
+    assert e["chip_id"] == EX.CHIP_DIE0, e["chip_id"]
+    assert e["out_chip"] == EX.CHIP_DIE1, (
+        f"the chain tail resolved to chip {e['out_chip']}, not chain A's "
+        "tail — the inter-chip walk is wrong")
+    assert e["out_tag"] == EX.OUT_TAG, (
+        f"out_tag resolved to {e['out_tag']!r}, not {EX.OUT_TAG} — a chain "
+        "that continues across the carrier wire lost its egress tag, and the "
+        "host demux would drop every word the tail emits")
+    assert e["complex_out"] is True, (
+        "complex_out is False, so the demux would keep only the I rail and "
+        "silently halve the stream — the transform's imaginary part vanishes")
+    assert e["routed"] is True, "die 0 lands off the port cell"
+
+
+@needs_mc
+def test_the_tail_stamps_the_complex_tag_pair(built):
+    """The FABRIC's ground truth for the gate above: chain A's tail stamps
+    BOTH tags of the complex pair, in equal numbers.
+
+    Without this, `test_the_cross_wire_chain_resolves_its_tail_egress_tag`
+    could be asserting a convention nothing actually follows."""
+    _ctrl, bres, _d0, _d1 = built
+    eng, landing = EX.open_engine(bres)
+    sim = eng._sim
+    head = f"chip{EX.CHIP_DIE0}"
+    hop, entry = int(landing["hop"]), int(landing["entry"])
+    a0, a1 = int(landing["data_addrs"][0]), int(landing["data_addrs"][1])
+    n = 40
+    # Drive WITHOUT draining, so the tail port still holds the tagged words.
+    for wi, wq in EX.stimulus(n):
+        sim.inject_data_physical(head, [wi], hop, a0); sim.run(*EX.PUMP)
+        sim.inject_data_physical(head, [wq], hop, a1); sim.run(*EX.PUMP)
+        sim.inject_jump_physical(head, hop, entry); sim.run(*EX.SETTLE)
+
+    timed = sim.read_port_words_timed(f"chip{EX.CHIP_DIE1}", "x16_out")
+    hist = {}
+    for (_v, d, _t) in timed:
+        hist[int(d)] = hist.get(int(d), 0) + 1
+    assert set(hist) == {EX.OUT_TAG, EX.OUT_TAG + 1}, (
+        f"the tail stamped tags {sorted(hist)}, expected the complex pair "
+        f"{[EX.OUT_TAG, EX.OUT_TAG + 1]}")
+    assert hist[EX.OUT_TAG] == hist[EX.OUT_TAG + 1] == n, (
+        f"I/Q rail counts {hist} are not both {n} — the pair is not balanced")

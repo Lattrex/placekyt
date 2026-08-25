@@ -134,10 +134,10 @@ factory is named in the dashboard so you never have to guess the equivalent.
 | **GainBlock** | `blocks.multiply_const_ff` | err 1 / tol 2 LSB · -90 dB SNR |
 | **ComplexGainBlock** | `blocks.multiply_const_cc` | err 4 / tol 7 LSB · -84 dB SNR |
 | **UpsamplerBlock** | `filter.interp_fir_filter_fff` | err 0 / tol 0 LSB |
-| **RepeatBlock** | `blocks.repeat` | — |
+| **RepeatBlock** | `blocks.repeat` | err 0 / tol 0 LSB |
 | **ComplexUpsamplerBlock** | `filter.interp_fir_filter_ccc` | err 0 / tol 0 LSB |
 | **IQUpconvertBlock** | `blocks.multiply_cc` | err 1 / tol 6 LSB · -85 dB SNR |
-| **RRCPulseShaperBlock** | `filter.firdes.root_raised_cosine` | — |
+| **RRCPulseShaperBlock** | `filter.firdes.root_raised_cosine` | err 4 / tol 34 LSB · -66 dB SNR |
 | **MultiplyBlock** | `blocks.multiply_ff` | err 1 / tol 2 LSB · -92 dB SNR |
 | **AddBlock** | `blocks.add_ff` | err 1 / tol 2 LSB · -90 dB SNR |
 | **SubtractBlock** | `blocks.sub_ff` | err 1 / tol 2 LSB · -89 dB SNR |
@@ -148,7 +148,7 @@ factory is named in the dashboard so you never have to guess the equivalent.
 | **ComplexToMagSquaredBlock** | `blocks.complex_to_mag_squared` | err 2 / tol 3 LSB · -83 dB SNR |
 | **ConjugateBlock** | `blocks.conjugate_cc` | err 0 / tol 0 LSB |
 | **AbsBlock** | `blocks.abs_ff` | err 0 / tol 2 LSB |
-| **StreamSplitterBlock** | `blocks.copy` | — |
+| **StreamSplitterBlock** | `blocks.copy` | err 0 / tol 0 LSB |
 | **AndConstBlock** | `blocks.and_const_bb` | err 0 / tol 0 LSB |
 | **KeepOneInNBlock** | `blocks.keep_one_in_n` | err 0 / tol 0 LSB |
 | **DelayBlock** | `blocks.delay` | err 0 / tol 0 LSB |
@@ -160,14 +160,14 @@ factory is named in the dashboard so you never have to guess the equivalent.
 | **IIRBiquadBlock** | `filter.iir_filter_ffd` | err 16 / tol 21 LSB · -64 dB SNR |
 | **ComplexMixerBlock** | `blocks.multiply_cc + analog.sig_source` | err 5 / tol 12 LSB · -74 dB SNR |
 | **NCOBlock** | `analog.sig_source_c` | err 9 / tol 12 LSB · -72 dB SNR |
-| **SoftDemodulatorBlock** | `digital.constellation_soft_decoder_cf` | — |
+| **SoftDemodulatorBlock** | `digital.constellation_soft_decoder_cf` | err 1 / tol 2 LSB |
 | **ComplexRRCMatchedFilterBlock** | `filter.fir_filter_ccf (rrc taps)` | err 11 / tol 18 LSB · -54 dB SNR |
 | **AGCBlock** | `analog.agc_ff` | err 3 / tol 80 LSB · -81 dB SNR |
 | **ComplexCostasLoopBlock** | `digital.costas_loop_cc` | BER 0 |
 | **MMTimingRecoveryBlock** | `digital.symbol_sync_cc` | pass |
 | **BPSKSlicerBlock** | `digital.binary_slicer_fb` | BER 0 (10 bits) |
-| **SquelchBlock** | `analog.pwr_squelch_ff` | — |
-| **PSKSymbolMapperBlock** | `digital.chunks_to_symbols` | — |
+| **SquelchBlock** | `analog.pwr_squelch_ff` | err 0 / tol 4 LSB |
+| **PSKSymbolMapperBlock** | `digital.chunks_to_symbols` | err 0 / tol 0 LSB |
 | **MapBBBlock** | `digital.map_bb` | BER 0 (40 bits) |
 | **FSK4SymbolMapperBlock** | `digital.chunks_to_symbols_bf (4FSK level table)` | err 0 / tol 0 LSB |
 | **FSK4SlicerBlock** | `digital.constellation_decoder (4FSK PAM, inverse of mapper)` | BER 0 (32 bits) |
@@ -190,8 +190,8 @@ factory is named in the dashboard so you never have to guess the equivalent.
 | **ComplexBandPassFilter** | `filter.fir_filter_ccf (firdes.band_pass)` | err 15 / tol 26 LSB · -46 dB SNR |
 | **ComplexBandRejectFilter** | `filter.fir_filter_ccf (firdes.band_reject)` | err 16 / tol 26 LSB · -45 dB SNR |
 | **DualFloatToComplexBlock** | `blocks.float_to_complex` | — |
-| **QAM16SymbolMapperBlock** | `digital.chunks_to_symbols_bc(constellation_16qam)` | — |
-| **QAM16SlicerBlock** | `digital.constellation_decoder_cb(constellation_16qam)` | — |
+| **QAM16SymbolMapperBlock** | `digital.chunks_to_symbols_bc(constellation_16qam)` | err 1 / tol 2 LSB |
+| **QAM16SlicerBlock** | `digital.constellation_decoder_cb(constellation_16qam)` | BER 0 (48 bits) |
 | **QAM16ComplexCostasLoopBlock** | `digital.constellation_receiver_cb(constellation_16qam)` | BER 0 (348 bits) |
 | **UnpackKBitsBlock** | `blocks.unpack_k_bits_bb` | BER 0 (64 bits) |
 | **NotBlock** | `blocks.not_bb` | BER 0 (64 bits) |
@@ -199,12 +199,12 @@ factory is named in the dashboard so you never have to guess the equivalent.
 | **Nlog10Block** | `blocks.nlog10_ff` | err 4 / tol 10 LSB · -75 dB SNR |
 | **VaricodeEncoderBlock** | (Kyttar-native, no single GR block) | pass |
 | **VaricodeDecoderBlock** | (Kyttar-native, no single GR block) | pass |
-| **RaisedCosineEnvelopeBlock** | (Kyttar-native, no single GR block) | — |
+| **RaisedCosineEnvelopeBlock** | (Kyttar-native, no single GR block) | err 1 / tol 12 LSB |
 | **CWKeyerBlock** | (Kyttar-native, no single GR block) | pass |
 | **CWDecoderBlock** | (Kyttar-native, no single GR block) | BER 0 (12 bits) |
 | **SramControllerBlock** | (Kyttar-native, no single GR block) | BER 0 (21 bits) |
 | **PackKBitsBlock** | `blocks.pack_k_bits_bb` | BER 0 (6 bits) |
-| **QPSKSlicerBlock** | `digital.constellation_decoder_cb(constellation_qpsk())` | — |
+| **QPSKSlicerBlock** | `digital.constellation_decoder_cb(constellation_qpsk())` | BER 0 (64 bits) |
 | **CrossoverBlock** | `(none — routing infrastructure)` | — |
 | **LMSEqualizerBlock** | `digital.linear_equalizer(num_taps, 1, adaptive_algorithm_lms(constellation_qpsk(), step_size))` | BER 0 (3400 bits) |
 | **ComplexToMagBlock** | `blocks.complex_to_mag(1)` | err 20 / tol 40 LSB |
@@ -212,7 +212,7 @@ factory is named in the dashboard so you never have to guess the equivalent.
 | **Crc16Block** | (Kyttar-native, no single GR block) | err 0 / tol 0 LSB |
 | **HammingEncoderBlock** | (Kyttar-native, no single GR block) | BER 0 (112 bits) |
 | **HammingDecoderBlock** | (Kyttar-native, no single GR block) | BER 0 (448 bits) |
-| **RMSBlock** | `blocks.rms_ff` | — |
+| **RMSBlock** | `blocks.rms_ff` | err 3 / tol 16 LSB · -78 dB SNR |
 | **RMSCFBlock** | `blocks.rms_cf` | err 3 / tol 16 LSB · -78 dB SNR |
 | **AddCCBlock** | `blocks.add_cc` | err 1 / tol 2 LSB · -90 dB SNR |
 | **SubCCBlock** | `blocks.sub_cc` | err 1 / tol 2 LSB · -89 dB SNR |
@@ -227,10 +227,10 @@ factory is named in the dashboard so you never have to guess the equivalent.
 | **TanhBlock** | `(Python golden: numpy.tanh in Q15)` | err 0 / tol 0 LSB |
 | **DotProductMACBlock** | (Kyttar-native, no single GR block) | BER 0 (60 bits) |
 | **ZeroCrossingRateBlock** | (Kyttar-native, no single GR block) | err 0 / tol 0 LSB |
-| **GRUCellBlock** | (Kyttar-native, no single GR block) | err 0.0 / tol 0.0 LSB |
+| **GRUCellBlock** | (Kyttar-native, no single GR block) | — |
 | **ComplexDelayLineBlock** | `(Python golden: numpy complex delay of N samples)` | err 0 / tol 0 LSB |
-| **R2ButterflyBlock** | `(Python golden: radix-2 DIF butterfly, RHE scale-by-2)` | err 0.0 / tol 0.0 LSB |
-| **TwiddleMultiplyBlock** | `(Python golden: complex multiply by a per-sample table-selected Q15 twiddle)` | err 0.0 / tol 0.0 LSB |
+| **R2ButterflyBlock** | `(Python golden: radix-2 DIF butterfly, RHE scale-by-2)` | — |
+| **TwiddleMultiplyBlock** | `(Python golden: complex multiply by a per-sample table-selected Q15 twiddle)` | — |
 | **FFT16Block** | `numpy.fft.fft (N=16)` | err 0.0 / tol 0.0 LSB |
 | **FFT32Block** | `numpy.fft.fft (N=32)` | err 0.0 / tol 0.0 LSB |
 | **FFT64Block** | `numpy.fft.fft (N=64)` | err 0.0 / tol 0.0 LSB |
@@ -241,7 +241,7 @@ factory is named in the dashboard so you never have to guess the equivalent.
 | **BinArgmaxBlock** | `(Python golden: numpy.argmax over N magnitude bins)` | err 0 / tol 0 LSB |
 | **ConjChirpMixerBlock** | `(Python golden: multiply by the conjugate reference up-chirp — the CSS dechirp)` | err 0 / tol 0 LSB |
 | **ChirpSyncBlock** | `(Python golden: K-consecutive-equal-argmax preamble run detector)` | err 0 / tol 0 LSB |
-| **SqrtBlock** | `blocks.transcendental` | err 3 / tol 5 LSB · -83 dB SNR |
+| **SqrtBlock** | `blocks.transcendental` | — |
 | **FeaturePairJoinBlock** | `(placeKYT-native: ordered two-word rendezvous; no GR counterpart)` | err 0 / tol 0 LSB |
 <!-- BLOCK-STATUS:END -->
 

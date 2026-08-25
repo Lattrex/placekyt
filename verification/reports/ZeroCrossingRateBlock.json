@@ -1,0 +1,23 @@
+{
+  "kyttar_block": "ZeroCrossingRateBlock",
+  "passed": true,
+  "metric": "exact",
+  "n_compared": 8,
+  "max_abs_err": 0,
+  "tolerance": 0,
+  "nmse_db": null,
+  "correlation": 0.9999999999999999,
+  "bit_errors": 0,
+  "delay_used": 0,
+  "coverage": {
+    "edge": true,
+    "random": 3,
+    "param_sweep": 5,
+    "bit_exact": true,
+    "tie_convention": true,
+    "boundary_carry": true,
+    "saturation_rail": true,
+    "mutation": true
+  },
+  "provenance": "session"
+}

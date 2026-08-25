@@ -1,0 +1,21 @@
+{
+  "kyttar_block": "XorBlock",
+  "passed": true,
+  "metric": "exact-byte",
+  "n_compared": 10,
+  "max_abs_err": 0,
+  "tolerance": 0,
+  "nmse_db": null,
+  "correlation": null,
+  "bit_errors": 0,
+  "delay_used": 0,
+  "coverage": {
+    "edge": true,
+    "random": 5,
+    "orientation": true,
+    "local_reference": true,
+    "mutation": true,
+    "bit_exact": true
+  },
+  "provenance": "session"
+}

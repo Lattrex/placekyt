@@ -12,9 +12,9 @@
 | **GainBlock** | `blocks.multiply_const_ff` | 1 · feed-forward | ✅ done | err 1 / tol 2 LSB · -90 dB SNR | edge rand×3 sweep×4 mut |
 | **ComplexGainBlock** | `blocks.multiply_const_cc` | 1 · feed-forward | ✅ done | err 4 / tol 7 LSB · -84 dB SNR | edge rand×3 sweep×11 mut |
 | **UpsamplerBlock** | `filter.interp_fir_filter_fff` | 1 · feed-forward | ✅ done | err 0 / tol 0 LSB | mut |
-| **RepeatBlock** | `blocks.repeat` | 1 · feed-forward | ✅ done | — | — |
+| **RepeatBlock** | `blocks.repeat` | 1 · feed-forward | ✅ done | err 0 / tol 0 LSB | mut |
 | **ComplexUpsamplerBlock** | `filter.interp_fir_filter_ccc` | 1 · feed-forward | ✅ done | err 0 / tol 0 LSB | mut |
-| **RRCPulseShaperBlock** | `filter.firdes.root_raised_cosine` | 1 · feed-forward | ✅ done | — | — |
+| **RRCPulseShaperBlock** | `filter.firdes.root_raised_cosine` | 1 · feed-forward | ✅ done | err 4 / tol 34 LSB · -66 dB SNR | mut |
 | **MultiplyBlock** | `blocks.multiply_ff` | 1 · feed-forward | ✅ done | err 1 / tol 2 LSB · -92 dB SNR | edge rand×3 mut |
 | **AddBlock** | `blocks.add_ff` | 1 · feed-forward | ✅ done | err 1 / tol 2 LSB · -90 dB SNR | edge rand×3 mut |
 | **SubtractBlock** | `blocks.sub_ff` | 1 · feed-forward | ✅ done | err 1 / tol 2 LSB · -89 dB SNR | edge rand×3 mut |
@@ -25,7 +25,7 @@
 | **ComplexToMagSquaredBlock** | `blocks.complex_to_mag_squared` | 1 · feed-forward | ✅ done | err 2 / tol 3 LSB · -83 dB SNR | edge rand×3 mut |
 | **ConjugateBlock** | `blocks.conjugate_cc` | 1 · feed-forward | ✅ done | err 0 / tol 0 LSB | edge rand×3 mut |
 | **AbsBlock** | `blocks.abs_ff` | 1 · feed-forward | ✅ done | err 0 / tol 2 LSB | edge rand×3 mut |
-| **StreamSplitterBlock** | `blocks.copy` | 1 · feed-forward | ✅ done | — | — |
+| **StreamSplitterBlock** | `blocks.copy` | 1 · feed-forward | ✅ done | err 0 / tol 0 LSB | edge rand×3 mut |
 | **AndConstBlock** | `blocks.and_const_bb` | 1 · feed-forward | ✅ done | err 0 / tol 0 LSB | edge rand×3 mut |
 | **KeepOneInNBlock** | `blocks.keep_one_in_n` | 1 · feed-forward | ✅ done | err 0 / tol 0 LSB | sweep×5 mut |
 | **DelayBlock** | `blocks.delay` | 1 · feed-forward | ✅ done | err 0 / tol 0 LSB | edge rand×3 sweep×8 mut |
@@ -37,35 +37,35 @@
 | **IIRBiquadBlock** | `filter.iir_filter_ffd` | 1 · feed-forward | ✅ done | err 16 / tol 21 LSB · -64 dB SNR | sweep×4 mut |
 | **ComplexMixerBlock** | `blocks.multiply_cc + analog.sig_source` | 1 · feed-forward | ✅ done | err 5 / tol 12 LSB · -74 dB SNR | sweep×5 mut |
 | **NCOBlock** | `analog.sig_source_c` | 1 · feed-forward | ✅ done | err 9 / tol 12 LSB · -72 dB SNR | sweep×5 mut |
-| **SoftDemodulatorBlock** | `digital.constellation_soft_decoder_cf` | 1 · feed-forward | ✅ done | — | — |
+| **SoftDemodulatorBlock** | `digital.constellation_soft_decoder_cf` | 1 · feed-forward | ✅ done | err 1 / tol 2 LSB | rand×4 sweep×5 mut |
 | **MapBBBlock** | `digital.map_bb` | 1 · feed-forward | ✅ done | BER 0 (40 bits) | rand×3 mut |
 | **DiffDecoderBlock** | `digital.diff_decoder_bb` | 1 · feed-forward | ✅ done | BER 0 (48 bits) | edge rand×4 mut |
 | **LowPassFilter** | `filter.fir_filter_fff (firdes.low_pass)` | 1 · feed-forward | ✅ done | err 37 / tol 79 LSB · -55 dB SNR | edge rand×1 sweep×4 mut |
 | **HighPassFilter** | `filter.fir_filter_fff (firdes.high_pass)` | 1 · feed-forward | ✅ done | err 40 / tol 79 LSB · -48 dB SNR | edge rand×1 sweep×4 mut |
 | **BandPassFilter** | `filter.fir_filter_fff (firdes.band_pass)` | 1 · feed-forward | ✅ done | err 36 / tol 79 LSB · -43 dB SNR | edge rand×1 sweep×4 mut |
 | **BandRejectFilter** | `filter.fir_filter_fff (firdes.band_reject)` | 1 · feed-forward | ✅ done | err 84 / tol 118 LSB · -49 dB SNR | edge rand×1 sweep×4 mut |
-| **QAM16SymbolMapperBlock** | `digital.chunks_to_symbols_bc(constellation_16qam)` | 1 · feed-forward | ✅ done | — | — |
-| **QAM16SlicerBlock** | `digital.constellation_decoder_cb(constellation_16qam)` | 1 · feed-forward | ✅ done | — | — |
+| **QAM16SymbolMapperBlock** | `digital.chunks_to_symbols_bc(constellation_16qam)` | 1 · feed-forward | ✅ done | err 1 / tol 2 LSB | mut |
+| **QAM16SlicerBlock** | `digital.constellation_decoder_cb(constellation_16qam)` | 1 · feed-forward | ✅ done | BER 0 (48 bits) | mut |
 | **UnpackKBitsBlock** | `blocks.unpack_k_bits_bb` | 1 · feed-forward | ✅ done | BER 0 (64 bits) | edge rand×4 mut |
 | **NotBlock** | `blocks.not_bb` | 1 · feed-forward | ✅ done | BER 0 (64 bits) | edge rand×4 mut |
 | **CharToFloatBlock** | `blocks.char_to_float` | 1 · feed-forward | ✅ done | err 0 / tol 2 LSB | edge rand×3 sweep×6 mut |
 | **PackKBitsBlock** | `blocks.pack_k_bits_bb` | 1 · feed-forward | ✅ done | BER 0 (6 bits) | edge rand×4 mut |
-| **QPSKSlicerBlock** | `digital.constellation_decoder_cb(constellation_qpsk())` | 1 · feed-forward | ✅ done | — | — |
+| **QPSKSlicerBlock** | `digital.constellation_decoder_cb(constellation_qpsk())` | 1 · feed-forward | ✅ done | BER 0 (64 bits) | mut |
 | **Crc16Block** | (Kyttar-native, no single GR block) | 1 · feed-forward | ✅ done | err 0 / tol 0 LSB | edge rand×4 mut |
 | **HammingEncoderBlock** | (Kyttar-native, no single GR block) | 1 · feed-forward | ✅ done | BER 0 (112 bits) | edge rand×4 mut |
 | **HammingDecoderBlock** | (Kyttar-native, no single GR block) | 1 · feed-forward | ✅ done | BER 0 (448 bits) | edge rand×3 mut |
-| **R2ButterflyBlock** | `(Python golden: radix-2 DIF butterfly, RHE scale-by-2)` | 1 · feed-forward | ✅ done | err 0.0 / tol 0.0 LSB | edge rand×3 mut |
-| **TwiddleMultiplyBlock** | `(Python golden: complex multiply by a per-sample table-selected Q15 twiddle)` | 1 · feed-forward | ✅ done | err 0.0 / tol 0.0 LSB | edge rand×3 mut |
+| **R2ButterflyBlock** | `(Python golden: radix-2 DIF butterfly, RHE scale-by-2)` | 1 · feed-forward | ✅ done | — | — |
+| **TwiddleMultiplyBlock** | `(Python golden: complex multiply by a per-sample table-selected Q15 twiddle)` | 1 · feed-forward | ✅ done | — | — |
 | **ChirpSymbolMapperBlock** | `(Python golden: pack log2(m) bits MSB-first into one raw symbol word; == blocks.pack_k_bits_bb for m <= 256)` | 1 · feed-forward | ✅ done | err 0 / tol 0 LSB | sweep×4 mut |
-| **SqrtBlock** | `blocks.transcendental` | 1 · feed-forward | ✅ done | err 3 / tol 5 LSB · -83 dB SNR | edge rand×3 sweep×5 mut |
+| **SqrtBlock** | `blocks.transcendental` | 1 · feed-forward | ✅ done | — | — |
 | **IQUpconvertBlock** | `blocks.multiply_cc` | 2 · stateful/loop | ✅ done | err 1 / tol 6 LSB · -85 dB SNR | mut |
 | **ComplexRRCMatchedFilterBlock** | `filter.fir_filter_ccf (rrc taps)` | 2 · stateful/loop | ✅ done · 🧪 proof-of-concept | err 11 / tol 18 LSB · -54 dB SNR | edge rand×3 sweep×8 mut |
 | **AGCBlock** | `analog.agc_ff` | 2 · stateful/loop | ✅ done | err 3 / tol 80 LSB · -81 dB SNR | mut |
 | **ComplexCostasLoopBlock** | `digital.costas_loop_cc` | 2 · stateful/loop | ✅ done | BER 0 | — |
 | **MMTimingRecoveryBlock** | `digital.symbol_sync_cc` | 2 · stateful/loop | ✅ done | pass | — |
 | **BPSKSlicerBlock** | `digital.binary_slicer_fb` | 2 · stateful/loop | ✅ done | BER 0 (10 bits) | edge rand×4 sweep×out_mode bit/byte/word mut |
-| **SquelchBlock** | `analog.pwr_squelch_ff` | 2 · stateful/loop | ✅ done | — | — |
-| **PSKSymbolMapperBlock** | `digital.chunks_to_symbols` | 2 · stateful/loop | ✅ done | — | — |
+| **SquelchBlock** | `analog.pwr_squelch_ff` | 2 · stateful/loop | ✅ done | err 0 / tol 4 LSB | mut |
+| **PSKSymbolMapperBlock** | `digital.chunks_to_symbols` | 2 · stateful/loop | ✅ done | err 0 / tol 0 LSB | mut |
 | **LFSRScramblerBlock** | `digital.additive_scrambler_bb` | 2 · stateful/loop | ✅ done | BER 0 (48 bits) | edge rand×4 sweep×mask/seed/len over 5 configs (len 4..15) + count reseed 4/8/13 mut |
 | **DiffEncoderBlock** | `digital.diff_encoder_bb` | 2 · stateful/loop | ✅ done | err 0 / tol 0 LSB | mut |
 | **ComplexFIRFilterBlock** | `filter.fir_filter_ccf` | 2 · stateful/loop | ✅ done | err 20 / tol 32 LSB · -45 dB SNR | rand×1 sweep×3 mut |
@@ -78,7 +78,7 @@
 | **Nlog10Block** | `blocks.nlog10_ff` | 2 · stateful/loop | ✅ done | err 4 / tol 10 LSB · -75 dB SNR | edge rand×3 sweep×6 mut |
 | **ComplexToMagBlock** | `blocks.complex_to_mag(1)` | 2 · stateful/loop | ✅ done | err 20 / tol 40 LSB | mut |
 | **ComplexToArgBlock** | `blocks.complex_to_arg(1)` | 2 · stateful/loop | ✅ done | err 27 / tol 63 LSB | mut |
-| **RMSBlock** | `blocks.rms_ff` | 2 · stateful/loop | ✅ done | — | — |
+| **RMSBlock** | `blocks.rms_ff` | 2 · stateful/loop | ✅ done | err 3 / tol 16 LSB · -78 dB SNR | edge rand×3 mut |
 | **RMSCFBlock** | `blocks.rms_cf` | 2 · stateful/loop | ✅ done | err 3 / tol 16 LSB · -78 dB SNR | edge rand×3 mut |
 | **AddCCBlock** | `blocks.add_cc` | 2 · stateful/loop | ✅ done | err 1 / tol 2 LSB · -90 dB SNR | edge rand×3 mut |
 | **SubCCBlock** | `blocks.sub_cc` | 2 · stateful/loop | ✅ done | err 1 / tol 2 LSB · -89 dB SNR | edge rand×3 mut |
@@ -101,7 +101,7 @@
 | **FreqXlatingFIR** | `filter.freq_xlating_fir_filter_ccf` | 3 · new GRC block | ✅ done | err 4 / tol 16 LSB · -60 dB SNR | sweep×8 mut |
 | **VaricodeEncoderBlock** | (Kyttar-native, no single GR block) | 3 · new GRC block | ✅ done | pass | rand×3 mut |
 | **VaricodeDecoderBlock** | (Kyttar-native, no single GR block) | 3 · new GRC block | ✅ done | pass | — |
-| **RaisedCosineEnvelopeBlock** | (Kyttar-native, no single GR block) | 3 · new GRC block | ✅ done | — | — |
+| **RaisedCosineEnvelopeBlock** | (Kyttar-native, no single GR block) | 3 · new GRC block | ✅ done | err 1 / tol 12 LSB | edge sweep×9 mut |
 | **CWKeyerBlock** | (Kyttar-native, no single GR block) | 3 · new GRC block | ✅ done | pass | mut |
 | **CWDecoderBlock** | (Kyttar-native, no single GR block) | 3 · new GRC block | ✅ done | BER 0 (12 bits) | mut |
 | **SramControllerBlock** | (Kyttar-native, no single GR block) | 3 · new GRC block | ✅ done | BER 0 (21 bits) | edge |
@@ -114,7 +114,7 @@
 | **RationalResamplerBlock** | `filter.rational_resampler_fff` | 3 · new GRC block | ✅ done | err 2 / tol 5 LSB · -76 dB SNR | edge rand×3 sweep×13 mut |
 | **DotProductMACBlock** | (Kyttar-native, no single GR block) | 3 · new GRC block | ✅ done | BER 0 (60 bits) | edge rand×4 mut |
 | **ZeroCrossingRateBlock** | (Kyttar-native, no single GR block) | 3 · new GRC block | ✅ done | err 0 / tol 0 LSB | edge rand×3 sweep×5 mut |
-| **GRUCellBlock** | (Kyttar-native, no single GR block) | 3 · new GRC block | ✅ done | err 0.0 / tol 0.0 LSB | edge rand×3 mut |
+| **GRUCellBlock** | (Kyttar-native, no single GR block) | 3 · new GRC block | ✅ done | — | — |
 | **FFT16Block** | `numpy.fft.fft (N=16)` | 3 · new GRC block | ✅ done | err 0.0 / tol 0.0 LSB | edge rand×3 mut |
 | **FFT32Block** | `numpy.fft.fft (N=32)` | 3 · new GRC block | ✅ done | err 0.0 / tol 0.0 LSB | edge rand×3 mut |
 | **FFT64Block** | `numpy.fft.fft (N=64)` | 3 · new GRC block | ✅ done | err 0.0 / tol 0.0 LSB | edge rand×3 mut |

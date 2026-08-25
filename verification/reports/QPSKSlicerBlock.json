@@ -1,0 +1,20 @@
+{
+  "kyttar_block": "QPSKSlicerBlock",
+  "passed": true,
+  "metric": "decision",
+  "n_compared": 64,
+  "max_abs_err": 0,
+  "tolerance": 0,
+  "nmse_db": null,
+  "correlation": null,
+  "bit_errors": 0,
+  "delay_used": 0,
+  "coverage": {
+    "gr_equiv": "digital.constellation_decoder_cb(constellation_qpsk())",
+    "patterns": "exact points, noisy quadrants (160 samples)",
+    "mutation": true,
+    "decision": "per-axis SIGN: symbol = (Q>=0 ? 2:0) | (I>=0 ? 1:0)",
+    "note": "1-cell branchless sign slicer; verified vs GR decision_maker"
+  },
+  "provenance": "session"
+}

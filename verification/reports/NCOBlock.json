@@ -1,0 +1,20 @@
+{
+  "kyttar_block": "NCOBlock",
+  "passed": true,
+  "metric": "amplitude",
+  "n_compared": 64,
+  "max_abs_err": 9,
+  "tolerance": 12,
+  "nmse_db": -72.48842821029343,
+  "correlation": 0.9999999951204993,
+  "bit_errors": 0,
+  "delay_used": 0,
+  "coverage": {
+    "param_sweep": 5,
+    "bit_exact": true,
+    "mutation": true,
+    "grid_aligned": true,
+    "off_grid_floor": 12
+  },
+  "provenance": "session"
+}

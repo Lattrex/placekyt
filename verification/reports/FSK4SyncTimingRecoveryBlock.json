@@ -1,0 +1,21 @@
+{
+  "kyttar_block": "FSK4SyncTimingRecoveryBlock",
+  "passed": true,
+  "metric": "decision",
+  "n_compared": 208,
+  "max_abs_err": 0,
+  "tolerance": 0,
+  "nmse_db": null,
+  "correlation": null,
+  "bit_errors": 0,
+  "delay_used": 0,
+  "coverage": {
+    "algorithm": "M17 sync-word correlation + local-max lock + 2:1 decimation",
+    "sync": "M17 LSF {+3,+3,+3,+3,-3,-3,+3,-3}; alternating preamble",
+    "patterns": "FM-discriminator 4-PAM burst, several seeds",
+    "mutation": true,
+    "gr_equiv": "no single GR block; bit-exact to process_reference; dibit BER 0",
+    "note": "Replaces Gardner for 4-level FSK (Gardner can't lock 4-PAM)."
+  },
+  "provenance": "session"
+}

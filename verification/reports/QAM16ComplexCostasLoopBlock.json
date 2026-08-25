@@ -1,0 +1,19 @@
+{
+  "kyttar_block": "QAM16ComplexCostasLoopBlock",
+  "passed": true,
+  "metric": "decision",
+  "n_compared": 348,
+  "max_abs_err": 0,
+  "tolerance": 0,
+  "nmse_db": null,
+  "correlation": null,
+  "bit_errors": 0,
+  "delay_used": 9,
+  "coverage": {
+    "gr_equiv": "digital.constellation_receiver_cb(constellation_16qam) (decision-level equivalence)",
+    "patterns": "400-symbol random RRC constellation_16qam burst, carrier offset, full MF->gain->MMTiming->Costas->slicer chain",
+    "mutation": true,
+    "note": "whole-RX-chain BER-0 gate (placekyt/tests/test_qam16_modem_ber.py owns the mutations); DD loops have no sample-exact GR twin \u2014 decision-level recovery is the claim"
+  },
+  "provenance": "session"
+}

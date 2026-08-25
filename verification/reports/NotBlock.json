@@ -1,0 +1,23 @@
+{
+  "kyttar_block": "NotBlock",
+  "passed": true,
+  "metric": "decision",
+  "n_compared": 64,
+  "max_abs_err": 0,
+  "tolerance": 0,
+  "nmse_db": null,
+  "correlation": null,
+  "bit_errors": 0,
+  "delay_used": 0,
+  "coverage": {
+    "gr_equiv": "blocks.not_bb",
+    "edge": "0x00->0xFF / 0xFF->0x00 / 0xAA->0x55 / 0x0F->0xF0 + single-bit walk",
+    "exhaustive": "all 256 byte values 0..255 bit-exact vs GR",
+    "random": 4,
+    "mutation": "pass-through / low-bit-only invert / wrong-mask XOR / +1 shift / double-NOT / empty",
+    "decision": "out = (~in) & 0xFF (full 8-bit width, GR-exact)",
+    "note": "1-cell memoryless bitwise NOT; BIT-EXACT vs not_bb, delay 0",
+    "hw_deviation": "none (no params; pure byte op)"
+  },
+  "provenance": "session"
+}

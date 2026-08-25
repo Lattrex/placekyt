@@ -272,7 +272,7 @@ chain reads −14 LSB on a loud window and −218 on a quiet one.
 
 ## Verification
 
-`verification/tests/test_gru_classifier_example.py` — **34 tests, all green**:
+`verification/tests/test_gru_classifier_example.py` — **38 tests, all green**:
 
 * the stimulus' load-bearing properties (Q15 headroom, trained distribution);
 * the two feature arms against `ml/features.py` — ZCR bit-exact, RMS inside the
@@ -291,7 +291,11 @@ chain reads −14 LSB on a loud window and −218 on a quiet one.
 * **seven mutations proven to fail** — four offline (swapped word order, wrong
   weights, zero features, a saturating clip breaking the RMS bound) and three
   **on-chip** (swapped I/Q rails, a starved rendezvous arm, and the exact-
-  baseline check that makes those two meaningful).
+  baseline check that makes those two meaningful);
+* **the source-integrity pair** (INV-43) — the `.grc`'s flowgraph id may not
+  collide with this directory's hand-written module, and `gru_classifier.py`
+  must still export every symbol its consumers import. See SOURCE INTEGRITY
+  below for why.
 
 The on-chip rail-swap mutation is not hypothetical: it is the bug this example
 actually hit. The complex `(Re, Im)` pair is **one** delivery into a shared
@@ -306,9 +310,37 @@ the clip classified 9/12 instead of exactly. See the INGRESS PROTOCOL note in
 |---|---|
 | `gru_classifier.kyt` | **the shipped design** — placed, routed, built, 102/120 cells |
 | `gru_classifier.grc` | the GNU Radio Companion flowgraph (server port 58950) |
+| `gru_classifier_grc.py` | GRC's generated flowgraph — **regenerated output, do not edit** |
 | `gru_classifier_golden.json` | the class stream the chip produces for the shipped stimulus |
 | `gru_classifier.py` | the chain: topology, anchors, the on-chip runner, feature references |
 | `gru_stimulus.py` | the shipped 4-segment stimulus |
 | `build_kyt.py` | regenerates the `.kyt` from the pinned anchors |
 | `gru_classifier_demo.py` | the headless end-to-end demo |
 | `ml/` | the offline pipeline: signals, features, training, references |
+
+## Source integrity — why the flowgraph id is `gru_classifier_grc`
+
+GRC's **Generate** button writes `<flowgraph id>.py` into the `.grc`'s own
+directory. This example is the one place in the repo where a **hand-written**
+module (`gru_classifier.py` — the chain, the anchors, the on-chip runner) lives
+beside a `.grc`, so an id of `gru_classifier` would aim Generate straight at it.
+
+That is not hypothetical. It happened: pressing Generate replaced the 534-line
+design module with the 273-line generated flowgraph. Every symbol `build_kyt.py`,
+`gru_classifier_demo.py` and the gates import vanished, the `.kyt` could no
+longer be regenerated, and — because the loss looks like an ordinary edit in
+`git status` — it rode into an unrelated commit. The example was unrunnable
+while this README advertised its tests as green.
+
+Two things prevent a repeat:
+
+* the flowgraph id is **`gru_classifier_grc`**, so Generate lands on
+  `gru_classifier_grc.py` (checked in, regenerable, safe to overwrite);
+* two gates hold the property — a repo-wide one in
+  `test_examples_grc_valid.py` asserting that **no** shipped `.grc` can generate
+  on top of a file lacking GRC's own generated-file banner, and a local one
+  asserting `gru_classifier.py` still exports what its consumers import.
+
+If you ever rename the flowgraph, keep the id different from every hand-written
+`.py` in the directory. The repo convention elsewhere is `<name>_demo`
+(`fft128_2p2s`, `gain`, `gain_2p2s`).

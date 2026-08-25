@@ -928,3 +928,59 @@ def test_the_gru_alone_dominates_the_array():
     assert used <= 60, (
         f"the wide-flat fold measured 58 at row 0; {used} means the block's "
         f"own corridors got materially more expensive")
+
+
+# ---------------------------------------------------------------------------
+# INV-43: a GRC flowgraph id must never collide with a hand-written module.
+# ---------------------------------------------------------------------------
+def test_grc_flowgraph_id_does_not_collide_with_this_design_module():
+    """The ``.grc`` id must NOT be ``gru_classifier``.
+
+    GRC's "Generate" writes ``<flowgraph id>.py`` into the ``.grc``'s own
+    directory. When that id equals the name of a HAND-WRITTEN module in the same
+    directory, pressing Generate SILENTLY OVERWRITES the source with a generated
+    flowgraph — and the loss looks like an ordinary edit in ``git status``, so it
+    lands in whatever commit is open at the time.
+
+    That is not hypothetical: it happened. The 534-line design module was
+    replaced by the 273-line generated flowgraph and the loss was swept into an
+    unrelated commit, taking every symbol ``build_kyt.py``, the demo and this
+    file import. The example was unrunnable while its README advertised
+    "34 tests, all green".
+
+    The repo convention that prevents it is visible in the closest sibling:
+    ``fft128_2p2s`` keeps the design module at ``fft128_2p2s.py`` and gives the
+    flowgraph the id ``fft128_2p2s_demo``, so Generate lands somewhere harmless.
+    """
+    grc = _EX / "gru_classifier.grc"
+    text = grc.read_text()
+    m = re.search(r"^    id: (\S+)$", text, re.MULTILINE)
+    assert m, "the .grc has no flowgraph id"
+    fid = m.group(1)
+
+    generated = _EX / f"{fid}.py"
+    design = _EX / "gru_classifier.py"
+    assert generated != design, (
+        f"the .grc flowgraph id is {fid!r}, so GRC's Generate writes "
+        f"{generated.name} — ON TOP OF the hand-written design module. Rename "
+        f"the flowgraph id (see fft128_2p2s, which uses <name>_demo)")
+
+
+def test_the_design_module_still_exports_what_its_consumers_import():
+    """Every symbol ``build_kyt.py`` / the demo / this file import must EXIST.
+
+    An import-time gate is what turns "the design module got clobbered" from a
+    22-failure cascade whose root cause has to be excavated into ONE test whose
+    message names the missing symbols.
+    """
+    import gru_classifier as m
+
+    required = ["BEST_KNOWN_ANCHORS", "BLOCK_SPECS", "CLASSES", "KYT",
+                "SEGMENT_STEPS", "WEIGHTS", "WINDOW_N", "build_chain",
+                "feature_words", "golden_classes", "rms_feature_words",
+                "route_chain", "route_report", "run_on_chip", "segment_votes",
+                "zcr_feature_words"]
+    missing = [s for s in required if not hasattr(m, s)]
+    assert not missing, (
+        f"gru_classifier.py is missing {missing} — it is not the design module. "
+        f"Restore it (git show 130f654:examples/gru_classifier/gru_classifier.py)")

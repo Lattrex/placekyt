@@ -321,3 +321,42 @@ def test_grcc_compiles(grc):
     assert r.returncode == 0 and pys, (
         f"grcc failed for {grc.name}:\n{r.stderr[-1500:]}")
     compile(pys[0].read_text(), str(pys[0]), "exec")
+
+
+# ---------------------------------------------------------------------------
+# INV-43: GRC's Generate must never land on a hand-written module.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("grc", EXAMPLE_GRCS, ids=_rel)
+def test_grc_generate_target_is_not_a_hand_written_module(grc):
+    """No ``.grc`` may generate ON TOP OF a hand-written source file.
+
+    GRC's "Generate" writes ``<flowgraph id>.py`` beside the ``.grc``. If a
+    hand-written module already occupies that name, pressing Generate destroys
+    it silently, and the loss reads as an ordinary edit in ``git status``.
+
+    This is a REAL loss, not a hypothetical one: ``gru_classifier.py`` — the
+    534-line design module the example's builder, demo and gates all import —
+    was overwritten by its own generated flowgraph, and the deletion rode into
+    an unrelated commit. 28 shipped examples share the id/filename shape; the
+    other 27 survived only because their ``<id>.py`` IS the generated flowgraph.
+
+    A file counts as hand-written here if it lacks GRC's generated-file banner.
+    That banner is what Generate itself stamps, so this asks the only question
+    that matters: would Generate overwrite something it did not write?
+    """
+    text = grc.read_text()
+    m = re.search(r"^    id: (\S+)$", text, re.MULTILINE)
+    if not m:
+        pytest.skip(f"{_rel(grc)} declares no flowgraph id")
+    target = grc.parent / f"{m.group(1)}.py"
+    if not target.exists():
+        return  # Generate would create a new file — nothing to destroy.
+
+    head = target.read_text(errors="replace")[:2000]
+    is_generated = ("GNU Radio Python Flow Graph" in head
+                    or "GNU Radio version" in head)
+    assert is_generated, (
+        f"{_rel(grc)} has flowgraph id {m.group(1)!r}, so GRC's Generate writes "
+        f"{target.name} — but that file is HAND-WRITTEN (no generated banner). "
+        f"Pressing Generate would destroy it. Rename the flowgraph id; the repo "
+        f"convention is <name>_demo (see fft128_2p2s, gain, gain_2p2s).")

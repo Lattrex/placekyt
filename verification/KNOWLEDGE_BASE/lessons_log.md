@@ -85,6 +85,50 @@ words) against the FFT's streaming reference composed with the power stage's.
 Six mutations must FAIL, and the one that matters is **no un-reversal**: the raw
 bit-reversed slots are a clean, plausible, *wrong* spectrum, which is exactly
 what a display-layer gate has to catch.
+## CSS receiver example — a `.grc` block param that is not a LITERAL builds the WRONG CHIP, silently 2026-08-24
+
+The `examples/css_transceiver` example (CSS receive spine — dechirp → FFT16 →
+|·|² → Delay(1) → BinArgmax — on one array, 82/120 cells) shipped end to end:
+bit-exact vs the composed integer golden, SER 0 recovering `KYTTAR CSS` at
++10 dB, and an **on-chip** negative control at −10 dB in the same continuous
+burst. Three durable lessons came out of building it.
+
+- **THE ONE THAT COST THE DEBUG CYCLE — a `.grc` block param must be a LITERAL.**
+  The flowgraph wrote `n: n_css` with `n_css = stim.N`, the same idiom every
+  example uses for scope sizes. But the **placeKYT importer evaluates block
+  parameters without the flowgraph's `stim` module** — that is a
+  `from gnuradio.kyttar import …`, resolvable only in the GR interpreter. It
+  does not raise: it falls back to the **yml default** (`n = 128`), so the chip
+  was built for a 128-sample chirp while the host transmitted 16-sample chirps.
+  Import ok, route ok, build ok, `auto_pnr.ok`, DRC clean, no route transits —
+  and the chip emitted **6 garbage words instead of 50**, with values outside
+  BinArgmax(16)'s legal `0..15`. The tell that finally cracked it was a
+  bitstream diff against a hand-built chain with identical geometry and an
+  identical net set: **5 differing words**, which decoded as the data constants
+  `128,128,128` (argmax frame length) and `512` vs `4096` (the mixer's rate word
+  `65536/n`). *Scope-sizing* variables may still be `stim.*` — GRC evaluates
+  those and the importer never reads them. Only **block params** are affected.
+  The example now carries a literal and a `_assert_chirp_len` guard that turns
+  any future drift into a loud failure at import instead of a silent one on the
+  chip. **Generalizes: any param the importer cannot evaluate degrades to the
+  yml default rather than failing, so a stim-derived block param is a silent
+  wrong-chip generator.**
+- **A block can be orientation-invariant STANDALONE and still not compose.**
+  A generic auto-place of this chain rotates the 44-cell FFT16 CCW and packs
+  everything into the top nine rows; that layout routes and builds "ok" and
+  does not work. Isolated: the *proven* geometry with FFT16 alone rotated CCW
+  does not even complete a run (0 words, no quiescence) — while FFT16 passes
+  `test_orientation_invariance.py` in all 8 D4 orientations **standalone**. The
+  per-block orientation gate is necessary, not sufficient, for a large block
+  inside a long chain. Handled the FSK4/QAM16 way: `build_kyt.py` imports the
+  `.grc` for its topology and **pins** the proven anchors before routing.
+- **A new OOT python module disarms the `grcc` smoke gate silently.** A demo
+  stim module added to `gr-kyttar/python/kyttar/` is invisible to `grcc` until
+  `install.sh` re-syncs it (which needs sudo), and every value that evaluates
+  through it then fails to compile. `test_examples_grc_valid.py` already had a
+  named skip for *stale installed ymls*; it now checks the installed **python
+  modules** too (`_installed_kyttar_py_stale`), so this reads as the
+  install-staleness condition it is rather than a bogus red on the flowgraph.
 
 ## Verification-integrity sweep — every report writer in the suite could write a GREEN report for a FAILING session (INV-36) 2026-08-24
 

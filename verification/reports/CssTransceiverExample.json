@@ -1,0 +1,17 @@
+{
+  "kyttar_block": "CssTransceiverExample",
+  "passed": true,
+  "example": "css_transceiver",
+  "n_symbols_per_segment": 24,
+  "snr_good_db": 10.0,
+  "snr_control_db": -10.0,
+  "attenuation": 0.5,
+  "ser_good": 0.0,
+  "ser_control": 0.625,
+  "message": "KYTTAR CSS",
+  "recovered": "KYTTAR CSS",
+  "cells": 82,
+  "onchip": "the whole CSS receive spine (dechirp + FFT16 + mag^2 + align + argmax) on one 10x12 chip, saturated drive",
+  "host_side": "TX (mapper + generator integer goldens, chip-verified in their own suites) and the numpy channel",
+  "provenance": "session"
+}

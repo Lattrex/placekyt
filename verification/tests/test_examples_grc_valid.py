@@ -33,6 +33,7 @@ shadows GRC_BLOCKS_PATH; re-run gr-kyttar/install.sh to arm it).
 from __future__ import annotations
 
 import math
+import os
 import re
 import shutil
 import subprocess
@@ -44,6 +45,9 @@ import pytest
 import yaml
 
 _ROOT = Path(__file__).resolve().parents[2]
+# The GNU-Radio interpreter (a separate process — its NumPy must never clash
+# with the venv's); the same env knob the rest of the harness uses.
+_GR_PYTHON = os.environ.get("KYTTAR_GR_PYTHON", "/usr/bin/python3")
 _KYTTAR_YMLS = _ROOT / "gr-kyttar" / "grc"
 _STOCK_DIRS = [Path("/usr/share/gnuradio/grc/blocks"),
                Path("/usr/local/share/gnuradio/grc/blocks")]
@@ -254,8 +258,38 @@ def test_grc_lints_clean(grc):
     assert not findings, "\n".join(findings)
 
 
+def _installed_kyttar_py_stale() -> str | None:
+    """Non-None (a reason) when the installed kyttar PYTHON package is missing
+    a repo module a flowgraph may import.
+
+    A ``.grc``'s ``import`` block runs under the GNU Radio interpreter, which
+    resolves ``gnuradio.kyttar`` to the INSTALLED dist-packages OOT — never the
+    repo tree. A demo-stimulus module added to ``gr-kyttar/python/kyttar/`` is
+    therefore invisible to ``grcc`` until ``install.sh`` re-syncs it, and every
+    variable/vector that evaluates through it fails to compile. That is an
+    install-staleness artifact, not a defect in the flowgraph — the same
+    condition the yml check below already names, so it gets the same named
+    skip rather than a bogus red.
+    """
+    try:
+        r = subprocess.run(
+            [_GR_PYTHON, "-c",
+             "import os, gnuradio.kyttar as k; print(os.path.dirname(k.__file__))"],
+            capture_output=True, text=True, timeout=120)
+    except Exception:  # noqa: BLE001
+        return None                      # no GR interpreter — nothing to check
+    if r.returncode != 0 or not r.stdout.strip():
+        return None
+    inst_dir = Path(r.stdout.strip())
+    for repo_py in (_ROOT / "gr-kyttar" / "python" / "kyttar").glob("*.py"):
+        if not (inst_dir / repo_py.name).exists():
+            return (f"{repo_py.name} not installed in {inst_dir} — "
+                    "run gr-kyttar/install.sh")
+    return None
+
+
 def _installed_kyttar_stale() -> str | None:
-    """Non-None (a reason) when the installed kyttar ymls differ from the
+    """Non-None (a reason) when the installed kyttar OOT differs from the
     repo's — grcc would then validate against the WRONG interface."""
     for d in _STOCK_DIRS:
         if any(d.glob("kyttar_*.block.yml")):
@@ -266,7 +300,7 @@ def _installed_kyttar_stale() -> str | None:
                 if inst.read_text() != repo_yml.read_text():
                     return (f"{repo_yml.name} installed copy differs — "
                             "run gr-kyttar/install.sh")
-            return None
+            return _installed_kyttar_py_stale()
     return "kyttar block ymls not installed"
 
 

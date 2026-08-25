@@ -1,0 +1,179 @@
+project:
+  format_version: 1
+  name: CSS receiver - chirp spread spectrum on one placeKYT array
+  version: '1.0'
+chip_type: kyttar_10x12
+chips:
+- id: 0
+  label: Chip 0
+  position: {x: 0.0, y: 0.0}
+blocks:
+- name: conjchirpmixer
+  type: ConjChirpMixerBlock
+  library: lattrex.official
+  params:
+    n: 16
+    pipeline_lock: false
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: phase, x: 0, y: 1, face: south}
+    - {cell_id: sin_fold, x: 0, y: 2, face: south}
+    - {cell_id: sin_even, x: 0, y: 3, face: south}
+    - {cell_id: sin_odd, x: 0, y: 4, face: south}
+    - {cell_id: sin_interp, x: 0, y: 5, face: south}
+    - {cell_id: relay, x: 0, y: 6, face: east}
+    - {cell_id: cos_fold, x: 1, y: 6, face: north}
+    - {cell_id: cos_even, x: 1, y: 5, face: north}
+    - {cell_id: cos_odd, x: 1, y: 4, face: north}
+    - {cell_id: cos_interp, x: 1, y: 3, face: north}
+    - {cell_id: prods, x: 1, y: 2, face: north}
+    - {cell_id: combine, x: 1, y: 1, face: east}
+- name: fft16
+  type: FFT16Block
+  library: lattrex.official
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: s0_ctl, x: 2, y: 2, face: east}
+    - {cell_id: s0_sumi, x: 3, y: 2, face: east}
+    - {cell_id: s0_sumq, x: 4, y: 2, face: east}
+    - {cell_id: s0_diffi, x: 5, y: 2, face: east}
+    - {cell_id: s0_diffq, x: 6, y: 2, face: east}
+    - {cell_id: s0_fetch_c, x: 7, y: 2, face: east}
+    - {cell_id: s0_fetch_d, x: 8, y: 2, face: south}
+    - {cell_id: s0_steer, x: 8, y: 3, face: west}
+    - {cell_id: s0_prods, x: 7, y: 3, face: west}
+    - {cell_id: s0_rail, x: 6, y: 3, face: west}
+    - {cell_id: s0_gather, x: 5, y: 3, face: west}
+    - {cell_id: s0_d0, x: 4, y: 3, face: west}
+    - {cell_id: s0_tail, x: 3, y: 3, face: west}
+    - {cell_id: s0_out, x: 2, y: 3, face: south}
+    - {cell_id: s1_ctl, x: 2, y: 4, face: east}
+    - {cell_id: s1_sumi, x: 3, y: 4, face: east}
+    - {cell_id: s1_sumq, x: 4, y: 4, face: east}
+    - {cell_id: s1_diffi, x: 5, y: 4, face: east}
+    - {cell_id: s1_diffq, x: 6, y: 4, face: east}
+    - {cell_id: s1_fetch_c, x: 7, y: 4, face: east}
+    - {cell_id: s1_fetch_d, x: 8, y: 4, face: south}
+    - {cell_id: s1_steer, x: 8, y: 5, face: west}
+    - {cell_id: s1_prods, x: 7, y: 5, face: west}
+    - {cell_id: s1_rail, x: 6, y: 5, face: west}
+    - {cell_id: s1_gather, x: 5, y: 5, face: west}
+    - {cell_id: s1_d0, x: 4, y: 5, face: west}
+    - {cell_id: s1_tail, x: 3, y: 5, face: west}
+    - {cell_id: s1_out, x: 2, y: 5, face: south}
+    - {cell_id: s2_ctl, x: 2, y: 6, face: east}
+    - {cell_id: s2_sumi, x: 3, y: 6, face: east}
+    - {cell_id: s2_sumq, x: 4, y: 6, face: east}
+    - {cell_id: s2_diffi, x: 5, y: 6, face: south}
+    - {cell_id: s2_diffq, x: 5, y: 7, face: west}
+    - {cell_id: s2_gather, x: 4, y: 7, face: west}
+    - {cell_id: s2_tail, x: 3, y: 7, face: west}
+    - {cell_id: s2_out, x: 2, y: 7, face: south}
+    - {cell_id: s3_ctl, x: 2, y: 8, face: east}
+    - {cell_id: s3_sumi, x: 3, y: 8, face: east}
+    - {cell_id: s3_sumq, x: 4, y: 8, face: east}
+    - {cell_id: s3_diffi, x: 5, y: 8, face: south}
+    - {cell_id: s3_diffq, x: 5, y: 9, face: west}
+    - {cell_id: s3_gather, x: 4, y: 9, face: west}
+    - {cell_id: s3_relay, x: 3, y: 9, face: west}
+    - {cell_id: s3_out, x: 2, y: 9, face: south}
+- name: complextomagsquared
+  type: ComplexToMagSquaredBlock
+  library: lattrex.official
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 0, y: 9, face: south}
+    orientation:
+    - cw
+- name: delay
+  type: DelayBlock
+  library: lattrex.official
+  params:
+    delay: 1
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 0, y: 11, face: east}
+- name: binargmax
+  type: BinArgmaxBlock
+  library: lattrex.official
+  params:
+    n: 16
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 2, y: 11, face: north}
+    orientation:
+    - ccw
+connections:
+- name: net1
+  from: {chip_port: {chip: 0, port: x16_in}}
+  to: {block: conjchirpmixer, port: xi}
+  route:
+  - {x: 0, y: 0}
+  - {x: 0, y: 1}
+  stream_id: rx
+  src_complex: true
+- name: net2
+  from: {block: conjchirpmixer, port: yi}
+  to: {block: fft16, port: xi}
+  route:
+  - {x: 1, y: 1}
+  - {x: 2, y: 1}
+- name: net3
+  from: {block: fft16, port: out_i}
+  to: {block: complextomagsquared, port: re}
+  route:
+  - {x: 2, y: 9}
+  - {x: 1, y: 9}
+- name: net4
+  from: {block: complextomagsquared, port: out}
+  to: {block: delay, port: sample}
+  route:
+  - {x: 0, y: 9}
+  - {x: 0, y: 10}
+- name: net5
+  from: {block: delay, port: out}
+  to: {block: binargmax, port: sample}
+  route:
+  - {x: 0, y: 11}
+  - {x: 1, y: 11}
+- name: net6
+  from: {block: binargmax, port: out}
+  to: {chip_port: {chip: 0, port: x16_out}}
+  route:
+  - {x: 2, y: 11}
+  - {x: 2, y: 10}
+  - {x: 3, y: 10}
+  - {x: 4, y: 10}
+  - {x: 5, y: 10}
+  - {x: 6, y: 10}
+  - {x: 7, y: 10}
+  - {x: 8, y: 10}
+  - {x: 9, y: 10}
+  - {x: 9, y: 9}
+  - {x: 9, y: 8}
+  - {x: 9, y: 7}
+  - {x: 9, y: 6}
+  - {x: 9, y: 5}
+  - {x: 9, y: 4}
+  - {x: 9, y: 3}
+  - {x: 9, y: 2}
+  - {x: 9, y: 1}
+  - {x: 9, y: 0}
+  out_tag: 5
+- name: net7
+  from: {block: conjchirpmixer, port: yq}
+  to: {block: fft16, port: xq}
+  route:
+  - {x: 1, y: 1}
+  - {x: 2, y: 1}
+- name: net8
+  from: {block: fft16, port: out_q}
+  to: {block: complextomagsquared, port: im}
+  route:
+  - {x: 2, y: 9}
+  - {x: 1, y: 9}

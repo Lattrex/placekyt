@@ -189,6 +189,21 @@ arithmetic. Gated (with teeth against the old concatenated order) by
 `test_the_animation_interleaves_the_dies_rather_than_batching_them`, which needs
 no Qt and no simulator.
 
+Measured on a real 6-sample run (24,489 chip-tagged events → 15,802 flash steps),
+which chip lights on each of the first 24 steps:
+
+    OLD: 0 . 0 0 0 0 0 . 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+    NEW: 0 1 . 1 0 1 0 1 0 1 0 1 0 1 . 1 0 1 0 1 0 1 0 1
+
+    OLD: chip 1's FIRST flash is step 4687/15802 — 29.7% into the animation
+    NEW: chip 1's FIRST flash is step 1/15802    —  0.0%
+
+So under the old order chip 0 animated ALONE for the first 29.7% of the run — an
+exact match for the "chip 0 works for a long time with chip 1 idle" report. This
+is a good template for the general problem: when a visual claim is disputed,
+derive the same structure the renderer consumes from REAL trace data and diff the
+old vs new ordering, rather than arguing from the code.
+
 **Gate design note:** bit-exactness alone could NEVER have caught this — arrival
 order does not change the arithmetic, so a genuinely batched model would be
 bit-exact and still misrepresent the hardware. That is why

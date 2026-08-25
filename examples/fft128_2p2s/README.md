@@ -150,9 +150,24 @@ The fix interleaves on each chip's **progress through its own burst** —
 round-robin across the per-chip step lists, so every die that did work in a
 refresh lights up together, and a busier die keeps flashing after the others
 drain. It is a rendering order only: it moves no data and changes no
-arithmetic. See `SimulationController._interleave_chip_steps`, gated by
+arithmetic. See `SimController._interleave_chip_steps`, gated by
 `test_the_animation_interleaves_the_dies_rather_than_batching_them` (which
 includes teeth asserting the old concatenated order does not satisfy it).
+
+Measured on a real 6-sample run's trace (24,489 chip-tagged events → 15,802
+flash steps), which chip lights on each of the first 24 steps:
+
+```
+  OLD: 0 . 0 0 0 0 0 . 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+  NEW: 0 1 . 1 0 1 0 1 0 1 0 1 0 1 . 1 0 1 0 1 0 1 0 1
+
+  OLD (concatenate): chip 1's FIRST flash is step 4687 of 15802 — 29.7% in
+  NEW (interleave):  chip 1's FIRST flash is step 1 of 15802  —  0.0% in
+```
+
+Under the old order chip 0 animated alone for the first 29.7% of the run,
+which is precisely the "chip 0 works for a long time, chip 1 idle" that was
+reported. Under the new order the dies alternate from the first step.
 
 ## The drive is part of the design
 

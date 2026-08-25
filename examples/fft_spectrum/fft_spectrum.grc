@@ -1,0 +1,506 @@
+options:
+  parameters:
+    author: Lattrex
+    catch_exceptions: 'True'
+    category: '[GRC Hier Blocks]'
+    cmake_opt: ''
+    comment: ''
+    copyright: ''
+    description: "LIVE SPECTRUM ANALYZER on the Kyttar array. A complex I/Q burst\
+      \ drives the placed 64-point streaming R2SDF FFT (FFT64, 84 cells) whose complex\
+      \ output feeds a placed Complex-to-Mag^2 stage, so the transform AND the per-bin\
+      \ power both run ON CHIP. The chip emits bins in BIT-REVERSED (DIF) order; the\
+      \ 'unreverse' block undoes that map and emits a natural-order 64-bin vector,\
+      \ so the demo tone at bin 11 (which leaves the chip at slot 52) appears exactly\
+      \ at 11 on the plot. Open fft_spectrum.kyt in placeKYT -> Run as GNURadio Server\
+      \ (port 58950), then Execute here."
+    gen_cmake: 'On'
+    gen_linking: dynamic
+    generate_options: qt_gui
+    hier_block_src_path: '.:'
+    id: fft_spectrum
+    max_nouts: '0'
+    output_language: python
+    placement: (0,0)
+    qt_qss_theme: ''
+    realtime_scheduling: ''
+    run: 'True'
+    run_command: '{python} -u {filename}'
+    run_options: prompt
+    sizing_mode: fixed
+    thread_safe_setters: ''
+    title: "Kyttar FFT64 spectrum analyzer — a streaming FFT on the fabric"
+    window_size: (1400,900)
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [8, 8]
+    rotation: 0
+    state: enabled
+
+blocks:
+- name: server_port
+  id: variable
+  parameters:
+    comment: placeKYT prints this on "Run as GNURadio Server"
+    value: '58950'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [40, 12]
+    rotation: 0
+    state: enabled
+- name: n_fft
+  id: variable
+  parameters:
+    comment: transform size of the placed FFT64 block
+    value: '64'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [160, 12]
+    rotation: 0
+    state: enabled
+- name: latency
+  id: variable
+  parameters:
+    comment: the block's pinned pipeline latency (N-1) — the first 63 outputs
+      are the zero-initialized startup transient, not a frame
+    value: '63'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [264, 12]
+    rotation: 0
+    state: enabled
+- name: frames
+  id: variable
+  parameters:
+    comment: whole 64-bin frames per dispatched burst
+    value: '3'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [376, 12]
+    rotation: 0
+    state: enabled
+- name: burst_len
+  id: variable
+  parameters:
+    comment: complex samples per burst = latency + n_fft*frames = 255
+    value: latency + n_fft * frames
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [472, 12]
+    rotation: 0
+    state: enabled
+- name: tone_bin
+  id: variable
+  parameters:
+    comment: "which FFT bin the demo tone sits in. ON-BIN (an integer number\
+      \ of cycles per 64-sample frame) so the answer is a single clean line\
+      \ with no leakage. The chip emits it at SLOT bit_reverse_6(11) = 52;\
+      \ the unreverse block puts it back at 11."
+    value: '11'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [648, 12]
+    rotation: 0
+    state: enabled
+- name: amplitude
+  id: variable
+  parameters:
+    comment: "0.9, NOT full scale. The hosted server converts an injected float\
+      \ with min(0.999, f) before quantizing, so a 0.99997 sample is clipped to\
+      \ word 32735 instead of 32767 (8 samples of a 255-sample full-scale burst).\
+      \ At 0.9 the server's conversion and the demo module's agree on EVERY\
+      \ sample, so the live path is bit-exact to the reference."
+    value: '0.9'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [760, 12]
+    rotation: 0
+    state: enabled
+- name: iq_stim
+  id: variable
+  parameters:
+    comment: "ON-BIN complex exponential at bin 11 — an exact integer number\
+      \ of cycles per 64-sample frame, so the answer is a single clean spectral\
+      \ line with no leakage"
+    value: list(amplitude*np.exp(2j*np.pi*tone_bin*np.arange(burst_len)/n_fft))
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [880, 12]
+    rotation: 0
+    state: enabled
+- name: import_np
+  id: import
+  parameters:
+    alias: ''
+    comment: ''
+    imports: import numpy as np
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [8, 84]
+    rotation: 0
+    state: enabled
+- name: src
+  id: blocks_vector_source_x
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: "the demo I/Q burst — exactly burst_len samples, repeating so the\
+      \ source always has its whole burst available; the kyttar source dispatches\
+      \ ONE burst (from index 0) and the sink loops that genuine result"
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    repeat: 'True'
+    tags: '[]'
+    type: complex
+    vector: iq_stim
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [48, 220]
+    rotation: 0
+    state: enabled
+- name: ksrc
+  id: kyttar_source
+  parameters:
+    affinity: ''
+    alias: ''
+    burst_len: burst_len
+    comment: "I/Q burst -> chip x16_in. ONE burst per Run (repeat = no) so the\
+      \ burst starts at vector index 0 and the 63-sample latency lines the frames\
+      \ up exactly. A REPEAT-burst source re-arms mid-vector — the next burst then\
+      \ starts at an arbitrary ROTATION, which slides the frame grid and puts the\
+      \ tone on the wrong slot (measured: a 55-sample rotation moved the peak from\
+      \ slot 52 to 43). The display keeps refreshing via the sink's server_repeat."
+    complex_in: complex
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_channels: '1'
+    output_words: '"q15"'
+    pipelined: 'no'
+    port_name: '"x16_in"'
+    repeat: 'no'
+    schedule: '"interleaved"'
+    server_host: '"127.0.0.1"'
+    server_port: server_port
+    stream_id: '"spectrum"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [280, 204]
+    rotation: 0
+    state: enabled
+- name: fft
+  id: kyttar_fft64
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: "64-point streaming R2SDF FFT — 84 cells, six stages, placed\
+      \ on chip. Output is BIT-REVERSED, scale FFT/64, latency 63."
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [520, 220]
+    rotation: 0
+    state: enabled
+- name: mag2
+  id: kyttar_complex_to_mag_squared
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: "per-bin POWER, computed on chip (one cell) — what leaves\
+      \ x16_out is already a real power word per bin"
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [752, 220]
+    rotation: 0
+    state: enabled
+- name: ksink
+  id: kyttar_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: "per-bin power <- x16_out (q15 floats). server_repeat LOOPS the\
+      \ genuine one-batch result so the vector display keeps painting without a\
+      \ re-armed source rotating the burst (see the source's comment); every\
+      \ repetition is a byte-identical replay of the SAME real chip output, and\
+      \ the gate asserts that repetition integrity rather than taking it on trust."
+    device_id: '"kyttar_0"'
+    hold_secs: '8.0'
+    in_type: float
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_channels: '1'
+    port_name: '"x16_out"'
+    server_port: server_port
+    server_repeat: 'True'
+    stream_id: '"spectrum"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [960, 204]
+    rotation: 0
+    state: enabled
+- name: unreverse
+  id: epy_block
+  parameters:
+    _source_code: |
+      """UN-REVERSE the chip's bin order — the example's display contract.
+
+      The placed FFT emits DIF order with deliberately NO reorder buffer:
+      output slot k of each 64-sample frame carries frequency bin
+      bit_reverse_6(k). Slot 52 is bin 11; slot 1 is bin 32. A plot fed the
+      raw slots is a SCRAMBLED spectrum that still looks plausible, which is
+      exactly why this block exists and why the gate pins the mapping.
+
+      It also strips the block's 63-sample pipeline LATENCY: the first 63
+      outputs of a burst are the deterministic startup values of the
+      zero-initialized pipeline, not a frame. Burst boundaries are found by
+      counting samples modulo burst_len, which is what the repeat-burst
+      source delivers.
+
+      Emits one natural-order 64-bin power VECTOR per whole frame.
+      """
+      import numpy as np
+      from gnuradio import gr
+
+
+      def _bitrev(n):
+          bits = int(n).bit_length() - 1
+          out = []
+          for k in range(n):
+              r, v = 0, k
+              for _ in range(bits):
+                  r = (r << 1) | (v & 1)
+                  v >>= 1
+              out.append(r)
+          return np.array(out, dtype=np.intp)
+
+
+      class blk(gr.basic_block):
+          def __init__(self, n_fft=64, latency=63, burst_len=255):
+              gr.basic_block.__init__(
+                  self, name='FFT bin un-reverse',
+                  in_sig=[np.float32], out_sig=[(np.float32, int(n_fft))])
+              self.n = int(n_fft)
+              self.latency = int(latency)
+              self.burst = int(burst_len)
+              # slot -> natural bin. The map is an involution, so this same
+              # permutation both scrambles and unscrambles; applying it to the
+              # emitted slots yields natural bin order.
+              self.rev = _bitrev(self.n)
+              self.buf = np.zeros(0, dtype=np.float32)
+              self.pos = 0          # index of buf[0] within the current burst
+
+          def forecast(self, noutput_items, ninputs):
+              return [noutput_items * self.n + self.n] * ninputs
+
+          def general_work(self, input_items, output_items):
+              x = input_items[0]
+              self.buf = np.concatenate([self.buf, np.asarray(x, np.float32)])
+              self.consume(0, len(x))
+              out = output_items[0]
+              made = 0
+              while made < len(out):
+                  # position of buf[0] inside its burst
+                  off = self.pos % self.burst
+                  if off < self.latency:            # inside the startup transient
+                      drop = min(self.latency - off, len(self.buf))
+                      if drop == 0:
+                          break
+                      self.buf = self.buf[drop:]
+                      self.pos += drop
+                      continue
+                  if len(self.buf) < self.n:
+                      break
+                  frame = self.buf[:self.n]
+                  self.buf = self.buf[self.n:]
+                  self.pos += self.n
+                  nat = np.zeros(self.n, dtype=np.float32)
+                  nat[self.rev] = frame
+                  out[made][:] = nat
+                  made += 1
+              return made
+    affinity: ''
+    alias: ''
+    burst_len: burst_len
+    comment: "bit-reversed chip slots -> natural-order 64-bin power vector\
+      \ (and strips the 63-sample startup transient)"
+    latency: latency
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    n_fft: n_fft
+  states:
+    _io_cache: ('FFT bin un-reverse', 'blk', [('n_fft', '64'), ('latency', '63'),
+      ('burst_len', '255')], [('0', 'float', 1)], [('0', 'float', 64)], '', ['burst_len',
+      'latency', 'n_fft'])
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1152, 196]
+    rotation: 0
+    state: enabled
+- name: to_db
+  id: epy_block
+  parameters:
+    _source_code: |
+      """Per-bin power -> dBFS, for a log spectrum display.
+
+      The chip already emits POWER (re^2+im^2 in Q15), so this is just
+      10*log10 with a floor. The FFT/64 scale puts a full-scale coherent
+      bin at power 1.0 = 0 dBFS, so the plot reads directly in dBFS.
+      """
+      import numpy as np
+      from gnuradio import gr
+
+
+      class blk(gr.sync_block):
+          def __init__(self, n_fft=64, floor_db=-90.0):
+              gr.sync_block.__init__(
+                  self, name='Power to dBFS',
+                  in_sig=[(np.float32, int(n_fft))],
+                  out_sig=[(np.float32, int(n_fft))])
+              self.floor = float(floor_db)
+              self.eps = 10.0 ** (self.floor / 10.0)
+
+          def work(self, input_items, output_items):
+              x = np.maximum(np.asarray(input_items[0]), self.eps)
+              output_items[0][:] = (10.0 * np.log10(x)).astype(np.float32)
+              return len(output_items[0])
+    affinity: ''
+    alias: ''
+    comment: linear power -> dBFS (0 dBFS = a full-scale coherent bin)
+    floor_db: '-90.0'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    n_fft: n_fft
+  states:
+    _io_cache: ('Power to dBFS', 'blk', [('n_fft', '64'), ('floor_db', '-90.0')],
+      [('0', 'float', 64)], [('0', 'float', 64)], '', ['floor_db', 'n_fft'])
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1152, 372]
+    rotation: 0
+    state: enabled
+- name: spectrum_sink
+  id: qtgui_vector_sink_f
+  parameters:
+    affinity: ''
+    alias: ''
+    alpha1: '1.0'
+    alpha10: '1.0'
+    alpha2: '1.0'
+    alpha3: '1.0'
+    alpha4: '1.0'
+    alpha5: '1.0'
+    alpha6: '1.0'
+    alpha7: '1.0'
+    alpha8: '1.0'
+    alpha9: '1.0'
+    autoscale: 'False'
+    average: '1.0'
+    color1: '"blue"'
+    color10: '"dark blue"'
+    color2: '"red"'
+    color3: '"green"'
+    color4: '"black"'
+    color5: '"cyan"'
+    color6: '"magenta"'
+    color7: '"yellow"'
+    color8: '"dark red"'
+    color9: '"dark green"'
+    comment: "THE SPECTRUM — 64 natural-order bins straight off the chip.\
+      \ The demo tone sits at bin 11 at 0 dBFS."
+    grid: 'True'
+    gui_hint: ''
+    label1: on-chip FFT64 power spectrum
+    label10: ''
+    label2: ''
+    label3: ''
+    label4: ''
+    label5: ''
+    label6: ''
+    label7: ''
+    label8: ''
+    label9: ''
+    legend: 'True'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    name: '"On-chip FFT64 spectrum (natural bin order, dBFS)"'
+    nconnections: '1'
+    ref_level: '0'
+    showports: 'False'
+    update_time: '0.10'
+    vlen: n_fft
+    width1: '3'
+    width10: '1'
+    width2: '1'
+    width3: '1'
+    width4: '1'
+    width5: '1'
+    width6: '1'
+    width7: '1'
+    width8: '1'
+    width9: '1'
+    x_axis_label: '"FFT bin (natural order)"'
+    x_start: '0'
+    x_step: '1.0'
+    x_units: '""'
+    y_axis_label: '"power (dBFS)"'
+    y_units: '""'
+    ymax: '5'
+    ymin: '-95'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1400, 348]
+    rotation: 0
+    state: enabled
+
+connections:
+- [src, '0', ksrc, '0']
+- [ksrc, '0', fft, '0']
+- [fft, '0', mag2, '0']
+- [mag2, '0', ksink, '0']
+- [ksink, '0', unreverse, '0']
+- [unreverse, '0', to_db, '0']
+- [to_db, '0', spectrum_sink, '0']
+
+metadata:
+  file_format: 1
+  grc_version: 3.10.12.0

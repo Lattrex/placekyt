@@ -1,0 +1,142 @@
+project:
+  format_version: 1
+  name: Kyttar FFT32 spectrum analyzer
+  version: '1.0'
+chip_type: kyttar_10x12
+chips:
+- id: 0
+  label: Chip 0
+  position: {x: 0.0, y: 0.0}
+blocks:
+- name: fft32
+  type: FFT32Block
+  library: lattrex.official
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: s0_ctl, x: 4, y: 0, face: east}
+    - {cell_id: s0_sumi, x: 5, y: 0, face: east}
+    - {cell_id: s0_sumq, x: 6, y: 0, face: south}
+    - {cell_id: s0_diffi, x: 6, y: 1, face: east}
+    - {cell_id: s0_diffq, x: 7, y: 1, face: north}
+    - {cell_id: s0_fetch_c, x: 7, y: 0, face: east}
+    - {cell_id: s0_fetch_d, x: 8, y: 0, face: south}
+    - {cell_id: s0_steer, x: 8, y: 1, face: south}
+    - {cell_id: s0_prods, x: 8, y: 2, face: west}
+    - {cell_id: s0_rail, x: 7, y: 2, face: south}
+    - {cell_id: s0_gather, x: 7, y: 3, face: west}
+    - {cell_id: s0_d0, x: 6, y: 3, face: north}
+    - {cell_id: s0_d1, x: 6, y: 2, face: west}
+    - {cell_id: s0_d2, x: 5, y: 2, face: north}
+    - {cell_id: s0_d3, x: 5, y: 1, face: west}
+    - {cell_id: s0_out, x: 4, y: 1, face: south}
+    - {cell_id: s1_ctl, x: 4, y: 2, face: west}
+    - {cell_id: s1_sumi, x: 3, y: 2, face: north}
+    - {cell_id: s1_sumq, x: 3, y: 1, face: west}
+    - {cell_id: s1_diffi, x: 2, y: 1, face: west}
+    - {cell_id: s1_diffq, x: 1, y: 1, face: west}
+    - {cell_id: s1_fetch_c, x: 0, y: 1, face: south}
+    - {cell_id: s1_fetch_d, x: 0, y: 2, face: south}
+    - {cell_id: s1_steer, x: 0, y: 3, face: east}
+    - {cell_id: s1_prods, x: 1, y: 3, face: north}
+    - {cell_id: s1_rail, x: 1, y: 2, face: east}
+    - {cell_id: s1_gather, x: 2, y: 2, face: south}
+    - {cell_id: s1_d0, x: 2, y: 3, face: east}
+    - {cell_id: s1_d1, x: 3, y: 3, face: east}
+    - {cell_id: s1_out, x: 4, y: 3, face: south}
+    - {cell_id: s2_ctl, x: 4, y: 4, face: east}
+    - {cell_id: s2_sumi, x: 5, y: 4, face: east}
+    - {cell_id: s2_sumq, x: 6, y: 4, face: south}
+    - {cell_id: s2_diffi, x: 6, y: 5, face: east}
+    - {cell_id: s2_diffq, x: 7, y: 5, face: north}
+    - {cell_id: s2_fetch_c, x: 7, y: 4, face: east}
+    - {cell_id: s2_fetch_d, x: 8, y: 4, face: south}
+    - {cell_id: s2_steer, x: 8, y: 5, face: south}
+    - {cell_id: s2_prods, x: 8, y: 6, face: west}
+    - {cell_id: s2_rail, x: 7, y: 6, face: west}
+    - {cell_id: s2_gather, x: 6, y: 6, face: west}
+    - {cell_id: s2_d0, x: 5, y: 6, face: north}
+    - {cell_id: s2_d1, x: 5, y: 5, face: west}
+    - {cell_id: s2_out, x: 4, y: 5, face: south}
+    - {cell_id: s3_ctl, x: 4, y: 6, face: west}
+    - {cell_id: s3_sumi, x: 3, y: 6, face: west}
+    - {cell_id: s3_sumq, x: 2, y: 6, face: west}
+    - {cell_id: s3_diffi, x: 1, y: 6, face: south}
+    - {cell_id: s3_diffq, x: 1, y: 7, face: east}
+    - {cell_id: s3_gather, x: 2, y: 7, face: east}
+    - {cell_id: s3_d0, x: 3, y: 7, face: east}
+    - {cell_id: s3_out, x: 4, y: 7, face: south}
+    - {cell_id: s4_ctl, x: 4, y: 8, face: east}
+    - {cell_id: s4_sumi, x: 5, y: 8, face: east}
+    - {cell_id: s4_sumq, x: 6, y: 8, face: east}
+    - {cell_id: s4_diffi, x: 7, y: 8, face: south}
+    - {cell_id: s4_diffq, x: 7, y: 9, face: west}
+    - {cell_id: s4_gather, x: 6, y: 9, face: west}
+    - {cell_id: s4_relay, x: 5, y: 9, face: west}
+    - {cell_id: s4_out, x: 4, y: 9, face: south}
+- name: complextomagsquared
+  type: ComplexToMagSquaredBlock
+  library: lattrex.official
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 9, y: 1, face: west}
+    orientation:
+    - ccw
+connections:
+- name: ingress
+  from: {chip_port: {chip: 0, port: x16_in}}
+  to: {block: fft32, port: xi}
+  route:
+  - {x: 0, y: 0}
+  - {x: 1, y: 0}
+  - {x: 2, y: 0}
+  - {x: 3, y: 0}
+  - {x: 4, y: 0}
+  stream_id: spectrum
+- name: spectrum
+  from: {block: fft32, port: out_i}
+  to: {block: complextomagsquared, port: re}
+  route:
+  - {x: 4, y: 9}
+  - {x: 4, y: 10}
+  - {x: 5, y: 10}
+  - {x: 6, y: 10}
+  - {x: 7, y: 10}
+  - {x: 8, y: 10}
+  - {x: 9, y: 10}
+  - {x: 9, y: 9}
+  - {x: 9, y: 8}
+  - {x: 9, y: 7}
+  - {x: 9, y: 6}
+  - {x: 9, y: 5}
+  - {x: 9, y: 4}
+  - {x: 9, y: 3}
+  - {x: 9, y: 2}
+  - {x: 9, y: 1}
+- name: fft32_to_complextomagsquared
+  from: {block: fft32, port: out_q}
+  to: {block: complextomagsquared, port: im}
+  route:
+  - {x: 4, y: 9}
+  - {x: 4, y: 10}
+  - {x: 5, y: 10}
+  - {x: 6, y: 10}
+  - {x: 7, y: 10}
+  - {x: 8, y: 10}
+  - {x: 9, y: 10}
+  - {x: 9, y: 9}
+  - {x: 9, y: 8}
+  - {x: 9, y: 7}
+  - {x: 9, y: 6}
+  - {x: 9, y: 5}
+  - {x: 9, y: 4}
+  - {x: 9, y: 3}
+  - {x: 9, y: 2}
+  - {x: 9, y: 1}
+- name: egress
+  from: {block: complextomagsquared, port: out}
+  to: {chip_port: {chip: 0, port: x16_out}}
+  route:
+  - {x: 9, y: 1}
+  - {x: 9, y: 0}

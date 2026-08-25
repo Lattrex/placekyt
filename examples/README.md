@@ -43,6 +43,7 @@ first command into a terminal, copy the second into another, and you're running.
 | **[channel_selector/](channel_selector/)** | A **channel selector**: FreqXlatingFIR channelizer → complex low-pass → rotator → conjugate → imag rail. Per-sample paced (the FreqXlatingFIR is saturation-bespoke; see its README). | 6 | `.grc` or `.kyt` |
 | **[lms_equalizer/](lms_equalizer/)** | The **adaptive-equalizer constellation snap** — multipath-smeared QPSK through the on-chip decision-directed **LMS equalizer**: the constellation cloud snaps onto the four clean points *within the burst* (the adaptation runs on the array, per sample). Converged tail **BER 0**. | 1 | `.grc` or `.kyt` |
 | **[cordic_polar/](cordic_polar/)** | **CORDIC polar decomposition** — one AM'd rotating phasor split into the two CORDIC vectoring chains (magnitude → the AM envelope, atan2 → the phase sawtooth), each overlaid on the stock GNU Radio reference block. Open the `.kyt` directly (dense guided-anchor placement; a fresh import doesn't route cleanly). | 2 | `.kyt` |
+| **[fft_spectrum/](fft_spectrum/)** | A **live spectrum analyzer on the fabric** — a **streaming FFT** and its per-bin power stage both placed on chip, so what leaves `x16_out` is already a power word per frequency bin; the flowgraph un-reverses the FFT's bit-reversed (DIF) bin order and plots it. A tone at bin 11 leaves the chip on slot 52 and lands at **bin 11, −0.9 dBFS, every other bin at the −90 dBFS floor**. Two sizes ship: **N=64** (104/120 cells) and **N=32** (80/120). Open the `.kyt` directly — the FFT is a CHIP_SCALE block the auto-packer cannot place. | 2 | `.kyt` |
 
 **Open `.kyt`** — the demo ships a pre-placed, pre-routed design you can open
 directly (**File → Open**) and explore on the canvas without importing anything.
@@ -50,11 +51,15 @@ directly (**File → Open**) and explore on the canvas without importing anythin
 Flowgraph…**) and placeKYT auto-places and routes it. Either way, you then **Run
 as GNURadio Server** and drive it from `gnuradio-companion`.
 
-> Four demos are the exception — the **SSB Weaver**, the **FSK4 modem**, the
-> **16-QAM modem**, and the **CORDIC polar** demo: they're dense placements the
-> auto-router can't fully route from a fresh import, so you **must open their
-> `.kyt` directly** (importing the `.grc` can leave nets unrouted). Each README
-> explains why. Every other demo places and routes from the `.grc`.
+> Five demos are the exception — the **SSB Weaver**, the **FSK4 modem**, the
+> **16-QAM modem**, the **CORDIC polar** demo, and the **FFT spectrum**
+> analyzer: you **must open their `.kyt` directly** (importing the `.grc` can
+> leave nets unrouted). For the first four it is placement density. For
+> `fft_spectrum` it is a hard limit rather than a tuning problem: its FFT is a
+> **CHIP_SCALE** block whose verified layout is a full-height ctl/out spine, and
+> the generic auto-packer has no model for that class — it shifts the spine off
+> the array and the import fails outright. Each README explains why. Every other
+> demo places and routes from the `.grc`.
 
 ## The common workflow (every demo)
 

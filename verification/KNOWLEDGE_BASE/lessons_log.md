@@ -9,6 +9,83 @@ block-specific gotcha. Promote anything that generalizes across block classes in
 and superseded material merged into the surviving entries; no durable lesson was
 dropped) — append new entries above the oldest ones as before.
 
+## fft_spectrum example SHIPPED — three LIVE-PATH defects that every headless gate passed 2026-08-24
+
+The FFT blocks (16/32/64) were all verified bit-exact on chip and **none of them
+had an example** — nothing to open, nothing to run. `examples/fft_spectrum` is
+that example: `x16_in -> FFT -> ComplexToMagSquared -> x16_out`, so the
+transform AND the per-bin power both run on the fabric, with the flowgraph
+un-reversing the DIF bin order and plotting it. Two sizes ship as independent
+`.kyt`/`.grc` pairs — **N=64** (84 FFT cells, 104/120 with routing) and **N=32**
+(60 cells, 80/120).
+
+**The whole value of this entry is that the headless gates were GREEN while the
+user path was BROKEN, three separate times.** Each defect produced a *plausible*
+spectrum. Anyone building the next chained example will hit at least one.
+
+- **1. A hosted batch's I/Q lands on the CLIENT's default registers unless the
+  stream is NAMED.** The GR client fills the `process_batch` header from its own
+  `data_addrs=(0, 1)`; the server replaces that with the build-resolved landing
+  **only** when the burst carries a `stream_id` present in
+  `engine.port_config.stream_targets`. This chain lands on `[1, 2]`, so with no
+  stream id the real part went to register 0 and the imaginary part to register
+  1 — the block received a **real** input. A real signal's spectrum is
+  conjugate-symmetric, so the tone split into two quarter-power peaks at bins 11
+  and 53 (= 64−11): measured, two 6635 words where one 26539 was expected. It
+  looks like a DSP bug and is an addressing bug. **Any single-stream chain whose
+  landing is not `(0, 1)` needs a `stream_id` on the ingress net AND on both
+  `.grc` markers** — `stream_targets` returning `{}` is the tell (the server
+  prints it at start).
+- **2. A repeat-burst source ROTATES the frame grid.** With `repeat = yes` the
+  source re-arms mid-vector, so each later burst begins at an arbitrary rotation
+  of the stimulus (this is documented behaviour — "samples arriving in between
+  are consumed and dropped"). For a framed transform a rotation by `r` slides the
+  frame boundary by `r mod N`: measured, a 55-sample rotation moved the peak from
+  slot 52 to slot 43. Harmless for a memoryless or self-synchronising chain,
+  **fatal for anything frame-aligned**. The fix is the CW/PSK31 shape — `repeat =
+  no` on the source, `server_repeat = yes` on the sink — one genuine burst from
+  index 0, looped for the display, with the gate asserting the loop is a
+  byte-identical replay.
+- **3. The host clips FULL-SCALE input.** `sim_bridge._float_to_q15` converts with
+  `max(-1.0, min(0.999, f))`, so a sample at `32767/32768 = 0.99997` becomes word
+  **32735**, not 32767. On a 255-sample full-scale burst that is 8 samples
+  (indices 0, 48, 64, 112, 128, 176, 192, 240) — enough that a live run can never
+  be bit-exact to a reference computed off-server. Any example that wants the
+  user-path gate to demand **bit-exactness** (rather than a fuzzy tolerance) must
+  drive below the clamp; this one uses amplitude 0.9, where the server's
+  conversion and the example's reference agree on every sample.
+
+**A CHIP-SCALE block cannot be auto-packed, and the failure is loud.** Asked to
+pack FFT64, `auto_pnr` shifts the verified 12-row ctl/out spine off the array
+(`block 'fft64' cell (2,12) is off the 10x12 array`) — the placer has no
+CHIP_SCALE awareness at all (grep: no `CHIP_SCALE` anywhere under `placekyt/`).
+The working shape is **pin the anchors, auto-route everything else**: place the
+FFT at its own `default_layout()` anchor and the 1-cell power stage at `(9, 1)`,
+then call the real `auto_route_all`. Two details are load-bearing and were
+measured: the power stage's resting face must be **NORTH** (the default EAST
+points off the array and the egress net dies with `no bus path from source to
+the broker tap`), and the FFT→power link must be **ONE** connection —
+`add_logical_connection` synthesises the Q-half sibling, and adding it by hand
+too builds a duplicate net onto the same register that routes, builds, and then
+emits **a frame of pure zeros with no error anywhere**.
+
+**A userpath harness that "bound something" is more dangerous than one that
+failed to bind.** During debugging `start_gnuradio_server` returned `None`
+(no bind) while another session held 58950; the flowgraph then talked to *that*
+server and the suite happily analysed **somebody else's chip output** (304215
+words of a foreign stream, read as a spectrum defect). `_serve` now retries until
+it holds 58950 **itself** and asserts the exclusive bind. Any new user-path suite
+should copy that, not the bare `assert bound == _PORT`.
+
+**Gates: 26.** The two user-path gates (one per size) host the shipped `.kyt` as
+the GUI does and run the shipped `.grc` under the real GR interpreter; observed
+N=64 `bin 11 at −0.9 dBFS, all 63 other bins −90.0`, N=32 the same at 32 bins.
+Both sizes are also bit-exact on the real built chip (255/255 and 127/127 power
+words) against the FFT's streaming reference composed with the power stage's.
+Six mutations must FAIL, and the one that matters is **no un-reversal**: the raw
+bit-reversed slots are a clean, plausible, *wrong* spectrum, which is exactly
+what a display-layer gate has to catch.
+
 ## Verification-integrity sweep — every report writer in the suite could write a GREEN report for a FAILING session (INV-36) 2026-08-24
 
 Not a block. A repo-wide audit of the code that produces the project's evidence,

@@ -169,13 +169,14 @@ Under the old order chip 0 animated alone for the first 29.7% of the run,
 which is precisely the "chip 0 works for a long time, chip 1 idle" that was
 reported. Under the new order the dies alternate from the first step.
 
-## Two LIVE-PATH defects the headless gates could not see
+## Three LIVE-PATH defects the headless gates could not see
 
 The headless suite drives `MultiChipSimEngine` directly and was green at
 200/200 bit-exact. The **user path** — host the `.kyt`, run the `.grc` through
-the real GR client stack — returned a stream of only two distinct values. Both
-faults are in the multi-chip bridge, and both are invisible to any test that
-does not go through a hosted server.
+the real GR client stack — returned a stream of only two distinct values. The
+first two faults are in the multi-chip bridge and the third is in the `.grc`
+itself; all three are invisible to any test that does not go through a hosted
+server.
 
 **1. A chain that continues across the CARRIER WIRE resolved `out_tag=None`.**
 `stream_targets` finds a chain's egress tag by walking **block → block within
@@ -212,29 +213,51 @@ weakening it. The gate now asserts **bit-exactness against the whole-transform
 reference for the `.grc`'s own stimulus**, which cannot pass on a broken chain
 and cannot fail on a working one.
 
-### STILL OPEN — the repeat-looping sink republishes the wrong burst
+**3. The `.grc` left `output_words` on `"auto"` for a VALUE-output chain.**
+This was the last fault, and the one that kept the user-path gate `xfail`.
+`output_words="auto"` ties **raw int16** output to `complex_in` — the
+**bit-packing receiver** convention, where a slicer's decoded bit lives in the
+word's LSB and Q15 scaling would crush it. This chain is the exact opposite
+case: its output is a **Q15 value**, the transform's bins. So the sink emitted
+raw ±30000 word floats while every consumer applied the documented q15/32768
+convention, under which those **alias**:
 
-Honest status: after the two fixes above, the hosted path resolves its stream,
-returns words, and delivers **both rails** of the complex pair — but the burst
-the sink emits is **not this stimulus's transform**. Measured:
+| the chip's word | the sink emitted | decoded as q15 | should be |
+|---|---|---|---|
+| `0x399a` (14746) | `14746.0` | `round(14746 × 32768) & 0xFFFF` = `0x0000` | `0x399a` |
+| `0x2ccd` (11469) | `11469.0` | `round(11469 × 32768) & 0xFFFF` = `0x8000` | `0x2ccd` |
+| `0x0000` | `0.0` | `0x0000` ✓ | `0x0000` |
 
-| driven through | result |
-|---|---|
-| headless (`MultiChipSimEngine`) | **BIT-EXACT 768/768**, zero saturated words |
-| the server's own drive + demux, offline | **BIT-EXACT 768/768** |
-| the **hosted sink** (`server_repeat=True`) | 1,359,360 words whose non-zero sample indices are 104, 168, 296, 360, 488, … — pairs **64** apart repeating every **192**, where the reference has pairs **10** apart repeating every **128** |
+Only the **non-zero** bins alias — zero survives the aliasing untouched. This
+`.grc` drives two pure tones, so a correct transform is nearly all zeros and
+just **4 of 384** samples were wrong. The burst came back looking almost
+right rather than obviously broken, which is why the earlier measurement read
+as a strange re-framing (an apparent period 192) instead of a scaling bug.
 
-Amplitude was ruled out: the chip is bit-exact at 0.45/0.35 **and** at 0.25/0.20
-and 0.15/0.12, with **zero** saturated words in every case. So the chip, the
-crossing, the target resolution and the tag demux are all correct, and the fault
-is in the **sink/batch-session layer** that republishes bursts under
-`server_repeat` — a different layer from the two multi-chip resolution defects
-fixed here.
+The **display** told the same story from the other side: raw ±30000 against
+the scope's `ymin/ymax` of −1/1 is a flat off-scale line, and the `.grc`'s own
+comment already claimed the plotted stream was "at the q15/32768 scale".
 
-`test_fft128_2p2s_shipped_grc_user_path` therefore **enforces** the parts that
-are proven (the stream resolves, words come back, both rails arrive) and marks
-the final comparison **xfail** with the measurement above. It is deliberately
-not deleted and not weakened.
+Fixed in `gen_grc.py` with `output_words="q15"` — the same fix, and the same
+failure class, as the LMS equalizer's missing-constellation report. Every
+other value-output complex example in the tree (`fft_spectrum`,
+`cordic_polar`, `complex_math`, `lms_equalizer`, `fm_transceiver`) already
+set `"q15"`; the two FFT128 `.grc`s were the outliers, both carrying a stale
+`output_words: 'False'` that GRC silently resolved back to the `"auto"`
+default.
+
+> **`fft128_2die` had the identical defect and no gate at all.** The two
+> `gen_grc.py` files are the same file modulo comments, so the fault was
+> cloned. It is fixed there too, and
+> `test_fft128_2die_shipped_grc_user_path` now gates it — a fix proven on a
+> sibling is not a fix proven here.
+
+`test_fft128_2p2s_shipped_grc_user_path` now **passes**, asserting
+bit-exactness of the full complex stream against the whole-transform
+reference, that the four energy-bearing samples are non-zero (so a dead chain
+cannot pass on the zeros alone), and that `server_repeat` loops the genuine
+burst cleanly. Reverting the `.grc` to `"auto"` makes it fail with exactly the
+4/384 signature above — the gate has teeth.
 
 ## The drive is part of the design
 

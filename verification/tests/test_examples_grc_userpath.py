@@ -364,7 +364,7 @@ def test_fft128_2p2s_shipped_grc_user_path(qapp):
     chain-tail tag demux. A ``.kyt`` missing its ``stream_id``/``out_tag``
     passes every headless gate and returns literally nothing here.
 
-    THE TWO DEFECTS IT FOUND, both invisible headless:
+    THE THREE DEFECTS IT FOUND, all invisible headless:
 
     1. A chain continuing across the CARRIER WIRE resolved ``out_tag=None``
        (``stream_targets`` walks block -> block within ONE chip; here the
@@ -374,6 +374,11 @@ def test_fft128_2p2s_shipped_grc_user_path(qapp):
        exit cell emits I then Q on ``(out_tag, out_tag+1)``, and matching
        ``out_tag`` alone returned the stream at HALF LENGTH with the
        imaginary part gone.
+    3. The ``.grc`` left ``output_words`` on "auto" (raw iff complex-in) for a
+       chain whose output is a Q15 VALUE, so the sink emitted raw +-30000 word
+       floats. Every consumer applies the q15/32768 convention, under which
+       those ALIAS (14746.0 -> 0x0000, 11469.0 -> 0x8000) — and only the
+       non-zero bins alias, so the burst came back looking nearly right.
 
     Asserted: the sink recovers the FULL complex stream off chain A's tail
     and it is BIT-EXACT against the whole-transform reference for the .grc's
@@ -421,37 +426,102 @@ def test_fft128_2p2s_shipped_grc_user_path(qapp):
         f"recovered {len(got)} words for {n} samples, expected >= {2 * n} — "
         "the complex pair is arriving half-length (only one tag demuxed)")
 
-    # ---------------------------------------------------------------------
-    # KNOWN OPEN ISSUE — the burst the SINK emits is not the burst the chip
-    # computed for this stimulus. Measured, after the two resolution fixes:
-    #
-    #   * driven headless, this exact stimulus is BIT-EXACT (768/768) with
-    #     ZERO saturated words, at 0.45/0.35 and at two lower amplitudes;
-    #   * driven through the SERVER's own drive + demux offline (the same
-    #     _process_batch_multichip shape), also BIT-EXACT 768/768;
-    #   * driven through the HOSTED sink, 1,359,360 words come back (the
-    #     server_repeat loop) whose non-zero SAMPLE indices are
-    #     104, 168, 296, 360, 488, … — pairs 64 apart repeating every 192,
-    #     where the reference has pairs 10 apart repeating every 128.
-    #
-    # So the chip, the crossing, the target resolution and the tag demux are
-    # all correct; something between the repeat-looping sink and the batch
-    # session is republishing a burst that is not this stimulus's transform.
-    # That is a SINK/session-layer fault, separate from the two multi-chip
-    # resolution defects this gate already found and which are fixed.
-    #
-    # It is recorded as an xfail rather than deleted or weakened: the checks
-    # above (stream resolves, words come back, BOTH rails arrive) are real
-    # and enforced, and this last comparison is the honest statement of what
-    # is still wrong. Do NOT relax it to make the suite green.
-    # ---------------------------------------------------------------------
+    # THE THIRD DEFECT, and the one that kept this gate xfail: the .grc left
+    # ``output_words`` on "auto", which ties RAW-int16 output to complex_in.
+    # That is the BIT-PACKING receiver convention (a slicer's decoded bit
+    # lives in the word LSB, which Q15 scaling would crush). This chain is the
+    # exact opposite — its output is a Q15 VALUE, the transform's bins. So the
+    # sink emitted raw +-30000 word floats while every consumer applied the
+    # documented q15/32768 convention, and ``round(w * 32768) & 0xFFFF``
+    # aliases: 14746.0 -> 0x0000 and 11469.0 -> 0x8000. Only the NON-ZERO bins
+    # alias (0.0 survives), so a two-tone transform came back looking almost
+    # right — 4 samples wrong out of 384 — rather than obviously broken. The
+    # scope told the same story: raw +-30000 against its -1..1 axis is a flat
+    # off-scale line. Fixed in gen_grc.py with output_words="q15", the same
+    # fix (and the same failure class) as the LMS equalizer's
+    # missing-constellation report.
     pairs = [(got[2 * k], got[2 * k + 1]) for k in range(n)]
     bad = [k for k in range(n) if pairs[k] != ref[k]]
-    if bad:
-        pytest.xfail(
-            f"KNOWN: hosted repeat-loop burst is not this stimulus's "
-            f"transform — {len(bad)}/{n} samples differ (first at {bad[0]}: "
-            f"got {(hex(pairs[bad[0]][0]), hex(pairs[bad[0]][1]))} "
-            f"want {(hex(ref[bad[0]][0]), hex(ref[bad[0]][1]))}). The same "
-            f"stimulus is bit-exact headless AND through the server's own "
-            f"drive+demux offline; see the comment above.")
+    assert not bad, (
+        f"the hosted burst is not this stimulus's transform — "
+        f"{len(bad)}/{n} samples differ (first at {bad[0]}: "
+        f"got {(hex(pairs[bad[0]][0]), hex(pairs[bad[0]][1]))} "
+        f"want {(hex(ref[bad[0]][0]), hex(ref[bad[0]][1]))})")
+
+    # NOT VACUOUS: this .grc's two tones land on exactly four non-zero
+    # samples of the 384. If the sink ever returned all zeros the comparison
+    # above would pass while proving nothing.
+    nz = [k for k in range(n) if ref[k] != (0, 0)]
+    assert len(nz) == 4, f"the reference has {len(nz)} non-zero samples, not 4"
+    assert all(pairs[k] != (0, 0) for k in nz), (
+        "the recovered burst is zero where the transform has energy — a dead "
+        "chain would pass the bit-exact comparison on the zeros alone")
+
+    # server_repeat=True loops the genuine one-batch result: every later full
+    # burst must be a clean repetition of it (real data looped, not a
+    # fabricated or drifting stream).
+    for r in range(1, min(8, len(got) // (2 * n))):
+        seg = got[r * 2 * n:(r + 1) * 2 * n]
+        assert seg == got[:2 * n], (
+            f"server_repeat repetition {r} diverges from the first burst")
+
+
+def test_fft128_2die_shipped_grc_user_path(qapp):
+    """The SAME user path for the two-die (non-board) FFT128.
+
+    WHY IT EXISTS. ``fft128_2die`` shipped with NO user-path gate at all, and
+    it carried the identical ``output_words="auto"`` defect its 2P2S sibling
+    was xfail on — the two ``gen_grc.py`` files are the same file modulo
+    comments, so the fault was cloned. Fixing only the gated example would
+    have left the ungated one broken with nothing to notice it. Every hosted
+    multi-chip example needs its own gate; a fix proven on a sibling is not a
+    fix proven here."""
+    import cmath
+
+    grc = _ROOT / "examples" / "fft128_2die" / "fft128_2die.grc"
+    kyt = _ROOT / "examples" / "fft128_2die" / "fft128_2die.kyt"
+    if not kyt.exists() or not grc.exists():
+        pytest.skip("fft128_2die example not generated (run build_kyt.py)")
+    sys.path.insert(0, str(_ROOT / "examples" / "fft128_2die"))
+    import fft128_2die as EX
+
+    ctrl, sim = _serve(kyt)
+    try:
+        assert len(ctrl.project.chips) == 2, (
+            "the two-die design must host as a MULTI-CHIP server")
+        sinks = _run_flowgraph(grc, secs=90)
+    finally:
+        sim.stop_gnuradio_server()
+
+    got = _words(sinks.get("kyt_sink", []))
+    assert got, (
+        "the shipped flowgraph recovered NOTHING off the chain tail — the "
+        "multi-chip server resolved no stream target")
+    assert all(0 <= w <= 0xFFFF for w in got), "recovered non-16-bit words"
+
+    n = 384
+    stim = []
+    for k in range(n):
+        c = (0.45 * cmath.exp(2j * cmath.pi * 9 * k / 128)
+             + 0.35 * cmath.exp(2j * cmath.pi * 37 * k / 128))
+        stim.append((EX.q15(c.real), EX.q15(c.imag)))
+    ref = EX.reference(stim)
+
+    assert len(got) >= 2 * n, (
+        f"recovered {len(got)} words for {n} samples, expected >= {2 * n} — "
+        "the complex pair is arriving half-length (only one tag demuxed)")
+    pairs = [(got[2 * k], got[2 * k + 1]) for k in range(n)]
+    bad = [k for k in range(n) if pairs[k] != ref[k]]
+    assert not bad, (
+        f"the hosted burst is not this stimulus's transform — "
+        f"{len(bad)}/{n} samples differ (first at {bad[0]}: "
+        f"got {(hex(pairs[bad[0]][0]), hex(pairs[bad[0]][1]))} "
+        f"want {(hex(ref[bad[0]][0]), hex(ref[bad[0]][1]))})")
+
+    nz = [k for k in range(n) if ref[k] != (0, 0)]
+    assert len(nz) == 4, f"the reference has {len(nz)} non-zero samples, not 4"
+    assert all(pairs[k] != (0, 0) for k in nz), (
+        "the recovered burst is zero where the transform has energy")
+    for r in range(1, min(8, len(got) // (2 * n))):
+        assert got[r * 2 * n:(r + 1) * 2 * n] == got[:2 * n], (
+            f"server_repeat repetition {r} diverges from the first burst")

@@ -267,3 +267,27 @@ on both chips, so `test_the_build_is_deterministic` holds the property and the
 The arithmetic gates live separately in
 `verification/tests/test_fft128_split.py` (the composition identity, both
 dies' cell contracts, the fold strides, the declared anchors).
+
+### The HOSTED user path (added 2026-08-25)
+
+```
+$ KYTTAR_GR_PYTHON=/usr/bin/python3 QT_QPA_PLATFORM=offscreen .venv/bin/python \
+      -m pytest verification/tests/test_examples_grc_userpath.py \
+      -k fft128_2die -q          # run user-path gates STANDALONE (port 58950)
+```
+
+This example previously had **no user-path gate**, and it carried a real
+defect that only the hosted path could see: the `.grc` left `output_words` on
+`"auto"`, which ties **raw int16** output to `complex_in` — the *bit-packing
+receiver* convention. This chain's output is a **Q15 value** (the transform's
+bins), so the sink emitted raw ±30000 word floats while every consumer applied
+the documented q15/32768 convention, under which raw words **alias**
+(`14746.0 → 0x0000`, `11469.0 → 0x8000`). Zero is a fixed point of that
+aliasing, and this `.grc` drives two pure tones, so only the **4 of 384**
+energy-bearing samples were wrong — the burst looked nearly right. On the
+display side the same stream is a flat off-scale line against the scope's
+`-1..1` axis.
+
+Fixed in `gen_grc.py` with `output_words="q15"`. The same fault was present in
+the sibling `examples/fft128_2p2s` (the two generators are the same file modulo
+comments); see INV-42 and that example's README for the full write-up.

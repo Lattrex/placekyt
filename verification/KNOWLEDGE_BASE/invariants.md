@@ -1932,3 +1932,68 @@ rejects duplicated / swapped / empty / one-sample-delayed rails).
 `add_logical_connection` — i.e. every complex example. Related: INV-6/11 (resolve
 ports WITH params), and the `fft_spectrum` lessons-log entries for the landing
 bug this shares a symptom with.
+
+---
+
+## INV-42 — `output_words` is the chain's OUTPUT SEMANTICS, not a formatting preference; `auto` is right for BITS and wrong for VALUES
+
+**Symptom.** A hosted example returns *almost* the right answer. Measured on
+`examples/fft128_2p2s`: a 384-sample two-tone transform came back with **4
+samples wrong** — the only 4 the reference has energy in — while the other 380
+matched bit-exactly. On the display side the same chain draws a flat off-scale
+line against a `-1..1` axis. Both the headless gate and an offline replay of the
+server's own drive are BIT-EXACT throughout, so nothing points at the encoding.
+
+**Root cause.** `kyttar_source`'s `output_words="auto"` ties **raw int16** output
+to `complex_in`. That default encodes the **bit-packing receiver** convention —
+a slicer's decoded bit lives in the word's LSB, and Q15 scaling would crush it.
+A chain whose output is a **Q15 VALUE** (transform bins, equalized I/Q, CORDIC
+magnitude/phase) is the opposite case and must set `output_words="q15"`.
+`complex_in` describes the chain's INPUT; it cannot decide the OUTPUT's meaning.
+
+**Why it hides — the part that generalizes. Zero is a FIXED POINT of the
+aliasing.** Consumers apply the documented q15/32768 convention,
+`round(w × 32768) & 0xFFFF`. A raw word aliases under it (`14746.0 -> 0x0000`,
+`11469.0 -> 0x8000`) but `0.0 -> 0x0000` survives unchanged. So on any **sparse**
+signal — a tone transform, a mostly-idle stream, a sparse constellation — the
+mismatch is confined to exactly the samples that carry information, and the
+result reads as "nearly right" rather than "obviously broken". The sparser the
+signal, the smaller the visible damage and the more misleading the symptom.
+
+**A `.grc` enum that matches no option is SILENTLY replaced by the default.**
+Both FFT128 `.grc`s carried `output_words: 'False'` (a stale boolean from before
+the enum existed) and `repeat: '''yes'''` (double-quoted, matching neither
+option). Neither is a build error: GRC resolves each back to its default. So the
+`.grc` text is NOT the authority — read the **generated Python**
+(`kyttar.source(..., output_words="auto")`) to see what the flowgraph actually
+runs with.
+
+**Rules.**
+1. If the chain's egress is a **value**, set `output_words="q15"` explicitly.
+   Leave `auto` only for a bit/symbol-packing receiver, and say which in a
+   comment — the default is silently wrong for the other half of the cases.
+2. A generator's comment claiming a scale (`"at the q15/32768 scale"`) and its
+   param must agree; when they disagree the comment usually records the intent
+   and the param is the bug.
+3. Verify at the **boundary**, not by inference. Instrument what the server
+   RETURNED against what the client DECODED. A derived index pattern (periods,
+   spacings) is a shadow of a root cause and can point confidently at the wrong
+   layer — this fault was recorded for a cycle as a "sink/batch-session"
+   defect on exactly such a reading.
+4. An offline reproduction that does not carry the encoding flag proves nothing
+   about the encoding. Three independent BIT-EXACT results (headless, server
+   drive-shape offline at three event budgets) all skipped the `raw` flag.
+
+**Gated by:** `verification/tests/test_examples_grc_userpath.py` —
+`test_fft128_2p2s_shipped_grc_user_path` and
+`test_fft128_2die_shipped_grc_user_path` assert bit-exactness of the recovered
+stream against the whole-transform reference, plus non-vacuity (the
+energy-bearing samples must be non-zero, so a dead chain cannot pass on the
+zeros alone). Teeth: reverting either `.grc` to `"auto"` makes the gate fail.
+
+**Applies to:** every hosted example whose chain emits VALUES rather than packed
+bits. `fft_spectrum`, `cordic_polar`, `complex_math`, `lms_equalizer` and
+`fm_transceiver` already set `"q15"`; the two FFT128 examples were the outliers,
+and one of them (`fft128_2die`) had no user-path gate at all — a copied
+generator clones the fault, so fixing one sibling is not fixing the class.
+Related: INV-22 (a binding that resolves is not a binding that is correct).

@@ -9,6 +9,82 @@ block-specific gotcha. Promote anything that generalizes across block classes in
 and superseded material merged into the surviving entries; no durable lesson was
 dropped) — append new entries above the oldest ones as before.
 
+## FFT128 user path CLOSED — a RAW-vs-Q15 encoding mismatch that ALIASES, and why it read as a re-framing 2026-08-25
+
+The last open gap in `examples/fft128_2p2s` — `test_fft128_2p2s_shipped_grc_user_path`
+was `xfail`, "the hosted repeat-loop burst is not this stimulus's transform" — is
+closed. **It was never a sink or batch-session fault.** It was the `.grc`.
+
+**ROOT CAUSE.** `kyttar_source`'s `output_words="auto"` ties **raw int16** output to
+`complex_in`. That is the **bit-packing receiver** convention (a slicer's decoded bit
+lives in the word's LSB, which Q15 scaling would crush). The FFT128 chain is the
+opposite case: its output is a **Q15 VALUE** — the transform's bins. Left on `auto`
+the sink emitted raw ±30000 word floats while every consumer applied the documented
+q15/32768 convention, `round(w × 32768) & 0xFFFF`, under which raw words **alias**:
+
+| chip word | sink emitted | decoded | should be |
+|---|---|---|---|
+| `0x399a` (14746) | `14746.0` | `0x0000` | `0x399a` |
+| `0x2ccd` (11469) | `11469.0` | `0x8000` | `0x2ccd` |
+| `0x0000` | `0.0` | `0x0000` ✓ | `0x0000` |
+
+**WHY IT HID — and this is the transferable part. Zero is a FIXED POINT of the
+aliasing.** `0.0` decodes to `0x0000` either way. This `.grc` drives two pure tones,
+so a correct 384-sample transform has exactly **4** non-zero samples; only those
+aliased. The burst came back **4/384 wrong** — looking almost right rather than
+obviously broken. A scaling bug on a sparse signal corrupts only the signal, which is
+precisely the part a "does it look busy" glance skips.
+
+**THE MEASUREMENT LESSON, which cost a whole debugging cycle.** The earlier recorded
+signature — "non-zero indices pairs 64 apart with period 192, versus the reference's
+10 apart with period 128" — pointed at a batch/frame-boundary fault in the sink, and
+that hypothesis was written into the gate, the README and this log. It was wrong. A
+derived **index pattern is not a root cause**; it is a shadow of one, and it can point
+confidently at the wrong layer. What actually closed this was instrumenting the
+**boundary**: monkey-patch `MultiChipSimServer._process_batch_multichip` and print
+what the server RECEIVED against what it RETURNED. That took one run and showed the
+server returning `14746.0` — correct data, wrong encoding — immediately. *When a
+value is wrong, compare the two sides of each interface it crosses before theorising
+about which layer is at fault.*
+
+**A THREE-WAY BIT-EXACT RESULT DID NOT NARROW IT.** Headless was bit-exact, and the
+server's own drive+demux shape offline was bit-exact at every event budget (4000 /
+60000 / 200000). Both are true and both are **irrelevant**, because neither carries
+the header's `raw` flag through the encode/decode round trip. *An offline
+reproduction that skips the field you have not suspected yet proves less than it
+appears to.*
+
+**THE `.grc` PARAM WAS ALSO SILENTLY REWRITTEN.** Both FFT `.grc`s carried
+`output_words: 'False'` — a stale boolean from before the enum existed. It matches no
+option, and GRC **silently resolves an unrecognised enum value back to the default**
+(`"auto"`) rather than erroring. Same for `repeat: '''yes'''` (double-quoted, matching
+neither `yes` nor `no`), which fell back to `no` — the correct value, by accident.
+*A `.grc` enum that does not match an option is not a build error; check the
+GENERATED Python (`kyttar.source(..., output_words="auto")`), never the `.grc` text.*
+
+**BLAST RADIUS.** `fft128_2die` had the **identical** defect — the two `gen_grc.py`
+files are the same file modulo comments, so the fault was cloned — and had **no
+user-path gate at all**, so nothing would have caught it. Both are fixed
+(`output_words='"q15"'`, `repeat='no'`) and `test_fft128_2die_shipped_grc_user_path`
+is new. Every other value-output complex example already set `"q15"`
+(`fft_spectrum`, `cordic_polar`, `complex_math`, `lms_equalizer`, `fm_transceiver`);
+the two FFT128s were the outliers. *When you fix an example generated from a
+copied script, grep for the sibling — and if the sibling has no gate, that is the
+finding, not a footnote.*
+
+**THE DISPLAY SAID IT TOO.** Raw ±30000 against the scope's `ymin/ymax` of −1/1 is a
+flat off-scale line, and the `.grc`'s own comment already claimed the plotted stream
+was "at the q15/32768 scale". The generator's comment and its param disagreed, and
+the comment was right. Same failure class as the LMS equalizer's
+missing-constellation report.
+
+**GATE.** The `xfail` is gone, replaced by a bit-exact assertion plus a
+non-vacuity check (the 4 energy-bearing samples must be non-zero, so a dead chain
+cannot pass on the zeros alone) and `server_repeat` repetition integrity. Teeth
+proven by reverting the `.grc` to `"auto"`: the gate FAILS with exactly the 4/384
+signature. 8/8 user-path gates green (serial — port 58950 contends), 87 in the FFT
+headless suites, 33 multichip/port_config, 90 grc valid+instantiate.
+
 ## css_transceiver — a BIT-EXACT chip that LOOKED broken: two scope-display defects a green gate could not see 2026-08-25
 
 The owner ran `examples/css_transceiver` through the real workflow (open the
@@ -242,12 +318,18 @@ wrong. Measured three ways on the identical stimulus:
 
 Amplitude/saturation was RULED OUT: bit-exact at 0.45/0.35 and at 0.25/0.20 and
 0.15/0.12, zero saturated words in every case. So chip + crossing + target resolution
-+ tag demux are all correct; the fault is in the SINK/batch-session layer that
-republishes bursts under `server_repeat` (`gr-kyttar/python/kyttar/sink.py` refreshes
-`_server_result` from a new generation mid-emit and restarts `_server_outq`), a
-different layer from the two multi-chip resolution defects. The gate ENFORCES what is
-proven (stream resolves, words return, both rails arrive) and marks the final
-comparison **xfail** carrying the measurement. Deliberately not deleted, not weakened.
++ tag demux were all correct.
+
+> **RESOLVED 2026-08-25 — and the sink/batch-session hypothesis above was WRONG.**
+> The third fault was the `.grc`'s `output_words="auto"` on a VALUE-output chain:
+> the sink emitted RAW word floats that ALIAS under the q15/32768 convention every
+> consumer applies. See the top-of-log entry. The "period 192 / pairs 64 apart"
+> reading in the table above was an artifact of measuring the aliased stream; on a
+> clean re-measurement the corruption is 4 samples of 384, at the reference's own
+> non-zero indices. **Lesson about the measurement itself: a derived index pattern
+> is not a root cause.** Re-measure before theorising about a layer, and prefer
+> instrumenting the actual boundary (what the server RETURNED vs what the client
+> DECODED) over inferring structure from indices.
 
 **A LIVELINESS HEURISTIC IS THE WRONG GATE — bit-exactness is the right one.** The
 first version of that user-path gate asserted the recovered stream "looks busy"

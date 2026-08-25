@@ -100,8 +100,20 @@ def build():
                    "placeKYT)",
         "complex_in": "complex", "device_id": '"kyttar_0"',
         "maxoutbuf": "0", "minoutbuf": "0", "num_channels": "1",
-        "output_words": "False", "port_name": '"x16_in"',
-        "pipelined": "False", "repeat": "'yes'",
+        # OUTPUT WORD ENCODING — load-bearing, and NOT the default here.
+        # "auto" ties raw-int16 output to complex_in, which is the BIT-PACKING
+        # receiver convention (a slicer's decoded bit lives in the word LSB, so
+        # Q15 scaling would crush it). This chain is the opposite case: its
+        # output is a Q15 VALUE (the transform's bins). Left on "auto" the sink
+        # emits raw +-30000 word floats — off the scope's -1..1 axis, and any
+        # client applying the documented q15/32768 convention decodes garbage
+        # (14746.0 * 32768 & 0xFFFF == 0). Same class as the LMS equalizer's
+        # missing-constellation report; the fix is the same.
+        "output_words": '"q15"', "port_name": '"x16_in"',
+        # One burst per Run (the SINK loops the genuine result for the display
+        # via server_repeat). A repeat-burst SOURCE keeps consuming the
+        # repeating stimulus during a dispatch, which rotates the frame grid.
+        "pipelined": "False", "repeat": "no",
         "schedule": '"interleaved"', "server_host": '"127.0.0.1"',
         "server_port": "server_port", "stream_id": '"fft"'}, 290, 200))
 

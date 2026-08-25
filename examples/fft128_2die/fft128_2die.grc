@@ -114,10 +114,10 @@ blocks:
     maxoutbuf: '0'
     minoutbuf: '0'
     num_channels: '1'
-    output_words: 'False'
+    output_words: '"q15"'
     port_name: '"x16_in"'
     pipelined: 'False'
-    repeat: '''yes'''
+    repeat: 'no'
     schedule: '"interleaved"'
     server_host: '"127.0.0.1"'
     server_port: server_port

@@ -28,7 +28,19 @@ What is gated here:
   6. THE USER PATH: the shipped ``.kyt`` hosted exactly as the GUI's
      *Run as GNURadio Server* (port 58950) with the shipped ``.grc``
      GRC-generated and run under the real GNU Radio interpreter, asserting the
-     decoded output the user actually sees.
+     decoded output the user actually sees;
+  7. THE TRACES ON SCREEN (``_assert_plotted_traces``, tapped in that same
+     run). Asserting the sink stream is NOT enough: this example's chip was
+     bit-exact — SER 0, message recovered — while the symbol scope showed a
+     smear, because the reference came from a SEPARATE free-running source
+     that outran the batch-gated chip stream by 27.9% and slid off it (3 items
+     of slip makes 22 of segment A's 24 correct symbols look wrong), and
+     because segment B's deliberate garbage was overplotted on segment A's
+     lock. So the gate now asserts what is DRAWN: segment A matches its
+     reference at every plotted point, segment B visibly does not, the two
+     never draw at the same position, and every frame is identical across the
+     run. ``test_mutation_display_gate_catches_the_old_broken_plot`` proves
+     that gate FAILS on both original defects (INV-4).
 
 Run the user-path test STANDALONE — it binds port 58950 and self-contends with
 the other examples' user-path gates under concurrent load::
@@ -124,6 +136,13 @@ def test_stim_shapes_are_self_consistent():
     assert stim.n_out_words() == stim.burst_len() // N
     assert len(stim.display_symbols()) == stim.n_out_words()
     assert len(stim.rx_burst()) == stim.burst_len()
+    # The .grc's display block is handed ONE segment's transmitted symbols plus
+    # the per-segment word width; it rebuilds the reference trace itself (that
+    # is what keeps the reference phase-locked to the decode). Those two must
+    # tile the output word grid exactly, or the on-screen reference is misframed.
+    seg_words = stim.n_out_words() // 2
+    assert 2 * seg_words == stim.n_out_words()
+    assert 1 + stim.n_data_symbols() == seg_words
 
 
 # --- 2. the placed chain is bit-exact vs the composed golden ------------------
@@ -324,9 +343,9 @@ def _serve(kyt, wait_secs=900):
         time.sleep(3.0)
 
 
-def _run_flowgraph(grc, secs=90):
+def _run_flowgraph(grc, secs=90, taps=""):
     r = subprocess.run(
-        [_GR_PYTHON, str(_RUNNER), str(grc), str(secs)],
+        [_GR_PYTHON, str(_RUNNER), str(grc), str(secs), taps],
         capture_output=True, text=True, timeout=secs + 300,
         env=dict(os.environ, QT_QPA_PLATFORM="offscreen"))
     sinks = {}
@@ -338,6 +357,160 @@ def _run_flowgraph(grc, secs=90):
         f"generated flowgraph failed (rc={r.returncode}):\n"
         f"{r.stdout[-1500:]}\n{r.stderr[-2000:]}")
     return sinks
+
+
+def _assert_plotted_traces(sinks):
+    """THE TRACES THE USER ACTUALLY SEES on the DECODED-vs-TRANSMITTED scope.
+
+    A gate that asserts only the kyttar sink's recovered stream is testing the
+    wrong thing: it passes while the PLOT is unusable. That is exactly what
+    happened here. The chip was bit-exact (SER 0, message recovered) and the
+    scope still showed a smear, for two independent display reasons:
+
+      1. PHASE DRIFT. The transmitted reference came from a SEPARATE
+         ``vector_source`` on channel 1. It free-ran while the chip stream was
+         gated by the simulator's batch turnaround — measured at +27.9% more
+         items over the same run. A time_sink pulls the same count from both
+         channels, so the reference SLID against the decode; offset by as few
+         as 3 items, 22 of segment A's 24 correct symbols rendered as
+         mismatches.
+      2. A/B CONFLATION. Segment B's deliberate garbage was drawn on the same
+         axis as segment A's perfect lock, with nothing marking which was
+         which — 17 of 50 plotted points disagreed BY DESIGN.
+
+    So this asserts the display contract directly:
+
+      * all four channels carry the SAME number of items (they come from ONE
+        block driven by ONE stream — drift is impossible by construction, and
+        an unequal count would mean it crept back in);
+      * segment A's decoded trace matches its reference at EVERY plotted point;
+      * segment B's decoded trace visibly does NOT (the negative control is
+        still doing its job on screen);
+      * A and B never draw at the same position, so neither overplots the
+        other and each is identifiable;
+      * every scope-sized frame across the whole run is identical to the
+        first — the traces stay phase-locked, they do not walk.
+    """
+    ch = [sinks.get(f"bin_to_sym.{i}") for i in range(4)]
+    assert all(c is not None for c in ch), (
+        "the display block's four channels were not tapped — the gate cannot "
+        "see what the scope draws")
+    a_dec, a_ref, b_dec, b_ref = ch
+
+    n = stim.n_out_words()
+    assert len({len(c) for c in ch}) == 1, (
+        f"the four scope channels carry different item counts "
+        f"{[len(c) for c in ch]} — a free-running producer has been "
+        f"reintroduced and the reference will slide against the decode")
+    assert len(a_dec) >= n, (
+        f"only {len(a_dec)} display items — fewer than one {n}-word frame")
+
+    def pairs(dec, ref):
+        return [(d, r) for d, r in zip(dec[:n], ref[:n])
+                if not np.isnan(d) and not np.isnan(r)]
+
+    n_data = stim.n_data_symbols()
+
+    pa = pairs(a_dec, a_ref)
+    assert len(pa) == n_data, (
+        f"segment A plots {len(pa)} point-pairs, expected {n_data}")
+    bad_a = [(i, d, r) for i, (d, r) in enumerate(pa) if int(d) != int(r)]
+    assert not bad_a, (
+        f"segment A (+10 dB) must overlay its reference EXACTLY on screen, "
+        f"but {len(bad_a)} plotted points differ: {bad_a[:6]}")
+
+    pb = pairs(b_dec, b_ref)
+    assert len(pb) == n_data, (
+        f"segment B plots {len(pb)} point-pairs, expected {n_data}")
+    bad_b = sum(1 for d, r in pb if int(d) != int(r))
+    assert bad_b > 0.2 * len(pb), (
+        f"segment B (-10 dB) is the on-chip negative control and must VISIBLY "
+        f"miss its reference, but only {bad_b}/{len(pb)} plotted points differ")
+
+    overlap = [i for i in range(n)
+               if not np.isnan(a_dec[i]) and not np.isnan(b_dec[i])]
+    assert not overlap, (
+        f"segments A and B draw at the same positions {overlap[:6]} — they "
+        f"overplot and a viewer cannot tell which trace is which")
+
+    # Phase lock across the WHOLE run: every frame identical to the first.
+    def frames(c):
+        return [c[f * n:(f + 1) * n] for f in range(len(c) // n)]
+
+    for name, c in (("A decoded", a_dec), ("A reference", a_ref),
+                    ("B decoded", b_dec), ("B reference", b_ref)):
+        fr = frames(c)
+        first = np.asarray(fr[0])
+        for k, f in enumerate(fr[1:], 1):
+            assert np.array_equal(np.asarray(f), first, equal_nan=True), (
+                f"{name}: scope frame {k} differs from frame 0 — the trace is "
+                f"drifting, not holding a stable picture")
+
+
+def test_mutation_display_gate_catches_the_old_broken_plot():
+    """INV-4 for the DISPLAY gate: it must FAIL on the two defects that made a
+    bit-exact decode look broken on screen. A display gate never shown to fail
+    certifies nothing — and these are not hypothetical, they are what shipped.
+
+    Replays both defects against ``_assert_plotted_traces`` with synthetic
+    channels built from the real reference trace.
+    """
+    n = stim.n_out_words()
+    w = n // 2
+    ref_seg = ([np.nan] + [float(s) for s in
+                           stim.framed_symbols()[:stim.n_data_symbols()]])[:w]
+    nan = [np.nan] * w
+    reps = 4
+
+    def chans(a_dec_seg, a_ref_seg, b_dec_seg, b_ref_seg):
+        return {
+            "bin_to_sym.0": (list(a_dec_seg) + nan) * reps,
+            "bin_to_sym.1": (list(a_ref_seg) + nan) * reps,
+            "bin_to_sym.2": (nan + list(b_dec_seg)) * reps,
+            "bin_to_sym.3": (nan + list(b_ref_seg)) * reps,
+        }
+
+    collapsed = [np.nan] + [float((int(s) + 7) % 16) for s in
+                            stim.framed_symbols()[:stim.n_data_symbols()]]
+    collapsed = collapsed[:w]
+
+    # Sanity: the HEALTHY shape passes, so the failures below are real.
+    _assert_plotted_traces(chans(ref_seg, ref_seg, collapsed, ref_seg))
+
+    # MUTATION 1 — PHASE DRIFT: segment A's reference slid by 3 words against a
+    # perfectly-decoded trace (the +27.9% free-running vector_source defect).
+    # The blank stays put so this isolates the VALUE drift: same plotted
+    # points, wrong values — the smear the owner reported.
+    body = [x for x in ref_seg[1:]]
+    slid = [ref_seg[0]] + [body[(i + 3) % len(body)] for i in range(len(body))]
+    with pytest.raises(AssertionError, match="overlay its reference EXACTLY"):
+        _assert_plotted_traces(chans(ref_seg, slid, collapsed, ref_seg))
+
+    # MUTATION 2 — A/B CONFLATION: both segments drawn across the whole sweep,
+    # so segment B's garbage overplots segment A's lock.
+    both = {
+        "bin_to_sym.0": (list(ref_seg) + list(ref_seg)) * reps,
+        "bin_to_sym.1": (list(ref_seg) + list(ref_seg)) * reps,
+        "bin_to_sym.2": (list(collapsed) + list(collapsed)) * reps,
+        "bin_to_sym.3": (list(ref_seg) + list(ref_seg)) * reps,
+    }
+    with pytest.raises(AssertionError, match="overplot|point-pairs"):
+        _assert_plotted_traces(both)
+
+    # MUTATION 3 — UNEQUAL CHANNEL LENGTHS: the signature of a reintroduced
+    # free-running reference producer.
+    uneven = chans(ref_seg, ref_seg, collapsed, ref_seg)
+    uneven["bin_to_sym.1"] = uneven["bin_to_sym.1"] + [0.0] * 7
+    with pytest.raises(AssertionError, match="different item counts"):
+        _assert_plotted_traces(uneven)
+
+    # MUTATION 4 — A DRIFTING (non-repeating) TRACE: frames must be stable.
+    drifting = chans(ref_seg, ref_seg, collapsed, ref_seg)
+    drifting["bin_to_sym.0"] = (
+        list(ref_seg) + nan + list(slid) + nan
+        + (list(ref_seg) + nan) * (reps - 2))
+    with pytest.raises(AssertionError, match="drifting"):
+        _assert_plotted_traces(drifting)
 
 
 @pytest.mark.skipif(not os.path.exists(_GR_PYTHON),
@@ -362,9 +535,14 @@ def test_shipped_grc_user_path(qapp):
     grc = _ROOT / "examples" / "css_transceiver" / "css_transceiver.grc"
     ctrl, sim = _serve(demo.KYT_PATH)
     try:
-        sinks = _run_flowgraph(grc)
+        # Tap the four DISPLAY channels too, so the same run proves both the
+        # recovered stream AND the traces the user actually looks at.
+        sinks = _run_flowgraph(
+            grc, taps="bin_to_sym.0,bin_to_sym.1,bin_to_sym.2,bin_to_sym.3")
     finally:
         sim.stop_gnuradio_server()
+
+    _assert_plotted_traces(sinks)
 
     idx = [int(round(v)) & 0xFFFF for v in sinks.get("rx_sink", [])]
     n = stim.n_out_words()

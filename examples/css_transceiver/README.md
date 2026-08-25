@@ -82,7 +82,7 @@ symbols on screen with a sync flag. The burst still carries the 4-symbol
 |-------|------|
 | **RF burst** | the received chirp burst (I and Q). Each 16-sample frame is one cyclic-shifted up-chirp. |
 | **Chip output — winning FFT bin** | the RAW argmax index straight off the chip (0..15), in FFT16's bit-reversed order. |
-| **DECODED SYMBOL vs TRANSMITTED** | blue = the chip's decoded symbol `s = brev4(bin)`; red = what was transmitted. Segment A sits exactly on the reference; segment B visibly does not. |
+| **DECODED vs TRANSMITTED** | **four traces, two pairs.** Left half = segment A (+10 dB): blue decoded sits **exactly** on the cyan reference, every point. Right half = segment B (−10 dB): red decoded scatters off the dark-red reference. Each segment draws only in its own half, so neither overplots the other. |
 
 Display notes (each is a documented past failure): the chain is complex-input,
 so the sink egresses **raw word floats** — the index plots directly with no
@@ -90,6 +90,36 @@ so the sink egresses **raw word floats** — the index plots directly with no
 the sink loops its genuine one-batch result (`server_repeat=True`), because GNU
 Radio strands the tail of a finite stream and a scope sized ≥ its burst never
 paints.
+
+### Why the reference is generated inside the display block
+
+The symbol scope's reference trace does **not** come from a separate source
+block, and that is deliberate. It used to, and it made a **bit-exact decode
+look broken** — two independent display defects, both measured:
+
+* **Phase drift.** The reference came from its own `vector_source`, which
+  free-runs, while the chip's stream is gated by the simulator's batch
+  turnaround. Measured over one run: the reference produced **27.9 % more
+  items**. A QT `time_sink` pulls the same count from every channel, so the
+  reference **slid** against the decode. Offset by as few as **3 items, 22 of
+  segment A's 24 correct symbols render as mismatches** — a smear, on a chip
+  reporting SER 0.
+* **A/B conflation.** Both segments were drawn on one axis with nothing marking
+  which was which, so segment B's *intentional* garbage overlaid segment A's
+  perfect lock. 17 of 50 plotted points disagreed **by design**, and the plot
+  never said so.
+
+The fix: `css_decode_map.py` takes the chip stream and emits **four
+phase-locked channels** — it derives the reference from the item index of the
+same stream it is decoding, so drift is impossible by construction, and it
+blanks (NaN) each segment outside its own half so A and B never overplot. The
+framing-latency word (word 0 of each segment, which carries no data symbol) is
+blanked on both channels rather than plotted as a lone unmatched point.
+
+`test_css_transceiver_example.py` asserts these traces directly — segment A
+matching at every plotted point, segment B visibly missing, the two disjoint,
+and every frame identical across the run — with four mutation tests proving
+that gate fails on both original defects.
 
 ## Run it
 
@@ -152,6 +182,12 @@ through the real pipeline:
   and run under the real GNU Radio interpreter — the sink's recovered stream is
   the chip-proven golden, decodes to `KYTTAR CSS`, the control still fails, and
   the `server_repeat` loop is a clean repetition of the genuine batch.
+- **The TRACES THE USER SEES**, tapped from the display block's four output
+  channels in that same run: segment A's decoded trace equals its reference at
+  **every** plotted point, segment B's visibly does not, the two never draw at
+  the same position, and every scope frame across the run is identical (no
+  drift). Backed by mutation tests that replay the two original display defects
+  and prove this gate FAILS on them.
 
 Run the user-path test **standalone** — it binds port 58950 and self-contends
 with the other examples' user-path gates under concurrent load.

@@ -10,8 +10,13 @@ untouched), runs the graph to completion of one batch, and prints one
 ``SINK <block_name> <v0> <v1> ...`` line per sink (floats).
 
 Usage: /usr/bin/python3 grc_userpath_run.py <file.grc> <run_seconds>
+                                            [block.port,block.port,...]
 The placeKYT server must already be hosting the design on the port the .grc
 names (58950 — the GUI's default bind).
+
+The optional third argument names EXTRA blocks/ports to tap — the display glue
+that actually feeds the scopes. Use it when the gate needs to assert the traces
+the USER SEES rather than only the recovered sink stream.
 """
 import os
 import sys
@@ -80,6 +85,26 @@ for attr, val in vars(tb).items():
         tb.connect((val, 0), (vs, 0))
         taps[attr] = vs
 assert taps, "no kyttar sinks found in the generated flowgraph"
+
+# EXTRA DISPLAY TAPS (optional 3rd arg: "block.port,block.port,...").
+#
+# The kyttar sink carries the RECOVERED data, but it is NOT what the user
+# looks at — the scopes are fed by the display glue downstream of it. A gate
+# that asserts only the sink stream can pass while the plotted traces are
+# unusable (measured on this example: a separate free-running reference source
+# ran 27.9% fast and slid the reference off a bit-exact decode). Naming the
+# blocks that FEED the scopes lets a gate assert the plotted traces themselves.
+for spec_str in (sys.argv[3].split(",") if len(sys.argv) > 3 and sys.argv[3]
+                 else []):
+    spec_str = spec_str.strip()
+    if not spec_str:
+        continue
+    attr, _, port = spec_str.partition(".")
+    blk = getattr(tb, attr, None)
+    assert blk is not None, f"no block {attr!r} in the generated flowgraph"
+    vs = blocks.vector_sink_f()
+    tb.connect((blk, int(port or 0)), (vs, 0))
+    taps[spec_str] = vs
 
 tb.start()
 t0 = time.time()

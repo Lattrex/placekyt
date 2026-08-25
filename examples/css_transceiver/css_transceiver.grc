@@ -6,13 +6,13 @@ options:
     cmake_opt: ''
     comment: ''
     copyright: ''
-    description: 'CSS (chirp spread spectrum) receiver on one placeKYT array. The WHOLE receive spine
-      is placed on the chip: dechirp (conjugate chirp mixer) -> 16-point streaming FFT -> bin power ->
-      the alignment Delay(1) -> framewise argmax. One continuous burst carries the message ''KYTTAR CSS''
-      twice: segment A at +10 dB SNR decodes exactly, segment B at -10 dB is the on-chip negative control
-      and collapses. The decode map is s = brev4(bin index) because FFT16 emits bins in bit-reversed order.
-      The transmitter and channel are host-side numpy (bit-exact to the TX blocks'' own chip-verified
-      goldens) - this is an RX example and does not claim a transmitter on the chip.'
+    description: 'CSS (chirp spread spectrum) receiver on one placeKYT array. The WHOLE receive spine is placed
+      on the chip: dechirp (conjugate chirp mixer) -> 16-point streaming FFT -> bin power -> the alignment Delay(1)
+      -> framewise argmax. One continuous burst carries the message ''KYTTAR CSS'' twice: segment A at +10 dB SNR
+      decodes exactly, segment B at -10 dB is the on-chip negative control and collapses. The decode map is s =
+      brev4(bin index) because FFT16 emits bins in bit-reversed order. The transmitter and channel are host-side
+      numpy (bit-exact to the TX blocks'' own chip-verified goldens) - this is an RX example and does not claim
+      a transmitter on the chip.'
     gen_cmake: 'On'
     gen_linking: dynamic
     generate_options: qt_gui
@@ -114,8 +114,9 @@ blocks:
 - name: tx_syms
   id: variable
   parameters:
-    comment: the transmitted symbol sequence, repeated for both segments (the red reference trace)
-    value: stim.display_symbols()
+    comment: the transmitted symbols of ONE segment (preamble + message) - the reference the display block locks
+      to the decoded stream
+    value: stim.framed_symbols()[:stim.n_data_symbols()]
   states:
     bus_sink: false
     bus_source: false
@@ -130,9 +131,8 @@ blocks:
   parameters:
     affinity: ''
     alias: ''
-    comment: 'the CSS burst as the radio sees it: the framed message as cyclic-shifted up-chirps, segment
-      A at +10 dB SNR then segment B at -10 dB (the on-chip negative control). Repeating, so the scopes
-      keep painting.'
+    comment: 'the CSS burst as the radio sees it: the framed message as cyclic-shifted up-chirps, segment A at +10
+      dB SNR then segment B at -10 dB (the on-chip negative control). Repeating, so the scopes keep painting.'
     maxoutbuf: '0'
     minoutbuf: '0'
     repeat: 'True'
@@ -156,14 +156,14 @@ blocks:
     alias: ''
     autoscale: 'False'
     axislabels: 'True'
-    comment: the received chirp burst (I and Q). Each 16-sample frame is one cyclic-shifted up-chirp;
-      the shift IS the symbol.
+    comment: the received chirp burst (I and Q). Each 16-sample frame is one cyclic-shifted up-chirp; the shift
+      IS the symbol.
     ctrlpanel: 'False'
     entags: 'True'
     grid: 'False'
     gui_hint: ''
     legend: 'True'
-    name: "\"RF burst \u2014 CSS up-chirps (A: +10 dB, B: -10 dB)\""
+    name: '"RF burst — CSS up-chirps (A: +10 dB, B: -10 dB)"'
     nconnections: '1'
     size: burst_len // 2
     srate: samp_rate
@@ -245,8 +245,8 @@ blocks:
     affinity: ''
     alias: ''
     burst_len: burst_len
-    comment: "the burst -> chip x16_in (stream 'rx'). complex_in=complex, so the recovered stream comes\
-      \ back as RAW word floats \u2014 the argmax index plots directly, no q15 rescale."
+    comment: the burst -> chip x16_in (stream 'rx'). complex_in=complex, so the recovered stream comes back as RAW
+      word floats — the argmax index plots directly, no q15 rescale.
     complex_in: complex
     device_id: '"kyttar_0"'
     maxoutbuf: '0'
@@ -272,8 +272,8 @@ blocks:
   parameters:
     affinity: ''
     alias: ''
-    comment: "DECHIRP \u2014 multiply by the conjugate reference up-chirp; a symbol chirp becomes a constant\
-      \ tone (placed on chip)"
+    comment: DECHIRP — multiply by the conjugate reference up-chirp; a symbol chirp becomes a constant tone (placed
+      on chip)
     device_id: '"kyttar_0"'
     maxoutbuf: '0'
     minoutbuf: '0'
@@ -292,8 +292,7 @@ blocks:
   parameters:
     affinity: ''
     alias: ''
-    comment: "16-point streaming FFT \u2014 the tone lands in ONE bin (placed on chip; output order is\
-      \ bit-reversed)"
+    comment: 16-point streaming FFT — the tone lands in ONE bin (placed on chip; output order is bit-reversed)
     device_id: '"kyttar_0"'
     maxoutbuf: '0'
     minoutbuf: '0'
@@ -329,9 +328,9 @@ blocks:
   parameters:
     affinity: ''
     alias: ''
-    comment: "THE ALIGNMENT DELAY \u2014 FFT16's latency is 15 == -1 (mod 16), so argmax frames would\
-      \ STRADDLE two FFT frames. This ONE sample lands every frame on exactly one FFT frame. Remove it\
-      \ and the decode breaks (placed on chip)."
+    comment: THE ALIGNMENT DELAY — FFT16's latency is 15 == -1 (mod 16), so argmax frames would STRADDLE two FFT
+      frames. This ONE sample lands every frame on exactly one FFT frame. Remove it and the decode breaks (placed
+      on chip).
     delay: '1'
     device_id: '"kyttar_0"'
     maxoutbuf: '0'
@@ -350,7 +349,7 @@ blocks:
   parameters:
     affinity: ''
     alias: ''
-    comment: "the winning bin of each 16-bin frame \u2014 the detected symbol (placed on chip)"
+    comment: the winning bin of each 16-bin frame — the detected symbol (placed on chip)
     device_id: '"kyttar_0"'
     maxoutbuf: '0'
     minoutbuf: '0'
@@ -388,8 +387,8 @@ blocks:
   parameters:
     affinity: ''
     alias: ''
-    comment: recovered bin indices <- chip x16_out (stream 'rx'). server_repeat loops the genuine one-batch
-      result so the scopes keep painting (GNU Radio strands the tail of a finite stream).
+    comment: recovered bin indices <- chip x16_out (stream 'rx'). server_repeat loops the genuine one-batch result
+      so the scopes keep painting (GNU Radio strands the tail of a finite stream).
     device_id: '"kyttar_0"'
     hold_secs: '8.0'
     in_type: float
@@ -416,14 +415,14 @@ blocks:
     alias: ''
     autoscale: 'False'
     axislabels: 'True'
-    comment: the RAW argmax index straight off the chip. Bins come out in FFT16's bit-reversed order,
-      so this is not yet the symbol.
+    comment: the RAW argmax index straight off the chip. Bins come out in FFT16's bit-reversed order, so this is
+      not yet the symbol.
     ctrlpanel: 'False'
     entags: 'True'
     grid: 'False'
     gui_hint: ''
     legend: 'True'
-    name: "\"Chip output \u2014 winning FFT bin (raw index 0..15)\""
+    name: '"Chip output — winning FFT bin (raw index 0..15)"'
     nconnections: '1'
     size: n_words
     srate: samp_rate
@@ -502,34 +501,73 @@ blocks:
 - name: bin_to_sym
   id: epy_block
   parameters:
-    _source_code: "# SPDX-License-Identifier: GPL-3.0-or-later\n\"\"\"CSS DEMOD MAP \u2014 turn the chip's\
-      \ raw argmax BIN INDEX into the SYMBOL.\n\nThe on-chip FFT16 emits its 16 bins in bit-reversed (DIF)\
-      \ order, so the\nwinning bin index i is not the symbol: the symbol is ``s = brev4(i)`` \u2014 the\n\
-      4-bit reversal of the index. This block applies exactly that map, and nothing\nelse, to the raw\
-      \ index words the kyttar sink delivers.\n\nAn embedded block on purpose: this is host-side DISPLAY\
-      \ glue (the same map\nthe example's gate applies), not chip DSP \u2014 stock converter ids are chip-side\n\
-      splice markers to the placeKYT importer, so a plain converter cannot be used\nhere.\n\nin0  = the\
-      \ kyttar sink output. A complex-input chain egresses RAW word floats,\n       so each item is already\
-      \ the integer index 0..15 (no q15 rescale).\nout0 = the decoded symbol s = brev4(index), as a float\
-      \ 0..15 \u2014 plot it\n       against the transmitted symbol sequence.\n\"\"\"\nimport numpy as\
-      \ np\nfrom gnuradio import gr\n\n# brev4: 4-bit reversal, the FFT16 DIF output-order map (index\
-      \ -> symbol).\n_BREV4 = [((i & 1) << 3) | ((i & 2) << 1) | ((i & 4) >> 1) | ((i & 8) >> 3)\n   \
-      \       for i in range(16)]\n\n\nclass blk(gr.sync_block):\n    def __init__(self, n=16):\n    \
-      \    gr.sync_block.__init__(self, name='CSS Bin -> Symbol (brev4)',\n                          \
-      \     in_sig=[np.float32], out_sig=[np.float32])\n        self.n = int(n)\n\n    def work(self,\
-      \ input_items, output_items):\n        x = input_items[0]\n        idx = np.rint(x.astype(np.float64)).astype(np.int64)\
-      \ & 0xFFFF\n        out = np.zeros(len(idx), dtype=np.float32)\n        for k, i in enumerate(idx):\n\
-      \            out[k] = float(_BREV4[i]) if 0 <= i < 16 else -1.0\n        output_items[0][:len(out)]\
-      \ = out\n        return len(out)\n"
+    _source_code: "# SPDX-License-Identifier: GPL-3.0-or-later\n\"\"\"CSS DEMOD MAP + SEGMENT SPLITTER — what the\
+      \ DECODED-vs-TRANSMITTED scope draws.\n\nTwo jobs, and the second one is why this block exists at all.\n\n\
+      **1. The decode map.** The on-chip FFT16 emits its 16 bins in bit-reversed (DIF)\norder, so the winning bin\
+      \ index ``i`` is not the symbol: the symbol is\n``s = brev4(i)`` — the 4-bit reversal of the index.\n\n**2.\
+      \ The reference rides the SAME stream as the decode.** This is the\nload-bearing part. The shipped burst is\
+      \ TWO segments through one chain —\nsegment A at +10 dB (which decodes exactly) and segment B at -10 dB (the\n\
+      on-chip NEGATIVE CONTROL, which must not). Displaying that correctly is not a\nmatter of taste; two earlier\
+      \ display defects made a perfect decode look broken:\n\n  * **PHASE DRIFT.** The old flowgraph drew the transmitted\
+      \ reference from a\n    SEPARATE ``vector_source`` on channel 1 of the scope. That source free-runs\n    while\
+      \ the chip's stream is gated by the simulator's batch turnaround —\n    measured at **+27.9 % more items over\
+      \ the same run**. A QT time_sink pulls\n    the same count from both channels, so the red reference SLID against\
+      \ the\n    blue decode. Once offset by as few as 3 items, **22 of segment A's 24\n    perfectly-decoded symbols\
+      \ render as mismatches**. The plot smeared while the\n    chip was bit-exact.\n  * **A/B CONFLATION.** Even\
+      \ at zero offset, segment B's intentional garbage was\n    drawn on the same axis as segment A's perfect lock,\
+      \ with nothing to tell a\n    viewer which half was which. 17 of 50 plotted points disagreed *by design*\n\
+      \    and the plot did not say so.\n\nThe cure for both: derive the reference HERE, from the item index of\
+      \ the very\nstream being decoded, and split the two segments onto their OWN channels. The\nreference cannot\
+      \ drift from the decode because it is generated per item from the\nsame counter, and segment A's lock is never\
+      \ overplotted by segment B's collapse.\n\nFrame layout (one batch = ``n_words`` items, ``seg_words`` per segment)::\n\
+      \n    word 0            the framing-latency word — carries no data symbol\n    word 1 .. n_data  symbol f\
+      \ arrives in word f+1\n\nso a segment's reference trace is ``[BLANK] + preamble + message symbols``.\n\nOutputs\
+      \ (all four are the SAME length and the SAME phase — plot them together):\n\n  out0  segment A decoded  (chip)\
+      \          blank outside segment A\n  out1  segment A transmitted (reference)  blank outside segment A\n \
+      \ out2  segment B decoded  (chip)          blank outside segment B\n  out3  segment B transmitted (reference)\
+      \  blank outside segment B\n\n``BLANK`` is NaN: GNU Radio's time sink leaves a gap rather than drawing a\n\
+      misleading 0 or -1, so each pair occupies only its own half of the sweep.\n\"\"\"\nimport numpy as np\nfrom\
+      \ gnuradio import gr\n\n# brev4: 4-bit reversal, the FFT16 DIF output-order map (index -> symbol).\n_BREV4\
+      \ = [((i & 1) << 3) | ((i & 2) << 1) | ((i & 4) >> 1) | ((i & 8) >> 3)\n          for i in range(16)]\n\n\
+      BLANK = float(\"nan\")\n\n\nclass blk(gr.sync_block):\n    \"\"\"n        = samples per chirp symbol == FFT\
+      \ size == alphabet (16)\n    tx_syms     = the transmitted symbol sequence for ONE segment, on the output\n\
+      \                  word grid (element 0 is the framing-latency word)\n    seg_words   = index words per segment\n\
+      \    \"\"\"\n\n    def __init__(self, n=16, tx_syms=(), seg_words=25):\n        gr.sync_block.__init__(\n\
+      \            self, name='CSS Bin -> Symbol + A/B split',\n            in_sig=[np.float32],\n            out_sig=[np.float32,\
+      \ np.float32, np.float32, np.float32])\n        self.n = int(n)\n        self.seg_words = int(seg_words)\n\
+      \        # The per-segment reference trace, on the output word grid. Element 0 is\n        # the framing-latency\
+      \ word (no data symbol) and is drawn BLANK.\n        ref = [BLANK] + [float(s) for s in tx_syms]\n       \
+      \ ref = ref[:self.seg_words]\n        ref += [BLANK] * (self.seg_words - len(ref))\n        self._ref = np.asarray(ref,\
+      \ dtype=np.float32)\n        # Item counter modulo the whole two-segment batch — this is what keeps\n    \
+      \    # the reference locked to the decode (see the module docstring).\n        self._k = 0\n\n    def work(self,\
+      \ input_items, output_items):\n        x = input_items[0]\n        nout = len(x)\n        w = self.seg_words\n\
+      \        period = 2 * w\n\n        idx = np.rint(x.astype(np.float64)).astype(np.int64) & 0xFFFF\n       \
+      \ sym = np.full(nout, BLANK, dtype=np.float32)\n        good = (idx >= 0) & (idx < 16)\n        sym[good]\
+      \ = [float(_BREV4[i]) for i in idx[good]]\n\n        # Position of every item within the two-segment batch.\n\
+      \        pos = (np.arange(nout, dtype=np.int64) + self._k) % period\n        in_a = pos < w\n        in_b\
+      \ = ~in_a\n        ref = self._ref[pos % w]\n\n        # A word the reference does not cover carries no data\
+      \ symbol (word 0 is\n        # the framing-latency word). Blank the DECODE there too — plotting it\n     \
+      \   # would put a lone unmatched point on an otherwise exact overlay and\n        # invite precisely the \"\
+      one symbol is wrong\" question it is not.\n        drawn = ~np.isnan(ref)\n        sym = np.where(drawn, sym,\
+      \ BLANK)\n\n        a_dec, a_ref, b_dec, b_ref = (output_items[i] for i in range(4))\n        a_dec[:nout]\
+      \ = np.where(in_a, sym, BLANK)\n        a_ref[:nout] = np.where(in_a, ref, BLANK)\n        b_dec[:nout] =\
+      \ np.where(in_b, sym, BLANK)\n        b_ref[:nout] = np.where(in_b, ref, BLANK)\n\n        self._k = (self._k\
+      \ + nout) % period\n        return nout\n"
     affinity: ''
     alias: ''
-    comment: "s = brev4(index) \u2014 FFT16 emits bins bit-reversed, so the index must be 4-bit-reversed\
-      \ to become the symbol"
+    comment: s = brev4(index) AND the A/B split. The transmitted reference is generated HERE, from the same stream's
+      item index, so it CANNOT drift against the decode (a separate vector_source ran 27.9% fast and smeared the
+      plot). Segment A and segment B get their own channel pair.
     maxoutbuf: '0'
     minoutbuf: '0'
     n: n_css
-    _io_cache: ('CSS Bin -> Symbol (brev4)', 'blk', [('n', 'int', 16)], [('0', 'float', 1)], [('0', 'float',
-      1)], '', ['n'])
+    _io_cache: ('CSS Bin -> Symbol + A/B split', 'blk', [('n', '16'), ('tx_syms', '()'), ('seg_words', '25')], [('0',
+      'float', 1)], [('0', 'float', 1), ('1', 'float', 1), ('2', 'float', 1), ('3', 'float', 1)], 'n        = samples
+      per chirp symbol == FFT size == alphabet (16)\n    tx_syms     = the transmitted symbol sequence for ONE segment,
+      on the output\n                  word grid (element 0 is the framing-latency word)\n    seg_words   = index
+      words per segment\n    ', ['n', 'seg_words'])
+    tx_syms: tx_syms
+    seg_words: seg_words
   states:
     bus_sink: false
     bus_source: false
@@ -539,29 +577,6 @@ blocks:
     - 320
     rotation: 0
     state: enabled
-- name: tx_ref
-  id: blocks_vector_source_x
-  parameters:
-    affinity: ''
-    alias: ''
-    comment: "the TRANSMITTED symbol sequence (host reference) \u2014 the red trace the chip's decoded\
-      \ symbols must sit on top of in segment A, and visibly miss in segment B"
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    repeat: 'True'
-    tags: '[]'
-    type: float
-    vector: tx_syms
-    vlen: '1'
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate:
-    - 1760
-    - 470
-    rotation: 0
-    state: enabled
 - name: sym_scope
   id: qtgui_time_sink_x
   parameters:
@@ -569,15 +584,16 @@ blocks:
     alias: ''
     autoscale: 'False'
     axislabels: 'True'
-    comment: blue = the chip's decoded symbol s = brev4(bin); red = what was transmitted. Segment A (+10
-      dB) matches exactly; segment B (-10 dB) is the on-chip negative control and does not.
+    comment: 'BOTH segments, each against its OWN reference, all four traces phase-locked to the chip stream. A:
+      blue decoded sits exactly on the cyan reference. B: red decoded scatters off the orange reference - the on-chip
+      negative control.'
     ctrlpanel: 'False'
     entags: 'True'
     grid: 'False'
     gui_hint: ''
     legend: 'True'
-    name: "\"DECODED SYMBOL vs TRANSMITTED \u2014 A locks, B collapses\""
-    nconnections: '2'
+    name: '"DECODED vs TRANSMITTED - segment A (+10 dB) locks | segment B (-10 dB) collapses"'
+    nconnections: '4'
     size: n_words
     srate: samp_rate
     stemplot: 'False'
@@ -595,24 +611,24 @@ blocks:
     yunit: '""'
     alpha1: '1.0'
     color1: blue
-    label1: decoded symbol (chip)
+    label1: A (+10 dB) decoded - chip
     marker1: '0'
     style1: '0'
     alpha2: '1.0'
-    color2: red
-    label2: transmitted symbol
+    color2: cyan
+    label2: A (+10 dB) transmitted
     marker2: '1'
     style2: '0'
     alpha3: '1.0'
-    color3: green
-    label3: Signal 3
-    marker3: '-1'
-    style3: '1'
+    color3: red
+    label3: B (-10 dB) decoded - chip
+    marker3: '0'
+    style3: '0'
     alpha4: '1.0'
-    color4: black
-    label4: Signal 4
-    marker4: '-1'
-    style4: '1'
+    color4: dark red
+    label4: B (-10 dB) transmitted
+    marker4: '1'
+    style4: '0'
     alpha5: '1.0'
     color5: cyan
     label5: Signal 5
@@ -650,6 +666,20 @@ blocks:
     coordinate:
     - 2000
     - 380
+    rotation: 0
+    state: enabled
+- name: seg_words
+  id: variable
+  parameters:
+    comment: index words per segment (A and B are the same length)
+    value: stim.n_out_words() // 2
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 990
+    - 12
     rotation: 0
     state: enabled
 connections:
@@ -701,10 +731,18 @@ connections:
   - '0'
   - sym_scope
   - '0'
-- - tx_ref
-  - '0'
+- - bin_to_sym
+  - '1'
   - sym_scope
   - '1'
+- - bin_to_sym
+  - '2'
+  - sym_scope
+  - '2'
+- - bin_to_sym
+  - '3'
+  - sym_scope
+  - '3'
 metadata:
   file_format: 1
   grc_version: 3.10.12.0

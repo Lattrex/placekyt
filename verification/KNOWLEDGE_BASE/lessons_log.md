@@ -9,6 +9,56 @@ block-specific gotcha. Promote anything that generalizes across block classes in
 and superseded material merged into the surviving entries; no durable lesson was
 dropped) — append new entries above the oldest ones as before.
 
+## css_transceiver — a BIT-EXACT chip that LOOKED broken: two scope-display defects a green gate could not see 2026-08-25
+
+The owner ran `examples/css_transceiver` through the real workflow (open the
+`.kyt`, *Run as GNURadio Server*, open the `.grc`, Run) and reported that the
+"DECODED vs TRANSMITTED" scatter showed decoded symbols that **did not match**
+the transmitted ones — a smear. The shipped gate said SER 0.0000 with
+`KYTTAR CSS` recovered, 12/12 green. The gate and the plot disagreed.
+
+**The chip was right and the gate was right; both were answering a question
+nobody was asking.** Tapping the actual flowgraph blocks that FEED the scope
+(not the kyttar sink) showed segment A decoding perfectly — 24/24 symbols, SER
+0 — through the real client stack. The display was the defect, twice over:
+
+- **1. PHASE DRIFT between two independently-rated producers.** The transmitted
+  reference was a separate `blocks_vector_source_x` wired to channel 1 of the
+  time sink. It free-runs; the kyttar sink's stream is gated by the simulator's
+  batch turnaround. **Measured over one 60 s run: 75130 reference items vs
+  58750 decoded items — the reference produced 27.9 % more.** A QT `time_sink`
+  pulls the SAME count from every channel, so the reference slides against the
+  decode. Quantified: **an offset of just 3 items makes 22 of segment A's 24
+  correct symbols render as mismatches.** This is the general trap — *never
+  feed one scope from two producers whose rates are set by different clocks;
+  a chip-gated stream and a free-running vector source are never in phase.*
+  The cure is structural, not a tweak: **derive the reference from the item
+  index of the same stream you are decoding**, inside one block, so the two
+  cannot drift by construction.
+- **2. NEGATIVE-CONTROL CONFLATION.** The burst deliberately carries segment A
+  (+10 dB, must decode) and segment B (−10 dB, must collapse). Both were drawn
+  on one axis with nothing marking which was which, so **17 of 50 plotted
+  points disagreed BY DESIGN** and the plot could not say so. An on-chip
+  negative control is only worth shipping if the display makes it legible as a
+  control — otherwise it just looks like the demo failing.
+
+The fix: `css_decode_map.py` became a 1-in/**4-out** block emitting
+`A decoded / A reference / B decoded / B reference`, all phase-locked to one
+stream, each segment blanked (NaN) outside its own half so neither overplots
+the other. The framing-latency word (word 0 of each segment, which carries no
+data symbol) is blanked on BOTH channels — plotted, it is a lone unmatched
+point on an otherwise exact overlay and invites exactly the wrong question.
+
+**The gate lesson, which generalizes: a user-path gate that asserts only the
+recovered SINK stream is testing the wrong thing.** The sink is not what the
+user looks at; the display glue downstream of it is. `grc_userpath_run.py`
+gained an optional third argument naming extra `block.port` taps, and the CSS
+gate now asserts the DRAWN traces — A matching at every plotted point, B
+visibly missing, the two disjoint, every frame identical across the run — with
+four mutation tests that replay both original defects and prove the gate fails
+on them. 13/13 green. The `.kyt` regenerates byte-identical: the chip never
+changed, only what was drawn about it.
+
 ## fft_spectrum example SHIPPED — three LIVE-PATH defects that every headless gate passed 2026-08-24
 
 The FFT blocks (16/32/64) were all verified bit-exact on chip and **none of them

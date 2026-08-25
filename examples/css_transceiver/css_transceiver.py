@@ -66,7 +66,8 @@ class css_transceiver(gr.top_block, Qt.QWidget):
         ##################################################
         # Variables
         ##################################################
-        self.tx_syms = tx_syms = stim.display_symbols()
+        self.tx_syms = tx_syms = stim.framed_symbols()[:stim.n_data_symbols()]
+        self.seg_words = seg_words = stim.n_out_words() // 2
         self.samp_rate = samp_rate = 32000
         self.n_words = n_words = stim.n_out_words()
         self.n_css = n_css = 16
@@ -76,12 +77,11 @@ class css_transceiver(gr.top_block, Qt.QWidget):
         # Blocks
         ##################################################
 
-        self.tx_ref = blocks.vector_source_f(tx_syms, True, 1, [])
         self.sym_scope = qtgui.time_sink_f(
             n_words, #size
             samp_rate, #samp_rate
-            "DECODED SYMBOL vs TRANSMITTED — A locks, B collapses", #name
-            2, #number of inputs
+            "DECODED vs TRANSMITTED - segment A (+10 dB) locks | segment B (-10 dB) collapses", #name
+            4, #number of inputs
             None # parent
         )
         self.sym_scope.set_update_time(0.10)
@@ -98,21 +98,21 @@ class css_transceiver(gr.top_block, Qt.QWidget):
         self.sym_scope.enable_stem_plot(False)
 
 
-        labels = ['decoded symbol (chip)', 'transmitted symbol', 'Signal 3', 'Signal 4', 'Signal 5',
+        labels = ['A (+10 dB) decoded - chip', 'A (+10 dB) transmitted', 'B (-10 dB) decoded - chip', 'B (-10 dB) transmitted', 'Signal 5',
             'Signal 6', 'Signal 7', 'Signal 8', 'Signal 9', 'Signal 10']
         widths = [1, 1, 1, 1, 1,
             1, 1, 1, 1, 1]
-        colors = ['blue', 'red', 'green', 'black', 'cyan',
+        colors = ['blue', 'cyan', 'red', 'dark red', 'cyan',
             'magenta', 'yellow', 'dark red', 'dark green', 'dark blue']
         alphas = [1.0, 1.0, 1.0, 1.0, 1.0,
             1.0, 1.0, 1.0, 1.0, 1.0]
-        styles = [0, 0, 1, 1, 1,
+        styles = [0, 0, 0, 0, 1,
             1, 1, 1, 1, 1]
-        markers = [0, 1, -1, -1, -1,
+        markers = [0, 1, 0, 1, -1,
             -1, -1, -1, -1, -1]
 
 
-        for i in range(2):
+        for i in range(4):
             if len(labels[i]) == 0:
                 self.sym_scope.set_line_label(i, "Data {0}".format(i))
             else:
@@ -183,7 +183,7 @@ class css_transceiver(gr.top_block, Qt.QWidget):
         self.idx_s2f = blocks.short_to_float(1, 1)
         self.fft = kyttar.fft16(device_id="kyttar_0")
         self.dechirp = kyttar.conj_chirp_mixer(device_id="kyttar_0", n=n_css)
-        self.bin_to_sym = bin_to_sym.blk(n=n_css)
+        self.bin_to_sym = bin_to_sym.blk(n=n_css, tx_syms=tx_syms, seg_words=seg_words)
         self.bin_scope = qtgui.time_sink_f(
             n_words, #size
             samp_rate, #samp_rate
@@ -242,6 +242,9 @@ class css_transceiver(gr.top_block, Qt.QWidget):
         self.connect((self.align, 0), (self.argmax, 0))
         self.connect((self.argmax, 0), (self.idx_s2f, 0))
         self.connect((self.bin_to_sym, 0), (self.sym_scope, 0))
+        self.connect((self.bin_to_sym, 3), (self.sym_scope, 3))
+        self.connect((self.bin_to_sym, 1), (self.sym_scope, 1))
+        self.connect((self.bin_to_sym, 2), (self.sym_scope, 2))
         self.connect((self.dechirp, 0), (self.fft, 0))
         self.connect((self.fft, 0), (self.magsq, 0))
         self.connect((self.idx_s2f, 0), (self.rx_sink, 0))
@@ -251,7 +254,6 @@ class css_transceiver(gr.top_block, Qt.QWidget):
         self.connect((self.rx_sink, 0), (self.bin_scope, 0))
         self.connect((self.rx_sink, 0), (self.bin_to_sym, 0))
         self.connect((self.rx_src, 0), (self.dechirp, 0))
-        self.connect((self.tx_ref, 0), (self.sym_scope, 1))
 
 
     def closeEvent(self, event):
@@ -267,7 +269,13 @@ class css_transceiver(gr.top_block, Qt.QWidget):
 
     def set_tx_syms(self, tx_syms):
         self.tx_syms = tx_syms
-        self.tx_ref.set_data(self.tx_syms, [])
+
+    def get_seg_words(self):
+        return self.seg_words
+
+    def set_seg_words(self, seg_words):
+        self.seg_words = seg_words
+        self.bin_to_sym.seg_words = self.seg_words
 
     def get_samp_rate(self):
         return self.samp_rate

@@ -124,6 +124,79 @@ single-net namer rule (reverting the fix fails 3 gates with
 `assert 'fft64.xi' != 'fft64.xi'`), a bin->Hz map that ignores the sample rate,
 and an axis read without the fftshift (natural bin 11 on the centred axis reads
 -10500 Hz, not +5500).
+## FFT128 retargeted to the 2P2S board + the "dies don't run in parallel" report 2026-08-25
+
+`examples/fft128_2p2s` replaces the ad-hoc two-chip `fft128_2die` project with the
+real **2P2S dev board** (`resources/boards/dev2p2s.kdb` — four dies, two parallel
+daisy-chains). Same verified split (die 0 = stage 0, die 1 = stages 1..6), now on
+chain A's head and tail, joined by the board's own **on-carrier series link**.
+200/200 samples bit-exact, 400 words, DRC-clean against the board file.
+
+**Retarget lessons, all cheap once known:**
+
+- **Instantiate ALL the board's dies, not just the ones you use.** A 2-die design
+  on a 4-die board is still a 4-chip project: `add_chip()` x3, label them the way
+  the board does, and wire BOTH chains' carrier links. This is what lets
+  `engine.drc.check_project(..., board=...)` run at all — `_check_inter_chip`
+  verifies every declared link is a wire the carrier physically provides, and a
+  two-chip project simply has no board to be checked against. The idle chain's
+  dies still build (~34 cells of port infrastructure each) and must stay empty.
+- **`.kyt` carries a `board:` ref** (`project.board = BoardRef(name, config)`) and
+  it round-trips. Neither shipped multi-chip example set it before; without it an
+  opened design does not know which board it targets.
+- **Give the board DRC teeth.** A cross-chain link (chip0 -> chip3) must be
+  REJECTED, or "DRC clean against the board" may just mean the check is inert.
+- **Assert the unused chain is SILENT** — no egress words and no trace events —
+  or the "two independent chains" property the board rests on is unproven.
+
+**THE CONCURRENCY REPORT — the answer has two halves, and they differ.** The cell
+animation looked like chip 0 ran to completion and only then chip 1 started.
+
+1. **The engine does NOT batch.** Measured per-die trace events per trigger over
+   200 samples: *every* trigger has die 0 doing ~1107 events and die 1 ~2900.
+   Neither die is ever idle while the other works. There is no "run die 0 over the
+   whole stimulus, then hand die 1 a block".
+2. **Within ONE trigger the dies ARE sequential — and that is CAUSAL, not a
+   scheduler artifact.** Die 0's crossing word for a sample is the LAST thing it
+   produces: its egress reaches the port cell (9,0) at event **1208 of a
+   1209-event burst (99.9%)**. Die 1 cannot start earlier because there is nothing
+   to start on. At single-round granularity: `JUMP round 0: c0=1209 c1=0`,
+   `JUMP round 1: c0=0 c1=2877`, `round 2: QUIESCENT`.
+3. **Do NOT try to fix this by shrinking the round budget.** `run(events, rounds)`
+   is events-per-chip-PER-ROUND. Measured at budgets of 400/200/60, the number of
+   rounds where both dies advanced was **10 in every case** — one handoff round
+   per sample, never more. The budget is not the lever; the causal dependency is.
+   (What genuinely overlaps on hardware is sample k+1 in die 0 against sample k in
+   die 1 — pipelining ACROSS samples, which the per-sample drive deliberately does
+   not do because the three-part complex transaction must be pumped to quiescence.)
+
+**The ANIMATION half WAS a real bug.** `sim_controller`'s multi-chip refresh built
+its flash-step list by **concatenating each chip's steps in chip order**
+(`for cid in sorted(by_chip): m_steps += ...`), and the canvas replays that list in
+order — so chip 0's whole burst played before chip 1's regardless of what the
+engine did.
+
+> **The trap worth remembering: sorting the merged steps by `time_ns` does NOT fix
+> it.** Each chip keeps its OWN sim clock and the clocks DIVERGE — measured, die 1's
+> clock runs **2.27x** die 0's after 200 samples, and the gap grows every sample
+> because die 1 does more work per sample. A strictly-later clock never interleaves
+> with a strictly-earlier one, so a global time sort reproduces the identical
+> batched playback. **Per-chip sim clocks are not a shared time base.**
+
+Fix: `SimController._interleave_chip_steps` merges round-robin on each chip's
+progress through its OWN burst. Rendering order only — moves no data, changes no
+arithmetic. Gated (with teeth against the old concatenated order) by
+`test_the_animation_interleaves_the_dies_rather_than_batching_them`, which needs
+no Qt and no simulator.
+
+**Gate design note:** bit-exactness alone could NEVER have caught this — arrival
+order does not change the arithmetic, so a genuinely batched model would be
+bit-exact and still misrepresent the hardware. That is why
+`test_the_dies_are_concurrent_across_the_run` (both dies work on every trigger)
+and `test_within_one_trigger_the_dies_are_causally_sequential` (the 99.9% figure,
+pinned) are separate gates. The second one is deliberately written to FAIL if a
+future change makes the crossing word appear early — that would be an improvement,
+and it should be adopted deliberately rather than silently.
 
 ## fft_spectrum example SHIPPED — three LIVE-PATH defects that every headless gate passed 2026-08-24
 

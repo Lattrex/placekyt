@@ -1323,10 +1323,20 @@ class SimController(QObject):
             for ev in anim_events:
                 by_chip.setdefault(int(ev.get("_chip", 0)), []).append(ev)
             m_states: list = []
-            m_steps: list = []
             for cid in sorted(by_chip):
                 m_states += list(self._states_from_events(by_chip[cid], cid))
-                m_steps += list(self._steps_from_events(by_chip[cid], cid))
+            # PER-CHIP steps MERGED BY TIME, never concatenated per chip. Each
+            # chip's trace carries its OWN sim clock, and the clocks diverge
+            # (a die that does more work per sample advances further), so
+            # sorting the merged steps by raw time_ns would still replay one
+            # die's whole burst before the other's — the reported "chip 0
+            # works, then chip 1 works" animation. Interleave on each chip's
+            # PROGRESS THROUGH ITS OWN BURST instead: zip the per-chip step
+            # lists round-robin so every die that did work in this refresh
+            # lights up together, which is what concurrent dies look like.
+            m_steps = self._interleave_chip_steps(
+                {cid: self._steps_from_events(by_chip[cid], cid)
+                 for cid in sorted(by_chip)})
             self.cell_states.emit(m_states)
             self.handshakes.emit({
                 "steps": m_steps,
@@ -1495,6 +1505,42 @@ class SimController(QObject):
                 b["ports"].append(port)
         order.sort()
         return [buckets[t] for t in order]
+
+    @staticmethod
+    def _interleave_chip_steps(per_chip: dict) -> list:
+        """Merge per-chip flash-step lists so the dies animate CONCURRENTLY.
+
+        ``per_chip`` is ``{chip_id: [step, …]}`` as produced by
+        ``_steps_from_events``. Returns one flat list the canvas replays in
+        order.
+
+        WHY NOT concatenate, and why not sort by time. Concatenating (the
+        original form) replays chip 0's entire burst, then chip 1's — two dies
+        that genuinely overlap on hardware render as "one works, then the
+        other", which is exactly the wrong picture. Sorting the merged steps
+        by ``time_ns`` does not fix it either: each chip's trace carries its
+        OWN sim clock and those clocks DIVERGE (measured on the FFT128 split:
+        after 130 samples the downstream die's clock had advanced 2.3x further
+        than the upstream die's), so a global time sort still emits one die's
+        whole burst before the other's — a strictly-later clock never
+        interleaves with a strictly-earlier one.
+
+        So interleave on each chip's PROGRESS THROUGH ITS OWN BURST: take one
+        step from each chip in turn (round-robin) until every list is drained.
+        A die with more steps keeps flashing after the shorter ones finish,
+        which is the honest picture of dies doing different amounts of work in
+        the same window. This is a RENDERING order only — it moves no data and
+        changes no arithmetic.
+        """
+        lists = [per_chip[c] for c in sorted(per_chip) if per_chip[c]]
+        if len(lists) <= 1:
+            return list(lists[0]) if lists else []
+        merged: list = []
+        for i in range(max(len(x) for x in lists)):
+            for lst in lists:
+                if i < len(lst):
+                    merged.append(lst[i])
+        return merged
 
     def _trace_scan_reset(self) -> None:
         """Reset the engine's handshake trace cursor (we cleared the chip trace,

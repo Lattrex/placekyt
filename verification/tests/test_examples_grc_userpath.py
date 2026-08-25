@@ -33,6 +33,7 @@ for _p in (str(_ROOT / "placekyt"), str(_ROOT / "runtime" / "python"),
            str(_ROOT / "examples" / "psk31_transceiver"),
            str(_ROOT / "examples" / "robust_rx"),
            str(_ROOT / "examples" / "gru_classifier"),
+           str(_ROOT / "examples" / "fft128_2p2s"),
            str(_ROOT / "examples" / "complex_math")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
@@ -347,3 +348,52 @@ def test_gru_classifier_shipped_grc_user_path(qapp):
         assert vote == ci, (
             f"segment {ci} ({name}) voted {vote} ({classes[vote]}) through the "
             f"shipped user path")
+
+
+def test_fft128_2p2s_shipped_grc_user_path(qapp):
+    """THE OWNER'S WORKFLOW for the 2P2S FFT128, end to end: host the SHIPPED
+    ``fft128_2p2s.kyt`` (a FOUR-die board design, so placeKYT hosts the
+    MULTI-CHIP server) on the GUI's default port, GRC-generate and run the
+    SHIPPED ``fft128_2p2s.grc``, and assert the bins the scope actually
+    receives.
+
+    This is the multi-chip analogue of the transceiver user-path gates, and it
+    covers ground the headless gate cannot: the headless suite drives
+    ``MultiChipSimEngine`` directly, whereas THIS path goes through the GRC
+    client stack, the multi-chip server's stream_target resolution, and the
+    chain-tail tag demux. A ``.kyt`` missing its ``stream_id``/``out_tag``
+    passes every headless gate and returns literally nothing here.
+
+    Asserted: the flowgraph runs, the sink recovers a non-trivial stream off
+    chain A's tail (not silence, which is what a broken resolution yields),
+    and the recovered words are genuine 16-bit chip words rather than a
+    rescaled or empty stream."""
+    grc = _ROOT / "examples" / "fft128_2p2s" / "fft128_2p2s.grc"
+    kyt = _ROOT / "examples" / "fft128_2p2s" / "fft128_2p2s.kyt"
+    if not kyt.exists() or not grc.exists():
+        pytest.skip("fft128_2p2s example not generated (run build_kyt.py)")
+
+    ctrl, sim = _serve(kyt)
+    try:
+        assert len(ctrl.project.chips) == 4, (
+            "the 2P2S design must host as a FOUR-die multi-chip server")
+        sinks = _run_flowgraph(grc, secs=90)
+    finally:
+        sim.stop_gnuradio_server()
+
+    got = _words(sinks.get("kyt_sink", []))
+    assert got, (
+        "the shipped flowgraph recovered NOTHING off chain A's tail — the "
+        "multi-chip server resolved no stream target (check the .kyt's "
+        "stream_id on the input nets and out_tag on the egress net)")
+    # A transform of two tones is not a constant stream: a chain that is
+    # merely echoing, stuck, or zero-filled would fail this.
+    assert len(set(got)) > 8, (
+        f"only {len(set(got))} distinct words recovered — the chain is not "
+        "transforming (a stuck/zero-filled stream looks like this)")
+    assert all(0 <= w <= 0xFFFF for w in got), "recovered non-16-bit words"
+    # Past the 127-sample latency the transform must produce real energy.
+    nz = sum(1 for w in got if w not in (0, 0xFFFF))
+    assert nz > len(got) // 4, (
+        f"only {nz}/{len(got)} recovered words are non-trivial — the run "
+        "never got past the zero-fill transient")

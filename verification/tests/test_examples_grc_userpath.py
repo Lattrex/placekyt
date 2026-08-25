@@ -364,14 +364,31 @@ def test_fft128_2p2s_shipped_grc_user_path(qapp):
     chain-tail tag demux. A ``.kyt`` missing its ``stream_id``/``out_tag``
     passes every headless gate and returns literally nothing here.
 
-    Asserted: the flowgraph runs, the sink recovers a non-trivial stream off
-    chain A's tail (not silence, which is what a broken resolution yields),
-    and the recovered words are genuine 16-bit chip words rather than a
-    rescaled or empty stream."""
+    THE TWO DEFECTS IT FOUND, both invisible headless:
+
+    1. A chain continuing across the CARRIER WIRE resolved ``out_tag=None``
+       (``stream_targets`` walks block -> block within ONE chip; here the
+       tagged egress net belongs to the tail die on the next chip), so the
+       host demux dropped every word the tail emitted.
+    2. The multi-chip demux kept only ONE tag of the COMPLEX PAIR — a complex
+       exit cell emits I then Q on ``(out_tag, out_tag+1)``, and matching
+       ``out_tag`` alone returned the stream at HALF LENGTH with the
+       imaginary part gone.
+
+    Asserted: the sink recovers the FULL complex stream off chain A's tail
+    and it is BIT-EXACT against the whole-transform reference for the .grc's
+    own embedded stimulus. Bit-exactness is the right bar here rather than a
+    liveliness heuristic — this .grc drives two pure tones at exactly bins 9
+    and 37 of 128, so a CORRECT transform is nearly all zeros (measured: 3
+    distinct values over 768 words). "Looks busy" would fail on a correct
+    chain; "equals the reference" cannot pass on a broken one."""
+    import cmath
+
     grc = _ROOT / "examples" / "fft128_2p2s" / "fft128_2p2s.grc"
     kyt = _ROOT / "examples" / "fft128_2p2s" / "fft128_2p2s.kyt"
     if not kyt.exists() or not grc.exists():
         pytest.skip("fft128_2p2s example not generated (run build_kyt.py)")
+    import fft128_2p2s as EX
 
     ctrl, sim = _serve(kyt)
     try:
@@ -386,14 +403,26 @@ def test_fft128_2p2s_shipped_grc_user_path(qapp):
         "the shipped flowgraph recovered NOTHING off chain A's tail — the "
         "multi-chip server resolved no stream target (check the .kyt's "
         "stream_id on the input nets and out_tag on the egress net)")
-    # A transform of two tones is not a constant stream: a chain that is
-    # merely echoing, stuck, or zero-filled would fail this.
-    assert len(set(got)) > 8, (
-        f"only {len(set(got))} distinct words recovered — the chain is not "
-        "transforming (a stuck/zero-filled stream looks like this)")
     assert all(0 <= w <= 0xFFFF for w in got), "recovered non-16-bit words"
-    # Past the 127-sample latency the transform must produce real energy.
-    nz = sum(1 for w in got if w not in (0, 0xFFFF))
-    assert nz > len(got) // 4, (
-        f"only {nz}/{len(got)} recovered words are non-trivial — the run "
-        "never got past the zero-fill transient")
+
+    # The .grc's OWN embedded stimulus: two complex tones, 384 samples.
+    n = 384
+    stim = []
+    for k in range(n):
+        c = (0.45 * cmath.exp(2j * cmath.pi * 9 * k / 128)
+             + 0.35 * cmath.exp(2j * cmath.pi * 37 * k / 128))
+        stim.append((EX.q15(c.real), EX.q15(c.imag)))
+    ref = EX.reference(stim)
+
+    # BOTH rails must arrive: 2 words per sample. A demux that kept only the
+    # I tag returns exactly half of this.
+    assert len(got) >= 2 * n, (
+        f"recovered {len(got)} words for {n} samples, expected >= {2 * n} — "
+        "the complex pair is arriving half-length (only one tag demuxed)")
+    pairs = [(got[2 * k], got[2 * k + 1]) for k in range(n)]
+    bad = [k for k in range(n) if pairs[k] != ref[k]]
+    assert not bad, (
+        f"{len(bad)} of {n} samples differ from the whole-transform "
+        f"reference through the hosted path; first at {bad[0]}: "
+        f"got {(hex(pairs[bad[0]][0]), hex(pairs[bad[0]][1]))} "
+        f"want {(hex(ref[bad[0]][0]), hex(ref[bad[0]][1]))}")

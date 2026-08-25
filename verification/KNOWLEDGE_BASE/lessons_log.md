@@ -229,6 +229,17 @@ user-path gate was written. Headless was green at 200/200 bit-exact while the ho
 > complex block — it must come from the terminal block's DECLARED output registers.
 > The single-chip resolver already OR-ed both sources; the multi-chip one had neither.
 
+**A LIVELINESS HEURISTIC IS THE WRONG GATE — bit-exactness is the right one.** The
+first version of that user-path gate asserted the recovered stream "looks busy"
+(enough distinct values, enough non-zero words). That is WRONG for this flowgraph:
+the `.grc` drives two pure tones at exactly bins 9 and 37 of 128, so a CORRECT
+transform is nearly all zeros — measured, **3 distinct values over 768 words**. The
+heuristic fails on a CORRECT chain, and the natural next move is to weaken it, which
+would have left a gate that proves nothing. Assert equality with the reference for the
+`.grc`'s OWN embedded stimulus instead: it cannot pass on a broken chain and cannot
+fail on a working one. (This also catches the half-length complex bug for free — a
+one-tag demux returns exactly half the words.)
+
 **Gate design note:** bit-exactness alone could NEVER have caught this — arrival
 order does not change the arithmetic, so a genuinely batched model would be
 bit-exact and still misrepresent the hardware. That is why

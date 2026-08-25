@@ -202,6 +202,16 @@ gone, which for a transform reads as a plausible wrong answer.
 > nets alone therefore cannot work for a chip-scale complex block — it has to
 > come from the terminal block's declared output registers.
 
+**A gate lesson from the same episode.** The first version of the user-path
+gate asserted the recovered stream "looks busy" (enough distinct values, enough
+non-zero words). That assertion is **wrong for this flowgraph**: the `.grc`
+drives two pure tones at exactly bins 9 and 37 of 128, so a *correct* transform
+is nearly all zeros — measured, **3 distinct values over 768 words**. The
+liveliness heuristic fails on a correct chain and would have been "fixed" by
+weakening it. The gate now asserts **bit-exactness against the whole-transform
+reference for the `.grc`'s own stimulus**, which cannot pass on a broken chain
+and cannot fail on a working one.
+
 ## The drive is part of the design
 
 A complex sample is a **three-part transaction**:

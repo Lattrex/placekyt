@@ -107,6 +107,24 @@ PUMP = (60_000, 5)      # after each operand WRITE
 SETTLE = (200_000, 50)  # after the JUMP
 
 
+#: THE DISPLAY CONTRACT. The array is asynchronous — it has no clock of its
+#: own — so the sample rate is DECLARED by the stimulus, and it is what turns a
+#: dimensionless bin index into a physical frequency. 32000 is the repo-wide
+#: example convention (see examples/fft_spectrum, examples/bpsk_modem); at
+#: N = 128 that makes each bin 250 Hz wide. Change it and the whole frequency
+#: axis rescales; the chip does not change at all.
+SAMP_RATE = 32000.0
+
+#: The shipped ``.grc``'s two ON-BIN stimulus tones, as NATURAL bin indices,
+#: with their amplitudes. Kept here so gen_grc.py, the gate and the README all
+#: cite ONE statement of the stimulus instead of three that can drift.
+TONE_A, AMP_A = 9, 0.45
+TONE_B, AMP_B = 37, 0.35
+
+#: The ``.grc``'s dispatched burst: two whole frames past the 127 latency.
+BURST = 384
+
+
 def q15(x: float) -> int:
     """Float in [-1, 1) to a Q15 word."""
     return int(round(max(-1.0, min(32767 / 32768.0, float(x)))
@@ -299,3 +317,126 @@ def stimulus(n, seed=9):
     rng = np.random.default_rng(seed)
     return [(q15(rng.uniform(-0.6, 0.6)), q15(rng.uniform(-0.6, 0.6)))
             for _ in range(n)]
+
+
+def grc_stimulus(n: int = BURST):
+    """The SHIPPED ``.grc``'s own two-tone stimulus, as Q15 ``(i, q)`` pairs.
+
+    The flowgraph computes the same expression inline (so a reader can see the
+    stimulus in the flowgraph); this is the reference the gates drive and
+    compare against, so the two cannot drift apart silently.
+    """
+    import cmath
+
+    out = []
+    for k in range(int(n)):
+        c = (AMP_A * cmath.exp(2j * cmath.pi * TONE_A * k / N)
+             + AMP_B * cmath.exp(2j * cmath.pi * TONE_B * k / N))
+        out.append((q15(c.real), q15(c.imag)))
+    return out
+
+
+# ------------------------------------------------- the bin -> Hz mapping
+def bin_hz(n_fft: int = N, samp_rate: float = SAMP_RATE) -> float:
+    """BIN WIDTH in Hz: ``samp_rate / n_fft`` — 250 Hz at N=128, fs=32 kHz."""
+    return float(samp_rate) / int(n_fft)
+
+
+def bin_to_hz(k: int, n_fft: int = N, samp_rate: float = SAMP_RATE) -> float:
+    """NATURAL bin index -> frequency in Hz. THE published mapping.
+
+    ``f(k) = k*fs/N`` for ``k < N/2`` (positive frequencies) and
+    ``f(k) = (k-N)*fs/N`` for ``k >= N/2`` (the negative half) — the standard
+    DFT bin map, stated once so the README, the ``.grc``'s axis config and the
+    gates cite the SAME arithmetic.
+
+    The shipped tones: bin 9 -> 2250.0 Hz, bin 37 -> 9250.0 Hz.
+    """
+    n, k = int(n_fft), int(k)
+    if not 0 <= k < n:
+        raise ValueError(f"bin {k} is out of range for an {n}-point transform")
+    signed = k if k < n // 2 else k - n
+    return signed * bin_hz(n, samp_rate)
+
+
+def fftshift_order(n_fft: int = N):
+    """``natural bin -> index on the CENTRED axis`` (numpy's ``fftshift`` map).
+
+    The natural-order vector runs 0 -> +fs/2 and then JUMPS to -fs/2 -> 0,
+    which no single linear axis can label. Rolling by N/2 makes the vector
+    monotonic in frequency, so the display can run a real Hz axis from
+    ``-samp_rate/2`` in steps of ``bin_hz``.
+    """
+    n = int(n_fft)
+    return [(k + n // 2) % n for k in range(n)]
+
+
+def axis_hz(n_fft: int = N, samp_rate: float = SAMP_RATE):
+    """The CENTRED display axis in Hz — one value per plotted point, exactly
+    what the vector sink's ``set_x_axis(-samp_rate/2, bin_hz)`` labels."""
+    n = int(n_fft)
+    step = bin_hz(n, samp_rate)
+    return [-float(samp_rate) / 2 + i * step for i in range(n)]
+
+
+# ------------------------------------------------ the bin-order contract
+def unreverse(n: int = N):
+    """``slot -> natural frequency bin``: the chain's BIT-REVERSED output map.
+
+    Output slot ``k`` carries bin ``bit_reverse(k, log2 n)``. The map is an
+    involution, so it is its own inverse. This function IS the display
+    contract: getting it wrong (or skipping it) puts the tones in the wrong
+    place on the plot while every bit-exactness gate still passes, which is
+    why the mutation suite attacks it directly.
+    """
+    bits = int(n).bit_length() - 1
+    out = []
+    for k in range(n):
+        r, v = 0, k
+        for _ in range(bits):
+            r = (r << 1) | (v & 1)
+            v >>= 1
+        out.append(r)
+    return out
+
+
+def frames_of(pairs, n_fft: int = N, latency: int = LATENCY):
+    """Complete COMPLEX output frames of a per-trigger stream, latency
+    stripped. ``pairs`` is the stream of ``(i_word, q_word)`` Q15 pairs."""
+    n, out, k = int(n_fft), [], int(latency)
+    while k + n <= len(pairs):
+        out.append(list(pairs[k:k + n]))
+        k += n
+    return out
+
+
+def centred_power_spectrum(frame, n_fft: int = N):
+    """ONE complex frame of chip SLOTS -> the CENTRED power vector the shipped
+    ``.grc`` plots. THE display arithmetic, in one place.
+
+    ``frame`` is the chip's ``(i_word, q_word)`` slots in emission order. The
+    return is indexed by position on the ``-fs/2 .. +fs/2`` axis: index ``i``
+    is ``-samp_rate/2 + i*bin_hz`` Hz. Power is ``|z|^2`` at the q15/32768
+    scale, so a full-scale coherent bin reads 1.0.
+
+    Three maps, and every one of them is load-bearing:
+
+      1. de-interleave the complex pair (the tail is a COMPLEX exit cell, so
+         the sink stream is out_i, out_q, ... — two words per bin);
+      2. un-reverse the DIF slot order (:func:`unreverse`);
+      3. fftshift, so a single linear Hz axis can label every point.
+    """
+    n = int(n_fft)
+    if len(frame) != n:
+        raise ValueError(f"a frame is {n} slots, got {len(frame)}")
+    rev = unreverse(n)
+    shift = fftshift_order(n)
+    nat = [0.0] * n
+    for slot, (wi, wq) in enumerate(frame):
+        re = s16(wi) / 32768.0
+        im = s16(wq) / 32768.0
+        nat[rev[slot]] = re * re + im * im
+    out = [0.0] * n
+    for k, i in enumerate(shift):
+        out[i] = nat[k]
+    return out

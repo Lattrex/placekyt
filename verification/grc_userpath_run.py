@@ -94,6 +94,12 @@ assert taps, "no kyttar sinks found in the generated flowgraph"
 # unusable (measured on this example: a separate free-running reference source
 # ran 27.9% fast and slid the reference off a bit-exact decode). Naming the
 # blocks that FEED the scopes lets a gate assert the plotted traces themselves.
+#
+# A VECTOR port (a spectrum display block emits one N-point vector per frame)
+# is tapped with a matching-vlen vector_sink_f: connecting a vlen-1 sink to an
+# N-float port is an itemsize mismatch and the flowgraph would refuse to
+# connect. ``vector_sink_f(vlen).data()`` returns the frames FLATTENED, which is
+# what the SINK line protocol below carries — the reading gate reshapes by vlen.
 for spec_str in (sys.argv[3].split(",") if len(sys.argv) > 3 and sys.argv[3]
                  else []):
     spec_str = spec_str.strip()
@@ -102,8 +108,14 @@ for spec_str in (sys.argv[3].split(",") if len(sys.argv) > 3 and sys.argv[3]
     attr, _, port = spec_str.partition(".")
     blk = getattr(tb, attr, None)
     assert blk is not None, f"no block {attr!r} in the generated flowgraph"
-    vs = blocks.vector_sink_f()
-    tb.connect((blk, int(port or 0)), (vs, 0))
+    p = int(port or 0)
+    itemsize = blk.output_signature().sizeof_stream_item(p)
+    vlen, rem = divmod(itemsize, gr.sizeof_float)
+    assert rem == 0 and vlen >= 1, (
+        f"{spec_str}: port itemsize {itemsize} is not a whole number of "
+        "floats — this tap only handles float / float-vector ports")
+    vs = blocks.vector_sink_f(vlen)
+    tb.connect((blk, p), (vs, 0))
     taps[spec_str] = vs
 
 tb.start()

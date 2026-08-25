@@ -32,6 +32,7 @@ Run:
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -59,6 +60,38 @@ pytestmark = pytest.mark.skipif(not CHIP_YAML.exists(),
 #: non-zero outputs.
 N_SAMPLES = 200
 MIN_NONZERO = 73
+
+# ---------------------------------------------------------------- the DISPLAY
+GRC_PATH = _EXAMPLE / "fft128_2p2s.grc"
+_RUNNER = _ROOT / "verification" / "grc_userpath_run.py"
+_GR_PYTHON = os.environ.get("KYTTAR_GR_PYTHON", "/usr/bin/python3")
+#: The GUI's default bind, which the shipped ``.grc`` bakes into server_port.
+#: Override for local iteration when the owner is holding 58950; the shipped
+#: value is what the final confirmation run must use.
+_PORT = int(os.environ.get("KYTTAR_USERPATH_PORT", "58950"))
+
+#: The two ON-BIN stimulus tones' NATURAL bins, the SLOTS they leave the chip
+#: on, and their frequencies. Pinned as LITERALS — never recomputed from the
+#: map under test, so a corrupted map cannot silently agree with itself:
+#: bit_reverse_7(9) = 72 and bit_reverse_7(37) = 82, and at fs = 32000 with
+#: N = 128 each bin is 250 Hz so bins 9/37 are 2250/9250 Hz.
+TONE_SLOT_A = 72
+TONE_SLOT_B = 82
+BIN_HZ = 250.0
+TONE_A_HZ = 2250.0
+TONE_B_HZ = 9250.0
+#: Positions on the CENTRED (-fs/2 .. +fs/2) axis: bin b -> (b + N/2) % N.
+TONE_INDEX_A = 73
+TONE_INDEX_B = 101
+
+#: The coherent-bin POWER each ON-BIN tone must reach (amplitude squared) and
+#: the floor everything else must stay under. An exactly-on-bin tone leaks
+#: nowhere, so the honest floor is 0 — the bar is set well under the weaker
+#: tone rather than at zero so Q15 rounding is not read as a defect.
+COHERENT_A = EX.AMP_A ** 2              # 0.2025
+COHERENT_B = EX.AMP_B ** 2              # 0.1225
+COHERENT_TOL = 0.01
+LEAKAGE_MAX = 0.01
 
 
 def _simkyt_has_multichip():
@@ -617,6 +650,628 @@ def test_the_tail_stamps_the_complex_tag_pair(built):
         f"I/Q rail counts {hist} are not both {n} — the pair is not balanced")
 
 
+
+
+# =============================================================================
+# 6. THE DISPLAY — what the GRC waveform window actually DRAWS
+# =============================================================================
+# THE REPORT THIS SECTION EXISTS FOR, in the owner's words: "the scale for the
+# FFT output in the GRC waveform viewer still doesn't look right. It doesn't
+# show the actual frequency where the spikes are ... that still has time as the
+# x axis and those spikes just flow across the screen."
+#
+# He was right, and the chip was not the problem — the chain was already
+# bit-exact through the hosted server (section 5 above). The `.grc` plotted the
+# kyttar sink's RAW stream on a qtgui TIME sink titled "FFT128 output words
+# (I, Q interleaved)". That stream is not a spectrum and cannot be made into
+# one by an axis relabel; FOUR transformations separate them, and all four are
+# gated here:
+#
+#   1. DE-INTERLEAVE. The chain tail is a COMPLEX exit cell — out_i then out_q
+#      from one cell — so the sink stream carries TWO float words per frequency
+#      bin. A time sink draws them as two adjacent samples of one time series.
+#   2. STRIP THE 127-SAMPLE LATENCY. The first 127 complex outputs of a burst
+#      are the zero-initialised pipeline's startup values, not a frame.
+#   3. UN-REVERSE. The transform emits DIF order with deliberately no reorder
+#      buffer: slot k carries bin bit_reverse_7(k). Plotting slots is a
+#      SCRAMBLED spectrum that still looks plausible.
+#   4. FFTSHIFT. Natural order runs 0 -> +fs/2 then JUMPS to -fs/2 -> 0, which
+#      no single linear axis can label; rolling by N/2 makes it monotonic so
+#      the sink's set_x_axis(-samp_rate/2, bin_hz) labels every point.
+#
+# The gates below assert the DRAWN trace (tapped at the display blocks' own
+# output through the live user path), not merely the sink stream — a gate that
+# stops at the sink passes while the plot is unusable, which is exactly what
+# happened.
+
+def _grc_doc():
+    import yaml
+    with open(GRC_PATH) as fh:
+        return yaml.safe_load(fh)
+
+
+def _grc_block(doc, name):
+    for b in doc.get("blocks", []):
+        if b.get("name") == name:
+            return b
+    raise AssertionError(f"no block named {name!r} in the shipped .grc")
+
+
+def _spectrum_gate(centred):
+    """The example's own DISPLAY assertion, reusable by the mutants.
+
+    A correct plot is TWO clean lines at the tones' centred positions, each at
+    its coherent power, with every other point on the floor."""
+    n = EX.N
+    if len(centred) != n:
+        return False
+    top = sorted(range(n), key=lambda i: centred[i], reverse=True)[:2]
+    if set(top) != {TONE_INDEX_A, TONE_INDEX_B}:
+        return False
+    if abs(centred[TONE_INDEX_A] - COHERENT_A) > COHERENT_TOL:
+        return False
+    if abs(centred[TONE_INDEX_B] - COHERENT_B) > COHERENT_TOL:
+        return False
+    rest = max(v for i, v in enumerate(centred)
+               if i not in (TONE_INDEX_A, TONE_INDEX_B))
+    return rest < LEAKAGE_MAX
+
+
+# ------------------------------------------------- the shipped .grc's config
+def test_the_shipped_grc_plots_a_frequency_axis():
+    """The display sink is a VECTOR (frequency) sink on a real Hz axis — not a
+    time sink. This is the reported defect, asserted structurally.
+
+    ``qtgui_time_sink_x`` has no frequency axis to configure: its x axis is
+    time, and a stream of raw interleaved words plotted on it is exactly the
+    "spikes flow across the screen" the owner saw. The fix is a different sink
+    fed by a different stream, so the gate pins BOTH."""
+    doc = _grc_doc()
+    sink = _grc_block(doc, "spectrum_sink")
+    assert sink["id"] == "qtgui_vector_sink_f", (
+        f"the spectrum display is a {sink['id']!r} — a time sink cannot show "
+        "frequency on its x axis no matter how it is labelled")
+    p = sink["parameters"]
+    assert p["x_units"] == '"Hz"', (
+        f"the spectrum x axis is in {p['x_units']!r}, not Hz — the user still "
+        "cannot tell what frequency a spike is on")
+    assert p["x_start"] == "-samp_rate / 2", f"x_start is {p['x_start']!r}"
+    assert p["x_step"] == "bin_hz", f"x_step is {p['x_step']!r}"
+    assert p["vlen"] == "n_fft", f"vlen is {p['vlen']!r}"
+    assert "Hz" in p["x_axis_label"] and "samp_rate" in p["x_axis_label"], (
+        f"the x label {p['x_axis_label']!r} does not state the bin -> Hz map")
+
+    variables = {b["name"]: b["parameters"].get("value")
+                 for b in doc["blocks"] if b.get("id") == "variable"}
+    assert variables.get("samp_rate") == "32000", (
+        f"samp_rate is {variables.get('samp_rate')!r}, expected 32000 — the "
+        "documented Hz mapping is stated at that rate")
+    assert variables.get("bin_hz") == "samp_rate / n_fft", (
+        f"bin_hz is {variables.get('bin_hz')!r} — the bin width must be "
+        "DERIVED from samp_rate and n_fft, never a hard-coded number")
+    assert variables.get("n_fft") == str(EX.N)
+    assert variables.get("latency") == str(EX.LATENCY)
+    assert float(variables["samp_rate"]) / EX.N == BIN_HZ
+
+    # And the OLD display must be gone: no time sink may be fed the raw
+    # recovered word stream any more.
+    conns = [list(c) for c in doc["connections"]]
+    assert ["kyt_sink", "0", "spectrum", "0"] in conns, (
+        "the kyttar sink no longer feeds the spectrum display block")
+    time_sinks = {b["name"] for b in doc["blocks"]
+                  if b.get("id") == "qtgui_time_sink_x"}
+    fed_by_chip = {c[2] for c in conns if c[0] == "kyt_sink"}
+    assert not (time_sinks & fed_by_chip), (
+        f"a TIME sink {sorted(time_sinks & fed_by_chip)} is still plotting the "
+        "chip's raw recovered words — that is the reported defect")
+    # The input scope is fine and stays: it is a time-domain signal.
+    assert "in_scope" in time_sinks
+
+
+def test_the_shipped_grc_display_block_does_all_four_transformations():
+    """The display block de-interleaves, strips the latency, un-reverses AND
+    fftshifts. Any one of the four missing puts the spikes somewhere wrong
+    while the plot still looks like a plausible spectrum."""
+    src = _grc_block(_grc_doc(), "spectrum")["parameters"]["_source_code"]
+    assert "frame[0::2]" in src and "frame[1::2]" in src, (
+        "the display block does not DE-INTERLEAVE the complex pair — it is "
+        "plotting raw words, two per bin")
+    assert "np.abs(bins) ** 2" in src, "no per-bin power is computed"
+    assert "self.latency" in src and "off < self.latency" in src, (
+        "the 127-sample startup transient is not stripped")
+    assert "nat[self.rev] = power" in src, (
+        "the bit-reversed DIF slot order is not un-reversed — the spectrum "
+        "would be scrambled while still looking plausible")
+    assert "(np.arange(self.n) + self.n // 2) % self.n" in src, (
+        "the shift is not the fftshift permutation")
+    assert "centred[self.shift] = nat" in src, (
+        "the fftshift is computed but never APPLIED — a linear Hz axis would "
+        "mislabel every negative-frequency bin")
+    assert "off + self.n > self.burst" in src, (
+        "the display block does not drop the burst's RAGGED TAIL — see "
+        "test_the_display_drops_the_bursts_ragged_tail for what that paints")
+    # the permutations the .grc computes match this module's published ones
+    n = EX.N
+    assert [(k + n // 2) % n for k in range(n)] == EX.fftshift_order(n)
+
+
+def test_the_display_drops_the_bursts_ragged_tail():
+    """A LIVE-PATH defect this gate caught, and the reason the drawn-trace gate
+    taps the display rather than the sink.
+
+    ``burst_len`` is 384 while ``latency + 2*n_fft`` is 383, so every burst
+    ends with ONE sample left over. A frame reader that keeps consuming across
+    the boundary builds its next "frame" from that 1 real sample plus 127 of
+    the NEXT burst's zero-fill transient — an ALL-ZERO spectrum. With
+    ``server_repeat`` looping the batch, the plot then blanks on EVERY THIRD
+    frame: measured, 4728 frames of a live run in a perfectly regular
+    good / good / blank cycle. Bit-exactness cannot see this at all; it is
+    purely a framing fault in the display glue.
+
+    Asserted on the arithmetic directly (no server needed): the shipped
+    burst/latency/size really do leave a ragged tail, and the display block's
+    own rule drops exactly it.
+    """
+    assert EX.BURST == 384
+    assert EX.LATENCY + 2 * EX.N == 383 < EX.BURST, (
+        "the burst is now a whole number of frames past the latency, so the "
+        "ragged tail this gate describes no longer exists — re-derive before "
+        "relaxing the display block's boundary rule")
+
+    # Walk the shipped block's own frame rule over several looped bursts and
+    # demand every frame start INSIDE one burst.
+    starts, pos = [], 0
+    for _ in range(6 * 4):
+        off = pos % EX.BURST
+        if off < EX.LATENCY:
+            pos += EX.LATENCY - off
+            continue
+        if off + EX.N > EX.BURST:
+            pos += EX.BURST - off          # THE RULE UNDER TEST
+            continue
+        starts.append(pos)
+        pos += EX.N
+    assert starts, "the frame rule emitted no frames at all"
+    assert len(starts) == len({s // EX.BURST for s in starts}) * 2, (
+        f"the frame rule does not emit exactly 2 frames per burst: {starts}")
+    for s in starts:
+        burst_i, off = divmod(s, EX.BURST)
+        assert off >= EX.LATENCY, (
+            f"frame at {s} starts inside burst {burst_i}'s startup transient")
+        assert off + EX.N <= EX.BURST, (
+            f"frame at {s} STRADDLES burst {burst_i}'s boundary — it would be "
+            f"{EX.BURST - off} real samples plus {off + EX.N - EX.BURST} of "
+            "the next burst's zero-fill, i.e. a blank spectrum")
+
+    # TEETH: without the rule, the straddling frame reappears.
+    starts_bad, pos = [], 0
+    for _ in range(6 * 4):
+        off = pos % EX.BURST
+        if off < EX.LATENCY:
+            pos += EX.LATENCY - off
+            continue
+        starts_bad.append(pos)
+        pos += EX.N
+    straddling = [s for s in starts_bad
+                  if (s % EX.BURST) + EX.N > EX.BURST]
+    assert straddling, (
+        "dropping the boundary rule produced no straddling frame — this gate "
+        "would then be inert")
+
+
+def test_the_shipped_grc_states_the_tone_frequencies():
+    """Opened cold, without the README, the flowgraph says in Hz where the
+    spikes are — bin width and both tones."""
+    doc = _grc_doc()
+    desc = doc["options"]["parameters"]["description"]
+    title = doc["options"]["parameters"]["title"]
+    for text, where in ((desc, "description"), (title, "title")):
+        assert "2250" in text and "9250" in text, (
+            f"the .grc {where} never states the tone frequencies: {text!r}")
+        assert "250" in text and "Hz" in text, (
+            f"the .grc {where} does not state the bin width in Hz")
+    plot = _grc_block(doc, "spectrum_sink")["parameters"]["name"]
+    assert "2250" in plot and "9250" in plot and "250 Hz/bin" in plot, (
+        f"the plot's own title {plot!r} does not state the bin width and the "
+        "tone frequencies")
+
+
+# ---------------------------------------------------- the bin -> Hz mapping
+def test_bin_to_hz_mapping_pinned():
+    """``bin_hz = fs/N`` and ``f(k) = k*fs/N`` — against literals."""
+    assert EX.SAMP_RATE == 32000.0
+    assert EX.bin_hz() == BIN_HZ == 250.0
+    assert EX.bin_to_hz(EX.TONE_A) == TONE_A_HZ == 2250.0
+    assert EX.bin_to_hz(EX.TONE_B) == TONE_B_HZ == 9250.0
+    assert EX.bin_to_hz(0) == 0.0
+    # the positive half runs up to (but not including) N/2 ...
+    assert EX.bin_to_hz(EX.N // 2 - 1) == (EX.N // 2 - 1) * BIN_HZ
+    # ... and bins at or above N/2 are NEGATIVE frequencies.
+    assert EX.bin_to_hz(EX.N // 2) == -(EX.N / 2) * BIN_HZ == -16000.0
+    assert EX.bin_to_hz(EX.N - 1) == -BIN_HZ
+    with pytest.raises(ValueError):
+        EX.bin_to_hz(EX.N)
+
+
+def test_the_centred_axis_is_monotonic_and_spans_the_band():
+    """The display axis is ``-fs/2 + i*bin_hz`` — monotonic (the whole reason
+    for the fftshift) and covering exactly one band, with the shift map and
+    ``bin_to_hz`` agreeing on every bin."""
+    axis = EX.axis_hz()
+    assert len(axis) == EX.N
+    assert axis[0] == -EX.SAMP_RATE / 2 == -16000.0
+    assert axis[-1] == EX.SAMP_RATE / 2 - BIN_HZ
+    assert all(axis[i + 1] - axis[i] == BIN_HZ for i in range(EX.N - 1))
+    shift = EX.fftshift_order()
+    for k in range(EX.N):
+        assert axis[shift[k]] == EX.bin_to_hz(k), (
+            f"bin {k}: shifted to axis point {shift[k]} = {axis[shift[k]]} Hz, "
+            f"but bin_to_hz says {EX.bin_to_hz(k)}")
+    # and the pinned tone indices really are where the tones land
+    assert shift[EX.TONE_A] == TONE_INDEX_A
+    assert shift[EX.TONE_B] == TONE_INDEX_B
+    assert axis[TONE_INDEX_A] == TONE_A_HZ
+    assert axis[TONE_INDEX_B] == TONE_B_HZ
+
+
+def test_the_bit_reversal_map_is_pinned():
+    """The slot -> bin map is a permutation, an involution, and spot-pinned
+    against LITERALS — never against the code that produces it."""
+    rev = EX.unreverse()
+    assert len(rev) == EX.N
+    assert rev[:8] == [0, 64, 32, 96, 16, 80, 48, 112]
+    assert rev[TONE_SLOT_A] == EX.TONE_A and rev[EX.TONE_A] == TONE_SLOT_A
+    assert rev[TONE_SLOT_B] == EX.TONE_B and rev[EX.TONE_B] == TONE_SLOT_B
+    assert sorted(rev) == list(range(EX.N))
+    assert all(rev[rev[k]] == k for k in range(EX.N)), "not an involution"
+
+
+# ------------------------------------------- the spectrum on the real chip
+@needs_mc
+def test_the_tones_land_at_their_frequencies_on_the_real_chip(built):
+    """THE answer to "where are the spikes, in Hz": drive the ``.grc``'s OWN
+    two-tone stimulus through the real 4-die board and read the peaks off the
+    SAME centred Hz axis the flowgraph plots.
+
+    Measured: +2250.0 Hz at power 0.2025 and +9250.0 Hz at power 0.1225, with
+    every other one of the 128 points at exactly 0.0."""
+    _ctrl, bres, _d0, _d1 = built
+    eng, landing = EX.open_engine(bres)
+    stim = EX.grc_stimulus()
+    got = EX.drive(eng, landing, stim)
+    assert len(got) == 2 * len(stim), (
+        f"chain A's tail egressed {len(got)} words for {len(stim)} samples")
+    pairs = [(got[2 * k], got[2 * k + 1]) for k in range(len(stim))]
+
+    frames = EX.frames_of(pairs)
+    assert len(frames) == 2, (
+        f"expected 2 whole 128-bin frames past the latency, got {len(frames)}")
+    axis = EX.axis_hz()
+    for f, frame in enumerate(frames):
+        # the tones leave the chip on their BIT-REVERSED slots
+        power_by_slot = [(EX.s16(i) / 32768.0) ** 2 + (EX.s16(q) / 32768.0) ** 2
+                         for (i, q) in frame]
+        top_slots = sorted(range(EX.N), key=lambda s: power_by_slot[s],
+                           reverse=True)[:2]
+        assert set(top_slots) == {TONE_SLOT_A, TONE_SLOT_B}, (
+            f"frame {f}: the chip's strongest SLOTS are {sorted(top_slots)}, "
+            f"expected the bit-reversed {sorted([TONE_SLOT_A, TONE_SLOT_B])}")
+
+        centred = EX.centred_power_spectrum(frame)
+        assert _spectrum_gate(centred), f"frame {f} is not the two-line spectrum"
+        i_a = int(max(range(EX.N), key=lambda i: centred[i]))
+        assert axis[i_a] == TONE_A_HZ, (
+            f"frame {f}: the strongest line is at {axis[i_a]:.0f} Hz, "
+            f"expected {TONE_A_HZ:.0f} Hz")
+        assert axis[TONE_INDEX_B] == TONE_B_HZ
+        assert abs(centred[TONE_INDEX_A] - COHERENT_A) < COHERENT_TOL
+        assert abs(centred[TONE_INDEX_B] - COHERENT_B) < COHERENT_TOL
+        # an exactly-ON-BIN pair leaks NOWHERE: every other point is zero.
+        assert all(centred[i] == 0.0 for i in range(EX.N)
+                   if i not in (TONE_INDEX_A, TONE_INDEX_B)), (
+            f"frame {f}: an on-bin tone pair leaked into other bins")
+
+
+# ------------------------------------------------ THE DRAWN TRACE, live
+def _serve(kyt, *, wait_s: float = 240.0):
+    """Host ``kyt`` on the user-path port, waiting for an EXCLUSIVE bind.
+
+    The wait is correctness, not politeness. Every user-path suite binds the
+    same port, so a concurrent suite (or the owner's own GUI) holds it, and the
+    dangerous failure is NOT the loud one: if the bind quietly returns
+    something else the flowgraph happily talks to SOMEBODY ELSE'S server on
+    that port and this gate reads somebody else's chip output as a spectrum
+    defect. So this retries until it holds the port itself.
+    """
+    import time
+
+    from engine.catalog import BlockCatalog
+    from engine.io.project_io import load_project
+    from ui.controller import AppController
+    from ui.sim_controller import SimController
+
+    ctrl = AppController(catalog=BlockCatalog.from_gr_kyttar())
+    ctrl.set_project(load_project(str(kyt)))
+    sim = SimController(ctrl)
+    deadline = time.monotonic() + wait_s
+    bound = None
+    while time.monotonic() < deadline:
+        try:
+            bound = sim.start_gnuradio_server(port=_PORT)
+        except OSError:
+            bound = None
+        if bound == _PORT:
+            return ctrl, sim
+        try:
+            sim.stop_gnuradio_server()
+        except Exception:  # noqa: BLE001
+            pass
+        time.sleep(2.0)
+    raise AssertionError(
+        f"never obtained an EXCLUSIVE bind of port {_PORT} within {wait_s}s "
+        f"(last bind result {bound!r}) — another user-path suite or a stale "
+        "server is holding it; run this suite STANDALONE")
+
+
+def _run_flowgraph(grc, secs=120, taps=""):
+    r = subprocess.run(
+        [_GR_PYTHON, str(_RUNNER), str(grc), str(secs), taps],
+        capture_output=True, text=True, timeout=secs + 300,
+        env=dict(os.environ, QT_QPA_PLATFORM="offscreen"))
+    sinks = {}
+    for line in r.stdout.splitlines():
+        if line.startswith("SINK "):
+            parts = line.split()
+            sinks[parts[1]] = [float(x) for x in parts[2:]]
+    assert r.returncode == 0 and sinks, (
+        f"generated flowgraph failed (rc={r.returncode}):\n"
+        f"{r.stdout[-1500:]}\n{r.stderr[-2000:]}")
+    return sinks
+
+
+@pytest.mark.skipif(not os.path.exists(_GR_PYTHON),
+                    reason="GNU Radio interpreter absent")
+def test_the_drawn_spectrum_trace_through_the_shipped_user_path():
+    """THE DISPLAY GATE: host the SHIPPED ``.kyt``, run the SHIPPED ``.grc``'s
+    generated top block under the real GNU Radio interpreter, and assert the
+    trace the VECTOR SINK IS ACTUALLY DRAWN WITH.
+
+    The tap is on ``to_db`` and ``spectrum`` — the display glue itself, not the
+    kyttar sink — because a gate that stops at the sink is testing the wrong
+    thing: the sink stream was already bit-exact while the plot was a scrolling
+    time series of raw words. ``grc_userpath_run.py``'s third argument names
+    these extra ``block.port`` taps and matches the tap's vlen to the port, so
+    what is asserted here is the 128-point vector the sink paints.
+
+    ⚠️ RUN THIS SUITE STANDALONE — see ``_serve``.
+
+    Asserted:
+      * every frame the display emits is the two-line spectrum, at the tones'
+        CENTRED positions (73 -> +2250 Hz, 101 -> +9250 Hz);
+      * each line is at its coherent power (0.45^2 and 0.35^2), everything else
+        on the floor;
+      * the dB trace agrees (-6.9 and -9.1 dBFS) and sits inside the sink's
+        -95..5 dBFS y axis, so nothing paints off-scale;
+      * every frame across the whole run is identical — ``server_repeat``
+        replays the genuine batch rather than sliding the frame grid.
+    """
+    kyt = _EXAMPLE / "fft128_2p2s.kyt"
+    if not kyt.exists() or not GRC_PATH.exists():
+        pytest.skip("fft128_2p2s example not generated (run build_kyt.py)")
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+
+    _ctrl, sim = _serve(kyt)
+    try:
+        sinks = _run_flowgraph(GRC_PATH, taps="spectrum.0,to_db.0")
+    finally:
+        sim.stop_gnuradio_server()
+
+    n = EX.N
+    lin = sinks.get("spectrum.0")
+    db = sinks.get("to_db.0")
+    assert lin and db, (
+        "the display blocks were not tapped — the gate cannot see what the "
+        f"vector sink draws (got {sorted(sinks)})")
+    assert len(lin) % n == 0 and len(db) % n == 0, (
+        f"the display emitted {len(lin)} / {len(db)} floats, not a whole "
+        f"number of {n}-point vectors")
+    assert len(lin) >= n, "the display never emitted one whole spectrum frame"
+
+    lin_frames = [lin[i * n:(i + 1) * n] for i in range(len(lin) // n)]
+    db_frames = [db[i * n:(i + 1) * n] for i in range(len(db) // n)]
+    axis = EX.axis_hz()
+
+    for f, frame in enumerate(lin_frames):
+        assert _spectrum_gate(frame), (
+            f"drawn frame {f} is not the two-line spectrum: strongest points "
+            f"{sorted(range(n), key=lambda i: frame[i], reverse=True)[:4]}")
+        # THE MEASUREMENT: the spikes are AT these frequencies.
+        peak = int(max(range(n), key=lambda i: frame[i]))
+        assert axis[peak] == TONE_A_HZ, (
+            f"drawn frame {f}: the strongest line is at {axis[peak]:.0f} Hz, "
+            f"expected {TONE_A_HZ:.0f} Hz")
+        second = int(max((i for i in range(n) if i != peak),
+                         key=lambda i: frame[i]))
+        assert axis[second] == TONE_B_HZ, (
+            f"drawn frame {f}: the second line is at {axis[second]:.0f} Hz, "
+            f"expected {TONE_B_HZ:.0f} Hz")
+        rest = max(v for i, v in enumerate(frame)
+                   if i not in (TONE_INDEX_A, TONE_INDEX_B))
+        assert rest < LEAKAGE_MAX, (
+            f"drawn frame {f}: {rest} leaked into another bin — two ON-BIN "
+            "tones must be two clean lines")
+
+    # The dB trace the sink is actually configured for, on its own axis.
+    import math
+    want_a_db = 10.0 * math.log10(COHERENT_A)      # -6.93
+    want_b_db = 10.0 * math.log10(COHERENT_B)      # -9.12
+    for f, frame in enumerate(db_frames):
+        assert abs(frame[TONE_INDEX_A] - want_a_db) < 0.2, (
+            f"drawn dB frame {f}: +{TONE_A_HZ:.0f} Hz reads "
+            f"{frame[TONE_INDEX_A]:.2f} dBFS, expected ~{want_a_db:.2f}")
+        assert abs(frame[TONE_INDEX_B] - want_b_db) < 0.2, (
+            f"drawn dB frame {f}: +{TONE_B_HZ:.0f} Hz reads "
+            f"{frame[TONE_INDEX_B]:.2f} dBFS, expected ~{want_b_db:.2f}")
+        # every point must land INSIDE the sink's ymin/ymax or it paints
+        # off-scale even though the chip is right (the class of defect that
+        # produced the raw +-30000 flat line before).
+        assert all(-95.0 <= v <= 5.0 for v in frame), (
+            f"drawn dB frame {f} has points outside the sink's -95..5 dBFS "
+            f"axis: {[v for v in frame if not -95.0 <= v <= 5.0][:4]}")
+
+    # server_repeat LOOPS the genuine one-batch result: every later frame must
+    # be a clean replay of the first, or the frame grid is sliding.
+    for f in range(1, len(lin_frames)):
+        assert lin_frames[f] == lin_frames[0], (
+            f"drawn frame {f} differs from frame 0 — the looped display is "
+            "not a clean replay of the real batch")
+
+
+# ---------------------------------------------- INV-4 teeth for the DISPLAY
+@needs_mc
+def test_the_display_mutations_fail(built):
+    """A display gate never shown to fail certifies nothing. Each mutation
+    below is a way the plot could look plausible and be WRONG; every one must
+    be rejected by the same ``_spectrum_gate`` the live gate uses.
+
+    These are not hypothetical: the "no un-reversal" mutant IS the plot the
+    example shipped with before the fft_spectrum-style display chain, and the
+    "raw words as a time series" mutant is literally the reported defect."""
+    import numpy as np
+
+    _ctrl, bres, _d0, _d1 = built
+    eng, landing = EX.open_engine(bres)
+    stim = EX.grc_stimulus()
+    got = EX.drive(eng, landing, stim)
+    pairs = [(got[2 * k], got[2 * k + 1]) for k in range(len(stim))]
+    frame = EX.frames_of(pairs)[0]
+
+    honest = EX.centred_power_spectrum(frame)
+    assert _spectrum_gate(honest), (
+        "the honest spectrum must PASS, or the teeth mean nothing")
+
+    def power_slots():
+        return [(EX.s16(i) / 32768.0) ** 2 + (EX.s16(q) / 32768.0) ** 2
+                for (i, q) in frame]
+
+    shift = EX.fftshift_order()
+
+    # (a) NO UN-REVERSAL — plot the chip's raw DIF slots, fftshifted. A clean
+    #     two-line spectrum, with both lines in the WRONG place (slots 72/82
+    #     shift to 8/18, i.e. -14000 and -11500 Hz).
+    raw = power_slots()
+    bad = [0.0] * EX.N
+    for k, i in enumerate(shift):
+        bad[i] = raw[k]
+    assert not _spectrum_gate(bad), (
+        "the raw bit-reversed slots passed the display gate — the un-reversal "
+        "is not load-bearing, so the gate certifies nothing")
+
+    # (b) WRONG N in the un-reverse map: a 6-bit (FFT64) reversal applied to
+    #     128 slots — a subtly wrong permutation.
+    rev6 = []
+    for k in range(EX.N):
+        r, v = 0, k
+        for _ in range(6):
+            r = (r << 1) | (v & 1)
+            v >>= 1
+        rev6.append(r % EX.N)
+    nat = [0.0] * EX.N
+    for slot, b in enumerate(rev6):
+        nat[b] = raw[slot]
+    bad = [0.0] * EX.N
+    for k, i in enumerate(shift):
+        bad[i] = nat[k]
+    assert not _spectrum_gate(bad), "a 6-bit reversal map passed the gate"
+
+    # (c) NO FFTSHIFT — correct natural-order bins read against the centred
+    #     axis. The lines land at indices 9 and 37, i.e. -13750 and -6750 Hz.
+    rev = EX.unreverse()
+    nat = [0.0] * EX.N
+    for slot, b in enumerate(rev):
+        nat[b] = raw[slot]
+    assert not _spectrum_gate(nat), (
+        "the unshifted natural-order vector passed the gate — a linear Hz "
+        "axis would mislabel every negative-frequency bin")
+
+    # (d) RAW WORDS AS A TIME SERIES — THE REPORTED DEFECT. The interleaved
+    #     I/Q float stream, one window of N points straight off the sink, is
+    #     what the old time sink drew. It is not a spectrum at all.
+    words = [EX.s16(w) / 32768.0
+             for k in range(EX.LATENCY, EX.LATENCY + EX.N // 2)
+             for w in pairs[k]]
+    assert len(words) == EX.N
+    assert not _spectrum_gate(words), (
+        "a raw interleaved-word time series passed the display gate — the "
+        "gate cannot tell a spectrum from the scrolling word stream it "
+        "replaces")
+
+    # (e) NO DE-INTERLEAVE — treat the I and Q rails as separate bins (twice
+    #     as many "bins", half a frame's worth of real ones).
+    half = [abs(EX.s16(w) / 32768.0) ** 2
+            for k in range(EX.N // 2) for w in frame[k]]
+    assert not _spectrum_gate(half), (
+        "an un-de-interleaved half-frame passed the display gate")
+
+    # (f) the LATENCY not stripped: read a frame at offset 0 rather than 127.
+    early = EX.centred_power_spectrum(pairs[:EX.N])
+    assert not _spectrum_gate(early), (
+        "the startup transient already looks like the answer — the latency "
+        "strip would be untestable")
+
+    # (g) degenerate streams a broken chain would produce.
+    assert not _spectrum_gate([0.0] * EX.N), "an all-zero spectrum passed"
+    assert not _spectrum_gate([1.0] * EX.N), "a flat full-scale spectrum passed"
+    assert not _spectrum_gate(list(np.zeros(EX.N // 2))), "a short vector passed"
+
+
+def test_mutation_wrong_sample_rate_moves_the_frequency():
+    """INV-4 for the Hz claim: it is a claim about fs, not a constant. Halving
+    the declared rate must halve every frequency — a mapping that ignored fs
+    would keep reading 2250 Hz."""
+    assert EX.bin_to_hz(EX.TONE_A, samp_rate=16000.0) == 1125.0
+    assert EX.bin_to_hz(EX.TONE_A, samp_rate=16000.0) != TONE_A_HZ
+    assert EX.bin_hz(samp_rate=16000.0) == 125.0
+
+
+def test_mutation_unshifted_axis_mislabels_the_tones():
+    """INV-4: reading the NATURAL-order vector against the centred axis (i.e.
+    forgetting the fftshift) puts both tones at the wrong frequency — the
+    wrong-but-plausible plot the shift exists to prevent."""
+    axis = EX.axis_hz()
+    # natural bin 9 sits at index 9 of an UNSHIFTED vector; on the centred
+    # axis index 9 is -16000 + 9*250 = -13750 Hz, not +2250.
+    assert axis[EX.TONE_A] == -13750.0
+    assert axis[EX.TONE_B] == -6750.0
+    assert axis[EX.TONE_A] != EX.bin_to_hz(EX.TONE_A)
+    assert axis[EX.TONE_B] != EX.bin_to_hz(EX.TONE_B)
+
+
+def test_the_grc_stimulus_helper_matches_the_shipped_flowgraph():
+    """The gate drives ``grc_stimulus()`` while the flowgraph computes its
+    vector inline. If they ever diverge, every "the tones are at 2250/9250 Hz"
+    claim above is about a different stimulus than the user runs."""
+    doc = _grc_doc()
+    vec = _grc_block(doc, "stim")["parameters"]["vector"]
+    variables = {b["name"]: b["parameters"].get("value")
+                 for b in doc["blocks"] if b.get("id") == "variable"}
+    assert variables.get("tone_a") == str(EX.TONE_A)
+    assert variables.get("tone_b") == str(EX.TONE_B)
+    assert variables.get("burst_len") == str(EX.BURST)
+    assert str(EX.AMP_A) in vec and str(EX.AMP_B) in vec, (
+        f"the .grc's stimulus amplitudes are not {EX.AMP_A}/{EX.AMP_B}: {vec}")
+    assert "tone_a" in vec and "tone_b" in vec and "n_fft" in vec, (
+        "the .grc's stimulus does not use its own tone/size variables, so the "
+        f"published frequencies can drift from what it drives: {vec}")
+
+    # Evaluate the .grc's OWN expression in the .grc's OWN variable scope and
+    # demand it equal the helper the gates drive, sample for sample.
+    scope = {"burst_len": EX.BURST, "n_fft": EX.N,
+             "tone_a": EX.TONE_A, "tone_b": EX.TONE_B}
+    theirs = [(EX.q15(c.real), EX.q15(c.imag)) for c in eval(vec, {}, scope)]
+    assert theirs == EX.grc_stimulus(), (
+        "the .grc's inline stimulus and grc_stimulus() have drifted apart")
 
 
 @pytest.mark.parametrize("cls_name", ["FFT128Die0", "FFT128Die1"])

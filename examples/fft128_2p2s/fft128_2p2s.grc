@@ -8,7 +8,10 @@ options:
     copyright: ''
     description: 'FFT128 on the 2P2S board: chain A''s head (chip 0) runs stage 0,
       its tail (chip 1) runs stages 1..6, joined by the board''s on-carrier series
-      link. Driven through the placeKYT multi-chip GNURadio server.'
+      link. Driven through the placeKYT multi-chip GNURadio server. The spectrum plot
+      reads in Hz: bin k of 128 at samp_rate is k*fs/N, so at 32000 Hz each bin is
+      250 Hz wide and the two demo tones (bins 9 and 37) peak at +2250 Hz and +9250
+      Hz.'
     gen_cmake: 'On'
     gen_linking: dynamic
     generate_options: qt_gui
@@ -24,8 +27,8 @@ options:
     run_options: prompt
     sizing_mode: fixed
     thread_safe_setters: ''
-    title: "Kyttar FFT128 \u2014 a 128-point transform across the 2P2S board's chain\
-      \ A"
+    title: "Kyttar FFT128 \u2014 a 128-point spectrum across the 2P2S board's chain\
+      \ A (250 Hz/bin, tones at +2250 and +9250 Hz)"
     window_size: (1500,900)
   states:
     bus_sink: false
@@ -37,10 +40,40 @@ options:
     rotation: 0
     state: enabled
 blocks:
+- name: n_fft
+  id: variable
+  parameters:
+    comment: the transform size split across chain A's two dies
+    value: '128'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 40
+    - 12
+    rotation: 0
+    state: enabled
+- name: latency
+  id: variable
+  parameters:
+    comment: "the chain's pinned pipeline latency (64 from die 0 + 63 from die 1)\
+      \ \u2014 the first 127 complex outputs are the zero-initialised startup transient,\
+      \ not a frame"
+    value: '127'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 120
+    - 12
+    rotation: 0
+    state: enabled
 - name: burst_len
   id: variable
   parameters:
-    comment: one 128-bin frame past the 127-sample latency
+    comment: two whole 128-bin frames past the 127-sample latency
     value: '384'
   states:
     bus_sink: false
@@ -65,6 +98,40 @@ blocks:
     - 12
     rotation: 0
     state: enabled
+- name: samp_rate
+  id: variable
+  parameters:
+    comment: "the rate the I/Q stimulus is DECLARED to be sampled at. The array is\
+      \ asynchronous \u2014 it has no clock of its own, so it transforms whatever\
+      \ stream you hand it and the sample rate is entirely YOURS to state. It is what\
+      \ turns a bin index into a physical frequency, so the spectrum axis can read\
+      \ in Hz."
+    value: '32000'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 440
+    - 12
+    rotation: 0
+    state: enabled
+- name: bin_hz
+  id: variable
+  parameters:
+    comment: BIN WIDTH = samp_rate / n_fft = 32000/128 = 250 Hz. Bin k of N at rate
+      fs is centred on k*fs/N, and bins at or above N/2 are NEGATIVE frequencies (k-N)*fs/N.
+      The demo tones at bins 9 and 37 are therefore 2250 Hz and 9250 Hz.
+    value: samp_rate / n_fft
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 480
+    - 12
+    rotation: 0
+    state: enabled
 - name: server_port
   id: variable
   parameters:
@@ -80,19 +147,53 @@ blocks:
     - 12
     rotation: 0
     state: enabled
+- name: tone_a
+  id: variable
+  parameters:
+    comment: 'the FIRST demo tone''s natural FFT bin. ON-BIN (an integer number of
+      cycles per 128-sample frame) so the answer is a clean line with no leakage.
+      The chip emits it at SLOT bit_reverse_7(9) = 72; the spectrum block puts it
+      back at 9. In Hz: 9 * bin_hz = 2250 Hz.'
+    value: '9'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 640
+    - 12
+    rotation: 0
+    state: enabled
+- name: tone_b
+  id: variable
+  parameters:
+    comment: the SECOND demo tone's natural FFT bin. SLOT bit_reverse_7(37) = 82 off
+      the chip; 37 * bin_hz = 9250 Hz on the plot.
+    value: '37'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 720
+    - 12
+    rotation: 0
+    state: enabled
 - name: stim
   id: blocks_vector_source_x
   parameters:
     affinity: ''
     alias: ''
-    comment: two complex tones (bins 9 and 37 of 128)
+    comment: "two complex tones \u2014 bins 9 and 37 of 128, i.e. 2250 Hz and 9250\
+      \ Hz at samp_rate = 32000"
     maxoutbuf: '0'
     minoutbuf: '0'
     repeat: 'True'
     tags: '[]'
     type: complex
-    vector: '[0.45*__import__(''cmath'').exp(2j*3.141592653589793*9*n/128) + 0.35*__import__(''cmath'').exp(2j*3.141592653589793*37*n/128)
-      for n in range(burst_len)]'
+    vector: '[0.45*__import__(''cmath'').exp(2j*3.141592653589793*tone_a*n/n_fft)
+      + 0.35*__import__(''cmath'').exp(2j*3.141592653589793*tone_b*n/n_fft) for n
+      in range(burst_len)]'
     vlen: '1'
   states:
     bus_sink: false
@@ -195,8 +296,145 @@ blocks:
     - 200
     rotation: 0
     state: enabled
-- name: bins
-  id: qtgui_time_sink_x
+- name: spectrum
+  id: epy_block
+  parameters:
+    _source_code: "\"\"\"The chain tail's INTERLEAVED I/Q words -> a centred POWER\
+      \ SPECTRUM.\n\nThis is the example's display contract, and it exists because\
+      \ the raw\nsink stream is NOT a spectrum. Four things separate them, and every\
+      \ one\nof them is load-bearing:\n\n1. DE-INTERLEAVE. Chain A's tail is a COMPLEX\
+      \ exit cell: it emits\n   out_i then out_q from one cell, so the sink's float\
+      \ stream is\n   I, Q, I, Q ... at the q15/32768 scale \u2014 two words per frequency\n\
+      \   bin. Plotting that stream directly is what the \"spikes flow across\n  \
+      \ the screen with time on the x axis\" report was looking at: a time\n   series\
+      \ of raw words, where a single bin's energy shows up as two\n   adjacent samples\
+      \ and the bin INDEX is nowhere on the axis.\n\n2. STRIP THE LATENCY. The transform's\
+      \ pipeline latency is 127 samples\n   (64 from die 0, 63 from die 1), so the\
+      \ first 127 complex outputs of\n   a burst are the deterministic startup values\
+      \ of the zero-initialised\n   pipeline, not a frame. Burst boundaries are found\
+      \ by counting\n   complex samples modulo burst_len.\n\n3. UN-REVERSE. The placed\
+      \ FFT emits DIF order with deliberately NO\n   reorder buffer: output slot k\
+      \ of each 128-sample frame carries\n   frequency bin bit_reverse_7(k). Slot\
+      \ 72 is bin 9; slot 82 is bin\n   37; slot 1 is bin 64. A plot fed the raw slots\
+      \ is a SCRAMBLED\n   spectrum that still looks plausible, which is exactly why\
+      \ this\n   block exists and why the gate pins the mapping.\n\n4. FFTSHIFT, so\
+      \ the x axis can read in Hz and be MONOTONIC. Natural\n   bin k of an N-point\
+      \ transform at sample rate fs is the frequency\n\n       f(k) = k*fs/N     \
+      \     for k <  N/2   (positive frequencies)\n       f(k) = (k-N)*fs/N      for\
+      \ k >= N/2   (negative frequencies)\n\n   i.e. the natural-order vector runs\
+      \ 0 -> +fs/2 and then jumps to\n   -fs/2 -> 0, which no single linear axis can\
+      \ label. Rolling the\n   vector by N/2 puts bin N/2 first, so the emitted vector\
+      \ runs\n   monotonically from -fs/2 in steps of fs/N and the sink's\n   set_x_axis(-samp_rate/2,\
+      \ bin_hz) labels every point correctly.\n   At fs = 32000 and N = 128 the step\
+      \ is 250 Hz, and the demo's two\n   tones (natural bins 9 and 37) land at indices\
+      \ 9 + 64 = 73 ->\n   -16000 + 73*250 = +2250 Hz = 9*250, and 37 + 64 = 101 ->\n\
+      \   -16000 + 101*250 = +9250 Hz = 37*250.\n\nEmits one 128-bin POWER vector\
+      \ per whole frame, in ascending frequency\norder from -fs/2. Power is |z|^2\
+      \ at the FFT/128 scale, so a full-scale\ncoherent bin reads 1.0.\n\"\"\"\nimport\
+      \ numpy as np\nfrom gnuradio import gr\n\n\ndef _bitrev(n):\n    bits = int(n).bit_length()\
+      \ - 1\n    out = []\n    for k in range(n):\n        r, v = 0, k\n        for\
+      \ _ in range(bits):\n            r = (r << 1) | (v & 1)\n            v >>= 1\n\
+      \        out.append(r)\n    return np.array(out, dtype=np.intp)\n\n\nclass blk(gr.basic_block):\n\
+      \    def __init__(self, n_fft=128, latency=127, burst_len=384):\n        gr.basic_block.__init__(\n\
+      \            self, name='FFT128 words to centred spectrum',\n            in_sig=[np.float32],\
+      \ out_sig=[(np.float32, int(n_fft))])\n        self.n = int(n_fft)\n       \
+      \ self.latency = int(latency)\n        self.burst = int(burst_len)\n       \
+      \ # slot -> natural bin. The map is an involution, so this same\n        # permutation\
+      \ both scrambles and unscrambles; applying it to the\n        # emitted slots\
+      \ yields natural bin order.\n        self.rev = _bitrev(self.n)\n        # natural\
+      \ bin -> position on the CENTRED (-fs/2 .. +fs/2) axis.\n        # This is exactly\
+      \ np.fft.fftshift's permutation, written out so\n        # the mapping is readable\
+      \ in the flowgraph.\n        self.shift = (np.arange(self.n) + self.n // 2)\
+      \ % self.n\n        self.buf = np.zeros(0, dtype=np.float32)\n        self.pos\
+      \ = 0          # index of buf[0] in COMPLEX samples of the burst\n\n    def\
+      \ forecast(self, noutput_items, ninputs):\n        # two float words per complex\
+      \ bin\n        return [2 * (noutput_items * self.n + self.n)] * ninputs\n\n\
+      \    def general_work(self, input_items, output_items):\n        x = input_items[0]\n\
+      \        self.buf = np.concatenate([self.buf, np.asarray(x, np.float32)])\n\
+      \        self.consume(0, len(x))\n        out = output_items[0]\n        made\
+      \ = 0\n        while made < len(out):\n            # position of buf[0] inside\
+      \ its burst, in COMPLEX samples\n            off = self.pos % self.burst\n \
+      \           if off < self.latency:            # inside the startup transient\n\
+      \                drop = min(self.latency - off, len(self.buf) // 2)\n      \
+      \          if drop == 0:\n                    break\n                self.buf\
+      \ = self.buf[2 * drop:]\n                self.pos += drop\n                continue\n\
+      \            if off + self.n > self.burst:\n                # THE BURST'S RAGGED\
+      \ TAIL. burst_len is not latency + k*n_fft\n                # (384 vs 127 +\
+      \ 2*128 = 383), so a burst ends with fewer than\n                # n_fft samples\
+      \ left over. Those are not a frame, and a frame\n                # STRADDLING\
+      \ the boundary is 1 real sample plus 127 of the\n                # NEXT burst's\
+      \ zero-fill transient \u2014 measured as an all-zero\n                # \"spectrum\"\
+      \ painted as every third frame. Drop the remainder.\n                drop =\
+      \ min(self.burst - off, len(self.buf) // 2)\n                if drop == 0:\n\
+      \                    break\n                self.buf = self.buf[2 * drop:]\n\
+      \                self.pos += drop\n                continue\n            if\
+      \ len(self.buf) < 2 * self.n:\n                break\n            frame = self.buf[:2\
+      \ * self.n]\n            self.buf = self.buf[2 * self.n:]\n            self.pos\
+      \ += self.n\n            # DE-INTERLEAVE: out_i, out_q per bin -> one complex\
+      \ slot\n            bins = frame[0::2].astype(np.float64) \\\n             \
+      \   + 1j * frame[1::2].astype(np.float64)\n            power = np.abs(bins)\
+      \ ** 2\n            nat = np.zeros(self.n, dtype=np.float32)\n            nat[self.rev]\
+      \ = power          # slots -> natural bin order\n            centred = np.zeros(self.n,\
+      \ dtype=np.float32)\n            centred[self.shift] = nat      # natural bins\
+      \ -> -fs/2 .. +fs/2\n            out[made][:] = centred\n            made +=\
+      \ 1\n        return made\n"
+    affinity: ''
+    alias: ''
+    burst_len: burst_len
+    comment: interleaved I/Q chip words -> a 128-bin POWER vector in ASCENDING FREQUENCY
+      order from -samp_rate/2 (de-interleave, un-reverse, fftshift), with the 127-sample
+      startup transient stripped
+    latency: latency
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    n_fft: n_fft
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1120
+    - 180
+    rotation: 0
+    state: enabled
+    _io_cache: ('FFT128 words to centred spectrum', 'blk', [('n_fft', '128'), ('latency',
+      '127'), ('burst_len', '384')], [('0', 'float', 1)], [('0', 'float', 128)], '',
+      ['burst_len', 'latency', 'n_fft'])
+- name: to_db
+  id: epy_block
+  parameters:
+    _source_code: "\"\"\"Per-bin power -> dBFS, for a log spectrum display.\n\nThe\
+      \ spectrum block upstream computes |z|^2 from the chain tail's\ninterleaved\
+      \ I/Q at the q15/32768 scale, so this is just 10*log10 with a\nfloor. The transform's\
+      \ FFT/128 scale puts a full-scale coherent bin at\npower 1.0 = 0 dBFS, so the\
+      \ plot reads directly in dBFS.\n\"\"\"\nimport numpy as np\nfrom gnuradio import\
+      \ gr\n\n\nclass blk(gr.sync_block):\n    def __init__(self, n_fft=128, floor_db=-90.0):\n\
+      \        gr.sync_block.__init__(\n            self, name='Power to dBFS',\n\
+      \            in_sig=[(np.float32, int(n_fft))],\n            out_sig=[(np.float32,\
+      \ int(n_fft))])\n        self.floor = float(floor_db)\n        self.eps = 10.0\
+      \ ** (self.floor / 10.0)\n\n    def work(self, input_items, output_items):\n\
+      \        x = np.maximum(np.asarray(input_items[0]), self.eps)\n        output_items[0][:]\
+      \ = (10.0 * np.log10(x)).astype(np.float32)\n        return len(output_items[0])\n"
+    affinity: ''
+    alias: ''
+    comment: linear power -> dBFS (0 dBFS = a full-scale coherent bin)
+    floor_db: '-90.0'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    n_fft: n_fft
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1120
+    - 340
+    rotation: 0
+    state: enabled
+    _io_cache: ('Power to dBFS', 'blk', [('n_fft', '128'), ('floor_db', '-90.0')],
+      [('0', 'float', 128)], [('0', 'float', 128)], '', ['floor_db', 'n_fft'])
+- name: spectrum_sink
+  id: qtgui_vector_sink_f
   parameters:
     alpha1: '1.0'
     alpha2: '1.0'
@@ -208,59 +446,72 @@ blocks:
     alpha8: '1.0'
     alpha9: '1.0'
     alpha10: '1.0'
-    color1: blue
-    color2: blue
-    color3: blue
-    color4: blue
-    color5: blue
-    color6: blue
-    color7: blue
-    color8: blue
-    color9: blue
-    color10: blue
-    label1: FFT128 output words (I, Q interleaved)
-    label2: Signal 2
-    label3: Signal 3
-    label4: Signal 4
-    label5: Signal 5
-    label6: Signal 6
-    label7: Signal 7
-    label8: Signal 8
-    label9: Signal 9
-    label10: Signal 10
+    color1: '"blue"'
+    color2: '"red"'
+    color3: '"blue"'
+    color4: '"blue"'
+    color5: '"blue"'
+    color6: '"blue"'
+    color7: '"blue"'
+    color8: '"blue"'
+    color9: '"blue"'
+    color10: '"blue"'
+    label1: on-chip FFT128 power spectrum (bin k = k*samp_rate/128 Hz)
+    label2: ''
+    label3: ''
+    label4: ''
+    label5: ''
+    label6: ''
+    label7: ''
+    label8: ''
+    label9: ''
+    label10: ''
+    width1: '3'
+    width2: '1'
+    width3: '1'
+    width4: '1'
+    width5: '1'
+    width6: '1'
+    width7: '1'
+    width8: '1'
+    width9: '1'
+    width10: '1'
     affinity: ''
     alias: ''
-    autoscale: 'True'
-    axislabels: 'True'
-    comment: "the transform's bins off chain A's tail. Slot k of each 128-bin frame\
-      \ carries bin bit_reverse_7(k) \u2014 the DIF order, no reorder buffer."
-    ctrlpanel: 'False'
-    entags: 'True'
+    autoscale: 'False'
+    average: '1.0'
+    comment: "THE SPECTRUM \u2014 128 bins off chain A's tail, on a real FREQUENCY\
+      \ axis. x runs from -samp_rate/2 = -16000 Hz in steps of bin_hz = samp_rate/n_fft\
+      \ = 250 Hz, so point i is (i - 64)*250 Hz. The demo tones (natural bins 9 and\
+      \ 37) are the lines at +2250 Hz and +9250 Hz; every other bin sits on the -90\
+      \ dBFS floor."
     grid: 'True'
     gui_hint: ''
     legend: 'True'
-    name: '"FFT128 output words (I, Q interleaved)"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    name: "\"On-chip FFT128 spectrum \u2014 250 Hz/bin, tones at +2250 Hz and +9250\
+      \ Hz (dBFS)\""
     nconnections: '1'
-    size: scope_points
-    srate: scope_points
-    type: float
-    tr_chan: '0'
-    tr_delay: '0'
-    tr_level: '0.0'
-    tr_mode: qtgui.TRIG_MODE_FREE
-    tr_slope: qtgui.TRIG_SLOPE_POS
-    tr_tag: '""'
-    ylabel: Magnitude
-    ymax: '1'
-    ymin: '-1'
-    yunit: '""'
+    ref_level: '0'
+    showports: 'False'
+    update_time: '0.10'
+    vlen: n_fft
+    x_axis_label: "\"frequency (Hz) \u2014 bin k of 128 at samp_rate = k*samp_rate/128\""
+    x_start: -samp_rate / 2
+    x_step: bin_hz
+    x_units: '"Hz"'
+    y_axis_label: '"power (dBFS)"'
+    y_units: '""'
+    ymax: '5'
+    ymin: '-95'
   states:
     bus_sink: false
     bus_source: false
     bus_structure: null
     coordinate:
-    - 1160
-    - 180
+    - 1400
+    - 320
     rotation: 0
     state: enabled
 - name: in_mag
@@ -278,7 +529,7 @@ blocks:
     bus_structure: null
     coordinate:
     - 960
-    - 420
+    - 520
     rotation: 0
     state: enabled
 - name: in_scope
@@ -345,7 +596,7 @@ blocks:
     bus_structure: null
     coordinate:
     - 1160
-    - 400
+    - 500
     rotation: 0
     state: enabled
 connections:
@@ -367,7 +618,15 @@ connections:
   - '0'
 - - kyt_sink
   - '0'
-  - bins
+  - spectrum
+  - '0'
+- - spectrum
+  - '0'
+  - to_db
+  - '0'
+- - to_db
+  - '0'
+  - spectrum_sink
   - '0'
 - - stim
   - '0'

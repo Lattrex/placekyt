@@ -256,6 +256,83 @@ cannot pass on the zeros alone), and that `server_repeat` loops the genuine
 burst cleanly. Reverting the `.grc` to `"auto"` makes it fail with exactly the
 4/384 signature above — the gate has teeth.
 
+## A FOURTH defect, in the DISPLAY rather than the data
+
+With all three faults above fixed the chain was bit-exact through the hosted
+server — and the plot was still wrong. Reported, watching the GUI:
+
+> "The scale for the FFT output in the GRC waveform viewer still doesn't look
+> right. It doesn't show the actual frequency where the spikes are ... that
+> still has time as the x axis and those spikes just flow across the screen."
+
+That is not a scale problem and it is not a chip problem. The `.grc` plotted
+the kyttar sink's **raw recovered stream** on a `qtgui_time_sink_x` titled
+"FFT128 output words (I, Q interleaved)". A time sink's x axis **is** time;
+there is no relabel that makes it read in Hz. And the stream itself is not a
+spectrum — **four** transformations separate the two, and every one of them
+is load-bearing:
+
+| # | What | Why the plot is wrong without it |
+|---|------|----------------------------------|
+| 1 | **De-interleave** the complex pair | The chain tail is a COMPLEX exit cell: `out_i` then `out_q` from one cell, so the stream carries **two float words per bin**. A time sink draws one bin's energy as two adjacent samples. |
+| 2 | **Strip the 127-sample latency** | The first 127 complex outputs of a burst are the zero-initialised pipeline's startup values, not a frame. |
+| 3 | **Un-reverse** the DIF slot order | Slot *k* carries bin `bit_reverse_7(k)`. Plotting slots is a **scrambled spectrum that still looks plausible** — clean lines, wrong frequencies. |
+| 4 | **fftshift** | Natural order runs 0 → +fs/2 and then *jumps* to −fs/2 → 0. No single linear axis can label that; rolling by N/2 makes the vector monotonic so `set_x_axis(-samp_rate/2, bin_hz)` labels every point. |
+
+The fix is the one `examples/fft_spectrum` already ships, with N and the
+complex de-interleave being what differ:
+
+```
+kyttar_sink ─▶ spectrum (de-interleave, strip, un-reverse, fftshift, |z|²)
+            ─▶ to_db (10·log10) ─▶ qtgui_vector_sink_f
+                                   x_start = -samp_rate/2, x_step = bin_hz,
+                                   x_units = "Hz"
+```
+
+`fft128_2p2s_spectrum.py` and `fft128_2p2s_to_db.py` are the display blocks,
+embedded verbatim into the `.grc` by `gen_grc.py` so the readable file and the
+flowgraph cannot drift.
+
+### What the plot reads now
+
+At the repo convention `samp_rate = 32000` and N = 128 each bin is
+**250 Hz** wide. The shipped stimulus is two ON-BIN tones:
+
+| tone | natural bin | chip SLOT (`bit_reverse_7`) | centred index | **frequency** | power | dBFS |
+|---|---|---|---|---|---|---|
+| A (amplitude 0.45) | 9 | 72 | 73 | **+2250 Hz** | 0.2025 | −6.93 |
+| B (amplitude 0.35) | 37 | 82 | 101 | **+9250 Hz** | 0.1225 | −9.12 |
+
+Every other one of the 128 points is **exactly 0.0** — an on-bin tone leaks
+nowhere — so the plot is two clean lines on the −90 dBFS floor. Measured on
+the real 4-die board *and* on the trace the vector sink is actually drawn
+with, tapped live through the hosted server.
+
+The stimulus scope (`input |x[n]| (two tones)`) is unchanged: it is a
+time-domain signal, so a time sink is the right sink for it.
+
+### And a fifth defect the DRAWN-TRACE tap caught
+
+The first version of the display chain was bit-exact and still blanked the
+plot on **every third frame**. `burst_len` is 384 while `latency + 2*n_fft`
+is **383**, so each burst ends with **one** sample left over. A frame reader
+that keeps consuming across the boundary builds its next "frame" from that
+one real sample plus 127 of the *next* burst's zero-fill transient — an
+all-zero spectrum. With `server_repeat` looping the batch that repeats
+forever: measured over a live run, **4728 frames in a perfectly regular
+good / good / blank cycle**.
+
+Nothing about the data was wrong; it is purely a framing fault in the display
+glue, and **no bit-exactness assertion can see it**. It was caught because the
+gate taps `spectrum.0` / `to_db.0` — the display blocks' own output, what the
+vector sink is actually drawn with — rather than stopping at the kyttar sink.
+That is the same lesson the CSS transceiver's display gate records, and it is
+why `grc_userpath_run.py` takes the extra `block.port` taps (now with a
+vlen-matched tap, so a vector display port can be tapped at all).
+
+The block drops the ragged tail; `test_the_display_drops_the_bursts_ragged_tail`
+pins the rule with teeth against its own removal.
+
 ## The drive is part of the design
 
 A complex sample is a **three-part transaction**:
@@ -294,8 +371,10 @@ be "simplified" away.
 | `fft128_2p2s.grc` | The GNU Radio flowgraph — drives chain A through the multi-chip server. Open in `gnuradio-companion`. |
 | `fft128_2p2s.py` | The design + the drive. `build_2p2s()`, `open_engine()`, `drive()` — shared by the demo, the `.kyt` writer and the gate, so they cannot drift. |
 | `fft128_2p2s_demo.py` | **The debugging vehicle.** Per-trigger yield, the carrier link's traffic, the first non-quiescent trigger, the per-die concurrency table, then a word-for-word compare. |
+| `fft128_2p2s_spectrum.py` | **The display contract.** Interleaved I/Q chip words → a centred 128-bin POWER vector: de-interleave, strip the 127-sample latency, un-reverse the DIF slots, fftshift. Embedded verbatim into the `.grc`. |
+| `fft128_2p2s_to_db.py` | Per-bin power → dBFS for the log spectrum plot. Embedded verbatim into the `.grc`. |
 | `build_kyt.py` | Regenerates `fft128_2p2s.kyt` from the real place-and-route. |
-| `gen_grc.py` | Regenerates `fft128_2p2s.grc`. |
+| `gen_grc.py` | Regenerates `fft128_2p2s.grc`, reading the two display blocks from the files above so they cannot drift. |
 
 ## Run it
 
@@ -384,6 +463,14 @@ so the first 127 outputs are the deterministic startup values of the
 zero-initialised pipeline — not a bug, and the reason a short run proves
 nothing.
 
+**Bin → Hz.** A bin index is dimensionless; the array is asynchronous and has
+no clock, so the sample rate is **declared** by your stimulus (`samp_rate` in
+the `.grc`). Bin *k* of *N* at rate *fs* is `k*fs/N`, with bins at or above
+*N*/2 being the negative frequencies `(k-N)*fs/N`. At the shipped
+`samp_rate = 32000` each bin is **250 Hz**. `fft128_2p2s.py` publishes this as
+`bin_hz()`, `bin_to_hz()`, `fftshift_order()` and `axis_hz()`, and the plot,
+the README and the gates all cite that one statement.
+
 **A single die's output is not frequency bins.** Die 0 emits a *partially
 transformed* stream; asking either die for a bin map raises rather than
 returning a plausible-looking wrong answer.
@@ -411,7 +498,26 @@ $ QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest \
 - **INV-4 teeth**: a single corrupted word, swapped rails and a dropped sample
   each FAIL the comparison;
 - the **un-paced drive** is held as a gate, so the root cause cannot be
-  re-introduced by "simplifying" the pumps away.
+  re-introduced by "simplifying" the pumps away;
+- **THE DISPLAY**, which is a separate claim from the data:
+  - the shipped `.grc` plots a **vector (frequency) sink** with `x_units="Hz"`,
+    `x_start=-samp_rate/2` and `x_step=bin_hz` — and **no time sink is fed the
+    chip's raw recovered words** any more;
+  - the display block does **all four** transformations (de-interleave, strip
+    the latency, un-reverse, fftshift) and drops the burst's ragged tail;
+  - the tones land at **+2250 Hz and +9250 Hz** on the real 4-die board, at
+    powers 0.2025 and 0.1225, with every other point at exactly 0.0;
+  - **the DRAWN trace** — tapped at `spectrum.0` / `to_db.0` through the live
+    hosted server, i.e. what the vector sink is actually painted with — is that
+    same two-line spectrum in **every** frame, at −6.93 and −9.12 dBFS, inside
+    the sink's −95..5 dBFS axis, with every frame a clean `server_repeat`
+    replay of the first;
+  - **INV-4 teeth for the display**: no un-reversal, a wrong-*N* un-reverse
+    map, no fftshift, raw words as a time series, no de-interleave, an
+    unstripped latency, and degenerate flat/zero/short vectors each FAIL the
+    same spectrum gate the live test uses; a halved `samp_rate` must move every
+    frequency; and the `.grc`'s own inline stimulus is evaluated and required to
+    equal the stimulus the gates drive.
 
 The arithmetic gates live separately in
 `verification/tests/test_fft128_split.py` (the composition identity, both

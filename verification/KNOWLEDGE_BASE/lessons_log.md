@@ -9,6 +9,65 @@ block-specific gotcha. Promote anything that generalizes across block classes in
 and superseded material merged into the surviving entries; no durable lesson was
 dropped) — append new entries above the oldest ones as before.
 
+## FFT128 DISPLAY — a bit-exact chain is not a correct PLOT, and the drawn-trace tap is what proves it 2026-08-25
+
+`examples/fft128_2p2s` computed correctly and its plot was still wrong. Reported
+watching the GUI: *"it doesn't show the actual frequency where the spikes are ...
+that still has time as the x axis and those spikes just flow across the screen."*
+
+**The `.grc` plotted the kyttar sink's raw recovered stream on a `qtgui_time_sink_x`.**
+A time sink's x axis IS time — no relabel makes it read in Hz. And the stream is not a
+spectrum: **four** transformations separate them, and skipping any one leaves a plot
+that still looks plausible.
+
+| # | Transformation | What its absence paints |
+|---|---|---|
+| 1 | **de-interleave** the complex pair | the tail is a COMPLEX exit cell (`out_i`, `out_q` from one cell) — **two** float words per bin, drawn as two adjacent time samples |
+| 2 | strip the **N−1 latency** | the zero-fill startup transient read as a frame |
+| 3 | **un-reverse** the DIF slots | a SCRAMBLED spectrum: clean lines, wrong frequencies |
+| 4 | **fftshift** | natural order runs 0 → +fs/2 then *jumps* to −fs/2; no linear axis can label it |
+
+The fix is the one `examples/fft_spectrum` already shipped, so the transferable rule is
+**a placed FFT's example needs a display chain, not a scope** — and if a sibling
+example already has one, copy its shape rather than re-deriving it. What differs per
+example is only *N* and whether the chip already reduced I/Q to power on-chip
+(fft_spectrum has a `ComplexToMagSquared` cell; FFT128 does not, so the de-interleave
+moves into the display block).
+
+**THE PART WORTH GENERALISING: tap the DISPLAY, not the sink.** With the chain
+bit-exact and the display chain in place, the plot still **blanked on every third
+frame**. `burst_len` is 384 while `latency + 2*n_fft` is **383**, so every burst ends
+with ONE sample left over; a frame reader that consumes across the boundary builds its
+next "frame" from that 1 real sample plus 127 of the NEXT burst's zero-fill — an
+all-zero spectrum, repeating forever under `server_repeat`. Measured: **4728 frames in
+a perfectly regular good/good/blank cycle.**
+
+**No bit-exactness assertion can see this.** The sink stream was byte-perfect; the
+fault is purely in the display glue's framing. It was caught only because the gate taps
+`spectrum.0` / `to_db.0` — the display blocks' own output, what the vector sink is
+actually painted with. This is the same lesson the CSS transceiver's display gate
+records (a free-running reference sliding against the decode), now confirmed on a
+second, structurally different example: **a user-path gate that stops at the kyttar
+sink is testing the wrong thing.**
+
+`verification/grc_userpath_run.py`'s optional third argument (extra `block.port` taps)
+now sizes the tap's vlen from `output_signature().sizeof_stream_item(port)`, so a
+**vector** display port can be tapped at all — a vlen-1 `vector_sink_f` on a 128-float
+port is an itemsize mismatch and the flowgraph refuses to connect.
+
+**Measured, on the drawn trace through the hosted server:** two ON-BIN tones at natural
+bins 9 and 37 of 128 land at **+2250 Hz** (power 0.2025, −6.93 dBFS) and **+9250 Hz**
+(0.1225, −9.12 dBFS) at `samp_rate = 32000` (250 Hz/bin), with every other one of the
+128 points at exactly 0.0 — an on-bin tone leaks nowhere. Slots 72 and 82 off the chip;
+`bit_reverse_7` puts them back; the fftshift moves them to centred indices 73 and 101.
+
+Mutations gated to FAIL: no un-reversal, a wrong-*N* (6-bit) un-reverse map, no
+fftshift, raw words as a time series, no de-interleave, an unstripped latency, a halved
+`samp_rate`, and degenerate flat/zero/short vectors. Plus the `.grc`'s own inline
+stimulus expression is **evaluated in its own variable scope** and required to equal the
+stimulus the gates drive — so "the tones are at 2250/9250 Hz" cannot quietly become a
+claim about a different stimulus than the user runs.
+
 ## FFT128 user path CLOSED — a RAW-vs-Q15 encoding mismatch that ALIASES, and why it read as a re-framing 2026-08-25
 
 The last open gap in `examples/fft128_2p2s` — `test_fft128_2p2s_shipped_grc_user_path`

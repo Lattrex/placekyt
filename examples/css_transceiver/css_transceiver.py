@@ -241,10 +241,10 @@ class css_transceiver(gr.top_block, Qt.QWidget):
         ##################################################
         self.connect((self.align, 0), (self.argmax, 0))
         self.connect((self.argmax, 0), (self.idx_s2f, 0))
-        self.connect((self.bin_to_sym, 0), (self.sym_scope, 0))
-        self.connect((self.bin_to_sym, 3), (self.sym_scope, 3))
-        self.connect((self.bin_to_sym, 1), (self.sym_scope, 1))
         self.connect((self.bin_to_sym, 2), (self.sym_scope, 2))
+        self.connect((self.bin_to_sym, 1), (self.sym_scope, 1))
+        self.connect((self.bin_to_sym, 3), (self.sym_scope, 3))
+        self.connect((self.bin_to_sym, 0), (self.sym_scope, 0))
         self.connect((self.dechirp, 0), (self.fft, 0))
         self.connect((self.fft, 0), (self.magsq, 0))
         self.connect((self.idx_s2f, 0), (self.rx_sink, 0))

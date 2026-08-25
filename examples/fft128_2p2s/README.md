@@ -7,7 +7,6 @@ chain A's head, 400 words out of its tail, every one equal to the whole
 128-point transform, on the real placed + routed 4-die build — and **DRC-clean
 against the board file itself**.
 
-This is the `fft128_2die` design retargeted from an ad-hoc two-chip project
 onto the **2P2S dev board** (`placekyt/resources/boards/dev2p2s.kdb`): four
 dies in two parallel daisy-chains of two, which is hardware that exists.
 
@@ -246,10 +245,8 @@ set `"q15"`; the two FFT128 `.grc`s were the outliers, both carrying a stale
 `output_words: 'False'` that GRC silently resolved back to the `"auto"`
 default.
 
-> **`fft128_2die` had the identical defect and no gate at all.** The two
 > `gen_grc.py` files are the same file modulo comments, so the fault was
 > cloned. It is fixed there too, and
-> `test_fft128_2die_shipped_grc_user_path` now gates it — a fix proven on a
 > sibling is not a fix proven here.
 
 `test_fft128_2p2s_shipped_grc_user_path` now **passes**, asserting

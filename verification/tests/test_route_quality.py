@@ -97,7 +97,6 @@ TOTAL_EXCESS = {
     "gru_classifier.kyt": 6,
     # FFT128 two-die split (2026-08-24): die 0's egress, +10 — see
     # WALLED_IN_NETS below, which proves it is the SHORTEST path that exists.
-    "fft128_2die.kyt": 10,
 }
 
 # Per-net exceptions to MAX_NET_EXCESS. An entry here is a claim that the net's
@@ -130,7 +129,6 @@ WALLED_IN_NETS = {
     # and the design does not route at all. The pair is verified BIT-EXACT end
     # to end on the real two-chip system, so the +10 buys correct hops rather
     # than hiding a hazard.
-    ("fft128_2die.kyt", "c0_out"): 10,
 }
 
 

@@ -615,3 +615,36 @@ def test_the_tail_stamps_the_complex_tag_pair(built):
         f"{[EX.OUT_TAG, EX.OUT_TAG + 1]}")
     assert hist[EX.OUT_TAG] == hist[EX.OUT_TAG + 1] == n, (
         f"I/Q rail counts {hist} are not both {n} — the pair is not balanced")
+
+
+
+
+@pytest.mark.parametrize("cls_name", ["FFT128Die0", "FFT128Die1"])
+def test_orientation_set_is_declared_and_gated(cls_name):
+    """INV-23 for the CHIP-SCALE class: each die DECLARES the orientations it
+    ships instead of silently skipping the D4 sweep.
+
+    Both dies are spine folds anchored to absolute coordinates — die 0 must
+    reach column 1 to keep its corridors open, die 1 spans the full height —
+    so identity is the whole legal set. That is asserted here rather than
+    assumed, which is what lets these blocks be exempt from the shared full-D4
+    gate (``test_chip_scale_blocks_are_gated_elsewhere`` requires every
+    manifest-done chip-scale block to name the suite that does this)."""
+    from gr_kyttar.placement.blocks import fft_large as FL
+
+    cls = getattr(FL, cls_name)
+    assert cls.CHIP_SCALE is True
+    assert cls.CHIP_SCALE_ORIENTATIONS == ((),), (
+        f"{cls_name} now declares more than the identity orientation — every "
+        "declared orientation needs a gate proving it computes identically")
+    blk = cls("probe")
+    lay = blk.default_layout()
+    # The declared anchor IS the plan's own minimum: place_block normalises a
+    # footprint to its bounding box, so anchoring anywhere else translates the
+    # fold and invalidates every absolute fact the plan rests on.
+    xs = [v[0] for v in lay.values()]
+    ys = [v[1] for v in lay.values()]
+    want = EX.DIE0_ANCHOR if cls_name == "FFT128Die0" else EX.DIE1_ANCHOR
+    assert (min(xs), min(ys)) == blk.default_anchor == want, (
+        f"{cls_name}'s declared anchor moved — a rotated or translated spine "
+        "fold has no legal image here; re-derive before waiving the D4 gate")

@@ -408,7 +408,7 @@ NEEDS_BESPOKE = {
         "of the N=128 split is only meaningful as half of a two-chip pair, and "
         "its output is a PARTIALLY transformed stream, not the transform's "
         "bins. Its saturated behaviour is gated BESPOKE and end-to-end instead, "
-        "on the REAL two-chip system: test_fft128_2die_example.py drives 200 "
+        "on the REAL two-chip system: test_fft128_2p2s_example.py drives 200 "
         "samples through die0 -> the inter-chip crossing -> die1 and asserts "
         "200/200 BIT-EXACT vs the whole transform, ONE complex sample per "
         "trigger (the rate check), and QUIESCENCE on every trigger — which is "
@@ -421,7 +421,7 @@ NEEDS_BESPOKE = {
         "FFT128Die0, from the other end: die 1 consumes DIE 0'S OUTPUT stream, "
         "not a raw signal, so driving it standalone against a whole-transform "
         "reference would certify nothing. Covered by the same end-to-end "
-        "two-chip gate (test_fft128_2die_example.py), which is strictly "
+        "two-chip gate (test_fft128_2p2s_example.py), which is strictly "
         "stronger than the shared harness here: it exercises the placement, "
         "the routes, the build, the boundary packet shape and the crossing, "
         "none of which a single-chip saturated drive touches.",

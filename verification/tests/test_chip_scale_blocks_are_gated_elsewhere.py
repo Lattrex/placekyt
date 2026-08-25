@@ -34,8 +34,8 @@ CHIP_SCALE_GATES = {
     # two-chip crossing was proven bit-exact, so both now carry a real
     # declared-orientation gate (test_orientation_set_is_declared_and_gated)
     # rather than sitting in the quarantine list below.
-    "FFT128Die0": "test_fft128_2die_example.py",
-    "FFT128Die1": "test_fft128_2die_example.py",
+    "FFT128Die0": "test_fft128_2p2s_example.py",
+    "FFT128Die1": "test_fft128_2p2s_example.py",
 }
 
 #: chip-scale classes that are NOT manifest-``done`` and so are not required to

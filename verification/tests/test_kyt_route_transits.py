@@ -64,7 +64,7 @@ def test_no_route_transits_dsp_block_cells(kyt):
     # so in a MULTI-CHIP design a route on chip 0 "transits" a block that is
     # actually on chip 1 at the same coordinate. That false positive is
     # invisible to every single-chip example and fires on the first multi-chip
-    # one with blocks on more than one die (fft128_2die).
+    # one with blocks on more than one die (fft128_2p2s).
     cell_owner = {}
     for b in project.blocks:
         if b.placement:

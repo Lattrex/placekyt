@@ -67,6 +67,73 @@ fftshift, raw words as a time series, no de-interleave, an unstripped latency, a
 stimulus expression is **evaluated in its own variable scope** and required to equal the
 stimulus the gates drive — so "the tones are at 2250/9250 Hz" cannot quietly become a
 claim about a different stimulus than the user runs.
+## A qtgui time_sink does NOT paint a NoPen channel above channel 0 — and a correct demo that LOOKS wrong is a broken demo 2026-08-25
+
+Two lessons out of the `examples/css_transceiver` display rework. The chip was never
+at fault: SER 0 on segment A, `KYTTAR CSS` recovered, bit-exact against the composed
+golden, throughout. Everything below is display.
+
+**1. THE RENDERING DEFECT — line style 0 (NoPen) silently drops every channel above
+channel 0.** A `qtgui.time_sink_f` with `nconnections=2`, both channels set to
+`set_line_style(i, 0)` (NoPen — "markers only", which is what GRC's style option `0`
+means), draws **only channel 0**. Channel 1 is never painted, at any marker id and any
+line width.
+
+Reproduced standalone, outside the example, with two `vector_source_f`s of
+**different amplitude** — so it is not occlusion, the second trace genuinely is not
+drawn — and confirmed on a real X display as well as under `QT_QPA_PLATFORM=offscreen`,
+so it is not a headless artifact either. Give the same channel any real pen
+(`set_line_style(i, 1)`, Solid) and its markers appear immediately. Channel 0 with
+NoPen paints its markers fine; only the higher channels vanish.
+
+This had been shipping. The example's scope used `style: '0'` on all four traces, so
+**the decoded traces the demo exists to show were never actually rendered** — the
+window displayed the reference traces alone and looked, reasonably, like a chain
+producing nothing. Rule: **never leave a multi-channel time_sink trace on style 0.**
+The example's gate now rejects it structurally.
+
+Corollary once both traces DO paint: the highest-numbered channel is painted LAST, so
+put the trace that must survive an exact overlay there. Reference on input 0 as a wide
+circle, decoded on input 1 as a narrower X — an X inside a ring reads as a lock, a
+bare ring or a bare X reads as a miss. Wired the other way round a perfect decode is
+invisible under its own reference, which is a *different* way to make SER 0 look like
+a dead chain.
+
+**2. A DEMO WHOSE CORRECT OUTPUT READS AS A FAILURE IS A DEFECT, even with every
+number right.** This example ships a deliberate on-chip negative control: segment B at
+−10 dB, whose decode must collapse, because that is what makes segment A's SER 0 a
+measurement rather than a chain that cannot fail. With A and B drawn as four traces on
+ONE axis it was reported as "the +10 dB works flawlessly but the −10 dB doesn't work
+at all" — a precise description of the demo behaving exactly as designed. One axis
+carrying both a lock and an intended collapse cannot say which is which; a viewer sees
+half the points miss and concludes half of it is broken.
+
+The fix is layout, not DSP: **one panel per segment, each title carrying its own
+verdict** ("SEGMENT B · −10 dB · NEGATIVE CONTROL — the X marks MISS their circles ✓
+EXPECTED, THIS IS THE POINT"), plus the **measured SER of each segment published as a
+live number** beside the panels. Nobody should need the README open to interpret a
+plot. Gate the structure, not just the data: the example's gate now reads the shipped
+`.grc` and asserts the panel count, the per-panel channel split, the wiring
+orientation, the line styles, the marker distinctness, and the words `CONTROL` /
+`EXPECTED` in B's title.
+
+**3. A NOISE-DRIVEN CONTROL WANTS A BAND WITH TWO MEANINGFUL ENDS.** The old assertion
+was `ser_b > 0.2`. It catches a control that quietly starts decoding and nothing else —
+in particular it happily accepts a **dead chain**, because a chain that has stopped
+computing and emits a constant scores a very HIGH SER. Scored against this 24-symbol
+frame, the 16 stuck-at-k streams score 0.7500 (k=5), 0.7917 (k=0, k=4) and up to
+1.0000; uniform-random guessing over the 16-ary alphabet averages 0.9375 and
+effectively never drops below 0.667. The band is therefore **[0.40, 0.75)**: the floor
+rejects a decoding control, and the ceiling — set at the cheapest stuck-at score —
+rejects every constant-output chain. Measured on the shipped burst: **0.6250** (15 of
+24), comfortably inside, and *below* the random floor, which says something real about
+segment B: at −10 dB the decode still retains partial signal and beats chance.
+
+**4. A HEADLESS TRACE GATE CANNOT SEE ANY OF THIS.** The four-channel tap gate was
+green while defect 1 was live — it asserts the DATA fed to the scope, and that data was
+always correct. What found it was rendering the flowgraph's Qt window offscreen
+(`tb.grab().save(png)`) and *looking at the picture*. When a display is the deliverable,
+render it and look; the data gate is necessary and is not sufficient.
 
 ## FFT128 user path CLOSED — a RAW-vs-Q15 encoding mismatch that ALIASES, and why it read as a re-framing 2026-08-25
 

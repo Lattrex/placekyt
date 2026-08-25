@@ -6,13 +6,12 @@ options:
     cmake_opt: ''
     comment: ''
     copyright: ''
-    description: 'CSS (chirp spread spectrum) receiver on one placeKYT array. The WHOLE receive spine is placed
-      on the chip: dechirp (conjugate chirp mixer) -> 16-point streaming FFT -> bin power -> the alignment Delay(1)
-      -> framewise argmax. One continuous burst carries the message ''KYTTAR CSS'' twice: segment A at +10 dB SNR
-      decodes exactly, segment B at -10 dB is the on-chip negative control and collapses. The decode map is s =
-      brev4(bin index) because FFT16 emits bins in bit-reversed order. The transmitter and channel are host-side
-      numpy (bit-exact to the TX blocks'' own chip-verified goldens) - this is an RX example and does not claim
-      a transmitter on the chip.'
+    description: 'CSS (chirp spread spectrum) receiver on one placeKYT array. The WHOLE receive spine is placed on the chip:
+      dechirp (conjugate chirp mixer) -> 16-point streaming FFT -> bin power -> the alignment Delay(1) -> framewise argmax.
+      One continuous burst carries the message ''KYTTAR CSS'' twice: segment A at +10 dB SNR decodes exactly, segment B at
+      -10 dB is the on-chip negative control and collapses. The decode map is s = brev4(bin index) because FFT16 emits bins
+      in bit-reversed order. The transmitter and channel are host-side numpy (bit-exact to the TX blocks'' own chip-verified
+      goldens) - this is an RX example and does not claim a transmitter on the chip.'
     gen_cmake: 'On'
     gen_linking: dynamic
     generate_options: qt_gui
@@ -114,8 +113,8 @@ blocks:
 - name: tx_syms
   id: variable
   parameters:
-    comment: the transmitted symbols of ONE segment (preamble + message) - the reference the display block locks
-      to the decoded stream
+    comment: the transmitted symbols of ONE segment (preamble + message) - the reference the display block locks to the decoded
+      stream
     value: stim.framed_symbols()[:stim.n_data_symbols()]
   states:
     bus_sink: false
@@ -131,8 +130,8 @@ blocks:
   parameters:
     affinity: ''
     alias: ''
-    comment: 'the CSS burst as the radio sees it: the framed message as cyclic-shifted up-chirps, segment A at +10
-      dB SNR then segment B at -10 dB (the on-chip negative control). Repeating, so the scopes keep painting.'
+    comment: 'the CSS burst as the radio sees it: the framed message as cyclic-shifted up-chirps, segment A at +10 dB SNR
+      then segment B at -10 dB (the on-chip negative control). Repeating, so the scopes keep painting.'
     maxoutbuf: '0'
     minoutbuf: '0'
     repeat: 'True'
@@ -156,12 +155,11 @@ blocks:
     alias: ''
     autoscale: 'False'
     axislabels: 'True'
-    comment: the received chirp burst (I and Q). Each 16-sample frame is one cyclic-shifted up-chirp; the shift
-      IS the symbol.
+    comment: the received chirp burst (I and Q). Each 16-sample frame is one cyclic-shifted up-chirp; the shift IS the symbol.
     ctrlpanel: 'False'
     entags: 'True'
     grid: 'False'
-    gui_hint: ''
+    gui_hint: 4,0,1,1
     legend: 'True'
     name: '"RF burst — CSS up-chirps (A: +10 dB, B: -10 dB)"'
     nconnections: '1'
@@ -245,8 +243,8 @@ blocks:
     affinity: ''
     alias: ''
     burst_len: burst_len
-    comment: the burst -> chip x16_in (stream 'rx'). complex_in=complex, so the recovered stream comes back as RAW
-      word floats — the argmax index plots directly, no q15 rescale.
+    comment: the burst -> chip x16_in (stream 'rx'). complex_in=complex, so the recovered stream comes back as RAW word floats
+      — the argmax index plots directly, no q15 rescale.
     complex_in: complex
     device_id: '"kyttar_0"'
     maxoutbuf: '0'
@@ -272,8 +270,7 @@ blocks:
   parameters:
     affinity: ''
     alias: ''
-    comment: DECHIRP — multiply by the conjugate reference up-chirp; a symbol chirp becomes a constant tone (placed
-      on chip)
+    comment: DECHIRP — multiply by the conjugate reference up-chirp; a symbol chirp becomes a constant tone (placed on chip)
     device_id: '"kyttar_0"'
     maxoutbuf: '0'
     minoutbuf: '0'
@@ -328,9 +325,8 @@ blocks:
   parameters:
     affinity: ''
     alias: ''
-    comment: THE ALIGNMENT DELAY — FFT16's latency is 15 == -1 (mod 16), so argmax frames would STRADDLE two FFT
-      frames. This ONE sample lands every frame on exactly one FFT frame. Remove it and the decode breaks (placed
-      on chip).
+    comment: THE ALIGNMENT DELAY — FFT16's latency is 15 == -1 (mod 16), so argmax frames would STRADDLE two FFT frames. This
+      ONE sample lands every frame on exactly one FFT frame. Remove it and the decode breaks (placed on chip).
     delay: '1'
     device_id: '"kyttar_0"'
     maxoutbuf: '0'
@@ -387,8 +383,8 @@ blocks:
   parameters:
     affinity: ''
     alias: ''
-    comment: recovered bin indices <- chip x16_out (stream 'rx'). server_repeat loops the genuine one-batch result
-      so the scopes keep painting (GNU Radio strands the tail of a finite stream).
+    comment: recovered bin indices <- chip x16_out (stream 'rx'). server_repeat loops the genuine one-batch result so the
+      scopes keep painting (GNU Radio strands the tail of a finite stream).
     device_id: '"kyttar_0"'
     hold_secs: '8.0'
     in_type: float
@@ -415,12 +411,12 @@ blocks:
     alias: ''
     autoscale: 'False'
     axislabels: 'True'
-    comment: the RAW argmax index straight off the chip. Bins come out in FFT16's bit-reversed order, so this is
-      not yet the symbol.
+    comment: the RAW argmax index straight off the chip. Bins come out in FFT16's bit-reversed order, so this is not yet the
+      symbol.
     ctrlpanel: 'False'
     entags: 'True'
     grid: 'False'
-    gui_hint: ''
+    gui_hint: 4,1,1,1
     legend: 'True'
     name: '"Chip output — winning FFT bin (raw index 0..15)"'
     nconnections: '1'
@@ -501,71 +497,105 @@ blocks:
 - name: bin_to_sym
   id: epy_block
   parameters:
-    _source_code: "# SPDX-License-Identifier: GPL-3.0-or-later\n\"\"\"CSS DEMOD MAP + SEGMENT SPLITTER — what the\
-      \ DECODED-vs-TRANSMITTED scope draws.\n\nTwo jobs, and the second one is why this block exists at all.\n\n\
-      **1. The decode map.** The on-chip FFT16 emits its 16 bins in bit-reversed (DIF)\norder, so the winning bin\
-      \ index ``i`` is not the symbol: the symbol is\n``s = brev4(i)`` — the 4-bit reversal of the index.\n\n**2.\
-      \ The reference rides the SAME stream as the decode.** This is the\nload-bearing part. The shipped burst is\
-      \ TWO segments through one chain —\nsegment A at +10 dB (which decodes exactly) and segment B at -10 dB (the\n\
-      on-chip NEGATIVE CONTROL, which must not). Displaying that correctly is not a\nmatter of taste; two earlier\
-      \ display defects made a perfect decode look broken:\n\n  * **PHASE DRIFT.** The old flowgraph drew the transmitted\
-      \ reference from a\n    SEPARATE ``vector_source`` on channel 1 of the scope. That source free-runs\n    while\
-      \ the chip's stream is gated by the simulator's batch turnaround —\n    measured at **+27.9 % more items over\
-      \ the same run**. A QT time_sink pulls\n    the same count from both channels, so the red reference SLID against\
-      \ the\n    blue decode. Once offset by as few as 3 items, **22 of segment A's 24\n    perfectly-decoded symbols\
-      \ render as mismatches**. The plot smeared while the\n    chip was bit-exact.\n  * **A/B CONFLATION.** Even\
-      \ at zero offset, segment B's intentional garbage was\n    drawn on the same axis as segment A's perfect lock,\
-      \ with nothing to tell a\n    viewer which half was which. 17 of 50 plotted points disagreed *by design*\n\
-      \    and the plot did not say so.\n\nThe cure for both: derive the reference HERE, from the item index of\
-      \ the very\nstream being decoded, and split the two segments onto their OWN channels. The\nreference cannot\
-      \ drift from the decode because it is generated per item from the\nsame counter, and segment A's lock is never\
-      \ overplotted by segment B's collapse.\n\nFrame layout (one batch = ``n_words`` items, ``seg_words`` per segment)::\n\
-      \n    word 0            the framing-latency word — carries no data symbol\n    word 1 .. n_data  symbol f\
-      \ arrives in word f+1\n\nso a segment's reference trace is ``[BLANK] + preamble + message symbols``.\n\nOutputs\
-      \ (all four are the SAME length and the SAME phase — plot them together):\n\n  out0  segment A decoded  (chip)\
-      \          blank outside segment A\n  out1  segment A transmitted (reference)  blank outside segment A\n \
-      \ out2  segment B decoded  (chip)          blank outside segment B\n  out3  segment B transmitted (reference)\
-      \  blank outside segment B\n\n``BLANK`` is NaN: GNU Radio's time sink leaves a gap rather than drawing a\n\
-      misleading 0 or -1, so each pair occupies only its own half of the sweep.\n\"\"\"\nimport numpy as np\nfrom\
-      \ gnuradio import gr\n\n# brev4: 4-bit reversal, the FFT16 DIF output-order map (index -> symbol).\n_BREV4\
-      \ = [((i & 1) << 3) | ((i & 2) << 1) | ((i & 4) >> 1) | ((i & 8) >> 3)\n          for i in range(16)]\n\n\
-      BLANK = float(\"nan\")\n\n\nclass blk(gr.sync_block):\n    \"\"\"n        = samples per chirp symbol == FFT\
-      \ size == alphabet (16)\n    tx_syms     = the transmitted symbol sequence for ONE segment, on the output\n\
-      \                  word grid (element 0 is the framing-latency word)\n    seg_words   = index words per segment\n\
-      \    \"\"\"\n\n    def __init__(self, n=16, tx_syms=(), seg_words=25):\n        gr.sync_block.__init__(\n\
-      \            self, name='CSS Bin -> Symbol + A/B split',\n            in_sig=[np.float32],\n            out_sig=[np.float32,\
-      \ np.float32, np.float32, np.float32])\n        self.n = int(n)\n        self.seg_words = int(seg_words)\n\
-      \        # The per-segment reference trace, on the output word grid. Element 0 is\n        # the framing-latency\
-      \ word (no data symbol) and is drawn BLANK.\n        ref = [BLANK] + [float(s) for s in tx_syms]\n       \
-      \ ref = ref[:self.seg_words]\n        ref += [BLANK] * (self.seg_words - len(ref))\n        self._ref = np.asarray(ref,\
-      \ dtype=np.float32)\n        # Item counter modulo the whole two-segment batch — this is what keeps\n    \
-      \    # the reference locked to the decode (see the module docstring).\n        self._k = 0\n\n    def work(self,\
-      \ input_items, output_items):\n        x = input_items[0]\n        nout = len(x)\n        w = self.seg_words\n\
-      \        period = 2 * w\n\n        idx = np.rint(x.astype(np.float64)).astype(np.int64) & 0xFFFF\n       \
-      \ sym = np.full(nout, BLANK, dtype=np.float32)\n        good = (idx >= 0) & (idx < 16)\n        sym[good]\
-      \ = [float(_BREV4[i]) for i in idx[good]]\n\n        # Position of every item within the two-segment batch.\n\
-      \        pos = (np.arange(nout, dtype=np.int64) + self._k) % period\n        in_a = pos < w\n        in_b\
-      \ = ~in_a\n        ref = self._ref[pos % w]\n\n        # A word the reference does not cover carries no data\
-      \ symbol (word 0 is\n        # the framing-latency word). Blank the DECODE there too — plotting it\n     \
-      \   # would put a lone unmatched point on an otherwise exact overlay and\n        # invite precisely the \"\
-      one symbol is wrong\" question it is not.\n        drawn = ~np.isnan(ref)\n        sym = np.where(drawn, sym,\
-      \ BLANK)\n\n        a_dec, a_ref, b_dec, b_ref = (output_items[i] for i in range(4))\n        a_dec[:nout]\
-      \ = np.where(in_a, sym, BLANK)\n        a_ref[:nout] = np.where(in_a, ref, BLANK)\n        b_dec[:nout] =\
-      \ np.where(in_b, sym, BLANK)\n        b_ref[:nout] = np.where(in_b, ref, BLANK)\n\n        self._k = (self._k\
-      \ + nout) % period\n        return nout\n"
+    _source_code: "# SPDX-License-Identifier: GPL-3.0-or-later\n\"\"\"CSS DEMOD MAP + PER-SEGMENT SPLITTER + LIVE SER — what\
+      \ the two verdict\nscopes and the SER readout draw.\n\nThree jobs, and the last two are why this block exists at all.\n\
+      \n**1. The decode map.** The on-chip FFT16 emits its 16 bins in bit-reversed (DIF)\norder, so the winning bin index\
+      \ ``i`` is not the symbol: the symbol is\n``s = brev4(i)`` — the 4-bit reversal of the index.\n\n**2. The reference\
+      \ rides the SAME stream as the decode.** This is the\nload-bearing part. The shipped burst is TWO segments through one\
+      \ chain —\nsegment A at +10 dB (which decodes exactly) and segment B at -10 dB (the\non-chip NEGATIVE CONTROL, which\
+      \ must not). Displaying that correctly is not a\nmatter of taste; four display defects in a row made a perfect run look\
+      \ broken:\n\n  * **PHASE DRIFT.** The old flowgraph drew the transmitted reference from a\n    SEPARATE ``vector_source``\
+      \ on channel 1 of the scope. That source free-runs\n    while the chip's stream is gated by the simulator's batch turnaround\
+      \ —\n    measured at **+27.9 % more items over the same run**. A QT time_sink pulls\n    the same count from both channels,\
+      \ so the red reference SLID against the\n    blue decode. Once offset by as few as 3 items, **22 of segment A's 24\n\
+      \    perfectly-decoded symbols render as mismatches**. The plot smeared while the\n    chip was bit-exact.\n  * **A/B\
+      \ CONFLATION.** Even at zero offset, segment B's intentional garbage was\n    drawn on the same axis as segment A's\
+      \ perfect lock, with nothing to tell a\n    viewer which half was which. 17 of 50 plotted points disagreed *by design*\n\
+      \    and the plot did not say so.\n  * **THE CONTROL READ AS A DEFECT.** Splitting A and B onto four traces of ONE\n\
+      \    scope fixed the arithmetic but not the meaning: a viewer looking at one axis\n    where half the points lock and\
+      \ half scatter reads \"half of it is broken\",\n    because nothing on screen says the scatter is the intended result.\
+      \ Reported\n    verbatim as \"the +10 dB works flawlessly but the -10 dB doesn't work at\n    all\" — a description\
+      \ of the demo working exactly as designed.\n\nThe cure for the first two: derive the reference HERE, from the item index\
+      \ of\nthe very stream being decoded, so it cannot drift, and blank each segment\noutside its own words.\n\n  * **HALF\
+      \ THE TRACES WERE NEVER DRAWN.** A qtgui ``time_sink`` channel set to\n    line style 0 (NoPen, \"markers only\") paints\
+      \ NOTHING on any channel above\n    channel 0. Reproduced standalone with two vector sources of *different*\n    amplitude\
+      \ — so it is not occlusion — on a real X display as well as\n    offscreen. The old scope used NoPen on all four of\
+      \ its traces, so this\n    block's decoded outputs were among the ones the window never rendered.\n\nThe cure for the\
+      \ first two: derive the reference HERE, from the item index of\nthe very stream being decoded, so it cannot drift, and\
+      \ blank each segment\noutside its own words.\n\nThe cure for the third: give each segment its **own scope**, so each\
+      \ carries\nits own verdict in its own title, and publish the **measured SER of each\nsegment as a live number** next\
+      \ to them. A mismatch inside a panel that says\n\"NEGATIVE CONTROL — this is the expected result\" cannot be misread\
+      \ as breakage.\n\nThe cure for the fourth lives in the ``.grc``, not here, but it constrains how\nthese channels are\
+      \ wired: both traces of a panel use a solid pen (never style\n0), the REFERENCE goes to scope input 0 as a wide circle,\
+      \ and the DECODED\noutput goes to input 1 — the last-painted channel — as a narrower X, so an\nexact overlay shows the\
+      \ X inside the ring instead of hiding the decode under\nits own reference.\n\nFrame layout (one batch = ``n_words``\
+      \ items, ``seg_words`` per segment)::\n\n    word 0            the framing-latency word — carries no data symbol\n \
+      \   word 1 .. n_data  symbol f arrives in word f+1\n\nso a segment's reference trace is ``[BLANK] + preamble + message\
+      \ symbols``.\n\nOutputs (all six are the SAME length and the SAME phase — one stream in, one\nitem out per item, so\
+      \ nothing can slide against anything else):\n\n  out0  segment A decoded  (chip)          blank outside segment A\n\
+      \  out1  segment A transmitted (reference)  blank outside segment A\n  out2  segment B decoded  (chip)          blank\
+      \ outside segment B\n  out3  segment B transmitted (reference)  blank outside segment B\n  out4  segment A measured\
+      \ SER  (0.0..1.0, held between passes)\n  out5  segment B measured SER  (0.0..1.0, held between passes)\n\n``BLANK``\
+      \ is NaN: GNU Radio's time sink leaves a gap rather than drawing a\nmisleading 0 or -1, so each segment's trace occupies\
+      \ only its own half of the\nsweep. Both scopes span the WHOLE batch and share one x axis, so the two\nhalf-filled panels\
+      \ stack into the burst's timeline: A fills the left half, B\nfills the right, and which is which is never in doubt.\n\
+      \nThe SER channels (out4/out5) are the honest measurement, not a constant: each\ncounts the plotted mismatches of the\
+      \ segment it belongs to over that segment's\nown symbols, publishes the value once the pass is COMPLETE, and holds it\
+      \ steady\nwhile the next pass accumulates. They exist so the two numbers the README quotes\nare ON SCREEN, where nobody\
+      \ has to take the README's word for them.\n\"\"\"\nimport numpy as np\nfrom gnuradio import gr\n\n# brev4: 4-bit reversal,\
+      \ the FFT16 DIF output-order map (index -> symbol).\n_BREV4 = [((i & 1) << 3) | ((i & 2) << 1) | ((i & 4) >> 1) | ((i\
+      \ & 8) >> 3)\n          for i in range(16)]\n\nBLANK = float(\"nan\")\n\n\nclass blk(gr.sync_block):\n    \"\"\"n  \
+      \      = samples per chirp symbol == FFT size == alphabet (16)\n    tx_syms     = the transmitted symbol sequence for\
+      \ ONE segment, on the output\n                  word grid (element 0 is the framing-latency word)\n    seg_words   =\
+      \ index words per segment\n    \"\"\"\n\n    def __init__(self, n=16, tx_syms=(), seg_words=25):\n        gr.sync_block.__init__(\n\
+      \            self, name='CSS Bin -> Symbol + A/B split + SER',\n            in_sig=[np.float32],\n            out_sig=[np.float32]\
+      \ * 6)\n        self.n = int(n)\n        self.seg_words = int(seg_words)\n        # The per-segment reference trace,\
+      \ on the output word grid. Element 0 is\n        # the framing-latency word (no data symbol) and is drawn BLANK.\n \
+      \       ref = [BLANK] + [float(s) for s in tx_syms]\n        ref = ref[:self.seg_words]\n        ref += [BLANK] * (self.seg_words\
+      \ - len(ref))\n        self._ref = np.asarray(ref, dtype=np.float32)\n        # Item counter modulo the whole two-segment\
+      \ batch — this is what keeps\n        # the reference locked to the decode (see the module docstring).\n        self._k\
+      \ = 0\n        # Live SER accumulators, one pair per segment: [errors, symbols scored]\n        # for the segment CURRENTLY\
+      \ being received, and the last COMPLETE value\n        # that the number sink holds while the other segment is in flight.\n\
+      \        self._acc = [[0, 0], [0, 0]]\n        self._ser = [BLANK, BLANK]\n        self._complete = [False, False]\n\
+      \n    def work(self, input_items, output_items):\n        x = input_items[0]\n        nout = len(x)\n        w = self.seg_words\n\
+      \        period = 2 * w\n\n        idx = np.rint(x.astype(np.float64)).astype(np.int64) & 0xFFFF\n        sym = np.full(nout,\
+      \ BLANK, dtype=np.float32)\n        good = (idx >= 0) & (idx < 16)\n        sym[good] = [float(_BREV4[i]) for i in idx[good]]\n\
+      \n        # Position of every item within the two-segment batch.\n        pos = (np.arange(nout, dtype=np.int64) + self._k)\
+      \ % period\n        in_a = pos < w\n        in_b = ~in_a\n        ref = self._ref[pos % w]\n\n        # A word the reference\
+      \ does not cover carries no data symbol (word 0 is\n        # the framing-latency word). Blank the DECODE there too\
+      \ — plotting it\n        # would put a lone unmatched point on an otherwise exact overlay and\n        # invite precisely\
+      \ the \"one symbol is wrong\" question it is not.\n        drawn = ~np.isnan(ref)\n        sym = np.where(drawn, sym,\
+      \ BLANK)\n\n        a_dec, a_ref, b_dec, b_ref, a_ser, b_ser = (\n            output_items[i] for i in range(6))\n \
+      \       a_dec[:nout] = np.where(in_a, sym, BLANK)\n        a_ref[:nout] = np.where(in_a, ref, BLANK)\n        b_dec[:nout]\
+      \ = np.where(in_b, sym, BLANK)\n        b_ref[:nout] = np.where(in_b, ref, BLANK)\n\n        # --- the live SER readout,\
+      \ scored on exactly the plotted points -------\n        # Walk item by item: cheap (one batch is tens of items) and\
+      \ it keeps the\n        # segment-boundary bookkeeping obvious rather than clever.\n        #\n        # What is PUBLISHED\
+      \ is the last COMPLETE pass over the segment, held\n        # steady while the next pass accumulates — so the number\
+      \ a viewer reads\n        # is a whole segment's SER, not a partial ratio that swings between 0\n        # and 1 mid-segment\
+      \ as symbols arrive. The one exception is the very\n        # first pass, before any complete result exists: there the\
+      \ running ratio\n        # is shown so the readout is never blank on screen for a whole batch.\n        for j in range(nout):\n\
+      \            seg = 0 if in_a[j] else 1\n            if pos[j] % w == 0:\n                # First word of a segment:\
+      \ the previous pass over this segment\n                # is complete, so publish it and start the next one.\n      \
+      \          e, tot = self._acc[seg]\n                if tot:\n                    self._ser[seg] = e / tot\n        \
+      \            self._complete[seg] = True\n                self._acc[seg] = [0, 0]\n            if drawn[j]:\n       \
+      \         self._acc[seg][1] += 1\n                d, r = sym[j], ref[j]\n                if np.isnan(d) or int(d) !=\
+      \ int(r):\n                    self._acc[seg][0] += 1\n                if not self._complete[seg]:\n               \
+      \     self._ser[seg] = self._acc[seg][0] / self._acc[seg][1]\n            a_ser[j] = self._ser[0]\n            b_ser[j]\
+      \ = self._ser[1]\n\n        self._k = (self._k + nout) % period\n        return nout\n"
     affinity: ''
     alias: ''
-    comment: s = brev4(index) AND the A/B split. The transmitted reference is generated HERE, from the same stream's
-      item index, so it CANNOT drift against the decode (a separate vector_source ran 27.9% fast and smeared the
-      plot). Segment A and segment B get their own channel pair.
+    comment: s = brev4(index), the A/B split, AND the live per-segment SER. The transmitted reference is generated HERE from
+      the same stream's item index, so it CANNOT drift against the decode (a separate vector_source ran 27.9% fast and smeared
+      the plot). Each segment then gets its OWN scope and its OWN measured SER number, so B's mismatch reads as the control
+      it is instead of a defect.
     maxoutbuf: '0'
     minoutbuf: '0'
     n: n_css
-    _io_cache: ('CSS Bin -> Symbol + A/B split', 'blk', [('n', '16'), ('tx_syms', '()'), ('seg_words', '25')], [('0',
-      'float', 1)], [('0', 'float', 1), ('1', 'float', 1), ('2', 'float', 1), ('3', 'float', 1)], 'n        = samples
-      per chirp symbol == FFT size == alphabet (16)\n    tx_syms     = the transmitted symbol sequence for ONE segment,
-      on the output\n                  word grid (element 0 is the framing-latency word)\n    seg_words   = index
-      words per segment\n    ', ['n', 'seg_words'])
+    _io_cache: ('CSS Bin -> Symbol + A/B split + SER', 'blk', [('n', '16'), ('tx_syms', '()'), ('seg_words', '25')], [('0',
+      'float', 1)], [('0', 'float', 1), ('1', 'float', 1), ('2', 'float', 1), ('3', 'float', 1), ('4', 'float', 1), ('5',
+      'float', 1)], 'n        = samples per chirp symbol == FFT size == alphabet (16)\n    tx_syms     = the transmitted symbol
+      sequence for ONE segment, on the output\n                  word grid (element 0 is the framing-latency word)\n    seg_words   =
+      index words per segment\n    ', ['n', 'seg_words'])
     tx_syms: tx_syms
     seg_words: seg_words
   states:
@@ -577,23 +607,24 @@ blocks:
     - 320
     rotation: 0
     state: enabled
-- name: sym_scope
+- name: seg_a_scope
   id: qtgui_time_sink_x
   parameters:
     affinity: ''
     alias: ''
     autoscale: 'False'
     axislabels: 'True'
-    comment: 'BOTH segments, each against its OWN reference, all four traces phase-locked to the chip stream. A:
-      blue decoded sits exactly on the cyan reference. B: red decoded scatters off the orange reference - the on-chip
-      negative control.'
+    comment: 'SEGMENT A, the working case. Every blue X (decoded, off the chip) lands inside a cyan circle (transmitted reference)
+      — that is the lock, and it is why the reference is on channel 0 and the decode on channel 1: painted the other way round
+      the perfect overlay HID the decode entirely. A draws only in the LEFT half of the sweep (its own words); the right half
+      is segment B''s and is blank here on purpose.'
     ctrlpanel: 'False'
     entags: 'True'
     grid: 'False'
-    gui_hint: ''
+    gui_hint: 1,0,1,2
     legend: 'True'
-    name: '"DECODED vs TRANSMITTED - segment A (+10 dB) locks | segment B (-10 dB) collapses"'
-    nconnections: '4'
+    name: '''SEGMENT A  ·  +10 dB  ·  DECODE LOCKS  —  every X lands in its circle, SER 0.00  ✓ EXPECTED'''
+    nconnections: '2'
     size: n_words
     srate: samp_rate
     stemplot: 'False'
@@ -605,52 +636,52 @@ blocks:
     tr_tag: '""'
     type: float
     update_time: '0.10'
-    ylabel: symbol
+    ylabel: symbol  (A)
     ymax: '16'
     ymin: '-1'
     yunit: '""'
     alpha1: '1.0'
-    color1: blue
-    label1: A (+10 dB) decoded - chip
+    color1: cyan
+    label1: A transmitted  — reference (circle)
     marker1: '0'
-    style1: '0'
+    style1: '1'
     alpha2: '1.0'
-    color2: cyan
-    label2: A (+10 dB) transmitted
-    marker2: '1'
-    style2: '0'
+    color2: blue
+    label2: A decoded  — off the chip (X)
+    marker2: '9'
+    style2: '1'
     alpha3: '1.0'
-    color3: red
-    label3: B (-10 dB) decoded - chip
-    marker3: '0'
-    style3: '0'
+    color3: dark blue
+    label3: Signal 3
+    marker3: '-1'
+    style3: '1'
     alpha4: '1.0'
-    color4: dark red
-    label4: B (-10 dB) transmitted
-    marker4: '1'
-    style4: '0'
+    color4: dark blue
+    label4: Signal 4
+    marker4: '-1'
+    style4: '1'
     alpha5: '1.0'
-    color5: cyan
+    color5: dark blue
     label5: Signal 5
     marker5: '-1'
     style5: '1'
     alpha6: '1.0'
-    color6: magenta
+    color6: dark blue
     label6: Signal 6
     marker6: '-1'
     style6: '1'
     alpha7: '1.0'
-    color7: yellow
+    color7: dark blue
     label7: Signal 7
     marker7: '-1'
     style7: '1'
     alpha8: '1.0'
-    color8: dark red
+    color8: dark blue
     label8: Signal 8
     marker8: '-1'
     style8: '1'
     alpha9: '1.0'
-    color9: dark green
+    color9: dark blue
     label9: Signal 9
     marker9: '-1'
     style9: '1'
@@ -659,13 +690,212 @@ blocks:
     label10: Signal 10
     marker10: '-1'
     style10: '1'
+    width1: '5'
+    width2: '3'
+    width3: '1'
+    width4: '1'
+    width5: '1'
+    width6: '1'
+    width7: '1'
+    width8: '1'
+    width9: '1'
+    width10: '1'
   states:
     bus_sink: false
     bus_source: false
     bus_structure: null
     coordinate:
     - 2000
-    - 380
+    - 300
+    rotation: 0
+    state: enabled
+- name: seg_b_scope
+  id: qtgui_time_sink_x
+  parameters:
+    affinity: ''
+    alias: ''
+    autoscale: 'False'
+    axislabels: 'True'
+    comment: 'SEGMENT B is the on-chip NEGATIVE CONTROL and it is SUPPOSED to fail. Same chip, same run, same chain - only
+      the SNR is 20 dB worse. Red X marks (decoded) scattering away from their dark-red circles (transmitted) is the INTENDED
+      result: it is what proves segment A''s SER 0 above is a real measurement and not a chain that cannot fail. A clean overlay
+      HERE would mean the control is broken. B draws only in the RIGHT half of the sweep.'
+    ctrlpanel: 'False'
+    entags: 'True'
+    grid: 'False'
+    gui_hint: 2,0,1,2
+    legend: 'True'
+    name: '''SEGMENT B  ·  −10 dB  ·  NEGATIVE CONTROL  —  the X marks MISS their circles, SER ≈ 0.63  ✓ EXPECTED, THIS IS
+      THE POINT'''
+    nconnections: '2'
+    size: n_words
+    srate: samp_rate
+    stemplot: 'False'
+    tr_chan: '0'
+    tr_delay: '0'
+    tr_level: '0.0'
+    tr_mode: qtgui.TRIG_MODE_FREE
+    tr_slope: qtgui.TRIG_SLOPE_POS
+    tr_tag: '""'
+    type: float
+    update_time: '0.10'
+    ylabel: symbol  (B)
+    ymax: '16'
+    ymin: '-1'
+    yunit: '""'
+    alpha1: '1.0'
+    color1: dark red
+    label1: B transmitted  — reference (circle)
+    marker1: '0'
+    style1: '1'
+    alpha2: '1.0'
+    color2: red
+    label2: B decoded  — off the chip, MISSES ON PURPOSE (X)
+    marker2: '9'
+    style2: '1'
+    alpha3: '1.0'
+    color3: dark blue
+    label3: Signal 3
+    marker3: '-1'
+    style3: '1'
+    alpha4: '1.0'
+    color4: dark blue
+    label4: Signal 4
+    marker4: '-1'
+    style4: '1'
+    alpha5: '1.0'
+    color5: dark blue
+    label5: Signal 5
+    marker5: '-1'
+    style5: '1'
+    alpha6: '1.0'
+    color6: dark blue
+    label6: Signal 6
+    marker6: '-1'
+    style6: '1'
+    alpha7: '1.0'
+    color7: dark blue
+    label7: Signal 7
+    marker7: '-1'
+    style7: '1'
+    alpha8: '1.0'
+    color8: dark blue
+    label8: Signal 8
+    marker8: '-1'
+    style8: '1'
+    alpha9: '1.0'
+    color9: dark blue
+    label9: Signal 9
+    marker9: '-1'
+    style9: '1'
+    alpha10: '1.0'
+    color10: dark blue
+    label10: Signal 10
+    marker10: '-1'
+    style10: '1'
+    width1: '5'
+    width2: '3'
+    width3: '1'
+    width4: '1'
+    width5: '1'
+    width6: '1'
+    width7: '1'
+    width8: '1'
+    width9: '1'
+    width10: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 2000
+    - 560
+    rotation: 0
+    state: enabled
+- name: ser_readout
+  id: qtgui_number_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    autoscale: 'False'
+    avg: '0'
+    comment: the two headline numbers, MEASURED live on the plotted symbols of this very run. A must read 0.00; B must NOT
+      - B is the negative control and a low number there would mean the control stopped working.
+    graph_type: qtgui.NUM_GRAPH_HORIZ
+    gui_hint: 3,0,1,2
+    label1: SER  A (+10 dB, panel 1)  — reads 0.00, EXPECTED ✓
+    label2: SER  B (−10 dB, panel 2, NEGATIVE CONTROL)  — reads HIGH, EXPECTED ✓
+    max: '1'
+    min: '0'
+    name: '''MEASURED SYMBOL ERROR RATE — A must be 0.00, B must NOT (both are the expected result)'''
+    nconnections: '2'
+    type: float
+    unit1: '''SER'''
+    unit2: '''SER'''
+    update_time: '0.10'
+    color1: ("blue", "red")
+    color2: ("black", "red")
+    factor1: '1'
+    factor2: '1'
+    label3: ''
+    unit3: ''
+    color3: ("black", "black")
+    factor3: '1'
+    label4: ''
+    unit4: ''
+    color4: ("black", "black")
+    factor4: '1'
+    label5: ''
+    unit5: ''
+    color5: ("black", "black")
+    factor5: '1'
+    label6: ''
+    unit6: ''
+    color6: ("black", "black")
+    factor6: '1'
+    label7: ''
+    unit7: ''
+    color7: ("black", "black")
+    factor7: '1'
+    label8: ''
+    unit8: ''
+    color8: ("black", "black")
+    factor8: '1'
+    label9: ''
+    unit9: ''
+    color9: ("black", "black")
+    factor9: '1'
+    label10: ''
+    unit10: ''
+    color10: ("black", "black")
+    factor10: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 2000
+    - 820
+    rotation: 0
+    state: enabled
+- name: verdict
+  id: variable_qtgui_label
+  parameters:
+    comment: 'the plot''s own caption: both panels below are the expected result.'
+    formatter: None
+    gui_hint: 0,0,1,2
+    label: 'BOTH PANELS ARE THE EXPECTED RESULT. Panel A (+10 dB) locks, SER 0.00. Panel B (-10 dB) collapses, SER ~0.63 -
+      B is a deliberate NEGATIVE CONTROL: same placed chip, same burst, 20 dB worse signal. Its failure is what makes A''s
+      SER 0 mean something.'
+    type: string
+    value: '''A LOCKS + B COLLAPSES = WORKING AS DESIGNED'''
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1180
+    - 12
     rotation: 0
     state: enabled
 - name: seg_words
@@ -728,21 +958,29 @@ connections:
   - bin_to_sym
   - '0'
 - - bin_to_sym
-  - '0'
-  - sym_scope
+  - '1'
+  - seg_a_scope
   - '0'
 - - bin_to_sym
+  - '0'
+  - seg_a_scope
   - '1'
-  - sym_scope
-  - '1'
-- - bin_to_sym
-  - '2'
-  - sym_scope
-  - '2'
 - - bin_to_sym
   - '3'
-  - sym_scope
-  - '3'
+  - seg_b_scope
+  - '0'
+- - bin_to_sym
+  - '2'
+  - seg_b_scope
+  - '1'
+- - bin_to_sym
+  - '4'
+  - ser_readout
+  - '0'
+- - bin_to_sym
+  - '5'
+  - ser_readout
+  - '1'
 metadata:
   file_format: 1
   grc_version: 3.10.12.0

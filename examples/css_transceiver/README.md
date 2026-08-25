@@ -78,24 +78,41 @@ symbols on screen with a sync flag. The burst still carries the 4-symbol
 
 ## What the GRC window shows
 
-| Scope | What |
-|-------|------|
+The window reads top to bottom as one argument. **Both segments succeeding at
+what they are each supposed to do is the result** — and the layout is built so
+that no one has to have read this file to know it.
+
+| Row | What |
+|-----|------|
+| **Caption** | one line: *"BOTH PANELS ARE THE EXPECTED RESULT — A (+10 dB) LOCKS, SER 0.00 \| B (−10 dB) COLLAPSES, SER ~0.63 …"* |
+| **Panel 1 — SEGMENT A · +10 dB · DECODE LOCKS ✓ EXPECTED** | segment A alone. Every **blue X** (decoded, off the chip) lands inside a **cyan circle** (transmitted reference) — 24 for 24. Draws in the left half of the sweep only. |
+| **Panel 2 — SEGMENT B · −10 dB · NEGATIVE CONTROL … ✓ EXPECTED, THIS IS THE POINT** | segment B alone. **Red X marks miss their dark-red circles**, on purpose. Draws in the right half only. A clean overlay *here* would mean the control had stopped working. |
+| **MEASURED SYMBOL ERROR RATE** | the two headline numbers, measured live on the symbols actually plotted above: **A reads 0.000000**, **B reads 0.625000**. |
 | **RF burst** | the received chirp burst (I and Q). Each 16-sample frame is one cyclic-shifted up-chirp. |
 | **Chip output — winning FFT bin** | the RAW argmax index straight off the chip (0..15), in FFT16's bit-reversed order. |
-| **DECODED vs TRANSMITTED** | **four traces, two pairs.** Left half = segment A (+10 dB): blue decoded sits **exactly** on the cyan reference, every point. Right half = segment B (−10 dB): red decoded scatters off the dark-red reference. Each segment draws only in its own half, so neither overplots the other. |
+
+Each segment gets its **own panel with its own verdict in its own title**,
+because the previous layout — all four traces on one axis — was read as a
+defect ("the +10 dB works flawlessly but the −10 dB doesn't work at all"),
+which is a description of the demo working exactly as designed. One axis
+carrying both a lock and a deliberate collapse cannot say which is which.
 
 Display notes (each is a documented past failure): the chain is complex-input,
 so the sink egresses **raw word floats** — the index plots directly with no
 ×32768 rescale. Every scope is sized to a real burst and the source repeats, and
 the sink loops its genuine one-batch result (`server_repeat=True`), because GNU
 Radio strands the tail of a finite stream and a scope sized ≥ its burst never
-paints.
+paints. And: **no trace may use line style 0 (NoPen).** A qtgui `time_sink`
+channel set to markers-only draws *nothing* on any channel above channel 0 —
+reproduced standalone with two sources of different amplitude, on a real X
+display as well as offscreen. The old scope used NoPen on all four traces, so
+the decoded traces this demo exists to show were never actually painted. Both
+panels now use a solid pen, and the gate rejects style 0.
 
-### Why the reference is generated inside the display block
+### Four display defects, all of which made a correct chip look broken
 
-The symbol scope's reference trace does **not** come from a separate source
-block, and that is deliberate. It used to, and it made a **bit-exact decode
-look broken** — two independent display defects, both measured:
+Every one of these was measured, and none of them was a DSP fault — the chip
+was bit-exact (SER 0, message recovered) through all four.
 
 * **Phase drift.** The reference came from its own `vector_source`, which
   free-runs, while the chip's stream is gated by the simulator's batch
@@ -108,18 +125,40 @@ look broken** — two independent display defects, both measured:
   which was which, so segment B's *intentional* garbage overlaid segment A's
   perfect lock. 17 of 50 plotted points disagreed **by design**, and the plot
   never said so.
+* **The control read as a defect.** Splitting A and B onto four traces of one
+  scope fixed the arithmetic and not the meaning. A single axis where half the
+  points lock and half scatter reads as *"half of it is broken"* — reported
+  verbatim as "the +10 dB works flawlessly but the −10 dB doesn't work at all",
+  which is a description of the demo behaving exactly as designed.
+* **Half the traces were never drawn.** A qtgui `time_sink` channel set to line
+  style **0 (NoPen, markers-only)** paints **nothing on any channel above
+  channel 0**. Reproduced standalone with two vector sources of *different*
+  amplitude — so it is not occlusion, the second trace is simply never
+  rendered — on a real X display as well as offscreen. The old scope used NoPen
+  on all four of its traces.
 
-The fix: `css_decode_map.py` takes the chip stream and emits **four
-phase-locked channels** — it derives the reference from the item index of the
-same stream it is decoding, so drift is impossible by construction, and it
-blanks (NaN) each segment outside its own half so A and B never overplot. The
-framing-latency word (word 0 of each segment, which carries no data symbol) is
-blanked on both channels rather than plotted as a lone unmatched point.
+The fixes, in order:
 
-`test_css_transceiver_example.py` asserts these traces directly — segment A
-matching at every plotted point, segment B visibly missing, the two disjoint,
-and every frame identical across the run — with four mutation tests proving
-that gate fails on both original defects.
+* `css_decode_map.py` takes the chip stream and derives the reference from the
+  **item index of the same stream it is decoding**, so drift is impossible by
+  construction, and blanks (NaN) each segment outside its own words so A and B
+  never overplot. The framing-latency word (word 0 of each segment, which
+  carries no data symbol) is blanked rather than plotted as a lone unmatched
+  point.
+* Each segment gets its **own panel**, whose **title states its own verdict**,
+  and the block publishes each segment's **measured SER** on its own channel so
+  the numbers sit on screen beside the pictures they describe.
+* Both panels use a **solid pen**, never NoPen, and draw the reference as a
+  wide **circle** on scope input 0 with the decoded output as a narrower **X**
+  on input 1 — the last-painted channel, so a perfect overlay shows the X
+  inside the ring instead of hiding the decode underneath the reference.
+
+`test_css_transceiver_example.py` asserts all of it directly — segment A
+matching at every plotted point, segment B missing across a derived SER band,
+the two disjoint, the SER readouts agreeing with the traces beside them, every
+frame identical across the run, and the `.grc`'s panel structure, titles,
+wiring orientation and line styles — with eight mutation tests proving the gate
+fails on each defect.
 
 ## Run it
 
@@ -162,7 +201,7 @@ RESULT: EXACT — 'KYTTAR CSS' recovered at +10 dB (SER 0); the -10 dB control c
 
 ## What is verified
 
-`verification/tests/test_css_transceiver_example.py` (12 tests) on real simKYT,
+`verification/tests/test_css_transceiver_example.py` (14 tests) on real simKYT,
 through the real pipeline:
 
 - **The stim module's goldens are the BLOCKS' own references** — bits→symbols
@@ -174,7 +213,13 @@ through the real pipeline:
 - **Shipped-`.kyt` parity:** the file the user opens produces the same stream as
   a fresh import.
 - **The decode:** SER **0** over the +10 dB segment with `KYTTAR CSS` recovered
-  exactly, and SER **> 0.2** over the −10 dB on-chip control.
+  exactly, and a SER inside the derived band **[0.40, 0.75)** over the −10 dB
+  on-chip control (measured: **0.625**, 15 errors of 24). The band is asserted
+  as a range because the control is noise-driven, and both ends mean something:
+  below **0.40** the control has started decoding and segment A's SER 0 proves
+  nothing; at **0.75** and above the chain is emitting a *constant*, since the
+  cheapest of the 16 stuck-at-k streams scores exactly 0.75 on this frame — a
+  bare "SER is high" check would accept a dead chain as a healthy control.
 - **Mutations (INV-4)** that must FAIL: decoding the raw index without `brev4`;
   dropping the `Delay(1)` alignment; a non-conjugated dechirp reference.
 - **The real GR-client user path:** the shipped `.kyt` hosted exactly as the
@@ -182,12 +227,23 @@ through the real pipeline:
   and run under the real GNU Radio interpreter — the sink's recovered stream is
   the chip-proven golden, decodes to `KYTTAR CSS`, the control still fails, and
   the `server_repeat` loop is a clean repetition of the genuine batch.
-- **The TRACES THE USER SEES**, tapped from the display block's four output
+- **The TRACES THE USER SEES**, tapped from the display block's six output
   channels in that same run: segment A's decoded trace equals its reference at
-  **every** plotted point, segment B's visibly does not, the two never draw at
-  the same position, and every scope frame across the run is identical (no
-  drift). Backed by mutation tests that replay the two original display defects
-  and prove this gate FAILS on them.
+  **every** plotted point, segment B's misses across the derived band, the two
+  never draw at the same position, the two SER readouts hold steady and equal
+  the mismatches actually plotted beside them, and every scope frame across the
+  run is identical (no drift).
+- **The PLOT LAYOUT ITSELF**, read from the shipped `.grc`: two per-segment
+  scopes rather than one four-trace axis, each fed only its own segment's pair,
+  each title naming its segment, SNR and verdict with B's marked EXPECTED and
+  CONTROL, the reference/decoded wiring orientation, no trace on NoPen, marker
+  shapes distinct with the reference drawn wider, and a two-input SER readout
+  wired to the two SER channels.
+- Backed by **eight mutation tests** that replay every display defect — the
+  phase drift, the A/B conflation, unequal channel counts, a drifting trace, a
+  control that quietly starts decoding, all sixteen stuck-at constants, a
+  readout that lies about its panel, and an unsettled readout — and prove this
+  gate FAILS on each.
 
 Run the user-path test **standalone** — it binds port 58950 and self-contends
 with the other examples' user-path gates under concurrent load.
@@ -223,7 +279,7 @@ with the other examples' user-path gates under concurrent load.
 |------|------|
 | `css_transceiver.grc` | GRC-first source — the flowgraph the user opens and runs. |
 | `css_transceiver.kyt` | The placed + routed project (pinned geometry, 82/120 cells). |
-| `css_decode_map.py` | The embedded `s = brev4(index)` display block. |
+| `css_decode_map.py` | The embedded display block: `s = brev4(index)`, the A/B split onto per-panel channels, and the live per-segment SER. |
 | `build_kyt.py` | Regenerates the `.kyt` from the `.grc` (import → pin geometry → route → build). |
 | `css_transceiver_demo.py` | Headless END-TO-END demo — the whole story in one command. |
 | `../../gr-kyttar/python/kyttar/css_demo_stim.py` | The stimulus the `.grc` feeds from (TX + channel). |

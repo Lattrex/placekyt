@@ -345,7 +345,7 @@ def build():
                 f"+{TONE_B_HZ:g} Hz.",
             "gen_cmake": "On", "gen_linking": "dynamic",
             "generate_options": "qt_gui", "hier_block_src_path": ".:",
-            "id": "fft128_2p2s_demo", "max_nouts": "0",
+            "id": "fft128_2p2s_grc", "max_nouts": "0",
             "output_language": "python", "placement": "(0,0)",
             "qt_qss_theme": "", "realtime_scheduling": "", "run": "True",
             "run_command": "{python} -u {filename}", "run_options": "prompt",

@@ -107,7 +107,7 @@ Then **Simulation → Run as GNURadio Server** (port **58950**). Leave placeKYT 
 gnuradio-companion examples/robust_rx/robust_rx.grc
 ```
 
-(Or run the generated top-block directly: `python3 examples/robust_rx/robust_rx.py`.)
+(Or, after pressing **Generate** in GRC once, run the generated top-block directly: `python3 examples/robust_rx/robust_rx.py`. That file is build output — it is not checked in, and GRC recreates it from the `.grc`.)
 
 | File | What |
 |------|------|

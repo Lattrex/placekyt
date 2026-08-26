@@ -5,9 +5,9 @@
 # SPDX-License-Identifier: GPL-3.0
 #
 # GNU Radio Python Flow Graph
-# Title: DSB-AM transceiver (on-chip, real blocks) — TX modulate + RX demodulate
+# Title: FM transceiver (on-chip, real blocks) — TX modulate + RX demodulate
 # Author: Kyttar
-# Description: DSB-AM TRANSCEIVER from REAL Kyttar blocks. SEPARATE TX chain (audio -> oscMix(fc) -> AM passband, stream 'tx') and SEPARATE RX chain (AM passband -> oscMix(fc) -> LowPass -> Gain -> recovered audio, stream 'rx') sharing ONE chip by stream_id, like the BPSK modem. Verified |corr| ~ 1.0. Imports + auto-P&R-routes into placeKYT.
+# Description: FM TRANSCEIVER from REAL Kyttar blocks. SEPARATE TX chain (audio -> frequency_modulator -> FM passband, stream 'tx') and SEPARATE RX chain (complex FM I/Q -> quadrature_demod -> recovered audio, stream 'rx') sharing ONE chip by stream_id, like the AM transceiver. Verified |corr| ~ 1.0. Imports + auto-P&R-routes into placeKYT.
 # GNU Radio version: 3.10.12.0
 
 from PyQt5 import Qt
@@ -23,18 +23,18 @@ from argparse import ArgumentParser
 from gnuradio.eng_arg import eng_float, intx
 from gnuradio import eng_notation
 from gnuradio import kyttar
-from gnuradio.kyttar import am_demo_stim as stim
+from gnuradio.kyttar import fm_demo_stim as stim
 import sip
 import threading
 
 
 
-class am_transceiver(gr.top_block, Qt.QWidget):
+class fm_transceiver(gr.top_block, Qt.QWidget):
 
     def __init__(self):
-        gr.top_block.__init__(self, "DSB-AM transceiver (on-chip, real blocks) — TX modulate + RX demodulate", catch_exceptions=True)
+        gr.top_block.__init__(self, "FM transceiver (on-chip, real blocks) — TX modulate + RX demodulate", catch_exceptions=True)
         Qt.QWidget.__init__(self)
-        self.setWindowTitle("DSB-AM transceiver (on-chip, real blocks) — TX modulate + RX demodulate")
+        self.setWindowTitle("FM transceiver (on-chip, real blocks) — TX modulate + RX demodulate")
         qtgui.util.check_set_qss()
         try:
             self.setWindowIcon(Qt.QIcon.fromTheme('gnuradio-grc'))
@@ -52,7 +52,7 @@ class am_transceiver(gr.top_block, Qt.QWidget):
         self.top_grid_layout = Qt.QGridLayout()
         self.top_layout.addLayout(self.top_grid_layout)
 
-        self.settings = Qt.QSettings("gnuradio/flowgraphs", "am_transceiver")
+        self.settings = Qt.QSettings("gnuradio/flowgraphs", "fm_transceiver")
 
         try:
             geometry = self.settings.value("geometry")
@@ -68,18 +68,19 @@ class am_transceiver(gr.top_block, Qt.QWidget):
         self.server_port = server_port = 58950
         self.samp_rate = samp_rate = 32000.0
         self.n_samp = n_samp = 2048
+        self.f_dev = f_dev = 1500.0
 
         ##################################################
         # Blocks
         ##################################################
 
+        self.tx_vco = kyttar.frequency_modulator(device_id="kyttar_0", sensitivity=0.2945243112740431, pipeline_lock=False)
         self.tx_src = kyttar.source(device_id="kyttar_0", port_name="x16_in", num_channels=1, server_host="127.0.0.1", server_port=server_port, complex_in=False, burst_len=n_samp, stream_id="tx", pipelined=True, schedule="interleaved", repeat=False, output_words="auto")
-        self.tx_sink = kyttar.sink(device_id="kyttar_0", port_name="x16_out", num_channels=1, server_port=server_port, server_repeat=False, hold_secs=5.0, stream_id="tx", in_type=False)
-        self.tx_q0 = blocks.null_source(gr.sizeof_float*1)
+        self.tx_sink = kyttar.sink(device_id="kyttar_0", port_name="x16_out", num_channels=1, server_port=server_port, server_repeat=False, hold_secs=5.0, stream_id="tx", in_type=True)
         self.tx_passband = qtgui.time_sink_f(
             stim.points(n_samp), #size
             samp_rate, #samp_rate
-            'AM passband (TX)', #name
+            'FM passband (TX)', #name
             1, #number of inputs
             None # parent
         )
@@ -97,7 +98,7 @@ class am_transceiver(gr.top_block, Qt.QWidget):
         self.tx_passband.enable_stem_plot(False)
 
 
-        labels = ['AM passband (TX)', 'Signal 2', 'Signal 3', 'Signal 4', 'Signal 5',
+        labels = ['FM passband (TX)', 'Signal 2', 'Signal 3', 'Signal 4', 'Signal 5',
             'Signal 6', 'Signal 7', 'Signal 8', 'Signal 9', 'Signal 10']
         widths = [1, 1, 1, 1, 1,
             1, 1, 1, 1, 1]
@@ -124,16 +125,10 @@ class am_transceiver(gr.top_block, Qt.QWidget):
 
         self._tx_passband_win = sip.wrapinstance(self.tx_passband.qwidget(), Qt.QWidget)
         self.top_layout.addWidget(self._tx_passband_win)
-        self.tx_mix = kyttar.iq_upconvert("kyttar_0", 32000.0, 6000.0)
-        self.tx_f2c = blocks.float_to_complex(1)
         self.tx_audio = blocks.vector_source_f(stim.tx_audio(n_samp), False, 1, [])
-        self.rx_src = kyttar.source(device_id="kyttar_0", port_name="x16_in", num_channels=1, server_host="127.0.0.1", server_port=server_port, complex_in=False, burst_len=n_samp, stream_id="rx", pipelined=True, schedule="interleaved", repeat=False, output_words="auto")
+        self.rx_src = kyttar.source(device_id="kyttar_0", port_name="x16_in", num_channels=1, server_host="127.0.0.1", server_port=server_port, complex_in=True, burst_len=n_samp, stream_id="rx", pipelined=True, schedule="interleaved", repeat=False, output_words="q15")
         self.rx_sink = kyttar.sink(device_id="kyttar_0", port_name="x16_out", num_channels=1, server_port=server_port, server_repeat=False, hold_secs=5.0, stream_id="rx", in_type=False)
-        self.rx_q0 = blocks.null_source(gr.sizeof_float*1)
-        self.rx_mix = kyttar.iq_upconvert("kyttar_0", 32000.0, 6000.0)
-        self.rx_lpf = kyttar.low_pass_filter(device_id="kyttar_0", gain=1, samp_rate=32000.0, cutoff_freq=2000.0, transition_width=1000.0, window='hamming', beta=6.76, decimation=1, interpolation=1)
-        self.rx_gain = kyttar.gain(device_id="kyttar_0", gain=2, block_name="")
-        self.rx_f2c = blocks.float_to_complex(1)
+        self.rx_demod = kyttar.quadrature_demod(device_id="kyttar_0", gain=3.3953054526271007)
         self.rx_audio = qtgui.time_sink_f(
             stim.points(n_samp), #size
             samp_rate, #samp_rate
@@ -182,30 +177,24 @@ class am_transceiver(gr.top_block, Qt.QWidget):
 
         self._rx_audio_win = sip.wrapinstance(self.rx_audio.qwidget(), Qt.QWidget)
         self.top_layout.addWidget(self._rx_audio_win)
-        self.am_rf = blocks.vector_source_f(stim.am_passband(n_samp), False, 1, [])
+        self.fm_rf = blocks.vector_source_c(stim.fm_iq(n_samp), False, 1, [])
 
 
         ##################################################
         # Connections
         ##################################################
-        self.connect((self.am_rf, 0), (self.rx_src, 0))
-        self.connect((self.rx_f2c, 0), (self.rx_mix, 0))
-        self.connect((self.rx_gain, 0), (self.rx_sink, 0))
-        self.connect((self.rx_lpf, 0), (self.rx_gain, 0))
-        self.connect((self.rx_mix, 0), (self.rx_lpf, 0))
-        self.connect((self.rx_q0, 0), (self.rx_f2c, 1))
+        self.connect((self.fm_rf, 0), (self.rx_src, 0))
+        self.connect((self.rx_demod, 0), (self.rx_sink, 0))
         self.connect((self.rx_sink, 0), (self.rx_audio, 0))
-        self.connect((self.rx_src, 0), (self.rx_f2c, 0))
+        self.connect((self.rx_src, 0), (self.rx_demod, 0))
         self.connect((self.tx_audio, 0), (self.tx_src, 0))
-        self.connect((self.tx_f2c, 0), (self.tx_mix, 0))
-        self.connect((self.tx_mix, 0), (self.tx_sink, 0))
-        self.connect((self.tx_q0, 0), (self.tx_f2c, 1))
         self.connect((self.tx_sink, 0), (self.tx_passband, 0))
-        self.connect((self.tx_src, 0), (self.tx_f2c, 0))
+        self.connect((self.tx_src, 0), (self.tx_vco, 0))
+        self.connect((self.tx_vco, 0), (self.tx_sink, 0))
 
 
     def closeEvent(self, event):
-        self.settings = Qt.QSettings("gnuradio/flowgraphs", "am_transceiver")
+        self.settings = Qt.QSettings("gnuradio/flowgraphs", "fm_transceiver")
         self.settings.setValue("geometry", self.saveGeometry())
         self.stop()
         self.wait()
@@ -231,13 +220,19 @@ class am_transceiver(gr.top_block, Qt.QWidget):
 
     def set_n_samp(self, n_samp):
         self.n_samp = n_samp
-        self.am_rf.set_data(stim.am_passband(self.n_samp), [])
+        self.fm_rf.set_data(stim.fm_iq(self.n_samp), [])
         self.tx_audio.set_data(stim.tx_audio(self.n_samp), [])
 
+    def get_f_dev(self):
+        return self.f_dev
+
+    def set_f_dev(self, f_dev):
+        self.f_dev = f_dev
 
 
 
-def main(top_block_cls=am_transceiver, options=None):
+
+def main(top_block_cls=fm_transceiver, options=None):
 
     qapp = Qt.QApplication(sys.argv)
 

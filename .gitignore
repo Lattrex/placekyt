@@ -29,12 +29,52 @@ htmlcov/
 .idea/
 .vscode/
 
-# GNU Radio generated flowgraph artifacts (the .grc is the source; the .py is generated)
-# Keep curated hand-written runners; ignore GRC-generated top_block .py if regenerated
+# GNU Radio GENERATED flowgraph artifacts. The .grc is the SOURCE; the .py is
+# its build output, and nothing in the repo consumes the checked-in copy —
+# verification/grc_userpath_run.py regenerates into a tempdir from the .grc.
+#
+# Tracking generated output beside hand-written source is what let GRC's
+# "Generate" silently destroy examples/gru_classifier/gru_classifier.py (the
+# loss reads as an ordinary edit in git status) and what let the CSS display
+# block sit at 4 outputs while its flowgraph wired 6. Regenerate, don't track.
+#
+# Listed explicitly rather than by wildcard: examples/*.py also holds
+# HAND-WRITTEN design modules (gru_classifier.py, css_decode_map.py,
+# fft128_2p2s_spectrum.py, the *_demo.py runners, gen_grc.py) which must stay
+# tracked. INV-43's gate in test_examples_grc_valid.py keeps the two kinds
+# from colliding on a filename.
 .mypy_cache/
 examples/bpsk_transceiver_loopback/bpsk_loopback.py
-examples/fm_transceiver/fm_transceiver.py
-examples/ssb_weaver/ssb_weaver.py
+examples/am_transceiver/am_transceiver.py
+examples/audio_effects/effect_comb.py
+examples/audio_effects/effect_echo.py
+examples/audio_effects/effect_tremolo.py
+examples/audio_meter/audio_meter.py
+examples/bpsk_modem/bpsk_modem.py
+examples/channel_selector/channel_selector.py
+examples/coherent_bpsk_rx/coherent_bpsk_rx_mf_demo.py
+examples/complex_math/complex_math.py
+examples/cordic_polar/cordic_polar.py
+examples/css_transceiver/css_transceiver.py
+examples/css_transceiver/css_transceiver_bin_to_sym.py
+examples/cw_transceiver/cw_transceiver.py
+examples/data_link/data_link.py
+examples/fec_link/fec_link.py
+examples/fft128_2p2s/fft128_2p2s_grc.py
+examples/fft128_2p2s/fft128_2p2s_grc_spectrum.py
+examples/fft128_2p2s/fft128_2p2s_grc_to_db.py
+examples/fft_spectrum/fft_spectrum.py
+examples/fft_spectrum/fft_spectrum_32.py
+examples/fsk4_modem/fsk4_modem.py
+examples/gain/gain_demo.py
+examples/gain_2p2s/gain_2p2s_demo.py
+examples/gain_hw/gain_hw.py
+examples/gru_classifier/gru_classifier_grc.py
+examples/lms_equalizer/lms_equalizer.py
+examples/psk31_transceiver/psk31_transceiver.py
+examples/qam16_modem/qam16_modem.py
+examples/qpsk_modem/qpsk_modem.py
+examples/robust_rx/robust_rx.py
 
 # Internal development / planning docs (NEVER checked in)
 dev_docs/

@@ -113,7 +113,7 @@ Then **Simulation → Run as GNURadio Server** (port **58950**). Leave placeKYT 
 gnuradio-companion examples/audio_meter/audio_meter.grc
 ```
 
-(Or run the generated top-block directly: `python3 examples/audio_meter/audio_meter.py`.)
+(Or, after pressing **Generate** in GRC once, run the generated top-block directly: `python3 examples/audio_meter/audio_meter.py`. That file is build output — it is not checked in, and GRC recreates it from the `.grc`.)
 
 | File | What |
 |------|------|

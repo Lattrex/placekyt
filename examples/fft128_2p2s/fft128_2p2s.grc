@@ -16,7 +16,7 @@ options:
     gen_linking: dynamic
     generate_options: qt_gui
     hier_block_src_path: '.:'
-    id: fft128_2p2s_demo
+    id: fft128_2p2s_grc
     max_nouts: '0'
     output_language: python
     placement: (0,0)

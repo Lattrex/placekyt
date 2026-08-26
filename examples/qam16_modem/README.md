@@ -129,7 +129,7 @@ Two terminals, from the repo root.
 Expected: `Symbol BER = 0.0000` after the loops lock (the first ~60 symbols are the warm-up
 and are guarded). Pass `--no-plot` for stats only; `--n` sets the burst length.
 
-Alternatively, run the flowgraph itself (`qam16_modem.py` / *Run as GNURadio Server*): the
+Alternatively, run the flowgraph itself (open `qam16_modem.grc` in GRC / *Run as GNURadio Server*): the
 **TX passband** scope shows the real 4 kHz carrier modulated by the 16-QAM symbols, and the
 **Recovered 16-QAM symbols** scope shows the decoded indices spanning the full 0..15 range.
 

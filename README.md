@@ -227,10 +227,10 @@ factory is named in the dashboard so you never have to guess the equivalent.
 | **TanhBlock** | `(Python golden: numpy.tanh in Q15)` | err 0 / tol 0 LSB |
 | **DotProductMACBlock** | (Kyttar-native, no single GR block) | BER 0 (60 bits) |
 | **ZeroCrossingRateBlock** | (Kyttar-native, no single GR block) | err 0 / tol 0 LSB |
-| **GRUCellBlock** | (Kyttar-native, no single GR block) | — |
+| **GRUCellBlock** | (Kyttar-native, no single GR block) | err 0.0 / tol 0.0 LSB |
 | **ComplexDelayLineBlock** | `(Python golden: numpy complex delay of N samples)` | err 0 / tol 0 LSB |
-| **R2ButterflyBlock** | `(Python golden: radix-2 DIF butterfly, RHE scale-by-2)` | — |
-| **TwiddleMultiplyBlock** | `(Python golden: complex multiply by a per-sample table-selected Q15 twiddle)` | — |
+| **R2ButterflyBlock** | `(Python golden: radix-2 DIF butterfly, RHE scale-by-2)` | err 0.0 / tol 0.0 LSB |
+| **TwiddleMultiplyBlock** | `(Python golden: complex multiply by a per-sample table-selected Q15 twiddle)` | err 0.0 / tol 0.0 LSB |
 | **FFT16Block** | `numpy.fft.fft (N=16)` | err 0.0 / tol 0.0 LSB |
 | **FFT32Block** | `numpy.fft.fft (N=32)` | err 0.0 / tol 0.0 LSB |
 | **FFT64Block** | `numpy.fft.fft (N=64)` | err 0.0 / tol 0.0 LSB |
@@ -241,7 +241,7 @@ factory is named in the dashboard so you never have to guess the equivalent.
 | **BinArgmaxBlock** | `(Python golden: numpy.argmax over N magnitude bins)` | err 0 / tol 0 LSB |
 | **ConjChirpMixerBlock** | `(Python golden: multiply by the conjugate reference up-chirp — the CSS dechirp)` | err 0 / tol 0 LSB |
 | **ChirpSyncBlock** | `(Python golden: K-consecutive-equal-argmax preamble run detector)` | err 0 / tol 0 LSB |
-| **SqrtBlock** | `blocks.transcendental` | — |
+| **SqrtBlock** | `blocks.transcendental` | err 3 / tol 5 LSB · -83 dB SNR |
 | **FeaturePairJoinBlock** | `(placeKYT-native: ordered two-word rendezvous; no GR counterpart)` | err 0 / tol 0 LSB |
 <!-- BLOCK-STATUS:END -->
 

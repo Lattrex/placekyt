@@ -54,10 +54,10 @@
 | **Crc16Block** | (Kyttar-native, no single GR block) | 1 · feed-forward | ✅ done | err 0 / tol 0 LSB | edge rand×4 mut |
 | **HammingEncoderBlock** | (Kyttar-native, no single GR block) | 1 · feed-forward | ✅ done | BER 0 (112 bits) | edge rand×4 mut |
 | **HammingDecoderBlock** | (Kyttar-native, no single GR block) | 1 · feed-forward | ✅ done | BER 0 (448 bits) | edge rand×3 mut |
-| **R2ButterflyBlock** | `(Python golden: radix-2 DIF butterfly, RHE scale-by-2)` | 1 · feed-forward | ✅ done | — | — |
-| **TwiddleMultiplyBlock** | `(Python golden: complex multiply by a per-sample table-selected Q15 twiddle)` | 1 · feed-forward | ✅ done | — | — |
+| **R2ButterflyBlock** | `(Python golden: radix-2 DIF butterfly, RHE scale-by-2)` | 1 · feed-forward | ✅ done | err 0.0 / tol 0.0 LSB | edge rand×3 mut |
+| **TwiddleMultiplyBlock** | `(Python golden: complex multiply by a per-sample table-selected Q15 twiddle)` | 1 · feed-forward | ✅ done | err 0.0 / tol 0.0 LSB | edge rand×3 mut |
 | **ChirpSymbolMapperBlock** | `(Python golden: pack log2(m) bits MSB-first into one raw symbol word; == blocks.pack_k_bits_bb for m <= 256)` | 1 · feed-forward | ✅ done | err 0 / tol 0 LSB | sweep×4 mut |
-| **SqrtBlock** | `blocks.transcendental` | 1 · feed-forward | ✅ done | — | — |
+| **SqrtBlock** | `blocks.transcendental` | 1 · feed-forward | ✅ done | err 3 / tol 5 LSB · -83 dB SNR | edge rand×3 sweep×5 mut |
 | **IQUpconvertBlock** | `blocks.multiply_cc` | 2 · stateful/loop | ✅ done | err 1 / tol 6 LSB · -85 dB SNR | mut |
 | **ComplexRRCMatchedFilterBlock** | `filter.fir_filter_ccf (rrc taps)` | 2 · stateful/loop | ✅ done · 🧪 proof-of-concept | err 11 / tol 18 LSB · -54 dB SNR | edge rand×3 sweep×8 mut |
 | **AGCBlock** | `analog.agc_ff` | 2 · stateful/loop | ✅ done | err 3 / tol 80 LSB · -81 dB SNR | mut |
@@ -114,7 +114,7 @@
 | **RationalResamplerBlock** | `filter.rational_resampler_fff` | 3 · new GRC block | ✅ done | err 2 / tol 5 LSB · -76 dB SNR | edge rand×3 sweep×13 mut |
 | **DotProductMACBlock** | (Kyttar-native, no single GR block) | 3 · new GRC block | ✅ done | BER 0 (60 bits) | edge rand×4 mut |
 | **ZeroCrossingRateBlock** | (Kyttar-native, no single GR block) | 3 · new GRC block | ✅ done | err 0 / tol 0 LSB | edge rand×3 sweep×5 mut |
-| **GRUCellBlock** | (Kyttar-native, no single GR block) | 3 · new GRC block | ✅ done | — | — |
+| **GRUCellBlock** | (Kyttar-native, no single GR block) | 3 · new GRC block | ✅ done | err 0.0 / tol 0.0 LSB | edge rand×3 mut |
 | **FFT16Block** | `numpy.fft.fft (N=16)` | 3 · new GRC block | ✅ done | err 0.0 / tol 0.0 LSB | edge rand×3 mut |
 | **FFT32Block** | `numpy.fft.fft (N=32)` | 3 · new GRC block | ✅ done | err 0.0 / tol 0.0 LSB | edge rand×3 mut |
 | **FFT64Block** | `numpy.fft.fft (N=64)` | 3 · new GRC block | ✅ done | err 0.0 / tol 0.0 LSB | edge rand×3 mut |

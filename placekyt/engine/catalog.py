@@ -56,8 +56,8 @@ _EXCLUDED_BLOCKS = frozenset({
     # do with the sweep.
     #
     # THIS ENTRY IS PERMANENT. The 2-die split HAS landed and is verified
-    # bit-exact end to end (examples/fft128_2die/, gated by
-    # test_fft128_2die_example.py), but it ships as the two HALVES —
+    # bit-exact end to end (examples/fft128_2p2s/, gated by
+    # test_fft128_2p2s_example.py), but it ships as the two HALVES —
     # FFT128Die0 and FFT128Die1, which ARE catalogued and placeable, one per
     # chip. The whole-transform class stays un-instantiable because a single
     # die genuinely cannot hold it; that is the fact it exists to state.

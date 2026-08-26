@@ -188,11 +188,13 @@ neither `yes` nor `no`), which fell back to `no` — the correct value, by accid
 *A `.grc` enum that does not match an option is not a build error; check the
 GENERATED Python (`kyttar.source(..., output_words="auto")`), never the `.grc` text.*
 
-**BLAST RADIUS.** `fft128_2die` had the **identical** defect — the two `gen_grc.py`
-files are the same file modulo comments, so the fault was cloned — and had **no
-user-path gate at all**, so nothing would have caught it. Both are fixed
-(`output_words='"q15"'`, `repeat='no'`) and `test_fft128_2die_shipped_grc_user_path`
-is new. Every other value-output complex example already set `"q15"`
+**BLAST RADIUS.** The sibling two-die example had the **identical** defect — the
+two `gen_grc.py` files are the same file modulo comments, so the fault was cloned
+— and had **no user-path gate at all**, so nothing would have caught it. Both
+were fixed (`output_words='"q15"'`, `repeat='no'`) and each gained a user-path
+gate. (That sibling has since been retargeted onto the real 2P2S board as
+`examples/fft128_2p2s/`, whose gate is
+`test_fft128_2p2s_shipped_grc_user_path`.) Every other value-output complex example already set `"q15"`
 (`fft_spectrum`, `cordic_polar`, `complex_math`, `lms_equalizer`, `fm_transceiver`);
 the two FFT128s were the outliers. *When you fix an example generated from a
 copied script, grep for the sibling — and if the sibling has no gate, that is the
@@ -693,8 +695,8 @@ The N=128 two-die split was quarantined `needs_human` with *"0 of 520 words,
 livelocks from trigger 1"*, after three real inter-chip build-path defects had
 been found and fixed. **The crossing was innocent.** Wired together and driven
 correctly the pair is **200/200 bit-exact** on the real two-chip system (73
-non-zero outputs; `examples/fft128_2die/`, gated by
-`verification/tests/test_fft128_2die_example.py`). The remaining fault was in
+non-zero outputs; then `examples/fft128_2die/`, since retargeted onto the real
+2P2S board as `examples/fft128_2p2s/`). The remaining fault was in
 the DRIVE, and the way it hid is the durable part.
 
 - **A complex sample is a THREE-PART TRANSACTION, and on the multi-chip path
@@ -840,11 +842,13 @@ the DRIVE, and the way it hid is the durable part.
 
 - **Ship the vehicle, not just the verdict.** The two-chip driver that
   produced the original "0 of 520 words" measurement was never committed, so
-  the next person started from prose. `examples/fft128_2die/` now ships the
+  the next person started from prose. The two-die example then shipped the
   `.kyt`, the `.grc`, and a demo that reports per-trigger yield, the crossing's
   traffic and the first non-quiescent trigger — plus `--pattern batched`,
-  which reproduces the failure on demand so the trap stays demonstrable
-  instead of becoming folklore.
+  which reproduced the failure on demand so the trap stayed demonstrable
+  instead of becoming folklore. (That example has since been retargeted onto
+  the real 2P2S board as `examples/fft128_2p2s/`, which carries the `.kyt`,
+  the `.grc` and the demo but not the `--pattern batched` reproducer.)
 
 ## Verification-integrity sweep — every report writer in the suite could write a GREEN report for a FAILING session (INV-36) 2026-08-24
 

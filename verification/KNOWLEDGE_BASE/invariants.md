@@ -1985,15 +1985,15 @@ runs with.
    drive-shape offline at three event budgets) all skipped the `raw` flag.
 
 **Gated by:** `verification/tests/test_examples_grc_userpath.py` —
-`test_fft128_2p2s_shipped_grc_user_path` and
-`test_fft128_2die_shipped_grc_user_path` assert bit-exactness of the recovered
+`test_fft128_2p2s_shipped_grc_user_path` asserts bit-exactness of the recovered
 stream against the whole-transform reference, plus non-vacuity (the
 energy-bearing samples must be non-zero, so a dead chain cannot pass on the
-zeros alone). Teeth: reverting either `.grc` to `"auto"` makes the gate fail.
+zeros alone). Teeth: reverting the `.grc` to `"auto"` makes the gate fail.
 
 **Applies to:** every hosted example whose chain emits VALUES rather than packed
 bits. `fft_spectrum`, `cordic_polar`, `complex_math`, `lms_equalizer` and
-`fm_transceiver` already set `"q15"`; the two FFT128 examples were the outliers,
-and one of them (`fft128_2die`) had no user-path gate at all — a copied
-generator clones the fault, so fixing one sibling is not fixing the class.
+`fm_transceiver` already set `"q15"`; the FFT128 examples were the outliers, and
+the sibling two-die project this one was cloned from had no user-path gate at
+all — a copied generator clones the fault, so fixing one sibling is not fixing
+the class.
 Related: INV-22 (a binding that resolves is not a binding that is correct).

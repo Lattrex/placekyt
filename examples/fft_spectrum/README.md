@@ -257,36 +257,34 @@ Two placement details are load-bearing and were measured, not guessed:
 
 ---
 
-## Three live-path lessons this example paid for
+## Contracts a hosted (GNU Radio) run depends on
 
-All three produced a *plausible* spectrum that was wrong, and none was visible
-headlessly. They are recorded here because the next chained example will hit
-them.
+Three settings must be right for a hosted run to deliver a correct spectrum.
+They are already correct in the shipped files; they are listed because anyone
+building a *new* chained flowgraph has to set them too, and getting one wrong
+produces a **plausible spectrum that is quietly wrong** rather than an error.
 
-1. **Name the stream, or the I/Q lands on the wrong registers.** A hosted batch
-   carries the injection landing in its request header, and the GR client fills
-   it from its own default `data_addrs=(0, 1)`. The server only overrides that
-   with the build-resolved landing when the burst names a **`stream_id`** it
-   knows. This chain lands on registers `[1, 2]`, so without a stream id the
-   real part went to register 0 and the imaginary part to register 1 — the
-   block saw a **real** input, whose spectrum is conjugate-symmetric, and the
-   tone split into two quarter-power peaks at bins 11 and 53. Both `.grc`s and
-   both `.kyt`s now name the stream `spectrum`.
+1. **Name the stream.** A hosted batch carries its injection landing in the
+   request header, and the GR client fills it from its own default
+   `data_addrs=(0, 1)`; the server overrides that with the build-resolved
+   landing only when the burst names a **`stream_id`** it knows. This chain
+   lands on registers `[1, 2]`, so an unnamed stream puts the real part on
+   register 0 and the imaginary on 1 — the block then sees a **real** input,
+   whose spectrum is conjugate-symmetric, and the tone splits into two
+   quarter-power peaks. Both `.grc`s and both `.kyt`s name the stream
+   `spectrum`.
 
-2. **A repeat-burst source rotates the frame grid.** With `repeat = yes` the
-   source re-arms mid-vector, so the next burst starts at an arbitrary rotation
-   of the stimulus. A rotation by `r` slides the frame boundary by `r mod N` and
-   moves the peak to the wrong slot (measured: a 55-sample rotation moved it
-   from slot 52 to 43). The fix is `repeat = no` on the source plus
-   `server_repeat = yes` on the sink — one genuine burst from index 0, looped
-   for the display. The gate asserts the loop is a byte-identical replay.
+2. **Use `repeat = no` on the source, `server_repeat = yes` on the sink.** With
+   `repeat = yes` the source re-arms mid-vector, so each burst starts at an
+   arbitrary rotation of the stimulus; a rotation by `r` slides the frame
+   boundary by `r mod N` and moves the peak to the wrong slot. The shipped
+   setting sends one genuine burst from index 0 and loops it for the display.
 
-3. **Full-scale input is clipped by the host conversion.** The server converts
-   an injected float with `max(-1.0, min(0.999, f))`, so a sample at
-   `32767/32768 = 0.99997` lands as word 32735 instead of 32767 — 8 samples of
-   a 255-sample full-scale burst. The demo uses amplitude **0.9**, where the
-   server's conversion and the example's reference agree on every sample, which
-   is what lets the user-path gate demand bit-exactness instead of a tolerance.
+3. **Leave headroom — the demo uses amplitude 0.9.** The host converts an
+   injected float with `max(-1.0, min(0.999, f))`, so a full-scale sample at
+   `32767/32768` lands as word 32735 rather than 32767. At 0.9 the conversion
+   and the reference agree on every sample, which is what lets the gate demand
+   bit-exactness instead of a tolerance.
 
 ---
 

@@ -48,7 +48,7 @@ Frame *f*'s index emerges during frame *f+1*, so the framed burst carries one
 trailing **flush symbol** — without a symbol behind it, the last data symbol's
 index never leaves the chip.
 
-## Where the on-chip / host boundary sits (honest statement)
+## Where the on-chip / host boundary sits
 
 **This is an RX example. It does not claim a transmitter on the chip.**
 
@@ -91,13 +91,12 @@ that no one has to have read this file to know it.
 | **RF burst** | the received chirp burst (I and Q). Each 16-sample frame is one cyclic-shifted up-chirp. |
 | **Chip output — winning FFT bin** | the RAW argmax index straight off the chip (0..15), in FFT16's bit-reversed order. |
 
-Each segment gets its **own panel with its own verdict in its own title**,
-because the previous layout — all four traces on one axis — was read as a
-defect ("the +10 dB works flawlessly but the −10 dB doesn't work at all"),
-which is a description of the demo working exactly as designed. One axis
-carrying both a lock and a deliberate collapse cannot say which is which.
+Each segment gets its **own panel with its own verdict in its own title**. One
+axis carrying both a lock and a deliberate collapse cannot say which is which —
+the −10 dB segment is *supposed* to scatter, and a shared axis makes that read
+as breakage.
 
-Display notes (each is a documented past failure): the chain is complex-input,
+Display notes — worth knowing if you build a similar display: the chain is complex-input,
 so the sink egresses **raw word floats** — the index plots directly with no
 ×32768 rescale. Every scope is sized to a real burst and the source repeats, and
 the sink loops its genuine one-batch result (`server_repeat=True`), because GNU
@@ -105,60 +104,15 @@ Radio strands the tail of a finite stream and a scope sized ≥ its burst never
 paints. And: **no trace may use line style 0 (NoPen).** A qtgui `time_sink`
 channel set to markers-only draws *nothing* on any channel above channel 0 —
 reproduced standalone with two sources of different amplitude, on a real X
-display as well as offscreen. The old scope used NoPen on all four traces, so
-the decoded traces this demo exists to show were never actually painted. Both
-panels now use a solid pen, and the gate rejects style 0.
-
-### Four display defects, all of which made a correct chip look broken
-
-Every one of these was measured, and none of them was a DSP fault — the chip
-was bit-exact (SER 0, message recovered) through all four.
-
-* **Phase drift.** The reference came from its own `vector_source`, which
-  free-runs, while the chip's stream is gated by the simulator's batch
-  turnaround. Measured over one run: the reference produced **27.9 % more
-  items**. A QT `time_sink` pulls the same count from every channel, so the
-  reference **slid** against the decode. Offset by as few as **3 items, 22 of
-  segment A's 24 correct symbols render as mismatches** — a smear, on a chip
-  reporting SER 0.
-* **A/B conflation.** Both segments were drawn on one axis with nothing marking
-  which was which, so segment B's *intentional* garbage overlaid segment A's
-  perfect lock. 17 of 50 plotted points disagreed **by design**, and the plot
-  never said so.
-* **The control read as a defect.** Splitting A and B onto four traces of one
-  scope fixed the arithmetic and not the meaning. A single axis where half the
-  points lock and half scatter reads as *"half of it is broken"* — reported
-  verbatim as "the +10 dB works flawlessly but the −10 dB doesn't work at all",
-  which is a description of the demo behaving exactly as designed.
-* **Half the traces were never drawn.** A qtgui `time_sink` channel set to line
-  style **0 (NoPen, markers-only)** paints **nothing on any channel above
-  channel 0**. Reproduced standalone with two vector sources of *different*
-  amplitude — so it is not occlusion, the second trace is simply never
-  rendered — on a real X display as well as offscreen. The old scope used NoPen
-  on all four of its traces.
-
-The fixes, in order:
-
-* `css_decode_map.py` takes the chip stream and derives the reference from the
-  **item index of the same stream it is decoding**, so drift is impossible by
-  construction, and blanks (NaN) each segment outside its own words so A and B
-  never overplot. The framing-latency word (word 0 of each segment, which
-  carries no data symbol) is blanked rather than plotted as a lone unmatched
-  point.
-* Each segment gets its **own panel**, whose **title states its own verdict**,
-  and the block publishes each segment's **measured SER** on its own channel so
-  the numbers sit on screen beside the pictures they describe.
-* Both panels use a **solid pen**, never NoPen, and draw the reference as a
-  wide **circle** on scope input 0 with the decoded output as a narrower **X**
-  on input 1 — the last-painted channel, so a perfect overlay shows the X
-  inside the ring instead of hiding the decode underneath the reference.
+display as well as offscreen. Both panels use a solid pen, and
+the gate rejects style 0.
 
 `test_css_transceiver_example.py` asserts all of it directly — segment A
 matching at every plotted point, segment B missing across a derived SER band,
 the two disjoint, the SER readouts agreeing with the traces beside them, every
 frame identical across the run, and the `.grc`'s panel structure, titles,
-wiring orientation and line styles — with eight mutation tests proving the gate
-fails on each defect.
+wiring orientation and line styles, each with mutation
+coverage proving the gate fails when it is violated.
 
 ## Run it
 

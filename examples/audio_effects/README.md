@@ -63,16 +63,9 @@ pinning the multi-landing injection path.
 Whole-chain proof for Delay, Gain, Add, Subtract, Multiply, IIRBiquad, NCO,
 AddConst, KeepOneInN (+ ComplexToReal mid-chain).
 
-**Engine limits found while building this — BOTH SINCE LIFTED** (the fan-out
-work shipped StreamSplitterBlock + replicated-WRITE multi-handoff +
-auto-splice; `test_fanout_chains.py` proves 3-arm block and port fan-outs):
-- ~~a port supports ~2 fan-out arms~~ — ≥3 arms now auto-splice a splitter;
-- ~~a BLOCK's output cell cannot fan out~~ — splitter / packet forms shipped.
-
 **Routing:** the shortest-path auto-router lays every
 block-to-block hand-off as a single abutted broker (route audit: 0 excess
-cells, 0 loop-backs on all three `.kyt`s — they previously staircased up and
-over every gap). The echo display sink LOOPS the genuine
+cells and 0 loop-backs on all three `.kyt`s). The echo display sink LOOPS the genuine
 one-batch result (`server_repeat=True`): GNU Radio strands the tail of a
 finite stream, so a scope sized to exactly the delivered burst never paints
 on its own (pixel-proven); tremolo/comb deliver well past their

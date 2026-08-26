@@ -60,8 +60,8 @@ RESULT: EXACT — full duplex transceiver, TX == golden AND RX == sent text
 ```
 
 `verification/tests/test_psk31_transceiver_example.py` (6 tests): TX
-**SAMPLE-EXACT** vs the psk31 golden (`psk31_tx_golden.py`, which is
-proven against) while RX runs interleaved; RX decodes the sent text exactly;
+**SAMPLE-EXACT** vs the psk31 golden (`psk31_tx_golden.py`) while RX runs
+interleaved; RX decodes the sent text exactly;
 EVERY printable ASCII char round-trips through the shared reverse map;
 shipped-`.kyt` parity; the addr_base-overlap refusal; and a **mutation** (one
 corrupted reverse-map word must corrupt exactly that character's decode).

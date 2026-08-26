@@ -2,13 +2,14 @@
 
 # FFT128 on the 2P2S board — a 128-point transform across a real chain
 
-**Status: WORKING and VERIFIED BIT-EXACT end to end.** 200 samples driven into
-chain A's head, 400 words out of its tail, every one equal to the whole
-128-point transform, on the real placed + routed 4-die build — and **DRC-clean
-against the board file itself**.
+A **128-point FFT split across two physical dies** on the **2P2S dev board**
+(`placekyt/resources/boards/dev2p2s.kdb` — four dies in two parallel
+daisy-chains of two). Chain A's head runs stage 0, its tail runs stages 1..6,
+and the board's own on-carrier series link joins them.
 
-onto the **2P2S dev board** (`placekyt/resources/boards/dev2p2s.kdb`): four
-dies in two parallel daisy-chains of two, which is hardware that exists.
+200 samples in, 400 words out, **every one bit-exact** against the whole
+128-point transform on the real placed and routed build — and **DRC-clean
+against the board file itself**.
 
 ```
   chain A                                                    (carries the transform)
@@ -27,354 +28,6 @@ dies in two parallel daisy-chains of two, which is hardware that exists.
       │                                                           │
   chain B    chip 2  B0 ════════════▶ chip 3  B1        (wired, and IDLE)
 ```
-
-## Why chain A, and why this die order
-
-The board gives the FPGA exactly two handles per chain: the chain HEAD's
-`x16_in` and the chain TAIL's `x16_out`. A stage-boundary cut of a
-feed-forward pipeline needs **one crossing in one direction**, and the board
-provides exactly that as an on-carrier series link. So the transform's input
-enters the chain head, the partially-transformed stream crosses the carrier
-link, and the bins leave the chain tail — the design's dataflow and the
-board's wiring are the same shape. Putting die 0 on the TAIL would require the
-stream to run backwards over a link the carrier does not provide.
-
-**Chain B is deliberately left empty**, and that is a feature of the retarget
-rather than waste: the board's two chains are independent, a 2-die design
-occupies one of them, and the free chain is where a second instance would go.
-`test_chain_b_stays_silent` asserts that driving chain A puts not one word —
-and not one trace event — into chain B.
-
-> The board also supports a **1P4S** re-chaining, where the FPGA passes chip
-> 2's output into chip 3's input to form one 4-long chain. This design does not
-> need it: the transform splits into exactly two dies, so a 2-long chain is the
-> right shape and the second chain stays free.
-
-## Why it is split at all
-
-N=128 does not fit ONE die, and not for want of area: its 7-stage ctl/out
-spine needs **14 rows in a single column** against a 12-row array. The cut is
-after **stage 0**, which is measured rather than balanced — cutting in the
-middle looks tidier and does not place at all. Die 1 is the same shape as the
-verified FFT64 and *computes* FFT64: the DIF angle identity
-`stage_table(128, s+1) == stage_table(64, s)` holds word for word.
-
-Correctness reduces to `whole(x) == die1(die0(x))`, which
-`verification/tests/test_fft128_split.py` asserts word for word. That is the
-arithmetic. **This example is the other half: the transport.**
-
-## Do the dies run concurrently? — the measured answer
-
-This was asked directly, after the cell animation looked like chip 0 ran to
-completion before chip 1 started. It is worth answering precisely, because the
-question has two halves and they have different answers.
-
-### The engine does NOT batch the dies
-
-Measured per-die trace events, per trigger, over a 200-sample run
-(`--concurrency` prints this table):
-
-```
-  triggers where BOTH dies did work: 200/200
-    trig   die0 ev   die1 ev    die0 clock    die1 clock
-     194      1107      2877       2293222       5173453
-     195      1107      2967       2303376       5202354
-     196      1107      2793       2313530       5228081
-     197      1107      2882       2323684       5255452
-     198      1107      2879       2333838       5282737
-     199      1107      2948       2343992       5311385
-```
-
-Every trigger has both dies doing real work. Neither die is ever idle for a
-stretch of triggers while the other runs. **There is no batching**: the model
-does not run die 0 to completion over the whole stimulus and then hand die 1 a
-block of results. `test_the_dies_are_concurrent_across_the_run` holds this.
-
-### Within ONE trigger the dies are causally sequential — and that is correct
-
-Inside a single sample's settle, the dies genuinely do run one then the other.
-Measured at single-round granularity, past the transform's latency:
-
-```
-  WRITE_i round 0: c0=   10 [1506672..1506712]   c1=    0
-  WRITE_q round 0: c0=   10 [1506722..1506762]   c1=    0
-  JUMP    round 0: c0= 1209 [1506772..1518871]   c1=    0
-  JUMP    round 1: c0=    0                      c1= 2877 [3481344..3508558]
-  JUMP    round 2: QUIESCENT
-```
-
-The reason is **causal, not a scheduler artifact**. Die 0's crossing word for
-a sample is the very LAST thing die 0 produces for it: its egress reaches the
-port cell (9, 0) at event **1208 of a 1209-event burst (99.9% through)**. Die 1
-therefore *cannot* start on that sample any earlier — there is nothing yet to
-start on.
-
-The corollary matters, because it rules out the obvious wrong fix: **shrinking
-the per-round event budget does not create overlap.** Measured at budgets of
-400, 200 and 60 events per chip per round, the number of rounds in which both
-dies advanced was **10 in every case** — one handoff round per sample, never
-more. Anyone "fixing" this by tuning `run(events, rounds)` is chasing the wrong
-thing.
-
-What genuinely overlaps on hardware is **sample k+1 in die 0 against sample k
-in die 1** — pipelining ACROSS samples. The shipped drive deliberately does not
-do that, because a complex sample is a three-part transaction that must be
-pumped to quiescence (below); that pacing is what makes the design work at all.
-`test_within_one_trigger_the_dies_are_causally_sequential` pins the measurement
-so that if a future change ever *does* produce the crossing word early, the
-gate says so rather than silently passing.
-
-### The animation was rendering it wrong — that part was a real bug
-
-Both dies working every trigger, yet the GUI showed one then the other. The
-fault was in the multi-chip refresh, which built its flash-step list by
-**concatenating each chip's steps in chip order**:
-
-```python
-for cid in sorted(by_chip):
-    m_steps += list(self._steps_from_events(by_chip[cid], cid))
-```
-
-The canvas replays that list in order, so chip 0's entire burst played before
-chip 1's — exactly what was reported.
-
-Sorting the merged steps by `time_ns` does **not** fix it, and this is the trap
-worth recording: each chip keeps its **own sim clock**, and those clocks
-**diverge** — measured above, die 1's clock runs **2.27×** die 0's, and the gap
-grows every sample because die 1 does more work per sample. A strictly-later
-clock never interleaves with a strictly-earlier one, so a global time sort
-reproduces the same batched playback.
-
-The fix interleaves on each chip's **progress through its own burst** —
-round-robin across the per-chip step lists, so every die that did work in a
-refresh lights up together, and a busier die keeps flashing after the others
-drain. It is a rendering order only: it moves no data and changes no
-arithmetic. See `SimController._interleave_chip_steps`, gated by
-`test_the_animation_interleaves_the_dies_rather_than_batching_them` (which
-includes teeth asserting the old concatenated order does not satisfy it).
-
-Measured on a real 6-sample run's trace (24,489 chip-tagged events → 15,802
-flash steps), which chip lights on each of the first 24 steps:
-
-```
-  OLD: 0 . 0 0 0 0 0 . 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
-  NEW: 0 1 . 1 0 1 0 1 0 1 0 1 0 1 . 1 0 1 0 1 0 1 0 1
-
-  OLD (concatenate): chip 1's FIRST flash is step 4687 of 15802 — 29.7% in
-  NEW (interleave):  chip 1's FIRST flash is step 1 of 15802  —  0.0% in
-```
-
-Under the old order chip 0 animated alone for the first 29.7% of the run,
-which is precisely the "chip 0 works for a long time, chip 1 idle" that was
-reported. Under the new order the dies alternate from the first step.
-
-## Three LIVE-PATH defects the headless gates could not see
-
-The headless suite drives `MultiChipSimEngine` directly and was green at
-200/200 bit-exact. The **user path** — host the `.kyt`, run the `.grc` through
-the real GR client stack — returned a stream of only two distinct values. The
-first two faults are in the multi-chip bridge and the third is in the `.grc`
-itself; all three are invisible to any test that does not go through a hosted
-server.
-
-**1. A chain that continues across the CARRIER WIRE resolved `out_tag=None`.**
-`stream_targets` finds a chain's egress tag by walking **block → block within
-one chip**. In this design the stream's input net is on chip 0 (die 0) while
-the tagged egress net belongs to die 1 on chip 1, joined by an *inter-chip
-wire* rather than a block-to-block net — so the walk never reaches it. The
-tail's words *are* tagged on the fabric, so a `None` here made the host demux
-drop every one of them: **data flowed on chip and the flowgraph showed
-nothing.** Fixed by recovering the tag from the tail chip's own egress net
-(`port_config._tail_egress_tag`), and only when the chain genuinely spans
-chips, so no single-chip behaviour changes.
-
-**2. The multi-chip demux kept only ONE tag of a complex pair.** A complex
-exit cell emits I then Q **from one cell on tags `(out_tag, out_tag+1)`** —
-measured at chain A's tail: `{7: 140, 8: 140}`. The single-chip path already
-owns both tags; the multi-chip drain matched `d == out_tag` only, discarding
-every Q word. That is the more dangerous of the two, because it does not look
-like a failure: the stream arrives at half length with the imaginary part
-gone, which for a transform reads as a plausible wrong answer.
-
-> Note the second fault's shape: **only the I rail is wired to a net** (wiring
-> a second net to the same port kills egress), so the fabric emits a tag the
-> project graph never mentions. Detecting "is this egress complex?" from the
-> nets alone therefore cannot work for a chip-scale complex block — it has to
-> come from the terminal block's declared output registers.
-
-**A gate lesson from the same episode.** The first version of the user-path
-gate asserted the recovered stream "looks busy" (enough distinct values, enough
-non-zero words). That assertion is **wrong for this flowgraph**: the `.grc`
-drives two pure tones at exactly bins 9 and 37 of 128, so a *correct* transform
-is nearly all zeros — measured, **3 distinct values over 768 words**. The
-liveliness heuristic fails on a correct chain and would have been "fixed" by
-weakening it. The gate now asserts **bit-exactness against the whole-transform
-reference for the `.grc`'s own stimulus**, which cannot pass on a broken chain
-and cannot fail on a working one.
-
-**3. The `.grc` left `output_words` on `"auto"` for a VALUE-output chain.**
-This was the last fault, and the one that kept the user-path gate `xfail`.
-`output_words="auto"` ties **raw int16** output to `complex_in` — the
-**bit-packing receiver** convention, where a slicer's decoded bit lives in the
-word's LSB and Q15 scaling would crush it. This chain is the exact opposite
-case: its output is a **Q15 value**, the transform's bins. So the sink emitted
-raw ±30000 word floats while every consumer applied the documented q15/32768
-convention, under which those **alias**:
-
-| the chip's word | the sink emitted | decoded as q15 | should be |
-|---|---|---|---|
-| `0x399a` (14746) | `14746.0` | `round(14746 × 32768) & 0xFFFF` = `0x0000` | `0x399a` |
-| `0x2ccd` (11469) | `11469.0` | `round(11469 × 32768) & 0xFFFF` = `0x8000` | `0x2ccd` |
-| `0x0000` | `0.0` | `0x0000` ✓ | `0x0000` |
-
-Only the **non-zero** bins alias — zero survives the aliasing untouched. This
-`.grc` drives two pure tones, so a correct transform is nearly all zeros and
-just **4 of 384** samples were wrong. The burst came back looking almost
-right rather than obviously broken, which is why the earlier measurement read
-as a strange re-framing (an apparent period 192) instead of a scaling bug.
-
-The **display** told the same story from the other side: raw ±30000 against
-the scope's `ymin/ymax` of −1/1 is a flat off-scale line, and the `.grc`'s own
-comment already claimed the plotted stream was "at the q15/32768 scale".
-
-Fixed in `gen_grc.py` with `output_words="q15"` — the same fix, and the same
-failure class, as the LMS equalizer's missing-constellation report. Every
-other value-output complex example in the tree (`fft_spectrum`,
-`cordic_polar`, `complex_math`, `lms_equalizer`, `fm_transceiver`) already
-set `"q15"`; the two FFT128 `.grc`s were the outliers, both carrying a stale
-`output_words: 'False'` that GRC silently resolved back to the `"auto"`
-default.
-
-> `gen_grc.py` files are the same file modulo comments, so the fault was
-> cloned. It is fixed there too, and
-> sibling is not a fix proven here.
-
-`test_fft128_2p2s_shipped_grc_user_path` now **passes**, asserting
-bit-exactness of the full complex stream against the whole-transform
-reference, that the four energy-bearing samples are non-zero (so a dead chain
-cannot pass on the zeros alone), and that `server_repeat` loops the genuine
-burst cleanly. Reverting the `.grc` to `"auto"` makes it fail with exactly the
-4/384 signature above — the gate has teeth.
-
-## A FOURTH defect, in the DISPLAY rather than the data
-
-With all three faults above fixed the chain was bit-exact through the hosted
-server — and the plot was still wrong. Reported, watching the GUI:
-
-> "The scale for the FFT output in the GRC waveform viewer still doesn't look
-> right. It doesn't show the actual frequency where the spikes are ... that
-> still has time as the x axis and those spikes just flow across the screen."
-
-That is not a scale problem and it is not a chip problem. The `.grc` plotted
-the kyttar sink's **raw recovered stream** on a `qtgui_time_sink_x` titled
-"FFT128 output words (I, Q interleaved)". A time sink's x axis **is** time;
-there is no relabel that makes it read in Hz. And the stream itself is not a
-spectrum — **four** transformations separate the two, and every one of them
-is load-bearing:
-
-| # | What | Why the plot is wrong without it |
-|---|------|----------------------------------|
-| 1 | **De-interleave** the complex pair | The chain tail is a COMPLEX exit cell: `out_i` then `out_q` from one cell, so the stream carries **two float words per bin**. A time sink draws one bin's energy as two adjacent samples. |
-| 2 | **Strip the 127-sample latency** | The first 127 complex outputs of a burst are the zero-initialised pipeline's startup values, not a frame. |
-| 3 | **Un-reverse** the DIF slot order | Slot *k* carries bin `bit_reverse_7(k)`. Plotting slots is a **scrambled spectrum that still looks plausible** — clean lines, wrong frequencies. |
-| 4 | **fftshift** | Natural order runs 0 → +fs/2 and then *jumps* to −fs/2 → 0. No single linear axis can label that; rolling by N/2 makes the vector monotonic so `set_x_axis(-samp_rate/2, bin_hz)` labels every point. |
-
-The fix is the one `examples/fft_spectrum` already ships, with N and the
-complex de-interleave being what differ:
-
-```
-kyttar_sink ─▶ spectrum (de-interleave, strip, un-reverse, fftshift, |z|²)
-            ─▶ to_db (10·log10) ─▶ qtgui_vector_sink_f
-                                   x_start = -samp_rate/2, x_step = bin_hz,
-                                   x_units = "Hz"
-```
-
-`fft128_2p2s_spectrum.py` and `fft128_2p2s_to_db.py` are the display blocks,
-embedded verbatim into the `.grc` by `gen_grc.py` so the readable file and the
-flowgraph cannot drift.
-
-### What the plot reads now
-
-At the repo convention `samp_rate = 32000` and N = 128 each bin is
-**250 Hz** wide. The shipped stimulus is two ON-BIN tones:
-
-| tone | natural bin | chip SLOT (`bit_reverse_7`) | centred index | **frequency** | power | dBFS |
-|---|---|---|---|---|---|---|
-| A (amplitude 0.45) | 9 | 72 | 73 | **+2250 Hz** | 0.2025 | −6.93 |
-| B (amplitude 0.35) | 37 | 82 | 101 | **+9250 Hz** | 0.1225 | −9.12 |
-
-Every other one of the 128 points is **exactly 0.0** — an on-bin tone leaks
-nowhere — so the plot is two clean lines on the −90 dBFS floor. Measured on
-the real 4-die board *and* on the trace the vector sink is actually drawn
-with, tapped live through the hosted server.
-
-The stimulus scope (`input |x[n]| (two tones)`) is unchanged: it is a
-time-domain signal, so a time sink is the right sink for it.
-
-### And a fifth defect the DRAWN-TRACE tap caught
-
-The first version of the display chain was bit-exact and still blanked the
-plot on **every third frame**. `burst_len` is 384 while `latency + 2*n_fft`
-is **383**, so each burst ends with **one** sample left over. A frame reader
-that keeps consuming across the boundary builds its next "frame" from that
-one real sample plus 127 of the *next* burst's zero-fill transient — an
-all-zero spectrum. With `server_repeat` looping the batch that repeats
-forever: measured over a live run, **4728 frames in a perfectly regular
-good / good / blank cycle**.
-
-Nothing about the data was wrong; it is purely a framing fault in the display
-glue, and **no bit-exactness assertion can see it**. It was caught because the
-gate taps `spectrum.0` / `to_db.0` — the display blocks' own output, what the
-vector sink is actually drawn with — rather than stopping at the kyttar sink.
-That is the same lesson the CSS transceiver's display gate records, and it is
-why `grc_userpath_run.py` takes the extra `block.port` taps (now with a
-vlen-matched tap, so a vector display port can be tapped at all).
-
-The block drops the ragged tail; `test_the_display_drops_the_bursts_ragged_tail`
-pins the rule with teeth against its own removal.
-
-## The drive is part of the design
-
-A complex sample is a **three-part transaction**:
-
-    WRITE xi  ─▶  WRITE xq  ─▶  JUMP     (one trigger, for the pair)
-
-On the multi-chip path each part must be **pumped to quiescence before the
-next is injected**. Queue all three back to back and the single-outstanding
-input handshake is overrun; the system makes no forward progress and the run
-looks exactly like a livelock.
-
-| drive shape | words out of the chain tail (12 samples) |
-|---|---|
-| all three parts queued, then one settle run | **0** of 24 |
-| two operand WRITEs queued, then JUMP + settle | **0** of 24 |
-| one WRITE + one JUMP *per word* (the generic head path) | 48 of 24 — **double-fires** |
-| **WRITE, pump, WRITE, pump, JUMP, settle** (shipped) | **24** of 24 ✅ |
-
-Two things are worth separating, because they are different mistakes:
-
-1. **The pumps are load-bearing**, not defensive padding.
-2. **A bigger budget is not a safer budget.** `run(events, rounds)` is
-   *events-per-chip-per-round × rounds*. The shipped budgets
-   (`PUMP = (60_000, 5)`, `SETTLE = (200_000, 50)`) are derived from what a
-   sample actually has to do.
-
-`--pattern batched` reproduces the failure on demand, and
-`test_the_unpaced_drive_is_what_stalls` holds it as a gate so the pumps cannot
-be "simplified" away.
-
-## Files
-
-| File | What it is |
-|------|------------|
-| `fft128_2p2s.kyt` | The 4-die board design — **open this in placeKYT**. Both dies placed and routed on chain A, both carrier links wired, the board named. |
-| `fft128_2p2s.grc` | The GNU Radio flowgraph — drives chain A through the multi-chip server. Open in `gnuradio-companion`. |
-| `fft128_2p2s.py` | The design + the drive. `build_2p2s()`, `open_engine()`, `drive()` — shared by the demo, the `.kyt` writer and the gate, so they cannot drift. |
-| `fft128_2p2s_demo.py` | **The debugging vehicle.** Per-trigger yield, the carrier link's traffic, the first non-quiescent trigger, the per-die concurrency table, then a word-for-word compare. |
-| `fft128_2p2s_spectrum.py` | **The display contract.** Interleaved I/Q chip words → a centred 128-bin POWER vector: de-interleave, strip the 127-sample latency, un-reverse the DIF slots, fftshift. Embedded verbatim into the `.grc`. |
-| `fft128_2p2s_to_db.py` | Per-bin power → dBFS for the log spectrum plot. Embedded verbatim into the `.grc`. |
-| `build_kyt.py` | Regenerates `fft128_2p2s.kyt` from the real place-and-route. |
-| `gen_grc.py` | Regenerates `fft128_2p2s.grc`, reading the two display blocks from the files above so they cannot drift. |
 
 ## Run it
 
@@ -451,6 +104,236 @@ no-op: it never connects, and the window stays blank with no error.
 The flowgraph carries only `stream_id` (`"fft"`); placeKYT owns which chip,
 port, hop and tag that maps to, resolved from the placed design.
 
+## Why chain A, and why this die order
+
+The board gives the FPGA exactly two handles per chain: the chain HEAD's
+`x16_in` and the chain TAIL's `x16_out`. A stage-boundary cut of a
+feed-forward pipeline needs **one crossing in one direction**, and the board
+provides exactly that as an on-carrier series link. So the transform's input
+enters the chain head, the partially-transformed stream crosses the carrier
+link, and the bins leave the chain tail — the design's dataflow and the
+board's wiring are the same shape. Putting die 0 on the TAIL would require the
+stream to run backwards over a link the carrier does not provide.
+
+**Chain B is deliberately left empty**, and that is a feature of the retarget
+rather than waste: the board's two chains are independent, a 2-die design
+occupies one of them, and the free chain is where a second instance would go.
+`test_chain_b_stays_silent` asserts that driving chain A puts not one word —
+and not one trace event — into chain B.
+
+> The board also supports a **1P4S** re-chaining, where the FPGA passes chip
+> 2's output into chip 3's input to form one 4-long chain. This design does not
+> need it: the transform splits into exactly two dies, so a 2-long chain is the
+> right shape and the second chain stays free.
+
+## Why it is split at all
+
+N=128 does not fit ONE die, and not for want of area: its 7-stage ctl/out
+spine needs **14 rows in a single column** against a 12-row array. The cut is
+after **stage 0**, which is measured rather than balanced — cutting in the
+middle looks tidier and does not place at all. Die 1 is the same shape as the
+verified FFT64 and *computes* FFT64: the DIF angle identity
+`stage_table(128, s+1) == stage_table(64, s)` holds word for word.
+
+Correctness reduces to `whole(x) == die1(die0(x))`, which
+`verification/tests/test_fft128_split.py` asserts word for word. That is the
+arithmetic. **This example is the other half: the transport.**
+
+## Do the dies run concurrently? — the measured answer
+
+Watching the cell animation it can look as though chip 0 runs to completion
+before chip 1 starts. The question is worth answering precisely, because it has
+two halves and they have different answers.
+
+### The engine does NOT batch the dies
+
+Measured per-die trace events, per trigger, over a 200-sample run
+(`--concurrency` prints this table):
+
+```
+  triggers where BOTH dies did work: 200/200
+    trig   die0 ev   die1 ev    die0 clock    die1 clock
+     194      1107      2877       2293222       5173453
+     195      1107      2967       2303376       5202354
+     196      1107      2793       2313530       5228081
+     197      1107      2882       2323684       5255452
+     198      1107      2879       2333838       5282737
+     199      1107      2948       2343992       5311385
+```
+
+Every trigger has both dies doing real work. Neither die is ever idle for a
+stretch of triggers while the other runs. **There is no batching**: the model
+does not run die 0 to completion over the whole stimulus and then hand die 1 a
+block of results. `test_the_dies_are_concurrent_across_the_run` holds this.
+
+### Within ONE trigger the dies are causally sequential — and that is correct
+
+Inside a single sample's settle, the dies genuinely do run one then the other.
+Measured at single-round granularity, past the transform's latency:
+
+```
+  WRITE_i round 0: c0=   10 [1506672..1506712]   c1=    0
+  WRITE_q round 0: c0=   10 [1506722..1506762]   c1=    0
+  JUMP    round 0: c0= 1209 [1506772..1518871]   c1=    0
+  JUMP    round 1: c0=    0                      c1= 2877 [3481344..3508558]
+  JUMP    round 2: QUIESCENT
+```
+
+The reason is **causal, not a scheduler artifact**. Die 0's crossing word for
+a sample is the very LAST thing die 0 produces for it: its egress reaches the
+port cell (9, 0) at event **1208 of a 1209-event burst (99.9% through)**. Die 1
+therefore *cannot* start on that sample any earlier — there is nothing yet to
+start on.
+
+The corollary matters, because it rules out the obvious wrong fix: **shrinking
+the per-round event budget does not create overlap.** Measured at budgets of
+400, 200 and 60 events per chip per round, the number of rounds in which both
+dies advanced was **10 in every case** — one handoff round per sample, never
+more. Tuning `run(events, rounds)` does not change it.
+
+What genuinely overlaps on hardware is **sample k+1 in die 0 against sample k
+in die 1** — pipelining ACROSS samples. The shipped drive deliberately does not
+do that, because a complex sample is a three-part transaction that must be
+pumped to quiescence (below); that pacing is what makes the design work at all.
+`test_within_one_trigger_the_dies_are_causally_sequential` pins the measurement
+so that if a future change ever *does* produce the crossing word early, the
+gate says so rather than silently passing.
+
+### How the animation shows two dies at once
+
+Each chip keeps its **own sim clock**, and those clocks **diverge**: die 1's
+runs about **2.27×** die 0's here, and the gap grows every sample because die 1
+does more work per sample. That has a direct consequence for the cell animation
+— a global sort by timestamp would replay one die's whole burst before the
+other's, because a strictly-later clock never interleaves with a strictly-earlier
+one.
+
+The animation therefore interleaves on each chip's **progress through its own
+burst** rather than on absolute time: every die that did work in a refresh lights
+up together, and a busier die keeps flashing after the others drain. It is a
+rendering order only — it moves no data and changes no arithmetic.
+
+So what you see in the animation is both dies alternating from the first step,
+which is what the measured event timeline above says is really happening.
+
+## Contracts a hosted (GNU Radio) run depends on
+
+Three settings must be right for the live path — hosting the `.kyt` and running
+the `.grc` through GNU Radio — to deliver this chain's stream. They are already
+correct in the shipped files; they are listed because anyone building a *new*
+cross-chip flowgraph has to set them too.
+
+* **The egress net carries an explicit `out_tag`.** A chain that continues
+  across the carrier wire cannot have its tag inferred by walking blocks within
+  one chip, so the tail die's egress net names the tag directly. Without it the
+  host demux has nothing to match and drops the stream.
+* **A complex exit is ONE cell emitting a tag PAIR.** The exit cell emits
+  `out_i` on `out_tag` and `out_q` on `out_tag + 1`; only the I rail is
+  net-wired. A demux that keeps a single tag silently delivers half a stream.
+* **Value-output chains set `output_words = "q15"`.** The `"auto"` setting ties
+  the raw-word convention to a complex *input*, which is right for a modem
+  returning packed bits and wrong for a chain returning VALUES. This example
+  returns transform words, so it declares `"q15"` explicitly.
+
+## From chip words to a spectrum plot
+
+What leaves the chip is not a spectrum, and plotting it directly gives a plot
+that looks plausible and reads wrong. **Four** transformations separate the two,
+and every one of them is load-bearing:
+
+| # | What | Why the plot is wrong without it |
+|---|------|----------------------------------|
+| 1 | **De-interleave** the complex pair | The chain tail is a COMPLEX exit cell: `out_i` then `out_q` from one cell, so the stream carries **two float words per bin**. A time sink draws one bin's energy as two adjacent samples. |
+| 2 | **Strip the 127-sample latency** | The first 127 complex outputs of a burst are the zero-initialised pipeline's startup values, not a frame. |
+| 3 | **Un-reverse** the DIF slot order | Slot *k* carries bin `bit_reverse_7(k)`. Plotting slots is a **scrambled spectrum that still looks plausible** — clean lines, wrong frequencies. |
+| 4 | **fftshift** | Natural order runs 0 → +fs/2 and then *jumps* to −fs/2 → 0. No single linear axis can label that; rolling by N/2 makes the vector monotonic so `set_x_axis(-samp_rate/2, bin_hz)` labels every point. |
+
+The fix is the one `examples/fft_spectrum` already ships, with N and the
+complex de-interleave being what differ:
+
+```
+kyttar_sink ─▶ spectrum (de-interleave, strip, un-reverse, fftshift, |z|²)
+            ─▶ to_db (10·log10) ─▶ qtgui_vector_sink_f
+                                   x_start = -samp_rate/2, x_step = bin_hz,
+                                   x_units = "Hz"
+```
+
+`fft128_2p2s_spectrum.py` and `fft128_2p2s_to_db.py` are the display blocks,
+embedded verbatim into the `.grc` by `gen_grc.py` so the readable file and the
+flowgraph cannot drift.
+
+### What the plot reads now
+
+At the repo convention `samp_rate = 32000` and N = 128 each bin is
+**250 Hz** wide. The shipped stimulus is two ON-BIN tones:
+
+| tone | natural bin | chip SLOT (`bit_reverse_7`) | centred index | **frequency** | power | dBFS |
+|---|---|---|---|---|---|---|
+| A (amplitude 0.45) | 9 | 72 | 73 | **+2250 Hz** | 0.2025 | −6.93 |
+| B (amplitude 0.35) | 37 | 82 | 101 | **+9250 Hz** | 0.1225 | −9.12 |
+
+Every other one of the 128 points is **exactly 0.0** — an on-bin tone leaks
+nowhere — so the plot is two clean lines on the −90 dBFS floor. Measured on
+the real 4-die board *and* on the trace the vector sink is actually drawn
+with, tapped live through the hosted server.
+
+The stimulus scope (`input |x[n]| (two tones)`) is unchanged: it is a
+time-domain signal, so a time sink is the right sink for it.
+
+### Why the display drops each burst's ragged tail
+
+`burst_len` is 384 while `latency + 2*n_fft` is **383**, so every burst ends
+with exactly **one** leftover sample. A frame reader that kept consuming across
+the boundary would build its next "frame" from that one real sample plus 127 of
+the next burst's zero-fill — an all-zero spectrum, and with `server_repeat`
+looping the batch it would recur forever in a regular good / good / blank cycle.
+
+The display block therefore drops the ragged tail at each burst boundary. If you
+adapt this display for a different `burst_len`, keep that rule.
+
+## The drive is part of the design
+
+A complex sample is a **three-part transaction**:
+
+    WRITE xi  ─▶  WRITE xq  ─▶  JUMP     (one trigger, for the pair)
+
+On the multi-chip path each part must be **pumped to quiescence before the
+next is injected**. Queue all three back to back and the single-outstanding
+input handshake is overrun; the system makes no forward progress and the run
+looks exactly like a livelock.
+
+| drive shape | words out of the chain tail (12 samples) |
+|---|---|
+| all three parts queued, then one settle run | **0** of 24 |
+| two operand WRITEs queued, then JUMP + settle | **0** of 24 |
+| one WRITE + one JUMP *per word* (the generic head path) | 48 of 24 — **double-fires** |
+| **WRITE, pump, WRITE, pump, JUMP, settle** (shipped) | **24** of 24 ✅ |
+
+Two things are worth separating, because they are different mistakes:
+
+1. **The pumps are load-bearing**, not defensive padding.
+2. **A bigger budget is not a safer budget.** `run(events, rounds)` is
+   *events-per-chip-per-round × rounds*. The shipped budgets
+   (`PUMP = (60_000, 5)`, `SETTLE = (200_000, 50)`) are derived from what a
+   sample actually has to do.
+
+`--pattern batched` reproduces the failure on demand, and
+`test_the_unpaced_drive_is_what_stalls` holds it as a gate so the pumps cannot
+be "simplified" away.
+
+## Files
+
+| File | What it is |
+|------|------------|
+| `fft128_2p2s.kyt` | The 4-die board design — **open this in placeKYT**. Both dies placed and routed on chain A, both carrier links wired, the board named. |
+| `fft128_2p2s.grc` | The GNU Radio flowgraph — drives chain A through the multi-chip server. Open in `gnuradio-companion`. |
+| `fft128_2p2s.py` | The design + the drive. `build_2p2s()`, `open_engine()`, `drive()` — shared by the demo, the `.kyt` writer and the gate, so they cannot drift. |
+| `fft128_2p2s_demo.py` | **The debugging vehicle.** Per-trigger yield, the carrier link's traffic, the first non-quiescent trigger, the per-die concurrency table, then a word-for-word compare. |
+| `fft128_2p2s_spectrum.py` | **The display contract.** Interleaved I/Q chip words → a centred 128-bin POWER vector: de-interleave, strip the 127-sample latency, un-reverse the DIF slots, fftshift. Embedded verbatim into the `.grc`. |
+| `fft128_2p2s_to_db.py` | Per-bin power → dBFS for the log spectrum plot. Embedded verbatim into the `.grc`. |
+| `build_kyt.py` | Regenerates `fft128_2p2s.kyt` from the real place-and-route. |
+| `gen_grc.py` | Regenerates `fft128_2p2s.grc`, reading the two display blocks from the files above so they cannot drift. |
+
 ## Reading the output
 
 **The output is in BIT-REVERSED bin order** (standard DIF, no reorder buffer):
@@ -482,42 +365,17 @@ $ QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest \
       verification/tests/test_fft128_2p2s_example.py -q
 ```
 
-- the design **places, routes and builds** on all four board dies, with the
-  transform on chain A and both carrier links wired;
-- it is **DRC-clean against `dev2p2s.kdb` itself**, and that check has teeth —
-  a cross-chain link the carrier does not provide is REJECTED;
-- the shipped `.kyt` **reloads to the verified design and rebuilds to the same
-  bitstream** on every die, names its board, and leaves chain B empty;
-- **200/200 samples bit-exact** through the real board, 73 of them non-zero,
-  one complex sample per trigger, every trigger reaching quiescence;
-- **chain B stays silent** — no words, no trace events — while chain A runs;
-- **die concurrency**: both dies do real work on all 200 triggers, and the
-  within-trigger causal ordering is pinned with its measured 99.9% figure;
-- the **animation interleaves** the dies rather than concatenating them, with
-  teeth against the old order;
-- **INV-4 teeth**: a single corrupted word, swapped rails and a dropped sample
-  each FAIL the comparison;
-- the **un-paced drive** is held as a gate, so the root cause cannot be
-  re-introduced by "simplifying" the pumps away;
-- **THE DISPLAY**, which is a separate claim from the data:
-  - the shipped `.grc` plots a **vector (frequency) sink** with `x_units="Hz"`,
-    `x_start=-samp_rate/2` and `x_step=bin_hz` — and **no time sink is fed the
-    chip's raw recovered words** any more;
-  - the display block does **all four** transformations (de-interleave, strip
-    the latency, un-reverse, fftshift) and drops the burst's ragged tail;
-  - the tones land at **+2250 Hz and +9250 Hz** on the real 4-die board, at
-    powers 0.2025 and 0.1225, with every other point at exactly 0.0;
-  - **the DRAWN trace** — tapped at `spectrum.0` / `to_db.0` through the live
-    hosted server, i.e. what the vector sink is actually painted with — is that
-    same two-line spectrum in **every** frame, at −6.93 and −9.12 dBFS, inside
-    the sink's −95..5 dBFS axis, with every frame a clean `server_repeat`
-    replay of the first;
-  - **INV-4 teeth for the display**: no un-reversal, a wrong-*N* un-reverse
-    map, no fftshift, raw words as a time series, no de-interleave, an
-    unstripped latency, and degenerate flat/zero/short vectors each FAIL the
-    same spectrum gate the live test uses; a halved `samp_rate` must move every
-    frequency; and the `.grc`'s own inline stimulus is evaluated and required to
-    equal the stimulus the gates drive.
+The suite covers the design (places, routes and builds on all four dies;
+DRC-clean against `dev2p2s.kdb`; the shipped `.kyt` reloads to the same
+bitstream), the data (**200/200 samples bit-exact** through the real board, 73
+non-zero, chain B silent throughout, both dies working on every trigger), and
+**the display as a separate claim** — the drawn trace, tapped live through the
+hosted server, is the same two-line spectrum at +2250 Hz and +9250 Hz in every
+frame.
+
+Each claim carries mutation coverage: a corrupted word, swapped rails, a dropped
+sample, a missing un-reversal, a wrong-*N* map, a missing fftshift and an
+unstripped latency all fail their gate.
 
 The arithmetic gates live separately in
 `verification/tests/test_fft128_split.py` (the composition identity, both

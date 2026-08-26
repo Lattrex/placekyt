@@ -8,7 +8,7 @@ selected, rotated, and its imag rail egresses:
 
 ```
 x ─▶ FloatToComplex ─▶ FreqXlatingFIR(9 taps, −9 kHz) ─▶ ComplexLowPass(firdes, 0.9, 1.2 kHz)
-                                                       ─▶ MultiplyConstComplex(0.6+0.35j) ─▶ ComplexToImag ─▶ out
+        ─▶ MultiplyConstComplex(0.6+0.35j) ─▶ Conjugate ─▶ ComplexToImag ─▶ out
 ```
 
 ## What is verified — and what "match" means here
@@ -22,9 +22,8 @@ ComplexLowPass 32 + MultiplyConstComplex 13 + ComplexToImag 0 = **61 LSB**.
 Measured: **25 LSB** worst over 320 samples.
 
 `verification/tests/test_channel_selector_example.py` (5 tests): the derived
-bound, BOTH I/Q rails wired on every complex edge (the importer `re`/`im`
-rail-synthesis regression this example uncovered — converter-class Q rails
-were silently never wired, all-zero output), interferer rejection is real,
+bound, BOTH I/Q rails wired on every complex edge, interferer rejection is
+real,
 shipped-`.kyt` parity, and a **mutation** (a wrong down-shift frequency blows
 the bound).
 
@@ -42,11 +41,6 @@ RESULT: WITHIN DERIVED BOUNDS — placed chain matches stock GNU Radio
 
 43/120 cells (abutment-first pack), 6 blocks. Whole-chain proof for FloatToComplex, FreqXlatingFIR,
 ComplexLowPassFilter, MultiplyConstComplex, ComplexToImag.
-
-**Known limitation (honest):** a Conjugate stage was planned and is absent —
-a single-cell complex-in→complex-out block mis-delivers its rails under the
-auto-router's abutment handoff (a known engine defect).
-ConjugateBlock remains per-block-verified only.
 
 ## Run it
 

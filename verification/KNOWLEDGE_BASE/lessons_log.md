@@ -6361,3 +6361,55 @@ IQUpconvert == `multiply_cc(bb, sig_source_c) → complex_to_real` to 1 LSB.
 The recurring Q15 OVERFLOW-CORNER pattern: keep the GR-equivalence stimulus
 OFF the wrap corner and add a DEDICATED test asserting the DUT wraps
 bit-exact vs its OWN reference there.
+
+## GRC "Generate" overwrites same-named hand-written modules — INV-43  2026-08-26
+
+GRC's **Generate** writes `<flowgraph id>.py` into the `.grc`'s own directory. If
+a HAND-WRITTEN module already occupies that name, Generate destroys it silently,
+and the loss reads as an ordinary modification in `git status` — so it lands in
+whatever commit is open at the time.
+
+This happened **twice**, found by two different routes:
+
+* `examples/gru_classifier/gru_classifier.py` — a 534-line design module
+  (topology, anchors, the on-chip runner) replaced by its 273-line generated
+  flowgraph. Every symbol `build_kyt.py`, the demo and the gates import went with
+  it; the suite went to 23 failed / 8 errors while the README advertised it green.
+* `examples/fft128_2p2s/fft128_2p2s_demo.py` — a hand-written headless debugging
+  vehicle (`--samples`, per-trigger yield, carrier-link traffic, word-for-word
+  compare) replaced the same way. Found only because its README documented a
+  `--samples` run that nothing in the tree could still perform.
+
+**The rule:** a `.grc`'s flowgraph id must never equal the name of a hand-written
+`.py` in the same directory. The repo convention is `<name>_demo` or
+`<name>_grc`. When a `gen_grc.py` is the generator of record, change the id
+THERE too — changing only the `.grc` reintroduces the collision on the next
+regeneration.
+
+**Gated by** `test_examples_grc_valid.py::test_grc_generate_target_is_not_a_hand_written_module`,
+which checks all shipped `.grc`s: Generate may only target a file carrying GRC's
+own generated-file banner. That banner is what Generate itself stamps, so the
+test asks the only question that matters — would Generate overwrite something it
+did not write?
+
+**Corollary, and the deeper fix:** generated flowgraphs are no longer tracked at
+all (see `.gitignore`). Tracking build output beside hand-written source is what
+made both losses invisible. Nothing in the repo consumes the checked-in `.py` —
+`grc_userpath_run.py` regenerates into a tempdir from the `.grc`.
+
+## A display frame reader must drop each burst's ragged tail  2026-08-26
+
+When `burst_len` is not an exact multiple of the frame stride, every burst ends
+with a partial frame. A reader that keeps consuming across the boundary builds
+its next "frame" from those leftover samples plus the head of the *next* burst's
+zero-fill transient — an all-zero output — and with `server_repeat` looping the
+batch it recurs forever in a regular good/good/blank cycle.
+
+Measured on `fft128_2p2s`: `burst_len` 384 against `latency + 2*n_fft` = 383
+leaves exactly one sample over, producing a blank plot on every third frame
+across 4728 frames.
+
+**No bit-exactness assertion can see this** — the DATA is correct; the fault is
+in the framing of the display glue. It is caught only by tapping the display
+block's own output (what the sink is actually painted with) rather than stopping
+at the kyttar sink. Same lesson as the CSS transceiver's display gate.

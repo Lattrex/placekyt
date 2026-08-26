@@ -13,13 +13,13 @@ TX ('tx'):  chars ─▶ CWKeyer (SRAM ROM, completion flow control) ─▶ ITU-
 RX ('rx'):  keyed audio ─▶ Abs (envelope det.) ─▶ STREAMING CWDecoder (SRAM LUT @16384) ─▶ chars
 ```
 
-## The TX half: the flow-controlled record chain (why the "NQ" bug can't recur)
+## The TX half: the flow-controlled record chain
 
 Feed ASCII bytes at runtime — any message, no rebuild. The panel holds a
 **message-independent Morse ROM** (one run-record region per ASCII code
-point). An earlier revision sequenced records by host triggers, and under
-load a record's push-read could overwrite the player's registers mid-play
-(observed in the GUI as `CQ…` keyed as `NQ…`). The current chain closes that
+point). Record sequencing is driven by the chain itself rather than by host
+triggers, so a record's push-read can never overwrite the player's registers
+mid-play. The chain closes that
 **by construction**:
 
 - One injected character makes the **fetch cell** point the panel at that
@@ -45,7 +45,7 @@ detect (run thresholding) → classify (dot/dash + char boundary) → the
 embedded SramController's `lookup` (every read carries its OWN R3/R4
 descriptors — the shared-panel-safe protocol) → panel push-read → emit.
 
-**Documented v1 streaming limits** (honest, gated as such):
+**Documented v1 streaming limits**:
 - word gaps decode as character boundaries only — NO SPACES (the space branch
   does not fit the classify cell's 32-word budget); compare letters.
 - an RX burst must end with an **EOT blip** (≥ 2 units of silence then ≥ 1 ON

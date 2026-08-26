@@ -8,123 +8,69 @@ Both features are computed by library DSP blocks, and the recurrent network
 itself — gates, activation tables, hidden state, and the 4-class readout — is one
 placed block whose weights come from the trained model in [`ml/`](ml/).
 
-## Status — shipped and verified end to end
+## What it does
 
-**This example runs on a real placed and routed chip.** The whole chain builds
-as one design at **102 of 120 cells** and classifies the shipped stimulus with
-its class stream **bit-identical** to the offline chip-exact model.
+The whole chain builds as one design at **102 of 120 cells** and classifies the
+shipped stimulus with its class stream **bit-identical** to the offline
+chip-exact model.
 
-| | Status |
+| | Result |
 |---|---|
 | Feature front end (RMS + ZCR arms) vs the trained model's own `ml/features.py` | **verified** — ZCR bit-exact, RMS inside a derived bound |
 | The whole chain placed and routed on one chip | **verified** — every net routes, builds at 102/120 |
 | End-to-end run on the placed + routed array | **verified** — 480 windows, agreement **1.000000** vs the golden |
 | On-chip classification of all four classes | **verified** — segment votes `[0, 1, 2, 3]`, on-chip == offline |
 | The `.grc` under the real GRC compiler | **verified** — opens, generates, instantiates |
+| The hosted GUI/GRC user path | **verified** — the shipped `.kyt` hosted on port 58950, the shipped `.grc` GRC-generated and run: 480 class words, agreement **1.000000** |
 
 On-chip per-step accuracy after burn-in: SSB **1.000**, BPSK **0.811**,
 4-FSK **0.856**, noise **1.000** — mean **0.917**, and *exactly equal* to the
 offline model's on the same clip (asserted, not eyeballed: the gate compares the
 two accuracy vectors).
 
-| The **hosted GUI/GRC user path** | **verified** — the shipped `.kyt` hosted on port 58950, the shipped `.grc` GRC-generated and run: 480 class words, agreement **1.000000** vs the golden |
+### Contracts a hosted (GNU Radio) run depends on
 
-### The user path shipped broken once — read this before editing the ingress
+Three settings must be right for the live path — hosting the `.kyt` and running
+the `.grc` through GNU Radio — to deliver this chain's stream. They are already
+correct in the shipped files; they are listed because anyone building a *new*
+multi-arm flowgraph has to set them too.
 
-The first release of this example was gated only to "the `.grc` opens,
-GRC-generates and instantiates". Its headless suite was green while the
-workflow the README tells you to use — open the `.kyt`, open the `.grc`, press
-Run — returned **nothing**: `15360 samples -> 0 recovered`, the class scope flat.
-Three independent faults, none of which any pre-existing gate could see:
+* **Every ingress net carries a `stream_id`.** The hosted server resolves an
+  input net's injection landing from that id. This chain has three ingress arms,
+  so without ids only the first would be injected — the rendezvous would never
+  complete and the classifier would never run.
+* **A complex arm is ONE delivery, not two.** A 2-address landing takes the
+  `(Re, Im)` pair together; driving the rails separately leaves `Im` at 0, and
+  power silently becomes `re²` while every downstream stage still looks
+  plausible.
+* **The class stream is RAW, so the `.grc` must not rescale it.** A
+  complex-input chain returns raw word floats, so the class index `0..3` already
+  arrives as `0.0..3.0`. A ×32768 rescale drives it far off the scope's axis.
 
-1. **The `.kyt` carried no `stream_id`.** The hosted server resolves an input
-   net's injection landing only for nets that carry one
-   (`engine.port_config.stream_targets`); with none it fell back to the
-   single-net path, which resolves the **first** arm only. The
-   `ZeroCrossingRate` arm was never injected, so `FeaturePairJoin` never
-   rendezvoused and the GRU never ran — data reached the input port and stopped
-   there. All three ingress nets now carry `stream_id: cls` and the egress net
-   carries its `out_tag`; `build_kyt.py` writes them (see `STREAM_ID` in
-   `gru_classifier.py`).
-2. **The live bridge could not drive a multi-arm COMPLEX stream.** Its fan-out
-   path was gated on the real-rail case and carried one address per landing, so
-   even a correctly tagged complex stream would have driven one arm. Fixed in
-   `engine.sim_bridge`: each arm is driven at its own landing, and the arm's own
-   address count decides its arity — a 2-address landing takes the `(Re, Im)`
-   pair as **one** delivery, a 1-address landing takes `Re` only. This is the
-   same INGRESS PROTOCOL the headless runner had always implemented by hand.
-3. **The `.grc` rescaled a RAW stream by ×32768.** A complex-input chain returns
-   RAW word floats (`output_words='auto'` ties raw to `complex_in`), so the
-   class index `0..3` already arrives as `0.0..3.0`. The ×32768 drove every
-   sample to `0/32768/65536/98304` — far off the scope's `[-0.5, 3.5]` axis, so
-   even correct data would have painted as a flat off-scale line. The rescale
-   block is gone; the sink feeds the scope directly.
+**What is not verified:** the gates assert the class stream the scope
+*receives*, not the rendered image.
 
-The gate that was missing is now
-`test_examples_grc_userpath.py::test_gru_classifier_shipped_grc_user_path`,
-which hosts the shipped `.kyt` and runs the shipped `.grc` exactly as a user
-does. It was demonstrated to FAIL against the broken state before the fix.
+### Why the GRU block is folded wide and flat
 
-**What is still NOT verified.** No one has watched the scopes paint pixels in
-the GUI. The gate asserts the class stream the scope *receives* (bit-exact to
-the golden, inside the scope's y-axis, cleanly repeated by `server_repeat`) —
-not the rendered image.
+`GRUCellBlock` is placed as a **`CHIP_SCALE`** block: 10 cells wide by 5 tall,
+with its input and output on the same edge. That shape is what makes the rest of
+the chain fit.
 
-### How it got unblocked: the fold, not the chain
-
-For four dispatches this chain was **always exactly one net short**, and which
-net failed rotated as blocks moved — the signature of a saturated array rather
-than one bad anchor. Three explanations were measured and ruled out:
-
-* **Not capacity.** The blocks total 65 of 120 cells.
-* **Not the hop ceiling.** INV-36 lifted the 31-hop limit; no `hop_overflow` in
-  5039 measured layouts.
-* **Not the arm.** Shrinking the RMS arm was swept over boxcar lengths
-  32/16/8/4 with and without `Sqrt`: 65 block cells → 4 nets short, 62 → 2,
-  57 → 1, 56 → 1. Even a 4-tap boxcar with `Sqrt` dropped — no longer the
-  model's feature — was one net short.
-
-The fourth explanation was the **fold**, and it was right but under-scoped.
-`GRUCellBlock` was first re-folded to **8×7** (I/O on the north edge facing the
-chip's two row-0 ports, port cost 11 → 7 cells), which took the search from two
-nets short to **one**; 4180 further layouts stayed at one. The conclusion drawn
-then was that no fold could close it, resting on a sound structural argument:
-**a closed ring can never contain a free through-channel** — a cycle cannot jump
-a gap — so all of its free space is perimeter, and free-space quality measured
-*identical* across every legal fold.
-
-That argument is correct. Its **conclusion** was scoped to the three bounding
-boxes [INV-9](../../verification/KNOWLEDGE_BASE/invariants.md)'s ≤ 8-across
-convention allowed for a 51-cell block. Waiving that convention for this block —
-the **`CHIP_SCALE` placement class**, declared per class and never a global
-loosening — admits a **10 × 5** box, and the perimeter free space of a 10-wide
-block *is* six contiguous full-width rows. That is the through-channel the ten
-nets could never find.
+A compact block leaves its free space as a **perimeter** — a ring of cells with
+no way through the middle, because a closed ring cannot contain a through-channel.
+A 10-wide fold instead leaves **six contiguous full-width rows**, which is the
+corridor the front end's ten nets route through. The whole chain then builds at
+102/120.
 
 `CHIP_SCALE` comes with an explicit trade, and the block honours it: nothing can
-reach the far side of a 10-wide block, so **its input and output must share one
-edge**. `GRUCellBlock`'s `fin` and `oout` sit three cells apart on its north
-edge.
+reach the far side of a 10-wide block, so its input and output must share one
+edge — `fin` and `oout` sit three cells apart on its north edge.
 
-The wide fold is **not** cheaper for the block's own corridors at the anchor the
-example uses. Measured at its best anchor (row 0) the block plus its two port
-corridors builds in **58 cells**, against 64 for the 8×7 — but the example seats
-it at row 6 (**70 cells**, +2 per row of descent) precisely so the front end gets
-the six port-side rows. The fold wins on the **shape** of the free space it
-leaves, not on its own cost, and 102/120 for the whole chain is the number that
-settles it.
-
-Both re-folds preserved behaviour **exactly**, re-verified on chip each time:
-36,000 on-chip steps at agreement **1.000000**, clip vote **0.9667 on-chip ==
-0.9667 offline** over 120 held-out clips, all block gates green.
-
-Re-folding also required a real fix, now
-[INV-37](../../verification/KNOWLEDGE_BASE/invariants.md): the block baked three
-`is_face=True` constants as literals, silently pinning it to the authored fold.
-Every re-fold built clean, passed every geometric gate, and computed garbage
-(the recurrence never landed; `h` froze at timestep 0). Those constants are
-derived from the fold now — which is exactly why this second, much larger
-re-fold was a one-method change.
+The fold is not cheaper for the block's own corridors. At its best anchor the
+block plus its two port corridors builds in 58 cells against 64 for a compact
+8×7, but the example seats it low precisely so the front end gets the six
+port-side rows. It wins on the **shape** of the free space it leaves, not on its
+own cost.
 
 ## The chain
 
@@ -297,11 +243,11 @@ chain reads −14 LSB on a loud window and −218 on a quiet one.
   must still export every symbol its consumers import. See SOURCE INTEGRITY
   below for why.
 
-The on-chip rail-swap mutation is not hypothetical: it is the bug this example
-actually hit. The complex `(Re, Im)` pair is **one** delivery into a shared
-broker, not two independent ones, and driving it as two left `Im` stuck at 0 —
-power silently became `re²`, every downstream stage still looked plausible, and
-the clip classified 9/12 instead of exactly. See the INGRESS PROTOCOL note in
+The on-chip rail-swap mutation matters because the complex `(Re, Im)` pair is
+**one** delivery into a shared broker, not two independent ones. Driving it as
+two leaves `Im` at 0 — power silently becomes `re²`, every downstream stage
+still looks plausible, and the classification degrades rather than failing
+outright. See the INGRESS PROTOCOL note in
 `gru_classifier.py`.
 
 ## Files
@@ -318,29 +264,11 @@ the clip classified 9/12 instead of exactly. See the INGRESS PROTOCOL note in
 | `gru_classifier_demo.py` | the headless end-to-end demo |
 | `ml/` | the offline pipeline: signals, features, training, references |
 
-## Source integrity — why the flowgraph id is `gru_classifier_grc`
+## A note if you edit the flowgraph
 
-GRC's **Generate** button writes `<flowgraph id>.py` into the `.grc`'s own
-directory. This example is the one place in the repo where a **hand-written**
-module (`gru_classifier.py` — the chain, the anchors, the on-chip runner) lives
-beside a `.grc`, so an id of `gru_classifier` would aim Generate straight at it.
-
-That is not hypothetical. It happened: pressing Generate replaced the 534-line
-design module with the 273-line generated flowgraph. Every symbol `build_kyt.py`,
-`gru_classifier_demo.py` and the gates import vanished, the `.kyt` could no
-longer be regenerated, and — because the loss looks like an ordinary edit in
-`git status` — it rode into an unrelated commit. The example was unrunnable
-while this README advertised its tests as green.
-
-Two things prevent a repeat:
-
-* the flowgraph id is **`gru_classifier_grc`**, so Generate lands on
-  `gru_classifier_grc.py` (checked in, regenerable, safe to overwrite);
-* two gates hold the property — a repo-wide one in
-  `test_examples_grc_valid.py` asserting that **no** shipped `.grc` can generate
-  on top of a file lacking GRC's own generated-file banner, and a local one
-  asserting `gru_classifier.py` still exports what its consumers import.
-
-If you ever rename the flowgraph, keep the id different from every hand-written
-`.py` in the directory. The repo convention elsewhere is `<name>_demo`
-(`fft128_2p2s`, `gain`, `gain_2p2s`).
+GRC's **Generate** writes `<flowgraph id>.py` into the `.grc`'s own directory.
+This example's id is **`gru_classifier_grc`**, deliberately different from the
+hand-written `gru_classifier.py` beside it — otherwise Generate would overwrite
+the design module. If you rename the flowgraph, keep its id different from every
+hand-written `.py` in the directory; the repo convention elsewhere is
+`<name>_demo`.

@@ -48,7 +48,7 @@ bounds are **derived from the per-block verified error reports — never tuned**
   exhaustive sqrt-path bound; alpha exact in Q15 ⇒ no time-constant skew).
   Measured: **3 LSB** worst.
 
-Two regime facts the golden must mirror (both bit us before they were pinned):
+Two regime facts the golden must mirror:
 
 - `agc_ff` runs with **max_gain = 0.999** — the chip gain register is Q15, so
   the block implements the attenuating regime (exactly how its per-block gate
@@ -60,8 +60,8 @@ Two regime facts the golden must mirror (both bit us before they were pinned):
 `verification/tests/test_audio_meter_example.py` (7 tests) covers: import →
 duplex auto-P&R → build, all three streams within the derived bounds on real
 simKYT, the squelch actually closing, shipped-`.kyt` parity, derived out_tags
-confined to the 5-bit 2..31 range (the engine regression this example
-uncovered), the three-rail saturated == per-sample proof, and a **mutation**
+confined to the 5-bit 2..31 range, the three-rail saturated == per-sample
+proof, and a **mutation**
 (a halved AGC reference must blow the bound).
 
 `placekyt/tests/test_gr_client_loop_examples.py::test_audio_meter_real_gr_client_three_stream_duplex`

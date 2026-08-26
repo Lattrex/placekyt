@@ -52,6 +52,22 @@ the honest batch-simulation answer to "live": the simulator is not real-time, so
 "live" = the next burst reflects the change. On real hardware (streaming mode)
 the same slider retunes the die mid-stream.
 
+> **What the placeKYT waveform panel will look like.** Because this demo runs a
+> continuous loop of *many* bursts rather than one, its traces in the placeKYT
+> waveform viewer look **disjointed** — segmented, with visible discontinuities
+> between batches — where a single-burst demo like [`gain/`](../gain/) draws one
+> clean continuous run. That is the simulator's batch boundary showing, not the
+> design misbehaving: each burst is simulated as its own bounded run, so the
+> viewer stitches together many short captures instead of one long one. The data
+> within each burst is exact, and the GNU Radio scopes (which consume the stream,
+> not the per-burst capture) show it continuously.
+>
+> This is the trade the demo exists to make. Interactive retuning is a *hardware*
+> capability — on a real chip the sliders retune a running fabric with no batch
+> boundary at all — and showing it under the simulator costs the clean waveform
+> capture that the single-burst examples get. Use [`gain/`](../gain/) to study
+> the waveform viewer; use this one to see what the hardware does live.
+
 ## Live per-die gain sliders
 
 The flowgraph carries FOUR sliders — **gain A (chip0) … gain D (chip3)**. Dragging

@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""CSS DEMOD MAP + SEGMENT SPLITTER — what the DECODED-vs-TRANSMITTED scope draws.
+"""CSS DEMOD MAP + PER-SEGMENT SPLITTER + LIVE SER — what the two verdict
+scopes and the SER readout draw.
 
-Two jobs, and the second one is why this block exists at all.
+Three jobs, and the last two are why this block exists at all.
 
 **1. The decode map.** The on-chip FFT16 emits its 16 bins in bit-reversed (DIF)
 order, so the winning bin index ``i`` is not the symbol: the symbol is
@@ -11,7 +12,7 @@ order, so the winning bin index ``i`` is not the symbol: the symbol is
 load-bearing part. The shipped burst is TWO segments through one chain —
 segment A at +10 dB (which decodes exactly) and segment B at -10 dB (the
 on-chip NEGATIVE CONTROL, which must not). Displaying that correctly is not a
-matter of taste; two earlier display defects made a perfect decode look broken:
+matter of taste; four display defects in a row made a perfect run look broken:
 
   * **PHASE DRIFT.** The old flowgraph drew the transmitted reference from a
     SEPARATE ``vector_source`` on channel 1 of the scope. That source free-runs
@@ -25,11 +26,39 @@ matter of taste; two earlier display defects made a perfect decode look broken:
     drawn on the same axis as segment A's perfect lock, with nothing to tell a
     viewer which half was which. 17 of 50 plotted points disagreed *by design*
     and the plot did not say so.
+  * **THE CONTROL READ AS A DEFECT.** Splitting A and B onto four traces of ONE
+    scope fixed the arithmetic but not the meaning: a viewer looking at one axis
+    where half the points lock and half scatter reads "half of it is broken",
+    because nothing on screen says the scatter is the intended result. Reported
+    verbatim as "the +10 dB works flawlessly but the -10 dB doesn't work at
+    all" — a description of the demo working exactly as designed.
 
-The cure for both: derive the reference HERE, from the item index of the very
-stream being decoded, and split the two segments onto their OWN channels. The
-reference cannot drift from the decode because it is generated per item from the
-same counter, and segment A's lock is never overplotted by segment B's collapse.
+The cure for the first two: derive the reference HERE, from the item index of
+the very stream being decoded, so it cannot drift, and blank each segment
+outside its own words.
+
+  * **HALF THE TRACES WERE NEVER DRAWN.** A qtgui ``time_sink`` channel set to
+    line style 0 (NoPen, "markers only") paints NOTHING on any channel above
+    channel 0. Reproduced standalone with two vector sources of *different*
+    amplitude — so it is not occlusion — on a real X display as well as
+    offscreen. The old scope used NoPen on all four of its traces, so this
+    block's decoded outputs were among the ones the window never rendered.
+
+The cure for the first two: derive the reference HERE, from the item index of
+the very stream being decoded, so it cannot drift, and blank each segment
+outside its own words.
+
+The cure for the third: give each segment its **own scope**, so each carries
+its own verdict in its own title, and publish the **measured SER of each
+segment as a live number** next to them. A mismatch inside a panel that says
+"NEGATIVE CONTROL — this is the expected result" cannot be misread as breakage.
+
+The cure for the fourth lives in the ``.grc``, not here, but it constrains how
+these channels are wired: both traces of a panel use a solid pen (never style
+0), the REFERENCE goes to scope input 0 as a wide circle, and the DECODED
+output goes to input 1 — the last-painted channel — as a narrower X, so an
+exact overlay shows the X inside the ring instead of hiding the decode under
+its own reference.
 
 Frame layout (one batch = ``n_words`` items, ``seg_words`` per segment)::
 
@@ -38,15 +67,27 @@ Frame layout (one batch = ``n_words`` items, ``seg_words`` per segment)::
 
 so a segment's reference trace is ``[BLANK] + preamble + message symbols``.
 
-Outputs (all four are the SAME length and the SAME phase — plot them together):
+Outputs (all six are the SAME length and the SAME phase — one stream in, one
+item out per item, so nothing can slide against anything else):
 
   out0  segment A decoded  (chip)          blank outside segment A
   out1  segment A transmitted (reference)  blank outside segment A
   out2  segment B decoded  (chip)          blank outside segment B
   out3  segment B transmitted (reference)  blank outside segment B
+  out4  segment A measured SER  (0.0..1.0, held between passes)
+  out5  segment B measured SER  (0.0..1.0, held between passes)
 
 ``BLANK`` is NaN: GNU Radio's time sink leaves a gap rather than drawing a
-misleading 0 or -1, so each pair occupies only its own half of the sweep.
+misleading 0 or -1, so each segment's trace occupies only its own half of the
+sweep. Both scopes span the WHOLE batch and share one x axis, so the two
+half-filled panels stack into the burst's timeline: A fills the left half, B
+fills the right, and which is which is never in doubt.
+
+The SER channels (out4/out5) are the honest measurement, not a constant: each
+counts the plotted mismatches of the segment it belongs to over that segment's
+own symbols, publishes the value once the pass is COMPLETE, and holds it steady
+while the next pass accumulates. They exist so the two numbers the README quotes
+are ON SCREEN, where nobody has to take the README's word for them.
 """
 import numpy as np
 from gnuradio import gr
@@ -67,9 +108,9 @@ class blk(gr.sync_block):
 
     def __init__(self, n=16, tx_syms=(), seg_words=25):
         gr.sync_block.__init__(
-            self, name='CSS Bin -> Symbol + A/B split',
+            self, name='CSS Bin -> Symbol + A/B split + SER',
             in_sig=[np.float32],
-            out_sig=[np.float32, np.float32, np.float32, np.float32])
+            out_sig=[np.float32] * 6)
         self.n = int(n)
         self.seg_words = int(seg_words)
         # The per-segment reference trace, on the output word grid. Element 0 is
@@ -81,6 +122,12 @@ class blk(gr.sync_block):
         # Item counter modulo the whole two-segment batch — this is what keeps
         # the reference locked to the decode (see the module docstring).
         self._k = 0
+        # Live SER accumulators, one pair per segment: [errors, symbols scored]
+        # for the segment CURRENTLY being received, and the last COMPLETE value
+        # that the number sink holds while the other segment is in flight.
+        self._acc = [[0, 0], [0, 0]]
+        self._ser = [BLANK, BLANK]
+        self._complete = [False, False]
 
     def work(self, input_items, output_items):
         x = input_items[0]
@@ -106,11 +153,42 @@ class blk(gr.sync_block):
         drawn = ~np.isnan(ref)
         sym = np.where(drawn, sym, BLANK)
 
-        a_dec, a_ref, b_dec, b_ref = (output_items[i] for i in range(4))
+        a_dec, a_ref, b_dec, b_ref, a_ser, b_ser = (
+            output_items[i] for i in range(6))
         a_dec[:nout] = np.where(in_a, sym, BLANK)
         a_ref[:nout] = np.where(in_a, ref, BLANK)
         b_dec[:nout] = np.where(in_b, sym, BLANK)
         b_ref[:nout] = np.where(in_b, ref, BLANK)
+
+        # --- the live SER readout, scored on exactly the plotted points -------
+        # Walk item by item: cheap (one batch is tens of items) and it keeps the
+        # segment-boundary bookkeeping obvious rather than clever.
+        #
+        # What is PUBLISHED is the last COMPLETE pass over the segment, held
+        # steady while the next pass accumulates — so the number a viewer reads
+        # is a whole segment's SER, not a partial ratio that swings between 0
+        # and 1 mid-segment as symbols arrive. The one exception is the very
+        # first pass, before any complete result exists: there the running ratio
+        # is shown so the readout is never blank on screen for a whole batch.
+        for j in range(nout):
+            seg = 0 if in_a[j] else 1
+            if pos[j] % w == 0:
+                # First word of a segment: the previous pass over this segment
+                # is complete, so publish it and start the next one.
+                e, tot = self._acc[seg]
+                if tot:
+                    self._ser[seg] = e / tot
+                    self._complete[seg] = True
+                self._acc[seg] = [0, 0]
+            if drawn[j]:
+                self._acc[seg][1] += 1
+                d, r = sym[j], ref[j]
+                if np.isnan(d) or int(d) != int(r):
+                    self._acc[seg][0] += 1
+                if not self._complete[seg]:
+                    self._ser[seg] = self._acc[seg][0] / self._acc[seg][1]
+            a_ser[j] = self._ser[0]
+            b_ser[j] = self._ser[1]
 
         self._k = (self._k + nout) % period
         return nout

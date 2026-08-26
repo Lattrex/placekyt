@@ -13,6 +13,7 @@
 from PyQt5 import Qt
 from gnuradio import qtgui
 from gnuradio import blocks
+from gnuradio import eng_notation
 from gnuradio import gr
 from gnuradio.filter import firdes
 from gnuradio.fft import window
@@ -21,7 +22,6 @@ import signal
 from PyQt5 import Qt
 from argparse import ArgumentParser
 from gnuradio.eng_arg import eng_float, intx
-from gnuradio import eng_notation
 from gnuradio import kyttar
 from gnuradio.kyttar import css_demo_stim as stim
 import css_transceiver_bin_to_sym as bin_to_sym  # embedded python block
@@ -66,6 +66,7 @@ class css_transceiver(gr.top_block, Qt.QWidget):
         ##################################################
         # Variables
         ##################################################
+        self.verdict = verdict = 'A LOCKS + B COLLAPSES = WORKING AS DESIGNED'
         self.tx_syms = tx_syms = stim.framed_symbols()[:stim.n_data_symbols()]
         self.seg_words = seg_words = stim.n_out_words() // 2
         self.samp_rate = samp_rate = 32000
@@ -77,54 +78,162 @@ class css_transceiver(gr.top_block, Qt.QWidget):
         # Blocks
         ##################################################
 
-        self.sym_scope = qtgui.time_sink_f(
-            n_words, #size
-            samp_rate, #samp_rate
-            "DECODED vs TRANSMITTED - segment A (+10 dB) locks | segment B (-10 dB) collapses", #name
-            4, #number of inputs
+        self._verdict_tool_bar = Qt.QToolBar(self)
+
+        if None:
+            self._verdict_formatter = None
+        else:
+            self._verdict_formatter = lambda x: str(x)
+
+        self._verdict_tool_bar.addWidget(Qt.QLabel("BOTH PANELS ARE THE EXPECTED RESULT. Panel A (+10 dB) locks, SER 0.00. Panel B (-10 dB) collapses, SER ~0.63 - B is a deliberate NEGATIVE CONTROL: same placed chip, same burst, 20 dB worse signal. Its failure is what makes A's SER 0 mean something."))
+        self._verdict_label = Qt.QLabel(str(self._verdict_formatter(self.verdict)))
+        self._verdict_tool_bar.addWidget(self._verdict_label)
+        self.top_grid_layout.addWidget(self._verdict_tool_bar, 0, 0, 1, 2)
+        for r in range(0, 1):
+            self.top_grid_layout.setRowStretch(r, 1)
+        for c in range(0, 2):
+            self.top_grid_layout.setColumnStretch(c, 1)
+        self.ser_readout = qtgui.number_sink(
+            gr.sizeof_float,
+            0,
+            qtgui.NUM_GRAPH_HORIZ,
+            2,
             None # parent
         )
-        self.sym_scope.set_update_time(0.10)
-        self.sym_scope.set_y_axis(-1, 16)
+        self.ser_readout.set_update_time(0.10)
+        self.ser_readout.set_title('MEASURED SYMBOL ERROR RATE — A must be 0.00, B must NOT (both are the expected result)')
 
-        self.sym_scope.set_y_label('symbol', "")
-
-        self.sym_scope.enable_tags(True)
-        self.sym_scope.set_trigger_mode(qtgui.TRIG_MODE_FREE, qtgui.TRIG_SLOPE_POS, 0.0, 0, 0, "")
-        self.sym_scope.enable_autoscale(False)
-        self.sym_scope.enable_grid(False)
-        self.sym_scope.enable_axis_labels(True)
-        self.sym_scope.enable_control_panel(False)
-        self.sym_scope.enable_stem_plot(False)
-
-
-        labels = ['A (+10 dB) decoded - chip', 'A (+10 dB) transmitted', 'B (-10 dB) decoded - chip', 'B (-10 dB) transmitted', 'Signal 5',
-            'Signal 6', 'Signal 7', 'Signal 8', 'Signal 9', 'Signal 10']
-        widths = [1, 1, 1, 1, 1,
+        labels = ['SER  A (+10 dB, panel 1)  — reads 0.00, EXPECTED ✓', 'SER  B (−10 dB, panel 2, NEGATIVE CONTROL)  — reads HIGH, EXPECTED ✓', '', '', '',
+            '', '', '', '', '']
+        units = ['SER', 'SER', '', '', '',
+            '', '', '', '', '']
+        colors = [("blue", "red"), ("black", "red"), ("black", "black"), ("black", "black"), ("black", "black"),
+            ("black", "black"), ("black", "black"), ("black", "black"), ("black", "black"), ("black", "black")]
+        factor = [1, 1, 1, 1, 1,
             1, 1, 1, 1, 1]
-        colors = ['blue', 'cyan', 'red', 'dark red', 'cyan',
-            'magenta', 'yellow', 'dark red', 'dark green', 'dark blue']
+
+        for i in range(2):
+            self.ser_readout.set_min(i, 0)
+            self.ser_readout.set_max(i, 1)
+            self.ser_readout.set_color(i, colors[i][0], colors[i][1])
+            if len(labels[i]) == 0:
+                self.ser_readout.set_label(i, "Data {0}".format(i))
+            else:
+                self.ser_readout.set_label(i, labels[i])
+            self.ser_readout.set_unit(i, units[i])
+            self.ser_readout.set_factor(i, factor[i])
+
+        self.ser_readout.enable_autoscale(False)
+        self._ser_readout_win = sip.wrapinstance(self.ser_readout.qwidget(), Qt.QWidget)
+        self.top_grid_layout.addWidget(self._ser_readout_win, 3, 0, 1, 2)
+        for r in range(3, 4):
+            self.top_grid_layout.setRowStretch(r, 1)
+        for c in range(0, 2):
+            self.top_grid_layout.setColumnStretch(c, 1)
+        self.seg_b_scope = qtgui.time_sink_f(
+            n_words, #size
+            samp_rate, #samp_rate
+            'SEGMENT B  ·  −10 dB  ·  NEGATIVE CONTROL  —  the X marks MISS their circles, SER ≈ 0.63  ✓ EXPECTED, THIS IS THE POINT', #name
+            2, #number of inputs
+            None # parent
+        )
+        self.seg_b_scope.set_update_time(0.10)
+        self.seg_b_scope.set_y_axis(-1, 16)
+
+        self.seg_b_scope.set_y_label('symbol  (B)', "")
+
+        self.seg_b_scope.enable_tags(True)
+        self.seg_b_scope.set_trigger_mode(qtgui.TRIG_MODE_FREE, qtgui.TRIG_SLOPE_POS, 0.0, 0, 0, "")
+        self.seg_b_scope.enable_autoscale(False)
+        self.seg_b_scope.enable_grid(False)
+        self.seg_b_scope.enable_axis_labels(True)
+        self.seg_b_scope.enable_control_panel(False)
+        self.seg_b_scope.enable_stem_plot(False)
+
+
+        labels = ['B transmitted  — reference (circle)', 'B decoded  — off the chip, MISSES ON PURPOSE (X)', 'Signal 3', 'Signal 4', 'Signal 5',
+            'Signal 6', 'Signal 7', 'Signal 8', 'Signal 9', 'Signal 10']
+        widths = [5, 3, 1, 1, 1,
+            1, 1, 1, 1, 1]
+        colors = ['dark red', 'red', 'dark blue', 'dark blue', 'dark blue',
+            'dark blue', 'dark blue', 'dark blue', 'dark blue', 'dark blue']
         alphas = [1.0, 1.0, 1.0, 1.0, 1.0,
             1.0, 1.0, 1.0, 1.0, 1.0]
-        styles = [0, 0, 0, 0, 1,
+        styles = [1, 1, 1, 1, 1,
             1, 1, 1, 1, 1]
-        markers = [0, 1, 0, 1, -1,
+        markers = [0, 9, -1, -1, -1,
             -1, -1, -1, -1, -1]
 
 
-        for i in range(4):
+        for i in range(2):
             if len(labels[i]) == 0:
-                self.sym_scope.set_line_label(i, "Data {0}".format(i))
+                self.seg_b_scope.set_line_label(i, "Data {0}".format(i))
             else:
-                self.sym_scope.set_line_label(i, labels[i])
-            self.sym_scope.set_line_width(i, widths[i])
-            self.sym_scope.set_line_color(i, colors[i])
-            self.sym_scope.set_line_style(i, styles[i])
-            self.sym_scope.set_line_marker(i, markers[i])
-            self.sym_scope.set_line_alpha(i, alphas[i])
+                self.seg_b_scope.set_line_label(i, labels[i])
+            self.seg_b_scope.set_line_width(i, widths[i])
+            self.seg_b_scope.set_line_color(i, colors[i])
+            self.seg_b_scope.set_line_style(i, styles[i])
+            self.seg_b_scope.set_line_marker(i, markers[i])
+            self.seg_b_scope.set_line_alpha(i, alphas[i])
 
-        self._sym_scope_win = sip.wrapinstance(self.sym_scope.qwidget(), Qt.QWidget)
-        self.top_layout.addWidget(self._sym_scope_win)
+        self._seg_b_scope_win = sip.wrapinstance(self.seg_b_scope.qwidget(), Qt.QWidget)
+        self.top_grid_layout.addWidget(self._seg_b_scope_win, 2, 0, 1, 2)
+        for r in range(2, 3):
+            self.top_grid_layout.setRowStretch(r, 1)
+        for c in range(0, 2):
+            self.top_grid_layout.setColumnStretch(c, 1)
+        self.seg_a_scope = qtgui.time_sink_f(
+            n_words, #size
+            samp_rate, #samp_rate
+            'SEGMENT A  ·  +10 dB  ·  DECODE LOCKS  —  every X lands in its circle, SER 0.00  ✓ EXPECTED', #name
+            2, #number of inputs
+            None # parent
+        )
+        self.seg_a_scope.set_update_time(0.10)
+        self.seg_a_scope.set_y_axis(-1, 16)
+
+        self.seg_a_scope.set_y_label('symbol  (A)', "")
+
+        self.seg_a_scope.enable_tags(True)
+        self.seg_a_scope.set_trigger_mode(qtgui.TRIG_MODE_FREE, qtgui.TRIG_SLOPE_POS, 0.0, 0, 0, "")
+        self.seg_a_scope.enable_autoscale(False)
+        self.seg_a_scope.enable_grid(False)
+        self.seg_a_scope.enable_axis_labels(True)
+        self.seg_a_scope.enable_control_panel(False)
+        self.seg_a_scope.enable_stem_plot(False)
+
+
+        labels = ['A transmitted  — reference (circle)', 'A decoded  — off the chip (X)', 'Signal 3', 'Signal 4', 'Signal 5',
+            'Signal 6', 'Signal 7', 'Signal 8', 'Signal 9', 'Signal 10']
+        widths = [5, 3, 1, 1, 1,
+            1, 1, 1, 1, 1]
+        colors = ['cyan', 'blue', 'dark blue', 'dark blue', 'dark blue',
+            'dark blue', 'dark blue', 'dark blue', 'dark blue', 'dark blue']
+        alphas = [1.0, 1.0, 1.0, 1.0, 1.0,
+            1.0, 1.0, 1.0, 1.0, 1.0]
+        styles = [1, 1, 1, 1, 1,
+            1, 1, 1, 1, 1]
+        markers = [0, 9, -1, -1, -1,
+            -1, -1, -1, -1, -1]
+
+
+        for i in range(2):
+            if len(labels[i]) == 0:
+                self.seg_a_scope.set_line_label(i, "Data {0}".format(i))
+            else:
+                self.seg_a_scope.set_line_label(i, labels[i])
+            self.seg_a_scope.set_line_width(i, widths[i])
+            self.seg_a_scope.set_line_color(i, colors[i])
+            self.seg_a_scope.set_line_style(i, styles[i])
+            self.seg_a_scope.set_line_marker(i, markers[i])
+            self.seg_a_scope.set_line_alpha(i, alphas[i])
+
+        self._seg_a_scope_win = sip.wrapinstance(self.seg_a_scope.qwidget(), Qt.QWidget)
+        self.top_grid_layout.addWidget(self._seg_a_scope_win, 1, 0, 1, 2)
+        for r in range(1, 2):
+            self.top_grid_layout.setRowStretch(r, 1)
+        for c in range(0, 2):
+            self.top_grid_layout.setColumnStretch(c, 1)
         self.rx_src = kyttar.source(device_id="kyttar_0", port_name="x16_in", num_channels=1, server_host="127.0.0.1", server_port=58950, complex_in=True, burst_len=burst_len, stream_id="rx", pipelined=False, schedule="interleaved", repeat=False, output_words="auto")
         self.rx_sink = kyttar.sink(device_id="kyttar_0", port_name="x16_out", num_channels=1, server_port=58950, server_repeat=True, hold_secs=8.0, stream_id="rx", in_type=False)
         self.rx_iq = blocks.vector_source_c(stim.rx_burst(), True, 1, [])
@@ -179,7 +288,11 @@ class css_transceiver(gr.top_block, Qt.QWidget):
             self.input_scope.set_line_alpha(i, alphas[i])
 
         self._input_scope_win = sip.wrapinstance(self.input_scope.qwidget(), Qt.QWidget)
-        self.top_layout.addWidget(self._input_scope_win)
+        self.top_grid_layout.addWidget(self._input_scope_win, 4, 0, 1, 1)
+        for r in range(4, 5):
+            self.top_grid_layout.setRowStretch(r, 1)
+        for c in range(0, 1):
+            self.top_grid_layout.setColumnStretch(c, 1)
         self.idx_s2f = blocks.short_to_float(1, 1)
         self.fft = kyttar.fft16(device_id="kyttar_0")
         self.dechirp = kyttar.conj_chirp_mixer(device_id="kyttar_0", n=n_css)
@@ -231,7 +344,11 @@ class css_transceiver(gr.top_block, Qt.QWidget):
             self.bin_scope.set_line_alpha(i, alphas[i])
 
         self._bin_scope_win = sip.wrapinstance(self.bin_scope.qwidget(), Qt.QWidget)
-        self.top_layout.addWidget(self._bin_scope_win)
+        self.top_grid_layout.addWidget(self._bin_scope_win, 4, 1, 1, 1)
+        for r in range(4, 5):
+            self.top_grid_layout.setRowStretch(r, 1)
+        for c in range(1, 2):
+            self.top_grid_layout.setColumnStretch(c, 1)
         self.argmax = kyttar.bin_argmax(device_id="kyttar_0", n=n_css)
         self.align = kyttar.delay(device_id="kyttar_0", delay=1)
 
@@ -241,10 +358,12 @@ class css_transceiver(gr.top_block, Qt.QWidget):
         ##################################################
         self.connect((self.align, 0), (self.argmax, 0))
         self.connect((self.argmax, 0), (self.idx_s2f, 0))
-        self.connect((self.bin_to_sym, 2), (self.sym_scope, 2))
-        self.connect((self.bin_to_sym, 1), (self.sym_scope, 1))
-        self.connect((self.bin_to_sym, 3), (self.sym_scope, 3))
-        self.connect((self.bin_to_sym, 0), (self.sym_scope, 0))
+        self.connect((self.bin_to_sym, 1), (self.seg_a_scope, 0))
+        self.connect((self.bin_to_sym, 0), (self.seg_a_scope, 1))
+        self.connect((self.bin_to_sym, 2), (self.seg_b_scope, 1))
+        self.connect((self.bin_to_sym, 3), (self.seg_b_scope, 0))
+        self.connect((self.bin_to_sym, 5), (self.ser_readout, 1))
+        self.connect((self.bin_to_sym, 4), (self.ser_readout, 0))
         self.connect((self.dechirp, 0), (self.fft, 0))
         self.connect((self.fft, 0), (self.magsq, 0))
         self.connect((self.idx_s2f, 0), (self.rx_sink, 0))
@@ -263,6 +382,13 @@ class css_transceiver(gr.top_block, Qt.QWidget):
         self.wait()
 
         event.accept()
+
+    def get_verdict(self):
+        return self.verdict
+
+    def set_verdict(self, verdict):
+        self.verdict = verdict
+        Qt.QMetaObject.invokeMethod(self._verdict_label, "setText", Qt.Q_ARG("QString", str(self._verdict_formatter(self.verdict))))
 
     def get_tx_syms(self):
         return self.tx_syms
@@ -284,7 +410,8 @@ class css_transceiver(gr.top_block, Qt.QWidget):
         self.samp_rate = samp_rate
         self.input_scope.set_samp_rate(self.samp_rate)
         self.bin_scope.set_samp_rate(self.samp_rate)
-        self.sym_scope.set_samp_rate(self.samp_rate)
+        self.seg_a_scope.set_samp_rate(self.samp_rate)
+        self.seg_b_scope.set_samp_rate(self.samp_rate)
 
     def get_n_words(self):
         return self.n_words

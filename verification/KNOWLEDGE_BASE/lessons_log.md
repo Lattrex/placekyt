@@ -9,6 +9,143 @@ block-specific gotcha. Promote anything that generalizes across block classes in
 and superseded material merged into the surviving entries; no durable lesson was
 dropped) — append new entries above the oldest ones as before.
 
+## GardnerTimingRecovery retry — the quarantine's ROOT CAUSE WAS WRONG; the DSP is solved in Q15, the block stays quarantined on an ON-CHIP wall 2026-08-27
+
+Second attempt at the block quarantined 2026-08-06. **Outcome: still `needs_human`, but
+with a corrected and much sharper diagnosis.** The Q15 signal-processing question is
+SOLVED and demonstrated (BER 0 across the full offset sweep in a bit-exact ISA model);
+the block does not ship because the redesigned datapath does not close its feedback loop
+on the built chip. Both halves are recorded below because both are durable.
+
+### The 2026-08-06 root cause was WRONG (measured, not argued)
+
+The quarantine record blamed TED PRECISION: *"the TED HALVES the BPSK sample difference
+(>>1) to fit int16 and the resulting timing jitter closes the Nyquist eye"*, and
+concluded the fix was *"a wider TED product without the >>1 truncation"*. That is not
+what was limiting the block. An ablation on the exact quarantine channel/metric
+(worst BER over 5 seeds x 10 fractional offsets, n=900):
+
+| variant | worst BER | failing cases |
+|---|---|---|
+| V0 shipped (phase-accumulator NCO, halved MULHI TED, power-of-two gains) | 0.1220 | 40/50 |
+| V1 + clamp the interpolation fraction | 0.0451 | 12/50 |
+| V2 + full-precision MULQ TED (the documented "fix") | 0.0122 | 2/50 |
+| V3 + GR-derived PI gains as well | 0.0415 | 14/50 |
+| **V4 modulo-1 counter + MULQ TED + GR gains** | **0.0000** | **0/50** |
+
+Removing the `>>1` (V2) helps but does NOT reach BER 0, and adding the correct loop
+gains on top of the old NCO (V3) makes it *worse*. **Only replacing the NCO closes it.**
+The real defect was an UNBOUNDED PHASE ACCUMULATOR:
+
+* `phase` is a plain int16 accumulator with **no modulo**. Whenever the loop pulled the
+  period below nominal, `phase` gained more per sample than each strobe shed, grew
+  without bound, and WRAPPED int16 (measured `phase` reaching 32298 before wrap). The
+  derived `frac = phase<<1` then read NEGATIVE and INVERTED the interpolation.
+* So the loop was not jittering — it was **slipping**. That also explains the shape of
+  the original evidence: a BER of 0.04–0.12 is far too good for a broken detector and far
+  too bad for a working one; it is a loop that keeps re-acquiring and re-slipping.
+* FIX: the MMTimingRecoveryBlock modulo-1 interpolator-control counter (Rice Ch.8) —
+  `cnt = (cnt - W) & 0x7FFF` is bounded BY CONSTRUCTION, so no wrap is possible.
+
+Two secondary defects were real and both are needed for cold ACQUISITION:
+
+* **The loop gains were not GR's.** The `>>8` integral / `>>2` proportional shifts give
+  effective gains 0.00195 / 0.125 against GR's derived 0.02492 / 0.19835 — the integrator
+  was ~12.8x too weak to track the offset. Derive K1/K2 from `loop_bw`/`damping` with
+  GR's own `control_loop` mapping (identical to `MMTimingRecoveryBlock._pi_gains`).
+* **The TED threw away 2 bits for headroom it never needed.** A Q15 signal*signal MULQ
+  product is ALREADY in [-1,1) (the MultiplyCC headroom finding), so pre-halving BOTH
+  operands was paying 2 bits for nothing. Only the DIFFERENCE `c_k - c_{k-1}` can leave
+  int16 — measured 6,063 of 44,387 strobes at amplitudes up to full scale — so saturate
+  just that and use a plain `MULQ(mid, sat(c - cprev))`: **4.0x (exactly 2 bits)** more
+  error amplitude. Those 2 bits are what let cold acquisition match GR's (GR is BER 0 by
+  symbol 80 on every case; without them the loop needs ~300 symbols).
+
+Measured, on the SAME channel and metric the quarantine used, in a bit-exact Q15/ISA
+model (truncating MULQ, wrapping int16, immediate-count shifts): **BER 0 on all 50
+selection cases AND on 200 HELD-OUT cases** (10 unseen seeds x a 20-point offset grid),
+plus lengths 200–2500 — at `loop_bw=0.02, damping=1.0` with a x4 TED-scale normaliser
+(K1=14581, K2=916 as Q15 MULQ multipliers).
+
+**Operating envelope (honest limit, not hidden):** the loop is amplitude-sensitive
+because the TED error shrinks with signal level — clean at amp 0.4–0.95 and rolloff
+beta >= 0.25, degrading below that. The verification channel (amp 0.7, beta 0.35) sits
+well inside.
+
+### Why it STILL does not ship: the redesign does not close its loop on-chip
+
+The redesigned datapath needs 5 cells (the NCO cell cannot also hold the delay line +
+two interpolations + a saturating TED — fused it needs 36 words in a 32-word cell). Every
+cell fits, the block places, routes and builds clean, the recovered symbol egresses at the
+CORRECT RATE (424 outputs for 424 symbols), and `ted.cprev` tracks the reference exactly —
+but **`period_relay` never executes**, so the PI never runs, `counter.v` stays 0 forever,
+and the timing loop never adapts (on-chip BER ~0.03–0.15 against a reference BER of 0).
+Everything static checks out: entry address 20, a 1-hop WEST abutment, the correct
+`face_fb`, and the build's own feedback pass reports BOTH the data WRITE and the
+co-located lock-clear `WRITE.CFG` patched to `@2`/dest 6 (`matched=True`). The trigger
+still does not fire the cell.
+
+**THE EXACT WALL: on this substrate a single cell cannot reliably be BOTH the block's
+external-egress cell AND the source of an internal feedback trigger, once the block has
+more than one cell between the landing cell and that egress.** Four distinct build passes
+each claim the exit cell's WRITE/JUMP words, and they conflict:
+
+* `output_at_last_write` patches the cell's HIGHEST-ADDRESS WRITE with the output hop —
+  a SINGLE-WRITE contract. It cannot express "the last write of the strobe path but not
+  of the no-strobe path", so a two-entry egress cell always mis-patches one path.
+* `_apply_routes` rewrites EVERY WRITE in a ROUTED exit cell to the output corridor,
+  and the `feedback_blocks` preserve-set only protects cells that are themselves
+  feedback SOURCES in chain order.
+* `_apply_internal_feedback` re-patches the cell's highest-address JUMP when the
+  feedback edge is declared as a connection — which is the EXTERNAL EGRESS trigger.
+* Reordering the cells to make the feedback edge backward fixes the WRITE and breaks
+  the JUMP, and vice versa. Both orderings were built and measured.
+
+Observable signatures, all of which look like unrelated bugs:
+* egress WRITE left at its authored `@1` -> builds and routes clean, emits **NOTHING**;
+* feedback WRITE repointed at the output corridor -> `period_relay` never runs, the lock
+  never clears, block emits **exactly ONE** symbol then goes quiescent (INV-33 warns this
+  is indistinguishable from a state/instruction overlap);
+* strobe gating lost -> **exactly 2x** the expected output count (one per input sample
+  rather than per strobe).
+
+Two further durable facts found on the way:
+
+* **A block's internal ring has a PARITY constraint.** The loop
+  counter -> interp -> ted -> loop_filter -> period_relay -> counter is a FIVE-cycle, and
+  a grid graph is bipartite, so it admits only EVEN cycles: no placement of those five
+  cells closes the ring by abutment alone (verified by exhaustive search over 3x3, 4x3,
+  3x4 and 4x4). At least one `transit_*` cell is mathematically REQUIRED, not stylistic.
+* **A `transit_*` cell's authored face is NOT safe on the block perimeter.** The route
+  pass runs BEFORE the feedback pass and overwrites `fwd_face` on every cell a corridor
+  crosses; the materialisation only applies the authored face when the cell is absent
+  from the cell_map. A perimeter transit crossed by the input corridor had its NORTH
+  face rewritten SOUTH, the feedback trace dead-ended, and the loop silently never closed.
+  MMTimingRecoveryBlock survives this only because its transit LANE runs along a row no
+  corridor uses.
+
+### For whoever picks this up
+
+The signal processing is done and re-derivable from this entry; the remaining work is
+purely build/router integration. The most promising route is a DEDICATED single-face
+egress cell (the MM `qout` idiom: exactly one WRITE, one JUMP, one face) that is BOTH the
+last program cell AND the router's block exit, with the feedback source kept strictly
+upstream of it — i.e. make the egress contract single-valued by construction rather than
+trying to satisfy four patch passes at once. That shape was attempted here and hit the
+`_set_cell_hop1` zeroing of `pout`'s destination when `period_relay` became the last
+cell; resolving THAT ordering conflict is the next concrete step.
+
+Artifacts: the full redesign (reference + 5-cell programs + layout) and the ablation
+harness were kept out of the commit deliberately — the repo must not carry a block whose
+reference disagrees with its own silicon.
+
+**GENERALIZES:** when a quarantine names a PRECISION root cause, ablate it before
+believing it. Precision defects degrade gracefully and roughly uniformly; this one
+failed 40/50 cases at 0.04–0.12 BER, which is the signature of a loop that LOSES LOCK,
+not one that jitters. An unbounded accumulator in a feedback loop is the thing to look
+for first, and the cheapest possible check — print the accumulator's max magnitude
+against its int16 range — would have found it in minutes.
+
 ## FFT128 DISPLAY — a bit-exact chain is not a correct PLOT, and the drawn-trace tap is what proves it 2026-08-25
 
 `examples/fft128_2p2s` computed correctly and its plot was still wrong. Reported

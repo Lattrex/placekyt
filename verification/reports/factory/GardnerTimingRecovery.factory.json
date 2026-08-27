@@ -5,16 +5,16 @@
   "wave": 2,
   "schema_version": 1,
   "started_utc": "2026-08-07T02:18:32Z",
-  "ended_utc": "2026-08-07T03:26:59Z",
-  "walltime_sec": 702.043,
+  "ended_utc": "2026-08-27T16:21:49Z",
+  "walltime_sec": 4927.442999999999,
   "tokens": {
     "input": 0,
-    "output": 165652,
+    "output": 705992,
     "cache_read": 0,
-    "total": 165652
+    "total": 705992
   },
-  "turns": 52,
-  "attempts": 2,
+  "turns": 464,
+  "attempts": 4,
   "human_interventions": 0,
   "intervention_reasons": [],
   "prompts": [
@@ -25,7 +25,7 @@
   ],
   "verify_passed": false,
   "quarantined": true,
-  "quarantine_reason": "Q15 Gardner TED (>>1 halving to fit int16) jitters too hard to lock the matched-filter Nyquist channel where GR symbol_sync_cc(Gardner) is BER 0; DUT BER ~4-12%. MMTimingRecovery is the verified alternative.",
-  "commit_sha": "e0bb4f1",
-  "notes": "QUARANTINE (needs_human), 2 attempts, autonomous verdict. poc. KEY FINDING: the block's OLD 'green' tests validated against a synthetic 2sps stimulus GR ITSELF cannot lock (BER ~0.45) -- i.e. it was tuned outside GR's operating regime; per-block GR-equivalence exposed it. New test PROVES both sides on the same channel (GR locks BER 0; DUT does not, reference AND on-chip) + leaves an xfail tripwire to promote if ever fixed. Extends the documented Gardner 4-PAM limit to 2-level BPSK on a Nyquist channel. A paper data point, not a hidden failure."
+  "quarantine_reason": "RETRY 2026-08-27: the 2026-08-06 root cause (TED precision, the >>1 halving) was WRONG. Ablation on the same channel/metric: removing the >>1 reaches only BER 0.0122 (2/50 failing); the actual defect is an UNBOUNDED PHASE ACCUMULATOR (no modulo, phase wraps int16 at 32298 and inverts the interpolation - the loop was SLIPPING, not jittering). With a modulo-1 counter + full-precision MULQ TED + GR-derived PI gains the Q15 DSP reaches BER 0 on all 50 selection cases and 200 held-out cases in a bit-exact ISA model. It still does not ship on an ON-CHIP INTEGRATION wall: one cell cannot reliably be both the block's external-egress cell and an internal feedback-trigger source (four build passes contend for its WRITE/JUMP words), so period_relay never executes and the PI never runs.",
+  "commit_sha": "551671d",
+  "notes": "QUARANTINE (needs_human), 2 attempts, autonomous verdict. poc. KEY FINDING: the block's OLD 'green' tests validated against a synthetic 2sps stimulus GR ITSELF cannot lock (BER ~0.45) -- i.e. it was tuned outside GR's operating regime; per-block GR-equivalence exposed it. New test PROVES both sides on the same channel (GR locks BER 0; DUT does not, reference AND on-chip) + leaves an xfail tripwire to promote if ever fixed. Extends the documented Gardner 4-PAM limit to 2-level BPSK on a Nyquist channel. A paper data point, not a hidden failure.\n\nRETRY (2026-08-27, +540,340 output tokens, 412 turns, ~70 min): SECOND attempt, 0 human interventions. Outcome still QUARANTINE, but the recorded diagnosis was corrected with measurements rather than argument - a paper data point in its own right. The Q15 signal-processing question is SOLVED (BER 0, full offset sweep, 200 held-out cases, bit-exact ISA model); the wall moved from 'the substrate cannot do Gardner in Q15' to a specific, named build-integration conflict. NO BLOCK SOURCE WAS COMMITTED - the repo must not carry a block whose reference disagrees with its own silicon. Generalizable lesson recorded: when a quarantine names a PRECISION root cause, ablate before believing it; precision defects degrade gracefully, and a one-line check of an accumulator's max magnitude against int16 range finds a wrap in minutes."
 }

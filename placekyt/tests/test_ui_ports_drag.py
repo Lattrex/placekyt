@@ -169,69 +169,98 @@ class TestRouteToPort:
 
 
 class TestDragMove:
+    """Drag/undo/overlap behaviour, exercised on a real multi-cell block.
+
+    These assert positions RELATIVE to the block's own placement, never literal
+    coordinates. A block's fold is free to change — GardnerTimingRecovery went
+    from a 2x2 with cell 0 at the anchor to a 2x4 whose cell 0 sits one row down —
+    and a literal here turns a UI regression test into a block-layout tripwire
+    that fails for reasons having nothing to do with dragging."""
+
     def _block(self, window, btype="GardnerTimingRecovery", x=1, y=1):
         window.controller.place_block(btype, 0, x, y, library="lattrex.official")
         window.canvas.render_scene()
         return window.controller.project.blocks[-1].name
 
+    @staticmethod
+    def _cells(window, name):
+        return window.controller.project.block(name).placement.cells
+
+    @staticmethod
+    def _grab(cells):
+        """A cell of the block to press on, and the block's min corner."""
+        return (cells[0].x, cells[0].y)
+
     def test_whole_block_drag(self, window):
         name = self._block(window)
         c = window.canvas
-        c.mousePressEvent(_mouse(c, QEvent.MouseButtonPress, 1, 1))
-        c.mouseMoveEvent(_mouse(c, QEvent.MouseMove, 1, 5))
+        gx, gy = self._grab(self._cells(window, name))
+        before = [cell.pos for cell in self._cells(window, name)]
+        c.mousePressEvent(_mouse(c, QEvent.MouseButtonPress, gx, gy))
+        c.mouseMoveEvent(_mouse(c, QEvent.MouseMove, gx, gy + 4))
         assert c._footprint is not None  # preview shows during drag
         c.mouseReleaseEvent(
-            _mouse(c, QEvent.MouseButtonRelease, 1, 5, buttons=Qt.NoButton))
+            _mouse(c, QEvent.MouseButtonRelease, gx, gy + 4, buttons=Qt.NoButton))
         _pump()
-        cells = window.controller.project.block(name).placement.cells
-        assert cells[0].pos == (1, 5)
+        after = [cell.pos for cell in self._cells(window, name)]
+        # EVERY cell moved by the same delta — that is what "whole block" means.
+        assert after == [(x, y + 4) for x, y in before]
 
     def test_drag_undo(self, window):
         name = self._block(window)
         c = window.canvas
-        c.mousePressEvent(_mouse(c, QEvent.MouseButtonPress, 1, 1))
-        c.mouseMoveEvent(_mouse(c, QEvent.MouseMove, 1, 5))
+        gx, gy = self._grab(self._cells(window, name))
+        before = [cell.pos for cell in self._cells(window, name)]
+        c.mousePressEvent(_mouse(c, QEvent.MouseButtonPress, gx, gy))
+        c.mouseMoveEvent(_mouse(c, QEvent.MouseMove, gx, gy + 4))
         c.mouseReleaseEvent(
-            _mouse(c, QEvent.MouseButtonRelease, 1, 5, buttons=Qt.NoButton))
+            _mouse(c, QEvent.MouseButtonRelease, gx, gy + 4, buttons=Qt.NoButton))
         _pump()
         window.controller.undo()
-        assert window.controller.project.block(name).placement.cells[0].pos == (1, 1)
+        assert [cell.pos for cell in self._cells(window, name)] == before
 
     def test_overlap_rejected(self, window):
         a = self._block(window, x=1, y=1)
-        self._block(window, btype="GainBlock", x=1, y=6)
+        before = [cell.pos for cell in self._cells(window, a)]
+        gx, gy = self._grab(self._cells(window, a))
+        # Put the blocker exactly where the drag would land the grabbed cell.
+        self._block(window, btype="GainBlock", x=gx, y=gy + 5)
         c = window.canvas
-        c.mousePressEvent(_mouse(c, QEvent.MouseButtonPress, 1, 1))
-        c.mouseMoveEvent(_mouse(c, QEvent.MouseMove, 1, 6))  # onto the gain block
+        c.mousePressEvent(_mouse(c, QEvent.MouseButtonPress, gx, gy))
+        c.mouseMoveEvent(_mouse(c, QEvent.MouseMove, gx, gy + 5))
         c.mouseReleaseEvent(
-            _mouse(c, QEvent.MouseButtonRelease, 1, 6, buttons=Qt.NoButton))
+            _mouse(c, QEvent.MouseButtonRelease, gx, gy + 5, buttons=Qt.NoButton))
         _pump()
         # unchanged — overlap reverts
-        assert window.controller.project.block(a).placement.cells[0].pos == (1, 1)
+        assert [cell.pos for cell in self._cells(window, a)] == before
 
     def test_ctrl_drag_single_cell(self, window):
-        name = self._block(window)  # 4-cell row at (1..4, 1)
+        name = self._block(window)
         c = window.canvas
-        first = window.controller.project.block(name).placement.cells[0]
+        before = [cell.pos for cell in self._cells(window, name)]
+        first = self._cells(window, name)[0]
         c.mousePressEvent(_mouse(c, QEvent.MouseButtonPress, first.x, first.y,
                                  ctrl=True))
         c.mouseMoveEvent(_mouse(c, QEvent.MouseMove, 7, 8, ctrl=True))
         c.mouseReleaseEvent(_mouse(c, QEvent.MouseButtonRelease, 7, 8, ctrl=True,
                                    buttons=Qt.NoButton))
         _pump()
-        cells = window.controller.project.block(name).placement.cells
-        assert cells[0].pos == (7, 8)          # the one cell moved
-        assert cells[1].pos == (2, 1)          # the rest unchanged
+        cells = self._cells(window, name)
+        assert cells[0].pos == (7, 8), "the grabbed cell alone should move"
+        assert [cell.pos for cell in cells[1:]] == before[1:], \
+            "ctrl-drag must leave every OTHER cell where it was"
 
     def test_plain_click_no_move(self, window):
         name = self._block(window)
         c = window.canvas
+        gx, gy = self._grab(self._cells(window, name))
+        before = [cell.pos for cell in self._cells(window, name)]
         # press + release on the same cell → selection, not a move
-        c.mousePressEvent(_mouse(c, QEvent.MouseButtonPress, 1, 1))
+        c.mousePressEvent(_mouse(c, QEvent.MouseButtonPress, gx, gy))
         c.mouseReleaseEvent(
-            _mouse(c, QEvent.MouseButtonRelease, 1, 1, buttons=Qt.NoButton))
+            _mouse(c, QEvent.MouseButtonRelease, gx, gy, buttons=Qt.NoButton))
         _pump()
-        assert window.controller.project.block(name).placement.cells[0].pos == (1, 1)
+        assert [cell.pos for cell in self._cells(window, name)] == before
 
 
 # --------------------------------------------------------------------------- #

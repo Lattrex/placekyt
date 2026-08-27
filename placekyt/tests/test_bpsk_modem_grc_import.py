@@ -207,17 +207,44 @@ def test_autoplace_strategy_aware_off_port(catalog):
         f"RRC not folded: spans rows {sorted(rys)}, cols {sorted(rxs)}"
 
     # The two filaments occupy SEPARABLE row bands (TX: mapper/up/rrc/upc ; RX:
-    # MF/costas/gardner/slicer). The RX-only blocks (Costas, Gardner, Slicer) sit in a
-    # band BELOW the TX-only blocks (Upsampler, RRC, IQUpconvert) — a coherent split,
+    # MF/costas/gardner). The RX-only BODY blocks (Costas, Gardner) sit in a band
+    # BELOW the TX-only blocks (Upsampler, RRC, IQUpconvert) — a coherent split,
     # not an interleaved jumble. (The two heads, mapper + MF, share the port row.)
+    #
+    # The single-cell SLICER is deliberately NOT part of this check. It is the
+    # chip-output egress terminal, and ``autoplace._pack_compact`` seats such a
+    # terminal in the CLEAR CHANNEL ROW ABOVE ITS BAND on purpose (the §5.3
+    # in==out split: there it abuts the reserved egress rail on its east and keeps
+    # free N/S/W faces for its bus input). That seat is topology-agnostic and by
+    # design, so on a TIGHT pack it legitimately lands in — or above — the TX
+    # band's rows. Asserting it into the RX band tests the packer's egress rule,
+    # not filament separation, and the two disagree whenever the design packs
+    # densely enough for the seat row to reach the top. (Observed once
+    # GardnerTimingRecovery grew from 4 cells to 7 and the whole modem packed into
+    # rows 0-5 instead of spreading over all 12.)
     def rows(type_name):
         b = next(x for x in ctrl.project.blocks if x.type == type_name)
         return {c.y for c in b.placement.cells}
     tx_rows = rows("UpsamplerBlock") | rows("RRCPulseShaperBlock") | rows("IQUpconvertBlock")
-    rx_rows = rows("ComplexCostasLoopBlock") | rows("GardnerTimingRecovery") \
-        | rows("BPSKSlicerBlock")
+    rx_rows = rows("ComplexCostasLoopBlock") | rows("GardnerTimingRecovery")
     assert min(rx_rows) > max(tx_rows), \
         f"filaments interleave: TX rows {sorted(tx_rows)}, RX rows {sorted(rx_rows)}"
+    # The slicer still must be a SEATED egress terminal, not lost mid-band: it is
+    # one cell, it drives the chip output, and it sits in a row no TX-or-RX body
+    # block occupies (its own clear channel).
+    sli_rows = rows("BPSKSlicerBlock")
+    assert len(sli_rows) == 1, f"slicer should be one cell, spans {sorted(sli_rows)}"
+    body = set()
+    for t in ("UpsamplerBlock", "RRCPulseShaperBlock", "IQUpconvertBlock",
+              "ComplexCostasLoopBlock", "GardnerTimingRecovery",
+              "ComplexRRCMatchedFilterBlock"):
+        body |= {(c.x, c.y) for c in
+                 next(x for x in ctrl.project.blocks
+                      if x.type == t).placement.cells}
+    sli_cell = next(x for x in ctrl.project.blocks
+                    if x.type == "BPSKSlicerBlock").placement.cells[0]
+    assert (sli_cell.x, sli_cell.y) not in body, \
+        "the egress terminal must have its own cell, not overlap a body block"
 
 
 def test_autoplace_then_route_status(catalog):

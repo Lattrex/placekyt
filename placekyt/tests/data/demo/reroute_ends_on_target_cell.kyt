@@ -24,21 +24,7 @@ blocks:
     - {cell_id: table_cos, x: 9, y: 4, face: west}
     - {cell_id: rotate, x: 8, y: 4, face: west}
     - {cell_id: pd_pi, x: 7, y: 4, face: west}
-    transit_cells:
-    - {x: 6, y: 4, face: north}
-- name: gardnertimingrecovery
-  type: GardnerTimingRecovery
-  library: lattrex.official
-  params:
-    kp: 3
-    ki: 1
-  placement:
-    chip: 0
-    cells:
-    - {cell_id: resampler, x: 3, y: 3, face: east}
-    - {cell_id: ted, x: 4, y: 3, face: south}
-    - {cell_id: loop_filter, x: 4, y: 4, face: west}
-    - {cell_id: period_relay, x: 3, y: 4, face: north}
+    - {cell_id: transit_0, x: 6, y: 4, face: north}
 - name: complexrrcmatchedfilter
   type: ComplexRRCMatchedFilterBlock
   library: lattrex.official
@@ -69,35 +55,24 @@ blocks:
   placement:
     chip: 0
     cells:
-    - {cell_id: 0, x: 1, y: 3, face: west}
-    orientation:
-    - mirror_h
+    - {cell_id: 0, x: 1, y: 3, face: east}
+- name: gardnertimingrecovery
+  type: GardnerTimingRecovery
+  library: lattrex.official
+  params:
+    kp: 3
+    ki: 1
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: counter, x: 7, y: 8, face: east}
+    - {cell_id: dline, x: 8, y: 8, face: east}
+    - {cell_id: interp, x: 9, y: 8, face: south}
+    - {cell_id: ted, x: 9, y: 9, face: west}
+    - {cell_id: loop_filter, x: 8, y: 9, face: south}
+    - {cell_id: qout, x: 8, y: 10, face: east}
+    - {cell_id: period_relay, x: 7, y: 9, face: north}
 connections:
-- name: net1
-  from: {block: complexcostasloop, port: yi_tap}
-  to: {block: gardnertimingrecovery, port: xi}
-  route:
-  - {x: 8, y: 4}
-  - {x: 8, y: 5}
-  - {x: 7, y: 5}
-  - {x: 6, y: 5}
-  - {x: 5, y: 5}
-  - {x: 4, y: 5}
-  - {x: 3, y: 5}
-  - {x: 2, y: 5}
-  - {x: 2, y: 4}
-  - {x: 2, y: 3}
-  - {x: 3, y: 3}
-- name: net2
-  from: {block: gardnertimingrecovery, port: out}
-  to: {block: bpskslicer, port: llr}
-  route:
-  - {x: 4, y: 4}
-  - {x: 4, y: 5}
-  - {x: 3, y: 5}
-  - {x: 2, y: 5}
-  - {x: 1, y: 5}
-  - {x: 1, y: 4}
 - name: net3
   from: {block: complexrrcmatchedfilter, port: yi}
   to: {block: complexcostasloop, port: xi}
@@ -146,3 +121,31 @@ connections:
   - {x: 7, y: 0}
   - {x: 8, y: 0}
   - {x: 9, y: 0}
+- name: net1
+  from: {block: complexcostasloop, port: yi_tap}
+  to: {block: gardnertimingrecovery, port: xi}
+  route:
+  - {x: 8, y: 4}
+  - {x: 8, y: 5}
+  - {x: 8, y: 6}
+  - {x: 8, y: 7}
+  - {x: 7, y: 7}
+  - {x: 7, y: 8}
+- name: net2
+  from: {block: gardnertimingrecovery, port: out}
+  to: {block: bpskslicer, port: llr}
+  route:
+  - {x: 8, y: 10}
+  - {x: 7, y: 10}
+  - {x: 6, y: 10}
+  - {x: 5, y: 10}
+  - {x: 5, y: 9}
+  - {x: 5, y: 8}
+  - {x: 5, y: 7}
+  - {x: 5, y: 6}
+  - {x: 5, y: 5}
+  - {x: 5, y: 4}
+  - {x: 4, y: 4}
+  - {x: 3, y: 4}
+  - {x: 2, y: 4}
+  - {x: 1, y: 4}

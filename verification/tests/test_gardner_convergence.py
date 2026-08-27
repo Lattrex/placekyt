@@ -72,54 +72,50 @@ def _make_bpsk_2sps(bits, sps=2, frac=0.5, rrc_span=8, beta=0.35):
 
 
 def _period_trace(blk, input_samples):
-    """Re-run the reference loop, capturing the interpolator half-period
-    (``inst_active``) at each CENTER strobe alongside the recovered center
-    samples. Bit-identical to ``process_reference`` — only instrumented."""
+    """Re-run the reference loop, capturing the interpolator-control period
+    ``W = Wnom + v`` at each strobe alongside the recovered symbol centers.
+    Bit-identical to ``process_reference`` — only instrumented.
+
+    NOTE this tracks the CURRENT datapath (the modulo-1 interpolator-control
+    counter). The pre-2026-08-27 block had an unbounded Q14 phase accumulator and
+    a separate ``inst_active``/``inst_next`` deferred period; that state does not
+    exist any more, and neither do the ``_MULQ_HALF`` / ``_INTEG_RBIAS`` /
+    ``_MULQ_INTEG`` constants this trace used to read.
+    """
     def s16(v):
+        v = int(v) & 0xFFFF
         return v - 0x10000 if v & 0x8000 else v
 
-    def u16(v):
-        return v & 0xFFFF
+    def sat(v):
+        return max(-32768, min(32767, int(v)))
 
-    def mqr(a, b):
+    def mq(a, b):
         return (s16(a) * s16(b)) >> 15
 
-    def mulhi(a, b):
-        return (s16(a) * s16(b)) >> 16
-
-    sq = [float_to_q15(float(x)) for x in input_samples]
-    ONE = NOMINAL
+    xq = [float_to_q15(float(x)) for x in input_samples]
+    ONE = blk._ONE
+    Wnom = ONE // 2
+    K1i, K2i, MD = blk._K1i, blk._K2i, blk._MAXDEV
+    cnt = vi = v = 0
+    d0 = d1 = 0
+    cprev = 0
     out, periods = [], []
-    iavg, avg = 0, ONE
-    inst_active = inst_next = ONE
-    cprev = midv = 0
-    phase = ONE >> 1
-    xp = xp2 = parity = 0
-    for v in sq:
-        xi = s16(v)
-        xp2 = xp
-        xp = xi
-        phase += ONE
-        if phase >= inst_active:
-            phase -= inst_active
-            inst_active = inst_next
-            frac = u16(phase << 1)
-            s = xp2 + mqr(frac, u16((xp - xp2) & 0xFFFF))
-            if parity == 0:
-                dch = u16((mqr(u16(s & 0xFFFF), blk._MULQ_HALF)
-                           - mqr(u16(cprev & 0xFFFF), blk._MULQ_HALF)) & 0xFFFF)
-                ewhi = mulhi(u16(midv & 0xFFFF), dch)
-                cprev = s
-                out.append(s16(u16(s)))
-                periods.append(inst_active)
-                iavg += mqr(u16((ewhi + blk._INTEG_RBIAS) & 0xFFFF),
-                            blk._MULQ_INTEG)
-                iavg = max(-blk._MAXDEV, min(blk._MAXDEV, iavg))
-                avg = ONE + iavg
-                inst_next = avg + mqr(u16(ewhi & 0xFFFF), blk._MULQ_PROP)
-            else:
-                midv = s
-            parity ^= 1
+    for n in range(len(xq)):
+        d2 = s16(xq[n])
+        W = Wnom + v
+        e = 0
+        if cnt < W:
+            mu = min(32767, cnt << 1)
+            c = sat(d1 + mq(mu, sat(d2 - d1)))
+            m = sat(d0 + mq(mu, sat(d1 - d0)))
+            e = mq(m, sat(c - cprev))
+            cprev = c
+            out.append(c)
+            periods.append(W)
+        vi = max(-MD, min(MD, vi + mq(e, K2i)))
+        v = max(-MD, min(MD, mq(e, K1i) + vi))
+        cnt = (cnt - W) % ONE
+        d0, d1 = d1, d2
     return np.array(out, dtype=np.int16), np.array(periods)
 
 
@@ -147,24 +143,42 @@ def _best_ber(rec_bits, ref_bits, skip=60):
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("frac", [0.3, 0.5, 0.7])
 def test_period_plateaus_not_collapses(frac):
-    """The interpolator period stays locked near nominal over 600 symbols — the
-    old kp/ki loop collapsed to ~7007 by ~symbol 189."""
+    """The interpolator-control period ``W = Wnom + v`` stays locked near nominal
+    over 600 symbols — it neither COLLAPSES nor RUNS AWAY, and it settles rather
+    than drifting monotonically.
+
+    Two historical failures this pins, both of which produced a plausible-looking
+    partial decode rather than an obvious break:
+
+      * the original kp/ki loop, whose period collapsed to ~7007 (0.43 x nominal)
+        by symbol ~189 and slipped a whole sample;
+      * the 2026-07 phase-accumulator NCO, which had NO modulo — the accumulator
+        grew without bound whenever the loop pulled the period below nominal,
+        WRAPPED int16, and inverted the interpolation. The current counter is
+        ``cnt = (cnt - W) & 0x7FFF``, bounded by construction, so the analogous
+        failure cannot recur; what CAN still go wrong is the loop output ``v``
+        walking out, which is what the band assertions below catch.
+    """
     rng = np.random.default_rng(1234)
     bits = rng.integers(0, 2, 600).tolist()
     sig = _make_bpsk_2sps(bits, frac=frac)
     blk = GardnerTimingRecovery("g")
     recovered, periods = _period_trace(blk, sig)
 
+    assert len(periods) > 500, f"only {len(periods)} strobes over 600 symbols"
     pmin, pmax = int(periods.min()), int(periods.max())
-    # No collapse: the loop must stay within its +-max_dev clamp band, nowhere
-    # near the old 7007 collapse (which is < 0.6 * nominal).
-    assert pmin > NOMINAL * 0.7, (
-        f"period collapsed to {pmin} (< 0.7*{NOMINAL}); loop is not converging")
-    assert pmax < NOMINAL * 1.3, f"period ran away high to {pmax}"
-    # Settled: the last-quarter spread is small (plateau, not a monotone drift).
+    # The period is Wnom +- v and v is clamped to +-max_dev by construction, so
+    # this band is a REAL check that the clamp is wired in, not a tautology: an
+    # unclamped v reaches several times max_dev on this stimulus.
+    assert pmin > NOMINAL - blk._MAXDEV - 1, (
+        f"period collapsed to {pmin} (below Wnom - max_dev); loop not converging")
+    assert pmax < NOMINAL + blk._MAXDEV + 1, (
+        f"period ran away high to {pmax} (above Wnom + max_dev)")
+    # Settled: the last-quarter spread is a fraction of the deviation budget —
+    # a plateau, not a monotone drift.
     tail = periods[-len(periods) // 4:]
     tail_spread = int(tail.max() - tail.min())
-    assert tail_spread < NOMINAL * 0.1, (
+    assert tail_spread < blk._MAXDEV, (
         f"period never settled (tail spread {tail_spread})")
 
     # And bits recover BER 0 past the transient.

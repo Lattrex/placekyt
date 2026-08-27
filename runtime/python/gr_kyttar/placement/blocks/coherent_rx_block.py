@@ -5,7 +5,6 @@ from ..block import CellProgram, Port, EntryPoint, StateVar, DataWord
 from typing import Dict, List, Tuple, Any
 from ._base import KyttarBlock, BlockInterface, assemble_to_words, float_to_q15, q15_to_float
 from .complex_costas_loop_block import ComplexCostasLoopBlock
-from .gardner_timing_recovery import GardnerTimingRecovery
 
 
 class CoherentRXBlock(KyttarBlock):
@@ -29,6 +28,10 @@ class CoherentRXBlock(KyttarBlock):
         col:    0       1        2        3        4        5      6        7       8     9
         row 0:  phase   sin_fold cos_fold table_sin table_cos rotate pd_pi  yi_relay rs_b? slicer
         row 1:  fb0(N)  fb1(W)   fb2(W)   fb3(W)   fb4(W)   fb5(W) fb6(W) resampler ted  loop_filter
+
+    The timing front half (``resampler`` + ``ted``) is LOCAL to this block — see
+    ``_legacy_resampler`` for why it is not the standalone
+    GardnerTimingRecovery's cells any more.
 
     The yi handoff is the key: ``pd_pi`` keeps its default face SOUTH (the Costas
     dphase feedback, unchanged) and FLIPS EAST to drop the recovered yi to a FREE
@@ -66,7 +69,6 @@ class CoherentRXBlock(KyttarBlock):
         self._costas = ComplexCostasLoopBlock(name + "_costas",
                                               loop_bw=loop_bw, damping=damping,
                                               pipeline_lock=True)
-        self._gardner = GardnerTimingRecovery(name + "_gardner", kp=kp, ki=ki)
         self._kp, self._ki = int(kp), int(ki)
 
     @property
@@ -209,9 +211,164 @@ emit:
 """,
         )
 
+    # ------------------------------------------------------------------------
+    # The FUSED-ONLY Gardner front half (resampler + ted).
+    #
+    # These are LOCAL to this block, deliberately. They are the pre-2026-08-27
+    # GardnerTimingRecovery cells: a Q14 phase-accumulator resampler that strobes
+    # TWICE per symbol with a center/mid parity tag, and a TED that halves the
+    # sample difference before the product. GardnerTimingRecovery itself has moved
+    # on — it is now a modulo-1 interpolator-control counter that strobes ONCE per
+    # symbol, interpolating both TED operands at that one strobe, which is what let
+    # it reach BER 0 against GNU Radio.
+    #
+    # This block does NOT track that change, and the reason is structural rather
+    # than lazy: the fused receiver runs its timing stage OPEN-LOOP at the nominal
+    # period (see ``DEAD_REG`` — the period feedback dead-ends), because there is no
+    # room on this 12-cell fold for the timing loop's own return corridor alongside
+    # the Costas dphase corridor. An open-loop resampler at nominal is exactly the
+    # regime the old two-strobe structure was tuned for, and it reaches BER 0 here
+    # on the demo channel. Borrowing the NEW cells would import a closed-loop design
+    # and then starve it of its feedback, which is strictly worse.
+    #
+    # So the dependency is cut: this block owns its copies, and
+    # GardnerTimingRecovery is free to be a correct standalone block. Anyone
+    # improving the fused receiver should replace this front half with the real
+    # closed-loop Gardner and give it its return corridor, not re-couple the two.
+    _MULQ_HALF = 1 << 14      # MULQ(x, 16384) == x >> 1, sign-correct
+    _NOMINAL_Q14 = 1 << 14    # nominal half-period (1.0 sample) in Q14
+
+    @classmethod
+    def _legacy_resampler(cls) -> CellProgram:
+        """Q14 phase-accumulator resampler + 2-sample delay line + linear interp,
+        emitting a (value, parity) pair per strobe. Runs at the NOMINAL period —
+        ``inst_next`` is never written (the period feedback dead-ends).
+
+        The two-instruction tail after ``{jump:val}`` engages the arbiter LOCK on
+        the STROBE path (INV-19), so the next input is held while the strobe's
+        value traverses the timing stage; the fused ``pd_pi`` carries the matching
+        inline lock-clear. The no-strobe ``done`` path never locks, so non-strobe
+        samples keep flowing to advance ``phase``. ``inc`` doubles as the
+        lock-enable word (any value with bit 0 set would do; this one is reused to
+        save a register on a cell that has none to spare)."""
+        INC = cls._NOMINAL_Q14
+        return CellProgram(
+            inputs=[Port("xi", register=0)],
+            outputs=[Port("val"), Port("par"), Port("trig")],
+            entries=[EntryPoint("default")],
+            data=[DataWord("inc", INC, address=1)],
+            state=[StateVar("phase", initial_value=INC >> 1,
+                            reset_per_batch=True),
+                   StateVar("xp", reset_per_batch=True),
+                   StateVar("xp2", reset_per_batch=True),
+                   StateVar("inst_active", initial_value=INC,
+                            reset_per_batch=True),
+                   StateVar("inst_next", initial_value=INC,
+                            reset_per_batch=True),
+                   StateVar("parity", reset_per_batch=True),
+                   StateVar("diff")],
+            assembly_template="""\
+start:
+    MOVE R{state:xp2}, R{state:xp}
+    MOVE R{state:xp}, R{in:xi}
+    ADD R{state:phase}, R{data:inc}
+    MOVE R{state:phase}, R0
+    SUB R{state:phase}, R{state:inst_active}
+    BR.N done
+    MOVE R{state:phase}, R0
+    MOVE R{state:inst_active}, R{state:inst_next}
+    SUB R{state:xp}, R{state:xp2}
+    MOVE R{state:diff}, R0
+    SHL R{state:phase}, #1
+    MULQ R0, R{state:diff}
+    ADD R0, R{state:xp2}
+    {write:val}
+    MOVE R0, R{state:parity}
+    {write:par}
+    XOR R{state:parity}, R{data:inc}
+    MOVE R{state:parity}, R0
+    {jump:val}
+    MOVE R0, R{data:inc}
+    MOVE [LOCK], R0
+done:
+    {jump:trig}
+""",
+        )
+
+    @classmethod
+    def _legacy_ted(cls) -> CellProgram:
+        """Gardner error on a CENTER strobe; the center sample passes through.
+        ``par == 0`` is a CENTER, ``par == 0x4000`` a MID."""
+        return CellProgram(
+            inputs=[Port("val", register=0), Port("par", register=1)],
+            outputs=[Port("e_out"), Port("c_out"), Port("trig")],
+            entries=[EntryPoint("default")],
+            data=[DataWord("one_q14", cls._NOMINAL_Q14, address=2),
+                  DataWord("mulq_half", cls._MULQ_HALF, address=3)],
+            state=[StateVar("cph", reset_per_batch=True),
+                   StateVar("half", reset_per_batch=True),
+                   StateVar("csh"), StateVar("cs")],
+            assembly_template="""\
+start:
+    CMP R{in:par}, R{data:one_q14}
+    BR.NZ center
+    MOVE R{state:half}, R{in:val}
+    {jump:trig}
+center:
+    MOVE R{state:cs}, R{in:val}
+    MULQ R{state:cs}, R{data:mulq_half}
+    MOVE R{state:csh}, R0
+    SUB R0, R{state:cph}
+    MULHI R0, R{state:half}
+    MOVE R{state:cph}, R{state:csh}
+    {write:e_out}
+    MOVE R0, R{state:cs}
+    {write:c_out}
+    {jump:c_out}
+""",
+        )
+
+    @classmethod
+    def _legacy_gardner_reference(cls, samples) -> np.ndarray:
+        """The matching Q15/Q14 reference for the open-loop front half above: a
+        nominal-period resampler + parity-tagged center/mid strobes, returning the
+        recovered symbol centers. Bit-exact with ``_legacy_resampler`` +
+        ``_legacy_ted`` driven at the nominal period."""
+        def s16(v):
+            return v - 0x10000 if v & 0x8000 else v
+
+        def u16(v):
+            return v & 0xFFFF
+
+        def mqr(a, b):
+            return (s16(a) * s16(b)) >> 15
+
+        arr = np.asarray(samples)
+        if arr.dtype.kind == "f":
+            sq = [float_to_q15(float(x)) for x in arr]
+        else:
+            sq = [int(x) & 0xFFFF for x in arr]
+
+        ONE = cls._NOMINAL_Q14
+        out = []
+        inst = ONE
+        phase = ONE >> 1
+        xp = xp2 = parity = 0
+        for v in sq:
+            xi = s16(v)
+            xp2, xp = xp, xi
+            phase += ONE
+            if phase >= inst:
+                phase -= inst
+                frac = u16(phase << 1)
+                s = xp2 + mqr(frac, u16((xp - xp2) & 0xFFFF))
+                if parity == 0:
+                    out.append(s16(u16(s)))
+                parity ^= 1
+        return np.array(out, dtype=np.int16)
+
     def build_cell_programs(self) -> Dict[str, CellProgram]:
         c = self._costas.build_cell_programs()
-        g = self._gardner.build_cell_programs()
         return {
             "phase": c["phase"],
             "sin_fold": c["sin_fold"],
@@ -227,8 +384,8 @@ emit:
             "rotate": ComplexCostasLoopBlock._rotate_legacy_single_face(),
             "pd_pi": self._pdpi_with_yitap(),
             "yi_relay": self._yi_relay(),
-            "resampler": g["resampler"],
-            "ted": g["ted"],
+            "resampler": self._legacy_resampler(),
+            "ted": self._legacy_ted(),
             "loop_filter": self._loopfilter_split_out(),
             "slicer": self._bit_slicer(),
         }
@@ -319,9 +476,8 @@ emit:
         """Reference: complex baseband -> Costas yi -> Gardner centers -> bits."""
         yi = self._costas.process_reference(input_samples)
         # Gardner reference over the recovered I, then slice.
-        centers = self._gardner.process_reference(np.asarray(yi, dtype=np.int16))
+        centers = self._legacy_gardner_reference(np.asarray(yi, dtype=np.int16))
         return np.array([1 if int(c) < 0 else 0 for c in centers], dtype=np.int16)
 
     def reset(self):
         self._costas.reset()
-        self._gardner.reset()

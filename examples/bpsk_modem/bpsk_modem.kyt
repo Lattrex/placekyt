@@ -29,21 +29,6 @@ blocks:
     - {cell_id: transit_fb_0, x: 1, y: 10, face: south}
     orientation:
     - mirror_v
-- name: gardnertimingrecovery
-  type: GardnerTimingRecovery
-  library: lattrex.official
-  params:
-    kp: 3
-    ki: 1
-    pipeline_lock: true
-    complex: false
-  placement:
-    chip: 0
-    cells:
-    - {cell_id: resampler, x: 6, y: 10, face: east}
-    - {cell_id: ted, x: 7, y: 10, face: south}
-    - {cell_id: loop_filter, x: 7, y: 11, face: west}
-    - {cell_id: period_relay, x: 6, y: 11, face: north}
 - name: psksymbolmapper
   type: PSKSymbolMapperBlock
   library: lattrex.official
@@ -105,7 +90,9 @@ blocks:
   placement:
     chip: 0
     cells:
-    - {cell_id: 0, x: 8, y: 9, face: east}
+    - {cell_id: 0, x: 8, y: 9, face: north}
+    orientation:
+    - ccw
 - name: upsampler
   type: UpsamplerBlock
   library: lattrex.official
@@ -132,23 +119,25 @@ blocks:
     - {cell_id: upmix, x: 3, y: 5, face: west}
     - {cell_id: transit_unlock_0, x: 2, y: 5, face: west}
     - {cell_id: transit_unlock_1, x: 1, y: 5, face: north}
+- name: gardnertimingrecovery
+  type: GardnerTimingRecovery
+  library: lattrex.official
+  params:
+    kp: 3
+    ki: 1
+    pipeline_lock: true
+    complex: false
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: counter, x: 5, y: 9, face: east}
+    - {cell_id: dline, x: 6, y: 9, face: east}
+    - {cell_id: interp, x: 7, y: 9, face: south}
+    - {cell_id: ted, x: 7, y: 10, face: west}
+    - {cell_id: loop_filter, x: 6, y: 10, face: south}
+    - {cell_id: qout, x: 6, y: 11, face: east}
+    - {cell_id: period_relay, x: 5, y: 10, face: north}
 connections:
-- name: net1
-  from: {block: complexcostasloop, port: yi_tap}
-  to: {block: gardnertimingrecovery, port: xi}
-  route:
-  - {x: 3, y: 10}
-  - {x: 3, y: 9}
-  - {x: 4, y: 9}
-  - {x: 5, y: 9}
-  - {x: 5, y: 10}
-- name: net2
-  from: {block: gardnertimingrecovery, port: out}
-  to: {block: bpskslicer, port: llr}
-  route:
-  - {x: 7, y: 11}
-  - {x: 8, y: 11}
-  - {x: 8, y: 10}
 - name: net3
   from: {block: psksymbolmapper, port: out}
   to: {block: upsampler, port: x}
@@ -253,3 +242,20 @@ connections:
   - {x: 0, y: 9}
   - {x: 0, y: 10}
   - {x: 0, y: 11}
+- name: net1
+  from: {block: complexcostasloop, port: yi_tap}
+  to: {block: gardnertimingrecovery, port: xi}
+  route:
+  - {x: 3, y: 10}
+  - {x: 3, y: 9}
+  - {x: 4, y: 9}
+  - {x: 5, y: 9}
+- name: net2
+  from: {block: gardnertimingrecovery, port: out}
+  to: {block: bpskslicer, port: llr}
+  route:
+  - {x: 6, y: 11}
+  - {x: 7, y: 11}
+  - {x: 8, y: 11}
+  - {x: 8, y: 10}
+  - {x: 8, y: 9}

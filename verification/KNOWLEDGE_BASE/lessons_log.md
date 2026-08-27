@@ -9,6 +9,251 @@ block-specific gotcha. Promote anything that generalizes across block classes in
 and superseded material merged into the surviving entries; no durable lesson was
 dropped) — append new entries above the oldest ones as before.
 
+## GardnerTimingRecovery SHIPS — the second quarantine's wall was a TOPOLOGY choice, not a substrate limit; and the DSP had a THIRD defect nobody had named 2026-08-27
+
+Third attempt at the block quarantined 2026-08-06 and again 2026-08-27.
+**Outcome: `done`.** GR `symbol_sync_cc(TED_GARDNER)` locks BER 0 across the full
+fractional-offset sweep on the matched-filter Nyquist 2-sps channel, and so does the
+block — reference (0/50 selection, 0/200 held out, lengths 150–2500) AND **on-chip**,
+where the emitted stream is BIT-EXACT to `process_reference` (0 mismatches, identical
+symbol counts) and saturated drive is bit-identical to per-sample drive. Two
+independent defects were fixed, and it matters that they were independent: either one
+alone leaves the block broken, and each masks the other.
+
+### The DSP defect the previous two attempts BOTH missed: Gardner strobes ONCE per symbol
+
+The 2026-08-27 entry recorded a Q15 recipe it had measured at BER 0 — modulo-1
+counter + full-precision MULQ TED + GR-derived PI gains — and framed the remaining
+work as purely build integration. **That recipe, re-implemented exactly as written,
+does not reach BER 0 across the offset sweep at ANY gain — its best is 12 of 50
+selection cases failing.** The missing piece is structural, and it
+is the thing "Gardner is a 2-samples-per-symbol detector" quietly leads you into:
+
+* the natural reading is a resampler that **strobes TWICE per symbol** and tags each
+  strobe center/mid with a parity bit — which is exactly what the 2026-07 shipped
+  block did, and what the 2026-08-27 retry kept.
+* But that ties the mid sample's phase to a **separate strobe whose own timing the
+  loop is still moving**. The TED's two operands then come from different loop
+  states, the detector reads a geometry that never existed, and the S-curve is not
+  well defined.
+* The fix: **ONE strobe per SYMBOL**, and interpolate BOTH operands at that one
+  strobe from one `mu` off one 3-tap window — the centre from `(x[n-1], x[n])` and the
+  mid from `(x[n-2], x[n-1])`, one input sample earlier being exactly half a symbol at
+  2 sps.
+
+Measured, everything else held equal (same modulo-1 counter, same full-precision
+MULQ TED, same GR gain derivation) and the two-strobe form given its correct strobe
+rate and swept over loop_bw x ted_scale x max_deviation: **the two-strobe form's
+BEST is 12 of 50 selection cases failing** — BER 0 on some offsets, 0.03-0.4 on
+others, never 0 across the sweep, which is exactly the 0.04-0.12 band the original
+2026-08-06 quarantine recorded. The one-strobe form is **0 of 50**, and 0 of 200
+held out.
+
+(A first pass at this comparison mis-set the two-strobe counter's nominal period,
+which made it slip and report ~0.44 — chance. That number is wrong and is not the
+claim; 12/50 is, and it is the more interesting result: the two-strobe structure is
+not broken, it is merely incapable of closing the last few offsets, which is why it
+survived two attempts looking almost right.)
+
+The counter modulo, the full-precision TED and the GR gains are all necessary too,
+but they are not sufficient, and the previous entry's confident "the signal
+processing is done and re-derivable from this entry" was not true — the entry
+omitted the one structural decision that carries the result.
+
+Settled operating point (`loop_bw=0.02`, `damping=1.0`, TED-scale ×8 → K1=29162,
+K2=1832 as Q15 MULQ multipliers, `max_deviation` 8192):
+
+| grid | cases | failures |
+|---|---|---|
+| selection (5 seeds × 10 offsets) | 50 | 0 |
+| held out (10 unseen seeds × 20 offsets) | 200 | 0 |
+| held out #2 (20 fresh seeds × 6 offsets) | 120 | 0 |
+| lengths 150/200/400/700/1200/2500 | 300 | 0 |
+| ON-CHIP (3 seeds × 10 offsets, built + simulated) | 30 | 0 |
+
+**Honest envelope, measured per cell of the sweep and recorded as a LIMIT:** peak
+amplitude **0.5–0.75** (1/50 fails at 0.4, 7/50 at 0.2, 1/50 at 0.8, 25/50 at 0.9) and
+RRC rolloff **β ≥ 0.35** (4/50 at 0.3, 8/50 at 0.25). The Gardner TED is
+NON-decision-directed — it multiplies two SIGNAL samples — so its S-curve slope scales
+with the SQUARE of the input level and the effective loop gain moves with drive
+amplitude. That is also why the raw GR gain mapping needs a ×8 renormalisation here
+where M&M needs none. Separately, the proportional gain is a Q15 MULQ multiplier and
+**clamps above `loop_bw` ≈ 0.022**, so a wider requested loop is silently not
+delivered; the default 0.02 sits just inside, and the gate asserts the ceiling rather
+than hiding it.
+
+### The on-chip wall: the previous entry's conclusion was RIGHT about the conflict and WRONG about it being a wall
+
+2026-08-27 concluded: *"on this substrate a single cell cannot reliably be BOTH the
+block's external-egress cell AND the source of an internal feedback trigger."* The
+conflict is real and the four contending build passes it names are real. But it is a
+consequence of **fusing** the two roles, not a property of the substrate —
+`MMTimingRecoveryBlock` has had both an internal feedback loop and an external egress
+since it shipped, because it **splits the roles across two cells**.
+
+The fix is that split, and nothing else. `loop_filter` fans out: the recovered symbol
+goes to a dedicated `qout` — one WRITE, one JUMP, one face, no state, no feedback —
+and `v` goes to `period_relay` on a PERPENDICULAR face. `period_relay` is ordered LAST
+in the program dict so its edge into `counter` is the block's ONLY backward
+connection. With that, `_apply_internal_feedback` resolves the return on the first
+try, patching both the `pout` data WRITE and the co-located lock-clear `WRITE.CFG`,
+and the routed egress has nothing of the loop's left in it to clobber.
+
+**NO ENGINE CHANGE WAS NEEDED.** `placekyt/engine/build.py` is untouched. The pass
+ordering the previous attempt suspected of being defective is fine; what it could not
+satisfy was a block asking one cell to hold two contracts.
+
+**And the PARITY constraint dissolved.** The previous entry recorded, from an
+exhaustive search, that the ring is a FIVE-cycle and a grid is bipartite, so "at least
+one `transit_*` cell is mathematically REQUIRED, not stylistic." That is true of the
+five-cell decomposition it searched — but splitting the delay line out of the NCO into
+its own `dline` cell makes the ring
+`counter → dline → interp → ted → loop_filter → period_relay → counter` a SIX-cycle,
+which is EVEN, so it closes by abutment with NO transit at all. **Parity is a property
+of the DECOMPOSITION, not of the block.** The shipped real-mode fold is 3x3, seven
+cells, zero transits. (The
+COMPLEX variant adds `qinterp` to the chain, making the ring a seven-cycle, which is
+odd; that one genuinely does need a transit, and uses one.)
+
+Getting there mattered for more than elegance, and the FOOTPRINT cost four
+iterations — each invisible from inside the block, each found only by running the
+designs it ships in.
+
+1. **6x2 with a four-cell transit lane (11 cells).** Broke the shipped full-duplex
+   BPSK modem: one of eleven nets stopped routing, taking 21 tests with it.
+2. **7 cells / zero transits, folded 4 WIDE x 2 TALL.** Fixed the modem; broke the
+   coherent-RX chain — a 4-wide block WALLS the matched-filter -> Costas bus
+   channel (`no bus path from source to the broker tap`, 5/7 nets).
+3. **2 WIDE x 4 TALL.** Fixed the coherent RX; broke the modem's auto-P&R instead
+   (6 duplex-e2e tests). A TALL fold trips the packer's FIT-DRIVEN ROTATION of a
+   feedback block whose authored height would overflow the current band
+   (`autoplace._pack_compact`: `h > w and row_top + h > height` -> rotate `cw`).
+   The flyline orienter deliberately leaves feedback blocks at identity, but this
+   fit path overrides it, and once ONE block rotates the orienter re-orients
+   everything downstream. Measured budget curve on the modem: 45 s -> 9/11 nets,
+   90 s -> 10/11, 150 s -> 10/11, 300 s -> 11/11. Raising the budget would have
+   turned an interactive operation into a four-minute one — not a fix.
+4. **3x3, SQUARE.** Triggers neither behaviour: modem 11/11 in 2 s AND production
+   coherent RX 7/7. Found by enumerating all 144 legal 3x3 zero-transit folds and
+   scoring candidates against BOTH design families; the first one passed both.
+
+**Two folds of the same area are NOT interchangeable, and the block's own suite cannot
+see the difference** — both are BER 0, bit-exact and orientation-invariant. Search for
+candidate folds by area and transit count (a ten-line exhaustive enumeration over chain
+placements does it), then choose among the winners by RE-RUNNING THE DESIGNS, and
+prefer wider-than-tall so the fit rotation never fires.
+
+### Three ISA/control-flow traps, each of which produced a plausible wrong answer
+
+The topology fix alone did not make it work. Three further bugs sat behind it, and all
+three are worth generalising because each **looks like an arithmetic bug and is not**.
+
+1. **A remote JUMP does not stop local execution — so a strobe-gated cell needs a
+   `HALT`.** `interp` branched to `nostrobe` on the no-strobe sentinel and ended its
+   strobe path with `{jump:trig}`. Without a `HALT` after that jump, the strobe path
+   **fell through into `nostrobe:` and fired the no-strobe trigger as well**, so the
+   loop_filter ran BOTH its entries every strobe and the second one zeroed the error
+   it had just captured. Symptom: the integrator `vi` tracked the reference **bit for
+   bit** while `v` came out exactly equal to `vi` on every single sample — i.e. the
+   PROPORTIONAL term silently vanished and the 2nd-order loop degraded to a pure
+   integrator. On-chip BER 0.22 against a reference BER of 0. (The FIR block's
+   saturating-restore comment records the same hazard; it is not Gardner-specific.)
+2. **`GOTO` compiles to a LOCAL JUMP, which has the same problem.** A `GOTO pi` used
+   to skip a fall-through block is an opcode-0x7 word: it queues a re-entry and keeps
+   running into the next word. Order the two entries so the path you want falls
+   through naturally and the other branches FORWARD over it (`CMP Rz,Rz; BR.Z`) —
+   MOVE does not touch the flags, so the compare must be explicit.
+3. **An overflow-saturation's sign polarity is INVERTED from how it reads.** On an
+   int16 `SUB` that overflows, the WRAPPED result's sign bit is the OPPOSITE of the
+   true sign. So after `BR.NV`, clamp to `0x8000` when the wrapped value reads
+   POSITIVE and to `0x7FFF` when it reads NEGATIVE. Getting it the obvious way round
+   clamps to the wrong rail: measured, on a burst where `c - c_prev` overflowed
+   negative, the chip produced `+32767` where the reference had `-32768`, the loop was
+   kicked the wrong way, and it shed two strobes over the rest of the burst. It
+   surfaced only on a stimulus that drives the TED difference out of range — the
+   matched-filter channel at amp 0.7 binds it 4 times in 63,000 symbols, so a narrower
+   test set would have shipped it.
+
+### A structural fact worth keeping: a data WRITE is not routed, it is ABUTTED
+
+The COMPLEX (I/Q) variant first placed its `qinterp` off to the side of the fold,
+writing `yq` straight to `qout` four cells away. It places, routes, builds and runs —
+and **the Q channel comes out all zeros** while the I rail stays bit-exact. An
+internal data WRITE is delivered along the chain of abutting forward faces, and the
+programmed cells in between are not transits: they do not relay it. A cell that sits
+in the middle of a linear thread must forward EVERYTHING the thread carries, so
+`qinterp` moved into the row-0 spine and relays the I rail's `(c, m)` as well as
+producing `yq`, which then goes hand to hand `qinterp → ted → loop_filter → qout` —
+the way MM walks its own recovered pair down to its egress. The I-rail-perfect /
+Q-rail-zero signature is the tell.
+
+### Also carried forward
+
+* The **transit-face-overwrite** hazard from the previous entry held up, and the real
+  fold now sidesteps it entirely by having no transits. The build test still asserts
+  the feedback resolves in all 8 D4 orientations, because a rotation that puts a
+  feedback cell under an external corridor kills the loop SILENTLY — the block still
+  builds, still routes, and still emits at the correct rate while never adapting.
+* **`_FACE_LOCK` is NOT `_FACE_FB`, and conflating them costs a day.** The counter's
+  arbiter LOCK gates every face except the one the feedback ARRIVES on; `_FACE_FB` is
+  the face it LEAVES the loop_filter on. In the 6x2 fold both happened to be SOUTH, so
+  one constant served both and nothing complained. Re-folding moved the arrival
+  face to EAST, the lock kept gating the wrong face, and the block emitted **exactly
+  one symbol and went quiescent** — a signature INV-33 warns is indistinguishable from
+  a state/instruction overlap. They are now separate constants with a test
+  (`test_faces_match_the_layout`) that re-derives all three from `default_layout`.
+* **The cold-acquisition transient is real and it is a behaviour change.** The loop
+  starts at the nominal period with `v = 0` and needs **up to 6 symbols** to pull the
+  offset in; from symbol 6 on, BER is 0 on every case. The block it replaces ran
+  open-loop at the nominal period, so it had NO transient — and could not track a
+  timing offset either, which is precisely why it was quarantined. Two downstream
+  modem gates counted every symbol from zero and had to start skipping the transient.
+  That is not a loosened tolerance: measuring a tracking loop's BER without excluding
+  its acquisition is measuring the wrong thing, and the gates in question are about
+  carried STATE, which the transient (identical on every repeat) says nothing about.
+* **Re-seating a grown block: minimise ROUTE EXCESS, do not take the first fit.**
+  Four saved designs hard-coded the old 4-cell placement and had to be re-placed.
+  Taking the first anchor that merely ROUTED pushed `bpsk_modem`'s total route
+  excess from its pinned 4 to 8 and `coherent_bpsk_rx`'s from 2 to 4, tripping the
+  route-quality ratchet — which says, correctly, *"a route got longer; find out why
+  before re-pinning."* Scoring every routable anchor by total excess instead put
+  both BELOW their original pins (2 and 0), so the pins were tightened rather than
+  loosened. The scoring loop is ~10 lines and it is the difference between
+  degrading two shipped examples and improving them. Note also that the candidate
+  scan must treat only other blocks' CELLS as occupied, not existing route cells:
+  counting the routes the block's own nets currently use left the modem with ONE
+  viable anchor (excess 8) instead of nine (best excess 2).
+* **`CoherentRXBlock` was decoupled from this block.** It borrowed Gardner's
+  `resampler` and `ted` cell programs, and it runs its timing stage OPEN-LOOP at the
+  nominal period (its period feedback dead-ends by design — the 12-cell fold has no
+  room for a second return corridor beside the Costas dphase corridor). It now owns
+  local copies of the legacy two-strobe cells, so the fused receiver's silicon is
+  **byte-for-byte identical** (verified: same 840-word bitstream, all 19 CoherentRX
+  gates green) and the standalone block is free to be correct. A new gate pins its
+  `process_reference` against its own chip output, because an over-modelled reference
+  and the real chip both decode that burst at BER 0 — only a direct stream comparison
+  separates them.
+
+### GENERALIZES
+
+**A quarantine entry's "the hard part is solved, only integration remains" is a
+hypothesis, not a result — re-measure it before building on it.** This entry's
+predecessor stated a Q15 recipe as settled and measured; re-implementing it exactly as
+written does NOT reach BER 0, because the one structural decision that carried
+the result was not in the write-up. The generalisable discipline is the one this
+project already applies to code: **an entry that claims a measurement must contain
+enough to REPRODUCE it**, and the reader's first act should be to reproduce it, not to
+build on it. A three-line "what the loop does per sample" pseudocode block in the
+previous entry would have saved the whole re-derivation.
+
+Second: **when a control-flow bug hides inside a feedback loop, the loop's own state
+tells you where.** `vi` matching the reference bit-for-bit while `v` never differed
+from `vi` named the defect precisely — one term of a two-term sum was missing — and
+pointed at the entry that zeroes the error rather than at any arithmetic. Dumping the
+loop's intermediate state per sample and diffing it against the reference's, rather
+than comparing only the output stream, is what turned a week-shaped problem into a
+one-line fix.
+
 ## GardnerTimingRecovery retry — the quarantine's ROOT CAUSE WAS WRONG; the DSP is solved in Q15, the block stays quarantined on an ON-CHIP wall 2026-08-27
 
 Second attempt at the block quarantined 2026-08-06. **Outcome: still `needs_human`, but

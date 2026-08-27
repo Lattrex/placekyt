@@ -1695,6 +1695,191 @@ not just routability, and say so in the layout docstring.
 `LOCK_FACE` barriers (INV-19/20 serialize-lock), ring/serpentine folds with an
 off-chain relay. Related: INV-23 (orientation invariance, which does NOT cover
 this), INV-35 (the layout dict is also a positional index).
+## INV-43 — A remote JUMP does NOT stop local execution; a branch-gated cell needs a HALT, and `GOTO` is a local JUMP with the same hazard
+
+**Symptom (measured on GardnerTimingRecovery; the FIR block's saturating-restore
+carries the same warning):** a two-path cell whose STROBE path ends in
+`{jump:next}` and whose NO-STROBE path is the fall-through target *below* it
+fires **both** triggers on every strobe. Downstream, the second entry runs after
+the first and overwrites what the first computed.
+
+```asm
+start:
+    MOVE R0, R{in:mu}
+    AND  R0, R0
+    BR.N nostrobe
+    ...compute...
+    {jump:trig}          ; remote JUMP — kicks the target and KEEPS GOING
+    HALT                 ; <-- REQUIRED. Without it, execution falls into:
+nostrobe:
+    {jump:ns_trig}       ; ...and this fires too, every strobe.
+```
+
+`JUMP` sets a **remote** cell's PC. It is not a local branch, and it does not
+end the issuing cell's instruction stream — the thread runs straight into the
+next word. The same is true of `GOTO`: it assembles to an opcode-0x7 word, i.e.
+a LOCAL (`@0`) JUMP, which likewise *queues* a re-entry at the target while the
+current thread continues into the following instruction.
+
+**Why it is expensive to find: the failure is ARITHMETIC-SHAPED.** Gardner's
+`loop_filter` has a `strobe` entry that captures the timing error and a
+`nostrobe` entry that forces it to zero. With the missing `HALT`, both ran on
+every strobe and the no-strobe one arrived second, so the error was zeroed
+*after* the integrator had already consumed it. The observable was:
+
+* `vi` (the integral state) matched the reference **bit for bit**, every sample;
+* `v` (the PI output) equalled `vi` **exactly**, every sample.
+
+That is, one term of a two-term sum silently vanished and a 2nd-order loop
+degraded to a pure integrator. On-chip BER 0.22 against a reference BER of 0,
+with every intermediate looking plausible. Nothing about it points at control
+flow.
+
+**The rules:**
+
+1. **Terminate every non-final path.** A cell path that ends in a remote
+   `{jump:...}` and is followed by *any* other code must end with `HALT`.
+2. **Never use `GOTO` to skip a fall-through block.** Order the two entries so
+   the path you want falls through NATURALLY, and have the other branch FORWARD
+   over it. `MOVE` does not touch the flags, so the compare must be explicit:
+
+```asm
+nostrobe:
+    MOVE R{state:es}, R{data:zero}
+    CMP  R{data:zero}, R{data:zero}   ; sets Z unconditionally
+    BR.Z pi
+strobe:
+    ...egress...
+pi:
+    ...shared tail...
+```
+
+3. **Diagnose it from the LOOP'S OWN STATE, not the output stream.** Dump each
+   loop-carried register per sample and diff it against the reference's. "The
+   integrator is exact but the output equals the integrator" names the defect in
+   one line; comparing only the emitted stream tells you nothing but "it
+   diverges at symbol 12".
+
+**Applies to:** any cell with more than one entry or more than one exit path —
+strobe/no-strobe gates, parity branches, saturation restores, decision paths.
+Related: INV-33 (the register contract, whose "emits exactly ONE sample then goes
+quiescent" symptom is a sibling false-lead), INV-39 (a dispatch entry no jump
+targets is dead code — this is the converse: an entry that fires when it
+shouldn't).
+
+---
+
+## INV-44 — A block's EXTERNAL-EGRESS cell and its INTERNAL-FEEDBACK source must be DIFFERENT cells
+
+**Symptom:** a feedback block places, routes and builds clean, egresses at the
+correct rate, and its forward datapath is bit-exact — but the loop never adapts.
+Its feedback relay never executes, the fed-back state stays at its reset value,
+and on-chip results sit in the uncanny band between "broken" and "working"
+(GardnerTimingRecovery measured BER 0.03–0.15 against a reference BER of 0).
+
+**Cause: four independent build passes each claim an exit cell's WRITE/JUMP
+words, and they conflict when one cell holds both roles.**
+
+* `output_at_last_write` patches the cell's HIGHEST-ADDRESS WRITE with the output
+  hop — a SINGLE-WRITE contract. It cannot express "the last write of the strobe
+  path but not of the no-strobe path", so a two-entry egress cell mis-patches one
+  path.
+* `_apply_routes` rewrites EVERY WRITE in a ROUTED exit cell to the output
+  corridor, and the `feedback_blocks` preserve-set only protects cells that are
+  themselves feedback SOURCES in chain order.
+* `_apply_internal_feedback` re-patches the cell's highest-address JUMP when the
+  feedback edge is declared as a connection — which on a fused cell is the
+  EXTERNAL EGRESS trigger.
+* Reordering the cells to make the feedback edge backward fixes the WRITE and
+  breaks the JUMP, and vice versa. Both orderings were built and measured.
+
+Observable signatures, each of which looks like an unrelated bug: the egress
+WRITE left at its authored `@1` (builds and routes clean, emits **nothing**); the
+feedback WRITE repointed at the output corridor (the relay never runs, the block
+emits **exactly ONE** sample then goes quiescent — indistinguishable from the
+INV-33 overlap); strobe gating lost (**exactly 2x** the expected output count).
+
+**The fix is structural and costs one cell.** Fan the last datapath cell out:
+
+* the recovered result goes to a **DEDICATED egress cell** — exactly one WRITE,
+  one JUMP, one face, no state, no feedback — on one face;
+* the loop correction goes to the **feedback relay** on a PERPENDICULAR face;
+* the relay is ordered **LAST in the program dict**, so its edge back to the
+  landing cell is the block's ONLY backward internal connection and
+  `_apply_internal_feedback` has exactly one edge to resolve.
+
+Making the egress contract single-valued BY CONSTRUCTION is the point: the
+dedicated cell has nothing else in it for the output passes to clobber, and
+nothing in it that the feedback pass wants. `MMTimingRecoveryBlock` and
+`GardnerTimingRecovery` both use this shape (`loop_filter` → `qout` +
+`period_relay`), and both close their loops on the first build.
+
+**This is NOT a substrate limit.** It was recorded as one after a failed 5-cell
+fused design; splitting the roles fixed it with no change to
+`placekyt/engine/build.py`. Do not "save a cell" by fusing them — the fused
+shape's failure mode is silent, and the split costs exactly one cell.
+
+**But DO spend effort on the fold.** The split cell is cheap; a sprawling fold is
+not. Gardner's first working split fold was 6x2 with a four-cell transit lane (11
+cells), and it broke the shipped full-duplex BPSK modem: one of eleven nets
+stopped routing, taking 21 tests down. Re-folding to 7 cells with zero transits
+restored those — and then the fold's ASPECT cost two more iterations, because TWO
+DIFFERENT placer behaviours punish the two rectangular folds and each is invisible
+from inside the block (all three folds are BER 0 and bit-exact in its own suite):
+
+* a **TALL** fold trips the packer's FIT-DRIVEN ROTATION of a feedback block whose
+  authored height would overflow the current band (`autoplace._pack_compact`:
+  `h > w and row_top + h > height` -> rotate `cw`). The flyline orienter
+  deliberately leaves feedback blocks at identity, but this fit path overrides it,
+  and once ONE block rotates the orienter re-orients everything downstream into a
+  much worse global packing. Measured: a 2x4 Gardner gives the shipped duplex BPSK
+  modem 6/11 nets at the compact reserve and 9/11 after the whole 45 s auto-P&R
+  sweep (11/11 only at a 300 s budget — raising the budget "fixes" the gate by
+  making an interactive operation take four minutes, which is not a fix).
+* a **4-WIDE** fold walls the coherent-RX chain's matched-filter -> Costas bus
+  channel: 5/7 nets, `no bus path from source to the broker tap`.
+
+A **SQUARE** fold triggers neither. **Enumerate the legal folds, then score the
+candidates by RUNNING THE DESIGNS THE BLOCK SHIPS IN** — there were 144 legal 3x3
+zero-transit folds for this ring and the first one scored passed both families
+(modem 11/11 in 2 s, production RX 7/7). Area alone is not the criterion and the
+block's own suite cannot see the difference.
+
+**PARITY IS A PROPERTY OF THE DECOMPOSITION, NOT THE BLOCK.** A grid is
+bipartite, so only EVEN rings close by abutment. Gardner's ring was recorded as a
+five-cycle needing a mandatory transit — but moving the delay line out of the NCO
+into its own cell made it a SIX-cycle, and the transit vanished. Before accepting
+"this ring needs a transit lane", check whether splitting or merging one cell
+flips the parity.
+
+**Note on INV-35 clause 2.** INV-35 says the external-egress cell must be the
+LAST program cell. That clause is about a cell whose ONLY output is the egress,
+where the router's positional default would otherwise trace the ring the long
+way. In this shape the egress cell is second-to-last (the feedback relay is
+last) and its trigger is explicitly `__terminate__`-ed, which silences that
+default; both blocks are verified across all 8 D4 orientations. Audit the
+positional rule as INV-35 describes, but read its clause 2 as "no cell may be
+BOTH the egress and a feedback source", which is what it is really protecting.
+
+**A related trap once the roles are split: the face the feedback LEAVES on is not
+the face it ARRIVES on.** The landing cell's arbiter LOCK gates every face except
+the one the feedback arrives on, so it needs its own constant — separate from the
+"which way does the loop filter emit v" one. Gardner had them equal in one fold
+and different in the next; the mismatch left the lock permanently engaged and the
+block emitted **exactly one symbol and went quiescent**, a signature INV-33 warns
+is indistinguishable from a state/instruction overlap. Derive BOTH from
+`default_layout` and assert it (`test_faces_match_the_layout`), per INV-37.
+
+**Audit it structurally:** assert in the block's own suite that
+`output_cell_id()` sources no internal connection, and that there is exactly ONE
+backward internal edge. See
+`placekyt/tests/test_gardner_build.py::test_places_with_split_egress_and_feedback_cells`
+and `::test_feedback_closes_under_rotation` (the latter matters because a
+rotation that puts a feedback transit under an external corridor kills the loop
+SILENTLY — the route pass runs first and overwrites the transit's authored face).
+
+---
+
 ## INV-38 — A verification report is an ARTIFACT of a verified session, never a literal; ABSENCE must be the safe state
 
 `verification/reports/<Block>.json` is the file the dashboard reads as *"this

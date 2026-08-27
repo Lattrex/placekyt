@@ -1,23 +1,53 @@
 {
   "kyttar_block": "GardnerTimingRecovery",
-  "passed": false,
+  "passed": true,
   "grc_block": "digital.symbol_sync_cc (TED_GARDNER)",
-  "status": "needs_human",
-  "metric": "decision",
-  "verdict": "QUARANTINE",
+  "metric": "decision (BER) + on-chip bit-exactness",
   "coverage": {
-    "channel": "RRC TX + sinc fractional delay + RRC matched filter (Nyquist 2 sps)",
-    "offsets": [
+    "edge": true,
+    "random": 3,
+    "param_sweep": 4,
+    "mutation": 7,
+    "channel": "RRC TX + sinc fractional delay + RRC matched filter (Nyquist 2 sps, peak amp 0.7, beta 0.35)",
+    "offsets_on_chip": [
       0.1,
       0.3,
       0.5,
       0.7
+    ],
+    "offsets_reference": [
+      0.0,
+      0.1,
+      0.2,
+      0.3,
+      0.4,
+      0.5,
+      0.6,
+      0.7,
+      0.8,
+      0.9
     ],
     "seeds": [
       1234,
       77,
       2026
     ],
+    "held_out": {
+      "seeds": 10,
+      "offsets": 20,
+      "cases": 200,
+      "failures": 0
+    },
+    "lengths_symbols": [
+      150,
+      200,
+      400,
+      700,
+      1200,
+      2500
+    ],
+    "saturated_drive": true,
+    "orientations": 8,
     "gr_config": {
       "ted": "TED_GARDNER",
       "sps": 2.0,
@@ -26,35 +56,64 @@
       "ted_gain": 1.0,
       "max_deviation": 1.5
     },
-    "attempts": [
-      "amplitude+RMS-normalisation sweep",
-      "loop-gain/period-trace diagnosis"
+    "mutations": [
+      "invert_ted_error_sign",
+      "freeze_the_feedback",
+      "drop_the_modulo_on_the_counter",
+      "halve_the_ted_operands",
+      "mid_sample_from_the_wrong_tap",
+      "drop_the_strobe_gate",
+      "wrong_pi_gain"
     ]
   },
   "metrics": {
     "per_frac": {
       "frac_0.1": {
         "gr_ber": 0.0,
-        "dut_reference_ber": 0.0488
+        "dut_reference_ber": 0.0,
+        "dut_on_chip_ber": 0.0,
+        "on_chip_symbols": 425,
+        "reference_symbols": 425,
+        "on_chip_mismatches": 0
       },
       "frac_0.3": {
         "gr_ber": 0.0,
-        "dut_reference_ber": 0.0415
+        "dut_reference_ber": 0.0,
+        "dut_on_chip_ber": 0.0,
+        "on_chip_symbols": 425,
+        "reference_symbols": 425,
+        "on_chip_mismatches": 0
       },
       "frac_0.5": {
         "gr_ber": 0.0,
-        "dut_reference_ber": 0.0378
+        "dut_reference_ber": 0.0,
+        "dut_on_chip_ber": 0.0,
+        "on_chip_symbols": 424,
+        "reference_symbols": 424,
+        "on_chip_mismatches": 0
       },
       "frac_0.7": {
         "gr_ber": 0.0,
-        "dut_reference_ber": 0.122
+        "dut_reference_ber": 0.0,
+        "dut_on_chip_ber": 0.0,
+        "on_chip_symbols": 424,
+        "reference_symbols": 424,
+        "on_chip_mismatches": 0
       }
     },
-    "dut_on_chip_ber_frac0.3": 0.0469,
     "gr_ber_all_fracs": 0.0,
-    "dut_worst_reference_ber": 0.122
+    "dut_worst_reference_ber": 0.0,
+    "on_chip_mismatches_total": 0
   },
-  "verified_alternative": "MMTimingRecoveryBlock",
-  "notes": "QUARANTINE (INV-25 + the scope steer). GardnerTimingRecovery is NOT a drop-in for digital.symbol_sync_cc(TED_GARDNER) on the industry-standard matched-filter Nyquist 2-sps channel: GR locks BER 0 across the whole fractional-offset sweep; the Q15 Gardner loop recovers at BER ~0.04-0.12 (reference) / ~0.05-0.10 (on-chip) because the TED HALVES the BPSK sample difference (>>1) to fit int16 and the resulting timing jitter closes the Nyquist eye. The block converges BER 0 ONLY on a non-Nyquist synthetic stimulus (its own _make_bpsk_2sps) that GR ITSELF cannot lock (BER ~0.45) \u2014 it was tuned outside GR's regime. Gardner is a BPSK/QPSK-only TED and this matches the documented 4-PAM limit that blocked the M17 4FSK modem. The VERIFIED timing-recovery block for this channel is MMTimingRecoveryBlock (bit-exact vs GR symbol_sync_cc, BER 0). Fixing Gardner is a datapath REDESIGN (a wider TED product without the >>1 truncation), not a tolerance tweak \u2014 quarantined for a human.",
+  "operating_envelope": {
+    "peak_amplitude": "0.5-0.75 (0/50 failures); degrades outside",
+    "rrc_rolloff_beta": ">= 0.35 (0/50 failures); degrades below",
+    "burst_length_symbols": "150-2500 (0/50 at every length)",
+    "cold_acquisition_transient_symbols": "<= 6 \u2014 the loop starts at the nominal period with v=0 and has to pull the offset in, so a BER gate over a burst must skip the head (this suite skips 80). A REAL behaviour change: the block this replaces ran open-loop at nominal and had no transient, and also could not track a timing offset, which is why it was quarantined",
+    "footprint": "7 cells in a 3x3 fold with NO transit cells \u2014 the ring counter->dline->interp->ted->loop_filter->period_relay-> counter is a SIX-cycle, which is even, so it closes by abutment on a bipartite grid",
+    "loop_bw_ceiling": "~0.022 \u2014 the proportional gain is a Q15 MULQ multiplier and clamps at 32767 above that, so a wider requested loop is not actually delivered; the default 0.02 sits just inside",
+    "note": "The Gardner TED is NON-decision-directed, so its S-curve slope scales with the SQUARE of the input level and the effective loop gain moves with drive amplitude. Gain-stage to ~0.7 peak. MMTimingRecoveryBlock is the decision-directed alternative and is required for 4-PAM/16-QAM, which Gardner cannot lock."
+  },
+  "notes": "PROMOTED from a double quarantine. GardnerTimingRecovery is now a drop-in for digital.symbol_sync_cc(TED_GARDNER) on the industry-standard matched-filter Nyquist 2-sps channel: GR locks BER 0 across the whole fractional-offset sweep and so does the DUT, reference AND on-chip, with the on-chip stream BIT-EXACT to process_reference (0 mismatches, identical symbol counts) and saturated drive bit-identical to per-sample. Two independent defects were fixed. (1) DSP: the datapath is now the Rice Ch.8 modulo-1 interpolator-control counter with ONE strobe per SYMBOL, both TED operands interpolated at that one strobe and one mu, a full-precision MULQ TED saturating only the difference, and GR-derived PI gains with GR's max_deviation clamp. The prior design had an unbounded phase accumulator (no modulo) that wrapped int16 and inverted the interpolation, and a two-strobe center/mid parity structure whose TED operands came from different loop states -- measured, everything else held equal and the two-strobe form swept over its gains, its BEST is 12/50 selection cases failing where the one-strobe form is 0/50. (2) TOPOLOGY: the block's external-egress cell and its internal-feedback source are now DIFFERENT cells (a dedicated single-WRITE `qout` fed by `loop_filter`, which separately drives `period_relay` on a perpendicular face), so the four build passes that each claim an exit cell's WRITE/JUMP words no longer contend. The verified alternative for decision-directed / multilevel constellations remains MMTimingRecoveryBlock; Gardner is a BPSK/QPSK TED and does not lock 4-PAM.",
   "provenance": "session"
 }

@@ -41,8 +41,16 @@ MAX_NET_EXCESS = 8
 TOTAL_EXCESS = {
     # port shares its single exit face with the near arm; the far arm detours
     # around the lead block (INV-24 fork) — 2 per affected net:
-    "bpsk_modem.kyt": 4,
-    "coherent_bpsk_rx.kyt": 2,
+    #
+    # Both of these TIGHTENED on 2026-08-27 (4 -> 2 and 2 -> 0) when
+    # GardnerTimingRecovery was re-placed for its new fold. The re-seat was
+    # forced — the block grew from 4 cells to 7 — but the seat was then CHOSEN by
+    # minimising total route excess over every routable anchor, which happened to
+    # beat the hand-placement both files shipped with. The ratchet is meant to
+    # move this way: re-pin DOWN when a placement improves, and investigate rather
+    # than re-pin UP when it degrades.
+    "bpsk_modem.kyt": 2,        # the one remaining net is the INV-24 fork above
+    "coherent_bpsk_rx.kyt": 0,
     "qam16_modem.kyt": 2,
     "fsk4_modem.kyt": 6,
     "am_transceiver.kyt": 2,

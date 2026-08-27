@@ -181,24 +181,33 @@ class complex_costas_loop(_PassThrough):
 
 
 class gardner_timing_recovery(_PassThrough):
-    """Gardner timing recovery — GR marker (maps to GardnerTimingRecovery).
+    """Gardner timing recovery — GR marker (maps to GardnerTimingRecovery, the
+    verified drop-in for ``digital.symbol_sync_cc`` with ``TED_GARDNER``).
 
-    ``complex=True`` selects 2-rail (I/Q) timing recovery carried as ONE gr_complex
-    stream in/out (the on-chip xi/xq in + yi_e/yq_e out pairs; placeKYT's importer
-    splits the single complex net into the two rails), feeding a downstream QPSK
-    slicer. ``complex=False`` (default) is the real BPSK timing loop (a single float
-    stream in, recovered center ``out``). One wire per link — no dangling rail port."""
+    ``loop_bw`` / ``damping`` are the GR ``symbol_sync`` control-loop parameters,
+    named verbatim. ``complex=True`` selects 2-rail (I/Q) timing recovery carried as
+    ONE gr_complex stream in/out (the on-chip xi/xq in + yi_e/yq_e out pairs;
+    placeKYT's importer splits the single complex net into the two rails), feeding a
+    downstream QPSK slicer. ``complex=False`` (default) is the real BPSK timing loop
+    (a single float stream in, recovered center ``out``). One wire per link — no
+    dangling rail port.
 
-    def __init__(self, device_id="kyttar_0", kp=3, ki=1, complex=False):
+    ``kp``/``ki`` are accepted and IGNORED (kept so saved flowgraphs that set them
+    still load); the loop gains derive from ``loop_bw``/``damping``."""
+
+    def __init__(self, device_id="kyttar_0", loop_bw=0.02, damping=1.0,
+                 complex=False, kp=None, ki=None):
         dt = np.complex64 if bool(complex) else np.float32
         super().__init__("Kyttar Gardner Timing Recovery",
                          in_dtype=dt, out_dtype=dt)
         self.device_id = device_id
-        self.kp = kp
-        self.ki = ki
+        self.loop_bw = float(loop_bw)
+        self.damping = float(damping)
         self.complex = bool(complex)
         self._advertise_grc_params(device_id, "GardnerTimingRecovery",
-                                   {"kp": kp, "ki": ki, "complex": bool(complex)})
+                                   {"loop_bw": float(loop_bw),
+                                    "damping": float(damping),
+                                    "complex": bool(complex)})
 
 
 class lms_equalizer(_PassThrough):

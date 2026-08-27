@@ -24,8 +24,19 @@ blocks:
     - {cell_id: table_cos, x: 3, y: 1, face: west}
     - {cell_id: rotate, x: 2, y: 1, face: west}
     - {cell_id: pd_pi, x: 1, y: 1, face: west}
-    transit_cells:
-    - {x: 0, y: 1, face: north}
+    - {cell_id: transit_0, x: 0, y: 1, face: north}
+- name: bpskslicer
+  type: BPSKSlicerBlock
+  library: lattrex.official
+  params:
+    out_mode: bit
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 9, y: 3, face: north}
+    orientation:
+    - ccw
+    - mirror_h
 - name: gardnertimingrecovery
   type: GardnerTimingRecovery
   library: lattrex.official
@@ -35,23 +46,13 @@ blocks:
   placement:
     chip: 0
     cells:
-    - {cell_id: resampler, x: 7, y: 0, face: west}
-    - {cell_id: ted, x: 6, y: 0, face: south}
-    - {cell_id: loop_filter, x: 6, y: 1, face: east}
-    - {cell_id: period_relay, x: 7, y: 1, face: north}
-    orientation:
-    - mirror_h
-- name: bpskslicer
-  type: BPSKSlicerBlock
-  library: lattrex.official
-  params:
-    out_mode: bit
-  placement:
-    chip: 0
-    cells:
-    - {cell_id: 0, x: 9, y: 3, face: west}
-    orientation:
-    - mirror_h
+    - {cell_id: counter, x: 2, y: 2, face: east}
+    - {cell_id: dline, x: 3, y: 2, face: east}
+    - {cell_id: interp, x: 4, y: 2, face: south}
+    - {cell_id: ted, x: 4, y: 3, face: west}
+    - {cell_id: loop_filter, x: 3, y: 3, face: south}
+    - {cell_id: qout, x: 3, y: 4, face: east}
+    - {cell_id: period_relay, x: 2, y: 3, face: north}
 connections:
 - name: net1
   from: {chip_port: {chip: 0, port: x16_in}}
@@ -63,31 +64,6 @@ connections:
   to: {block: complexcostasloop, port: xq}
   route:
   - {x: 0, y: 0}
-- name: net3
-  from: {block: complexcostasloop, port: yi_tap}
-  to: {block: gardnertimingrecovery, port: xi}
-  route:
-  - {x: 2, y: 1}
-  - {x: 2, y: 2}
-  - {x: 3, y: 2}
-  - {x: 4, y: 2}
-  - {x: 5, y: 2}
-  - {x: 6, y: 2}
-  - {x: 7, y: 2}
-  - {x: 8, y: 2}
-  - {x: 9, y: 2}
-  - {x: 9, y: 1}
-  - {x: 9, y: 0}
-  - {x: 8, y: 0}
-- name: net4
-  from: {block: gardnertimingrecovery, port: out}
-  to: {block: bpskslicer, port: llr}
-  route:
-  - {x: 6, y: 1}
-  - {x: 6, y: 2}
-  - {x: 7, y: 2}
-  - {x: 8, y: 2}
-  - {x: 9, y: 2}
 - name: net5
   from: {block: bpskslicer, port: out}
   to: {chip_port: {chip: 0, port: x16_out}}
@@ -96,3 +72,21 @@ connections:
   - {x: 9, y: 2}
   - {x: 9, y: 1}
   - {x: 9, y: 0}
+- name: net3
+  from: {block: complexcostasloop, port: yi_tap}
+  to: {block: gardnertimingrecovery, port: xi}
+  route:
+  - {x: 2, y: 1}
+  - {x: 2, y: 2}
+- name: net4
+  from: {block: gardnertimingrecovery, port: out}
+  to: {block: bpskslicer, port: llr}
+  route:
+  - {x: 3, y: 4}
+  - {x: 4, y: 4}
+  - {x: 5, y: 4}
+  - {x: 6, y: 4}
+  - {x: 7, y: 4}
+  - {x: 8, y: 4}
+  - {x: 9, y: 4}
+  - {x: 9, y: 3}

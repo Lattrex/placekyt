@@ -189,6 +189,61 @@ def _run(res, entry, foff, toff, seed=5, nbits=120):
     return (e / m if m else 1.0), len(rx)
 
 
+def test_reference_agrees_with_the_chip(built):
+    """``process_reference`` must describe the SILICON, not an idealised version of
+    it. This block's timing stage runs OPEN-LOOP at the nominal period (see
+    ``DEAD_REG``: the period feedback dead-ends on purpose, because the 12-cell fold
+    has no room for a second return corridor beside the Costas dphase corridor), so
+    the reference models a nominal-period resampler — NOT the closed PI loop the
+    standalone GardnerTimingRecovery runs.
+
+    That distinction is easy to get wrong and invisible in a BER gate: an
+    over-modelled reference and the real chip both decode this burst at BER 0, and
+    only a direct stream comparison shows they disagree. Pin it."""
+    res, entry = built
+    import simkyt
+
+    def fq(f):
+        return int(round(max(-1, min(0.999, f)) * 32768)) & 0xFFFF
+
+    foff, toff, nbits = 0.008, 0.45, 120
+    chip = simkyt.Chip.from_yaml(str(CT_PATH))
+    chip.load_bitstream_physical(res.words(0))
+    chip.set_port_entry_address("x16_in", entry)
+    random.seed(11)
+    bits = [random.randint(0, 1) for _ in range(nbits)]
+    sig, _syms = _tx_signal(bits, timing_offset=toff)
+
+    rx = []
+    stim = []
+    for n, s in enumerate(sig):
+        ph = 2 * math.pi * foff * n
+        i, q = s * math.cos(ph), s * math.sin(ph)
+        stim.append(complex(i, q))
+        chip.inject_data_physical([fq(i)], target_hop_cnt=30, target_addr=0)
+        chip.run(max_events=3000)
+        chip.inject_data_physical([fq(q)], target_hop_cnt=30, target_addr=1)
+        chip.run(max_events=3000)
+        chip.inject_jump_physical(target_hop_cnt=30, entry_addr=entry)
+        chip.run(max_events=40000)
+        while chip.output_available("x16_out"):
+            p = chip.read_port_i16("x16_out").view("uint16").tolist()
+            rx.append(int(p[-1]) & 1)
+            chip.release_output_ack("x16_out")
+            chip.run(max_events=2000)
+
+    import numpy as np
+    from gr_kyttar.placement.blocks.coherent_rx_block import CoherentRXBlock
+    ref = [int(v) for v in
+           CoherentRXBlock("r").process_reference(np.array(stim))]
+    m = min(len(ref), len(rx))
+    assert m >= 80, f"too few bits to compare (chip {len(rx)}, ref {len(ref)})"
+    mism = sum(1 for k in range(m) if ref[k] != rx[k])
+    assert mism == 0, (
+        f"process_reference disagrees with the chip in {mism}/{m} bits — the "
+        f"reference does not model the silicon")
+
+
 @pytest.mark.parametrize("foff,toff", [(0.0, 0.4), (0.01, 0.5), (-0.008, 0.45)])
 def test_recovers_ber0(built, foff, toff):
     """The placeKYT-built receiver recovers BER 0 across carrier+timing offsets —

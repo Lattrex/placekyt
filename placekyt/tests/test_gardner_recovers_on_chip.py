@@ -101,7 +101,16 @@ def _tx_real(bits, sps=2, beta=0.35, span=6, toff=0.45):
     return out, syms
 
 
-def _ber_with_lag(rx, tx, max_lag=20, min_overlap=40):
+# The timing loop needs a few symbols to pull the offset in from its cold start,
+# so the head of the burst is an ACQUISITION TRANSIENT. GardnerTimingRecovery's is
+# measured at <= 6 symbols; skip 12 for margin. (The pre-2026-08-27 block ran
+# open-loop at the nominal period and had no transient — and could not track a
+# timing offset either, which is why it was quarantined.)
+_ACQ_SKIP = 12
+
+
+def _ber_with_lag(rx, tx, max_lag=20, min_overlap=40, skip=_ACQ_SKIP):
+    rx, tx = rx[skip:], tx[skip:]
     best = (10 ** 9, 0, 0)
     for lag in range(0, max_lag + 1):
         a, b = rx[lag:], tx[: len(rx) - lag]
@@ -124,15 +133,21 @@ def test_gardner_dualface_recovers_timing_ber0(qapp, catalog, chip_type):
 
     ctrl = AppController(catalog=catalog)
     ctrl.new_project("g", "kyttar_10x12")
-    # Gain(1.0) on x16_in forwards samples into the Gardner resampler (off-port).
+    # Gain(1.0) on x16_in forwards samples into the Gardner counter (off-port).
+    # It sits on row 0 so the corridor can drop SOUTH onto the counter, which in
+    # the 4x2 fold is the second cell of the top row (dline is at the anchor).
     gain = ctrl.place_block("GainBlock", 0, 0, 0, params={"gain": 1.0},
                             library="lattrex.official")
-    # Gardner: resampler(2,0) ted(3,0) loop_filter(3,1) transit(2,1).
+    # Gardner (7 cells, 3x3 fold, no transits) anchored at (2,0):
+    #   row 0: counter(2,0) dline(3,0)      interp(4,0)
+    #   row 1: period_relay(2,1) loop_filter(3,1) ted(4,1)
+    #   row 2:                   qout(3,2)
+    # The counter (landing cell) is at the anchor itself, reachable along row 0.
     ctrl.place_block("GardnerTimingRecovery", 0, 2, 0, library="lattrex.official")
     gar = ctrl.project.blocks[-1].name
-    # Slicer south of loop_filter's `out` (3,1)->(3,2). out_mode='bit' (one word
-    # per bit) for this per-bit BER check; the block default is now 'word' (packed).
-    ctrl.place_block("BPSKSlicerBlock", 0, 3, 2, library="lattrex.official",
+    # Slicer south of the DEDICATED egress cell ``qout``. out_mode='bit' (one word
+    # per bit) for this per-bit BER check; the block default is 'word' (packed).
+    ctrl.place_block("BPSKSlicerBlock", 0, 3, 4, library="lattrex.official",
                      params={"out_mode": "bit"})
     sli = ctrl.project.blocks[-1].name
 
@@ -146,15 +161,22 @@ def test_gardner_dualface_recovers_timing_ber0(qapp, catalog, chip_type):
                                 ChipPortEndpoint(chip=0, port="x16_out"), name="out")
 
     g = ctrl.project.block(gar)
-    rs = g.placement.cell("resampler")
-    lf = g.placement.cell("loop_filter")
+    rs = g.placement.cell("counter")
+    qo = g.placement.cell("qout")
     sl = ctrl.project.block(sli).placement.cells[0]
-    # gain(0,0) -> resampler(2,0): abut east via (1,0).
-    SetConnectionRouteCommand(ctrl.project, "g2r",
-                              [(0, 0), (1, 0), (rs.x, rs.y)]).execute()
-    # loop_filter out SOUTH -> slicer.
-    SetConnectionRouteCommand(ctrl.project, "r2s",
-                              [(lf.x, lf.y), (sl.x, sl.y)]).execute()
+    # gain(0,0) -> counter: run east along row 0 up to the landing cell. Derive
+    # the path from the PLACEMENT rather than hardcoding it — the fold has changed
+    # shape before and a stale literal here silently drops the corridor onto a
+    # mid-block cell, which builds clean and emits nothing.
+    SetConnectionRouteCommand(
+        ctrl.project, "g2r",
+        [(x, 0) for x in range(0, rs.x + 1)]).execute()
+    # The egress leaves the DEDICATED qout cell, SOUTH into the slicer — the whole
+    # point of the split-role design: the routed exit cell carries no feedback for
+    # the route pass to clobber.
+    SetConnectionRouteCommand(
+        ctrl.project, "r2s",
+        [(qo.x, y) for y in range(qo.y, sl.y + 1)]).execute()
     # slicer -> x16_out(9,0): east along row then up.
     xout = next(p for p in chip_type.ports if p.name == "x16_out")
     route = [(sl.x, sl.y)]

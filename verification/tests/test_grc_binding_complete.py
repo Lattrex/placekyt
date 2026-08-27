@@ -263,6 +263,13 @@ _DTYPE_DEVIATIONS = {
     # the output rail is short (dtype short in the yml and int16 in the marker;
     # documented in the class + binding).
     "ChirpSymbolMapperBlock": ("byte", "short"),
+    # symbol_sync_cc is always complex; the Kyttar Gardner's dtype is
+    # PARAM-DEPENDENT, exactly like ComplexCostasLoopBlock above. Its DEFAULT
+    # (complex=False) is the real BPSK timing loop — one float 2-sps rail in, the
+    # recovered symbol-centre rail out; complex=True makes both ports complex (the
+    # xi/xq in + yi_e/yq_e out pairs on one gr_complex stream). The gate pins the
+    # default, and the .block.yml's conditional dtype carries the other mode.
+    "GardnerTimingRecovery": ("float", "float"),
 }
 
 

@@ -1,10 +1,10 @@
 id: kyttar_gardner_ted
-label: 🧪 Kyttar Gardner TED
+label: Kyttar Gardner TED (Symbol Sync)
 category: '[Kyttar]'
 
 templates:
   imports: from gnuradio import kyttar
-  make: kyttar.gardner_timing_recovery(${device_id}, ${kp}, ${ki}, ${complex})
+  make: kyttar.gardner_timing_recovery(${device_id}, ${loop_bw}, ${damping}, ${complex})
 
 parameters:
 - id: device_id
@@ -12,15 +12,17 @@ parameters:
   dtype: string
   default: '"kyttar_0"'
 
-- id: kp
-  label: Proportional Gain (kp)
-  dtype: int
-  default: '3'
+# The GR symbol_sync control-loop parameters, verbatim (INV-0: mirror the GR block's
+# parameter names so a user never has to learn a Kyttar-specific knob).
+- id: loop_bw
+  label: Loop Bandwidth
+  dtype: float
+  default: '0.02'
 
-- id: ki
-  label: Integral Gain (ki)
-  dtype: int
-  default: '1'
+- id: damping
+  label: Damping Factor
+  dtype: float
+  default: '1.0'
 
 - id: complex
   label: Complex (I/Q)
@@ -44,30 +46,43 @@ outputs:
   dtype: ${ 'complex' if complex else 'float' }
 
 documentation: |-
-  🧪 PROOF-OF-CONCEPT: this block works in a demo but has NOT been through
-  per-block GNU Radio-equivalence verification. Use with care.
+  Gardner symbol-timing recovery — a drop-in for GNU Radio's
+  digital.symbol_sync_cc with TED_GARDNER on the standard receiver channel
+  (RRC-shaped TX, fractional timing offset, RRC matched filter, Nyquist 2
+  samples/symbol).
 
-  Gardner Timing Error Detector Block
+  VERIFIED against digital.symbol_sync_cc(TED_GARDNER): BER 0 across the full
+  fractional-offset sweep, on the built + simulated chip, with the on-chip stream
+  bit-exact to the block's reference. See
+  verification/reports/GardnerTimingRecovery.json.
 
-  Performs symbol timing recovery using the Gardner TED algorithm.
-  Uses a multi-cell Ring pattern (3 cells) with:
+  Structure (Rice Ch.8): a modulo-1 interpolator-control counter strobes ONCE per
+  symbol; at that strobe both the symbol CENTER and the MID-symbol sample are
+  linearly interpolated at the same fractional interval; the Gardner TED forms
+  e = mid * (center - prev_center); a 2nd-order PI loop filter (gains derived from
+  loop_bw + damping through GR's control_loop mapping, clamped by GR's
+  max_deviation) adjusts the counter's step.
 
-  - Interpolator: Linear interpolation based on timing offset
-  - TED: Computes Gardner error e = (x[n] - x[n-2]) * x[n-1]
-  - Loop Filter: PI controller for timing tracking
-
-  The Gardner TED is insensitive to carrier phase errors, making
-  it ideal for use before carrier recovery or in systems where
-  carrier phase is unknown.
+  Gardner is insensitive to carrier phase, so it can run BEFORE carrier recovery.
 
   Parameters:
-    Device ID: Which Kyttar device to use
-    Proportional Gain (kp): DEPRECATED / ignored (gains derive from GR loop_bw).
-    Integral Gain (ki): DEPRECATED / ignored (gains derive from GR loop_bw).
+    Device ID: Which Kyttar device to use.
+    Loop Bandwidth: GR symbol_sync control-loop bandwidth (default 0.02).
+      NOTE the proportional gain is a Q15 multiplier and clamps at its ceiling
+      above loop_bw ~ 0.022, so a wider requested loop is not actually delivered.
+    Damping Factor: GR symbol_sync control-loop damping (default 1.0).
     Complex (I/Q): False = real 2-sps input -> recovered center `out` (BPSK).
-      True = 2-rail I/Q timing recovery: adds the `xq` input and emits the
-      recovered (yi_e, yq_e) symbol-center pair (for a downstream QPSK slicer).
+      True = 2-rail I/Q timing recovery: the I rail drives the loop and the Q rail
+      is interpolated at the identical strobe, emitting the recovered
+      (yi_e, yq_e) symbol-center pair for a downstream QPSK slicer.
 
-  Output rate is 1/sps of input rate (symbol rate).
+  Output rate is 1/sps of the input rate (symbol rate).
+
+  OPERATING POINT (measured limits, not guesses). Gain-stage the input to about
+  0.7 peak: the Gardner TED is non-decision-directed, so its S-curve slope scales
+  with the SQUARE of the signal level. Verified clean for peak amplitude 0.5-0.75
+  and RRC rolloff beta >= 0.35. Gardner is a BPSK/QPSK detector and does NOT lock
+  a 4-level (4-PAM / 16-QAM) signal — use the Kyttar M&M Timing Recovery block,
+  which is decision-directed, for multilevel constellations.
 
 file_format: 1

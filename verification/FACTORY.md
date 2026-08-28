@@ -109,9 +109,10 @@ reference. **If you change the methodology, change `factory_dispatch.py`'s `TEMP
   enc/dec, bit-pack/unpack, xor/and, CRC, threshold. No harness extension; racks up
   low-variance token/walltime numbers.
 - **Wave 2 — verify the coherent-RX POCs** (the highest-value wave: these complete the coherent receiver chain):
-  ComplexRRCMatchedFilter, ComplexCostasLoop, BPSKSlicer (prefer the verified
-  MMTimingRecovery over the PoC Gardner), then AGC variants, FLL, framing/access-code
-  correlators.
+  ComplexRRCMatchedFilter, ComplexCostasLoop, BPSKSlicer, MMTimingRecovery and
+  GardnerTimingRecovery (both verified against `symbol_sync_cc`; Gardner took
+  three attempts and two honest quarantines — see the lessons_log), then AGC
+  variants, FLL, framing/access-code correlators.
 - **Wave 3 — human-in-loop** (Q15-risky / needs RAM / >8 fold): a shared CORDIC
   (unblocks mag/arg/rms/atan/PLL at once), the LMS equalizer (NOT RLS), Viterbi ACS.
   These are dispatched supervised, not left fully autonomous.

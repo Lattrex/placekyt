@@ -6,9 +6,9 @@ A complete coherent BPSK receiver running on the Kyttar cell array: an RRC match
 filter, a Costas loop for carrier recovery, Gardner timing recovery, and a BPSK
 slicer. The input is an RRC pulse-shaped BPSK signal carrying **both** a carrier
 frequency offset and a fractional timing offset; the chip recovers the bits with
-**BER 0**. The Gardner timing block is proof-of-concept — verified at BER 0 in
-this demo, but not yet a certified drop-in for GNU Radio's `symbol_sync_cc`; see
-[`verification/STATUS.md`](../../verification/STATUS.md).
+**BER 0**. The Gardner timing block is a **verified drop-in** for GNU Radio's
+`symbol_sync_cc(TED_GARDNER)` — bit-exact on chip across the fractional-offset
+sweep; see [`verification/STATUS.md`](../../verification/STATUS.md).
 
 > **This is the receiver on its own — an *extra* view, not the main demo.** The
 > flagship [**BPSK modem**](../bpsk_modem/) contains this whole recovery chain

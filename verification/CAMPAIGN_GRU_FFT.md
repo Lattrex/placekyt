@@ -111,5 +111,7 @@ Beyond the normal factory cost record:
 - Provenance sentence for any power/throughput figure: workload activity from the
   SDF-annotated run x SPICE-characterized per-op energy, on a known-good PDK, pre-silicon,
   typical corner. Never just "measured."
-- Quarantine honestly after 2 real attempts. A written wall beats a faked pass, and the
-  Gardner quarantine is already the most valuable record in the paper.
+- Quarantine honestly after 2 real attempts. A written wall beats a faked pass — and a
+  well-written wall is what lets a later attempt clear it. Gardner was quarantined twice
+  and then SHIPPED on the third attempt (BER 0, bit-exact); each quarantine record named
+  the failure precisely enough for the next attempt to disprove it and move on.

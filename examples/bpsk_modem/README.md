@@ -18,9 +18,9 @@ RX (stream 'rx'):  RRC-BPSK I/Q ─▶ ComplexRRCMatchedFilter ─▶ CostasLoop
 - **RX (demodulator):** an RRC matched filter, a Costas loop for carrier recovery,
   Gardner timing recovery, and a slicer — recovers the bits from an RRC-shaped
   BPSK burst carrying a carrier **and** a fractional timing offset. The Gardner
-  timing block is proof-of-concept — verified at BER 0 in this demo, but not yet
-  a certified drop-in for GNU Radio's `symbol_sync_cc`; see
-  [`verification/STATUS.md`](../../verification/STATUS.md).
+  timing block is a **verified drop-in** for GNU Radio's
+  `symbol_sync_cc(TED_GARDNER)` — bit-exact on chip across the fractional-offset
+  sweep; see [`verification/STATUS.md`](../../verification/STATUS.md).
 
 The RX chain here is the same receiver as [`../coherent_bpsk_rx/`](../coherent_bpsk_rx/);
 this demo adds the matching **transmitter** on the same chip so you can see a whole

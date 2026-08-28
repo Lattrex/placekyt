@@ -43,3 +43,34 @@ GR_KYTTAR_PY = GR_KYTTAR / "python" / "kyttar"
 # GRC flowgraph fixtures for the import/routing tests. These are test inputs, kept
 # under tests/data/ so they're decoupled from the user-facing demos in examples/.
 EXAMPLES_DIR = Path(os.environ.get("KYTTAR_GRC_FIXTURES", ROOT / "tests" / "data" / "grc"))
+
+
+# --- The GNURadio server does NOT auto-start under test ----------------------
+#
+# placeKYT ships with "Run as GNURadio Server" ON by default (preference
+# ``sim/gr_server_autostart``), so a project load hosts the chip immediately —
+# that is the shipping workflow and it is deliberate.
+#
+# It must be OFF for the suite. A live server is not a passive listener: it does
+# a per-batch rebuild and drives the chip itself, which races the tests that
+# drive the stepper BY HAND (Step / Pause / instruction-step, the cell-inspector
+# live-mode tests) and makes them non-deterministic. It also binds a real TCP
+# port, so two tests constructing a MainWindow would contend for 58950.
+#
+# Autouse + session-scoped so no test can forget it, and it is set before any
+# MainWindow is constructed.
+import pytest  # noqa: E402
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _no_gr_server_autostart():
+    """Disable GNURadio-server autostart for the whole test session."""
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtCore import QCoreApplication, QSettings
+
+    # QSettings needs the org/name main.py sets, or it writes to a stray file.
+    QCoreApplication.setOrganizationName("Lattrex")
+    QCoreApplication.setApplicationName("placeKYT-tests")
+    QSettings().setValue("sim/gr_server_autostart", False)
+    QSettings().sync()
+    yield

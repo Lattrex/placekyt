@@ -61,3 +61,32 @@ def set_grc_param_change_mode(mode: str) -> None:
     s = _settings()
     s.setValue(_KEY_GRC_MODE, mode)
     s.sync()
+
+
+# --- Auto-start the GNURadio server ------------------------------------------
+# placeKYT's primary workflow is hosting the chip and driving it from GNU Radio,
+# so "Run as GNURadio Server" is ON by default and the server starts as soon as a
+# project is loaded. It is a preference rather than a hardcoded default because a
+# live server changes SIMULATION behaviour — the per-batch rebuild and the
+# server's own stepping interact with manual Step/Pause — so anyone driving the
+# stepper by hand (or running headless) needs a way to turn it off.
+_KEY_GR_AUTOSTART = "sim/gr_server_autostart"
+
+
+def gr_server_autostart() -> bool:
+    """Whether to start the GNURadio server automatically on project load.
+
+    Defaults to TRUE: driving the chip from GNU Radio is the main workflow, and
+    having to re-tick the menu item on every launch is pure friction."""
+    val = _settings().value(_KEY_GR_AUTOSTART, True)
+    if isinstance(val, bool):
+        return val
+    # QSettings round-trips booleans as strings on some backends.
+    return str(val).strip().lower() not in ("false", "0", "no", "")
+
+
+def set_gr_server_autostart(enabled: bool) -> None:
+    """Persist the GNURadio-server autostart preference."""
+    s = _settings()
+    s.setValue(_KEY_GR_AUTOSTART, bool(enabled))
+    s.sync()

@@ -99,11 +99,18 @@ class MainWindow(QMainWindow):
         # Output / Transactions (bottom): the captured output payload (default)
         # and the full ordered, timestamped transaction stream (detail toggle).
         # Folds in the old Output panel (DEBUG_ARCHITECTURE §3.1).
+        #
+        # HIDDEN BY DEFAULT. The waveform viewer is what a run is actually read
+        # from, so it owns the bottom dock on startup; this panel stays fully
+        # WIRED (it keeps its output/trace feeds, the cursor sync and the
+        # canvas-selection cell filter) and is one click away under View >
+        # Output for anyone who wants the raw transaction stream.
         from .panels.transaction_log_panel import TransactionLogPanel
 
         self.output_panel = TransactionLogPanel()
         output_dock = self._add_dock(
             "Output", self.output_panel, Qt.BottomDockWidgetArea)
+        output_dock.hide()
 
         # Waveform viewer (bottom): GTKWave-style port-stream traces with the
         # shared time cursor (DEBUG_ARCHITECTURE §3.3).
@@ -163,7 +170,10 @@ class MainWindow(QMainWindow):
         self.tabifyDockWidget(console_dock, disasm_dock)
         self.tabifyDockWidget(disasm_dock, summary_dock)
         self.tabifyDockWidget(summary_dock, drc_dock)
-        output_dock.raise_()
+        # Waveform is the landing tab: it is where a run is read. Output stays
+        # tabbed (hidden above) so re-showing it from the View menu lands it
+        # back in this same tab bar rather than as a loose floating dock.
+        waveform_dock.raise_()
 
     def _api_namespace(self) -> dict:
         """The objects exposed in the embedded console (§3.1, §9.4 MCP-ready).
@@ -279,6 +289,16 @@ class MainWindow(QMainWindow):
         self.act_gr_server = self._action(
             "Run as GNURadio Server", None, self._toggle_gnuradio_server)
         self.act_gr_server.setCheckable(True)
+        # ON BY DEFAULT (preferences: sim/gr_server_autostart): driving the chip
+        # from GNU Radio is the primary workflow, so the menu item starts checked
+        # and _after_project_loaded actually starts the server once a design
+        # exists. setChecked() is used rather than triggering the slot: the
+        # server needs a BUILT design, and at menu-construction time there is no
+        # project yet, so starting here would fail its build gate and report a
+        # spurious DRC error on launch.
+        from engine import preferences as _prefs
+
+        self.act_gr_server.setChecked(_prefs.gr_server_autostart())
         self._sim_menu.addAction(self.act_gr_server)
         self._sim_menu.addAction(
             self._action("Live Window Size…", None, self._set_live_window))
@@ -1954,13 +1974,42 @@ class MainWindow(QMainWindow):
         # have to hand-delete stale traces when switching projects. The next
         # run auto-seeds this project's default traces.
         self.waveform_panel.clear_traces()
-        if _server_port_keep is not None:
-            bound = self.sim.start_gnuradio_server(port=_server_port_keep or 58950)
-            if bound is None:
+        # Start (or restart) the GRC server for THIS project. Two cases converge
+        # here: a server was already running and must be re-pointed at the new
+        # design, or "Run as GNURadio Server" is checked — which it is by
+        # DEFAULT — and this is the first project to exist, so the server has
+        # not been started yet. A design that does not build reports it and
+        # unchecks the action, rather than leaving the menu lying about a server
+        # that is not listening.
+        _want_server = (_server_port_keep is not None
+                        or self.act_gr_server.isChecked())
+        if _want_server:
+            # Same contract as the menu toggle: fall back to an OS-assigned port
+            # if the preferred one is busy, and never let a failure to start
+            # propagate out of project loading — an unopenable port must not
+            # stop a project from opening.
+            try:
+                try:
+                    bound = self.sim.start_gnuradio_server(
+                        port=_server_port_keep or 58950)
+                except OSError:
+                    bound = self.sim.start_gnuradio_server(port=0)
+            except Exception as exc:  # noqa: BLE001 — report, never vanish
+                bound = None
+                self.act_gr_server.setChecked(False)
                 self.statusBar().showMessage(
-                    "GNURadio server stopped — the newly-loaded project did "
-                    "not build (fix DRC errors, then re-enable the server).",
-                    8000)
+                    f"GNURadio server failed to start: "
+                    f"{type(exc).__name__}: {exc}", 8000)
+                return
+            if bound is None:
+                self.act_gr_server.setChecked(False)
+                self.statusBar().showMessage(
+                    "GNURadio server not started — this project did not build "
+                    "(fix DRC errors, then re-enable the server).", 8000)
+            else:
+                self.act_gr_server.setChecked(True)
+                self.statusBar().showMessage(
+                    f"GNURadio server listening on port {bound}.", 4000)
 
     def _load_default_stimulus(self, project) -> None:
         """Load the project's ``default_stimulus`` ``.kbs`` (if any) so plain Run

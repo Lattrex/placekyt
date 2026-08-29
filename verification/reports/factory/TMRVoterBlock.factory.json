@@ -1,0 +1,34 @@
+{
+  "block": "TMRVoterBlock",
+  "grc_block": "",
+  "tier": 2,
+  "wave": 8,
+  "schema_version": 1,
+  "started_utc": "2026-08-29T03:45:55Z",
+  "ended_utc": "2026-08-29T09:38:00Z",
+  "walltime_sec": 21120.0,
+  "tokens": {
+    "input": 0,
+    "output": 538009,
+    "cache_read": 0,
+    "total": 538009
+  },
+  "turns": 313,
+  "attempts": 6,
+  "human_interventions": 2,
+  "intervention_reasons": [
+    "orchestrator resumed the builder twice after API-error terminations (infrastructure, not build failures)",
+    "orchestrator redirected it off harness geometry: use StreamSplitterBlock identity arms and keep the GATE harness minimal (three producers on three faces) - the realistic 3-chain pipeline is the EXAMPLE's job, not the block's; also reviewed and approved its engine changes after confirming placekyt/tests stayed green"
+  ],
+  "prompts": [
+    {
+      "role": "initial",
+      "text": "PLAN_COMPRESS_CRYPTO_TMR.md SB1 dispatch: 3-arm LOCK-rotation voter, generalising DualFloatToComplexBlock from 2 faces to 3."
+    }
+  ],
+  "verify_passed": true,
+  "quarantined": false,
+  "quarantine_reason": "",
+  "commit_sha": "695d7c4",
+  "notes": "THE FINDING - INV-46: the LOCK-rotation rendezvous is generic over N, but THREE separate places in the toolchain had N=2 baked in, and NONE announced itself. Each produced a layout that built and routed cleanly, then misbehaved for a reason pointing somewhere else:\n  (1) cpsat_placer constrained only the first two drivers (hardcoded drvs[0], drvs[1]) and skipped multi-cell blocks via a len(pl.cells) != 1 gate;\n  (2) bus_router reused ONE broker per target cell - for a face-locking target that reuse IS the same-face bug, delivering two arms on one face;\n  (3) build hardcoded CONFIG 4 (LOCK) as the backward-unlock target, silently REWRITING an authored WRITE.CFG @N,3 (LOCK_FACE re-point) into a lock-CLEAR - it voted correctly for two samples then desynced. Fixed with an opt-in UNLOCK_CFG_ADDR class attribute so existing serialize-LOCK blocks are untouched.\n\nTHE GOVERNING CONSTRAINT IS A FACE BUDGET: an N-arm rendezvous needs N arms + 1 forward + 1 release corridor = N + 2 faces, against a cell's 4. N=2 fits (and the shipped N=2 blocks are single-cell, so it never surfaced). N=3 needs FIVE, which is why this block is a 4-cell colinear chain with the rendezvous as a LEAF of the fold, forced into the longitudinal strip layout_rules warns about, and why its serialize-lock release cannot have its own corridor and must ride the one abutting cell. N >= 4 is NOT placeable as a single rendezvous - it needs a tree.\n\nINV-19 EARNED ITS KEEP TWICE: it caught that the OBVIOUS construction (re-lock to face_a at the end of the last arm) deadlocks after exactly one packet - the rotation needs N+1 stops, not N - and then that the residual one-triple-in-flight limit is the same face budget wall, recorded as an executable guard naming three measured alternative release points and why each is blocked.\n\nVERIFICATION: 55 gates at EXACT tolerance 0 on the real placed+routed+built chip - all five vote cases, all 6 relative arrival orders producing identical streams, random interleavings over 3 seeds, edge values, the fault_sentinel param, startup/stall semantics, all 8 D4 orientations with 0 xfails, and every INV-4 mutation proven to fail including the mandatory negative (fault injection disabled -> status channel asserted FLAT ZERO, which catches a voter emitting a constant fault code).\n\nORCHESTRATOR VERIFICATION: 55 gates pass from main; the two N=2 sibling blocks (DualFloatToComplex, FeaturePairJoin) are UNREGRESSED at 40 passed, which is the real test of three engine changes that touch every design; placekyt/tests green. Both engine diffs reviewed and judged principled - each is scoped to blocks declaring NEEDS_DISTINCT_INPUT_FACES or UNLOCK_CFG_ADDR, with getattr defaults preserving existing behaviour.\n\nNUMBERING COLLISION CAUGHT AT LANDING: this block and ChaCha20QRBlock ran in PARALLEL worktrees and both independently claimed INV-45. Resolved by keeping BOTH and renumbering this one to INV-46. A parallel-wave hazard worth knowing: concurrent builders cannot see each other's KB additions, so the orchestrator must reconcile invariant numbers at landing.\n\nBUILDER CAVEAT CARRIED FORWARD: its own verification/tests/ full-suite runs stalled twice with no output, so it verified 1164 tests across the seven most relevant files rather than the whole suite. Orchestrator is running the full sweep independently."
+}

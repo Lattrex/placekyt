@@ -544,6 +544,24 @@ NEEDS_BESPOKE = {
         "saturated proof against the REAL toggle consumer is "
         "test_real_consumer_chain_matches_the_direct_feed (join -> GRUCellBlock, "
         "bit-identical class words at the correct 1:1 pair rate).",
+    "XorJoinBlock": "2-FACE LOCK RENDEZVOUS with TWO INDEPENDENT upstream "
+        "producers (the FeaturePairJoinBlock topology with an XOR instead of a "
+        "pair-emit): a 'sample' is one word on each of two DISTINCT faces from "
+        "two SEPARATE blocks, so no shared harness can drive it — they all "
+        "inject one stream through one port landing. Its saturated behaviour is "
+        "gated BESPOKE in test_xor_join.py::test_saturated_equals_per_sample, "
+        "which enqueues the WHOLE burst (both arms, every sample) as raw "
+        "WRITE/DATA/JUMP words via queue_words_physical with NO inter-sample "
+        "quiescence anywhere, and asserts both the VALUES and the 1:1 COUNT "
+        "against the per-sample drive. It PASSES: unlike the N=3 voter this "
+        "block needs no serialize-LOCK, because the arbiter LOCK it already "
+        "carries IS the serialization INV-19 prescribes, and at N=2 the face "
+        "budget (INV-46: N + 2 = 4) lets the whole rendezvous be ONE cell — "
+        "there is no internal datapath for queued samples to pile into. "
+        "test_saturated_drive_is_not_vacuous pins that the stimulus would SHOW "
+        "a mis-pairing (every cross-sample XOR is disjoint from every correct "
+        "one), which matters more here than elsewhere because a desynced XOR "
+        "emits a plausible-looking byte rather than an obvious failure.",
     # INV-20 fan-in FIXED (2026-07-21): NCO + FrequencyModulator had the SAME phase->2-arm
     # ->emit reconvergent fan-in as the pre-fix ComplexMixer. The pipeline_lock=True
     # serialize-LOCK (relay arm-serializer + emit dual-FACE unlock + sign-inline interp)

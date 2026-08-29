@@ -9,6 +9,76 @@ block-specific gotcha. Promote anything that generalizes across block classes in
 and superseded material merged into the surviving entries; no durable lesson was
 dropped) — append new entries above the oldest ones as before.
 
+## XorJoinBlock — the N=2 rendezvous at its cheapest, and a mutation test that proved nothing 2026-08-29
+
+`out = a ^ b` for two INDEPENDENT producers. **Outcome: `done`**, 59 tests, EXACT
+tolerance 0, on the real placed + routed + built chip. One cell, built directly from
+`FeaturePairJoinBlock`'s N=2 LOCK-by-face rendezvous with the two-burst emit replaced
+by one native LOGIC `XOR` + a single brokered write. It went in essentially first-try;
+everything below is what the *verification* turned up, which was the interesting part.
+
+**Why the block exists at all.** `XorBlock` already computes this function and is
+gated bit-exact against `blocks.xor_bb`, but its operands arrive via the complex-burst
+fan-in, which keys on `(src_cell, in_cell)` — both words must come from ONE source
+cell. The stream cipher needs plaintext and keystream from two SEPARATE chains. So the
+distinguishing mechanism is not arithmetic, it is topological: arrival FACE + the
+arbiter LOCK (INV-46 at N=2).
+
+**INV-19 passed, and the reason is structural rather than lucky** — worth stating
+because the N=3 voter's saturated gate found a real deadlock and it would be easy to
+assume this family is generally hazardous. The face budget is `N + 2` (arms + forward
++ release corridor); at N=2 that is 4 and a cell has 4, so the whole rendezvous fits
+in ONE cell — and a single cell needs neither a forward nor a release, because there
+is no internal datapath for queued samples to pile into. The LOCK it already carries
+IS the serialization INV-19 prescribes. Whole-burst `queue_words_physical` with no
+quiescence anywhere equals the per-sample drive, values and 1:1 count.
+
+**THE REAL LESSON — a mutation that is a NO-OP certifies nothing.** The spec's third
+named mutation was "emit before latching the second operand", and the obvious way to
+write it is to swap `MOVE R0, R{in:b}` with the `XOR`. That mutant BUILT, RAN, and
+emitted the CORRECT golden stream. The cause: both input ports are declared at R0
+(each arrives on its own face-gated trigger — the shipped N=2 convention), so that
+MOVE assembles to `MOVE R0, R0` and reordering it changes nothing. Had that been
+written as the INV-4 gate and observed to "fail as expected" on a modelled stream, the
+suite would have carried a mutation that could never fire. The fix was to mutate the
+REAL block and rebuild on the REAL chip: `_SUBSTRATE_MUTANTS` corrupts the assembly,
+rebuilds, and asserts the output diverges. Measured — drop the XOR → forwards `b`;
+AND instead of XOR → `a & b`; drop the `a` latch → forwards `b`; drop the re-lock →
+2 words then desync. The redundant MOVE is KEPT (one word of 32) because it makes the
+operand explicit rather than dependent on a register-allocation coincidence, and the
+fact is pinned by a test so nobody removes it without knowing what it does and does
+not protect.
+
+**A SECOND, SHARPER TRAP: a broken block collapses this suite into SKIPS, not
+failures.** Per INV-46 Rule 4 the harness smoke-probes each candidate layout and moves
+to the next anchor on failure, ending in `pytest.skip` if none survive. That is right
+for a flaky CP-SAT run and dangerous for a broken block: corrupting the XOR to an AND
+turned 35 tests into skips and only 6 into failures — a suite that still reads
+"passed" at a glance. `test_the_probing_harness_actually_routes_this_block` now FAILS
+(never skips) if no anchor yields a correctly-pairing chain, so a wholesale collapse
+into skips cannot be mistaken for green. **Any face-locking block's suite wants this
+guard**; the probing pattern the family requires creates the hazard.
+
+**Stimulus design is load-bearing for XOR specifically.** A mis-paired XOR emits a
+plausible-looking byte, not an obvious failure, so every gate here uses values whose
+per-sample XORs are all distinct AND whose cross-sample XORs are disjoint from the
+correct ones — asserted in the test, not assumed. The first draft of the smoke probe
+used `0xAA`/`0x55`, which XOR to `0xFF` whichever way they pair; the back-to-back gate
+caught its own lazy constants via that same non-vacuity assertion. Symmetric stimulus
+cannot see a rendezvous bug.
+
+**Golden.** No stock GR counterpart for the two-independent-producer case, but the
+FUNCTION is stock, so the golden is cross-checked three ways: against a LIVE
+`blocks.xor_bb` over 512 random byte pairs, against the shipped `XorBlock`'s
+reference, and pinned independently so it still gates without GNU Radio installed.
+
+**Also verified:** self-inverse `(x ^ k) ^ k == x` with BOTH halves computed on chip
+(with a non-vacuity check that the ciphertext really differs from the plaintext);
+commutativity across the two arms; unequal producer rates (n=2 vs n=4) still pair
+emission-for-emission; all 8 D4 orientations; the same-face DRC; and the marker
+imports under the real GR interpreter with 1-byte io_signature matching the yml's
+`byte` dtype.
+
 ## TMRVoterBlock — the LOCK-rotation rendezvous generalises to N=3, and the FACE BUDGET is what decides how far it goes 2026-08-29
 
 Three redundant chains converge on one block from three DISTINCT faces; the block

@@ -2354,9 +2354,34 @@ the same value, so fault ONE ARM AT A TIME; (b) probe on a THROWAWAY chip instan
 because driving a group advances the lock rotation and latches arm state, so smoking
 the chip a gate is about to use leaks the probe's values into that gate's first result.
 
+**Rule 4a — the probe's own failure mode: a broken block collapses the suite into
+SKIPS, not failures.** The probing loop of Rule 4 ends in `pytest.skip` when no anchor
+survives — correct for a flaky CP-SAT run, and dangerous for a genuinely broken block,
+which fails the probe at EVERY anchor. Measured on the N=2 `XorJoinBlock`: corrupting
+its `XOR` to an `AND` turned **35 tests into skips and only 6 into failures**, a suite
+that still reads "passed" at a glance. So every face-locking block's suite needs ONE
+gate that FAILS rather than skips when the probing path cannot produce a working chain
+(`test_the_probing_harness_actually_routes_this_block`). The pattern this family
+requires is what creates the hazard, so the guard belongs with the pattern.
+
+**Rule 5 — mutate the BLOCK, not a model of it; at N=2 both operands alias R0.** The
+family declares BOTH input ports on the SAME register (R0), because each operand
+arrives on its own face-gated trigger. A consequence that has already produced one
+worthless mutation test: in a `MOVE R0, R{in:b}` / `XOR` pair the MOVE assembles to
+`MOVE R0, R0`, so REORDERING those two lines is a NO-OP — the mutant builds, runs, and
+emits the correct answer. Any "emit before latching the second operand" mutation
+written that way certifies nothing. Mutate the ALU op, the latch, or the re-lock
+instead, corrupt the REAL block, and REBUILD ON CHIP (measured for `XorJoinBlock`:
+drop the XOR → forwards `b`; AND instead of XOR → `a & b`; drop the `a` latch →
+forwards `b`; drop the re-lock → 2 words then desync). A model of a mutation is not a
+mutation.
+
 **Gate:** `verification/tests/test_tmr_voter.py` (N=3, 54 tests: all 6 arrival
 permutations, 8 D4 orientations, the saturated gate, the depth guard, and INV-4
-mutations) + `test_feature_pair_join.py` / `test_dual_float_to_complex.py` (N=2).
+mutations) + `test_feature_pair_join.py` / `test_dual_float_to_complex.py` /
+`test_xor_join.py` (N=2; the last carries the Rule 4a anti-skip guard and the Rule 5
+substrate mutations, and its INV-19 saturated gate PASSES — at N=2 the whole
+rendezvous is one cell, so the LOCK alone is the serialization).
 Related: INV-19/20 (the serialize-LOCK idiom this extends), INV-23 (every face
 constant is `is_face` so it D4-transforms), INV-39 (a multi-entry dispatch cell's
 entries must all be jumped).

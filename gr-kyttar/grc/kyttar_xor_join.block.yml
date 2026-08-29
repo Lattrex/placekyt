@@ -1,0 +1,64 @@
+id: kyttar_xor_join
+label: Kyttar Xor Join
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar Xor Join — bitwise XOR of TWO INDEPENDENT streams: out = a ^ b.
+
+  The FUNCTION is the same as GNU Radio's Xor (blocks.xor_bb), and the Kyttar
+  Xor block already provides that. The difference is WHERE THE OPERANDS COME
+  FROM. Kyttar Xor takes both of its operands from ONE upstream block. Use THIS
+  block when the two operands are produced by TWO SEPARATE chains running on the
+  chip at independent, asynchronous rates — the canonical case being a stream
+  cipher, where a plaintext chain and a keystream chain are XORed together.
+
+  XOR is its own inverse — (x ^ k) ^ k == x — so the SAME block is both the
+  encrypt half and the decrypt half of a stream cipher.
+
+  On the chip this is ONE cell. The two producers fire at independent times, so
+  the cell tells the streams apart by their ARRIVAL FACE: it uses the arbiter
+  LOCK to accept input from exactly one face at a time, advancing a -> b -> a. A
+  word on the other face is simply held by the arbiter until it is that face's
+  turn, so the pairing survives ANY interleaving. Because the arrival face IS
+  the stream identity, the two inputs must reach the block on two DIFFERENT
+  faces; the placer arranges this and a design-rule check rejects a layout where
+  both land on one face.
+
+  Semantics: one output word per matched (a, b) pair, in order; no output is
+  ever emitted from a single arm; a starved arm STALLS the join (it never
+  reuses a stale operand) and resumes correctly when the missing word arrives.
+  An arm may run at most two samples ahead of the other.
+
+  This is a PURE BITWISE operation, not Q15 arithmetic: no rounding, no
+  saturation, no overflow corner. Byte values 0..255 ride the low 8 bits of the
+  16-bit data word, and the result is bit-exact over the whole word. Set the
+  Kyttar sink to RAW output words — byte data is not Q15.
+
+  This block runs on the Kyttar chip. Place it between a KyttarSource and
+  KyttarSink block, and ensure the device_id matches your KyttarDevice.
+
+  Parameters:
+  - Device ID: ID of the KyttarDevice block
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.xor_join(device_id=${device_id})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+
+inputs:
+  - label: a
+    dtype: byte
+  - label: b
+    dtype: byte
+
+outputs:
+  - label: out
+    dtype: byte
+
+file_format: 1

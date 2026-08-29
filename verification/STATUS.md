@@ -3,7 +3,7 @@
 
 # Kyttar block library — status
 
-**115 verified · 0 in progress · 120 targeted.** Each Kyttar block is verified as a drop-in equivalent of its GNU Radio Companion counterpart (same parameters, output matching within Q15 quantization). “Quality” is the measured error of the verified block versus the GNU Radio reference.
+**116 verified · 0 in progress · 120 targeted.** Each Kyttar block is verified as a drop-in equivalent of its GNU Radio Companion counterpart (same parameters, output matching within Q15 quantization). “Quality” is the measured error of the verified block versus the GNU Radio reference.
 
 > **Reading the quality column.** `err N / tol M LSB` — the worst-case sample error (`N`) against the derived pass threshold (`M`), in Q15 **LSBs** (1 LSB = 1/32768 of full scale ≈ 3.05e-5); pass requires `N ≤ M`. `−X dB SNR` — the **NMSE**: the error power is `X` dB below the signal power (more negative = quieter; Q15's floor is ≈ −90 dB). Decision blocks report **BER** instead. To estimate a chain's total noise, convert each block's dB to linear power (`10^(dB/10)`), sum, and convert back (`10·log10`) — the noisiest stage dominates.
 
@@ -58,7 +58,7 @@
 | **TwiddleMultiplyBlock** | `(Python golden: complex multiply by a per-sample table-selected Q15 twiddle)` | 1 · feed-forward | ✅ done | err 0.0 / tol 0.0 LSB | edge rand×3 mut |
 | **ChirpSymbolMapperBlock** | `(Python golden: pack log2(m) bits MSB-first into one raw symbol word; == blocks.pack_k_bits_bb for m <= 256)` | 1 · feed-forward | ✅ done | err 0 / tol 0 LSB | sweep×4 mut |
 | **SqrtBlock** | `blocks.transcendental` | 1 · feed-forward | ✅ done | err 3 / tol 5 LSB · -83 dB SNR | edge rand×3 sweep×5 mut |
-| **XorJoinBlock** | (Kyttar-native, no single GR block) | 1 · feed-forward | ⬜ planned | — | — |
+| **XorJoinBlock** | (Kyttar-native, no single GR block) | 1 · feed-forward | ✅ done | err 0 / tol 0 LSB | edge rand×3 mut |
 | **IQUpconvertBlock** | `blocks.multiply_cc` | 2 · stateful/loop | ✅ done | err 1 / tol 6 LSB · -85 dB SNR | mut |
 | **ComplexRRCMatchedFilterBlock** | `filter.fir_filter_ccf (rrc taps)` | 2 · stateful/loop | ✅ done · 🧪 proof-of-concept | err 11 / tol 18 LSB · -54 dB SNR | edge rand×3 sweep×8 mut |
 | **AGCBlock** | `analog.agc_ff` | 2 · stateful/loop | ✅ done | err 3 / tol 80 LSB · -81 dB SNR | mut |

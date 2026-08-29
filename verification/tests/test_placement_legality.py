@@ -201,6 +201,13 @@ BLOCKS = [
     # placement-relevant (NEEDS_DISTINCT_INPUT_FACES) — cover it so a future
     # footprint change (e.g. an emit-sequencing second cell) is caught here.
     ("FeaturePairJoinBlock", {}),
+    # XOR of two INDEPENDENT producers: the same ONE-cell N=2 LOCK rendezvous,
+    # so the same reason to cover it — its two input faces are placement-relevant
+    # (NEEDS_DISTINCT_INPUT_FACES), and at N=2 the face budget (INV-46: N + 2 = 4)
+    # is what keeps it a single cell. A future change that grew it a second cell
+    # would spend a face the rendezvous does not have to spare; catch that here
+    # as a geometry regression rather than as an unexplained routing failure.
+    ("XorJoinBlock", {}),
     # TMR majority voter: 4-cell COLINEAR chain (rendezvous -> agree -> disagree
     # -> emit). Its shape is dictated by a face budget, not by convenience — the
     # N=3 rendezvous needs all four of its faces (three arms + the forward), so

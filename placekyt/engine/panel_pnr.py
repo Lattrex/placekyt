@@ -225,6 +225,24 @@ def _derive_geometry(ct) -> _Geometry:
                      emit=emit, box=box)
 
 
+def _ctor_params(catalog, block) -> set:
+    """The parameter names a project block's CLASS accepts.
+
+    ``blk.params`` holds only what the caller passed, so testing membership there
+    misses a parameter the block declares with a default — and a placement-derived
+    parameter (an egress hop, an output register) is WRONG at its default for
+    every geometry but the one it was written against. Ask the class instead.
+    """
+    import inspect
+    try:
+        spec = catalog.get(block.type, block.library)
+        if spec is None:
+            return set()
+        return set(inspect.signature(spec.cls.__init__).parameters) - {"self"}
+    except Exception:  # noqa: BLE001
+        return set()
+
+
 def _resolve_cell(catalog, block, cell_id):
     """(resolved memory-image resolver outputs) for one cell of a project block:
     ``(entry_addresses, {classified name: addr}, first_entry_name)``."""
@@ -1442,13 +1460,26 @@ def _apply_self_contained_template(project, catalog, ct, blk, req, *,
         x1_in(0,11) → row 11 east → RETURN CELL      (the push-read corridor)
         EGRESS CELL → its column north → row 0 east → x16_out(9,0)
 
-    The EGRESS cell is a free cell on the emit cell's own outgoing walk: the emit
-    cell has one resting face, already committed toward the controller, so its
-    ``out`` WRITE sets off the same way and has to land somewhere that is not the
-    controller. The block leaves that cell blank in its layout; this template
-    finds it and starts the output corridor there. A block whose layout leaves no
-    such cell is rejected with a named error rather than built into a word that
-    gets deflected into the SRAM port.
+    FOUR ROLES, WHICH MAY BE FOUR DIFFERENT CELLS. ``controller_cell`` sits on
+    ``x1_out``; ``input_cell`` receives the stream; ``return_cell`` is where the
+    panel push-read lands (so it must sit on the ``x1_in`` row); and two more,
+    both of which DEFAULT to the return cell so the existing shapes are unchanged:
+
+    * ``panel_client_cell`` — the cell whose WRITE/JUMPs must REACH the
+      controller. Checked with a walk, not assumed.
+    * ``output_cell`` — the cell that owns the block's EGRESS. The template finds
+      the first FREE cell on THIS cell's own outgoing walk and starts the output
+      corridor there: the cell has one resting face and its ``out`` WRITE sets off
+      along it, so it has to land somewhere that is not the controller. The block
+      leaves that cell blank in its layout; a block whose layout leaves no such
+      cell is rejected with a named error rather than built into a word that gets
+      deflected into the SRAM port.
+
+    Separating the two matters because a cell serves ONE direction for free and
+    every extra one costs an in-program face flip (2 instructions + 1 ``is_face``
+    DataWord). A block whose emit cell cannot afford a third face splits the
+    egress onto its own cell — see ``LZ4DecoderBlock`` and INV-46/INV-48 — and
+    then the panel walk and the egress walk start from DIFFERENT cells.
     """
     from engine.autoroute import RouteResult
     from engine.errors import PlacementError
@@ -1464,6 +1495,10 @@ def _apply_self_contained_template(project, catalog, ct, blk, req, *,
     in_cell_id = req.get("input_cell")
     ret_cell = req.get("return_cell", 1)
     ret_port = str(req.get("return_port") or "word")
+    # The panel client and the egress owner default to the return cell, which is
+    # what the single-emit-cell shapes have always been.
+    cli_cell = req.get("panel_client_cell", ret_cell)
+    out_cell = req.get("output_cell", ret_cell)
 
     def _rp(pts):
         return [RoutePoint(x, y) for (x, y) in pts]
@@ -1475,7 +1510,9 @@ def _apply_self_contained_template(project, catalog, ct, blk, req, *,
             f"self-contained panel template: {blk.name} declares "
             "self_contained but has no default_layout to place")
     for need, what in ((ctl_cell, "controller_cell"), (in_cell_id, "input_cell"),
-                       (ret_cell, "return_cell")):
+                       (ret_cell, "return_cell"),
+                       (cli_cell, "panel_client_cell"),
+                       (out_cell, "output_cell")):
         if need not in layout:
             raise PlacementError(
                 f"self-contained panel template: {blk.name}'s {what} {need!r} is "
@@ -1500,42 +1537,80 @@ def _apply_self_contained_template(project, catalog, ct, blk, req, *,
     notes.append("cells placed: "
                  + ", ".join(f"{cid}@{pos[cid]}" for cid in sorted(pos)))
 
-    # ---- 2. The EGRESS cell: the first FREE cell on the return/emit cell's own
-    # outgoing walk, before the controller. The emit cell's `out` WRITE sets off
-    # on that same face, so this is where the output corridor must begin. NOTE
-    # the walk is followed here as a straight line, which is only right while the
-    # cells along it rest on one face; the general rule is that each transit cell
-    # forwards on ITS OWN face (INV-48).
+    # ---- 2. Follow the REAL forwarding rule to find (a) the hop from the panel
+    # CLIENT cell to the controller and (b) the free EGRESS cell on the OUTPUT
+    # cell's own walk.
+    #
+    # THE RULE (INV-48, measured, not inferred): a word leaves on its SOURCE
+    # cell's face, and every cell it then arrives at forwards it on THAT CELL'S
+    # OWN resting face. So the walk is NOT a straight ray — it turns at every
+    # occupied cell it crosses. An earlier revision of this function followed a
+    # straight line, which is right only while every cell on the walk happens to
+    # rest on the same face; a fold that turns (the LZ4 ring) silently got the
+    # wrong cell and the wrong hop.
     occupied = {p: cid for cid, p in pos.items()}
-    ret_pos = pos[ret_cell]
     _fd = {"east": (1, 0), "west": (-1, 0), "north": (0, -1), "south": (0, 1)}
-    rdx, rdy = _fd[str(layout[ret_cell][2])]
+
+    def _walk(start_cid, start_face=None, limit=31):
+        """[(cell_id or None, (x, y))] a word from ``start_cid`` visits."""
+        x, y = pos[start_cid]
+        dx, dy = _fd[str(start_face or layout[start_cid][2])]
+        seen = []
+        for _ in range(limit):
+            x, y = x + dx, y + dy
+            if not (0 <= x < w and 0 <= y < h):
+                break
+            cid = occupied.get((x, y))
+            seen.append((cid, (x, y)))
+            if cid is not None:
+                dx, dy = _fd[str(layout[cid][2])]
+        return seen
+
+    # (a) the panel client must REACH the controller. A cell whose walk needs a
+    # face flip to get there authors that flip itself, so try the resting face
+    # first and then the other three — what must hold is that SOME face reaches
+    # the controller without another of the block's cells swallowing it first.
     ctl_hop = None
-    egress_cell = None
-    emit_hop = None
-    for k in range(1, 32):
-        px, py = ret_pos[0] + rdx * k, ret_pos[1] + rdy * k
-        if not (0 <= px < w and 0 <= py < h):
+    ctl_face = None
+    for _f in (layout[cli_cell][2], "east", "west", "north", "south"):
+        for i, (cid, _p) in enumerate(_walk(cli_cell, _f)):
+            if cid == ctl_cell:
+                ctl_hop, ctl_face = i + 1, _f
+                break
+        if ctl_hop is not None:
             break
-        if occupied.get((px, py)) == ctl_cell:
-            ctl_hop = k
-            break
-        if (px, py) not in occupied and egress_cell is None:
-            egress_cell, emit_hop = (px, py), k
     if ctl_hop is None:
         raise PlacementError(
-            f"self-contained panel template: {blk.name}'s return cell "
-            f"{ret_cell} at {ret_pos} does not reach the controller along its "
-            f"{layout[ret_cell][2]} face — the panel hand-offs cannot be issued")
+            f"self-contained panel template: {blk.name}'s panel client cell "
+            f"{cli_cell} at {pos[cli_cell]} does not reach the controller on ANY "
+            "face — the panel hand-offs cannot be issued. Remember a word turns "
+            "at every occupied cell it crosses (INV-48), so a cell between the "
+            "two must REST toward the controller to stay transparent.")
+
+    # (b) the EGRESS cell: the first FREE cell on the OUTPUT cell's walk, before
+    # the controller. The output cell's `out` WRITE sets off along that face, so
+    # this is where the output corridor must begin.
+    egress_cell = None
+    emit_hop = None
+    for _f in (layout[out_cell][2], "north", "east", "west", "south"):
+        for i, (cid, p) in enumerate(_walk(out_cell, _f)):
+            if cid == ctl_cell:
+                break                      # never past the controller
+            if cid is None:
+                egress_cell, emit_hop = p, i + 1
+                break
+        if egress_cell is not None:
+            break
     if egress_cell is None:
         raise PlacementError(
-            f"self-contained panel template: {blk.name}'s return cell "
-            f"{ret_cell} at {ret_pos} has NO free cell on its "
-            f"{layout[ret_cell][2]} face before the controller (hop {ctl_hop}) — "
-            "its output WRITE would transit the controller and be deflected into "
-            "the SRAM port. Leave one cell of the layout blank on that walk.")
-    notes.append(f"egress cell {egress_cell} (emit @{emit_hop}); "
-                 f"controller @{ctl_hop}")
+            f"self-contained panel template: {blk.name}'s output cell "
+            f"{out_cell} at {pos[out_cell]} has NO free cell on any of its walks "
+            f"before the controller — its output WRITE would transit the "
+            "controller and be deflected into the SRAM port. Leave one cell of "
+            "the layout blank on that walk.")
+    notes.append(f"panel client {cli_cell} -> controller @{ctl_hop} "
+                 f"(face {ctl_face}); egress cell {egress_cell} from output cell "
+                 f"{out_cell} @{emit_hop}")
 
     # ---- 3. Derived panel params. The controller sits ON the port cell, so its
     # own WRITE/JUMP exit directly (@1); the block's emit cell reaches it at the
@@ -1551,6 +1626,7 @@ def _apply_self_contained_template(project, catalog, ct, blk, req, *,
             f"self-contained panel template: {blk.name} cell {ret_cell} has no "
             f"register named {ret_port!r} (have {sorted(emit_named)})")
     # Return corridor: x1_in, east along its row, landing ON the return cell.
+    ret_pos = pos[ret_cell]
     ret_route = ([geo.x1_in_cell]
                  + [(x, geo.x1_in_cell[1])
                     for x in range(geo.x1_in_cell[0] + 1, ret_pos[0] + 1)])
@@ -1559,6 +1635,18 @@ def _apply_self_contained_template(project, catalog, ct, blk, req, *,
             f"self-contained panel template: {blk.name}'s return cell "
             f"{ret_pos} is not on the x1_in row {geo.x1_in_cell[1]} — the "
             "push-read corridor cannot reach it")
+    # A corridor cell that is ONE OF THE BLOCK'S OWN forwards on its own resting
+    # face, so it must rest EAST or the push-read is deflected off the corridor
+    # (INV-48; the same rule that makes the egress cell opaque). A blank corridor
+    # cell is faced by the drawn route, so only the block's own cells are checked.
+    _bad = [p for p in ret_route[:-1]
+            if p in occupied and str(layout[occupied[p]][2]) != "east"]
+    if _bad:
+        raise PlacementError(
+            f"self-contained panel template: {blk.name}'s push-read corridor "
+            f"transits its own cells at {_bad}, which do not rest EAST — the "
+            "returned byte would be deflected off the corridor. A block cell on "
+            "the x1_in row west of the return cell must face along it.")
     ret_hop = 31 - len(ret_route)
     if ret_hop < 0:
         raise PlacementError(
@@ -1662,16 +1750,31 @@ def _apply_self_contained_template(project, catalog, ct, blk, req, *,
         ChipPortEndpoint(chip, "x16_out"), route=_rp(eg_route),
         out_tag=out_tag))
     results.append(RouteResult("block_to_out", True, points=list(eg_route)))
-    # The emit cell AUTHORS its own `out` WRITE/JUMP (RAW_OUTPUT_HOPS): the same
-    # cell issues the panel protocol, so the build's exit patch must not touch
-    # it. Give it the measured hop to the egress cell; the word then rides the
-    # drawn corridor to the port. The dest carries the net's output TAG so
-    # several chains sharing one port stay distinguishable on the wire.
-    if "emit_hop" in blk.params:
+    # The output cell AUTHORS its own `out` WRITE/JUMP (RAW_OUTPUT_HOPS), because
+    # the block also speaks the panel protocol and the build's exit patch would
+    # rewrite BOTH. The dest carries the net's output TAG so several chains
+    # sharing one port stay distinguishable on the wire.
+    #
+    # THE HOP IS THE WHOLE CORRIDOR, NOT THE FIRST CELL. The corridor is made of
+    # PLAIN TRANSIT cells, and a transiting word (HOP_CNT < 31) is forwarded by
+    # the hardware on the cell's ``fwd_face`` before any program is consulted —
+    # only a word that LANDS (HOP_CNT == 31) executes there. So aiming the WRITE
+    # at the egress cell (@1) parks the byte on the first corridor cell instead of
+    # sending it down the corridor. The word must be given the full transit count:
+    # every corridor cell, plus one more to EXIT the port (the same ``distance +
+    # 1`` the router's own sink path uses).
+    emit_hop = len(eg_route) + 1
+    #
+    # The parameter is set whenever the BLOCK CLASS accepts it — not only when the
+    # caller happened to pass it. A design built from an empty params dict gets
+    # the constructor's default, and a hard-coded default hop is wrong for every
+    # geometry but the one it was written against (it is placement-derived).
+    if "emit_hop" in _ctor_params(catalog, blk):
         blk.params["emit_hop"] = int(emit_hop)
         blk.params["out_dest"] = int(out_tag) if out_tag is not None else 0
         blk.params["emit_entry"] = 0
-        notes.append(f"emit authored: hop {emit_hop} -> {egress_cell}, "
+        notes.append(f"emit authored: hop {emit_hop} (egress {egress_cell} + "
+                     f"{len(eg_route)}-cell corridor + port exit), "
                      f"dest {blk.params['out_dest']}")
     notes.append(f"corridors: in {len(in_route)}, return {len(ret_route)}, "
                  f"egress {len(eg_route)}")

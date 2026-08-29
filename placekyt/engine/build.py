@@ -481,6 +481,8 @@ class BuildEngine:
         gr_blocks: dict[str, object] = {}
         anchors: dict[str, tuple[int, int]] = {}
         shapes: dict[str, object] = {}
+        faces: dict[str, list] = {}
+        orients: dict[str, list] = {}
         for blk in blocks:
             spec = self.catalog.get(blk.type, blk.library)
             if spec is None:
@@ -510,6 +512,23 @@ class BuildEngine:
                 continue
             gr_blocks[blk.name] = gr_block
             anchors[blk.name] = anchor
+            # The AUTHORED resting face of each placed cell, positionally aligned
+            # with ``offsets`` (hence with ``PlacedBlock.cells``). The Router needs
+            # these to measure an INTERNAL hop by WALKING the faces — its own
+            # cell_map does not carry them yet at that point, and guessing from
+            # Manhattan distance silently produces a hop that lands the word on
+            # the wrong cell (INV-50). These faces are already orientation-rotated
+            # (``Placement.transform`` maps face and coordinate together), so a
+            # rotated block is correct here with no extra D4 step (INV-23).
+            faces[blk.name] = [
+                _PORT_FACE_CODE.get(getattr(c.face, "value", None))
+                for c in cells]
+            # The block's D4 orientation, so the Router can rotate the block's
+            # IN-PROGRAM face constants before treating them as directions. The
+            # cell FACES above are already transformed; these constants are not
+            # (the build rewrites them later) — INV-23.
+            orients[blk.name] = list(getattr(blk.placement, "orientation", None)
+                                     or [])
             # A block may declare that its OUTPUT leaves a NON-last cell (e.g. a
             # Costas loop's recovered I exits the rotate cell, which is mid-block).
             # Find that cell's offset by matching cell_id so the Shape's exit_cell
@@ -565,6 +584,8 @@ class BuildEngine:
             # cell to the output-port hop). See BlockDefinition.raw_output_hops.
             block_def.raw_output_hops = bool(
                 getattr(gr_block, "RAW_OUTPUT_HOPS", False))
+            block_def.cell_faces = list(faces.get(name) or [])
+            block_def.orientation = list(orients.get(name) or [])
             try:
                 placement.place(block_def, shapes[name], anchors[name])
             except Exception as exc:  # noqa: BLE001 — overlap, etc.

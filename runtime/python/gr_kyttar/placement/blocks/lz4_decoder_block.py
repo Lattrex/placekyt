@@ -145,7 +145,7 @@ class LZ4DecoderBlock(KyttarBlock):
     own output position. The window is live read-write state, not a table — which is
     what makes the write-before-read ordering load-bearing (see the overlap note).
 
-    The cell decomposition (7 cells + the panel)
+    The cell decomposition (8 cells + the panel)
     --------------------------------------------
     The parse FSM does not fit one cell: measured at 33 instructions against a 23-word
     budget once its data words, state and input register are accounted for. It is split
@@ -165,11 +165,34 @@ class LZ4DecoderBlock(KyttarBlock):
           ``nb``
     4     ``mat``       **MATCHLEN** — the match-length continuation; hands the final
           --            run length to cell 5 and fires the first fetch.
-    5     ``wpos``      **EMIT** — the single egress + history-write point, the
-          ``off``       ``src = wpos - off`` address calculation, AND the match copy
-          ``mat``       loop. Also the cell the panel push-read delivers into.
+    5     ``wpos``      **EMIT** — the history-write point, the ``src = wpos - off``
+          ``off``       address calculation, AND the match copy loop. Also the cell
+          ``mat``       the panel push-read delivers into.
+    7     --            **OUT** — the block's egress. Receives each decoded byte from
+                        cell 5 and issues the ``out`` ``WRITE``/``JUMP`` up the output
+                        corridor. See "why the egress is its own cell" below.
     6     --            **CTL** — the embedded :class:`SramControllerBlock`.
     ===== ============= ==============================================================
+
+    Why the egress is its own cell (INV-46 / INV-48)
+    ------------------------------------------------
+    A word leaves on its SOURCE cell's face, and every cell it then arrives at
+    forwards it on **that cell's own** resting face, so a cell serves ONE direction
+    for free and each extra one costs an in-program FACE FLIP (2 instructions + 1
+    ``is_face`` DataWord = 3 words). With the egress in cell 5 that cell had to serve
+    THREE directions — the ring-forward to the router, the panel, and the output
+    corridor — i.e. 6 words against the 5 it has. Exhaustive search over three
+    independent placement windows found no arrangement that avoids it.
+
+    Splitting the egress out is INV-46's "prefer more cells doing less": cell 5 now
+    rests on the ring face (its ``gohead`` is free) and flips EAST once for a burst
+    that serves cell 7 at hop 1 and the controller at hop 2 — **one flip, one
+    direction, three words**. Cell 7 is nearly empty, so the flip its own egress
+    needs is free. Cell 7 sits BETWEEN cell 5 and the controller and rests facing
+    the controller, so cell 5's panel words transit it (an occupied cell IS
+    transparent to a hop-counted word — measured), and its own north flip does not
+    disturb them (measured: 180 concurrent transits across a flipping cell, zero
+    losses).
 
     Three encodings keep every cell inside budget, and all three are load-bearing:
 
@@ -190,7 +213,8 @@ class LZ4DecoderBlock(KyttarBlock):
     ---------------------------------------------------------------------
     The copy loop lives ENTIRELY inside cell 5 and is closed through the panel: cell 5
     computes ``wpos - off`` and issues the push-read, the panel delivers that one byte
-    back into cell 5, cell 5 emits it, **appends it to the window**, bumps ``wpos``,
+    back into cell 5, cell 5 hands it to cell 7 for egress, **appends it to the
+    window**, bumps ``wpos``,
     decrements ``mat`` and — if more remain — branches back to ``fetch`` locally.
     Because ``wpos`` advances and the byte is written to the window *before* the next
     fetch is issued, a match with ``match_len > offset`` reads back bytes this same
@@ -207,11 +231,20 @@ class LZ4DecoderBlock(KyttarBlock):
     Panel cost (the number that scopes the encoder)
     -----------------------------------------------
     Per the ``SRAM_PANEL.md`` §2-3 protocol, one **emitted** byte costs a history write
-    (``set_addr`` + ``write`` = 3 panel-port words) and one **match** byte costs that
-    plus a push-read (4 words out + the 2-word panel-originated return) = **9
-    panel-port words per back-reference byte**. The link is single-outstanding
+    (``write`` = 3 panel-port words) and one **match** byte costs that plus a push-read
+    (4 words out + the 2-word panel-originated return) = **9 panel-port words per
+    back-reference byte**. The link is single-outstanding
     (``SRAM_PANEL.md`` §5), so these are sequential held-ack handshakes with the
     upstream stalled behind them — the per-sample pacing the panel contract specifies.
+
+    The per-byte ``set_addr`` an earlier revision issued before every ``write`` is
+    GONE, and its removal is proven on silicon: the read and write paths do NOT share
+    a counter. ``write`` drives the controller's ``wraddr``; ``lookup``/``read`` drive
+    its ``rdaddr``; each re-writes the panel's single R5 address latch from its OWN
+    counter before its own trigger, so the interleaving is safe. ``wraddr`` boots at 0
+    and this block appends exactly one byte per emitted byte from 0 — the same
+    sequence ``wpos`` follows. Dropping it costs nothing and freed the three words the
+    emit cell's face flip needed.
 
     Port topology
     -------------
@@ -279,8 +312,10 @@ class LZ4DecoderBlock(KyttarBlock):
     # ------------------------------------------------------------------ shape
     @property
     def cell_count(self) -> int:
-        # router + token + literal + offset + matchlen + emit + SRAM controller.
-        return 7
+        # router + token + literal + offset + matchlen + emit + SRAM controller
+        # + the dedicated egress cell (see the class docstring: the emit cell
+        # cannot afford a THIRD direction, so the output moves to its own cell).
+        return 8
 
     @property
     def interface(self) -> BlockInterface:
@@ -303,11 +338,22 @@ class LZ4DecoderBlock(KyttarBlock):
         ``self_contained`` selects the panel template shape (``engine/panel_pnr.py``).
         The Varicode/CW RX shape names 3-4 ROLE cells and places ONLY those, deriving
         a read-via-controller indirection and a crossover egress. This block is
-        different in kind: it has SEVEN cells, its emit cell drives the controller
-        directly (no read indirection), and its egress is its own ``out`` port — so it
-        supplies its whole ``default_layout`` and asks the template to lay that row
-        down with the controller pinned on the panel port. See
-        :meth:`default_layout` for why the row (and not a fold) is the shape.
+        different in kind: it has EIGHT cells, its emit cell drives the controller
+        directly (no read indirection), and its egress is its own ``out`` port on a
+        cell of its own — so it supplies its whole ``default_layout`` and asks the
+        template to lay that fold down with the controller pinned on the panel port.
+        See :meth:`default_layout` for the shape and why it is the shape.
+
+        Four roles are named, and they are FOUR DIFFERENT CELLS:
+
+        * ``controller_cell`` (6) sits on ``x1_out``;
+        * ``input_cell`` (0) is where the compressed stream lands;
+        * ``return_cell`` (5) is where the panel push-read lands — so it must sit on
+          the ``x1_in`` row;
+        * ``panel_client_cell`` (5) is the cell whose WRITE/JUMPs reach the
+          controller, and ``output_cell`` (7) is the cell that owns the EGRESS walk.
+          Those two are the same cell in the Varicode shape and DIFFERENT here, which
+          is exactly the split this block needed (see the class docstring).
         """
         return {
             "label": f"LZ4 history window ({self._window_words} x 16b)",
@@ -317,6 +363,16 @@ class LZ4DecoderBlock(KyttarBlock):
             "input_cell": 0,
             "return_port": "b",
             "return_cell": 5,
+            # The cell whose panel hand-offs must REACH the controller. Defaults to
+            # the return cell; named explicitly here because this block's egress
+            # lives on a different cell (below) and the template must check the two
+            # walks separately.
+            "panel_client_cell": 5,
+            # The cell that owns the block's OUTPUT: the template finds the free
+            # EGRESS cell on THIS cell's walk and starts the output corridor there.
+            # In the Varicode shape it is the return cell; here it is cell 7, which
+            # exists precisely so the emit cell does not have to serve a third face.
+            "output_cell": 7,
             # The push-read result must kick `emit_mat`, NOT the return cell's
             # lowest-addressed entry: a fetched match byte re-enters the copy loop
             # mid-body (emit the byte, append it, decrement, refetch). Landing on
@@ -327,7 +383,7 @@ class LZ4DecoderBlock(KyttarBlock):
 
     # ------------------------------------------------------------- the programs
     def build_cell_programs(self) -> Dict[Any, CellProgram]:
-        """The seven cell programs. See the class docstring for the decomposition."""
+        """The eight cell programs. See the class docstring for the decomposition."""
         # ---------------------------------------------------------- cell 0 ROUTER
         # Holds `st`. Every compressed byte lands here and is steered to the handler
         # for the current phase. A handler that changes the phase WRITEs the new
@@ -462,19 +518,34 @@ class LZ4DecoderBlock(KyttarBlock):
         # off = (off >> 8) | (b << 8). After two bytes the FIRST byte has been
         # shifted down into bits[7:0] and the SECOND sits in bits[15:8] — exactly
         # little-endian, and exactly what the big-endian mutation breaks.
+        #
+        # It is also the WHOLE match phase's landing cell: the router steers every
+        # ST_MATCH byte here, and after the two offset bytes the phase is not over
+        # — a token whose match nibble was 15 is followed by match-length
+        # CONTINUATION bytes (``decode_model``'s ``ext`` branch). Those arrive on
+        # this same entry with ``nb`` already 0, so the cell must RELAY them to
+        # cell 4's `feed` rather than fall through to HALT. Without the relay the
+        # continuation byte is silently dropped and the match never fires — which
+        # is exactly what happened on chip for every payload whose match is longer
+        # than 18 bytes (`b'Q'*40`, `b'abc'*12`, ordinary English text).
         offset = CellProgram(
             inputs=[Port("b")],
-            outputs=[Port("setoff"), Port("ready")],
+            outputs=[Port("setoff"), Port("ready"), Port("ext")],
             entries=[EntryPoint("feed"), EntryPoint("arm")],
             data=[DataWord("one", 1, address=1),
-                  DataWord("two", 2, address=2)],
-            state=[StateVar("off", register=3, initial_value=0),
-                   StateVar("nb", register=4, initial_value=0)],
+                  DataWord("two", 2, address=2),
+                  DataWord("zero", 0, address=3)],
+            state=[StateVar("off", register=4, initial_value=0),
+                   StateVar("nb", register=5, initial_value=0)],
             assembly_template=(
                 "arm:\n"
                 "    MOVE R{state:nb}, R{data:two}\n"
                 "    HALT\n"
                 "feed:\n"
+                # nb == 0 -> this is a match-LENGTH continuation byte, not an
+                # offset byte: hand it to cell 4 and stay out of the way.
+                "    SUB R{state:nb}, R{data:zero}\n"    # R0 = nb, sets Z
+                "    BR.Z relay\n"
                 "    SHR R{state:off}, #8\n"
                 "    MOVE R{state:off}, R0\n"
                 "    SHL R{in:b}, #8\n"
@@ -486,6 +557,11 @@ class LZ4DecoderBlock(KyttarBlock):
                 "    MOVE R0, R{state:off}\n"
                 "    {write:setoff}\n"                # cell 5's `off`
                 "    {jump:ready}\n"                  # cell 4's `ready`
+                "    HALT\n"
+                "relay:\n"
+                "    MOVE R0, R{in:b}\n"
+                "    {write:ext}\n"                   # cell 4's `b`
+                "    {jump:ext}\n"                    # cell 4's `feed`
                 "done:\n"
                 "    HALT\n"
             ),
@@ -530,53 +606,60 @@ class LZ4DecoderBlock(KyttarBlock):
         )
 
         # ------------------------------------------------------------ cell 5 EMIT
-        # The single egress + history-write point, and the WHOLE match copy loop.
-        # `mat` is both the run counter and the literal/match discriminator:
+        # The history-write point and the WHOLE match copy loop. `mat` is both the
+        # run counter and the literal/match discriminator:
         #   emit_lit zeroes it -> after the shared decrement it is -1 (N) -> stop;
         #   emit_mat leaves the run length -> 0 (Z) on the last byte -> finish the
         #   sequence; > 0 -> branch back to `fetch` LOCALLY.
-        # The `out` egress is AUTHORED (RAW_OUTPUT_HOPS), not a {write:out}
-        # placeholder: this one cell issues BOTH the block's output and the three
-        # panel hand-offs, and the build's output-port patch rewrites every
-        # WRITE/JUMP in an exit cell to the egress route. Letting it do that here
-        # retargeted set_addr/write/lookup at the output corridor and killed the
-        # panel traffic outright. Authoring the hop keeps the two apart.
-        eh, od, ee = self._emit_hop, self._out_dest, self._emit_entry
+        #
+        # FACES. The cell RESTS on the ring face (`gohead` -> the router, hop 1,
+        # free) and FLIPS EAST for one burst that serves BOTH cell 7 (the egress
+        # cell, hop 1) and the controller (hop 2, transiting cell 7 — an occupied
+        # cell is transparent to a hop-counted word). That is ONE flip: 2
+        # instructions + 1 `is_face` DataWord. Resting east instead would break the
+        # ring, because cells 1 and 2 reach the router's `st` THROUGH this cell.
         emit = CellProgram(
             inputs=[Port("b")],
-            outputs=[Port("hist_addr"), Port("hist_data"),
-                     Port("read"), Port("gohead")],
+            outputs=[Port("hist_data"), Port("read"), Port("out"),
+                     Port("gohead")],
             entries=[EntryPoint("emit_lit"), EntryPoint("emit_mat"),
                      EntryPoint("fetch")],
             data=[DataWord("one", 1, address=1),
-                  DataWord("zero", 0, address=2)],
-            state=[StateVar("wpos", register=3, initial_value=0),
-                   StateVar("off", register=4, initial_value=0),
-                   StateVar("mat", register=5, initial_value=0)],
+                  DataWord("zero", 0, address=2),
+                  # S=0, E=1, W=2, N=3. Both are `is_face`, so the placer D4-rotates
+                  # them with the block (INV-23).
+                  DataWord("face_panel", 1, address=3, is_face=True),
+                  DataWord("face_ring", 3, address=4, is_face=True)],
+            state=[StateVar("wpos", register=5, initial_value=0),
+                   StateVar("off", register=6, initial_value=0),
+                   StateVar("mat", register=7, initial_value=0)],
             assembly_template=(
                 # src = wpos - off, mod 2**16 -- the 16-bit register IS the window
                 # wrap, which is why no masking instruction is needed.
                 "fetch:\n"
                 "    SUB R{state:wpos}, R{state:off}\n"
-                "    {write:read}\n"
-                "    {jump:read}\n"
+                "    MOVE [FACE], R{data:face_panel}\n"
+                "    {write:read}\n"                  # ctl.data = wpos - off
+                "    {jump:read}\n"                   # ctl.lookup
+                "    MOVE [FACE], R{data:face_ring}\n"
                 "    HALT\n"
                 "emit_lit:\n"
                 "    MOVE R{state:mat}, R{data:zero}\n"
                 "emit_mat:\n"
+                "    MOVE [FACE], R{data:face_panel}\n"
                 "    MOVE R0, R{in:b}\n"
-                f"    WRITE @{eh}, {od}\n"
-                f"    JUMP @{eh}, {ee}\n"
+                "    {write:out}\n"                   # cell 7's `b`
+                "    {jump:out}\n"                    # cell 7's `send`
+                # R0 still holds the byte: WRITE/JUMP transmit the accumulator, they
+                # do not clobber it, so the history write needs no second MOVE.
                 # Append to the history window BEFORE the next fetch is issued —
                 # this ordering is what makes an overlapping match (match_len >
                 # offset; offset == 1 in the limit) read back the bytes this same
-                # match just produced.
-                "    MOVE R0, R{state:wpos}\n"
-                "    {write:hist_addr}\n"
-                "    {jump:hist_addr}\n"              # ctl.set_addr(wpos)
-                "    MOVE R0, R{in:b}\n"
+                # match just produced. The controller's `write` entry auto-increments
+                # its own `wraddr`, which is why no `set_addr` precedes it.
                 "    {write:hist_data}\n"
                 "    {jump:hist_data}\n"              # ctl.write(byte)
+                "    MOVE [FACE], R{data:face_ring}\n"
                 "    ADD R{state:wpos}, R{data:one}\n"
                 "    MOVE R{state:wpos}, R0\n"
                 "    SUB R{state:mat}, R{data:one}\n"
@@ -585,6 +668,36 @@ class LZ4DecoderBlock(KyttarBlock):
                 "    BR.NZ fetch\n"                   # more match bytes to copy
                 "    {jump:gohead}\n"                 # sequence done -> expect token
                 "done:\n"
+                "    HALT\n"
+            ),
+        )
+
+        # ------------------------------------------------------------- cell 7 OUT
+        # The block's EGRESS, on a cell of its own. It rests facing the CONTROLLER
+        # so that cell 5's panel words transit it untouched, and flips toward the
+        # output corridor for its own WRITE/JUMP.
+        #
+        # The `out` hop is AUTHORED (RAW_OUTPUT_HOPS), not a {write:out} placeholder:
+        # the build's output-port patch rewrites every WRITE/JUMP in an exit cell to
+        # the egress route, which — when this lived in cell 5 — retargeted the panel
+        # hand-offs at the output corridor and killed the panel traffic outright.
+        # Authoring the hop keeps the two apart. (Cell 7 has no other WRITE, so the
+        # patch would be harmless here; the flag is kept because cell 5 and the
+        # embedded controller both still author their own hops.)
+        eh, od, ee = self._emit_hop, self._out_dest, self._emit_entry
+        out_cell = CellProgram(
+            inputs=[Port("b")],
+            outputs=[Port("egress")],
+            entries=[EntryPoint("send")],
+            data=[DataWord("face_egress", 3, address=1, is_face=True),
+                  DataWord("face_rest", 1, address=2, is_face=True)],
+            assembly_template=(
+                "send:\n"
+                "    MOVE [FACE], R{data:face_egress}\n"
+                "    MOVE R0, R{in:b}\n"
+                f"    WRITE @{eh}, {od}\n"
+                f"    JUMP @{eh}, {ee}\n"
+                "    MOVE [FACE], R{data:face_rest}\n"
                 "    HALT\n"
             ),
         )
@@ -598,11 +711,11 @@ class LZ4DecoderBlock(KyttarBlock):
         ctl_cell = ctl.build_cell_programs()[0]
 
         return {0: router, 1: token, 2: literal, 3: offset, 4: matchlen,
-                5: emit, 6: ctl_cell}
+                5: emit, 6: ctl_cell, 7: out_cell}
 
     # ------------------------------------------------------------ block wiring
     def internal_connections(self) -> List[Tuple[Any, str, Any, str]]:
-        """The DATA (``WRITE``) hand-offs between the seven cells."""
+        """The DATA (``WRITE``) hand-offs between the eight cells."""
         return [
             (0, "tok", 1, "b"),
             (0, "lit", 2, "b"),
@@ -613,14 +726,15 @@ class LZ4DecoderBlock(KyttarBlock):
             (2, "emit", 5, "b"),
             (2, "st_set", 0, "st"),
             (3, "setoff", 5, "off"),
+            (3, "ext", 4, "b"),
             (4, "setmat", 5, "mat"),
-            (5, "hist_addr", 6, "data"),
+            (5, "out", 7, "b"),
             (5, "hist_data", 6, "data"),
             (5, "read", 6, "data"),
         ]
 
     def internal_jumps(self) -> List[Tuple[Any, str, Any, str]]:
-        """The TRIGGER (``JUMP``) edges between the seven cells.
+        """The TRIGGER (``JUMP``) edges between the eight cells.
 
         Note what is NOT here: the ``st_set`` hand-offs are DATA-only. A phase change
         needs no trigger, because the router is re-entered by the next input byte
@@ -636,76 +750,89 @@ class LZ4DecoderBlock(KyttarBlock):
             (2, "emit", 5, "emit_lit"),
             (2, "arm", 3, "arm"),
             (3, "ready", 4, "ready"),
-            (4, "fetch", 5, "emit_mat"),
-            (5, "hist_addr", 6, "set_addr"),
+            (3, "ext", 4, "feed"),
+            # The FIRST fetch of a match run: cell 4 has the final run length and
+            # kicks the emit cell's ``fetch`` — which computes ``wpos - off`` and
+            # issues the push-read. It must NOT kick ``emit_mat``: that entry is
+            # the RETURN door (the panel's fetched byte re-enters the copy loop
+            # mid-body there), and firing it with no byte fetched emits whatever
+            # ``b`` still holds — the previous literal. Measured: the first match
+            # byte came out as the last literal and every later one was one
+            # position early, because the run then continued from a window the
+            # spurious byte had already corrupted.
+            (4, "fetch", 5, "fetch"),
+            (5, "out", 7, "send"),
             (5, "hist_data", 6, "write"),
             (5, "read", 6, "lookup"),
             (5, "gohead", 0, "settoken"),
         ]
 
     def output_cell_id(self) -> Any:
-        """The decompressed byte stream leaves the EMIT cell (5), not the last one.
+        """The decompressed byte stream leaves the OUT cell (7).
 
-        Cell 6 is the embedded SRAM controller — it is placed last and speaks only
-        to the panel, so the default "output leaves the last cell" assumption would
-        aim this block's egress at the panel port. The `out` port is cell 5's.
+        Cell 6 is the embedded SRAM controller — it speaks only to the panel, so the
+        default "output leaves the last cell" assumption would aim this block's
+        egress at the panel port. The `out` port is cell 7's: a cell that exists
+        precisely so the emit cell (5) does not have to serve a third direction.
         """
-        return 5
+        return 7
 
     def default_layout(self) -> Dict[Any, Tuple[int, int, str]]:
-        """A 7x1 row. **This layout PLACES and BUILDS but does not yet RUN** — see
-        the caveat below before changing anything here.
+        """A 3x2 RING over cells 0..5, with the OUT cell and the CTL on the tail.
 
-        The row, west to east, and each cell's face::
+        Coordinates are relative; the template translates the whole fold so the CTL
+        lands on the ``x1_out`` port cell. On ``kyttar_10x12`` that is::
 
-            x:      0        1         2        3        4       5      6      7
-            cell:   1        2         3        4        5       0    (gap)    6
-                  TOKEN   LITERAL   OFFSET  MATCHLEN   EMIT   ROUTER  EGRESS  CTL
-            face:  east     east      east     east     east    west          south
+            x:        5         6        7        8        9
+            y=10:  LITERAL    TOKEN    ROUTER  (egress)
+                   face S     face W   face W   (blank, the corridor turns N here)
+            y=11:  OFFSET   MATCHLEN   EMIT      OUT      CTL
+                   face E     face E   face N   face E   face S
 
-        The row is arranged so the ROUTER (the block's stream input) sits next to
-        the panel port, where the RX-tail input corridor delivers, and x=6 is left
-        EMPTY as the cell the emit cell's ``out`` WRITE lands on (the egress
-        corridor to ``x16_out`` starts there).
+        **Why a ring.** A word leaves on its SOURCE cell's face and every cell it
+        then arrives at forwards it on **that cell's own** face, so each cell has
+        exactly ONE free outgoing walk and all of its targets must lie along it. On
+        a LINE the phase hand-backs (``1 -> 0`` and ``2 -> 0``, the ``st_set``
+        writes) run against the traffic and every arrangement needs a flip
+        somewhere it cannot be afforded. A ring closes them for free: the walk from
+        any cell continues round to the router. Cells 0..5 sit on the ring in their
+        natural order 0->1->2->3->4->5->0, and **thirteen of the block's fifteen
+        internal edges deliver on the RESTING face with no flip at all** —
+        including ``1 -> 0`` (hop 5) and ``2 -> 0`` (hop 4), which is what the ring
+        buys.
 
-        **THE KNOWN GAP — do not trust the ray model.** This row was derived under
-        the assumption that a word keeps its SENDER's direction for the whole
-        corridor. That is FALSE. A simkyt trace shows the real rule: a word leaves
-        on the source cell's face, and every cell it then arrives at forwards it on
-        **that cell's own** face. So each cell has exactly ONE outgoing walk, and
-        all of its internal targets must lie along it. Here the router faces west
-        but the emit cell beside it faces east, so the router's three dispatch
-        words bounce between the two and the simulation hangs. Four internal edges
-        do not deliver: ``0->1``, ``0->2``, ``0->3`` and ``5->6``; the exact set is
-        pinned by ``test_internal_edges_that_do_not_route_are_exactly_the_known_gap``.
+        **Why the OUT cell exists.** The remaining two edges are the emit cell's:
+        it must reach the controller AND the output corridor, on top of its ring
+        face. Three directions is two flips = 6 words against the 5 the cell has —
+        the measured wall this block sat behind. Cell 7 takes the egress, and it is
+        placed BETWEEN the emit cell and the controller, resting toward the
+        controller. So the emit cell's ONE eastward flip serves cell 7 at hop 1
+        (the decoded byte) and the controller at hop 2 (the panel words transit
+        cell 7, which an occupied cell forwards untouched). One flip, three words,
+        two words to spare.
 
-        **What a fix looks like** (both idioms are shipped and verified elsewhere):
+        **The three corridors** the template draws around this fold:
 
-        * lay the block out so each cell's targets are CONSECUTIVE along one walk —
-          ``LMSEqualizerBlock``'s ``bcast`` faces west with its six targets in the
-          six cells west of it; and/or
-        * author an in-program FACE FLIP: ``DataWord(..., is_face=True)`` plus
-          ``MOVE [FACE], R{data:face_x}`` … WRITEs … ``MOVE [FACE], R{data:face_y}``
-          (``LMSEqualizerBlock`` ``f0``, ``MMTimingRecoveryBlock``). Cost is 2
-          instructions + 1 data word per extra direction.
-
-        A ring over cells 0..5 with the CONTROLLER OFF the ring satisfies all 14
-        inter-cell edges in the natural order (exhaustively verified). The one
-        edge left over is ``emit -> controller``, which needs a face flip the emit
-        cell cannot currently afford — it has 2 free words against the 3 a flip
-        costs. Dropping the redundant per-byte ``set_addr`` (the controller's
-        ``write`` entry already auto-increments ``wraddr``, verified equivalent on
-        19 payloads) frees exactly the words needed, but changes the program the
-        match copy is proven on in ``test_onchip_match_copy_through_the_real_panel``
-        and so needs its own silicon re-verification.
-
-        The block is placed by the self-contained panel template
-        (``engine/panel_pnr.py``), which lays this row along the chip's bottom edge
-        with the CTL on the ``x1_out`` port cell.
+        * ``x16_in`` (0,0) east along row 0, then SOUTH down the router's column,
+          landing on the ROUTER — column 7 rows 1..9 are free;
+        * ``x1_in`` (0,11) east along row 11, landing on the EMIT cell — the two
+          ring cells it transits (OFFSET, MATCHLEN) both rest EAST, so they forward
+          the push-read along the corridor instead of deflecting it;
+        * the EGRESS from cell 7: north to the free cell at (8,10), up column 8 to
+          row 0, then east to ``x16_out`` (9,0).
         """
-        return {0: (5, 0, "west"), 1: (0, 0, "east"), 2: (1, 0, "east"),
-                3: (2, 0, "east"), 4: (3, 0, "east"), 5: (4, 0, "east"),
-                6: (7, 0, "south")}
+        return {
+            # --- the ring, in order 0 -> 1 -> 2 -> 3 -> 4 -> 5 -> 0 -----------
+            0: (2, 0, "west"),      # ROUTER    -> 1 h1, 2 h2, 3 h3
+            1: (1, 0, "west"),      # TOKEN     -> 2 h1, 3 h2, 4 h3, 0 h5
+            2: (0, 0, "south"),     # LITERAL   -> 3 h1, 5 h3, 0 h4
+            3: (0, 1, "east"),      # OFFSET    -> 4 h1, 5 h2
+            4: (1, 1, "east"),      # MATCHLEN  -> 5 h1
+            5: (2, 1, "north"),     # EMIT      -> 0 h1 (ring); flips E: 7 h1, 6 h2
+            # --- the tail: egress cell, then the controller on the panel port --
+            7: (3, 1, "east"),      # OUT       -> transparent to 6; flips N to egress
+            6: (4, 1, "south"),     # CTL       -> the x1_out panel port
+        }
 
     # --------------------------------------------------------------- reference
     def process_reference(self, input_bytes) -> np.ndarray:
@@ -727,9 +854,10 @@ class LZ4DecoderBlock(KyttarBlock):
         The controller macro is what speaks to the panel, so a decoder operation
         costs whatever controller entry it invokes (``SRAM_PANEL.md`` §2-4):
 
-        * **history write** = ``set_addr`` (0 panel words — it only latches the
-          controller's own address counters) then ``write`` = ``WRITE R5``,
-          ``WRITE R2``, ``JUMP R0`` = **3** panel-port words;
+        * **history write** = ``write`` = ``WRITE R5``, ``WRITE R2``, ``JUMP R0``
+          = **3** panel-port words (no ``set_addr`` precedes it: the controller
+          auto-increments its own ``wraddr``, and the read path drives a separate
+          ``rdaddr``, so the two never collide — proven on silicon);
         * **push-read** = ``lookup``/``read`` = ``WRITE R3``, ``WRITE R4``,
           ``WRITE R5``, ``JUMP R1`` = **4** words out, plus the panel-originated
           return (a ``WRITE`` + a ``JUMP`` injected into the chip input port) = **2**

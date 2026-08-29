@@ -700,27 +700,88 @@ class Router:
             return int(Face.NORTH)
         return None            # not abutting: not a face we can name
 
+    @staticmethod
+    def _authored_faces(pb, block_def) -> Dict[Tuple[int, int], "Face"]:
+        """``{(x, y): Face}`` for a placed block's own cells, from the faces the
+        block AUTHORED (already orientation-rotated by the caller's placement).
+
+        THE OTHER HALF OF THE WALK. :meth:`_declared_emit_face` fixes the FIRST
+        step — which face the source cell emits this particular port on. These
+        faces fix every step AFTER it: a word turns at each occupied cell it
+        crosses, on THAT cell's resting face, and during internal resolution the
+        ``cell_map`` does not yet hold those. It holds the router's own guess
+        (``_configure_block_cells`` faces a cell toward whichever internal
+        connection the dict yielded first) and the caller's authored faces are
+        applied later, by ``build._apply_block_cell_faces``. So a walk over the
+        cell_map alone crosses the fold on fictional faces — it misses, and the
+        Manhattan fallback then returns a number that corresponds to no path.
+
+        These come from the caller's PLACEMENT, so they are already transformed
+        by the block's orientation (``Placement.transform`` maps a cell's face
+        together with its coordinates) and need no D4 pass here — the same
+        by-construction property that makes ``emit_faces`` orientation-free
+        (INV-23).
+
+        Empty when the block definition carries none, in which case the caller
+        falls back to the ``cell_map`` exactly as before.
+        """
+        codes = list(getattr(block_def, "cell_faces", None) or [])
+        if not codes:
+            return {}
+        by_code = {0: Face.SOUTH, 1: Face.EAST, 2: Face.WEST, 3: Face.NORTH}
+        out: Dict[Tuple[int, int], Face] = {}
+        for xy, code in zip(pb.cells, codes):
+            f = by_code.get(int(code)) if code is not None else None
+            if f is not None:
+                out[tuple(xy)] = f
+        return out
+
     def _get_routing_distance(
         self,
         from_pos: Tuple[int, int],
         to_pos: Tuple[int, int],
         cell_map: CellMap,
+        # ``Face`` is an IntEnum, so either a raw code or a Face is accepted.
         start_face: Optional[int] = None,
-    ) -> int:
-        """
-        Calculate the actual routing distance between two cells.
+        authored: Optional[Dict[Tuple[int, int], "Face"]] = None,
+        strict: bool = False,
+    ) -> Optional[int]:
+        """Hops from ``from_pos`` to ``to_pos`` under the REAL forwarding rule.
 
-        Traces the route by following each cell's own ``fwd_face`` — the real
-        forwarding model: a word leaves its source on the SOURCE cell's face,
-        and every cell it then arrives at forwards it on THAT CELL'S OWN face.
-        Falls back to Manhattan distance if the walk does not reach the target.
+        THE RULE (measured, not inferred — INV-48): a word leaves on its SOURCE
+        cell's face, and every cell it then arrives at forwards it on THAT
+        CELL'S OWN resting face. So the path is a WALK that turns at every
+        occupied cell, not a straight ray, and the hop count is the number of
+        cells it visits before landing on the target.
 
-        ``start_face`` overrides the face used for the FIRST step only. A cell
-        may re-point itself mid-program (``MOVE [FACE], R{data:…}``) and emit a
-        WRITE/JUMP while flipped, in which case the word leaves on the FLIPPED
-        face and not on the cell's resting one. The block declares that face per
-        edge (``emit_faces()``); without it the walk starts on the resting face
-        and silently sizes the edge along a path the word never takes.
+        The walk therefore needs TWO things right, and they are independent:
+
+        ``start_face`` fixes the FIRST step. A cell may re-point itself
+        mid-program (``MOVE [FACE], R{data:…}``) and emit a WRITE/JUMP while
+        flipped, in which case the word leaves on the FLIPPED face and not on
+        the cell's resting one. The block declares that face PER EDGE
+        (``emit_faces()``, resolved by :meth:`_declared_emit_face` from a
+        neighbour CELL ID, so it is orientation-free); without it the walk
+        starts on the resting face and silently sizes the edge along a path the
+        word never takes.
+
+        ``authored`` fixes EVERY STEP AFTER IT — the faces of the cells the word
+        crosses. During internal resolution the ``cell_map`` holds the router's
+        own positional guesses, not the caller's authored layout (which
+        ``build._apply_block_cell_faces`` applies later), so walking the
+        cell_map alone crosses the fold on fictional faces. See
+        :meth:`_authored_faces`. These faces are already orientation-rotated by
+        the placement, so like ``emit_faces`` they need no D4 pass (INV-23).
+
+        ``strict`` selects the failure behaviour when the walk does not reach the
+        target. ``False`` (the default, and what BLOCK-TO-BLOCK and
+        BLOCK-TO-PORT edges use, where the cell_map already holds real
+        drawn-route faces) keeps the historical Manhattan estimate. ``True``
+        returns ``None`` instead, and the caller must handle it — because for an
+        INTERNAL edge the estimate is not an approximation, it is a wrong hop
+        count that lands the word on the wrong cell with nothing raised (INV-50:
+        6 of the LZ4 decoder's 15 internal edges got one, e.g. a Manhattan 1
+        against a true walk of 3, and the block silently did not decode).
         """
         fx, fy = from_pos
         tx, ty = to_pos
@@ -728,58 +789,180 @@ class Router:
         if from_pos == to_pos:
             return 0
 
-        # Trace the existing route by following fwd_face links
         face_deltas = {
             Face.SOUTH: (0, 1),
             Face.NORTH: (0, -1),
             Face.EAST: (1, 0),
             Face.WEST: (-1, 0),
         }
-        if start_face is not None:
-            f = Face(start_face)
-            dx, dy = face_deltas[f]
-            pos = (fx + dx, fy + dy)
-            if pos == to_pos:
-                return 1
-            # Continue the walk from there on the transit cells' own faces.
-            distance = 1
-            visited = {from_pos}
-            while pos != to_pos and distance < 100:
-                if pos in visited:
-                    break
-                visited.add(pos)
-                cfg = cell_map.get_cell(pos[0], pos[1])
-                if cfg is None or cfg.fwd_face is None:
-                    break
-                ddx, ddy = face_deltas[cfg.fwd_face]
-                pos = (pos[0] + ddx, pos[1] + ddy)
-                distance += 1
-            if pos == to_pos:
-                return distance
-            # A DECLARED emit face that does not reach the target is an authoring
-            # error, not something to paper over with a straight-line guess —
-            # the guess is the exact model the forwarding rule disproves. Fall
-            # through to the legacy behaviour so this can never be a regression,
-            # but the block's own fold gate is what must catch it.
+        authored = authored or {}
+
+        def face_at(p):
+            """The face the cell at ``p`` forwards on: the block's AUTHORED face
+            when it has one, else whatever the cell_map currently holds."""
+            f = authored.get(p)
+            if f is not None:
+                return f
+            cfg = cell_map.get_cell(p[0], p[1])
+            return None if cfg is None else cfg.fwd_face
+
+        # ONE walk serves both halves: the first step takes ``start_face`` when
+        # the block declared one for this edge, and every step after it takes the
+        # transit cell's own face. (An earlier revision special-cased the
+        # ``start_face`` walk in its own loop; it is the same walk with a
+        # different first step, so it is written once here.)
         pos = from_pos
         distance = 0
         visited = set()
+        first = True
         while pos != to_pos and distance < 100:
             if pos in visited:
                 break  # Loop detected
             visited.add(pos)
-            cfg = cell_map.get_cell(pos[0], pos[1])
-            if cfg is None or cfg.fwd_face is None:
+            f = (Face(start_face) if (first and start_face is not None)
+                 else face_at(pos))
+            first = False
+            if f is None:
                 break
-            dx, dy = face_deltas[cfg.fwd_face]
+            dx, dy = face_deltas[f]
             pos = (pos[0] + dx, pos[1] + dy)
             distance += 1
+            if not (0 <= pos[0] < self.config.width
+                    and 0 <= pos[1] < self.config.height):
+                break
 
         if pos == to_pos:
             return distance
 
-        # Fallback to Manhattan distance
+        if strict:
+            return None
+        # Fallback to Manhattan distance. Reached when the walk misses AND the
+        # caller did not ask for strictness — block→block / block→port edges,
+        # where the cell_map holds real drawn-route faces so the estimate is an
+        # estimate rather than a fiction. A DECLARED emit face that misses is an
+        # authoring error and lands here too, deliberately: the legacy number
+        # keeps that from ever being a regression, and the block's own fold gate
+        # is what must catch it.
         return abs(tx - fx) + abs(ty - fy)
+
+    @staticmethod
+    def _face_after(code: int, orientation) -> int:
+        """A hardware FACE code (S=0, E=1, W=2, N=3) through a D4 op list.
+
+        Screen space, y DOWN — the same map ``Placement.transform`` applies to a
+        cell's resting face, kept here so the two can never disagree.
+        """
+        cw = {0: 2, 2: 3, 3: 1, 1: 0}          # S->W->N->E->S
+        ccw = {v: k for k, v in cw.items()}
+        mh = {1: 2, 2: 1, 0: 0, 3: 3}          # mirror in x: E<->W
+        mv = {0: 3, 3: 0, 1: 1, 2: 2}          # mirror in y: S<->N
+        c = int(code) & 0x3
+        for kind in (orientation or []):
+            c = {"cw": cw, "ccw": ccw,
+                 "mirror_h": mh, "mirror_v": mv}.get(kind, {}).get(c, c)
+        return c
+
+    @classmethod
+    def _declared_flip_faces(cls, block_def, cell_pos_idx) -> List["Face"]:
+        """The faces a cell's own program can FLIP to, from its ``is_face`` data
+        words — NOT every face, and not a guess.
+
+        A cell leaves on its resting face unless the program says otherwise, and
+        the program says so by declaring ``DataWord(..., is_face=True)`` and
+        writing it with ``MOVE [FACE], …``. A cell that declares none has exactly
+        one outgoing direction; a cell that declares some can use those.
+
+        Guessing here is wrong in BOTH directions and each way has been measured:
+        assuming the resting face always wins charges an abutting flip the long
+        way round the fold (LMS ``(2,1) -> (2,2)``: 1 hop SOUTH, 13 hops around),
+        while taking the shortest of all four faces gives a NON-flipping cell a
+        hop it cannot reach (LZ4 ``token -> matchlen``: 1 hop SOUTH that the cell
+        has no way to take, against the 3 its resting walk really costs). Both
+        build clean and compute the wrong answer.
+
+        THE CONSTANTS ARE STORED UNROTATED (INV-23). The block authors an ABSOLUTE
+        direction and the placer may rotate the block; the cell's resting face is
+        transformed by the placement, but these words are transformed later, by
+        the build. So they are rotated HERE by the block's orientation before
+        being used as directions — without it a rotated flip-using block
+        (MMTimingRecovery, ChirpGenerator) gets its flip hop measured along the
+        wrong axis.
+        """
+        try:
+            cps = list(block_def.cell_programs.values())
+            cp = cps[cell_pos_idx]
+        except Exception:  # noqa: BLE001
+            return []
+        orientation = list(getattr(block_def, "orientation", None) or [])
+        by_code = {0: Face.SOUTH, 1: Face.EAST, 2: Face.WEST, 3: Face.NORTH}
+        out = []
+        for d in (getattr(cp, "data", None) or []):
+            if getattr(d, "is_face", False):
+                f = by_code.get(cls._face_after(int(d.value), orientation))
+                if f is not None and f not in out:
+                    out.append(f)
+        return out
+
+    def _internal_distance(self, pb, block_def, cell_map, src_pos, dst_pos,
+                           src_idx=None, declared_face=None):
+        """Hops for an edge INSIDE one block, walking the block's authored faces.
+
+        FIRST STEP. ``declared_face`` — from the block's own ``emit_faces()``,
+        resolved to a compass face from the neighbour's PLACED coordinates — is
+        AUTHORITATIVE when present, and nothing else is tried. It is the only
+        source that knows which face THIS PORT leaves on; everything below is
+        inference about which faces the cell has at all, which is strictly
+        weaker. A block that declares an edge and gets it wrong should see the
+        error, not have the router quietly find some other face that happens to
+        work.
+
+        Without a declaration: the source cell's RESTING face first — that is
+        where a word leaves unless the program says otherwise — then only the
+        faces the cell's own program DECLARES it can flip to
+        (:meth:`_declared_flip_faces`). Among those the SHORTEST delivering walk
+        wins, because a flip that abuts the target is what the program is for.
+
+        EVERY STEP AFTER: each transit cell's authored face
+        (:meth:`_authored_faces`), never the router's positional guess.
+
+        Returns ``None`` when no available face reaches the target, which the
+        caller reports rather than papering over with a Manhattan guess (INV-50).
+        """
+        authored = self._authored_faces(pb, block_def)
+        if not authored:
+            # No authored faces to walk: keep the historical behaviour so blocks
+            # built through paths that do not supply them are byte-identical.
+            # A declared emit face still steers the first step.
+            return self._get_routing_distance(src_pos, dst_pos, cell_map,
+                                              start_face=declared_face)
+        if declared_face is not None:
+            return self._get_routing_distance(
+                src_pos, dst_pos, cell_map, start_face=declared_face,
+                authored=authored, strict=True)
+        faces = [authored.get(tuple(src_pos))]
+        if src_idx is not None:
+            faces += self._declared_flip_faces(block_def, src_idx)
+        best = None
+        for f in faces:
+            if f is None:
+                continue
+            d = self._get_routing_distance(src_pos, dst_pos, cell_map,
+                                           authored=authored, start_face=f,
+                                           strict=True)
+            if d is not None and (best is None or d < best):
+                best = d
+        if best is not None:
+            return best
+        # DIRECT ABUTMENT is always 1, whatever the faces say. A cell may aim a
+        # word at an edge-adjacent neighbour on a face this function cannot see:
+        # a DUAL-FACE output cell's tap direction is not an ``is_face`` word at
+        # all — it is filled in later from the DRAWN ROUTE
+        # (``build._apply_rotate_tap_face``), so at internal-resolution time the
+        # cell looks like it has only its internal face. Refusing the edge here
+        # broke CoherentRX, whose ``pd_pi.yi_tap`` abuts ``yi_relay``.
+        if (abs(src_pos[0] - dst_pos[0]) + abs(src_pos[1] - dst_pos[1])) == 1:
+            return 1
+        return None
 
         def heuristic(pos):
             return abs(pos[0] - tx) + abs(pos[1] - ty)
@@ -957,10 +1140,19 @@ class Router:
                 continue
             src_pos = pb.cells[cell_pos]
             dst_pos = pb.cells[dst_pos_idx]
-            distance = self._get_routing_distance(
-                src_pos, dst_pos, cell_map,
-                self._declared_emit_face(block_def, pb, cell_pos,
-                                         src_cid, src_port))
+            distance = self._internal_distance(
+                pb, block_def, cell_map, src_pos, dst_pos, src_idx=cell_pos,
+                declared_face=self._declared_emit_face(
+                    block_def, pb, cell_pos, src_cid, src_port))
+            if distance is None:
+                raise RouterError(
+                    f"block {block_name!r}: internal WRITE {src_cid}.{src_port} "
+                    f"-> {dst_cid}.{dst_port} ({src_pos} -> {dst_pos}) is not "
+                    "deliverable on ANY face. A word turns at every occupied cell "
+                    "it crosses (INV-48), so the target must lie on one of the "
+                    "source cell's four walks. Re-fold the block, declare the "
+                    "emit face in emit_faces(), or give the intervening cell a "
+                    "resting face that forwards toward it.")
             dst_cp = block_def.cell_programs[dst_cid]
             # An empty dst_port means "write to the target's R0" (e.g. the DFE
             # lock driver writing the FF sum into DC's accumulator). Otherwise
@@ -1019,10 +1211,17 @@ class Router:
                 continue
             src_pos = pb.cells[cell_pos]
             dst_pos = pb.cells[dst_pos_idx]
-            distance = self._get_routing_distance(
-                src_pos, dst_pos, cell_map,
-                self._declared_emit_face(block_def, pb, cell_pos,
-                                         src_cid, src_port))
+            distance = self._internal_distance(
+                pb, block_def, cell_map, src_pos, dst_pos, src_idx=cell_pos,
+                declared_face=self._declared_emit_face(
+                    block_def, pb, cell_pos, src_cid, src_port))
+            if distance is None:
+                raise RouterError(
+                    f"block {block_name!r}: internal JUMP {src_cid}.{src_port} "
+                    f"-> {dst_cid}.{dst_entry} ({src_pos} -> {dst_pos}) is not "
+                    "deliverable on ANY face (INV-48: a word turns at every "
+                    "occupied cell it crosses). Re-fold the block or declare the "
+                    "emit face in emit_faces().")
             dst_cp = block_def.cell_programs[dst_cid]
             # Resolve the target INPUT register (first input) and the NAMED entry
             # address. Fall back to the default entry when the name is unknown.
@@ -1050,7 +1249,16 @@ class Router:
             if cell_pos < len(cps) - 1 and cell_pos + 1 < len(pb.cells):
                 src_pos = pb.cells[cell_pos]
                 next_pos = pb.cells[cell_pos + 1]
-                distance = self._get_routing_distance(src_pos, next_pos, cell_map)
+                # The POSITIONAL default (cell n -> cell n+1) is a guess about
+                # what the block meant, so it keeps the estimate rather than
+                # raising: an undeclared hand-off has no authored intent to
+                # check against. Declared edges (above) do, and they raise.
+                distance = self._internal_distance(pb, block_def, cell_map,
+                                                   src_pos, next_pos,
+                                                   src_idx=cell_pos)
+                if distance is None:
+                    distance = self._get_routing_distance(src_pos, next_pos,
+                                                          cell_map)
                 next_cp = cps[cell_pos + 1]
                 target_input, target_entry = self._resolve_named_input(
                     next_cp, port_name)

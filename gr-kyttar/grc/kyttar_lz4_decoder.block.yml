@@ -1,0 +1,114 @@
+id: kyttar_lz4_decoder
+label: 🧪 Kyttar LZ4 Decoder
+category: '[Kyttar]'
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.lz4_decoder(${device_id}, ${window_words}, ${panel_hop}, ${read_wr_desc}, ${read_jp_desc}, ${addr_base}, ${emit_hop}, ${out_dest}, ${emit_entry})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+- id: window_words
+  label: History window (words)
+  dtype: int
+  default: '65536'
+- id: panel_hop
+  label: Panel hop (@N)
+  dtype: int
+  default: '1'
+
+- id: read_wr_desc
+  label: read_wr_desc
+  dtype: int
+  default: 0
+  hide: part
+- id: read_jp_desc
+  label: read_jp_desc
+  dtype: int
+  default: 0
+  hide: part
+- id: addr_base
+  label: addr_base
+  dtype: int
+  default: 0
+  hide: part
+- id: emit_hop
+  label: emit_hop
+  dtype: int
+  default: 2
+  hide: part
+- id: out_dest
+  label: out_dest
+  dtype: int
+  default: 0
+  hide: part
+- id: emit_entry
+  label: emit_entry
+  dtype: int
+  default: 0
+  hide: part
+
+inputs:
+- id: '0'
+  label: byte
+  domain: stream
+  dtype: byte
+
+outputs:
+- id: '0'
+  label: out
+  domain: stream
+  dtype: byte
+
+documentation: |-
+  LZ4 BLOCK-FORMAT decompressor — SRAM-backed, streaming, one compressed byte in
+  per item and one decompressed byte out per item. No stock GNU Radio counterpart.
+
+  Spec: the published LZ4 Block Format Description (Yann Collet). The golden this
+  is verified against is a plain transcription of that document, cross-checked
+  BOTH WAYS against the reference C implementation — it decodes blocks the
+  reference compressor produced, and the reference decoder accepts blocks this
+  suite manufactures.
+
+  WHY IT NEEDS THE SRAM PANEL. LZ4 is a back-reference format: a match copies
+  match_len bytes from offset bytes earlier in the ALREADY DECODED OUTPUT, and
+  the offset field is 16 bits, so a conformant decoder must retain a 64 KB
+  history window — 2048x a single 32-word cell. The window lives in the SRAM
+  panel (verification/SRAM_PANEL.md) and only the parse FSM stays in cells.
+
+  This is the FIRST Kyttar block to address a COMPUTED panel address. The
+  Varicode decoder reads a preloaded ROM at "address == the input symbol"; this
+  block WRITES the panel as it decodes and reads it back at (wpos - offset) &
+  0xFFFF — an address the chip derives at run time from its own output position.
+  The copy is BYTE-BY-BYTE and each byte is appended to the window BEFORE the
+  next fetch, which is what makes an overlapping match (match_len > offset, and
+  offset == 1 in the limit) read back the bytes that same match just produced.
+
+  Ports:
+    byte (in): the compressed LZ4 block, one byte per item
+    out:       the decompressed byte stream, one byte per item
+
+  Parameters (mirror LZ4DecoderBlock verbatim):
+    Device ID:        which Kyttar device to use
+    History window:   window size in panel words; must be a power of two and at
+                      most 65536 (the 16-bit LZ4 offset field). 65536 is the only
+                      value that decodes EVERY conformant block; smaller values
+                      are accepted for panel-constrained designs and decode
+                      exactly any block whose offsets fit the smaller window.
+    Panel hop:        hops from the embedded controller cell to the SRAM panel
+                      port (@N)
+
+  The remaining parameters are placement-derived: the auto-P&R panel template
+  fills them in from the geometry it chooses, and hand-setting them is only for a
+  hand-placed design.
+
+  VERIFIED byte-exact on the AUTO-PLACED, ROUTED, BUILT design on a real chip
+  through a real SRAM panel, on all-literal, repetitive-text, offset==1 byte-run,
+  overlapping-match, match-length-continuation and literal-continuation payloads —
+  and on blocks produced by the reference C compressor. Mapped by placeKYT
+  (File -> Import GNURadio Flowgraph) to LZ4DecoderBlock.
+
+file_format: 1

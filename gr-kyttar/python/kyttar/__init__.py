@@ -150,6 +150,7 @@ from .cw_keyer import cw_keyer
 from .cw_decoder import cw_decoder
 from .raised_cosine_envelope import raised_cosine_envelope
 from .sram_controller import sram_controller
+from .lz4_decoder import lz4_decoder
 
 __version__ = "1.9.0"
 __all__ = [
@@ -283,6 +284,7 @@ __all__ = [
     "cw_decoder",
     "raised_cosine_envelope",
     "sram_controller",
+    "lz4_decoder",
     # Registry (internal)
     "KyttarRegistry",
     "get_registry",

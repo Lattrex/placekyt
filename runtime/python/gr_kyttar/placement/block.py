@@ -267,6 +267,37 @@ class BlockDefinition:
     # ``RAW_OUTPUT_HOPS`` class flag the build's own exit-hop passes honour.
     raw_output_hops: bool = False
 
+    # The block's AUTHORED resting face per placed cell, POSITIONALLY aligned
+    # with ``PlacedBlock.cells`` (index i is the face of cells[i]), as an
+    # ``ArrayConfig``-style code (S=0, E=1, W=2, N=3); ``None`` where unknown.
+    #
+    # WHY THIS EXISTS. A word leaves on its SOURCE cell's face and every cell it
+    # then arrives at forwards it on THAT CELL'S OWN face, so measuring an
+    # INTERNAL hop means walking those faces. The router's own ``cell_map`` does
+    # not yet carry them when the internal hops are resolved — it holds the
+    # router's positional guesses, which are overwritten by the caller's authored
+    # faces later — so walking the cell_map silently missed and fell back to
+    # Manhattan distance (INV-50).
+    #
+    # These faces come from the caller's PLACEMENT, which means they are already
+    # transformed by the block's orientation: ``Placement.transform`` rotates each
+    # cell's ``face`` with its coordinates. So a rotated block's walk is correct
+    # by construction and needs no second D4 pass here (INV-23).
+    cell_faces: List[Optional[int]] = field(default_factory=list)
+
+    # The block's D4 ORIENTATION as an op list (``["cw"]``, ``["mirror_v","cw"]``,
+    # …), empty for the identity.
+    #
+    # ``cell_faces`` above arrives already transformed, because the caller's
+    # placement rotates a cell's face together with its coordinates. The block's
+    # IN-PROGRAM face constants (``DataWord(is_face=True)``) do NOT: they are
+    # stored as the block AUTHORED them and the build rewrites them into the cell
+    # memory later. So anything that reasons about which way a cell can FLIP must
+    # rotate those constants by this list first — INV-23. Reading them raw makes a
+    # rotated block's flip point the wrong way, and the resulting hop is wrong in
+    # a way that still builds.
+    orientation: List[str] = field(default_factory=list)
+
     def set_cell_program(self, cell_index: int, program: CellProgram):
         """Set the program for a specific cell in this block."""
         if cell_index < 0:

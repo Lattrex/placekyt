@@ -7829,3 +7829,136 @@ across 4728 frames.
 in the framing of the display glue. It is caught only by tapping the display
 block's own output (what the sink is actually painted with) rather than stopping
 at the kyttar sink. Same lesson as the CSS transceiver's display gate.
+
+## Splitting a cell buys a FACE, not just words — LZ4DecoderBlock  2026-08-29
+
+`LZ4DecoderBlock` is `done`: the auto-placed, routed, built design decodes real
+LZ4 blocks byte-exact on a real chip through a real `SramPanelDevice`, including
+blocks produced by the **reference C compressor**. It had been stuck for three
+passes behind a budget of exactly one word. Four things are worth keeping.
+
+**1. The wall was a FACE COUNT, and the fix was an extra CELL.** A cell serves
+ONE direction free; each extra one costs an in-program flip (2 instructions + 1
+`is_face` DataWord). The emit cell had to serve three — the ring-forward to the
+router, the panel, and the output corridor — i.e. 6 words against 5, exhaustive
+over three placement windows. Moving ONLY the egress to an 8th cell dropped it to
+TWO directions, and placing that cell BETWEEN the emit cell and the controller,
+resting toward the controller, collapsed those two into ONE flip: the burst
+reaches cell 7 at hop 1 and the controller at hop 2 through it. Thirteen of the
+fold's fifteen internal edges then ride resting faces with no flip at all. That
+is INV-46's "prefer more cells doing less" paying off in FACES rather than
+instructions — the axis that was actually short.
+
+**2. Three substrate facts, each measured, each the opposite of the cautious
+guess** (`proto_*` harnesses, all on real simkyt):
+
+* **An OCCUPIED cell is TRANSPARENT to a hop-counted word.** A cell with a real
+  program forwards a transiting word on its own face without executing; only a
+  word that LANDS (HOP_CNT == 31) runs the program. This is what makes the
+  "put the egress cell in the middle" trick legal at all.
+* **A cell may FLIP while words TRANSIT it.** Measured: 180 concurrent transits
+  across a cell running a flip/write/restore burst, ZERO losses or misdeliveries.
+  The race everyone assumes is there is not there, and assuming it is rules out
+  the whole class of layouts that actually work.
+* **A blank cell faced across the walk DOES deflect.** The egress cell is not
+  transparent — that half of the folklore is true, and it is why the egress must
+  belong to a cell whose walk can afford to end there.
+
+**3. The end-to-end gate found THREE defects nothing else could.** Every per-cell
+chip gate, the whole FSM model, the golden and the reference-C cross-check all
+passed while the placed design was wrong in three separate ways:
+
+* cell 4 kicked the emit cell's `emit_mat` (the panel RETURN door) instead of
+  `fetch`, so every match began by re-emitting the previous literal;
+* the OFFSET cell — which is the landing cell for the WHOLE match phase — dropped
+  the match-length CONTINUATION byte once `nb` hit 0, so every match longer than
+  18 bytes stalled (i.e. most real text);
+* the egress WRITE was aimed at the first corridor cell (`@1`) instead of through
+  the corridor, so the byte parked one cell out and the port stayed silent while
+  the panel window filled perfectly.
+
+Each is now a mutation gate that corrupts the REAL block and rebuilds on chip.
+The lesson is the old one, sharper: a per-cell gate proves a cell, a model proves
+an algorithm, and NEITHER proves a design. Only the placed, routed, built chip
+does.
+
+**4. Budget arithmetic in a test must be a POSITIVE assertion.** The suite used
+to assert the emit cell had FEWER free words than a flip costs — a gate that
+passes precisely while the block is broken and fails the day it is fixed. It is
+now the reverse (every cell resolves; the flip is present and restored on both
+bursts), which is strictly stronger and cannot rot into a pinned wall.
+
+**Gated by** `verification/tests/test_lz4_decoder.py` (62 tests, no skips):
+golden vs reference C both ways, the FSM model, per-cell chip gates, a real match
+copy through a real panel, 8 end-to-end payload classes on the placed design,
+reference-C blocks on the placed design, three whole-chip mutations, and the 8
+D4 orientation cases.
+
+## INV-50 is CLOSED by TWO passes at once, and the naive fix is wrong THREE ways  2026-08-29
+
+**Merged with the `ChaCha20KeystreamBlock` pass, which closed the other half of
+this independently and landed first.** The reconciled rule lives in INV-50; this
+entry records the LZ4 half and what the merge taught. Read the two together —
+neither half is sufficient, and the reason is structural:
+
+> A walk is *"leave the source on face F, then turn at every occupied cell."*
+> **ChaCha fixed F** (which face this PORT departs on — `emit_faces()`, declared
+> as a neighbour CELL ID so it is orientation-correct by construction).
+> **LZ4 fixed the turns** (which face each TRANSIT cell forwards on —
+> `cell_faces`, from the model placement, likewise already rotated).
+> A fix with only one half still returns wrong numbers, in different cases.
+
+`router._get_routing_distance` fell back to Manhattan distance when its face-walk
+missed, silently returning a hop that lands the word on the wrong cell. Closing
+it needed three corrections, and the first two each looked right and broke a
+shipped block:
+
+* **Walk the block's AUTHORED faces, not the cell_map's.** At internal-resolution
+  time the cell_map holds the router's positional guesses; the caller's authored
+  faces are applied later. New `BlockDefinition.cell_faces`, filled from the model
+  placement — which means they arrive already orientation-transformed, so the
+  rotation INV-23 demands is correct BY CONSTRUCTION rather than by a second pass.
+  (This is the same trick `emit_faces` uses from the other direction: never store
+  a DIRECTION that a rotation can invalidate — store something the placer has
+  already transformed, and derive the direction from it.)
+* **Do NOT take the resting face just because it delivers.** A fold is usually a
+  closed walk, so the resting face reaches an abutting neighbour the long way
+  round — `LMSEqualizerBlock`'s `(2,1) -> (2,2)` is 1 hop SOUTH and 13 hops around
+  the serpentine. Charging 13 sent the word past its target; LMS went from 14
+  passed to 6 failed.
+* **Do NOT take the shortest of all four faces either.** That hands a
+  NON-flipping cell a hop it has no way to take — LZ4's `token -> matchlen` is
+  1 hop SOUTH that the cell cannot use, against the 3 its resting walk costs.
+
+The rule that survives all three: a DECLARED emit face (`emit_faces()`) wins
+outright and nothing else is tried; otherwise the resting face plus **only the
+faces the cell's own program DECLARES** via `is_face` DataWords (rotated by the
+block's orientation), shortest wins — and a DIRECT ABUTMENT is always 1, because
+a dual-face output cell's tap direction is not an `is_face` word at all (it is
+filled in later from the drawn route, `build._apply_rotate_tap_face`), and
+refusing that edge broke `CoherentRXBlock`.
+
+**Why declaration beats inference, and why the merge kept both:** inference knows
+which faces a cell HAS; only a declaration knows which face a given PORT uses. So
+`emit_faces` is authoritative where present — a block that declares an edge and
+gets it wrong should see the error, not have the router quietly find another face
+that happens to work. Inference remains for the ~116 blocks that declare nothing,
+and it is what closed ChaCha's own residual: taking the shortest over {resting} ∪
+{declared flip faces} means a resting walk no longer wins merely by *arriving*,
+which was the "spurious success" case that pass named as the worse half.
+
+Six of LZ4's fifteen internal edges had a wrong hop before the fix; ChaCha
+measured 6 of 22 flipped edges wrong across 233. The Manhattan fallback still
+stands for block→block and block→port edges, where the cell_map genuinely holds
+drawn-route faces; for a DECLARED internal edge it now raises a named
+`RouterError` instead, while the undeclared positional default keeps the estimate
+by choice.
+
+**One code path was dropped in the merge, no behaviour:** `_get_routing_distance`
+briefly carried two copies of the walk loop (one for the `start_face` case). It is
+one walk with a different first step, so it is written once.
+
+Verified after the merge: `placekyt/tests/` 1219 passed (baseline),
+`test_orientation_invariance.py` 364 passed, `test_lz4_decoder.py` 63 +
+`test_chacha20_fixed_tap_ring.py` / `test_chacha20_keystream_golden.py` 111
+passed together, and 1040 passed across the panel/FFT/Costas/rendezvous families.

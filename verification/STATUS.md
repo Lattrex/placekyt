@@ -3,7 +3,7 @@
 
 # Kyttar block library — status
 
-**116 verified · 0 in progress · 120 targeted.** Each Kyttar block is verified as a drop-in equivalent of its GNU Radio Companion counterpart (same parameters, output matching within Q15 quantization). “Quality” is the measured error of the verified block versus the GNU Radio reference.
+**117 verified · 0 in progress · 120 targeted.** Each Kyttar block is verified as a drop-in equivalent of its GNU Radio Companion counterpart (same parameters, output matching within Q15 quantization). “Quality” is the measured error of the verified block versus the GNU Radio reference.
 
 > **Reading the quality column.** `err N / tol M LSB` — the worst-case sample error (`N`) against the derived pass threshold (`M`), in Q15 **LSBs** (1 LSB = 1/32768 of full scale ≈ 3.05e-5); pass requires `N ≤ M`. `−X dB SNR` — the **NMSE**: the error power is `X` dB below the signal power (more negative = quieter; Q15's floor is ≈ −90 dB). Decision blocks report **BER** instead. To estimate a chain's total noise, convert each block's dB to linear power (`10^(dB/10)`), sum, and convert back (`10·log10`) — the noisiest stage dominates.
 
@@ -125,8 +125,8 @@
 | **FFT128Die1** | `numpy.fft.fft (N=128, as a 2-die split)` | 3 · new GRC block | ✅ done | err 0.0 / tol 0.0 LSB | rand×1 mut |
 | **ChirpSyncBlock** | `(Python golden: K-consecutive-equal-argmax preamble run detector)` | 3 · new GRC block | ✅ done | err 0 / tol 0 LSB | edge rand×3 sweep×4 mut |
 | **FeaturePairJoinBlock** | `(placeKYT-native: ordered two-word rendezvous; no GR counterpart)` | 3 · new GRC block | ✅ done | err 0 / tol 0 LSB | edge rand×3 mut |
+| **LZ4DecoderBlock** | (Kyttar-native, no single GR block) | 3 · new GRC block | ✅ done | err 0 / tol 0 LSB | mut |
 | **ChaCha20KeystreamBlock** | (Kyttar-native, no single GR block) | 3 · new GRC block | 🚧 needs human (quarantined) | — | — |
-| **LZ4DecoderBlock** | (Kyttar-native, no single GR block) | 3 · new GRC block | ⬜ planned | — | — |
 | **Poly1305MACBlock** | (Kyttar-native, no single GR block) | 3 · new GRC block | ⬜ planned | — | — |
 | **LZ4EncoderBlock** | (Kyttar-native, no single GR block) | 3 · new GRC block | ⬜ planned | — | — |
 

@@ -17,18 +17,31 @@ What this suite establishes, in order of strength:
   2. **The block's FSM model vs the golden** — ``decode_model`` is the cell-level twin
      of the on-chip state machine (same registers, same phases), not a second copy of
      the golden.
-  3. **THE CHIP.** The cell programs run on a real ``simkyt`` chip: the token nibble
-     split, the little-endian offset assembly, and — the decisive one — a whole match
-     copy driven through a real ``SramPanelDevice`` + ``PanelDriver``, including the
-     ``offset == 1`` byte-run whose later source bytes are produced BY the copy.
-  4. **INV-4 mutations**, each proven to FAIL.
-  5. **PLACEMENT**: the block goes through the panel template, all SEVEN of its cells
+  3. **THE CHIP, per cell.** The cell programs run on a real ``simkyt`` chip: the
+     token nibble split, the little-endian offset assembly, the match-length
+     continuation relay, and a whole match copy driven through a real
+     ``SramPanelDevice`` + ``PanelDriver``, including the ``offset == 1`` byte-run
+     whose later source bytes are produced BY the copy.
+  4. **INV-4 mutations**, each proven to FAIL — including three that corrupt the
+     REAL block and rebuild it on chip.
+  5. **PLACEMENT**: the block goes through the panel template, all EIGHT of its cells
      land on the fabric, the three corridors are drawn, DRC is clean, and the build
      binds each program to its placed cell with the panel hand-offs intact.
+  6. **THE WHOLE DESIGN.** The AUTO-PLACED, ROUTED, BUILT chip decodes 8 payload
+     classes byte-exact, and decodes blocks the REFERENCE C COMPRESSOR produced.
+     This is the one that matters: three defects passed every layer above it and
+     were caught only here.
+  7. **INV-23 ORIENTATION**: the fold is a rigid unit in all 8 D4 orientations,
+     and its in-program face constants rotate with it.
 
 This suite previously ended in three ``test_placement_wall_*`` gates pinning a
-QUARANTINE. They are gone; the header of LAYER 5 records what each one got wrong,
-because two of them looked rigorous and were not. See INV-48.
+QUARANTINE, and then in two gates pinning the placement GAP. All five are gone.
+The header of LAYER 5 records what the wall gates got wrong; the gap gates were
+INVERTED rather than deleted (an assertion that a limit HOLDS passes precisely
+while the block is broken), and are now
+``test_every_internal_edge_DELIVERS_under_the_real_forwarding_rule`` and
+``test_the_emit_cell_can_afford_the_ONE_flip_the_layout_asks_of_it``. See INV-48
+and INV-50.
 
 Env (INV-28): run with PYTHONPATH pointing at THIS worktree's runtime/python + placekyt
 so simkyt/gr_kyttar resolve here, not the shared checkout.
@@ -359,7 +372,7 @@ def test_router_cold_starts_expecting_a_token():
 
 
 def test_every_cell_fits_a_32_word_cell():
-    """Each of the seven cells resolves inside its 32-word budget, with its state
+    """Each of the eight cells resolves inside its 32-word budget, with its state
     registers strictly BELOW the first instruction (the INV-33 overlap check)."""
     _b, progs, _m = _block_maps()
     for cid, cp in progs.items():
@@ -376,11 +389,14 @@ def test_every_cell_fits_a_32_word_cell():
         assert max(res.memory) < 32
 
 
-def _dummy_targets(cp):
+def _dummy_targets(cp, distance=1):
+    """Every output aimed at ``distance`` hops. With ``distance=10`` on a cell at
+    (0,0) of an all-east row, every hand-off the cell makes EXITS the x16 port and
+    is observable — which is how the per-cell gates read a cell's traffic."""
     tg = ResolvedTargets()
     for p in cp.outputs:
-        tg.writes[p.name] = WriteTarget(distance=1, target_addr=25)
-        tg.jumps[p.name] = JumpTarget(distance=1, target_addr=1)
+        tg.writes[p.name] = WriteTarget(distance=distance, target_addr=25)
+        tg.jumps[p.name] = JumpTarget(distance=distance, target_addr=1)
     return tg
 
 
@@ -460,10 +476,7 @@ def test_onchip_offset_cell_is_little_endian(lo, hi, want):
     import simkyt
     b, progs, M = _block_maps()
     names, entries = M[3]
-    tg = ResolvedTargets(
-        writes={"setoff": WriteTarget(10, 2)},
-        jumps={"setoff": JumpTarget(10, 1), "ready": JumpTarget(10, 1)})
-    res = R.resolve(progs[3], tg)
+    res = R.resolve(progs[3], _dummy_targets(progs[3], distance=10))
     chip = simkyt.Chip.from_yaml(str(CHIP_YAML))
     for a in range(32):
         chip.write_cell_memory(_cid(0, 0), a, int(res.memory.get(a, 0)))
@@ -490,6 +503,52 @@ def test_onchip_offset_cell_is_little_endian(lo, hi, want):
     assert out and out[0] == want, "the assembled offset must be handed on"
 
 
+def test_onchip_offset_cell_relays_a_match_length_continuation_byte():
+    """ON CHIP: once both offset bytes are in (``nb == 0``), the OFFSET cell is
+    still the match phase's landing cell — the router steers EVERY ``ST_MATCH``
+    byte here — so a match-length CONTINUATION byte must be RELAYED to the
+    MATCHLEN cell, not swallowed.
+
+    This is the path a token with match nibble 15 takes, i.e. every match longer
+    than 18 bytes. Without the relay the byte is dropped, the run never fires,
+    and the decoder stalls on ordinary English text (measured: `b'Q'*40`,
+    `b'abc'*12` and the reference `repetitive` payload all stopped at the first
+    match).
+    """
+    _need_chip()
+    import simkyt
+    b, progs, M = _block_maps()
+    names, entries = M[3]
+    res = R.resolve(progs[3], _dummy_targets(progs[3], distance=10))
+    chip = simkyt.Chip.from_yaml(str(CHIP_YAML))
+    for a in range(32):
+        chip.write_cell_memory(_cid(0, 0), a, int(res.memory.get(a, 0)))
+    for x in range(W):
+        chip.set_fwd_face(_cid(x, 0), "east")
+
+    def kick(entry, val=None):
+        if val is not None:
+            chip.write_cell_memory(_cid(0, 0), names["b"], val & 0xFFFF)
+        chip.set_port_entry_address("x16_in", entries[entry])
+        chip.set_port_target_hop_count("x16_in", 30)
+        chip.write_port("x16_in", np.array([0.0], dtype=np.float32))
+        out = []
+        for _ in range(300):
+            chip.run(max_events=16)
+            for v, _d, _t in chip.read_port_words_timed("x16_out"):
+                out.append(v & 0xFFFF)
+        return out
+
+    kick("arm")
+    kick("feed", 0x08)                    # the two offset bytes
+    kick("feed", 0x00)
+    assert chip.read_cell_memory(_cid(0, 0), names["nb"]) == 0
+    out = kick("feed", 0x2A)              # a match-length continuation byte
+    assert out and out[0] == 0x2A, (
+        f"a continuation byte arriving with nb == 0 must be relayed on "
+        f"unchanged, got {out}")
+
+
 # --- the DECISIVE gate: a real match copy through the REAL panel ---------------
 def _panel_match_run(window, wpos, off, mat, rounds=30000):
     """Run a whole match copy on a REAL chip through a REAL ``SramPanelDevice``.
@@ -499,6 +558,17 @@ def _panel_match_run(window, wpos, off, mat, rounds=30000):
     push-read returns the fetched byte straight back into cell 5's ``b`` register
     and kicks ``emit_mat``. That is the block's whole copy loop, unmodified.
 
+    THE EMIT CELL RESTS ON ITS RING FACE and flips toward the panel for the burst,
+    so this harness lays it on an all-EAST row and lets the flip do its work: the
+    in-program ``MOVE [FACE]`` writes the hardware face, exactly as it does on the
+    placed design.
+
+    SEED BOTH COUNTERS. There is no per-byte ``set_addr`` any more — the
+    controller's ``write`` entry auto-increments its OWN ``wraddr``, which boots at
+    0. A test that presets ``wpos`` mid-stream must therefore preset ``wraddr`` to
+    the same value, or the history bytes land at 0.. instead of at ``wpos``. (An
+    earlier pass read that mismatch as a DSP bug and reverted a correct change.)
+
     Returns ``(panel device, chip, emit register map)``.
     """
     import simkyt
@@ -507,16 +577,17 @@ def _panel_match_run(window, wpos, off, mat, rounds=30000):
     _b, progs, M = _block_maps()
     en, ee = M[5]
     cn, ce = M[6]
-    # The emit cell's three panel hand-offs abut the controller (@1); its EXTERNAL
-    # edges (`out`, `gohead`) are aimed LOCALLY (@0 == hop 31) so this harness does
-    # not feed them back into the panel port (which would read as a panel trigger).
+    on, oe = M[7]
+    # The emit cell's panel hand-offs reach the controller at @2 (they transit the
+    # OUT cell, which rests toward the controller — see the block's default_layout);
+    # here the harness abuts them at @1 with the OUT cell aimed locally, because the
+    # point of this gate is the PANEL protocol, not the fold. `gohead` is aimed
+    # LOCALLY (@0 == hop 31) so it is not fed back into the panel port.
     tg = ResolvedTargets(
-        writes={"hist_addr": WriteTarget(1, cn["data"]),
-                "hist_data": WriteTarget(1, cn["data"]),
+        writes={"hist_data": WriteTarget(1, cn["data"]),
                 "read": WriteTarget(1, cn["data"]),
                 "out": WriteTarget(31, 20)},
-        jumps={"hist_addr": JumpTarget(1, ce["set_addr"]),
-               "hist_data": JumpTarget(1, ce["write"]),
+        jumps={"hist_data": JumpTarget(1, ce["write"]),
                "read": JumpTarget(1, ce["lookup"]),
                "out": JumpTarget(31, 31),
                "gohead": JumpTarget(31, 31)})
@@ -537,6 +608,8 @@ def _panel_match_run(window, wpos, off, mat, rounds=30000):
     chip.write_cell_memory(_cid(0, 0), en["wpos"], wpos & 0xFFFF)
     chip.write_cell_memory(_cid(0, 0), en["off"], off & 0xFFFF)
     chip.write_cell_memory(_cid(0, 0), en["mat"], mat & 0xFFFF)
+    # Seed the controller's OWN write counter to match (see the docstring).
+    chip.write_cell_memory(_cid(1, 0), cn["wraddr"], wpos & 0xFFFF)
 
     dev = SramPanelDevice()
     for a, v in window.items():
@@ -715,10 +788,7 @@ def test_mutation_onchip_offset_bytes_swapped_FAILS():
     import simkyt
     _b, progs, M = _block_maps()
     names, entries = M[3]
-    tg = ResolvedTargets(writes={"setoff": WriteTarget(10, 2)},
-                         jumps={"setoff": JumpTarget(10, 1),
-                                "ready": JumpTarget(10, 1)})
-    res = R.resolve(progs[3], tg)
+    res = R.resolve(progs[3], _dummy_targets(progs[3], distance=10))
     chip = simkyt.Chip.from_yaml(str(CHIP_YAML))
     for a in range(32):
         chip.write_cell_memory(_cid(0, 0), a, int(res.memory.get(a, 0)))
@@ -792,14 +862,74 @@ def _reachable_from(pos, face, start, W, H, limit=31):
     return seen
 
 
-def test_internal_edges_that_do_not_route_are_exactly_the_known_gap():
-    """Pin WHICH internal edges the current layout fails to deliver, under the
-    real forwarding rule (:func:`_reachable_from`).
+def _flip_walks(pos, face, start, W, H):
+    """Every walk out of ``start`` — the resting face first, then the three flip
+    faces — as ``{face: [cells visited]}``."""
+    return {f: _reachable_from(pos, {**face, start: f}, start, W, H)
+            for f in ("east", "west", "north", "south")}
 
-    This is deliberately an exact-set assertion rather than "no failures": the
-    block is not finished, and the value here is that the failure set cannot
-    drift silently. When the layout is fixed this test's expected set shrinks to
-    empty and it becomes the routability gate.
+
+def test_the_merged_INV50_rule_keeps_BOTH_halves_of_the_walk():
+    """INV-50 was closed by TWO passes that fixed OPPOSITE halves of one walk, and
+    this pins that neither half can be dropped without a red test.
+
+    A walk is "leave the source on face F, then turn at every occupied cell you
+    cross". ``ChaCha20KeystreamBlock`` fixed F (``emit_faces()``, a neighbour CELL
+    ID so it survives rotation); ``LZ4DecoderBlock`` fixed the turns
+    (``BlockDefinition.cell_faces``, the block's authored faces, because at
+    internal-resolution time the ``cell_map`` still holds the router's positional
+    guesses). This test asserts both mechanisms are still WIRED — a merge that
+    kept only one would leave the other's block silently mis-sized, which is
+    exactly the failure mode neither pass's own suite would notice.
+    """
+    import inspect
+    from gr_kyttar.placement.router import Router
+    from gr_kyttar.placement.block import BlockDefinition
+
+    sig = inspect.signature(Router._get_routing_distance).parameters
+    assert "start_face" in sig, (
+        "the FIRST-step half is gone: _get_routing_distance no longer takes "
+        "start_face, so a flipped edge is sized along the resting walk again")
+    assert "authored" in sig, (
+        "the TRANSIT half is gone: _get_routing_distance no longer takes "
+        "authored faces, so the walk crosses the fold on the router's guesses")
+    assert "strict" in sig, (
+        "the strict failure mode is gone — an internal edge that reaches "
+        "nothing would silently take the Manhattan estimate again")
+    assert hasattr(Router, "_declared_emit_face"), \
+        "emit_faces() resolution (the ChaCha half) was dropped"
+    assert hasattr(Router, "_authored_faces"), \
+        "cell_faces resolution (the LZ4 half) was dropped"
+    assert "cell_faces" in {f.name for f in
+                            __import__("dataclasses").fields(BlockDefinition)}, \
+        "BlockDefinition.cell_faces was dropped"
+    assert "orientation" in {f.name for f in
+                             __import__("dataclasses").fields(BlockDefinition)}, (
+        "BlockDefinition.orientation was dropped — declared flip faces are "
+        "stored UNROTATED, so without it a rotated block flips the wrong way")
+    # A DECLARED emit face must WIN outright: inference knows which faces a cell
+    # has, never which port uses which, so a declaration must not be second-guessed.
+    src = inspect.getsource(Router._internal_distance)
+    assert "declared_face is not None" in src, (
+        "a declared emit face is no longer authoritative — the router would "
+        "fall back to inference and could 'fix' a wrong declaration silently")
+
+
+def test_every_internal_edge_DELIVERS_under_the_real_forwarding_rule():
+    """THE ROUTABILITY GATE. Every one of the block's internal edges reaches its
+    target under the REAL forwarding rule (:func:`_reachable_from`) — a word
+    leaves on its SOURCE cell's face and turns at every occupied cell it crosses.
+
+    This test used to pin a KNOWN GAP: an exact set of four edges the 7x1 row
+    could not deliver (``0->1``, ``0->2``, ``0->3``, ``5->6``). The gap is CLOSED,
+    so it now asserts the positive property, which is strictly stronger — a
+    regression that breaks any edge fails here rather than being absorbed into a
+    "known" set.
+
+    It also pins WHERE the flips are: cell 5 is the only cell that needs one, and
+    it needs exactly ONE. That is the whole point of the 8th cell (see the class
+    docstring): with the egress still in cell 5, that cell needed THREE
+    directions, which costs 6 words against the 5 it has.
     """
     b = LZ4DecoderBlock("lz4")
     lay = b.default_layout()
@@ -812,58 +942,117 @@ def test_internal_edges_that_do_not_route_are_exactly_the_known_gap():
     edges = ({(s, d) for s, _o, d, _i in b.internal_connections()}
              | {(s, d) for s, _o, d, _e in b.internal_jumps()})
     unroutable = set()
+    flips = {c: set() for c in pos}
     for (s, d) in sorted(edges):
-        seen = _reachable_from(pos, face, s, W, H)
-        if d not in seen or ctl in seen[:seen.index(d)]:
+        walks = _flip_walks(pos, face, s, W, H)
+        hit = None
+        for f in (face[s], "east", "west", "north", "south"):
+            seen = walks[f]
+            if d in seen and (ctl not in seen[:seen.index(d)] or d == ctl):
+                hit = f
+                break
+        if hit is None:
             unroutable.add((s, d))
+        elif hit != face[s]:
+            flips[s].add(hit)
 
-    # cell 0 = router, 1 = token, 2 = literal, 3 = offset, 4 = matchlen,
-    # 5 = emit, 6 = controller. The router's three dispatch edges bounce off the
-    # emit cell's opposing face, and the emit cell cannot reach the controller —
-    # the two halves of the gap described in
-    # ``test_emit_cell_cannot_reach_the_controller_in_a_placed_layout``.
-    expected = {(0, 1), (0, 2), (0, 3), (5, 6)}
-    assert unroutable == expected, (
-        f"the set of unroutable internal edges CHANGED: {sorted(unroutable)} "
-        f"(was {sorted(expected)}). If it shrank, update this test — and if it "
-        "is now empty, the block may be end-to-end testable: un-skip "
-        "test_auto_placed_design_decodes_on_chip.")
+    assert not unroutable, (
+        f"internal edges that do NOT deliver: {sorted(unroutable)}. A word turns "
+        "at every occupied cell it crosses (INV-48), so each target must lie on "
+        "one of its source cell's four walks — and not behind the controller, "
+        "which would push it into the SRAM port.")
+    assert {c: sorted(v) for c, v in flips.items() if v} == {5: ["east"]}, (
+        f"the FLIP set changed: {({c: sorted(v) for c, v in flips.items() if v})}. "
+        "Exactly one cell (5, EMIT) may need exactly one flip — every other edge "
+        "must ride its source cell's resting face. More flips than that means the "
+        "fold regressed and some cell is paying 3 words it may not have.")
 
 
-def test_layout_leaves_an_egress_cell_on_the_emit_ray():
-    """The emit cell's ``out`` WRITE rides the SAME face as its panel hand-offs,
-    so the layout must leave a FREE cell on that ray BEFORE the controller.
+def test_the_emit_cell_can_afford_the_ONE_flip_the_layout_asks_of_it():
+    """The budget arithmetic, as a POSITIVE assertion.
+
+    This test used to assert the opposite — that the emit cell had FEWER free
+    words than a flip costs — and it pinned the gap that stopped this block. Both
+    halves of that gap are closed, and each is asserted here:
+
+    * dropping the redundant per-byte ``set_addr`` freed 3 words (2 -> 5);
+    * splitting the egress onto cell 7 dropped the emit cell from THREE
+      directions to TWO, so it needs ONE flip (3 words), not two (6).
+
+    A change that puts a third direction back on the emit cell, or that spends
+    its words elsewhere, fails here with the arithmetic spelled out.
+    """
+    b = LZ4DecoderBlock("lz4")
+    progs = b.build_cell_programs()
+
+    def free_words(cid):
+        cp = progs[cid]
+        n = R.count_instructions(cp)
+        dm = R._allocate_data(cp.data)
+        nd = max(dm.values(), default=-1) + 1
+        return (31 - n) - nd - len(cp.state) - len(cp.inputs)
+
+    for cid in sorted(progs):
+        assert free_words(cid) >= 0, (
+            f"cell {cid} is over budget by {-free_words(cid)} words")
+    # The emit cell's flip is AUTHORED (two `MOVE [FACE]` pairs + two is_face
+    # DataWords are already inside the program), so what must hold is that the
+    # program with the flip in it still resolves — which the loop above checks —
+    # and that the flip is really there.
+    emit = progs[b.panel_requirements()["panel_client_cell"]]
+    faces = [d for d in emit.data if getattr(d, "is_face", False)]
+    assert len(faces) == 2, (
+        f"the emit cell must carry exactly two is_face DataWords (its resting "
+        f"ring face and the panel face it flips to), found {len(faces)}")
+    assert emit.assembly_template.count("MOVE [FACE]") == 4, (
+        "the emit cell must flip and RESTORE on both of its bursts (the fetch "
+        "and the emit body) — an unrestored flip leaves the cell facing the "
+        "panel, and the ring words that transit it (cells 1 and 2 reaching the "
+        "router's `st`) are then deflected into the controller")
+
+
+def test_layout_leaves_an_egress_cell_on_the_output_cell_walk():
+    """The OUTPUT cell's ``out`` WRITE rides one of its faces, so the layout must
+    leave a FREE cell on that walk BEFORE the controller.
 
     Without it the output would transit the controller — whose face points at the
     panel — and be pushed into the SRAM port instead of the output corridor. The
     self-contained template raises a named PlacementError when this cell is
     missing, so this test pins the layout property the template depends on.
+
+    Note WHICH cell: the egress belongs to ``output_cell`` (7), not to the return
+    cell (5). Those were the same cell until this block needed them apart.
     """
     b = LZ4DecoderBlock("lz4")
     lay = b.default_layout()
     req = b.panel_requirements()
-    ret, ctl = req["return_cell"], req["controller_cell"]
+    out_c, ctl = req["output_cell"], req["controller_cell"]
+    assert out_c != req["return_cell"], (
+        "this block's egress is on its OWN cell — that split is what let the "
+        "emit cell fit its one flip")
     pos = {c: (x, y) for c, (x, y, _f) in lay.items()}
     occ = {p: c for c, p in pos.items()}
-    dx, dy = {"east": (1, 0), "west": (-1, 0),
-              "north": (0, -1), "south": (0, 1)}[lay[ret][2]]
-    sx, sy = pos[ret]
-    free = ctl_hop = None
-    for k in range(1, 32):
-        p = (sx + dx * k, sy + dy * k)
-        if occ.get(p) == ctl:
-            ctl_hop = k
+    found = None
+    for f in (lay[out_c][2], "north", "east", "west", "south"):
+        dx, dy = {"east": (1, 0), "west": (-1, 0),
+                  "north": (0, -1), "south": (0, 1)}[f]
+        sx, sy = pos[out_c]
+        for k in range(1, 32):
+            p = (sx + dx * k, sy + dy * k)
+            if occ.get(p) == ctl:
+                break
+            if p not in occ:
+                found = (f, k, p)
+                break
+        if found:
             break
-        if p not in occ and free is None:
-            free = k
-    assert ctl_hop is not None, "the emit cell must reach the controller"
-    assert free is not None and free < ctl_hop, (
-        "no free cell on the emit cell's ray before the controller — the "
-        "block's `out` WRITE has nowhere to land but the controller")
+    assert found is not None, (
+        "no free cell on any of the output cell's walks before the controller — "
+        "the block's `out` WRITE has nowhere to land but the controller")
 
 
 def test_auto_pnr_places_every_cell_and_routes_the_corridors():
-    """THE PLACEMENT GATE. ``apply_panel_template`` places ALL SEVEN cells and
+    """THE PLACEMENT GATE. ``apply_panel_template`` places ALL EIGHT cells and
     draws the three corridors, and the result passes DRC with no errors.
 
     A role-named template places only the cells named in ``panel_requirements()``
@@ -909,7 +1098,22 @@ def test_auto_pnr_places_every_cell_and_routes_the_corridors():
     req = blk.placement.cells
     ctl = next(c for c in req if c.cell_id == 6)
     assert (ctl.x, ctl.y) == (9, 11), "the controller must sit on x1_out"
-    assert len({(c.x, c.y) for c in req}) == 7, "cells overlap"
+    assert len({(c.x, c.y) for c in req}) == n_cells, "cells overlap"
+    # The return cell must land on the x1_in ROW — the push-read corridor runs
+    # east along it and has to land ON that cell.
+    ret = next(c for c in req if c.cell_id == 5)
+    assert ret.y == 11, f"the return cell must sit on the x1_in row, got {ret.y}"
+    # The OUT cell sits BETWEEN the emit cell and the controller and rests toward
+    # the controller, so the emit cell's panel words transit it. That adjacency is
+    # what lets ONE eastward flip serve both (cell 7 at hop 1, controller at 2).
+    out = next(c for c in req if c.cell_id == 7)
+    assert (out.x, out.y) == (ret.x + 1, ret.y) and (ctl.x, ctl.y) == (out.x + 1,
+                                                                      out.y), (
+        f"emit {(ret.x, ret.y)} -> out {(out.x, out.y)} -> ctl "
+        f"{(ctl.x, ctl.y)} must be collinear and adjacent")
+    assert out.face.name == "EAST", (
+        "the OUT cell must REST facing the controller or the emit cell's panel "
+        "words are deflected into the output corridor")
     # All three corridors were drawn.
     named = {r.name for r in results}
     assert {"in_to_block", "block_to_out"} <= named, named
@@ -971,18 +1175,44 @@ def test_build_lands_each_program_on_its_placed_cell():
             f"of that program's entries {sorted(want.values())} — the programs "
             "are bound to the wrong cells")
 
-    # The emit cell keeps its THREE distinct panel hand-offs: the controller's
-    # set_addr / write / lookup entries, each at the placed hop. A build that
-    # rewrote them would collapse them onto one entry (the old defect).
+    # The emit cell keeps its TWO distinct panel hand-offs: the controller's
+    # `write` and `lookup` entries, each at the placed hop. A build that rewrote
+    # them would collapse them onto one entry (the old defect).
+    #
+    # There are TWO, not three: the per-byte `set_addr` is gone. The controller's
+    # `write` auto-increments its own `wraddr` and `lookup` drives a SEPARATE
+    # `rdaddr`, so the two paths never collide — proven on silicon (see
+    # test_onchip_match_copy_through_the_real_panel, which interleaves them) and
+    # end to end (test_auto_placed_design_decodes_on_chip). Removing it freed the
+    # three words the emit cell's face flip needed.
     emit_mem = cb.cells[pos[5]]["memory"]
     ctl_entries = R.compute_entry_addresses(inst.build_cell_programs()[6])
     jumps = {w & 0x1F for a, w in enumerate(emit_mem)
              if w and (w >> 12) & 0xF == 0x7}
-    for name in ("set_addr", "write", "lookup"):
+    for name in ("write", "lookup"):
         assert ctl_entries[name] in jumps, (
             f"the emit cell no longer JUMPs the controller's {name!r} entry "
             f"(entries seen: {sorted(jumps)}) — the panel protocol was "
             "flattened by an exit-hop patch")
+    assert ctl_entries["set_addr"] not in jumps, (
+        "the emit cell JUMPs the controller's `set_addr` — the per-byte address "
+        "latch is redundant (the controller auto-increments `wraddr`) and its "
+        "three words are what pay for the emit cell's face flip")
+
+    # The OUT cell issues the egress for the WHOLE corridor, not just the first
+    # cell of it. The corridor is plain transit cells, and hardware forwards a
+    # transiting word (HOP_CNT < 31) on the cell's face BEFORE any program runs —
+    # only a landing word executes. So a WRITE aimed @1 parks the byte on the
+    # first corridor cell and nothing ever leaves the port (measured: correct
+    # decode inside the block, zero words at x16_out).
+    eg = next(c for c in p.connections if c.name == "block_to_out")
+    want_hop = len(eg.route) + 1                # transit every cell, then exit
+    out_mem = cb.cells[pos[7]]["memory"]
+    hops = {31 - ((w >> 5) & 0x1F) for w in out_mem
+            if w and (w >> 12) & 0xF in (0x6, 0x7)}
+    assert hops == {want_hop}, (
+        f"the OUT cell's egress WRITE/JUMP carry hops {sorted(hops)}, expected "
+        f"{want_hop} = the {len(eg.route)}-cell corridor plus the port exit")
 
 
 # --- the whole thing, on the chip, from the auto-placed build ------------------
@@ -1068,100 +1298,58 @@ def _decode_on_chip(project, bres, src_bytes, idle_max=200):
     return out, dev
 
 
-def test_emit_cell_cannot_reach_the_controller_in_a_placed_layout():
-    """THE REMAINING GAP, measured — why the auto-placed design does not yet RUN.
+_BUILD_CACHE: list = []
 
-    Placement, build and DRC are all clean (the tests above), but the design does
-    not decode end to end, and this pins the reason so the next agent starts from
-    the measurement rather than from scratch.
 
-    **The substrate rule, read off a real simkyt trace** (not inferred): a word
-    leaves its source on the SOURCE cell's face, and every cell it then arrives at
-    forwards it on THAT CELL'S OWN resting face. So from any cell there is exactly
-    ONE outgoing walk, and all of that cell's internal targets must lie along it.
-    A straight-line "ray" model is WRONG — under it this block's row layout looks
-    routable, but on the chip the router's westward word reaches the emit cell,
-    whose face is east, and is sent straight back. That ping-pong is what hangs the
-    simulation.
+def _auto_build_cached():
+    """The auto-placed + built design, built ONCE for the whole module.
 
-    **What the shipped blocks prove is possible.** Fan-out is not the wall:
-    ``LMSEqualizerBlock`` ships with fan-out 6 and 5 backward edges, ``FFT64Block``
-    with fan-out 4 and 6 backward edges — both strictly worse than this block's
-    (4, 3), both ``done``. They manage it two ways, and both are available here:
-
-      * arrange each cell's targets CONSECUTIVELY along one walk (LMS's ``bcast``
-        at (7,1) faces west and its six targets are the six cells west of it);
-      * author an in-program FACE FLIP — ``DataWord(..., is_face=True)`` plus
-        ``MOVE [FACE], R{data:face_x}`` … WRITEs … ``MOVE [FACE], R{data:face_y}``
-        (LMS ``f0``/``bcast``, ``MMTimingRecoveryBlock``). Cost: 2 instructions +
-        1 data word per extra direction.
-
-    **The measured blocker.** A ring over cells 0..5 alone (controller OFF the
-    ring) satisfies all 14 inter-cell edges in the natural order — verified by
-    exhaustive search. What does not fit is the last edge, ``emit -> controller``:
-    the emit cell would need a face flip, and it has only 2 free words against the
-    3 a flip costs. An exhaustive search over every 4x2..7x2 fold, with per-cell
-    flip budgets, found no arrangement every cell can afford (the other binding
-    cell is ``token``, with 1 free word).
-
-    **The way through, also measured.** The per-byte ``set_addr`` is redundant:
-    the controller's ``write`` entry auto-increments its own ``wraddr``, and this
-    block appends exactly one byte per emitted byte from 0 — the same sequence
-    ``wpos`` follows. Dropping it frees 3 words in the emit cell (2 -> 5), enough
-    for the flip. That was verified against the golden on 19 payloads, but it
-    changes the cell program the match copy is PROVEN on in
-    ``test_onchip_match_copy_through_the_real_panel``, so it needs its own silicon
-    re-verification and was not taken here.
-
-    This test asserts the budget arithmetic, so it FAILS the day the emit cell can
-    afford its flip — i.e. the day this gap is closed.
+    Placement and build are deterministic here (the panel template lays the
+    block's own ``default_layout`` down — there is no CP-SAT search), so every
+    end-to-end case can share one build. Each case still gets a FRESH chip and a
+    fresh panel device, so no state leaks between payloads.
     """
-    b = LZ4DecoderBlock("lz4")
-    progs = b.build_cell_programs()
-
-    def free_words(cid):
-        cp = progs[cid]
-        n = R.count_instructions(cp)
-        dm = R._allocate_data(cp.data)
-        nd = max(dm.values(), default=-1) + 1
-        return (31 - n) - nd - len(cp.state) - len(cp.inputs)
-
-    FLIP_COST = 3            # 2 instructions + 1 face DataWord
-    emit_free = free_words(b.panel_requirements()["return_cell"])
-    assert emit_free < FLIP_COST, (
-        f"the emit cell now has {emit_free} free words, enough for a face flip "
-        f"({FLIP_COST}) — the placement gap this test pins can be CLOSED: give "
-        "it the flip, lay the block out as a 6-cell ring with the controller "
-        "off-ring, and turn this test into the end-to-end decode gate")
+    if not _BUILD_CACHE:
+        _BUILD_CACHE.append(_auto_build())
+    return _BUILD_CACHE[0]
 
 
-@pytest.mark.skip(reason=(
-    "the auto-placed design does not yet RUN end to end — see "
-    "test_emit_cell_cannot_reach_the_controller_in_a_placed_layout for the "
-    "measured reason. Placement/build/DRC are green; this gate is written and "
-    "ready for the day the emit cell can reach the controller. It HANGS today "
-    "(the router's word ping-pongs against the emit cell's opposing face), so "
-    "it is skipped rather than left to time out."))
 @pytest.mark.parametrize("name,payload", [
     ("all_literal", bytes(range(64))),
     ("repetitive", b"the quick brown fox jumps over the lazy dog. " * 3),
     ("byte_run", b"Q" * 40 + b"tail!"),
     ("overlap", b"abc" * 12 + b"!"),
+    # The three cases each of which found a REAL defect that no per-cell gate saw:
+    #   * a match-length CONTINUATION (nibble 15) — the OFFSET cell dropped the
+    #     byte, so every match longer than 18 stalled;
+    #   * offset == 1 over a long run — the copy has to be byte-by-byte;
+    #   * a LITERAL continuation (15 + 255 + k) alongside matches.
+    ("matchlen_continuation", b"z" * 4 + b"y" * 60 + b"end!"),
+    ("offset_one_run", b"Q" + b"Q" * 200 + b"tail!"),
+    ("literal_continuation", bytes((i * 7) & 0xFF for i in range(280))),
+    ("mixed", b"a" * 80 + b"bcdefgh" * 10 + b"a" * 20),
 ])
 def test_auto_placed_design_decodes_on_chip(name, payload):
-    """THE END-TO-END GATE (currently skipped — see the skip reason).
+    """THE END-TO-END GATE.
 
     The AUTO-PLACED, BUILT design decompresses a real LZ4 block byte-for-byte on a
     real chip through a real SRAM panel. Every layer below it is a component
     check; this is those checks composed — the parse FSM, the history window, the
     match copy at a computed panel address, and the placement, at once, from the
     same build path the GUI's auto-P&R produces.
+
+    This gate was SKIPPED while the block could not be laid out (the emit cell
+    needed a third face it could not afford). It is live now, and it is the test
+    that matters: three defects survived every per-cell gate and every model check
+    and were caught only here — the OFFSET cell dropping a match-length
+    continuation byte, cell 4 kicking the RETURN entry instead of ``fetch``, and
+    the egress WRITE aimed at the first corridor cell instead of through it.
     """
     _need_chip()
     blk = lz4_compress_block(payload)
     golden = lz4_decompress_block(blk)
     assert golden == payload, "the stimulus itself must round-trip"
-    project, bres = _auto_build()
+    project, bres = _auto_build_cached()
     got, dev = _decode_on_chip(project, bres, blk)
     assert len(got) >= len(golden), (
         f"{name}: chip emitted {len(got)} of {len(golden)} bytes "
@@ -1170,6 +1358,302 @@ def test_auto_placed_design_decodes_on_chip(name, payload):
         f"{name}: decoded bytes differ from the golden\n"
         f"  golden[:24]={list(golden[:24])}\n"
         f"  chip  [:24]={got[:24]}")
+
+
+def _mutated_chip_decode(payload, *, patch):
+    """Build the design with ONE named defect patched into the BLOCK ITSELF, run
+    it on a real chip, and return ``(decoded bytes, golden)``.
+
+    The mutation is applied to the real ``LZ4DecoderBlock`` class and the design
+    is re-placed, re-routed and re-built from it (INV-4 rule 5: mutate the BLOCK,
+    not a model of it). ``patch`` is a callable given the class; it returns a
+    restore callable.
+    """
+    from gr_kyttar.placement.blocks import lz4_decoder_block as _mod
+    restore = patch(_mod.LZ4DecoderBlock)
+    saved = list(_BUILD_CACHE)
+    _BUILD_CACHE.clear()
+    try:
+        blk = lz4_compress_block(payload)
+        project, bres = _auto_build()
+        got, _dev = _decode_on_chip(project, bres, blk)
+        return got, lz4_decompress_block(blk)
+    finally:
+        restore()
+        _BUILD_CACHE[:] = saved
+
+
+def test_mutation_onchip_first_fetch_kicks_the_RETURN_entry_FAILS():
+    """INV-4, WHOLE CHIP: cell 4 kicking the emit cell's ``emit_mat`` (the panel
+    RETURN door) instead of its ``fetch`` must break the decode.
+
+    This mutation IS the bug the end-to-end gate found, restored: ``emit_mat``
+    emits whatever ``b`` still holds — the previous literal — so the run starts
+    one byte early against a window the spurious byte has already corrupted.
+    Every per-cell gate and the whole FSM model pass with it in place, which is
+    why this gate has to run the placed chip.
+    """
+    _need_chip()
+
+    def patch(cls):
+        orig = cls.internal_jumps
+        cls.internal_jumps = lambda self: [
+            (s, o, d, "emit_mat" if (s, o, d) == (4, "fetch", 5) else e)
+            for (s, o, d, e) in orig(self)]
+
+        def restore():
+            cls.internal_jumps = orig
+        return restore
+
+    got, golden = _mutated_chip_decode(b"abc" * 12 + b"!", patch=patch)
+    assert bytes(got[:len(golden)]) != golden, \
+        "the end-to-end gate is BLIND to the first fetch kicking the return entry"
+
+
+def test_mutation_onchip_dropping_the_matchlen_relay_FAILS():
+    """INV-4, WHOLE CHIP: removing the OFFSET cell's relay of a match-length
+    CONTINUATION byte must break the decode.
+
+    The router steers every ``ST_MATCH`` byte to the OFFSET cell, so once the two
+    offset bytes are in, a continuation byte lands there with ``nb == 0``. Without
+    the relay to cell 4 it is swallowed and the match never fires — measured: a
+    45-byte payload decoded to ONE byte. Any match longer than 18 takes this path,
+    which is most real text.
+    """
+    _need_chip()
+
+    def patch(cls):
+        oc, oj = cls.internal_connections, cls.internal_jumps
+        cls.internal_connections = lambda self: [
+            e for e in oc(self) if e[:2] != (3, "ext")]
+        cls.internal_jumps = lambda self: [
+            e for e in oj(self) if e[:2] != (3, "ext")]
+
+        def restore():
+            cls.internal_connections, cls.internal_jumps = oc, oj
+        return restore
+
+    got, golden = _mutated_chip_decode(b"Q" * 40 + b"tail!", patch=patch)
+    assert bytes(got[:len(golden)]) != golden, \
+        "the end-to-end gate is BLIND to a dropped match-length continuation"
+
+
+def test_mutation_onchip_egress_aimed_at_the_first_corridor_cell_FAILS():
+    """INV-4, WHOLE CHIP: aiming the OUT cell's egress at the first corridor cell
+    (``@1``) instead of through the whole corridor must produce NO output.
+
+    A transiting word (HOP_CNT < 31) is forwarded by hardware on the cell's face
+    before any program runs; only a LANDING word executes. So ``@1`` parks the
+    byte on the egress cell and nothing reaches the port — while everything
+    INSIDE the block still looks perfect (the panel window fills correctly). This
+    gate pins the distinction.
+    """
+    _need_chip()
+    project, bres = _auto_build()
+    blk = project.block("lz4")
+    good = int(blk.params["emit_hop"])
+    assert good > 1, "the egress hop must span the corridor, not one cell"
+
+    # Rebuild the block with the SHORT hop and run it: the panel window must
+    # still fill (the block works) while the port stays silent.
+    from engine.build import BuildEngine
+    from engine.catalog import BlockCatalog
+    from engine.io.chip_type_io import load_chip_type
+    cat = BlockCatalog.from_gr_kyttar()
+    ct = load_chip_type(str(CHIP_YAML))
+    blk.params["emit_hop"] = 1
+    bad = BuildEngine(cat, str(CHIP_YAML)).build(project, {"kyttar_10x12": ct})
+    assert bad.ok, [str(e) for e in bad.errors]
+    payload = bytes(range(32))
+    got, dev = _decode_on_chip(project, bad, lz4_compress_block(payload))
+    blk.params["emit_hop"] = good
+    assert dev.writes_committed >= len(payload), (
+        "the mutation must leave the BLOCK working — if the window did not fill, "
+        "this gate is measuring something else")
+    assert not got, (
+        f"the port emitted {len(got)} words with the egress aimed one cell away; "
+        "a transiting word is forwarded by hardware, so @1 must park it")
+
+
+@pytest.mark.skipif(not _HAVE_REF, reason="reference lz4 C binding not importable")
+def test_auto_placed_design_decodes_REFERENCE_C_blocks_on_chip():
+    """THE STRONGEST GATE: the placed chip decodes blocks produced by the
+    REFERENCE C COMPRESSOR, byte-for-byte.
+
+    Everything else in this suite runs on blocks this repository manufactured. A
+    block from ``lz4.block.compress`` is one nothing here shaped — it picks its
+    own token nibbles, its own continuation lengths and its own offsets — so this
+    is the check that the whole chain (golden, model, cell programs, placement,
+    corridors) is not self-consistently wrong.
+
+    Kept small on purpose: the panel link is single-outstanding, so a large
+    payload is minutes of simulation for no extra coverage.
+    """
+    _need_chip()
+    payloads = [PAYLOADS["short"],
+                b"the quick brown fox jumps over the lazy dog. " * 3,
+                b"Q" * 40 + b"tail!"]
+    blocks = _ref_compress(payloads)
+    project, bres = _auto_build_cached()
+    for want, blk in zip(payloads, blocks):
+        got, dev = _decode_on_chip(project, bres, blk)
+        assert bytes(got[:len(want)]) == want and len(got) >= len(want), (
+            f"a REFERENCE-C-compressed block did not decode on chip:\n"
+            f"  want[:24]={list(want[:24])}\n  got [:24]={got[:24]}")
+
+
+# =========================================================================
+# LAYER 6 — INV-23 ORIENTATION: the fold is a RIGID unit
+# =========================================================================
+_D4 = [["cw"], ["cw", "cw"], ["cw", "cw", "cw"], ["mirror_h"], ["mirror_v"],
+       ["mirror_h", "cw"], ["mirror_v", "cw"]]
+
+
+@pytest.mark.parametrize("orient", _D4, ids=["+".join(o) for o in _D4])
+def test_orientation_transforms_the_fold_and_its_face_words_together(orient):
+    """INV-23: rotating/mirroring the placed block moves every cell AND turns
+    every cell's resting face AND rewrites the in-program ``is_face`` constants
+    through the SAME D4 map — so the fold stays a rigid unit and every internal
+    edge still delivers.
+
+    This block cannot use the shared orientation gate
+    (``test_orientation_invariance.py``): that harness places a block anywhere and
+    drives it from the chip port, whereas a panel-backed block is pinned by the
+    panel template with its controller ON ``x1_out``. So the invariance is checked
+    where it can be — on the transform itself — and it is checked on the property
+    that actually matters here: **the walk**. A face constant that did not rotate
+    with the cells would aim the emit cell's panel burst somewhere else, and the
+    layout's one flip is exactly the thing at risk.
+    """
+    from model.enums import Face, face_code_after
+    from model.placement import Placement, PlacedCell
+
+    b = LZ4DecoderBlock("lz4")
+    lay = b.default_layout()
+    pl = Placement(0, [PlacedCell(cid, x, y, Face.from_str(f))
+                       for cid, (x, y, f) in sorted(lay.items())])
+    for k in orient:
+        pl.transform(k)
+    pos = {c.cell_id: (c.x, c.y) for c in pl.cells}
+    face = {c.cell_id: c.face.value for c in pl.cells}
+
+    # 1. RIGID: the footprint keeps its shape (same multiset of cell-to-cell
+    #    offsets up to the transform) and nothing collides.
+    assert len({(c.x, c.y) for c in pl.cells}) == b.cell_count, "cells collide"
+
+    # 2. Every internal edge still delivers, on the transformed faces.
+    W_ = max(x for x, _y in pos.values()) + 1
+    H_ = max(y for _x, y in pos.values()) + 1
+    minx = min(x for x, _y in pos.values())
+    miny = min(y for _x, y in pos.values())
+    npos = {c: (x - minx, y - miny) for c, (x, y) in pos.items()}
+    W_ -= minx
+    H_ -= miny
+    ctl = b.panel_requirements()["controller_cell"]
+    edges = ({(s, d) for s, _o, d, _i in b.internal_connections()}
+             | {(s, d) for s, _o, d, _e in b.internal_jumps()})
+    bad = []
+    for (s, d) in sorted(edges):
+        ok = False
+        for f in ("east", "west", "north", "south"):
+            seen = _reachable_from(npos, {**face, s: f}, s, W_, H_)
+            if d in seen and (d == ctl or ctl not in seen[:seen.index(d)]):
+                ok = True
+                break
+        if not ok:
+            bad.append((s, d))
+    assert not bad, f"orientation {orient} breaks internal edges {bad}"
+
+    # 3. The in-program FACE constants transform by the SAME map. The emit cell
+    #    rests on the ring face and flips to the panel face; after the transform
+    #    both must still name the direction of the cell they serve.
+    progs = b.build_cell_programs()
+    emit_id = b.panel_requirements()["panel_client_cell"]
+    out_id = b.panel_requirements()["output_cell"]
+    got = {d.name: face_code_after(d.value, orient)
+           for d in progs[emit_id].data if d.is_face}
+    _CODE = {"south": 0, "east": 1, "west": 2, "north": 3}
+    assert got["face_ring"] == _CODE[face[emit_id]], (
+        f"orientation {orient}: the emit cell's resting `face_ring` constant "
+        f"({got['face_ring']}) no longer matches its placed face "
+        f"({face[emit_id]}) — the ring hand-off would leave the wrong way")
+    # face_panel must point AT the OUT cell (which the panel burst reaches first).
+    ex, ey = npos[emit_id]
+    ox, oy = npos[out_id]
+    want = {(1, 0): 1, (-1, 0): 2, (0, -1): 3, (0, 1): 0}[(ox - ex, oy - ey)]
+    assert got["face_panel"] == want, (
+        f"orientation {orient}: the emit cell's `face_panel` constant "
+        f"({got['face_panel']}) does not point at the OUT cell (want {want}) — "
+        "the panel burst and the block's own output would both go astray")
+
+
+def test_orientation_is_a_noop_for_the_identity():
+    """The D4 identity leaves the layout byte-identical — the control that makes
+    the seven transform cases above mean something."""
+    from model.enums import Face
+    from model.placement import Placement, PlacedCell
+
+    b = LZ4DecoderBlock("lz4")
+    lay = b.default_layout()
+    pl = Placement(0, [PlacedCell(cid, x, y, Face.from_str(f))
+                       for cid, (x, y, f) in sorted(lay.items())])
+    before = [(c.cell_id, c.x, c.y, c.face.value) for c in pl.cells]
+    for k in ("cw", "cw", "cw", "cw"):
+        pl.transform(k)
+    assert [(c.cell_id, c.x, c.y, c.face.value) for c in pl.cells] == before
+
+
+def test_emit_report():
+    """Emit the verification report — from the AUTO-PLACED CHIP, not the model.
+
+    The number that earns this block its `done` is the byte error count of the
+    placed, routed, built design against the golden, so that is what is measured
+    and reported here. ``write_report`` refuses to write unless the session
+    itself passed (INV-36/INV-38), so the file cannot outlive a red run.
+    """
+    _need_chip()
+    from kyttar_verify.compare import CompareResult, Metric, write_report
+
+    payloads = [bytes(range(64)),
+                b"the quick brown fox jumps over the lazy dog. " * 3,
+                b"Q" * 40 + b"tail!",
+                b"abc" * 12 + b"!",
+                b"z" * 4 + b"y" * 60 + b"end!",
+                bytes((i * 7) & 0xFF for i in range(280))]
+    project, bres = _auto_build_cached()
+    n = errs = 0
+    for want in payloads:
+        golden = lz4_decompress_block(lz4_compress_block(want))
+        got, _dev = _decode_on_chip(project, bres, lz4_compress_block(want))
+        n += len(golden)
+        errs += sum(1 for i, g in enumerate(golden)
+                    if i >= len(got) or (got[i] & 0xFF) != g)
+    res = CompareResult(passed=(errs == 0), metric=Metric.EXACT,
+                        n_compared=n, bit_errors=errs, delay_used=0)
+    write_report("LZ4DecoderBlock", res, coverage={
+        "gr_equiv": "no stock GR block; golden is a transcription of the "
+                    "published LZ4 Block Format Description, cross-checked "
+                    "BOTH WAYS against the reference C implementation "
+                    "(lz4.block) — it decodes reference-compressed blocks and "
+                    "the reference decodes ours",
+        "patterns": f"{len(payloads)} payload classes, {n} bytes, decoded on "
+                    "the AUTO-PLACED + ROUTED + BUILT design on a real simkyt "
+                    "chip through a real SramPanelDevice: all-literal, "
+                    "repetitive text, an offset==1 byte run, an overlapping "
+                    "match, a match-length continuation and a literal "
+                    "continuation; plus reference-C-compressed blocks on the "
+                    "same placed design",
+        "mutation": True,
+        "note": "SRAM-backed (INV-31), and the first block to address a "
+                "COMPUTED panel address (wpos - off) into a window it is "
+                "itself writing. 8 cells: a 3x2 ring over the parse FSM with "
+                "the egress cell and the controller on a tail — the split that "
+                "let the emit cell fit its one face flip (INV-46/INV-48). "
+                "Whole-chip mutations: the first fetch kicking the return "
+                "entry, a dropped match-length continuation, and an egress hop "
+                "aimed at the first corridor cell.",
+    })
+    assert errs == 0, f"{errs} byte errors over {n} decoded bytes"
 
 
 def test_block_is_not_done_until_it_has_a_report():

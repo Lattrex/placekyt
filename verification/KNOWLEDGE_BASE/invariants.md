@@ -2385,3 +2385,86 @@ rendezvous is one cell, so the LOCK alone is the serialization).
 Related: INV-19/20 (the serialize-LOCK idiom this extends), INV-23 (every face
 constant is `is_face` so it D4-transforms), INV-39 (a multi-entry dispatch cell's
 entries must all be jumped).
+
+## INV-47 — When a wide value cannot be CARRIED, make it RESIDENT and turn the index into ADDRESS ARITHMETIC — the panel is the only computed-destination path
+
+**The rule.** INV-45 prices carrying a `W`-word live set at `3W + 1` of a cell's
+31 usable words. Solving `3W + 1 <= 31` gives a hard ceiling: **a live set wider
+than 10 sixteen-bit words cannot transit a cell at all.** Past that ceiling the
+answer is not a bigger fold or a cleverer relay — it is to stop moving the value.
+Put it in an **SRAM panel** (INV-31) and move *addresses* instead. Addresses are
+one word wide, so the transport cost collapses from `3W + 1` to `~3`, and the
+expensive compute block becomes a small REUSED engine the data is streamed
+through rather than a structure replicated per iteration.
+
+**The second half, which is the part that is easy to miss.** Making the value
+resident also solves a problem the substrate otherwise cannot solve at all. A
+`WRITE`'s `HOP_CNT` and `DEST` are **instruction fields** (guide §4), and there
+is no cross-cell register addressing — so **a cell cannot compute where to send a
+word**. Any algorithm whose dataflow is data-dependent (a permutation, a
+gather/scatter, an indexed shuffle) is therefore un-expressible as ROUTING. The
+panel is the one place on this substrate where a destination is a DATA value: the
+address register R5 and the push-read descriptors R3/R4 are all written, not
+encoded. **A data-dependent dataflow must be re-expressed as panel addressing, or
+it does not fit.**
+
+**Worked case (ChaCha20 keystream, measured 2026-08-29).** 16 x 32-bit state = 32
+sixteen-bit words; relaying it through one cell costs `3*32 + 1 = 97` words of a
+31-word cell — over 3x the whole cell. The round permutation (column vs diagonal)
+selects which four state words feed each quarter round, i.e. exactly the
+data-dependent dataflow above. Resident-in-panel fixes both, and the schedule the
+RFC states as eight literal index quadruples collapses to one closed form:
+
+    index(k) = 4*k + ((j + k*shift) & 3)        shift = 1 if diagonal else 0
+
+Three instructions (`SHL #2` / `ADD` / `AND #3`), no table. **Proven on the real
+placed+routed chip:** a built `gather` cell emitted the exact RFC panel-address
+sequence for all 8 quadruples, both halves, including the wrap-around diagonals.
+
+**How to build it (the three rules that cost real time to learn).**
+
+1. **Drive the panel from an AUTHORED cell when the addresses are computed.**
+   `SramControllerBlock` carries ONE fixed descriptor pair plus its own
+   auto-incrementing address — right for streaming a table, wrong for a
+   gather/scatter at N computed addresses. Author the cell and emit the protocol
+   directly (`WRITE @ph,5` address / `WRITE @ph,2` payload / `JUMP @ph,0` commit;
+   `JUMP @ph,1` to read). This is `CWKeyerBlock`'s fetch-cell pattern.
+2. **Keep the address/payload/commit triple in ONE cell.** The panel commits
+   whatever is in R2 to whatever is in R5. Split the address and the payload
+   across two cells and they are a RECONVERGENT FAN-IN (INV-20) whose arms can
+   interleave under load and silently store a word at the WRONG ADDRESS. One
+   cell's instruction stream is already ordered — no lock needed, and none
+   available (the panel has no arbiter to rotate).
+3. **The READ direction is cheap if the consumer serialises.** One fixed
+   descriptor pair suffices when the destination shifts arriving words into a
+   frame itself (the quarter round's `in0`/`in1` collectors do exactly this), so
+   N reads need N addresses but only ONE descriptor preload.
+
+**The budget trap that comes with it — carry the static gate from commit one.**
+Building this shape put a cell over the 31-word budget **four separate times**,
+and every time the design still ASSEMBLED, PLACED, ROUTED AND BUILT CLEAN while
+silently overlaying its own instruction words (INV-45's trap, INV-33's overlap
+half). Assert per cell that no pinned input register, state var or data address
+is `>= 31 - instruction_count`, with an INV-4 negative that re-inflates the
+over-budget shape. Note the trade direction, too: converting a stored constant
+into an instruction (`SUB Rx, Rx` for a zero) frees a register but costs
+instructions, and on an already-tight cell that makes the overrun WORSE.
+
+**And one wiring rule this shape trips over.** `engine/catalog.py`'s
+`resolved_io` selects the landing cell as **the first cell that declares
+inputs** — so the ORDER of `build_cell_programs` decides where the block's
+external trigger arrives. An iterative block must put its SEQUENCER first;
+ordering a mid-loop stage first starts the loop with its schedule registers
+uninitialised, and (again) the design builds and routes clean and emits nothing.
+
+**Gated by:** `verification/tests/test_chacha20_keystream_golden.py` (the closed
+form vs the RFC's literal quadruples, the half-round partition property, and the
+INV-4 negatives: wrong round count, missing final addition, stuck counter,
+swapped permutation, wrong diagonal stride).
+
+**Applies to:** any block whose working set exceeds the ~10-word transit ceiling
+or whose dataflow is data-dependent — ChaCha20 (keystream), Poly1305, wide
+interleavers, LZ4's history window, sort/permutation networks, any indexed
+gather/scatter. Related: INV-45 (the transport ceiling this starts from), INV-31
+(the panel + its protocol), INV-20 (the fan-in hazard rule 2 avoids), INV-33 (the
+register/overlap contract), INV-29 (the table-heavy case).

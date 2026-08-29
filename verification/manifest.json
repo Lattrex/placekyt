@@ -1275,14 +1275,14 @@
    "kyttar_block": "ChaCha20KeystreamBlock",
    "grc_block": "",
    "tier": 3,
-   "status": "planned",
+   "status": "needs_human",
    "metric": "exact",
    "params": [
     "key",
     "nonce",
     "counter"
    ],
-   "notes": "ChaCha20 block function, RFC 8439 S2.3. See PLAN SB3."
+   "notes": "QUARANTINED 2026-08-29 (scoping + partial build). RFC 8439 S2.3 block function. THE WALL: the 80 quarter-round invocations cannot be unrolled (17 cells/QR x 80 = 1360 vs a 120-cell array), and the 16-word state (32 sixteen-bit words) CANNOT transit a cell at all -- INV-45 prices a W-word relay at 3W+1 of 31 usable words, so 3*32+1 = 97 words for a 31-word cell; the ceiling 3W+1<=31 caps a transiting live set at W=10. So the state must be RESIDENT, not carried. The permutation cannot be expressed as routing either: a WRITE HOP_CNT/DEST are INSTRUCTION fields and there is no cross-cell register addressing, so a cell cannot compute where to send a word. WHAT WAS PROVEN (all measured, on the real 10x12 chip unless noted): (1) the SRAM panel is the escape hatch for BOTH problems -- its address is a DATA word, so the state is addressed rather than carried AND the permutation becomes computed ADDRESSES; (2) the column/diagonal schedule needs NO table -- both halves collapse to index(k) = 4k + ((j + k*shift) & 3), shift=1 for diagonal, verified against the RFC's eight literal quadruples; (3) that formula RUNS CORRECTLY ON CHIP: a built+placed+routed gather cell emitted the exact RFC panel-address sequence for ALL 8 quadruples (both halves, including the wrap-around diagonals); (4) the whole design fits -- 27 cells in a 6x5 fold, every cell inside its 31-word budget, auto_route_all ok and build ok on the 10x12; (5) the Python golden (verification/tests/chacha20_golden.py, extended this wave) is EXACT against RFC 8439 S2.3.2 state, S2.3.2 keystream and S2.4.2 encryption, and the block's process_reference matches it including counter increment across blocks. WHAT IS NOT DONE: the assembled 80-invocation loop does NOT yet run end to end on chip -- the design builds and routes but emits ZERO words and commits ZERO panel writes. Remaining work is integration, not architecture: the panel is never attached via register_panel in the harness (run_block_dut has NO panel awareness at all -- zero panel/sram references in dut_runner.py -- so panel blocks need a bespoke harness, as every shipped SRAM-backed block does), the push-read descriptors are placement-derived and still 0 (the disabled sentinel), and the external trigger/entry selection for a two-entry landing cell is unresolved. RECURRING TRAP worth its own gate: FOUR separate times a cell went over the 31-word budget and the design STILL assembled, placed, routed and built clean -- exactly the silent INV-45/INV-33 failure. A static per-cell budget assertion (max pinned register < 31 - instruction_count) caught every one and should gate any multi-word block. Block source NOT committed (it does not compute); the validated golden extension IS. Next agent: start from the golden + the on-chip address-schedule proof, and build the bespoke panel harness FIRST (mirror test_cw_keyer_sram.py) before wiring the loop."
   },
   {
    "kyttar_block": "LZ4DecoderBlock",

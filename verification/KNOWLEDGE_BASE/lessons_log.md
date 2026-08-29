@@ -9,6 +9,93 @@ block-specific gotcha. Promote anything that generalizes across block classes in
 and superseded material merged into the surviving entries; no durable lesson was
 dropped) — append new entries above the oldest ones as before.
 
+## ChaCha20KeystreamBlock — QUARANTINED: the transport ceiling forces a resident state, and the permutation becomes ADDRESS ARITHMETIC (proven on chip) 2026-08-29
+
+**Result: QUARANTINE (`needs_human`), with the architecture measured and its
+load-bearing mechanism proven on the real placed+routed chip.** The block source
+is NOT committed — it builds and routes but does not yet compute. The validated
+golden and the on-chip proof of the key mechanism ARE committed, so the next
+builder starts from evidence rather than from scratch.
+
+**The scoping, which is the point of the entry.** Three independent walls, all
+arithmetic, all measured — none of them the ALU:
+
+1. **The unroll is 10x over.** 20 rounds x 4 quarter rounds = **80** invocations;
+   `ChaCha20QRBlock` measured **17 cells**; `17 x 80 = 1360` against a **120**-cell
+   array. The quarter round must be REUSED, not instantiated.
+2. **The state cannot transit a cell at all.** INV-45 prices a `W`-word relay at
+   `3W + 1` of the 31 usable words. The ChaCha state is 16 x 32-bit = **32
+   sixteen-bit words**, so `3*32 + 1 = 97` — more than three whole cells for ONE
+   hop. Solving `3W + 1 <= 31` caps a transiting live set at **W = 10**; the
+   quarter round's 8-word frame already leaves only 6 words of body. So the state
+   must SIT, not move. This is the sharpest form of INV-45 measured so far.
+3. **The permutation cannot be ROUTING.** Column and diagonal rounds read
+   different index quadruples, so "which state word feeds this quarter round" is
+   data-dependent — but a `WRITE`'s `HOP_CNT`/`DEST` are INSTRUCTION fields
+   (guide §4) and there is no cross-cell register addressing. **A cell cannot
+   compute where to send a word.**
+
+**The escape hatch, and the durable finding.** The SRAM panel (INV-31) solves 2
+and 3 *at the same time*, because a panel ADDRESS is a DATA word: the state
+becomes resident and addressed rather than carried, and the permutation becomes
+computed addresses instead of computed routing. Concretely, the RFC states the
+schedule as eight literal quadruples, but both halves collapse into one closed
+form:
+
+    index(k) = 4*k + ((j + k*shift) & 3)        shift = 1 if diagonal else 0
+
+Three instructions (`SHL #2` / `ADD` / `AND #3`) and **no lookup table**. That
+identity is what makes the block expressible at all, and it is gated in
+`test_chacha20_keystream_golden.py` against the RFC's literal quadruples.
+
+**Proven ON CHIP (not modelled).** A built, placed and routed `gather` cell,
+driven through the real simulator with `j`/`shift` preset, emitted the exact RFC
+panel-address sequence for **all 8 quadruples** — both halves, including the
+wrap-around diagonals (`(1,6,11,12)`, `(2,7,8,13)`, `(3,4,9,14)`). The whole
+27-cell design folds 6x5, every cell inside its 31-word budget, `auto_route_all`
+ok and `build` ok on the 10x12. So the architecture is real; what remains is
+integration.
+
+**Why it is not done.** The assembled 80-invocation loop emits ZERO words and
+commits ZERO panel writes. The remaining work is harness/integration, not
+architecture: (a) `run_block_dut` has **no panel awareness whatsoever** — zero
+`panel`/`sram` references in `dut_runner.py` — so a panel block needs a bespoke
+harness (mirror `test_cw_keyer_sram.py`), which is how every shipped SRAM-backed
+block is gated; (b) the push-read descriptors are placement-derived and were
+still `0` (the disabled sentinel), so reads went nowhere; (c) the landing-cell
+selection interacts badly with a two-entry sequencer — `engine/catalog.py`'s
+`resolved_io` picks **the first cell that declares inputs**, so cell ORDER in
+`build_cell_programs` decides where the external trigger lands. Ordering `desc`
+before `seq` silently started the loop mid-stage with the schedule registers
+uninitialised, and the design still built and routed clean.
+
+**The recurring trap, worth its own gate.** FOUR separate times a cell went over
+the 31-word budget and the design STILL assembled, placed, routed and built
+clean — the silent INV-45/INV-33 failure, every time looking like a routing
+fault. A static per-cell assertion — *no pinned register, state var or data
+address may be `>= 31 - instruction_count`* — caught every one immediately. Any
+multi-word block should carry that gate from the first commit, not after the
+first wrong answer. (Watch the direction of the trade, too: converting a stored
+`zero` constant into `SUB Rx, Rx` frees a register but costs instructions, and on
+an already-tight cell that made the overrun *worse*, not better.)
+
+**For the next builder.** Start from `verification/tests/chacha20_golden.py`
+(now exact against §2.3.2 state, §2.3.2 keystream and §2.4.2 encryption) and the
+on-chip address-schedule proof. Build the **bespoke panel harness first** and get
+a single quarter round to read 8 words, compute, and store 8 words back through
+the real panel; only then close the 80-iteration loop. Drive the panel directly
+from an authored cell (`WRITE @ph,N` / `JUMP @ph,N`, the `CWKeyerBlock` fetch-cell
+pattern) rather than through `SramControllerBlock` — the generic controller
+carries ONE fixed descriptor pair and its own auto-incrementing address, and a
+quarter round needs eight COMPUTED addresses. Keep the address/payload/commit
+triple inside ONE cell: split across two, it is a reconvergent fan-in (INV-20)
+whose arms can interleave and store a word at the wrong address.
+
+**Unrelated pre-existing bug found in passing:** `test_pipeline_saturation.py`
+has a DUPLICATE `CWKeyerBlock` key (lines 615/616); the second, stale
+`QUARANTINE (INV-29)` string wins the dict merge and is now factually wrong (the
+block is SRAM-backed and verified). Identical to the `VaricodeDecoderBlock`
+duplicate that was fixed at lines 592-593; the same removal was never done here.
 ## XorJoinBlock — the N=2 rendezvous at its cheapest, and a mutation test that proved nothing 2026-08-29
 
 `out = a ^ b` for two INDEPENDENT producers. **Outcome: `done`**, 59 tests, EXACT

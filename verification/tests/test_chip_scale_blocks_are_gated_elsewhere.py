@@ -43,7 +43,7 @@ CHIP_SCALE_GATES = {
 #: it is quarantined, and the registry test RE-CHECKS the manifest — a block
 #: that reaches ``done`` while parked here fails, rather than slipping through
 #: with no orientation coverage at all.
-CHIP_SCALE_QUARANTINED = ("FFT128Block",)
+CHIP_SCALE_QUARANTINED = ("FFT128Block", "ChaCha20KeystreamBlock")
 
 
 def _all_chip_scale_blocks():

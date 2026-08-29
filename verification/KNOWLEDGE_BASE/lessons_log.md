@@ -9,6 +9,123 @@ block-specific gotcha. Promote anything that generalizes across block classes in
 and superseded material merged into the surviving entries; no durable lesson was
 dropped) — append new entries above the oldest ones as before.
 
+## ChaCha20KeystreamBlock — the SELECTOR was unnecessary: a fixed-tap ring makes the permutation a shift register. Places/routes/builds, does NOT yet compute 2026-08-29
+
+Second re-examination. **Outcome: still `needs_human`, and again for a smaller
+reason than before.** The architecture the previous pass settled on — 8 lane
+cells with a `LOAD`-indirect read, a 4-way `CMP`/`BR` write-back and a
+fan-out-8 selector broadcast — turned out to be unnecessary. The block is now
+authored, wired, folded, placed, routed and built, all static gates green, and
+it **emits no words**: the ring does not start. What remains is control-flow
+debugging on chip, not architecture.
+
+The headline, because it removes a whole mechanism from the design space:
+
+> **The ChaCha20 round permutation is a SHIFT REGISTER, not a selection.**
+> Written as `index(k) = 4k + ((j + k*shift) & 3)` it invites a per-row
+> selector. Written as a per-row READ OFFSET it collapses to "every row taps
+> slot 0", and the entire column/diagonal permutation becomes a rotate.
+
+### The restatement
+
+```
+row 0 reads offsets  0 1 2 3 | 0 1 2 3
+row 1 reads offsets  0 1 2 3 | 1 2 3 0
+row 2 reads offsets  0 1 2 3 | 2 3 0 1
+row 3 reads offsets  0 1 2 3 | 3 0 1 2
+```
+
+Every row reads **offset 0** provided it rotates left by one after each quarter
+round. The column half needs nothing else. The diagonal half is the *same*
+sequence started `k` positions later, so it is bracketed by `k` extra rotations
+of row `k` and `4 - k` to restore alignment — and a 4-slot rotation has order 4,
+so those brackets cancel over a double round.
+
+What that deletes: the selector broadcast (fan-out 8), the `LOAD`-indirect read,
+the 4-way write-back branch, and the 8-cell demux. **40 cells and 58 internal
+edges** replace 37 cells and 36 much harder ones, and every remaining edge is a
+plain walk.
+
+Proven EXACT against RFC 8439 §2.3.2 (state **and** the 64 keystream bytes) and
+§2.4.2 (the full 114-byte, two-block encryption vector), over the same
+cell-level operations the hardware performs — publish / quarter round /
+write-back-and-rotate / spin. Gated with 8 INV-4 mutants, of which four are the
+dangerous kind: **diagonal-half-first, no-realignment, reversed spin direction
+and a stuck tap all still perform exactly 80 invocations.** No count-based or
+structural check catches any of them; only a value gate does. Same class as the
+counter-direction mutant the previous pass found.
+
+### Measured on the real chip this pass
+
+1. **The row cell.** Publish the head pair, install a written-back replacement,
+   rotate the four 32-bit slots: correct on silicon, 4 spins is the identity,
+   16 instructions with 5 spare words.
+2. **INV-48's forwarding rule, live — as a failure and then a fix.** A cell
+   whose resting face does not reach its target produces **no output and no
+   error**; an in-program `FACE` flip fixes it. This was watched happen, not
+   inferred.
+3. **A word transits cells that carry a FACE and NO PROGRAM**, at distances
+   2/3/4/6. But the build gives a bare array cell a face only where a ROUTE
+   claims it — so an unoccupied column inside a block's **own footprint** is
+   still a dead end for a block-internal `WRITE`. Both halves matter when
+   folding, and getting only the first half right is what made an early fold
+   look feasible when it was not.
+
+### The new silent trap, now gated: POSITIONAL PAIRING
+
+`build_cell_programs()` and `default_layout()` must **iterate in the same
+order**. The router and the build walk the programs and the placed cells in
+lockstep *by position*; both dicts are keyed by cell id, which **hides** a
+mismatch. The design places, routes, builds and DRCs clean and whole cells come
+out with **empty memory**. Symptom: a block that builds green and emits nothing.
+Cost here: one debug cycle. It is INV-33's positional-pairing clause, and it now
+has a test.
+
+### The three structural facts that fixed the fold
+
+* **The state line must be COLLINEAR and CO-FACING.** `wb` (eight write-backs),
+  `wbk` (four rotate triggers) and `realign` (the boundary spins) each have to
+  reach several rows from ONE walk, and a walk serves several targets only when
+  they are consecutive along it — the `LMSEqualizerBlock` broadcast idiom.
+* **The finish row must be GAP-FREE**, because the four adders share one walk
+  into the egress. Hence three pass-through cells paving between them.
+* **A CLOSED RING TRAPS ITS INTERIOR.** Every ring cell forwards along the ring,
+  so a word emitted inside it in *any* direction joins the ring and follows it
+  forever — there is no walk from the inside out. A rectangle-perimeter fold is
+  therefore wrong for any block whose interior must reach an edge; the fold is a
+  serpentine with free ends instead. Measured on the fold, not derived.
+
+Also worth reusing: the **initial state is a build-time constant** (the four RFC
+constants are fixed; key, nonce and counter are block parameters), so the
+add-back needs no shadow copy of the state — and each adder holds its four
+addends in a **rotating** register so the add-back tap is *also* always slot 0.
+
+### What is NOT done — and why the source is committed anyway
+
+The block places, routes and builds at 40 cells in a 10×6 fold; every cell is
+inside its 31-word budget; all 58 internal edges verify against a walk simulator
+that credits a `FACE` flip **only** to cells whose programs actually contain
+one. And it **emits no words**. The rows boot correctly seeded with the RFC
+initial state, `seq`'s external trigger arrives at the right entry with a
+correctly resolved hop, and no lap ever runs.
+
+The source is committed this time — unlike the previous pass — because it
+places, routes, builds and is statically green, so the next agent can start from
+a running toolchain rather than a description. **It is not marked `done` and it
+does not compute.** Start at why `seq`'s `default` entry does not get the ring
+turning in the built bitstream.
+
+### Method note
+
+The walk checker I built to search folds initially credited a face flip to any
+cell I nominated. It passed a layout that then mis-resolved on silicon, because
+**a flip only exists if the cell's program actually contains `MOVE [FACE]`**.
+Rewriting the checker to read the programs rather than a hand-maintained list
+turned three "green" edges red immediately — the same failure the KB keeps
+recording in a new costume: a model that flatters the design is worse than no
+model. Every layout claim in this entry comes from the checker that reads the
+programs.
+
 ## LZ4DecoderBlock — the cell cap was FICTION; it now PLACES and BUILDS clean, and the real blocker is measured 2026-08-29
 
 Re-opened from the quarantine below, which cited a panel-template **cell cap** that

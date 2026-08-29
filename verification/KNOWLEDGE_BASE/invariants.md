@@ -2865,6 +2865,113 @@ gather/scatter. Related: INV-45 (the transport ceiling this starts from), INV-31
 (the panel + its protocol), INV-20 (the fan-in hazard rule 2 avoids), INV-33 (the
 register/overlap contract), INV-29 (the table-heavy case).
 
+## INV-50 — A closed RING traps its interior; the layout dicts must PAIR BY POSITION; and a "gap" is a dead end for an internal WRITE
+
+**Why this exists.** Three separate mechanisms, all discovered while folding one
+block, all of which produce a design that **places, routes, builds and passes
+DRC and then does the wrong thing in silence**. None of them is reported as an
+error. Two are hardware/ISA-permanent, one is a toolchain contract.
+
+---
+
+### 1. A CLOSED RING TRAPS ITS INTERIOR. (hardware/ISA — permanent)
+
+A word is forwarded on each **transit cell's own** face (INV-48 root cause C).
+So if a block is folded as a closed loop — every cell facing its successor
+around a rectangle perimeter — then a word emitted from a cell *inside* that
+loop, **in any of the four directions**, arrives at a ring cell and from then on
+follows the ring. Forever. There is no walk from the inside to the outside.
+
+**Measured**, not derived: on a 26-cell ring around a 10×5 rectangle, an
+interior cell facing east reaches the ring's east column, whose own face
+continues *along* the ring; the same holds for all four directions and all
+rotations of the ring.
+
+**Consequences, in the order they bite:**
+
+* A block's **egress cannot be an interior cell** — its face-neighbour is where
+  the routing corridor starts, and that neighbour is always another block cell.
+* It cannot be a plain **ring** cell either, because a ring cell's face is
+  load-bearing: the datapath frame walks *through* it.
+* A **corner** cell of a ring is doubly stuck: its only interior neighbour is
+  its own ring predecessor, so it can never turn inward at all. This is what
+  made an interior control cell unplaceable at every one of 26 rotations.
+
+**What to do:** if any cell of the fold must reach the block's edge, **do not
+fold as a closed ring — fold as a serpentine**, which has free ends and free
+edges. A ring is only right when the block is entirely self-contained. Note this
+is a stronger statement than layout_rules §3's "a closed-ring block can never
+enclose a channel": the problem is not just that the ring encloses no channel,
+it is that the ring is a one-way trap for everything inside it.
+
+### 2. POSITIONAL PAIRING: the two dicts must ITERATE in the same order. (TOOLCHAIN)
+
+`build_cell_programs()` returns `{cell_id: CellProgram}` and `default_layout()`
+returns `{cell_id: (dx, dy, face)}`. The router (`placement/router.py`) and the
+build walk **the programs and the placed cells in lockstep BY POSITION** —
+`for cell_pos, (cell_idx, cell_prog) in enumerate(block_def.cell_programs.items())`
+against `pb.cells[cell_pos]`.
+
+Both dicts are keyed by cell id, which is exactly why this is dangerous: **the
+ids hide the mismatch.** A layout whose insertion order differs from the
+programs' silently pairs each program with the wrong cell. The design places,
+routes, builds and DRCs clean, and **whole cells come out with empty memory**.
+
+**Measured symptom:** a 40-cell block that built green and emitted nothing; the
+state cells read `0x0000` in the bitstream while the resolver, called directly,
+produced the correct seeded memory for the same program.
+
+**The rule:** end `default_layout()` by reindexing against the programs —
+
+```python
+order = list(self.build_cell_programs().keys())
+assert set(order) == set(lay)
+return {cid: lay[cid] for cid in order}
+```
+
+and assert it in the block's test suite. `layer`: TOOLCHAIN — the pairing could
+be made id-keyed in `router.py` and `build.py`, and should be.
+
+### 3. A faced, PROGRAMLESS cell DOES forward — but nothing gives it that face inside a block. (hardware + toolchain)
+
+**Measured on the real chip:** a `WRITE` transits cells that carry a `fwd_face`
+and **no program at all**, at distances 2, 3, 4 and 6. Transit needs no program.
+
+**But** the build sets `fwd_face` on a non-block cell only where a **route**
+claims it (`build._apply_routes` walks each routed net's waypoints). So an
+unoccupied position *inside a block's own footprint* has no face, and is
+therefore a **dead end for a block-internal `WRITE`**.
+
+Both halves matter and they pull in opposite directions:
+
+* do **not** assume a gap breaks a chip-level route — it does not;
+* do **not** assume a gap carries a block-internal edge — it does not.
+
+If several of a block's cells must share one walk (an N-way broadcast, or N
+sources converging on one sink), the walk has to be **paved with real cells**.
+Cheap: a one-word pass-through is 3 instructions.
+
+---
+
+**SAY WHICH LAYER.** (1) and (3)'s first half are hardware/ISA and permanent.
+(2) is a TOOLCHAIN contract in `placement/router.py` + `engine/build.py` and is
+fixable there. (3)'s second half is a toolchain behaviour in
+`build._apply_routes`.
+
+**REACH.** (1) measured on one 26-cell ring over all 26 rotations and four
+emit directions. (2) measured on one 40-cell block, but the mechanism is in the
+shared router/build path and applies to every multi-cell block. (3) measured at
+four distances on a single row.
+
+**Gated by:** `verification/tests/test_chacha20_fixed_tap_ring.py` — the
+positional-pairing contract, the per-cell budget gate with an INV-4 negative
+that re-inflates a known-bad shape, and the on-chip transit measurement.
+
+**Related:** INV-48 (the forwarding rule all of this follows from), INV-33 (the
+register/overlap contract and the positional-pairing clause this sharpens),
+INV-40 and layout_rules §3 (fold for the shape of the free space), INV-49 (the
+recirculation this fold was built to carry).
+
 ## INV-49 — A datapath can be REUSED for N sequential passes; check whether a "permutation" is a CONSTANT before paying for a computed destination
 
 **Why this exists.** Two blocks in this campaign were quarantined against walls

@@ -501,17 +501,24 @@ def plan_cpsat(placer, chip: int, *, max_time_s: float = 10.0,
                 neqs.append(ne)
             model.AddBoolOr(neqs)   # sign patterns differ => faces cannot coincide
 
-        # DISTINCT INPUT FACES (DualFloatToComplex LOCK rendezvous). A block that
-        # declares NEEDS_DISTINCT_INPUT_FACES pairs two INDEPENDENT, async real streams
-        # into a complex sample by LOCKING to one arrival FACE at a time — the face IS
-        # the stream identity. If the placer lets both input drivers land on the SAME
-        # face (as the compact pack did — both rails brokered through one neighbour), the
-        # face lock cannot tell I from Q and the rendezvous stalls forever. So force the
-        # block's TWO input drivers onto DIFFERENT faces of its (single) input cell: the
+        # DISTINCT INPUT FACES (the LOCK-rotation rendezvous family). A block that
+        # declares NEEDS_DISTINCT_INPUT_FACES joins N INDEPENDENT, async streams by
+        # LOCKING to one arrival FACE at a time — the face IS the stream identity. If
+        # the placer lets two input drivers land on the SAME face (as the compact pack
+        # did — both rails brokered through one neighbour), the face lock cannot tell
+        # the streams apart and the rendezvous stalls forever. So force ALL of the
+        # block's input drivers onto pairwise-DIFFERENT faces of its input cell: the
         # same "sign patterns differ" trick used for the single-cell in!=out rule above,
-        # but between the two DRIVERS rather than driver-vs-consumer. Only the dual sets
-        # the flag; every other complex block receives a pre-paired yi/yq packet and is
-        # exempt. Requires the I/O-cell vars (slack-0 / wirelength branch).
+        # but between the DRIVERS rather than driver-vs-consumer. Requires the I/O-cell
+        # vars (slack-0 / wirelength branch).
+        #
+        # N IS NOT 2. The family runs from N=2 (DualFloatToComplex, FeaturePairJoin) to
+        # N=3 (TMRVoter). Constraining only the first TWO drivers left the third arm
+        # free to land on a face already taken; the build DRC (which IS generic over N)
+        # then correctly rejected the layout and the chain never routed. Likewise the
+        # block need not be SINGLE-CELL: a multi-cell rendezvous lands its arms on its
+        # INPUT cell, which is exactly what in_cx/in_cy already model — gating on
+        # ``len(pl.cells) != 1`` silently skipped every multi-cell member of the family.
         _distinct_pred = getattr(placer, "_distinct_face_provider", None)
         if _distinct_pred is not None:
             # driver blocks feeding each target, in the order the project lists them.
@@ -523,8 +530,8 @@ def plan_cpsat(placer, chip: int, *, max_time_s: float = 10.0,
                     _drivers_of.setdefault(_t.block, []).append(_s.block)
             for b in blocks:
                 pl = b.placement
-                if pl is None or len(pl.cells) != 1:
-                    continue                          # dual is single-cell
+                if pl is None or not pl.cells:
+                    continue
                 if b.name not in in_cx:
                     continue
                 try:
@@ -533,14 +540,13 @@ def plan_cpsat(placer, chip: int, *, max_time_s: float = 10.0,
                     need = False
                 if not need:
                     continue
-                # its two input drivers (dedup, keep order); need >=2 distinct producers.
+                # ALL its input drivers (dedup, keep order); need >=2 distinct producers.
                 drvs = []
                 for d in _drivers_of.get(b.name, []):
                     if d not in drvs and d in out_cx:
                         drvs.append(d)
                 if len(drvs) < 2:
                     continue                          # single/logical feed: no lock needed
-                d0, d1 = drvs[0], drvs[1]
                 cx, cy = in_cx[b.name], in_cy[b.name]
 
                 def _sgn(nx, ny, tag):
@@ -557,15 +563,23 @@ def plan_cpsat(placer, chip: int, *, max_time_s: float = 10.0,
                     model.Add(ny > cy).OnlyEnforceIf(gy)
                     model.Add(ny <= cy).OnlyEnforceIf(gy.Not())
                     return (lx, gx, ly, gy)
-                # The face-list to keep pairwise-distinct on this cell: the two input
-                # drivers PLUS (when present) the block's OUTPUT consumer. The dual needs
-                # THREE distinct faces (i, q, out) on its one cell — constraining only the
-                # two inputs still let the output collide with an input (the §5.3
-                # single_cell_inout_deadlock). Add the consumer so all three differ.
-                faces_pts = [(_sgn(out_cx[d0], out_cy[d0], f"{b.name}_d0"), d0),
-                             (_sgn(out_cx[d1], out_cy[d1], f"{b.name}_d1"), d1)]
+                # The face-list to keep pairwise-distinct on this cell: EVERY input
+                # driver, plus (when present) the block's OUTPUT consumer. The dual
+                # needs THREE distinct faces (i, q, out) on its one cell — constraining
+                # only the inputs still let the output collide with an input (the §5.3
+                # single_cell_inout_deadlock). Add the consumer so all differ.
+                #
+                # A cell has only FOUR faces, so N drivers + a consumer is satisfiable
+                # only for N <= 3 (N=3 uses ALL FOUR faces of the input cell and is the
+                # tightest placement problem in the library). Adding the consumer to an
+                # already-4-face list would make the model INFEASIBLE and lose the whole
+                # placement, so for a MULTI-CELL block — whose consumer is fed from a
+                # DIFFERENT (output) cell and therefore contends for no face here — the
+                # consumer term is skipped.
+                faces_pts = [(_sgn(out_cx[d], out_cy[d], f"{b.name}_d{_k}"), d)
+                             for _k, d in enumerate(drvs)]
                 _con = _consumer_of.get(b.name)
-                if _con is not None and _con in in_cx:
+                if _con is not None and _con in in_cx and len(pl.cells) == 1:
                     faces_pts.append(
                         (_sgn(in_cx[_con], in_cy[_con], f"{b.name}_con"), _con))
                 # every PAIR of these landing faces must differ in >=1 sign bit.

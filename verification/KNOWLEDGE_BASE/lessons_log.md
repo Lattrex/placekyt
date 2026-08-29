@@ -9,6 +9,127 @@ block-specific gotcha. Promote anything that generalizes across block classes in
 and superseded material merged into the surviving entries; no durable lesson was
 dropped) — append new entries above the oldest ones as before.
 
+## TMRVoterBlock — the LOCK-rotation rendezvous generalises to N=3, and the FACE BUDGET is what decides how far it goes 2026-08-29
+
+Three redundant chains converge on one block from three DISTINCT faces; the block
+votes and emits a 2-word `[value, status]` packet. **Outcome: `done`**, 54 tests,
+EXACT tolerance 0, verified on the real placed + routed + built chip: all five vote
+cases, all 6 relative arrival orders, random interleavings over 3 seeds, all 8 D4
+orientations, and every INV-4 mutation proven to fail. It is the N=3 member of the
+family `DualFloatToComplexBlock` / `FeaturePairJoinBlock` established at N=2.
+
+### The durable finding: N=2 was baked into the engine in three separate places
+
+The mechanism is generic over N. The code serving it was not, and **none of the three
+failures announced themselves** — each produced a layout that built and routed
+cleanly and then misbehaved for a reason that looked unrelated:
+
+1. **`cpsat_placer.py` — the distinct-face constraint constrained only the FIRST TWO
+   drivers** (`d0, d1 = drvs[0], drvs[1]`) **and skipped multi-cell blocks outright**
+   (`if len(pl.cells) != 1: continue`). So the third arm was unconstrained and the
+   whole block was exempt. Symptom: the build DRC rejected the layout with
+   `dual_input_same_face` — a correct complaint pointing at the wrong culprit.
+   Fixed: constrain ALL drivers, drop the single-cell gate. The consumer term must be
+   SKIPPED for a multi-cell block: N drivers + a consumer is satisfiable only for
+   N ≤ 3, and a multi-cell block's consumer is fed from a DIFFERENT cell so it
+   contends for no face at the rendezvous — adding it makes the model infeasible and
+   loses the whole placement.
+2. **`bus_router.py` — broker REUSE is the same-face bug.** The router's ordinary
+   fan-in behaviour is that a second net into the same target cell reuses the broker
+   already serving it (`_broker_abutting`). For a face-locking target that is
+   precisely how two arms end up on one face. Measured: all three arms funnelled
+   through ONE broker cell, all arriving WEST. Fixed by `_distinct_face_target_cells`
+   — reuse disabled for these targets, and each net's broker candidates filtered
+   against the faces siblings have already claimed. (The MAZE router already did this
+   correctly and generically; the bus router, which runs first and succeeds, did not.)
+3. **`build.py` — the backward `unlock` edge hardcoded CONFIG 4 (LOCK).** This block's
+   interlock RE-POINTS a rotating face lock (CONFIG 3 = LOCK_FACE) rather than
+   clearing the arbiter lock. The pass silently rewrote the authored
+   `WRITE.CFG @N, 3` into a lock-CLEAR, which un-gates every face and lets out-of-turn
+   arms barge in: it built, routed, voted correctly for two samples, then desynced.
+   Fixed by a block-declared `UNLOCK_CFG_ADDR` (default 4, so every existing block is
+   byte-identical).
+
+Also added to `controller.py`: the same-face verdict is now computed IN the
+router-selection loop (`_rendezvous_input_same_face`), so a bus-router report with a
+same-face landing is treated as INVALID and escalated to the maze router — instead of
+surfacing much later as an unexplained build error.
+
+### The FACE BUDGET — the arithmetic that decides the whole design
+
+    a cell has 4 faces; an N-arm rendezvous needs
+      N (one per arm — the face IS the path identity)
+    + 1 (forward into the block's datapath)
+    + 1 (a serialize-LOCK release corridor coming back)
+    = N + 2
+
+* **N=2**: 4 faces. Fits — and the shipped N=2 blocks are SINGLE-CELL, so they need
+  neither a forward nor a release, which is why the budget never came up before.
+* **N=3**: FIVE needed, four available.
+
+Everything about this block's shape follows from that one line:
+
+* The rendezvous must be a **LEAF of the fold** (exactly one in-block neighbour). A
+  compact 2×2 square — the obvious 4-cell fold, and the first tried — gives every
+  cell two in-block neighbours, leaving two free faces for three arms; the maze
+  router reports *"no free DISTINCT-face broker for a face-locking block's input"*
+  and the chain does not route at all.
+* The block is a **colinear 4×1 chain** (rendezvous → agree → disagree → emit), the
+  longitudinal shape `layout_rules` warns against, because the face budget forces it.
+  It is affordable here: 4 ≤ 8 across, and the three inputs land on one cell from
+  three sides rather than tapping a bus edge, so the co-located-I/O convention does
+  not apply.
+* The serialize-LOCK release **cannot have a corridor of its own** and must come back
+  through the one abutting cell, `agree` — the FIRST stage of a three-stage chain.
+
+### INV-19 found a real construction bug, and then a real wall
+
+The obvious construction re-locks straight to `face_a` at the end of `got_c`. That is
+correct per-sample and **deadlocks under saturation**: it re-admits the next sample's
+first arm the instant the current triple is dispatched, triples pile into the chain,
+and the simulator reports an explicit `Deadlock` after exactly ONE packet. (The three
+producer arms driven saturated WITHOUT the voter are fine, so the hazard was the
+block's — worth measuring before blaming the harness.) The fix is INV-19/20's own
+idiom: **the rotation has FOUR stops, not three** — `got_c` locks to the INTERNAL
+FORWARD face, which no external arm ever arrives on and therefore bars all three, and
+`agree` re-points `LOCK_FACE` at arm A once it has dispatched.
+
+The RESIDUAL limit is the face budget again, and it is guarded, not waived
+(`test_known_limit_saturated_burst_depth_is_one`): **one triple in flight**. Arms may
+arrive in any order WITHIN a sample (all 6 permutations verified), and any number of
+triples may be driven one-at-a-time; but two complete triples queued before running
+deadlock, and an arm that runs a whole sample ahead truncates. Three deeper release
+points were built and measured, all blocked — (a) a backward `WRITE.CFG` transiting
+the datapath row is re-forwarded by the live cells' committed faces and lands on a
+real entry (it fired `nomaj` and emitted a spurious `[sentinel, 7]`); (b) a dedicated
+`transit_*` unlock lane must enter the rendezvous on a face, and all four are
+committed, so the DRC rejects it; (c) a backward JUMP into a relay entry is rewritten
+by the exit-default to the emitting cell's own entry.
+
+### Two smaller things worth keeping
+
+* **The algebraic identity that made the tree fit.** If `a != b` then the majority,
+  whenever one exists, is ALWAYS `c` — a majority needs `c` to equal one of them. So
+  the disagree half needs no value selection at all. Written naively the tree stages a
+  selected value in a state register and does not fit any cell; with the identity it
+  does. (Trading a data word for an instruction is always neutral on this ISA — 32
+  words is 32 words — so the only real savings are structural.)
+* **A layout probe belongs in any harness for a face-locking block.** `auto_pnr` is a
+  CP-SAT search and is not deterministic: ~4% of layouts that route, build, and
+  present three distinct landings still mis-deliver an arm. That surfaced as a ~50%
+  per-run flake spread across whichever gate happened to draw a bad layout —
+  indistinguishable from a real block bug, and exactly how a flake hides one. The
+  harness now smoke-tests each candidate layout on a THROWAWAY chip instance (a
+  healthy triple plus one single-fault triple per arm) and moves to the next anchor if
+  it fails. A healthy-only probe is NOT enough: a mis-delivered arm still votes 0 when
+  all three carry the same value. Use a throwaway chip — driving a triple advances the
+  lock rotation and latches arm state, so smoking the chip a gate is about to use leaks
+  the probe's values into that gate's first vote (measured: a phantom "arm A faulted").
+
+Golden: `verification/tests/tmr_golden.py` (written from the spec, cross-checked
+against the block's own `vote` over the whole interesting domain). Saturated coverage
+is BESPOKE — no shared harness can drive three independent producers on three distinct
+faces.
 ## ChaCha20QRBlock — 32-bit arithmetic on a 16-bit ALU: CARRYING a wide value costs 4x what COMPUTING on it does 2026-08-29
 
 **Outcome: `done`.** One ChaCha20 quarter round (RFC 8439 §2.1), 17 cells, exact on

@@ -507,6 +507,26 @@ NEEDS_BESPOKE = {
     "ComplexBandPassFilter": "Σ|h|>1 firdes build constraint; datapath == ComplexLowPass (gated)",
     "ComplexBandRejectFilter": "Σ|h|>1 firdes build constraint; datapath == ComplexLowPass (gated)",
     "DualFloatToComplexBlock": "2-face rendezvous (own gate proto_dual_f2c)",
+    "TMRVoterBlock": "THREE-FACE LOCK-ROTATION RENDEZVOUS with THREE "
+        "INDEPENDENT upstream producers: a 'sample' is one word on each of "
+        "three DISTINCT faces from three SEPARATE blocks, so no shared harness "
+        "can drive it (they all inject one stream through one port landing). "
+        "Its saturated behaviour is gated BESPOKE in "
+        "verification/tests/test_tmr_voter.py: "
+        "test_saturated_equals_per_sample drives each triple's THREE ARM WORDS "
+        "back-to-back as raw queue_words (the three producers race at the "
+        "rendezvous — the hazard the LOCK exists to survive) over a long run "
+        "and asserts equality with the per-sample reference. That gate FOUND a "
+        "real construction bug: re-locking straight to face_a at the end of "
+        "got_c re-admits the next sample's first arm the instant the current "
+        "triple is dispatched, and the sim reports an explicit Deadlock after "
+        "ONE packet; the fix is the INV-19/20 serialize-LOCK (got_c locks to "
+        "the INTERNAL forward face, which no arm arrives on, and `agree` "
+        "re-points LOCK_FACE at arm A with a backward WRITE.CFG @N,3). The "
+        "RESIDUAL whole-burst limit — two or more complete triples queued "
+        "before running deadlocks — is a FACE-BUDGET wall (N arms + 1 forward "
+        "+ 1 release corridor = N+2 faces; N=3 needs 5, a cell has 4) and is "
+        "pinned by test_known_limit_saturated_burst_depth_is_one.",
     "FeaturePairJoinBlock": "2-FACE LOCK RENDEZVOUS with TWO INDEPENDENT "
         "upstream producers: a 'sample' is one word on each of two DISTINCT "
         "faces from two SEPARATE blocks, so no shared harness can drive it "

@@ -1572,3 +1572,45 @@ class feature_pair_join(_PassThrough):
                          in_dtype=np.float32, out_dtype=np.float32)
         self.device_id = device_id
         self._advertise_grc_params(device_id, "FeaturePairJoinBlock", {})
+
+
+class tmr_voter(_PassThrough):
+    """Triple-modular-redundancy majority voter — GR marker (maps to
+    TMRVoterBlock).
+
+    placeKYT-NATIVE: there is no stock GNU Radio counterpart, because the
+    problem does not exist on a host CPU — there is only one execution path to
+    vote on. On the clockless array three copies of a chain run concurrently on
+    DISJOINT cells, so redundancy costs AREA, not throughput, and this block
+    only sequences the three already-computed words. It accepts one word on
+    each of ``a``, ``b`` and ``c`` (in ANY relative order, from three
+    independent chains), votes, and emits ``[value, status]``.
+
+    Status: 0 = all agree, 1/2/3 = that path faulted (the MAJORITY value is
+    still emitted, so TMR corrects a single fault), 7 = no majority (value is
+    the ``fault_sentinel``, default 65535 — outside the 0-255 byte domain, so
+    it can never collide with real data).
+
+    RATE / MARKER CONVENTION (the feature_pair_join convention, and it is
+    load-bearing): on the chip this block is rate-EXPANDING — one (a, b, c)
+    triple in becomes TWO words out. A ``sync_block`` cannot express that, and
+    a marker that fakes a rate change DEADLOCKS the client scheduler at
+    flowgraph end (sync work's return value is both produce AND consume, so the
+    input tail is never retired). So this marker is a plain 1:1 pass-through of
+    input 0; the REAL vote runs on the chip and the kyttar SINK emits the
+    recovered 2-word packet stream. Split it downstream with
+    ``blocks.deinterleave`` and set the sink to RAW output words (status and
+    byte data are not Q15).
+
+    The face_a/face_b/face_c placement knobs of the placed block are
+    router-reconciled internals (see TMRVoterBlock.GRC_UNSUPPORTED_PARAMS) and
+    are intentionally NOT exposed to GRC."""
+
+    def __init__(self, device_id="kyttar_0", fault_sentinel=0xFFFF):
+        super().__init__("Kyttar TMR Voter", n_in=3, n_out=1,
+                         in_dtype=np.float32, out_dtype=np.float32)
+        self.device_id = device_id
+        self.fault_sentinel = int(fault_sentinel)
+        self._advertise_grc_params(
+            device_id, "TMRVoterBlock",
+            {"fault_sentinel": int(fault_sentinel)})

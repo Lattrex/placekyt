@@ -108,6 +108,36 @@ places the cells *and their faces* to satisfy conventions 1–3. Folding a 13×1
 line into a 4×4 block with colocated I/O is a deliberate layout design — the
 auto-snake will not do it for you.
 
+### 4b. A multi-input FACE-LOCKING block: the rendezvous cell must be a LEAF
+
+If a block declares `NEEDS_DISTINCT_INPUT_FACES` (the LOCK-rotation rendezvous
+family — see INV-45), its input cell tells its N producers apart by ARRIVAL FACE.
+A cell has four faces, and that cell needs:
+
+    N (one per arm) + 1 (forward into the datapath) + 1 (a release corridor back)
+
+At **N=2** that is 4 and fits — and the shipped N=2 blocks are single-cell, so
+they need neither a forward nor a release. At **N=3** it is FIVE, and the cell has
+four. The consequences are layout consequences, so they belong here:
+
+- **The rendezvous cell must be a LEAF of the fold** — exactly ONE in-block
+  neighbour — so three faces stay free for the three arms. A compact 2×2 square
+  (the obvious 4-cell fold) gives EVERY cell two in-block neighbours and cannot
+  host an N=3 rendezvous: the maze router reports *"no free DISTINCT-face broker
+  for a face-locking block's input"* and the chain does not route at all.
+- **Such a block is therefore a CHAIN, not a square** — a longitudinal strip,
+  which is normally exactly what §1–§3 warn against. It is FORCED here, and it is
+  affordable because the block's inputs land on one cell from N different sides
+  rather than tapping a single bus edge, so the co-located-I/O convention (§1)
+  does not apply to it. Keep the chain ≤8 across (§3) — that still binds.
+- **The serialize-LOCK release cannot have a corridor of its own** at N=3; it must
+  ride back through the one abutting cell. A dedicated `transit_*` unlock lane
+  (§5, the ComplexMixer pattern) needs a face to enter the rendezvous on, and
+  there is none — the placer/DRC then reject the layout because an arm loses its
+  face. See INV-45 Rule 3 for what that costs in pipeline depth.
+- **N ≥ 4 is not placeable** as a single rendezvous. Build a TREE of N=2/N=3
+  rendezvous blocks.
+
 ### 5. Internal feedback/"transit" cells are FIRST-CLASS block cells
 
 A `default_layout` entry whose `cell_id` starts with `transit_` (e.g.

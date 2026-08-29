@@ -1,0 +1,80 @@
+id: kyttar_tmr_voter
+label: Kyttar TMR Voter
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar TMR Voter — triple-modular-redundancy majority vote over THREE
+  redundant copies of the same stream, emitting a 2-word packet
+  [value, status] per sample.
+
+  There is no stock GNU Radio counterpart: GR has no notion of redundant
+  hardware paths, because on a host CPU there is only one path. On the Kyttar
+  array redundancy is an AREA cost, not a performance cost — three copies of a
+  chain run concurrently on disjoint cells and this block only sequences the
+  three already-computed words. The customer therefore chooses the redundancy
+  factor per design at place-and-route time: TMR for the safety-critical path,
+  single-path for the rest, on the same die, with no different hardware.
+
+  Wire the SAME logical stream through three independent chains and bring them
+  to inputs a, b and c. The block votes:
+
+    status 0  all three agree; value is the agreed value.
+    status 1  path A disagreed; value is the correct B/C majority.
+    status 2  path B disagreed; value is the correct A/C majority.
+    status 3  path C disagreed; value is the correct A/B majority.
+    status 7  no two agree; value is the sentinel (default 65535).
+
+  TMR CORRECTS a single fault: on status 1, 2 or 3 the emitted value is still
+  the majority, so a consumer that ignores the status word still receives the
+  right answer. The sentinel 65535 is outside the 0-255 byte domain, so it can
+  never collide with real byte data.
+
+  On the chip the three arms fire at independent, asynchronous times, so the
+  block tells them apart by their ARRIVAL FACE: it uses the arbiter LOCK to
+  accept input from exactly one face at a time, rotating a -> b -> c -> a. A
+  word on another face is simply held by the arbiter until it is that arm's
+  turn, so the vote survives ANY interleaving and can never mis-pair. Because
+  the arrival face IS the path identity, the three inputs must reach the block
+  on three DIFFERENT faces; the placer arranges this and a design-rule check
+  rejects a layout where two land on one face.
+
+  Output shape: TWO words per sample on one stream — the value, then the
+  status. Split them downstream with a Deinterleave block (one scope for
+  values, one for status), and set the Kyttar Sink to raw output words: byte
+  and status data are not Q15.
+
+  This block runs on the Kyttar chip. Place it between KyttarSource and
+  KyttarSink blocks, and ensure the device_id matches your KyttarDevice.
+
+  Parameters:
+  - Device ID: ID of the KyttarDevice block
+  - Fault Sentinel: value emitted when no two paths agree (default 65535)
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.tmr_voter(device_id=${device_id}, fault_sentinel=${fault_sentinel})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+  - id: fault_sentinel
+    label: Fault Sentinel
+    dtype: int
+    default: '65535'
+
+inputs:
+  - label: a
+    dtype: float
+  - label: b
+    dtype: float
+  - label: c
+    dtype: float
+
+outputs:
+  - label: out
+    dtype: float
+
+file_format: 1

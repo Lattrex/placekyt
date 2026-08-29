@@ -1490,6 +1490,18 @@ def _route_chip_bus(project, ct, chip_id, nets, spine, *, sc_cells=None,
     hazard_in_face: dict = {}         # hazard (x, y) -> committed input ARRIVAL face
     hazard_out_face: dict = {}        # hazard (x, y) -> committed OUTPUT face
 
+    # DISTINCT-INPUT-FACE targets (the LOCK-rotation rendezvous family). For these
+    # the ordinary fan-in behaviour — a second net into the same input cell REUSES
+    # the broker already serving it — is precisely the bug: it delivers two arms on
+    # ONE face, which the arbiter cannot tell apart and the build DRC rejects. So
+    # reuse is DISABLED for these cells and each net claims its own broker (hence
+    # its own face), the same rule the maze router applies. See
+    # ``_distinct_face_target_cells``.
+    distinct_face_cells = _distinct_face_target_cells(project, chip_id)
+    # (x, y) target cell -> set of arrival FACE codes already claimed there, so a
+    # later arm never picks a broker on a face a sibling already took.
+    claimed_in_faces: dict = {}
+
     # The bus is grown LAZILY: each net's path commits its cells' outgoing directions
     # (``bus_dir``), and a later net may RE-USE a committed cell only by leaving it the
     # SAME way (sound sharing, §1.3) — else that cell is an obstacle and the net routes
@@ -1588,8 +1600,11 @@ def _route_chip_bus(project, ct, chip_id, nets, spine, *, sc_cells=None,
             # input feed and the output drive use DIFFERENT links (§5.3).
             if d in sc_cells and isinstance(conn.target, BlockEndpoint):
                 forbid_broker = hazard_out_face.get(d)
-            reuse = _broker_abutting(d, dface, brokers, s, forbid_broker,
-                                     broker_target)
+            # A face-locking rendezvous target NEVER reuses a sibling's broker:
+            # the reuse IS the same-face bug (two arms delivered on one face).
+            reuse = (None if d in distinct_face_cells else
+                     _broker_abutting(d, dface, brokers, s, forbid_broker,
+                                      broker_target))
             # PORT FAN-OUT (≥2 nets off ONE chip input port). The port cell has ONE
             # forward face (§1.3): it cannot steer two words in two directions. So all
             # nets off a port must leave the port cell in ONE SHARED direction (a common
@@ -1745,6 +1760,15 @@ def _route_chip_bus(project, ct, chip_id, nets, spine, *, sc_cells=None,
             # injection/egress programming and the broker programming destroy
             # each other (same hazard as transiting it).
             cands = [c for c in cands if c not in used_port_cells]
+            # DISTINCT-INPUT-FACE targets: drop every candidate sitting on a face
+            # a SIBLING arm has already claimed at this cell. Without this the
+            # shortest-path pick happily lands the 2nd and 3rd arms beside the
+            # 1st, and the build DRC rejects the whole layout.
+            if d in distinct_face_cells:
+                taken = claimed_in_faces.get(d, set())
+                if taken:
+                    cands = [c for c in cands
+                             if _step_face(d, c) not in taken]
             # A FOREIGN net's emit cell stays a LAST-RESORT broker (its egress face
             # would clobber the delivery — the rotated-complex-fan-in bug): shortest-
             # candidate selection runs over the CLEAN candidates first, and only
@@ -1879,6 +1903,13 @@ def _route_chip_bus(project, ct, chip_id, nets, spine, *, sc_cells=None,
             of = _step_face(path[0], path[1])
             if of is not None:
                 hazard_out_face.setdefault(s, of)
+        # DISTINCT-INPUT-FACE bookkeeping: claim the face this arm just landed on,
+        # so a later sibling arm into the same rendezvous cell cannot pick it.
+        if d in distinct_face_cells and isinstance(conn.target, BlockEndpoint):
+            arr = _step_face(d, path[-1]) if path[-1] != d else (
+                _step_face(d, path[-2]) if len(path) >= 2 else None)
+            if arr is not None:
+                claimed_in_faces.setdefault(d, set()).add(arr)
 
         # Deadlock-cycle guard bookkeeping: record this block-output corridor so
         # a LATER input broker for the same block never lands on it.
@@ -2244,6 +2275,49 @@ def _single_cell_bus_fed_targets(project, chip_id, nets) -> set:
             continue
         bus_fed.add(d)
     return bus_fed
+
+
+def _distinct_face_target_cells(project, chip_id) -> set:
+    """The (x, y) INPUT cells of blocks that require DISTINCT INPUT FACES.
+
+    The LOCK-rotation rendezvous family — ``DualFloatToComplexBlock`` and
+    ``FeaturePairJoinBlock`` at N=2, ``TMRVoterBlock`` at N=3 — tells its N
+    independent async input streams apart ONLY by the FACE each arrives on. Two
+    arms delivered on ONE face cannot be distinguished by the arbiter, so the
+    rendezvous stalls forever, and the build DRC
+    (``bus_drc._check_dual_input_same_face``) rejects such a layout outright.
+
+    The bus router's default fan-in behaviour is exactly wrong for these blocks:
+    a second net into the SAME target cell REUSES the broker already serving it
+    (``_broker_abutting``), which is precisely how two arms end up on one face.
+    So these target cells are collected here and broker REUSE is disabled for
+    them — each net must claim its own broker, hence its own face.
+
+    N=3 is the tight case: three arms plus the block's internal forward need ALL
+    FOUR faces of the rendezvous cell, so the cell must additionally be a LEAF of
+    the block's own fold (no second in-block neighbour) for any assignment to
+    exist at all.
+
+    The flag is a BLOCK-CLASS attribute, read from the gr_kyttar registry (the
+    same source the catalog uses); a block type that cannot be resolved is simply
+    treated as not face-locking — this is a routing preference, never a hard
+    dependency."""
+    try:
+        from gr_kyttar.placement.blocks import all_block_classes
+        registry = all_block_classes()
+    except Exception:  # noqa: BLE001 — routing must never hard-depend on this
+        return set()
+    out: set = set()
+    for blk in project.blocks:
+        pl = blk.placement
+        if pl is None or pl.chip != chip_id or not pl.cells:
+            continue
+        cls = registry.get(blk.type)
+        if cls is None or not bool(
+                getattr(cls, "NEEDS_DISTINCT_INPUT_FACES", False)):
+            continue
+        out.add((pl.cells[0].x, pl.cells[0].y))
+    return out
 
 
 def _conn_chip(project, conn):

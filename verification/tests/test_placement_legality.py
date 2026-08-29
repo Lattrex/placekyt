@@ -201,6 +201,13 @@ BLOCKS = [
     # placement-relevant (NEEDS_DISTINCT_INPUT_FACES) — cover it so a future
     # footprint change (e.g. an emit-sequencing second cell) is caught here.
     ("FeaturePairJoinBlock", {}),
+    # TMR majority voter: 4-cell COLINEAR chain (rendezvous -> agree -> disagree
+    # -> emit). Its shape is dictated by a face budget, not by convenience — the
+    # N=3 rendezvous needs all four of its faces (three arms + the forward), so
+    # it must stay a LEAF of the fold. Cover it here so a future re-fold that
+    # folded a cell back alongside the rendezvous (a 2x2 square, say) is caught
+    # as a geometry regression rather than as an unexplained routing failure.
+    ("TMRVoterBlock", {}),
     # rows x cols block interleaver: 3-cell vertical column (rgen -> wctl ->
     # store), no internal transit cell; rows/cols/deinterleave change register
     # contents only (the footprint is always 1x3) — must stay pairwise-distinct

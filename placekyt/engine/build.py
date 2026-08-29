@@ -3848,12 +3848,25 @@ def _apply_internal_feedback(cell_map, gr_placement, blocks, gr_blocks,
                 # sink-default may have already rewritten its dest (LOCK addr -> 0) and
                 # hop while treating this last-placed cell as a port sink. RESTORE it:
                 # find the cell's WRITE.CFG (opcode WRITE + config bit) and set BOTH the
-                # resolved corridor hop AND dest = _LOCK_CFG_ADDR (the LOCK register),
-                # regardless of the current (possibly clobbered) dest. Then record the
-                # cell so the exit-default preserves it.
-                if _patch_config_write(cfg, hops, _LOCK_CFG_ADDR):
+                # resolved corridor hop AND the CONFIG dest, regardless of the current
+                # (possibly clobbered) dest. Then record the cell so the exit-default
+                # preserves it.
+                #
+                # WHICH CONFIG REGISTER: ``_LOCK_CFG_ADDR`` (4 = LOCK) by default —
+                # the ComplexMixer/Costas serialize-LOCK, which CLEARS the landing
+                # cell's arbiter lock. A block whose interlock instead RE-POINTS a
+                # rotating face lock (the N-face LOCK-rotation rendezvous: TMRVoter
+                # holds its three arms by locking to a face nothing drives, then
+                # re-points LOCK_FACE at arm A to admit the next sample) declares
+                # ``UNLOCK_CFG_ADDR = 3`` (LOCK_FACE) on its block class. Hardcoding 4
+                # silently REWROTE such a block's authored ``WRITE.CFG @N, 3`` into a
+                # lock-CLEAR, which un-gates every face and lets out-of-turn arms
+                # barge in — it built and routed cleanly and desynced after two
+                # samples.
+                _cfg_addr = int(getattr(gb, "UNLOCK_CFG_ADDR", _LOCK_CFG_ADDR))
+                if _patch_config_write(cfg, hops, _cfg_addr):
                     feedback_blocks.setdefault(blk.name, set()).add(
-                        (src_pos, _LOCK_CFG_ADDR))
+                        (src_pos, _cfg_addr))
                 continue
             # Resolve the dst register: a feedback may target an INPUT port (e.g.
             # Costas dphase) OR an internal STATE var (e.g. Gardner `period` — a
@@ -3885,7 +3898,13 @@ def _apply_internal_feedback(cell_map, gr_placement, blocks, gr_blocks,
                 # a fixed hop deadlocks any layout whose feedback corridor differs
                 # (standalone Costas @2 vs CoherentRX @8). ``_LOCK_CFG_ADDR`` (4) is the
                 # CONFIG LOCK register; the WRITE.CFG's dest low-5 = 4, config bit set.
-                _patch_one_handoff(cfg, _WRITE, _LOCK_CFG_ADDR, hops, config=True)
+                # A block that re-points a rotating face lock instead of clearing it
+                # declares ``UNLOCK_CFG_ADDR = 3`` (LOCK_FACE) — see the ``unlock``
+                # branch above.
+                _patch_one_handoff(
+                    cfg, _WRITE,
+                    int(getattr(gb, "UNLOCK_CFG_ADDR", _LOCK_CFG_ADDR)),
+                    hops, config=True)
 
         # 3. Resolve each BACKWARD internal JUMP (a self-paced RETURN KICK — e.g.
         # the ChirpGenerator emit cell firing the sweep cell's `iternext` entry

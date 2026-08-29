@@ -2455,6 +2455,79 @@ class AppController(QObject):
                 return True
         return False
 
+    def _rendezvous_input_same_face(self, report) -> bool:
+        """True if a face-locking rendezvous block (``NEEDS_DISTINCT_INPUT_FACES``)
+        would receive TWO of its input nets on the SAME face of its input cell.
+
+        The LOCK-rotation rendezvous family — ``DualFloatToComplexBlock`` (N=2),
+        ``FeaturePairJoinBlock`` (N=2), ``TMRVoterBlock`` (N=3) — distinguishes its
+        N independent async streams ONLY by their arrival FACE. Two arms landing on
+        one face cannot be told apart by the arbiter, so the rendezvous stalls
+        forever. The build DRC (``bus_drc._check_dual_input_same_face``) rejects such
+        a layout as a HARD ERROR — but it only runs at BUILD time, so a router that
+        "succeeds" with a same-face landing returns ``ok=True`` and the failure
+        surfaces much later as an unexplained build error.
+
+        This validator moves that verdict INTO the router-selection loop: a
+        same-face report is treated as INVALID, exactly like a route across a block
+        body, and escalated to the node-disjoint MAZE router — which reserves a
+        SEPARATE broker on a DISTINCT face per net for these targets
+        (``maze_router`` PHASE A, ``distinct_face_cells``) and is generic over N.
+
+        WHY THIS IS NEEDED AT ALL: the bus router has no distinct-face notion, and
+        the CP-SAT placer's constraint only positions the DRIVERS relative to the
+        target — the ROUTER still chooses which face each corridor finally enters
+        on, and it can freely collapse two arms onto one face. At N=2 a lucky
+        geometry usually avoided it; at N=3 (all FOUR faces of the input cell in
+        use) it is the common case, so the escalation is what makes the N-face
+        rendezvous placeable at all."""
+        from model.connection import BlockEndpoint as _BE
+
+        # Blocks that declare the flag -> their input cell, per chip.
+        targets: dict = {}     # block name -> (chip, x, y)
+        for blk in self.project.blocks:
+            pl = blk.placement
+            if pl is None or not pl.cells:
+                continue
+            try:
+                inst = self.catalog.instantiate(
+                    blk.type, "__route_probe__", getattr(blk, "params", None),
+                    library=blk.library)
+                if not bool(getattr(inst, "NEEDS_DISTINCT_INPUT_FACES", False)):
+                    continue
+            except Exception:  # noqa: BLE001
+                continue
+            targets[blk.name] = (pl.chip, pl.cells[0].x, pl.cells[0].y)
+        if not targets:
+            return False
+
+        def _face(cell, src):
+            dx, dy = src[0] - cell[0], src[1] - cell[1]
+            return {(0, 1): 0, (1, 0): 1, (-1, 0): 2, (0, -1): 3}.get((dx, dy))
+
+        seen: dict = {}        # block name -> {port: face}
+        for r in report.routed:
+            conn = self.project.connection(r.name)
+            if conn is None or not isinstance(conn.target, _BE):
+                continue
+            rec = targets.get(conn.target.block)
+            if rec is None:
+                continue
+            pts = [(int(p[0]), int(p[1])) for p in (getattr(r, "points", None) or [])]
+            if not pts:
+                continue
+            cell = (rec[1], rec[2])
+            last = pts[-1]
+            src = pts[-2] if (last == cell and len(pts) >= 2) else last
+            f = _face(cell, src)
+            if f is not None:
+                seen.setdefault(conn.target.block, {})[conn.target.port] = f
+        for faces in seen.values():
+            vals = list(faces.values())
+            if len(vals) >= 2 and len(set(vals)) < len(vals):
+                return True
+        return False
+
     def _run_router(self, heuristic_router, port_cells, chip_types, use_cpsat,
                     use_bus="auto", port_maps=None, topology="block"):
         """Pick the router and return the AutoRouteReport.
@@ -2472,10 +2545,13 @@ class AppController(QObject):
         from engine.cpsat_router import route_all_cpsat, CpSatUnavailable
 
         def _invalid(report):
-            # A report is INVALID if a route crosses a block body OR a complex port
-            # fan-in's rails diverge (can't land as one coherent sample).
+            # A report is INVALID if a route crosses a block body, a complex port
+            # fan-in's rails diverge (can't land as one coherent sample), OR a
+            # face-locking rendezvous would receive two arms on ONE face (its LOCK
+            # cannot then tell the streams apart — a build-DRC hard error).
             return (self._routes_cross_block_body(report)
-                    or self._port_complex_fanin_split(report))
+                    or self._port_complex_fanin_split(report)
+                    or self._rendezvous_input_same_face(report))
 
         def _validated(report):
             # If the report is clean, keep it. If invalid, try the node-disjoint MAZE

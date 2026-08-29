@@ -2269,3 +2269,94 @@ constant, each add-as-xor, and the DROPPED CARRY are proven to fail; plus
 registers), wide CRCs, any extended-precision accumulator. Related: INV-33 (the
 register contract and the overlap half), INV-34 (shift counts are immediates), INV-13
 (Q15 saturation — which multi-word arithmetic must NOT inherit).
+
+## INV-46 — The LOCK-rotation rendezvous is generic over N; every constraint and DRC that serves it must be too, and the FACE BUDGET (N + 2) decides how far it goes
+
+**The mechanism.** On this clockless array, N independent producers firing at
+asynchronous times can be told apart ONLY by the physical channel they arrive on —
+the FACE. A rendezvous cell uses the arbiter LOCK (`LOCK`/`LOCK_FACE`, CONFIG 4/3) to
+accept from exactly ONE face at a time and ROTATES that lock across the N arms, so an
+early or bursty producer is simply held by the arbiter until its turn. The family:
+`DualFloatToComplexBlock` (N=2), `FeaturePairJoinBlock` (N=2), `TMRVoterBlock` (N=3).
+The cold start is always BAKED into the boot CONFIG (`initial_lock_face`) — arming via
+a JUMP is a race, because a word arriving before the arm-JUMP is accepted on an
+unlocked face and mis-pairs, which is the exact failure the LOCK exists to prevent.
+
+**Rule 1 — anything that serves the family must be generic over N.** The mechanism
+generalises; the code serving it silently did not, in THREE separate places, and none
+of the three announced itself — each produced a layout that built and routed cleanly
+and then misbehaved for a reason that pointed somewhere else:
+
+* `cpsat_placer` constrained only the FIRST TWO drivers (`d0, d1 = drvs[0], drvs[1]`)
+  and skipped multi-cell blocks (`if len(pl.cells) != 1: continue`). The third arm was
+  unconstrained and the whole block exempt; the symptom was the build DRC firing
+  `dual_input_same_face` — a correct complaint about the wrong culprit.
+* `bus_router` REUSED one broker for every net into a target cell (`_broker_abutting`)
+  — which for a face-locking target IS the same-face bug. Measured: three arms
+  funnelled through one broker, all arriving WEST. (The MAZE router already handled N
+  correctly; the BUS router, which runs first and *succeeds*, did not — so the bad
+  report was never escalated.)
+* `build._apply_internal_feedback` hardcoded CONFIG 4 (LOCK) as the target of a
+  backward `unlock` edge. A block whose interlock RE-POINTS a rotating face lock
+  (CONFIG 3 = LOCK_FACE) had its authored write rewritten into a lock-CLEAR, which
+  un-gates every face: it voted correctly for two samples and then desynced. Blocks
+  now declare `UNLOCK_CFG_ADDR` (default 4, so existing blocks are byte-identical).
+
+Corollary: a same-face verdict belongs IN the router-selection loop
+(`controller._rendezvous_input_same_face`), not only in the build DRC — otherwise a
+router that "succeeds" with a same-face landing returns `ok=True` and the failure
+surfaces much later as an unexplained build error.
+
+**Rule 2 — the FACE BUDGET.** A cell has FOUR faces. An N-arm rendezvous needs
+
+    N (one per arm — the face IS the path identity)
+  + 1 (forward into the block's datapath)
+  + 1 (a serialize-LOCK release corridor coming back)
+  = N + 2
+
+* **N=2**: 4 — fits. And the shipped N=2 blocks are SINGLE-CELL, so they need neither
+  a forward nor a release; the budget never came up.
+* **N=3**: FIVE needed, four available. Everything about such a block's shape follows:
+  the rendezvous MUST be a **LEAF of the fold** (exactly one in-block neighbour, so
+  three faces stay free), the block is forced into a longitudinal chain rather than a
+  compact square, and the serialize-LOCK release cannot have a corridor of its own —
+  it must come back through the one abutting cell.
+* **N ≥ 4**: not placeable as a single rendezvous on a 4-face cell. Build a TREE of
+  N=2/N=3 rendezvous blocks instead.
+
+A compact 2×2 fold gives EVERY cell two in-block neighbours and therefore cannot host
+an N=3 rendezvous at all: the maze router reports *"no free DISTINCT-face broker for a
+face-locking block's input"* and the chain does not route.
+
+**Rule 3 — the rotation has N+1 stops, not N (the INV-19 corollary).** Re-locking
+straight back to arm 0 at the end of the last arm's entry is correct per-sample and
+DEADLOCKS under load: it re-admits the next sample's first arm the instant the current
+group is dispatched, groups pile into the downstream chain, and the sim reports an
+explicit `Deadlock` after ONE packet. The last arm's entry must instead lock to the
+INTERNAL FORWARD face — which no external arm arrives on, so all N are barred — and a
+downstream cell re-points `LOCK_FACE` at arm 0 via a backward `WRITE.CFG` once the
+group has cleared. How deep that release can sit is decided by Rule 2: at N=3 it can
+only ride the ONE cell abutting the rendezvous, which bounds the block to one group in
+flight. Deeper release points were built and measured, all blocked — a `WRITE.CFG`
+transiting a live datapath cell is re-forwarded on that cell's committed face and lands
+on a real entry (spurious packet); a dedicated `transit_*` lane needs a face that does
+not exist; a backward JUMP into a relay entry is rewritten by the exit-default.
+
+**Rule 4 — probe the layout, or ship a flake.** `auto_pnr` is a CP-SAT search and is
+not deterministic. Measured on the N=3 voter: ~4% of layouts that route, build, AND
+present N distinct input landings still mis-deliver an arm. Across the ~20 chain
+builds in one suite run that became a ~50% per-run failure, spread across whichever
+gate happened to draw a bad layout — indistinguishable from a real block bug. Any
+harness for a face-locking block must SMOKE each candidate layout and move to the next
+anchor if it fails. Two details are load-bearing: (a) a healthy group is NOT a
+sufficient probe — a mis-delivered arm still votes "all agree" when every arm carries
+the same value, so fault ONE ARM AT A TIME; (b) probe on a THROWAWAY chip instance,
+because driving a group advances the lock rotation and latches arm state, so smoking
+the chip a gate is about to use leaks the probe's values into that gate's first result.
+
+**Gate:** `verification/tests/test_tmr_voter.py` (N=3, 54 tests: all 6 arrival
+permutations, 8 D4 orientations, the saturated gate, the depth guard, and INV-4
+mutations) + `test_feature_pair_join.py` / `test_dual_float_to_complex.py` (N=2).
+Related: INV-19/20 (the serialize-LOCK idiom this extends), INV-23 (every face
+constant is `is_face` so it D4-transforms), INV-39 (a multi-entry dispatch cell's
+entries must all be jumped).

@@ -3647,3 +3647,122 @@ gate, which now asserts **all sixteen** state words rather than the first.
 **Related:** INV-4 (mutation testing — this is a mutant that four existing
 mutants could not distinguish), INV-52 (the same block's face defects, found the
 same way: by measuring rather than by reading the recorded counts).
+
+
+---
+
+## INV-NEXT — A REORDER is a COLLECTOR problem: fix the order where the stream is SERIALISED, not where it is produced; and a band whose neighbours all face one way is SEALED
+
+Added 2026-08-29, from `ChaCha20KeystreamBlock`'s emission-order defect. Two
+separable rules; the first is a design heuristic with teeth, the second a
+geometric property that decides where anything can be put.
+
+### 1. Reorder at the collector, not at the producers
+
+A block whose output comes out in the wrong ORDER (right values, wrong
+positions) invites the fix at the PRODUCERS: change when each source publishes,
+add a per-source loop, permute the schedule. That is usually the expensive end,
+and on this substrate it is often the impossible one, because the producers'
+schedule is what the datapath's own wiring already pins.
+
+**Ask instead what the ORDER IS A FUNCTION OF at the point the stream
+serialises.** Writing the emission index as an arithmetic expression usually
+collapses the problem:
+
+* ChaCha20's drain emits, at output position `4L + k`, the word `state[4k + L]`
+  — the 4x4 transpose. Read the other way round, the word wanted at position
+  `4k + L` is the one produced by SOURCE `k` on PASS `L`. So "output group `k` is
+  source `k`'s four words in pass order", and the whole transpose is *hold each
+  source's words, release source by source* — a per-source BUFFER, needing no
+  counter that reaches the producers at all.
+
+**MEASURED, on that block:** the producer side has literally zero freedom. The
+boot-time load map (which would cost nothing — it is only `initial_value`
+constants) is FORCED: each (row, slot) is read on the laps where that row's
+rotation offset matches, and the datapath demands a specific word there, so
+walking the schedule pins all sixteen cells with no conflict and none left free.
+And all `4^4 x 4^4 x 4!` combinations of pre-drain rotation, inter-pass spin and
+source publish order were searched: none gives the wanted order, best 4 of 16.
+The structural reason generalises — **if one pass visits every source exactly
+once, the source index is the fast-varying half of the output position, and no
+permutation of passes or sources can exchange the nibbles.**
+
+**The cost, so the trade is real:** a per-source buffer of `d` words of width
+`w` costs `d*w/16` registers plus a shift; the release needs a counter and a
+re-entry unless something else can trigger it `d` times. On ChaCha20 that came
+to 10 live registers + 8 shift instructions, and the counter's `SUB`/`MOVE`/`BR`
+triple overflowed the cell by **exactly three words** — measured both ways
+(16 instructions/`base_addr` 15/12 live without it; 20/11/13 with it). The
+documented fix is to halve the per-cell depth (two stages of `d/2`), which frees
+`d*w/32` registers per cell and needs one more cell per source.
+
+**SAY WHICH LAYER.** Block program / fold — FIXABLE. The three-word gap is the
+per-cell register-file budget (32 addresses shared by code and data,
+`base_addr = 31 - instruction_count`), not a substrate or ISA wall.
+
+**REACH.** Any block that serialises N sources over M passes and needs an output
+order different from the one the passes impose: transposes, interleavers,
+deinterleavers, matrix/FFT output reordering, block codes read out column-wise.
+Measured in detail on one block; the arithmetic argument (fast/slow nibble) is
+general, the three-word figure is not.
+
+### 2. A band whose neighbours all face one way is SEALED
+
+A cell forwards on its own resting face and so does every cell a word merely
+transits, so a whole BAND of the fold can become unreachable from the rest of
+the block without anything flagging it.
+
+**MEASURED:** ChaCha20's finish row — its top band — can reach **NO free slot on
+ANY face**, checked over every free slot of the fold's bounding box x all four
+faces. North leaves the block (the array row above is the chip's I/O corridor,
+and a block-internal `WRITE` into a cell the block does not own is a dead end,
+INV-51). South lands on the state line, every cell of which rests EAST because
+three different control cells need that one eastward walk, so the word is swept
+along it and out. East and west stay on the row.
+
+**The consequence that matters:** anything that must talk to a cell in that band
+has to LIVE in that band, so the band's free slot count is a hard budget, and a
+cell in it cannot be relieved by the block's free space however much there is.
+This is the general form of a narrower claim an earlier pass recorded as "a
+per-row sequencer serving row3 has ZERO candidate placements" — that was true
+but attributed to the wrong cause (`tap3`'s position); the real cause is that
+the band is enclosed.
+
+**How to check it, cheaply:** for each cell of the band, walk every face against
+a probe placed in each free slot, using the block's own resting-face map. If
+nothing escapes, the band is sealed. **Do not infer sealing from a drawing** —
+the state line looks like a wall but is actually a conveyor, and the difference
+is what decides whether a word is lost or delivered.
+
+**The re-fold that opens a sealed band:** give it a neighbour band that does not
+all face one way — in ChaCha20's case, shifting the fold down one array row and
+adding a second band on top, so the producer's northward walk passes THROUGH the
+old band (occupied cells are transparent to a hop-counted word) into the new
+one. Verified walk by walk before building: every existing control relationship —
+the state line's hop-1/3/5/7 broadcast, the tap-to-adder abutment, the
+`wb -> seq -> wbk` hand-off — survives the shift, and the one new walk is hop 1.
+
+**SAY WHICH LAYER.** Block fold — a property of a LAYOUT, not of the substrate.
+Every sealed band is unsealed by a re-fold.
+
+**REACH.** Any multi-cell block with a uniformly-faced band, which is the normal
+shape for a broadcast line (one walk serving several consecutive targets — the
+`LMSEqualizerBlock` idiom). The more cells that share one walk, the more likely
+the band on its far side is sealed.
+
+**Gated by:** `verification/tests/test_chacha20_fixed_tap_ring.py` —
+`test_the_boot_load_map_is_FORCED_by_the_quarter_round_schedule`,
+`test_no_drain_side_knob_can_produce_row_major_order`,
+`test_the_transpose_is_a_PER_ADDER_buffer_not_a_per_row_loop`,
+`test_the_reorder_buffer_misses_this_folds_cell_budget_by_three_words`,
+`test_the_finish_row_is_SEALED_so_the_buffer_cannot_be_moved_off_it`,
+`test_the_two_row_finish_band_refold_preserves_every_control_walk` — each with a
+proven INV-4 mutant.
+
+**Related:** INV-33 (the register contract and its silent overlap half — the
+three-word gap is exactly that budget), INV-46 ("prefer more cells doing less",
+which is what the two-stage buffer applies), INV-48/INV-52 (the forwarding and
+face rules that make a band sealable at all), INV-49 (check whether a
+"permutation" is a CONSTANT before paying for a computed destination — here it
+is, and that is why the load map has no freedom), INV-51 (a gap inside the
+footprint is a dead end).

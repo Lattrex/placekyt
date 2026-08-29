@@ -9,6 +9,121 @@ block-specific gotcha. Promote anything that generalizes across block classes in
 and superseded material merged into the surviving entries; no durable lesson was
 dropped) — append new entries above the oldest ones as before.
 
+## ChaCha20KeystreamBlock — the emission-order fix is at the COLLECTOR, and it misses this fold by exactly three words 2026-08-29
+
+Sixth pass. The block arrives functionally correct — all sixteen RFC 8439 §2.3.2
+state words bit-exact on the real placed+routed+built chip — with one defect: the
+32 words leave in LAP-MAJOR order, the 4x4 transpose of §2.3.2's. **No code
+change shipped this pass. What shipped is six gates that convert four passes of
+argument into measured fact, and a re-fold specification verified walk by walk.**
+
+**The brief asked me to test an assumption, and the assumption was right to
+doubt.** Every previous pass looked for the fix at the ROWS — a per-row loop
+draining one row completely before the next — and recorded "does not fit". That
+finding stands, but it turns out to understate the case, and the search was
+aimed at the wrong end of the block.
+
+**What I measured, in the order I measured it.**
+
+1. **The boot-time permutation (the brief's "check this first") is DEAD, and for
+   a stronger reason than a budget.** It looked like the cheapest possible fix:
+   loading row `k` with a permuted slice costs zero instructions and zero cells,
+   just different `initial_value` constants. I modelled the ring exactly —
+   validating the model by reproducing the known defect's permutation
+   `[0,4,8,12,1,5,...]` — and then *derived* the load map the quarter-round
+   schedule demands rather than guessing candidates. **Every one of the sixteen
+   (row, slot) cells is pinned, with no conflict and none left free, and the
+   unique solution is the identity the block already ships.** There is no
+   boot-time permutation to choose; the QR wiring has already chosen it. The
+   brief's instinct that pass 5's "relabelling changes values not order"
+   argument didn't obviously transfer was correct — but the conclusion survives
+   on its own merits, by a different route.
+
+2. **Nor does any drain-side knob.** Exhaustive over all `4^4 x 4^4 x 4!`
+   combinations of pre-drain rotation, inter-lap spin count and row publish
+   order: none gives §2.3.2 order, best 4 of 16 positions. The structural
+   reason, which generalises: **one drain lap visits each row exactly once, so
+   the row index is the fast-varying half of the output position while the state
+   index carries it in the slow nibble — no permutation of laps or rows can
+   exchange them.**
+
+3. **The COLLECTOR avenue is real and the reorder is small.** Emission position
+   `4L + k` carries `state[4k + L]`; read the other way, the word wanted at
+   output position `4k + L` is the one `add_k` produces on lap `L`. So **output
+   group `k` is exactly `add_k`'s four words in lap order**, and the entire 4x4
+   transpose is *hold each adder's four words, release adder by adder*. That is
+   a per-ADDER buffer, not a per-row loop, and it needs no counter reaching the
+   rows. The brief's "work out the actual minimum buffering depth" was the right
+   question and the answer is better than the naive one: a single streaming
+   reorderer would need 9 words held at peak, but **split per adder it is 4
+   words each**, and the cell shape is exactly `_row`'s, already proven on chip
+   at that depth. Simulated at the cell-instruction level it emits §2.3.2 order
+   exactly.
+
+4. **The gap is THREE INSTRUCTION WORDS, measured both ways.** The buffer needs
+   10 live registers (8 for four 32-bit words + 2 for the arriving pair), an
+   8-instruction shift (irreducible for depth 4), and a release that emits one
+   word and re-enters three times. Without the release counter: 16 instructions,
+   `base_addr` 15, 12 live words — **three spare**. With it: 20 instructions,
+   `base_addr` 11, 13 live words — **overlap of three**. The counter's
+   `SUB`/`MOVE`/`BR` triple *is* the shortfall.
+
+5. **I could not relocate the counter, and I measured why: the finish row is
+   SEALED.** Over every free slot of the fold's bounding box x all four faces,
+   **no cell of the finish row reaches ANY free slot on ANY face.** North leaves
+   the block (the array row above is the I/O corridor); south lands on the state
+   line, whose cells all rest EAST — a solved constraint serving `wb`, `wbk` and
+   `drn` — so the word is swept along it and out; east/west stay on the row.
+   **This is the general form of pass 5's "`d3` has ZERO candidates": that was
+   true but attributed to `tap3`'s position, when the real cause is that the
+   whole band is enclosed.** The adders were separately measured at zero free
+   data addresses (four after splitting their output into `oh`/`ol`, which saves
+   an instruction) — still short of what a counter plus re-entry needs.
+
+**The re-fold that WOULD work, verified rather than sketched.** Shift the whole
+10x6 fold down one array row and add a second buffer row on top, giving each
+adder a PAIR of depth-2 buffers (a 4-deep FIFO as two stages). Depth 2 frees four
+registers per cell and the counter fits with room to spare. The array is 10x12
+and the block sits at array row 1, so there is space; 41 → 49 cells. **Every
+existing control walk survives the shift** — the state line's hop-1/3/5/7
+broadcast from both `wbk` and `drn`, the tap-to-adder abutment, the
+`wb → seq → wbk` hand-off — and the one new walk, `bufA_k → bufB_k`, is hop 1
+north. All of that is gated, so the next pass executes rather than re-searches.
+
+**Gotchas worth carrying forward.**
+
+* **A partial implementation was written and reverted.** I built the four-buffer
+  version end to end — cells, geometry, wiring, faces — precisely to *measure*
+  the budget rather than derive it, and the resolver reported the overlap. That
+  is the intended use of a throwaway: the number is now a gate, not an opinion.
+* **The adder's output was one port for both halves.** Feeding a buffer needs hi
+  and lo in different registers. Splitting `out` into `oh`/`ol` with a single
+  trailing trigger costs nothing (a `WRITE`'s target is an instruction field)
+  and **saves** an instruction — worth keeping in the re-fold.
+* **`arm` falls through.** `tap0`'s `arm` entry ends in a remote `{jump:narm}`,
+  and a remote JUMP does not stop local execution (INV-43 rule 2), so any entry
+  appended after it needs an explicit `HALT` in front or it fires during arming.
+* **ENVIRONMENT (cost me real time, and cost pass 5 more).** In a git worktree
+  the venv resolves `gr_kyttar`/`simkyt` to the MAIN checkout, so edits appear to
+  do nothing and tests appear to pass. Set
+  `PYTHONPATH=<worktree>/runtime/python`. Verify with
+  `import gr_kyttar...; print(module.__file__)` before trusting any result.
+* **The on-chip gate is genuinely fast (~0.4 s) and genuinely real** — I
+  mutation-tested it (drain lap count 4→3) and it caught the mutant while still
+  showing 640 `in0` executions. A quick green is not evidence of a skip here.
+
+**Gates added (6, each with a proven INV-4 mutant):** the forced boot load map;
+the exhaustive drain-knob search; the per-adder buffer producing §2.3.2 order;
+the three-word budget gap; the sealed finish row; the two-row re-fold's walks.
+Mutant 3 reproduces the block's actual defect `[0,4,8,12,...]`, so the gate
+discriminates the real bug and not a proxy. Full suite: **1220 passed, 0 failed**
+(chacha 34, plus saturation, GRC-binding, orientation, placement-legality,
+chip-scale, reachability). The fold gate still runs with **zero exemptions**.
+
+**STATUS: still `needs_human`.** The cipher is correct; the order is not; the
+remaining work is a re-fold whose geometry is now proven and whose cell budget is
+now quantified. **LAYER: block program / fold — fixable, not a substrate limit.**
+
 ## ChaCha20KeystreamBlock — the cipher is CORRECT on chip: all 16 state words bit-exact. Two "verified" facts from the last pass were the two remaining bugs 2026-08-30
 
 Fifth pass. The block was handed over as *"four words short of done"*, with a

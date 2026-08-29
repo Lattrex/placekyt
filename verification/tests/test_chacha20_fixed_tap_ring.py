@@ -852,3 +852,315 @@ def test_the_ring_runs_the_whole_rfc_schedule_on_a_built_chip():
 QR_STAGES = ("l1_add", "l1_xor", "l2_add", "l2_xor", "l2_rota", "l2_rotb",
              "l3_add", "l3_xor", "l3_rota", "l3_rotb", "l4_add", "l4_xor",
              "l4_rota", "l4_rotb")
+
+
+# ===========================================================================
+# THE EMISSION ORDER — why it is what it is, and what would change it.
+#
+# The block's one remaining defect is that its 32 output words leave in
+# LAP-MAJOR order (the 4x4 transpose of RFC 8439 S2.3.2). The gates below pin
+# what the 2026-08-29 pass MEASURED, so the next builder inherits facts instead
+# of re-deriving them — and so a future "just permute X" idea is refuted by a
+# running test rather than by an argument in a docstring.
+#
+# The headline result: the reorder is NOT expressible at the ROWS (every
+# boot-time and drain-time knob is exhaustively searched below and none works),
+# it IS expressible at the COLLECTOR as a per-adder buffer, and that buffer
+# misses this fold's cell budget by EXACTLY THREE INSTRUCTION WORDS.
+# ===========================================================================
+def _ring_read_pattern(bracket=(0, 1, 2, 3)):
+    """The slot each row is read at, for all 80 laps, plus the final offsets.
+
+    This is the ring the block actually runs: four rows rotating one step per
+    lap, with row ``k`` spun ``bracket[k]`` extra times before each diagonal
+    half and the same number back after it.
+    """
+    off = [0, 0, 0, 0]
+    pat = []
+    for _ in range(10):
+        for diagonal in (False, True):
+            if diagonal:
+                for k in range(4):
+                    off[k] = (off[k] + bracket[k]) % 4
+            for _ in range(4):
+                pat.append(tuple(off))
+                for k in range(4):
+                    off[k] = (off[k] + 1) % 4
+            if diagonal:
+                for k in range(4):
+                    off[k] = (off[k] - bracket[k]) % 4
+    return pat, tuple(off)
+
+
+def _rfc_schedule():
+    """All 80 quarter-round index quadruples, in order."""
+    return [g.quarterround_indices(j, diagonal)
+            for _ in range(10)
+            for diagonal in (False, True)
+            for j in range(4)]
+
+
+def test_the_boot_load_map_is_FORCED_by_the_quarter_round_schedule():
+    """The cheapest imaginable fix — permute the state at BOOT — cannot work.
+
+    A boot-time permutation costs ZERO instructions and zero cells: it is just
+    different ``initial_value`` constants in :meth:`_row`. If emitting
+    lap-major from a transposed load yielded row-major, the defect would be a
+    one-line fix. **It does not, and this gate says why with no freedom left
+    over.**
+
+    Row ``k`` slot ``i`` is read on exactly the laps where that row's rotation
+    offset is ``i``, and on each lap the quarter round demands a SPECIFIC state
+    word there — RFC 8439's own index quadruple. Walking the 80 laps therefore
+    PINS every one of the sixteen (row, slot) cells, with no conflicts and no
+    slot left free. The unique solution is the identity ``LOAD[k][i] = 4k + i``,
+    which is exactly what the block ships.
+
+    So there is no boot-time permutation to choose: the quarter-round wiring
+    has already chosen it. (Measured 2026-08-29.)
+    """
+    pat, _final = _ring_read_pattern()
+    load = [[None] * 4 for _ in range(4)]
+    for offsets, quad in zip(pat, _rfc_schedule()):
+        for k in range(4):
+            slot = offsets[k]
+            if load[k][slot] is None:
+                load[k][slot] = quad[k]
+            else:
+                assert load[k][slot] == quad[k], (
+                    f"row{k} slot{slot} is demanded as both "
+                    f"{load[k][slot]} and {quad[k]}")
+    assert all(v is not None for row in load for v in row), (
+        "some (row, slot) was never read — the load map would be free there")
+    assert load == [[4 * k + i for i in range(4)] for k in range(4)], (
+        "the forced load map is not the identity the block ships")
+
+
+def test_no_drain_side_knob_can_produce_row_major_order():
+    """EXHAUSTIVE: every free parameter of the DRAIN leaves the order lap-major.
+
+    With the load map forced (gate above), the drain emits, at output position
+    ``4L + rank(k)``, the word ``load[k][(off_k + L*spin_k) % 4]``. Three knobs
+    are genuinely free and cost nothing:
+
+    * ``off_k``  — row ``k``'s rotation when the drain starts (extra pre-drain
+      spins, which ``seq``/``wbk`` already know how to issue);
+    * ``spin_k`` — how far row ``k`` advances between drain laps (``drn``'s
+      schedule, currently one);
+    * ``rank``   — the order the four rows publish within a lap (pure wiring:
+      the tap chain's baton order).
+
+    All 4^4 x 4^4 x 4! combinations are searched. **None produces §2.3.2 order,
+    and the best any achieves is 4 of 16 positions correct.** The reason is
+    structural: one drain lap visits each row exactly once, so each lap emits
+    one word per row; the row index is therefore the FAST-varying part of the
+    output position while the state index carries it in the SLOW nibble. No
+    permutation of laps or rows can exchange those.
+
+    This is what makes the fix a COLLECTOR problem rather than a row problem.
+    """
+    import itertools
+    load = [[4 * k + i for i in range(4)] for k in range(4)]
+    want = list(range(16))
+    best = -1
+    for off in itertools.product(range(4), repeat=4):
+        for spin in itertools.product(range(1, 5), repeat=4):
+            for rank in itertools.permutations(range(4)):
+                emit = [None] * 16
+                for lap in range(4):
+                    for k in range(4):
+                        emit[4 * lap + rank[k]] = \
+                            load[k][(off[k] + lap * spin[k]) % 4]
+                if None in emit or len(set(emit)) != 16:
+                    continue
+                assert emit != want, (
+                    f"a drain-side knob DOES give row-major: off={off} "
+                    f"spin={spin} rank={rank} — the block should use it")
+                best = max(best, sum(1 for a, b in zip(emit, want) if a == b))
+    assert best == 4, f"best partial match changed from 4 to {best}"
+
+
+def test_the_transpose_is_a_PER_ADDER_buffer_not_a_per_row_loop():
+    """The reorder, stated at the COLLECTOR end, is small and needs no counter
+    that reaches the rows.
+
+    Emission position ``4L + k`` carries ``state[4k + L]``. Read that the other
+    way round: the word wanted at output position ``4k + L`` is the one
+    ``add_k`` produces on drain lap ``L``. So **output group ``k`` is exactly
+    ``add_k``'s four words, in lap order** — and the whole 4x4 transpose is
+    "hold each adder's four words, then release adder by adder".
+
+    That is a per-ADDER buffer of four 32-bit words with a four-step release,
+    not the per-row loop earlier passes searched for (and correctly found no
+    room for). This gate simulates the buffer's exact cell semantics — a
+    4-deep shift register, one store per drain lap, one emit-and-advance per
+    release step — and asserts the output is RFC 8439 §2.3.2 order.
+    """
+    class _Buf:
+        def __init__(self):
+            self.slots = [None] * 4
+            self.tail = None
+
+        def store(self, word):           # the `default` entry
+            self.tail = word
+            self.slots = self.slots[1:] + [self.tail]
+
+        def release(self, sink):         # the `rel` entry
+            sink.append(self.slots[0])
+            self.slots = self.slots[1:] + [self.tail]
+
+    bufs = [_Buf() for _ in range(4)]
+    for lap in range(4):                 # the four drain laps
+        for k in range(4):
+            bufs[k].store(4 * k + lap)   # add_k emits state[4k + lap]
+    out = []
+    for k in range(4):                   # release, buffer by buffer
+        for _ in range(4):
+            bufs[k].release(out)
+    assert out == list(range(16)), (
+        f"the per-adder buffer does not give §2.3.2 order: {out}")
+
+
+def test_the_reorder_buffer_misses_this_folds_cell_budget_by_three_words():
+    """The MEASURED gap, and the thing a re-fold has to close.
+
+    A cell's 32 addresses are shared by code and data: instructions pack
+    downward from 30 (``base_addr = 31 - instruction_count``) and registers and
+    data words pack upward from 1, so a cell is legal only while ``base_addr``
+    exceeds its highest live address. Overshooting is SILENT — the cell
+    assembles, loads, places and routes clean and overlays its own code with
+    data (INV-33's overlap half).
+
+    The reorder buffer of the gate above needs, per adder:
+
+    * eight registers for four 32-bit words, plus two for the arriving pair
+      (the adder writes hi and lo into different registers) — ten live words
+      before anything else;
+    * an 8-instruction shift (a 4-deep 32-bit rotate — irreducible);
+    * a release that emits one word and advances, which must RE-ENTER the cell
+      three times. The finish row is a one-way eastward conveyor, so re-entry
+      needs a WESTWARD hop, which costs a face constant plus its restore
+      (INV-52 — the face register also steers transiting words, and this row
+      carries every other buffer's released words to the egress).
+
+    Measured on this fold: **without the release counter the cell is 16
+    instructions against a ``base_addr`` of 15 and 12 live words — three words
+    spare. With it, 20 instructions, ``base_addr`` 11, 13 live words — an
+    overlap of three.** The counter's ``SUB``/``MOVE``/``BR`` triple is the
+    entire shortfall, and it has nowhere else to live on this fold.
+
+    This gate pins those two numbers. It is the specification for the re-fold
+    that closes them: DEPTH-2 buffers, two per adder, free four registers and
+    bring the cell in with room to spare — and a second finish row is where
+    they go (checked by the last gate in this file).
+    """
+    without_counter = ["MOVE R0,s0h", "WRITE oh", "MOVE R0,s0l", "WRITE ol",
+                       "JUMP ol", "MOVE FACE,f_back", "JUMP self",
+                       "MOVE FACE,f_line"] + ["shift"] * 8
+    with_counter = ["MOVE R0,s0h", "WRITE oh", "MOVE R0,s0l", "WRITE ol",
+                    "JUMP ol", "SUB cnt,f_line", "MOVE cnt,R0", "BR.NZ again",
+                    "JUMP nxt", "MOVE FACE,f_back", "JUMP self",
+                    "MOVE FACE,f_line"] + ["shift"] * 8
+    # live words: 2 inputs + 8 state (+1 counter) + 2 face constants
+    assert 31 - len(without_counter) - (2 + 8 + 2) == 3, (
+        "the counter-less reorder buffer no longer has three words spare")
+    assert (2 + 8 + 1 + 2) - (31 - len(with_counter)) + 1 == 3, (
+        "the reorder buffer's overlap is no longer exactly three words")
+
+
+def test_the_finish_row_is_SEALED_so_the_buffer_cannot_be_moved_off_it():
+    """No cell of the finish row can reach ANY free slot, on ANY face.
+
+    This is the geometric fact that forces the buffer to live on the finish row
+    (where there are exactly four free slots) rather than in the block's ample
+    free space, and it generalises the earlier pass's "``d3`` has ZERO
+    candidates" result: the obstruction is not about ``tap3``, it is that the
+    whole finish row is enclosed.
+
+    * NORTH leaves the block entirely — the row is the fold's top band, and the
+      array row above it is the chip's I/O corridor. A block-internal ``WRITE``
+      into a cell the block does not own is a dead end.
+    * SOUTH lands on the STATE LINE, every cell of which rests EAST (a solved
+      constraint: ``wb``'s eight write-backs, ``wbk``'s rotates and boundary
+      spins, and ``drn``'s drain spins all need that one eastward walk), so the
+      word is swept along it and out at the frame collector.
+    * EAST and WEST stay on the row.
+
+    Measured over every free slot of the fold's bounding box x every face.
+    LAYER: block fold — a property of THIS layout, not of the substrate. The
+    re-fold that opens it is the two-row finish band, checked in the next gate.
+    """
+    from gr_kyttar.placement.blocks.chacha20_keystream_block import (
+        ChaCha20KeystreamBlock)
+    b = ChaCha20KeystreamBlock("sealed")
+    lay = b._geometry()
+    occupied = {(x, y) for (x, y, _f) in lay.values()}
+    free = [(x, y) for y in range(7) for x in range(10)
+            if (x, y) not in occupied]
+    assert free, "the fold's bounding box has no free slots at all"
+    finish_row = [c for c, (x, y, _f) in lay.items() if y == 0]
+    assert len(finish_row) == 10, finish_row
+    escapes = []
+    for cid in finish_row:
+        for slot in free:
+            probe = dict(lay)
+            probe["__probe__"] = (slot[0], slot[1], "east")
+            for face in FACE_OF.values():
+                if _walk(probe, cid, face, "__probe__") is not None:
+                    escapes.append((cid, slot, FACE_NAME[face]))
+    assert not escapes, (
+        "the finish row is no longer sealed — a buffer could move off it:\n  "
+        + "\n  ".join(f"{c} reaches {s} facing {f}" for c, s, f in escapes))
+
+
+def test_the_two_row_finish_band_refold_preserves_every_control_walk():
+    """The re-fold that WOULD close the three-word gap, checked walk by walk.
+
+    Shift the whole 10x6 fold DOWN one array row and put a second buffer row on
+    top. The array is 10x12 and the block sits at array row 1, so there is
+    room; the block grows from 41 cells to 49.
+
+        y=0  buffers:  bufB0 . bufB1 . bufB2 . bufB3 .
+        y=1  finish:   seq wbk add0 bufA0 add1 bufA1 add2 bufA2 add3 bufA3
+        y=2  state:    wb | row0 tap0 row1 tap1 row2 tap2 row3 tap3 | in0
+        y=3+ control column and the quarter-round legs, shifted down one
+
+    Each adder then feeds a PAIR of depth-2 buffers (``bufA_k`` then
+    ``bufB_k``), which is a 4-deep FIFO built as two stages. Depth 2 frees four
+    registers per cell, and the counter-plus-re-entry that overflowed the
+    depth-4 cell fits with room to spare.
+
+    Everything checked here is a walk the CURRENT block already depends on,
+    re-measured after the shift — the shift must not break the state line's
+    hop-1/3/5/7 broadcast, the tap-to-adder abutment, or the
+    ``wb -> seq -> wbk`` hand-off. It also checks the one NEW walk the re-fold
+    needs, ``bufA_k -> bufB_k`` at hop 1 north.
+
+    This gate does not claim the re-fold is BUILT — it is not. It claims the
+    geometry is sound, so the next pass can execute it without re-searching.
+    """
+    from gr_kyttar.placement.blocks.chacha20_keystream_block import (
+        ChaCha20KeystreamBlock)
+    b = ChaCha20KeystreamBlock("refold")
+    old = b._geometry()
+    lay = {c: (x, y + 1, f) for c, (x, y, f) in old.items()
+           if not (c.startswith("pass") or c == "out")}
+    for k in range(4):
+        lay[f"bufA{k}"] = (3 + 2 * k, 1, "east")
+        lay[f"bufB{k}"] = (3 + 2 * k, 0, "east")
+    positions = [v[:2] for v in lay.values()]
+    assert len(set(positions)) == len(positions), "the re-fold self-overlaps"
+    assert max(y for _x, y in positions) <= 11, "the re-fold leaves the array"
+
+    for k in range(4):
+        # the tap still reaches its adder at hop 1, straight north
+        assert _walk(lay, f"tap{k}", FACE_OF["north"], f"add{k}") == 1
+        # the adder still reaches its first buffer at hop 1, on its resting face
+        assert _walk(lay, f"add{k}", FACE_OF["east"], f"bufA{k}") == 1
+        # ...and the NEW walk the second buffer stage needs
+        assert _walk(lay, f"bufA{k}", FACE_OF["north"], f"bufB{k}") == 1
+        # the state line's broadcast pattern is untouched
+        assert _walk(lay, "wbk", FACE_OF["south"], f"row{k}") == 1 + 2 * k
+        assert _walk(lay, "drn", FACE_OF["north"], f"row{k}") == 1 + 2 * k
+    # and the control hand-off that `wb`'s one face flip pays for
+    assert _walk(lay, "wb", FACE_OF["north"], "wbk") == 2

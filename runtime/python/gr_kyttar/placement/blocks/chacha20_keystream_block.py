@@ -219,30 +219,76 @@ class ChaCha20KeystreamBlock(KyttarBlock):
     is fixed the block is not a drop-in for the published algorithm, so it stays
     ``needs_human``.
 
-    Why the transpose is not a small fix, measured rather than argued:
+    Where the fix is, and what exactly still blocks it (2026-08-29)
+    --------------------------------------------------------------
 
-    * emitting ``0..15`` requires the SLOT index to advance fastest and the ROW
-      slowest — one row drained completely before the next starts. The
-      publish chain ``row0 → tap0 → row1 → …`` is what makes a lap visit all
-      four rows, so this is a per-row loop, and it needs a per-row counter.
-    * the ROW cell has four spare words but **no free data address** for the
-      loop constant (its eight state registers occupy 3..10 and the next free
-      address collides with ``base_addr`` once the four loop instructions are
-      added);
-    * the TAP cells have two to three spare words against a cost of about seven;
-    * a per-row sequencer CELL was searched exhaustively over all **seventy**
-      free slots of the 10x11 region x all four faces: ``d0``/``d1``/``d2`` have
-      candidates, and ``d3`` has **ZERO** — ``tap3`` sits at the east end where
-      the quarter-round chain begins, and nothing ``tap3`` can reach can in turn
-      reach ``row3``;
-    * relabelling cannot absorb it either: the adders fire in the order their
-      taps publish, so permuting which adder serves which row changes the values
-      and not the order (three independent arguments, all agreeing).
+    Earlier passes looked for the fix at the ROWS — a per-row loop that drains
+    one row completely before starting the next — and measured that it does not
+    fit. That is still true, and it is now known to be true for a deeper reason
+    than "no room": **the row side has no freedom at all.**
 
-    LAYER: block program / fold — a **fold** problem, not a substrate limit and
-    not an arithmetic one. A fold with the state line and the quarter-round
-    chain arranged so that every tap can reach a cell that reaches its own row
-    would fix it; this fold cannot.
+    * **The boot-time load map is FORCED.** Permuting the state as it is loaded
+      would cost zero instructions and zero cells, so it is the cheapest
+      conceivable fix. It cannot work: row ``k`` slot ``i`` is read on exactly
+      the laps where that row's rotation offset is ``i``, and the quarter round
+      demands a specific RFC index there, so walking the 80 laps pins all
+      sixteen (row, slot) cells with no conflict and nothing left free. The
+      unique solution is the identity this block already ships.
+    * **No drain-side knob helps either.** All ``4^4 x 4^4 x 4!`` combinations
+      of pre-drain rotation, inter-lap spin count and row publish order were
+      searched exhaustively; none gives §2.3.2 order and the best gets 4 of 16
+      positions right. One drain lap visits each row once, so the row index is
+      always the FAST-varying half of the output position — no permutation of
+      laps or rows can exchange the nibbles.
+
+    Both of those are gated in ``test_chacha20_fixed_tap_ring.py``, with
+    INV-4 mutants.
+
+    **The fix is at the COLLECTOR, and it is small.** Emission position
+    ``4L + k`` carries ``state[4k + L]``; read the other way, the word wanted at
+    output position ``4k + L`` is the one ``add_k`` produces on drain lap ``L``.
+    So **output group ``k`` is exactly ``add_k``'s four words in lap order**,
+    and the whole 4x4 transpose is "hold each adder's four words, then release
+    adder by adder". That is a per-ADDER buffer — a 4-deep 32-bit shift register
+    shaped exactly like :meth:`_row`, which is already proven on chip at that
+    depth — and it needs no counter that reaches the rows at all. Simulated at
+    the cell-instruction level it produces §2.3.2 order exactly (gated).
+
+    **What blocks it is a cell budget, and the gap is THREE INSTRUCTION WORDS.**
+    The buffer needs ten live registers (eight for four 32-bit words, two for
+    the arriving pair), an 8-instruction shift, and a release that emits one
+    word and re-enters the cell three times. Measured: without the release
+    counter the cell is 16 instructions against a ``base_addr`` of 15 and 12
+    live words — three spare; with it, 20 instructions, ``base_addr`` 11, 13
+    live words — an overlap of three. The counter's ``SUB``/``MOVE``/``BR``
+    triple IS the shortfall, and there is nowhere else on this fold to put it.
+
+    **Why the buffer cannot simply move somewhere roomier: the finish row is
+    SEALED.** Measured over every free slot of the fold's bounding box x every
+    face, **no cell of the finish row can reach ANY free slot on ANY face** —
+    north leaves the block (the row is the fold's top band, and the array row
+    above is the chip's I/O corridor), south lands on the state line whose cells
+    all rest EAST and sweep the word away, and east/west stay on the row. This
+    generalises the previous pass's "``d3`` has ZERO candidates": the
+    obstruction was never about ``tap3``, it is that the whole finish row is
+    enclosed. The row has exactly four free slots and the block needs four
+    buffers, so they fit positionally — just not within the per-cell budget.
+
+    **The re-fold that closes it, verified walk by walk (but NOT yet built).**
+    Shift the whole 10x6 fold down one array row and add a second buffer row on
+    top, giving each adder a PAIR of DEPTH-2 buffers (a 4-deep FIFO as two
+    stages). Depth 2 frees four registers per cell and the counter fits with
+    room to spare. The array is 10x12 and the block sits at array row 1, so
+    there is space; the block grows 41 → 49 cells. Every existing control walk
+    survives the shift — the state line's hop-1/3/5/7 broadcast from both
+    ``wbk`` and ``drn``, the tap-to-adder abutment, and the ``wb → seq → wbk``
+    hand-off — and the one new walk, ``bufA_k → bufB_k``, is hop 1 north. That
+    is gated too, so the next pass can execute it without re-searching.
+
+    LAYER: block program / **fold** — fixable, not a substrate limit and not an
+    arithmetic one. The three-word gap is a per-cell register-file budget
+    (32 addresses shared by code and data), and the two-row finish band closes
+    it by halving the per-cell depth.
 
     The algebra is separately verified in
     ``verification/tests/test_chacha20_fixed_tap_ring.py`` (exact against RFC
@@ -778,15 +824,17 @@ arm:
         ``state[0], state[4], state[8], state[12], state[1], ...``: the 4x4
         TRANSPOSE of RFC 8439 §2.3.2's order. Every one of the sixteen values is
         bit-exact (measured on the real placed+routed+built chip); only their
-        positions are permuted. Emitting ``0..15`` needs the slot index to
-        advance fastest and the row slowest -- one row drained completely before
-        the next starts -- and that is a per-row loop whose counter has nowhere
-        to live on this fold: the row cell has four spare words but no data
-        address for the constant, the tap has two to three, and an exhaustive
-        search over all seventy free slots of the 10x11 region finds ZERO valid
-        placements for a per-row sequencer serving ``row3`` (``tap3`` sits at the
-        east end where the quarter-round chain begins, and nothing it can reach
-        can reach ``row3``). See the class docstring's Status section.
+        positions are permuted.
+
+        **The fix is NOT here.** Every knob this sequencer owns was searched
+        exhaustively -- all ``4^4 x 4^4 x 4!`` combinations of pre-drain
+        rotation, inter-lap spin count and row publish order -- and none gives
+        §2.3.2 order (best: 4 of 16 positions). One drain lap visits each row
+        exactly once, so the row index is always the fast-varying half of the
+        output position, and no reordering of laps or rows can exchange the
+        nibbles. The reorder belongs at the COLLECTOR, as a per-adder buffer;
+        see the class docstring's Status section for the measured three-word
+        budget gap and the two-row re-fold that closes it.
         """
         return CellProgram(
             inputs=[Port("go", register=1)],

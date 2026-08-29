@@ -3108,7 +3108,7 @@ orientation suite before believing it.
 **Applies to:** any multi-cell block; most acutely to blocks with dense internal
 graphs or cells that must send against their resting face.
 
-**UPDATE 2026-08-30 — narrowed, and the harder half named.** See INV-NEXT (the
+**UPDATE 2026-08-30 — narrowed, and the harder half named.** See INV-52 (the
 FACE-register invariant). Two contributing mechanisms are now FIXED and
 regression-tested at the 1219 baseline: the router looked cell programs up by the
 raw positional *index*, so **string-keyed blocks never had their declared
@@ -3125,7 +3125,7 @@ were right only because Manhattan happened to match.
 
 ---
 
-## INV-NEXT — The FACE register is CELL state: it persists across entries, it steers TRANSITING words, and the router cannot see it
+## INV-52 — The FACE register is CELL state: it persists across entries, it steers TRANSITING words, and the router cannot see it
 
 *(Number to be assigned at landing — three numbering collisions have already
 happened because parallel builders cannot see each other's KB additions.)*

@@ -2479,7 +2479,7 @@ entries must all be jumped).
 
 ---
 
-## INV-48 — A panel block is auto-placed only for its NAMED ROLE cells, and a dense internal graph has no single-face ring
+## INV-48 — A panel block is auto-placed only for its NAMED ROLE cells; and a word is forwarded on each TRANSIT CELL'S OWN face, not the sender's
 
 **Symptom:** a panel-backed block whose cell programs are individually correct — every
 cell inside its 32-word budget, every hand-off verified on the real chip through the
@@ -2528,23 +2528,69 @@ a real chip with a real `SramPanelDevice`; what it cannot do is go through
 substrate, and the fix is to extend the template (or have a block declare every
 cell as a role).
 
-**Root cause C — and this is the durable, block-independent half: a dense internal
-graph has NO single-face layout.** A cell has ONE forward face, so every `WRITE`/`JUMP`
-it makes leaves in the same direction and reaches its target by HOP COUNT, transiting
-the cells in between. The embedded controller sits AT the panel port with its face
-pointing OUT of the array, so any word that TRANSITS it is lost off-chip — and INV-32
-already makes routing through a used port cell a hard `port_transit` failure. The
-placement question is therefore combinatorial:
+**Root cause C — the durable, block-independent half: A WORD IS FORWARDED ON EACH
+TRANSIT CELL'S OWN FACE, NOT THE SENDER'S.** This is the rule everything else in
+this section follows from, and it is the one that is easy to get wrong.
 
-> is there an ordering of the block's cells around a ring such that no internal edge
-> transits the controller's slot?
+A word leaves its source on the **source cell's** face. Every cell it then arrives
+at forwards it on **that cell's own** resting face. So from any cell there is
+exactly ONE outgoing walk through the face field, and all of that cell's internal
+targets must lie along it, in the order the walk visits them.
 
-For the LZ4 decoder's **15-edge, 7-cell** graph the answer is **no, at every ring size
-from 7 to 16 — and not even within two violations** (exhaustive search, kept as a live
-guard test). The blocking structure is simple and will recur: the emit cell has an edge
-to the CONTROLLER *and* an edge back to the head of the FSM, and in a ring one of those
-two must wrap past the other. Such a block needs real brokers and corridors — i.e. the
-generic router — which is precisely what root cause A withholds.
+**Measured, from a simkyt trace** (2026-08-29), not inferred:
+
+```
+cell 117 exec_tick pc=23 word=0x6348 result=external_write
+cell 117 output_ready face=W ... neighbor_id=116     <- router sends WEST
+cell 116 instr_arrival face=E word=0x6348 hop_cnt=27
+         action=forward exit_face=E                  <- emit forwards EAST
+cell 116 output_ready face=E ... neighbor_id=117     <- straight back
+```
+
+The straight-line "ray" model — the word keeps the sender's direction for the whole
+corridor — is **FALSE**, and believing it produces a layout that places clean,
+builds clean, passes DRC, and then **ping-pongs at run time**. That is exactly how
+the LZ4 decoder got a 7×1 row whose every edge "checks out" on paper and hangs on
+the chip.
+
+**FAN-OUT IS NOT A WALL.** Checked against the shipped library before writing this:
+
+| block | cells | max fan-out | backward edges | status |
+|---|---|---|---|---|
+| `LMSEqualizerBlock` | 14 | **6** | 5 | done |
+| `FFT64Block` | 84 | 4 | **6** | done |
+| `FFT32Block` | 60 | 4 | 5 | done |
+| `LZ4DecoderBlock` | 7 | 4 | 3 | *not done* |
+
+Two shipped blocks are strictly worse than LZ4 on both counts. Whatever stops LZ4,
+it is not the size of its graph.
+
+**The two idioms that make a many-target cell work**, both shipped and verified:
+
+1. **Targets consecutive along one walk.** `LMSEqualizerBlock`'s `bcast` sits at
+   (7,1) facing west and its six targets are the six cells west of it, so one walk
+   delivers all six. This is what a serpentine fold is *for*.
+2. **An in-program FACE FLIP.** Declare `DataWord(..., is_face=True)` and emit
+   `MOVE [FACE], R{data:face_x}` … WRITEs … `MOVE [FACE], R{data:face_y}` to point
+   the cell somewhere else for a burst and then restore it. See `LMSEqualizerBlock`
+   `f0`/`bcast` and `MMTimingRecoveryBlock`. **Cost: 2 instructions + 1 data word
+   per extra direction** — so a cell's spare words are what bound how many
+   directions it can serve.
+
+**The LZ4 decoder's actual, measured blocker** is therefore a BUDGET one, not a
+topology one. A ring over its cells 0..5 with the controller OFF the ring satisfies
+all 14 inter-cell edges in the natural order (exhaustive). The leftover edge
+`emit → controller` needs a face flip, and the emit cell has **2 free words against
+the 3 a flip costs**; the `token` cell has 1. An exhaustive search over every 4×2
+… 7×2 fold with per-cell flip budgets found no arrangement every cell can afford.
+Freeing the words is straightforward — the per-byte `set_addr` is redundant because
+the controller's `write` entry auto-increments its own `wraddr` (verified equivalent
+to the golden on 19 payloads), which buys 3 words — but it changes the cell program
+the match copy is proven on, so it needs its own silicon re-verification.
+
+**Reach of this claim:** the forwarding rule is HARDWARE and permanent. The budget
+arithmetic is specific to this block's current cell programs and changes the moment
+they do.
 
 **The rule / what to do about it.**
 
@@ -2565,16 +2611,48 @@ generic router — which is precisely what root cause A withholds.
    an entire register (`inmatch` — the counter doubles as the literal/match
    discriminator via the sign of one shared `SUB`), and removed one whole edge from the
    layout problem. Loop back-edges are the expensive ones.
+4. **CHECK A LAYOUT AGAINST THE WALK, NOT A RAY.** Simulate the forwarding rule
+   above before believing a layout: from each cell, follow the faces and confirm
+   every target appears on that walk before the controller does. Placement, build
+   and DRC will all pass a layout that fails this — the symptom is a HANG, not an
+   error. Budget the face flips at the same time (3 words each): a cell with 1 free
+   word cannot serve a second direction, and that, not the graph, is usually what
+   binds.
+5. **BUILD-PATH BUGS THIS SHAPE OF BLOCK EXPOSES** (all three found and fixed
+   2026-08-29 while placing the LZ4 decoder; each was silent):
+   * `router._find_output_target` matched `internal_connections` first and returned
+     the target cell's DEFAULT entry, so a port carrying BOTH a WRITE and a JUMP
+     fired the wrong entry. A cell driving several entries of one companion (the
+     LZ4 emit cell → the controller's `set_addr`/`write`/`lookup`) collapsed them
+     all onto the first. Now the entry is taken from `internal_jumps` for the same
+     port.
+   * `router._fixup_write_instructions`'s sink fallback rewrote **every** WRITE and
+     JUMP in the exit cell to the output-port hop. Correct for a plain sink;
+     destroys a cell that also speaks a protocol. Now honours `RAW_OUTPUT_HOPS`
+     (new `BlockDefinition.raw_output_hops`, set by the build).
+   * `build._apply_output_port_routes` had no `RAW_OUTPUT_HOPS` guard, unlike its
+     sibling `_apply_routes`. Same failure, different pass.
+   * `build._patch_one_handoff` identifies the WRITE to patch by DESTINATION
+     REGISTER alone and takes the lowest-addressed match. When one cell drives two
+     different cells' registers that share a NUMBER, the backward edge's hop lands
+     on the forward WRITE. Worked around by pinning the colliding `StateVar` to a
+     distinct register; the pass itself is still ambiguous and would be worth
+     making port-aware.
 
-**Ground truth:** `verification/tests/test_lz4_decoder.py` (38 tests). The block's
+**Ground truth:** `verification/tests/test_lz4_decoder.py`. The block's DSP
 correctness is NOT in doubt — the token nibble split, the little-endian offset
 assembly, a whole match copy, and the `offset == 1` byte run all run on a real chip
-through a real `SramPanelDevice`/`PanelDriver`, with each match byte push-read at the
-**computed** address `wpos - off`. Three `test_placement_wall_*` gates pin the three
-root causes above, so the day the template grows or panel designs get a generic route
-path, they fail and say the quarantine can be revisited. Related: INV-29 (why it needs
-the panel), INV-31 (the panel contract), INV-32 (port-cell transit), INV-33 (the
-register-allocation contract the cell budgets come from), INV-36 (the 31-hop cap).
+through a real `SramPanelDevice`, with each match byte push-read at the **computed**
+address `wpos - off`. Placement, build and DRC are green through
+`_apply_self_contained_template`. What is NOT yet true is end-to-end operation: see
+`test_internal_edges_that_do_not_route_are_exactly_the_known_gap` and
+`test_emit_cell_cannot_reach_the_controller_in_a_placed_layout`, which pin the
+remaining gap and its arithmetic, and the skipped
+`test_auto_placed_design_decodes_on_chip`, which is written and ready. Related:
+INV-29 (why it needs the panel), INV-31 (the panel contract), INV-32 (port-cell
+transit), INV-33 (the register-allocation contract the cell budgets come from),
+INV-36 (the 31-hop cap).
+
 ## INV-47 — When a wide value cannot be CARRIED, make it RESIDENT and turn the index into ADDRESS ARITHMETIC — the panel is the only computed-destination path
 
 > ### ⚠️ CORRECTED 2026-08-29 — the ceiling below is REAL but was OVER-SCOPED

@@ -289,6 +289,14 @@ def apply_panel_template(project, catalog, ct, *, chip: int = 0, _only=None):
                                             chip=chip)
     blk, req = next(((b, r) for b, r in backed
                      if _only is None or b.name == _only), backed[0])
+    # SELF-CONTAINED SHAPE: a panel-backed block that supplies its OWN complete
+    # layout for every cell and speaks to the panel from inside itself (its emit
+    # cell drives the controller directly; its egress is its own output port).
+    # The role-named templates below place only 2-4 named cells, which silently
+    # DROPS the rest of a larger block — see _apply_self_contained_template.
+    if req.get("self_contained"):
+        return _apply_self_contained_template(project, catalog, ct, blk, req,
+                                              chip=chip)
     # RX-TAIL SHAPE: a panel-backed block whose stream INPUT lands on a
     # different cell than its panel controller (input_cell declared) consumes
     # the END of a chain (bits in -> panel lookup -> chars out) — the mirrored
@@ -1392,6 +1400,284 @@ def _apply_rx_template(project, catalog, ct, blk, req, *, chip: int = 0):
     return results, notes
 
 
+def _apply_self_contained_template(project, catalog, ct, blk, req, *,
+                                   chip: int = 0):
+    """SELF-CONTAINED panel template: place EVERY cell of a panel-backed block
+    from the block's own ``default_layout``, with the embedded controller pinned
+    on the ``x1_out`` port cell.
+
+    Why this shape exists
+    ---------------------
+    The TX and RX templates above place only the cells NAMED AS ROLES in
+    ``panel_requirements()`` — 2 for the TX shape, 3-4 for the RX shape. That is
+    fine for a block whose every cell IS a role (the 3-cell Varicode decoder), but
+    for a larger block it is a silent-dead build, in two ways at once:
+
+    * the un-named cells get **no position** and are simply absent from the
+      ``Placement`` — nothing raises, and no DRC check compares ``cell_count``
+      against ``len(placement.cells)``; and
+    * the build binds ``build_cell_programs()`` to ``placement.cells`` **by
+      index**, so a 3-cell placement of a 7-cell block also lands programs 1 and 2
+      on the controller's and the consumer's positions — the wrong programs on the
+      wrong cells.
+
+    So this template asks the block for its whole layout instead of inventing one,
+    and the block owns the hard part: a layout whose internal edges actually
+    deliver. The rule there is easy to get wrong — a word leaves on its SOURCE
+    cell's face, but every cell it then arrives at forwards it on **that cell's
+    own** face, so each cell has exactly ONE outgoing walk and all of its targets
+    must lie along it. (A straight-line model, where the word keeps the sender's
+    direction, is false; a layout built on it places, builds and DRCs clean and
+    then HANGS.) Cells that must serve several directions do it the way
+    ``LMSEqualizerBlock`` and ``MMTimingRecoveryBlock`` do — an in-program face
+    flip, ``DataWord(is_face=True)`` plus ``MOVE [FACE], …``. See INV-48. This
+    function only translates the layout onto the fabric and draws the three
+    corridors around it; it does not check the walk.
+
+    Geometry (kyttar_10x12 corner topology). The layout is translated so the
+    controller lands on ``x1_out``, and the row it belongs to becomes the block's
+    band along the chip's bottom edge::
+
+        x16_in(0,0) → row 0 east → col (input cell x) south → INPUT CELL
+        x1_in(0,11) → row 11 east → RETURN CELL      (the push-read corridor)
+        EGRESS CELL → its column north → row 0 east → x16_out(9,0)
+
+    The EGRESS cell is a free cell on the emit cell's own outgoing walk: the emit
+    cell has one resting face, already committed toward the controller, so its
+    ``out`` WRITE sets off the same way and has to land somewhere that is not the
+    controller. The block leaves that cell blank in its layout; this template
+    finds it and starts the output corridor there. A block whose layout leaves no
+    such cell is rejected with a named error rather than built into a word that
+    gets deflected into the SRAM port.
+    """
+    from engine.autoroute import RouteResult
+    from engine.errors import PlacementError
+    from model.connection import (BlockEndpoint, ChipPortEndpoint, Connection,
+                                  RoutePoint)
+    from model.enums import Face
+    from model.placement import Placement, PlacedCell
+
+    notes: list[str] = ["self-contained panel template"]
+    geo = _derive_geometry(ct)
+    w, h = geo.w, geo.h
+    ctl_cell = req.get("controller_cell", 0)
+    in_cell_id = req.get("input_cell")
+    ret_cell = req.get("return_cell", 1)
+    ret_port = str(req.get("return_port") or "word")
+
+    def _rp(pts):
+        return [RoutePoint(x, y) for (x, y) in pts]
+
+    # ---- 1. Translate the block's OWN layout so the controller lands on x1_out.
+    layout = catalog.default_layout(blk.type, blk.params, library=blk.library)
+    if not layout:
+        raise PlacementError(
+            f"self-contained panel template: {blk.name} declares "
+            "self_contained but has no default_layout to place")
+    for need, what in ((ctl_cell, "controller_cell"), (in_cell_id, "input_cell"),
+                       (ret_cell, "return_cell")):
+        if need not in layout:
+            raise PlacementError(
+                f"self-contained panel template: {blk.name}'s {what} {need!r} is "
+                f"not in its default_layout (cells {sorted(layout)})")
+    cxl, cyl, _cf = layout[ctl_cell]
+    ox = geo.x1_out_cell[0] - cxl
+    oy = geo.x1_out_cell[1] - cyl
+    pos = {cid: (dx + ox, dy + oy) for cid, (dx, dy, _f) in layout.items()}
+    for cid, (px, py) in pos.items():
+        if not (0 <= px < w and 0 <= py < h):
+            raise PlacementError(
+                f"self-contained panel template: {blk.name} cell {cid} lands at "
+                f"({px},{py}), outside the {w}x{h} fabric — its default_layout "
+                f"does not fit with the controller pinned at {geo.x1_out_cell}")
+    # ORDER BY CELL ID: the build binds cell_programs()[i] to placement.cells[i]
+    # BY INDEX, so the placed list must ascend by cell id (see the module note on
+    # the RX template) or every program lands on the wrong cell.
+    blk.placement = Placement(chip, [
+        PlacedCell(cid, pos[cid][0], pos[cid][1],
+                   Face.from_str(layout[cid][2]))
+        for cid in sorted(pos)])
+    notes.append("cells placed: "
+                 + ", ".join(f"{cid}@{pos[cid]}" for cid in sorted(pos)))
+
+    # ---- 2. The EGRESS cell: the first FREE cell on the return/emit cell's own
+    # outgoing walk, before the controller. The emit cell's `out` WRITE sets off
+    # on that same face, so this is where the output corridor must begin. NOTE
+    # the walk is followed here as a straight line, which is only right while the
+    # cells along it rest on one face; the general rule is that each transit cell
+    # forwards on ITS OWN face (INV-48).
+    occupied = {p: cid for cid, p in pos.items()}
+    ret_pos = pos[ret_cell]
+    _fd = {"east": (1, 0), "west": (-1, 0), "north": (0, -1), "south": (0, 1)}
+    rdx, rdy = _fd[str(layout[ret_cell][2])]
+    ctl_hop = None
+    egress_cell = None
+    emit_hop = None
+    for k in range(1, 32):
+        px, py = ret_pos[0] + rdx * k, ret_pos[1] + rdy * k
+        if not (0 <= px < w and 0 <= py < h):
+            break
+        if occupied.get((px, py)) == ctl_cell:
+            ctl_hop = k
+            break
+        if (px, py) not in occupied and egress_cell is None:
+            egress_cell, emit_hop = (px, py), k
+    if ctl_hop is None:
+        raise PlacementError(
+            f"self-contained panel template: {blk.name}'s return cell "
+            f"{ret_cell} at {ret_pos} does not reach the controller along its "
+            f"{layout[ret_cell][2]} face — the panel hand-offs cannot be issued")
+    if egress_cell is None:
+        raise PlacementError(
+            f"self-contained panel template: {blk.name}'s return cell "
+            f"{ret_cell} at {ret_pos} has NO free cell on its "
+            f"{layout[ret_cell][2]} face before the controller (hop {ctl_hop}) — "
+            "its output WRITE would transit the controller and be deflected into "
+            "the SRAM port. Leave one cell of the layout blank on that walk.")
+    notes.append(f"egress cell {egress_cell} (emit @{emit_hop}); "
+                 f"controller @{ctl_hop}")
+
+    # ---- 3. Derived panel params. The controller sits ON the port cell, so its
+    # own WRITE/JUMP exit directly (@1); the block's emit cell reaches it at the
+    # hop measured above.
+    ctl_entries, ctl_named, _ = _resolve_cell(catalog, blk, ctl_cell)
+    if "data" not in ctl_named:
+        raise PlacementError(
+            f"self-contained panel template: {blk.name}'s controller cell "
+            f"{ctl_cell} has no 'data' register (have {sorted(ctl_named)})")
+    emit_entries, emit_named, _ = _resolve_cell(catalog, blk, ret_cell)
+    if ret_port not in emit_named:
+        raise PlacementError(
+            f"self-contained panel template: {blk.name} cell {ret_cell} has no "
+            f"register named {ret_port!r} (have {sorted(emit_named)})")
+    # Return corridor: x1_in, east along its row, landing ON the return cell.
+    ret_route = ([geo.x1_in_cell]
+                 + [(x, geo.x1_in_cell[1])
+                    for x in range(geo.x1_in_cell[0] + 1, ret_pos[0] + 1)])
+    if ret_route[-1] != ret_pos:
+        raise PlacementError(
+            f"self-contained panel template: {blk.name}'s return cell "
+            f"{ret_pos} is not on the x1_in row {geo.x1_in_cell[1]} — the "
+            "push-read corridor cannot reach it")
+    ret_hop = 31 - len(ret_route)
+    if ret_hop < 0:
+        raise PlacementError(
+            f"self-contained panel template: return corridor {len(ret_route)} "
+            "hops exceeds the 31-hop budget")
+    # Which entry the push-read result kicks. A block may name one
+    # (``return_entry``) — the fetched word often re-enters a loop MID-BODY, and
+    # the return cell's lowest-addressed entry is then the wrong door. Default to
+    # that lowest entry, which is what the single-entry consumers want.
+    ret_entry_name = req.get("return_entry")
+    if ret_entry_name is not None:
+        if ret_entry_name not in emit_entries:
+            raise PlacementError(
+                f"self-contained panel template: {blk.name} cell {ret_cell} has "
+                f"no entry {ret_entry_name!r} (have {sorted(emit_entries)})")
+        ret_entry = int(emit_entries[ret_entry_name])
+    else:
+        ret_entry = int(min(emit_entries.values()))
+    blk.params["panel_hop"] = 1            # the controller IS the port cell
+    blk.params["read_wr_desc"] = _wr(ret_hop, emit_named[ret_port])
+    blk.params["read_jp_desc"] = _jp(ret_hop, ret_entry)
+    notes.append(
+        f"descriptors rwd=0x{blk.params['read_wr_desc']:04X} "
+        f"rjd=0x{blk.params['read_jp_desc']:04X} (hop {ret_hop}, entry "
+        f"{ret_entry_name or 'default'}@{ret_entry})")
+
+    # ---- 4. Corridors + net rewrites.
+    results: list[RouteResult] = []
+
+    def _drop(pred):
+        dropped = [c for c in project.connections if pred(c)]
+        project.connections[:] = [c for c in project.connections if not pred(c)]
+        return dropped
+
+    # INPUT: x16_in -> row 0 east -> down the input cell's column -> ON the cell.
+    in_pos = pos[in_cell_id]
+    in_route = ([(x, geo.in_cell[1]) for x in range(geo.in_cell[0], in_pos[0] + 1)]
+                + [(in_pos[0], y) for y in range(geo.in_cell[1] + 1, in_pos[1] + 1)])
+    blocked = [p for p in in_route[:-1] if p in occupied]
+    if blocked:
+        raise PlacementError(
+            f"self-contained panel template: the input corridor to {blk.name} "
+            f"cell {in_cell_id} at {in_pos} is blocked by its own cells at "
+            f"{blocked} — the input cell must be reachable down its column")
+    dropped_in = _drop(
+        lambda c: isinstance(c.source, ChipPortEndpoint)
+        and c.source.port == "x16_in"
+        and isinstance(c.target, BlockEndpoint) and c.target.block == blk.name)
+    in_sid = next((c.stream_id for c in dropped_in
+                   if getattr(c, "stream_id", None)), None)
+    in_port_name = next((c.target.port for c in dropped_in), "in")
+    project.connections.append(Connection(
+        "in_to_block", ChipPortEndpoint(chip, "x16_in"),
+        BlockEndpoint(blk.name, in_port_name), route=_rp(in_route),
+        stream_id=in_sid))
+    results.append(RouteResult("in_to_block", True, points=list(in_route)))
+
+    # RETURN: the synthesized x1_in net gets the drawn corridor.
+    ret_conn = next(
+        (c for c in project.connections
+         if isinstance(c.source, ChipPortEndpoint) and c.source.port == "x1_in"
+         and isinstance(c.target, BlockEndpoint)
+         and c.target.block == blk.name), None)
+    if ret_conn is None:
+        ret_conn = Connection(f"{blk.name}_panel_return",
+                              ChipPortEndpoint(chip, "x1_in"),
+                              BlockEndpoint(blk.name, ret_port), route=None)
+        project.connections.append(ret_conn)
+    ret_conn.route = _rp(ret_route)
+    results.append(RouteResult(ret_conn.name, True, points=list(ret_route)))
+
+    # EGRESS: the emit cell -> the free egress cell -> up its column -> row 0
+    # east -> ON the x16_out port cell (the final waypoint takes the port's exit
+    # face, the xo_to_out convention).
+    # The route STARTS on the egress cell, not on the emit cell: the hop between
+    # them is not a drawn corridor but the emit cell's own single-face WRITE
+    # (measured as ``emit_hop`` above), and it TRANSITS the block's own cells,
+    # which a waypoint list may not do. Starting here also keeps the polyline
+    # contiguous — a route that skipped from the emit cell to the egress cell
+    # would read as a fly line (``route_gap``).
+    eg_route = ([egress_cell]
+                + [(egress_cell[0], y)
+                   for y in range(egress_cell[1] - 1, geo.out_cell[1] - 1, -1)]
+                + [(x, geo.out_cell[1])
+                   for x in range(egress_cell[0] + 1, geo.out_cell[0] + 1)])
+    blocked = [p for p in eg_route[:-1] if p in occupied]
+    if blocked:
+        raise PlacementError(
+            f"self-contained panel template: the egress corridor from "
+            f"{blk.name} is blocked by its own cells at {blocked}")
+    dropped_out = _drop(
+        lambda c: isinstance(c.source, BlockEndpoint)
+        and c.source.block == blk.name
+        and isinstance(c.target, ChipPortEndpoint)
+        and c.target.port == "x16_out")
+    out_tag = next((c.out_tag for c in dropped_out
+                    if getattr(c, "out_tag", None) is not None), None)
+    out_port_name = next((c.source.port for c in dropped_out), "out")
+    project.connections.append(Connection(
+        "block_to_out", BlockEndpoint(blk.name, out_port_name),
+        ChipPortEndpoint(chip, "x16_out"), route=_rp(eg_route),
+        out_tag=out_tag))
+    results.append(RouteResult("block_to_out", True, points=list(eg_route)))
+    # The emit cell AUTHORS its own `out` WRITE/JUMP (RAW_OUTPUT_HOPS): the same
+    # cell issues the panel protocol, so the build's exit patch must not touch
+    # it. Give it the measured hop to the egress cell; the word then rides the
+    # drawn corridor to the port. The dest carries the net's output TAG so
+    # several chains sharing one port stay distinguishable on the wire.
+    if "emit_hop" in blk.params:
+        blk.params["emit_hop"] = int(emit_hop)
+        blk.params["out_dest"] = int(out_tag) if out_tag is not None else 0
+        blk.params["emit_entry"] = 0
+        notes.append(f"emit authored: hop {emit_hop} -> {egress_cell}, "
+                     f"dest {blk.params['out_dest']}")
+    notes.append(f"corridors: in {len(in_route)}, return {len(ret_route)}, "
+                 f"egress {len(eg_route)}")
+    return results, notes
+
+
 # --------------------------------------------------------------------------- #
 # Build-time refresh of placement-derived panel parameters
 # --------------------------------------------------------------------------- #
@@ -1452,10 +1738,18 @@ def refresh_panel_params(project, catalog, *, chip: int = 0) -> list[str]:
         if hopf >= 0:
             entries, named, _ = _resolve_cell(catalog, blk, ret_cell_id)
             if ret_port in named and entries:
+                # Honour a block-declared ``return_entry`` — the fetched word may
+                # re-enter a loop MID-BODY, in which case the return cell's
+                # lowest-addressed entry is the WRONG door and re-deriving it here
+                # would silently undo what the template chose (the LZ4 match copy:
+                # landing on ``fetch`` instead of ``emit_mat`` re-issues the read
+                # and spins). Blocks that name no entry keep the historical min.
+                _re = req.get("return_entry")
+                _entry = (int(entries[_re]) if _re in entries
+                          else int(min(entries.values())))
                 _set(blk.params, "read_wr_desc", _wr(hopf, named[ret_port]),
                      blk.name)
-                _set(blk.params, "read_jp_desc", _jp(hopf, min(entries.values())),
-                     blk.name)
+                _set(blk.params, "read_jp_desc", _jp(hopf, _entry), blk.name)
 
     # --- crossover track params from its corridors ----------------------------
     xo_blk = next((b for b in project.blocks

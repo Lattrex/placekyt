@@ -219,8 +219,14 @@ class LZ4DecoderBlock(KyttarBlock):
     ``engine/panel_pnr.py``, and the ``psk31_transceiver``) puts the panel on the **x1
     port pair** — ``x1_out`` carries cells->panel, ``x1_in`` carries the push-read
     return — and duplexes the DATA stream through ``x16_in``/``x16_out``. That is the
-    assignment this block uses. It has to be this way round here: a decompressed byte
-    is a 16-bit word, and the x1 port is one bit wide.
+    assignment this block uses.
+
+    Note that this is a CONVENTION, not a width constraint. The x1 port is a
+    **SERDES**: ``width: 1`` in the chip YAML is a PIN COUNT, and the panel pushes
+    full 16-bit words through it (``engine/sram_panel.py`` masks each word ``&
+    0xFFFF``; ``model/panel.py`` documents x1 as serial). There is no bit-serial
+    bottleneck to design around — the panel is on x1 because the chip has exactly one
+    such pair and the panel protocol owns it, leaving x16 free for the data stream.
 
     Parameters
     ----------
@@ -244,7 +250,8 @@ class LZ4DecoderBlock(KyttarBlock):
 
     def __init__(self, name: str, window_words: int = DEFAULT_WINDOW_WORDS,
                  panel_hop: int = 1, read_wr_desc: int = 0, read_jp_desc: int = 0,
-                 addr_base: int = 0):
+                 addr_base: int = 0, emit_hop: int = 2, out_dest: int = 0,
+                 emit_entry: int = 0):
         if window_words <= 0 or (window_words & (window_words - 1)):
             raise ValueError(
                 f"window_words must be a power of two, got {window_words}")
@@ -254,12 +261,20 @@ class LZ4DecoderBlock(KyttarBlock):
                 f"offset field, got {window_words}")
         super().__init__(name, window_words=window_words, panel_hop=panel_hop,
                          read_wr_desc=read_wr_desc, read_jp_desc=read_jp_desc,
-                         addr_base=addr_base)
+                         addr_base=addr_base, emit_hop=emit_hop,
+                         out_dest=out_dest, emit_entry=emit_entry)
         self._window_words = int(window_words)
         self._panel_hop = int(panel_hop)
         self._read_wr_desc = int(read_wr_desc) & 0xFFFF
         self._read_jp_desc = int(read_jp_desc) & 0xFFFF
         self._addr_base = int(addr_base) & 0xFFFF
+        # The block is RAW_OUTPUT_HOPS: the emit cell issues its own `out`
+        # WRITE/JUMP rather than letting the build patch the cell (which would
+        # rewrite the panel hand-offs in the SAME cell — see the emit program).
+        # The panel template derives these from the placed geometry.
+        self._emit_hop = int(emit_hop)
+        self._out_dest = int(out_dest) & 0x1F
+        self._emit_entry = int(emit_entry) & 0x1F
 
     # ------------------------------------------------------------------ shape
     @property
@@ -284,6 +299,15 @@ class LZ4DecoderBlock(KyttarBlock):
         table. Cell 6 (the embedded :class:`SramControllerBlock`) sits at the panel's
         ``x1_out`` port; the panel push-reads each match byte back into cell 5's ``b``
         register via ``x1_in`` (the return corridor).
+
+        ``self_contained`` selects the panel template shape (``engine/panel_pnr.py``).
+        The Varicode/CW RX shape names 3-4 ROLE cells and places ONLY those, deriving
+        a read-via-controller indirection and a crossover egress. This block is
+        different in kind: it has SEVEN cells, its emit cell drives the controller
+        directly (no read indirection), and its egress is its own ``out`` port — so it
+        supplies its whole ``default_layout`` and asks the template to lay that row
+        down with the controller pinned on the panel port. See
+        :meth:`default_layout` for why the row (and not a fold) is the shape.
         """
         return {
             "label": f"LZ4 history window ({self._window_words} x 16b)",
@@ -293,6 +317,12 @@ class LZ4DecoderBlock(KyttarBlock):
             "input_cell": 0,
             "return_port": "b",
             "return_cell": 5,
+            # The push-read result must kick `emit_mat`, NOT the return cell's
+            # lowest-addressed entry: a fetched match byte re-enters the copy loop
+            # mid-body (emit the byte, append it, decrement, refetch). Landing on
+            # `fetch` instead would re-issue the read and spin.
+            "return_entry": "emit_mat",
+            "self_contained": True,
         }
 
     # ------------------------------------------------------------- the programs
@@ -471,7 +501,15 @@ class LZ4DecoderBlock(KyttarBlock):
             entries=[EntryPoint("ready"), EntryPoint("feed")],
             data=[DataWord("escape", MAT_ESCAPE, address=1),
                   DataWord("c255", CONT_ESCAPE, address=2)],
-            state=[StateVar("mat", register=3, initial_value=0)],
+            # `mat` is pinned to R6, NOT the next free R3, to keep it clear of
+            # cell 0's `st` (also R3). The build's backward-edge pass identifies
+            # the WRITE to patch by its DESTINATION REGISTER alone
+            # (`build._patch_one_handoff`) and takes the lowest-addressed match,
+            # so when one cell drives two different cells' registers that happen
+            # to share a number — here cell 1 writes cell 4's `mat` AND, later,
+            # cell 0's `st` — the backward edge's hop lands on the FORWARD
+            # WRITE instead. Distinct numbers make the match unambiguous.
+            state=[StateVar("mat", register=6, initial_value=0)],
             assembly_template=(
                 "ready:\n"                            # both offset bytes are in
                 "    CMP R{state:mat}, R{data:escape}\n"
@@ -497,9 +535,16 @@ class LZ4DecoderBlock(KyttarBlock):
         #   emit_lit zeroes it -> after the shared decrement it is -1 (N) -> stop;
         #   emit_mat leaves the run length -> 0 (Z) on the last byte -> finish the
         #   sequence; > 0 -> branch back to `fetch` LOCALLY.
+        # The `out` egress is AUTHORED (RAW_OUTPUT_HOPS), not a {write:out}
+        # placeholder: this one cell issues BOTH the block's output and the three
+        # panel hand-offs, and the build's output-port patch rewrites every
+        # WRITE/JUMP in an exit cell to the egress route. Letting it do that here
+        # retargeted set_addr/write/lookup at the output corridor and killed the
+        # panel traffic outright. Authoring the hop keeps the two apart.
+        eh, od, ee = self._emit_hop, self._out_dest, self._emit_entry
         emit = CellProgram(
             inputs=[Port("b")],
-            outputs=[Port("out"), Port("hist_addr"), Port("hist_data"),
+            outputs=[Port("hist_addr"), Port("hist_data"),
                      Port("read"), Port("gohead")],
             entries=[EntryPoint("emit_lit"), EntryPoint("emit_mat"),
                      EntryPoint("fetch")],
@@ -520,8 +565,8 @@ class LZ4DecoderBlock(KyttarBlock):
                 "    MOVE R{state:mat}, R{data:zero}\n"
                 "emit_mat:\n"
                 "    MOVE R0, R{in:b}\n"
-                "    {write:out}\n"
-                "    {jump:out}\n"
+                f"    WRITE @{eh}, {od}\n"
+                f"    JUMP @{eh}, {ee}\n"
                 # Append to the history window BEFORE the next fetch is issued —
                 # this ordering is what makes an overlapping match (match_len >
                 # offset; offset == 1 in the limit) read back the bytes this same
@@ -598,26 +643,69 @@ class LZ4DecoderBlock(KyttarBlock):
             (5, "gohead", 0, "settoken"),
         ]
 
-    def default_layout(self) -> Dict[Any, Tuple[int, int, str]]:
-        """A 4x2 FOLD (serpentine), not a 7x1 strip (INV-8/9/14).
+    def output_cell_id(self) -> Any:
+        """The decompressed byte stream leaves the EMIT cell (5), not the last one.
 
-        Row 0 runs east ``router -> token -> literal -> offset``; the fold turns down
-        and row 1 runs west ``matchlen -> emit -> ctl``. That puts:
-
-        * the ROUTER (cell 0, the block's external input) and the CTL (cell 6, the
-          panel-port cell) both on the west edge, one row apart — the bus-facing edge
-          taps the data input and the panel traffic without wrapping;
-        * EMIT (cell 5, the block's external output) adjacent to CTL, so each of the
-          three per-byte panel hand-offs is a single abutment rather than a corridor;
-        * MATCHLEN (cell 4) adjacent to EMIT, so ``fetch`` is one hop.
-
-        4 wide x 2 tall: comfortably inside the <= 8-across convention on this 10x12
-        chip, and an EVEN column count so the serpentine returns the last cell to the
-        input edge (INV-14).
+        Cell 6 is the embedded SRAM controller — it is placed last and speaks only
+        to the panel, so the default "output leaves the last cell" assumption would
+        aim this block's egress at the panel port. The `out` port is cell 5's.
         """
-        return {0: (0, 0, "east"), 1: (1, 0, "east"), 2: (2, 0, "east"),
-                3: (3, 0, "south"), 4: (3, 1, "west"), 5: (2, 1, "west"),
-                6: (1, 1, "west")}
+        return 5
+
+    def default_layout(self) -> Dict[Any, Tuple[int, int, str]]:
+        """A 7x1 row. **This layout PLACES and BUILDS but does not yet RUN** — see
+        the caveat below before changing anything here.
+
+        The row, west to east, and each cell's face::
+
+            x:      0        1         2        3        4       5      6      7
+            cell:   1        2         3        4        5       0    (gap)    6
+                  TOKEN   LITERAL   OFFSET  MATCHLEN   EMIT   ROUTER  EGRESS  CTL
+            face:  east     east      east     east     east    west          south
+
+        The row is arranged so the ROUTER (the block's stream input) sits next to
+        the panel port, where the RX-tail input corridor delivers, and x=6 is left
+        EMPTY as the cell the emit cell's ``out`` WRITE lands on (the egress
+        corridor to ``x16_out`` starts there).
+
+        **THE KNOWN GAP — do not trust the ray model.** This row was derived under
+        the assumption that a word keeps its SENDER's direction for the whole
+        corridor. That is FALSE. A simkyt trace shows the real rule: a word leaves
+        on the source cell's face, and every cell it then arrives at forwards it on
+        **that cell's own** face. So each cell has exactly ONE outgoing walk, and
+        all of its internal targets must lie along it. Here the router faces west
+        but the emit cell beside it faces east, so the router's three dispatch
+        words bounce between the two and the simulation hangs. Four internal edges
+        do not deliver: ``0->1``, ``0->2``, ``0->3`` and ``5->6``; the exact set is
+        pinned by ``test_internal_edges_that_do_not_route_are_exactly_the_known_gap``.
+
+        **What a fix looks like** (both idioms are shipped and verified elsewhere):
+
+        * lay the block out so each cell's targets are CONSECUTIVE along one walk —
+          ``LMSEqualizerBlock``'s ``bcast`` faces west with its six targets in the
+          six cells west of it; and/or
+        * author an in-program FACE FLIP: ``DataWord(..., is_face=True)`` plus
+          ``MOVE [FACE], R{data:face_x}`` … WRITEs … ``MOVE [FACE], R{data:face_y}``
+          (``LMSEqualizerBlock`` ``f0``, ``MMTimingRecoveryBlock``). Cost is 2
+          instructions + 1 data word per extra direction.
+
+        A ring over cells 0..5 with the CONTROLLER OFF the ring satisfies all 14
+        inter-cell edges in the natural order (exhaustively verified). The one
+        edge left over is ``emit -> controller``, which needs a face flip the emit
+        cell cannot currently afford — it has 2 free words against the 3 a flip
+        costs. Dropping the redundant per-byte ``set_addr`` (the controller's
+        ``write`` entry already auto-increments ``wraddr``, verified equivalent on
+        19 payloads) frees exactly the words needed, but changes the program the
+        match copy is proven on in ``test_onchip_match_copy_through_the_real_panel``
+        and so needs its own silicon re-verification.
+
+        The block is placed by the self-contained panel template
+        (``engine/panel_pnr.py``), which lays this row along the chip's bottom edge
+        with the CTL on the ``x1_out`` port cell.
+        """
+        return {0: (5, 0, "west"), 1: (0, 0, "east"), 2: (1, 0, "east"),
+                3: (2, 0, "east"), 4: (3, 0, "east"), 5: (4, 0, "east"),
+                6: (7, 0, "south")}
 
     # --------------------------------------------------------------- reference
     def process_reference(self, input_bytes) -> np.ndarray:

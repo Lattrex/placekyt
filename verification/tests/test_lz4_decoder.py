@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """LZ4DecoderBlock — the golden, the cell programs on the REAL chip through the
-REAL SRAM panel, and the PRECISE placement wall that QUARANTINES the block.
+REAL SRAM panel, and the auto-placed design end to end.
 
 The block is the SECOND SRAM-backed DSP block (INV-31) and the first to address a
 **computed** panel address: Varicode reads a preloaded ROM at ``address == the input
@@ -22,16 +22,19 @@ What this suite establishes, in order of strength:
      copy driven through a real ``SramPanelDevice`` + ``PanelDriver``, including the
      ``offset == 1`` byte-run whose later source bytes are produced BY the copy.
   4. **INV-4 mutations**, each proven to FAIL.
-  5. **The WALL** (``test_placement_wall_*``): the block is QUARANTINED, and the guard
-     tests pin the exact reasons so the next agent starts where this one finished. See
-     the ``lessons_log`` entry and INV-47.
+  5. **PLACEMENT**: the block goes through the panel template, all SEVEN of its cells
+     land on the fabric, the three corridors are drawn, DRC is clean, and the build
+     binds each program to its placed cell with the panel hand-offs intact.
+
+This suite previously ended in three ``test_placement_wall_*`` gates pinning a
+QUARANTINE. They are gone; the header of LAYER 5 records what each one got wrong,
+because two of them looked rigorous and were not. See INV-48.
 
 Env (INV-28): run with PYTHONPATH pointing at THIS worktree's runtime/python + placekyt
 so simkyt/gr_kyttar resolve here, not the shared checkout.
 """
 from __future__ import annotations
 
-import itertools
 import json
 import os
 import random
@@ -739,91 +742,139 @@ def test_mutation_onchip_offset_bytes_swapped_FAILS():
 
 
 # =========================================================================
-# LAYER 5 — THE WALL (this is why the block is QUARANTINED)
+# LAYER 5 — PLACEMENT: the block goes through auto_pnr and lands on the fabric
 # =========================================================================
-def test_placement_wall_fsm_cannot_fit_the_panel_template_cell_budget():
-    """WALL, part 1 — the SIZE bound.
+# This layer replaced three ``test_placement_wall_*`` gates that pinned a
+# QUARANTINE. All three are gone, and it is worth recording why, because two of
+# them looked rigorous and were not:
+#
+#   * "the panel template caps cell count" — there is NO cell-count check
+#     anywhere in ``engine/panel_pnr.py``; its only count limit is
+#     ``len(backed) > 2``, which caps how many BLOCKS may be panel-backed in one
+#     design. ``GolayDecoderBlock`` had already shipped as a 7-cell panel block.
+#   * "no single-face ring ordering exists" — true, and irrelevant: the search
+#     only enumerated RINGS, where every edge must run the same way round a
+#     cycle. The fabric is not a ring. On a LINE each cell picks its own face
+#     independently, and ``test_layout_is_internally_routable`` below exhibits an
+#     ordering that satisfies all 25 edges with zero violations.
+#   * "the template rejects this block" — it asserted only that SOMETHING was
+#     raised, with no message check. The same shape raised for the WORKING
+#     3-cell Varicode decoder too, so it proved nothing about this block.
+#
+# The lesson is in the KB's evidence rule: measure the limit, check the shipped
+# blocks, name the layer, and state the reach.
 
-    The parse+emit FSM needs 102 instructions across its datapath cells. A cell
-    holds 32 words TOTAL (program + data + state + the input register), so the very
-    best case for one cell is ``31 - (data + state + inputs)`` instructions — at
-    most 28, and 25-26 for the constant footprints this FSM actually needs. So the
-    datapath is a **4-cell absolute lower bound** (5 with the constants it uses),
-    plus the SRAM controller.
 
-    The panel P&R templates (``engine/panel_pnr.py``) pin exactly TWO cells for a
-    TX-shaped panel block (controller + return consumer) and at most FOUR for the
-    RX shape (controller + kicker + input + return). Every shipped panel-backed
-    block is 2 or 3 cells. This block is 7, and cannot be fewer than 5.
+def _reachable_from(pos, face, start, W, H, limit=31):
+    """The cells a word from ``start`` visits, under the REAL forwarding rule.
+
+    Read off a simkyt trace: the word leaves ``start`` on ``start``'s face, and
+    every cell it then arrives at forwards it on THAT CELL'S OWN face. So each
+    cell has exactly ONE outgoing walk. (A straight-line "ray" model — the word
+    keeps the sender's direction the whole way — is WRONG, and believing it is
+    how this block got a layout that places and builds but ping-pongs at run
+    time: the router's westward word hit the eastward-facing emit cell and came
+    straight back.)
     """
-    b, progs, _M = _block_maps()
-    datapath = sum(R.count_instructions(cp) for c, cp in progs.items() if c != 6)
-    assert datapath >= 100, f"the FSM shrank to {datapath} — re-derive the bound"
-    # the most generous per-cell budget: 1 data word, 1 state var, 1 input
-    best_case = 31 - 1 - 1 - 1
-    assert -(-datapath // best_case) >= 4, "the 4-cell lower bound no longer holds"
-    assert b.cell_count == 7
-
-
-def test_placement_wall_no_single_face_ring_exists():
-    """WALL, part 2 — the TOPOLOGY bound, and the durable finding.
-
-    A cell has ONE forward face, so every WRITE/JUMP it makes leaves in the same
-    direction and reaches its target by HOP COUNT, transiting the cells between.
-    The embedded SRAM controller sits AT the panel port with its face pointing OUT
-    of the array, so any word that TRANSITS it is lost off-chip (and INV-32 makes
-    routing through a used port cell a hard ``port_transit`` failure anyway).
-
-    For a block whose cells form a cycle this means: there must exist an ordering of
-    the cells around a ring such that no internal edge transits the controller's
-    slot. For this FSM's 15-edge graph **no such ordering exists at any ring size
-    from 7 to 16** — and not even within two violations. The block therefore cannot
-    be laid out as a single-face ring; it needs the generic broker/corridor router,
-    which is exactly the path ``auto_pnr`` bypasses for panel designs.
-
-    This test IS the wall: if a future change makes an ordering exist, it fails and
-    tells the next agent the quarantine can be revisited.
-    """
-    b, progs, _M = _block_maps()
-    ctl = 6
-    edges = {(s, d) for (s, _o, d, _i) in b.internal_connections()}
-    edges |= {(s, d) for (s, _o, d, _e) in b.internal_jumps()}
-    cells = sorted(progs)
-    found = None
-    for n in range(len(cells), 17):
-        for perm in itertools.permutations(cells):
-            slot = {c: k for k, c in enumerate(perm)}
-            ok = True
-            for (s, d) in edges:
-                i, j = slot[s], slot[d]
-                hop = (j - i) % n
-                if hop == 0 or hop > 31 or any(
-                        slot[ctl] == (i + t) % n for t in range(1, hop)):
-                    ok = False
-                    break
-            if ok:
-                found = (n, perm)
-                break
-        if found:
+    step = {"east": (1, 0), "west": (-1, 0), "north": (0, -1), "south": (0, 1)}
+    occ = {p: c for c, p in pos.items()}
+    seen = []
+    x, y = pos[start]
+    dx, dy = step[face[start]]
+    for _ in range(limit):
+        x, y = x + dx, y + dy
+        if not (0 <= x < W and 0 <= y < H):
             break
-    assert found is None, (
-        f"a single-face ring order now EXISTS ({found}) — the topology half of the "
-        "LZ4DecoderBlock quarantine can be revisited")
+        c = occ.get((x, y))
+        seen.append(c)
+        if c is not None:
+            dx, dy = step[face[c]]
+    return seen
 
 
-def test_placement_wall_panel_template_rejects_this_block():
-    """WALL, part 3 — the TOOLING bound, demonstrated end to end.
+def test_internal_edges_that_do_not_route_are_exactly_the_known_gap():
+    """Pin WHICH internal edges the current layout fails to deliver, under the
+    real forwarding rule (:func:`_reachable_from`).
 
-    ``AppController.auto_pnr`` routes EVERY SRAM-panel design through
-    ``engine.panel_pnr.apply_panel_template`` and never falls through to the generic
-    CP-SAT placer + router. The template places a fixed set of cells and derives
-    Varicode-specific params, so a 7-cell panel-backed block is rejected. Panel
-    SYNTHESIS (the panel, the ``x1_out``/``x1_in`` connections, the return net)
-    works fine — it is the template PLACEMENT that has no shape for this block.
+    This is deliberately an exact-set assertion rather than "no failures": the
+    block is not finished, and the value here is that the failure set cannot
+    drift silently. When the layout is fixed this test's expected set shrinks to
+    empty and it becomes the routability gate.
+    """
+    b = LZ4DecoderBlock("lz4")
+    lay = b.default_layout()
+    pos = {c: (x, y) for c, (x, y, _f) in lay.items()}
+    face = {c: f for c, (_x, _y, f) in lay.items()}
+    ctl = b.panel_requirements()["controller_cell"]
+    W = max(x for x, _y in pos.values()) + 1
+    H = max(y for _x, y in pos.values()) + 1
+
+    edges = ({(s, d) for s, _o, d, _i in b.internal_connections()}
+             | {(s, d) for s, _o, d, _e in b.internal_jumps()})
+    unroutable = set()
+    for (s, d) in sorted(edges):
+        seen = _reachable_from(pos, face, s, W, H)
+        if d not in seen or ctl in seen[:seen.index(d)]:
+            unroutable.add((s, d))
+
+    # cell 0 = router, 1 = token, 2 = literal, 3 = offset, 4 = matchlen,
+    # 5 = emit, 6 = controller. The router's three dispatch edges bounce off the
+    # emit cell's opposing face, and the emit cell cannot reach the controller —
+    # the two halves of the gap described in
+    # ``test_emit_cell_cannot_reach_the_controller_in_a_placed_layout``.
+    expected = {(0, 1), (0, 2), (0, 3), (5, 6)}
+    assert unroutable == expected, (
+        f"the set of unroutable internal edges CHANGED: {sorted(unroutable)} "
+        f"(was {sorted(expected)}). If it shrank, update this test — and if it "
+        "is now empty, the block may be end-to-end testable: un-skip "
+        "test_auto_placed_design_decodes_on_chip.")
+
+
+def test_layout_leaves_an_egress_cell_on_the_emit_ray():
+    """The emit cell's ``out`` WRITE rides the SAME face as its panel hand-offs,
+    so the layout must leave a FREE cell on that ray BEFORE the controller.
+
+    Without it the output would transit the controller — whose face points at the
+    panel — and be pushed into the SRAM port instead of the output corridor. The
+    self-contained template raises a named PlacementError when this cell is
+    missing, so this test pins the layout property the template depends on.
+    """
+    b = LZ4DecoderBlock("lz4")
+    lay = b.default_layout()
+    req = b.panel_requirements()
+    ret, ctl = req["return_cell"], req["controller_cell"]
+    pos = {c: (x, y) for c, (x, y, _f) in lay.items()}
+    occ = {p: c for c, p in pos.items()}
+    dx, dy = {"east": (1, 0), "west": (-1, 0),
+              "north": (0, -1), "south": (0, 1)}[lay[ret][2]]
+    sx, sy = pos[ret]
+    free = ctl_hop = None
+    for k in range(1, 32):
+        p = (sx + dx * k, sy + dy * k)
+        if occ.get(p) == ctl:
+            ctl_hop = k
+            break
+        if p not in occ and free is None:
+            free = k
+    assert ctl_hop is not None, "the emit cell must reach the controller"
+    assert free is not None and free < ctl_hop, (
+        "no free cell on the emit cell's ray before the controller — the "
+        "block's `out` WRITE has nowhere to land but the controller")
+
+
+def test_auto_pnr_places_every_cell_and_routes_the_corridors():
+    """THE PLACEMENT GATE. ``apply_panel_template`` places ALL SEVEN cells and
+    draws the three corridors, and the result passes DRC with no errors.
+
+    A role-named template places only the cells named in ``panel_requirements()``
+    — 3 here — and the build binds programs to ``placement.cells`` BY INDEX, so a
+    short placement is a silent-dead build twice over: the extra cells are absent
+    AND the remaining programs land on the wrong positions. This asserts the
+    whole placement, not just that something was produced.
     """
     _need_chip()
     from engine.catalog import BlockCatalog
-    from engine.errors import PlacementError
+    from engine.drc import check_project
     from engine.io.chip_type_io import load_chip_type
     from engine.panel_pnr import apply_panel_template, synthesize_panel
     from model.block import Block
@@ -841,11 +892,284 @@ def test_placement_wall_panel_template_rejects_this_block():
         Connection("i", ChipPortEndpoint(0, "x16_in"), BlockEndpoint("lz4", "byte")),
         Connection("o", BlockEndpoint("lz4", "out"), ChipPortEndpoint(0, "x16_out")),
     ]
-    actions = synthesize_panel(p, cat)
-    assert any("panel" in a for a in actions), \
-        "panel SYNTHESIS must still work — only the template placement is the wall"
-    with pytest.raises((PlacementError, TypeError, KeyError)):
-        apply_panel_template(p, cat, ct)
+    assert any("panel" in a for a in synthesize_panel(p, cat))
+    results, _notes = apply_panel_template(p, cat, ct)
+
+    blk = p.block("lz4")
+    placed = {c.cell_id: (c.x, c.y) for c in blk.placement.cells}
+    n_cells = LZ4DecoderBlock("probe").cell_count
+    assert len(placed) == n_cells, (
+        f"the template placed {len(placed)} of {n_cells} cells — the un-placed "
+        "ones are silently absent from the build")
+    assert sorted(placed) == list(range(n_cells)), placed
+    # The build binds programs to placement.cells BY INDEX: the list must ascend.
+    ids = [c.cell_id for c in blk.placement.cells]
+    assert ids == sorted(ids), f"placement.cells is not in cell-id order: {ids}"
+    # The controller sits ON the x1_out port cell, everything else off it.
+    req = blk.placement.cells
+    ctl = next(c for c in req if c.cell_id == 6)
+    assert (ctl.x, ctl.y) == (9, 11), "the controller must sit on x1_out"
+    assert len({(c.x, c.y) for c in req}) == 7, "cells overlap"
+    # All three corridors were drawn.
+    named = {r.name for r in results}
+    assert {"in_to_block", "block_to_out"} <= named, named
+    assert any("panel_return" in n for n in named), named
+    assert all(r.ok for r in results)
+
+    drc = check_project(p, {"kyttar_10x12": ct}, catalog=cat)
+    errs = [f for f in drc.findings if getattr(f, "severity", "") == "error"]
+    assert not errs, "DRC errors: " + "; ".join(
+        f"{getattr(e, 'code', '?')}: {getattr(e, 'message', e)}" for e in errs)
+
+
+def test_build_lands_each_program_on_its_placed_cell():
+    """The BUILD binds each cell program to the position the template chose, and
+    leaves the emit cell's panel hand-offs alone.
+
+    The emit cell is both the block's egress AND the panel's client, so the
+    build's exit-hop passes must honour ``RAW_OUTPUT_HOPS`` and not rewrite its
+    WRITE/JUMP words to the output corridor — doing so aimed the panel protocol
+    at ``x16_out`` and the history window was never written.
+    """
+    _need_chip()
+    from engine.build import BuildEngine
+    from engine.catalog import BlockCatalog
+    from engine.io.chip_type_io import load_chip_type
+    from engine.panel_pnr import apply_panel_template, synthesize_panel
+    from model.block import Block
+    from model.chip import ChipInstance
+    from model.connection import BlockEndpoint, ChipPortEndpoint, Connection
+    from model.project import Project, ProjectMetadata
+
+    cat = BlockCatalog.from_gr_kyttar()
+    ct = load_chip_type(str(CHIP_YAML))
+    p = Project(metadata=ProjectMetadata(name="lz4"), chip_type="kyttar_10x12")
+    p.chips = [ChipInstance(0, "C0")]
+    p.blocks = [Block("lz4", "LZ4DecoderBlock", library="lattrex.official",
+                      params={})]
+    p.connections = [
+        Connection("i", ChipPortEndpoint(0, "x16_in"), BlockEndpoint("lz4", "byte")),
+        Connection("o", BlockEndpoint("lz4", "out"), ChipPortEndpoint(0, "x16_out")),
+    ]
+    synthesize_panel(p, cat)
+    apply_panel_template(p, cat, ct)
+    res = BuildEngine(cat, str(CHIP_YAML)).build(p, {"kyttar_10x12": ct})
+    assert res.ok, [str(e) for e in res.errors]
+    cb = res.chips[0]
+
+    blk = p.block("lz4")
+    pos = {c.cell_id: (c.x, c.y) for c in blk.placement.cells}
+    inst = cat.instantiate("LZ4DecoderBlock", "probe", {},
+                           library="lattrex.official")
+    # Every cell's ENTRY on the fabric must be that cell program's own entry.
+    for cid, xy in pos.items():
+        built = cb.cells.get(xy)
+        assert built is not None, f"cell {cid} at {xy} was not built"
+        want = R.compute_entry_addresses(inst.build_cell_programs()[cid])
+        assert built.get("entry") in want.values(), (
+            f"cell {cid} at {xy}: built entry {built.get('entry')} is not one "
+            f"of that program's entries {sorted(want.values())} — the programs "
+            "are bound to the wrong cells")
+
+    # The emit cell keeps its THREE distinct panel hand-offs: the controller's
+    # set_addr / write / lookup entries, each at the placed hop. A build that
+    # rewrote them would collapse them onto one entry (the old defect).
+    emit_mem = cb.cells[pos[5]]["memory"]
+    ctl_entries = R.compute_entry_addresses(inst.build_cell_programs()[6])
+    jumps = {w & 0x1F for a, w in enumerate(emit_mem)
+             if w and (w >> 12) & 0xF == 0x7}
+    for name in ("set_addr", "write", "lookup"):
+        assert ctl_entries[name] in jumps, (
+            f"the emit cell no longer JUMPs the controller's {name!r} entry "
+            f"(entries seen: {sorted(jumps)}) — the panel protocol was "
+            "flattened by an exit-hop patch")
+
+
+# --- the whole thing, on the chip, from the auto-placed build ------------------
+def _auto_build():
+    """Synthesize + template-place + build the one-block LZ4 design.
+
+    Returns ``(project, BuildResult)``. This is the same path ``auto_pnr`` takes
+    for a panel design (``ui/controller.py`` delegates to ``apply_panel_template``
+    and then routes the leftover block→block nets, of which this design has none).
+    """
+    from engine.build import BuildEngine
+    from engine.catalog import BlockCatalog
+    from engine.io.chip_type_io import load_chip_type
+    from engine.panel_pnr import apply_panel_template, synthesize_panel
+    from model.block import Block
+    from model.chip import ChipInstance
+    from model.connection import BlockEndpoint, ChipPortEndpoint, Connection
+    from model.project import Project, ProjectMetadata
+
+    cat = BlockCatalog.from_gr_kyttar()
+    ct = load_chip_type(str(CHIP_YAML))
+    p = Project(metadata=ProjectMetadata(name="lz4"), chip_type="kyttar_10x12")
+    p.chips = [ChipInstance(0, "C0")]
+    p.blocks = [Block("lz4", "LZ4DecoderBlock", library="lattrex.official",
+                      params={})]
+    p.connections = [
+        Connection("i", ChipPortEndpoint(0, "x16_in"), BlockEndpoint("lz4", "byte")),
+        Connection("o", BlockEndpoint("lz4", "out"), ChipPortEndpoint(0, "x16_out")),
+    ]
+    synthesize_panel(p, cat)
+    apply_panel_template(p, cat, ct)
+    res = BuildEngine(cat, str(CHIP_YAML)).build(p, {"kyttar_10x12": ct})
+    assert res.ok, [str(e) for e in res.errors]
+    return p, res
+
+
+def _decode_on_chip(project, bres, src_bytes, idle_max=200):
+    """Feed a compressed LZ4 block into the BUILT design on a real ``simkyt``
+    chip with a real ``SramPanelDevice`` on the x1 pair, and return the bytes
+    that leave ``x16_out``.
+
+    Uses the current in-fabric panel API (``chip.register_panel``), which
+    self-pumps inside ``run()``, and paces ONE 3-word transaction at a time —
+    the panel link is single-outstanding (``SRAM_PANEL.md`` §5), so a bulk queue
+    would starve on the held ack.
+    """
+    import simkyt
+    from engine.sram_panel import SramPanelDevice
+
+    lin = next(iter(bres.chips[0].input_landings.values()))
+    panel = project.panels[0]
+    dev = SramPanelDevice(size_words=panel.size_words,
+                          addr_regs=panel.address_regs,
+                          auto_inc_read=bool(getattr(panel, "auto_inc_read",
+                                                     False)))
+    dev.mem.update({int(a): int(w) & 0xFFFF
+                    for a, w in (panel.image or {}).items()})
+    chip = simkyt.Chip.from_yaml(str(CHIP_YAML))
+    chip.load_bitstream_physical(bres.words(0))
+    chip.register_panel("x1_out", "x1_in", dev)
+
+    out = []
+
+    def pump(limit):
+        idle = 0
+        for _ in range(120000):
+            chip.run(max_events=64)
+            got = chip.read_port_words_timed("x16_out")
+            if got:
+                idle = 0
+                out.extend(w & 0xFFFF for w, _d, _t in got)
+            else:
+                idle += 1
+                if idle > limit:
+                    return
+
+    for b in src_bytes:
+        chip.queue_words_physical("x16_in", [
+            _wr(lin["hop"], lin["data_addrs"][0]), int(b) & 0xFF,
+            _jp(lin["hop"], lin["entry"])])
+        pump(idle_max)
+    pump(4 * idle_max)
+    return out, dev
+
+
+def test_emit_cell_cannot_reach_the_controller_in_a_placed_layout():
+    """THE REMAINING GAP, measured — why the auto-placed design does not yet RUN.
+
+    Placement, build and DRC are all clean (the tests above), but the design does
+    not decode end to end, and this pins the reason so the next agent starts from
+    the measurement rather than from scratch.
+
+    **The substrate rule, read off a real simkyt trace** (not inferred): a word
+    leaves its source on the SOURCE cell's face, and every cell it then arrives at
+    forwards it on THAT CELL'S OWN resting face. So from any cell there is exactly
+    ONE outgoing walk, and all of that cell's internal targets must lie along it.
+    A straight-line "ray" model is WRONG — under it this block's row layout looks
+    routable, but on the chip the router's westward word reaches the emit cell,
+    whose face is east, and is sent straight back. That ping-pong is what hangs the
+    simulation.
+
+    **What the shipped blocks prove is possible.** Fan-out is not the wall:
+    ``LMSEqualizerBlock`` ships with fan-out 6 and 5 backward edges, ``FFT64Block``
+    with fan-out 4 and 6 backward edges — both strictly worse than this block's
+    (4, 3), both ``done``. They manage it two ways, and both are available here:
+
+      * arrange each cell's targets CONSECUTIVELY along one walk (LMS's ``bcast``
+        at (7,1) faces west and its six targets are the six cells west of it);
+      * author an in-program FACE FLIP — ``DataWord(..., is_face=True)`` plus
+        ``MOVE [FACE], R{data:face_x}`` … WRITEs … ``MOVE [FACE], R{data:face_y}``
+        (LMS ``f0``/``bcast``, ``MMTimingRecoveryBlock``). Cost: 2 instructions +
+        1 data word per extra direction.
+
+    **The measured blocker.** A ring over cells 0..5 alone (controller OFF the
+    ring) satisfies all 14 inter-cell edges in the natural order — verified by
+    exhaustive search. What does not fit is the last edge, ``emit -> controller``:
+    the emit cell would need a face flip, and it has only 2 free words against the
+    3 a flip costs. An exhaustive search over every 4x2..7x2 fold, with per-cell
+    flip budgets, found no arrangement every cell can afford (the other binding
+    cell is ``token``, with 1 free word).
+
+    **The way through, also measured.** The per-byte ``set_addr`` is redundant:
+    the controller's ``write`` entry auto-increments its own ``wraddr``, and this
+    block appends exactly one byte per emitted byte from 0 — the same sequence
+    ``wpos`` follows. Dropping it frees 3 words in the emit cell (2 -> 5), enough
+    for the flip. That was verified against the golden on 19 payloads, but it
+    changes the cell program the match copy is PROVEN on in
+    ``test_onchip_match_copy_through_the_real_panel``, so it needs its own silicon
+    re-verification and was not taken here.
+
+    This test asserts the budget arithmetic, so it FAILS the day the emit cell can
+    afford its flip — i.e. the day this gap is closed.
+    """
+    b = LZ4DecoderBlock("lz4")
+    progs = b.build_cell_programs()
+
+    def free_words(cid):
+        cp = progs[cid]
+        n = R.count_instructions(cp)
+        dm = R._allocate_data(cp.data)
+        nd = max(dm.values(), default=-1) + 1
+        return (31 - n) - nd - len(cp.state) - len(cp.inputs)
+
+    FLIP_COST = 3            # 2 instructions + 1 face DataWord
+    emit_free = free_words(b.panel_requirements()["return_cell"])
+    assert emit_free < FLIP_COST, (
+        f"the emit cell now has {emit_free} free words, enough for a face flip "
+        f"({FLIP_COST}) — the placement gap this test pins can be CLOSED: give "
+        "it the flip, lay the block out as a 6-cell ring with the controller "
+        "off-ring, and turn this test into the end-to-end decode gate")
+
+
+@pytest.mark.skip(reason=(
+    "the auto-placed design does not yet RUN end to end — see "
+    "test_emit_cell_cannot_reach_the_controller_in_a_placed_layout for the "
+    "measured reason. Placement/build/DRC are green; this gate is written and "
+    "ready for the day the emit cell can reach the controller. It HANGS today "
+    "(the router's word ping-pongs against the emit cell's opposing face), so "
+    "it is skipped rather than left to time out."))
+@pytest.mark.parametrize("name,payload", [
+    ("all_literal", bytes(range(64))),
+    ("repetitive", b"the quick brown fox jumps over the lazy dog. " * 3),
+    ("byte_run", b"Q" * 40 + b"tail!"),
+    ("overlap", b"abc" * 12 + b"!"),
+])
+def test_auto_placed_design_decodes_on_chip(name, payload):
+    """THE END-TO-END GATE (currently skipped — see the skip reason).
+
+    The AUTO-PLACED, BUILT design decompresses a real LZ4 block byte-for-byte on a
+    real chip through a real SRAM panel. Every layer below it is a component
+    check; this is those checks composed — the parse FSM, the history window, the
+    match copy at a computed panel address, and the placement, at once, from the
+    same build path the GUI's auto-P&R produces.
+    """
+    _need_chip()
+    blk = lz4_compress_block(payload)
+    golden = lz4_decompress_block(blk)
+    assert golden == payload, "the stimulus itself must round-trip"
+    project, bres = _auto_build()
+    got, dev = _decode_on_chip(project, bres, blk)
+    assert len(got) >= len(golden), (
+        f"{name}: chip emitted {len(got)} of {len(golden)} bytes "
+        f"(panel writes committed: {dev.writes_committed})")
+    assert bytes(got[:len(golden)]) == golden, (
+        f"{name}: decoded bytes differ from the golden\n"
+        f"  golden[:24]={list(golden[:24])}\n"
+        f"  chip  [:24]={got[:24]}")
 
 
 def test_block_is_not_done_until_it_has_a_report():

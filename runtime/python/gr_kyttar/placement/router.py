@@ -877,6 +877,28 @@ class Router:
                 target_input = 0
             else:
                 target_input, _e = self._resolve_named_input(dst_cp, dst_port)
+            # A port carrying BOTH a WRITE and a JUMP: one ``ResolvedTargets``
+            # entry serves both, so the JUMP's entry must come from
+            # ``internal_jumps`` for this SAME port. Without this the trigger
+            # silently falls back to the target cell's DEFAULT entry — and a
+            # block that hands off to several entries of one companion cell
+            # (the LZ4 emit cell driving the SRAM controller's set_addr / write
+            # / lookup, all named ``hist_addr``/``hist_data``/``read``) fires
+            # every one of them at the FIRST entry, so the panel protocol
+            # collapses to a single repeated operation. Only the entry is taken
+            # from the jump; the WRITE's register and the distance stay as
+            # resolved here.
+            for (js, jp, jd, je) in (
+                    getattr(block_def, "internal_jumps", None) or []):
+                if js == cell_idx and jp == port_name and jd == dst_cid:
+                    try:
+                        _ea = CellProgramResolver().compute_entry_addresses(
+                            dst_cp)
+                        if je in _ea:
+                            target_entry = _ea[je]
+                    except Exception:  # noqa: BLE001
+                        pass
+                    break
             return (distance, target_input, target_entry)
 
         # EXPLICIT internal JUMP (declared in internal_jumps): a TRIGGER to a
@@ -1168,6 +1190,19 @@ class Router:
             # This ensures: 30 - distance + distance = 30 < 31 at the output port
             # The data will transit through and exit without executing.
             hop_cnt = max(0, 30 - distance)
+
+            # A block that AUTHORS its own output WRITE/JUMP hops opts out of this
+            # sink fallback entirely. The loop below rewrites EVERY WRITE and JUMP
+            # in the exit cell to the port hop — which is right for a plain sink,
+            # but destroys a cell that also speaks a protocol. The LZ4 decoder's
+            # emit cell is both: it issues the block's `out` AND the SRAM panel's
+            # set_addr/write/lookup hand-offs, and rewriting those pointed the
+            # panel traffic at the output port, so the history window was never
+            # written and the decoder produced nothing. Same flag the build's
+            # exit-hop passes already honour.
+            if getattr(block_lookup.get(last_block.block.name),
+                       "raw_output_hops", False):
+                return
 
             config = cell_map.get_cell(exit_cell[0], exit_cell[1])
             if config:

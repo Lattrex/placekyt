@@ -257,6 +257,16 @@ class BlockDefinition:
     # every WRITE is rewritten to the output hop (the long-standing behaviour).
     output_at_last_write: bool = False
 
+    # When True, this block AUTHORS its own output WRITE/JUMP hop counts and the
+    # Router's sink fixup must leave its exit cell alone. That fixup rewrites
+    # EVERY WRITE/JUMP in the exit cell to the output-port hop, which is correct
+    # for a plain sink but destroys a cell that also speaks a protocol — e.g. an
+    # SRAM-panel client whose egress cell issues both the block's output and the
+    # panel's set_addr/write/lookup hand-offs (rewriting those aims the panel
+    # traffic at the output port and the block goes silent). Mirrors the
+    # ``RAW_OUTPUT_HOPS`` class flag the build's own exit-hop passes honour.
+    raw_output_hops: bool = False
+
     def set_cell_program(self, cell_index: int, program: CellProgram):
         """Set the program for a specific cell in this block."""
         if cell_index < 0:

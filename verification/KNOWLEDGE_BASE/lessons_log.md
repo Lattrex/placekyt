@@ -9,6 +9,90 @@ block-specific gotcha. Promote anything that generalizes across block classes in
 and superseded material merged into the surviving entries; no durable lesson was
 dropped) — append new entries above the oldest ones as before.
 
+## LZ4DecoderBlock — the cell cap was FICTION; it now PLACES and BUILDS clean, and the real blocker is measured 2026-08-29
+
+Re-opened from the quarantine below, which cited a panel-template **cell cap** that
+does not exist. Outcome: **still not `done`, but the wall is a different, smaller and
+fully measured one**, and four toolchain bugs were found and fixed on the way.
+
+### The quarantine's three "walls", each disposed of
+
+* **"the panel template caps cell count"** — FALSE. `engine/panel_pnr.py` has no
+  `cell_count` check of any kind; its only count limit is `len(backed) > 2`, which caps
+  how many *blocks* may be panel-backed. `GolayDecoderBlock` had already shipped as a
+  7-cell panel block. **Measured extra fact the audit did not have:** Golay fails the
+  *same* template with a `TypeError`, because the RX shape writes Varicode-specific
+  params into `blk.params`. The template was broken for both, and for neither reason
+  the quarantine gave.
+* **"no single-face ring ordering exists"** — true but the wrong question. It searched
+  RINGS, where every edge runs the same way round a cycle.
+* **"the template rejects this block"** — asserted only that *something* raised, with no
+  message check. The audit already showed the same shape raised for the working
+  3-cell Varicode decoder.
+
+### The substrate rule that actually governs this (now INV-48 root cause C)
+
+A word leaves on its SOURCE cell's face, and every cell it then arrives at forwards it
+on **that cell's own** face. Each cell therefore has exactly ONE outgoing walk. Read off
+a simkyt trace, not inferred. The straight-line "ray" model is false, and it is what
+produced a 7×1 row that places clean, builds clean, passes DRC — and **hangs**, because
+the router faces west into an emit cell facing east and the word ping-pongs.
+
+**Fan-out is not the wall**, checked against the library before saying so:
+`LMSEqualizerBlock` ships with fan-out 6 and 5 backward edges, `FFT64Block` with fan-out
+4 and 6 — both strictly worse than LZ4's (4, 3), both `done`. They win by putting a
+cell's targets CONSECUTIVELY along one walk, and by authoring in-program FACE FLIPS
+(`DataWord(is_face=True)` + `MOVE [FACE], …`), which cost 2 instructions + 1 data word
+per extra direction.
+
+### The remaining blocker, with its arithmetic
+
+A ring over cells 0..5 with the controller OFF the ring satisfies all 14 inter-cell
+edges in the natural order (exhaustive). The leftover edge `emit → controller` needs a
+face flip; the emit cell has **2 free words against the 3 a flip costs** (`token` has 1).
+Exhaustive over every 4×2…7×2 fold with per-cell budgets: no arrangement every cell can
+afford. The way through is measured too — the per-byte `set_addr` is redundant (the
+controller's `write` auto-increments its own `wraddr`; equivalent to the golden on 19
+payloads) and frees exactly 3 words — but it changes the program the match copy is
+proven on, so it needs its own silicon re-verification and was not taken.
+
+### What is NOW green (do not redo)
+
+* `_apply_self_contained_template` (new, `engine/panel_pnr.py`): places **all 7 cells**
+  from the block's own `default_layout` with the controller pinned on `x1_out`, draws
+  the input/return/egress corridors, derives the push-read descriptors. **0 DRC errors,
+  0 warnings**; the build binds every program to its placed cell.
+* The role-named templates place ONLY the cells named in `panel_requirements()`. For a
+  larger block that is silent-dead twice over: the extra cells get no position, AND the
+  build binds programs to `placement.cells` BY INDEX, so the survivors land on the wrong
+  positions. New `self_contained` + `return_entry` requirement keys.
+* `placekyt/tests/` **1219 passed**; Golay + Varicode suites **92 passed**.
+
+### Four silent toolchain bugs, found and fixed
+
+1. `router._find_output_target` returned the target's DEFAULT entry for a port carrying
+   both a WRITE and a JUMP — so the emit cell's `set_addr`/`write`/`lookup` hand-offs all
+   fired the controller's *first* entry. Now reads the entry from `internal_jumps`.
+2. `router._fixup_write_instructions`'s sink fallback rewrote EVERY WRITE/JUMP in the
+   exit cell to the port hop, aiming the panel protocol at `x16_out`. Now honours
+   `RAW_OUTPUT_HOPS` via a new `BlockDefinition.raw_output_hops`.
+3. `build._apply_output_port_routes` lacked the `RAW_OUTPUT_HOPS` guard its sibling
+   `_apply_routes` has. Same failure, different pass.
+4. `build._patch_one_handoff` matches by destination REGISTER alone and takes the
+   lowest-addressed hit, so a cell driving two different cells' registers that share a
+   number patches the wrong instruction. Worked around by pinning cell 4's `mat` off
+   cell 0's `st`; the pass is still ambiguous and deserves a port-aware fix.
+
+Also corrected: the block declared no `output_cell_id()`, so the port map put its output
+on the *controller*; and its docstring repeated the false "x1 is one bit wide" claim
+(x1 is a SERDES — `width: 1` is a PIN COUNT).
+
+### Test suite
+
+41 passed, 4 skipped. The three `test_placement_wall_*` gates are gone; the header of
+LAYER 5 records what each got wrong. New gates pin placement, the build binding, the
+exact set of unroutable edges, and the flip budget — the last two fail the day the gap
+closes, and the written-and-ready end-to-end decode test is skipped until then.
 ## ChaCha20KeystreamBlock — RE-EXAMINED: two of the three quarantine walls were WRONG, and the block needs no SRAM panel 2026-08-29
 
 Re-opened the 2026-08-29 quarantine of the RFC 8439 §2.3 block function. **Outcome:
@@ -102,6 +186,13 @@ streaming relay and run it would have prevented a quarantine that then became a
 law in `invariants.md` and was cited to size a future architecture.
 
 ## LZ4DecoderBlock — QUARANTINED on the panel-template cell cap; the decoder itself is proven on chip 2026-08-29
+
+> **SUPERSEDED — read the entry above.** Kept because its wrong claims were copied
+> into INV-48, the manifest and the factory record, and a reader needs to recognise
+> them. The cell cap does not exist; the "no single-face ring" search asked the
+> wrong question (the fabric is not a ring, and a cell's targets need only lie
+> along its one outgoing *walk*); and the "template rejects this block" test
+> asserted merely that something raised. The DSP findings below are all still good.
 
 Decodes the published **LZ4 block format** — `[token][literal length][literals]
 [offset][match length]` sequences — into the original byte stream, with the history

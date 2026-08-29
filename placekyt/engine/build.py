@@ -560,6 +560,11 @@ class BuildEngine:
                     block_def.output_at_last_write = True
             except Exception:  # noqa: BLE001
                 pass
+            # A block that authors its own output hops also opts OUT of the
+            # Router's sink fixup (which rewrites every WRITE/JUMP in the exit
+            # cell to the output-port hop). See BlockDefinition.raw_output_hops.
+            block_def.raw_output_hops = bool(
+                getattr(gr_block, "RAW_OUTPUT_HOPS", False))
             try:
                 placement.place(block_def, shapes[name], anchors[name])
             except Exception as exc:  # noqa: BLE001 — overlap, etc.
@@ -2772,6 +2777,15 @@ def _apply_port_route_faces_and_hops(cell_map, gr_placement, blocks,
                         n_out = max(1, len(gb.interface.output_registers))
                 except Exception:  # noqa: BLE001
                     n_out = 1
+                # A block that AUTHORS its own output hops keeps them (the same
+                # guard ``_apply_routes`` applies). Patching here would rewrite
+                # every WRITE/JUMP in the cell to this route's length — and for a
+                # panel client whose egress cell ALSO issues the panel protocol,
+                # that silently retargets its set_addr/write/lookup hand-offs at
+                # the output corridor, so the panel goes quiet and the block dies.
+                # Its egress cell reaches the corridor on its own authored hop.
+                if getattr(gb, "RAW_OUTPUT_HOPS", False):
+                    continue
                 if _output_cell_carries_handoffs(gb):
                     if n_out > 1:
                         _patch_last_n_write_handoff(cfg, _route_distance(conn),

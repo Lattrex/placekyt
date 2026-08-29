@@ -2577,20 +2577,46 @@ it is not the size of its graph.
    per extra direction** — so a cell's spare words are what bound how many
    directions it can serve.
 
-**The LZ4 decoder's actual, measured blocker** is therefore a BUDGET one, not a
-topology one. A ring over its cells 0..5 with the controller OFF the ring satisfies
-all 14 inter-cell edges in the natural order (exhaustive). The leftover edge
-`emit → controller` needs a face flip, and the emit cell has **2 free words against
-the 3 a flip costs**; the `token` cell has 1. An exhaustive search over every 4×2
-… 7×2 fold with per-cell flip budgets found no arrangement every cell can afford.
-Freeing the words is straightforward — the per-byte `set_addr` is redundant because
-the controller's `write` entry auto-increments its own `wraddr` (verified equivalent
-to the golden on 19 payloads), which buys 3 words — but it changes the cell program
-the match copy is proven on, so it needs its own silicon re-verification.
+**The LZ4 decoder's actual, measured blocker** is a BUDGET one, not a topology one
+— and it is now **one word**, refined 2026-08-29 by a pass that measured the
+template's real constraints rather than assuming them.
 
-**Reach of this claim:** the forwarding rule is HARDWARE and permanent. The budget
-arithmetic is specific to this block's current cell programs and changes the moment
-they do.
+**UPDATED — the binding cell is the EMIT cell's FACE COUNT, not the token cell.**
+An earlier version of this paragraph said the `token` cell's 1 free word was
+co-binding. With the template's real rules modelled (below), an exhaustive search
+over cols 5-9 × rows 10-11 gives **24 feasible placements, and ALL 24 require the
+emit cell to serve THREE directions** (panel east, egress, gohead) = 6 words.
+
+**The `set_addr` removal is CORRECT and was PROVEN on silicon** (not merely
+proposed): the read and write paths do **not** share a counter — `write` drives
+`wraddr`, `lookup`/`read` drive `rdaddr`, and each re-writes the panel's single R5
+address latch from its own counter before its own trigger. Verified byte-exact on
+a real chip + real `SramPanelDevice` across literal runs, a match boundary, an
+overlapping match (`offset=3, len=11`), an `offset==1` byte run, back-to-back
+matches, and match→literal, with `wpos == wraddr` at the end. It frees exactly 3
+words (emit 2 → 5). *An earlier attempt saw this "break" the panel tests; that was
+a HARNESS artifact — `_panel_match_run` presets `wpos=8` mid-stream while `wraddr`
+boots at 0, so with `set_addr` gone the harness must seed both.*
+
+**So the shortfall is 5 words available against 6 needed — exactly ONE word.** No
+legitimate source was found: `EAST`'s face code is numerically 1, equal to the
+`one` constant, but sharing them breaks orientation rotation (`is_face` words are
+rewritten by the placer); zeroing `mat` by self-subtract trades a data word for an
+instruction, net zero. **The untaken lever is to SPLIT THE EMIT CELL IN TWO**
+(INV-46's "prefer more cells doing less"), which changes the block shape and needs
+its own silicon pass.
+
+**Two template rules this pass discovered, which any panel block must respect:**
+* **The egress cell is NOT transparent.** A blank cell on the emit cell's resting
+  walk becomes the egress cell and is turned toward the output corridor, which
+  **deflects the panel words** — measured: correct hops, zero panel writes.
+* **The egress column is a full-height wall** for horizontal walks.
+
+**Reach of this claim:** the forwarding rule is HARDWARE and permanent. The
+24/24 three-face result is exhaustive over the cols 5-9 × rows 10-11 window with
+the CURRENT cell programs — not a claim about all layouts. The budget arithmetic
+changes the moment the programs do. See also INV-50: a router distance bug was
+found while measuring this, and it is still open.
 
 **The rule / what to do about it.**
 
@@ -2910,3 +2936,56 @@ different answers; and the INV-47 corrections it also pins.
 transport pricing), INV-48 rule 2 (the same one-backward-JUMP rule, stated for
 panel blocks), INV-32 (why the loop exit must leave the axis), INV-34 (shift
 counts are immediates — the reason CORDIC unrolled instead of looping).
+
+---
+
+## INV-50 — `_get_routing_distance` falls back to MANHATTAN when its face-walk fails, silently returning a wrong hop count
+
+**Found 2026-08-29 while finishing LZ4DecoderBlock. Measured, not derived — and
+NOT fixed yet.** Recorded because it is a live defect that outlives that block,
+and because the naive fix regresses orientation.
+
+**The mechanism.** `runtime/python/gr_kyttar/placement/router.py::_get_routing_distance`
+walks cell to cell following each cell's own `fwd_face` — which is CORRECT, and is
+the real routing model (INV-48 root cause C: a word leaves on its SOURCE cell's
+face, but every cell it arrives at forwards it on THAT CELL'S OWN face). But when
+the walk does not reach the target, it does not fail. It returns:
+
+```python
+    # Fallback to Manhattan distance
+    return abs(tx - fx) + abs(ty - fy)
+```
+
+That is the **straight-line ray model** — the exact model INV-48 proved false —
+reinstated as a fallback. The caller receives a plausible number and patches a
+`WRITE`/`JUMP` with a hop count that does not correspond to any path the word will
+actually take. Nothing raises.
+
+**Measured on the LZ4 decoder's fold: 6 of 15 internal edges got a wrong hop**
+(e.g. `1.mat_seed → 4`: true walk 4 hops, Manhattan 2). Correcting the distance
+made the FSM run — the token nibble split, `lit` counting down, `mat` seeded,
+bytes reaching the emit cell — where before it hung.
+
+**Reach.** `_get_routing_distance` has **eight call sites** in `router.py`
+(internal edges, exit→entry handoffs, and output-port routes), so any block whose
+internal geometry makes the face-walk miss is exposed. The 116 shipped blocks are
+demonstrably unaffected in practice — they are verified bit-exact on chip — most
+likely because their folds keep the walk reachable. **This is not a claim that the
+fallback never fires elsewhere; it is a claim that no shipped block currently
+depends on it being wrong.**
+
+**Why it is still open.** The naive fix (return a failure instead of a Manhattan
+guess) regresses `test_rotated_feedback_block_computes_identically`, because
+block-declared faces are stored UNROTATED while the placer rotates the geometry —
+so the walk must apply the placement's orientation to each cell's `fwd_face`
+before stepping (INV-23). A correct fix does that; a fix that does not, breaks
+every rotated block. The builder that found this reverted rather than ship the
+half-fix, which was right.
+
+**What to do when you touch this:** rotate the faces in the walk, then make the
+non-reaching case an ERROR rather than a guess — a hop count that cannot be
+derived is not a hop count. Re-run `placekyt/tests/` (1219 at baseline) and the
+orientation suite before believing it.
+
+**Applies to:** any multi-cell block; most acutely to blocks with dense internal
+graphs or cells that must send against their resting face.

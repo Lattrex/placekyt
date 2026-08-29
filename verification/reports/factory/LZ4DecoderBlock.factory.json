@@ -6,14 +6,14 @@
   "schema_version": 1,
   "started_utc": "2026-08-29T13:00:00Z",
   "ended_utc": "2026-08-29T19:25:00Z",
-  "walltime_sec": 15468.9,
+  "walltime_sec": 6512.2,
   "tokens": {
     "input": 0,
-    "output": 494769,
+    "output": 840996,
     "cache_read": 0,
-    "total": 494769
+    "total": 840996
   },
-  "turns": 411,
+  "turns": 613,
   "attempts": 8,
   "human_interventions": 0,
   "intervention_reasons": [],

@@ -213,9 +213,24 @@ class Router:
             if face is not None:
                 config.fwd_face = face
 
-            # Copy cell program from block definition
-            if block_def and i in block_def.cell_programs:
-                prog = block_def.cell_programs[i]
+            # Copy cell program from block definition. Look the program up by
+            # the POSITIONAL KEY, not the raw index: `cell_programs` may be
+            # keyed by string cell ids (the DFE's "ff0"…, ChaCha20's "tap3"…),
+            # and `i in block_def.cell_programs` is False for every one of them
+            # — so a string-keyed block silently got NO program copied here and,
+            # more sharply, never had its declared `fwd_face` honoured. The
+            # router then kept its own GUESS (face whichever internal connection
+            # the dict yielded first), and `_get_routing_distance` sized every
+            # WRITE/JUMP by walking those guessed faces. A cell with two
+            # internal destinations in different directions is thus sized along
+            # a path its words never take, with no error raised.
+            prog = None
+            if block_def:
+                if cell_key is not None and cell_key in block_def.cell_programs:
+                    prog = block_def.cell_programs[cell_key]
+                elif i in block_def.cell_programs:
+                    prog = block_def.cell_programs[i]
+            if prog is not None:
                 config.memory = dict(prog.memory)
                 config.entry_addr = prog.entry_addr
                 if prog.fwd_face is not None:
@@ -645,17 +660,67 @@ class Router:
             return Face.SOUTH if ty > fy else Face.NORTH
         return None
 
+    @staticmethod
+    def _declared_emit_face(block_def, pb, cell_pos, src_cid, port_name):
+        """The face a block says this port is emitted on, or ``None``.
+
+        A block may declare ``emit_faces() -> {(cell_id, port): neighbour_id}``
+        for any port it emits while FLIPPED (``MOVE [FACE], …``). The value is a
+        CELL ID, not a compass direction, so it is orientation-free: the face is
+        derived here from the two cells' PLACED coordinates, which the placer has
+        already rotated (INV-23). Declaring a direction instead would need the
+        block's faces rotated by hand and is exactly what regressed rotation
+        before.
+        """
+        try:
+            table = getattr(block_def, "emit_faces", None)
+            table = table() if callable(table) else table
+        except Exception:  # noqa: BLE001
+            return None
+        if not table:
+            return None
+        nbr = table.get((src_cid, port_name))
+        if nbr is None:
+            return None
+        keys = list(block_def.cell_programs.keys())
+        if nbr not in keys or cell_pos is None:
+            return None
+        n_idx = keys.index(nbr)
+        if cell_pos >= len(pb.cells) or n_idx >= len(pb.cells):
+            return None
+        sx, sy = pb.cells[cell_pos]
+        nx, ny = pb.cells[n_idx]
+        if nx == sx + 1 and ny == sy:
+            return int(Face.EAST)
+        if nx == sx - 1 and ny == sy:
+            return int(Face.WEST)
+        if ny == sy + 1 and nx == sx:
+            return int(Face.SOUTH)
+        if ny == sy - 1 and nx == sx:
+            return int(Face.NORTH)
+        return None            # not abutting: not a face we can name
+
     def _get_routing_distance(
         self,
         from_pos: Tuple[int, int],
         to_pos: Tuple[int, int],
         cell_map: CellMap,
+        start_face: Optional[int] = None,
     ) -> int:
         """
         Calculate the actual routing distance between two cells.
 
-        First tries to trace the existing route in the cell_map by following
-        fwd_face links. Falls back to Manhattan distance if no route exists.
+        Traces the route by following each cell's own ``fwd_face`` — the real
+        forwarding model: a word leaves its source on the SOURCE cell's face,
+        and every cell it then arrives at forwards it on THAT CELL'S OWN face.
+        Falls back to Manhattan distance if the walk does not reach the target.
+
+        ``start_face`` overrides the face used for the FIRST step only. A cell
+        may re-point itself mid-program (``MOVE [FACE], R{data:…}``) and emit a
+        WRITE/JUMP while flipped, in which case the word leaves on the FLIPPED
+        face and not on the cell's resting one. The block declares that face per
+        edge (``emit_faces()``); without it the walk starts on the resting face
+        and silently sizes the edge along a path the word never takes.
         """
         fx, fy = from_pos
         tx, ty = to_pos
@@ -670,6 +735,32 @@ class Router:
             Face.EAST: (1, 0),
             Face.WEST: (-1, 0),
         }
+        if start_face is not None:
+            f = Face(start_face)
+            dx, dy = face_deltas[f]
+            pos = (fx + dx, fy + dy)
+            if pos == to_pos:
+                return 1
+            # Continue the walk from there on the transit cells' own faces.
+            distance = 1
+            visited = {from_pos}
+            while pos != to_pos and distance < 100:
+                if pos in visited:
+                    break
+                visited.add(pos)
+                cfg = cell_map.get_cell(pos[0], pos[1])
+                if cfg is None or cfg.fwd_face is None:
+                    break
+                ddx, ddy = face_deltas[cfg.fwd_face]
+                pos = (pos[0] + ddx, pos[1] + ddy)
+                distance += 1
+            if pos == to_pos:
+                return distance
+            # A DECLARED emit face that does not reach the target is an authoring
+            # error, not something to paper over with a straight-line guess —
+            # the guess is the exact model the forwarding rule disproves. Fall
+            # through to the legacy behaviour so this can never be a regression,
+            # but the block's own fold gate is what must catch it.
         pos = from_pos
         distance = 0
         visited = set()
@@ -866,7 +957,10 @@ class Router:
                 continue
             src_pos = pb.cells[cell_pos]
             dst_pos = pb.cells[dst_pos_idx]
-            distance = self._get_routing_distance(src_pos, dst_pos, cell_map)
+            distance = self._get_routing_distance(
+                src_pos, dst_pos, cell_map,
+                self._declared_emit_face(block_def, pb, cell_pos,
+                                         src_cid, src_port))
             dst_cp = block_def.cell_programs[dst_cid]
             # An empty dst_port means "write to the target's R0" (e.g. the DFE
             # lock driver writing the FF sum into DC's accumulator). Otherwise
@@ -925,7 +1019,10 @@ class Router:
                 continue
             src_pos = pb.cells[cell_pos]
             dst_pos = pb.cells[dst_pos_idx]
-            distance = self._get_routing_distance(src_pos, dst_pos, cell_map)
+            distance = self._get_routing_distance(
+                src_pos, dst_pos, cell_map,
+                self._declared_emit_face(block_def, pb, cell_pos,
+                                         src_cid, src_port))
             dst_cp = block_def.cell_programs[dst_cid]
             # Resolve the target INPUT register (first input) and the NAMED entry
             # address. Fall back to the default entry when the name is unknown.

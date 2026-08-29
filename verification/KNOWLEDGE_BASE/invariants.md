@@ -3107,3 +3107,140 @@ orientation suite before believing it.
 
 **Applies to:** any multi-cell block; most acutely to blocks with dense internal
 graphs or cells that must send against their resting face.
+
+**UPDATE 2026-08-30 — narrowed, and the harder half named.** See INV-NEXT (the
+FACE-register invariant). Two contributing mechanisms are now FIXED and
+regression-tested at the 1219 baseline: the router looked cell programs up by the
+raw positional *index*, so **string-keyed blocks never had their declared
+`fwd_face` honoured at all**, and a block may now declare `emit_faces()` to give
+the walk a correct starting face — as a NEIGHBOUR CELL ID, so the router derives
+the direction from placed coordinates and the declaration is orientation-correct
+by construction, which is what the earlier by-hand-rotation attempt got wrong.
+
+What is NOT fixed, and is the worse half: for an *undeclared* flipped edge the
+resting-face walk can **succeed spuriously** on a path the word never takes, and
+then no fallback fires and nothing looks anomalous. Measured on ChaCha20: 211/211
+resting-face edges correct, 6 of 22 flipped ones wrong, and the 16 that were right
+were right only because Manhattan happened to match.
+
+---
+
+## INV-NEXT — The FACE register is CELL state: it persists across entries, it steers TRANSITING words, and the router cannot see it
+
+*(Number to be assigned at landing — three numbering collisions have already
+happened because parallel builders cannot see each other's KB additions.)*
+
+**Found 2026-08-30 while finishing `ChaCha20KeystreamBlock`. Every claim below is
+MEASURED on a real placed + routed + built chip, from execution traces.** It
+sharpens INV-48 root cause C from "a word is forwarded on each transit cell's own
+face" into the three consequences that actually bite, and it explains *why* INV-50
+is so hard to notice.
+
+### 1. The face register PERSISTS across entries. (hardware — permanent)
+
+`MOVE [FACE], R{data:x}` writes a **cell** register, not a per-entry one. An entry
+that does not set it inherits whatever the last path to run left behind. Two of
+this block's cells flipped for one burst and never restored, so the *next* entry
+fired its triggers in the previous entry's direction — no output, no error.
+
+**The rule: every path RESTORES the resting face before it ends**, so every path
+may assume the resting face on entry. Restore at the TAIL, not the head: a head
+restore protects the cell's own edges but leaves the face dirty between
+activations, which is what clause 2 punishes.
+
+### 2. A cell's flip deflects words that merely TRANSIT it. (hardware — permanent)
+
+A transiting word is forwarded on the transit cell's **live** face register, not
+on the face its layout gave it. So a cell that leaves itself flipped silently
+re-routes every walk that crosses it.
+
+**Measured:** the write-back cell sat on the sequencer's walk down to the state
+line and left its face pointing at the control column. Every lap-start trigger the
+sequencer issued bounced off it straight back into the sequencer, which re-entered
+its own step entry, decremented the lap counter again and ping-ponged. The ring
+completed exactly ONE lap and then oscillated forever.
+
+**Consequence for layout:** a cell's resting face is a contract with every walk
+that crosses it, not only with its own edges. In this block the sequencer's
+resting face is *forced* by another cell's jump needing to transit it, so the
+sequencer pays for a flip-and-restore on every one of its own edges.
+
+### 3. The router cannot size a FLIPPED edge. (TOOLCHAIN — partly fixed)
+
+`router._get_routing_distance` walks **resting** faces. For an edge emitted while
+flipped it therefore walks a path the word never takes. Classified over all 233
+internal edges of this block:
+
+| emit face | resolved correctly | resolved WRONG |
+|---|---|---|
+| resting | **211** | **0** |
+| flipped | 16 | 6 |
+
+**Every flipped edge that worked did so by coincidence** — the resting walk missed,
+Manhattan fired, and Manhattan happened to equal the true distance. All 16 are
+straight-line hops of 1 or 2. The failures are the ones where the resting walk
+*succeeds spuriously*: a tap with connections both east (to the collector, 1 hop)
+and north (to its adder, 1 hop) was faced north, and the walk found the real path
+`tap -> adder -> egress -> collector` and returned **3**. At run time the word left
+east and overshot by two. Every frame reached the collector two words short, the
+mod-8 frame counter never aligned, and the cipher ran five laps and stalled.
+
+**This is worse than INV-50's Manhattan fallback**, because nothing looks
+anomalous: a plausible walk, a plausible number, no fallback taken.
+
+**Two fixes landed, both regression-tested at the 1219 baseline:**
+
+* `router._place_block_cells` looked programs up by the raw positional INDEX
+  (`if i in block_def.cell_programs`), which is **False for every string-keyed
+  block**. Such a block got no program copied there and — sharply — **never had
+  its declared `CellProgram.fwd_face` honoured**, so the router kept its own guess
+  (face whichever internal connection the dict yielded first) and sized every edge
+  against it. Now looks up by the positional KEY, falling back to the index.
+* `_get_routing_distance` takes an optional `start_face`, and a block may declare
+  `emit_faces() -> {(cell_id, port): neighbour_id}` for ports it emits while
+  flipped. **The value is a CELL ID, not a compass direction** — the router derives
+  the face from the two cells' PLACED coordinates, which the placer has already
+  rotated. That is orientation-correct by construction (INV-23), rather than
+  needing the by-hand rotation that regressed
+  `test_rotated_feedback_block_computes_identically` on the previous attempt.
+
+### 4. A fold checker must iterate the face to a FIXPOINT
+
+INV-51's method note said a checker must read `MOVE [FACE]` out of the real
+programs. Necessary, not sufficient. A checker that assumes each entry starts on
+the resting face cannot see clause 1 or clause 2 — and those were half the bugs
+here. **Symbolically execute every path, over both sides of every branch, and
+iterate: seed with the resting face, collect the faces each path can LEAVE behind,
+re-seed, repeat until nothing new appears.**
+
+### 5. Changing a control cell's LENGTH can re-target another cell's JUMP
+
+Entry addresses are params-dependent (INV-6/11) and that hazard reaches INTERNAL
+edges. Deleting one redundant instruction from the sequencer moved its `step`
+entry from 15 to 14; the build then mis-resolved a *different* cell's backward
+jump to it instead of to the row publish entry, which is also at 15. The
+realignment ran perfectly and then handed control to the lap counter — the ring
+stopped at the first boundary with a flawless trace up to that point. **After any
+change to a control cell's instruction count, re-read the BUILT words, not just
+the budget.**
+
+**SAY WHICH LAYER.** (1) and (2) are hardware and permanent — design around them.
+(3) is toolchain in `placement/router.py`; two of its mechanisms are fixed, the
+resting-face walk for an *undeclared* flipped edge is still a latent guess. (4) is
+method. (5) is toolchain, in the build's jump resolution, and is still open.
+
+**REACH.** Measured on one 40-cell block over 233 internal edges and ~167k
+simulated events. (1), (2) and (5) are mechanisms in the shared hardware/build
+path and apply to every multi-cell block; (3)'s table is this block's fold, but
+`_get_routing_distance` has eight call sites in `router.py`.
+
+**Gated by:** `verification/tests/test_chacha20_fixed_tap_ring.py` — the
+fixpoint fold checker, its INV-4 negative (re-point each original face constant
+and assert it misses), the `emit_faces()` abutment/consistency gate, and an
+on-chip gate that pins the full RFC 8439 schedule plus the first state word.
+
+**Related:** INV-48 (root cause C, which this sharpens), INV-50 (the sibling
+distance defect — this is why it hides), INV-51 (the fold/pairing traps from the
+same block), INV-43 (a remote JUMP does not stop local execution — which is what
+makes a tail restore after a `{jump:…}` work at all), INV-6/11 (params-dependent
+entry addresses, clause 5).

@@ -392,6 +392,18 @@ _CORDIC_COVERAGE = {
 COMPLEX_2IN2OUT.update(_CORDIC_COVERAGE)
 
 NEEDS_BESPOKE = {
+    "ChaCha20KeystreamBlock": "NOT DONE — manifest status needs_human. The "
+        "cipher itself now runs on a real placed+routed+built chip (all 80 "
+        "quarter-round invocations, 19 half-boundary realignments, and state "
+        "word 0 bit-exact against RFC 8439 §2.3.2), but the FINISH drain does "
+        "not repeat, so the block emits 8 of its 32 words. Driving a block "
+        "saturated when it does not yet produce a full output on ONE trigger "
+        "would certify nothing — and it is a SOURCE (one trigger, one 64-byte "
+        "keystream block, no per-sample data input), so the 1-in/1-out drivers "
+        "here do not apply to it in any case. Its coverage is "
+        "test_chacha20_fixed_tap_ring.py, whose on-chip gate pins the schedule "
+        "counts and the first state word. Move this entry out when the drain "
+        "lands and the block reaches done.",
     "LZ4DecoderBlock": "NOT DONE — manifest status planned (re-opened 2026-08-29 "
         "after an audit showed its quarantine cited a panel-template cell cap that "
         "does not exist; GolayDecoderBlock is a 7-cell panel-backed block with "

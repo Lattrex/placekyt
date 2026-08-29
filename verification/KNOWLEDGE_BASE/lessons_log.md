@@ -9,6 +9,148 @@ block-specific gotcha. Promote anything that generalizes across block classes in
 and superseded material merged into the surviving entries; no durable lesson was
 dropped) — append new entries above the oldest ones as before.
 
+## ChaCha20KeystreamBlock — the ring RUNS: all 80 laps and state word 0 bit-exact on chip. Every defect was a FACE, and the router could not see any of them 2026-08-30
+
+Fourth pass, and a bounded one: the block was handed over as "one symptom away"
+— *places, routes and builds clean, emits no words, the ring never starts*. It
+now runs **the whole of RFC 8439's schedule on a real placed + routed + built
+chip**: 80 quarter-round invocations through all sixteen stages, 19 half-boundary
+realignments, 37/38/39 realignment spins of rows 1/2/3, all four taps armed for
+the finish — and **state word 0 comes out bit-exact, `0xE4E7 0xF110`**. A wrong
+20-round permutation cannot produce those bytes, so the datapath, the write-back,
+the fixed tap and the realignment are all confirmed correct on silicon.
+
+Still `needs_human`, for a much smaller and fully-characterised reason: the drain
+does not repeat, so 8 of 32 words come out. See the bottom of this entry.
+
+### Every single defect was the same class, and it was candidate cause #2
+
+The handoff listed four candidates. It was **INV-48 root cause C — a face that
+misses — five times over**, in five different disguises. Not a missing `HALT`,
+not boot ordering. INV-50 was involved, but as an *accomplice*: it is what let
+all five hide.
+
+**1. Face CONSTANTS pointing the wrong way.** Four cells had `is_face` DataWords
+naming the wrong compass direction outright — `wbk`'s row triggers NORTH, which
+is off the top of the array; the four taps' inward flip SOUTH when their adders
+are NORTH; `wb`'s hand-off SOUTH when `wbk` is NORTH; `wbk`'s lap-advance EAST
+when `seq` is WEST. **This one constant — `wbk`'s `f_ring` = NORTH — is the whole
+of "the ring never starts".** `wbk` never executed at all in the trace: zero
+events, because `wb`'s jump to it left on the wrong face.
+
+**2. The FACE register PERSISTS across entries, and an entry that does not set it
+inherits whatever the last path left.** `wbk.default` flipped WEST for the lap
+advance and never restored, so the *next* lap's four row triggers fired west into
+`seq`. `seq.default` flipped SOUTH and never restored, so the boundary hand-off
+fired south into `wb`. The discipline that fixes it is one line: **every path
+restores the resting face before it ends, so every path may assume the resting
+face on entry.**
+
+**3. A cell's flip also deflects words that merely TRANSIT it.** This was the
+sharpest one. `wb` sits at `(0,1)`, directly on `seq`'s walk down to the state
+line, and left its face pointing north at `wbk`. Every `pub` trigger `seq` issued
+therefore bounced off `wb` straight back into `seq`, which re-entered `step`,
+decremented the lap counter again, and ping-ponged. Measured: the ring completed
+exactly ONE lap and then oscillated, with no output and no error. **A cell's
+resting face is a contract with every walk that crosses it, not just with its own
+edges** — and `seq`'s own resting face is FORCED to EAST by `wb`'s jump needing
+to transit it, which is why `seq` pays for a flip on every one of its own edges.
+
+**4. An internal edge the block never declared.** `in0.trig -> in1.default` comes
+straight from `ChaCha20QRBlock` and was simply absent from `internal_jumps()`,
+while the assembly still emitted the word. It happened to resolve correctly; it
+is now declared.
+
+**5. The router faced `tap3` at its ADDER and sized `tap3.q -> in0` at three
+hops.** `tap3` has internal connections to both `in0` (east, 1 hop) and `add3`
+(north, 1 hop); `router._place_block_cells` faces a cell at "the" declared
+destination, picking whichever the dict yields, then `_get_routing_distance`
+walks *that* face. It found the real path `tap3 -> add3 -> out -> in0` and
+returned 3. At run time the word leaves EAST and overshot `in0` by two, landing
+in `l1_add`. **The effect: every frame reached the collector TWO WORDS SHORT**,
+`in1`'s mod-8 counter never hit a frame boundary in step with the ring, and the
+whole cipher ran five laps and stalled. This is the single fix that took the
+block from 5 laps to all 80.
+
+### THE MEASUREMENT THAT MATTERS: the router cannot size a FLIPPED edge
+
+Classifying all 233 internal edges by whether the emitting path is on the cell's
+resting face or a flipped one:
+
+| emit face | resolved correctly | resolved WRONG |
+|---|---|---|
+| resting | **211** | **0** |
+| flipped | 16 | 6 |
+
+**Every flipped edge that works does so by coincidence.** `_get_routing_distance`
+walks resting faces only; for a flipped emit it either (a) misses, falls back to
+Manhattan, and Manhattan happens to equal the true distance — which is how all 16
+"correct" ones pass, every one of them a straight-line hop of 1 or 2 — or (b)
+*succeeds spuriously* on a path the word never takes, which is what killed
+`tap3`. This is INV-50's real shape: the Manhattan fallback is not the only
+failure mode, and it is not even the worst one. A successful walk from the wrong
+starting face is worse, because nothing looks anomalous.
+
+### Two toolchain fixes, both regression-tested at the 1219 baseline
+
+* **`router._place_block_cells` looked programs up by the raw positional INDEX**
+  (`if i in block_def.cell_programs`), which is False for every string-keyed
+  block — the DFE's `ff0`, ChaCha20's `tap3`. So a string-keyed block silently
+  got no program copied there and, sharply, **never had its declared `fwd_face`
+  honoured**; the router kept its own guess and sized every edge against it.
+  Fixed to look up by the positional KEY, falling back to the index.
+* **`_get_routing_distance` gained an optional `start_face`**, and blocks may now
+  declare `emit_faces() -> {(cell_id, port): neighbour_id}` for ports they emit
+  while flipped. The value is a **cell id, not a compass direction**, so the
+  router derives the face from the two cells' PLACED coordinates — which the
+  placer has already rotated. That is what keeps it orientation-correct by
+  construction (INV-23) instead of needing the hand rotation that regressed
+  `test_rotated_feedback_block_computes_identically` last time. `placekyt/tests/`
+  is **1219 passed**, the orientation suite green, and the ChaCha20 + binding +
+  legality + saturation suites all green.
+
+### A model that flatters the design, part two
+
+The previous pass's lesson was that a fold checker must read `MOVE [FACE]` out of
+the real programs. That is necessary but not sufficient. The checker written this
+pass **symbolically executes every path, over both sides of every branch, and
+iterates the face register to a FIXPOINT** — seed with the resting face, collect
+what each path can *leave behind*, re-seed, repeat. A checker that assumes each
+entry starts clean is exactly a checker that cannot see defect 2 or defect 3, and
+those two were half the bugs. It is now `test_every_internal_edge_lands_on_a_real
+_forwarding_walk` with an INV-4 negative that re-points the original constants and
+asserts each of them misses.
+
+### What remains — measured, and it is a WORD BUDGET, not a wall
+
+Each row holds four 32-bit words and one drain lap emits the head of each, so the
+finish must run four laps with a plain rotate (`row.spin`) between them. The
+rotate must come from a cell that reaches all four rows on ONE walk — on this fold
+that is only `wbk` at `(1,0)` — and the lap must be closed by a cell that can
+reach `wbk`, which is only `wb` or `seq`: **the tap line and the finish row both
+run one-way AWAY from the control corner**, measured over all four faces from
+every tap, every adder and the egress. That costs a `drn` entry on `wbk` (5
+words), a relay entry on `wb` (3) and a lap counter on `tap3` (6).
+
+**Shortfall: four words**, after compressing `wbk`'s realignment from twelve jumps
+to eight by hoisting the spins common to both halves (row1 x1, row2 x2, row3 x1 —
+verified behaviour-identical: the spin counts stayed 37/38/39). LAYER: block
+program / fold. Not routing, not arithmetic, not the substrate.
+
+### The trap that cost the last hour, and is worth its own line
+
+Freeing that word by dropping `seq`'s `MOVE half, four` (redundant — `half` is
+`reset_per_batch`) **fits, and breaks the block.** Shortening `seq` moves
+`seq.step`'s entry address from 15 to 14, and the build then mis-resolves
+`wbk.back` to it instead of to `row0.pub`, which is also at 15. The realignment
+ran perfectly and then handed control to the lap counter; the ring stopped at the
+first boundary with a flawless trace up to that point. **Entry addresses are
+params-dependent (INV-6/11) and that hazard reaches INTERNAL edges too** — so
+changing a control cell's LENGTH can silently re-target another cell's jump. Any
+attempt at the four words must re-check `wbk`'s built words, not just the budget.
+
+---
+
 ## ChaCha20KeystreamBlock — the SELECTOR was unnecessary: a fixed-tap ring makes the permutation a shift register. Places/routes/builds, does NOT yet compute 2026-08-29
 
 Second re-examination. **Outcome: still `needs_human`, and again for a smaller

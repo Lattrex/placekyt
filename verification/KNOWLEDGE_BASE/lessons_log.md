@@ -9,6 +9,75 @@ block-specific gotcha. Promote anything that generalizes across block classes in
 and superseded material merged into the surviving entries; no durable lesson was
 dropped) — append new entries above the oldest ones as before.
 
+## LZ4DecoderBlock — QUARANTINED on the panel-template cell cap; the decoder itself is proven on chip 2026-08-29
+
+Decodes the published **LZ4 block format** — `[token][literal length][literals]
+[offset][match length]` sequences — into the original byte stream, with the history
+window in the SRAM panel. **Outcome: `needs_human`.** The golden and the cell programs
+are verified (38 tests, `verification/tests/test_lz4_decoder.py`); what is blocked is
+PLACEMENT, and the wall is sharp enough to be actionable. Promoted to **INV-48**.
+
+### What IS proven (so the next agent does not redo it)
+
+* **The golden is validated against the reference C implementation**, not just against
+  itself: `verification/tests/lz4_golden.py` decodes blocks produced by the reference
+  LZ4 compressor byte-for-byte on 6 payloads, and the reference C DECODER accepts the
+  blocks this suite manufactures. That is the check that stops a golden and a block
+  being self-consistently wrong together.
+* **The cell programs run correctly on a real chip.** The token nibble split (all five
+  token classes), the little-endian offset assembly (4 byte pairs), and — the decisive
+  one — a whole **match copy driven through a real `SramPanelDevice` + `PanelDriver`**,
+  with each byte push-read at the *computed* address `wpos - off` and appended to the
+  window at `wpos` before the next fetch. The `offset == 1` byte run is exact on chip:
+  only `window[0]` is preloaded and the remaining six bytes are ones the same match
+  produced a moment earlier. That is the classic decoder bug, closed on silicon.
+* **The panel cost, measured:** a history write is 3 panel-port words (`set_addr` then
+  `write` = `WRITE R5`, `WRITE R2`, `JUMP R0`); a push-read is 6 (`WRITE R3/R4/R5`,
+  `JUMP R1`, plus the 2-word panel-originated return). So **9 panel-port words per
+  back-reference byte** against 3 per literal byte, all sequential on a
+  single-outstanding held-ack link. That is the number that scopes the encoder.
+
+### The wall, in three parts
+
+1. **`auto_pnr` never routes a panel design generically.** It branches on
+   `panel_backed_blocks(...)` and hands the whole design to
+   `engine/panel_pnr.apply_panel_template`, then runs `auto_route_all` only for the
+   leftovers. The CP-SAT pack + perturbation sweep is never reached.
+2. **The templates pin a fixed cell set.** TX shape: 2 cells (controller at `x1_out`,
+   consumer at `(0,1)`). RX shape: 4, and it writes VaricodeDecoder-specific params
+   (`read_addr_hop`/`read_dest`/`read_entry`) into the block, so a block without them
+   dies in its own constructor. Every shipped panel block is 2-3 cells, so the cap had
+   never bound before.
+3. **This FSM cannot be 3 cells, and cannot be a ring.** The parse+emit datapath is
+   **102 instructions**; the real per-cell budget is `31 - (data + state + inputs)`,
+   at best 28 and realistically 25-26 — a **4-cell absolute lower bound**, 6 as
+   actually decomposed, plus the controller. And an exhaustive search finds **no
+   single-face ring ordering** of the 7 cells at any ring size 7..16 that avoids
+   transiting the controller (which sits at the port with its face pointing off-chip):
+   the emit cell has an edge to the controller AND an edge back to the FSM head, and
+   in a ring one must wrap past the other.
+
+### Three encodings worth stealing (they are what got 6 cells to fit at all)
+
+* **Hold a counter NEGATIVE to mark a sub-phase.** `lit` is stored as `-(15+sum)` while
+  inside the literal-length continuation, so the phase test is the sign bit of a value
+  the cell already has (one `SUB` sets `N`). That deleted an entire `ext` register and
+  its `CMP` from the hottest cell.
+* **Apply a constant offset ONCE, at the token, and let it become the sentinel.** `mat`
+  is seeded as `nibble + MINMATCH`, so "was the nibble 15?" is a single compare against
+  19 rather than a carried flag.
+* **Let one counter be the loop counter AND the discriminator.** The emit cell serves
+  both a literal byte and a match byte with one program body: `emit_lit` zeroes `mat`,
+  so the shared `SUB mat, one` goes to `-1` (`N` → stop) for a literal, `0` (`Z` →
+  finish the sequence) on a match's last byte, and positive (→ fetch the next). That
+  removed a whole `inmatch` register and its two setup instructions — and, because it
+  put the copy loop entirely inside one cell, removed a cross-cell back-trigger from
+  the layout problem too. **Loop back-edges are the expensive ones.**
+
+Also confirmed while doing this: the shipped panel topology is **panel on the x1 pair,
+data on x16** (`engine/sram_demo.py`, `engine/panel_pnr.py`, `psk31_transceiver`) — the
+opposite of what one might assume, and it has to be that way round because a data word
+is 16 bits and the x1 port is one bit wide.
 ## ChaCha20KeystreamBlock — QUARANTINED: the transport ceiling forces a resident state, and the permutation becomes ADDRESS ARITHMETIC (proven on chip) 2026-08-29
 
 **Result: QUARANTINE (`needs_human`), with the architecture measured and its

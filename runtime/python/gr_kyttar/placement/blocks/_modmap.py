@@ -130,5 +130,6 @@ BUILTIN_BLOCKS = {
     'SqrtBlock': 'sqrt_block',
     'FeaturePairJoinBlock': 'feature_pair_join_block',
     'TMRVoterBlock': 'tmr_voter_block',
+    'LZ4DecoderBlock': 'lz4_decoder_block',
     'XorJoinBlock': 'xor_join_block',
 }

@@ -2386,6 +2386,84 @@ Related: INV-19/20 (the serialize-LOCK idiom this extends), INV-23 (every face
 constant is `is_face` so it D4-transforms), INV-39 (a multi-entry dispatch cell's
 entries must all be jumped).
 
+---
+
+## INV-48 — An SRAM-panel block is capped at the PANEL TEMPLATE's cell count, and a dense multi-cell FSM has no single-face layout at all
+
+**Symptom:** a panel-backed block whose cell programs are individually correct — every
+cell inside its 32-word budget, every hand-off verified on the real chip through the
+real panel — cannot be placed. `auto_pnr` does not report a routing failure; it raises
+a `PlacementError` (or a `TypeError` on a param the template assumes) from
+`engine/panel_pnr.py` before any router runs.
+
+**Root cause A — the panel path BYPASSES the generic placer/router.**
+`AppController.auto_pnr` branches on `panel_backed_blocks(...)` and, for ANY design
+containing one, calls `apply_panel_template(...)` and then only `auto_route_all` for
+the leftover block→block nets. It never reaches the CP-SAT pack / perturbation sweep
+that every non-panel design uses. So a panel block gets exactly the placement the
+template hard-codes, and nothing else.
+
+**Root cause B — the templates encode a SHAPE, not a size.** There are two, and each
+pins a fixed set of cells:
+
+* the **TX shape** (`apply_panel_template`) pins **2**: the embedded controller at the
+  `x1_out` port cell and the push-read consumer at `(0,1)`;
+* the **RX shape** (`_apply_rx_template`, taken when `panel_requirements()` declares an
+  `input_cell` distinct from the `controller_cell`) pins **4**: controller, kicker,
+  input, consumer — and additionally writes Varicode-decoder-specific params
+  (`read_addr_hop`, `read_dest`, `read_entry`) straight into `blk.params`, so a block
+  that does not accept them fails with a `TypeError` from its own constructor.
+
+Every panel-backed block shipped to date is 2 or 3 cells (VaricodeEncoder 2,
+VaricodeDecoder 3, CWKeyer 2), so the cap was never load-bearing. **A panel-backed
+block of 5+ cells is not placeable today**, however correct it is.
+
+**Root cause C — and this is the durable, block-independent half: a dense internal
+graph has NO single-face layout.** A cell has ONE forward face, so every `WRITE`/`JUMP`
+it makes leaves in the same direction and reaches its target by HOP COUNT, transiting
+the cells in between. The embedded controller sits AT the panel port with its face
+pointing OUT of the array, so any word that TRANSITS it is lost off-chip — and INV-32
+already makes routing through a used port cell a hard `port_transit` failure. The
+placement question is therefore combinatorial:
+
+> is there an ordering of the block's cells around a ring such that no internal edge
+> transits the controller's slot?
+
+For the LZ4 decoder's **15-edge, 7-cell** graph the answer is **no, at every ring size
+from 7 to 16 — and not even within two violations** (exhaustive search, kept as a live
+guard test). The blocking structure is simple and will recur: the emit cell has an edge
+to the CONTROLLER *and* an edge back to the head of the FSM, and in a ring one of those
+two must wrap past the other. Such a block needs real brokers and corridors — i.e. the
+generic router — which is precisely what root cause A withholds.
+
+**The rule / what to do about it.**
+
+1. **Estimate the CELL COUNT before committing to a panel-backed design.** Sum the
+   FSM's instructions and divide by the real per-cell budget,
+   `31 - (data words + state vars + input registers)` — at best 28, realistically
+   25-26. If the answer is more than ~3 datapath cells, the block will hit this wall
+   and the honest move is to say so early.
+2. **Keep at most ONE backward internal edge per cell.** `build._apply_internal_feedback`
+   restores the **highest-address** `JUMP` per cell for a backward internal jump; a
+   second backward jump in the same cell is silently lost. Prefer a DATA-only backward
+   `WRITE` (no trigger) wherever the target is re-entered by the normal stream anyway —
+   that is free, and it is what let the LZ4 router's phase register be updated from two
+   different handler cells.
+3. **Keep a hot loop LOCAL.** Moving the LZ4 match-run counter out of the length-parsing
+   cell and INTO the emit cell turned a cross-cell back-trigger into a `BR.NZ`, removed
+   an entire register (`inmatch` — the counter doubles as the literal/match
+   discriminator via the sign of one shared `SUB`), and removed one whole edge from the
+   layout problem. Loop back-edges are the expensive ones.
+
+**Ground truth:** `verification/tests/test_lz4_decoder.py` (38 tests). The block's
+correctness is NOT in doubt — the token nibble split, the little-endian offset
+assembly, a whole match copy, and the `offset == 1` byte run all run on a real chip
+through a real `SramPanelDevice`/`PanelDriver`, with each match byte push-read at the
+**computed** address `wpos - off`. Three `test_placement_wall_*` gates pin the three
+root causes above, so the day the template grows or panel designs get a generic route
+path, they fail and say the quarantine can be revisited. Related: INV-29 (why it needs
+the panel), INV-31 (the panel contract), INV-32 (port-cell transit), INV-33 (the
+register-allocation contract the cell budgets come from), INV-36 (the 31-hop cap).
 ## INV-47 — When a wide value cannot be CARRIED, make it RESIDENT and turn the index into ADDRESS ARITHMETIC — the panel is the only computed-destination path
 
 **The rule.** INV-45 prices carrying a `W`-word live set at `3W + 1` of a cell's

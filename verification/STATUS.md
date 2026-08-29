@@ -125,6 +125,8 @@
 | **FFT128Die1** | `numpy.fft.fft (N=128, as a 2-die split)` | 3 · new GRC block | ✅ done | err 0.0 / tol 0.0 LSB | rand×1 mut |
 | **ChirpSyncBlock** | `(Python golden: K-consecutive-equal-argmax preamble run detector)` | 3 · new GRC block | ✅ done | err 0 / tol 0 LSB | edge rand×3 sweep×4 mut |
 | **FeaturePairJoinBlock** | `(placeKYT-native: ordered two-word rendezvous; no GR counterpart)` | 3 · new GRC block | ✅ done | err 0 / tol 0 LSB | edge rand×3 mut |
+| **ChaCha20KeystreamBlock** | (Kyttar-native, no single GR block) | 3 · new GRC block | ⬜ planned | — | — |
+| **LZ4DecoderBlock** | (Kyttar-native, no single GR block) | 3 · new GRC block | 🚧 needs human (quarantined) | — | — |
 | **ChaCha20KeystreamBlock** | (Kyttar-native, no single GR block) | 3 · new GRC block | 🚧 needs human (quarantined) | — | — |
 | **LZ4DecoderBlock** | (Kyttar-native, no single GR block) | 3 · new GRC block | ⬜ planned | — | — |
 | **Poly1305MACBlock** | (Kyttar-native, no single GR block) | 3 · new GRC block | ⬜ planned | — | — |

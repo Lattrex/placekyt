@@ -1288,12 +1288,12 @@
    "kyttar_block": "LZ4DecoderBlock",
    "grc_block": "",
    "tier": 3,
-   "status": "planned",
+   "status": "needs_human",
    "metric": "exact",
    "params": [
     "window_words"
    ],
-   "notes": "LZ4 block-format decoder, panel history window. See PLAN SB4."
+   "notes": "LZ4 block-format decoder (published LZ4 block format spec), SRAM-panel history window. QUARANTINED on the PANEL P&R TEMPLATE cell budget (INV-47): the parse+emit FSM is 102 instructions across 7 cells (4 datapath cells is an absolute lower bound), but auto_pnr routes EVERY SRAM-panel design through engine/panel_pnr.py, whose templates pin 2 cells (TX shape) or 4 (RX shape) and never fall through to the generic placer/router. The golden and the cell programs ARE verified, including the match copy and the offset-1 byte run on the real chip through the real panel — verification/tests/test_lz4_decoder.py, 38 tests. A human must extend the panel template (or give panel designs a generic route path) to unblock it."
   },
   {
    "kyttar_block": "Poly1305MACBlock",

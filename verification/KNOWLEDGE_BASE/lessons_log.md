@@ -9,6 +9,209 @@ block-specific gotcha. Promote anything that generalizes across block classes in
 and superseded material merged into the surviving entries; no durable lesson was
 dropped) — append new entries above the oldest ones as before.
 
+## ChaCha20QRBlock — 32-bit arithmetic on a 16-bit ALU: CARRYING a wide value costs 4x what COMPUTING on it does 2026-08-29
+
+**Outcome: `done`.** One ChaCha20 quarter round (RFC 8439 §2.1), 17 cells, exact on
+the real placed-and-routed chip: the RFC's §2.1.1 quarter-round vector AND its §2.2.1
+`QUARTERROUND(2,7,8,13)` state vector, 12 random 32-bit frames over 3 seeds, and 7
+wrapping corners — all bit-exact, tolerance 0, in all 8 D4 orientations, saturated ==
+per-sample. No GNU Radio counterpart; the golden is the published algorithm pinned by
+the RFC's own two independent vectors before it is allowed to gate anything.
+
+### The measured instruction costs — these REPLACE the plan's estimates
+
+Measured, not estimated (counted in the built cell programs; the whole-block totals
+are asserted in the test's report):
+
+| 32-bit op on 16-bit halves | instructions | how |
+|---|---|---|
+| `ADD` (mod 2^32) | **4** | `ADD lo,lo / MOVE lo,R0 / ADC hi,hi / MOVE hi,R0` |
+| `XOR` | **4** | two 16-bit `XOR`s + their parks |
+| `ROTL32(x, 16)` | **0** | the hi/lo swap, folded into the relay (below) |
+| `ROTL32(x, 12)` | **7** over 2 cells | 4 (`ROL` both halves) + 3 (masked merge) |
+| `ROTL32(x, 8)` | **7** over 2 cells | same |
+| `ROTL32(x, 7)` | **7** over 2 cells | same |
+
+Counted as body instructions ABOVE the 17-instruction transport baseline that every
+relay stage pays (8 words x `MOVE`+`WRITE`, plus the trigger `JUMP`). The `rotb` merge
+is 5 instructions of which 2 ARE the relay writes it replaces, hence 3 net.
+
+Whole quarter round: **53 instructions of actual arithmetic** — under the plan's ~60
+guess. But the block is 17 cells, not the 3-5 the plan budgeted, and the reason is the
+finding below.
+
+### `ADC` needs no help: MOVE is flag-preserving
+
+`ADD lo / MOVE / ADC hi / MOVE` is a correct 32-bit add because only ALU ops touch the
+flags — the park `MOVE` between the `ADD` and the `ADC` does not disturb the carry.
+The carry is never synthesised, never re-derived with a `CMP`. (CostasLoop's
+`int_lo/int_hi` accumulator was already doing this; it is now the named idiom.)
+
+### `ROTL32(x, 16)` is FREE — and "free" means zero instructions, not two MOVEs
+
+A rotate by exactly the half-width is the hi/lo swap. The cheap implementation is two
+`MOVE`s; the FREE one is to not move anything at all and instead swap **which register
+each relay `MOVE` reads**. Every stage already re-reads all eight frame words to
+forward them, so the rotate rides on work the cell was doing anyway. Cost: 0.
+
+### `ROTL32(x, n)` for n < 16, WITHOUT a cross-half shift
+
+The obvious form needs both original halves alive while writing both results:
+
+    hi' = (hi << n) | (lo >> (16-n));   lo' = (lo << n) | (hi >> (16-n))
+
+which is 11 instructions and 2 scratch registers — over budget for a relay cell. The
+cheaper identity uses the 16-bit **rotate** (`ROL`, the `ROT` bit of `SHL`) on each
+half independently. With `u = ROL16(hi, n)`, `v = ROL16(lo, n)` and `M = (1<<n)-1`:
+
+    hi' = u ^ ((u ^ v) & M)          lo' = v ^ ((u ^ v) & M)
+
+`ROL16(hi, n)` already holds `hi << n` in its high bits and `hi >> (16-n)` in its low
+`n` bits — exactly the two pieces the cross-half form assembles — so all that remains
+is to TRADE the low `n` bits between the halves, which is one shared `k = (u^v) & M`
+and two XORs. It splits into a 4-instruction cell and a 5-instruction cell, both of
+which fit alongside the 8-word relay. Verified over the full 32-bit domain for
+n = 12/8/7 before any silicon.
+
+### THE finding: transport dominates, 4:1
+
+A quarter round's live set is all four 32-bit words — none dies early, all four are
+outputs — so **every inter-stage hop carries the whole 8-word frame**, at
+`MOVE R0, Rw` + `WRITE` = 2 instructions per word:
+
+    8 held words + 16 relay + 1 jump = 25 of the 31 usable words
+
+leaving **6** for the stage's own data + state + body. That is the binding constraint,
+and it is why the block is 17 cells for 59 instructions of arithmetic: the ADD (4) and
+XOR (4) fit, the 11-instruction rotate does not, so the rotate had to be reshaped
+until it split into two cells that each fit. **Relaying the 8-word frame one hop costs
+17 instructions; the arithmetic done on it at that hop costs 3-4.** Wide-value
+dataflow, not the ALU, is what sizes a multi-word block on this substrate. Promoted to
+**INV-45**.
+
+### The bug that cost the most: an over-budget cell is SILENT and looks like a routing fault
+
+The egress cell holds the finished frame and bursts it out as eight `WRITE`+`JUMP`
+pairs on one port (the `UpsamplerBlock` rate-expanding idiom). Eight words is exactly
+**one word over budget**: 8 inputs + 8x(MOVE/WRITE/JUMP) = 24 instructions puts
+`base_addr` at 31-24 = 7, so the frame's own R7/R8 sit **on top of the cell's first two
+instruction words**.
+
+The resolver does not catch this. Its space guard compares only DATA against
+`base_addr` — never state, never pinned inputs (INV-33's overlap half). So the cell
+assembled, the bitstream loaded, the block placed and routed cleanly, and the burst
+came out **seven words long, missing its LEADING word, with the other seven bit-exact**.
+Dumping the egress cell's registers after the run showed all eight words present and
+correct; the compute pipeline was never wrong. Symptoms that misled:
+
+* it looked like a first-word-of-burst handshake artifact, so the first hypothesis was
+  the harness drain. A hand-rolled driver that drains aggressively between every run
+  step got the same 7 words — **the loss was real, on-chip, not a drain artifact**.
+* `UpsamplerBlock` at `sps=8` emits all 8 words correctly, which ruled out "burst
+  egress drops a word" as a substrate property and pointed back at this cell.
+* adding a dummy leading write to test the theory made it WORSE (still 7 words, now
+  with a garbage word) — because the extra instruction pushed the overlap further, not
+  because the theory was wrong. A mutation that makes an over-budget cell worse is not
+  evidence about the mechanism you were testing.
+
+**The fix, and it is the reusable one:** deliver frame slot 0 into the egress cell's
+**R0** (INV-33's accumulator-delivery idiom) as the upstream stage's LAST write, and
+make that word's `WRITE` the cell's FIRST instruction — no `MOVE` needed, and nothing
+has run yet to clobber R0. That saves the one instruction AND the one register the cell
+was over by: 23 instructions, `base_addr` 8, frame at R1..R7, clean. It requires the
+upstream relay tail to write that slot **last** (a `last=` ordering hook), because any
+later write would disturb the delivered R0.
+
+`test_chacha20_qr.py::test_no_cell_overlaps_its_own_instructions` is now a static gate
+over every cell of the block, paired (INV-4) with
+`test_overlap_gate_catches_the_known_bad_shape`, which re-inflates the pre-fix 8-word
+egress cell and asserts the gate FAILS on it.
+
+### A `__terminate__` jump on the external output port DELETES that port
+
+`internal_jumps()` returning `("emit", "out", "__terminate__", "default")` puts
+`("emit","out")` into the portmap's `internal_srcs`, and the portmap then excludes it
+as internally-consumed — leaving the block with an input port and **no output port at
+all**, `io_colocated=False`. The block still built and ran correctly through an
+explicitly-wired logical connection, so the DUT gate was green while auto-placement saw
+a portless block. The egress `WRITE`/`JUMP` pairs ARE the external handshake
+(`UpsamplerBlock` declares no terminate edge); do not also declare them internal.
+
+### Two constants at R0 (twice)
+
+Both the frame counter's `one` and every relay stage's mask were first allocated at
+address 0. `SUB R{n}, R{one}` reads R0 and, being an ALU op, WRITES R0 — so the
+constant survives exactly one instruction and the counter free-runs after the first
+sample. All data now starts at R1; the R0 slot is a deliberate hole. This is INV-33
+verbatim and it still cost a debug cycle, which is the argument for the static gate.
+
+### Interface and shape
+
+8 words in / 8 words out, one word per trigger, the result frame bursting on the
+eighth — so `run_block_dut_rate` (which drains every word per trigger) is the driver;
+`run_block_dut` keeps only the last word and cannot see a burst. The serial word
+stream is turned into a resident 8-word frame by **two 4-deep shift-register collector
+cells**: `in0` (the landing cell) spills its oldest word to `in1` and re-publishes its
+four held words every trigger unconditionally, and `in1` holds the mod-8 counter and
+fires the compute head once per frame. Making `in0` unconditional — no branch, no
+second jump, no lock — was deliberate: the intermediate publications are simply
+overwritten because the head is only ever triggered by `in1`.
+
+Fold: 8x3 out-and-back serpentine, `in0` at (0,0) and the egress cell at (0,2), both on
+the west edge (`io_colocated=True`).
+
+### Scoping the rest of the wave — READ THIS BEFORE ChaCha20KeystreamBlock
+
+**17 cells per quarter round is real and measured.** A full ChaCha20 block is 8
+quarter rounds per double-round x 10 double-rounds = 80 quarter rounds. Unrolled that
+is 1360 cells against a 120-cell array — **off by more than 10x**. A keystream block
+CANNOT be a straight-line expansion of this one. It must REUSE a small number of
+quarter-round instances across rounds, which means a feedback/state-machine topology
+(round counter, state permutation between rounds) that this block deliberately does
+not have. Note also that transport, not arithmetic, is the cost: the 16-word ChaCha
+state is 32 16-bit words, which no single cell can hold, so the state itself has to
+live distributed and the round permutation becomes a routing problem. Budget the next
+dispatch for that, not for "QR x 8".
+
+For Poly1305 the ADD/ADC idiom, the free half-width rotate, and the rotate-then-merge
+identity all carry over directly; the transport ceiling (6 words of body per relay
+stage holding an 8-word live set) is the number to design against.
+
+### The mutation gates were run on SILICON, not just on the model
+
+Model-level mutants prove the GOLDEN discriminates; they do not prove the chip gate
+does. Three mutants were therefore built, placed, routed and RUN on simKYT:
+
+* `rot7` built as `rot6` (a perturbed rotate constant),
+* `ADC` replaced by `ADD` on the high half (the dropped carry),
+* the free `ROTL32(d,16)` hi/lo swap removed.
+
+All three were caught, and — the part that matters — **each still emitted the right
+NUMBER of words (24/24)**, so they failed on VALUES alone, not on a broken build. The
+rot16 case is the one worth keeping: because that rotate costs zero instructions, an
+incorrect one is invisible to every size, budget and word-count check that exists. Only
+a value gate can see it. They ship as
+`test_onchip_mutant_{perturbed_rotate_constant,dropped_carry,removed_rot16_swap}_fails`.
+
+### Anchor sweep, because an 8x3 fold is big enough for it to matter
+
+The AGCCC / ComplexToMag precedent is that corridor disjointness is
+ANCHOR-DEPENDENT for large folds — a block computes correctly at one placement and
+routes its corridor through the port cell at another. This fold is 8x3, so the RFC
+vector is gated from all 8 anchors it fits, not just the harness default (1,1). All 8
+exact; no anchor-dependent fragility here, but the gate is cheap and the hazard is
+real for the bigger blocks this family will grow into.
+
+**Gates:** 69 in `test_chacha20_qr.py`, all green — 2 RFC vectors on chip, 4 random
+seeds, 7 wrapping corners (WRAPS, never saturates — a Q15 datapath would clamp and
+fail), 8 anchors, 8 D4 orientations on the full burst, saturated == per-sample, 17 model-level
+mutation gates each proven to fail (every rotate constant perturbed +-1 independently,
+each of the four adds swapped for a XOR, the DROPPED CARRY, the rot16 hi/lo swap
+reversed, frame word order reversed, hi/lo swapped, +1 frame shift, identity
+passthrough, empty), 3 ON-CHIP mutants, and the structural gates above. Also
+registered in the shared orientation (INV-23), saturation (INV-19), placement-legality
+(INV-25) and GRC-binding (INV-22) suites.
+
 ## GardnerTimingRecovery SHIPS — the second quarantine's wall was a TOPOLOGY choice, not a substrate limit; and the DSP had a THIRD defect nobody had named 2026-08-27
 
 Third attempt at the block quarantined 2026-08-06 and again 2026-08-27.

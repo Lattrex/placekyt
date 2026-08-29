@@ -129,6 +129,7 @@ from .viterbi_k7 import viterbi_k7
 from .lfsr_scrambler import lfsr_scrambler
 from .pack_k_bits import pack_k_bits
 from .crc16 import crc16
+from .chacha20_qr import chacha20_qr
 from .dot_product_mac import dot_product_mac
 from .conv_encoder_k7 import conv_encoder_k7
 from .hamming_encoder import hamming_encoder
@@ -260,6 +261,7 @@ __all__ = [
     "lfsr_scrambler",
     "pack_k_bits",
     "crc16",
+    "chacha20_qr",
     "dot_product_mac",
     "conv_encoder_k7",
     "hamming_encoder",

@@ -88,6 +88,7 @@ BUILTIN_BLOCKS = {
     'BlockInterleaverBlock': 'block_interleaver_block',
     'LFSRScramblerBlock': 'lfsr_scrambler_block',
     'Crc16Block': 'crc16_block',
+    'ChaCha20QRBlock': 'chacha20_qr_block',
     'PackKBitsBlock': 'pack_k_bits_block',
     'DiffEncoderBlock': 'diff_encoder_block',
     'DiffDecoderBlock': 'diff_decoder_block',

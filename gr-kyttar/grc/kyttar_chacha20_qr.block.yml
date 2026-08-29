@@ -1,0 +1,67 @@
+id: kyttar_chacha20_qr
+label: Kyttar ChaCha20 Quarter Round
+category: '[Kyttar]/FEC'
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.chacha20_qr(${device_id})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+
+inputs:
+- id: '0'
+  label: in
+  domain: stream
+  dtype: short
+
+outputs:
+- id: '0'
+  label: out
+  domain: stream
+  dtype: short
+
+documentation: |-
+  ChaCha20 quarter round (RFC 8439 section 2.1) — a placeKYT-native [Kyttar]
+  cryptographic primitive. There is no stock GNU Radio counterpart; the golden
+  reference is the published algorithm, pinned by the RFC's own section 2.1.1
+  and 2.2.1 test vectors.
+
+  One quarter round on four 32-bit words a, b, c, d:
+
+      a += b;  d ^= a;  d <<<= 16
+      c += d;  b ^= c;  b <<<= 12
+      a += b;  d ^= a;  d <<<= 8
+      c += d;  b ^= c;  b <<<= 7
+
+  This is EXACT 32-bit modular integer arithmetic, not Q15 DSP: every addition
+  wraps mod 2**32 and nothing saturates. Each 32-bit word travels as a hi/lo
+  pair of raw 16-bit words, so the stream is 8 words per quarter round, in this
+  order both in and out:
+
+      a_hi a_lo b_hi b_lo c_hi c_lo d_hi d_lo
+
+  Rate: 8 words in, 8 words out. One input word is consumed per item; the
+  result frame is emitted as an 8-word burst on the eighth. A trailing partial
+  frame (fewer than 8 words) produces no output.
+
+  Set output_words="raw" on any sink reading this stream — these are raw 16-bit
+  values, NOT Q15-scaled samples.
+
+  This block has no parameters: the quarter round is a fixed permutation and
+  its four rotate constants (16/12/8/7) are part of the specification, not user
+  settings.
+
+  Ports:
+    in  (in):  raw 16-bit words, 8 per quarter round (hi/lo pairs)
+    out:       raw 16-bit words, the 8-word result frame
+
+  Parameters:
+    Device ID: Which Kyttar device to use.
+
+  Mapped by placeKYT (File -> Import GNURadio Flowgraph) to ChaCha20QRBlock.
+
+file_format: 1

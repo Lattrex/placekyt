@@ -2182,3 +2182,90 @@ the sibling two-die project this one was cloned from had no user-path gate at
 all — a copied generator clones the fault, so fixing one sibling is not fixing
 the class.
 Related: INV-22 (a binding that resolves is not a binding that is correct).
+
+---
+
+## INV-45 — Multi-word (>16-bit) arithmetic: CARRYING a wide value costs more than COMPUTING on it
+
+**The rule.** On this 16-bit ALU a value wider than 16 bits lives as a tuple of
+16-bit registers, and a cell that must FORWARD that tuple pays `MOVE R0, Rw` +
+`WRITE` = **2 instructions per word, per hop**. For a live set of `W` words that is
+`2W + 1` instructions of pure transport before the cell computes anything, out of
+the 31 usable words:
+
+    W held words + 2W relay + 1 jump  =  3W + 1  words consumed
+    body budget (data + state + instructions)  =  31 - (3W + 1)
+
+At `W = 8` (four 32-bit values, the ChaCha20 quarter-round live set) that leaves
+**6**. A 32-bit ADD (4) fits; a 32-bit XOR (4) fits; anything larger does not, and
+must be reshaped until it splits into stages that each fit. This — not the ALU — is
+what sizes a multi-word block: **ChaCha20QRBlock is 17 cells for 53 instructions of
+arithmetic** — one hop of its 8-word frame costs 17 instructions, the arithmetic done
+at that hop costs 3-4. Design against the transport ceiling first, then pick the
+algorithm that fits it.
+
+**The four primitives, measured (ChaCha20QRBlock, 2026-08-29).** These are counts
+from built cell programs, not estimates. Reuse them; do not re-derive:
+
+| 32-bit op on hi/lo halves | instructions | construction |
+|---|---|---|
+| `ADD` (mod 2^n, wrapping) | **4** | `ADD lo,lo / MOVE lo,R0 / ADC hi,hi / MOVE hi,R0` |
+| `XOR` / `AND` / `OR` | **4** | two 16-bit ops + their parks |
+| `ROTL(x, half-width)` | **0** | the hi/lo swap, folded into the relay (below) |
+| `ROTL(x, n)`, n < half-width | **7** over 2 cells | 4 (`ROL` each half) + 3 (masked merge) |
+
+**1. `ADC` is the carry — never synthesise it.** `MOVE` is flag-preserving (only ALU
+ops touch the flags, guide §4.2/§4.8), so the park between the low `ADD` and the high
+`ADC` does not disturb the carry. No `CMP`, no mask, no compare-against-operand trick.
+`SBC` is the same story for subtraction. Extends to any width: N halves = N-1 `ADC`s.
+
+**2. A rotate by exactly the half-width is FREE — zero instructions, not two MOVEs.**
+`ROTL32(x, 16)` IS the hi/lo swap. The cheap implementation moves two registers; the
+free one moves nothing and instead swaps **which register each relay `MOVE` reads**.
+A stage that already re-reads its live set to forward it gets the rotate for nothing.
+Any wide-value pipeline should place its half-width rotates on a relay boundary.
+
+**3. Cross-half rotates: rotate each half, then TRADE the low bits.** The obvious
+form needs both original halves alive while writing both results (11 instructions,
+2 scratch — over budget). Use the 16-bit **rotate** (`ROL` = `SHL` with the `ROT`
+bit) on each half independently. With `u = ROL16(hi, n)`, `v = ROL16(lo, n)`,
+`M = (1 << n) - 1`:
+
+    hi' = u ^ ((u ^ v) & M)          lo' = v ^ ((u ^ v) & M)
+
+`ROL16(hi, n)` already contains `hi << n` in its high bits and `hi >> (16-n)` in its
+low `n` bits — the two pieces the cross-half form assembles — so only the low `n`
+bits need trading, via one shared `k` and two XORs. Splits into a 4-instruction cell
+and a 3-instruction cell (5 written, 2 of which ARE the relay writes they replace),
+both of which fit beside an 8-word relay.
+
+**4. Wrapping, not saturating.** Multi-word integer arithmetic is exact mod 2^N; it
+must NOT reuse the Q15 saturating idioms (INV-13). Gate it with operands that force
+a carry out of the top bit AND with operands sitting on the Q15 rails
+(`0x7FFFFFFF + 1`), which a saturating datapath would clamp.
+
+**The budget trap that comes with it (INV-33's overlap half, sharpened).** A relay or
+egress cell that is ONE word over budget assembles, loads, places and routes
+cleanly, and produces a WRONG answer that looks like a routing fault — the resolver's
+space guard compares only DATA against `base_addr`, never state or pinned inputs.
+Measured: an 8-word egress cell (8 inputs + 24 instructions, `base_addr` = 7) put
+R7/R8 on its first two instruction words and dropped the LEADING word of every burst
+while the other seven stayed bit-exact. **Every multi-word block needs the static
+gate** — for each cell, assert no data address, state register or pinned input
+register is `>= 31 - instr_count` — paired with an INV-4 negative that re-inflates
+the over-budget shape. When a cell is one word over, the fix is INV-33's
+ACCUMULATOR DELIVERY: have the upstream stage write one word into the cell's **R0**
+as its LAST write and make that word's `WRITE` the cell's FIRST instruction, which
+recovers both an instruction and a register. It requires an ordering hook on the
+upstream relay tail, because any later write would disturb the delivered R0.
+
+**Gated by:** `verification/tests/test_chacha20_qr.py` — the RFC 8439 §2.1.1 and
+§2.2.1 vectors on chip, 7 wrapping corners, and mutation gates that each rotate
+constant, each add-as-xor, and the DROPPED CARRY are proven to fail; plus
+`test_no_cell_overlaps_its_own_instructions` and its INV-4 negative.
+
+**Applies to:** every block computing on values wider than 16 bits — ChaCha20
+(quarter round and keystream), Poly1305 (five radix-2^26 limbs, each spanning two
+registers), wide CRCs, any extended-precision accumulator. Related: INV-33 (the
+register contract and the overlap half), INV-34 (shift counts are immediates), INV-13
+(Q15 saturation — which multi-word arithmetic must NOT inherit).

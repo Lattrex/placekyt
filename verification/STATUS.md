@@ -3,7 +3,7 @@
 
 # Kyttar block library — status
 
-**113 verified · 0 in progress · 120 targeted.** Each Kyttar block is verified as a drop-in equivalent of its GNU Radio Companion counterpart (same parameters, output matching within Q15 quantization). “Quality” is the measured error of the verified block versus the GNU Radio reference.
+**114 verified · 0 in progress · 120 targeted.** Each Kyttar block is verified as a drop-in equivalent of its GNU Radio Companion counterpart (same parameters, output matching within Q15 quantization). “Quality” is the measured error of the verified block versus the GNU Radio reference.
 
 > **Reading the quality column.** `err N / tol M LSB` — the worst-case sample error (`N`) against the derived pass threshold (`M`), in Q15 **LSBs** (1 LSB = 1/32768 of full scale ≈ 3.05e-5); pass requires `N ≤ M`. `−X dB SNR` — the **NMSE**: the error power is `X` dB below the signal power (more negative = quieter; Q15's floor is ≈ −90 dB). Decision blocks report **BER** instead. To estimate a chain's total noise, convert each block's dB to linear power (`10^(dB/10)`), sum, and convert back (`10·log10`) — the noisiest stage dominates.
 
@@ -92,8 +92,8 @@
 | **ChirpGeneratorBlock** | `(Python golden: cyclic-shifted linear up-chirp)` | 2 · stateful/loop | ✅ done | err 0 / tol 0 LSB | sweep×6 mut |
 | **BinArgmaxBlock** | `(Python golden: numpy.argmax over N magnitude bins)` | 2 · stateful/loop | ✅ done | err 0 / tol 0 LSB | edge rand×3 sweep×7 mut |
 | **ConjChirpMixerBlock** | `(Python golden: multiply by the conjugate reference up-chirp — the CSS dechirp)` | 2 · stateful/loop | ✅ done | err 0 / tol 0 LSB | sweep×3 mut |
+| **ChaCha20QRBlock** | (Kyttar-native, no single GR block) | 2 · stateful/loop | ✅ done | err 0 / tol 0 LSB | edge rand×3 seeds x 4 frames + 6 back-to-back (32-bit operands) mut |
 | **TMRVoterBlock** | (Kyttar-native, no single GR block) | 2 · stateful/loop | ⬜ planned | — | — |
-| **ChaCha20QRBlock** | (Kyttar-native, no single GR block) | 2 · stateful/loop | ⬜ planned | — | — |
 | **FSK4SymbolMapperBlock** | `digital.chunks_to_symbols_bf (4FSK level table)` | 3 · new GRC block | ✅ done | err 0 / tol 0 LSB | mut |
 | **FSK4SlicerBlock** | `digital.constellation_decoder (4FSK PAM, inverse of mapper)` | 3 · new GRC block | ✅ done | BER 0 (32 bits) | mut |
 | **FSK4SyncTimingRecoveryBlock** | `sync-word correlation timing recovery (no single GR block)` | 3 · new GRC block | ✅ done | BER 0 (208 bits) | mut |

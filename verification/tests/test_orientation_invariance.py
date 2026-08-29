@@ -320,6 +320,16 @@ _CASES = [
     ("RationalResamplerBlock",
      {"interpolation": 2, "decimation": 3, "taps": [0.4, 0.25, -0.2, 0.1]},
      "real", ("sample", "out")),
+    # ChaCha20 quarter round (RFC 8439 §2.1, placeKYT-native, no GR
+    # counterpart): single real rail in (one raw 16-bit word per trigger) -> an
+    # 8-word result frame burst every 8th trigger. A 17-cell feed-forward
+    # 8x3 serpentine (2 collector cells + 14 frame-relay compute stages + the
+    # egress cell), no in-template FACE constants, no feedback corridor and no
+    # reconvergent fan-in — so its per-trigger output must be IDENTICAL in
+    # every D4 orientation. The harness keeps the LAST word per trigger here;
+    # the FULL 8-word-burst D4 check runs in
+    # test_chacha20_qr.py::test_orientation_invariant_full_burst.
+    ("ChaCha20QRBlock", {}, "real", ("x", "out")),
 ]
 
 # No orientation residuals remain: every block in _CASES is invariant in all 8 D4

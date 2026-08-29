@@ -1,0 +1,27 @@
+{
+  "kyttar_block": "ChaCha20QRBlock",
+  "passed": true,
+  "metric": "exact",
+  "n_compared": 136,
+  "max_abs_err": 0,
+  "tolerance": 0,
+  "nmse_db": null,
+  "correlation": null,
+  "bit_errors": 0,
+  "delay_used": 0,
+  "coverage": {
+    "golden": "RFC 8439 \u00a72.1 quarter round (verification/tests/chacha20_golden.py); no GNU Radio counterpart",
+    "anchors": "RFC 8439 \u00a72.1.1 quarter-round vector AND \u00a72.2.1 QUARTERROUND(2,7,8,13) state vector \u2014 both exact ON CHIP",
+    "random": "3 seeds x 4 frames + 6 back-to-back (32-bit operands)",
+    "edge": "7 wrapping corners incl. 0xFFFFFFFF x4, a+b == 2**32, the sign-bit corner and the Q15 rail \u2014 WRAPS, never saturates",
+    "rate": "8 words in / 8 words out; partial frame never emitted",
+    "placements": "RFC vector exact from all 8 anchors the 8x3 fold fits (corridor disjointness is anchor-dependent for big folds)",
+    "mutation": "each rotate constant 16/12/8/7 perturbed +-1 independently (8 cases) / each of the 4 adds swapped for xor / DROPPED CARRY (16-bit adds, no ADC) / rot16 hi-lo swap reversed / frame word order reversed / hi-lo swapped / +1 frame shift / identity passthrough / empty",
+    "mutation_onchip": "3 REAL mutants built+placed+routed+run on simKYT, each caught while still emitting the right word COUNT: rot7 built as rot6; ADC->ADD (dropped carry); the free rot16 hi/lo swap removed",
+    "structural": "INV-33 no cell overlaps its own instructions (with an INV-4 negative on the pre-fix 8-word egress cell); positional pairing; every entry reachable; folded layout, I/O co-located, ONE output port",
+    "cells": 17,
+    "instr_measured": "32-bit ADD=4 (ADD/MOVE/ADC/MOVE), XOR=4, ROTL32(x,16)=0 (hi/lo swap folded into the relay), ROTL32(x,n<16)=7 over 2 cells (4 ROL + 3 merge)",
+    "note": "exact 32-bit modular integer arithmetic, NOT Q15; raw 16-bit words, tolerance 0, delay 0"
+  },
+  "provenance": "session"
+}

@@ -129,6 +129,11 @@ BLOCKS = [
     # param (poly/init/frame_len only change register contents); trivially
     # non-self-overlapping in every D4 orientation and under movement.
     ("Crc16Block", {"frame_len": 8}),
+    # ChaCha20 quarter round: a 17-cell 8x3 fold (2 collector cells + 14
+    # frame-relay stages + the egress cell). No internal transit cells, but the
+    # tallest fold in the crypto family — check it stays pairwise-distinct
+    # under every D4 orientation and under user movement.
+    ("ChaCha20QRBlock", {}),
     # Single-cell windowed zero-crossing rate — no internal transit cell, no
     # footprint-growing param (window_size only changes a data word + a shift
     # immediate); trivially non-self-overlapping in every D4 orientation and

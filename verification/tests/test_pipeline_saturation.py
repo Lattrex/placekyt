@@ -207,6 +207,14 @@ REAL_2IN = {
 # (drops/duplicates a burst) is caught here.
 RATE_1IN = {
     "UpsamplerBlock": ("x", "out", {}),        # rate-EXPANDING (fixed factor)
+    # ChaCha20 quarter round (RFC 8439 §2.1, no GR counterpart): one raw 16-bit
+    # word per trigger in, an 8-word result frame burst out on every 8th
+    # trigger (8:8 with framing, so most triggers emit 0 words and one emits
+    # 8). 17 cells, purely FEED-FORWARD — no data-feedback loop and no
+    # reconvergent fan-in (INV-19/20 N/A) — so the saturated flat stream must
+    # equal the per-sample flat stream. The frame counter lives in the second
+    # collector cell and is the only cross-sample state.
+    "ChaCha20QRBlock": ("x", "out", {}),
     # Polyphase L/M rational resampler (GR rational_resampler_fff): single cell,
     # K-deep input-rate delay line + a countdown mod-M gate across the L unrolled
     # arms. Feed-forward, NO feedback corridor, NO reconvergent fan-in (INV-19/20

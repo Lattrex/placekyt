@@ -202,6 +202,43 @@ vector is gated from all 8 anchors it fits, not just the harness default (1,1). 
 exact; no anchor-dependent fragility here, but the gate is cheap and the hazard is
 real for the bigger blocks this family will grow into.
 
+### The full suite is RED at this commit, and none of it is this block
+
+Recorded so the next builder does not mistake a pre-existing red suite for their own
+regression. A full `verification/tests/` run at this commit reports ~68 failures, of
+which ~57 are CASCADE: the INV-38 session guard makes every `test_emit_report` /
+`test_write_report` refuse to write once ANY gate has failed in the session, and those
+writers then fail themselves. The real failures are ~11, and **ChaCha20QRBlock appears
+in none of them** (0 occurrences of "chacha" anywhere in the failure list).
+
+Six were reproduced IDENTICALLY at the parent commit `8db6e49` in the untouched main
+checkout, so they are pre-existing:
+
+* `test_route_quality[fft128_2p2s]`, `test_route_quality[fft_spectrum_32]`
+* `test_iir_biquad::test_iir_matches_gnuradio_production_range[0.1]`
+* `test_qam16_costas_report::test_qam16_costas_chain_ber_zero_and_report`
+* `test_fec_link_example::test_shipped_grc_user_path`
+* `test_examples_grc_userpath::test_fft128_2p2s_shipped_grc_user_path`
+
+(`test_route_quality` + `test_iir_biquad` give exactly `3 failed, 53 passed, 1 skipped`
+on BOTH trees — same tests, same counts.)
+
+**A failed full run DELETES report JSONs, so never `git add -A` after one.** INV-38's
+"absence is the safe state" means each writer UNLINKS its report before the verdict is
+known; when the session then fails, ~57 reports stay deleted on disk. A reflexive
+`git add -A && git commit` after such a run stages all of those deletions — I did
+exactly that here and had to `reset --soft HEAD~1` + `git checkout -- verification/
+reports/` to undo it. After any failed suite run, restore the reports before
+committing, and stage the files you actually edited BY NAME.
+
+The remaining `*_shipped_grc_user_path` failures (complex_math, lms_equalizer,
+gru_classifier, cw, psk31, robust_rx) are **not stable between runs of the identical
+tree**: two full runs of the same commit produced different subsets, and the ones that
+fail inside the full suite pass when run in a smaller session. These examples host a
+GRC server on a fixed port, so the signature is port contention / ordering, not a
+datapath defect. Do not chase them as a regression without first re-running the subset
+alone, and do not read the cascade count as a failure count.
+
 **Gates:** 69 in `test_chacha20_qr.py`, all green — 2 RFC vectors on chip, 4 random
 seeds, 7 wrapping corners (WRAPS, never saturates — a Q15 datapath would clamp and
 fail), 8 anchors, 8 D4 orientations on the full burst, saturated == per-sample, 17 model-level

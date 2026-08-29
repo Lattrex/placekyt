@@ -1,0 +1,31 @@
+{
+  "block": "LZ4DecoderBlock",
+  "grc_block": "",
+  "tier": 3,
+  "wave": 9,
+  "schema_version": 1,
+  "started_utc": "2026-08-29T11:33:45Z",
+  "ended_utc": "2026-08-29T12:14:00Z",
+  "walltime_sec": 2443.3,
+  "tokens": {
+    "input": 0,
+    "output": 346227,
+    "cache_read": 0,
+    "total": 346227
+  },
+  "turns": 202,
+  "attempts": 11,
+  "human_interventions": 0,
+  "intervention_reasons": [],
+  "prompts": [
+    {
+      "role": "initial",
+      "text": "PLAN SB4 dispatch: LZ4 block-format decoder, panel history window. NOTE: the brief's port topology was INVERTED and the builder corrected it."
+    }
+  ],
+  "verify_passed": false,
+  "quarantined": true,
+  "quarantine_reason": "auto_pnr routes EVERY SRAM-panel design through engine/panel_pnr.py, whose templates pin a fixed cell set - 2 (controller + consumer) or 4 (RX shape) - and never fall through to the generic placer/router (controller.py:1832 branches on panel_backed_blocks; panel_pnr.py:78,287 branch on len(backed)==2). This FSM cannot be that small: 102 datapath instructions against a real per-cell budget of <=28 is a 4-cell lower bound, 6 as decomposed, and an exhaustive search finds NO single-face ring ordering of its 15-edge graph at any ring size 7..16. Every panel block shipped to date is 2-3 cells, so the cap had never bound. To unblock: extend the panel template to place an arbitrary panel-backed block, or give panel designs a generic route path.",
+  "commit_sha": "de811b6",
+  "notes": "HONEST QUARANTINE on a TOOLCHAIN wall, not a substrate one - and the DSP is proven.\n\nTHE GOLDEN IS VALIDATED AGAINST THE REFERENCE C IMPLEMENTATION IN BOTH DIRECTIONS: it decodes reference-compressed blocks byte-for-byte on 6 payloads, AND the reference C decoder accepts the blocks the suite manufactures. The golden and the block therefore cannot be self-consistently wrong together - which is exactly the trap the brief warned about.\n\nTHE CELL PROGRAMS RUN CORRECTLY ON A REAL CHIP (real simkyt + real SramPanelDevice/PanelDriver): the token nibble split across all five token classes, little-endian offset assembly, a whole match copy with each byte push-read at the COMPUTED address wpos-off, and the offset==1 byte run - only window[0] preloaded, the other six bytes read back from what the same match had just written. That is the classic LZ4 decoder bug, closed on silicon.\n\nIT CORRECTED MY BRIEF ON A FACTUAL ERROR: I wrote that the panel takes both x16 ports and data goes on x1. INVERTED. A data word is 16 bits and cannot transit a 1-bit port. The shipped arrangement (engine/sram_demo.py:5-13, psk31_transceiver) is panel on the x1 PAIR, data on x16. The plan document is corrected.\n\nPANEL ROUND-TRIP COST, which scopes the encoder: a history WRITE is 3 panel-port words (set_addr, WRITE R5, WRITE R2, JUMP R0); a PUSH-READ is 6 (WRITE R3/R4/R5, JUMP R1, plus the 2-word panel-originated return). So 9 panel-port words per back-reference byte vs 3 per literal byte, all sequential on a single-outstanding held-ack link.\n\nDURABLE LAYOUT FINDING (inverse of what the brief suggested): moving the match-run counter INTO the emit cell turned a cross-cell back-trigger into a local BR.NZ, deleted a register (the counter doubles as the literal/match discriminator via one shared SUB's sign), and removed an edge from the layout problem. 11 architecture revisions, converging only once cell budgets were MEASURED against the real resolver instead of estimated.\n\nFinal: 7 cells (router, token, literal, offset, matchlen, emit, controller) + panel, all inside their 32-word budgets, INV-33 checked. 39 gates green, 1006 passing across the suites it could affect. Engine untouched."
+}

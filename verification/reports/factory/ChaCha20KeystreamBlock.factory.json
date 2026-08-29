@@ -1,0 +1,31 @@
+{
+  "block": "ChaCha20KeystreamBlock",
+  "grc_block": "",
+  "tier": 3,
+  "wave": 9,
+  "schema_version": 1,
+  "started_utc": "2026-08-29T11:33:45Z",
+  "ended_utc": "2026-08-29T12:06:00Z",
+  "walltime_sec": 1948.7,
+  "tokens": {
+    "input": 0,
+    "output": 286603,
+    "cache_read": 0,
+    "total": 286603
+  },
+  "turns": 246,
+  "attempts": 4,
+  "human_interventions": 0,
+  "intervention_reasons": [],
+  "prompts": [
+    {
+      "role": "initial",
+      "text": "PLAN SB3 dispatch: RFC 8439 S2.3 block function, with the 1360-vs-120 arithmetic stated and architecture left open."
+    }
+  ],
+  "verify_passed": false,
+  "quarantined": true,
+  "quarantine_reason": "Three measured walls, NONE of them the ALU: (1) unrolling 80 QR invocations x 17 cells = 1360 vs a 120-cell array; (2) THE STATE CANNOT TRANSIT A CELL AT ALL - INV-45 prices a W-word relay at 3W+1 of 31 usable words, and the 32-word state needs 97; solving 3W+1 <= 31 caps ANY transiting live set at W=10; (3) THE PERMUTATION CANNOT BE ROUTING - WRITE's HOP_CNT/DEST are INSTRUCTION fields and there is no cross-cell register addressing, so a cell cannot compute where to send a word.",
+  "commit_sha": "e12fb6e",
+  "notes": "HONEST QUARANTINE, and the walls are the deliverable. Wall (2) is the sharpest number this campaign has produced: W=10 is the hard cap on any value a cell can relay, which is a far crisper statement of what wider words would buy than any ratio estimate.\n\nWall (3) corrects MY OWN dispatch brief, which offered 'the permutation in the routing' as an architecture option. It is not expressible: HOP_CNT and DEST are instruction fields, so routing is authored, never computed.\n\nREAL RESULT FOUND INSIDE THE WALL: the RFC's eight literal index quadruples collapse to one closed form, index(k) = 4k + ((j + k*shift) & 3) - three instructions, no lookup table - and it was PROVEN ON THE REAL PLACED+ROUTED CHIP for all 8 quadruples including the wrap-around diagonals. A built gather cell emitted the exact RFC panel-address sequence. Architecture reached 27 cells (6x5 fold), every cell inside its 31-word budget, auto_route_all ok, build ok.\n\nWHY NOT DONE, stated plainly by the builder: the assembled 80-invocation loop emits ZERO words and commits ZERO panel writes. It did NOT ship the block source, because it does not compute. The remaining work is integration, not architecture: run_block_dut has zero panel awareness (verified: 0 matches in dut_runner.py), push-read descriptors were still the disabled sentinel, and resolved_io picks the landing cell as the first cell declaring inputs so cell ORDER decides where the external trigger lands.\n\nRECURRING TRAP, now INV-47: four separate times a cell went OVER the 31-word budget and the design still assembled, placed, routed and built clean. A static per-cell assertion caught every one. Same silent-overrun class the ChaCha20 QR block hit.\n\nALSO FLAGGED (pre-existing, outside scope, not touched): test_pipeline_saturation.py has a duplicate CWKeyerBlock key at lines 615/616; the stale 'QUARANTINE (INV-29)' string wins the dict merge and is now factually wrong - the same defect already fixed for VaricodeDecoderBlock at 592-593."
+}

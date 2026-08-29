@@ -3481,7 +3481,7 @@ entry addresses, clause 5).
 
 ---
 
-## INV-NEXT — A backward JUMP is resolved by ADDRESS, not by name: it rewrites the source cell's HIGHEST-ADDRESSED jump, and an entry-address COINCIDENCE can hide the damage indefinitely
+## INV-53 — A backward JUMP is resolved by ADDRESS, not by name: it rewrites the source cell's HIGHEST-ADDRESSED jump, and an entry-address COINCIDENCE can hide the damage indefinitely
 
 **This closes INV-52 clause 5**, which was recorded as "toolchain, in the build's
 jump resolution, and is still open". The mechanism is now exact, and the failure
@@ -3587,7 +3587,7 @@ INV-6/11 (params-dependent entry addresses — the reason the collision moved).
 
 ---
 
-## INV-NEXT — A BRACKETED schedule needs its LAST closing bracket issued explicitly, and a zero-width bracket will hide the omission
+## INV-54 — A BRACKETED schedule needs its LAST closing bracket issued explicitly, and a zero-width bracket will hide the omission
 
 **THE SHAPE.** When a loop body is bracketed — some setup before it and the
 inverse afterwards — and the brackets are issued *at the boundaries between

@@ -157,7 +157,7 @@ screw, and it is about **gates rather than models**:
 > coincidence between two entry addresses as a thing to prove impossible, not a
 > thing to rely on.
 
-Two candidate invariants recorded as `INV-NEXT` in `invariants.md`: the
+Two candidate invariants, assigned at landing as **INV-53** and **INV-54** in `invariants.md`: the
 backward-jump-by-address rule (which **closes INV-52 clause 5**, previously
 recorded as open), and the last-closing-bracket rule.
 

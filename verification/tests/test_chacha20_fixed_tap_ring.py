@@ -3,20 +3,23 @@
 on-chip gate that pins how much of the cipher actually runs.
 
 ``ChaCha20KeystreamBlock`` is still ``needs_human`` — but for a much smaller
-reason than before. The CIPHER now runs on a real placed + routed + built chip:
-all 80 quarter-round invocations, 19 half-boundary realignments, and **state word
-0 bit-exact against RFC 8439 §2.3.2**. What does NOT yet work is the finish
-DRAIN's repeat, so the block emits 8 of its 32 words; see the class docstring for
-the measured four-word shortfall.
+reason than before. The CIPHER IS NOW CORRECT on a real placed + routed + built
+chip: 80 quarter-round invocations, **20** half-boundary realignments, the four
+drain laps, 32 words emitted, and **all sixteen state words bit-exact against RFC
+8439 §2.3.2**. What remains is the ORDER they leave in — one drain lap empties one
+SLOT of every row, so the words come out lap-major, the 4x4 transpose of §2.3.2's
+order. Every value is right; the positions are permuted. See the class docstring
+for why row-major does not fit this fold.
 
 This file gates three layers:
 
 * the algebraic restatement of RFC 8439's round schedule that removes the
   selector the original architecture was built around;
 * the substrate traps measured while wiring it — the closed-ring/positional-
-  pairing/gap ones (INV-51) and the FACE-register ones (INV-NEXT: the face
-  persists across entries, it steers TRANSITING words, and the router cannot see
-  it);
+  pairing/gap ones (INV-51), the FACE-register ones (INV-52: the face persists
+  across entries, it steers TRANSITING words, and the router cannot see it), and
+  the backward-JUMP-by-address one (INV-NEXT), which had silently redirected an
+  internal edge for a whole pass behind an entry-address coincidence;
 * what the assembled block does ON SILICON, as counts AND as bytes.
 
 **1. The fixed-tap ring.** Written as ``index(k) = 4k + ((j + k*shift) & 3)`` the
@@ -486,32 +489,16 @@ def test_every_internal_edge_lands_on_a_real_forwarding_walk():
             continue
         for f in sorted(faces):
             if _walk(lay, s, f, d) is None:
-                if (s, sp) in KNOWN_CROSS_BATCH_FACE_LEAK:
-                    continue
                 bad.append(f"{kind} {s}.{sp} -> {d}.{dp}: face "
                            f"{FACE_NAME[f]} never reaches it")
     assert not bad, "edges on no real forwarding walk:\n  " + "\n  ".join(bad)
-
-
-#: The ONE edge this gate knowingly exempts, with its reason and its cost.
-#:
-#: ``seq``'s ``finish`` path is the terminal path of a batch and does NOT restore
-#: the resting face, so the fixpoint (correctly) reports that a SECOND trigger
-#: could enter ``step`` with the face still pointing south and fire the first
-#: half-boundary into ``wb`` instead of ``wbk``. Within ONE batch -- which is what
-#: the block is driven with, one trigger per keystream block -- it cannot happen:
-#: ``finish`` is reached exactly once, at lap 80, and nothing follows it.
-#:
-#: The restore is ONE word and ``seq`` has none: it assembles to 22 instructions
-#: against a ``base_addr`` of 9 with its highest pin at 8. Freeing that word by
-#: dropping ``default``'s ``MOVE half, four`` (redundant with ``half``'s
-#: ``reset_per_batch``) DOES fit -- and it breaks the block, because shortening
-#: ``seq`` moves ``seq.step``'s entry address from 15 to 14 and the build then
-#: mis-resolves ``wbk.back`` to it instead of to ``row0.pub`` (also 15). Measured:
-#: the realignment ran perfectly and then handed control to the lap counter, and
-#: the ring stopped at the first boundary. Entry addresses are PARAMS-DEPENDENT
-#: (INV-6/11) and this is that hazard biting an INTERNAL edge.
-KNOWN_CROSS_BATCH_FACE_LEAK = {("seq", "bnd")}
+    # NO EXEMPTIONS. An earlier revision had to exempt `seq.bnd`, because
+    # `seq`'s `finish` path did not restore the resting face and the fixpoint
+    # correctly reported that a SECOND trigger could enter `step` still pointing
+    # south and fire the first half-boundary into `wb` instead of `wbk`. That
+    # restore now exists -- `finish` has to hand off to `wbk.bnd` for the closing
+    # realignment bracket anyway, so it restores EAST on the way -- and the gate
+    # is unconditional again.
 
 
 def test_the_fold_gate_catches_a_face_that_misses():
@@ -579,24 +566,177 @@ def test_declared_emit_faces_are_all_abutting_and_consistent():
             f"emits it on {[FACE_NAME[f] for f in ef[cid][port]]}")
 
 
+def test_entry_addresses_stay_distinct_where_edges_resolve():
+    """Entry addresses are PARAMS-DEPENDENT (INV-6/11), and two entries that
+    collide numerically can mask a mis-resolved edge.
+
+    ``seq.step`` and ``row0.pub`` both resolved to address 15 in an earlier
+    revision. That coincidence hid a real defect for a whole pass: the build was
+    rewriting ``wbk.back`` (authored ``-> row0.pub``) to ``seq.step``, and
+    because the two addresses were equal the corrupted jump still landed on the
+    right entry. Any edit that moved either entry -- and a three-word saving in
+    ``seq`` did -- turned a silent latent bug into eighty laps of wrong answers.
+
+    This gate does not forbid collisions in general (they are common and mostly
+    harmless). It pins the SPECIFIC pair whose equality masked the defect, so
+    that if a future edit re-collides them the reason is at least visible.
+    """
+    from gr_kyttar.placement.blocks.chacha20_keystream_block import (
+        ChaCha20KeystreamBlock)
+    from gr_kyttar.placement.resolver import CellProgramResolver
+
+    b = ChaCha20KeystreamBlock("addrs")
+    R = CellProgramResolver()
+    ent = {c: R.compute_entry_addresses(p)
+           for c, p in b.build_cell_programs().items()}
+    assert ent["seq"]["step"] != ent["row0"]["pub"], (
+        "seq.step and row0.pub have collided again "
+        f"(both {ent['seq']['step']}); a mis-resolved wbk.back would be "
+        "invisible")
+
+
+def test_the_realignment_needs_TWENTY_brackets_not_nineteen():
+    """INV-4 for the closing bracket -- the bug that hid behind row 0.
+
+    Each diagonal half is bracketed by ``k`` spins of row ``k`` before and
+    ``4 - k`` after. Ten double rounds therefore need TEN of each. Issuing only
+    the nineteen that fall BETWEEN laps leaves every row short by its own closing
+    bracket, and the drain then reads slot ``k`` of row ``k`` instead of slot 0.
+
+    Row 0's bracket is zero spins either way, so row 0 stays aligned and its head
+    -- the RFC's first output word -- is still bit-exact. That is exactly why a
+    gate on word 0 alone could not see this.
+    """
+    key, nonce, ctr = g.RFC8439_BLOCK_KEY, g.RFC8439_BLOCK_NONCE, 1
+    init = g.initial_state(key, nonce, ctr)
+
+    def run(close_last):
+        rows = [Row(init[4 * k:4 * k + 4]) for k in range(4)]
+        spins = [0, 0, 0, 0]
+
+        def realign(mult):
+            for k in range(4):
+                for _ in range((mult * k) & 3):
+                    rows[k].spin()
+                    spins[k] += 1
+
+        for dr in range(10):
+            for half in (0, 1):
+                if half == 1:
+                    realign(1)
+                for _ in range(4):
+                    a, b, c, d = g.quarter_round(*[r.pub() for r in rows])
+                    for r, v in zip(rows, (a, b, c, d)):
+                        r.wb(v)
+                if half == 1 and (close_last or dr != 9):
+                    realign(-1)
+        heads = [(rows[k].s[0] + init[4 * k]) & g.MASK32 for k in range(4)]
+        return spins, heads
+
+    ok_spins, ok_heads = run(True)
+    bad_spins, bad_heads = run(False)
+
+    # The correct schedule spins rows 1..3 forty times; the truncated one
+    # 37/38/39 -- exactly `10a + 9b` against `10a + 10b`.
+    assert ok_spins == [0, 40, 40, 40]
+    assert bad_spins == [0, 37, 38, 39]
+
+    # Row 0 is IDENTICAL either way -- the whole reason this was invisible.
+    assert ok_heads[0] == bad_heads[0] == g.RFC8439_BLOCK_EXPECTED_STATE[0]
+    # ...and rows 1..3 are wrong without the closing bracket.
+    for k in (1, 2, 3):
+        assert ok_heads[k] == g.RFC8439_BLOCK_EXPECTED_STATE[4 * k]
+        assert bad_heads[k] != g.RFC8439_BLOCK_EXPECTED_STATE[4 * k]
+
+
+def test_at_most_one_backward_internal_jump_per_cell():
+    """INV-48 rule 2, as a GATE rather than a comment.
+
+    ``build._apply_internal_feedback`` resolves a BACKWARD internal jump (one
+    whose destination cell precedes its source in ``build_cell_programs`` order)
+    by rewriting the source cell's HIGHEST-ADDRESSED JUMP instruction. A cell
+    with two backward jumps therefore keeps one and silently loses the other,
+    and a cell with one backward jump whose highest-addressed JUMP is a
+    DIFFERENT jump has that other jump silently redirected.
+
+    Both bit this block. ``wbk`` declared one backward jump (``step`` -> ``seq``)
+    but its highest-addressed JUMP was ``back`` -> ``row0.pub``, so the build
+    rewrote ``back`` to point at ``seq.step``. It went unnoticed for a whole pass
+    because ``seq.step`` and ``row0.pub`` happened to resolve to the SAME numeric
+    address (15) and the corrupted jump landed on the right entry by coincidence;
+    shortening ``seq`` by three words decoupled them and the realignment's
+    hand-back went to the lap counter instead.
+    """
+    from gr_kyttar.placement.blocks.chacha20_keystream_block import (
+        ChaCha20KeystreamBlock)
+    from gr_kyttar.placement.resolver import CellProgramResolver
+
+    b = ChaCha20KeystreamBlock("backward")
+    progs = b.build_cell_programs()
+    order = list(progs)
+    idx = {c: i for i, c in enumerate(order)}
+
+    backward = {}
+    for s, sp, d, dp in b.internal_jumps():
+        if idx[d] < idx[s]:
+            backward.setdefault(s, []).append((sp, d, dp))
+    for cid, edges in backward.items():
+        assert len(edges) == 1, (
+            f"{cid} declares {len(edges)} backward jumps {edges}; the build "
+            f"keeps only the highest-addressed one and drops the rest")
+
+    # ...and the surviving one must BE the cell's highest-addressed jump.
+    R = CellProgramResolver()
+    for cid, ((sp, d, dp),) in ((c, tuple(e)) for c, e in backward.items()):
+        lines = [ln.strip() for ln in progs[cid].assembly_template.splitlines()
+                 if ln.strip()]
+        code = [ln for ln in lines if not ln.endswith(":")]
+        jaddrs = [i for i, ln in enumerate(code) if "{jump:" in ln]
+        assert jaddrs, f"{cid} has a backward jump but no JUMP instruction"
+        last = code[max(jaddrs)]
+        assert f"{{jump:{sp}}}" == last.strip(), (
+            f"{cid}'s backward jump is '{sp}' but its highest-addressed JUMP is "
+            f"'{last.strip()}' -- the build will rewrite THAT one instead")
+
+
 def test_the_ring_runs_the_whole_rfc_schedule_on_a_built_chip():
     """END TO END on the real placed + routed + built chip.
 
     Not a proxy: this places the block, auto-routes it between the chip's x16
-    ports, builds the bitstream, runs simKYT and reads the trace back. It asserts
-    the counts RFC 8439's 20 rounds require -- 80 quarter-round invocations
-    through every one of the sixteen stages, 19 half-boundary realignments, and
-    the 37/38/39 realignment spins of rows 1/2/3 -- and that the FIRST state word
-    out is the RFC's own ``0xE4E7 0xF110``.
+    ports, builds the bitstream, runs simKYT and reads the trace back.
 
-    That last assertion is what makes this a value gate rather than a counting
-    one: four of this cipher's mutants (diagonal-half-first, no realignment,
-    reversed spin direction, stuck tap) all still perform exactly 80
-    invocations, so only a byte-level check separates them.
+    It asserts the counts RFC 8439's 20 rounds require -- 80 quarter-round
+    invocations through every one of the sixteen stages, **20** half-boundary
+    realignments and the 40/40/40 realignment spins of rows 1/2/3 -- and then,
+    the part that actually decides correctness, that **all sixteen output state
+    words are bit-exact** against the RFC's §2.3.2 vector.
 
-    The block does NOT yet emit all 32 words -- the drain repeat is unfinished,
-    see the class docstring -- so this gate pins what IS proven and will tighten
-    to the full 32 when the drain lands.
+    The value gate is what makes this real: four of this cipher's mutants
+    (diagonal-half-first, no realignment, reversed spin direction, stuck tap) all
+    still perform exactly 80 invocations, so no count-based or structural check
+    separates them -- only the bytes do.
+
+    **Why 20 realignments and not 19.** Each diagonal half is BRACKETED, ``k``
+    spins of row ``k`` before it and ``4 - k`` after, so ten double rounds need
+    ten opening and ten closing brackets. Nineteen fall between laps; the
+    twentieth is the closing bracket of the LAST diagonal half and has no
+    following lap to hang off, so ``seq.finish`` issues it explicitly. An earlier
+    revision issued only nineteen and this gate asserted nineteen -- the spin
+    counts were 37/38/39 where the schedule requires 40/40/40, i.e. exactly
+    ``10a + 9b`` against ``10a + 10b``. It hid behind row 0, whose bracket is
+    zero spins either way: row 0 stayed aligned and its head came out bit-exact
+    while rows 1..3 were left rotated by ``4 - k`` too little. A gate that
+    checked only word 0 passed it. Hence the assertion below is over ALL SIXTEEN
+    words, not the first.
+
+    **Emission ORDER is a known, documented gap.** One drain lap empties one slot
+    of every row, so the words leave lap-major -- ``state[0], state[4],
+    state[8], state[12], state[1], ...``, the 4x4 transpose of §2.3.2's order.
+    Every value is right; the positions are permuted. This gate therefore checks
+    the values against the transposed order AND checks that the emitted multiset
+    is exactly the RFC's sixteen words, which is what pins the arithmetic. See
+    ``ChaCha20KeystreamBlock``'s Status section for why row-major does not fit
+    this fold.
     """
     simkyt = pytest.importorskip("simkyt")
     pytest.importorskip("PySide6")
@@ -674,21 +814,38 @@ def test_the_ring_runs_the_whole_rfc_schedule_on_a_built_chip():
             f"{stage} ran {runs.get((stage, 'default'))} times, want 80")
     assert runs.get(("seq", "step")) == 80
     assert runs.get(("wb", "default")) == 80
-    # 10 double rounds == 19 INTERIOR half-boundaries.
-    assert runs.get(("wbk", "bnd")) == 19
-    # Realignment spins: row k is spun k then 4-k per boundary.
-    for k, want in ((1, 37), (2, 38), (3, 39)):
-        assert runs.get((f"row{k}", "spin")) == want, (
-            f"row{k} spun {runs.get((f'row{k}', 'spin'))} times, want {want}")
-    # The finish arms every tap.
+    # 10 double rounds == 10 OPENING + 10 CLOSING brackets. Nineteen fall
+    # between laps; the twentieth is issued by `seq.finish` (see the docstring).
+    assert runs.get(("wbk", "bnd")) == 20
+    # Realignment spins: row k is spun k then 4-k per double round, ten times,
+    # so every row 1..3 spins exactly 40 times -- plus the THREE drain spins.
+    for k in (1, 2, 3):
+        assert runs.get((f"row{k}", "spin")) == 43, (
+            f"row{k} spun {runs.get((f'row{k}', 'spin'))} times, want 43 "
+            f"(40 realignment + 3 drain)")
+    # row0's bracket is zero spins either way, so it only ever sees the drain's.
+    assert runs.get(("row0", "spin")) == 3
+    # The finish arms every tap, and the drain then runs four laps.
     for k in range(4):
         assert runs.get((f"tap{k}", "arm")) == 1, f"tap{k} was not armed"
+        assert runs.get((f"add{k}", "default")) == 4, (
+            f"add{k} fired {runs.get((f'add{k}', 'default'))} times, want 4")
+    assert runs.get(("drn", "default")) == 4
+    assert runs.get(("out", "default")) == 32
 
-    # ...and the VALUE gate: state word 0, exact, from RFC 8439 S2.3.2.
-    want0 = g.RFC8439_BLOCK_EXPECTED_STATE[0]
-    assert out[:2] == [(want0 >> 16) & 0xFFFF, want0 & 0xFFFF], (
-        f"state word 0 on chip = {out[:2]}, want "
-        f"{[(want0 >> 16) & 0xFFFF, want0 & 0xFFFF]}")
+    # ...and THE VALUE GATE: all sixteen state words, bit-exact, RFC 8439 S2.3.2.
+    assert len(out) == 32, f"emitted {len(out)} words, want 32"
+    got32 = [(out[2 * i] << 16) | out[2 * i + 1] for i in range(16)]
+    want = list(g.RFC8439_BLOCK_EXPECTED_STATE)
+    # The drain is lap-major: emission position 4*i + k carries state[4*k + i].
+    expect = [want[4 * k + i] for i in range(4) for k in range(4)]
+    assert got32 == expect, (
+        "on-chip state words differ from RFC 8439 S2.3.2 (lap-major order):\n"
+        f"  got  {[f'{v:#010x}' for v in got32]}\n"
+        f"  want {[f'{v:#010x}' for v in expect]}")
+    # ...and independently: the emitted SET is exactly the RFC's sixteen words,
+    # which is the assertion that does not depend on knowing the drain's order.
+    assert sorted(got32) == sorted(want)
 
 
 #: The sixteen quarter-round stages, as the block reuses them.

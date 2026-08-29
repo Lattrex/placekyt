@@ -3478,3 +3478,172 @@ distance defect — this is why it hides), INV-51 (the fold/pairing traps from t
 same block), INV-43 (a remote JUMP does not stop local execution — which is what
 makes a tail restore after a `{jump:…}` work at all), INV-6/11 (params-dependent
 entry addresses, clause 5).
+
+---
+
+## INV-NEXT — A backward JUMP is resolved by ADDRESS, not by name: it rewrites the source cell's HIGHEST-ADDRESSED jump, and an entry-address COINCIDENCE can hide the damage indefinitely
+
+**This closes INV-52 clause 5**, which was recorded as "toolchain, in the build's
+jump resolution, and is still open". The mechanism is now exact, and the failure
+it produces is the worst kind: silent, and *self-concealing*.
+
+**THE RULE.** `build._apply_internal_feedback` resolves a **backward** internal
+jump — one whose destination cell precedes its source in `build_cell_programs`
+order — by rewriting the source cell's **highest-addressed `JUMP` instruction**,
+whichever instruction that happens to be. It does not match on the port name; it
+cannot, because the routed-exit patch pass may already have clobbered the dest.
+It takes `max(jaddrs)` and overwrites it.
+
+Two corollaries, and the second one is the one nobody states:
+
+1. **At most ONE backward jump per cell** (this half was already in INV-48 rule 2
+   and INV-49): a second one overwrites the first, silently.
+2. **The backward jump must BE the cell's highest-addressed `JUMP`.** A cell with
+   exactly one backward jump is still corrupted if some *other* jump sits at a
+   higher address — that other jump is the one that gets rewritten, and it is
+   redirected to the backward edge's target.
+
+**MEASURED.** `ChaCha20KeystreamBlock`'s `wbk` declares one backward jump,
+`step → seq.step`. Its highest-addressed `JUMP` was `back → row0.pub`, the
+realignment's hand-back. The build therefore rewrote `back` to point at
+`seq.step`. Read straight out of the built words: address 30, `0x73d2` — `JUMP
+dist=1 entry=18`, where 18 is `seq.step` and `row0.pub` is 15.
+
+**WHY IT SURVIVED A WHOLE PASS UNDETECTED — the coincidence.** In the previous
+revision `seq.step` and `row0.pub` **both resolved to address 15**. The corrupted
+jump therefore still landed on the correct entry, purely because the two numbers
+were equal. The block ran, the trace was clean, and the defect was invisible.
+
+It became visible only when `seq` was shortened by three instructions for an
+unrelated reason: that moved `seq.step` from 15 to 18, decoupled the pair, and
+the realignment's hand-back started firing into the lap counter instead of the
+row publish. The symptom was maximally misleading — 80 laps still ran, the
+boundary count was still right, and every output word was wrong.
+
+This is the same hazard the previous pass recorded from the other side ("dropping
+`seq`'s redundant `MOVE half, four` FITS AND BREAKS THE BLOCK"). It was read then
+as *"shortening a cell can break an internal edge"*. That is the symptom. The
+cause is that the edge was **already broken** and an address collision was
+masking it. Shortening the cell did not break anything; it *revealed* a defect
+that had been there all along.
+
+**THE GENERAL LESSON.** An equality between two entry addresses is not a
+coincidence you can leave unexamined — it can be load-bearing for a bug. When two
+entries a mis-resolution could confuse collide numerically, the mis-resolution is
+undetectable. Prefer to **assert the pair distinct** rather than to rely on the
+collision; if a design genuinely depends on two entries being equal, that
+dependency is a defect wearing a disguise.
+
+**THE FIX IS FREE.** Emit the entry containing the backward jump **last**, so its
+`{jump:…}` is the cell's highest-addressed one. In `wbk` that meant moving the
+`default` entry after `bnd`, which cost one `HALT` — recovered by hoisting the
+realignment spins common to both half-boundaries (row1 once, row2 twice, row3
+once) out of the branch, leaving only the two that differ.
+
+**HOW TO CHECK IT, statically and cheaply** — both clauses, no chip required:
+
+```python
+order = list(block.build_cell_programs())
+idx = {c: i for i, c in enumerate(order)}
+backward = {}
+for s, sp, d, dp in block.internal_jumps():
+    if idx[d] < idx[s]:
+        backward.setdefault(s, []).append((sp, d, dp))
+for cid, edges in backward.items():
+    assert len(edges) == 1                      # clause 1
+    code = [ln.strip() for ln in progs[cid].assembly_template.splitlines()
+            if ln.strip() and not ln.strip().endswith(":")]
+    last_jump = max(i for i, ln in enumerate(code) if "{jump:" in ln)
+    assert code[last_jump] == "{jump:%s}" % edges[0][0]      # clause 2
+```
+
+**PROGRAM ORDER IS A DESIGN LEVER, not bookkeeping.** Whether a jump counts as
+"backward" is decided entirely by the order `build_cell_programs` yields cells.
+A control cell that fires several triggers at cells listed *after* it pays
+nothing; the same cell listed *after* them keeps one trigger and silently drops
+the rest. `ChaCha20KeystreamBlock`'s drain sequencer fires five triggers at the
+state rows and is listed **before** them for exactly this reason — as an interior
+cell appended at the end it would have kept one and lost four.
+
+**SAY WHICH LAYER.** Toolchain, `placekyt/engine/build.py`
+`_apply_internal_feedback`. It is fixable there — match the authored port name
+rather than `max(jaddrs)` — but the rewrite exists precisely because the dest may
+already be clobbered, so the fix needs care. Until then it is a **block-authoring
+contract**, and it is cheap to honour and cheap to gate.
+
+**REACH.** The resolution rule is in the shared build path and applies to every
+multi-cell block that declares a backward internal jump. Measured on
+`ChaCha20KeystreamBlock` (41 cells, 250+ internal edges) by reading the built
+bitstream words back off the loaded chip.
+
+**Gated by:** `verification/tests/test_chacha20_fixed_tap_ring.py` —
+`test_at_most_one_backward_internal_jump_per_cell` (both clauses) and
+`test_entry_addresses_stay_distinct_where_edges_resolve` (the masking
+coincidence).
+
+**Related:** INV-52 clause 5 (which this closes), INV-48 rule 2 and INV-49 (the
+"at most one backward jump" half, which is necessary but not sufficient),
+INV-6/11 (params-dependent entry addresses — the reason the collision moved).
+
+---
+
+## INV-NEXT — A BRACKETED schedule needs its LAST closing bracket issued explicitly, and a zero-width bracket will hide the omission
+
+**THE SHAPE.** When a loop body is bracketed — some setup before it and the
+inverse afterwards — and the brackets are issued *at the boundaries between
+iterations*, the final closing bracket has no following boundary to hang off. It
+must be issued explicitly by whatever ends the loop. Issuing `n - 1` closing
+brackets for `n` iterations is an off-by-one that no *counting* check detects,
+because every count in sight is internally consistent.
+
+**MEASURED.** `ChaCha20KeystreamBlock` realigns its state at each half-round
+boundary: row `k` is spun `k` times before the diagonal half and `4 - k` times
+after. Ten double rounds therefore need **ten opening and ten closing brackets**.
+Nineteen boundaries fall between laps and were issued; the twentieth — the
+closing bracket of the *last* diagonal half — was never issued at all. On chip
+the spin counts were **37/38/39** for rows 1/2/3 where the schedule requires
+**40/40/40**: exactly `10a + 9b` against `10a + 10b`.
+
+**WHY IT SURVIVED A WHOLE PASS — the zero-width bracket.** Row 0's bracket is
+`0` spins in both directions. So **row 0 was always correctly aligned**, and row
+0's head is the RFC's *first output word*. The block emitted `0xE4E7F110`,
+bit-exact, while rows 1, 2 and 3 were each left rotated by `4 - k` too little and
+drained slot `k` instead of slot 0. The previous pass's on-chip gate asserted
+"19 half-boundary realignments and 37/38/39 spins" *as the exact counts the
+schedule requires*, and asserted the value of **word 0 only**. Every assertion
+passed. The recorded numbers were the bug, written down as the specification.
+
+**TWO RULES.**
+
+1. **A value gate must cover the DEGENERATE element, not just the first one.**
+   The element whose bracket is zero-width, whose coefficient is 1, whose shift
+   is 0 — that is the element that stays correct under the bug, and it is very
+   often the one a "check the first word" gate lands on. Assert **all** outputs,
+   or deliberately assert the element with the *largest* parameter.
+2. **Derive the bracket count from the algebra, then assert it.** `n` iterations
+   of a bracketed body means `n` openings and `n` closings — not `n` and
+   `n - 1`, and not "one per boundary". Write the count as an expression of the
+   loop bound (`10 * a + 10 * b`), not as the number that was observed.
+
+**THE FIX WAS FREE**, which is the other half of the lesson: the boundary handler
+already alternated between the opening and closing schedules on a toggle, and on
+the twentieth entry that toggle is already even. Firing it once more from the
+loop's terminal path issues the closing bracket with **no new schedule logic at
+all** — and, as a bonus, gave that path the face restore it had been exempted
+from needing.
+
+**SAY WHICH LAYER.** Block program — an authoring/verification-method lesson, not
+a substrate or toolchain limit.
+
+**REACH.** Any block whose loop body is bracketed by setup/teardown issued at
+iteration boundaries: realignments, windowing, save/restore of a rotating tap,
+scale-in/scale-out around a fixed-point kernel.
+
+**Gated by:** `verification/tests/test_chacha20_fixed_tap_ring.py` —
+`test_the_realignment_needs_TWENTY_brackets_not_nineteen` (an INV-4 negative that
+proves the omission is invisible in row 0 and fatal in rows 1-3), and the on-chip
+gate, which now asserts **all sixteen** state words rather than the first.
+
+**Related:** INV-4 (mutation testing — this is a mutant that four existing
+mutants could not distinguish), INV-52 (the same block's face defects, found the
+same way: by measuring rather than by reading the recorded counts).

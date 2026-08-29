@@ -41,7 +41,17 @@ STATE_LINE = tuple(c for k in range(4) for c in (f"row{k}", f"tap{k}"))
 #: The datapath CYCLE, in dataflow order. One lap == one quarter-round
 #: invocation, and 80 laps is the whole cipher. It is a cycle in DATAFLOW; the
 #: LAYOUT that carries it is a serpentine, not a closed ring (INV-50).
-RING = ("seq", "wb", "wbk") + STATE_LINE + QR_CELLS + ("relay", "relay2")
+#:
+#: ``drn`` sits here, before the state line, even though it is not on the
+#: datapath: PROGRAM ORDER IS WHAT DECIDES WHETHER A JUMP IS "BACKWARD", and
+#: only ONE backward JUMP per cell survives the build (INV-48 rule 2 --
+#: ``build._apply_internal_feedback`` restores the HIGHEST-ADDRESS jump per cell
+#: and silently loses any other). ``drn`` fires FIVE triggers at the rows, so
+#: listed after them it would keep exactly one and drop four, in silence. Listed
+#: before them all five are ordinary forward handoffs the resolver sizes itself.
+#: See :meth:`_drn`.
+RING = (("seq", "wb", "wbk", "drn") + STATE_LINE + QR_CELLS
+        + ("relay", "relay2"))
 
 #: Cells that are NOT on the datapath cycle: the four finish adders, the egress,
 #: and the six one-word pass-throughs that PAVE shared walks (a gap inside the
@@ -167,14 +177,17 @@ class ChaCha20KeystreamBlock(KyttarBlock):
       ordinary relay contract and peels it back into the four rows, which lie
       consecutively along its own walk. ``wbk`` then fires the four rotates and
       advances the lap counter, in that order.
-    * ``seq`` counts the 80 laps and the half boundaries; ``realign`` issues the
-      fixed 12-spin boundary schedule as unrolled literal ``JUMP``s.
+    * ``seq`` counts the 80 laps and the half boundaries, and issues the
+      TWENTIETH realignment itself before arming the drain; ``wbk``'s ``bnd``
+      entry issues the boundary spin schedule as unrolled literal ``JUMP``s.
+    * ``drn`` sequences the four drain laps, spinning every row between them.
     * ``add0..add3`` finish: each drains one row and adds that row's four
       addends, held in a rotating register that steps in lockstep so the
       add-back tap is **also** always slot 0.
-    * ``pass0..pass2``, ``add_pad`` and ``ctl_pad`` are one-word pass-throughs
+    * ``pass0..pass2`` and ``ctl_pad``/``ra_pad`` are one-word pass-throughs
       that PAVE shared walks — a gap inside the block's own footprint is a dead
-      end for an internal ``WRITE`` (INV-50).
+      end for an internal ``WRITE`` (INV-50). ``add_pad`` paves the same column
+      and additionally relays the drain baton from ``tap3`` to ``drn``.
 
     The initial state is a **build-time constant** — the four RFC constants are
     fixed and key/nonce/counter are block parameters — so the add-back needs no
@@ -183,42 +196,59 @@ class ChaCha20KeystreamBlock(KyttarBlock):
     Status
     ======
 
-    **This block is NOT `done`. The CIPHER now runs — the drain does not.**
+    **This block is NOT `done`. The CIPHER IS CORRECT; the EMISSION ORDER is
+    not.**
 
     What is proven ON THE REAL PLACED + ROUTED + BUILT CHIP, from the execution
     trace and the emitted words:
 
     * the ring runs the **whole of RFC 8439's schedule**: exactly 80
-      quarter-round invocations through all sixteen stages, 19 half-boundary
-      realignments, and 37/38/39 realignment spins of rows 1/2/3 — the exact
-      counts the reference schedule requires;
-    * the finish arms all four taps and drains;
-    * **state word 0 comes out BIT-EXACT** (``0xE4E7 0xF110``, RFC 8439 §2.3.2),
-      and so does most of state word 15. A wrong 20-round permutation cannot
-      produce those bytes, so the datapath, the write-back, the fixed tap and
-      the realignment are all confirmed correct on silicon.
+      quarter-round invocations through all sixteen stages, **20** half-boundary
+      realignments, and 40 realignment spins of each of rows 1/2/3;
+    * the finish arms all four taps, and the drain runs its four laps: each
+      adder fires exactly four times and **all 32 output words are emitted**;
+    * **all sixteen state words are BIT-EXACT** against RFC 8439 §2.3.2. Not
+      word 0 — every one of them. A wrong 20-round permutation cannot produce
+      those bytes, so the datapath, the write-back, the fixed tap, the
+      realignment, the drain and the add-back are all confirmed on silicon.
 
-    What remains is **only the drain repeat**. Each row holds four 32-bit words
-    and one drain lap emits the head of each, so the finish must run four laps
-    with a plain rotate (``row.spin``) between them. The block emits 8 of its 32
-    words: lap one, correct at its head, then stops.
+    What remains is **the ORDER the 32 words leave in**. One drain lap empties
+    one SLOT of every row, so the words are emitted lap-major — ``state[0],
+    state[4], state[8], state[12], state[1], …`` — which is the 4x4 TRANSPOSE of
+    §2.3.2's order. Every value is right; the positions are permuted. Until that
+    is fixed the block is not a drop-in for the published algorithm, so it stays
+    ``needs_human``.
 
-    The rotate has to be issued by a cell that reaches all four rows on ONE walk,
-    which on this fold is only ``wbk`` at ``(1,0)``, and the lap has to be closed
-    by a cell that can reach ``wbk``, which is only ``wb`` or ``seq`` — the tap
-    line and the finish row both run one-way AWAY from the control corner
-    (measured over all four faces from every tap, adder and the egress). That
-    costs a ``drn`` entry on ``wbk`` (5 words), a relay entry on ``wb`` (3) and a
-    lap counter on ``tap3`` (5+1). **Measured shortfall: four words**, after
-    compressing ``wbk``'s realignment schedule from twelve jumps to eight by
-    hoisting the spins common to both halves. LAYER: block program / fold — a
-    word-budget problem on this particular fold, not a substrate limit. It is
-    not a routing problem and not an arithmetic one.
+    Why the transpose is not a small fix, measured rather than argued:
+
+    * emitting ``0..15`` requires the SLOT index to advance fastest and the ROW
+      slowest — one row drained completely before the next starts. The
+      publish chain ``row0 → tap0 → row1 → …`` is what makes a lap visit all
+      four rows, so this is a per-row loop, and it needs a per-row counter.
+    * the ROW cell has four spare words but **no free data address** for the
+      loop constant (its eight state registers occupy 3..10 and the next free
+      address collides with ``base_addr`` once the four loop instructions are
+      added);
+    * the TAP cells have two to three spare words against a cost of about seven;
+    * a per-row sequencer CELL was searched exhaustively over all **seventy**
+      free slots of the 10x11 region x all four faces: ``d0``/``d1``/``d2`` have
+      candidates, and ``d3`` has **ZERO** — ``tap3`` sits at the east end where
+      the quarter-round chain begins, and nothing ``tap3`` can reach can in turn
+      reach ``row3``;
+    * relabelling cannot absorb it either: the adders fire in the order their
+      taps publish, so permuting which adder serves which row changes the values
+      and not the order (three independent arguments, all agreeing).
+
+    LAYER: block program / fold — a **fold** problem, not a substrate limit and
+    not an arithmetic one. A fold with the state line and the quarter-round
+    chain arranged so that every tap can reach a cell that reaches its own row
+    would fix it; this fold cannot.
 
     The algebra is separately verified in
     ``verification/tests/test_chacha20_fixed_tap_ring.py`` (exact against RFC
-    8439 §2.3.2 and §2.4.2, with eight INV-4 mutants). Do not use this block for
-    keystream yet: it emits a quarter of its output.
+    8439 §2.3.2 and §2.4.2, with eight INV-4 mutants). **Do not use this block
+    for keystream yet: its 32 words are correct but transposed**, and a
+    keystream consumed in the wrong word order is simply a different keystream.
 
     Interface:
         - Entry: ``seq``'s default entry; one trigger runs the whole block.
@@ -229,14 +259,15 @@ class ChaCha20KeystreamBlock(KyttarBlock):
     TAGS = ["chacha20", "crypto", "cipher", "rfc8439", "keystream",
             "block-function", "multi-word", "32-bit"]
 
-    # A 34-cell RING that is a large fraction of a 120-cell array, so it is a
-    # CHIP_SCALE block: the sole occupant of its die. The <=8-across convention
-    # exists only to keep several blocks co-resident, and a closed ring can
-    # never enclose a routing channel anyway (a cycle cannot jump a gap), so the
-    # fold is 9 wide and leaves column 9 as one contiguous through-corridor.
+    # 41 cells, a large fraction of a 120-cell array, so this is a CHIP_SCALE
+    # block: the sole occupant of its die. The <=8-across convention exists only
+    # to keep several blocks co-resident; a sole occupant has none to pass, and
+    # a wider fold leaves whole free ROWS rather than fragmented perimeter (see
+    # layout_rules.md §3 and INV-40 -- FFT64Block ships 9x12). The fold is the
+    # full 10 wide and 6 tall, so array row 0 stays free as the I/O corridor.
     # The class's one placement contract -- input and output reachable from the
-    # chip's x16 ports -- is met by putting BOTH on the ring's right edge, and
-    # it is gated end to end on a real built chip, never by inspection.
+    # chip's x16 ports -- is met by putting BOTH in the fold's top row, and it is
+    # gated end to end on a real built chip, never by inspection.
     CHIP_SCALE = True
     CHIP_SCALE_ORIENTATIONS = ((),)
 
@@ -402,18 +433,32 @@ wb:
         fired exactly once, and then nothing at all happened.
         """
         qr_tail = "" if last else "    {jump:nq}\n"
-        # At the END of the tap line the drain closes its own lap: each row holds
-        # FOUR 32-bit words and one lap emits only the head of each, so the drain
-        # runs four times. `nlap` counts them -- without it the drain recirculates
-        # forever. The baton goes SOUTH, the only direction from which anything
-        # eventually reaches the control corner (see :meth:`_wb`'s `drn`).
-        add_tail = qr_tail
+        # At the END of the tap line a drain lap CLOSES. Each row holds four
+        # 32-bit words and one lap emits only the head of each, so the drain runs
+        # four times and something has to send it round again.
+        #
+        # `tap3` is where a drain lap ends, so the baton starts there. It goes
+        # SOUTH -- a THIRD direction for that cell, after the ring (east) and the
+        # adder (north), so it costs a second face constant and its own restore.
+        # That walk crosses the fourteen idle quarter-round stages and both
+        # relays and climbs the control column to `add_pad` at hop 19; an
+        # OCCUPIED cell is transparent to a hop-counted word, so those fourteen
+        # transits cost nothing at all. `add_pad` then hands it east to `drn`.
+        #
+        # The `{jump:nlap}` sits AFTER the `f_ring` restore that ends the drain
+        # body, so it re-flips to SOUTH and restores to the ring face again --
+        # every path out of this cell leaves the resting face behind it (INV-52).
+        add_tail = qr_tail if not last else (
+            "    MOVE [FACE], R{data:f_lap}\n"
+            "    {jump:nlap}\n"
+            "    MOVE [FACE], R{data:f_ring}\n")
         # The chain: arm the next tap. The last tap ends it.
         arm_tail = "" if last else "    {jump:narm}\n"
         return CellProgram(
             inputs=[Port("h", register=1), Port("l", register=2)],
             outputs=([Port("q"), Port("ah"), Port("al")]
-                     + ([] if last else [Port("nq"), Port("narm")])),
+                     + ([Port("nlap")] if last
+                        else [Port("nq"), Port("narm")])),
             entries=[EntryPoint("default"), EntryPoint("arm")],
             data=[DataWord("one", 1, address=3),
                   # The tap serves TWO directions: along the ring (its resting
@@ -424,7 +469,13 @@ wb:
                   # the spare words for it; the row cell did not, which is the
                   # other half of why the steering lives here.
                   DataWord("f_ring", 1, address=5, is_face=True),   # EAST
-                  DataWord("f_in", 3, address=6, is_face=True)],    # NORTH
+                  DataWord("f_in", 3, address=6, is_face=True)]     # NORTH
+                 # Only the LAST tap closes the drain lap, and only it needs a
+                 # third direction (SOUTH, down the idle quarter-round chain to
+                 # `add_pad`). Giving it to every tap would spend a word on
+                 # three cells that never use it.
+                 + ([DataWord("f_lap", 0, address=7, is_face=True)]  # SOUTH
+                    if last else []),
             state=[StateVar("mode", register=4, initial_value=0,
                             reset_per_batch=True, reset_value=0)],
             assembly_template="""\
@@ -580,13 +631,31 @@ arm:
         # only the lap-advance leaves the ring walk, so `default` flips WEST for
         # `{jump:step}` and immediately restores; `bnd` never leaves it at all
         # and needs no flip. Two entries, ONE flip pair.
-        body = ""
+        #
+        # **`{jump:step}` MUST BE THIS CELL'S HIGHEST-ADDRESSED JUMP.** It is the
+        # cell's one BACKWARD internal jump (`seq` precedes `wbk` in program
+        # order), and `build._apply_internal_feedback` restores a backward jump
+        # by rewriting the HIGHEST-ADDRESS JUMP instruction of the source cell,
+        # whichever one that is (INV-48 rule 2). So the `default` entry is
+        # emitted LAST, after `bnd`, purely so that `{jump:step}` outranks
+        # `{jump:back}`.
+        #
+        # With `bnd` last -- the obvious order -- the build silently rewrote
+        # `{jump:back}` to `seq.step`, and the ONLY reason the block still ran
+        # was that `seq.step` and `row0.pub` happened to resolve to the SAME
+        # numeric address (15), so the corrupted jump landed on the right entry
+        # by pure coincidence. Shortening `seq` by three words moved `seq.step`
+        # to 18, decoupled the two, and the realignment's hand-back went to the
+        # lap counter instead of to `row0.pub`: 80 laps still ran, `wbk.bnd`
+        # still fired 20 times, and every drained word was wrong.
+        entry_default = ""
         for k in range(4):
-            body += f"    {{jump:k{k}}}\n"
-        body += ("    MOVE [FACE], R{data:f_in}\n"
-                 "    {jump:step}\n"
-                 "    MOVE [FACE], R{data:f_ring}\n"
-                 "    HALT\n")
+            entry_default += f"    {{jump:k{k}}}\n"
+        entry_default += ("    MOVE [FACE], R{data:f_in}\n"
+                          "    {jump:step}\n"
+                          "    MOVE [FACE], R{data:f_ring}\n"
+                          "    HALT\n")
+        body = ""
         # The realignment half. `tog` alternates so the SAME entry issues the
         # pre-diagonal `k` spins on one boundary and the post-diagonal `4 - k`
         # spins on the next. Every destination is a compile-time CONSTANT, so
@@ -599,41 +668,47 @@ arm:
         #     half A:  row1 x1  row2 x2  row3 x3
         #     half B:  row1 x3  row2 x2  row3 x1
         #
-        # so the COMMON part -- row1 once, row2 twice, row3 once -- is the same
-        # in both and is hoisted OUT of the branches. What is left is row3 twice
-        # on one side and row1 twice on the other. Eight jumps instead of twelve,
-        # and rotations commute across different rows so hoisting cannot reorder
-        # anything that matters.
-        a = "".join(f"    {{jump:a{k}_{i}}}\n"
-                    for k in (1, 2, 3) for i in range(k))
-        bb = "".join(f"    {{jump:b{k}_{i}}}\n"
-                     for k in (1, 2, 3) for i in range((4 - k) & 3))
-        common2 = ""
-        # `bnd` (the realignment). ONE `back` jump serves both halves: the two
-        # spin schedules are laid out so each FALLS THROUGH to a shared tail
-        # rather than each ending in its own remote JUMP (INV-43 rule 2 -- a
+        # Both are just "spin row1 p times, row2 twice, row3 q times" with
+        # ``(p, q) = (1, 3)`` on one boundary and ``(3, 1)`` on the next, so the
+        # COMMON part -- row1 once, row2 twice, row3 once -- is issued
+        # UNCONDITIONALLY and only the two remaining spins of whichever row
+        # differs are branched over. Six jumps and one branch instead of twelve
+        # jumps and two schedules; rotations of DIFFERENT rows commute, so
+        # hoisting cannot reorder anything observable.
+        #
+        # ONE `back` jump serves both halves: each arm FALLS THROUGH to a shared
+        # tail rather than ending in its own remote JUMP (INV-43 rule 2 -- a
         # remote JUMP does not stop local execution, so a second copy would need
-        # its own HALT and cost two more words). The `BR` forwards over the
-        # first half; the second half is the fall-through.
+        # its own HALT and cost two more words).
         #
         # `tog` toggles against `f_in` (numerically 2) rather than a dedicated
         # `1` constant. A two-state toggle only needs SOME single bit to flip and
-        # a `BR.Z` to test it, so ANY non-zero constant serves; reusing the face
-        # word buys back the one word this cell was over budget by. The same
-        # word doubles as the `CMP`'s operand, which sets Z unconditionally
-        # (`MOVE` does not touch the flags, so the compare must be explicit).
+        # a `BR.Z` to test it, so ANY non-zero constant serves. The same word
+        # doubles as the `CMP`'s operand, which sets Z unconditionally (`MOVE`
+        # does not touch the flags, so the compare must be explicit).
+        common = ("    {jump:c1}\n"
+                  "    {jump:c2_0}\n"
+                  "    {jump:c2_1}\n"
+                  "    {jump:c3}\n")
         body += ("bnd:\n"
-                 + common2
                  + "    XOR R{state:tog}, R{data:f_in}\n"
                    "    MOVE R{state:tog}, R0\n"
-                   "    BR.Z second\n"
-                 + a
-                 + "    CMP R{data:f_in}, R{data:f_in}\n"
+                 + common
+                 + "    BR.Z second\n"
+                   "    {jump:a3_0}\n"
+                   "    {jump:a3_1}\n"
+                   "    CMP R{data:f_in}, R{data:f_in}\n"
                    "    BR.Z back\n"
                    "second:\n"
-                 + bb
-                 + "back:\n"
-                   "    {jump:back}\n")
+                   "    {jump:b1_0}\n"
+                   "    {jump:b1_1}\n"
+                   "back:\n"
+                   "    {jump:back}\n"
+                   "    HALT\n")
+        # `default` LAST -- see the note above `entry_default`: its `{jump:step}`
+        # has to be the highest-addressed JUMP in the cell or the build's
+        # backward-jump restore rewrites `{jump:back}` instead.
+        body += "default:\n" + entry_default
         # `drn` -- the DRAIN rotate. The finish emits one 32-bit word per row per
         # lap and each row holds four, so between drain laps every row must
         # advance by ONE plain rotate. That is `row.spin`, a different entry from
@@ -643,9 +718,11 @@ arm:
         # target entry differs. It then restarts the lap at `row0.pub`, hop 1 on
         # that same walk. The words for it come from the `bnd` hoist above.
         outs = ([Port(f"k{k}") for k in range(4)] + [Port("step")]
-                + [Port(f"a{k}_{i}") for k in (1, 2, 3) for i in range(k)]
-                + [Port(f"b{k}_{i}") for k in (1, 2, 3)
-                   for i in range((4 - k) & 3)]
+                # the hoisted common spins: row1 once, row2 twice, row3 once
+                + [Port("c1"), Port("c2_0"), Port("c2_1"), Port("c3")]
+                # ...then the two that differ between the halves
+                + [Port("a3_0"), Port("a3_1"),
+                   Port("b1_0"), Port("b1_1")]
                 + [Port("back")])
         return CellProgram(
             inputs=[Port("go", register=1)],
@@ -655,7 +732,121 @@ arm:
                   DataWord("f_in", 2, address=3, is_face=True)],    # WEST
             state=[StateVar("tog", register=4, initial_value=0,
                             reset_per_batch=True, reset_value=0)],
-            assembly_template="default:\n" + body,
+            assembly_template=body,
+        )
+
+    @staticmethod
+    def _drn() -> CellProgram:
+        """The DRAIN sequencer — run the finish four times, one slot per lap.
+
+        Each row holds four 32-bit words and one drain lap publishes only the
+        head of each, so the finish must run four laps with a plain ``row.spin``
+        between them. Nothing on the original fold could do it: ``wbk``, the one
+        cell whose walk reached all four rows, had ZERO spare words, and so did
+        ``seq``, the only cell that could reach ``wbk``.
+
+        The answer is not to hunt for those words but to MOVE THE JOB ONTO CELLS
+        OF ITS OWN (INV-46, "prefer more cells doing less" -- the move that
+        landed ``LZ4DecoderBlock``). The array has 80 free cells and this block
+        is already ``CHIP_SCALE``, so a cell is the cheap resource and a word is
+        not.
+
+        Placed at ``(1, 2)`` resting NORTH, its walk enters the state line at
+        ``row0`` and runs east along it, hitting the four rows at hops 1, 3, 5,
+        7 -- the same clean pattern ``wbk`` has, and ``row0.pub`` is that same
+        hop 1, so every one of its five jumps rides the RESTING face and none
+        needs a flip (nor, therefore, a restore -- INV-52). Measured by
+        exhaustive search over every free slot x every face: NINETEEN slots reach
+        all four rows in order, so the earlier claim that ``(1, 0)`` was the only
+        one was derived, not measured, and was wrong. ``(1, 2)`` is the one that
+        is ALSO reachable from a cell with words to spare.
+
+        The lap is closed by ``tap3``, the last cell of a drain lap, whose
+        southward walk crosses the fourteen idle quarter-round stages and both
+        relays and climbs the control column to ``add_pad`` at hop 19 -- an
+        OCCUPIED cell is transparent to a hop-counted word, so those transits
+        cost nothing. ``add_pad`` is a paving cell with no declared edge of its
+        own and 26 spare words, so it takes the relay for free and hands the
+        baton one hop east to here.
+
+        ``lap`` counts DOWN from four: three times it spins every row and
+        re-publishes; the fourth time it falls out and the block is done.
+        Without the counter the drain recirculates forever.
+
+        **Known limitation — the EMISSION ORDER.** One lap of this sequencer
+        drains one SLOT of every row, so the words leave in *lap-major* order,
+        ``state[0], state[4], state[8], state[12], state[1], ...``: the 4x4
+        TRANSPOSE of RFC 8439 §2.3.2's order. Every one of the sixteen values is
+        bit-exact (measured on the real placed+routed+built chip); only their
+        positions are permuted. Emitting ``0..15`` needs the slot index to
+        advance fastest and the row slowest -- one row drained completely before
+        the next starts -- and that is a per-row loop whose counter has nowhere
+        to live on this fold: the row cell has four spare words but no data
+        address for the constant, the tap has two to three, and an exhaustive
+        search over all seventy free slots of the 10x11 region finds ZERO valid
+        placements for a per-row sequencer serving ``row3`` (``tap3`` sits at the
+        east end where the quarter-round chain begins, and nothing it can reach
+        can reach ``row3``). See the class docstring's Status section.
+        """
+        return CellProgram(
+            inputs=[Port("go", register=1)],
+            outputs=[Port("s0"), Port("s1"), Port("s2"), Port("s3"),
+                     Port("pub")],
+            entries=[EntryPoint("default")],
+            data=[DataWord("one", 1, address=2)],
+            state=[StateVar("lap", register=3, initial_value=4,
+                            reset_per_batch=True, reset_value=4)],
+            assembly_template="""\
+default:
+    SUB R{state:lap}, R{data:one}
+    MOVE R{state:lap}, R0
+    BR.Z done
+    {jump:s0}
+    {jump:s1}
+    {jump:s2}
+    {jump:s3}
+    {jump:pub}
+done:
+    HALT
+""",
+        )
+
+    @staticmethod
+    def _drn_relay() -> CellProgram:
+        """``add_pad``, promoted from bare paving to the drain baton's relay.
+
+        It already had to exist -- a gap inside the block's own footprint is a
+        dead end for a block-internal WRITE, so the control column is paved --
+        and as a pad it carried no declared edge at all and 26 spare words. It
+        sits at ``(0, 2)``, one hop WEST of ``drn``, and is the landing point of
+        ``tap3``'s southward walk (hop 19), so it is exactly the cell that joins
+        the end of the drain lap to the drain controller.
+
+        Taking the baton costs it ONE face flip: its RESTING face is NORTH,
+        which is what paves the control column for every word that merely
+        transits it, and the hand-off to ``drn`` goes EAST. The flip is UNDONE
+        before the entry ends -- the face register is CELL state that persists
+        across entries and steers transiting words too, so a path that leaves it
+        pointing east would deflect the control column's traffic (INV-52).
+        """
+        return CellProgram(
+            inputs=[Port("v", register=1)],
+            outputs=[Port("o"), Port("go")],
+            entries=[EntryPoint("default"), EntryPoint("baton")],
+            data=[DataWord("f_col", 3, address=2, is_face=True),   # NORTH
+                  DataWord("f_drn", 1, address=3, is_face=True)],  # EAST
+            state=[],
+            assembly_template="""\
+default:
+    MOVE R0, R{in:v}
+    {write:o}
+    {jump:o}
+    HALT
+baton:
+    MOVE [FACE], R{data:f_drn}
+    {jump:go}
+    MOVE [FACE], R{data:f_col}
+""",
         )
 
     @staticmethod
@@ -746,6 +937,29 @@ default:
         DOWNWARD, still performs exactly 80 invocations but computes a
         DIFFERENT cipher, so no count-based or structural check catches it —
         only a schedule-value gate does.
+
+        **There are TWENTY realignments, not nineteen.** Each diagonal half is
+        BRACKETED — ``k`` spins of row ``k`` before it and ``4 - k`` after — so
+        ten double rounds need ten opening and ten closing brackets. Nineteen
+        of those fall between laps and were always issued; the twentieth is the
+        CLOSING bracket of the last diagonal half, and it has no lap after it to
+        hang off. So ``finish`` issues it explicitly, and only then is the state
+        aligned for the drain.
+
+        Leaving it out is the subtlest bug this block had, and it survived a
+        whole pass because it hides behind row 0. Row 0's bracket is ``0`` spins
+        either way, so row 0 was always aligned and its head -- the RFC's first
+        output word -- came out BIT-EXACT while rows 1, 2 and 3 were left
+        rotated by ``4 - k`` too little and drained slot ``k`` instead of slot 0.
+        Measured on chip as spin counts of 37/38/39 where the schedule requires
+        40/40/40, i.e. exactly ``10a + 9b`` against ``10a + 10b``. A gate that
+        checked only word 0 passed it.
+
+        The closing bracket costs NO new schedule logic: ``wbk``'s ``bnd``
+        alternates halves on a toggle, and on the twentieth entry that toggle is
+        even, so ``bnd`` already issues the ``4 - k`` side. ``finish`` simply
+        fires it once more, and ``bnd``'s existing hand-back to ``row0.pub``
+        starts the first drain lap -- the taps having just been armed.
         """
         return CellProgram(
             inputs=[Port("go", register=1)],
@@ -780,10 +994,24 @@ default:
                             reset_per_batch=True, reset_value=4),
                    StateVar("laps", register=6, initial_value=LAPS_INIT,
                             reset_per_batch=True, reset_value=LAPS_INIT)],
+            # `default` FALLS THROUGH into `more`. Both start a compute lap with
+            # the identical three-instruction publish tail (flip south, jump,
+            # restore east), and a fall-through costs nothing where a second copy
+            # costs three words. That is what pays for `finish`'s closing
+            # bracket. `default` only has to set `laps` first -- `half` already
+            # resets to four per batch, so the explicit `MOVE half, four` there
+            # was redundant.
+            #
+            # NOTE the entry-address hazard this deliberately steers around
+            # (INV-6/11): entry addresses are `31 - instruction_count` plus the
+            # label offset, so ANY change to this cell's length moves `step`, and
+            # `wbk.back` resolves against `row0.pub` at the same numeric address.
+            # Both entries are re-checked by
+            # `test_entry_addresses_stay_distinct_where_edges_resolve`.
             assembly_template="""\
 default:
-    MOVE R{state:half}, R{data:four}
     MOVE R{state:laps}, R{data:eighty}
+more:
     MOVE [FACE], R{data:f_line}
     {jump:pub}
     MOVE [FACE], R{data:f_ctl}
@@ -798,15 +1026,11 @@ step:
     MOVE R{state:half}, R{data:four}
     {jump:bnd}
     HALT
-more:
-    MOVE [FACE], R{data:f_line}
-    {jump:pub}
-    MOVE [FACE], R{data:f_ctl}
-    HALT
 finish:
     MOVE [FACE], R{data:f_line}
     {jump:fin}
-    {jump:pub}
+    MOVE [FACE], R{data:f_ctl}
+    {jump:bnd}
 """,
         )
 
@@ -889,6 +1113,8 @@ default:
                 progs[cid] = self._tap(last=(cid == "tap3"))
             elif cid == "wbk":
                 progs[cid] = self._wbk()
+            elif cid == "drn":
+                progs[cid] = self._drn()
             elif cid == "seq":
                 progs[cid] = self._seq()
             else:
@@ -897,7 +1123,10 @@ default:
             progs[f"add{k}"] = self._adder(k, last=(k == 3))
         for k in range(3):
             progs[f"pass{k}"] = self._passthru()
-        progs["add_pad"] = self._passthru()
+        # `add_pad` is still the control column's paving cell -- that is what its
+        # `default` entry does -- but it ALSO carries the drain baton east to
+        # `drn` on its `baton` entry. It had 26 spare words and no declared edge.
+        progs["add_pad"] = self._drn_relay()
         progs["ctl_pad"] = self._passthru()
         progs["ra_pad"] = self._passthru()
         progs["out"] = self._out()
@@ -1022,12 +1251,29 @@ default:
         # of times, then starts the next lap directly at row0's publish. Row 2
         # gets two spins in EITHER half, so its pair is issued unconditionally
         # (`c2_*`) and only rows 1 and 3 differ between the halves.
-        for k in (1, 2, 3):
-            for i in range(k):
-                jumps.append(("wbk", f"a{k}_{i}", f"row{k}", "spin"))
-            for i in range((4 - k) & 3):
-                jumps.append(("wbk", f"b{k}_{i}", f"row{k}", "spin"))
+        # The spins common to BOTH halves -- row1 once, row2 twice, row3 once --
+        # are issued unconditionally; only the two that differ are branched over
+        # (half A adds two more of row3, half B two more of row1).
+        jumps.append(("wbk", "c1", "row1", "spin"))
+        jumps.append(("wbk", "c2_0", "row2", "spin"))
+        jumps.append(("wbk", "c2_1", "row2", "spin"))
+        jumps.append(("wbk", "c3", "row3", "spin"))
+        jumps.append(("wbk", "a3_0", "row3", "spin"))
+        jumps.append(("wbk", "a3_1", "row3", "spin"))
+        jumps.append(("wbk", "b1_0", "row1", "spin"))
+        jumps.append(("wbk", "b1_1", "row1", "spin"))
         jumps.append(("wbk", "back", "row0", "pub"))
+        # THE DRAIN LAP. `tap3` is where a drain lap ends, so it sends the baton
+        # south down the idle quarter-round chain and up the control column to
+        # `add_pad` (hop 19 -- occupied cells are transparent to a hop-counted
+        # word), which relays it one hop east to `drn`. `drn` spins all four rows
+        # and re-publishes, four laps in all, so each row's four 32-bit words all
+        # reach the adders.
+        jumps.append(("tap3", "nlap", "add_pad", "baton"))
+        jumps.append(("add_pad", "go", "drn", "default"))
+        for k in range(4):
+            jumps.append(("drn", f"s{k}", f"row{k}", "spin"))
+        jumps.append(("drn", "pub", "row0", "pub"))
         return jumps
 
     def emit_faces(self) -> Dict[Tuple[Any, str], Any]:
@@ -1059,6 +1305,10 @@ default:
         # `seq` drops south onto the state line for everything but the boundary.
         for p in ("pub", "fin"):
             faces[("seq", p)] = "wb"
+        # The drain lap's baton: `tap3` turns SOUTH into the idle quarter-round
+        # chain, and `add_pad` turns EAST out of the control column.
+        faces[("tap3", "nlap")] = "l1_add"
+        faces[("add_pad", "go")] = "drn"
         return faces
 
     def _geometry(self) -> Dict[Any, Tuple[int, int, str]]:
@@ -1076,10 +1326,11 @@ default:
 
         1. **The state line must be collinear and co-facing.**
            ``row0 tap0 row1 tap1 row2 tap2 row3 tap3`` sit in one eastward row,
-           because ``wb`` (eight write-backs), ``wbk`` (four rotate triggers)
-           and ``realign`` (the boundary spins) each have to reach several of
-           them from ONE walk. This is the ``LMSEqualizerBlock`` broadcast
-           idiom: consecutive targets along a single walk.
+           because ``wb`` (eight write-backs), ``wbk`` (four rotate triggers and
+           the boundary spins) and ``drn`` (the drain's four spins and its
+           re-publish) each have to reach several of them from ONE walk. This is
+           the ``LMSEqualizerBlock`` broadcast idiom: consecutive targets along a
+           single walk.
         2. **The finish row must be gap-free.** The four adders share one
            eastward walk into ``out``, and an unoccupied column is a DEAD END
            for a block-internal WRITE — the build gives a bare array cell a face
@@ -1087,19 +1338,21 @@ default:
            columns between the adders. (A faced-but-programless cell DOES
            forward — measured at distances 2/3/4/6 — but nothing sets that face
            inside the block's own footprint.)
-        3. **The control column is one northward walk.** ``relay2``, ``realign``,
-           ``seq`` and ``wbk`` all face north, so each one's walk climbs the
-           column, passes through ``wb``, and continues east along the state
-           line. The single backward edge, ``wb -> wbk``, is served by ``wb``'s
-           one face flip.
+        3. **The control column is one northward walk.** ``relay2``, the three
+           pads and ``drn`` all face north, so each one's walk climbs the column,
+           passes through ``wb``, and continues east along the state line. The
+           single backward edge, ``wb -> wbk``, is served by ``wb``'s one face
+           flip. ``tap3``'s drain baton rides the same column: it leaves SOUTH,
+           crosses the idle quarter-round chain, and lands on ``add_pad`` at hop
+           19, which turns it EAST into ``drn``.
 
-        The bands::
+        The bands (``.`` is free)::
 
-            y=0  finish:   add0 pass0 add1 pass1 add2 pass2 add3 out
+            y=0  finish:   seq  wbk  add0 pass0 add1 pass1 add2 pass2 add3 out
             y=1  state:    wb | row0 tap0 row1 tap1 row2 tap2 row3 tap3 | in0
-            y=2  QR leg 1: (west)  in1 l1_add l1_xor l2_add l2_xor l2_rota
-            y=3  QR leg 2: (east)  l2_rotb l3_add l3_xor
-            y=4  QR leg 3: (west)  l3_rota l3_rotb l4_add l4_xor l4_rota l4_rotb
+            y=2  ctl/QR:   add_pad drn . . . . .  l1_xor l1_add in1
+            y=3  ctl/QR:   ctl_pad . . . . . .    l2_add l2_xor l2_rota
+            y=4  QR leg 3: ra_pad l4_rotb … l3_rota l3_xor l3_add l2_rotb
             y=5  loop:     relay2 relay
 
         Each adder sits directly NORTH of its own tap, so the tap's inward face
@@ -1172,6 +1425,18 @@ default:
         lay["ra_pad"] = (0, 4, "north")
         lay["ctl_pad"] = (0, 3, "north")
         lay["add_pad"] = (0, 2, "north")
+
+        # --- the DRAIN sequencer. Resting NORTH from (1,2) its walk enters the
+        #     state line at `row0` and runs east along it, so the four rows sit
+        #     at hops 1, 3, 5, 7 and `row0.pub` is that same hop 1 -- every one
+        #     of its jumps rides the resting face and none needs a flip.
+        #     Exhaustive search over every free slot x every face finds NINETEEN
+        #     slots that reach all four rows in order, so the earlier claim that
+        #     `(1,0)` was the only such slot was derived, not measured, and was
+        #     wrong. `(1,2)` is the one that is ALSO reachable from a cell with
+        #     words to spare (`add_pad`, one hop west), which is what closes the
+        #     drain lap.
+        lay["drn"] = (1, 2, "north")
 
         assert len(lay) == self.cell_count, (
             f"layout has {len(lay)} cells, block declares {self.cell_count}")

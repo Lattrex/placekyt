@@ -9,6 +9,158 @@ block-specific gotcha. Promote anything that generalizes across block classes in
 and superseded material merged into the surviving entries; no durable lesson was
 dropped) — append new entries above the oldest ones as before.
 
+## ChaCha20KeystreamBlock — the cipher is CORRECT on chip: all 16 state words bit-exact. Two "verified" facts from the last pass were the two remaining bugs 2026-08-30
+
+Fifth pass. The block was handed over as *"four words short of done"*, with a
+strongly-indicated fix (add a cell for the drain) and a named blocker (only `wbk`
+at `(1,0)` can reach all four rows). **The drain was indeed a cell, and the
+handoff's headline advice was right. But the four-word shortfall was not the real
+constraint, and two things the previous pass had recorded as PROVEN CORRECT were
+the two actual defects.**
+
+Where it now stands, on the real placed + routed + built chip: 80 quarter-round
+invocations through all sixteen stages, **20** half-boundary realignments, 40
+realignment spins of each of rows 1/2/3, four taps armed, each adder firing four
+times, **32 words emitted**, and **all sixteen state words BIT-EXACT** against
+RFC 8439 §2.3.2 — not word 0, every one of them.
+
+Still `needs_human`, for a genuinely smaller and fully-characterised reason: the
+32 correct words come out **transposed**. See the last section.
+
+### The two defects were both recorded as correct behaviour
+
+**1. There are TWENTY realignments, not nineteen.** Each diagonal half is
+bracketed — row `k` spun `k` times before it and `4 - k` after — so ten double
+rounds need ten openings and ten closings. Nineteen fall between laps; the
+twentieth is the closing bracket of the *last* diagonal half and has no following
+lap to hang off, so it was never issued. On chip the spin counts were 37/38/39
+where the schedule requires 40/40/40 — exactly `10a + 9b` against `10a + 10b`.
+
+The previous pass's on-chip gate asserted `wbk.bnd == 19` and `row{1,2,3}.spin ==
+37/38/39` **as "the exact counts RFC 8439's 20 rounds require"**, and asserted the
+value of word 0 alone. Every assertion passed. The recorded numbers were the bug,
+written down as the specification.
+
+It hid because **row 0's bracket is zero spins either way**. Row 0 stayed aligned,
+and row 0's head is the RFC's first output word — so `0xE4E7F110` came out
+bit-exact while rows 1, 2 and 3 were each rotated by `4 - k` too little and
+drained slot `k` instead of slot 0. A gate on word 0 could not see it. Promoted:
+*a value gate must cover the degenerate element (zero-width bracket, unit
+coefficient, zero shift), because that is the one that stays correct under the
+bug — and it is very often the one "check the first word" lands on.*
+
+The fix cost nothing. `wbk.bnd` already alternates halves on a toggle, and on the
+twentieth entry the toggle is already even, so `seq.finish` simply fires it once
+more before arming the drain. No new schedule logic — and it gave `finish` the
+face restore it had previously been *exempted* from needing, so the fold gate now
+runs with **zero exemptions**.
+
+**2. A backward JUMP had been silently redirected for a whole pass, hidden by an
+address coincidence.** `build._apply_internal_feedback` resolves a backward
+internal jump by rewriting the source cell's **highest-addressed `JUMP`** —
+whichever instruction that is; it does not match the port name. `wbk` has one
+backward jump (`step → seq.step`), but its highest-addressed jump was `back →
+row0.pub`. So the build rewrote `back` to point at `seq.step`. Straight out of the
+built words: address 30, `0x73d2` = `JUMP dist=1 entry=18`, and `row0.pub` is 15.
+
+**It ran anyway, because `seq.step` and `row0.pub` both resolved to 15.** The
+corrupted jump landed on the right entry by pure numerical coincidence.
+
+This is the same hazard the previous pass wrote down from the other side —
+*"dropping `seq`'s redundant `MOVE half, four` FITS AND BREAKS THE BLOCK"* — and
+read as "shortening a cell can break an internal edge". That is the symptom. The
+cause is that **the edge was already broken and the collision was masking it**;
+shortening `seq` did not break anything, it *revealed* it. I hit exactly this: a
+three-instruction saving in `seq` moved `seq.step` to 18, and the realignment's
+hand-back started firing into the lap counter. 80 laps still ran, `wbk.bnd` still
+fired 20 times, `row0.pub` dropped from 84 to 64 — and every drained word was
+wrong.
+
+Fixed by emitting `wbk`'s `default` entry **last**, so `{jump:step}` is the
+highest-addressed jump — which is what the build's rule actually requires. That
+cost one `HALT`, recovered by hoisting the spins common to both half-boundaries
+(row1 once, row2 twice, row3 once) out of the branch and keeping only the two
+that differ: six jumps and one branch where there were twelve jumps and two
+schedules.
+
+Both clauses are now static gates, and so is the collision that masked them.
+
+### The handoff's blocking claim was wrong, and measurably so
+
+The dispatch recorded that the drain rotate *"must come from the only cell
+reaching all four rows on one walk (`wbk` at (1,0))"*. An exhaustive search over
+every free slot × every face finds **nineteen** slots whose walk reaches all four
+rows in order. That claim was derived, not measured — and the campaign's own rule
+("every 'cannot' that was DERIVED was wrong; every one that was MEASURED held")
+called it correctly for the fifth time.
+
+So the four-word shortfall was never the binding constraint. The drain went to
+`drn` at `(1,2)` resting NORTH: rows at hops 1/3/5/7 and `row0.pub` at that same
+hop 1, so **all five of its jumps ride the resting face with no flip at all** —
+and therefore need no restore. The lap closes `tap3` → (SOUTH, hop 19, straight
+through the fourteen idle quarter-round stages, which are transparent to a
+hop-counted word) → `add_pad`, a paving cell that already had to exist and had 26
+spare words, which turns it one hop east into `drn`. INV-46, exactly as
+`LZ4DecoderBlock` did it. 41 cells, one more than before.
+
+**Program order is a design lever.** `drn` fires five triggers at the state rows
+and is listed *before* them in `build_cell_programs`, because whether a jump is
+"backward" is decided entirely by that order — and a cell with five backward
+jumps keeps one and silently drops four. Listed first, all five are ordinary
+forward handoffs the resolver sizes itself.
+
+### What remains: the words are right, the ORDER is not
+
+One drain lap empties one **slot** of every row, so the words leave lap-major —
+`state[0], state[4], state[8], state[12], state[1], …` — the 4×4 **transpose** of
+§2.3.2's order. Every value is bit-exact; the positions are permuted. A keystream
+consumed in the wrong word order is a different keystream, so this is not
+cosmetic and the block stays `needs_human`.
+
+Emitting `0..15` needs the slot index to advance fastest and the row slowest —
+one row drained completely before the next starts — which is a per-row loop with
+a per-row counter. **All three places it could live were measured, and none fits
+this fold:**
+
+* the **row** cell has four spare words but **no free data address** for the loop
+  constant: its eight state registers occupy 3..10, and the next free address
+  collides with `base_addr` once the four loop instructions are added;
+* the **tap** cells have 2–3 spare against a cost of about seven;
+* a per-row sequencer **cell** was searched exhaustively over **all seventy** free
+  slots of the 10×11 region × all four faces. `d0`/`d1`/`d2` have candidates;
+  **`d3` has zero** — `tap3` sits at the east end where the quarter-round chain
+  begins, and nothing `tap3` can reach can in turn reach `row3`.
+
+Relabelling cannot absorb it either: the adders fire in the order their taps
+publish, so permuting which adder serves which row changes the *values*, not the
+order. Three independent arguments, all agreeing.
+
+**LAYER: block program / fold.** Not the substrate, not routing, not arithmetic.
+A fold in which every tap can reach a cell that reaches its own row would fix it;
+this one — with the quarter-round chain starting at the east end of the state
+line and folding back across every column — cannot. That is the next pass's job,
+and it is a re-fold, not a re-design: the fixed-tap ring, the realignment and the
+drain are all now proven correct on silicon.
+
+### Method note
+
+The previous two passes each sharpened one lesson: *"a model that flatters the
+design is worse than no model"*, then *"reading `MOVE [FACE]` is necessary but not
+sufficient — iterate to a fixpoint"*. This pass adds a third turn of the same
+screw, and it is about **gates rather than models**:
+
+> **A gate that asserts the numbers you observed is not a gate.** Both of this
+> pass's defects were sitting inside assertions that passed — one as "the exact
+> counts the schedule requires" (they were not), one as an address equality nobody
+> had reason to question. Derive the expected value from the algebra (`10a + 10b`),
+> assert *all* the outputs rather than the first, and treat a numerical
+> coincidence between two entry addresses as a thing to prove impossible, not a
+> thing to rely on.
+
+Two candidate invariants recorded as `INV-NEXT` in `invariants.md`: the
+backward-jump-by-address rule (which **closes INV-52 clause 5**, previously
+recorded as open), and the last-closing-bracket rule.
+
 ## ChaCha20KeystreamBlock — the ring RUNS: all 80 laps and state word 0 bit-exact on chip. Every defect was a FACE, and the router could not see any of them 2026-08-30
 
 Fourth pass, and a bounded one: the block was handed over as "one symptom away"

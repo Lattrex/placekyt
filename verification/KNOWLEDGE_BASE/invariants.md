@@ -2577,6 +2577,40 @@ the panel), INV-31 (the panel contract), INV-32 (port-cell transit), INV-33 (the
 register-allocation contract the cell budgets come from), INV-36 (the 31-hop cap).
 ## INV-47 — When a wide value cannot be CARRIED, make it RESIDENT and turn the index into ADDRESS ARITHMETIC — the panel is the only computed-destination path
 
+> ### ⚠️ CORRECTED 2026-08-29 — the ceiling below is REAL but was OVER-SCOPED
+>
+> The original text read: *"Solving `3W + 1 <= 31` gives a hard ceiling: **a live
+> set wider than 10 sixteen-bit words cannot transit a cell at all.**"* That
+> sentence is **FALSE as written**, and it was derived by algebra over a formula
+> — never measured. It is left here because it was copied into a commit message,
+> a factory report and a manifest note, and a reader needs to recognise it.
+>
+> **What is true:** `3W + 1` prices exactly ONE construction — a relay that
+> HOLDS all `W` words in its own registers and forwards each with
+> `MOVE R0, Rw` + `WRITE`. For that shape the bound is real, and it is
+> **`W <= 9`, not `W <= 10`** — at `W = 10` the inequality is satisfied with
+> equality, which leaves zero words and still collides with the instructions.
+>
+> **What is false:** the generalisation to "a cell". A **STREAMING** relay (one
+> word in, the same word straight out, holding nothing) costs a *constant* 3
+> instructions at any frame width, so there is nothing to solve for. **Measured
+> on the real placed+routed chip: frames of 8/10/12/16/24/32/64/128 words cross
+> 1 and 3 cells bit-exact.** W=32 is the full ChaCha20 state — the exact case
+> this invariant declared impossible.
+>
+> **Layer:** neither hardware nor toolchain. It is a property of a CODE SHAPE,
+> so it is avoidable by writing a different relay.
+>
+> **Reach:** measured on the transit fixture at 1 and 3 cells deep, widths 8-128.
+>
+> **Gated by:** `verification/tests/test_wide_transit_ceiling.py` (38 tests) —
+> which asserts BOTH halves: that wide frames do transit, and that the
+> hold-and-forward shape really does overrun at `W >= 10`.
+>
+> **Consequence for this invariant's advice:** "make it resident" is still
+> often right, but it is a *cost* argument, not a *possibility* argument, and
+> the panel is NOT the only option. See the correction to the second half below.
+
 **The rule.** INV-45 prices carrying a `W`-word live set at `3W + 1` of a cell's
 31 usable words. Solving `3W + 1 <= 31` gives a hard ceiling: **a live set wider
 than 10 sixteen-bit words cannot transit a cell at all.** Past that ceiling the
@@ -2597,6 +2631,31 @@ address register R5 and the push-read descriptors R3/R4 are all written, not
 encoded. **A data-dependent dataflow must be re-expressed as panel addressing, or
 it does not fit.**
 
+> ### ⚠️ NARROWED 2026-08-29 — "the panel is the ONLY computed-destination path" is too strong
+>
+> The `HOP_CNT`/`DEST` half is **correct and permanent** (hardware/ISA): they
+> are instruction bits `[9:5]`/`[4:0]`, so a cell genuinely cannot compute where
+> to send a word. But three other data-dependent mechanisms exist, all used by
+> shipped blocks, and a builder who reads "panel or nothing" will reach for the
+> panel when it is not needed:
+>
+> 1. **`FACE` is runtime-writable** (CONFIG **1**, read/write; guide §3). A cell
+>    can compute its output *direction* mid-program (`MOVE [FACE], Rn`), and
+>    `DataWord(is_face=True)` exists so the placer D4-transforms the constant.
+>    So *direction* is data-dependent even though hop count and destination are
+>    not. Shipped: `costas_loop_block`, `agc_cc_block`, `freq_xlating_fir_block`,
+>    `iq_upconvert_block`.
+> 2. **`LOAD [Rn]` is a computed in-cell table lookup** — `R0 = mem[mem[Rn] &
+>    0x1F]`, up to 32 entries (~21 practical). A data-dependent *word choice*
+>    inside a cell costs one register, no panel. Shipped: `hamming_decoder`,
+>    `fsk4_symbol_mapper`, `dot_product_mac`, `golay_decoder`.
+> 3. **A fixed schedule is not a computed dataflow at all.** Check whether the
+>    "permutation" actually varies at runtime before concluding it needs a
+>    computed destination — see the worked case below, where it does not.
+>
+> **Reach:** the three mechanisms are each demonstrated by shipped, verified
+> blocks; items 1 and 2 were additionally re-measured on chip 2026-08-29.
+
 **Worked case (ChaCha20 keystream, measured 2026-08-29).** 16 x 32-bit state = 32
 sixteen-bit words; relaying it through one cell costs `3*32 + 1 = 97` words of a
 31-word cell — over 3x the whole cell. The round permutation (column vs diagonal)
@@ -2609,6 +2668,39 @@ RFC states as eight literal index quadruples collapses to one closed form:
 Three instructions (`SHL #2` / `ADD` / `AND #3`), no table. **Proven on the real
 placed+routed chip:** a built `gather` cell emitted the exact RFC panel-address
 sequence for all 8 quadruples, both halves, including the wrap-around diagonals.
+
+> ### ⚠️ CORRECTED 2026-08-29 — the ChaCha20 permutation is NOT data-dependent
+>
+> The claim above that the round permutation is *"exactly the data-dependent
+> dataflow"* is **wrong**, and it is the reason this block was routed toward the
+> panel. Measured facts:
+>
+> * All **80** quarter-round invocations are **ten identical repeats of a fixed
+>   8-step cycle**: only 8 distinct index quadruples exist in the whole cipher,
+>   and `schedule[i] == cycle[i % 8]` for every `i`. Nothing varies at runtime.
+>   The schedule is a **constant**, so it is AUTHORED, never computed.
+> * Better: **every quadruple takes exactly one word from each of the four rows**
+>   `{0-3} {4-7} {8-11} {12-15}` — that is the defining property of the ChaCha
+>   schedule (it is why each half round partitions the state). So if row `k`
+>   lives in its own cell, the `4*k` term of the closed form is *which row*,
+>   already resolved by WHICH CELL is addressed. All that remains is the
+>   within-row selector `(j + k*shift) & 3` — a **2-bit number**, which is a
+>   `LOAD [Rn]` index, not a destination.
+>
+> **Consequence:** the 32-word state can live in **cell registers** across eight
+> lane cells, with no panel, no computed destination, and no gather/scatter
+> protocol. Measured on the real placed+routed chip: a lane cell reads the
+> selected word (`LOAD`-indirect) and writes a result back into the same slot
+> (4-way `CMP`/`BR`, since the ISA has **no `STORE [Rn]`**) correctly for all 32
+> (row, half, selector) combinations, carrying the real RFC 8439 §2.3.2 state;
+> the sequencer emits all 80 invocations of the RFC schedule exactly; and the
+> shipped 17-cell `ChaCha20QRBlock` sustains all 80 sequential invocations
+> bit-exact, reproducing the §2.3.2 output state after the add-back.
+>
+> **The general lesson, which is the transferable part:** before concluding a
+> dataflow needs a computed destination, check whether the schedule actually
+> VARIES. A permutation stated as a literal table in a spec is usually a
+> constant, and a constant is wiring.
 
 **How to build it (the three rules that cost real time to learn).**
 
@@ -2657,3 +2749,86 @@ interleavers, LZ4's history window, sort/permutation networks, any indexed
 gather/scatter. Related: INV-45 (the transport ceiling this starts from), INV-31
 (the panel + its protocol), INV-20 (the fan-in hazard rule 2 avoids), INV-33 (the
 register/overlap contract), INV-29 (the table-heavy case).
+
+## INV-49 — A datapath can be REUSED for N sequential passes; check whether a "permutation" is a CONSTANT before paying for a computed destination
+
+**Why this exists.** Two blocks in this campaign were quarantined against walls
+that a measurement would have removed, and both quarantines were algebra over a
+formula rather than something anyone ran. This invariant records the two
+mechanisms that dissolve the usual "it does not fit" verdict for an iterative
+block, and both are gated.
+
+**1. RECIRCULATION — one datapath, N sequential passes.** A block whose unrolled
+form does not fit does not have to be unrolled. A backward `JUMP` that re-enters
+a cell **mid-program at a named entry**, with the loop counter held in that
+cell's state, runs the same datapath again with its registers intact.
+
+Measured on the real placed+routed chip at **1, 2, 4, 8, 10, 20 and 80 passes**,
+exact every time. 80 is the number that matters: ChaCha20's 80 quarter-round
+invocations price out at `17 cells x 80 = 1360` against a 120-cell array, and
+reuse is what makes the cipher fit at all.
+
+Three rules the shape must respect:
+
+* **At most ONE backward `JUMP` per cell.** `build._apply_internal_feedback`
+  restores the highest-address `JUMP` per cell and a second is **silently lost**.
+  Nest loops with LOCAL `BR` branches, never with extra JUMPs. (Same rule INV-48
+  rule 2 states for panel blocks; it is general.)
+* **The loop exit must leave the loop AXIS.** A cell has one forward face, so
+  the finished value cannot travel back along the path the recirculated value
+  uses — the neighbour that bounces the loop would consume it (INV-32). Switch
+  `FACE` (CONFIG 1 is runtime-writable) and drop the result off-axis into a
+  dedicated egress cell.
+* **Deliver the recirculated word into the register the body already reads.**
+  Aliasing the loop's return input onto the body's accumulator register makes
+  re-entry free — no copy, no extra instruction.
+
+**2. A "permutation" is usually a CONSTANT, and a constant is WIRING.** Before
+concluding that an indexed dataflow needs a computed destination (and therefore
+the panel — INV-47), check whether the schedule actually VARIES AT RUNTIME.
+Specs state permutations as literal tables, which *looks* data-dependent and
+almost never is.
+
+The diagnostic, in order:
+
+1. **Enumerate the whole schedule and count DISTINCT patterns.** ChaCha20's 80
+   invocations are ten identical repeats of an 8-step cycle — 8 distinct
+   quadruples in the entire cipher. A short cycle means a counter, not a lookup.
+2. **Factor the index into "which cell" and "which word within the cell".** The
+   part that selects a *cell* is static routing (free). Only the part that
+   selects a *word inside* a cell needs a mechanism, and `LOAD [Rn]`
+   (`R0 = mem[mem[Rn] & 0x1F]`) is that mechanism — a computed word choice for
+   one register, no panel. ChaCha20's `index(k) = 4k + ((j + k*shift) & 3)`
+   factors exactly this way: `4k` IS the row, so it is which lane cell is
+   addressed, and only the 2-bit `(j + k*shift) & 3` is ever computed.
+3. **Remember there is no `STORE [Rn]`.** `LOAD` reads at a computed address but
+   nothing writes at one. The write-back is a static N-way `CMP`/`BR` branch
+   (measured: exactly the selected slot changes, the other N-1 untouched). For
+   N=4 that is ~11 instructions — cheap. For large N it is not, and *that* is
+   the real threshold at which the panel wins.
+
+**The trade this implies.** Cells are usually the resource in surplus (a 120-cell
+array) and WORDS are the scarce one (31 per cell). So prefer MORE cells doing
+LESS each: an 8-way demux does not fit one cell (~48 instructions) but a chain of
+eight one-slot cells fits easily at ~7 each. Splitting a cell is nearly always
+the right answer to a budget overrun.
+
+**SAY WHICH LAYER.** Everything above is hardware/ISA-permanent EXCEPT the
+one-backward-JUMP-per-cell rule, which is a **TOOLCHAIN** limit
+(`placekyt/engine/build.py::_apply_internal_feedback` keeps only the
+highest-address `JUMP` per cell) and is fixable there.
+
+**REACH.** Recirculation measured on a 2-cell loop at 7 pass counts up to 80.
+The permutation factoring is demonstrated on ChaCha20 (measured end to end:
+lane read/write over all 32 (row, half, selector) combinations, the full 80-step
+schedule on chip, and the shipped `ChaCha20QRBlock` sustaining 80 sequential
+invocations bit-exact). It is a method, not a proof about all indexed dataflows.
+
+**Gated by:** `verification/tests/test_wide_transit_ceiling.py` (38 tests) —
+recirculation at 7 pass counts plus a negative that different pass counts give
+different answers; and the INV-47 corrections it also pins.
+
+**Related:** INV-47 (the panel path, whose "only" this narrows), INV-45 (the
+transport pricing), INV-48 rule 2 (the same one-backward-JUMP rule, stated for
+panel blocks), INV-32 (why the loop exit must leave the axis), INV-34 (shift
+counts are immediates — the reason CORDIC unrolled instead of looping).

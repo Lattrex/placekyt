@@ -92,6 +92,95 @@ def test_each_half_round_touches_every_state_word_exactly_once():
         assert sorted(seen) == list(range(16))
 
 
+# --------------------------------------------------------------------------
+# The schedule is a CONSTANT — the property that decides the architecture.
+#
+# The 2026-08-29 quarantine concluded the round permutation was a
+# data-dependent dataflow, which on this substrate is un-expressible as routing
+# (a WRITE's HOP_CNT/DEST are instruction fields) and therefore forces the SRAM
+# panel. These gates pin the facts that show it is NOT data-dependent, so a
+# future builder does not pay for a panel this cipher does not need. See
+# INV-49.
+# --------------------------------------------------------------------------
+def _full_schedule():
+    """All 80 quarter-round invocations, in order."""
+    return [g.quarterround_indices(j, diagonal)
+            for _ in range(10)
+            for diagonal in (False, True)
+            for j in range(4)]
+
+
+def test_the_whole_cipher_is_ten_repeats_of_one_eight_step_cycle():
+    """80 invocations, but only ONE 8-step cycle, repeated ten times.
+
+    Nothing about the dataflow varies at runtime, so the schedule is a
+    CONSTANT — it is authored wiring plus a counter, never a computed
+    destination.
+    """
+    sched = _full_schedule()
+    assert len(sched) == 80
+    cycle = sched[:8]
+    assert all(sched[i] == cycle[i % 8] for i in range(80))
+
+
+def test_only_eight_distinct_quadruples_exist_in_the_entire_cipher():
+    """A short cycle means a counter, not a lookup table."""
+    assert len(set(_full_schedule())) == 8
+
+
+def test_every_quadruple_takes_one_word_from_each_row():
+    """THE structural property that removes the need for a panel.
+
+    Each quarter round draws exactly one word from each of the four rows
+    {0-3} {4-7} {8-11} {12-15}. So if row k lives in its own cell, the ``4*k``
+    term of ``index(k) = 4k + ((j + k*shift) & 3)`` is *which row*, already
+    resolved by WHICH CELL is addressed — and the only thing ever computed is
+    the 2-bit within-row selector, which is a ``LOAD [Rn]`` index.
+    """
+    for quad in set(_full_schedule()):
+        assert sorted(i // 4 for i in quad) == [0, 1, 2, 3], (
+            f"{quad} does not take exactly one word per row")
+
+
+def test_the_within_row_selector_is_two_bits():
+    """What actually has to be computed on chip is a number in 0..3."""
+    for j in range(4):
+        for diagonal in (False, True):
+            quad = g.quarterround_indices(j, diagonal)
+            for k, idx in enumerate(quad):
+                sel = idx - 4 * k
+                assert 0 <= sel <= 3
+
+
+def test_counter_directions_are_load_bearing():
+    """The COLUMN half runs first and ``j`` must ASCEND.
+
+    A down-counting ``j`` yields ``j & 3 = 0,3,2,1`` and silently computes a
+    DIFFERENT cipher — it still produces exactly 80 invocations, so no
+    structural check catches it. Measured while building the sequencer.
+    """
+    want = [g.quarterround_indices(j, d)
+            for d in (False, True) for j in range(4)]
+
+    def sched(start_shift, ascending):
+        j, shift, out = (0 if ascending else 4), start_shift, []
+        for _ in range(8):
+            out.append(tuple(4 * k + ((j + k * shift) & 3) for k in range(4)))
+            if ascending:
+                j = (j + 1) & 3
+                if j == 0:
+                    shift ^= 1
+            else:
+                j -= 1
+                if j == 0:
+                    j, shift = 4, shift ^ 1
+        return out
+
+    assert sched(0, True) == want                  # the correct ordering
+    assert sched(0, False) != want                 # descending j is a mutant
+    assert sched(1, True) != want                  # diagonal-first is a mutant
+
+
 # ----------------------------------------------------------- state + counter
 def test_initial_state_layout():
     """§2.3: 4 constants, 8 key words, the counter, then 3 nonce words."""

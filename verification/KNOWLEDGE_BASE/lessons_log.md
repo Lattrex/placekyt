@@ -9,6 +9,98 @@ block-specific gotcha. Promote anything that generalizes across block classes in
 and superseded material merged into the surviving entries; no durable lesson was
 dropped) — append new entries above the oldest ones as before.
 
+## ChaCha20KeystreamBlock — RE-EXAMINED: two of the three quarantine walls were WRONG, and the block needs no SRAM panel 2026-08-29
+
+Re-opened the 2026-08-29 quarantine of the RFC 8439 §2.3 block function. **Outcome:
+still `needs_human`, but for a completely different and much smaller reason** — the
+architecture is settled and every mechanism is measured on the real placed+routed
+chip; what remains is wiring, not architecture. Promoted to **INV-49**, and INV-47
+is corrected in place (twice).
+
+The headline, because it is being used to size a future architecture:
+
+> **"The state cannot transit a cell" is FALSE.** It was algebra over INV-45's
+> `3W + 1`, never run. A **streaming** relay carries 128-word frames through real
+> cells exactly. The bound is real only for the *hold-all-in-registers* relay, and
+> for that shape it is **W ≤ 9**, not 10.
+
+### The three walls, re-measured
+
+| wall | verdict |
+|---|---|
+| 1. capacity — 17 cells/QR × 80 = 1360 vs 120 | **STANDS.** Not re-derived. Forces REUSE. |
+| 2. the 32-word state cannot transit a cell | **FALSE.** See above. Layer: a property of a CODE SHAPE — not hardware, not toolchain. |
+| 3. HOP_CNT/DEST are immediates | **STANDS as an ISA fact, but does not bind this block.** |
+
+Wall 3 does not bind because **the permutation is not data-dependent**. All 80
+invocations are ten identical repeats of a fixed 8-step cycle (only 8 distinct
+quadruples exist in the whole cipher). Better: **every quadruple takes exactly one
+word from each of the four rows** — so with row `k` in its own lane cell, the `4k`
+term of `index(k) = 4k + ((j + k*shift) & 3)` is *which cell* (static routing), and
+the only computed value is the 2-bit within-row selector, i.e. a `LOAD [Rn]` index.
+**No SRAM panel is needed** — which deletes the entire integration surface the
+previous attempt died on (`run_block_dut` has no panel awareness, push-read
+descriptors, `resolved_io` landing-cell ordering).
+
+### Measured on chip this session (all on the real 10×12)
+
+1. **Recirculation.** A backward `JUMP` re-entering a cell mid-program with the
+   counter in cell state: **1/2/4/8/10/20/80 passes over ONE datapath, exact every
+   time.** This is what makes wall 1 survivable.
+2. **The lane cell.** `LOAD`-indirect read AND 4-way-`CMP`/`BR` write-back (the ISA
+   has **no `STORE [Rn]`**) correct for **all 32 (row, half, selector)
+   combinations**, carrying the real RFC §2.3.2 state, exactly one slot changed per
+   write.
+3. **The sequencer.** `seq_ctl` + `seq_sel` emit **all 80 invocations of the RFC
+   schedule exactly**.
+4. **QR reuse.** The shipped 17-cell `ChaCha20QRBlock` sustains **all 80 sequential
+   invocations bit-exact** (640 words in, 640 out), and the loop + add-back
+   reproduces the RFC §2.3.2 output state.
+
+### Architecture (register-resident, panel-free, 37 cells of 120)
+
+8 lane cells + `seq_ctl` + `seq_sel` + the 17-cell QR engine **reused verbatim** + an
+8-cell write-back peel chain + finalizer + serializer. Every cell authored and
+budget-checked and every one FITS: lane 20 instr / base 11 / max pin 10; `seq_sel`
+19/12/6; `seq_ctl` 20/11/9; peel 7/24/3; final 9/22/4; ser 6/25/2.
+
+Two design facts worth reusing:
+
+* **A single 8-way demux does not fit** (~48 instructions vs a 31-word budget); a
+  chain of eight one-slot cells is ~7 each. **Cells are the surplus resource, words
+  are the scarce one** — splitting a cell is nearly always the right answer to an
+  overrun.
+* **The 32-bit add-back must live in ONE cell.** ALU flags are per-cell, so a carry
+  cannot cross a cell boundary.
+
+### The gotcha that would have been invisible
+
+**The counter directions are load-bearing.** The COLUMN half must run first and `j`
+must **ASCEND**. A descending `j` gives `j & 3 = 0,3,2,1` and silently computes a
+**different cipher** — while still producing exactly 80 invocations, so no
+structural or count-based check catches it. Only a schedule-value gate sees it.
+This is the same class as the QR block's free-`rot16` mutant. Now gated.
+
+### What is NOT done
+
+The cells are authored and individually proven but **not wired** — no
+`build_cell_programs` / `internal_connections` / `internal_jumps` /
+`default_layout`, so the assembled block does not compute, and **its source is
+deliberately not committed**. Shipping a non-computing block source was the exact
+fault of the previous attempt; a block that does not compute is not a block.
+
+**Next agent:** wire the 37 cells, fold them (INV-8/9/14), gate against RFC 8439
+§2.3.2 and §2.4.2. Start from `test_chacha20_keystream_golden.py` (23 tests, now
+pinning the schedule-is-a-constant properties and the counter-direction mutants)
+and `test_wide_transit_ceiling.py` (38 tests, the recirculation gate). See INV-49.
+
+### Method note
+
+Every "cannot" in the previous quarantine that was *derived* turned out to be
+wrong, and every one that was *measured* held. The 20 minutes it took to build a
+streaming relay and run it would have prevented a quarantine that then became a
+law in `invariants.md` and was cited to size a future architecture.
+
 ## LZ4DecoderBlock — QUARANTINED on the panel-template cell cap; the decoder itself is proven on chip 2026-08-29
 
 Decodes the published **LZ4 block format** — `[token][literal length][literals]

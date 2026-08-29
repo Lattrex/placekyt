@@ -2613,8 +2613,19 @@ its own silicon pass.
 * **The egress column is a full-height wall** for horizontal walks.
 
 **Reach of this claim:** the forwarding rule is HARDWARE and permanent. The
-24/24 three-face result is exhaustive over the cols 5-9 × rows 10-11 window with
-the CURRENT cell programs — not a claim about all layouts. The budget arithmetic
+three-face requirement is exhaustive over **three** independent windows with the
+CURRENT cell programs — widening west and adding a row both fail to help:
+
+| window | feasible placements | emit-cell faces needed |
+|---|---|---|
+| cols 5-9 × rows 10-11 | 24 | **3 in all 24** |
+| cols 4-9 × rows 10-11 | 20 | **3 in all 20** |
+| cols 6-9 × rows 9-11 | 20 | **3 in all 20** |
+
+Best cost is unchanged at 9 flip-words total, with the egress invariably at
+(8,10) reached northward and the emit cell invariably at (8,11) abutting the
+controller. Still not a claim about ALL layouts — but it is no longer an artifact
+of one narrow window. The budget arithmetic
 changes the moment the programs do. See also INV-50: a router distance bug was
 found while measuring this, and it is still open.
 

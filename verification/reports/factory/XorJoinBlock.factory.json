@@ -1,0 +1,31 @@
+{
+  "block": "XorJoinBlock",
+  "grc_block": "",
+  "tier": 1,
+  "wave": 9,
+  "schema_version": 1,
+  "started_utc": "2026-08-29T11:33:45Z",
+  "ended_utc": "2026-08-29T11:57:45Z",
+  "walltime_sec": 1443.5,
+  "tokens": {
+    "input": 0,
+    "output": 232787,
+    "cache_read": 0,
+    "total": 232787
+  },
+  "turns": 111,
+  "attempts": 1,
+  "human_interventions": 0,
+  "intervention_reasons": [],
+  "prompts": [
+    {
+      "role": "initial",
+      "text": "PLAN SB7 dispatch: 1-cell N=2 LOCK-by-face XOR rendezvous for two INDEPENDENT producers, templated on DualFloatToComplexBlock."
+    }
+  ],
+  "verify_passed": true,
+  "quarantined": false,
+  "quarantine_reason": "",
+  "commit_sha": "d049c8d",
+  "notes": "1 cell, FIRST ATTEMPT, zero human interventions, ~24 min. Exists because XorBlock CANNOT take two independent producers: its complex-burst fan-in keys on (src_cell, in_cell) so both operands must come from ONE source cell, and it declares no 'join' entry so the importer declines to arbitrate. This block distinguishes its two streams the only way independent async producers can be told apart on this array - by arrival FACE, using the arbiter LOCK.\n\nINV-19 SATURATED PASSES STRUCTURALLY, not by luck: at N=2 the INV-46 face budget (N+2=4) lets the whole rendezvous be ONE cell, so there is no internal datapath for queued samples to pile into, and the LOCK already IS INV-19's prescribed serialization.\n\nTWO TEST-INTEGRITY FINDINGS, both recorded as INV-46 Rules 4a and 5 (no new invariant number needed):\n  (1) THE DISPATCH SPEC'S OWN MUTATION WAS A NO-OP. I specified 'emit before latching the second operand' as an INV-4 gate. At N=2 both input ports are declared at R0 (each arrives on its own face-gated trigger - the shipped convention), so the reordered form assembles to 'MOVE R0, R0'. The builder BUILT that mutant and it emitted the CORRECT golden. Had it written the gate as specified and confirmed it 'fails' against a MODEL, the suite would have carried a mutation that could never fire. Replaced with substrate mutations that corrupt the real block and rebuild on chip. The lesson generalises: mutate the BLOCK, never a model of it.\n  (2) A BROKEN BLOCK COLLAPSES A FACE-LOCKING SUITE INTO SKIPS, NOT FAILURES. The INV-46 Rule 4 smoke probe skips when no anchor routes - correct for a flaky CP-SAT run, DANGEROUS for a broken block, because the suite then reads 'passed' at a glance. Added a guard that FAILS instead. ORCHESTRATOR-VERIFIED: mutating the committed block's XOR to an AND yields 7 failures / 35 skips, and test_the_probing_harness_actually_routes_this_block is among the failures - the guard fires. Without it that mutant would have shown 0 failures and 42 skips.\n\nVERIFICATION: 59 gates at EXACT tolerance 0 on the real placed/routed/built chain; golden cross-checked THREE ways (live blocks.xor_bb over 512 pairs, the shipped XorBlock reference, and pinned independently); self-inverse (x^k)^k == x with both halves on chip; all 8 D4 orientations; same-face DRC; all four anchors; unequal producer rates. Builder's scoped sweep 999 passed / 0 failed. Engine UNTOUCHED. Orchestrator confirmed 92 passed from main and the anti-skip guard is load-bearing.\n\nPROCESS NOTE: this is the first block dispatched under the new rule that BUILDERS DO NOT RUN THE FULL SUITE (the orchestrator owns it). No competing pytest generations, no corrupted intermediate results - contrast wave 1, where two builders each ran it and produced four concurrent generations against a shared checkout."
+}

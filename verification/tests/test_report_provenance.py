@@ -474,3 +474,49 @@ def test_the_guard_itself_detects_a_reintroduced_instance(tmp_path):
     """))
     assert scan_for_hardcoded_report_writers(fixture) == [], \
         "the guard fires on a CORRECT writer — it would be un-actionable noise"
+
+
+# ---------------------------------------------------------------------------
+# The failure SCOPE is the writer's own suite, not the whole session.
+# ---------------------------------------------------------------------------
+def test_failure_scope_is_the_writers_own_file_not_the_session():
+    """``session_failures(scope_file=...)`` must report ONLY that file's failures.
+
+    INV-38 originally asked "did ANYTHING fail in this session?" before writing.
+    Combined with its unlink-first rule that made one failing gate destroy the
+    evidence for every block whose writer sorted after it — measured on this repo
+    at ~57 of 118 reports lost in a single full-suite run, with recovery costing
+    ~56 individual suite re-runs. It also made the suite NON-IDEMPOTENT: two
+    identical invocations reported 14 and 60 failures, because the count depended
+    on how many reports happened to exist when the run started.
+
+    The guarantee that matters is unchanged and is asserted by the sibling tests
+    above: a report may not claim a pass its OWN tests did not earn. This test
+    pins the other half — that a DIFFERENT block's failure is not evidence about
+    this block and must not be treated as such.
+    """
+    from kyttar_verify import session_report as sr
+
+    class _Cfg:
+        pass
+
+    cfg = _Cfg()
+    setattr(cfg, sr.SESSION_RECORD_ATTR, {
+        "verification/tests/test_mine.py::test_a": "failed",
+        "verification/tests/test_other.py::test_b": "failed",
+        "/abs/path/verification/tests/test_other.py::test_c": "error",
+    })
+    sr._RECORDING_CONFIG[:] = [cfg]
+    try:
+        mine = sr.session_failures("test_mine.py")
+        other = sr.session_failures("test_other.py")
+        every = sr.session_failures()
+
+        assert len(mine) == 1 and mine[0].endswith("::test_a"), \
+            f"scoping to test_mine.py must see ONLY its own failure, got {mine}"
+        # Absolute vs relative node-id paths must not widen the scope back out.
+        assert len(other) == 2, \
+            f"basename matching must catch both path forms, got {other}"
+        assert len(every) == 3, "unscoped must still see the whole session"
+    finally:
+        sr._RECORDING_CONFIG.clear()

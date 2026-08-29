@@ -123,8 +123,13 @@ def record_outcome(config, nodeid: str, outcome: str) -> None:
     rec[nodeid] = outcome
 
 
-def session_failures() -> list[str]:
+def session_failures(scope_file: str | None = None) -> list[str]:
     """Node ids that FAILED or ERRORED in this session, so far.
+
+    ``scope_file`` restricts the answer to failures in ONE test file (matched
+    against the node id's path part). That is what a report writer asks: "did
+    MY OWN suite fail?" — see :func:`write_session_report` for why the
+    session-wide question is the wrong one.
 
     Raises :class:`NoSessionError` if there is no live session to ask — a writer
     invoked outside pytest, or with the conftest plugin missing, has no evidence
@@ -139,7 +144,33 @@ def session_failures() -> list[str]:
         raise NoSessionError(
             "the session outcome record is missing (verification/tests/conftest.py "
             "not loaded?) — refusing to write a report on unknown evidence")
-    return sorted(rec)
+    if scope_file is None:
+        return sorted(rec)
+    # Node ids are "path/to/test_x.py::test_name[param]" — compare the file part
+    # by BASENAME so an absolute/relative path difference cannot silently widen
+    # the scope back to the whole session.
+    import os
+
+    want = os.path.basename(str(scope_file))
+    return sorted(n for n in rec
+                  if os.path.basename(str(n).split("::", 1)[0]) == want)
+
+
+def _caller_test_file() -> str | None:
+    """Basename of the nearest ``test_*.py`` up the call stack, or ``None``.
+
+    Walks OUT from this module to find the test file that invoked the writer, so
+    the failure scope is the caller's own suite. Returns ``None`` when no test
+    file is on the stack (a non-pytest caller), in which case the writer falls
+    back to the session-wide question — strictly the safer direction."""
+    import inspect
+    import os
+
+    for frame in inspect.stack():
+        base = os.path.basename(frame.filename)
+        if base.startswith("test_") and base.endswith(".py"):
+            return base
+    return None
 
 
 def write_session_report(kyttar_block: str, payload: dict, *,
@@ -175,16 +206,36 @@ def write_session_report(kyttar_block: str, payload: dict, *,
     if out.exists():
         out.unlink()
 
-    # (2) The verdict comes from the test runner, not from this module.
+    # (2) The verdict comes from the test runner, not from this module — and the
+    #     question is "did MY OWN suite fail?", NOT "did anything anywhere fail?".
+    #
+    #     THE SESSION-WIDE QUESTION WAS WRONG, and destructively so. A writer runs
+    #     `unlink` first (step 1) and then refuses to rewrite if the session has
+    #     ANY failure. So one failing gate — in a DIFFERENT block, possibly hours
+    #     earlier — deleted the evidence for every block whose writer sorted after
+    #     it. Measured repeatedly on this repo: a single early failure destroyed
+    #     ~57 of 118 reports in one full-suite run, and recovery was ~56 individual
+    #     suite re-runs. It also made the suite NON-IDEMPOTENT (two identical runs
+    #     gave 14 and 60 failures) because the failure count depended on how many
+    #     reports happened to exist when the run started, which made diagnosing
+    #     anything downstream unreliable.
+    #
+    #     Scoping to the caller's own file keeps INV-38's guarantee EXACTLY: a
+    #     report still cannot claim a pass its OWN tests did not earn, which is the
+    #     property that matters (the hardcoded `"passed": True` class of defect is
+    #     still impossible). What it drops is the part that was never evidence
+    #     about this block at all — another block's failure.
+    caller_file = _caller_test_file()
     try:
-        failures = session_failures()
+        failures = session_failures(caller_file)
     except NoSessionError as exc:
         raise AssertionError(
             f"NOT writing verification/reports/{kyttar_block}.json — {exc}") from None
     if failures:
         raise AssertionError(
             f"NOT writing verification/reports/{kyttar_block}.json — "
-            f"{len(failures)} gate(s) failed in this session: "
+            f"{len(failures)} gate(s) failed in "
+            f"{caller_file or 'this suite'}: "
             + ", ".join(f.split("::")[-1] for f in failures))
 
     # A payload that asserts its own pass without a measurement is the literal this

@@ -43,11 +43,16 @@ PLACEMENT, and the wall is sharp enough to be actionable. Promoted to **INV-48**
    `panel_backed_blocks(...)` and hands the whole design to
    `engine/panel_pnr.apply_panel_template`, then runs `auto_route_all` only for the
    leftovers. The CP-SAT pack + perturbation sweep is never reached.
-2. **The templates pin a fixed cell set.** TX shape: 2 cells (controller at `x1_out`,
-   consumer at `(0,1)`). RX shape: 4, and it writes VaricodeDecoder-specific params
-   (`read_addr_hop`/`read_dest`/`read_entry`) into the block, so a block without them
-   dies in its own constructor. Every shipped panel block is 2-3 cells, so the cap had
-   never bound before.
+2. **The templates place only the NAMED ROLE cells.** TX shape: controller at
+   `x1_out`, consumer at `(0,1)`. RX shape: controller, kicker, input, consumer —
+   and it writes VaricodeDecoder-specific params (`read_addr_hop`/`read_dest`/
+   `read_entry`) into the block, so a block without them dies in its own
+   constructor. **CORRECTED 2026-08-29:** this bullet previously read "every
+   shipped panel block is 2-3 cells, so the cap had never bound" — that was FALSE
+   and there is no cell cap. `GolayDecoderBlock` is **7 cells, panel-backed,
+   `done`, BER 0**, shipped 2026-08-16 — before this entry was written. What
+   actually binds is that a cell with no named role gets no position, so it is
+   silently left out of the `Placement`.
 3. **This FSM cannot be 3 cells, and cannot be a ring.** The parse+emit datapath is
    **102 instructions**; the real per-cell budget is `31 - (data + state + inputs)`,
    at best 28 and realistically 25-26 — a **4-cell absolute lower bound**, 6 as

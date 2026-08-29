@@ -3,19 +3,25 @@
 # Block layout — folding, edges, and the bus
 
 How a multi-cell block is **shaped on the array** is not cosmetic — it decides
-whether the block can be placed and routed at all on this chip. None of what
-follows is enforced by a DRC or a warning: the build will happily accept a block
-that violates these conventions and then **silently fail to route** (no output,
-no error pointing at the cause). An agent that does not know these rules will burn
-a long time rediscovering them. Read this before authoring or reshaping any
-block bigger than one cell.
+whether the block can be placed and routed at all on this chip. Read this before
+authoring or reshaping any block bigger than one cell.
+
+What is and is not enforced (corrected 2026-08-29 — this preamble used to say
+"none of this is enforced", which is only half true):
+* a block extending past the fabric **is** caught, loudly, as `unplaced_cell`
+  (`engine/drc.py`, repeated in `engine/build.py`);
+* I/O colocation is genuinely **not** enforced — `io_colocated` is derived only
+  (`engine/portmap.py`) and 61 of 127 shipped blocks are not colocated;
+* the ≤8 width cap is enforced **nowhere** — `layout_caps()` has no placer or DRC
+  caller. See §3.
 
 > **Scope note — this is a CONVENTION, not an architectural rule.** The pressure
 > here comes entirely from this chip being **10×12** — very few cells, very few
 > routing channels to spare. On the larger chips that come later, the width
 > convention (below) stops mattering and would be wrong to enforce. So nothing in
-> the codebase flags a violation, *by design*. But on **this** chip, breaking
-> these conventions means the block doesn't work. Treat them as hard for now.
+> the codebase flags a violation, *by design*. On **this** chip they are strong
+> defaults — but they are defaults, not laws: see §3 for the width convention,
+> which is measurably WRONG for blocks that dominate the array.
 
 ---
 
@@ -54,9 +60,12 @@ next block.
 The engine *observes* whether you did this: `portmap.py` derives
 `io_colocated=True` when the input and output ports share the bus-facing edge and
 sit within `COLOCATION_SPAN` (2) cells. **It is derived, not required** — nothing
-forces it. But a block that is **not** I/O-colocated will not tap a single bus,
-which on this chip means it does not route. So treat `io_colocated=True` as a
-design *target* you achieve by where you place your ports, not a flag you set.
+forces it. **Corrected 2026-08-29:** this used to say a non-colocated block "does
+not route". That is false — `io_colocated` is True for 66 and **False for 61** of
+the shipped, verified blocks, and the placer uses it only as a TIE-BREAK
+(`engine/autoplace.py`). Colocation shortens the route and makes placement
+forgiving; it is a design *target*, not a precondition. It IS mandatory for a
+`CHIP_SCALE` block, which has no reachable far side (§3).
 
 Concretely: fold the block so its input landing cell and its output cell are both
 on the bus-facing edge. For an 8-cell block, a 2×4 vertical fold with input at
@@ -77,23 +86,49 @@ output. This is the single most common multi-cell trap:
   drains the block (the verification harness, a bus tap) must target that cell's
   position — not cells[0].
 
-If you are extending the verification harness for a wavefront block, this is the
-capability to add: drive cell 0, drain the **last** cell. (See INV-7 — this is the
-known FIR limit.)
+The fact above stands. **Corrected 2026-08-29:** a paragraph here used to call
+draining the last cell "the capability to add (see INV-7)". That gap was closed
+long ago — `verification/kyttar_verify/dut_runner.py` wires `x16_in -> block ->
+x16_out` by PORT NAME and lets the router resolve the output cell, and 44
+multi-cell blocks are verified through it, including an 84-cell one. INV-7's
+matching "still to be built" clause is stale for the same reason.
 
-### 3. Keep a block ≤ 8 cells across (this chip only)
+### 3. Fold for the SHAPE of the free space, not for a width number
 
-The array is 10 wide. A bus needs one routing channel of cells on each side of a
-block to get traffic past it. 8 (block) + 1 (channel) + 1 (channel) = 10 = the
-whole width. A block **wider than 8 cells in either direction leaves no channel**
-for the bus to pass, and the route fails — silently, again.
+**CORRECTED 2026-08-29.** This section previously said "keep a block ≤ 8 cells
+across … a block wider than 8 in either direction leaves no channel and the route
+fails — silently," and called it "a hard constraint in practice." That was
+**FALSE, and backwards for exactly the designs it mattered most to.** Shipped,
+verified blocks that exceed 8 across: `FFT64Block` **9×12** (84 cells),
+`FFT128Die1` 9×12, `FFT32Block` 9×10, `GRUCellBlock` **10×6**, and —
+with no `CHIP_SCALE` waiver at all — `ComplexToMagBlock` **9×2** and
+`CoherentRXBlock` **10×2**. `layout_caps()` is read by no placer and no DRC; the
+≤8 number was self-imposed convention.
 
-So fold to keep both dimensions ≤ 8. A 64-tap FIR at 5 taps/cell is ~13 cells —
-that **cannot** be a 13×1 line (too wide *and* I/O at opposite ends). It must fold
-to something like 4×4 or 5×3 with I/O colocated on one edge.
+**The rule that is actually true:**
 
-This is the convention that evaporates on bigger chips. On a 10×12 it is a hard
-constraint in practice.
+* **For a SMALL block, ≤8 across is a good default.** It leaves a routing channel
+  on each side, which makes I/O placement forgiving. Keep doing it.
+* **For a block that is a LARGE fraction of the array, go FULL width and declare
+  `CHIP_SCALE`.** A full-width block leaves whole free ROWS — one contiguous
+  through-channel. An 8-wide fold of the same block leaves *fragmented perimeter*,
+  and a closed-ring block can never enclose a channel at all (a cycle cannot jump
+  a gap).
+
+**This is measured, not argued — see INV-40.** `GRUCellBlock` at the compliant
+8×7 left five fragmented free rows and its chain stayed **one net short across
+~8200 layouts**; the same 51 cells re-folded to the non-compliant **10×6** left
+six full-width free rows and the identical chain routed and built at **102/120**.
+Obeying the old ≤8 rule is what *prevented* that design from routing.
+
+**The trade `CHIP_SCALE` demands:** nothing can reach the far side of a
+full-width block, so its input and output must be on ONE edge, facing the chip
+ports. Declare it via `CHIP_SCALE = True` (`_base.py`), which raises the cap to
+the array dimensions.
+
+Still true regardless of width: a 64-tap FIR at ~13 cells cannot be a 13×1 line —
+not because 13 > 8, but because I/O at opposite ends of a line is the colocation
+problem in §1.
 
 ### 4. The base-class auto-snake is a fallback, not a fold
 
@@ -223,9 +258,13 @@ asserts the input-near-driver invariant survives the full place+route flow.
 
 ## Checklist for a multi-cell block on this chip
 
-- [ ] Both dimensions of the footprint ≤ 8 cells.
-- [ ] External input and output ports on the **same** edge, within ~2 cells →
-      `portmap` reports `io_colocated=True`.
+- [ ] Footprint chosen for the SHAPE of the free space it leaves (§3): ≤8 across
+      for a small block; FULL width + `CHIP_SCALE` for a block that dominates the
+      array. NOT a bare width check — see INV-40.
+- [ ] I/O ports on the **same** edge where practical (`io_colocated=True`).
+      A preference, not a precondition — 61 of 127 shipped blocks are NOT
+      colocated and route fine; the placer uses it only as a tie-break. MANDATORY
+      for a `CHIP_SCALE` block, which has no reachable far side.
 - [ ] Wavefront output port declared on the **last** cell; anything draining the
       block targets that cell, not cells[0].
 - [ ] Feedback producers/consumers folded adjacent (no full-width return path).

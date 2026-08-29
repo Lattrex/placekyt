@@ -848,13 +848,22 @@ def test_placement_wall_panel_template_rejects_this_block():
         apply_panel_template(p, cat, ct)
 
 
-def test_block_is_quarantined_in_the_manifest():
-    """The manifest records the quarantine, so the dashboard never claims this block
-    is done (INV-38: absence must be the safe state)."""
+def test_block_is_not_done_until_it_has_a_report():
+    """The manifest must not claim `done` without a passing report (INV-38: absence
+    is the safe state).
+
+    RE-OPENED 2026-08-29. This test previously asserted `status == "needs_human"`,
+    pinning a quarantine whose stated cause — a panel-template CELL CAP — an audit
+    proved does not exist: `GolayDecoderBlock` is a 7-cell panel-backed block with
+    status `done`, and `panel_pnr.py` has no cell-count check at all. Pinning a
+    false wall in a test is how the false wall survives, so the assertion now pins
+    the property that is actually true in both states."""
     m = json.loads((_WT / "verification" / "manifest.json").read_text())
     blocks = m["blocks"] if isinstance(m, dict) and "blocks" in m else m
     ent = next(b for b in blocks if b["kyttar_block"] == "LZ4DecoderBlock")
-    assert ent["status"] == "needs_human", \
-        "LZ4DecoderBlock is QUARANTINED on the panel-template placement wall"
-    assert not REPORT.exists(), \
-        "a quarantined block must NOT ship a passing verification report (INV-38)"
+    if ent["status"] == "done":
+        assert REPORT.exists(), \
+            "manifest says done but there is no verification report (INV-38)"
+    else:
+        assert not REPORT.exists(), \
+            "a not-done block must NOT ship a passing verification report (INV-38)"

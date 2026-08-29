@@ -506,6 +506,11 @@ def test_failure_scope_is_the_writers_own_file_not_the_session():
         "verification/tests/test_other.py::test_b": "failed",
         "/abs/path/verification/tests/test_other.py::test_c": "error",
     })
+    # SAVE and RESTORE — never clear(). The slot holds the REAL live pytest Config
+    # for this session; clearing it makes every later report writer in the run
+    # raise NoSessionError and refuse to write. (That is exactly what this test
+    # did when first added, and it broke the ChaCha20/TMR writers downstream.)
+    _prev = list(sr._RECORDING_CONFIG)
     sr._RECORDING_CONFIG[:] = [cfg]
     try:
         mine = sr.session_failures("test_mine.py")
@@ -519,4 +524,4 @@ def test_failure_scope_is_the_writers_own_file_not_the_session():
             f"basename matching must catch both path forms, got {other}"
         assert len(every) == 3, "unscoped must still see the whole session"
     finally:
-        sr._RECORDING_CONFIG.clear()
+        sr._RECORDING_CONFIG[:] = _prev

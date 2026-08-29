@@ -92,8 +92,8 @@
 | **ChirpGeneratorBlock** | `(Python golden: cyclic-shifted linear up-chirp)` | 2 · stateful/loop | ✅ done | err 0 / tol 0 LSB | sweep×6 mut |
 | **BinArgmaxBlock** | `(Python golden: numpy.argmax over N magnitude bins)` | 2 · stateful/loop | ✅ done | err 0 / tol 0 LSB | edge rand×3 sweep×7 mut |
 | **ConjChirpMixerBlock** | `(Python golden: multiply by the conjugate reference up-chirp — the CSS dechirp)` | 2 · stateful/loop | ✅ done | err 0 / tol 0 LSB | sweep×3 mut |
-| **TMRVoterBlock** | (Kyttar-native, no single GR block) | 2 · stateful/loop | ✅ done | err 0 / tol 0 LSB | edge rand×3 sweep×1 mut |
-| **ChaCha20QRBlock** | (Kyttar-native, no single GR block) | 2 · stateful/loop | ✅ done | err 0 / tol 0 LSB | edge rand×3 seeds x 4 frames + 6 back-to-back (32-bit operands) mut |
+| **TMRVoterBlock** | (Kyttar-native, no single GR block) | 2 · stateful/loop | ✅ done | — | — |
+| **ChaCha20QRBlock** | (Kyttar-native, no single GR block) | 2 · stateful/loop | ✅ done | — | — |
 | **FSK4SymbolMapperBlock** | `digital.chunks_to_symbols_bf (4FSK level table)` | 3 · new GRC block | ✅ done | err 0 / tol 0 LSB | mut |
 | **FSK4SlicerBlock** | `digital.constellation_decoder (4FSK PAM, inverse of mapper)` | 3 · new GRC block | ✅ done | BER 0 (32 bits) | mut |
 | **FSK4SyncTimingRecoveryBlock** | `sync-word correlation timing recovery (no single GR block)` | 3 · new GRC block | ✅ done | BER 0 (208 bits) | mut |
@@ -126,7 +126,7 @@
 | **ChirpSyncBlock** | `(Python golden: K-consecutive-equal-argmax preamble run detector)` | 3 · new GRC block | ✅ done | err 0 / tol 0 LSB | edge rand×3 sweep×4 mut |
 | **FeaturePairJoinBlock** | `(placeKYT-native: ordered two-word rendezvous; no GR counterpart)` | 3 · new GRC block | ✅ done | err 0 / tol 0 LSB | edge rand×3 mut |
 | **ChaCha20KeystreamBlock** | (Kyttar-native, no single GR block) | 3 · new GRC block | 🚧 needs human (quarantined) | — | — |
-| **LZ4DecoderBlock** | (Kyttar-native, no single GR block) | 3 · new GRC block | 🚧 needs human (quarantined) | — | — |
+| **LZ4DecoderBlock** | (Kyttar-native, no single GR block) | 3 · new GRC block | ⬜ planned | — | — |
 | **Poly1305MACBlock** | (Kyttar-native, no single GR block) | 3 · new GRC block | ⬜ planned | — | — |
 | **LZ4EncoderBlock** | (Kyttar-native, no single GR block) | 3 · new GRC block | ⬜ planned | — | — |
 

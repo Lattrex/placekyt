@@ -8,6 +8,42 @@ or verifying a Kyttar block should read these first. Each is a *constraint* ("al
 
 ---
 
+## RULE FOR WRITING IN THIS FILE — a stated LIMIT must carry its evidence
+
+Added 2026-08-29, after an audit found several fabricated limits in here.
+
+**A false limit is worse than a missing one.** Every agent reads this file before
+building, so a wrong "you cannot do X" is applied as a design constraint by every
+future builder — it makes correct designs get abandoned, shrunk, or quarantined,
+and it propagates into commit messages, plans and reports where it is even harder
+to dislodge. Three such claims were found in this file, and one of them
+(a fabricated panel cell cap) kept a working block quarantined.
+
+So, before writing any sentence of the form **"cannot" / "limit" / "maximum" /
+"caps at" / "is not placeable" / "does not fit"**:
+
+1. **MEASURE IT.** Run it, or point at a test that fails without the claim. Do not
+   derive a limit by reading code — `lessons_log.md` has said
+   *"DO NOT DERIVE A 'KNOWN LIMIT' FROM CODE-READING — MEASURE IT"* since long
+   before these errors, and it was ignored anyway.
+2. **CHECK THE SHIPPED BLOCKS FIRST.** There are 100+ verified blocks. If one of
+   them already does the thing you are about to declare impossible, the claim is
+   dead. This alone would have caught every false limit the audit found:
+   `FFT64Block` is 9×12 (refutes "≤8 across"); `GolayDecoderBlock` is a 7-cell
+   panel block (refutes the panel cap).
+3. **SAY WHICH LAYER.** Hardware/ISA limits are permanent. **Toolchain limits are
+   FIXABLE and must say so**, with a pointer at the code that would change. Calling
+   a placer gap a "substrate wall" is how a fixable bug becomes folklore.
+4. **STATE THE REACH.** "Measured on N blocks" is not "all blocks". A true
+   observation about a handful of cases, written as a universal law, is the single
+   most common failure mode found in the audit — every one of the false claims had
+   this shape.
+5. **NEVER DELETE A CORRECTION.** When a claim here turns out to be wrong, mark it
+   corrected, in place, with the date and the evidence that killed it. The wrong
+   version has usually been copied elsewhere, and a reader needs to recognise it.
+
+---
+
 ## INV-0 — MATCH THE GNU RADIO BLOCK'S PARAMETERS EXACTLY (deviate ONLY for hardware, and say so LOUDLY)
 
 **This is the most important rule. Violating it silently makes automated block
@@ -186,16 +222,21 @@ single-block harness.
 
 **Root cause:** each cell has ~31 usable registers (R0 is the accumulator). A
 single-cell FIR holds its coefficients + delay line + scratch + program; past
-~7 taps that exceeds the budget (the block's own `<=12 → 1 cell` heuristic is
-too optimistic). Above the single-cell ceiling the block becomes a multi-cell
-**wavefront** whose output egresses from the *last* cell — which a harness that
-derives its hop/drive from `placement.cells[0]` (the input landing cell) does
-not yet handle.
+**6** taps that exceeds the budget (`MAX_SINGLE_CELL_TAPS = 6` in
+`fir_filter_block.py`; measured: 6 taps → 1 cell, 7 taps → 2). Above the
+single-cell ceiling the block becomes a multi-cell **wavefront** whose output
+egresses from the *last* cell.
 
 **Fix / status:** verify scaling blocks across their *proven* parameter range and
 record the ceiling as an explicit known limit (executable guard tests that flip
-when fixed) rather than claiming the block is fully done. Multi-cell egress
-(driving the last cell, not the first) is a harness capability still to be built.
+when fixed) rather than claiming the block is fully done.
+
+**CORRECTED 2026-08-29:** this used to end "multi-cell egress (driving the last
+cell, not the first) is a harness capability still to be built." That was STALE
+and contradicted INV-11 *in this same file*. It was built: `dut_runner.py` wires
+`x16_in -> block -> x16_out` by PORT NAME and lets the router resolve the output
+cell, and `test_fir_filter.py` verifies 7/8/11/16/20/32/**64**-tap FIRs
+bit-exact. The "~7 taps" figure above was also off by one.
 
 **Applies to:** FIR, decimator, IIR, and any block that grows past one cell.
 
@@ -225,22 +266,37 @@ See `layout_rules.md` for the full rationale and the canonical 2×4 fold.
 
 ---
 
-## INV-9 — On THIS 10×12 chip, keep a block ≤ 8 cells across (convention)
+## INV-9 — A fold is chosen for the SHAPE of the free space it leaves; ≤8 across is a DEFAULT for small blocks, not a law
 
-**Symptom:** a wide block (a long FIR as a near-straight line) builds but won't
-route past itself; an adjacent block can't be reached by the bus.
+**CORRECTED 2026-08-29.** This invariant previously read "keep a block ≤ 8 cells
+across … a block wider than 8 in either dimension leaves no channel → routes fail
+silently." That is **FALSE**, and it is **backwards for large blocks** — the case
+where it was doing the most damage.
 
-**Root cause:** the array is 10 wide and the bus needs one channel of cells on
-EACH side of a block to pass traffic. 8 + 1 + 1 = 10 = full width. A block wider
-than 8 in either dimension leaves no channel → routes fail silently.
+**Refuted by shipped, verified blocks:** `FFT64Block` **9×12** (84 cells, done),
+`FFT128Die1` 9×12, `FFT32Block` 9×10, `GRUCellBlock` **10×6** — and, with **no
+`CHIP_SCALE` waiver at all**, `ComplexToMagBlock` **9×2** and `CoherentRXBlock`
+**10×2**. `layout_caps()` has no placer or DRC caller; the number was never
+enforced anywhere.
 
-**Fix:** fold to keep both footprint dimensions ≤ 8 (a 64-tap FIR ≈ 13 cells must
-be ~4×4, never 13×1).
+**Backwards, measured — see INV-40.** `GRUCellBlock` folded to the *compliant*
+8×7 left fragmented perimeter free space and its chain stayed **one net short
+across ~8200 layouts**. The same 51 cells at the *non-compliant* **10×6** left six
+full-width free rows and the identical chain routed and built at **102/120**.
+Obeying this rule is what prevented that design from routing.
 
-**This is a CHIP-SIZE CONVENTION, not an architectural rule, and is deliberately
-NOT enforced by any DRC or warning** — on larger future chips it stops mattering
-and enforcement would have to be ripped out. Nothing flags a violation; it just
-won't work here. Honor it on this chip.
+**The true rule:**
+* **Small block → ≤8 across is a good default.** It leaves a channel on each side
+  and makes I/O placement forgiving.
+* **Block that dominates the array → go FULL width and declare `CHIP_SCALE`.**
+  Full width leaves whole free ROWS, i.e. one contiguous through-channel; an
+  8-wide fold leaves fragmented perimeter, and a closed-ring block can never
+  enclose a channel at all.
+* **The trade:** nothing reaches the far side of a full-width block, so its I/O
+  must be on ONE edge facing the chip ports.
+
+**What IS enforced:** a block extending past the fabric is caught as
+`unplaced_cell` by the DRC — that failure is loud, not silent.
 
 **Applies to:** any multi-cell block on the 10×12 array.
 
@@ -1193,8 +1249,13 @@ builds fine as a Python golden but its on-chip `build_cell_programs()` cannot fi
 **Ground truth (the PSK31 + CW/Morse wave, 2026-08-07):** 5 ham-mode blocks all
 quarantined on the SAME wall, and it is now a measured, repeatable substrate boundary:
 - a cell is **32 words total** (chip yaml `memory_words: 32`), shared by program + data +
-  state; the `LOAD`-indirect table is capped at **~21 usable entries** (`mem[Rn] & 0x1F`,
-  the MapBB `MAX_TABLE=21` ceiling).
+  state; the `LOAD`-indirect table addresses **32** entries (`mem[Rn] & 0x1F` — that
+  is the ISA limit). **CORRECTED 2026-08-29:** this used to say "~21 usable entries
+  (`mem[Rn] & 0x1F`, the MapBB `MAX_TABLE=21` ceiling)", which conflated two
+  different numbers. 21 is MapBB's OWN instruction-budget arithmetic for its own
+  program, not a substrate cap; how many of the 32 a given block can actually spend
+  on a table depends on that block's program and state. Compute your own budget —
+  do not inherit MapBB's.
 - **VaricodeEncoder:** 128-entry variable-length table = ~6× over; plus a data-dependent
   3–12-word burst emit with no variable-length WRITE-loop primitive.
 - **VaricodeDecoder:** reverse code→char map = a **1024-entry** LUT (codeword values to 955)
@@ -1695,7 +1756,7 @@ not just routability, and say so in the layout docstring.
 `LOCK_FACE` barriers (INV-19/20 serialize-lock), ring/serpentine folds with an
 off-chain relay. Related: INV-23 (orientation invariance, which does NOT cover
 this), INV-35 (the layout dict is also a positional index).
-## INV-43 — A remote JUMP does NOT stop local execution; a branch-gated cell needs a HALT, and `GOTO` is a local JUMP with the same hazard
+## INV-43 — A remote JUMP does NOT stop local execution; a branch-gated cell needs a HALT (the `GOTO` claim here was FALSE — see below)
 
 **Symptom (measured on GardnerTimingRecovery; the FIR block's saturating-restore
 carries the same warning):** a two-path cell whose STROBE path ends in
@@ -1717,9 +1778,22 @@ nostrobe:
 
 `JUMP` sets a **remote** cell's PC. It is not a local branch, and it does not
 end the issuing cell's instruction stream — the thread runs straight into the
-next word. The same is true of `GOTO`: it assembles to an opcode-0x7 word, i.e.
-a LOCAL (`@0`) JUMP, which likewise *queues* a re-entry at the target while the
-current thread continues into the following instruction.
+next word. **This half is VERIFIED on the simulator**: the instruction after
+`JUMP @1,0` executes.
+
+**CORRECTED 2026-08-29 — the `GOTO` half was FALSE.** This used to claim "the
+same is true of `GOTO` … the current thread continues into the following
+instruction." Measured side-by-side on the simulator in one harness with a
+passing control: after a remote `JUMP` the next instruction RAN (R20=222); after
+a `GOTO` it did **not** (R20=0), and the target did not run inline either. So
+`GOTO` neither falls through nor transfers inline, and the fall-through hazard
+this invariant is about does **not** apply to it.
+
+The real `GOTO` hazard is a **TOOLCHAIN** defect, not hardware, and it is
+fixable: the build's output-handoff pass rewrites every opcode-0x7 word in an
+EXIT cell into an external JUMP, so a local `GOTO` in such a cell is silently
+turned into something else (see the notes in `rms_block.py` and `add_block.py`).
+Avoid `GOTO` in an exit cell for that reason — not because of fall-through.
 
 **Why it is expensive to find: the failure is ARITHMETIC-SHAPED.** Gardner's
 `loop_filter` has a `strobe` entry that captures the timing error and a
@@ -1939,9 +2013,26 @@ things in this order — the order is load-bearing:
    been re-run **to completion**. A full run (no `-x`) does clear it. See
    `test_dash_x_leaves_a_pre_existing_report_UNTOUCHED` — the limit is asserted, not
    assumed, so it cannot be quietly forgotten or quietly regress.
-2. **Ask the session, not the module.** Read the accumulated per-test outcomes
-   recorded by `verification/tests/conftest.py` on the running pytest `Config`.
-   Any failure or any error means **no write**, and the writer itself FAILS,
+2. **Ask the test runner, not the module — scoped to the writer's OWN suite.**
+   Read the accumulated per-test outcomes recorded by
+   `verification/tests/conftest.py` on the running pytest `Config`, filtered to
+   the calling test FILE. Any failure or error **in that file** means **no
+   write**, and the writer itself FAILS,
+
+   **UPDATED 2026-08-29 — this used to be session-wide, and that was
+   destructive.** Combined with unlink-first, ONE failing gate anywhere deleted
+   the evidence for every block whose writer sorted after it: measured at ~57 of
+   118 reports lost in a single full-suite run, ~56 individual suite re-runs to
+   recover, three times in one session. It also made the suite NON-IDEMPOTENT —
+   two identical invocations reported 14 and 60 failures, because the count
+   depended on how many reports happened to exist when the run started, which
+   made every downstream diagnosis unreliable. Scoping to the caller's own file
+   keeps the guarantee that matters (a report cannot claim a pass its OWN tests
+   did not earn — all three defect shapes above remain impossible) and drops only
+   the part that was never evidence about this block: a DIFFERENT block's
+   failure. Gated by
+   `test_report_provenance.py::test_failure_scope_is_the_writers_own_file_not_the_session`,
+   proven to fail when the scoping is reverted.
    naming the offending gates so a report-less run is never mistaken for a skip.
 3. **Stamp the provenance.** The written body carries `"provenance": "session"`,
    so an auditor can tell an artifact from a literal by inspection.
@@ -2388,7 +2479,7 @@ entries must all be jumped).
 
 ---
 
-## INV-48 — An SRAM-panel block is capped at the PANEL TEMPLATE's cell count, and a dense multi-cell FSM has no single-face layout at all
+## INV-48 — A panel block is auto-placed only for its NAMED ROLE cells, and a dense internal graph has no single-face ring
 
 **Symptom:** a panel-backed block whose cell programs are individually correct — every
 cell inside its 32-word budget, every hand-off verified on the real chip through the
@@ -2414,9 +2505,28 @@ pins a fixed set of cells:
   (`read_addr_hop`, `read_dest`, `read_entry`) straight into `blk.params`, so a block
   that does not accept them fails with a `TypeError` from its own constructor.
 
-Every panel-backed block shipped to date is 2 or 3 cells (VaricodeEncoder 2,
-VaricodeDecoder 3, CWKeyer 2), so the cap was never load-bearing. **A panel-backed
-block of 5+ cells is not placeable today**, however correct it is.
+**THERE IS NO CELL-COUNT CAP. An earlier revision of this invariant claimed one and
+it was FALSE** — corrected 2026-08-29 after an audit. The false text read "every
+panel-backed block shipped to date is 2 or 3 cells … a panel-backed block of 5+
+cells is not placeable today." It was refuted by a block that had already shipped:
+**`GolayDecoderBlock` is SEVEN cells, panel-backed, `status: done`, BER 0**
+(`verification/STATUS.md`; `panel_requirements()` → `controller_cell 6,
+input_cell 0, return_cell 5`), and it landed 2026-08-16, **thirteen days before**
+the claim was written. `panel_pnr.py` contains **no `cell_count` check of any
+kind** — its only count limit is `len(backed) > 2` at `panel_pnr.py:71`, which
+caps how many *blocks* may be panel-backed in one design (the chip has one
+`x1_out`/`x1_in` pair), and says nothing about how large any of them is.
+
+**What is actually true is narrower and fixable:** each template places only the
+cells NAMED as roles in `panel_requirements()` — 2 for the TX shape, 3-4 for the
+RX shape. A block whose `cell_count` exceeds its named-role count has **no
+position assigned** for the extra cells: they are silently absent from the
+resulting `Placement`, and the failure surfaces later as something that looks
+unrelated. Golay (7 cells, 3 named roles) is placeable **by hand** and verified on
+a real chip with a real `SramPanelDevice`; what it cannot do is go through
+`auto_pnr`. That is a **role-coverage gap in the template**, not a property of the
+substrate, and the fix is to extend the template (or have a block declare every
+cell as a role).
 
 **Root cause C — and this is the durable, block-independent half: a dense internal
 graph has NO single-face layout.** A cell has ONE forward face, so every `WRITE`/`JUMP`
@@ -2438,11 +2548,12 @@ generic router — which is precisely what root cause A withholds.
 
 **The rule / what to do about it.**
 
-1. **Estimate the CELL COUNT before committing to a panel-backed design.** Sum the
-   FSM's instructions and divide by the real per-cell budget,
-   `31 - (data words + state vars + input registers)` — at best 28, realistically
-   25-26. If the answer is more than ~3 datapath cells, the block will hit this wall
-   and the honest move is to say so early.
+1. **Declare every cell as a named role in `panel_requirements()`, or expect to hand-place.**
+   Cell COUNT is not the test — `GolayDecoderBlock` runs 7 cells on real silicon.
+   The test is whether the template has a position for each cell, i.e. whether the
+   cell is a named role. Sizing the FSM up front is still worth doing (budget is
+   `31 - (data words + state vars + input registers)`, at best 28, realistically
+   25-26), but a large count is not by itself a wall.
 2. **Keep at most ONE backward internal edge per cell.** `build._apply_internal_feedback`
    restores the **highest-address** `JUMP` per cell for a backward internal jump; a
    second backward jump in the same cell is silently lost. Prefer a DATA-only backward

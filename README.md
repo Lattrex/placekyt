@@ -244,9 +244,9 @@ factory is named in the dashboard so you never have to guess the equivalent.
 | **ChirpSyncBlock** | `(Python golden: K-consecutive-equal-argmax preamble run detector)` | err 0 / tol 0 LSB |
 | **SqrtBlock** | `blocks.transcendental` | err 3 / tol 5 LSB · -83 dB SNR |
 | **FeaturePairJoinBlock** | `(placeKYT-native: ordered two-word rendezvous; no GR counterpart)` | err 0 / tol 0 LSB |
-| **TMRVoterBlock** | (Kyttar-native, no single GR block) | err 0 / tol 0 LSB |
+| **TMRVoterBlock** | (Kyttar-native, no single GR block) | — |
 | **XorJoinBlock** | (Kyttar-native, no single GR block) | err 0 / tol 0 LSB |
-| **ChaCha20QRBlock** | (Kyttar-native, no single GR block) | err 0 / tol 0 LSB |
+| **ChaCha20QRBlock** | (Kyttar-native, no single GR block) | — |
 <!-- BLOCK-STATUS:END -->
 
 - **[Block status dashboard → `verification/STATUS.md`](verification/STATUS.md)** —

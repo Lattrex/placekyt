@@ -3651,7 +3651,7 @@ same way: by measuring rather than by reading the recorded counts).
 
 ---
 
-## INV-NEXT — A REORDER is a COLLECTOR problem: fix the order where the stream is SERIALISED, not where it is produced; and a band whose neighbours all face one way is SEALED
+## INV-55 — A REORDER is a COLLECTOR problem: fix the order where the stream is SERIALISED, not where it is produced; and a band whose neighbours all face one way is SEALED
 
 Added 2026-08-29, from `ChaCha20KeystreamBlock`'s emission-order defect. Two
 separable rules; the first is a design heuristic with teeth, the second a

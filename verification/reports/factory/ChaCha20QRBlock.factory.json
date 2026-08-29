@@ -1,0 +1,33 @@
+{
+  "block": "ChaCha20QRBlock",
+  "grc_block": "",
+  "tier": 2,
+  "wave": 8,
+  "schema_version": 1,
+  "started_utc": "2026-08-29T03:45:55Z",
+  "ended_utc": "2026-08-29T06:47:00Z",
+  "walltime_sec": 10830.0,
+  "tokens": {
+    "input": 0,
+    "output": 422341,
+    "cache_read": 0,
+    "total": 422341
+  },
+  "turns": 355,
+  "attempts": 1,
+  "human_interventions": 1,
+  "intervention_reasons": [
+    "orchestrator resumed the builder after an API-error termination (infrastructure, not a build failure) and independently re-verified its RFC 8439 golden; no redirection of technical approach"
+  ],
+  "prompts": [
+    {
+      "role": "initial",
+      "text": "PLAN_COMPRESS_CRYPTO_TMR.md SB2 dispatch: ChaCha20 quarter round, RFC 8439 S2.1, with the ISA mapping (ADD/ADC, free ROTL32-16 as a hi/lo swap) supplied."
+    }
+  ],
+  "verify_passed": true,
+  "quarantined": false,
+  "quarantine_reason": "",
+  "commit_sha": "8042af4",
+  "notes": "MEASURED instruction counts on this 16-bit ALU, replacing the plan's estimates: 32-bit ADD = 4 (ADD/MOVE/ADC/MOVE; ADC needs no help because MOVE is flag-preserving, so the carry rides the park), 32-bit XOR = 4, ROTL32(x,16) = 0 (the hi/lo swap folded into WHICH REGISTER each relay MOVE reads), ROTL32(x,12/8/7) = 7 each over 2 cells via rotate-then-merge (the naive cross-half shift needs both originals alive while writing both results: 11 instr + 2 scratch, over budget). Total arithmetic 53 instructions in 17 cells.\n\nHEADLINE FINDING - INV-45, TRANSPORT DOMINATES: carrying a wide value costs more than computing on it. A cell forwarding a W-word live set pays 2 instructions per word per hop, so 3W+1 of the 31 usable words are gone before any arithmetic. At W=8 (the quarter round's four 32-bit values) that leaves 6 words of body budget - a 32-bit ADD fits and little else. That ceiling, not the ALU, sizes the block.\n\nSCOPING CONSEQUENCE FOR THE NEXT WAVE: 17 cells/QR x 80 QRs = 1360 cells against a 120-cell array, off by >10x. ChaCha20KeystreamBlock CANNOT be a straight-line expansion; it must reuse a few QR instances across rounds, and since the 16-word state is 32 registers (no cell holds it) the round permutation becomes a ROUTING problem. Caught by measurement before dispatch - the same class of error the XTEA scoping made.\n\nTWO SILENT TRAPS FOUND AND GATED: (1) an over-budget cell is SILENT and looks like a routing fault - an 8-word egress cell one word over put R7/R8 on the first instruction words; it assembled, loaded, placed and routed cleanly and dropped the LEADING WORD of every burst while the other seven were bit-exact, because the resolver's space guard compares only DATA against base_addr, never state or pinned inputs. (2) a __terminate__ internal jump on an external output port DELETES that port from the portmap.\n\nVERIFICATION: both RFC 8439 vectors (S2.1.1 and S2.2.1) exact ON THE REAL PLACED+ROUTED CHIP; 4 seeds; all 8 anchors; 7 wrapping corners with a non-vacuity proof that all four adds and the ADC half-carry fire; 8 D4 orientations on the full burst, 0 xfails; saturated == per-sample; 17 model mutations proven to fail; and 3 REAL ON-CHIP MUTANTS (rot7->rot6, ADC->ADD, the free rot16 swap removed) each caught WHILE STILL EMITTING THE RIGHT WORD COUNT - the rot16 one is invisible to every size/budget check, so only a value gate sees it. 69 block tests green.\n\nSELF-CORRECTIONS THE BUILDER MADE (recorded because the discipline is the point): its hand-counted rotate cost of 9 was wrong - measurement gave 7, total 53 not 59; and a reflexive 'git add -A' staged 57 report deletions left by an INV-38-interrupted run, which it caught, reset, restored (all 117 reports verified present) and recommitted staging only the named file. Both hazards are in the lessons_log.\n\nORCHESTRATOR VERIFICATION: 69 tests pass from main; report carries provenance=session; the grc_import.py edit is a 4-line name-mapping entry following the existing Crc16Block pattern (snake->Pascal cannot produce 'QR' or the digits); and the ~11 real full-suite failures are PRE-EXISTING - route_quality + iir_biquad reproduce as '3 failed, 53 passed, 1 skipped' identically on untouched main. Caveat carried forward: install.sh needs sudo, so the GRC binding is validated against repo files by test_grc_binding_complete.py, not in a live GRC window."
+}

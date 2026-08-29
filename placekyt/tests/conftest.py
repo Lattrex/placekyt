@@ -74,3 +74,37 @@ def _no_gr_server_autostart():
     QSettings().setValue("sim/gr_server_autostart", False)
     QSettings().sync()
     yield
+
+
+@pytest.fixture(autouse=True)
+def _reap_leaked_gr_servers():
+    """Stop any GNURadio server a test left running.
+
+    Port 58950 is a REAL bound TCP socket, so a test that starts a server and
+    does not stop it poisons every LATER test that needs the port — and the
+    victim's failure names the port, not the leaker, which makes it look like a
+    defect in whatever ran second.
+
+    Several suites predate this fixture and leak by construction (measured:
+    ``test_batch_trace_retention``, ``test_modem_grc_import_duplex_e2e`` and
+    ``test_persistent_chip_batch_reset`` each start a server and never stop it).
+    Rather than edit each one — and hope the next author remembers — this reaps
+    whatever is still bound after every test.
+
+    Cheap: it walks the SimController instances that exist, so a test that
+    cleaned up correctly costs one no-op call.
+    """
+    yield
+    try:
+        import gc
+
+        from ui.sim_controller import SimController
+
+        for obj in gc.get_objects():
+            if isinstance(obj, SimController) and getattr(obj, "_gr_server", None):
+                try:
+                    obj.stop_gnuradio_server()
+                except Exception:      # noqa: BLE001 — teardown must never fail a test
+                    pass
+    except Exception:                  # noqa: BLE001 — ui not importable in this run
+        pass

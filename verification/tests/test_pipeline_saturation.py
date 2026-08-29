@@ -392,6 +392,13 @@ _CORDIC_COVERAGE = {
 COMPLEX_2IN2OUT.update(_CORDIC_COVERAGE)
 
 NEEDS_BESPOKE = {
+    "LZ4DecoderBlock": "NOT DONE — manifest status planned (re-opened 2026-08-29 "
+        "after an audit showed its quarantine cited a panel-template cell cap that "
+        "does not exist; GolayDecoderBlock is a 7-cell panel-backed block with "
+        "status done). The DSP is proven against the reference C implementation in "
+        "BOTH directions and on a real chip, but the block is not yet auto-placeable, "
+        "so there is no assembled design to drive saturated. Its coverage is "
+        "test_lz4_decoder.py. Remove this entry when the block ships.",
     "FFT64Block": "NOT DONE — manifest status needs_human. The block places, "
         "routes and builds, but is NOT yet bit-exact on chip (see the lessons "
         "log: two cells hit the INV-33 state/instruction OVERLAP and stall the "

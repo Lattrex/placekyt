@@ -2865,7 +2865,7 @@ gather/scatter. Related: INV-45 (the transport ceiling this starts from), INV-31
 (the panel + its protocol), INV-20 (the fan-in hazard rule 2 avoids), INV-33 (the
 register/overlap contract), INV-29 (the table-heavy case).
 
-## INV-50 — A closed RING traps its interior; the layout dicts must PAIR BY POSITION; and a "gap" is a dead end for an internal WRITE
+## INV-51 — A closed RING traps its interior; the layout dicts must PAIR BY POSITION; and a "gap" is a dead end for an internal WRITE
 
 **Why this exists.** Three separate mechanisms, all discovered while folding one
 block, all of which produce a design that **places, routes, builds and passes

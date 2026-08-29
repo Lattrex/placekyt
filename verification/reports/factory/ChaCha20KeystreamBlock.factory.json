@@ -1,35 +1,31 @@
 {
-    "block": "ChaCha20KeystreamBlock",
-    "grc_block": "",
-    "tier": 3,
-    "wave": 9,
-    "schema_version": 1,
-    "started_utc": "2026-08-29T11:33:45Z",
-    "ended_utc": "2026-08-29T23:59:00Z",
-    "walltime_sec": 21853.0,
-    "tokens": {
-        "input": 0,
-        "output": 568850,
-        "cache_read": 0,
-        "total": 568850
-    },
-    "turns": 625,
-    "attempts": 6,
-    "human_interventions": 0,
-    "intervention_reasons": [],
-    "prompts": [
-        {
-            "role": "initial",
-            "text": "Re-attempt after the KB audit: two of three claimed walls were sound, the third was unmeasured algebra. Told to MEASURE, not derive."
-        },
-        {
-            "role": "initial",
-            "text": "Third attempt: 37 cells authored but NOT WIRED. Told to wire, fold, and prove end to end on chip."
-        }
-    ],
-    "verify_passed": false,
-    "quarantined": true,
-    "quarantine_reason": "STILL DOES NOT COMPUTE. The block now PLACES, ROUTES and BUILDS clean at 40 cells in a 10x6 fold, every cell inside its 31-word budget and all 58 internal edges verified against a walk simulator that credits a FACE flip only to cells whose programs actually contain one -- but it EMITS NO WORDS. The rows boot correctly seeded with the RFC initial state and seq's external trigger arrives at the right entry with a correctly resolved hop, yet no lap of the ring ever runs. Remaining work is control-flow debugging on chip, not architecture. The SELECTOR architecture the previous pass planned was REPLACED by a FIXED-TAP RING that makes the permutation a shift register (40 cells / 58 easy edges instead of 37 cells / 36 hard ones); that restatement is proven exact against RFC 8439 S2.3.2 and S2.4.2 with 8 INV-4 mutants and is committed and gated. Source IS committed this time (unlike attempt 2) because it places/routes/builds and is statically green, so the next agent starts from a running toolchain -- but it is NOT done and does NOT compute.",
-    "commit_sha": "5659148",
-    "notes": "THE HEADLINE: THE SELECTOR WAS UNNECESSARY. The previous pass's architecture (8 lane cells, LOAD-indirect read, 4-way CMP/BR write-back, fan-out-8 selector broadcast, 8-cell demux) is replaced by a FIXED-TAP RING. Reading the schedule as a per-row READ OFFSET rather than as index(k)=4k+((j+k*shift)&3) collapses it: row k reads offsets 0,1,2,3 in the column half and k,k+1,k+2,k+3 in the diagonal half, so EVERY row taps SLOT 0 provided it rotates left by one after each quarter round, and the diagonal half is the same walk started k positions later (bracketed by k extra rotations and 4-k to restore alignment; a 4-slot rotation has order 4 so the brackets cancel). The tap is a CONSTANT and the whole permutation is a SHIFT REGISTER.\n\nProven EXACT against RFC 8439 S2.3.2 (state + the 64 keystream bytes) and S2.4.2 (the full 114-byte two-block encryption vector) over the same cell-level operations the hardware performs, with 8 INV-4 mutants. FOUR of those mutants -- diagonal-half-first, no-realignment, reversed spin direction, stuck tap -- ALL still perform exactly 80 invocations, so no count-based or structural check catches any of them. Same class as the counter-direction mutant found in attempt 2.\n\nMEASURED ON THE REAL CHIP: (1) the row cell -- publish the head pair, install a written-back replacement, rotate four 32-bit slots -- correct on silicon, 4 spins the identity, 16 instructions with 5 spare words; (2) INV-48's forwarding rule watched LIVE as a failure and then a fix (a cell whose resting face misses its target gives NO output and NO error; an in-program FACE flip fixes it); (3) a word TRANSITS cells carrying a FACE and NO PROGRAM at distances 2/3/4/6 -- but the build faces a bare array cell only where a ROUTE claims it, so a gap inside a block's OWN footprint is still a dead end for a block-internal WRITE.\n\nNEW SILENT TRAP FOUND AND GATED -- POSITIONAL PAIRING (INV-33/INV-50): build_cell_programs and default_layout must ITERATE IN THE SAME ORDER, because the router and build walk the programs and the placed cells in lockstep BY POSITION. Both dicts are keyed by cell id, which HIDES the mismatch: the design places, routes, builds and DRCs clean while whole cells come out with EMPTY memory. Cost one debug cycle here.\n\nNEW INV-50 (three mechanisms, all silent): a CLOSED RING TRAPS ITS INTERIOR (every ring cell forwards along the ring, so nothing emitted inside can ever leave -- measured over all 26 rotations and four emit directions; fold as a serpentine, not a ring, whenever an interior cell must reach an edge); the positional-pairing contract; and the gap/transit asymmetry above.\n\nMETHOD NOTE: the fold-search checker initially credited a FACE flip to any cell I nominated, and passed a layout that then mis-resolved on silicon -- a flip only exists if the cell's PROGRAM contains MOVE [FACE]. Rewriting the checker to read the programs turned three 'green' edges red immediately. A model that flatters the design is worse than no model."
+  "block": "ChaCha20KeystreamBlock",
+  "grc_block": "",
+  "tier": 3,
+  "wave": 9,
+  "schema_version": 1,
+  "started_utc": "2026-08-29T11:33:45Z",
+  "ended_utc": "2026-08-30T03:30:00Z",
+  "walltime_sec": 27902.4,
+  "tokens": {
+    "input": 0,
+    "output": 1090750,
+    "cache_read": 0,
+    "total": 1090750
+  },
+  "turns": 1091,
+  "attempts": 7,
+  "human_interventions": 0,
+  "intervention_reasons": [],
+  "prompts": [
+    {
+      "role": "initial",
+      "text": "Wire, fold and prove the 37 authored cells end to end. Two walls already demolished by measurement; only capacity stands."
+    }
+  ],
+  "verify_passed": false,
+  "quarantined": true,
+  "quarantine_reason": "PLACES, ROUTES and BUILDS clean at 40 cells in a 10x6 fold - every cell inside its 31-word budget, all 58 internal edges verified - but EMITS NO WORDS. The ring never starts. Not marked done because it does not compute. The remaining defect is CONTROL FLOW, not architecture: seq's trigger arrives at the right entry with a correct hop and the rows boot correctly seeded, but no lap runs. LAYER: block program, fixable.",
+  "commit_sha": "5b2209d",
+  "notes": "THE HEADLINE: THE SELECTOR WAS UNNECESSARY. The previous pass's architecture (8 lane cells, LOAD-indirect read, 4-way CMP/BR write-back, fan-out-8 selector broadcast, 8-cell demux) is replaced by a FIXED-TAP RING. Reading the schedule as a per-row READ OFFSET rather than as index(k)=4k+((j+k*shift)&3) collapses it: row k reads offsets 0,1,2,3 in the column half and k,k+1,k+2,k+3 in the diagonal half, so EVERY row taps SLOT 0 provided it rotates left by one after each quarter round, and the diagonal half is the same walk started k positions later (bracketed by k extra rotations and 4-k to restore alignment; a 4-slot rotation has order 4 so the brackets cancel). The tap is a CONSTANT and the whole permutation is a SHIFT REGISTER.\n\nProven EXACT against RFC 8439 S2.3.2 (state + the 64 keystream bytes) and S2.4.2 (the full 114-byte two-block encryption vector) over the same cell-level operations the hardware performs, with 8 INV-4 mutants. FOUR of those mutants -- diagonal-half-first, no-realignment, reversed spin direction, stuck tap -- ALL still perform exactly 80 invocations, so no count-based or structural check catches any of them. Same class as the counter-direction mutant found in attempt 2.\n\nMEASURED ON THE REAL CHIP: (1) the row cell -- publish the head pair, install a written-back replacement, rotate four 32-bit slots -- correct on silicon, 4 spins the identity, 16 instructions with 5 spare words; (2) INV-48's forwarding rule watched LIVE as a failure and then a fix (a cell whose resting face misses its target gives NO output and NO error; an in-program FACE flip fixes it); (3) a word TRANSITS cells carrying a FACE and NO PROGRAM at distances 2/3/4/6 -- but the build faces a bare array cell only where a ROUTE claims it, so a gap inside a block's OWN footprint is still a dead end for a block-internal WRITE.\n\nNEW SILENT TRAP FOUND AND GATED -- POSITIONAL PAIRING (INV-33/INV-50): build_cell_programs and default_layout must ITERATE IN THE SAME ORDER, because the router and build walk the programs and the placed cells in lockstep BY POSITION. Both dicts are keyed by cell id, which HIDES the mismatch: the design places, routes, builds and DRCs clean while whole cells come out with EMPTY memory. Cost one debug cycle here.\n\nNEW INV-50 (three mechanisms, all silent): a CLOSED RING TRAPS ITS INTERIOR (every ring cell forwards along the ring, so nothing emitted inside can ever leave -- measured over all 26 rotations and four emit directions; fold as a serpentine, not a ring, whenever an interior cell must reach an edge); the positional-pairing contract; and the gap/transit asymmetry above.\n\nMETHOD NOTE: the fold-search checker initially credited a FACE flip to any cell I nominated, and passed a layout that then mis-resolved on silicon -- a flip only exists if the cell's PROGRAM contains MOVE [FACE]. Rewriting the checker to read the programs turned three 'green' edges red immediately. A model that flatters the design is worse than no model.\n\n=== PASS 3 (2026-08-29/30) \u2014 architecture REPLACED and simplified ===\n\nTHE PRIOR PASS'S PLAN WAS UNNECESSARY. It had 8 lane cells, LOAD-indirect reads, a 4-way CMP/BR write-back, a fan-out-8 selector broadcast and an 8-cell demux - 37 cells and 36 hard edges. Reading RFC 8439's schedule as a per-row READ OFFSET instead of the closed form index(k) = 4k + ((j + k*shift) & 3) collapses all of it: row k reads offsets 0,1,2,3 in the column half and k,k+1,k+2,k+3 in the diagonal half, so EVERY ROW TAPS SLOT 0 if it rotates left by one after each quarter round, and the diagonal half is the same walk started k later. The tap becomes a CONSTANT and the permutation becomes a SHIFT REGISTER. 40 cells / 58 plain edges replace 37 cells / 36 hard ones. Proven exact against RFC 8439 S2.3.2 (state AND keystream bytes) and S2.4.2 (the full 114-byte two-block vector) with 8 INV-4 mutants - four of which (diagonal-first, no-realign, reversed spin, stuck tap) still perform exactly 80 invocations, so ONLY A VALUE GATE CATCHES THEM.\n\nMEASURED ON REAL SILICON: the row cell publishing, installing a write-back and rotating (4 spins = identity); INV-48's forwarding rule observed LIVE as a failure then a fix - a cell whose resting face misses its target gives no output AND NO ERROR; and a word transiting cells that have a face but no program at distances 2/3/4/6 - though the build faces bare cells only where a ROUTE claims them, so a gap inside a block's own footprint is still a dead end for an internal WRITE.\n\nNEW INV-51 (renumbered from the builder's INV-50 - third numbering collision this campaign; parallel builders cannot see each other's KB additions): (1) A CLOSED RING TRAPS ITS INTERIOR - nothing emitted inside a ring fold can ever leave, so fold as a serpentine when an interior cell must reach an edge. (2) POSITIONAL PAIRING - build_cell_programs and default_layout must iterate in the SAME ORDER; the cell-id keys HIDE a mismatch and leave whole cells with empty memory. (3) the gap/transit asymmetry above.\n\nIT COMMITTED THE SOURCE THIS TIME, unlike pass 2, and the reasoning is sound: the block builds and is statically green, so the next agent inherits a working toolchain rather than 37 loose cells. It is explicitly marked non-computing in the docstring, the manifest and the lessons log.\n\nTHE LESSON IT VOLUNTEERED, which is the best thing in this report: its first fold-search checker credited face flips to cells it had merely NOMINATED, and passed a layout that mis-resolved on silicon. Rewriting it to read MOVE [FACE] out of the actual programs turned three 'green' edges red immediately. 'A MODEL THAT FLATTERS THE DESIGN IS WORSE THAN NO MODEL.' That is the same failure class as the fabricated KB limits this campaign spent a day removing.\n\nORCHESTRATOR VERIFICATION: 151 tests pass from main across the keystream golden, the new fixed-tap-ring suite, the QR block and the transit ceiling; manifest honestly needs_human; dashboard clean."
 }

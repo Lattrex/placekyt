@@ -130,6 +130,201 @@ across the three chacha files; placement-legality, orientation, GRC-binding,
 saturation, chip-scale and reachability all green (1016 + 78 + 24 passed). The
 one failure is the on-chip value gate, which now asserts the sixteen words in
 §2.3.2 order — the definition of done for this block.
+## Poly1305MACBlock — the multiplier is SIGNED, which picks the radix; and a systolic ring CANNOT fuse adopt-and-forward into one entry 2026-08-29
+
+First pass. **NOT done, and the manifest entry stays `planned`.** What IS
+finished and measured: the golden (both implementations, all RFC vectors), the
+arithmetic design, the block's `process_reference`, and — on a real placed +
+routed + built chip — **the complete Poly1305 field multiply
+`acc * r mod (2**130 - 5)`, all thirteen accumulators bit-exact over 11 cases
+including the all-maximum corner.** What is NOT done is the rest of the block:
+the message-to-limb packing, the carry-normalise phase, the final reduction and
+`+ s`, and the tag egress. No end-to-end RFC tag has been produced on chip, so
+nothing here is claimed as a working Poly1305 block.
+
+**Every number below was MEASURED on a real placed+routed+built chip**, by
+probe blocks driven through `run_block_dut_rate`, not derived from reading code.
+
+### 1. `MUL`/`MULHI` are SIGNED, and that single fact picks the whole radix
+
+`MULHI` is documented as "the high 16 bits" (PROGRAMMING_GUIDE §4.4), which
+reads as unsigned. It is not. Measured, `x * 0xFFFF` for x = 1, 2, 0x7FFF,
+0x8000, 0xFFFF returns the **signed** 32-bit product every time
+(`0x0002 * 0xFFFF -> 0xFFFFFFFE`, not `0x0001FFFE`). With both operands
+constrained to `[0, 0x7FFF]` the same pair is **exact and equals the unsigned
+product** (verified across the range).
+
+That constraint decides the limb layout, and it decides it *against* the plan:
+
+* the radix must **divide 130 exactly** for the `2**130 ≡ 5` fold to be
+  limb-aligned, which allows only 2, 5, 10, 13, 26;
+* radix `2**26` (the plan's "five radix-2^26 limbs", and every textbook
+  Poly1305) has 26-bit limbs — far outside 15 bits. **Not implementable here.**
+* radix `2**13` has legal limbs but the folded coefficient `5*r[j]` reaches
+  `0x9FFB`. Also dead.
+* radix `2**10` / **13 limbs**: limbs ≤ 1023, `5*r[j] ≤ 5115`, both inside 15
+  bits. Accumulators peak at a **measured 25 bits**, comfortably inside 32.
+
+So the plan's suggested representation is wrong for this ISA, and the reason is
+one measurement. LAYER: hardware/ISA — permanent. REACH: the signedness is a
+property of the ALU and applies to every block using `MUL`/`MULHI`; the radix
+conclusion is specific to Poly1305's modulus.
+
+### 2. A 32-bit MAC is SEVEN instructions, and the obvious six-instruction order is silently wrong
+
+`acc += a*b` on a hi/lo pair. The natural order —
+`MUL / ADD / MOVE / MULHI / ADC / MOVE` — is **wrong**: `MULHI` is an ALU op and
+sets all flags, so it **destroys the carry** the `ADD` just produced. Measured,
+the accumulator carries a constant `+0x10000` error from the first
+accumulation onward, **while the low word stays bit-exact in every one of six
+successive MACs**. A gate that checks one word, or only the low half, sees
+nothing.
+
+The correct order computes the high half FIRST and parks it, keeping
+`ADD`→`ADC` adjacent in flag terms:
+
+```
+MULHI c, a  /  MOVE t, R0  /  MUL c, a  /  ADD R0, lo
+MOVE lo, R0 /  ADC t, hi   /  MOVE hi, R0
+```
+
+Verified exact over six successive accumulations of `921 * 5115`. Related and
+worth stating alongside INV-45's "`ADC` is the carry — never synthesise it":
+the park may be a `MOVE` **or a `{write}`** — measured, a `WRITE` between `ADD`
+and `ADC` also preserves the carry. It is only the ALU ops that clobber it.
+
+### 3. A hop-counted broadcast to N cells works, and it needs a COLLECTOR to observe
+
+One cell writing to several downstream cells at hops 1, 2, 3 delivers three
+**distinct** values correctly — the mechanism a systolic ring's coefficient
+distribution needs. It measured as broken on the first attempt (all three sinks
+held the first value) for a reason that is *not* the broadcast: each sink had
+declared its own external `out` port, and the build re-resolved those into chain
+hand-offs, rewriting the sinks' programs. Re-probed with the sinks reporting
+into a single collector, all three values came back correct. **Only the last
+cell may own the block's external output**; an intermediate cell that declares
+one gets its program rewritten.
+
+### 4. THE STRUCTURAL RESULT: a systolic ring cannot fuse ADOPT and FORWARD
+
+This is the pass's most valuable finding, and it is a statement about the
+substrate rather than about Poly1305.
+
+The multiply is a cyclic convolution, which folds into a ring: cell `k` owns
+accumulator `k` (resident — the accumulator must never move, or INV-45's
+transport ceiling kills the design), the limb line ROTATES through the cells,
+and the coefficient is broadcast. Verified equal to the plain dot-product form
+over 400 random limb pairs, with the `2**130 ≡ 5` fold riding the limb line as a
+single `×5` at the one wrap edge.
+
+The natural cell program is one entry doing *adopt the predecessor's limb → MAC
+→ forward to the successor*. **It is wrong, and it is wrong in all six
+permutations of those three steps, in both trigger orders — twelve variants,
+zero correct** (enumerated exhaustively against the reference). Measured on chip
+first, as every cell's limb register holding the *same* value: a cell entry is
+atomic, so whichever cell runs second in a pass already sees the first cell's
+forward, and one value sweeps the entire ring in a single pass instead of
+advancing one position.
+
+**The fix is to STAGE the sweeps as two separate entries** fired by two separate
+fan cells:
+
+```
+sweep 1 (entry `mac`)   :  acc += c * a ;  successor's a_in <- a
+sweep 2 (entry `adopt`) :  a <- a_in
+```
+
+Because the whole ring finishes sweep 1 before any cell runs sweep 2, no cell
+can observe the current pass's forward. Verified over 500 random limb pairs in
+both trigger orders. Putting the MAC sweep first also removes the need to prime
+the line or special-case pass 0.
+
+Two cells rather than one because `1 MOVE + 13 WRITE + 26 JUMP` is 40 words
+against a 31-word budget (INV-46: more cells doing less).
+
+LAYER: hardware — a consequence of atomic cell entries, permanent. REACH: any
+block whose datapath is a rotating line of cells that both consume and forward
+the same value — systolic convolutions, ring accumulators, shift-register
+folds. Stated generally: **on this substrate a systolic stage's "read old
+value / write new value" cannot live in one entry; the read and the write must
+be separated by a full sweep of the ring.**
+
+### 4b. …and BOTH sweeps must fire in REVERSE ring order
+
+Staging alone was not sufficient on chip, and the residual is a second,
+independent fact. With the sweeps staged but fired FORWARD (mac0 first), twelve
+of the thirteen accumulators were bit-exact and **the wrap cell alone was
+exactly one pass stale**. Cause: a cell's `JUMP`s are issued in program order,
+but the substrate is asynchronous, so "later in the entry" is not "later in
+time" at a distant cell — mac12's closing write around the ring landed *after*
+mac0's adopt. Firing the ring backwards puts the longest-latency trigger first
+and the defect disappears.
+
+The same fact killed a third variant: a dedicated `×5` wrap CELL between mac12
+and mac0 cannot be ordered between the two sweeps by trigger placement at all —
+its write landed one pass late no matter which cell fired it (tried from mac12,
+from the MAC fan, and from the adopt fan). **Folding the `×5` into mac12's own
+forward** makes it just another sweep-1 write, and those are proven visible to
+sweep 2. That also keeps all thirteen MAC cells identical.
+
+**And the egress must not ride a MAC cell.** Folding the drain onto mac6 (two
+`is_face` words plus a flip-and-restore) shifted that cell's register map and
+left **its accumulator, and only its accumulator, wrong** while the other twelve
+stayed bit-exact. Twelve-of-thirteen is precisely the shape a one-value gate
+cannot see — the brief's warning, met in practice.
+
+**RESULT, measured on the real placed + routed + built chip:** with the sweeps
+staged, both fired in reverse, the `×5` inline and the egress off the ring, all
+**13/13 accumulators are bit-exact over 11 cases** — all-zero, `a=max r=max`
+(every accumulator at its 27-bit peak, the full carry chain), `a=max r=1`, a
+single limb, the `r=1` identity, and 6 random pairs.
+
+### 5. The INV-33 overlap gate earned its keep twice, statically
+
+The static per-cell budget check (`no data address, state register or pinned
+input >= 31 - instr_count`) caught the wrap cell at **exactly one word over**
+before any chip run — twice, on two different revisions. The fix both times was
+INV-46's: move the work to another cell. The `×5` fold now lives in its own
+2-instruction `wrapx5` cell on the ring's closing edge instead of costing every
+MAC cell a data word and an instruction, which also made all 13 MAC cells
+**identical**.
+
+### 6. The collector must not sit on the ring either
+
+Before that, the collector had been placed ON the ring, and it emitted
+`0x3760376` — the broadcast coefficient `886` in both halves of every
+accumulator. A cell on a walk is not neutral: it sat on the coefficient
+broadcast walk, the two fan cells then disagreed about which walk position was
+which MAC cell (one skipped distance 8, the other distance 9), and it was
+triggered during a MAC sweep. INV-52 clause 2 from the other side. Moving it
+off the walk fixed it.
+
+### 7. Where it stands
+
+The 20-cell probe (13 MAC + seq + 2 fans + collector + 3 face-only transits)
+places, routes, builds and computes the field multiply exactly. **What remains
+is not arithmetic** — every arithmetic layer is measured exact — but the four
+surrounding phases: the message-word-to-limb packing (a bit-serial shift, whose
+Python model is validated over 500 blocks), the carry-normalise sweep, the final
+reduction plus `+ s`, and the tag egress (which needs the flip-and-restore
+pattern `LZ4DecoderBlock` proved, on a cell that is NOT a MAC cell). The
+sequencer must also grow the phase schedule. Estimated 21-22 cells total.
+
+### What is already gated
+
+`verification/tests/poly1305_golden.py` ships two INDEPENDENT implementations —
+a plain big-integer transcription and the 13-limb radix-`2**10` model the chip
+computes in — and both reproduce **RFC 8439 §2.5.2** (including its published
+intermediate `r` and `s`) and **all nine §A.3 edge-case vectors**, and agree
+with each other over 500 random message/key pairs. The block's
+`process_reference` runs the exact cell-level schedule (systolic passes, the
+wrap-`×5`, the carry-normalise sweeps) and is exact against the golden on the
+RFC vectors and 200 random word-aligned messages.
+
+INTERFACE NOTE, honestly stated: the block consumes the message as 16-bit
+words, so an ODD-length byte message is not expressible at this interface.
+Three of the nine §A.3 vectors have odd byte lengths and are therefore gated at
+the golden, not at the block.
 
 ## ChaCha20KeystreamBlock — the emission-order fix is at the COLLECTOR, and it misses this fold by exactly three words 2026-08-29
 

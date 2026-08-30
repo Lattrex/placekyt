@@ -3993,3 +3993,146 @@ negative `test_the_head_on_gate_catches_a_facing_pair`.
 seals what is BEYOND it; this says the band itself cannot carry both
 directions), INV-19/INV-20 (the serialize-LOCK, which is the existing remedy for
 a different contention class — reconvergent fan-in — and is NOT what this needs).
+## INV-NEXT — `MUL`/`MULHI` are SIGNED, so an exact unsigned 16x16->32 product needs BOTH operands under 2^15
+
+*(Number to be assigned at landing.)*
+
+Found 2026-08-29 building `Poly1305MACBlock`. **MEASURED on a real placed +
+routed + built chip**, not read out of a table.
+
+**THE RULE.** PROGRAMMING_GUIDE §4.4 describes `MUL` as "the low 16 bits" and
+`MULHI` as `(A x B) >> 16`, which reads as an unsigned pair. It is not: both
+are halves of the **SIGNED** 32-bit product.
+
+| x | `x * 0xFFFF` measured | unsigned truth |
+|---|---|---|
+| `0x0001` | `0xFFFFFFFF` | `0x0000FFFF` |
+| `0x0002` | `0xFFFFFFFE` | `0x0001FFFE` |
+| `0x7FFF` | `0xFFFF8001` | `0x7FFE8001` |
+| `0x8000` | `0x00008000` | `0x7FFF8000` |
+| `0xFFFF` | `0x00000001` | `0xFFFE0001` |
+
+Every row is the signed product exactly. With **both operands in `[0, 0x7FFF]`**
+the same pair is exact AND equals the unsigned product (verified across the
+range, e.g. `0x7FFF * 0x7FFF -> 0x3FFF0001`).
+
+**WHY IT MATTERS BEYOND ONE BLOCK.** Any block doing extended-precision
+*integer* arithmetic (as opposed to Q15 DSP, where operands are signed by
+construction) has to keep every multiplicand non-negative in 16 bits, and that
+constraint propagates all the way back into the **choice of representation**.
+For Poly1305 it eliminated the textbook radix outright: the fold `2^130 = 5`
+needs a radix dividing 130 (only 2, 5, 10, 13, 26), and radix `2^26` has 26-bit
+limbs while radix `2^13` produces a folded coefficient `5*r[j]` reaching
+`0x9FFB` — both outside 15 bits. Radix `2^10` with 13 limbs is the largest that
+survives. A plan written against the usual five-limb decomposition is therefore
+not implementable here, and no amount of code reading would have said so.
+
+**COROLLARY, also measured:** the carry survives a `{write}` between `ADD` and
+`ADC`, not only a `MOVE` — `WRITE` is flag-preserving too. Only ALU ops clobber
+the flags. But `MULHI` **is** an ALU op, which is the trap in the next entry.
+
+**SAY WHICH LAYER.** Hardware/ISA — permanent.
+**REACH.** The signedness is a property of the ALU and applies to every block
+using `MUL`/`MULHI`. The radix conclusion is specific to Poly1305's modulus; the
+*method* (let the 15-bit multiplicand rule pick the representation) is general.
+
+**Related:** INV-45 (multi-word arithmetic pricing), INV-13 (the Q15 saturation
+idioms multi-word integer code must NOT inherit), INV-34 (the sibling case of an
+ISA claim that had to be measured rather than read).
+
+---
+
+## INV-NEXT — A 32-bit MAC must compute the HIGH half FIRST; and a SYSTOLIC stage cannot adopt and forward in one entry
+
+*(Number to be assigned at landing.)*
+
+Found 2026-08-29 building `Poly1305MACBlock`'s 13-cell multiply ring. Two
+independent rules, both measured on a real placed + routed + built chip, both
+producing answers that are wrong in ways a casual gate cannot see.
+
+### 1. `acc += a*b` on a hi/lo pair is SEVEN instructions, and the order is load-bearing
+
+INV-45 prices a 32-bit `ADD` at 4 instructions and notes that the park between
+`ADD` and `ADC` may be a flag-preserving `MOVE`. A 32-bit **MAC** is not that
+shape, because the high half comes from `MULHI` — **an ALU op, which sets all
+flags and therefore DESTROYS the carry the `ADD` just produced.**
+
+```
+WRONG (6):  MUL c,a / ADD R0,lo / MOVE lo,R0 / MULHI c,a / ADC R0,hi / MOVE hi,R0
+RIGHT (7):  MULHI c,a / MOVE t,R0 / MUL c,a / ADD R0,lo / MOVE lo,R0
+            / ADC t,hi / MOVE hi,R0
+```
+
+**MEASURED:** the wrong order carries a constant `+0x10000` error from the first
+accumulation onward, **while the low word stays bit-exact** in every one of six
+successive MACs — so a gate that checks one word, or only the low half, sees
+nothing. Computing the high half first and parking it keeps
+`ADD` and `ADC` adjacent in flag terms. Verified exact over six successive
+accumulations; the right order then held 13/13 accumulators bit-exact over 11
+cases including the all-maximum corner.
+
+### 2. A systolic stage's READ and WRITE must be separated by a full sweep
+
+A rotating datapath — cells that each hold a value, compute on it, and forward
+it to their successor — invites the obvious cell program:
+
+```
+adopt the predecessor's value  ->  compute  ->  forward to the successor
+```
+
+**That is wrong in ALL SIX permutations of those three steps, in BOTH trigger
+orders** (twelve variants, enumerated exhaustively against the reference; zero
+correct). A cell entry is **atomic**, so whichever cell runs second in a pass
+already sees the first cell's forward, and one value sweeps the entire ring in a
+single pass instead of advancing one position. On chip this presents as every
+cell's register holding the *same* value.
+
+**The fix is to STAGE the sweeps as two separate entries**, fired by two
+separate fan cells:
+
+```
+sweep 1 (entry `mac`)   :  acc += c * a ;  successor's a_in <- a
+sweep 2 (entry `adopt`) :  a <- a_in
+```
+
+The whole ring finishes sweep 1 before any cell runs sweep 2, so no cell can
+observe the current pass's forward. Verified over 500 random inputs.
+
+**And BOTH sweeps must fire in REVERSE ring order.** Staging alone still left
+**twelve of thirteen cells exact and the wrap cell exactly one pass stale**: a
+cell's `JUMP`s are issued in program order, but the substrate is asynchronous,
+so "later in the entry" is not "later in time" at a distant cell — the closing
+write around the ring landed after the first cell's adopt. Firing the ring
+backwards puts the longest-latency trigger first.
+
+**Three corollaries, each measured after a wrong answer:**
+
+* **A per-edge fix-up CELL cannot be ordered between the two sweeps.** A
+  dedicated cell applying a constant on the ring's closing edge had its write
+  land one pass late no matter which cell fired it (tried from the ring's last
+  cell, from the MAC fan, and from the adopt fan). Fold such work into the
+  producing cell's **forward**, where it becomes an ordinary sweep-1 write.
+* **The egress must not ride a compute cell.** Folding the drain onto one MAC
+  cell (two `is_face` words plus a flip-and-restore) shifted that cell's
+  register map and left **its accumulator, and only its accumulator, wrong**.
+  Twelve-of-thirteen is exactly the shape a one-value gate cannot see.
+* **The collector must not sit ON the ring.** Placed there it lands on the
+  coefficient BROADCAST walk; the two fan cells then disagree about which walk
+  position is which cell (one skipped distance 8, the other 9) and the collector
+  was triggered during a compute sweep, emitting the coefficient. INV-52 clause
+  2 from the other side: a cell on a walk is not neutral.
+
+**SAY WHICH LAYER.** Both rules are hardware — (1) is the ALU's flag behaviour,
+(2) follows from atomic cell entries and asynchronous delivery. Permanent.
+
+**REACH.** (1) applies to every 32-bit multiply-accumulate on this ISA. (2)
+applies to any block whose datapath is a rotating line of cells that both
+consume and forward the same value — systolic convolutions, ring accumulators,
+shift-register folds. Measured on one 13-cell ring, over 11 input cases; the
+mechanism is in the shared execution model.
+
+**Related:** INV-45 (the multi-word pricing this extends to MAC), INV-33 (the
+register/overlap contract — the static gate caught the wrap cell one word over,
+twice), INV-46 (more cells doing less, which is why the fan is two cells and the
+egress is its own), INV-52 (the face/walk rules the collector violated), INV-54
+(a value gate must cover more than one element — met here as twelve-of-thirteen).

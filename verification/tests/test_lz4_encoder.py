@@ -1676,6 +1676,83 @@ def test_THE_BUILT_CHIP_tail_is_accepted_by_the_INDEPENDENT_decoder(name):
     assert val == payload
 
 
+def test_emit_report():
+    """Write ``verification/reports/LZ4EncoderBlock.json``.
+
+    ``passed`` is FALSE, deliberately. The DSP is fully verified and the placed
+    design is verified for the tail path, but the scan loop does not terminate on
+    chip — and a report that claimed otherwise would be exactly the false victory
+    this project forbids. The measured numbers are all here so the next pass
+    starts from fact.
+    """
+    _need_chip()
+    project, bres = _auto_build_cached()
+    onchip = {}
+    for name in _ONCHIP_TAIL_ONLY:
+        payload = PAYLOADS[name]
+        got, dev, stop = _encode_on_chip(project, bres, payload)
+        onchip[name] = {
+            "in_bytes": len(payload),
+            "out_bytes": len(got),
+            "matches_model": list(got) == list(encode_model(payload)[0]),
+            "round_trips": (lz4_decompress_block(bytes(b & 0xFF for b in got))
+                            == payload),
+            "stop_reason": stop,
+            "panel_writes": dev.writes_committed,
+        }
+    rnd = PAYLOADS["random"]
+    REPORT.parent.mkdir(parents=True, exist_ok=True)
+    REPORT.write_text(json.dumps({
+        "kyttar_block": "LZ4EncoderBlock",
+        "passed": False,
+        "metric": "exact",
+        "n_compared": sum(len(p) for p in PAYLOADS.values()),
+        "max_abs_err": 0,
+        "tolerance": 0,
+        "nmse_db": None,
+        "correlation": None,
+        "bit_errors": 0,
+        "delay_used": 0,
+        "coverage": {
+            "gr_equiv": "no stock GR block; LZ4 does not specify WHICH block a "
+                        "compressor must emit, so the gate is decode(encode(x)) "
+                        "== x under the published golden AND under the "
+                        "INDEPENDENT reference C decoder (lz4.block)",
+            "patterns": f"{len(PAYLOADS)} payload classes at the model level, "
+                        "all round-tripping under both decoders; "
+                        f"{len(_ONCHIP_TAIL_ONLY)} of them on the AUTO-PLACED + "
+                        "ROUTED + BUILT design on a real simkyt chip through a "
+                        "real SramPanelDevice",
+            "mutation": True,
+            "independent_decoder": "lz4.block (the reference C implementation, "
+                                   "via its Python binding, run in the GNU-Radio "
+                                   "interpreter)",
+            "independent_decoder_available": _HAVE_REF,
+            "incompressible_expansion_pct": round(
+                (len(encode_model(rnd)[0]) - len(rnd)) / len(rnd) * 100, 4),
+            "cells": LZ4EncoderBlock("probe").cell_count,
+            "onchip": onchip,
+            "open_gap": {
+                "what": "payloads that ENTER THE SCAN LOOP emit nothing on chip; "
+                        "payloads shorter than MF_LIMIT (12) take the "
+                        "literals-only tail and are byte-exact",
+                "measured": "2/3/5/8 bytes match the model exactly; 24/30/40 "
+                            "bytes give zero output and stop_reason EventLimit "
+                            "after ~1.3M events",
+                "cause": "the 14-cell fold closed into a 12-cell RING, so an "
+                         "adjacent-cell hand-off can cost 11 hops the long way "
+                         "round and each word occupies most of the ring for its "
+                         "flight; every edge IS reachable, the hops are just "
+                         "long (INV-51 clause 1)",
+                "layer": "block FOLD — fixable, not a substrate or ISA wall",
+                "next": "re-fold as a SERPENTINE; add a max-hop term to the fold "
+                        "score, which forbids a ring by construction",
+            },
+        },
+    }, indent=1) + "\n")
+    assert REPORT.exists()
+
+
 def test_KNOWN_GAP_the_scan_loop_does_not_terminate_on_chip():
     """THE OPEN GAP, pinned as a gate so it cannot be forgotten or overstated.
 

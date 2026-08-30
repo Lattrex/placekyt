@@ -76,18 +76,26 @@ EOB_SENTINEL = 1 << 8
 # Renumbering any of these without re-running the block's own
 # ``test_at_most_one_backward_internal_jump_per_cell`` gate is how a silent,
 # self-concealing mis-resolution gets in.
-C_SEAL = 0       # the sequence epilogue: offset, match-length re-arm, hand-back
-C_SEQ = 1        # the pass-2 driver: the position cursor and the scan loop
-C_RET = 2        # the SINGLE push-read return point; dispatches by phase
-C_HASH = 3       # the rolling 4-byte hash
-C_VERIFY = 4     # the hash-slot test and the offset
-C_LITS = 5       # the literal replay loop
-C_FRAME = 6      # the sequence's literal-run bounds, fanned out
-C_TOKEN = 7      # the token's two nibbles
-C_MATCH = 8      # the compare engine
-C_INGEST = 9     # pass 1: the input landing cell
-C_ADDR = 10      # the panel port: region base + read issue
-C_CTL = 11       # the embedded SramControllerBlock
+# INGEST IS PINNED AT ZERO, and that is not cosmetic. The catalog's PortMap
+# derives the block's EXTERNAL input port from the FIRST cell's first input port,
+# and ``bus_router._target_input_cell`` falls back to ``placement.cells[0]`` when
+# the PortMap has no entry for a named port. MEASURED: with another cell at index
+# 0 the ``x16_in`` landing resolved to THAT cell's input register at THAT cell's
+# position, so pass 1 was never entered — the chip ran cleanly to quiescence
+# (``stop_reason == "QueueEmpty"``) and committed ZERO panel writes. The input
+# landing cell must be cell 0.
+C_INGEST = 0     # pass 1: the input landing cell (PINNED — see above)
+C_RET = 1        # the SINGLE push-read return point; dispatches by phase
+C_FRAME = 2      # the sequence's literal-run bounds, fanned out
+C_VERIFY = 3     # the hash-slot test and the offset
+C_MATCH = 4      # the compare engine
+C_SEQ = 5        # the pass-2 driver: the position cursor and the scan loop
+C_LITS = 6       # the literal replay loop
+C_HASH = 7       # the rolling 4-byte hash
+C_ADDR = 8       # the panel port: region base + read issue
+C_TOKEN = 9      # the token's two nibbles
+C_CTL = 10       # the embedded SramControllerBlock
+C_SEAL = 11      # the sequence epilogue: offset, match-length re-arm, hand-back
 C_LENRUN = 12    # the shared length-continuation engine
 C_OUT = 13       # the egress
 
@@ -544,6 +552,18 @@ class LZ4EncoderBlock(KyttarBlock):
                 # `n` and `lim` are DATA-only deliveries from INGEST (which derives
                 # both LZ4 end-of-block bounds — see its `flush`); no entry is
                 # needed for them, because `start` is what INGEST triggers.
+                # --- a MATCH sequence finished ------------------------------
+                # `took` is placed FIRST so it FALLS THROUGH into `step` instead
+                # of branching there. That is one word, and this cell needed
+                # exactly one for its input register (the resolver allocates
+                # inputs from what is left after data and state, so a full cell
+                # fails at build time with "No register space for input 'v'",
+                # not with a budget error). Program order is free to change here
+                # because SEQ declares NO backward internal jump — both of its
+                # `{jump:}` edges target higher-numbered cells (INV-53).
+                "took:\n"
+                # `v` carries the new position i + k.
+                "    MOVE R{state:i}, R{in:v}\n"
                 # --- the scan loop -------------------------------------------
                 "start:\n"
                 "step:\n"
@@ -600,19 +620,6 @@ class LZ4EncoderBlock(KyttarBlock):
                 "    {write:f_end}\n"
                 "    {jump:go_seq}\n"                # frame.seq
                 "    HALT\n"
-                # --- a MATCH sequence finished ------------------------------
-                "took:\n"
-                # `v` carries the new position i + k. The `lim` compare re-sets the
-                # flags the local branch needs — INV-13: this ISA has conditional
-                # local branches ONLY, and an unconditional `GOTO` near a
-                # `{write}`/`{jump}` miscompiles into an EXTERNAL jump.
-                "    MOVE R{state:i}, R{in:v}\n"
-                "    CMP R{state:i}, R{state:lim}\n"
-                "    BR.GE tail\n"
-                "    BR.LT issue\n"
-                # No trailing HALT: execution auto-halts once the program counter
-                # runs past the last instruction, so the word it would occupy is
-                # free — and this cell needed exactly one.
             ),
         )
         # ----------------------------------------------------------- cell 2 HASH
@@ -754,12 +761,17 @@ class LZ4EncoderBlock(KyttarBlock):
             inputs=[Port("v")],
             outputs=[Port("rd_c"), Port("rd_i"), Port("len"), Port("f_mend")],
             entries=[EntryPoint("begin"), EntryPoint("got")],
+            # PACKED with no hole. An earlier revision left address 2 empty
+            # (a leftover from a removed word); state auto-allocates above
+            # ``max_data_address``, so a hole below it is simply LOST — and this
+            # cell was one word short of room for its input register, which the
+            # build reports only as "No register space for input 'v'".
             data=[DataWord("one", 1, address=1),
-                  DataWord("novalue", EOB_SENTINEL, address=3)],
-            state=[StateVar("off", register=4, initial_value=0),
-                   StateVar("held", register=5, initial_value=EOB_SENTINEL),
-                   StateVar("ii", register=6, initial_value=0),
-                   StateVar("stop", register=7, initial_value=0)],
+                  DataWord("novalue", EOB_SENTINEL, address=2)],
+            state=[StateVar("off", register=3, initial_value=0),
+                   StateVar("held", register=4, initial_value=EOB_SENTINEL),
+                   StateVar("ii", register=5, initial_value=0),
+                   StateVar("stop", register=6, initial_value=0)],
             assembly_template=(
                 # `ci` (= cand) and `ii` (= i) are seeded by the two cells that own
                 # those positions and then ADVANCE together, one per confirmed
@@ -1261,8 +1273,17 @@ class LZ4EncoderBlock(KyttarBlock):
         # an exit cell to the egress route, which would retarget any other
         # hand-off in the same cell. Authoring the hop keeps them apart.
         eh, od, ee = self._emit_hop, self._out_dest, self._emit_entry
+        # NOTE the input port is ``w``, not ``b``. The block's EXTERNAL input port
+        # is INGEST's ``b``, and the build resolves a chip-port landing by PORT
+        # NAME — so a second cell declaring a port called ``b`` makes the landing
+        # ambiguous. MEASURED: with this cell's input also named ``b`` the
+        # ``x16_in`` landing resolved to the WRONG CELL, and the chip ran to
+        # quiescence (``stop_reason == "QueueEmpty"``) with ZERO panel writes
+        # committed — pass 1's first store never happened, because pass 1 was
+        # never entered. Every port name that the outside world can name must be
+        # unique across the block's cells.
         out_cell = CellProgram(
-            inputs=[Port("b")],
+            inputs=[Port("w")],
             outputs=[Port("egress")],
             entries=[EntryPoint("send")],
             data=[DataWord("face_egress", 3, address=1, is_face=True),
@@ -1270,7 +1291,7 @@ class LZ4EncoderBlock(KyttarBlock):
             assembly_template=(
                 "send:\n"
                 "    MOVE [FACE], R{data:face_egress}\n"
-                "    MOVE R0, R{in:b}\n"
+                "    MOVE R0, R{in:w}\n"
                 f"    WRITE @{eh}, {od}\n"
                 f"    JUMP @{eh}, {ee}\n"
                 # RESTORE at the TAIL (INV-52 clause 1): the resting face is a
@@ -1339,12 +1360,12 @@ class LZ4EncoderBlock(KyttarBlock):
             (C_FRAME, "li_p", C_LITS, "p"),
             (C_FRAME, "li_end", C_LITS, "end"),
             # --- the formatter's output rail --------------------------------
-            (C_TOKEN, "out", C_OUT, "b"),
+            (C_TOKEN, "out", C_OUT, "w"),
             (C_TOKEN, "m_park", C_SEAL, "mat"),
-            (C_LENRUN, "out", C_OUT, "b"),
-            (C_LITS, "out", C_OUT, "b"),
+            (C_LENRUN, "out", C_OUT, "w"),
+            (C_LITS, "out", C_OUT, "w"),
             (C_LITS, "rd", C_ADDR, "a"),
-            (C_SEAL, "out", C_OUT, "b"),
+            (C_SEAL, "out", C_OUT, "w"),
             (C_SEAL, "m_rest", C_LENRUN, "rest"),
             # --- the panel port and its single return -----------------------
             (C_ADDR, "setph", C_RET, "ph"),
@@ -1459,20 +1480,20 @@ class LZ4EncoderBlock(KyttarBlock):
         clause 2).
         """
         lay = {
-            C_SEAL: (-3, -2, "east"),
-            C_SEQ: (-1, -3, "south"),
-            C_RET: (-4, 0, "north"),      # on the x1_in row
-            C_HASH: (-2, -3, "east"),
-            C_VERIFY: (-1, -2, "south"),
-            C_LITS: (-1, -1, "south"),
-            C_FRAME: (-2, 0, "west"),
-            C_TOKEN: (-2, -2, "north"),
-            C_MATCH: (-3, 0, "west"),
-            C_INGEST: (0, -3, "west"),    # the input landing cell
-            C_ADDR: (-1, 0, "west"),      # the panel client
+            C_SEAL: (-2, -1, "north"),
+            C_SEQ: (-3, -1, "west"),
+            C_RET: (-5, 0, "east"),       # on the x1_in row, facing along it
+            C_HASH: (-5, -1, "south"),
+            C_VERIFY: (-4, 0, "east"),
+            C_LITS: (-2, -2, "west"),
+            C_FRAME: (-1, -1, "west"),
+            C_TOKEN: (-3, 0, "east"),
+            C_MATCH: (-2, 0, "east"),
+            C_INGEST: (-5, -2, "south"),  # the input landing cell
+            C_ADDR: (-1, 0, "north"),     # the panel client
             C_CTL: (0, 0, "south"),       # pinned on x1_out, facing the port
-            C_LENRUN: (-4, -1, "east"),
-            C_OUT: (-3, -1, "north"),     # the egress
+            C_LENRUN: (-3, -2, "south"),
+            C_OUT: (-4, -1, "west"),      # the egress
         }
         order = list(self.build_cell_programs().keys())
         assert set(order) == set(lay), (order, sorted(lay))

@@ -665,6 +665,16 @@ def test_every_cell_fits_a_32_word_cell():
             f"cell {cid}: {ni} instructions put base_addr at {base}, but data "
             f"and state reach {hi} — the program would overlay its own words")
         assert base >= 0
+        # ...AND the INPUTS must fit too. The resolver allocates state into
+        # ``range(max_data_addr + 1, 31 - instr_count)`` and inputs into what is
+        # LEFT, so a cell can satisfy the data/state arithmetic above and still
+        # fail with "No register space for input 'x'" at BUILD time. That is
+        # exactly what happened here on SEQ and MATCH, which is why this half is
+        # part of the gate rather than a thing the build discovers.
+        free = [r for r in range(maxd + 1, base) if r not in set(st.values())]
+        assert len(free) >= len(cp.inputs), (
+            f"cell {cid}: {len(cp.inputs)} input register(s) needed but only "
+            f"{free} free between data (<{maxd + 1}) and base_addr {base}")
 
 
 def test_INV4_an_inflated_cell_is_REJECTED():
@@ -886,6 +896,64 @@ def test_INV4_the_stale_flag_checker_sees_a_planted_defect():
                                   "    BR.N away\n"
                                   "away:\n"
                                   "    HALT\n"))
+
+
+def test_the_input_landing_cell_is_CELL_ZERO():
+    """The block's EXTERNAL input port must live on cell 0.
+
+    The catalog's PortMap derives a block's external input from the FIRST cell's
+    first input port, and ``bus_router._target_input_cell`` falls back to
+    ``placement.cells[0]`` when the PortMap has no entry for a named port. So the
+    cell the ``x16_in`` corridor is drawn to (``panel_requirements()['input_cell']``)
+    and the cell the HOST-INJECTION LANDING resolves to are decided by two
+    different mechanisms, and they agree only when the input cell IS cell 0.
+
+    MEASURED: with another cell at index 0 the landing resolved to THAT cell's
+    input register at THAT cell's position. Pass 1 was never entered, the chip ran
+    cleanly to quiescence (``stop_reason == "QueueEmpty"``, NOT a deadlock) and
+    committed ZERO panel writes — a silent, complete no-op that placement,
+    routing, DRC and the build all reported as success.
+    """
+    b = LZ4EncoderBlock("enc")
+    req = b.panel_requirements()
+    progs = b.build_cell_programs()
+    first = list(progs)[0]
+    assert req["input_cell"] == first == C_INGEST, (
+        f"input_cell is {req['input_cell']} but cells[0] is {first}; the "
+        "PortMap resolves the external input from cells[0], so the two must "
+        "be the same cell")
+    assert progs[first].inputs and progs[first].inputs[0].name == "b"
+
+
+def test_the_portmap_resolves_the_external_ports_to_the_right_cells():
+    """The catalog's PortMap — which is what the ROUTER reads — must name the
+    input on the INGEST cell and the output on the OUT cell. This reads the real
+    catalog rather than the block's own declarations, because a disagreement
+    between the two is exactly the defect above."""
+    _need_chip()
+    from engine.catalog import BlockCatalog
+    pm = BlockCatalog.from_gr_kyttar().port_map(
+        "LZ4EncoderBlock", {}, library="lattrex.official")
+    ins = [p for p in pm.ports if p.direction == "in"]
+    outs = [p for p in pm.ports if p.direction == "out"]
+    assert ins and ins[0].cell_id == C_INGEST, (
+        f"the PortMap's input is on cell {ins[0].cell_id if ins else None}, "
+        f"expected the INGEST cell {C_INGEST}")
+    assert outs and outs[0].cell_id == C_OUT, (
+        f"the PortMap's output is on cell {outs[0].cell_id if outs else None}, "
+        f"expected the OUT cell {C_OUT}")
+
+
+def test_every_externally_visible_port_name_is_unique():
+    """A chip-port net names a BLOCK PORT, and the build resolves it by NAME. Two
+    cells declaring the same port name make that resolution ambiguous."""
+    progs = LZ4EncoderBlock("enc").build_cell_programs()
+    seen = {}
+    for cid, cp in progs.items():
+        for p in cp.inputs:
+            seen.setdefault(p.name, []).append(cid)
+    dupes = {n: c for n, c in seen.items() if len(c) > 1 and n in ("b", "egress")}
+    assert not dupes, f"externally-visible port names collide: {dupes}"
 
 
 def test_panel_requirements_name_five_distinct_roles():
@@ -1341,7 +1409,7 @@ def _auto_build():
     return p, res
 
 
-def _encode_on_chip(project, bres, raw_bytes, idle_max=400):
+def _encode_on_chip(project, bres, raw_bytes, idle_max=60, budget=20000):
     """Feed a raw byte stream into the BUILT design on a real ``simkyt`` chip
     with a real ``SramPanelDevice`` on the x1 pair, and return
     ``(compressed bytes, panel device, last stop_reason)``.
@@ -1376,10 +1444,10 @@ def _encode_on_chip(project, bres, raw_bytes, idle_max=400):
     out = []
     state = {"stop": None}
 
-    def pump(limit):
+    def pump(limit, rounds):
         idle = 0
-        for _ in range(200000):
-            st = chip.run(max_events=64)
+        for _ in range(rounds):
+            st = chip.run(max_events=256)
             if isinstance(st, dict):
                 state["stop"] = st.get("stop_reason", state["stop"])
             got = chip.read_port_words_timed("x16_out")
@@ -1391,12 +1459,18 @@ def _encode_on_chip(project, bres, raw_bytes, idle_max=400):
                 if idle > limit:
                     return
 
-    for b in list(raw_bytes) + [EOB_SENTINEL]:
+    # PASS 1 is one panel WRITE per byte and emits nothing, so each ingest byte
+    # settles quickly; PASS 2 is the whole compression and needs a much longer
+    # budget after the sentinel.
+    for b in raw_bytes:
         chip.queue_words_physical("x16_in", [
             _wr(lin["hop"], lin["data_addrs"][0]), int(b) & 0xFFFF,
             _jp(lin["hop"], lin["entry"])])
-        pump(idle_max)
-    pump(6 * idle_max)
+        pump(idle_max, 2000)
+    chip.queue_words_physical("x16_in", [
+        _wr(lin["hop"], lin["data_addrs"][0]), EOB_SENTINEL,
+        _jp(lin["hop"], lin["entry"])])
+    pump(20 * idle_max, budget)
     return out, dev, state["stop"]
 
 

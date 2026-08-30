@@ -299,16 +299,62 @@ which MAC cell (one skipped distance 8, the other distance 9), and it was
 triggered during a MAC sweep. INV-52 clause 2 from the other side. Moving it
 off the walk fixed it.
 
-### 7. Where it stands
+### 7. The CARRY-NORMALISE phase: three more measured facts (second sitting)
 
-The 20-cell probe (13 MAC + seq + 2 fans + collector + 3 face-only transits)
-places, routes, builds and computes the field multiply exactly. **What remains
-is not arithmetic** — every arithmetic layer is measured exact — but the four
-surrounding phases: the message-word-to-limb packing (a bit-serial shift, whose
-Python model is validated over 500 blocks), the carry-normalise sweep, the final
-reduction plus `+ s`, and the tag egress (which needs the flip-and-restore
-pattern `LZ4DecoderBlock` proved, on a cell that is NOT a MAC cell). The
-sequencer must also grow the phase schedule. Estimated 21-22 cells total.
+The normalise reuses the same 13-cell ring — the carries rotate exactly like
+the limbs, and a carry crossing the closing edge takes the same `×5`, so the
+phase needs **no new cells**, only new entries and more fan sweeps. Validated
+against the golden first (RFC §2.5.2, all nine §A.3, 400 random messages, at
+just **2 rounds**; worst case measured at 2 rounds after the add and 3 after
+the multiply). Then built and run on chip, which produced three findings:
+
+**(a) A 27-bit accumulator cannot yield a 10-bit limb AND a one-word carry in
+the same step.** The obvious split sends `hi*64 + (lo >> 10)`; for the true
+maximum accumulator `68024385` that is `66430` — SEVENTEEN bits. The fix is
+two stages per round: stage A carries the HIGH WORD (`≤ 1037`) and the
+**receiver** applies the `×64`, so the wire never holds `hi*64`; stage B then
+splits the 16-bit residue at bit 10. Worst carries measured 1037 and 386
+against a 65535 limit. *This was caught by the on-chip case list including the
+all-maximum corner — a random sample never reached it.*
+
+**(b) `carry × 64` needs `MULHI` too — the same trap as the MAC, from the
+other side.** `MUL` gives only the low 16 bits, and `1037 × 64 = 66368`
+overflows, silently truncating to 832. Fixed with the same MULHI-first pairing
+the 32-bit MAC uses.
+
+**(c) A PROGRAMMED cell sitting on the ring's walk STOPS THE SWEEP DEAD.**
+With the collector placed on the ring at walk distance 11, the fans reached
+`c0..c6` and `c7..c12` were **never triggered** — and `stop_reason` was
+`Deadlock` for some inputs and `QueueEmpty` for others, which is exactly why
+INV-56 says to read it first. Replacing it with a face-only transit and
+hanging the collector off the walk removed the deadlock outright. A face-only
+`transit_*` cell forwards a hop-counted word untouched; a programmed cell does
+not.
+
+**(d) THE HARNESS BUG THAT LOOKED LIKE A BLOCK BUG (INV-1, again).** With
+everything above fixed the ring still did nothing: **8 events** on the jump
+run. The cause was the harness deriving the injection hop from a manhattan
+guess (30) when the build had resolved it to 28, with the landing on a
+different cell and a different entry. Taking `BuildResult.chips[0].
+input_landings` instead — `{'cell': (2,0), 'entry': 25, 'hop': 28,
+'data_addrs': [1]}` — turned 8 events into **1445** and every cell processed.
+*Never derive the hop; read the one the build resolved.*
+
+Where the normalise stands: it runs, all cases report `QueueEmpty`, and the
+values land in the right range, with **3 of 9 cases exact**. The remainder are
+short by exactly `carry_in × 64` (and cell 0 by `5 × 64`, the wrap) — i.e.
+stage A's carry is read one sweep before it arrives, the same staging problem
+already solved for the multiply, now to be solved for this phase. That is the
+next step and it is understood, not mysterious.
+
+### 8. Where the block stands overall
+
+Proven on a real placed + routed + built chip: **the field multiply**
+(13/13 accumulators, 11 cases). Running but not yet exact: the
+carry-normalise (3/9). Not yet built: message-word-to-limb packing (its
+bit-serial model is validated over 500 blocks), the final reduction plus
+`+ s`, and the tag egress. **No RFC tag has been produced on chip**, so the
+block is not done and the manifest entry stays `planned`.
 
 ### What is already gated
 

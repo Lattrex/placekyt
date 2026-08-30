@@ -170,6 +170,127 @@ def test_the_accumulator_never_leaves_32_bits():
     assert worst < (1 << 32)
 
 
+# --------------------------------------------------------------------------
+# The CARRY-NORMALISE decomposition the ring runs (MEASURED bounds)
+# --------------------------------------------------------------------------
+
+MAX_ACC32 = N_LIMBS * LIMB_MASK * (REDUCTION_CONSTANT * LIMB_MASK)
+
+
+def test_one_step_cannot_yield_a_10bit_limb_AND_a_one_word_carry():
+    """Why the normalise is TWO stages per round, not one.
+
+    The obvious split sends ``hi*64 + (lo >> 10)`` on one wire. For the true
+    maximum accumulator that is 17 bits and does not fit — measured on chip
+    via the all-maximum case, which a random sample never reaches.
+    """
+    assert (MAX_ACC32 >> LIMB_BITS) == 66430
+    assert (MAX_ACC32 >> LIMB_BITS) > 0xFFFF          # the trap
+    assert (MAX_ACC32 >> LIMB_BITS).bit_length() == 17
+
+
+def _norm_round(acc):
+    """The TWO-STAGE round the ring cells run.
+
+    stage A: carry the HIGH word; the RECEIVER applies the ``*64``, so the
+             wire never holds ``hi*64``.
+    stage B: split the 16-bit residue at bit 10.
+    Both stages ride the ring's rotation, and a carry crossing the closing
+    edge takes the same ``*5`` the multiply uses (``2**130 == 5`` mod p).
+    """
+    def rot_add(res, cy, scale):
+        return [res[k] + (REDUCTION_CONSTANT * cy[N_LIMBS - 1] if k == 0
+                          else cy[k - 1]) * scale for k in range(N_LIMBS)]
+
+    cy_a = [v >> 16 for v in acc]
+    for c in cy_a:
+        assert c <= 0xFFFF, ("stage A carry too wide", c)
+    mid = rot_add([v & 0xFFFF for v in acc], cy_a, 64)
+    cy_b = [v >> LIMB_BITS for v in mid]
+    for c in cy_b:
+        assert c <= 0xFFFF, ("stage B carry too wide", c)
+    return rot_add([v & LIMB_MASK for v in mid], cy_b, 1)
+
+
+def test_both_normalise_carries_fit_one_word_at_the_maximum():
+    """The corner the on-chip case list caught: every carry must be a single
+    16-bit word even when every accumulator is at its 27-bit peak."""
+    acc = [MAX_ACC32] * N_LIMBS
+    for _ in range(4):
+        acc = _norm_round(acc)          # the asserts inside are the gate
+    assert all(v <= 0xFFFF for v in acc)
+
+
+def test_the_stage_a_carry_times_64_needs_MULHI():
+    """``carry * 64`` is 17 bits, so ``MUL`` alone TRUNCATES it — the same
+    trap as the 32-bit MAC, from the other side. Measured: 1037*64 = 66368
+    became 832."""
+    worst_hi = MAX_ACC32 >> 16
+    assert worst_hi == 1037
+    assert worst_hi * 64 == 66368
+    assert (worst_hi * 64) > 0xFFFF                   # MUL alone loses bit 16
+    assert (worst_hi * 64) & 0xFFFF == 832            # the wrong answer
+
+
+def test_two_normalise_rounds_reproduce_every_rfc_vector():
+    """The whole MAC, with the ring's two-stage normalise in place of the
+    golden's carry_normalise, at the round count the block will use."""
+    def poly_ring(msg, key, rounds):
+        r, s = split_key(key)
+        rl = to_limbs(r)
+        a = [0] * N_LIMBS
+        for i in range(0, len(msg), 16):
+            n = to_limbs(block_value(msg[i:i + 16]))
+            a = [x + y for x, y in zip(a, n)]
+            for _ in range(rounds):
+                a = _norm_round(a)
+            a = limb_mul_mod_p(a, rl)
+            for _ in range(rounds):
+                a = _norm_round(a)
+        return (((from_limbs(a) % P1305) + s)
+                % (1 << 128)).to_bytes(16, "little")
+
+    for rounds in (2, 3, 4):
+        assert poly_ring(RFC8439_2_5_2_MSG, RFC8439_2_5_2_KEY, rounds) \
+            == RFC8439_2_5_2_TAG
+        for _name, key, msg, exp in RFC8439_A3_VECTORS:
+            assert poly_ring(msg, key, rounds) == exp
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2])
+def test_the_ring_normalise_matches_the_golden_on_random_messages(seed):
+    def poly_ring(msg, key):
+        r, s = split_key(key)
+        rl = to_limbs(r)
+        a = [0] * N_LIMBS
+        for i in range(0, len(msg), 16):
+            n = to_limbs(block_value(msg[i:i + 16]))
+            a = [x + y for x, y in zip(a, n)]
+            for _ in range(3):
+                a = _norm_round(a)
+            a = limb_mul_mod_p(a, rl)
+            for _ in range(3):
+                a = _norm_round(a)
+        return (((from_limbs(a) % P1305) + s)
+                % (1 << 128)).to_bytes(16, "little")
+
+    rng = random.Random(seed)
+    for _ in range(60):
+        key = bytes(rng.randrange(256) for _ in range(32))
+        msg = bytes(rng.randrange(256) for _ in range(rng.randrange(0, 200)))
+        assert poly_ring(msg, key) == poly1305_mac(msg, key)
+
+
+def test_mutation_a_one_stage_normalise_overflows_the_carry_wire():
+    """INV-4 for the two-stage split: the ONE-stage form must be provably
+    unable to carry the maximum accumulator."""
+    with pytest.raises(AssertionError):
+        for v in [MAX_ACC32] * N_LIMBS:
+            lo, hi = v & 0xFFFF, v >> 16
+            c = hi * 64 + (lo >> LIMB_BITS)
+            assert c <= 0xFFFF, "one-stage carry does not fit a word"
+
+
 def test_limb_roundtrip():
     rng = random.Random(11)
     for _ in range(500):

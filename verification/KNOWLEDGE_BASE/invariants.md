@@ -4136,3 +4136,92 @@ register/overlap contract — the static gate caught the wrap cell one word over
 twice), INV-46 (more cells doing less, which is why the fan is two cells and the
 egress is its own), INV-52 (the face/walk rules the collector violated), INV-54
 (a value gate must cover more than one element — met here as twelve-of-thirteen).
+
+---
+
+## INV-NEXT — A PROGRAMMED cell on a broadcast walk stops the sweep; only a face-only `transit_*` is transparent
+
+*(Number to be assigned at landing; main is at INV-56, so this is not one of
+1..56.)*
+
+Added 2026-08-30 from `Poly1305MACBlock`'s normalise ring. Measured on a real
+placed + routed + built chip.
+
+**THE RULE.** A cell that broadcasts to N downstream cells does it with N
+hop-counted `WRITE`/`JUMP` pairs down ONE walk (that much is proven and
+useful — see the sibling entry on the signed multiplier). Every cell the walk
+crosses forwards the word (INV-48). **But a cell with a PROGRAM does not
+forward a trigger past itself the way a face-only relay does.** Put one on the
+walk and the sweep stops there.
+
+**MEASURED.** A 13-cell ring driven by fan cells, with the collector placed ON
+the ring at walk distance 11: cells at distances 4..10 ran, and **cells at
+12..17 were never triggered at all**. Replacing the collector with a face-only
+`transit_*` cell at the same position, and hanging the collector off the walk,
+made all thirteen run. The build's own resolved jumps were correct in BOTH
+layouts — the hop numbers skip the transit correctly — so nothing in the
+bitstream looks wrong.
+
+**AND THE TWO FAILURE MODES LOOK DIFFERENT ON DIFFERENT INPUTS.** The same
+defective layout reported `stop_reason == "Deadlock"` for some seed values and
+`"QueueEmpty"` for others. This is why INV-56's rule ("read `stop_reason`
+first") needs its corollary: **read it for EVERY case, not one**, because a
+layout fault can present as a wedge on one input and as silence on the next.
+
+**SAY WHICH LAYER.** Hardware/toolchain boundary — the forwarding rule is
+hardware; which cells get a program is the block's own layout. Fixable in the
+block, always, by moving the programmed cell off the walk.
+
+**REACH.** Measured on one 13-cell ring with two layouts. The mechanism is the
+shared forwarding path and applies to any block that broadcasts along a walk
+crossing its own cells.
+
+**Related:** INV-48 (the forwarding rule), INV-52 (a cell on a walk is not
+neutral — this is the same lesson for triggers rather than data), INV-56
+(`stop_reason`, which this sharpens).
+
+---
+
+## INV-NEXT — Read the hop the BUILD resolved; a manhattan guess is a harness bug that presents as a dead block
+
+*(Number to be assigned at landing.)*
+
+Added 2026-08-30 from `Poly1305MACBlock`. This is INV-1's refinement, restated
+because it cost real time again and because the fix is now a one-liner.
+
+**THE RULE.** `BuildResult.chips[N].input_landings` gives the injection
+parameters the build actually resolved:
+
+```python
+{'i': {'cell': (2, 0), 'entry': 25, 'hop': 28, 'data_addrs': [1]}}
+```
+
+Use them. A harness that derives the hop from `31 - (|dx| + |dy| + 1)` against
+the block's *nominal* input cell is guessing at three things at once — the
+landing CELL, the ENTRY address and the HOP — and the block's real landing may
+be none of them.
+
+**MEASURED.** With the manhattan guess (hop 30, the block's default entry) the
+jump run processed **8 events** and no cell changed state — indistinguishable
+by inspection from a dead datapath, a bad fold or a missing trigger, and it
+survived a full disassembly of the fan cells because *the bitstream was
+correct all along*. With the resolved landing (hop 28, entry 25) the same
+bitstream processed **1445 events** and every cell ran.
+
+**The diagnostic that separates it from a block bug:** `stop_reason` is
+`QueueEmpty` and `events_processed` is TINY. A block bug typically runs the
+events and computes the wrong value; a wrong landing means the work never
+starts. Check the event count before suspecting the program.
+
+**SAY WHICH LAYER.** Harness — always fixable, never a substrate limit.
+`run_block_dut`/`run_block_dut_rate` already do this correctly; the trap is
+only for hand-rolled drivers, which any block with a non-standard input
+protocol needs.
+
+**REACH.** The mechanism is in the shared build path and applies to every
+hand-rolled driver.
+
+**Related:** INV-1 (the placement-dependent hop, and its corridor-accurate
+refinement), INV-6/11 (params-dependent entry addresses — the entry is
+resolved for you here too), INV-56 (`stop_reason` plus the event count is the
+pair that localises this in one run).

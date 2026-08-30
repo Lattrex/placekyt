@@ -80,20 +80,82 @@ maximally compressible, the exact opposite of the incompressible case it is
 named for. One generator drawn 2000 times is the fix; this suite does it that
 way and says why.
 
-**THE OPEN GAP, and its layer.** The whole-design gates are RED. The
-self-contained panel template rejects the fold with `egress corridor from enc is
-blocked by its own cells`. The egress corridor runs from the egress cell NORTH up
-its whole column to row 0 and then EAST to `x16_out`, so none of the block's own
-cells may sit on either leg — and an earlier fold checker modelled only "is there
-a free cell on the output cell's walk", which passed a fold the template then
-rejected. **LAYER: block FOLD — fixable, not a substrate or ISA wall.** The
-per-cell programs all resolve inside 32 words, every internal edge delivers under
-the real forwarding rule, there are no head-on resting-face pairs, and the block
-places and DRCs clean; what is unsolved is a placement that ALSO leaves both
-corridor legs clear. Two measurements bound the search: a merged ADDR+RET cell
-(which would remove five of the 32 edges) is **41 instructions against 31 words**,
-so the split is forced; and 14 cells over rows 10-11 is exactly 14 slots, so that
-shape has no positional slack at all.
+**7. THREE MORE DEFECTS THE PLACED DESIGN FOUND, EACH SILENT.** The block now
+places, routes, DRCs clean and builds, and the tail path is byte-exact ON A REAL
+CHIP. Getting there cost three findings, none of which any per-cell or
+model-level gate could see:
+
+* **An unbounded walk in the FOLD SEARCH, not in the block.** The search's "first
+  free cell on the output cell's walk" loop had no step bound, and a fold that
+  forms a RING made it spin forever inside ONE evaluation. Every earlier search
+  looked like it needed hours per seed. With the bound, a zero-problem fold
+  appeared in under two minutes. *A tool that scores designs needs its own walk
+  bounded exactly like the hardware's 31-hop budget.*
+* **A cell can pass the data/state budget and still have no room for its INPUT.**
+  The resolver allocates state into `range(max_data_addr + 1, 31 - instr_count)`
+  and inputs into what is LEFT, so the failure surfaces only at BUILD time as
+  `No register space for input 'v'`. One cell had a HOLE at data address 2 —
+  state auto-allocates ABOVE `max_data_address`, so a hole below it is simply
+  lost. **Pack data addresses with no gaps, and put the input count in the
+  budget gate.**
+* **The input LANDING resolved to the wrong cell.** The catalog's PortMap derives
+  a block's external input from the FIRST cell's first input port, and
+  `bus_router._target_input_cell` falls back to `placement.cells[0]`. So the cell
+  the `x16_in` CORRIDOR is drawn to (`panel_requirements()['input_cell']`) and
+  the cell the HOST-INJECTION LANDING resolves to are decided by two different
+  mechanisms, and they agree only when the input cell IS cell 0. With another
+  cell at index 0, pass 1 was never entered: `stop_reason == "QueueEmpty"`, ZERO
+  panel writes, and placement, routing, DRC and the build all reported success.
+  **The input landing cell must be cell 0.**
+
+**8. AN INHERITED FACE CONSTANT IS A HEAD-ON PAIR THE LAYOUT CHECK CANNOT SEE.**
+The OUT cell was copied from `LZ4DecoderBlock`, whose OUT rests EAST — and
+`DataWord("face_rest", 1)` came with it, while THIS fold rests OUT **WEST**. The
+cell restored itself to EAST after every egress burst; its EAST neighbour (SEQ)
+rests WEST. **Measured: the two ping-ponged a single WRITE forever, its hop count
+climbing 22 → 31, and the run reported `stop_reason == "Deadlock"` after emitting
+only the sequence's first byte.** INV-56's static head-on check reported NONE,
+correctly — the *layout* has no head-on pair; the *program* created one. The fix
+is to DERIVE every in-program face from the layout (`_resting_face()` /
+`_face_to()`) and never write a literal. After it, the same payload ran to
+`QueueEmpty` and matched the model exactly.
+
+**THE OPEN GAP, and its layer.** **Payloads shorter than `MF_LIMIT` (12 bytes)
+are byte-exact on the BUILT CHIP and accepted by the reference C decoder;
+payloads that ENTER THE SCAN LOOP emit nothing.** The boundary is measured and
+sharp: 2, 3, 5 and 8 bytes match the model exactly; 24, 30 and 40 bytes produce
+zero output and end in `stop_reason == "EventLimit"` after ~1.3M events. A
+payload under 12 bytes has `lim = n - 12 <= 0` and goes straight to the
+literals-only tail, so it never enters the scan.
+
+The cause is located from the trace: **RET's `to_hash` hand-off leaves on RET's
+resting face (EAST) carrying the hop the ROUTER computed (11), and the word then
+walks out of the block's footprint — 115, 116, 117, 118, 108, 107, 97 — instead
+of landing on HASH, which is ONE cell NORTH.** That is INV-50's residual, the
+edge sized against a walk the word does not take. Note `stop_reason` is
+`"EventLimit"`, not `"Deadlock"`: nothing is wedged, the words are produced and
+MIS-ADDRESSED — which is exactly the distinction INV-56 clause 1 exists to make,
+and it is what localised this in one run.
+
+**LAYER: block FOLD — fixable, not a substrate or ISA wall.** The fix is either a
+fold whose resting-face walks reach their targets under the ROUTER's OWN distance
+function (my search's walk model and the router's still disagree — the next pass
+should score candidate folds by calling the router rather than by re-implementing
+it), or an `emit_faces()` declaration for every edge the router sizes wrong.
+Two measurements bound that search: a merged ADDR+RET cell (which would remove
+five of the 32 edges) is **41 instructions against 31 words**, so the split is
+forced; and 14 cells over rows 10-11 is exactly 14 slots, so that shape has no
+positional slack at all.
+
+**Gated by** `verification/tests/test_lz4_encoder.py` (80 passed, 9 skipped): the
+ten-payload round trip under the published golden AND the independent reference C
+decoder, the 0.5 % incompressible bound, the four format rules as separate
+properties, three INV-4 mutants each proven to fail, the static cell contracts
+(budget INCLUDING inputs, positional pairing, entry reachability, backward jumps,
+face restore, stale-flag branches, head-on pairs, cell-0 landing), the per-cell
+chip layer, and four WHOLE-DESIGN on-chip gates. The gap itself is a gate
+(`test_KNOWN_GAP_the_scan_loop_does_not_terminate_on_chip`) that FAILS the day
+the scan loop works, so it must be deleted rather than left to rot.
 
 ## ChaCha20KeystreamBlock — the emission-order fix is at the COLLECTOR, and it misses this fold by exactly three words 2026-08-29
 

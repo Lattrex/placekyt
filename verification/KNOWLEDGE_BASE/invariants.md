@@ -3850,9 +3850,71 @@ It over-reports where a label lets control arrive from elsewhere, so pair it wit
 a per-block allowlist naming each exception and WHY the flags are known there —
 not with deletion.
 
+### 3. AN IN-PROGRAM FACE CONSTANT MUST BE DERIVED FROM THE LAYOUT. (authoring contract)
+
+INV-52 clause 1 says every path must RESTORE the resting face. This is the
+sibling failure: the path restores faithfully, **to the wrong face**, because the
+`is_face` DataWord is a LITERAL that outlived the fold it was written for.
+
+**MEASURED.** `LZ4EncoderBlock`'s OUT cell was copied from `LZ4DecoderBlock`,
+whose OUT rests EAST, and `DataWord("face_rest", 1)` came with it — while this
+block's fold rests OUT **WEST**. The cell restored itself to EAST after every
+egress burst; its EAST neighbour rests WEST. The two ping-ponged a single WRITE
+forever, its hop count climbing 22 → 31, and the run reported
+`stop_reason == "Deadlock"` after emitting only the first byte of the sequence.
+
+**Why the static head-on check does not catch it:** INV-56 clause 3 walks
+`default_layout()`, and the LAYOUT is innocent — it has no head-on pair. The
+PROGRAM created one at run time. Both checks are needed, and neither subsumes the
+other.
+
+**THE RULE:** never write a face code as a literal. Derive it:
+
+```python
+_FACE_CODE = {"south": 0, "east": 1, "west": 2, "north": 3}
+
+def _resting_face(self, cid):                 # a cell's own resting face
+    return _FACE_CODE[str(self.default_layout()[cid][2])]
+
+def _face_to(self, src, dst):                 # the face pointing src -> dst
+    ...                                       # from the two placed positions
+```
+
+Then a re-fold updates every constant automatically, and a copy-paste from
+another block fails loudly (the cells are not on a common row/column) instead of
+silently deadlocking. Keep `default_layout()` free of any call back into
+`build_cell_programs()` so the helpers cannot recurse.
+
+### 4. THE INPUT LANDING CELL MUST BE CELL 0. (toolchain — fixable)
+
+The corridor and the landing are resolved by two different mechanisms. The panel
+template draws the `x16_in` corridor to `panel_requirements()["input_cell"]`,
+but the HOST-INJECTION LANDING comes from the catalog's PortMap, which derives a
+block's external input from the FIRST cell's first input port — and
+`bus_router._target_input_cell` falls back to `placement.cells[0]`. The two agree
+only when the input cell IS cell 0.
+
+**MEASURED:** with another cell at index 0, the landing resolved to THAT cell's
+input register at THAT cell's position. Pass 1 was never entered; the chip ran
+cleanly to quiescence (`stop_reason == "QueueEmpty"`, **not** a deadlock) and
+committed ZERO panel writes, while placement, routing, DRC and the build all
+reported success. A block whose ids are chosen for INV-53's jump ordering must
+therefore pin the input cell at 0 and derive the rest of the order around it.
+
+Related, from the same pass: **a cell can satisfy the data/state budget and still
+have no room for its INPUT register.** The resolver allocates state into
+`range(max_data_addr + 1, 31 - instr_count)` and inputs into what is LEFT, so the
+failure appears only at build time as `No register space for input 'x'`. Pack
+data addresses with NO GAPS (state auto-allocates above `max_data_address`, so a
+hole below it is lost) and put the input count in the budget gate.
+
 **SAY WHICH LAYER.** (1) is a toolchain/authoring contract; the wrap is real and
 correct hardware behaviour, what is missing is a guard, and this block now
-carries one. (2) is hardware/ISA and permanent.
+carries one. (2) is hardware/ISA and permanent. (3) is an authoring contract —
+the substrate behaviour is correct, the constant was stale. (4) is toolchain, in
+`bus_router._target_input_cell` and the PortMap derivation; it is fixable there
+(resolve the named port against every cell) and is a block-authoring contract
+until then.
 
 **REACH.** (1) measured on one block, but the mechanism is in the shared
 `SramPanelDevice` and applies to any block declaring more than one region. (2)
@@ -3861,9 +3923,13 @@ cell program ever written.
 
 **Gated by:** `verification/tests/test_lz4_encoder.py` —
 `test_the_two_panel_regions_never_overlap` (the constructor guard, both
-directions) and `test_INV4_a_stale_flag_branch_in_the_token_cell_is_CAUGHT` (an
-INV-4 negative that re-introduces the real defect on chip and asserts the gate
-sees it).
+directions), `test_no_branch_reads_the_flags_of_a_MOVE` with
+`test_INV4_the_stale_flag_checker_sees_a_planted_defect`,
+`test_INV4_a_stale_flag_branch_in_the_token_cell_is_CAUGHT` (an INV-4 negative
+that re-introduces the real defect ON CHIP and asserts the gate sees it),
+`test_the_input_landing_cell_is_CELL_ZERO` +
+`test_the_portmap_resolves_the_external_ports_to_the_right_cells`, and
+`test_every_cell_fits_a_32_word_cell` (which now checks the INPUT registers too).
 
 **Related:** INV-33 (the overlap contract this extends to the panel), INV-31 and
 INV-47 (the panel tier), INV-13 (no unconditional GOTO — the same flag-discipline

@@ -458,6 +458,40 @@ class LZ4EncoderBlock(KyttarBlock):
             "words_per_read": 6,
         }
 
+    # --------------------------------------------------- face helpers (INV-52)
+    #: Hardware FACE codes. South=0, East=1, West=2, North=3.
+    _FACE_CODE = {"south": 0, "east": 1, "west": 2, "north": 3}
+
+    def _resting_face(self, cell_id) -> int:
+        """The hardware face code of a cell's RESTING face, from the layout.
+
+        Every in-program face constant is derived through this or
+        :meth:`_face_to` rather than written as a literal. A literal survives a
+        re-fold and a copy-paste from another block, and the result is a cell
+        that restores itself to a face the layout does not give it — which is a
+        HEAD-ON PAIR the static layout check cannot see, because the layout is
+        right and the PROGRAM is wrong (INV-52 clause 1, INV-56 clause 3).
+        """
+        return self._FACE_CODE[str(self.default_layout()[cell_id][2])]
+
+    def _face_to(self, src, dst) -> int:
+        """The face code pointing from ``src`` to ``dst``, from the layout.
+
+        Requires the two to be on a common row or column; a flip aims at a
+        DIRECTION, and the direction has to come from the geometry rather than
+        from a remembered constant.
+        """
+        lay = self.default_layout()
+        sx, sy, _ = lay[src]
+        dx, dy, _ = lay[dst]
+        if sy == dy:
+            return self._FACE_CODE["east" if dx > sx else "west"]
+        if sx == dx:
+            return self._FACE_CODE["south" if dy > sy else "north"]
+        raise ValueError(
+            f"cells {src} and {dst} are not on a common row or column, so no "
+            "single face points from one to the other")
+
     # ------------------------------------------------------------- the programs
     def build_cell_programs(self) -> Dict[Any, CellProgram]:
         """The eight cell programs. See the class docstring for the decomposition.
@@ -1147,8 +1181,14 @@ class LZ4EncoderBlock(KyttarBlock):
                   DataWord("ph_htab", PH_HTAB, address=3),
                   DataWord("ph_match", PH_MATCH, address=4),
                   DataWord("ph_lit", PH_LIT, address=5),
-                  DataWord("face_panel", 1, address=6, is_face=True),
-                  DataWord("face_ring", 3, address=7, is_face=True)],
+                  # DERIVED from the layout, never literals — see the OUT cell
+                  # for what a stale inherited face constant costs.
+                  # ``face_panel`` points at the controller; ``face_ring`` is
+                  # this cell's own resting face, restored at the tail.
+                  DataWord("face_panel", self._face_to(C_ADDR, C_CTL),
+                           address=6, is_face=True),
+                  DataWord("face_ring", self._resting_face(C_ADDR),
+                           address=7, is_face=True)],
             assembly_template=(
                 # FOUR entries — one per KIND of read — and each costs exactly TWO
                 # words, because ``SUB const, zero`` both loads the accumulator and
@@ -1282,12 +1322,25 @@ class LZ4EncoderBlock(KyttarBlock):
         # committed — pass 1's first store never happened, because pass 1 was
         # never entered. Every port name that the outside world can name must be
         # unique across the block's cells.
+        # The RESTING face is DERIVED FROM THE LAYOUT, never a literal.
+        #
+        # MEASURED: this cell was copied from ``LZ4DecoderBlock``, whose OUT cell
+        # rests EAST — and the constant came with it while THIS fold rests it
+        # WEST. The cell therefore restored itself to EAST after every egress
+        # burst, and SEQ (its EAST neighbour) rests WEST: a HEAD-ON PAIR created
+        # by the PROGRAM rather than by the layout, which the static layout check
+        # cannot see. On chip the two ping-ponged one WRITE forever, its hop count
+        # climbing 22 -> 31, and the run reported ``stop_reason == "Deadlock"``
+        # after emitting only the sequence's first byte (INV-52 clause 1 + INV-56
+        # clause 3).
+        _FACE_CODE = {"south": 0, "east": 1, "west": 2, "north": 3}
+        _rest_code = _FACE_CODE[str(self.default_layout()[C_OUT][2])]
         out_cell = CellProgram(
             inputs=[Port("w")],
             outputs=[Port("egress")],
             entries=[EntryPoint("send")],
             data=[DataWord("face_egress", 3, address=1, is_face=True),
-                  DataWord("face_rest", 1, address=2, is_face=True)],
+                  DataWord("face_rest", _rest_code, address=2, is_face=True)],
             assembly_template=(
                 "send:\n"
                 "    MOVE [FACE], R{data:face_egress}\n"
@@ -1296,7 +1349,8 @@ class LZ4EncoderBlock(KyttarBlock):
                 f"    JUMP @{eh}, {ee}\n"
                 # RESTORE at the TAIL (INV-52 clause 1): the resting face is a
                 # contract with every walk that crosses this cell, not only with
-                # its own edges, and an UNRESTORED face silently deflects them.
+                # its own edges, and an UNRESTORED — or WRONGLY restored — face
+                # silently deflects them.
                 "    MOVE [FACE], R{data:face_rest}\n"
                 "    HALT\n"
             ),
@@ -1495,9 +1549,7 @@ class LZ4EncoderBlock(KyttarBlock):
             C_LENRUN: (-3, -2, "south"),
             C_OUT: (-4, -1, "west"),      # the egress
         }
-        order = list(self.build_cell_programs().keys())
-        assert set(order) == set(lay), (order, sorted(lay))
-        return {cid: lay[cid] for cid in order}
+        return {cid: lay[cid] for cid in sorted(lay)}
 
     def emit_faces(self) -> Dict[Tuple[Any, str], Any]:
         """The ports this block emits while FLIPPED, as neighbour CELL IDs.

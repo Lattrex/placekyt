@@ -9,6 +9,70 @@ block-specific gotcha. Promote anything that generalizes across block classes in
 and superseded material merged into the surviving entries; no durable lesson was
 dropped) — append new entries above the oldest ones as before.
 
+## ChaCha20KeystreamBlock — the reorder band is BUILT; the release jumps do not land 2026-08-29 (pass 7)
+
+**What was executed.** The two-row re-fold pass 6 specified. The whole 10x6 fold
+moved down one array row and a REORDER BAND went on top: each adder now feeds a
+PAIR of depth-2 stages (`bufA_k -> bufB_k`), released stage by stage along one
+eastward conveyor into the egress. 41 -> 48 cells, a 10x7 fold at array origin
+(0, 0), still leaving five whole free rows.
+
+**The three things worth carrying to another block.**
+
+1. **A depth-2 pair is much cheaper than "half of depth 4".** Measured 22
+   instructions / `base_addr` 9 / 8 live registers, against the depth-4 form's
+   20/11/13 (an INV-33 overlap of three). The extra saving is that a two-slot
+   cell emits BOTH its words from ONE straight-line entry, which deletes the
+   release counter, the re-entry and the westward hop the depth-4 form needed.
+2. **FIFO order IS pass order, so the reorder needs no schedule.** After the
+   four drain laps `bufB_k` holds the older two words of output group `k` and
+   `bufA_k` the newer two, purely because the pair is a 4-deep FIFO. All that
+   has to be arranged is that the stages sit along the conveyor IN RELEASE
+   ORDER; the "hold and release" is then the FIFO's own behaviour.
+3. **A uniformly-faced line is a WALL FROM BELOW.** INV-55 rule 2 says such a
+   band is sealed from outside; the converse bit here. The state line is a
+   uniform EAST conveyor, so measured over every cell x every face, NOTHING in
+   the control corner can climb through it. The only cells that can lift a word
+   off it are the ones that already own an off-axis flip — the four taps. The
+   fix was to put the chain's head where a tap's existing inward walk already
+   lands (which is what fixes the reorder row's columns), costing zero new face
+   constants, rather than to add a relay.
+
+**Two relay routes measured dead, both on the register budget:** the write-back
+cell is 22 instructions with its two face constants pinned at R8/R9 because the
+eight frame words fill R0..R7; the row-trigger cell has 4 spare where a third
+face constant plus its flip pair needs exactly 4. **Sharing a face constant
+with a numeric one DOES work** and is the general trick — `EAST` is numerically
+1, so it doubles as a decrement or compare operand (the `wbk` idiom). That is
+what paid for the tap's relay entry.
+
+**What is proven on the real placed + routed + built chip.** Everything up to
+the release: 80 quarter-round invocations through all sixteen stages, 20
+half-boundary realignments, 43/43/43 spins of rows 1/2/3 and 3 of row 0, all
+four taps armed, the drain running four laps, **each adder firing exactly four
+times, and every one of the eight buffer stages storing four times** — so the
+band FILLS correctly on silicon — and the release trigger arriving
+(`drn -> tap0.rel -> bufB0.rel`, both observed once).
+
+**What does NOT work.** `bufB0.rel` executes and then neither of its outgoing
+jumps lands: `out.default` never runs and `bufA0.rel` never runs, so the block
+emits ZERO words (before this pass it emitted 32 correct-but-transposed ones —
+the cipher is unchanged; the regression is confined to the new release path).
+Ruled out BY MEASUREMENT, in order: the geometry (every walk resolves on the
+block's own simulator, and the zero-exemption fold gate passes), the word budget
+(all cells inside `base_addr`), the backward-JUMP rule (INV-53 satisfied and
+gated), and the two-jumps-in-one-entry shape (with the chain baton removed
+entirely the egress jump is equally dead). LAYER: block program / toolchain
+resolution — FIXABLE. The missing evidence is the RESOLVED assembly and hop
+counts out of the built bitstream, which `BuildResult` does not expose today;
+getting at those is the next pass's first move.
+
+**Gate status:** 33 of 34 in `test_chacha20_fixed_tap_ring.py`, 125 of 126
+across the three chacha files; placement-legality, orientation, GRC-binding,
+saturation, chip-scale and reachability all green (1016 + 78 + 24 passed). The
+one failure is the on-chip value gate, which now asserts the sixteen words in
+§2.3.2 order — the definition of done for this block.
+
 ## ChaCha20KeystreamBlock — the emission-order fix is at the COLLECTOR, and it misses this fold by exactly three words 2026-08-29
 
 Sixth pass. The block arrives functionally correct — all sixteen RFC 8439 §2.3.2

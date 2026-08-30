@@ -3755,9 +3755,77 @@ the band on its far side is sealed.
 `test_no_drain_side_knob_can_produce_row_major_order`,
 `test_the_transpose_is_a_PER_ADDER_buffer_not_a_per_row_loop`,
 `test_the_reorder_buffer_misses_this_folds_cell_budget_by_three_words`,
-`test_the_finish_row_is_SEALED_so_the_buffer_cannot_be_moved_off_it`,
-`test_the_two_row_finish_band_refold_preserves_every_control_walk` — each with a
-proven INV-4 mutant.
+`test_the_two_row_reorder_band_is_BUILT_and_every_walk_resolves` — each with a
+proven INV-4 mutant. (The two gates that described the OLD sealed fold and the
+re-fold as a *proposal* were replaced when the re-fold was built; see the
+addendum below.)
+
+
+
+### 3. ADDENDUM (2026-08-29, pass 7) — the band was BUILT, and what it cost
+
+The two-row re-fold rule 2 prescribes is now in the tree. Recording what the
+build MEASURED, because two of the numbers differ from the prediction and one
+avenue that looked obvious is dead.
+
+**The depth-2 pair fits, with room.** Predicted "frees four registers"; measured
+the stage at **22 instructions against a `base_addr` of 9 with eight live
+registers**, against the depth-4 form's 20/11/13. The saving is bigger than
+halving the state, because depth 2 also **removes the release counter
+outright**: a two-slot cell emits BOTH its words from one straight-line entry,
+so there is no re-entry, no `SUB`/`MOVE`/`BR` triple and no westward hop.
+
+**FIFO order IS pass order — the reorder needs no schedule at all.** With the
+pair wired `first -> second`, after N passes the second stage holds the OLDEST
+words. Releasing second-then-first, source by source, is exactly the wanted
+order. So the "hold and release" of rule 1 is not a program: it is the FIFO's
+own behaviour, and the only thing that has to be arranged is that the stages
+sit along the output conveyor **in release order**.
+
+**That ordering is what pins the LAYOUT, and it is tighter than it looks.**
+Measured on ChaCha20: the adders are pinned under their taps; the second stage
+must be WEST of the first (older releases first on an eastward conveyor); and
+therefore the chain's HEAD is one column west of where the adder sits. Getting
+a trigger to that head is the whole difficulty — see below.
+
+**A uniformly-faced band is a WALL from below, not just a seal from above.**
+Rule 2 says a band whose neighbours all face one way is sealed. The converse
+was measured here and matters as much: ChaCha20's state line is a uniform EAST
+conveyor, so **no word from the control corner can climb through it** — checked
+over every cell x every face. The only cells that can lift a word off such a
+line are the ones that already own an off-axis flip (here the four taps, which
+flip north to their adders). **Design consequence: put the thing that must be
+reachable where an existing flip already points**, rather than adding a relay —
+the reorder row's columns were chosen so a tap's inward walk lands on the chain
+head, which costs ZERO new face constants.
+
+**Two relay routes were MEASURED DEAD, both on the register budget:**
+* via the write-back cell (the control corner's one turn north): 22
+  instructions with its two face constants pinned at R8/R9, because the eight
+  frame words fill R0..R7 — INV-33's silent overlap, and neither the frame
+  width nor the constants can move;
+* via the row-trigger cell: 4 spare words where a third face constant plus its
+  flip pair needs exactly 4.
+Freeing a word by **sharing a face constant with a numeric one** does work and
+is the general trick (`EAST` is numerically 1, so it doubles as a decrement or
+compare operand — the `wbk` idiom). It is what paid for the tap's relay.
+
+**STILL OPEN, and stated so the next pass does not re-derive it.** The band
+FILLS correctly on the real chip — every adder fires four times, every one of
+the eight stages stores four times, and the release trigger arrives — but the
+first stage's `rel` entry executes and **neither of its outgoing jumps lands**.
+Ruled out by measurement: the geometry (every walk resolves; the zero-exemption
+fold gate passes), the word budget (all cells inside `base_addr`), the
+backward-JUMP rule (INV-53 satisfied and gated), and the two-jumps-in-one-entry
+shape (removing the chain baton leaves the egress jump equally dead). LAYER:
+block program / toolchain resolution — **FIXABLE**, not a substrate wall. The
+missing evidence is the RESOLVED assembly and hop counts out of the built
+bitstream, which `BuildResult` does not currently expose.
+
+**REACH.** The fitting result (depth-2 halves the state and deletes the
+counter) is arithmetic and general. The layout-pinning argument is general for
+any block whose sources are pinned under a uniformly-faced line. The specific
+instruction counts are one block's.
 
 **Related:** INV-33 (the register contract and its silent overlap half — the
 three-word gap is exactly that budget), INV-46 ("prefer more cells doing less",

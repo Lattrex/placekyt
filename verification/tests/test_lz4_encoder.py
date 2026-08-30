@@ -62,6 +62,7 @@ from gr_kyttar.placement.blocks.lz4_encoder_block import (  # noqa: E402
     C_FRAME,
     C_HASH,
     C_INGEST,
+    C_INS,
     C_LENRUN,
     C_LITS,
     C_MATCH,
@@ -1007,78 +1008,124 @@ def test_no_two_block_cells_rest_facing_each_other():
     assert not pairs, f"cells rest facing each other (INV-56): {pairs}"
 
 
-def test_KNOWN_GAP_the_fold_is_a_closed_ring():
-    """The fold closed into a RING, and that is why the scan loop saturates.
+def _edge_hops(b, lay, src, port, dst):
+    """The hop count of one internal edge under the REAL forwarding rule.
 
-    Every internal edge IS reachable on a resting face — the hops are not wrong,
-    they are LONG. Walking any cell's resting face from this fold enumerates the
-    whole fold and returns to the start with period 12, so a hand-off between two
-    physically ADJACENT cells can cost 11 hops the long way round, and each such
-    word occupies most of the ring for its entire flight. The literals-only tail
-    emits 3-9 bytes and fits; the scan loop, which issues a panel round trip per
-    byte per candidate, does not.
-
-    That is INV-51 clause 1 reached from a new direction: a ring does not only
-    trap its interior, it turns every hop into modular arithmetic. A SERPENTINE
-    has free ends and short hops both.
-
-    This test measures the ring's period. It FAILS when the fold is re-shaped —
-    which is the point: the next pass must re-fold, and this gate is how it knows
-    it succeeded.
+    The word leaves ``src`` on its DECLARED emit face when ``emit_faces()``
+    names this ``(src, port)`` (the face is derived from the two placed
+    positions, exactly as the router does it), else on ``src``'s resting face;
+    every cell it then crosses forwards it on THAT cell's resting face
+    (INV-48/INV-50). Returns None when the walk never reaches ``dst``.
     """
-    b = LZ4EncoderBlock("enc")
-    lay = b.default_layout()
-    at = {(x, y): c for c, (x, y, _f) in lay.items()}
-    # walk one cell's resting face and see whether it returns to its origin
-    start = C_RET
-    x, y, _f = lay[start]
-    face = str(lay[start][2])
-    period = None
-    for step in range(1, 40):
-        dx, dy = _DELTA[face]
+    at = {(x, y): cid for cid, (x, y, _f) in lay.items()}
+    ef = b.emit_faces()
+    sx, sy, sface = lay[src]
+    if (src, port) in ef:
+        tx, ty, _tf = lay[ef[(src, port)]]
+        if sy == ty:
+            face = "east" if tx > sx else "west"
+        else:
+            face = "south" if ty > sy else "north"
+    else:
+        face = str(sface)
+    x, y = sx, sy
+    for hop in range(1, 40):
+        dx, dy = _DELTA[str(face)]
         x, y = x + dx, y + dy
         cid = at.get((x, y))
         if cid is None:
-            break
-        if cid == start:
-            period = step
-            break
-        face = str(lay[cid][2])
-    assert period is not None, (
-        "THE FOLD IS NO LONGER A RING — re-run the on-chip scan-loop gates, "
-        "delete this test and the known-gap gate if they now pass")
-    assert period >= 8, (
-        f"ring period {period}; this gate pins the measured shape (12)")
+            return None
+        if cid == dst:
+            return hop
+        face = lay[cid][2]
+    return None
 
 
-def test_KNOWN_GAP_the_edge_graph_has_hubs_that_force_long_walks():
-    """Why the ring cannot be fixed by re-folding, measured as degrees.
+def test_the_fold_delivers_every_internal_edge():
+    """EVERY declared internal WRITE and JUMP edge reaches its target on the
+    walk the hardware will actually take — the declared emit face where one is
+    declared, the resting-face chain everywhere else. The first fold passed
+    this property too (a ring delivers everything, eventually), which is why
+    it is paired with the frequency-weighted hop gate below."""
+    b = LZ4EncoderBlock("enc")
+    lay = b.default_layout()
+    undelivered = []
+    for s, sp, d, _dp in b.internal_connections() + b.internal_jumps():
+        if d == C_CTL and s == C_ADDR:
+            continue                     # the declared flip, checked below
+        if s == C_INS or d == C_CTL:
+            continue                     # INS speaks raw port words through CTL
+        h = _edge_hops(b, lay, s, sp, d)
+        if h is None:
+            undelivered.append((s, sp, d))
+    assert not undelivered, f"edges that never reach their target: {undelivered}"
+    # the two panel flips
+    assert _edge_hops(b, lay, C_ADDR, "rd", C_CTL) == 1
+    assert _edge_hops(b, lay, C_HASH, "ins_h", C_INS) == 1
 
-    A fold score that asks only "does this edge deliver?" accepts a RING, because
-    a ring delivers everything eventually. Adding a max-hop term is the obvious
-    fix and it was tried: over ~500 annealing restarts across three slot shapes
-    at K = 6 and K = 7, the best fold still needed ELEVEN hops for some edge. The
-    long walks are forced by the EDGE GRAPH, not by a weak search.
 
-    This test records the degrees that force them, so the next pass attacks the
-    graph instead of the layout. It fails when the graph is simplified — which is
-    the intended fix.
+def test_the_fold_is_FREQUENCY_WEIGHTED_hot_edges_are_short():
+    """INV-61 clause 5's method, applied and pinned. The first fold was a ring
+    whose hot edges ran the long way round (RET -> HASH cost 11 hops, four
+    times per scanned position) and the scan drowned; ~500 annealing restarts
+    with a max-hop term could not fix it because a ring's TOTAL circumference
+    is conserved — what a fold can choose is WHICH edges get the long arcs.
+    This fold gives them to the per-sequence formatter edges and keeps the
+    per-position scan cycle short; these bounds are the design, so a re-fold
+    that silently regresses a hot edge fails here, not on a wall-clock budget.
     """
     b = LZ4EncoderBlock("enc")
-    edges = sorted({(s, d) for s, _sp, d, _dp in b.internal_connections()}
-                   | {(s, d) for s, _sp, d, _dp in b.internal_jumps()})
-    outdeg, indeg = {}, {}
-    for s, d in edges:
-        outdeg[s] = outdeg.get(s, 0) + 1
-        indeg[d] = indeg.get(d, 0) + 1
-    hubs = sorted([c for c in set(outdeg) | set(indeg)
-                   if max(outdeg.get(c, 0), indeg.get(c, 0)) >= 4])
-    assert len(edges) >= 30 and hubs, (
-        "THE EDGE GRAPH WAS SIMPLIFIED — re-run the fold search with the max-hop "
-        f"term; it may now find a serpentine ({len(edges)} edges, hubs {hubs})")
-    # the panel port and its return are the worst, and that is the lever
-    assert indeg.get(C_ADDR, 0) >= 4, "ADDR is no longer a hub"
-    assert outdeg.get(C_RET, 0) >= 4, "RET is no longer a hub"
+    lay = b.default_layout()
+    bounds = {
+        # per scanned position (fires ~n times, x4 for the hash bytes)
+        (C_RET, "to_hash", C_HASH): 6,
+        (C_RET, "to_slot", C_VERIFY): 2,
+        (C_SEQ, "h_i", C_HASH): 5,
+        (C_SEQ, "v_i", C_VERIFY): 1,
+        (C_HASH, "rd", C_ADDR): 1,       # HASH abuts the history port
+        (C_HASH, "ins_h", C_INS): 1,     # ...and the table port (flip east)
+        (C_VERIFY, "miss", C_SEQ): 1,    # the miss hand-back (flip west)
+        (C_VERIFY, "s_i", C_SEQ): 1,
+        (C_ADDR, "setph", C_RET): 5,     # must beat a ~570 ns panel round trip
+        # per match byte / per literal byte
+        (C_RET, "to_match", C_MATCH): 3,
+        (C_RET, "to_lit", C_LITS): 4,
+        (C_MATCH, "rd_c", C_ADDR): 4,
+        (C_MATCH, "rd_i", C_ADDR): 4,
+        (C_LITS, "rd", C_ADDR): 3,
+        (C_LITS, "out", C_OUT): 1,       # the literal replay's emission
+    }
+    over = []
+    for (s, sp, d), bound in bounds.items():
+        h = _edge_hops(b, lay, s, sp, d)
+        if h is None or h > bound:
+            over.append((s, sp, d, h, bound))
+    assert not over, (
+        "HOT edges over their frequency-weighted bounds (edge, hops, bound): "
+        f"{over}")
+
+
+def test_the_shared_face_constants_still_equal_the_layout():
+    """HASH's flip constants are its arithmetic constants — the INV-55 `wbk`
+    idiom (`one` == EAST == 1 toward INS, `zero` == SOUTH == 0 at rest) — which
+    is what lets the 9-instruction probe tail fit a cell that is otherwise
+    exactly full. The coincidence is LOAD-BEARING and a re-fold can silently
+    break it (INV-61 clause 3: a face constant that outlives its fold), so it
+    is re-derived from the layout here; the block's own constructor asserts it
+    too, so a breaking re-fold cannot even instantiate.
+    """
+    b = LZ4EncoderBlock("enc")
+    lay = b.default_layout()
+    hx, hy, hface = lay[C_HASH]
+    ix, iy, _ = lay[C_INS]
+    assert (ix - hx, iy - hy) == (1, 0), "INS must abut HASH to the EAST"
+    assert str(hface) == "south", "HASH's resting face must be SOUTH (== 0)"
+    # and the flips are DECLARED for the router (INV-50 rule 1)
+    ef = b.emit_faces()
+    for port in ("ins_h", "ins_v", "ins_go"):
+        assert ef.get((C_HASH, port)) == C_INS, (port, ef)
+    for port in ("s_i", "miss"):
+        assert ef.get((C_VERIFY, port)) == C_SEQ, (port, ef)
 
 
 def test_INV4_the_head_on_gate_catches_a_forced_pair():
@@ -1682,13 +1729,33 @@ def test_build_lands_each_program_on_its_placed_cell():
             "are bound to the wrong cells")
 
 
-#: Payloads SHORTER than MF_LIMIT take the literals-only TAIL path and never
-#: enter the scan loop (``lim = n - 12`` is <= 0). Those run correctly on the
-#: BUILT CHIP today. Longer payloads enter the scan and currently spin — see
-#: :func:`test_KNOWN_GAP_the_scan_loop_does_not_terminate_on_chip`, which pins
-#: the boundary rather than hiding it.
-_ONCHIP_TAIL_ONLY = ["tiny", "shortest"]
+#: EVERY payload class runs on the BUILT CHIP — the tail-only payloads (shorter
+#: than ``MF_LIMIT``, which never enter the scan) AND the scan-loop payloads,
+#: including the 2000-byte incompressible ``random`` and the failed-MINMATCH
+#: stress payload ``minmatch3``. The first pass could only run the tail
+#: payloads; the scan loop's three measured defects (no cursor advance on a
+#: miss, no hash-table insert anywhere, hot ring edges placed the long way
+#: round) are fixed and the pinning known-gap gate is deleted.
+_ONCHIP_TAIL_ONLY = ["tiny", "shortest", "empty"]
+_ONCHIP_SCAN = ["short", "overlap", "text", "repetitive", "long_run", "mixed",
+                "all_literal", "minmatch3", "random"]
+_ONCHIP_ALL = _ONCHIP_TAIL_ONLY + _ONCHIP_SCAN
 PAYLOADS["shortest"] = b"xyz12345"
+
+#: On-chip encodes are DETERMINISTIC (one shared build, a fresh chip + panel
+#: per run), so each payload is encoded once and every gate reads the cache.
+_ONCHIP_CACHE: dict = {}
+
+
+def _encode_on_chip_cached(name):
+    """``(bytes, panel_writes, stop_reason)`` for a named payload, encoded on
+    the built chip once per test session."""
+    if name not in _ONCHIP_CACHE:
+        project, bres = _auto_build_cached()
+        got, dev, stop = _encode_on_chip(project, bres, PAYLOADS[name])
+        _ONCHIP_CACHE[name] = (bytes(b & 0xFF for b in got),
+                               dev.writes_committed, stop)
+    return _ONCHIP_CACHE[name]
 
 
 @pytest.mark.parametrize("name", _ONCHIP_TAIL_ONLY)
@@ -1700,25 +1767,22 @@ def test_THE_BUILT_CHIP_emits_the_literals_only_tail_exactly(name):
     loaded, run on ``simkyt`` with a real ``SramPanelDevice`` — and it exercises
     pass 1 (every input byte stored in the panel), the END-OF-BLOCK sentinel, the
     token builder, the length encoder, the literal REPLAY out of the panel, and
-    the egress corridor. What it does NOT exercise is the scan loop; see the
-    known-gap gate below.
+    the egress corridor. The scan loop has its own gates below.
     """
     _need_chip()
     payload = PAYLOADS[name]
-    project, bres = _auto_build_cached()
-    got, dev, stop = _encode_on_chip(project, bres, payload)
+    blk, writes, stop = _encode_on_chip_cached(name)
     assert stop != "Deadlock", (
         f"{name}: the chip WEDGED (stop_reason={stop!r}) — a circular wait, so "
         "the geometry is at fault, not the program (INV-56 clause 1)")
-    assert got, (
+    assert blk, (
         f"{name}: the chip emitted NOTHING (stop_reason={stop!r}, panel writes "
-        f"committed: {dev.writes_committed})")
-    blk = bytes(b & 0xFF for b in got)
+        f"committed: {writes})")
     assert blk == bytes(encode_model(payload)[0]), (
-        f"{name}: chip {list(got)} vs model {list(encode_model(payload)[0])}")
+        f"{name}: chip {list(blk)} vs model {list(encode_model(payload)[0])}")
     assert lz4_decompress_block(blk) == payload
     # pass 1 really did store every byte in the panel
-    assert dev.writes_committed >= len(payload)
+    assert writes >= len(payload)
 
 
 @pytest.mark.skipif(not _HAVE_REF, reason="reference lz4 C binding not importable")
@@ -1729,44 +1793,289 @@ def test_THE_BUILT_CHIP_tail_is_accepted_by_the_INDEPENDENT_decoder(name):
     and it returns the exact input."""
     _need_chip()
     payload = PAYLOADS[name]
-    project, bres = _auto_build_cached()
-    got, _dev, stop = _encode_on_chip(project, bres, payload)
+    blk, _writes, stop = _encode_on_chip_cached(name)
     assert stop != "Deadlock", (name, stop)
-    (ok, val), = _ref_decompress(
-        [(bytes(b & 0xFF for b in got), len(payload) + 4096)])
+    if not payload:
+        assert lz4_decompress_block(blk) == payload
+        return
+    (ok, val), = _ref_decompress([(blk, len(payload) + 4096)])
     assert ok, f"{name}: the REFERENCE C decoder REJECTED the CHIP's block: {val}"
     assert val == payload
+
+
+@pytest.mark.parametrize("name", _ONCHIP_SCAN)
+def test_THE_BUILT_CHIP_compresses_and_the_block_round_trips(name):
+    """THE END-TO-END GATE, and the one that matters.
+
+    The AUTO-PLACED, ROUTED, BUILT design compresses a real payload on a real
+    chip through a real SRAM panel, and the block it emits decodes back to the
+    input under the PUBLISHED golden decoder. Nine payload classes that all
+    ENTER THE SCAN LOOP, including the 2000-byte incompressible ``random`` and
+    the failed-MINMATCH stress payload.
+
+    Every layer below this is a component check. This is those checks composed —
+    the two-pass control flow, the two panel regions, the hash probe with its
+    deferred insert, the match verify, the length encoder and the placement, at
+    once, from the same build path the GUI's auto-P&R produces.
+    """
+    _need_chip()
+    payload = PAYLOADS[name]
+    blk, writes, stop = _encode_on_chip_cached(name)
+    assert stop != "Deadlock", (
+        f"{name}: the chip WEDGED (stop_reason={stop!r}) — a circular wait, so "
+        "the geometry is at fault, not the program (INV-56 clause 1)")
+    assert blk, (
+        f"{name}: the chip emitted NOTHING (stop_reason={stop!r}, panel writes "
+        f"committed: {writes})")
+    assert lz4_decompress_block(blk) == payload, (
+        f"{name}: the chip's block did not decode back to the input\n"
+        f"  payload[:24]={list(payload[:24])}\n"
+        f"  chip blk[:24]={list(blk[:24])}")
+    # pass 1 stored every byte AND pass 2 committed one insert per scanned
+    # position (minus the final probe's, whose commit is deferred past the end)
+    assert writes > len(payload)
+
+
+@pytest.mark.parametrize("name", _ONCHIP_SCAN)
+def test_THE_BUILT_CHIP_matches_the_model_byte_for_byte(name):
+    """The chip's output equals ``encode_model``'s, byte for byte.
+
+    Stronger than round-trip alone: round-trip passes for ANY legal block, so it
+    cannot see a chip that picks different (still legal) matches from the model.
+    This pins that the silicon runs the algorithm the model describes — the same
+    hash, the same insert timing (the deferred commit preserves the model's
+    panel-visible order: read a_p, write a_p, read a_p+1), the same bounds.
+    """
+    _need_chip()
+    payload = PAYLOADS[name]
+    blk, _writes, stop = _encode_on_chip_cached(name)
+    assert stop != "Deadlock", (name, stop)
+    want = bytes(encode_model(payload)[0])
+    assert blk == want, (
+        f"{name}: chip {list(blk[:24])} vs model {list(want[:24])} "
+        f"(chip {len(blk)}B, model {len(want)}B)")
+
+
+@pytest.mark.skipif(not _HAVE_REF, reason="reference lz4 C binding not importable")
+def test_THE_BUILT_CHIP_output_is_accepted_by_the_INDEPENDENT_decoder():
+    """THE ACCEPTANCE GATE.
+
+    Blocks produced by the REAL BUILT CHIP — including every scan-loop payload
+    class — are handed to the INDEPENDENT reference **C** decoder
+    (``lz4.block``), which this repository did not write, and it returns the
+    exact input. This is the only gate that can rule out an encoder and a
+    decoder being self-consistently wrong TOGETHER — and it is the one the
+    brief requires before this block may be called done.
+    """
+    _need_chip()
+    names = [n for n in _ONCHIP_ALL if PAYLOADS[n]]
+    jobs = []
+    for name in names:
+        blk, _writes, stop = _encode_on_chip_cached(name)
+        assert stop != "Deadlock", (name, stop)
+        assert blk, f"{name}: the chip emitted nothing (stop_reason={stop!r})"
+        jobs.append((blk, len(PAYLOADS[name]) + 4096))
+    for name, (ok, val) in zip(names, _ref_decompress(jobs)):
+        assert ok, (
+            f"{name}: the REFERENCE C decoder REJECTED the CHIP's block: {val}")
+        assert val == PAYLOADS[name], (
+            f"{name}: the reference decoder returned {len(val)} bytes from the "
+            f"chip's block, expected {len(PAYLOADS[name])}")
+
+
+def test_THE_BUILT_CHIP_incompressible_bound():
+    """The 0.5% expansion bound, measured on the REAL CHIP rather than the
+    model."""
+    _need_chip()
+    payload = PAYLOADS["random"]
+    blk, _writes, stop = _encode_on_chip_cached("random")
+    assert stop != "Deadlock", stop
+    growth = (len(blk) - len(payload)) / len(payload)
+    assert growth <= 0.005, (
+        f"on chip, incompressible input expanded {growth * 100:.3f}%, "
+        "bound 0.5%")
+
+
+def test_THE_BUILT_CHIP_compressible_input_actually_compresses():
+    """The complement of the bound above, ON CHIP: a gate that only checked
+    expansion would pass a chip that emits everything as literals and
+    compresses NOTHING — which is exactly what a broken hash-table INSERT
+    produces (an empty table proposes no candidates, ever, and the output is
+    still format-legal and still round-trips)."""
+    _need_chip()
+    for name in ("repetitive", "long_run", "mixed", "overlap", "text"):
+        payload = PAYLOADS[name]
+        blk, _writes, stop = _encode_on_chip_cached(name)
+        assert stop != "Deadlock", (name, stop)
+        ratio = len(blk) / len(payload)
+        assert ratio < 0.5, f"{name} compressed only to {ratio:.2%} on chip"
+
+
+# =========================================================================
+# LAYER 7 — INV-4 ON-CHIP MUTANTS for the scan loop's three mechanisms.
+# Each corrupts the REAL block, rebuilds the WHOLE design, runs it on a real
+# chip, and asserts the end-to-end gates would catch it. A gate never shown
+# to fail certifies nothing — and each of these mutants is a defect this
+# block ACTUALLY HAD (the first two) or nearly had (the third).
+# =========================================================================
+def _run_mutant_design(payload, budget=4000):
+    """Build the CURRENT (possibly monkeypatched) block and encode ``payload``
+    on a fresh chip. Returns ``(bytes, stop_reason)``. A small budget keeps a
+    non-terminating mutant from spinning for minutes."""
+    project, bres = _auto_build()
+    got, _dev, stop = _encode_on_chip(project, bres, payload, budget=budget)
+    return bytes(b & 0xFF for b in got), stop
+
+
+def _with_mutated_programs(mutate):
+    """Context: monkeypatch ``build_cell_programs`` through ``mutate(progs)``."""
+    import contextlib
+    import gr_kyttar.placement.blocks.lz4_encoder_block as mod
+
+    real = mod.LZ4EncoderBlock.build_cell_programs
+
+    @contextlib.contextmanager
+    def ctx():
+        def mutated(self):
+            progs = real(self)
+            mutate(progs)
+            return progs
+        mod.LZ4EncoderBlock.build_cell_programs = mutated
+        try:
+            yield
+        finally:
+            mod.LZ4EncoderBlock.build_cell_programs = real
+    return ctx()
+
+
+def test_INV4_ONCHIP_the_missing_cursor_advance_is_CAUGHT():
+    """Re-introduce THE defect the first pass shipped: the no-candidate miss
+    path jumps ``seq.step`` with NO ``i += 1`` — the model's advance with no
+    on-chip counterpart. MEASURED then: the scan re-probed position 0 forever
+    (RET dispatched 1596 times, MATCH ran once) and the run ended at
+    EventLimit with zero output. The end-to-end gate must see it."""
+    _need_chip()
+
+    def mutate(progs):
+        cp = progs[C_VERIFY]
+        old = cp.assembly_template
+        cp.assembly_template = old.replace(
+            "    ADD R{state:i}, R{data:one}\n"
+            "    MOVE [FACE], R{data:face_seq}\n"
+            "    {write:s_i}\n"
+            "    {jump:miss}\n",
+            "    MOVE [FACE], R{data:face_seq}\n"
+            "    {jump:miss}\n")
+        assert cp.assembly_template != old, (
+            "the mutant no longer mutates the real block")
+
+    with _with_mutated_programs(mutate):
+        blk, stop = _run_mutant_design(PAYLOADS["short"], budget=1500)
+    assert blk != bytes(encode_model(PAYLOADS["short"])[0]), (
+        "the no-advance mutant produced the CORRECT block — the end-to-end "
+        "gate cannot see the very defect this block shipped with")
+    # and the real block still passes afterwards (from the cache, untouched)
+    real_blk, _w, _s = _encode_on_chip_cached("short")
+    assert real_blk == bytes(encode_model(PAYLOADS["short"])[0])
+
+
+def test_INV4_ONCHIP_a_dropped_hash_insert_is_CAUGHT_by_the_ratio_gate():
+    """Suppress the INSERT's commit trigger (the panel R0 jump). The table then
+    stays empty forever, no candidate is ever proposed, and the output is pure
+    literals — still format-legal, still ROUND-TRIPPING, which is exactly why
+    the round-trip gate alone certifies nothing here. The byte-exact gate and
+    the on-chip compression-ratio gate are what fire."""
+    _need_chip()
+
+    def mutate(progs):
+        cp = progs[C_INS]
+        lines = cp.assembly_template.splitlines(keepends=True)
+        # drop the COMMIT trigger (the JUMP into panel R0)
+        for k, ln in enumerate(lines):
+            if ln.strip().startswith("JUMP") and ln.strip().endswith(", 0"):
+                del lines[k]
+                break
+        else:
+            raise AssertionError("the commit JUMP was not found — the mutant "
+                                 "no longer mutates the real block")
+        cp.assembly_template = "".join(lines)
+
+    payload = PAYLOADS["repetitive"]
+    with _with_mutated_programs(mutate):
+        blk, stop = _run_mutant_design(payload)
+    assert stop != "Deadlock", stop
+    want = bytes(encode_model(payload)[0])
+    assert blk != want, (
+        "the no-insert mutant matched the model byte-for-byte — the byte-exact "
+        "gate cannot see a dead hash table")
+    # the sharpened claim: the mutant STILL round-trips (all-literals is legal),
+    # so a suite with only a round-trip gate would pass it...
+    assert lz4_decompress_block(blk) == payload
+    # ...and the ratio gate is the one with teeth
+    assert len(blk) / len(payload) > 0.5, (
+        "the no-insert mutant still compressed, so the insert was not the "
+        "thing this mutant disabled")
+
+
+def test_INV4_ONCHIP_a_wrong_RET_count_seed_is_CAUGHT():
+    """Corrupt the return-counting protocol: seed the per-position read count
+    at FOUR instead of five, so the fourth history byte is dispatched as the
+    hash-table slot and the real slot as a history byte. The scan's dispatch
+    is then permanently skewed; the end-to-end gate must see it."""
+    _need_chip()
+    from gr_kyttar.placement.block import DataWord, StateVar
+
+    def mutate(progs):
+        cp = progs[C_RET]
+        assert any(d.name == "five" for d in cp.data), (
+            "RET no longer carries the count seed")
+        cp.data = [DataWord(d.name, 4 if d.name == "five" else d.value,
+                            address=d.address, is_face=d.is_face)
+                   for d in cp.data]
+        cp.state = [StateVar(s.name, register=s.register, initial_value=4)
+                    for s in cp.state]
+
+    # a COMPRESSIBLE payload: with the count skewed, the fourth history byte
+    # is dispatched as the slot, the rolling hash never completes, no probe is
+    # ever issued and the output degrades to all-literals — which for a
+    # mostly-literal payload would EQUAL the model and prove nothing.
+    payload = PAYLOADS["repetitive"]
+    with _with_mutated_programs(mutate):
+        blk, stop = _run_mutant_design(payload, budget=1500)
+    assert blk != bytes(encode_model(payload)[0]), (
+        "the count-seed mutant produced the CORRECT block — the count "
+        "protocol is not load-bearing and the gate certifies nothing")
 
 
 def test_emit_report():
     """Write ``verification/reports/LZ4EncoderBlock.json``.
 
-    ``passed`` is FALSE, deliberately. The DSP is fully verified and the placed
-    design is verified for the tail path, but the scan loop does not terminate on
-    chip — and a report that claimed otherwise would be exactly the false victory
-    this project forbids. The measured numbers are all here so the next pass
-    starts from fact.
+    ``passed`` is TRUE now, and earned: the first pass wrote ``passed: false``
+    with the scan-loop gap measured and pinned; this pass closed the gap and
+    every payload class — tail AND scan — is byte-exact against the model on
+    the placed + routed + built chip, round-trips under the published golden
+    decoder, and is accepted by the independent reference C decoder.
     """
     _need_chip()
-    project, bres = _auto_build_cached()
     onchip = {}
-    for name in _ONCHIP_TAIL_ONLY:
+    for name in _ONCHIP_ALL:
         payload = PAYLOADS[name]
-        got, dev, stop = _encode_on_chip(project, bres, payload)
+        blk, writes, stop = _encode_on_chip_cached(name)
         onchip[name] = {
             "in_bytes": len(payload),
-            "out_bytes": len(got),
-            "matches_model": list(got) == list(encode_model(payload)[0]),
-            "round_trips": (lz4_decompress_block(bytes(b & 0xFF for b in got))
-                            == payload),
+            "out_bytes": len(blk),
+            "matches_model": blk == bytes(encode_model(payload)[0]),
+            "round_trips": lz4_decompress_block(blk) == payload,
             "stop_reason": stop,
-            "panel_writes": dev.writes_committed,
+            "panel_writes": writes,
         }
+    assert all(v["matches_model"] and v["round_trips"]
+               for v in onchip.values()), onchip
     rnd = PAYLOADS["random"]
     REPORT.parent.mkdir(parents=True, exist_ok=True)
     REPORT.write_text(json.dumps({
         "kyttar_block": "LZ4EncoderBlock",
-        "passed": False,
+        "passed": True,
         "metric": "exact",
         "n_compared": sum(len(p) for p in PAYLOADS.values()),
         "max_abs_err": 0,
@@ -1782,10 +2091,16 @@ def test_emit_report():
                         "INDEPENDENT reference C decoder (lz4.block)",
             "patterns": f"{len(PAYLOADS)} payload classes at the model level, "
                         "all round-tripping under both decoders; "
-                        f"{len(_ONCHIP_TAIL_ONLY)} of them on the AUTO-PLACED + "
-                        "ROUTED + BUILT design on a real simkyt chip through a "
-                        "real SramPanelDevice",
+                        f"{len(_ONCHIP_ALL)} of them BYTE-EXACT on the "
+                        "AUTO-PLACED + ROUTED + BUILT design on a real simkyt "
+                        "chip through a real SramPanelDevice, including the "
+                        "scan loop (2..2000 bytes)",
             "mutation": True,
+            "onchip_mutation": "the first pass's missing-cursor-advance defect "
+                               "re-introduced and CAUGHT; a dead hash-table "
+                               "insert CAUGHT by the on-chip ratio gate (it "
+                               "still round-trips!); a corrupted return-count "
+                               "seed CAUGHT byte-exact",
             "independent_decoder": "lz4.block (the reference C implementation, "
                                    "via its Python binding, run in the GNU-Radio "
                                    "interpreter)",
@@ -1794,161 +2109,6 @@ def test_emit_report():
                 (len(encode_model(rnd)[0]) - len(rnd)) / len(rnd) * 100, 4),
             "cells": LZ4EncoderBlock("probe").cell_count,
             "onchip": onchip,
-            "open_gap": {
-                "what": "payloads that ENTER THE SCAN LOOP emit nothing on chip; "
-                        "payloads shorter than MF_LIMIT (12) take the "
-                        "literals-only tail and are byte-exact",
-                "measured": "2/3/5/8 bytes match the model exactly; 24/30/40 "
-                            "bytes give zero output and stop_reason EventLimit "
-                            "after ~1.3M events",
-                "cause": "the 14-cell fold closed into a 12-cell RING, so an "
-                         "adjacent-cell hand-off can cost 11 hops the long way "
-                         "round and each word occupies most of the ring for its "
-                         "flight; every edge IS reachable, the hops are just "
-                         "long (INV-51 clause 1)",
-                "layer": "block FOLD — fixable, not a substrate or ISA wall",
-                "next": "re-fold as a SERPENTINE; add a max-hop term to the fold "
-                        "score, which forbids a ring by construction",
-            },
         },
     }, indent=1) + "\n")
     assert REPORT.exists()
-
-
-def test_KNOWN_GAP_the_scan_loop_does_not_terminate_on_chip():
-    """THE OPEN GAP, pinned as a gate so it cannot be forgotten or overstated.
-
-    MEASURED boundary on the built chip: payloads of 2, 3, 5 and 8 bytes match
-    the model EXACTLY; payloads of 24, 30 and 40 bytes emit NOTHING and the run
-    ends in ``stop_reason == "EventLimit"`` after ~1.3M events. The split is
-    exactly ``MF_LIMIT``: a payload shorter than 12 bytes has ``lim = n - 12 <=
-    0`` and goes straight to the literals-only tail, so it never enters the scan
-    loop. Everything that DOES enter the scan spins.
-
-    The cause is located, from the execution trace: the RET cell's ``to_hash``
-    hand-off is emitted on RET's resting face (EAST) carrying the hop the ROUTER
-    computed (11), and the word then walks out of the block's footprint —
-    115, 116, 117, 118, 108, 107, 97 — instead of landing on HASH, which is ONE
-    cell NORTH. That is INV-50's residual: the edge was sized against a walk the
-    word does not take. ``stop_reason`` is ``"EventLimit"``, not ``"Deadlock"``,
-    so nothing is wedged — the words are produced and MIS-ADDRESSED (INV-56
-    clause 1 tells the two apart, and that is what localised this).
-
-    LAYER: block FOLD — fixable. Not a substrate or ISA wall. The fix is a fold
-    whose resting-face walks reach their targets under the ROUTER's own distance
-    function, or an ``emit_faces()`` declaration for every edge the router sizes
-    wrong.
-
-    This test asserts the gap is exactly where it is measured to be. It FAILS the
-    day the scan loop starts working, which is the point: it must be deleted (and
-    the payload list above widened) rather than left to rot.
-    """
-    _need_chip()
-    project, bres = _auto_build_cached()
-    got, _dev, stop = _encode_on_chip(project, bres, PAYLOADS["short"],
-                                      budget=3000)
-    assert not got and stop != "Deadlock", (
-        "THE SCAN LOOP NOW WORKS ON CHIP — delete this known-gap gate, move the "
-        f"longer payloads into _ONCHIP_TAIL_ONLY, and update the manifest "
-        f"(got {len(got)} bytes, stop_reason={stop!r})")
-
-
-@pytest.mark.skip(reason="pinned by test_KNOWN_GAP_the_scan_loop_does_not_"
-                         "terminate_on_chip: the scan loop spins on chip "
-                         "(INV-50 residual on RET's to_hash edge). Model-level "
-                         "round-trip, reference-C acceptance and the "
-                         "incompressible bound are all GREEN; this is the "
-                         "placed-design half.")
-@pytest.mark.parametrize("name", [
-    "short", "tiny", "overlap", "text", "repetitive", "random",
-])
-def test_THE_BUILT_CHIP_compresses_and_the_block_round_trips(name):
-    """THE END-TO-END GATE, and the one that matters.
-
-    The AUTO-PLACED, ROUTED, BUILT design compresses a real payload on a real
-    chip through a real SRAM panel, and the block it emits decodes back to the
-    input under the PUBLISHED golden decoder. Six payload classes, including
-    incompressible random data.
-
-    Every layer below this is a component check. This is those checks composed —
-    the two-pass control flow, the two panel regions, the hash probe, the match
-    verify, the length encoder and the placement, at once, from the same build
-    path the GUI's auto-P&R produces.
-    """
-    _need_chip()
-    payload = PAYLOADS[name]
-    project, bres = _auto_build_cached()
-    got, dev, stop = _encode_on_chip(project, bres, payload)
-    assert stop != "Deadlock", (
-        f"{name}: the chip WEDGED (stop_reason={stop!r}) — a circular wait, so "
-        "the geometry is at fault, not the program (INV-56 clause 1)")
-    assert got, (
-        f"{name}: the chip emitted NOTHING (stop_reason={stop!r}, panel writes "
-        f"committed: {dev.writes_committed})")
-    blk = bytes(b & 0xFF for b in got)
-    assert lz4_decompress_block(blk) == payload, (
-        f"{name}: the chip's block did not decode back to the input\n"
-        f"  payload[:24]={list(payload[:24])}\n"
-        f"  chip blk[:24]={list(blk[:24])}")
-
-
-@pytest.mark.skip(reason="pinned by test_KNOWN_GAP_the_scan_loop_does_not_terminate_on_chip")
-def test_THE_BUILT_CHIP_matches_the_model_byte_for_byte():
-    """The chip's output equals ``encode_model``'s, byte for byte.
-
-    Stronger than round-trip alone: round-trip passes for ANY legal block, so it
-    cannot see a chip that picks different (still legal) matches from the model.
-    This pins that the silicon runs the algorithm the model describes.
-    """
-    _need_chip()
-    project, bres = _auto_build_cached()
-    for name in ("short", "overlap", "text"):
-        payload = PAYLOADS[name]
-        got, _dev, stop = _encode_on_chip(project, bres, payload)
-        assert stop != "Deadlock", (name, stop)
-        want = bytes(encode_model(payload)[0])
-        assert bytes(b & 0xFF for b in got) == want, (
-            f"{name}: chip {list(got[:24])} vs model {list(want[:24])}")
-
-
-@pytest.mark.skipif(not _HAVE_REF, reason="reference lz4 C binding not importable")
-@pytest.mark.skip(reason="pinned by test_KNOWN_GAP_the_scan_loop_does_not_terminate_on_chip")
-def test_THE_BUILT_CHIP_output_is_accepted_by_the_INDEPENDENT_decoder():
-    """THE ACCEPTANCE GATE.
-
-    Blocks produced by the REAL BUILT CHIP are handed to the INDEPENDENT
-    reference **C** decoder (``lz4.block``), which this repository did not write,
-    and it returns the exact input. This is the only gate that can rule out an
-    encoder and a decoder being self-consistently wrong TOGETHER — and it is the
-    one the brief requires before this block may be called done.
-    """
-    _need_chip()
-    project, bres = _auto_build_cached()
-    names = ["short", "tiny", "overlap", "text", "repetitive", "random"]
-    jobs = []
-    for name in names:
-        got, _dev, stop = _encode_on_chip(project, bres, PAYLOADS[name])
-        assert stop != "Deadlock", (name, stop)
-        assert got, f"{name}: the chip emitted nothing (stop_reason={stop!r})"
-        jobs.append((bytes(b & 0xFF for b in got), len(PAYLOADS[name]) + 4096))
-    for name, (ok, val) in zip(names, _ref_decompress(jobs)):
-        assert ok, (
-            f"{name}: the REFERENCE C decoder REJECTED the CHIP's block: {val}")
-        assert val == PAYLOADS[name], (
-            f"{name}: the reference decoder returned {len(val)} bytes from the "
-            f"chip's block, expected {len(PAYLOADS[name])}")
-
-
-@pytest.mark.skip(reason="pinned by test_KNOWN_GAP_the_scan_loop_does_not_terminate_on_chip")
-def test_THE_BUILT_CHIP_incompressible_bound():
-    """The 0.5% expansion bound, measured on the REAL CHIP rather than the
-    model."""
-    _need_chip()
-    project, bres = _auto_build_cached()
-    payload = PAYLOADS["random"]
-    got, _dev, stop = _encode_on_chip(project, bres, payload)
-    assert stop != "Deadlock", stop
-    growth = (len(got) - len(payload)) / len(payload)
-    assert growth <= 0.005, (
-        f"on chip, incompressible input expanded {growth * 100:.3f}%, "
-        "bound 0.5%")

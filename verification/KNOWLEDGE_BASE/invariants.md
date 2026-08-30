@@ -3766,3 +3766,105 @@ face rules that make a band sealable at all), INV-49 (check whether a
 "permutation" is a CONSTANT before paying for a computed destination — here it
 is, and that is why the load map has no freedom), INV-51 (a gap inside the
 footprint is a dead end).
+
+---
+
+## INV-NEXT — A MULTI-REGION panel is INV-33's overlap hazard at the memory tier; and a BRANCH whose predecessor is a `MOVE` reads STALE FLAGS
+
+*(Number to be assigned at landing — parallel builders cannot see each other's
+KB additions, and three numbering collisions have already happened.)*
+
+**Found 2026-08-30 building `LZ4EncoderBlock`, the first block to use TWO panel
+regions at once.** Two separable rules; the first is a substrate/toolchain
+hazard, the second is an ISA fact that is trivially avoidable once stated and
+completely invisible to every model-level gate.
+
+### 1. TWO REGIONS IN ONE PANEL MUST BE PROVEN DISJOINT. (toolchain — fixable, and now guarded)
+
+INV-31 introduced the panel as the memory tier and INV-47 as the place where a
+destination can be a DATA value. Both describe ONE table. A block that needs two
+— here the stored input (`address == byte position`) and a hash table — is
+partitioning a single 65536-word address space, and **`SramPanelDevice` wraps
+every address modulo its size** (`engine/sram_panel.py`, `addr % size_words`).
+
+**MEASURED:** with `window_words = 2**16` the hash table's base of 65536 aliased
+onto history address 0. The encoder then read hash slots as input bytes and
+produced a block that was **format-legal, the RIGHT LENGTH, and decoded to the
+WRONG payload.** Nothing raised. This is exactly the shape INV-33 describes for a
+cell whose state overlays its own instructions — an overlap that assembles,
+places, routes and returns a wrong answer silently — one tier up.
+
+**THE RULE:** a block declaring more than one panel region must (a) compute every
+region base from its own parameters, (b) REJECT in its constructor any
+combination whose regions do not fit disjointly in the panel, and (c) keep the
+region-base arithmetic in ONE cell, so the partition is checkable in one place
+rather than spread across every reader. In this block only the ADDR cell adds a
+base; no other cell ever holds an absolute panel address.
+
+**Corollary for `panel_requirements()`:** `words` must be the SUM of the regions,
+not the largest one. A short `words` under-allocates and the wrap returns.
+
+### 2. `MOVE` DOES NOT SET THE FLAGS. A branch after one reads whatever the last ALU op left. (hardware/ISA — permanent)
+
+This is stated in `PROGRAMMING_GUIDE.md` §4 ("The non-ALU ops — `HALT`, `MOVE`,
+`BR`, `WRITE`, `JUMP`, `LOAD` — do **not** touch the flags") and it is still the
+easiest defect to write, because the sequence *reads* like a test:
+
+```asm
+    MOVE R0, R{state:mat}     ; load the value...
+    BR.N  mzero               ; ...and branch on its sign   <-- WRONG
+```
+
+**MEASURED on a real chip**, twice in one block:
+
+* the TOKEN cell's `BR.N` read the stale `N` from a preceding `CMP mat, f15`,
+  which is negative for every `mat < 15`. The literals-only-tail path was
+  therefore taken for EVERY ordinary match: `lit=3 mat=1` emitted `0x30` for
+  `0x31`, `10/11` emitted `0xa0` for `0xab`, `14/14` emitted `0xe0` for `0xee`;
+* the length-run engine's caller dispatch used `BR.GE` after a `MOVE`, so which
+  caller it believed it had was whatever the last arithmetic left behind.
+
+**THE FIX IS FREE:** `SUB Rx, Rzero` both loads the accumulator AND sets the
+flags from the value itself, in one instruction — the same word count as the
+`MOVE` it replaces. The same trick gives a cheap "unconditional" local branch
+(INV-13 forbids a real `GOTO` near a `{write}`/`{jump}`): `SUB Rzero, Rzero` sets
+`Z`, and `BR.Z` after it always fires.
+
+**WHY IT MATTERS DISPROPORTIONATELY:** the Python model of a block has no flags,
+so **no model-level gate can see this class of defect at all** — not the golden,
+not the FSM twin, not a round-trip. Only the chip can. It is also silent: the
+program runs to completion, `stop_reason` is `"QueueEmpty"`, and the output is
+merely *wrong*.
+
+**THE CHEAP STATIC CHECK**, which needs no chip:
+
+```python
+code = [l.strip() for l in cp.assembly_template.splitlines()
+        if l.strip() and not l.strip().endswith(":")]
+for i, ln in enumerate(code[1:], 1):
+    if ln.startswith("BR.") and code[i - 1].startswith("MOVE"):
+        raise AssertionError(f"{ln} reads the flags of {code[i-1]!r}")
+```
+
+It over-reports where a label lets control arrive from elsewhere, so pair it with
+a per-block allowlist naming each exception and WHY the flags are known there —
+not with deletion.
+
+**SAY WHICH LAYER.** (1) is a toolchain/authoring contract; the wrap is real and
+correct hardware behaviour, what is missing is a guard, and this block now
+carries one. (2) is hardware/ISA and permanent.
+
+**REACH.** (1) measured on one block, but the mechanism is in the shared
+`SramPanelDevice` and applies to any block declaring more than one region. (2)
+measured twice on one block; the flag rule is in the ISA and applies to every
+cell program ever written.
+
+**Gated by:** `verification/tests/test_lz4_encoder.py` —
+`test_the_two_panel_regions_never_overlap` (the constructor guard, both
+directions) and `test_INV4_a_stale_flag_branch_in_the_token_cell_is_CAUGHT` (an
+INV-4 negative that re-introduces the real defect on chip and asserts the gate
+sees it).
+
+**Related:** INV-33 (the overlap contract this extends to the panel), INV-31 and
+INV-47 (the panel tier), INV-13 (no unconditional GOTO — the same flag-discipline
+family), INV-4 (both gates carry proven negatives).

@@ -788,6 +788,106 @@ def test_every_path_restores_the_resting_face():
             f"resting face ({resting}) at the TAIL, not at the head")
 
 
+#: The ALU ops that update the flags (PROGRAMMING_GUIDE §4). Everything else —
+#: ``HALT``, ``MOVE``, ``BR``, ``WRITE``, ``JUMP``, ``LOAD`` — leaves them alone.
+_FLAG_SETTERS = ("CMP", "SUB", "ADD", "AND", "OR", "XOR", "NOT", "SHL", "SHR",
+                 "ROL", "ROR", "MUL", "MAC", "SBC", "ADC", "MSU")
+
+#: Branch sites where the nearest flag-setting instruction is NOT the one whose
+#: result the branch is testing. Each entry must say WHY the flags are known
+#: good — this is an allowlist with reasons, never a suppression.
+_FLAG_ALLOWLIST = {
+    # TOKEN: `BR.GE lgot` / `BR.GE mgot` are reached only by falling through the
+    # NOT-LESS-THAN side of the immediately preceding `CMP …, f15`, so GE is
+    # known TRUE. They are "unconditional" local branches spelled with a flag
+    # that cannot be false — INV-13 forbids a real GOTO next to a
+    # {write}/{jump}, so this is the idiom.
+    (C_TOKEN, "BR.GE lgot"): "falls through the CMP lit,f15 not-less side",
+    (C_TOKEN, "BR.GE mgot"): "falls through the CMP mat,f15 not-less side",
+}
+
+
+def _flag_defects(progs):
+    """Branches whose nearest preceding FLAG-SETTING instruction is separated
+    from them by a ``{write:}``/``{jump:}``/``HALT``, or by nothing at all.
+
+    A ``MOVE`` between a flag setter and its branch is FINE and is a documented
+    idiom — ``MOVE`` preserves the flags, which is how "compute, store, branch on
+    the stored value" is written. What is NOT fine is a branch with no flag
+    setter before it in the same straight-line run.
+    """
+    bad = []
+    for cid, cp in progs.items():
+        code = [ln.strip() for ln in cp.assembly_template.splitlines()
+                if ln.strip() and not ln.strip().endswith(":")]
+        for i, ln in enumerate(code):
+            if not ln.startswith("BR."):
+                continue
+            setter = None
+            for j in range(i - 1, -1, -1):
+                prev = code[j]
+                if prev.startswith(_FLAG_SETTERS):
+                    setter = prev
+                    break
+                if prev.startswith(("MOVE", "BR.")):
+                    # MOVE preserves the flags; a preceding BRANCH does too, and
+                    # a chain of branches on one CMP is the two-way dispatch
+                    # idiom (`BR.GE tail` / `BR.LT issue` off a single compare).
+                    continue
+                break                  # HALT, WRITE or JUMP: the run ends
+            if setter is None and (cid, ln) not in _FLAG_ALLOWLIST:
+                bad.append((cid, ln, code[i - 1] if i else "<entry>"))
+    return bad
+
+
+def test_no_branch_reads_the_flags_of_a_MOVE():
+    """``MOVE`` does NOT set the flags on this ISA (PROGRAMMING_GUIDE §4), so a
+    branch reached with no flag-setting instruction before it reads whatever the
+    last ALU operation anywhere left behind.
+
+    MEASURED on chip, twice in this block. The TOKEN cell loaded the match length
+    with ``MOVE R0, R{state:mat}`` and branched on N; the stale N came from the
+    preceding ``CMP mat, f15``, which is negative for every ``mat < 15``, so the
+    literals-only-tail path was taken for EVERY ordinary match and the token's
+    match nibble came out 0 — lit=3 mat=1 emitted 0x30 for 0x31, 10/11 emitted
+    0xa0 for 0xab, 14/14 emitted 0xe0 for 0xee. The length-run engine's caller
+    dispatch had the same shape.
+
+    NO MODEL-LEVEL GATE CAN SEE THIS, because the model has no flags. The static
+    check is free, so it runs here.
+    """
+    bad = _flag_defects(_progs())
+    assert not bad, (
+        "branches with no flag-setting instruction before them:\n"
+        + "\n".join(f"  cell {c}: {br!r} (preceded by {prev!r})"
+                    for c, br, prev in bad))
+
+
+def test_INV4_the_stale_flag_checker_sees_a_planted_defect():
+    """The negative for the check above: plant the exact shape the chip caught
+    and assert the checker reports it, while the legitimate
+    compute-store-branch idiom stays clean."""
+    from gr_kyttar.placement.block import CellProgram, EntryPoint, Port
+
+    def prog(body):
+        return {0: CellProgram(inputs=[Port("x")], outputs=[Port("y")],
+                               entries=[EntryPoint("go")],
+                               assembly_template="go:\n" + body)}
+
+    # the DEFECT: a jump resets the run, then a bare MOVE, then a branch
+    assert _flag_defects(prog("    {jump:y}\n"
+                              "    MOVE R0, R1\n"
+                              "    BR.N away\n"
+                              "away:\n"
+                              "    HALT\n"))
+    # the IDIOM: SUB sets the flags, MOVE preserves them, the branch is valid
+    assert not _flag_defects(prog("    SUB R1, R2\n"
+                                  "    MOVE R1, R0\n"
+                                  "    BR.N away\n"
+                                  "away:\n"
+                                  "    HALT\n"))
+
+
 def test_panel_requirements_name_five_distinct_roles():
     b = LZ4EncoderBlock("enc")
     req = b.panel_requirements()

@@ -9,6 +9,92 @@ block-specific gotcha. Promote anything that generalizes across block classes in
 and superseded material merged into the surviving entries; no durable lesson was
 dropped) — append new entries above the oldest ones as before.
 
+## LZ4EncoderBlock — a COMPRESSOR's gate is an INDEPENDENT decoder, and the panel's address space has INV-33's overlap hazard  2026-08-30
+
+The DSP is verified: ten payload classes round-trip, the reference **C** decoder
+(`lz4.block`, which this repository did not write) accepts every block, and
+incompressible data expands **0.45 %** against a 0.5 % bound. The per-cell chip
+layer is green on real `simkyt`. What is NOT yet done is the whole placed design
+— see the open gap at the end. Six things are worth keeping.
+
+**1. FOR A COMPRESSOR, "matches the reference output" IS THE WRONG GATE.** LZ4
+does not specify which block a compressor must emit; many are legal for the same
+input, and the reference C compressor's choices depend on its own hash and its
+own heuristics. What the format DOES specify is that a conformant decoder
+recovers the input exactly. So the bar here is `decode(encode(x)) == x` under the
+published golden **and** under an implementation nobody here wrote. The second
+half is not ceremony: pairing our encoder against our own `LZ4DecoderBlock` makes
+the two self-consistent and possibly both wrong, and the byte-order mutant below
+is exactly the defect that survives such a pairing — swap the endianness in both
+and every round-trip still passes.
+
+**2. INV-33's OVERLAP HAZARD LIVES IN THE PANEL'S ADDRESS SPACE TOO.** This is
+the first block to use TWO panel regions at once: the stored input at
+`address == position`, and a hash table above it. `SramPanelDevice` wraps every
+address modulo its size, so with `window_words = 2**16` the table based at 65536
+aliased straight onto history address 0. **Measured: the encoder read hash slots
+as input bytes and produced a block that was still format-legal and still the
+RIGHT LENGTH, and decoded to the WRONG payload.** Not a crash, not a short
+output — a silent wrong answer, which is precisely what INV-33 describes for a
+cell. The constructor now rejects any combination whose regions do not fit
+disjointly, and the default window is `2**15`.
+
+**3. A MEASURED DEAD END: DO NOT BUILD THE HASH TABLE DURING THE INGEST PASS.**
+The obvious two-pass split is "pass 1 stores AND hashes, pass 2 matches". It
+destroys compression outright — a repetitive payload went from **−89 % to
++0.74 %**. The table then holds the LAST occurrence of every 4-gram, so by the
+time pass 2 reaches position `i` the candidate is almost always AHEAD of `i` and
+has to be rejected. The insert belongs at the position being encoded, exactly
+where the spec's single-pass loop puts it. Pass 1 stores and nothing else.
+
+**4. THE CHIP FOUND A DEFECT NO MODEL COULD.** `MOVE` does not set the flags on
+this ISA. The TOKEN cell loaded the match length with `MOVE R0, R{state:mat}` and
+branched on `N`; the stale `N` came from the preceding `CMP mat, f15`, which is
+negative for every `mat < 15`. So the literals-only-tail zeroing path was taken
+for EVERY ordinary match and the token's match nibble came out 0 in all of them.
+**Measured on chip: lit=3 mat=1 emitted 0x30 for 0x31; 10/11 emitted 0xa0 for
+0xab; 14/14 emitted 0xe0 for 0xee.** The Python model has no flags, so no
+model-level gate can see this class of bug at all; the fix is free (`SUB mat,
+zero` both loads the accumulator and sets the flags). The same defect was found
+independently in the length-run engine's caller dispatch, whose `BR.GE` also read
+a `MOVE`'s flags. **Rule: on this substrate, treat "a branch whose preceding
+instruction is a MOVE" as a defect on sight.**
+
+**5. A MUTATION MUST BE PROVEN TO CHANGE THE OUTPUT, NOT JUST PROVEN TO COMPILE.**
+The spec asks for a "match of length 3" mutant. Written the obvious way — lower
+the MINMATCH threshold from 4 to 3 — it is a **no-op**, and a careless gate reads
+that as a pass. The reason is structural and worth recording: the candidate comes
+from a hash of the FOUR bytes at `i`, so either all four match (`k >= 4`) or the
+hash collided and byte 0 already differs (`k == 0`). **Measured run-length
+histograms over three payloads: `{4:1, 5:1, 486:1}`, `{0:14, 80:1}`,
+`{0:1, 4:1, 12:1, 14:1, 298:1}` — never 1, 2 or 3.** The mutant has to TRUNCATE a
+real match to three instead. That is INV-4 applied to the mutant itself, and the
+suite now carries a coverage gate asserting each defect changes the output on at
+least one payload.
+
+**6. A BUG IN THE SHIPPED DECODER SUITE'S OWN STIMULUS.** `test_lz4_decoder.py`
+builds its "random" payload as
+`bytes(random.Random(SEED).randrange(256) for _ in range(2000))`. That re-seeds a
+FRESH generator on every element, so it yields 2000 copies of ONE byte —
+maximally compressible, the exact opposite of the incompressible case it is
+named for. One generator drawn 2000 times is the fix; this suite does it that
+way and says why.
+
+**THE OPEN GAP, and its layer.** The whole-design gates are RED. The
+self-contained panel template rejects the fold with `egress corridor from enc is
+blocked by its own cells`. The egress corridor runs from the egress cell NORTH up
+its whole column to row 0 and then EAST to `x16_out`, so none of the block's own
+cells may sit on either leg — and an earlier fold checker modelled only "is there
+a free cell on the output cell's walk", which passed a fold the template then
+rejected. **LAYER: block FOLD — fixable, not a substrate or ISA wall.** The
+per-cell programs all resolve inside 32 words, every internal edge delivers under
+the real forwarding rule, there are no head-on resting-face pairs, and the block
+places and DRCs clean; what is unsolved is a placement that ALSO leaves both
+corridor legs clear. Two measurements bound the search: a merged ADDR+RET cell
+(which would remove five of the 32 edges) is **41 instructions against 31 words**,
+so the split is forced; and 14 cells over rows 10-11 is exactly 14 slots, so that
+shape has no positional slack at all.
+
 ## ChaCha20KeystreamBlock — the emission-order fix is at the COLLECTOR, and it misses this fold by exactly three words 2026-08-29
 
 Sixth pass. The block arrives functionally correct — all sixteen RFC 8439 §2.3.2

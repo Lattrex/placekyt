@@ -3769,15 +3769,26 @@ footprint is a dead end).
 
 ---
 
-## INV-NEXT — A MULTI-REGION panel is INV-33's overlap hazard at the memory tier; and a BRANCH whose predecessor is a `MOVE` reads STALE FLAGS
+## INV-NEXT — Five silent failures a placed panel-backed block can have: a multi-region panel, a stale-flag branch, a stale FACE constant, an input landing off cell 0, and a fold whose edges all deliver but slowly
 
 *(Number to be assigned at landing — parallel builders cannot see each other's
 KB additions, and three numbering collisions have already happened.)*
 
 **Found 2026-08-30 building `LZ4EncoderBlock`, the first block to use TWO panel
-regions at once.** Two separable rules; the first is a substrate/toolchain
-hazard, the second is an ISA fact that is trivially avoidable once stated and
-completely invisible to every model-level gate.
+regions at once.** Five separable rules, grouped because they share one property
+that makes them expensive: **every one of them places, routes, DRCs clean and
+BUILDS, and then does the wrong thing without raising anything.** Three are
+invisible to any model-level gate; two are invisible to the static layout checks
+as well. Each is stated with what it was measured to cost.
+
+Quick index:
+1. two panel regions that alias → a wrong answer of the RIGHT LENGTH;
+2. a branch with no flag-setter before it → the wrong branch, silently;
+3. an in-program FACE constant that outlived its fold → a run-time head-on
+   deadlock the layout check cannot see;
+4. an input landing that resolves off cell 0 → the whole first pass is a no-op;
+5. a fold where every edge delivers but the walks are long → saturation, not
+   deadlock.
 
 ### 1. TWO REGIONS IN ONE PANEL MUST BE PROVEN DISJOINT. (toolchain — fixable, and now guarded)
 

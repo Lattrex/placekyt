@@ -3,7 +3,7 @@
 
 # Kyttar block library — status
 
-**117 verified · 1 in progress · 120 targeted.** Each Kyttar block is verified as a drop-in equivalent of its GNU Radio Companion counterpart (same parameters, output matching within Q15 quantization). “Quality” is the measured error of the verified block versus the GNU Radio reference.
+**118 verified · 0 in progress · 120 targeted.** Each Kyttar block is verified as a drop-in equivalent of its GNU Radio Companion counterpart (same parameters, output matching within Q15 quantization). “Quality” is the measured error of the verified block versus the GNU Radio reference.
 
 > **Reading the quality column.** `err N / tol M LSB` — the worst-case sample error (`N`) against the derived pass threshold (`M`), in Q15 **LSBs** (1 LSB = 1/32768 of full scale ≈ 3.05e-5); pass requires `N ≤ M`. `−X dB SNR` — the **NMSE**: the error power is `X` dB below the signal power (more negative = quieter; Q15's floor is ≈ −90 dB). Decision blocks report **BER** instead. To estimate a chain's total noise, convert each block's dB to linear power (`10^(dB/10)`), sum, and convert back (`10·log10`) — the noisiest stage dominates.
 
@@ -126,9 +126,9 @@
 | **ChirpSyncBlock** | `(Python golden: K-consecutive-equal-argmax preamble run detector)` | 3 · new GRC block | ✅ done | err 0 / tol 0 LSB | edge rand×3 sweep×4 mut |
 | **FeaturePairJoinBlock** | `(placeKYT-native: ordered two-word rendezvous; no GR counterpart)` | 3 · new GRC block | ✅ done | err 0 / tol 0 LSB | edge rand×3 mut |
 | **LZ4DecoderBlock** | (Kyttar-native, no single GR block) | 3 · new GRC block | ✅ done | err 0 / tol 0 LSB | mut |
+| **LZ4EncoderBlock** | (Kyttar-native, no single GR block) | 3 · new GRC block | ✅ done | err 0 / tol 0 LSB | mut |
 | **ChaCha20KeystreamBlock** | (Kyttar-native, no single GR block) | 3 · new GRC block | 🚧 needs human (quarantined) | — | — |
 | **Poly1305MACBlock** | (Kyttar-native, no single GR block) | 3 · new GRC block | ⬜ planned | — | — |
-| **LZ4EncoderBlock** | (Kyttar-native, no single GR block) | 3 · new GRC block | 🟡 in progress | — | — |
 
 **Tiers** reflect verification difficulty (the build order): tier 1 = feed-forward, tier 2 = stateful/loop, tier 3 = new block to build. **🧪 proof-of-concept** blocks exist and work in a demo (e.g. the coherent BPSK receiver) but have NOT yet been through per-block GNU Radio equivalence verification — treat them as demo-quality, not drop-in-verified. **Won't-map** blocks are GRC blocks that do not translate to the Kyttar fabric (with a reason in the manifest).
 

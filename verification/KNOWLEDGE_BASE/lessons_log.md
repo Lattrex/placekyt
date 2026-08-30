@@ -9,6 +9,107 @@ block-specific gotcha. Promote anything that generalizes across block classes in
 and superseded material merged into the surviving entries; no durable lesson was
 dropped) — append new entries above the oldest ones as before.
 
+## LZ4EncoderBlock — DONE (pass 2): the pass-1 diagnosis was wrong twice, and an exec-count trace found the truth in one run 2026-08-30
+
+**Headline: the scan loop never had a hop problem. It had two program
+omissions and, behind them, two panel-port protocol wedges — every one found
+by MEASURING, three of them contradicting something pass 1 wrote down.** The
+block is done: 12 payload classes (0..2000 bytes, incompressible random and a
+failed-MINMATCH stress payload included) byte-exact against the model on the
+auto-placed+routed+built chip, round-tripping under the golden decoder and
+ACCEPTED by the independent reference C decoder; 109 tests, 0 skips; three
+new ON-CHIP INV-4 mutants each proven to fire.
+
+**1. The trace method that paid for everything.** `chip.enable_trace()` +
+`Counter(e["cell_id"] for e in trace if e["kind"] == "exec_tick")`, compared
+against the model's expected per-cell counts, localised each failure in ONE
+run. Pass 1's story ("the 12-cell ring saturates the event budget; RET's
+to_hash is mis-sized and walks out of the footprint") died on the first
+trace: to_hash at hop 11 landed EXACTLY on HASH, and the EventLimit was an
+infinite re-probe of position 0 — RET dispatched 1596 times, HASH executed
+1066, MATCH executed ONCE (its setstop delivery), the panel returned the same
+four bytes and the same empty slot forever. Two causes, both invisible to
+every static and tail-path gate: the no-candidate miss path jumped `seq.step`
+with NO `i += 1`, and NO cell ever issued the model's hash-table INSERT
+(`pw(ht_base+h, i+1)` had no on-chip counterpart at all — INV-61 clause 5's
+"the insert must happen at the position being encoded" was written down and
+still not wired).
+
+**2. The fix direction the dispatch prescribed ("shrink the graph") landed as
+geometry, not edge count.** The graph still has 36 distinct cell-pair edges
+and the fold is still a 12-cell ring — ON PURPOSE: the scan is a genuine
+cycle (issue -> read -> return -> dispatch -> issue), and the panel's
+push-read return closes it EXTERNALLY, so a ring is the shape that gets the
+back edge for free. What changed is WHICH edges get the long arcs: the ring
+is ordered so every per-position edge rides a 1-6 hop walk (RET->HASH 6,
+SEQ->VERIFY 1, HASH->ADDR 1 by abutment, VERIFY->SEQ miss 1 by a west flip,
+ADDR->RET setph 5 against a measured ~570ns round trip) and the per-sequence
+formatter edges take the 7-11 hop arcs. Frequency-weighting is now a GATE
+(`test_the_fold_is_FREQUENCY_WEIGHTED_hot_edges_are_short`), not a score.
+
+**3. The hash-table port (INS) — the block's new mechanism, and three
+measured wedges on the way to it.** The insert needs an addressed panel
+write; the controller cell cannot host it (re-measured: every merged shape
+is 28-34 instructions against a 22-instruction budget). So INS is a 15th
+cell at the ONLY other slot that can reach the port corner (directly above
+the controller, resting into it — and itself feedable ONLY by its west
+neighbour's flip, which is why HASH carries the whole hand-off and why the
+slot return CANNOT carry a phase). Three designs were measured:
+
+* controller entries (lookup+set_addr+write, three jumps per activation):
+  WEDGED — the follow-on words arrive while the controller is stalled
+  mid-port-burst on the held ack; n=492 died at position 3, n=416 completed,
+  identical program;
+* raw panel words with the commit right after the read trigger: WEDGED at
+  position 125 — the slot's return spawns the match engine's first read
+  while the commit pair is still stalling through the port;
+* raw panel words with the commit DEFERRED to the next probe: CORRECT, and
+  model-exact by construction — the panel-visible order is still
+  `read a_p, write a_p, read a_p+1`. The final probe's commit never lands;
+  nothing reads the table after the scan, and the gate says so.
+
+The raw-protocol idiom itself: INS emits literal `WRITE @2,reg`/`JUMP @2,trig`
+words that TRANSIT the programmed controller cell out the port; R5 persists
+and R3/R4 are refreshed by every controller read, so the whole
+lookup+deferred-insert is 6 port words / 11 instructions.
+
+**4. The return-count dispatch.** RET tells the scan's fifth read (the slot)
+from the four hash bytes by COUNTING ph==0 returns (seeded 5, reseeded at
+dispatch), because the table port has no walk to RET. Gated by an on-chip
+mutant seeded at 4 — which on a mostly-literal payload produces the CORRECT
+block (the degraded all-literal output equals the model!), so the mutant
+names a compressible payload. Same family as INV-46 rule 5: pick mutants that
+actually change the output.
+
+**5. The harness lesson: the panel bridge can drop an ack release on a
+`run(max_events)` boundary.** Chip idle, `any_panel_ack_pending()` True, the
+DEVICE already holding the captured word, the controller stalled mid-burst
+forever. Sweeping max_events (256/257/1024/8192/65536) MOVED the wedge —
+boundary phase, not program. The pump now re-issues `release_output_ack`
+when idle with an ack pending, the same recovery `PanelDriver.step` carries;
+it is lossless because the capture already reached the device.
+
+**6. Dead theory, recorded so nobody re-chases it:** the setph race (the
+phase write racing the panel return) was measured SAFE — 8 hops of setph beat
+the return by ~450ns under full livelock congestion in the pass-1 trace, and
+the new fold's 5-hop setph has more margin still. And the backward-write
+register-collision hazard (INV-33's patcher clause) turned out not to bite
+here: `_apply_internal_feedback` SKIPS a backward edge whose dst is an
+unpinned input port (`p.register is None` -> no patch), so only
+state-targeted backward writes (SEQ->VERIFY.i) are patched — first-match
+order still checked, and the ids were renumbered so all three backward JUMPS
+(SEQ->FRAME, LENRUN->LITS, SEAL->FRAME) stay single-and-highest (INV-53).
+
+**Numbers.** 15 cells (was 14; +INS, the second panel client — the first
+block with two). 36 distinct cell-pair edges before AND after (the shrink
+was in hop-weighted cost, not edge count): the per-read hot cycle went from
+~24 transit hops (RET->HASH alone was 11, x4 per position) to ~8. Suite: 109
+passed / 0 skipped (was 83/9); on-chip byte-exact 12/12 payload classes;
+random 2000B expands 0.45% on chip vs the 0.5% format bound; repetitive
+compresses to 10.7% on chip. placekyt/tests 1219 passed, placement 364
+passed, GRC binding + saturation + legality suites green, engine and router
+untouched.
+
 ## ChaCha20KeystreamBlock — the release does not have a JUMP bug; it DEADLOCKS 2026-08-29 (pass 8)
 
 **Headline: pass 7's diagnosis was wrong, and the evidence it said was missing

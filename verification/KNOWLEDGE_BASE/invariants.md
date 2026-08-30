@@ -4431,6 +4431,159 @@ that re-introduces the real defect ON CHIP and asserts the gate sees it),
 `test_the_portmap_resolves_the_external_ports_to_the_right_cells`, and
 `test_every_cell_fits_a_32_word_cell` (which now checks the INPUT registers too).
 
+### CORRECTED 2026-08-30 (the block's second pass) — clause 5's DIAGNOSIS of the
+### scan-loop failure was wrong, though its method survived
+
+Clause 5's failure story ("the per-byte inner loop saturates the event budget";
+elsewhere recorded as "RET's `to_hash` is sized 11 and walks out of the block's
+footprint") was **disproven by an execution trace on the same build**:
+
+* `to_hash` at hop 11 landed EXACTLY on HASH — the ring walk was sized right
+  and delivered right (the trace shows `hop_cnt=31 action=execute_locally` at
+  the HASH cell after eleven forwards);
+* the `EventLimit` was not saturation. It was an INFINITE RE-PROBE of position
+  0: the same four bytes and the same empty table slot, forever (RET dispatched
+  1596 times; MATCH executed ONCE — that one execution was its `setstop`
+  delivery). Two PROGRAM OMISSIONS caused it, both invisible to every static
+  gate because the tail path never runs them: the no-candidate miss jumped
+  `seq.step` with **no `i += 1`** (the model's advance had no on-chip
+  counterpart), and **no cell ever issued the hash-table INSERT** — the model's
+  `pw(ht_base + h, i + 1)` simply was not wired, so every probe read EMPTY.
+
+**What still stands, verbatim:** the fold-method rule (weight edges by firing
+frequency; rare edges can be long), the measured annealing dead end, and the
+hub analysis. The second pass's fold applies it — the per-position edges ride
+1–6 hop walks and the per-sequence formatter takes the long arcs — and the
+suite pins the bounds (`test_the_fold_is_FREQUENCY_WEIGHTED_hot_edges_are_short`).
+**The lesson the correction adds:** an `EventLimit` with plausible long hops in
+sight invites a COST story, and a cost story cannot be told apart from a
+non-termination story without counting EXECUTIONS PER CELL against the model's
+expected counts — which the trace gives in one run (`enable_trace()` +
+a Counter over `exec_tick` events). Both program omissions are re-introduced as
+ON-CHIP INV-4 mutants in the block's suite and proven caught.
+
 **Related:** INV-33 (the overlap contract this extends to the panel), INV-31 and
 INV-47 (the panel tier), INV-13 (no unconditional GOTO — the same flag-discipline
 family), INV-4 (both gates carry proven negatives).
+
+### CORRECTED 2026-08-30 addendum — see the correction block above the gate list
+### for what clause 5's failure diagnosis got wrong and what survived.
+
+## INV-NEXT — The panel-port corner has exactly TWO reachable client slots; a second client can speak the RAW panel protocol THROUGH the controller if its commits are DEFERRED one transaction; and the panel bridge can drop an ack release on a run boundary
+
+*(Number to be assigned at landing — parallel builders are running.)*
+
+**Found 2026-08-30 finishing `LZ4EncoderBlock` (its second pass), the first
+block with TWO on-chip panel clients.** Every claim is measured on a real
+placed + routed + built chip; the wedges each name the payload length that
+produced them, because the same program passed at other lengths.
+
+### 1. A pinned port-corner controller is reachable from exactly two slots. (geometry — permanent for this chip shape)
+
+The `x1_out` controller sits in the fabric's corner. A word reaches it only if
+some cell's face points AT it, and a word transiting any other cell leaves on
+that cell's own face (INV-48) — so the client slots are exactly:
+
+* the abutting same-row cell, emitting on a FACE FLIP toward it; and
+* the cell DIRECTLY ABOVE it, resting toward it.
+
+And the above-slot is itself **fed only by its west neighbour's flip**: every
+walk that could arrive there from elsewhere is forwarded away first (checked
+over every face of every other cell of the fold). Consequences that shaped this
+block: the hash-table port cell (INS) is pinned at the above-slot, its ONLY
+trigger source is the cell west of it (HASH), and nothing else — not the
+return cell, not the sequencer — can ever reach it. A design that needs a
+trigger into that corner from anywhere else does not have a routing problem;
+it has an impossible edge, and must restructure (here: HASH carries the whole
+table hand-off, and the return needs no phase — see 4).
+
+### 2. A block cell may speak the RAW panel register protocol through the controller. (protocol idiom — measured)
+
+The above-slot client emits literal `WRITE @panel_hop+1, <panel reg>` /
+`JUMP @panel_hop+1, <trigger>` words. They TRANSIT the programmed controller
+cell — a transiting word is forwarded on the cell's face, straight out the
+port; only a LANDING word executes — and the port serializes them in emission
+order. Three register-file facts make the client small:
+
+* the panel's R5 (address) persists until rewritten;
+* R3/R4 (the push-read descriptors) are rewritten by EVERY controller read
+  with the same build-time constants, so a client that only ever runs after
+  at least one controller read never writes them;
+* a read followed by a commit at the SAME address needs no second R5 write.
+
+Measured: `LZ4EncoderBlock`'s table client does lookup + insert in 6 port
+words and 11 instructions, byte-exact across 12 payload classes. The
+controller executes NOTHING for table traffic — which is the point, see 3.
+
+### 3. NEVER leave protocol words in flight when a push-read's return can spawn new port traffic — DEFER the commit. (authoring contract — measured twice)
+
+Two wedges, same shape, different distances:
+
+* routing the table transaction through the controller's own entries
+  (`lookup` then `set_addr` then `write`, three jumps from one activation)
+  wedged when the second jump's words arrived while the controller was
+  stalled MID-PORT-BURST on the lookup's held-ack handshake — n=492 died at
+  scan position 3 while n=416 completed, the identical program;
+* emitting the commit pair right after the raw read trigger wedged when the
+  slot's RETURN (→ dispatch → a HIT → the match engine's first read) reached
+  the controller while the commit words were still stalling through the
+  held-ack port — n=492 died at position 125, every smaller case passed.
+
+**The rule:** after a client issues a read trigger it must emit NOTHING until
+the read's return has been consumed. A commit that must follow a read of the
+same address is DEFERRED to the head of the client's NEXT transaction — which
+preserves the panel-visible order exactly (`read a_p, write a_p, read a_p+1`
+is the model's own sequence), at the cost of the FINAL transaction's commit
+never landing (harmless when nothing reads the region after the loop ends —
+say so and gate it). The deferred client then has a natural quiescent gap of
+a full round trip between its bursts.
+
+### 4. A deterministic read schedule can replace a phase wire. (design idiom)
+
+The block's single push-read return point told MATCH/LITS reads apart by an
+explicit phase the history port writes — but the table client CANNOT write a
+phase (clause 1: it has no walk to the return cell). The scan's schedule is
+rigid — every position is exactly four history reads then one table read,
+single-threaded, single-outstanding — so the return cell COUNTS: ph==0
+returns decrement a counter seeded 5; the fifth is the slot; dispatching it
+reseeds. Self-repairing (reseeded at the identified element), and cheaper
+than the wire it replaces. The count seed is gated by an on-chip INV-4 mutant
+(seed 4: the fourth history byte dispatches as the slot; caught byte-exact on
+a compressible payload — on a mostly-literal payload the degraded all-literal
+output EQUALS the model and proves nothing, which is why the mutant names its
+payload).
+
+### 5. The in-fabric panel bridge can DROP an ack release on a run boundary. (simulator layer — recover in the harness)
+
+With `chip.register_panel(...)` (the self-pumping API), a
+`chip.run(max_events=N)` boundary landing inside a port-capture window can
+leave the held ack unreleased forever: the chip drains to QueueEmpty
+mid-burst with `any_panel_ack_pending()` True, while the DEVICE already holds
+the captured word (its register file shows it). Evidence it is the boundary:
+sweeping `max_events` over 256/257/1024/8192/65536 MOVED the wedge (8192
+produced 56 bytes before wedging; the others zero). Recovery, lossless
+because the capture already reached the device: when the chip is idle with a
+panel ack pending, `release_output_ack(<panel out port>)` — the exact
+recovery `PanelDriver.step` carries for its own missed-capture timing window.
+Layer: the closed simulator binary's bridge; the harness idiom is the fix
+available to a block suite.
+
+**SAY WHICH LAYER.** (1) is chip-shape geometry plus INV-48 — permanent for
+the corner-pinned panel template. (2) and (3) are protocol/authoring idioms on
+permanent substrate behaviour. (4) is a design idiom. (5) is a simulator
+bridge defect, recoverable in the harness.
+
+**REACH.** All measured on one block (the first two-client panel block), but
+(1) is forced by the port geometry for every panel-backed block, (3)'s rule is
+the panel protocol itself, and (5) was reproduced at will by the max_events
+sweep and is independent of this block's program.
+
+**Gated by:** `verification/tests/test_lz4_encoder.py` — the
+frequency-weighted fold gates, the three ON-CHIP INV-4 mutants
+(`test_INV4_ONCHIP_*`), the byte-exact whole-design gates over 12 payload
+classes, and the independent-decoder acceptance gate.
+
+**Related:** INV-48/INV-52 (the forwarding and face rules clause 1 follows
+from), INV-31/INV-47 (the panel tier), INV-61 (the same block's first-pass
+hazards, and the corrected diagnosis), INV-56 (read stop_reason first — this
+pass adds "and count executions per cell against the model").

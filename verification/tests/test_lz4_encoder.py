@@ -1051,6 +1051,36 @@ def test_KNOWN_GAP_the_fold_is_a_closed_ring():
         f"ring period {period}; this gate pins the measured shape (12)")
 
 
+def test_KNOWN_GAP_the_edge_graph_has_hubs_that_force_long_walks():
+    """Why the ring cannot be fixed by re-folding, measured as degrees.
+
+    A fold score that asks only "does this edge deliver?" accepts a RING, because
+    a ring delivers everything eventually. Adding a max-hop term is the obvious
+    fix and it was tried: over ~500 annealing restarts across three slot shapes
+    at K = 6 and K = 7, the best fold still needed ELEVEN hops for some edge. The
+    long walks are forced by the EDGE GRAPH, not by a weak search.
+
+    This test records the degrees that force them, so the next pass attacks the
+    graph instead of the layout. It fails when the graph is simplified — which is
+    the intended fix.
+    """
+    b = LZ4EncoderBlock("enc")
+    edges = sorted({(s, d) for s, _sp, d, _dp in b.internal_connections()}
+                   | {(s, d) for s, _sp, d, _dp in b.internal_jumps()})
+    outdeg, indeg = {}, {}
+    for s, d in edges:
+        outdeg[s] = outdeg.get(s, 0) + 1
+        indeg[d] = indeg.get(d, 0) + 1
+    hubs = sorted([c for c in set(outdeg) | set(indeg)
+                   if max(outdeg.get(c, 0), indeg.get(c, 0)) >= 4])
+    assert len(edges) >= 30 and hubs, (
+        "THE EDGE GRAPH WAS SIMPLIFIED — re-run the fold search with the max-hop "
+        f"term; it may now find a serpentine ({len(edges)} edges, hubs {hubs})")
+    # the panel port and its return are the worst, and that is the lever
+    assert indeg.get(C_ADDR, 0) >= 4, "ADDR is no longer a hub"
+    assert outdeg.get(C_RET, 0) >= 4, "RET is no longer a hub"
+
+
 def test_INV4_the_head_on_gate_catches_a_forced_pair():
     """The negative for the gate above. Point two abutting cells at each other
     and assert the check SEES it — otherwise the green result certifies nothing."""
@@ -1494,6 +1524,15 @@ def _encode_on_chip(project, bres, raw_bytes, idle_max=60, budget=20000):
             st = chip.run(max_events=256)
             if isinstance(st, dict):
                 state["stop"] = st.get("stop_reason", state["stop"])
+                # BAIL OUT ON A DEADLOCK IMMEDIATELY (INV-56 clause 1). A wedged
+                # chip keeps returning events while its deadlock detector churns,
+                # so a driver that only watches the output count spins for
+                # minutes on what `stop_reason` reports in one call. Measured:
+                # re-introducing this block's OUT-face defect made an unbounded
+                # pump hang; with this bail-out the gate FAILS in a second and
+                # names the cause.
+                if state["stop"] == "Deadlock":
+                    return
             got = chip.read_port_words_timed("x16_out")
             if got:
                 idle = 0

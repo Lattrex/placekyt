@@ -3908,13 +3908,45 @@ failure appears only at build time as `No register space for input 'x'`. Pack
 data addresses with NO GAPS (state auto-allocates above `max_data_address`, so a
 hole below it is lost) and put the input count in the budget gate.
 
+### 5. "EVERY EDGE DELIVERS" IS NOT ENOUGH — WEIGHT EDGES BY HOW OFTEN THEY FIRE. (fold method)
+
+A fold score that asks only *"does this edge reach its target?"* accepts a RING,
+because a ring delivers everything — eventually, at up to `ring_length − 1` hops.
+INV-51 clause 1 already says a ring traps its interior; the sibling cost is that
+**a ring turns every hop into modular arithmetic**, so two physically ADJACENT
+cells can be 11 hops apart and the router will correctly compute 11. Under a
+per-sample inner loop those long-haul words saturate the ring and the block runs
+to `stop_reason == "EventLimit"` with no output — produced, not wedged.
+
+**MEASURED, including the negative result.** Adding a max-hop term to the fold
+score (penalise any edge over K hops) is the obvious fix and it is NOT
+sufficient: over ~500 annealing restarts across three slot shapes at K = 6 and
+K = 7, `LZ4EncoderBlock`'s best fold still needed **11 hops** for some edge. The
+long walks are forced by the EDGE GRAPH — 36 distinct cell-pair edges over 14
+cells with four 4-way hubs — not by a weak search.
+
+**THE RULE:** when a fold will not shorten, stop re-folding and **shrink the
+graph**. Count each cell's in- and out-degree first; a cell written by five
+others or writing four is a hub, and hubs are what force long walks. Then:
+
+* **weight the score by FIRING FREQUENCY.** A per-sample inner-loop edge and a
+  once-per-frame setup edge are not equally important, and treating them alike is
+  what lets a search "solve" the wrong problem;
+* **push a dispatch INTO its consumers.** A cell that exists only to fan one
+  arriving word out to N consumers has N expensive edges; if each consumer can
+  decide for itself whether the word is its own, that collapses to ONE broadcast
+  walk. This is INV-46's "prefer more cells doing less" applied to EDGES rather
+  than to instructions;
+* **check whether two cells can merge** — but MEASURE it: the merge that would
+  have removed five of these 36 edges is 41 instructions against 31 words.
+
 **SAY WHICH LAYER.** (1) is a toolchain/authoring contract; the wrap is real and
 correct hardware behaviour, what is missing is a guard, and this block now
 carries one. (2) is hardware/ISA and permanent. (3) is an authoring contract —
 the substrate behaviour is correct, the constant was stale. (4) is toolchain, in
 `bus_router._target_input_cell` and the PortMap derivation; it is fixable there
 (resolve the named port against every cell) and is a block-authoring contract
-until then.
+until then. (5) is fold METHOD.
 
 **REACH.** (1) measured on one block, but the mechanism is in the shared
 `SramPanelDevice` and applies to any block declaring more than one region. (2)

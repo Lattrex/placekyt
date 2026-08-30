@@ -163,14 +163,40 @@ adjacent neighbour may be 1 hop or 11 depending on which way the faces run, and
 the router will correctly compute 11.** A serpentine has free ends and short
 hops both.
 
-**LAYER: block FOLD — fixable, not a substrate or ISA wall. THE NEXT PASS SHOULD
-RE-FOLD AS A SERPENTINE, NOT SEARCH HARDER.** Add "no cell may be more than K
-hops from any of its targets" to the fold score (K ≈ 4), which forbids the ring
-by construction; the current search only asked whether an edge DELIVERS, and a
-ring delivers everything eventually. Two measurements bound that search: a merged
-ADDR+RET cell (which would remove five of the 36 edges) is **41 instructions
-against 31 words**, so the split is forced; and 14 cells over rows 10-11 is
-exactly 14 slots, so that shape has no positional slack at all.
+**LAYER: block FOLD — fixable, not a substrate or ISA wall.** The obvious next
+move is "re-fold as a serpentine", and it was tried: the fold search was given a
+MAX-HOP term (penalise any edge needing more than K hops), which forbids a ring
+by construction where the previous score only asked whether an edge DELIVERS —
+and a ring delivers everything eventually.
+
+**MEASURED, and this is the useful negative result: it does not help.** Over
+~500 annealing restarts across three slot shapes with K = 6 and K = 7, the best
+fold still needs **11 hops** for some edge (best cost 18, worst hop 11; the
+zero-cost folds found WITHOUT the max-hop term all have worst hop 11 or 12). So
+the long walks are not an artefact of a bad search — **the EDGE GRAPH forces
+them.** 36 distinct cell-pair edges over 14 cells, with four cells that are
+4-way hubs (ADDR is written by five cells; RET writes four; OUT is written by
+four), cannot be laid on a 10×12 grid with every hub adjacent to all its
+partners.
+
+**So the fix is to SHRINK THE GRAPH, not to re-search it.** Three concrete
+levers, in the order they look cheapest:
+
+1. **Give the hot inner loop its own short walk.** The scan loop's traffic is
+   HASH ⇄ ADDR ⇄ RET and MATCH ⇄ ADDR ⇄ RET. Those five cells want to be a
+   compact 5-cell neighbourhood; the formatter (TOKEN, LENRUN, LITS, SEAL, OUT,
+   FRAME) only runs once per SEQUENCE and can afford long hops. The current score
+   treats all 36 edges alike — weight them by how often they FIRE.
+2. **Make the panel return land directly.** RET exists only because the block has
+   ONE push-read descriptor pair and four consumers. Its four outgoing edges are
+   the worst offenders. If the phase-to-consumer dispatch moved INTO each
+   consumer (each re-checks whether the byte is for it), RET's fan-out collapses
+   to one broadcast walk — INV-46's "more cells doing less" applied to EDGES.
+3. **A merged ADDR+RET would remove five edges but does NOT fit** — measured at
+   **41 instructions against 31 words** — so that particular shortcut is closed.
+
+Also measured: 14 cells over rows 10-11 is exactly 14 slots, so that shape has no
+positional slack at all; the workable shapes are 3-4 rows.
 
 **Gated by** `verification/tests/test_lz4_encoder.py` (80 passed, 9 skipped): the
 ten-payload round trip under the published golden AND the independent reference C

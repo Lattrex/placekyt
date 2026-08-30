@@ -34,7 +34,7 @@ from pathlib import Path
 
 FACTORY_DIR = Path(__file__).resolve().parents[1] / "reports" / "factory"
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # v2: `model` + per-model `by_model` breakdown
 
 
 @dataclass
@@ -56,6 +56,19 @@ class Tokens:
     @property
     def total(self) -> int:
         return int(self.input) + int(self.output)
+
+
+@dataclass
+class ModelUsage:
+    """Per-model share of a block's counters, so a block built by more than one
+    model keeps its token and walltime costs ATTRIBUTABLE. One entry per model
+    that ran at least one attempt; the top-level counters remain the totals."""
+
+    model: str                          # exact model id, e.g. "claude-opus-5"
+    attempts: int = 0
+    turns: int = 0
+    walltime_sec: float = 0.0
+    output_tokens: int = 0
 
 
 @dataclass
@@ -86,6 +99,10 @@ class FactoryRecord:
     commit_sha: str | None = None
     notes: str = ""
 
+    model: str = ""                     # model id of the LATEST attempt (the one that
+                                        # shipped the block, when verify_passed)
+    by_model: list[ModelUsage] = field(default_factory=list)  # per-model counter shares
+
     def path(self) -> Path:
         return FACTORY_DIR / f"{self.block}.factory.json"
 
@@ -102,6 +119,24 @@ def record(rec: FactoryRecord) -> Path:
     p = rec.path()
     p.write_text(json.dumps(rec.to_dict(), indent=2) + "\n")
     return p
+
+
+def add_model_stint(rec: FactoryRecord, model: str, *, attempts: int = 0,
+                    turns: int = 0, walltime_sec: float = 0.0,
+                    output_tokens: int = 0) -> None:
+    """Fold one model's stint into ``rec.by_model`` (merging with an existing
+    entry for the same model) and stamp ``rec.model`` with it as the latest."""
+    rec.model = model
+    for m in rec.by_model:
+        if m.model == model:
+            m.attempts += attempts
+            m.turns += turns
+            m.walltime_sec = round(m.walltime_sec + walltime_sec, 1)
+            m.output_tokens += output_tokens
+            return
+    rec.by_model.append(ModelUsage(model=model, attempts=attempts, turns=turns,
+                                   walltime_sec=round(walltime_sec, 1),
+                                   output_tokens=output_tokens))
 
 
 def load(block: str) -> FactoryRecord | None:
@@ -126,4 +161,6 @@ def load(block: str) -> FactoryRecord | None:
         verify_passed=bool(d.get("verify_passed", False)),
         quarantined=bool(d.get("quarantined", False)),
         quarantine_reason=d.get("quarantine_reason", ""),
-        commit_sha=d.get("commit_sha"), notes=d.get("notes", ""))
+        commit_sha=d.get("commit_sha"), notes=d.get("notes", ""),
+        model=d.get("model", ""),
+        by_model=[ModelUsage(**m) for m in d.get("by_model", [])])

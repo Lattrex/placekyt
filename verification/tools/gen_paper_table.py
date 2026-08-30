@@ -58,11 +58,16 @@ def _rows(records: list[dict]) -> list[dict]:
             "wave": r.get("wave", 0),
             "tier": r.get("tier", 0),
             "tokens": _tok_total(r),
-            "turns": int(r.get("turns", 0)),
-            "walltime_sec": float(r.get("walltime_sec", 0.0)),
+            "turns": int(r.get("turns") or 0),
+            "walltime_sec": float(r.get("walltime_sec") or 0.0),
             "attempts": int(r.get("attempts", 1)),
             "interventions": int(r.get("human_interventions", 0)),
             "outcome": outcome,
+            # schema v2: which model(s) ran the build. `model` is the latest
+            # attempt's; `by_model` keeps per-model token/walltime shares for
+            # blocks built by more than one model.
+            "model": r.get("model", ""),
+            "by_model": r.get("by_model", []),
         })
     return rows
 

@@ -57,6 +57,40 @@ EOB_SENTINEL = 1 << 8
 # (SRAM_PANEL.md §3-4). There is exactly ONE such pair for the whole block, so
 # every read returns to the SAME register of the SAME cell at the SAME entry.
 # These codes are how the return cell knows which consumer asked.
+# --- CELL IDS -----------------------------------------------------------------
+# PROGRAM ORDER IS A DESIGN LEVER, NOT BOOKKEEPING (INV-53). The build resolves a
+# BACKWARD internal jump — one whose destination cell PRECEDES its source in
+# ``build_cell_programs()`` order — by rewriting the source cell's
+# HIGHEST-ADDRESSED ``JUMP`` instruction, matched by address and never by port
+# name. So a cell may declare at most ONE backward jump, and that jump must BE
+# the highest-addressed one it emits, or a different jump is silently redirected
+# to the backward edge's target.
+#
+# These numbers are therefore CHOSEN, not incidental: they are the unique-up-to-
+# detail order (found by search over all 14! orderings' violation count) in which
+# no cell violates either clause. They are also the order the cells are PLACED
+# in, because the panel template places ``sorted(pos)`` and the build binds
+# programs to placed cells BY POSITION (INV-51 clause 2) — the two dicts must
+# iterate identically or whole cells silently get the wrong program.
+#
+# Renumbering any of these without re-running the block's own
+# ``test_at_most_one_backward_internal_jump_per_cell`` gate is how a silent,
+# self-concealing mis-resolution gets in.
+C_SEAL = 0       # the sequence epilogue: offset, match-length re-arm, hand-back
+C_SEQ = 1        # the pass-2 driver: the position cursor and the scan loop
+C_RET = 2        # the SINGLE push-read return point; dispatches by phase
+C_HASH = 3       # the rolling 4-byte hash
+C_VERIFY = 4     # the hash-slot test and the offset
+C_LITS = 5       # the literal replay loop
+C_FRAME = 6      # the sequence's literal-run bounds, fanned out
+C_TOKEN = 7      # the token's two nibbles
+C_MATCH = 8      # the compare engine
+C_INGEST = 9     # pass 1: the input landing cell
+C_ADDR = 10      # the panel port: region base + read issue
+C_CTL = 11       # the embedded SramControllerBlock
+C_LENRUN = 12    # the shared length-continuation engine
+C_OUT = 13       # the egress
+
 PH_HASH = 0      # a byte for the rolling hash
 PH_MATCH = 1     # either side of a compare step (MATCH tells them apart itself)
 PH_LIT = 2       # a literal being replayed into the output
@@ -1249,56 +1283,63 @@ class LZ4EncoderBlock(KyttarBlock):
         # binds programs to placed cells BY POSITION (INV-51 clause 2); the two
         # must iterate identically or whole cells get the wrong program with
         # nothing raised.
-        return {0: ingest, 1: seq, 2: hashc, 3: verify, 4: match, 5: token,
-                6: lenrun, 7: lits, 8: frame, 9: addr, 10: ret, 11: out_cell,
-                12: ctl_cell, 13: seal}
+        by_id = {C_INGEST: ingest, C_SEQ: seq, C_HASH: hashc, C_VERIFY: verify,
+                 C_MATCH: match, C_TOKEN: token, C_LENRUN: lenrun, C_LITS: lits,
+                 C_FRAME: frame, C_ADDR: addr, C_RET: ret, C_OUT: out_cell,
+                 C_CTL: ctl_cell, C_SEAL: seal}
+        # ASCENDING BY ID, always. The panel template places ``sorted(pos)`` and
+        # the build binds programs to placed cells BY POSITION, so this dict and
+        # ``default_layout()`` must iterate identically (INV-51 clause 2) — the
+        # ids hide a mismatch, and the design then places, routes, builds and
+        # DRCs clean while whole cells come out with empty memory.
+        return {cid: by_id[cid] for cid in sorted(by_id)}
 
     # ------------------------------------------------------------ block wiring
     def internal_connections(self) -> List[Tuple[Any, str, Any, str]]:
         """The DATA (``WRITE``) hand-offs between the thirteen cells."""
         return [
             # --- pass 1 -> pass 2 hand-over -----------------------------------
-            (0, "hist", 9, "a"),
-            (0, "setn", 1, "n"),
-            (0, "setlim", 1, "lim"),
-            (0, "setstop", 4, "stop"),
+            (C_INGEST, "hist", C_ADDR, "a"),
+            (C_INGEST, "setn", C_SEQ, "n"),
+            (C_INGEST, "setlim", C_SEQ, "lim"),
+            (C_INGEST, "setstop", C_MATCH, "stop"),
             # --- the scan --------------------------------------------------
-            (1, "h_i", 2, "i"),
-            (1, "v_i", 3, "i"),
-            (2, "rd", 9, "a"),
-            (2, "probe", 3, "v"),
-            (3, "rd", 9, "a"),
-            (3, "m_off", 4, "off"),
-            (3, "m_ii", 4, "ii"),
-            (3, "li_off", 13, "off"),
-            (4, "rd_c", 9, "a"),
-            (4, "rd_i", 9, "a"),
-            (4, "len", 1, "v"),
-            (4, "f_mend", 8, "mend"),
+            (C_SEQ, "h_i", C_HASH, "i"),
+            (C_SEQ, "v_i", C_VERIFY, "i"),
+            (C_HASH, "rd", C_ADDR, "a"),
+            (C_HASH, "probe", C_VERIFY, "v"),
+            (C_VERIFY, "rd", C_ADDR, "a"),
+            (C_VERIFY, "m_off", C_MATCH, "off"),
+            (C_VERIFY, "m_ii", C_MATCH, "ii"),
+            (C_VERIFY, "li_off", C_SEAL, "off"),
+            (C_MATCH, "rd_c", C_ADDR, "a"),
+            (C_MATCH, "rd_i", C_ADDR, "a"),
+            (C_MATCH, "len", C_SEQ, "v"),
+            (C_MATCH, "f_mend", C_FRAME, "mend"),
             # --- the sequence ----------------------------------------------
-            (1, "f_end", 8, "v"),
-            (1, "f_mend", 8, "mend"),
-            (8, "t_lit", 5, "lit"),
-            (8, "t_mat", 5, "mat"),
-            (8, "l_rest", 6, "rest"),
-            (8, "li_p", 7, "p"),
-            (8, "li_end", 7, "end"),
+            (C_SEQ, "f_end", C_FRAME, "v"),
+            (C_SEQ, "f_mend", C_FRAME, "mend"),
+            (C_FRAME, "t_lit", C_TOKEN, "lit"),
+            (C_FRAME, "t_mat", C_TOKEN, "mat"),
+            (C_FRAME, "l_rest", C_LENRUN, "rest"),
+            (C_FRAME, "li_p", C_LITS, "p"),
+            (C_FRAME, "li_end", C_LITS, "end"),
             # --- the formatter's output rail --------------------------------
-            (5, "out", 11, "b"),
-            (5, "m_park", 13, "mat"),
-            (6, "out", 11, "b"),
-            (7, "out", 11, "b"),
-            (7, "rd", 9, "a"),
-            (13, "out", 11, "b"),
-            (13, "m_rest", 6, "rest"),
+            (C_TOKEN, "out", C_OUT, "b"),
+            (C_TOKEN, "m_park", C_SEAL, "mat"),
+            (C_LENRUN, "out", C_OUT, "b"),
+            (C_LITS, "out", C_OUT, "b"),
+            (C_LITS, "rd", C_ADDR, "a"),
+            (C_SEAL, "out", C_OUT, "b"),
+            (C_SEAL, "m_rest", C_LENRUN, "rest"),
             # --- the panel port and its single return -----------------------
-            (9, "setph", 10, "ph"),
-            (9, "rd", 12, "data"),
-            (9, "st", 12, "data"),
-            (10, "to_hash", 2, "v"),
-            (10, "to_slot", 3, "v"),
-            (10, "to_match", 4, "v"),
-            (10, "to_lit", 7, "v"),
+            (C_ADDR, "setph", C_RET, "ph"),
+            (C_ADDR, "rd", C_CTL, "data"),
+            (C_ADDR, "st", C_CTL, "data"),
+            (C_RET, "to_hash", C_HASH, "v"),
+            (C_RET, "to_slot", C_VERIFY, "v"),
+            (C_RET, "to_match", C_MATCH, "v"),
+            (C_RET, "to_lit", C_LITS, "v"),
         ]
 
     def internal_jumps(self) -> List[Tuple[Any, str, Any, str]]:
@@ -1315,45 +1356,47 @@ class LZ4EncoderBlock(KyttarBlock):
         be silently mis-patched.
         """
         return [
-            (0, "hist", 9, "store"),
-            (0, "go", 1, "start"),
-            (1, "scan", 2, "begin"),
-            (1, "go_seq", 8, "seq"),
-            (2, "rd", 9, "hist"),
-            (2, "probe", 3, "probe"),
-            (3, "rd", 9, "htab"),
-            (3, "arm", 4, "begin"),
-            (3, "miss", 1, "step"),
-            (4, "rd_c", 9, "hist_m"),
-            (4, "rd_i", 9, "hist_m"),
-            (4, "len", 1, "decide"),
-            (8, "go", 5, "seq"),
-            (5, "out", 11, "send"),
-            (5, "go", 6, "enter"),
-            (6, "out", 11, "send"),
-            (6, "to_lits", 7, "replay"),
-            (7, "out", 11, "send"),
-            (7, "rd", 9, "hist_l"),
-            (7, "post", 13, "post"),
-            (13, "out", 11, "send"),
-            (13, "mrun", 6, "enter"),
-            (13, "adv", 8, "adv"),
-            (9, "rd", 12, "lookup"),
-            (9, "st", 12, "write"),
-            (10, "to_hash", 2, "byte"),
-            (10, "to_slot", 3, "slot"),
-            (10, "to_match", 4, "got"),
-            (10, "to_lit", 7, "byte"),
+            (C_INGEST, "hist", C_ADDR, "store"),
+            (C_INGEST, "go", C_SEQ, "start"),
+            (C_SEQ, "scan", C_HASH, "begin"),
+            (C_SEQ, "go_seq", C_FRAME, "seq"),
+            (C_HASH, "rd", C_ADDR, "hist"),
+            (C_HASH, "probe", C_VERIFY, "probe"),
+            (C_VERIFY, "rd", C_ADDR, "htab"),
+            (C_VERIFY, "arm", C_MATCH, "begin"),
+            (C_VERIFY, "miss", C_SEQ, "step"),
+            (C_MATCH, "rd_c", C_ADDR, "hist_m"),
+            (C_MATCH, "rd_i", C_ADDR, "hist_m"),
+            (C_MATCH, "len", C_SEQ, "decide"),
+            (C_FRAME, "s_took", C_SEQ, "took"),
+            (C_FRAME, "go", C_TOKEN, "seq"),
+            (C_TOKEN, "out", C_OUT, "send"),
+            (C_TOKEN, "go", C_LENRUN, "enter"),
+            (C_LENRUN, "out", C_OUT, "send"),
+            (C_LENRUN, "to_lits", C_LITS, "replay"),
+            (C_LITS, "out", C_OUT, "send"),
+            (C_LITS, "rd", C_ADDR, "hist_l"),
+            (C_LITS, "post", C_SEAL, "post"),
+            (C_SEAL, "out", C_OUT, "send"),
+            (C_SEAL, "mrun", C_LENRUN, "enter"),
+            (C_SEAL, "adv", C_FRAME, "adv"),
+            (C_ADDR, "rd", C_CTL, "lookup"),
+            (C_ADDR, "st", C_CTL, "write"),
+            (C_RET, "to_hash", C_HASH, "byte"),
+            (C_RET, "to_slot", C_VERIFY, "slot"),
+            (C_RET, "to_match", C_MATCH, "got"),
+            (C_RET, "to_lit", C_LITS, "byte"),
         ]
 
     def output_cell_id(self) -> Any:
-        """The compressed byte stream leaves the OUT cell (11).
+        """The compressed byte stream leaves the OUT cell.
 
-        Cell 12 is the embedded SRAM controller — it speaks only to the panel, so
-        the default "output leaves the last cell" assumption would aim this block's
-        egress at the panel port.
+        The default "output leaves the LAST cell" assumption is wrong for this
+        block twice over: the last cell by id is not the egress, and one of the
+        cells is the embedded SRAM controller, which speaks only to the panel —
+        so the default would aim the block's egress at the panel port.
         """
-        return 11
+        return C_OUT
 
     def panel_requirements(self) -> dict:
         """This block needs an SRAM panel, and it uses TWO DISJOINT REGIONS of it.
@@ -1381,12 +1424,12 @@ class LZ4EncoderBlock(KyttarBlock):
                       f"table ({1 << self._hash_bits} slots)"),
             "image": {},
             "words": self._window_words + (1 << self._hash_bits),
-            "controller_cell": 12,
-            "input_cell": 0,
+            "controller_cell": C_CTL,
+            "input_cell": C_INGEST,
             "return_port": "v",
-            "return_cell": 10,
-            "panel_client_cell": 9,
-            "output_cell": 11,
+            "return_cell": C_RET,
+            "panel_client_cell": C_ADDR,
+            "output_cell": C_OUT,
             "return_entry": "word",
             "self_contained": True,
         }
@@ -1402,24 +1445,46 @@ class LZ4EncoderBlock(KyttarBlock):
         clause 2).
         """
         lay = {
-            0: (-2, -1, "west"),      # INGEST  — the input landing cell
-            1: (-9, -1, "south"),     # SEQ
-            2: (-5, 0, "east"),       # HASH
-            3: (-7, -2, "south"),     # VERIFY
-            4: (-3, -1, "north"),     # MATCH
-            5: (-9, 0, "east"),       # TOKEN
-            6: (-3, -2, "west"),      # LENRUN
-            7: (-6, 0, "east"),       # LITS
-            8: (-7, -1, "west"),      # FRAME
-            9: (-2, 0, "north"),      # ADDR   — the panel client
-            10: (-4, 0, "east"),      # RET    — on the x1_in row
-            11: (-6, -2, "west"),     # OUT    — the egress
-            12: (0, 0, "south"),      # CTL    — pinned on x1_out, facing the port
-            13: (-8, -2, "east"),     # SEAL
+            C_SEAL: (-3, -2, "east"),
+            C_SEQ: (-1, -3, "south"),
+            C_RET: (-4, 0, "north"),      # on the x1_in row
+            C_HASH: (-2, -3, "east"),
+            C_VERIFY: (-1, -2, "south"),
+            C_LITS: (-1, -1, "south"),
+            C_FRAME: (-2, 0, "west"),
+            C_TOKEN: (-2, -2, "north"),
+            C_MATCH: (-3, 0, "west"),
+            C_INGEST: (0, -3, "west"),    # the input landing cell
+            C_ADDR: (-1, 0, "west"),      # the panel client
+            C_CTL: (0, 0, "south"),       # pinned on x1_out, facing the port
+            C_LENRUN: (-4, -1, "east"),
+            C_OUT: (-3, -1, "north"),     # the egress
         }
         order = list(self.build_cell_programs().keys())
         assert set(order) == set(lay), (order, sorted(lay))
         return {cid: lay[cid] for cid in order}
+
+    def emit_faces(self) -> Dict[Tuple[Any, str], Any]:
+        """The ports this block emits while FLIPPED, as neighbour CELL IDs.
+
+        A DECLARED emit face is authoritative for the router (INV-50/INV-52
+        clause 3): without it the walk starts on the cell's RESTING face and
+        sizes the edge along a path the word never takes — which does not raise,
+        it just lands the word on the wrong cell.
+
+        The value is a CELL ID, never a compass direction, so the router derives
+        the face from the two cells' PLACED coordinates. That is
+        orientation-correct by construction (INV-23) rather than needing a
+        by-hand D4 pass that a rotation can invalidate.
+
+        ADDR is the only cell here that emits while flipped: it rests on the
+        block's own ring and flips toward the controller for each panel burst,
+        restoring at the tail.
+        """
+        return {
+            (C_ADDR, "rd"): C_CTL,
+            (C_ADDR, "st"): C_CTL,
+        }
 
     def reset(self):
         pass

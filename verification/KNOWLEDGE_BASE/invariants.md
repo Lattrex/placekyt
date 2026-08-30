@@ -3993,7 +3993,7 @@ negative `test_the_head_on_gate_catches_a_facing_pair`.
 seals what is BEYOND it; this says the band itself cannot carry both
 directions), INV-19/INV-20 (the serialize-LOCK, which is the existing remedy for
 a different contention class — reconvergent fan-in — and is NOT what this needs).
-## INV-NEXT — `MUL`/`MULHI` are SIGNED, so an exact unsigned 16x16->32 product needs BOTH operands under 2^15
+## INV-57 — `MUL`/`MULHI` are SIGNED, so an exact unsigned 16x16->32 product needs BOTH operands under 2^15
 
 *(Number to be assigned at landing.)*
 
@@ -4042,7 +4042,7 @@ ISA claim that had to be measured rather than read).
 
 ---
 
-## INV-NEXT — A 32-bit MAC must compute the HIGH half FIRST; and a SYSTOLIC stage cannot adopt and forward in one entry
+## INV-58 — A 32-bit MAC must compute the HIGH half FIRST; and a SYSTOLIC stage cannot adopt and forward in one entry
 
 *(Number to be assigned at landing.)*
 
@@ -4139,7 +4139,7 @@ egress is its own), INV-52 (the face/walk rules the collector violated), INV-54
 
 ---
 
-## INV-NEXT — A PROGRAMMED cell on a broadcast walk stops the sweep; only a face-only `transit_*` is transparent
+## INV-59 — A PROGRAMMED cell on a broadcast walk stops the sweep; only a face-only `transit_*` is transparent
 
 *(Number to be assigned at landing; main is at INV-56, so this is not one of
 1..56.)*
@@ -4182,7 +4182,7 @@ neutral — this is the same lesson for triggers rather than data), INV-56
 
 ---
 
-## INV-NEXT — Read the hop the BUILD resolved; a manhattan guess is a harness bug that presents as a dead block
+## INV-60 — Read the hop the BUILD resolved; a manhattan guess is a harness bug that presents as a dead block
 
 *(Number to be assigned at landing.)*
 

@@ -1,0 +1,130 @@
+id: kyttar_lz4_encoder
+label: 🧪 Kyttar LZ4 Encoder
+category: '[Kyttar]'
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.lz4_encoder(${device_id}, ${window_words}, ${hash_bits}, ${panel_hop}, ${read_wr_desc}, ${read_jp_desc}, ${addr_base}, ${emit_hop}, ${out_dest}, ${emit_entry})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+- id: window_words
+  label: Input window (words)
+  dtype: int
+  default: '32768'
+- id: hash_bits
+  label: Hash table width (bits)
+  dtype: int
+  default: '12'
+- id: panel_hop
+  label: Panel hop (@N)
+  dtype: int
+  default: '1'
+
+- id: read_wr_desc
+  label: read_wr_desc
+  dtype: int
+  default: 0
+  hide: part
+- id: read_jp_desc
+  label: read_jp_desc
+  dtype: int
+  default: 0
+  hide: part
+- id: addr_base
+  label: addr_base
+  dtype: int
+  default: 0
+  hide: part
+- id: emit_hop
+  label: emit_hop
+  dtype: int
+  default: 2
+  hide: part
+- id: out_dest
+  label: out_dest
+  dtype: int
+  default: 0
+  hide: part
+- id: emit_entry
+  label: emit_entry
+  dtype: int
+  default: 0
+  hide: part
+
+inputs:
+- id: '0'
+  label: b
+  domain: stream
+  dtype: byte
+
+outputs:
+- id: '0'
+  label: egress
+  domain: stream
+  dtype: byte
+
+documentation: |-
+  LZ4 BLOCK-FORMAT compressor — SRAM-backed. One raw byte in per item,
+  terminated by an out-of-band END-OF-BLOCK word (256); the compressed LZ4 block
+  out, one byte per item. No stock GNU Radio counterpart.
+
+  Spec: the published LZ4 Block Format Description (Yann Collet). The acceptance
+  bar for a COMPRESSOR is not byte-equality against some other implementation —
+  LZ4 does not specify which block a compressor must produce, and many are legal
+  for the same input. What IS specified is that a conformant DECODER recovers the
+  input exactly, so this block is gated on decode(encode(x)) == x under the
+  published golden decoder AND under the INDEPENDENT reference C implementation
+  of LZ4 (the lz4 Python binding), on ten payload classes including
+  incompressible random data.
+
+  WHY IT NEEDS THE SRAM PANEL, AND TWO REGIONS OF IT. Compression is a SEARCH,
+  not a transform: to emit a match the encoder must compare the four bytes at the
+  current position against the four at a candidate position it has already seen,
+  and then walk both forward. Both operands are arbitrary earlier input, so the
+  encoder needs random access to the whole input — and a HASH TABLE to find the
+  candidate at all. Neither fits in 32-word cells, so both live in the panel:
+
+    [0, window_words)                        the stored input, address == position
+    [window_words, +2**hash_bits)            the hash table, one slot per hash
+
+  THE REGION SPLIT IS A CORRECTNESS PROPERTY, NOT A TUNING KNOB. The panel wraps
+  every address modulo its size, so a table based at 65536 aliases straight onto
+  history address 0. Measured: with window_words = 65536 the encoder read hash
+  slots as input bytes and produced a block that was still format-legal and still
+  the right LENGTH but decoded to the WRONG payload — a silent wrong answer. The
+  block therefore REJECTS any combination whose two regions do not fit disjointly
+  in the 65536-word panel, and the default window is 32768.
+
+  WHY TWO PASSES. LZ4 puts the TOKEN BEFORE ITS LITERALS, and the token carries
+  the literal count — which is not known until the run closes. Pass 1 stores the
+  input in the panel; pass 2 emits the token and then REPLAYS the literals out of
+  the panel. No output buffer is needed, and the replay reuses the same read path
+  the match verify uses.
+
+  Ports:
+    b (in):   the raw byte stream, one byte per item, then the 256 sentinel
+    egress:   the compressed LZ4 block, one byte per item
+
+  Parameters (mirror LZ4EncoderBlock verbatim):
+    Device ID:      which Kyttar device to use
+    Input window:   size of the panel's history region in words (a power of two).
+                    Positions are addressed directly, so this is also the largest
+                    input compressed in one block. Must leave room for the hash
+                    table inside the 65536-word panel.
+    Hash width:     the hash table has 2**hash_bits slots. This affects the
+                    compression RATIO ONLY, never correctness: every candidate
+                    the hash proposes is confirmed by a real four-byte comparison
+                    before any match is emitted.
+    Panel hop:      hops from the embedded controller cell to the SRAM panel port
+
+  The remaining parameters are placement-derived: the auto-P&R panel template
+  fills them in from the geometry it chooses, and hand-setting them is only for a
+  hand-placed design.
+
+  Mapped by placeKYT (File -> Import GNURadio Flowgraph) to LZ4EncoderBlock.
+
+file_format: 1

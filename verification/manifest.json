@@ -1311,13 +1311,13 @@
       "kyttar_block": "LZ4EncoderBlock",
       "grc_block": "",
       "tier": 3,
-      "status": "planned",
+      "status": "in_progress",
       "metric": "exact",
       "params": [
         "window_words",
         "hash_bits"
       ],
-      "notes": "LZ4 block-format encoder, panel hash table. See PLAN SB6."
+      "notes": "SRAM-backed LZ4 block-format compressor and the first block to use TWO DISJOINT PANEL REGIONS at once - the stored input (address == byte position) and a hash table above it. The region split is a CORRECTNESS property, not a tuning knob: the panel wraps every address modulo its size, so a table based at 65536 aliases onto history address 0, and the measured result was a format-legal block of the RIGHT LENGTH that decoded to the WRONG payload (INV-33's overlap hazard, in the panel's address space). The constructor rejects any overlapping combination and the default window is 2**15. TWO PASSES because LZ4 puts the token BEFORE its literals and the token carries the literal count: pass 1 stores the input in the panel, pass 2 emits the token and REPLAYS the literals out of the panel, so no output buffer is needed. Measured dead end: filling the hash table during pass 1 destroys compression outright (a repetitive payload went -89% to +0.7%) because the table then holds the LAST occurrence of every 4-gram; the insert belongs at the position being encoded. Shape: 14 cells; the ids are CHOSEN to satisfy both INV-53 clauses. Verification bar: LZ4 does not specify which block a compressor must emit, so the gate is decode(encode(x)) == x under the published golden AND under the INDEPENDENT reference C decoder (lz4.block) on ten payload classes, plus the 0.5% incompressible bound and three INV-4 mutants each proven to fail."
     }
   ]
 }

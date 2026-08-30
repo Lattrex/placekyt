@@ -660,12 +660,22 @@ emit:
                 assembly_template=asm)
 
         # ---------------- unlock relays ----------------
+        # u1/u2 double as the HIGH-BIT trigger relay for final-block residues
+        # whose pack sits more than 31 hops downstream of bnd (measured: m=4
+        # resolved the direct hbgo at 32 and failed the build).
+        hb_relay = self._hb_relay()
         for uid, nxt in (("u1", "u2go"), ("u2", "u3go"), ("u3", "ulkgo")):
+            outs = [Port(nxt)]
+            asm = f"go:\n    {{jump:{nxt}}}\n"
+            if uid in hb_relay:
+                outs.append(Port("hbj"))
+                asm = "hbr:\n    {jump:hbj}\n    HALT\n" + asm
             progs[uid] = CellProgram(
-                inputs=[], outputs=[Port(nxt)],
-                entries=[EntryPoint("go")],
+                inputs=[], outputs=outs,
+                entries=(([EntryPoint("hbr")] if uid in hb_relay else [])
+                         + [EntryPoint("go")]),
                 data=[], state=[],
-                assembly_template=f"go:\n    {{jump:{nxt}}}\n")
+                assembly_template=asm)
 
         # ---------------- the 13 limb groups ----------------
         for k in range(N_LIMBS):
@@ -958,6 +968,17 @@ femit:
         return {0: [0, 1], 1: [1, 2, 3], 2: [3, 4], 3: [4, 5, 6],
                 4: [6, 7], 5: [8, 9], 6: [9, 10, 11], 7: [11, 12]}[j]
 
+    def _hb_relay(self):
+        """The u-relay CHAIN carrying bnd's high-bit trigger (compile-time).
+
+        Packs 0-2 are within bnd's 31-hop reach (direct, ``[]``); packs 3-5
+        route via u1; pack 6 via u1 THEN u2 (measured: the direct hop for m=4
+        resolved at 32 and failed the build; u2 is beyond bnd's own reach)."""
+        m = self._m_last
+        if m >= BLOCK_WORDS or m <= 3:
+            return []
+        return ["u1"] if m <= 6 else ["u1", "u2"]
+
     def internal_connections(self) -> List[Tuple[Any, str, Any, str]]:
         m = self._m_last
         conns: List[Tuple[Any, str, Any, str]] = [
@@ -1063,7 +1084,12 @@ femit:
         ]
         if m < BLOCK_WORDS:
             hb_limb = (16 * m) // 10
-            jumps.append(("bnd", "hbgo", f"pack_{m - 1}", "hb"))
+            relay = self._hb_relay()
+            hops = ["bnd"] + relay + [f"pack_{m - 1}"]
+            for a, b2 in zip(hops, hops[1:]):
+                sp = "hbgo" if a == "bnd" else "hbj"
+                dp = "hb" if b2.startswith("pack_") else "hbr"
+                jumps.append((a, sp, b2, dp))
             jumps.append((f"pack_{m - 1}", "hvj", f"lh_{hb_limb}", "addv"))
         for j in range(BLOCK_WORDS):
             cid = f"pack_{j}"

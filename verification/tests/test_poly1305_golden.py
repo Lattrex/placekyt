@@ -61,8 +61,11 @@ def _tag(out) -> bytes:
     return b"".join(int(v).to_bytes(2, "little") for v in np.asarray(out))
 
 
-def _block_for(key: bytes) -> Poly1305MACBlock:
-    return Poly1305MACBlock("p", r_key=key[:16].hex(), s_key=key[16:].hex())
+def _block_for(key: bytes, msg_words: int = 17) -> Poly1305MACBlock:
+    """A block for ``key``. ``msg_words`` must match the driven message: the
+    block consumes EXACTLY that many words (one-time-MAC semantics)."""
+    return Poly1305MACBlock("p", r_key=key[:16].hex(), s_key=key[16:].hex(),
+                            msg_words=msg_words)
 
 
 def _even_a3():
@@ -361,7 +364,7 @@ def test_block_reference_matches_rfc8439_section_2_5_2():
 @pytest.mark.parametrize("name,key,msg,exp", _even_a3(),
                          ids=[v[0] for v in _even_a3()])
 def test_block_reference_matches_appendix_a3(name, key, msg, exp):
-    blk = _block_for(key)
+    blk = _block_for(key, msg_words=len(msg) // 2)
     out = blk.process_reference(np.array(_words(msg), dtype=np.uint16))
     assert _tag(out) == exp
 
@@ -372,7 +375,7 @@ def test_block_reference_matches_golden_random(seed):
     for _ in range(40):
         key = bytes(rng.randrange(256) for _ in range(32))
         msg = bytes(rng.randrange(256) for _ in range(2 * rng.randrange(1, 60)))
-        blk = _block_for(key)
+        blk = _block_for(key, msg_words=len(msg) // 2)
         out = blk.process_reference(np.array(_words(msg), dtype=np.uint16))
         assert _tag(out) == poly1305_mac(msg, key)
 

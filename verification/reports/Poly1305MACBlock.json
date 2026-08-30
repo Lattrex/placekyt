@@ -1,0 +1,25 @@
+{
+  "kyttar_block": "Poly1305MACBlock",
+  "passed": true,
+  "metric": "exact",
+  "n_compared": 8,
+  "max_abs_err": 0,
+  "tolerance": 0,
+  "nmse_db": null,
+  "correlation": null,
+  "bit_errors": 0,
+  "delay_used": 0,
+  "coverage": {
+    "golden": "RFC 8439 \u00a72.5 (verification/tests/poly1305_golden.py, two independent implementations); no GNU Radio counterpart",
+    "anchors": "\u00a72.5.2 worked example (17 words, 3 blocks incl. a partial final block) EXACT ON CHIP \u2014 full 8-word tag; all six even-length \u00a7A.3 edge vectors on chip",
+    "random": "8 residue-sweep messages (every final-block m=1..8) + 3 seeded randoms + the all-max carry-ceiling case, all bit-exact on chip",
+    "saturated": "whole message queue_words_physical back-to-back, one continuous run \u2014 the INV-20 serialize-LOCK on the input landing",
+    "rate": "msg_words words in -> 8-word tag out on the final trigger",
+    "mutation_onchip": "7 real mutants, each placed+routed+built+run and each PROVEN able to fire (model prediction first): skip r clamp / drop high bit x2 (full + partial block) / reduction constant 3 / omit +s / wrong 32-bit MAC half order (INV-58) / one-stage carry",
+    "structural": "INV-33 budget (with INV-4 negative) / positional pairing / 425-edge walk gate (with negative) / head-on pairs / INV-53 backward-jump audit / INV-39 entry reachability / INV-61 stale-flag checker / input landing = cell 0",
+    "cells": 100,
+    "stop_reason": "read for EVERY case; QueueEmpty required everywhere",
+    "note": "one-time MAC: exactly ONE message per build (RFC 8439 one-time-key semantics); odd-byte messages inexpressible at the 16-bit word interface (golden-gated)"
+  },
+  "provenance": "session"
+}

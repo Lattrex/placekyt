@@ -4469,7 +4469,7 @@ family), INV-4 (both gates carry proven negatives).
 ### CORRECTED 2026-08-30 addendum — see the correction block above the gate list
 ### for what clause 5's failure diagnosis got wrong and what survived.
 
-## INV-NEXT — The panel-port corner has exactly TWO reachable client slots; a second client can speak the RAW panel protocol THROUGH the controller if its commits are DEFERRED one transaction; and the panel bridge can drop an ack release on a run boundary
+## INV-62 — The panel-port corner has exactly TWO reachable client slots; a second client can speak the RAW panel protocol THROUGH the controller if its commits are DEFERRED one transaction; and the panel bridge can drop an ack release on a run boundary
 
 *(Number to be assigned at landing — parallel builders are running.)*
 

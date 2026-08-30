@@ -444,19 +444,15 @@ class LZ4EncoderBlock(KyttarBlock):
             data=[DataWord("one", 1, address=1),
                   DataWord("eob", EOB_SENTINEL, address=2),
                   DataWord("mflimit", MF_LIMIT, address=3),
-                  DataWord("lastlit", LAST_LITERALS, address=4),
-                  DataWord("face_panel", 1, address=5, is_face=True),
-                  DataWord("face_ring", 3, address=6, is_face=True)],
-            state=[StateVar("pos", register=7, initial_value=0)],
+                  DataWord("lastlit", LAST_LITERALS, address=4)],
+            state=[StateVar("pos", register=5, initial_value=0)],
             assembly_template=(
                 "feed:\n"
                 "    CMP R{in:b}, R{data:eob}\n"
                 "    BR.GE flush\n"
                 "    MOVE R0, R{in:b}\n"
-                "    MOVE [FACE], R{data:face_panel}\n"
-                "    {write:hist}\n"                  # ctl.data = the byte
-                "    {jump:hist}\n"                   # ctl.write  (wraddr++)
-                "    MOVE [FACE], R{data:face_ring}\n"
+                "    {write:hist}\n"                  # addr.a = the byte
+                "    {jump:hist}\n"                   # addr.store -> ctl.write
                 "    ADD R{state:pos}, R{data:one}\n"
                 "    MOVE R{state:pos}, R0\n"
                 "    HALT\n"
@@ -915,7 +911,7 @@ class LZ4EncoderBlock(KyttarBlock):
         # first. The `offset_big_endian` mutant swaps exactly those two emissions.
         lits = CellProgram(
             inputs=[Port("v")],
-            outputs=[Port("out"), Port("rd"), Port("mrun"), Port("done")],
+            outputs=[Port("out"), Port("rd"), Port("mrun")],
             entries=[EntryPoint("replay"), EntryPoint("byte")],
             data=[DataWord("one", 1, address=1),
                   DataWord("ff", 0xFF, address=2),
@@ -956,9 +952,11 @@ class LZ4EncoderBlock(KyttarBlock):
                 # would be a redundant word — and this cell is exactly one word
                 # from its budget.
                 "    {jump:mrun}\n"                  # lenrun.mat_run
-                "    HALT\n"
                 "fin:\n"
-                "    {jump:done}\n"                  # seq.took
+                # THE LITERALS-ONLY TAIL ENDS HERE, triggering NOTHING. That is
+                # the LZ4 rule "the block ends right after its final literals",
+                # and it is also what terminates the whole encode: nothing hands
+                # control back to the scan, so the tail is emitted exactly once.
                 "    HALT\n"
             ),
         )
@@ -970,25 +968,26 @@ class LZ4EncoderBlock(KyttarBlock):
         frame = CellProgram(
             inputs=[Port("v"), Port("mend")],
             outputs=[Port("t_lit"), Port("t_mat"), Port("l_rest"), Port("li_p"),
-                     Port("li_end"), Port("go")],
+                     Port("li_end"), Port("go"), Port("s_pos"), Port("s_took")],
             entries=[EntryPoint("seq"), EntryPoint("adv")],
             data=[DataWord("four", MINMATCH, address=1)],
             state=[StateVar("ls", register=2, initial_value=0),
-                   StateVar("end", register=3, initial_value=0)],
+                   StateVar("end", register=3, initial_value=0),
+                   StateVar("mpos", register=4, initial_value=0)],
             assembly_template=(
                 "seq:\n"
                 "    MOVE R{state:end}, R{in:v}\n"
+                "    MOVE R{state:mpos}, R{in:mend}\n"
                 "    MOVE R0, R{state:ls}\n"
                 "    {write:li_p}\n"                 # lits.p   = ls
                 "    MOVE R0, R{state:end}\n"
                 "    {write:li_end}\n"               # lits.end = end
-                # The match length nibble's raw value is k - MINMATCH, and
+                # The match-length nibble's raw value is k - MINMATCH, and
                 # k = mend - end. MATCH delivers `mend` (its end cursor) here at
                 # the same moment it reports to SEQ, so the subtraction happens
                 # once, in the cell that is going to emit it.
-                "    SUB R{in:mend}, R{state:end}\n"
-                "    MOVE R{in:mend}, R0\n"
-                "    SUB R{in:mend}, R{data:four}\n"
+                "    SUB R{state:mpos}, R{state:end}\n"
+                "    SUB R0, R{data:four}\n"
                 "    {write:t_mat}\n"                # token.mat = k - 4
                 "    SUB R{state:end}, R{state:ls}\n"
                 "    {write:t_lit}\n"                # token.lit   = end - ls
@@ -996,9 +995,21 @@ class LZ4EncoderBlock(KyttarBlock):
                 "    {jump:go}\n"                    # token.seq
                 "    HALT\n"
                 "adv:\n"
-                # The sequence is out. `v` is the next literal-run start (i + k
-                # after a match). The tail never lands here — see SEQ's `tail`.
-                "    MOVE R{state:ls}, R{in:v}\n"
+                # A MATCH sequence is fully out (the run engine hands back here
+                # after the match-length extras). `mend` is the position just past
+                # the match, which is both the next literal-run start and the
+                # scan's new cursor.
+                #
+                # THE LITERALS-ONLY TAIL NEVER LANDS HERE, and that asymmetry is
+                # what terminates the block: LITS ends a tail by triggering
+                # nothing at all (its `off` is 0). If the tail did hand back,
+                # SEQ's `took` would set i = n, the `lim` test would send control
+                # straight to `tail` again, and the final literals would be
+                # emitted forever.
+                "    MOVE R{state:ls}, R{state:mpos}\n"
+                "    MOVE R0, R{state:mpos}\n"
+                "    {write:s_pos}\n"                # seq.v
+                "    {jump:s_took}\n"                # seq.took
                 "    HALT\n"
             ),
         )
@@ -1026,9 +1037,9 @@ class LZ4EncoderBlock(KyttarBlock):
         # flip-and-restore is safe even for a cell other walks transit.
         addr = CellProgram(
             inputs=[Port("a")],
-            outputs=[Port("rd"), Port("setph")],
-            entries=[EntryPoint("htab"), EntryPoint("hist"), EntryPoint("hist_m"),
-                     EntryPoint("hist_l")],
+            outputs=[Port("rd"), Port("st"), Port("setph")],
+            entries=[EntryPoint("store"), EntryPoint("htab"), EntryPoint("hist"),
+                     EntryPoint("hist_m"), EntryPoint("hist_l")],
             data=[DataWord("htbase", htb & 0xFFFF, address=1),
                   DataWord("ph_htab", PH_HTAB, address=2),
                   DataWord("ph_hash", PH_HASH, address=3),
@@ -1051,6 +1062,21 @@ class LZ4EncoderBlock(KyttarBlock):
                 # shared so that every path sets `ph` explicitly — an entry that
                 # inherited a stale phase would send the byte to the wrong cell,
                 # and that is a silent wrong answer, not a crash.)
+                "store:\n"
+                # PASS 1's history write. It comes through THIS cell rather than
+                # straight from INGEST for a geometric reason: a cell reaches the
+                # controller only if some walk from it gets there, and INGEST is
+                # already pinned by the input corridor (it must be reachable down
+                # its own column from row 0). Making the panel port the ONE cell
+                # that talks to the controller removed the constraint — MEASURED:
+                # an exhaustive fold search over rows 9-11 found no placement with
+                # both an INGEST->controller walk and every other edge delivering.
+                "    MOVE [FACE], R{data:face_panel}\n"
+                "    MOVE R0, R{in:a}\n"
+                "    {write:st}\n"                   # ctl.data = the byte
+                "    {jump:st}\n"                    # ctl.write  (wraddr++)
+                "    MOVE [FACE], R{data:face_ring}\n"
+                "    HALT\n"
                 "htab:\n"
                 # The hash-table probe. This is the ONLY place the table's region
                 # base is added, so no other cell in the block ever holds an
@@ -1125,8 +1151,212 @@ class LZ4EncoderBlock(KyttarBlock):
                 "    HALT\n"
             ),
         )
+        # ------------------------------------------------------------ cell 11 OUT
+        # The block's EGRESS, on a cell of its own — for exactly the reason the
+        # decoder's is (INV-46/INV-48). A cell serves ONE direction free and every
+        # extra one costs an in-program face flip (2 instructions + 1 `is_face`
+        # DataWord). Giving the egress its own cell keeps the formatter's three
+        # emitting cells (TOKEN, LENRUN, LITS) on their resting faces: all three
+        # write HERE, and this one cell owns the corridor.
+        #
+        # The `out` hop is AUTHORED (RAW_OUTPUT_HOPS), not a `{write:out}`
+        # placeholder: the build's output-port patch rewrites every WRITE/JUMP in
+        # an exit cell to the egress route, which would retarget any other
+        # hand-off in the same cell. Authoring the hop keeps them apart.
+        eh, od, ee = self._emit_hop, self._out_dest, self._emit_entry
+        out_cell = CellProgram(
+            inputs=[Port("b")],
+            outputs=[Port("egress")],
+            entries=[EntryPoint("send")],
+            data=[DataWord("face_egress", 3, address=1, is_face=True),
+                  DataWord("face_rest", 1, address=2, is_face=True)],
+            assembly_template=(
+                "send:\n"
+                "    MOVE [FACE], R{data:face_egress}\n"
+                "    MOVE R0, R{in:b}\n"
+                f"    WRITE @{eh}, {od}\n"
+                f"    JUMP @{eh}, {ee}\n"
+                # RESTORE at the TAIL (INV-52 clause 1): the resting face is a
+                # contract with every walk that crosses this cell, not only with
+                # its own edges, and an UNRESTORED face silently deflects them.
+                "    MOVE [FACE], R{data:face_rest}\n"
+                "    HALT\n"
+            ),
+        )
+
+        # ------------------------------------------------------------ cell 12 CTL
+        from .sram_controller_block import SramControllerBlock
+        ctl = SramControllerBlock(self.name + "_ctl", panel_hop=self._panel_hop,
+                                  read_wr_desc=self._read_wr_desc,
+                                  read_jp_desc=self._read_jp_desc,
+                                  addr_base=self._addr_base)
+        ctl_cell = ctl.build_cell_programs()[0]
+
         return {0: ingest, 1: seq, 2: hashc, 3: verify, 4: match, 5: token,
-                6: lenrun, 7: lits, 8: frame, 9: addr, 10: ret}
+                6: lenrun, 7: lits, 8: frame, 9: addr, 10: ret, 11: out_cell,
+                12: ctl_cell}
+
+    # ------------------------------------------------------------ block wiring
+    def internal_connections(self) -> List[Tuple[Any, str, Any, str]]:
+        """The DATA (``WRITE``) hand-offs between the thirteen cells."""
+        return [
+            # --- pass 1 -> pass 2 hand-over -----------------------------------
+            (0, "hist", 9, "a"),
+            (0, "setn", 1, "n"),
+            (0, "setlim", 1, "lim"),
+            (0, "setstop", 4, "stop"),
+            # --- the scan --------------------------------------------------
+            (1, "h_i", 2, "i"),
+            (1, "v_i", 3, "i"),
+            (2, "rd", 9, "a"),
+            (2, "probe", 3, "v"),
+            (3, "rd", 9, "a"),
+            (3, "m_off", 4, "off"),
+            (3, "m_ii", 4, "ii"),
+            (3, "li_off", 7, "off"),
+            (4, "rd_c", 9, "a"),
+            (4, "rd_i", 9, "a"),
+            (4, "len", 1, "v"),
+            (4, "f_mend", 8, "mend"),
+            # --- the sequence ----------------------------------------------
+            (1, "f_end", 8, "v"),
+            (1, "f_mend", 8, "mend"),
+            (8, "t_lit", 5, "lit"),
+            (8, "t_mat", 5, "mat"),
+            (8, "l_rest", 6, "rest"),
+            (8, "li_p", 7, "p"),
+            (8, "li_end", 7, "end"),
+            # --- the formatter's output rail --------------------------------
+            (5, "out", 11, "b"),
+            (6, "out", 11, "b"),
+            (7, "out", 11, "b"),
+            (7, "rd", 9, "a"),
+            # --- the panel port and its single return -----------------------
+            (9, "setph", 10, "ph"),
+            (9, "rd", 12, "data"),
+            (9, "st", 12, "data"),
+            (10, "to_hash", 2, "v"),
+            (10, "to_slot", 3, "v"),
+            (10, "to_match", 4, "v"),
+            (10, "to_lit", 7, "v"),
+        ]
+
+    def internal_jumps(self) -> List[Tuple[Any, str, Any, str]]:
+        """The TRIGGER (``JUMP``) edges between the thirteen cells.
+
+        Note what is NOT here: the pure state deliveries (``setn``, ``setlim``,
+        ``setstop``, ``m_off``, ``m_ii``, ``t_lit``, ``t_mat``, ``l_rest``,
+        ``li_p``, ``li_end``, ``li_off``, ``f_mend``, ``setph``) are DATA-only.
+        A value that is going to be READ by a later trigger needs no trigger of
+        its own, and every trigger omitted is a word saved in the cell that would
+        have issued it — which is what INV-53 makes expensive to get wrong: the
+        build rewrites a cell's HIGHEST-ADDRESSED jump when it resolves a backward
+        edge, so a cell with more jumps than it needs is a cell with more ways to
+        be silently mis-patched.
+        """
+        return [
+            (0, "hist", 9, "store"),
+            (0, "go", 1, "start"),
+            (1, "scan", 2, "begin"),
+            (1, "go_seq", 8, "seq"),
+            (2, "rd", 9, "hist"),
+            (2, "probe", 3, "probe"),
+            (3, "rd", 9, "htab"),
+            (3, "arm", 4, "begin"),
+            (3, "miss", 1, "step"),
+            (4, "rd_c", 9, "hist_m"),
+            (4, "rd_i", 9, "hist_m"),
+            (4, "len", 1, "decide"),
+            (8, "go", 5, "seq"),
+            (5, "out", 11, "send"),
+            (5, "go", 6, "lit_run"),
+            (6, "out", 11, "send"),
+            (6, "to_lits", 7, "replay"),
+            (6, "to_end", 8, "adv"),
+            (7, "out", 11, "send"),
+            (7, "rd", 9, "hist_l"),
+            (7, "mrun", 6, "mat_run"),
+            (9, "rd", 12, "lookup"),
+            (9, "st", 12, "write"),
+            (10, "to_hash", 2, "byte"),
+            (10, "to_slot", 3, "slot"),
+            (10, "to_match", 4, "got"),
+            (10, "to_lit", 7, "byte"),
+        ]
+
+    def output_cell_id(self) -> Any:
+        """The compressed byte stream leaves the OUT cell (11).
+
+        Cell 12 is the embedded SRAM controller — it speaks only to the panel, so
+        the default "output leaves the last cell" assumption would aim this block's
+        egress at the panel port.
+        """
+        return 11
+
+    def panel_requirements(self) -> dict:
+        """This block needs an SRAM panel, and it uses TWO DISJOINT REGIONS of it.
+
+        ``[0, window_words)`` holds the stored input (address == the byte's
+        position) and ``[window_words, window_words + 2**hash_bits)`` holds the
+        hash table. Both start EMPTY (``image`` is empty) — this block writes
+        everything it later reads, which is what makes the region split
+        load-bearing rather than cosmetic. See the class docstring on why an
+        overlap is a SILENT wrong answer rather than a crash.
+
+        Five roles, and they are five DIFFERENT cells:
+
+        * ``controller_cell`` (12) sits on ``x1_out``;
+        * ``input_cell`` (0) is where the raw stream lands;
+        * ``return_cell`` (10) is where every push-read lands — so it must sit on
+          the ``x1_in`` row. It is a cell of its own because the block has ONE
+          return-descriptor pair and FOUR consumers (see the RET cell);
+        * ``panel_client_cell`` (9) is the cell whose WRITE/JUMPs must reach the
+          controller;
+        * ``output_cell`` (11) owns the EGRESS walk.
+        """
+        return {
+            "label": (f"LZ4 input window ({self._window_words} x 16b) + hash "
+                      f"table ({1 << self._hash_bits} slots)"),
+            "image": {},
+            "words": self._window_words + (1 << self._hash_bits),
+            "controller_cell": 12,
+            "input_cell": 0,
+            "return_port": "v",
+            "return_cell": 10,
+            "panel_client_cell": 9,
+            "output_cell": 11,
+            "return_entry": "word",
+            "self_contained": True,
+        }
+
+    def default_layout(self) -> Dict[Any, Tuple[int, int, str]]:
+        """The fold. Coordinates are relative; the panel template translates the
+        whole thing so the CTL lands on the ``x1_out`` port cell.
+
+        The dict is reindexed against ``build_cell_programs()`` at the end, because
+        the router and the build walk the two dicts **in lockstep BY POSITION** —
+        the ids hide a mismatch, and a mismatched pairing places, routes, builds
+        and DRCs clean while whole cells come out with empty memory (INV-51
+        clause 2).
+        """
+        lay = {
+            0: (-2, -1, "west"),      # INGEST  — the input landing cell
+            1: (-9, -1, "south"),     # SEQ
+            2: (-5, 0, "east"),       # HASH
+            3: (-7, -2, "south"),     # VERIFY
+            4: (-3, -1, "north"),     # MATCH
+            5: (-9, 0, "east"),       # TOKEN
+            6: (-3, -2, "west"),      # LENRUN
+            7: (-6, 0, "east"),       # LITS
+            8: (-7, -1, "west"),      # FRAME
+            9: (-2, 0, "north"),      # ADDR   — the panel client
+            10: (-4, 0, "east"),      # RET    — on the x1_in row
+            11: (-6, -2, "west"),     # OUT    — the egress
+            12: (0, 0, "south"),      # CTL    — pinned on x1_out, facing the port
+        }
+        order = list(self.build_cell_programs().keys())
+        assert set(order) == set(lay), (order, sorted(lay))
+        return {cid: lay[cid] for cid in order}
 
     def reset(self):
         pass

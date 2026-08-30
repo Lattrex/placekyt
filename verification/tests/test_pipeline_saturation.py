@@ -392,6 +392,19 @@ _CORDIC_COVERAGE = {
 COMPLEX_2IN2OUT.update(_CORDIC_COVERAGE)
 
 NEEDS_BESPOKE = {
+    "Poly1305MACBlock": "BESPOKE BY CONSTRUCTION — a one-time MAC, not a "
+        "streaming N:M converter: it consumes exactly msg_words words and "
+        "emits one 8-word tag, and its saturation hazard is a NEXT WORD "
+        "arriving mid-compute (the pack chain's word registers and the limb "
+        "accumulators would be overwritten). That is closed by the INV-20 "
+        "serialize-LOCK on the input landing and gated on the real placed+"
+        "routed+built chip by test_poly1305_mac.py::"
+        "test_saturated_backtoback_drive_bit_exact, which enqueues the whole "
+        "RFC 8439 S2.5.2 message back-to-back via queue_words_physical, runs "
+        "ONE continuous run, and asserts the full 8-word tag bit-exact (with "
+        "stop_reason == QueueEmpty). The generic 1-in drivers here also use "
+        "a manhattan landing guess, which is off by one for this block's "
+        "corridor (INV-60: the build resolves hop 29, the guess gives 28).",
     "ChaCha20KeystreamBlock": "BESPOKE BY CONSTRUCTION — a SOURCE, not a "
         "streaming N:M converter: one trigger produces one whole 64-byte "
         "keystream block and there is no per-sample data input, so the "

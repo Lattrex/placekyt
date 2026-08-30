@@ -144,6 +144,10 @@ _TYPE_OVERRIDES = {
     # counterpart). snake→Pascal of "kyttar_chacha20_qr" cannot produce the
     # "QR" acronym or the digits in "ChaCha20", so pin it explicitly.
     "kyttar_chacha20_qr": "ChaCha20QRBlock",
+    # Poly1305 (placeKYT-native, RFC 8439 §2.5): snake→Pascal of
+    # "kyttar_poly1305_mac" cannot produce the digits+capitalisation of
+    # "Poly1305MACBlock", so pin it explicitly.
+    "kyttar_poly1305_mac": "Poly1305MACBlock",
     # pack_k_bits: snake→Pascal gives "PackKBitsBlock" but the mid-word single-letter
     # "k" makes the fallback fragile; pin it explicitly (override uses catalog.get).
     "kyttar_pack_k_bits": "PackKBitsBlock",

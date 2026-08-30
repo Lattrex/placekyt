@@ -40,6 +40,10 @@ CHIP_SCALE_GATES = {
     # port cell -- identity is the whole orientation set, gated (with the
     # geometric justification asserted) in its own suite.
     "ChaCha20KeystreamBlock": "test_chacha20_fixed_tap_ring.py",
+    # 100 cells, 10 wide and 10 tall on the 10x12 array -- identity is the
+    # whole orientation set, declared and asserted (with the footprint
+    # geometry) in its own suite.
+    "Poly1305MACBlock": "test_poly1305_mac.py",
 }
 
 #: chip-scale classes that are NOT manifest-``done`` and so are not required to

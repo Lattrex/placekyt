@@ -1,0 +1,62 @@
+id: kyttar_poly1305_mac
+label: Kyttar Poly1305 MAC
+category: '[Kyttar]/FEC'
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.poly1305_mac(${device_id}, ${r_key}, ${s_key}, ${msg_words})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+- id: r_key
+  label: r key half (16 bytes, hex, LE)
+  dtype: string
+  default: '"85d6be7857556d337f4452fe42d506a8"'
+- id: s_key
+  label: s key half (16 bytes, hex, LE)
+  dtype: string
+  default: '"0103808afb0db2fd4abff6af4149f51b"'
+- id: msg_words
+  label: Message length (16-bit words)
+  dtype: int
+  default: '17'
+
+inputs:
+- id: '0'
+  label: w
+  domain: stream
+  dtype: short
+
+outputs:
+- id: '0'
+  label: out
+  domain: stream
+  dtype: short
+
+documentation: |-
+  Poly1305 one-time authenticator (RFC 8439 section 2.5) — a placeKYT-native
+  [Kyttar] cryptographic primitive. There is no stock GNU Radio counterpart;
+  the golden reference is the published algorithm, pinned by the RFC's own
+  section 2.5.2 worked example and the appendix A.3 edge-case vectors, and
+  the block is verified bit-exact against them on the real placed + routed +
+  built chip.
+
+  The message is consumed as raw little-endian 16-bit words (NOT Q15). After
+  exactly msg_words input words the 16-byte tag is emitted as 8 little-endian
+  16-bit words in one burst. Set output_words="raw" on any sink reading it.
+
+  r_key and s_key are the two 16-byte halves of the 32-byte ONE-TIME key,
+  given as hex strings little-endian exactly as RFC 8439 section 2.5.2 prints
+  them; r is clamped on the way in (the clamp is part of the algorithm). RFC
+  8439 requires a Poly1305 key to authenticate exactly ONE message, and the
+  placed design enforces it: words beyond msg_words are held at the input
+  arbiter, never mixed into a finished tag.
+
+  KNOWN INTERFACE LIMIT: the input is a 16-bit word stream, so a message with
+  an odd number of BYTES is not expressible here (three of the nine A.3
+  vectors are odd-length; they are gated at the golden model instead).
+
+file_format: 1

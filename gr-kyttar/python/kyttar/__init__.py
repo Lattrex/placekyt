@@ -131,6 +131,7 @@ from .lfsr_scrambler import lfsr_scrambler
 from .pack_k_bits import pack_k_bits
 from .crc16 import crc16
 from .chacha20_keystream import chacha20_keystream
+from .poly1305_mac import poly1305_mac
 from .chacha20_qr import chacha20_qr
 from .dot_product_mac import dot_product_mac
 from .conv_encoder_k7 import conv_encoder_k7
@@ -268,6 +269,7 @@ __all__ = [
     "pack_k_bits",
     "crc16",
     "chacha20_keystream",
+    "poly1305_mac",
     "chacha20_qr",
     "dot_product_mac",
     "conv_encoder_k7",

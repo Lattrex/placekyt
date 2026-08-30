@@ -3984,8 +3984,9 @@ with a reverse accumulation path, any FIFO whose fill and drain share a row.
 The head-on static check is general to every multi-cell block.
 
 **Gated by:** `verification/tests/test_chacha20_fixed_tap_ring.py` —
-`test_no_two_block_cells_rest_facing_each_other` (currently RED: it reports
-`[('bufA3', 'out')]`, which is the real defect, correctly) with its INV-4
+`test_no_two_block_cells_rest_facing_each_other` (RED at the time this entry
+was written, reporting `[('bufA3', 'out')]` — the real defect, correctly; GREEN
+since the 2026-08-30 re-fold, see the addendum below) with its INV-4
 negative `test_the_head_on_gate_catches_a_facing_pair`.
 
 **Related:** INV-48 (the forwarding rule this follows from), INV-52/INV-55
@@ -3993,6 +3994,45 @@ negative `test_the_head_on_gate_catches_a_facing_pair`.
 seals what is BEYOND it; this says the band itself cannot carry both
 directions), INV-19/INV-20 (the serialize-LOCK, which is the existing remedy for
 a different contention class — reconvergent fan-in — and is NOT what this needs).
+### ADDENDUM (2026-08-30, pass 9) — the fix LANDED, and it took BOTH shapes
+
+The block is `done`: all sixteen RFC 8439 §2.3.2 words, bit-exact and in
+order, on the built chip, `stop_reason == "QueueEmpty"`, and the head-on gate
+(`test_no_two_block_cells_rest_facing_each_other`) is GREEN. Three sharpenings
+of this invariant, all measured on the way:
+
+1. **Shape (b) alone is NOT sufficient.** With every spill moved onto its own
+   corridor (row 1 relay pads), the chip still wedged in a **FOUR-cell
+   circular wait** `add3(N) -> bufB3(E) -> bufA3(S) -> out(W) -> add3` — the
+   head-on pair's N-cell generalisation. Disjoint corridors can still form a
+   CYCLE of faces, and the cycle fills the moment the two waves overlap in
+   time. Shape (a) — the lap-close baton sourced from the END of the store
+   wave (`bufA3`, after its spill hand-off) — is what closed it: the release
+   is then causally later than every spill. **When a fold has any face cycle,
+   apply (a) as well as (b); the static 2-cycle check does not see N-cycles.**
+
+2. **A port word is NOT consumed independently of the cell it transits.** An
+   egress one cell away from the chip's output-port cell bursts every port
+   word THROUGH whatever block cell owns that port cell, and the word waits on
+   that cell's queues — measured as the exact two-cell circular wait rule 3
+   predicts (`out` at (9,1) holding north at `bufA3`'s cell while `bufA3`
+   held south at `out`; zero words on the wire). **The egress of a block that
+   covers its own output-port cell must BE the port cell.** From there the
+   write leaves on the chip edge and touches no other cell, and a
+   single-waypoint egress route never re-faces the cell (the route patch
+   faces an exit cell toward its first waypoint otherwise).
+
+3. **The store-count signature is now a live gate**, not just a diagnostic:
+   the on-chip gate asserts every stage stores 4/4 and releases 1/1, so a
+   reintroduced two-wave collision fails with the same reading that found it.
+
+**Gated by (updated):** `test_chacha20_fixed_tap_ring.py` — the head-on gate
+GREEN with its INV-4 negative, the 16-word ordered on-chip value gate, the
+store-count signature, and the walk-by-walk fold gate over the final 51-cell
+geometry (spill corridors, port-cell egress, `bufA3`'s hop-21 lap baton).
+
+---
+
 ## INV-57 — `MUL`/`MULHI` are SIGNED, so an exact unsigned 16x16->32 product needs BOTH operands under 2^15
 
 *(Number to be assigned at landing.)*
@@ -4434,3 +4474,75 @@ that re-introduces the real defect ON CHIP and asserts the gate sees it),
 **Related:** INV-33 (the overlap contract this extends to the panel), INV-31 and
 INV-47 (the panel tier), INV-13 (no unconditional GOTO — the same flag-discipline
 family), INV-4 (both gates carry proven negatives).
+
+
+## INV-NEXT — An EXIT cell's highest-addressed WRITE/JUMP are contested by TWO build passes: a declared backward jump and the external port pair cannot share a cell; RAW literals with build-time-resolved operands are the escape
+
+*(Number to be assigned at landing — parallel builders are running.)*
+
+Found 2026-08-30 finishing `ChaCha20KeystreamBlock`, whose egress must sit ON
+the chip's output-port cell (INV-56 addendum) and ALSO relay the pair-3 spill
+one hop west. Every claim measured on a real placed + routed + built chip.
+
+**THE MECHANISM.** Two independent build passes each rewrite instructions of a
+block's OUTPUT exit cell, selected BY ADDRESS:
+
+* `_apply_internal_feedback` resolves a DECLARED backward internal jump by
+  rewriting the cell's **highest-addressed JUMP** (INV-53);
+* the output-port sink fixup rewrites the **highest-addressed WRITE and JUMP**
+  to the port hand-off when `_output_cell_carries_handoffs(...)` is true
+  (the cell sources an `internal_connections` edge or holds an inline
+  `WRITE.CFG`) — and otherwise rewrites **EVERY WRITE and JUMP in the cell**.
+
+Three corollaries, each of which was hit:
+
+1. **A declared backward jump and the port pair cannot coexist in one cell.**
+   Both passes demand the highest slot; no entry order satisfies them
+   simultaneously. (Ordering the port pair last protects it from the feedback
+   pass only until a backward edge is declared, and vice versa.)
+2. **The FULL-CELL rewrite catches authored literals too.** With no internal
+   sources on the cell, the sink fixup rewrote the spill relay's literal
+   `WRITE @1, r` / `JUMP @1, e` into `@1, 0` port hand-offs: the relayed words
+   landed in the target's R0 and the trigger aimed at entry 0 — the target
+   cell executed ZERO times while the relay ran four, with nothing anomalous
+   anywhere else.
+3. **An exit cell with NO internal sources also keeps the ROUTE's face**, not
+   its authored one: `_reassert_internal_forward_faces` restores authored
+   faces only on cells that source an `internal_connections` edge. A transit
+   or relay duty that depends on the egress cell's resting face silently
+   breaks (measured: the spill transit bounced straight back to its sender on
+   `exit_face N`).
+
+**THE ESCAPE — the panel family's `RAW_OUTPUT_HOPS`, plus one discipline.**
+`RAW_OUTPUT_HOPS = True` opts the block out of the sink fixup AND of the
+route-facing of its exit cell, so the cell's authored program and authored
+resting face both survive. The block must then author the port pair itself —
+read the correct encoding off what the build's own patch resolved BEFORE
+opting out (for `x16_out` from its own port cell: `WRITE @1, 0` /
+`JUMP @1, 0`, emitted on the port-edge face) — and author the relay's
+literals with operands RESOLVED at `build_cell_programs` time from the target
+cell's real program (`CellProgramResolver.compute_entry_addresses` + its
+declared input registers), never hand-typed: entry addresses are
+params-dependent (INV-6/11) and a literal that is not derived rots.
+
+**SAY WHICH LAYER.** Toolchain (`placekyt/engine/build.py` — the sink fixup,
+the feedback pass, `_reassert_internal_forward_faces`); permanent until those
+passes match on authored intent rather than address. Until then this is a
+block-authoring contract, cheap to honour once known and invisible until hit.
+
+**REACH.** Any block whose output exit cell also does internal work — relays,
+spill turns, feedback sources — and any block that must place its egress on a
+port cell. The panel-backed family (`LZ4DecoderBlock`, `CWKeyerBlock`,
+`VaricodeDecoderBlock`, `GolayDecoderBlock`, …) already carries the flag for
+its own reasons; this entry records WHY the flag is the right tool for a
+non-panel block too, and the full-cell-rewrite failure mode that forces it.
+
+**Gated by:** `verification/tests/test_chacha20_fixed_tap_ring.py` — the
+on-chip value gate (whose 32 in-order words transit the authored literals),
+the store-count signature (which fails when the relay's literals are
+clobbered — the measured `bufB3 == 0` reading), and the second-batch gate.
+
+**Related:** INV-53 (the highest-address resolution rule this collides with),
+INV-56 (the deadlock campaign this closed), INV-50/INV-52 (authored faces vs
+the router's/build's), INV-6/11 (why the literals must be derived), INV-38
+(the report emitted by the gate that proved all of this).

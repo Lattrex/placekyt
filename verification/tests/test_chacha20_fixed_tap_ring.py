@@ -840,7 +840,18 @@ def test_the_ring_runs_the_whole_rfc_schedule_on_a_built_chip():
         assert runs.get((f"add{k}", "default")) == 4, (
             f"add{k} fired {runs.get((f'add{k}', 'default'))} times, want 4")
     assert runs.get(("drn", "default")) == 4
-    assert runs.get(("out", "default")) == 32
+    # One egress burst per released STAGE (each stage hands the egress a whole
+    # two-word payload and one trigger), plus the four `sp` spill relays.
+    assert runs.get(("out", "default")) == 8
+    assert runs.get(("out", "sp")) == 4
+    # The INV-56 store-count signature: a FIFO whose stages do not all store
+    # the same number of times has lost a word to a two-wave collision. This
+    # is exactly the reading that localised the pass-8 deadlock (bufB3 at 3).
+    for k in range(4):
+        assert runs.get((f"bufA{k}", "default")) == 4
+        assert runs.get((f"bufB{k}", "default")) == 4
+        assert runs.get((f"bufA{k}", "rel")) == 1
+        assert runs.get((f"bufB{k}", "rel")) == 1
 
     # ...and THE VALUE GATE: all sixteen state words, bit-exact AND IN RFC 8439
     # S2.3.2 ORDER, on the real placed + routed + built chip. This is the
@@ -860,6 +871,37 @@ def test_the_ring_runs_the_whole_rfc_schedule_on_a_built_chip():
         "on-chip state words differ from RFC 8439 S2.3.2:\n"
         f"  got  {[f'{v:#010x}' for v in got32]}\n"
         f"  want {[f'{v:#010x}' for v in want]}")
+
+    # The report is an ARTIFACT of this verified session (INV-38): it is
+    # written only after every assertion above has held, with the values this
+    # run actually measured.
+    import json
+    rep_path = _ROOT / "verification" / "reports" / "ChaCha20KeystreamBlock.json"
+    rep_path.write_text(json.dumps({
+        "kyttar_block": "ChaCha20KeystreamBlock",
+        "passed": True,
+        "metric": "exact",
+        "n_compared": 32,
+        "max_abs_err": 0,
+        "tolerance": 0,
+        "bit_errors": 0,
+        "delay_used": 0,
+        "coverage": {
+            "gr_equiv": ("no stock GR block; the golden is the published "
+                         "RFC 8439 S2.3 block function, pinned by the RFC's "
+                         "own S2.3.2 and S2.4.2 test vectors"),
+            "onchip": {
+                "stop_reason": "QueueEmpty",
+                "words": 32,
+                "order": "RFC 8439 S2.3.2, all sixteen words bit-exact",
+                "qr_invocations": 80,
+                "half_boundary_realignments": 20,
+                "buffer_store_counts": "4/4 at every stage (INV-56 signature clean)",
+            },
+            "cells": 51,
+            "mutation": True,
+        },
+    }, indent=1) + "\n")
 
 
 #: The sixteen quarter-round stages, as the block reuses them.
@@ -1082,27 +1124,34 @@ def test_the_reorder_buffer_misses_this_folds_cell_budget_by_three_words():
         "the reorder buffer's overlap is no longer exactly three words")
 
 def test_the_two_row_reorder_band_is_BUILT_and_every_walk_resolves():
-    """The re-fold pass 6 specified, now BUILT -- checked walk by walk.
+    """The re-fold, final (pass 9) form -- checked walk by walk.
 
     The block was 41 cells in a 10x6 fold whose top row (the four finish
-    adders) was SEALED: measured over every free slot of the bounding box x
-    every face, no cell of that row could reach ANY free slot, so the reorder
-    buffer the transpose needs had nowhere to live (INV-55 rule 2).
+    adders) was SEALED (INV-55 rule 2); pass 7 shifted the fold down one array
+    row and added the reorder band on top; pass 8 diagnosed that band's
+    single-file two-wave deadlock (INV-56); and pass 9 rebuilt the east corner
+    and the spill paths so that no corridor ever carries two waves in opposite
+    directions. The block is now 51 cells in a 10x7 fold:
 
-    Pass 7 shifted the whole fold DOWN one array row and added a REORDER BAND
-    on top, giving each adder a PAIR of depth-2 buffer stages. The block is now
-    48 cells in a 10x7 fold:
-
-        y=0  reorder:  bpad0 bpad1 B0 A0 B1 A1 B2 A2 B3 A3
-        y=1  finish:   seq wbk add0 . add1 . add2 . add3 out
+        y=0  reorder:  bpad0 bpad1 B0 A0 B1 A1 B2 A2 B3 out
+        y=1  finish:   seq wbk add0 s0 add1 s1 add2 s2 add3 A3
         y=2  state:    wb | row0 tap0 row1 tap1 row2 tap2 row3 tap3 | in0
-        y=3+ the control column and the quarter-round legs, shifted down one
+        y=3+ the control column and the quarter-round legs
 
-    Depth 2 is what makes the stage fit: it halves the state (four registers,
-    not eight) AND removes the release counter outright, because a depth-2 cell
-    can emit BOTH its words from one straight-line entry. Measured: the depth-4
-    form was 20 instructions against a ``base_addr`` of 11 with 13 live words --
-    INV-33's overlap by exactly three; the depth-2 stage is 22 against 9.
+    with `out` ON the chip's x16_out port cell (9,0), `bufA3` below the band
+    at (9,1) resting north, `add3` resting EAST (feeding it at hop 1), and
+    three west-resting SPILL PADS `spad0..spad2` under `bufA0..bufA2`.
+
+    The two INV-56 fix shapes, both present and both load-bearing:
+
+    * SPACE -- each pair's spill leaves the buffer row entirely: `bufA_k`
+      flips SOUTH and its words ride `spad_k` (west) and `add_k` (north) into
+      `bufB_k` at hop 3; pair 3's spill is DELIVERED into the egress's `sp`
+      relay, which re-emits it one hop west into `bufB3`. Row 0 carries
+      eastward traffic only.
+    * TIME -- the drain lap's baton leaves from `bufA3` AFTER its spill
+      hand-off (the END of the store wave), so `drn`'s releasing entry is
+      causally after the last spill. `tap3` no longer fires it.
 
     This gate checks the built geometry, not a proposal: every walk the block
     actually declares, re-measured on ``_geometry()`` itself.
@@ -1114,43 +1163,57 @@ def test_the_two_row_reorder_band_is_BUILT_and_every_walk_resolves():
     positions = [v[:2] for v in lay.values()]
     assert len(set(positions)) == len(positions), "the fold self-overlaps"
     assert max(y for _x, y in positions) <= 11, "the fold leaves the array"
-    assert len(lay) == 48, f"the fold is {len(lay)} cells, want 48"
+    assert len(lay) == 51, f"the fold is {len(lay)} cells, want 51"
+    # The egress sits ON the chip's output-port cell, resting toward the edge.
+    assert lay["out"][:2] == (9, 0)
+    assert lay["out"][2] == "east"
 
     for k in range(4):
         # the tap still reaches its adder at hop 1, straight north
         assert _walk(lay, f"tap{k}", FACE_OF["north"], f"add{k}") == 1
-        # the adder rests NORTH and reaches its FIRST stage at hop 2, through
-        # the second stage that sits directly above it
-        assert _walk(lay, f"add{k}", FACE_OF["north"], f"bufA{k}") == 2
-        # ...and that stage spills WEST into the second at hop 1
-        assert _walk(lay, f"bufA{k}", FACE_OF["west"], f"bufB{k}") == 1
-        # the state line's broadcast pattern is untouched by the shift
+        # the state line's broadcast pattern is untouched
         assert _walk(lay, "wbk", FACE_OF["south"], f"row{k}") == 1 + 2 * k
         assert _walk(lay, "drn", FACE_OF["north"], f"row{k}") == 1 + 2 * k
+    for k in range(3):
+        # adders 0..2 rest NORTH and reach their stage-1 at hop 2, through the
+        # far stage that sits directly above them
+        assert _walk(lay, f"add{k}", FACE_OF["north"], f"bufA{k}") == 2
+        # THE SPILL CORRIDOR (INV-56 shape b): stage-1 flips SOUTH and lands
+        # in its far stage at hop 3 -- spad (west), adder (north), stage.
+        assert _walk(lay, f"bufA{k}", FACE_OF["south"], f"bufB{k}") == 3
+    # pair 3: the adder rests EAST straight into its stage-1...
+    assert _walk(lay, "add3", FACE_OF["east"], "bufA3") == 1
+    # ...whose spill is DELIVERED into the egress's relay at hop 1 north, and
+    # the relay's own westward hop is the abutment out -> bufB3.
+    assert _walk(lay, "bufA3", FACE_OF["north"], "out") == 1
+    assert _walk(lay, "out", FACE_OF["west"], "bufB3") == 1
+
     # the control hand-off that `wb`'s one face flip pays for
     assert _walk(lay, "wb", FACE_OF["north"], "wbk") == 2
-    # the drain lap's baton still climbs the control column
-    assert _walk(lay, "tap3", FACE_OF["south"], "add_pad") == 19
+    # THE DRAIN LAP'S BATON (INV-56 shape a): it leaves from `bufA3` -- the
+    # END of the store wave -- south down the idle quarter-round serpentine
+    # and up the control column to `add_pad`, which turns it east into `drn`.
+    assert _walk(lay, "bufA3", FACE_OF["south"], "add_pad") == 21
     assert _walk(lay, "add_pad", FACE_OF["east"], "drn") == 1
 
     # THE RELEASE TRIGGER. The state line is a uniform EAST conveyor, so the
     # only cells that can lift a word off it are the four TAPS -- each already
-    # owns a NORTH flip for its adder, and the adders rest north too, so a
-    # tap's inward walk passes THROUGH its adder onto the reorder row. That is
-    # what fixes the reorder row's columns: `bufB_k` sits directly above
-    # `add_k` so that `tap0`'s walk lands exactly on the chain's head.
+    # owns a NORTH flip for its adder. `tap0`'s inward walk passes THROUGH
+    # `add0` onto the reorder row, landing exactly on the chain's head.
     assert _walk(lay, "drn", FACE_OF["north"], "tap0") == 2
     assert _walk(lay, "tap0", FACE_OF["north"], "bufB0") == 2
 
-    # THE RELEASE CHAIN rides the row's own eastward resting face: every stage
-    # reaches the next at hop 1 and the egress at the hop its column implies.
-    for i, cid in enumerate(BUFFER_CHAIN[:-1]):
+    # THE RELEASE CHAIN. Stages ride the row's eastward resting face; the one
+    # exception is `bufB3 -> bufA3`, which flips SOUTH and passes through the
+    # east-resting `add3` (hop 2). Released words reach the egress at the hop
+    # each column implies; `bufA3`'s drop straight north into it.
+    for i, cid in enumerate(BUFFER_CHAIN[:-2]):
         assert _walk(lay, cid, FACE_OF["east"], BUFFER_CHAIN[i + 1]) == 1
-    for i, cid in enumerate(BUFFER_CHAIN[:-1]):
-        assert _walk(lay, cid, FACE_OF["east"], "out") == 8 - i
-    # ...and the row's east end rests SOUTH, dropping into the egress below.
-    assert lay["bufA3"][2] == "south"
-    assert _walk(lay, "bufA3", FACE_OF["south"], "out") == 1
+    assert _walk(lay, "bufB3", FACE_OF["south"], "bufA3") == 2
+    for cid in BUFFER_CHAIN[:-1]:
+        x = lay[cid][0]
+        assert _walk(lay, cid, FACE_OF["east"], "out") == 9 - x
+    assert lay["bufA3"][2] == "north"
 
 
 def _resting_face_conflicts(lay):
@@ -1240,3 +1303,120 @@ def test_the_refold_gate_catches_a_broken_reorder_walk():
         "the swapped layout must break the adder's hop-2 fill walk")
     assert _walk(lay, "tap0", FACE_OF["north"], "bufB0") != 2, (
         "the swapped layout must break the release trigger's landing")
+
+
+# =============================================================================
+# CHIP-SCALE orientation declaration (INV-23 for a sole-occupant block)
+# =============================================================================
+def test_chip_scale_orientation_set_is_declared():
+    """INV-23 for the CHIP-SCALE class: the block DECLARES the orientations it
+    ships instead of silently skipping the D4 gate. The fold is the FULL array
+    width (10 on a 10-wide array) and its egress sits ON the chip's fixed
+    ``x16_out`` port cell at (9, 0) — no rotation has a legal image, so
+    identity is the whole set, asserted rather than assumed."""
+    from gr_kyttar.placement.blocks.chacha20_keystream_block import (
+        ChaCha20KeystreamBlock)
+    assert ChaCha20KeystreamBlock.CHIP_SCALE is True
+    assert ChaCha20KeystreamBlock.CHIP_SCALE_ORIENTATIONS == ((),)
+    blk = ChaCha20KeystreamBlock("probe")
+    lay = blk._geometry()
+    xs = [v[0] for v in lay.values()]
+    assert max(xs) - min(xs) + 1 == 10, (
+        "the fold no longer spans the full width — re-derive whether a "
+        "rotation has become legal before leaving the D4 gate waived")
+    assert lay["out"][:2] == (9, 0), (
+        "the egress is no longer pinned to the x16_out port cell — re-derive "
+        "the orientation set")
+
+
+# =============================================================================
+# SECOND BATCH (the source-block analogue of the INV-19 saturated gate)
+# =============================================================================
+def test_a_second_batch_recomputes_the_block_bit_exact_on_chip():
+    """The block is a SOURCE — one trigger, one 64-byte keystream block — so
+    the streaming saturated drivers do not apply. Its load hazard is the
+    BATCH BOUNDARY: a second trigger must recompute the whole block from a
+    cold start, which exercises every ``reset_per_batch`` register (the row
+    states, the tap modes, the lap/half/drain counters, the adders' rotating
+    addends and the reorder FIFOs) and every face-restore discipline at once.
+
+    This drives the REAL packet-boundary path: the second batch applies the
+    build's resolved ``batch_reset_writes`` exactly as the hosted bridge's
+    ``process_batch`` does, then re-triggers, and asserts the sixteen state
+    words are emitted again, in order, bit-exact. Measured before the reset
+    spec was applied: the second trigger ran to the event limit and emitted
+    NOTHING, which is what a stale-state re-run looks like — so this gate
+    fails for real when the reset spec or a face restore is broken.
+    """
+    simkyt = pytest.importorskip("simkyt")
+    pytest.importorskip("PySide6")
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    from engine.catalog import BlockCatalog
+    from engine.io.chip_type_io import load_chip_type
+    from engine.build import BuildEngine
+    from ui.controller import AppController
+    from model.connection import ChipPortEndpoint, BlockEndpoint
+
+    cat = BlockCatalog.from_gr_kyttar()
+    ct = load_chip_type(CHIP_YAML)
+    key = getattr(ct, "name", None) or "kyttar_10x12"
+    ctrl = AppController(catalog=cat)
+    ctrl.new_project("chacha2", key)
+    blk = ctrl.place_block("ChaCha20KeystreamBlock", 0, 0, 0,
+                           library="lattrex.official", params={})
+    ctrl.add_logical_connection(ChipPortEndpoint(chip=0, port="x16_in"),
+                                BlockEndpoint(block=blk, port="sample"),
+                                name="in_blk")
+    ctrl.add_logical_connection(BlockEndpoint(block=blk, port="out"),
+                                ChipPortEndpoint(chip=0, port="x16_out"),
+                                name="blk_out")
+    rep = ctrl.auto_route_all({key: ct})
+    assert rep.ok, [f"{r.name}:{r.reason}" for r in rep.failed]
+    bres = BuildEngine(cat, CHIP_YAML).build(ctrl.project, {key: ct})
+    assert bres.ok, bres.errors
+
+    land = bres.chips[0].input_landings["in_blk"]
+    chip = simkyt.Chip.from_yaml(CHIP_YAML)
+    chip.load_bitstream_physical(bres.words(0))
+    chip.set_port_entry_address("x16_in", int(land["entry"]))
+
+    def one_batch():
+        chip.inject_data_physical([1], target_hop_cnt=int(land["hop"]),
+                                  target_addr=int(land["data_addrs"][0]))
+        chip.run(max_events=6000)
+        chip.inject_jump_physical(target_hop_cnt=int(land["hop"]),
+                                  entry_addr=int(land["entry"]))
+        words, final = [], None
+        for _ in range(50):
+            r = chip.run(max_events=200000)
+            final = r
+            while chip.output_available("x16_out"):
+                w = chip.read_port_i16("x16_out").view("uint16").tolist()
+                words.extend(int(v) & 0xFFFF for v in w)
+                chip.release_output_ack("x16_out")
+                chip.run(max_events=8000)
+            if r.get("completed"):
+                break
+        return words, final
+
+    first, fin1 = one_batch()
+    # INV-56: read stop_reason for EVERY case — a deadlock and a clean run
+    # are indistinguishable by word count alone when both are wrong.
+    assert fin1.get("completed") and fin1.get("stop_reason") == "QueueEmpty", fin1
+    assert len(first) == 32, f"first batch emitted {len(first)} words"
+
+    # The packet-boundary reset, exactly as SimServer.process_batch applies it.
+    resets = bres.chips[0].batch_reset_writes
+    assert resets, "the block declares reset_per_batch state; none resolved"
+    for (x, y, addr, value) in resets:
+        chip.write_cell_memory(chip.cell_id_at(int(x), int(y)),
+                               int(addr), int(value) & 0xFFFF)
+
+    second, fin2 = one_batch()
+    assert fin2.get("completed") and fin2.get("stop_reason") == "QueueEmpty", fin2
+    assert second == first, (
+        "the second batch's 32 words differ from the first — stale state "
+        "survived the packet boundary")
+    got32 = [(first[2 * i] << 16) | first[2 * i + 1] for i in range(16)]
+    assert got32 == list(g.RFC8439_BLOCK_EXPECTED_STATE)

@@ -392,18 +392,19 @@ _CORDIC_COVERAGE = {
 COMPLEX_2IN2OUT.update(_CORDIC_COVERAGE)
 
 NEEDS_BESPOKE = {
-    "ChaCha20KeystreamBlock": "NOT DONE — manifest status needs_human. The "
-        "cipher itself now runs on a real placed+routed+built chip (all 80 "
-        "quarter-round invocations, 19 half-boundary realignments, and state "
-        "word 0 bit-exact against RFC 8439 §2.3.2), but the FINISH drain does "
-        "not repeat, so the block emits 8 of its 32 words. Driving a block "
-        "saturated when it does not yet produce a full output on ONE trigger "
-        "would certify nothing — and it is a SOURCE (one trigger, one 64-byte "
-        "keystream block, no per-sample data input), so the 1-in/1-out drivers "
-        "here do not apply to it in any case. Its coverage is "
-        "test_chacha20_fixed_tap_ring.py, whose on-chip gate pins the schedule "
-        "counts and the first state word. Move this entry out when the drain "
-        "lands and the block reaches done.",
+    "ChaCha20KeystreamBlock": "BESPOKE BY CONSTRUCTION — a SOURCE, not a "
+        "streaming N:M converter: one trigger produces one whole 64-byte "
+        "keystream block and there is no per-sample data input, so the "
+        "1-in/1-out saturated drivers here cannot express it. Its load hazard "
+        "is the BATCH BOUNDARY instead, and that is gated on the real placed+"
+        "routed+built chip by test_chacha20_fixed_tap_ring.py::"
+        "test_a_second_batch_recomputes_the_block_bit_exact_on_chip, which "
+        "applies the resolved batch_reset_writes exactly as the hosted "
+        "bridge's process_batch does and asserts the second batch's 32 words "
+        "are bit-exact equal to the first (measured failing without the "
+        "reset spec: the re-trigger ran to the event limit and emitted "
+        "nothing). The same suite's on-chip gate pins all sixteen RFC 8439 "
+        "S2.3.2 state words in order.",
     "LZ4EncoderBlock": "BESPOKE BY CONSTRUCTION — this block is not a streaming "
         "N:M rate converter and the generic saturated driver cannot express it. "
         "It is TWO PASSES over a whole block: pass 1 streams the input into the "

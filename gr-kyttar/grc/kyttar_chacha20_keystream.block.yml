@@ -1,0 +1,74 @@
+id: kyttar_chacha20_keystream
+label: Kyttar ChaCha20 Keystream
+category: '[Kyttar]/FEC'
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.chacha20_keystream(${device_id}, ${key}, ${nonce}, ${counter})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+- id: key
+  label: Key (32 bytes, hex)
+  dtype: string
+  default: '"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"'
+- id: nonce
+  label: Nonce (12 bytes, hex)
+  dtype: string
+  default: '"000000090000004a00000000"'
+- id: counter
+  label: Block counter
+  dtype: int
+  default: '1'
+
+inputs:
+- id: '0'
+  label: in
+  domain: stream
+  dtype: short
+
+outputs:
+- id: '0'
+  label: out
+  domain: stream
+  dtype: short
+
+documentation: |-
+  ChaCha20 block function (RFC 8439 section 2.3) — a placeKYT-native [Kyttar]
+  cryptographic primitive. There is no stock GNU Radio counterpart; the golden
+  reference is the published algorithm, pinned by the RFC's own section 2.3.2
+  (block function) and section 2.4.2 (encryption) test vectors, and the block
+  is verified bit-exact against them on the real placed + routed + built chip.
+
+  Twenty rounds over the 16-word ChaCha state, then the original state added
+  back word by word mod 2**32. This is EXACT 32-bit modular integer
+  arithmetic, not Q15 DSP: every addition wraps and nothing saturates.
+
+  The block is a SOURCE in behaviour: one input trigger word produces one
+  64-byte keystream block — the sixteen state words in section 2.3.2 order,
+  each carried as a hi/lo pair of raw 16-bit words (32 output words per
+  trigger). Set output_words="raw" on any sink reading this stream.
+
+  Key, nonce and counter are BUILD-TIME constants of the placed design (the
+  initial state they define is baked into the finish stage), exactly as
+  section 2.3 parameterises the block function. Key is 32 bytes and nonce 12
+  bytes, both given as hex strings; a wrong length raises rather than being
+  silently padded.
+
+  Ports:
+    in  (in):  trigger words — one keystream block per trigger
+    out:       raw 16-bit words, 32 per trigger (hi/lo pairs, RFC order)
+
+  Parameters:
+    Device ID: Which Kyttar device to use.
+    Key:       the 256-bit key, 64 hex digits, RFC 8439 little-endian parsing.
+    Nonce:     the 96-bit nonce, 24 hex digits.
+    Block counter: the 32-bit initial block counter.
+
+  Mapped by placeKYT (File -> Import GNURadio Flowgraph) to
+  ChaCha20KeystreamBlock.
+
+file_format: 1

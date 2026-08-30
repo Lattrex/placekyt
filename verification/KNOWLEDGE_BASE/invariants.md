@@ -4225,3 +4225,212 @@ hand-rolled driver.
 refinement), INV-6/11 (params-dependent entry addresses — the entry is
 resolved for you here too), INV-56 (`stop_reason` plus the event count is the
 pair that localises this in one run).
+
+## INV-61 — Five silent failures a placed panel-backed block can have: a multi-region panel, a stale-flag branch, a stale FACE constant, an input landing off cell 0, and a fold whose edges all deliver but slowly
+
+*(Number to be assigned at landing — parallel builders cannot see each other's
+KB additions, and three numbering collisions have already happened.)*
+
+**Found 2026-08-30 building `LZ4EncoderBlock`, the first block to use TWO panel
+regions at once.** Five separable rules, grouped because they share one property
+that makes them expensive: **every one of them places, routes, DRCs clean and
+BUILDS, and then does the wrong thing without raising anything.** Three are
+invisible to any model-level gate; two are invisible to the static layout checks
+as well. Each is stated with what it was measured to cost.
+
+Quick index:
+1. two panel regions that alias → a wrong answer of the RIGHT LENGTH;
+2. a branch with no flag-setter before it → the wrong branch, silently;
+3. an in-program FACE constant that outlived its fold → a run-time head-on
+   deadlock the layout check cannot see;
+4. an input landing that resolves off cell 0 → the whole first pass is a no-op;
+5. a fold where every edge delivers but the walks are long → saturation, not
+   deadlock.
+
+### 1. TWO REGIONS IN ONE PANEL MUST BE PROVEN DISJOINT. (toolchain — fixable, and now guarded)
+
+INV-31 introduced the panel as the memory tier and INV-47 as the place where a
+destination can be a DATA value. Both describe ONE table. A block that needs two
+— here the stored input (`address == byte position`) and a hash table — is
+partitioning a single 65536-word address space, and **`SramPanelDevice` wraps
+every address modulo its size** (`engine/sram_panel.py`, `addr % size_words`).
+
+**MEASURED:** with `window_words = 2**16` the hash table's base of 65536 aliased
+onto history address 0. The encoder then read hash slots as input bytes and
+produced a block that was **format-legal, the RIGHT LENGTH, and decoded to the
+WRONG payload.** Nothing raised. This is exactly the shape INV-33 describes for a
+cell whose state overlays its own instructions — an overlap that assembles,
+places, routes and returns a wrong answer silently — one tier up.
+
+**THE RULE:** a block declaring more than one panel region must (a) compute every
+region base from its own parameters, (b) REJECT in its constructor any
+combination whose regions do not fit disjointly in the panel, and (c) keep the
+region-base arithmetic in ONE cell, so the partition is checkable in one place
+rather than spread across every reader. In this block only the ADDR cell adds a
+base; no other cell ever holds an absolute panel address.
+
+**Corollary for `panel_requirements()`:** `words` must be the SUM of the regions,
+not the largest one. A short `words` under-allocates and the wrap returns.
+
+### 2. `MOVE` DOES NOT SET THE FLAGS. A branch after one reads whatever the last ALU op left. (hardware/ISA — permanent)
+
+This is stated in `PROGRAMMING_GUIDE.md` §4 ("The non-ALU ops — `HALT`, `MOVE`,
+`BR`, `WRITE`, `JUMP`, `LOAD` — do **not** touch the flags") and it is still the
+easiest defect to write, because the sequence *reads* like a test:
+
+```asm
+    MOVE R0, R{state:mat}     ; load the value...
+    BR.N  mzero               ; ...and branch on its sign   <-- WRONG
+```
+
+**MEASURED on a real chip**, twice in one block:
+
+* the TOKEN cell's `BR.N` read the stale `N` from a preceding `CMP mat, f15`,
+  which is negative for every `mat < 15`. The literals-only-tail path was
+  therefore taken for EVERY ordinary match: `lit=3 mat=1` emitted `0x30` for
+  `0x31`, `10/11` emitted `0xa0` for `0xab`, `14/14` emitted `0xe0` for `0xee`;
+* the length-run engine's caller dispatch used `BR.GE` after a `MOVE`, so which
+  caller it believed it had was whatever the last arithmetic left behind.
+
+**THE FIX IS FREE:** `SUB Rx, Rzero` both loads the accumulator AND sets the
+flags from the value itself, in one instruction — the same word count as the
+`MOVE` it replaces. The same trick gives a cheap "unconditional" local branch
+(INV-13 forbids a real `GOTO` near a `{write}`/`{jump}`): `SUB Rzero, Rzero` sets
+`Z`, and `BR.Z` after it always fires.
+
+**WHY IT MATTERS DISPROPORTIONATELY:** the Python model of a block has no flags,
+so **no model-level gate can see this class of defect at all** — not the golden,
+not the FSM twin, not a round-trip. Only the chip can. It is also silent: the
+program runs to completion, `stop_reason` is `"QueueEmpty"`, and the output is
+merely *wrong*.
+
+**THE CHEAP STATIC CHECK**, which needs no chip:
+
+```python
+code = [l.strip() for l in cp.assembly_template.splitlines()
+        if l.strip() and not l.strip().endswith(":")]
+for i, ln in enumerate(code[1:], 1):
+    if ln.startswith("BR.") and code[i - 1].startswith("MOVE"):
+        raise AssertionError(f"{ln} reads the flags of {code[i-1]!r}")
+```
+
+It over-reports where a label lets control arrive from elsewhere, so pair it with
+a per-block allowlist naming each exception and WHY the flags are known there —
+not with deletion.
+
+### 3. AN IN-PROGRAM FACE CONSTANT MUST BE DERIVED FROM THE LAYOUT. (authoring contract)
+
+INV-52 clause 1 says every path must RESTORE the resting face. This is the
+sibling failure: the path restores faithfully, **to the wrong face**, because the
+`is_face` DataWord is a LITERAL that outlived the fold it was written for.
+
+**MEASURED.** `LZ4EncoderBlock`'s OUT cell was copied from `LZ4DecoderBlock`,
+whose OUT rests EAST, and `DataWord("face_rest", 1)` came with it — while this
+block's fold rests OUT **WEST**. The cell restored itself to EAST after every
+egress burst; its EAST neighbour rests WEST. The two ping-ponged a single WRITE
+forever, its hop count climbing 22 → 31, and the run reported
+`stop_reason == "Deadlock"` after emitting only the first byte of the sequence.
+
+**Why the static head-on check does not catch it:** INV-56 clause 3 walks
+`default_layout()`, and the LAYOUT is innocent — it has no head-on pair. The
+PROGRAM created one at run time. Both checks are needed, and neither subsumes the
+other.
+
+**THE RULE:** never write a face code as a literal. Derive it:
+
+```python
+_FACE_CODE = {"south": 0, "east": 1, "west": 2, "north": 3}
+
+def _resting_face(self, cid):                 # a cell's own resting face
+    return _FACE_CODE[str(self.default_layout()[cid][2])]
+
+def _face_to(self, src, dst):                 # the face pointing src -> dst
+    ...                                       # from the two placed positions
+```
+
+Then a re-fold updates every constant automatically, and a copy-paste from
+another block fails loudly (the cells are not on a common row/column) instead of
+silently deadlocking. Keep `default_layout()` free of any call back into
+`build_cell_programs()` so the helpers cannot recurse.
+
+### 4. THE INPUT LANDING CELL MUST BE CELL 0. (toolchain — fixable)
+
+The corridor and the landing are resolved by two different mechanisms. The panel
+template draws the `x16_in` corridor to `panel_requirements()["input_cell"]`,
+but the HOST-INJECTION LANDING comes from the catalog's PortMap, which derives a
+block's external input from the FIRST cell's first input port — and
+`bus_router._target_input_cell` falls back to `placement.cells[0]`. The two agree
+only when the input cell IS cell 0.
+
+**MEASURED:** with another cell at index 0, the landing resolved to THAT cell's
+input register at THAT cell's position. Pass 1 was never entered; the chip ran
+cleanly to quiescence (`stop_reason == "QueueEmpty"`, **not** a deadlock) and
+committed ZERO panel writes, while placement, routing, DRC and the build all
+reported success. A block whose ids are chosen for INV-53's jump ordering must
+therefore pin the input cell at 0 and derive the rest of the order around it.
+
+Related, from the same pass: **a cell can satisfy the data/state budget and still
+have no room for its INPUT register.** The resolver allocates state into
+`range(max_data_addr + 1, 31 - instr_count)` and inputs into what is LEFT, so the
+failure appears only at build time as `No register space for input 'x'`. Pack
+data addresses with NO GAPS (state auto-allocates above `max_data_address`, so a
+hole below it is lost) and put the input count in the budget gate.
+
+### 5. "EVERY EDGE DELIVERS" IS NOT ENOUGH — WEIGHT EDGES BY HOW OFTEN THEY FIRE. (fold method)
+
+A fold score that asks only *"does this edge reach its target?"* accepts a RING,
+because a ring delivers everything — eventually, at up to `ring_length − 1` hops.
+INV-51 clause 1 already says a ring traps its interior; the sibling cost is that
+**a ring turns every hop into modular arithmetic**, so two physically ADJACENT
+cells can be 11 hops apart and the router will correctly compute 11. Under a
+per-sample inner loop those long-haul words saturate the ring and the block runs
+to `stop_reason == "EventLimit"` with no output — produced, not wedged.
+
+**MEASURED, including the negative result.** Adding a max-hop term to the fold
+score (penalise any edge over K hops) is the obvious fix and it is NOT
+sufficient: over ~500 annealing restarts across three slot shapes at K = 6 and
+K = 7, `LZ4EncoderBlock`'s best fold still needed **11 hops** for some edge. The
+long walks are forced by the EDGE GRAPH — 36 distinct cell-pair edges over 14
+cells with four 4-way hubs — not by a weak search.
+
+**THE RULE:** when a fold will not shorten, stop re-folding and **shrink the
+graph**. Count each cell's in- and out-degree first; a cell written by five
+others or writing four is a hub, and hubs are what force long walks. Then:
+
+* **weight the score by FIRING FREQUENCY.** A per-sample inner-loop edge and a
+  once-per-frame setup edge are not equally important, and treating them alike is
+  what lets a search "solve" the wrong problem;
+* **push a dispatch INTO its consumers.** A cell that exists only to fan one
+  arriving word out to N consumers has N expensive edges; if each consumer can
+  decide for itself whether the word is its own, that collapses to ONE broadcast
+  walk. This is INV-46's "prefer more cells doing less" applied to EDGES rather
+  than to instructions;
+* **check whether two cells can merge** — but MEASURE it: the merge that would
+  have removed five of these 36 edges is 41 instructions against 31 words.
+
+**SAY WHICH LAYER.** (1) is a toolchain/authoring contract; the wrap is real and
+correct hardware behaviour, what is missing is a guard, and this block now
+carries one. (2) is hardware/ISA and permanent. (3) is an authoring contract —
+the substrate behaviour is correct, the constant was stale. (4) is toolchain, in
+`bus_router._target_input_cell` and the PortMap derivation; it is fixable there
+(resolve the named port against every cell) and is a block-authoring contract
+until then. (5) is fold METHOD.
+
+**REACH.** (1) measured on one block, but the mechanism is in the shared
+`SramPanelDevice` and applies to any block declaring more than one region. (2)
+measured twice on one block; the flag rule is in the ISA and applies to every
+cell program ever written.
+
+**Gated by:** `verification/tests/test_lz4_encoder.py` —
+`test_the_two_panel_regions_never_overlap` (the constructor guard, both
+directions), `test_no_branch_reads_the_flags_of_a_MOVE` with
+`test_INV4_the_stale_flag_checker_sees_a_planted_defect`,
+`test_INV4_a_stale_flag_branch_in_the_token_cell_is_CAUGHT` (an INV-4 negative
+that re-introduces the real defect ON CHIP and asserts the gate sees it),
+`test_the_input_landing_cell_is_CELL_ZERO` +
+`test_the_portmap_resolves_the_external_ports_to_the_right_cells`, and
+`test_every_cell_fits_a_32_word_cell` (which now checks the INPUT registers too).
+
+**Related:** INV-33 (the overlap contract this extends to the panel), INV-31 and
+INV-47 (the panel tier), INV-13 (no unconditional GOTO — the same flag-discipline
+family), INV-4 (both gates carry proven negatives).

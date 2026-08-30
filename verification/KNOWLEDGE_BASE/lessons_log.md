@@ -110,6 +110,81 @@ compresses to 10.7% on chip. placekyt/tests 1219 passed, placement 364
 passed, GRC binding + saturation + legality suites green, engine and router
 untouched.
 
+## ChaCha20KeystreamBlock — DONE: both INV-56 fix shapes were needed, the egress belongs ON the port cell, and one cell cannot carry a backward jump AND the port pair 2026-08-30 (pass 9)
+
+**Headline: all sixteen RFC 8439 §2.3.2 state words, bit-exact AND IN ORDER, on
+the real placed + routed + built chip; `stop_reason == "QueueEmpty"`; promoted
+to `done`.** The pass went through FOUR measured deadlocks/mis-resolutions to
+get there, each with a distinct mechanism. Every one placed, routed, built and
+DRC'd clean.
+
+**1. Fix shape (b) alone — spills on their own corridor — was NOT enough.**
+The spills were moved off the buffer row entirely (each `bufA_k` flips SOUTH,
+its words riding a dedicated west-resting pad `spad_k` and the adder's
+northward column into `bufB_k` at hop 3), so the release row carries eastward
+traffic only. The chip still wedged: a **FOUR-cell circular wait**
+`add3(N) -> bufB3(E) -> bufA3(S) -> out(W) -> add3`, each holding the word the
+next had to accept — the head-on pair's N-cell generalisation. The spill
+CORRIDOR and the release CONVEYOR were disjoint, but they still formed a cycle
+of faces at the east corner, and the release (fired by `drn` in parallel with
+the store chain) arrived while the lap-4 spill was mid-corridor. **INV-56's
+static head-on check finds 2-cycles; an N-cycle of resting/live faces is just
+as fatal and only shows up under temporal overlap.**
+
+**2. Fix shape (a) — source the lap-close from the END of the store wave.**
+`tap3` used to fire the lap-close baton in PARALLEL with its store chain, and
+the baton always won the race (~35 instr vs ~40+): the release was EARLIER
+than the last spill by construction. Moving the baton to `bufA3` — emitted
+AFTER its spill hand-off, south at hop 21 down the idle QR serpentine to
+`add_pad` — makes `drn`'s releasing entry causally later than every spill.
+Store-count signature after: 4/4 at every stage (was `bufB3` 3).
+
+**3. A port word is NOT consumed independently of the cell it transits.**
+With the egress at (9,1) bursting NORTH, its port words entered the port cell
+(9,0) — owned by `bufA3` — and waited on that cell's queues; `bufA3`
+simultaneously held a release word SOUTH toward the egress: the exact two-cell
+circular wait the head-on gate warns about, live, zero words on the wire. THE
+EGRESS MUST SIT ON THE PORT CELL (main's 41-cell fold had this right all
+along): from there the port write leaves on the chip edge and touches no other
+cell, and a single-waypoint egress route never re-faces the cell.
+
+**4. One cell cannot carry both a DECLARED backward internal jump and the
+external port pair.** Promoted to INV-63 (see invariants.md). Two build
+passes each rewrite a "highest-addressed" instruction of the exit cell:
+`_apply_internal_feedback` resolves a backward jump into the highest JUMP
+(INV-53), and the output-port patch rewrites the highest WRITE/JUMP — or, when
+the exit cell sources no internal connection, EVERY write/jump (measured: the
+pair-3 spill relay's words landed in `bufB3`'s R0 with entry 0, `bufB3` stored
+ZERO times while the relay ran four). No program order satisfies both. The
+escape is the panel family's `RAW_OUTPUT_HOPS` + AUTHORED literal hops, with
+the literal dest registers and entry address RESOLVED from the target cell's
+real program at `build_cell_programs` time (`CellProgramResolver`), never
+hand-typed.
+
+**Also measured on the way:**
+* The build's route patch faces an egress cell toward its drawn route and
+  `_reassert_internal_forward_faces` restores authored faces ONLY on cells
+  that SOURCE an `internal_connections` edge — an egress with no internal
+  edges keeps the route's face, and a spill TRANSIT through it bounces
+  (measured: `exit_face N`, the spill returned to its sender).
+* The `reset_per_batch` mechanism is applied by the HOST
+  (`SimServer.process_batch` backdoor-writes `bres.chips[N].batch_reset_writes`);
+  a raw `inject_jump` second trigger without it runs to the EVENT LIMIT and
+  emits NOTHING. With the reset spec applied exactly as the bridge does, the
+  second batch recomputes all 32 words bit-exact — now gated
+  (`test_a_second_batch_recomputes_the_block_bit_exact_on_chip`), which is the
+  SOURCE-block analogue of the INV-19 saturated gate.
+* The port protocol from the port cell, read off the build's own patch before
+  opting out of it: `WRITE @1, 0` / `JUMP @1, 0`, emitted on the port-edge
+  face (EAST for x16_out).
+
+**Gate status:** 38/38 in `test_chacha20_fixed_tap_ring.py` (on-chip 16-word
+ordered value gate — mutation-proven by drn lap 4->3 — the INV-56 store-count
+signature, the head-on static gate now GREEN, the walk-by-walk fold gate with
+zero exemptions, the chip-scale declared-orientation gate, the second-batch
+gate); QR + golden 92; placekyt/tests 1219; orientation + saturation 442;
+binding/legality/reachability/chip-scale 682. Final fold: 51 cells, 10x7.
+
 ## ChaCha20KeystreamBlock — the release does not have a JUMP bug; it DEADLOCKS 2026-08-29 (pass 8)
 
 **Headline: pass 7's diagnosis was wrong, and the evidence it said was missing

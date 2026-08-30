@@ -36,6 +36,10 @@ CHIP_SCALE_GATES = {
     # rather than sitting in the quarantine list below.
     "FFT128Die0": "test_fft128_2p2s_example.py",
     "FFT128Die1": "test_fft128_2p2s_example.py",
+    # 51 cells, 10 wide on the 10-wide array with the egress ON the x16_out
+    # port cell -- identity is the whole orientation set, gated (with the
+    # geometric justification asserted) in its own suite.
+    "ChaCha20KeystreamBlock": "test_chacha20_fixed_tap_ring.py",
 }
 
 #: chip-scale classes that are NOT manifest-``done`` and so are not required to
@@ -43,7 +47,7 @@ CHIP_SCALE_GATES = {
 #: it is quarantined, and the registry test RE-CHECKS the manifest — a block
 #: that reaches ``done`` while parked here fails, rather than slipping through
 #: with no orientation coverage at all.
-CHIP_SCALE_QUARANTINED = ("FFT128Block", "ChaCha20KeystreamBlock")
+CHIP_SCALE_QUARANTINED = ("FFT128Block",)
 
 
 def _all_chip_scale_blocks():

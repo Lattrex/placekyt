@@ -1126,6 +1126,19 @@ def test_the_shared_face_constants_still_equal_the_layout():
         assert ef.get((C_HASH, port)) == C_INS, (port, ef)
     for port in ("s_i", "miss"):
         assert ef.get((C_VERIFY, port)) == C_SEQ, (port, ef)
+    # HASH's flip words are NOT is_face (they are the shared numerics), so the
+    # generic restore gate (`test_every_path_restores_the_resting_face`) cannot
+    # see this cell — check the INV-52 clause-1 discipline here instead: it
+    # flips exactly once and restores at the TAIL, to the resting code (zero).
+    cp = b.build_cell_programs()[C_HASH]
+    face_moves = [ln.strip() for ln in cp.assembly_template.splitlines()
+                  if "MOVE [FACE]" in ln]
+    assert len(face_moves) == 2, face_moves
+    assert face_moves[0].endswith("R{data:one}"), face_moves
+    assert face_moves[-1].endswith("R{data:zero}"), (
+        "HASH's last face move must RESTORE the resting face (south == zero) "
+        "at the tail — an unrestored face deflects every walk that crosses "
+        "the cell (INV-52 clause 1, measured 0/160 transits delivered)")
 
 
 def test_INV4_the_head_on_gate_catches_a_forced_pair():

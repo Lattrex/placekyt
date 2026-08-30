@@ -308,33 +308,59 @@ class ChaCha20KeystreamBlock(KyttarBlock):
     * the release trigger arriving: ``drn`` -> ``tap0.rel`` -> ``bufB0.rel``,
       both entries observed exactly once in the trace.
 
-    **WHAT DOES NOT WORK YET, stated exactly.** ``bufB0.rel`` executes and then
-    **neither of its outgoing jumps lands**: ``out.default`` never runs and
-    ``bufA0.rel`` never runs, so the block emits **zero** words. Measured, in
-    this order:
+    **WHAT DOES NOT WORK YET — the ROOT CAUSE, measured (pass 8).** The block
+    emits **zero** words because the chip **DEADLOCKS**: ``chip.run(...)``
+    returns ``stop_reason == "Deadlock"``. It is NOT a jump defect.
 
-    * it is NOT the geometry. Every walk resolves on the block's own walk
-      simulator — ``bufB0`` reaches ``bufA0`` at hop 1 and ``out`` at hop 8 on
-      its resting face — and the zero-exemption fold gate passes.
-    * it is NOT the word budget. Every cell is inside ``base_addr``; the
-      static budget gate passes.
-    * it is NOT the backward-JUMP rule. The chain's ``bufB_k -> bufA_k`` baton
-      is the cell's only backward edge AND its highest-addressed jump, which is
-      what INV-53 requires, and the gate for it passes.
-    * it is NOT the two-jumps-in-one-entry shape: with the chain baton removed
-      entirely, leaving ``rel`` a single ``{jump:o1l}``, ``out`` still never
-      runs.
-    * it is NOT the egress's four-register delivery alone: reverting to
-      one-word-per-trigger pushes the A stage over its budget and fails the
-      build, so that variant is not a control.
+    An earlier pass recorded this as "``bufB0.rel`` executes and neither of its
+    outgoing jumps lands" and looked in the jump resolution. **Both jumps
+    resolve correctly** — read straight out of the built bitstream
+    (``BuildResult.chips[0].cells``, which exposes every cell's resolved
+    32-word memory, entry address and face):
 
-    So the defect is in how the release jumps are RESOLVED, not in the fold, the
-    budget or the schedule, and it is the one thing left between this block and
-    §2.3.2 order. LAYER: block program / toolchain resolution — FIXABLE, not a
-    substrate or ISA wall. The next pass should dump the RESOLVED assembly and
-    hop counts for ``bufB0`` out of the built bitstream (the ``BuildResult``
-    does not expose them today, which is why this pass could not close it) and
-    compare them against the walk simulator's hops.
+    * ``[29] 0x72f3`` = ``JUMP @8 entry=19`` — and 19 IS ``out``'s entry addr;
+    * ``[30] 0x73d5`` = ``JUMP @1 entry=21`` — and 21 IS ``bufA0.rel``'s addr.
+
+    The words physically leave, too: the first release word pair is ``0xe4e7``
+    then ``0xf110`` — ``0xE4E7F110``, RFC 8439's word 0, correct.
+
+    **The real mechanism** is that the reorder band is ONE eastward single-file
+    row carrying TWO waves in OPPOSITE directions (INV-NEXT):
+
+    * the STORE wave travels WEST — each A stage spills its oldest word west
+      into its own B stage, once per drain lap;
+    * the RELEASE wave travels EAST — every stage's words ride the row to the
+      egress.
+
+    On the fourth drain lap they overlap and two abutting cells each hold the
+    word the other must accept::
+
+        bufA3 (9,0)  output_ready face=W -> neighbor 8 (bufB3)   # store spill
+        bufB3 (8,0)  output_ready face=E -> neighbor 9 (bufA3)   # release word
+
+    with the whole row queued behind them and ``out`` never executing. The
+    signature is cheap to spot: every stage stores 4 times **except ``bufB3``,
+    which stores 3** — the one spill that never landed. The margin is 83 ns:
+    ``drn`` fires the release that soon after ``bufA3``'s last store, while the
+    spill (which takes ~207 ns on every prior lap) is still in flight.
+
+    **There is also a HEAD-ON resting-face pair**, the degenerate two-cell form:
+    ``out`` rests NORTH at (9,1) and ``bufA3`` rests SOUTH at (9,0), directly at
+    each other. That is forced by the chip: ``x16_out`` IS cell (9,0), so the
+    router brings the egress net north from ``out`` into a block-owned cell
+    (``blk_out route = [(9,1), (9,0)]``).
+
+    **Measured dead ends** (do not repeat): sweeping ``out``'s resting face over
+    all four directions — all four deadlock, so breaking the head-on pair alone
+    is not enough; removing ``bufA3``'s spill — the collision just moves west;
+    shifting the band one column west — ``overlap`` DRC; ``bufA3`` resting EAST
+    onto the port — ``bufA0.o0h -> out.v0h`` becomes undeliverable.
+
+    **THE FIX is a re-fold**, in one of two shapes: (a) separate the waves in
+    TIME, sourcing the release trigger from the END of the store wave
+    (``bufB3``) rather than from ``drn`` in parallel with it; or (b) separate
+    them in SPACE, giving the store wave its own row. LAYER: block fold —
+    FIXABLE, not a substrate or ISA wall.
 
     **Do not use this block for keystream.** It currently emits NOTHING; before
     this pass it emitted 32 correct-but-transposed words. The cipher itself is

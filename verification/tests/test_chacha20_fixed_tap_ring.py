@@ -1153,6 +1153,77 @@ def test_the_two_row_reorder_band_is_BUILT_and_every_walk_resolves():
     assert _walk(lay, "bufA3", FACE_OF["south"], "out") == 1
 
 
+def _resting_face_conflicts(lay):
+    """Every ADJACENT pair of block cells whose resting faces point AT each other.
+
+    A cell forwards on its own resting face, so two abutting cells that rest
+    toward one another form a two-cell circular wait the moment both hold an
+    outgoing word: each is waiting for the other to accept. The simulator
+    reports it as ``stop_reason == "Deadlock"`` with no error from place, route,
+    build or DRC -- see INV-NEXT.
+
+    Returns a sorted list of ``(cell_a, cell_b)`` pairs.
+    """
+    delta = {"south": (0, 1), "east": (1, 0), "west": (-1, 0), "north": (0, -1)}
+    at = {(x, y): cid for cid, (x, y, _f) in lay.items()}
+    bad = set()
+    for cid, (x, y, face) in lay.items():
+        dx, dy = delta[face]
+        nbr = at.get((x + dx, y + dy))
+        if nbr is None:
+            continue
+        nx, ny, nface = lay[nbr]
+        ndx, ndy = delta[nface]
+        if (nx + ndx, ny + ndy) == (x, y):
+            bad.add(tuple(sorted((cid, nbr))))
+    return sorted(bad)
+
+
+def test_no_two_block_cells_rest_facing_each_other():
+    """INV-NEXT: a HEAD-ON resting-face pair is a two-cell deadlock.
+
+    This is the defect that made the built re-fold emit ZERO words while every
+    other measurement looked healthy -- all four adders fired four times, every
+    stage stored, the release trigger arrived and ``bufB0.rel`` executed. The
+    cause was not a dead jump at all: ``out`` rested NORTH at (9, 1) and
+    ``bufA3`` rested SOUTH at (9, 0), directly at each other, because the chip's
+    ``x16_out`` port cell IS (9, 0) and the fold had placed the reorder band's
+    last stage on top of it.
+
+    Measured on the built chip: ``out`` holding ``output_ready face=N ->
+    neighbor 9`` while ``bufA3`` held ``output_ready face=S -> neighbor 19``,
+    each waiting on the other, with the whole buffer row queued behind them and
+    ``stop_reason == "Deadlock"``.
+
+    The check is static and costs nothing, which is the point: nothing in place,
+    route, build or DRC reports it, and on chip it presents as "the output cell
+    never runs" -- which reads exactly like a mis-resolved jump and sent a whole
+    pass looking at the jump resolution.
+    """
+    from gr_kyttar.placement.blocks.chacha20_keystream_block import (
+        ChaCha20KeystreamBlock)
+    b = ChaCha20KeystreamBlock("headon")
+    bad = _resting_face_conflicts(b._geometry())
+    assert not bad, (
+        "these abutting cell pairs rest facing each other and will deadlock "
+        f"the moment both hold an outgoing word: {bad}")
+
+
+def test_the_head_on_gate_catches_a_facing_pair():
+    """INV-4 for the gate above: turn one cell around and it must fire."""
+    from gr_kyttar.placement.blocks.chacha20_keystream_block import (
+        ChaCha20KeystreamBlock)
+    b = ChaCha20KeystreamBlock("mutant")
+    lay = dict(b._geometry())
+    # `bufB0` (2, 0) rests EAST toward `bufA0` (3, 0). Turn `bufA0` around to
+    # face WEST and the two now point at each other.
+    x, y, _f = lay["bufA0"]
+    lay["bufA0"] = (x, y, "west")
+    bad = _resting_face_conflicts(lay)
+    assert ("bufA0", "bufB0") in bad, (
+        f"the head-on gate must catch the reversed pair; got {bad}")
+
+
 def test_the_refold_gate_catches_a_broken_reorder_walk():
     """INV-4 for the gate above. Move ONE buffer stage off its column and the
     fill walk must break -- the adder's hop-2 north write is what pins the

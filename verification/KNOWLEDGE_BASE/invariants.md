@@ -3810,17 +3810,36 @@ Freeing a word by **sharing a face constant with a numeric one** does work and
 is the general trick (`EAST` is numerically 1, so it doubles as a decrement or
 compare operand — the `wbk` idiom). It is what paid for the tap's relay.
 
-**STILL OPEN, and stated so the next pass does not re-derive it.** The band
-FILLS correctly on the real chip — every adder fires four times, every one of
-the eight stages stores four times, and the release trigger arrives — but the
-first stage's `rel` entry executes and **neither of its outgoing jumps lands**.
-Ruled out by measurement: the geometry (every walk resolves; the zero-exemption
-fold gate passes), the word budget (all cells inside `base_addr`), the
-backward-JUMP rule (INV-53 satisfied and gated), and the two-jumps-in-one-entry
-shape (removing the chain baton leaves the egress jump equally dead). LAYER:
-block program / toolchain resolution — **FIXABLE**, not a substrate wall. The
-missing evidence is the RESOLVED assembly and hop counts out of the built
-bitstream, which `BuildResult` does not currently expose.
+**~~STILL OPEN~~ — CORRECTED 2026-08-29 (pass 8). The "dead jump" reading was
+WRONG.** Pass 7 recorded this as "the first stage's `rel` entry executes and
+neither of its outgoing jumps lands", and looked for the fault in jump
+resolution. **Both jumps resolve correctly.** Read straight out of the built
+bitstream, `bufB0`'s `rel` entry is:
+
+```
+[21] 0x4060  <== ENTRY 'rel'
+[22] 0x62e1  WRITE @8 -> R1      (out.v0h)
+[24] 0x62e2  WRITE @8 -> R2      (out.v0l)
+[26] 0x62e3  WRITE @8 -> R3      (out.v1h)
+[28] 0x62e4  WRITE @8 -> R4      (out.v1l)
+[29] 0x72f3  JUMP  @8 entry=19   (out.default — entry 19 IS out's entry addr)
+[30] 0x73d5  JUMP  @1 entry=21   (bufA0.rel — entry 21 IS bufA0's rel addr)
+```
+
+Every field is right, and the trace shows the words physically leaving: the
+first release word is `0xe4e7` then `0xf110` — `0xE4E7F110`, RFC 8439's word 0,
+correct. **The real fault is a DEADLOCK, not a resolution failure**; see
+INV-NEXT below. `simkyt` reports it as `stop_reason == "Deadlock"`, which pass 7
+never read because it only inspected the trace and the emitted-word count.
+
+**And the missing evidence was already there.** Pass 7 recorded that
+`BuildResult` "does not expose the resolved assembly and hop counts". It does:
+`BuildResult.chips[N].cells` is `{(x, y): {"entry", "memory"[32], "face",
+"cell_id", "block", "routing_only", "classes"}}`, which is the complete resolved
+per-cell image. With `_is_instruction_addr`'s rule (an address below `entry` is
+a data word) and the v0.11 encoding (`op = word & 0xF000`, `HOP_CNT = bits[9:5]`
+with `@N = 31 - HOP_CNT`, entry/dest = `bits[4:0]`), a fifteen-line test-side
+disassembler prints the whole band. No engine change was needed.
 
 **REACH.** The fitting result (depth-2 halves the state and deletes the
 counter) is arithmetic and general. The layout-pinning argument is general for
@@ -3834,3 +3853,143 @@ face rules that make a band sealable at all), INV-49 (check whether a
 "permutation" is a CONSTANT before paying for a computed destination — here it
 is, and that is why the load map has no freedom), INV-51 (a gap inside the
 footprint is a dead end).
+
+---
+
+## INV-NEXT — A single-file conveyor carrying TWO waves in OPPOSITE directions deadlocks; and `stop_reason` is the first thing to read when a block emits nothing
+
+Added 2026-08-29 from `ChaCha20KeystreamBlock` pass 8. Three separable rules.
+The first is the defect; the second is the cheap static check that finds it; the
+third is a method lesson that cost this campaign an entire pass.
+
+### 1. READ `stop_reason` BEFORE ANYTHING ELSE
+
+`simkyt`'s `chip.run(...)` returns a dict whose keys are
+`completed`, `events_processed`, `simulation_time_ns`, **`stop_reason`** and
+`total_energy_pj`. When a block emits nothing, `stop_reason` distinguishes the
+two entirely different failure modes immediately:
+
+* `"QueueEmpty"` — the chip ran to quiescence. Nothing is stuck; the words were
+  never produced, or were produced and mis-addressed. **Look at the program.**
+* `"Deadlock"` — the chip is WEDGED. Some set of cells is in a circular wait.
+  The program may be perfect. **Look at the geometry.**
+
+**MEASURED, and this is the whole lesson:** the pass-7 fold reports
+`stop_reason == "Deadlock"`. Suppressing only the release trigger (one jump
+removed, nothing else) flips it to `"QueueEmpty"`. That one-line experiment
+localises the fault to the release path in a single run, and it is available
+before any disassembly.
+
+Note that `completed` is `False` for BOTH, and the emitted-word count is `0` for
+both, so neither of the two signals a driver usually checks tells them apart.
+A test-loop that spins `for _ in range(50): chip.run(...)` on a deadlocked chip
+gets `events_processed == 0` from the second iteration onward, forever.
+
+### 2. TWO WAVES, ONE CONVEYOR, OPPOSITE DIRECTIONS — the deadlock
+
+**THE RULE.** A cell forwards on its own resting face and holds its outgoing
+word until the neighbour accepts it. So a row of cells that all rest EAST is a
+one-way conveyor, and **any traffic that must travel WEST along that same row
+must never be in flight at the same time as eastward traffic**. When both are,
+two abutting cells each hold a word the other must accept, and the whole row
+backs up behind them.
+
+**MEASURED on `ChaCha20KeystreamBlock`'s reorder band.** The band is one
+eastward row of eight buffer stages. It carries two different waves:
+
+* the STORE wave, westward — each A stage spills its oldest word WEST into its
+  own B stage, once per drain lap;
+* the RELEASE wave, eastward — each stage's four words ride the row east to the
+  egress.
+
+On the fourth (last) drain lap they overlap, and the chip wedges. The trace
+shows the circular wait exactly:
+
+```
+bufA3 (9,0)  output_ready face=W -> neighbor 8 (bufB3)   # store spill, westward
+bufB3 (8,0)  output_ready face=E -> neighbor 9 (bufA3)   # release word, eastward
+```
+
+with `bufA2`, `bufB2`, `bufA1`, `bufB1`, `bufA0`, `bufB0` all queued behind, and
+`out` never executing at all. The store-count signature is diagnostic and cheap:
+**every stage stored 4 times except `bufB3`, which stored 3** — the one spill
+that never landed.
+
+**The timing, so the margin is on record.** On each of the first three laps
+`bufA3.default` is followed ~207 ns later by `bufB3.default`. On the fourth,
+`drn` fires the release at t=1796686.6, which is **83 ns** after `bufA3` stored
+at t=1796603.6 — while that spill is still in flight. The two waves are not
+merely adjacent in time, they overlap.
+
+**A HEAD-ON RESTING-FACE PAIR is the degenerate two-cell case**, and this fold
+has one of those too: `out` rests NORTH at (9,1) and `bufA3` rests SOUTH at
+(9,0), pointing directly at each other. That happened because **the chip's
+`x16_out` port cell IS (9,0)** (`kyttar_10x12.yaml`: `x16_out` at
+`{x: 9, y: 0, face: east}`) and the fold placed the band's last stage on top of
+it, so the router had to bring the egress net NORTH from `out` into a cell the
+block itself owns: `blk_out route = [(9,1), (9,0)]`.
+
+**Measured dead ends, so the next pass does not repeat them:**
+* sweeping `out`'s resting face over all four directions — **all four
+  deadlock.** Breaking the head-on pair alone is NOT sufficient, because the
+  general two-wave collision at `bufB3` remains;
+* removing `bufA3`'s spill — still deadlocks (the collision just moves west);
+* shifting the band one column west to put `out` on the port cell — `overlap`
+  DRC, `bpad0` has nowhere to go;
+* `bufA3` resting EAST onto the port — breaks the conveyor:
+  `bufA0.o0h -> out.v0h` is then undeliverable;
+* `out` at (9,1) with `bufA3` at (9,1)/(9,0) swapped — DRC rejects
+  `bufB3.nxt -> bufA3.rel` as not deliverable on any face.
+
+**THE FIX is a re-fold, and it is one of two shapes.** Either (a) separate the
+two waves in TIME — the release must not start until the last store wave has
+fully drained, which needs a quiescence signal the drain does not currently have
+(firing it from the END of the store wave rather than from `drn` in parallel
+with it); or (b) separate them in SPACE — give the store wave its own row so the
+release row carries eastward traffic only. (b) is the INV-46 move and is
+structurally safer; (a) is cheaper if a trigger can be sourced from `bufB3`.
+
+**SAY WHICH LAYER.** Block fold — **FIXABLE**, not a substrate or ISA wall. The
+substrate behaviour (a cell holds its outgoing word until the neighbour accepts)
+is permanent and correct; what is wrong is a LAYOUT that runs two opposed waves
+over one single-file row.
+
+### 3. THE STATIC CHECK — a head-on pair costs nothing to find
+
+Nothing in place, route, build or DRC reports either shape. The two-cell case is
+findable from `_geometry()` alone, with no chip run:
+
+```python
+delta = {"south": (0, 1), "east": (1, 0), "west": (-1, 0), "north": (0, -1)}
+at = {(x, y): cid for cid, (x, y, _f) in lay.items()}
+for cid, (x, y, face) in lay.items():
+    dx, dy = delta[face]
+    nbr = at.get((x + dx, y + dy))
+    if nbr is None:
+        continue
+    nx, ny, nface = lay[nbr]
+    ndx, ndy = delta[nface]
+    assert (nx + ndx, ny + ndy) != (x, y), f"{cid} and {nbr} rest facing each other"
+```
+
+The general N-cell case is not static — it depends on which waves are live at
+once — but the store/release overlap has a cheap on-chip signature: **compare
+each stage's store count.** A FIFO whose stages do not all store the same number
+of times has lost a word to a collision.
+
+**REACH.** Measured in detail on one block. The mechanism is general to any
+multi-cell block with a shared uniformly-faced conveyor carrying traffic in both
+directions — reorder buffers, shift chains that spill backward, systolic arrays
+with a reverse accumulation path, any FIFO whose fill and drain share a row.
+The head-on static check is general to every multi-cell block.
+
+**Gated by:** `verification/tests/test_chacha20_fixed_tap_ring.py` —
+`test_no_two_block_cells_rest_facing_each_other` (currently RED: it reports
+`[('bufA3', 'out')]`, which is the real defect, correctly) with its INV-4
+negative `test_the_head_on_gate_catches_a_facing_pair`.
+
+**Related:** INV-48 (the forwarding rule this follows from), INV-52/INV-55
+(the face and sealed-band rules — INV-55 rule 2 says a uniformly-faced band
+seals what is BEYOND it; this says the band itself cannot carry both
+directions), INV-19/INV-20 (the serialize-LOCK, which is the existing remedy for
+a different contention class — reconvergent fan-in — and is NOT what this needs).

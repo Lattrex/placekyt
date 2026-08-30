@@ -9,6 +9,64 @@ block-specific gotcha. Promote anything that generalizes across block classes in
 and superseded material merged into the surviving entries; no durable lesson was
 dropped) — append new entries above the oldest ones as before.
 
+## ChaCha20KeystreamBlock — the release does not have a JUMP bug; it DEADLOCKS 2026-08-29 (pass 8)
+
+**Headline: pass 7's diagnosis was wrong, and the evidence it said was missing
+was already in `BuildResult`.** Two corrections, both worth more than the fix.
+
+**1. `BuildResult` DOES expose the resolved per-cell image.** Pass 7 closed
+saying "the missing evidence is the RESOLVED assembly and hop counts out of the
+built bitstream, which `BuildResult` does not currently expose", and stopped.
+It does expose them: `bres.chips[N].cells` is `{(x, y): {"entry", "memory"[32],
+"face", "cell_id", "block", "routing_only", "classes"}}`. With
+`_is_instruction_addr`'s rule (an address below `entry` is a data word) and the
+v0.11 encoding (`op = word & 0xF000`; `HOP_CNT = bits[9:5]`, `@N = 31 - HOP_CNT`;
+entry/dest = `bits[4:0]`), a ~15-line test-side disassembler prints any cell.
+**No engine change was needed for the observability this pass was chartered to
+add.** Cost of not looking: one whole pass.
+
+**2. The jumps were never dead.** `bufB0.rel` resolves to
+`[29] JUMP @8 entry=19` (19 IS `out`'s entry) and `[30] JUMP @1 entry=21`
+(21 IS `bufA0.rel`). The words physically leave: the first release pair is
+`0xe4e7`/`0xf110` = `0xE4E7F110`, RFC 8439 word 0, correct.
+
+**The actual root cause: `stop_reason == "Deadlock"`.** The reorder band is one
+eastward single-file row carrying two waves in OPPOSITE directions — the STORE
+wave spills WEST (each A stage into its own B stage, once per drain lap) and the
+RELEASE wave rides EAST to the egress. On the fourth drain lap they overlap and
+two abutting cells each hold the word the other must accept:
+
+```
+bufA3 (9,0)  output_ready face=W -> neighbor 8 (bufB3)   # store spill, westward
+bufB3 (8,0)  output_ready face=E -> neighbor 9 (bufA3)   # release word, eastward
+```
+
+Promoted to **INV-NEXT**, with the head-on static check and its INV-4 mutant.
+
+**THE METHOD LESSON, which is the reusable part.** When a block emits nothing,
+**read `chip.run(...)["stop_reason"]` FIRST.** `completed` is `False` and the
+word count is `0` for both failure modes, so neither tells them apart, but:
+
+* `"QueueEmpty"` = ran to quiescence -> look at the PROGRAM;
+* `"Deadlock"` = wedged in a circular wait -> look at the GEOMETRY.
+
+Pass 7 read the trace and the word count, saw `bufB0.rel` execute and no output,
+and concluded "the jump didn't land" — a program-layer story for a
+geometry-layer fault. One field, available on every run, would have redirected
+the entire pass. And the confirming experiment is one line: suppress ONLY the
+release trigger and the chip flips to `"QueueEmpty"`.
+
+**Diagnostic signatures worth reusing.** A FIFO whose stages do not all store
+the same number of times has lost a word to a collision — here every stage
+stored 4 times except `bufB3`, which stored 3. And a head-on resting-face pair
+is findable statically from `_geometry()` alone, with no chip run, in ~10 lines.
+
+**Measured dead ends** (all four `out` resting faces deadlock; removing
+`bufA3`'s spill just moves the collision west; shifting the band one column west
+hits `overlap` DRC; `bufA3` resting EAST breaks `bufA0.o0h -> out.v0h`). The
+fix is a re-fold — separate the two waves in time or in space — and was out of
+this pass's scope. **The block still emits nothing; do not use it.**
+
 ## ChaCha20KeystreamBlock — the reorder band is BUILT; the release jumps do not land 2026-08-29 (pass 7)
 
 **What was executed.** The two-row re-fold pass 6 specified. The whole 10x6 fold

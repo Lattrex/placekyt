@@ -1538,6 +1538,24 @@ def _encode_on_chip(project, bres, raw_bytes, idle_max=60, budget=20000):
                 idle = 0
                 out.extend(w & 0xFFFF for w, _d, _t in got)
             else:
+                # RE-ISSUE A DROPPED PANEL-ACK RELEASE. MEASURED: the in-fabric
+                # panel bridge occasionally drops the release of a held port
+                # ack when a ``run(max_events=...)`` boundary lands inside the
+                # capture window — the device HAS the word (its register file
+                # shows it), the controller stays stalled mid-burst, and the
+                # chip drains to QueueEmpty with the scan half done. Which
+                # payload hits it depends on the boundary phase (n=492 wedged
+                # where n=416 completed, and sweeping max_events MOVED the
+                # wedge). ``PanelDriver.step`` carries this exact recovery for
+                # the same reason ("stalled on a word we have NOT yet seen…
+                # release it"); this is that idiom for the self-pumping API.
+                # Releasing loses nothing: the capture already reached the
+                # device, only the hand-back to the stalled cell was dropped.
+                if chip.is_idle and chip.any_panel_ack_pending() \
+                        and chip.release_output_ack("x1_out"):
+                    state["nudges"] = state.get("nudges", 0) + 1
+                    idle = 0
+                    continue
                 idle += 1
                 if idle > limit:
                     return
@@ -1553,7 +1571,12 @@ def _encode_on_chip(project, bres, raw_bytes, idle_max=60, budget=20000):
     chip.queue_words_physical("x16_in", [
         _wr(lin["hop"], lin["data_addrs"][0]), EOB_SENTINEL,
         _jp(lin["hop"], lin["entry"])])
-    pump(20 * idle_max, budget)
+    # The scan of an INCOMPRESSIBLE payload emits nothing until the tail (all
+    # misses -> one literals-only sequence at the very end), so the idle
+    # tolerance must scale with the input: ~2000 silent positions of scanning
+    # is a normal, healthy run for the `random` payload.
+    tail_idle = max(20 * idle_max, 30 * len(raw_bytes))
+    pump(tail_idle, max(budget, tail_idle + 4000))
     return out, dev, state["stop"]
 
 

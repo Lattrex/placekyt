@@ -758,38 +758,83 @@ class LZ4EncoderBlock(KyttarBlock):
         # answer of the RIGHT length, silently).
         #
         # It abuts the controller from the NORTH and rests facing it, so every
-        # hand-off is a 1-hop resting write — the (9,10)-relative slot is the
-        # only position besides ADDR's that can reach the controller at all,
-        # because a word transiting ANY other cell is forwarded on that cell's
-        # own face, never into the port corner.
+        # word it emits rides its resting face into the port corner — the
+        # (0,-1)-relative slot is the only position besides ADDR's that can
+        # reach the controller at all, because a word transiting ANY other cell
+        # is forwarded on that cell's own face, never into the port corner.
         #
-        # One entry does the model's exact slot step: READ the old slot, then
-        # INSERT i+1 at the same address. Order is guaranteed by the port
-        # protocol (SRAM_PANEL.md §5: the panel drains port words in time
-        # order), so the pushed value is always the PRE-insert slot. The insert
-        # rides the controller's `set_addr` + `write` pair — no controller
-        # change; `set_addr` also resets the READ counter, which is harmless
-        # because every read in this design is an addressed `lookup`.
+        # IT SPEAKS THE RAW PANEL REGISTER PROTOCOL, TRANSITING THE CONTROLLER.
+        # The first design routed the transaction through the controller's
+        # `lookup` + `set_addr` + `write` entries — three jumps from one
+        # activation. MEASURED on the built chip: the second jump's words
+        # arrive while the controller is stalled MID-PORT-BURST on the
+        # lookup's held-ack handshake, and on some (deterministic, payload-
+        # dependent) alignments the whole port wedges — the panel held an ack
+        # forever, the chip drained to QueueEmpty with the scan half done
+        # (n=492 died at position 3; n=416 completed; the identical program).
+        # The cure is to give the controller NOTHING to execute: this cell
+        # emits the panel REGISTER words itself (SRAM_PANEL.md §2-3), hop @2 —
+        # one transit THROUGH the port cell (a transiting word is forwarded on
+        # the cell's face, south, straight out the port; only a LANDING word
+        # executes there) plus the port exit. The port serializes the words in
+        # emission order, so the READ trigger always precedes the COMMIT.
         #
-        # The lookup's return needs NO phase word: RET counts it (five reads per
-        # scan position, the fifth is the slot — see RET).
+        # THE COMMIT IS DEFERRED BY ONE PROBE, and that is load-bearing. A first
+        # revision committed right after its own read trigger (R2 + the R0
+        # commit, 3 more port words). MEASURED on the built chip: the slot's
+        # push-read return races those trailing words — the return reaches
+        # VERIFY and (on a HIT) MATCH's first read arrives at the controller
+        # while the commit pair is still stalling through the port's held-ack
+        # handshake, the two protocol streams interleave at the panel
+        # registers, and the port wedges (n=492 died at position 125 with
+        # MATCH holding a candidate byte forever; every smaller case passed).
+        # Deferring the commit to the START of the next probe makes the cell
+        # emit NOTHING after its read trigger, so no INS word is ever in
+        # flight when the return spawns new controller traffic — and the
+        # PANEL-VISIBLE ORDER IS UNCHANGED: read(a_p), write(a_p, p+1),
+        # read(a_p1) is exactly the model's sequence, because the commit still
+        # precedes the next read. The final probe's insert never commits;
+        # nothing reads the table after the scan, so the output cannot see it.
+        #
+        # THREE protocol facts carry the cell's small size:
+        # * the panel's R5 (address) persists until rewritten and the read-out
+        #   descriptors R3/R4 are rewritten by EVERY controller read with the
+        #   same build-time constants (`read_wr_desc`/`read_jp_desc`), so this
+        #   cell writes neither — every scan position begins with four history
+        #   reads through the controller, which seed R3/R4 before the first
+        #   probe can trigger;
+        # * the deferred commit needs only R5 (address), R2 (payload), R0
+        #   (trigger); the new lookup only R5 and R1;
+        # * the return lands on RET exactly like every other read — told apart
+        #   by COUNT (five reads per position, the fifth is the slot; see
+        #   RET). No phase write is needed, which is just as well: this cell
+        #   rests facing the controller and has no walk to RET at all.
+        #
+        # `sa` seeds to the table base and `sv` to 0, so the first activation's
+        # "previous commit" writes EMPTY (0) to slot 0 — a semantic no-op.
+        _hop2 = self._panel_hop + 1          # transit the port cell + exit
         ins = CellProgram(
             inputs=[Port("h"), Port("v")],
-            outputs=[Port("rd"), Port("sk"), Port("pt")],
+            outputs=[],
             entries=[EntryPoint("go")],
             data=[DataWord("htbase", htb & 0xFFFF, address=1)],
+            state=[StateVar("sa", register=2, initial_value=htb & 0xFFFF),
+                   StateVar("sv", register=3, initial_value=0)],
             assembly_template=(
                 "go:\n"
+                # 1. COMMIT the PREVIOUS probe's insert.
+                "    MOVE R0, R{state:sa}\n"
+                f"    WRITE @{_hop2}, 5\n"           # panel R5 := prev address
+                "    MOVE R0, R{state:sv}\n"
+                f"    WRITE @{_hop2}, 2\n"           # panel R2 := prev i + 1
+                f"    JUMP @{_hop2}, 0\n"            # COMMIT
+                # 2. LOOK UP this probe's slot (the OLD value, pre-insert).
                 "    ADD R{in:h}, R{data:htbase}\n"  # R0 = the ABSOLUTE address
-                "    MOVE R{in:h}, R0\n"             # keep it for the seek
-                "    {write:rd}\n"                   # ctl.data = ht_base + h
-                "    {jump:rd}\n"                    # ctl.lookup — read OLD slot
-                "    MOVE R0, R{in:h}\n"
-                "    {write:sk}\n"                   # ctl.data = ht_base + h
-                "    {jump:sk}\n"                    # ctl.set_addr (wr_addr := a)
-                "    MOVE R0, R{in:v}\n"
-                "    {write:pt}\n"                   # ctl.data = i + 1
-                "    {jump:pt}\n"                    # ctl.write — the INSERT
+                "    MOVE R{state:sa}, R0\n"         # remember it for step 1
+                f"    WRITE @{_hop2}, 5\n"           # panel R5 := ht_base + h
+                f"    JUMP @{_hop2}, 1\n"            # READ -> push lands on RET
+                # 3. Remember the value to insert; nothing more leaves the cell.
+                "    MOVE R{state:sv}, R{in:v}\n"
                 "    HALT\n"
             ),
         )
@@ -1550,9 +1595,6 @@ class LZ4EncoderBlock(KyttarBlock):
             (C_ADDR, "setph", C_RET, "ph"),
             (C_ADDR, "rd", C_CTL, "data"),
             (C_ADDR, "st", C_CTL, "data"),
-            (C_INS, "rd", C_CTL, "data"),
-            (C_INS, "sk", C_CTL, "data"),
-            (C_INS, "pt", C_CTL, "data"),
             (C_RET, "to_hash", C_HASH, "v"),
             (C_RET, "to_slot", C_VERIFY, "v"),
             (C_RET, "to_match", C_MATCH, "v"),
@@ -1598,9 +1640,6 @@ class LZ4EncoderBlock(KyttarBlock):
             (C_SEAL, "adv", C_FRAME, "adv"),
             (C_ADDR, "rd", C_CTL, "lookup"),
             (C_ADDR, "st", C_CTL, "write"),
-            (C_INS, "rd", C_CTL, "lookup"),
-            (C_INS, "sk", C_CTL, "set_addr"),
-            (C_INS, "pt", C_CTL, "write"),
             (C_RET, "to_hash", C_HASH, "byte"),
             (C_RET, "to_slot", C_VERIFY, "slot"),
             (C_RET, "to_match", C_MATCH, "got"),

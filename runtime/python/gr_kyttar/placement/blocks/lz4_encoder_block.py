@@ -84,25 +84,34 @@ EOB_SENTINEL = 1 << 8
 # position, so pass 1 was never entered — the chip ran cleanly to quiescence
 # (``stop_reason == "QueueEmpty"``) and committed ZERO panel writes. The input
 # landing cell must be cell 0.
+#
+# The rest of the numbering makes every internal JUMP edge FORWARD except the
+# three that are backward by design (SEQ→FRAME ``go_seq``, LENRUN→LITS
+# ``to_lits``, SEAL→FRAME ``adv``), each of which is its cell's single,
+# highest-addressed jump (INV-53, gated). INS sits BELOW C_CTL so its two
+# controller jumps (``set_addr`` + ``write``) stay forward — id 14 there was
+# measured as TWO backward jumps in one cell, which the build silently halves.
 C_INGEST = 0     # pass 1: the input landing cell (PINNED — see above)
-C_RET = 1        # the SINGLE push-read return point; dispatches by phase
+C_RET = 1        # the SINGLE push-read return point; dispatches by phase+count
 C_FRAME = 2      # the sequence's literal-run bounds, fanned out
 C_VERIFY = 3     # the hash-slot test and the offset
 C_MATCH = 4      # the compare engine
 C_SEQ = 5        # the pass-2 driver: the position cursor and the scan loop
 C_LITS = 6       # the literal replay loop
 C_HASH = 7       # the rolling 4-byte hash
-C_ADDR = 8       # the panel port: region base + read issue
-C_TOKEN = 9      # the token's two nibbles
-C_CTL = 10       # the embedded SramControllerBlock
-C_SEAL = 11      # the sequence epilogue: offset, match-length re-arm, hand-back
-C_LENRUN = 12    # the shared length-continuation engine
-C_OUT = 13       # the egress
+C_ADDR = 8       # the panel port for the HISTORY region: read issue + phase
+C_INS = 9        # the panel port for the HASH-TABLE region: lookup + insert
+C_TOKEN = 10     # the token's two nibbles
+C_CTL = 11       # the embedded SramControllerBlock
+C_SEAL = 12      # the sequence epilogue: offset, match-length re-arm, hand-back
+C_LENRUN = 13    # the shared length-continuation engine
+C_OUT = 14       # the egress
 
-PH_HASH = 0      # a byte for the rolling hash
+PH_HASH = 0      # a byte for the rolling hash — AND the hash-table slot, which
+                 # RET tells apart by COUNTING (every scan position is exactly
+                 # four history reads then one table read; see the RET cell)
 PH_MATCH = 1     # either side of a compare step (MATCH tells them apart itself)
 PH_LIT = 2       # a literal being replayed into the output
-PH_HTAB = 3      # a hash-table slot
 
 
 def hash4(b0: int, b1: int, b2: int, b3: int,
@@ -294,41 +303,43 @@ class LZ4EncoderBlock(KyttarBlock):
     Pass 1 stores only. It deliberately does NOT also build the hash table — see the
     measured dead end in :func:`encode_model`.
 
-    The cell decomposition (8 cells + the panel)
-    --------------------------------------------
+    The cell decomposition (15 cells + the panel)
+    ---------------------------------------------
     Split so each cell owns exactly the state it uses, per INV-46/INV-49 ("prefer
     more cells doing less"; cells are the surplus resource, words and instruction
     addresses are the scarce ones):
 
-    ===== ================== ==========================================================
-    cell  state              role
-    ===== ================== ==========================================================
-    0     ``pos``            **INGEST** — the landing cell. Pass 1: every input byte
-                             goes to ``panel[pos]``. The out-of-band sentinel word
-                             ends pass 1 and starts pass 2.
-    1     ``i`` ``ls``       **SEQ** — the pass-2 driver: the position cursor, the
-          ``lim``           literal-run start, and the ``n - 12`` bound. Dispatches
-                             each phase and is re-entered when a phase completes.
-    2     ``b0..b3`` ``h``   **HASH** — collects the four bytes at ``i`` and computes
-                             :func:`hash4`.
-    3     ``cand`` ``k``     **VERIFY** — ONE compare engine, reused for the four-byte
-          ``exp`` ``ph``     candidate check AND the forward extension (INV-49).
-    4     ``run`` ``nib``    **EMIT** — the formatter: the length-nibble/continuation
-          ``p``              encoding, the token, the literal replay cursor, the
-                             LITTLE-ENDIAN offset, and the match-length extras.
-    5     ``adr``            **ADDR** — the panel address port: adds the region base
-                             and issues the controller hand-off. Rests on the ring
-                             and flips EAST once per burst (INV-52's bounded rule).
-    7     --                 **OUT** — the block's egress, on its own cell.
-    6     --                 **CTL** — the embedded :class:`SramControllerBlock`.
-    ===== ================== ==========================================================
+    ==== ======== =============================================================
+    cell id       role
+    ==== ======== =============================================================
+    0    INGEST   pass 1: the input landing; stores every byte, derives the two
+                  end-of-block bounds at the sentinel and starts pass 2.
+    1    RET      the SINGLE push-read return point; dispatches by phase for
+                  MATCH/LITS reads and by COUNT for the scan's 4+1 (see RET).
+    2    FRAME    the sequence's literal-run bounds, fanned to the formatter.
+    3    VERIFY   the hash-slot test, the offset, and the model's
+                  ``i += 1; continue`` on a miss.
+    4    MATCH    the compare engine (MINMATCH + the final-five-literals rule).
+    5    SEQ      the pass-2 driver: the cursor, the scan bound, the dispatch.
+    6    LITS     the literal replay loop.
+    7    HASH     the rolling 4-byte hash; hands the whole table transaction
+                  (lookup + insert) to INS.
+    8    ADDR     the HISTORY-region panel port: read issue + return phase.
+    9    INS      the HASH-TABLE panel port: holds the region base, reads the
+                  old slot and inserts ``i + 1`` at the position being encoded.
+    10   TOKEN    the token's two nibbles.
+    11   CTL      the embedded :class:`SramControllerBlock`.
+    12   SEAL     the sequence epilogue: LITTLE-ENDIAN offset, match-length
+                  re-arm, the hand-back that resumes the scan.
+    13   LENRUN   the shared length-continuation engine (both length fields).
+    14   OUT      the block's egress, on its own cell.
+    ==== ======== =============================================================
 
     The egress is its own cell for exactly the reason the decoder's is (INV-46/48):
     a cell serves ONE direction free and each extra costs a flip (2 instructions +
-    1 ``is_face`` DataWord). Cell 7 sits BETWEEN cell 5 and the controller and rests
-    facing the controller, so cell 5's panel words transit it untouched while its own
-    north flip serves the output corridor — the flip-and-restore that INV-52's
-    measured table shows is safe under concurrent transit.
+    1 ``is_face`` DataWord). OUT rests on the ring and flips NORTH only for its
+    own egress burst — the flip-and-restore that INV-52's measured table shows is
+    safe under concurrent transit.
 
     Format rules the block honours (all four are gated with INV-4 mutants)
     ----------------------------------------------------------------------
@@ -401,9 +412,9 @@ class LZ4EncoderBlock(KyttarBlock):
     # ------------------------------------------------------------------ shape
     @property
     def cell_count(self) -> int:
-        # ingest, seq, hash, verify, match, token, lenrun, lits, frame, addr,
-        # ret, egress, controller, seal.
-        return 14
+        # ingest, ret, frame, verify, match, seq, lits, hash, addr, ins, token,
+        # controller, seal, lenrun, egress.
+        return 15
 
     @property
     def interface(self) -> BlockInterface:
@@ -573,7 +584,7 @@ class LZ4EncoderBlock(KyttarBlock):
         # can know: the literal run's bounds.
         seq = CellProgram(
             inputs=[Port("v")],
-            outputs=[Port("h_i"), Port("v_i"), Port("scan"),
+            outputs=[Port("h_i"), Port("v_i"), Port("scan"), Port("li_zero"),
                      Port("f_end"), Port("f_mend"), Port("go_seq")],
             entries=[EntryPoint("start"), EntryPoint("step"),
                      EntryPoint("decide"), EntryPoint("took")],
@@ -640,6 +651,18 @@ class LZ4EncoderBlock(KyttarBlock):
                 # this cell inside budget (MEASURED two words over with the paths
                 # separate).
                 #
+                # FIRST, clear SEAL's offset. A candidate that failed MINMATCH
+                # leaves VERIFY's per-hit `li_off` write STALE in SEAL (no
+                # sequence ran, so SEAL never consumed and cleared it), and a
+                # mid-scan stale value is always overwritten by the next slot
+                # outcome — EXCEPT when the failed candidate was the last scan
+                # position and control falls straight here. The tail must emit NO
+                # offset, so the one place the zero is needed is the one place it
+                # is written: once per block, off the hot path. `SUB one, one`
+                # loads the zero without a data word.
+                "    SUB R{data:one}, R{data:one}\n"
+                "    {write:li_zero}\n"               # seal.off = 0
+                #
                 # The match-length input is forced to n + MINMATCH so FRAME's
                 # ``mat = mend - end - 4`` comes out ZERO, which is the token's
                 # match nibble for a literals-only sequence. Without this the
@@ -664,9 +687,22 @@ class LZ4EncoderBlock(KyttarBlock):
         # instruction-field IMMEDIATE and can never come from a register (INV-34).
         # Measured: the two forms produce byte-identical blocks on all ten gate
         # payloads, so the simpler cell is free.
+        # The probe hand-off is a FACE FLIP toward INS (the hash-table port cell,
+        # which this cell abuts). The two face codes are NOT extra data words:
+        # the flip face (east = 1) is numerically `one` and the resting face
+        # (south = 0) is numerically `zero`, so the existing arithmetic constants
+        # double as the face codes — the INV-55 `wbk` idiom, which is what makes
+        # the 9-instruction probe tail fit a cell that is otherwise exactly full.
+        # The coincidence is LOAD-BEARING and therefore GATED: the block's test
+        # suite re-derives both codes from the layout and fails if a re-fold
+        # breaks the equality (INV-61 clause 3 — never trust a face literal).
+        # The router does not read these words; the flip edges are DECLARED in
+        # :meth:`emit_faces`, which is authoritative (INV-50 rule 1).
+        assert self._face_to(C_HASH, C_INS) == 1, "flip face must equal `one`"
+        assert self._resting_face(C_HASH) == 0, "resting face must equal `zero`"
         hashc = CellProgram(
             inputs=[Port("v")],
-            outputs=[Port("rd"), Port("probe")],
+            outputs=[Port("rd"), Port("ins_h"), Port("ins_v"), Port("ins_go")],
             entries=[EntryPoint("begin"), EntryPoint("byte")],
             data=[DataWord("one", 1, address=1),
                   DataWord("four", MINMATCH, address=2),
@@ -693,11 +729,67 @@ class LZ4EncoderBlock(KyttarBlock):
                 "    MOVE R{state:c}, R0\n"
                 "    CMP R{state:c}, R{data:four}\n"
                 "    BR.LT next\n"
-                # all four folded in: one final multiply, keep the top hash_bits.
+                # All four folded in: one final multiply, keep the top hash_bits,
+                # and hand the WHOLE hash-table transaction to INS — the slot
+                # index and the value to insert (i + 1; slot 0 means EMPTY, and
+                # position 0 is valid). The insert happens HERE, at the position
+                # being encoded (INV-61 clause 5's last hazard): pass 1 must NOT
+                # build the table, and a design with no insert at all never finds
+                # a single candidate — the slot stays 0 forever, and (measured on
+                # the first pass's chip) the scan re-probes an empty table on
+                # every position.
                 "    MUL R{state:h}, R{data:mul}\n"
                 f"    SHR R0, #{hshift}\n"
-                "    {write:probe}\n"                # verify.slot (the table index)
-                "    {jump:probe}\n"                 # verify.probe
+                "    MOVE [FACE], R{data:one}\n"     # flip EAST (= 1) toward INS
+                "    {write:ins_h}\n"                # ins.h = the slot index
+                "    ADD R{state:i}, R{data:one}\n"
+                "    {write:ins_v}\n"                # ins.v = i + 1
+                "    {jump:ins_go}\n"                # ins.go: lookup + insert
+                "    MOVE [FACE], R{data:zero}\n"    # restore SOUTH (= 0)
+                "    HALT\n"
+            ),
+        )
+
+        # --------------------------------------------------------- cell 9 INS
+        # THE HASH-TABLE PORT — the ONE cell that holds the table's region base,
+        # exactly as ADDR is the one cell for the history region. Keeping each
+        # region's arithmetic in exactly one cell is what makes the two-region
+        # partition checkable (INV-61 clause 1: an overlap returns a wrong
+        # answer of the RIGHT length, silently).
+        #
+        # It abuts the controller from the NORTH and rests facing it, so every
+        # hand-off is a 1-hop resting write — the (9,10)-relative slot is the
+        # only position besides ADDR's that can reach the controller at all,
+        # because a word transiting ANY other cell is forwarded on that cell's
+        # own face, never into the port corner.
+        #
+        # One entry does the model's exact slot step: READ the old slot, then
+        # INSERT i+1 at the same address. Order is guaranteed by the port
+        # protocol (SRAM_PANEL.md §5: the panel drains port words in time
+        # order), so the pushed value is always the PRE-insert slot. The insert
+        # rides the controller's `set_addr` + `write` pair — no controller
+        # change; `set_addr` also resets the READ counter, which is harmless
+        # because every read in this design is an addressed `lookup`.
+        #
+        # The lookup's return needs NO phase word: RET counts it (five reads per
+        # scan position, the fifth is the slot — see RET).
+        ins = CellProgram(
+            inputs=[Port("h"), Port("v")],
+            outputs=[Port("rd"), Port("sk"), Port("pt")],
+            entries=[EntryPoint("go")],
+            data=[DataWord("htbase", htb & 0xFFFF, address=1)],
+            assembly_template=(
+                "go:\n"
+                "    ADD R{in:h}, R{data:htbase}\n"  # R0 = the ABSOLUTE address
+                "    MOVE R{in:h}, R0\n"             # keep it for the seek
+                "    {write:rd}\n"                   # ctl.data = ht_base + h
+                "    {jump:rd}\n"                    # ctl.lookup — read OLD slot
+                "    MOVE R0, R{in:h}\n"
+                "    {write:sk}\n"                   # ctl.data = ht_base + h
+                "    {jump:sk}\n"                    # ctl.set_addr (wr_addr := a)
+                "    MOVE R0, R{in:v}\n"
+                "    {write:pt}\n"                   # ctl.data = i + 1
+                "    {jump:pt}\n"                    # ctl.write — the INSERT
                 "    HALT\n"
             ),
         )
@@ -727,28 +819,26 @@ class LZ4EncoderBlock(KyttarBlock):
         # state.
         verify = CellProgram(
             inputs=[Port("v")],
-            outputs=[Port("rd"), Port("miss"), Port("arm"), Port("m_off"),
-                     Port("m_ii"), Port("li_off")],
-            entries=[EntryPoint("probe"), EntryPoint("slot")],
+            outputs=[Port("miss"), Port("arm"), Port("m_off"),
+                     Port("m_ii"), Port("li_off"), Port("s_i")],
+            entries=[EntryPoint("slot")],
             data=[DataWord("one", 1, address=1),
-                  DataWord("zero", 0, address=2)],
-            state=[StateVar("i", register=3, initial_value=0),
-                   StateVar("cand", register=4, initial_value=0)],
+                  # DERIVED from the layout, never literals (INV-61 clause 3):
+                  # the miss hand-back flips WEST onto the abutting SEQ cell.
+                  DataWord("face_seq", self._face_to(C_VERIFY, C_SEQ),
+                           address=2, is_face=True),
+                  DataWord("face_rest", self._resting_face(C_VERIFY),
+                           address=3, is_face=True)],
+            state=[StateVar("i", register=4, initial_value=0),
+                   StateVar("cand", register=5, initial_value=0)],
             assembly_template=(
-                "probe:\n"
-                # The table index arrived as data in `v`; ask ADDR for the slot.
-                # ADDR adds the table base and performs the read-then-insert, so
-                # this cell never sees an absolute panel address.
-                "    MOVE R0, R{in:v}\n"
-                "    {write:rd}\n"                   # addr.a = the slot index
-                "    {jump:rd}\n"                    # addr.htab (read + insert)
-                "    HALT\n"
                 "slot:\n"
-                # A slot holds position+1, so 0 means EMPTY. cand = slot - 1, and
-                # only a STRICTLY EARLIER position is usable — which is ALSO why
-                # LZ4's "offset 0 is invalid" can never be violated here: the
-                # offset is i - cand and cand < i, so it is at least 1, by
-                # construction rather than by a check.
+                # The OLD slot value arrives via RET (which told it apart from a
+                # history byte by COUNT — see RET). A slot holds position+1, so 0
+                # means EMPTY. cand = slot - 1, and only a STRICTLY EARLIER
+                # position is usable — which is ALSO why LZ4's "offset 0 is
+                # invalid" can never be violated here: the offset is i - cand and
+                # cand < i, so it is at least 1, by construction, not by a check.
                 "    SUB R{in:v}, R{data:one}\n"
                 "    MOVE R{state:cand}, R0\n"
                 "    BR.N no\n"                      # the slot was 0 -> EMPTY
@@ -756,22 +846,40 @@ class LZ4EncoderBlock(KyttarBlock):
                 "    BR.GE no\n"                     # not strictly earlier
                 # The OFFSET is computed HERE, the one moment both operands are in
                 # one cell, and written straight to the two cells that need it —
-                # MATCH (which walks the candidate side as ii - off) and LITS
+                # MATCH (which walks the candidate side as ii - off) and SEAL
                 # (which emits it). Routing `cand` to SEQ instead would have made
                 # SEQ carry a register it has no other use for.
                 "    SUB R{state:i}, R{state:cand}\n"
                 "    {write:m_off}\n"                # match.off
-                "    {write:li_off}\n"               # lits.off
+                "    {write:li_off}\n"               # seal.off
                 "    MOVE R0, R{state:i}\n"
                 "    {write:m_ii}\n"                 # match.ii = i (the cursor)
                 "    {jump:arm}\n"                   # match.begin
                 "    HALT\n"
                 "no:\n"
-                # No usable candidate. LITS must not emit a stale offset on the
-                # NEXT sequence, so the tail's zero is written here too.
-                "    MOVE R0, R{data:zero}\n"
-                "    {write:li_off}\n"
-                "    {jump:miss}\n"                  # seq.step -> i += 1
+                # NO USABLE CANDIDATE: this is the model's `i += 1; continue`,
+                # and BOTH halves must happen HERE. The first pass jumped
+                # straight to seq.step with no increment — MEASURED on the built
+                # chip: `i` never advanced, the empty slot was re-probed forever
+                # (RET dispatched 1596 times while the scan sat on position 0),
+                # and the run ended at EventLimit with zero output. The advance
+                # is computed from this cell's own copy of `i` and written into
+                # SEQ's cursor, then seq.step re-checks the bound — exactly the
+                # model's loop.
+                #
+                # SEAL's offset must ALSO be cleared, or the literals-only tail
+                # inherits the offset of a hit whose match failed MINMATCH.
+                # `SUB one, one` loads the zero and costs no data word; the write
+                # rides the resting face (SEAL is on this cell's eastward walk).
+                "    SUB R{data:one}, R{data:one}\n"
+                "    {write:li_off}\n"               # seal.off = 0
+                "    ADD R{state:i}, R{data:one}\n"
+                "    MOVE [FACE], R{data:face_seq}\n"
+                "    {write:s_i}\n"                  # seq.i = i + 1 (abutting)
+                "    {jump:miss}\n"                  # seq.step: bound-check, scan
+                # RESTORE at the TAIL (INV-52 clause 1): the resting face is a
+                # contract with every walk that crosses this cell.
+                "    MOVE [FACE], R{data:face_rest}\n"
                 "    HALT\n"
             ),
         )
@@ -1149,60 +1257,61 @@ class LZ4EncoderBlock(KyttarBlock):
             ),
         )
 
-        # ----------------------------------------------------------- cell 9 ADDR
-        # THE PANEL PORT, and the single RETURN POINT for every push-read.
+        # ----------------------------------------------------------- cell 8 ADDR
+        # THE HISTORY-REGION PANEL PORT. Every history read (the rolling hash's
+        # four bytes, both sides of a compare step, the literal replay) is
+        # issued here, and the return PHASE for the two explicitly-phased
+        # consumers (MATCH, LITS) is written here — once, where there is room,
+        # instead of two instructions and a data word in each of the two
+        # tightest cells (INV-46 applied to WORDS).
         #
-        # Why one cell must be both: the push-read's destination register and
-        # entry are the panel's R3/R4 descriptors, which the controller writes
-        # from BUILD-TIME params (SRAM_PANEL.md §3-4). There is exactly ONE pair
-        # for the whole block, so every read in the design comes back to the same
-        # register of the same cell at the same entry. Four different consumers
-        # (HASH, MATCH twice, LITS) therefore cannot each be a return target; ADDR
-        # receives every byte and RE-ISSUES it to the consumer that asked, which
-        # it remembers in `ph`.
-        #
-        # It is also where the panel REGION BASE is added, so no other cell ever
-        # holds an absolute panel address: `hist` reads are used as-is, `htab`
-        # reads add ``ht_base``. Keeping the region arithmetic in one cell is what
-        # makes the two-region split checkable in one place (see the class
-        # docstring on why an overlap is a silent wrong answer).
+        # A history read needs no region base: an input position IS its panel
+        # address. The hash TABLE's base lives in INS, its own port cell — each
+        # region's arithmetic in exactly one cell, so the two-region partition
+        # stays checkable (see the class docstring on why an overlap is a
+        # silent wrong answer).
         #
         # FACES: rests on the ring and flips toward the controller for each burst,
         # restoring at the TAIL — INV-52 clause 1, whose measured table shows a
         # flip-and-restore is safe even for a cell other walks transit.
+        #
+        # THE PHASE RACE, measured: `setph` departs on the resting walk (5 hops
+        # -> RET, ~75 ns) BEFORE the read is issued, and the read's own path
+        # (controller program + panel + return corridor) was measured at
+        # ~570 ns on the first pass's chip — the phase always lands first.
         addr = CellProgram(
             inputs=[Port("a")],
             outputs=[Port("rd"), Port("st"), Port("setph")],
-            entries=[EntryPoint("store"), EntryPoint("htab"), EntryPoint("hist"),
+            entries=[EntryPoint("store"), EntryPoint("hist"),
                      EntryPoint("hist_m"), EntryPoint("hist_l")],
-            data=[DataWord("htbase", htb & 0xFFFF, address=1),
+            data=[
                   # `zero` doubles as PH_HASH, which IS 0.
-                  DataWord("zero", PH_HASH, address=2),
-                  DataWord("ph_htab", PH_HTAB, address=3),
-                  DataWord("ph_match", PH_MATCH, address=4),
-                  DataWord("ph_lit", PH_LIT, address=5),
+                  DataWord("zero", PH_HASH, address=1),
+                  DataWord("ph_match", PH_MATCH, address=2),
+                  DataWord("ph_lit", PH_LIT, address=3),
                   # DERIVED from the layout, never literals — see the OUT cell
                   # for what a stale inherited face constant costs.
                   # ``face_panel`` points at the controller; ``face_ring`` is
                   # this cell's own resting face, restored at the tail.
                   DataWord("face_panel", self._face_to(C_ADDR, C_CTL),
-                           address=6, is_face=True),
+                           address=4, is_face=True),
                   DataWord("face_ring", self._resting_face(C_ADDR),
-                           address=7, is_face=True)],
+                           address=5, is_face=True)],
             assembly_template=(
-                # FOUR entries — one per KIND of read — and each costs exactly TWO
-                # words, because ``SUB const, zero`` both loads the accumulator and
-                # sets the flags the local branch needs. Making the CALLERS carry a
-                # phase code instead was MEASURED three words over budget in BOTH
-                # the match cell and the literal cell: two instructions and a data
-                # word each, in the two cells with the least room. Paying it once
-                # here, where there is room, is INV-46's rule applied to WORDS
-                # rather than cells.
+                # THREE read entries — one per KIND of history read — and each
+                # costs at most TWO words, because ``SUB const, zero`` both loads
+                # the accumulator and sets the flags the local branch needs.
+                # Making the CALLERS carry a phase code instead was MEASURED
+                # three words over budget in BOTH the match cell and the literal
+                # cell. The HASH-TABLE read has no entry here at all: the table
+                # lives behind its own port cell (INS), and its return needs no
+                # phase because RET tells the fifth read of a position apart by
+                # COUNT.
                 #
-                # (`hist` is the HASH caller's door. It is spelled out rather than
-                # shared so that every path sets `ph` explicitly — an entry that
-                # inherited a stale phase would send the byte to the wrong cell,
-                # and that is a silent wrong answer, not a crash.)
+                # (`hist` is the HASH caller's door. It is spelled out rather
+                # than shared so that every path sets `ph` explicitly — an entry
+                # that inherited a stale phase would send the byte to the wrong
+                # cell, and that is a silent wrong answer, not a crash.)
                 "store:\n"
                 # PASS 1's history write. It comes through THIS cell rather than
                 # straight from INGEST for a geometric reason: a cell reaches the
@@ -1218,16 +1327,6 @@ class LZ4EncoderBlock(KyttarBlock):
                 "    {jump:st}\n"                    # ctl.write  (wraddr++)
                 "    SUB R{data:zero}, R{data:zero}\n"
                 "    BR.Z rest\n"                    # share the face restore
-                "htab:\n"
-                # The hash-table probe. This is the ONLY place the table's region
-                # base is added, so no other cell in the block ever holds an
-                # absolute panel address — which is what makes the two-region split
-                # checkable in one place. An overlap between the regions is a
-                # SILENT wrong answer (see the class docstring).
-                "    ADD R{in:a}, R{data:htbase}\n"
-                "    MOVE R{in:a}, R0\n"
-                "    SUB R{data:ph_htab}, R{data:zero}\n"
-                "    BR.NZ go\n"
                 "hist_m:\n"
                 "    SUB R{data:ph_match}, R{data:zero}\n"
                 "    BR.NZ go\n"
@@ -1263,40 +1362,64 @@ class LZ4EncoderBlock(KyttarBlock):
         # BUILD-TIME params (SRAM_PANEL.md §3-4). There is exactly ONE such pair
         # for the whole block, so every read in the design comes back to the same
         # register of the same cell at the same entry. Four different consumers
-        # (HASH, MATCH twice, LITS) cannot each be a return target; this cell
-        # receives every byte and RE-ISSUES it to whichever asked, using the phase
-        # ADDR latched when the read went out.
+        # (HASH, VERIFY, MATCH, LITS) cannot each be a return target; this cell
+        # receives every word and RE-ISSUES it to whichever asked, using the
+        # phase ADDR latched when the read went out — except the hash-table
+        # slot, which is identified by COUNT (see below).
+        # `one` doubles as PH_MATCH, which IS 1 — a plain numeric share (no face
+        # semantics), so it is safe under every orientation.
+        assert PH_MATCH == 1 and PH_HASH == 0
         ret = CellProgram(
             inputs=[Port("v"), Port("ph")],
             outputs=[Port("to_hash"), Port("to_slot"), Port("to_match"),
                      Port("to_lit")],
             entries=[EntryPoint("word")],
-            data=[DataWord("ph_match", PH_MATCH, address=1),
+            data=[DataWord("one", PH_MATCH, address=1),
                   DataWord("ph_lit", PH_LIT, address=2),
-                  DataWord("ph_htab", PH_HTAB, address=3)],
+                  DataWord("five", 5, address=3)],
+            state=[StateVar("cnt", register=4, initial_value=5)],
             assembly_template=(
+                # THE COUNT PROTOCOL. The block has exactly ONE push-read return
+                # descriptor pair, so every read lands here and must be told
+                # apart. MATCH and LITS reads carry an explicit phase (ADDR
+                # writes `ph` before each — 1 and 2). The scan's own reads carry
+                # ph == 0, and are told apart by ARITHMETIC instead of a wire:
+                # a scan position is ALWAYS exactly four history reads (the
+                # rolling hash) followed by ONE hash-table read, in order, with
+                # nothing interleaved (the control flow is a single thread and
+                # the panel link is single-outstanding). So the fifth ph==0
+                # return IS the slot. This deletes the phase write the table
+                # port cannot afford: INS rests facing the controller and has no
+                # walk to this cell at all.
+                #
+                # `cnt` starts at 5 and is reseeded to 5 when the slot is
+                # dispatched, so the count is position-local and self-repairing.
                 "word:\n"
-                "    MOVE R0, R{in:v}\n"
-                "    CMP R{in:ph}, R{data:ph_match}\n"
+                "    CMP R{in:ph}, R{data:one}\n"    # PH_MATCH == 1
                 "    BR.Z r_match\n"
                 "    CMP R{in:ph}, R{data:ph_lit}\n"
                 "    BR.Z r_lit\n"
-                "    CMP R{in:ph}, R{data:ph_htab}\n"
-                "    BR.Z r_slot\n"
+                "    SUB R{state:cnt}, R{data:one}\n"
+                "    MOVE R{state:cnt}, R0\n"
+                "    MOVE R0, R{in:v}\n"
+                "    BR.Z r_slot\n"                  # flags: the SUB (MOVEs keep)
                 "    {write:to_hash}\n"              # hash.v
                 "    {jump:to_hash}\n"               # hash.byte
                 "    HALT\n"
+                "r_slot:\n"
+                "    MOVE R{state:cnt}, R{data:five}\n"
+                "    {write:to_slot}\n"              # verify.v (the OLD slot)
+                "    {jump:to_slot}\n"               # verify.slot
+                "    HALT\n"
                 "r_match:\n"
+                "    MOVE R0, R{in:v}\n"
                 "    {write:to_match}\n"             # match.v
                 "    {jump:to_match}\n"              # match.got
                 "    HALT\n"
                 "r_lit:\n"
+                "    MOVE R0, R{in:v}\n"
                 "    {write:to_lit}\n"               # lits.v
                 "    {jump:to_lit}\n"                # lits.byte
-                "    HALT\n"
-                "r_slot:\n"
-                "    {write:to_slot}\n"              # verify.v (the OLD slot)
-                "    {jump:to_slot}\n"               # verify.slot
                 "    HALT\n"
             ),
         )
@@ -1374,8 +1497,8 @@ class LZ4EncoderBlock(KyttarBlock):
         # nothing raised.
         by_id = {C_INGEST: ingest, C_SEQ: seq, C_HASH: hashc, C_VERIFY: verify,
                  C_MATCH: match, C_TOKEN: token, C_LENRUN: lenrun, C_LITS: lits,
-                 C_FRAME: frame, C_ADDR: addr, C_RET: ret, C_OUT: out_cell,
-                 C_CTL: ctl_cell, C_SEAL: seal}
+                 C_FRAME: frame, C_ADDR: addr, C_INS: ins, C_RET: ret,
+                 C_OUT: out_cell, C_CTL: ctl_cell, C_SEAL: seal}
         # ASCENDING BY ID, always. The panel template places ``sorted(pos)`` and
         # the build binds programs to placed cells BY POSITION, so this dict and
         # ``default_layout()`` must iterate identically (INV-51 clause 2) — the
@@ -1385,7 +1508,7 @@ class LZ4EncoderBlock(KyttarBlock):
 
     # ------------------------------------------------------------ block wiring
     def internal_connections(self) -> List[Tuple[Any, str, Any, str]]:
-        """The DATA (``WRITE``) hand-offs between the thirteen cells."""
+        """The DATA (``WRITE``) hand-offs between the fifteen cells."""
         return [
             # --- pass 1 -> pass 2 hand-over -----------------------------------
             (C_INGEST, "hist", C_ADDR, "a"),
@@ -1395,12 +1518,14 @@ class LZ4EncoderBlock(KyttarBlock):
             # --- the scan --------------------------------------------------
             (C_SEQ, "h_i", C_HASH, "i"),
             (C_SEQ, "v_i", C_VERIFY, "i"),
+            (C_SEQ, "li_zero", C_SEAL, "off"),
             (C_HASH, "rd", C_ADDR, "a"),
-            (C_HASH, "probe", C_VERIFY, "v"),
-            (C_VERIFY, "rd", C_ADDR, "a"),
+            (C_HASH, "ins_h", C_INS, "h"),
+            (C_HASH, "ins_v", C_INS, "v"),
             (C_VERIFY, "m_off", C_MATCH, "off"),
             (C_VERIFY, "m_ii", C_MATCH, "ii"),
             (C_VERIFY, "li_off", C_SEAL, "off"),
+            (C_VERIFY, "s_i", C_SEQ, "i"),
             (C_MATCH, "rd_c", C_ADDR, "a"),
             (C_MATCH, "rd_i", C_ADDR, "a"),
             (C_MATCH, "len", C_SEQ, "v"),
@@ -1421,10 +1546,13 @@ class LZ4EncoderBlock(KyttarBlock):
             (C_LITS, "rd", C_ADDR, "a"),
             (C_SEAL, "out", C_OUT, "w"),
             (C_SEAL, "m_rest", C_LENRUN, "rest"),
-            # --- the panel port and its single return -----------------------
+            # --- the two panel ports and the single return ------------------
             (C_ADDR, "setph", C_RET, "ph"),
             (C_ADDR, "rd", C_CTL, "data"),
             (C_ADDR, "st", C_CTL, "data"),
+            (C_INS, "rd", C_CTL, "data"),
+            (C_INS, "sk", C_CTL, "data"),
+            (C_INS, "pt", C_CTL, "data"),
             (C_RET, "to_hash", C_HASH, "v"),
             (C_RET, "to_slot", C_VERIFY, "v"),
             (C_RET, "to_match", C_MATCH, "v"),
@@ -1432,7 +1560,7 @@ class LZ4EncoderBlock(KyttarBlock):
         ]
 
     def internal_jumps(self) -> List[Tuple[Any, str, Any, str]]:
-        """The TRIGGER (``JUMP``) edges between the thirteen cells.
+        """The TRIGGER (``JUMP``) edges between the fifteen cells.
 
         Note what is NOT here: the pure state deliveries (``setn``, ``setlim``,
         ``setstop``, ``m_off``, ``m_ii``, ``t_lit``, ``t_mat``, ``l_rest``,
@@ -1450,8 +1578,7 @@ class LZ4EncoderBlock(KyttarBlock):
             (C_SEQ, "scan", C_HASH, "begin"),
             (C_SEQ, "go_seq", C_FRAME, "seq"),
             (C_HASH, "rd", C_ADDR, "hist"),
-            (C_HASH, "probe", C_VERIFY, "probe"),
-            (C_VERIFY, "rd", C_ADDR, "htab"),
+            (C_HASH, "ins_go", C_INS, "go"),
             (C_VERIFY, "arm", C_MATCH, "begin"),
             (C_VERIFY, "miss", C_SEQ, "step"),
             (C_MATCH, "rd_c", C_ADDR, "hist_m"),
@@ -1471,6 +1598,9 @@ class LZ4EncoderBlock(KyttarBlock):
             (C_SEAL, "adv", C_FRAME, "adv"),
             (C_ADDR, "rd", C_CTL, "lookup"),
             (C_ADDR, "st", C_CTL, "write"),
+            (C_INS, "rd", C_CTL, "lookup"),
+            (C_INS, "sk", C_CTL, "set_addr"),
+            (C_INS, "pt", C_CTL, "write"),
             (C_RET, "to_hash", C_HASH, "byte"),
             (C_RET, "to_slot", C_VERIFY, "slot"),
             (C_RET, "to_match", C_MATCH, "got"),
@@ -1499,14 +1629,18 @@ class LZ4EncoderBlock(KyttarBlock):
 
         Five roles, and they are five DIFFERENT cells:
 
-        * ``controller_cell`` (12) sits on ``x1_out``;
+        * ``controller_cell`` (11) sits on ``x1_out``;
         * ``input_cell`` (0) is where the raw stream lands;
-        * ``return_cell`` (10) is where every push-read lands — so it must sit on
+        * ``return_cell`` (1) is where every push-read lands — so it must sit on
           the ``x1_in`` row. It is a cell of its own because the block has ONE
           return-descriptor pair and FOUR consumers (see the RET cell);
-        * ``panel_client_cell`` (9) is the cell whose WRITE/JUMPs must reach the
+        * ``panel_client_cell`` (8) is the cell whose WRITE/JUMPs must reach the
           controller;
-        * ``output_cell`` (11) owns the EGRESS walk.
+        * ``output_cell`` (14) owns the EGRESS walk.
+
+        A SIXTH cell also speaks to the controller: INS (9), the hash-table
+        port, which abuts the controller from the north and needs no template
+        role — its hand-offs are ordinary 1-hop resting writes.
         """
         return {
             "label": (f"LZ4 input window ({self._window_words} x 16b) + hash "
@@ -1533,21 +1667,47 @@ class LZ4EncoderBlock(KyttarBlock):
         and DRCs clean while whole cells come out with empty memory (INV-51
         clause 2).
         """
+        # THE FOLD IS FREQUENCY-WEIGHTED (INV-61 clause 5): the per-position
+        # scan cycle rides short walks, the per-sequence formatter takes the
+        # long ones. The 12 datapath cells close one CCW ring —
+        #
+        #   RET(-6,0) N -> SEQ(-6,-1) E -> VERIFY -> MATCH -> LITS -> OUT ->
+        #   HASH(-1,-1) S -> ADDR(-1,0) W -> FRAME -> TOKEN -> SEAL ->
+        #   LENRUN(-5,0) W -> RET
+        #
+        # — a ring on PURPOSE: the scan is a genuine cycle (issue -> read ->
+        # return -> dispatch -> issue), so a serpentine's free ends cannot carry
+        # it; what killed the first fold was not the ring but hot edges placed
+        # the long way round it (plus the three program defects the trace
+        # found). Hot placements here: RET's dispatches reach SEQ/VERIFY/MATCH/
+        # LITS at 1-4 hops, the read issues reach ADDR at 1-4 hops (HASH abuts
+        # it), VERIFY hands the miss back to SEQ by a 1-hop west flip, and
+        # ADDR's phase word reaches RET in 5 hops on its resting walk — 75 ns
+        # against a panel round trip measured at ~570 ns, so the phase always
+        # lands first.
+        #
+        # CTL is pinned on the x1_out port cell and INS abuts it from the north
+        # — the ONLY position besides ADDR's that can reach the controller,
+        # since a word transiting any other cell leaves on that cell's face.
+        # INGEST tops the input column; OUT's egress flips north to the free
+        # (-2,-2) slot. RET is the WESTERNMOST row-0 cell so the x1_in corridor
+        # reaches it over free cells only.
         lay = {
-            C_SEAL: (-2, -1, "north"),
-            C_SEQ: (-3, -1, "west"),
-            C_RET: (-5, 0, "east"),       # on the x1_in row, facing along it
-            C_HASH: (-5, -1, "south"),
-            C_VERIFY: (-4, 0, "east"),
-            C_LITS: (-2, -2, "west"),
-            C_FRAME: (-1, -1, "west"),
-            C_TOKEN: (-3, 0, "east"),
-            C_MATCH: (-2, 0, "east"),
-            C_INGEST: (-5, -2, "south"),  # the input landing cell
-            C_ADDR: (-1, 0, "north"),     # the panel client
+            C_INGEST: (-6, -2, "south"),  # the input landing cell
+            C_RET: (-6, 0, "north"),      # on the x1_in row; corridor lands here
+            C_FRAME: (-2, 0, "west"),
+            C_VERIFY: (-5, -1, "east"),
+            C_MATCH: (-4, -1, "east"),
+            C_SEQ: (-6, -1, "east"),
+            C_LITS: (-3, -1, "east"),
+            C_HASH: (-1, -1, "south"),
+            C_ADDR: (-1, 0, "west"),      # the history-region panel port
+            C_INS: (0, -1, "south"),      # the hash-table panel port, on CTL
+            C_TOKEN: (-3, 0, "west"),
             C_CTL: (0, 0, "south"),       # pinned on x1_out, facing the port
-            C_LENRUN: (-3, -2, "south"),
-            C_OUT: (-4, -1, "west"),      # the egress
+            C_SEAL: (-4, 0, "west"),
+            C_LENRUN: (-5, 0, "west"),
+            C_OUT: (-2, -1, "east"),      # the egress (flips north to emit)
         }
         return {cid: lay[cid] for cid in sorted(lay)}
 
@@ -1564,13 +1724,19 @@ class LZ4EncoderBlock(KyttarBlock):
         orientation-correct by construction (INV-23) rather than needing a
         by-hand D4 pass that a rotation can invalidate.
 
-        ADDR is the only cell here that emits while flipped: it rests on the
-        block's own ring and flips toward the controller for each panel burst,
-        restoring at the tail.
+        Three cells emit while flipped: ADDR flips toward the controller for
+        each panel burst; HASH flips toward INS for the hash-table hand-off;
+        VERIFY flips toward SEQ for the miss hand-back. Each restores at the
+        tail (INV-52 clause 1).
         """
         return {
             (C_ADDR, "rd"): C_CTL,
             (C_ADDR, "st"): C_CTL,
+            (C_HASH, "ins_h"): C_INS,
+            (C_HASH, "ins_v"): C_INS,
+            (C_HASH, "ins_go"): C_INS,
+            (C_VERIFY, "s_i"): C_SEQ,
+            (C_VERIFY, "miss"): C_SEQ,
         }
 
     def reset(self):

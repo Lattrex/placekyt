@@ -57,6 +57,20 @@ for _p in (str(_WT / "runtime" / "python"), str(_WT / "placekyt"),
 
 from lz4_golden import lz4_decompress_block, LZ4FormatError  # noqa: E402
 from gr_kyttar.placement.blocks.lz4_encoder_block import (  # noqa: E402
+    C_ADDR,
+    C_CTL,
+    C_FRAME,
+    C_HASH,
+    C_INGEST,
+    C_LENRUN,
+    C_LITS,
+    C_MATCH,
+    C_OUT,
+    C_RET,
+    C_SEAL,
+    C_SEQ,
+    C_TOKEN,
+    C_VERIFY,
     CONT_ESCAPE,
     DEFAULT_HASH_BITS,
     DEFAULT_WINDOW_WORDS,
@@ -69,7 +83,12 @@ from gr_kyttar.placement.blocks.lz4_encoder_block import (  # noqa: E402
     encode_model,
     hash4,
 )
-from gr_kyttar.placement.resolver import CellProgramResolver  # noqa: E402
+from gr_kyttar.placement.resolver import (  # noqa: E402
+    CellProgramResolver,
+    JumpTarget,
+    ResolvedTargets,
+    WriteTarget,
+)
 
 CHIP_YAML = Path(os.environ.get(
     "KYTTAR_CHIP_YAML",
@@ -84,6 +103,27 @@ W = 10                        # the chip is 10 cells wide
 def _need_chip():
     if not CHIP_YAML.exists():
         pytest.skip("chip-type yaml absent")
+
+
+_DELTA = {"south": (0, 1), "east": (1, 0), "west": (-1, 0), "north": (0, -1)}
+
+
+def _head_on_pairs(lay):
+    """Cells whose RESTING faces point at each other (INV-56 clause 3)."""
+    at = {(x, y): cid for cid, (x, y, _f) in lay.items()}
+    bad = []
+    for cid, (x, y, face) in lay.items():
+        dx, dy = _DELTA[str(face)]
+        nbr = at.get((x + dx, y + dy))
+        if nbr is None:
+            continue
+        nx, ny, nface = lay[nbr]
+        ndx, ndy = _DELTA[str(nface)]
+        if (nx + ndx, ny + ndy) == (x, y):
+            pair = tuple(sorted((cid, nbr)))
+            if pair not in bad:
+                bad.append(pair)
+    return bad
 
 
 def _wr(h, d):
@@ -783,6 +823,38 @@ def test_process_reference_drops_the_sentinel():
     assert EOB_SENTINEL > 0xFF
 
 
+def test_no_two_block_cells_rest_facing_each_other():
+    """INV-56 clause 3 — a HEAD-ON RESTING-FACE PAIR is a two-cell DEADLOCK.
+
+    A cell forwards on its own resting face and HOLDS its outgoing word until the
+    neighbour accepts it. Two abutting cells whose resting faces point at each
+    other therefore lock the moment both hold one. Nothing in place, route, build
+    or DRC reports this; on chip it presents as "the output cell never runs", and
+    ``stop_reason`` is ``"Deadlock"`` while a clean run-to-quiescence reports
+    ``"QueueEmpty"`` — the emitted-word count is 0 for both.
+
+    Static, no chip required.
+    """
+    pairs = _head_on_pairs(LZ4EncoderBlock("enc").default_layout())
+    assert not pairs, f"cells rest facing each other (INV-56): {pairs}"
+
+
+def test_INV4_the_head_on_gate_catches_a_forced_pair():
+    """The negative for the gate above. Point two abutting cells at each other
+    and assert the check SEES it — otherwise the green result certifies nothing."""
+    lay = dict(LZ4EncoderBlock("enc").default_layout())
+    inv = {v: k for k, v in _DELTA.items()}
+    a = sorted(lay)[0]
+    ax, ay, _ = lay[a]
+    nbr = next(c for c, (x, y, _f) in lay.items()
+               if c != a and abs(x - ax) + abs(y - ay) == 1)
+    bx, by, _ = lay[nbr]
+    d = (bx - ax, by - ay)
+    lay[a] = (ax, ay, inv[d])
+    lay[nbr] = (bx, by, inv[(-d[0], -d[1])])
+    assert _head_on_pairs(lay) == [tuple(sorted((a, nbr)))]
+
+
 def test_panel_cost_matches_the_documented_protocol():
     b = LZ4EncoderBlock("enc")
     c = b.panel_cost(np.frombuffer(PAYLOADS["text"], dtype=np.uint8))
@@ -792,3 +864,296 @@ def test_panel_cost_matches_the_documented_protocol():
     # pass 1 writes one word per input byte, and pass 2 writes one hash slot per
     # scanned position
     assert c["panel_writes"] >= len(PAYLOADS["text"])
+
+
+# =========================================================================
+# LAYER 5 — THE CHIP, per cell. Real simkyt, real instructions.
+# =========================================================================
+def _cid(x, y):
+    return y * W + x
+
+
+def _block_maps():
+    """``(block, programs, {cell: (register map, entry map)})`` — the resolved
+    register numbers and entry addresses every on-chip gate below drives."""
+    b = LZ4EncoderBlock("enc")
+    progs = b.build_cell_programs()
+    maps = {}
+    for cid, cp in progs.items():
+        names = {}
+        names.update({d.name: a for d, a in
+                      zip(cp.data, [R._allocate_data(cp.data)[d.name]
+                                    for d in cp.data])})
+        names.update(R.compute_state_registers(cp))
+        dm = R._allocate_data(cp.data)
+        dummy = R._substitute_registers(cp.assembly_template, cp, dm,
+                                        state_map={}, input_map={}, dummy=True)
+        dummy = R._substitute_write_jump(dummy, None, dummy=True)
+        ni = R._count_instructions(dummy)
+        base = 31 - ni
+        used = set(names.values())
+        free = [r for r in range(max(used) + 1 if used else 0, base)
+                if r not in used]
+        for p, r in zip(cp.inputs, free):
+            names[p.name] = r
+        maps[cid] = (names, R.compute_entry_addresses(cp))
+    return b, progs, maps
+
+
+def _run_cell(cellid, entry, inputs=None, preset=None, rounds=600):
+    """Load ONE cell at (0,0) on a real chip, kick ``entry``, and return
+    ``(final registers, words at x16_out, stop_reason)``.
+
+    Every hand-off the cell makes is aimed 10 hops EAST along an all-east row, so
+    it EXITS the x16 port and is observable — the pattern the shipped
+    ``LZ4DecoderBlock`` suite uses.
+
+    ``stop_reason`` is returned and asserted by the callers because INV-56
+    clause 1 makes it the FIRST thing to read: ``"QueueEmpty"`` means the chip
+    ran to quiescence (look at the program), ``"Deadlock"`` means it is wedged
+    (look at the geometry). ``completed`` is False and the word count is 0 for
+    BOTH, so neither of the signals a driver usually checks tells them apart.
+    """
+    import simkyt
+    b, progs, M = _block_maps()
+    cp = progs[cellid]
+    names, entries = M[cellid]
+    tg = ResolvedTargets()
+    for (s, o, d, i) in b.internal_connections():
+        if s == cellid:
+            tg.writes[o] = WriteTarget(distance=10, target_addr=M[d][0][i])
+    for (s, o, d, e) in b.internal_jumps():
+        if s == cellid:
+            tg.jumps[o] = JumpTarget(distance=10, target_addr=M[d][1][e])
+    for p in cp.outputs:
+        tg.writes.setdefault(p.name, WriteTarget(distance=10, target_addr=2))
+        tg.jumps.setdefault(p.name, JumpTarget(distance=10, target_addr=1))
+    res = R.resolve(cp, tg)
+
+    chip = simkyt.Chip.from_yaml(str(CHIP_YAML))
+    for a in range(32):
+        chip.write_cell_memory(_cid(0, 0), a, int(res.memory.get(a, 0)))
+    for k, v in (preset or {}).items():
+        chip.write_cell_memory(_cid(0, 0), names[k], int(v) & 0xFFFF)
+    for k, v in (inputs or {}).items():
+        chip.write_cell_memory(_cid(0, 0), names[k], int(v) & 0xFFFF)
+    for x in range(W):
+        chip.set_fwd_face(_cid(x, 0), "east")
+    chip.set_port_entry_address("x16_in", entries[entry])
+    chip.set_port_target_hop_count("x16_in", 30)
+    chip.write_port("x16_in", np.array([0.0], dtype=np.float32))
+    words, stop = [], None
+    for _ in range(rounds):
+        st = chip.run(max_events=16)
+        if isinstance(st, dict):
+            stop = st.get("stop_reason", stop)
+        for v, _d, _t in chip.read_port_words_timed("x16_out"):
+            words.append(v & 0xFFFF)
+    regs = {n: chip.read_cell_memory(_cid(0, 0), a) for n, a in names.items()}
+    return regs, words, stop
+
+
+def test_onchip_stop_reason_is_readable_and_is_QueueEmpty_for_a_clean_run():
+    """INV-56 clause 1, asserted rather than assumed.
+
+    Every on-chip gate below reads ``stop_reason``. This one pins that the key
+    exists and that a cell which runs to quiescence reports ``"QueueEmpty"`` —
+    so that a later ``"Deadlock"`` is a signal and not noise. It cost another
+    block in this campaign a whole pass to learn that the two are otherwise
+    indistinguishable.
+    """
+    _need_chip()
+    _regs, _w, stop = _run_cell(C_TOKEN, "seq", preset={"lit": 3, "mat": 1})
+    assert stop == "QueueEmpty", (
+        f"a cell that should run to quiescence reported {stop!r}; "
+        '"Deadlock" means the chip is WEDGED — look at the geometry, not the '
+        "program")
+
+
+@pytest.mark.parametrize("lit,mat,want_token", [
+    (0, 0, 0x00),                       # no literals, a 4-byte match
+    (3, 1, 0x31),                       # 3 literals, a 5-byte match
+    (20, 0, 0xF0),                      # a literal-length continuation
+    (0, 20, 0x0F),                      # a match-length continuation
+    (10, 11, 0xAB),                     # both nibbles mid-range
+    (14, 14, 0xEE),                     # the largest values with no escape
+])
+def test_onchip_token_cell_builds_the_token(lit, mat, want_token):
+    """ON CHIP: the TOKEN cell computes ``nib(lit) << 4 | nib(mat)`` with
+    ``nib(v) = min(v, 15)``, and emits it as the sequence's first byte."""
+    _need_chip()
+    _regs, words, stop = _run_cell(C_TOKEN, "seq", preset={"lit": lit, "mat": mat})
+    assert stop == "QueueEmpty", stop
+    assert words, "the token cell emitted nothing"
+    assert words[0] == want_token, (
+        f"lit={lit} mat={mat}: token {words[0]:#04x}, expected "
+        f"{want_token:#04x}")
+
+
+def test_onchip_token_cell_zeroes_a_negative_match_nibble():
+    """A literals-only TAIL arrives with a NEGATIVE ``mat`` marker; its match
+    nibble must be 0, which is what the format requires when there is no match."""
+    _need_chip()
+    regs, words, stop = _run_cell(C_TOKEN, "seq",
+                                  preset={"lit": 5, "mat": 0xFFFF})
+    assert stop == "QueueEmpty", stop
+    assert words and words[0] == 0x50, f"token {words[0]:#04x}, expected 0x50"
+    assert regs["mat"] == 0, "the negative marker was not cleared"
+
+
+@pytest.mark.parametrize("rest,want", [
+    (0, []),                                   # below the escape: no run at all
+    (14, []),
+    (15, [0]),                                 # exactly the escape
+    (16, [1]),
+    (48, [33]),                                # 15 + 33
+    (270, [CONT_ESCAPE, 0]),                   # 15 + 255 + 0
+    (280, [CONT_ESCAPE, 10]),                  # 15 + 255 + 10
+    (525, [CONT_ESCAPE, CONT_ESCAPE, 0]),      # 15 + 255 + 255 + 0
+])
+def test_onchip_length_run_engine(rest, want):
+    """ON CHIP: the shared length-continuation engine.
+
+    A value below 15 emits NOTHING (the nibble carried it). From 15 up it emits
+    ``value - 15`` as a run of 255s followed by a final byte below 255 — and the
+    terminating byte is itself part of the sum, which is the classic
+    transcription trap the format hides.
+    """
+    _need_chip()
+    _regs, words, stop = _run_cell(C_LENRUN, "enter", preset={"rest": rest})
+    assert stop == "QueueEmpty", stop
+    # the trailing hand-off to LITS is a JUMP, not a data word, so the emitted
+    # WORDS are exactly the continuation bytes
+    assert words == want, f"rest={rest}: emitted {words}, expected {want}"
+
+
+@pytest.mark.parametrize("off,want_lo,want_hi", [
+    (1, 0x01, 0x00),
+    (0x1234, 0x34, 0x12),
+    (0x00FF, 0xFF, 0x00),
+    (0xFF00, 0x00, 0xFF),
+    (0xFFFF, 0xFF, 0xFF),
+])
+def test_onchip_offset_is_emitted_LITTLE_endian(off, want_lo, want_hi):
+    """ON CHIP: LZ4 rule 4 — the 16-bit offset goes out LOW BYTE FIRST.
+
+    This is the classic transcription error and the one a self-consistent
+    encoder/decoder PAIR can never catch: swap the order in both and every
+    round-trip still passes. Here the bytes are read straight off the port.
+    """
+    _need_chip()
+    _regs, words, stop = _run_cell(C_SEAL, "post",
+                                   preset={"off": off, "sealed": 0, "mat": 0})
+    assert stop == "QueueEmpty", stop
+    assert len(words) >= 2, f"the seal cell emitted {words}, expected 2+ bytes"
+    assert words[0] == want_lo and words[1] == want_hi, (
+        f"offset {off:#06x} went out as {words[0]:#04x} {words[1]:#04x}; "
+        f"LITTLE endian is {want_lo:#04x} {want_hi:#04x}")
+
+
+def test_onchip_seal_cell_ends_the_tail_without_an_offset():
+    """A literals-only TAIL carries ``off == 0`` and must emit NOTHING here — the
+    format's "the block ends right after its final literals". It is also what
+    terminates the whole encode: nothing hands control back to the scan."""
+    _need_chip()
+    _regs, words, stop = _run_cell(C_SEAL, "post",
+                                   preset={"off": 0, "sealed": 0, "mat": 0})
+    assert stop == "QueueEmpty", stop
+    assert words == [], f"the tail emitted {words}, expected nothing"
+
+
+@pytest.mark.parametrize("b0,b1,b2,b3", [
+    (0, 0, 0, 0),
+    (1, 2, 3, 4),
+    (0x61, 0x62, 0x63, 0x64),
+    (0xFF, 0xFF, 0xFF, 0xFF),
+    (0x80, 0x00, 0x7F, 0x01),
+])
+def test_onchip_rolling_hash_matches_the_model(b0, b1, b2, b3):
+    """ON CHIP: the HASH cell's rolling ``h = h * HASH_MUL + b`` per byte, then
+    one final multiply and a shift, equals :func:`hash4` exactly.
+
+    The four bytes are fed by re-entering ``byte`` once each, which is how the
+    panel's push-read delivers them.
+    """
+    _need_chip()
+    import simkyt
+    b, progs, M = _block_maps()
+    cp = progs[C_HASH]
+    names, entries = M[C_HASH]
+    tg = ResolvedTargets()
+    for (s, o, d, i) in b.internal_connections():
+        if s == C_HASH:
+            tg.writes[o] = WriteTarget(distance=10, target_addr=M[d][0][i])
+    for (s, o, d, e) in b.internal_jumps():
+        if s == C_HASH:
+            tg.jumps[o] = JumpTarget(distance=10, target_addr=M[d][1][e])
+    res = R.resolve(cp, tg)
+    chip = simkyt.Chip.from_yaml(str(CHIP_YAML))
+    for a in range(32):
+        chip.write_cell_memory(_cid(0, 0), a, int(res.memory.get(a, 0)))
+    for x in range(W):
+        chip.set_fwd_face(_cid(x, 0), "east")
+    # seed the loop as `begin` does, then hand it the four bytes
+    chip.write_cell_memory(_cid(0, 0), names["c"], 0)
+    chip.write_cell_memory(_cid(0, 0), names["h"], 0)
+    chip.write_cell_memory(_cid(0, 0), names["i"], 0)
+    stop = None
+    for val in (b0, b1, b2, b3):
+        chip.write_cell_memory(_cid(0, 0), names["v"], val & 0xFFFF)
+        chip.set_port_entry_address("x16_in", entries["byte"])
+        chip.set_port_target_hop_count("x16_in", 30)
+        chip.write_port("x16_in", np.array([0.0], dtype=np.float32))
+        for _ in range(200):
+            st = chip.run(max_events=16)
+            if isinstance(st, dict):
+                stop = st.get("stop_reason", stop)
+            chip.read_port_words_timed("x16_out")
+    assert stop == "QueueEmpty", stop
+    got_h = chip.read_cell_memory(_cid(0, 0), names["h"])
+    # the cell's `h` after four folds; the final multiply + shift is the probe
+    want_roll = 0
+    for v in (b0, b1, b2, b3):
+        want_roll = ((want_roll * 40503) + v) & 0xFFFF
+    assert got_h == want_roll, (
+        f"rolling hash on chip {got_h:#06x}, model {want_roll:#06x}")
+    assert (want_roll * 40503 & 0xFFFF) >> (16 - DEFAULT_HASH_BITS) == \
+        hash4(b0, b1, b2, b3), "the model's own final multiply disagrees"
+
+
+@pytest.mark.parametrize("slot,i,want_hit", [
+    (0, 5, False),        # slot 0 == EMPTY
+    (1, 5, True),         # cand 0, strictly earlier
+    (5, 5, False),        # cand 4 < 5 -> hit
+    (6, 5, False),        # cand 5 == i -> NOT strictly earlier
+    (9, 5, False),        # cand 8 > i
+])
+def test_onchip_verify_cell_accepts_only_a_strictly_earlier_candidate(
+        slot, i, want_hit):
+    """ON CHIP: a slot holds ``position + 1`` so 0 means EMPTY, and only a
+    STRICTLY EARLIER position is usable.
+
+    That single test is also what makes LZ4's "offset 0 is invalid" unviolatable
+    by construction rather than by a check: the offset is ``i - cand`` and
+    ``cand < i``, so it is at least 1.
+    """
+    _need_chip()
+    if slot == 5:
+        want_hit = True                       # cand 4 < 5
+    regs, _w, stop = _run_cell(C_VERIFY, "slot",
+                               inputs={"v": slot}, preset={"i": i})
+    assert stop == "QueueEmpty", stop
+    if want_hit:
+        assert regs["cand"] == slot - 1
+    # a miss leaves cand set but takes the `no` path; the observable difference
+    # is the offset write, which the whole-design gate covers.
+
+
+def test_onchip_verify_offset_is_i_minus_cand_and_never_zero():
+    _need_chip()
+    for i, slot in ((10, 4), (100, 1), (0x8000, 0x4000)):
+        regs, _w, stop = _run_cell(C_VERIFY, "slot",
+                                   inputs={"v": slot}, preset={"i": i})
+        assert stop == "QueueEmpty", stop
+        assert regs["cand"] == slot - 1
+        assert i - (slot - 1) >= 1

@@ -843,13 +843,27 @@ class LZ4EncoderBlock(KyttarBlock):
             inputs=[Port("v")],
             outputs=[Port("out"), Port("go"), Port("m_park")],
             entries=[EntryPoint("seq")],
-            data=[DataWord("f15", NIBBLE_ESCAPE, address=1)],
-            state=[StateVar("lit", register=2, initial_value=0),
-                   StateVar("mat", register=3, initial_value=0),
-                   StateVar("hi", register=4, initial_value=0)],
+            data=[DataWord("f15", NIBBLE_ESCAPE, address=1),
+                  DataWord("zero", 0, address=2)],
+            state=[StateVar("lit", register=3, initial_value=0),
+                   StateVar("mat", register=4, initial_value=0),
+                   StateVar("hi", register=5, initial_value=0)],
             assembly_template=(
                 # `lit` (the literal count) and `mat` (match length - MINMATCH, or
                 # a NEGATIVE marker for the literals-only tail) arrive as data.
+                #
+                # EVERY branch here is preceded by a FLAG-SETTING instruction, and
+                # that is load-bearing: on this ISA `MOVE` does NOT touch the
+                # flags (PROGRAMMING_GUIDE §4), so a branch after a bare `MOVE`
+                # reads whatever the last ALU op left behind. MEASURED on chip:
+                # an earlier revision loaded `mat` with `MOVE R0, R{state:mat}`
+                # and then branched on N. The stale N came from the preceding
+                # `CMP mat, f15`, which is negative for every mat < 15 — so the
+                # tail-zeroing path was taken for EVERY ordinary match and the
+                # token's match nibble came out 0 in all of them. It cost nothing
+                # to fix (`SUB mat, zero` both loads the accumulator and sets the
+                # flags) and it is invisible to every model-level gate, because
+                # the model has no flags.
                 "seq:\n"
                 "    CMP R{state:lit}, R{data:f15}\n"
                 "    BR.LT lnib\n"
@@ -867,11 +881,11 @@ class LZ4EncoderBlock(KyttarBlock):
                 "mnib:\n"
                 # A NEGATIVE `mat` is the literals-only tail: its match nibble is
                 # 0, which is also what the format requires (there is no match).
-                "    MOVE R0, R{state:mat}\n"
-                "    BR.N mzero\n"
-                "    BR.GE mgot\n"
-                "mzero:\n"
+                # `SUB` loads R0 AND sets N from the value itself.
+                "    SUB R{state:mat}, R{data:zero}\n"
+                "    BR.NN mgot\n"
                 "    SUB R{state:mat}, R{state:mat}\n"
+                "    MOVE R{state:mat}, R0\n"
                 "mgot:\n"
                 "    OR R0, R{state:hi}\n"
                 "    {write:out}\n"                  # the TOKEN

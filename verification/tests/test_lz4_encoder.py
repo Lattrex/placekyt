@@ -1157,3 +1157,338 @@ def test_onchip_verify_offset_is_i_minus_cand_and_never_zero():
         assert stop == "QueueEmpty", stop
         assert regs["cand"] == slot - 1
         assert i - (slot - 1) >= 1
+
+
+def test_INV4_a_stale_flag_branch_in_the_token_cell_is_CAUGHT():
+    """The INV-4 negative for the on-chip token gate, and the mutant is the REAL
+    defect this layer found.
+
+    On this ISA ``MOVE`` does not set the flags, so a branch after a bare ``MOVE``
+    reads whatever the last ALU operation left behind. Re-introducing that in the
+    TOKEN cell — load ``mat`` with ``MOVE`` and branch on N — makes the stale N
+    from the preceding ``CMP mat, f15`` (negative for every ``mat < 15``) send
+    every ordinary match down the tail-zeroing path, and the token's match nibble
+    comes out 0.
+
+    MEASURED before the fix: lit=3 mat=1 emitted 0x30 for 0x31; 10/11 emitted
+    0xa0 for 0xab; 14/14 emitted 0xe0 for 0xee. NO model-level gate can see this,
+    because the model has no flags.
+    """
+    _need_chip()
+    import gr_kyttar.placement.blocks.lz4_encoder_block as mod
+    real = mod.LZ4EncoderBlock.build_cell_programs
+
+    def mutated(self):
+        progs = real(self)
+        cp = progs[C_TOKEN]
+        cp.assembly_template = cp.assembly_template.replace(
+            "    SUB R{state:mat}, R{data:zero}\n"
+            "    BR.NN mgot\n",
+            "    MOVE R0, R{state:mat}\n"
+            "    BR.NN mgot\n")
+        return progs
+
+    mod.LZ4EncoderBlock.build_cell_programs = mutated
+    try:
+        _regs, words, stop = _run_cell(C_TOKEN, "seq",
+                                       preset={"lit": 3, "mat": 1})
+        assert stop == "QueueEmpty", stop
+        assert words and words[0] != 0x31, (
+            "the stale-flag mutant produced the CORRECT token, so the on-chip "
+            "token gate cannot see a flag defect and certifies nothing")
+    finally:
+        mod.LZ4EncoderBlock.build_cell_programs = real
+    # and the real block is still right afterwards
+    _regs, words, stop = _run_cell(C_TOKEN, "seq", preset={"lit": 3, "mat": 1})
+    assert words and words[0] == 0x31
+
+
+# =========================================================================
+# LAYER 6 — THE WHOLE DESIGN, auto-placed, routed, built, on a real chip
+# =========================================================================
+def _auto_build():
+    """Synthesize + template-place + build the one-block LZ4 encoder design.
+
+    Returns ``(project, BuildResult)``. This is the same path ``auto_pnr`` takes
+    for a panel design: ``ui/controller.py`` delegates to
+    ``apply_panel_template`` and then routes the leftover block-to-block nets, of
+    which this design has none.
+    """
+    from engine.build import BuildEngine
+    from engine.catalog import BlockCatalog
+    from engine.io.chip_type_io import load_chip_type
+    from engine.panel_pnr import apply_panel_template, synthesize_panel
+    from model.block import Block
+    from model.chip import ChipInstance
+    from model.connection import BlockEndpoint, ChipPortEndpoint, Connection
+    from model.project import Project, ProjectMetadata
+
+    cat = BlockCatalog.from_gr_kyttar()
+    ct = load_chip_type(str(CHIP_YAML))
+    p = Project(metadata=ProjectMetadata(name="lz4e"), chip_type="kyttar_10x12")
+    p.chips = [ChipInstance(0, "C0")]
+    p.blocks = [Block("enc", "LZ4EncoderBlock", library="lattrex.official",
+                      params={})]
+    p.connections = [
+        Connection("i", ChipPortEndpoint(0, "x16_in"), BlockEndpoint("enc", "b")),
+        Connection("o", BlockEndpoint("enc", "egress"),
+                   ChipPortEndpoint(0, "x16_out")),
+    ]
+    synthesize_panel(p, cat)
+    apply_panel_template(p, cat, ct)
+    res = BuildEngine(cat, str(CHIP_YAML)).build(p, {"kyttar_10x12": ct})
+    assert res.ok, [str(e) for e in res.errors]
+    return p, res
+
+
+def _encode_on_chip(project, bres, raw_bytes, idle_max=400):
+    """Feed a raw byte stream into the BUILT design on a real ``simkyt`` chip
+    with a real ``SramPanelDevice`` on the x1 pair, and return
+    ``(compressed bytes, panel device, last stop_reason)``.
+
+    The stream is terminated by the out-of-band END-OF-BLOCK sentinel, which is
+    what starts pass 2.
+
+    Paces ONE transaction at a time: the panel link is single-outstanding
+    (``SRAM_PANEL.md`` §5), so a bulk queue would starve on the held ack.
+
+    ``stop_reason`` is captured and returned because INV-56 clause 1 makes it the
+    FIRST thing to read when a block emits nothing — ``"QueueEmpty"`` means the
+    chip ran to quiescence and the words were never produced or were
+    mis-addressed (look at the program), ``"Deadlock"`` means the chip is WEDGED
+    (look at the geometry). ``completed`` is False and the count is 0 for both.
+    """
+    import simkyt
+    from engine.sram_panel import SramPanelDevice
+
+    lin = next(iter(bres.chips[0].input_landings.values()))
+    panel = project.panels[0]
+    dev = SramPanelDevice(size_words=panel.size_words,
+                          addr_regs=panel.address_regs,
+                          auto_inc_read=bool(getattr(panel, "auto_inc_read",
+                                                     False)))
+    dev.mem.update({int(a): int(w) & 0xFFFF
+                    for a, w in (panel.image or {}).items()})
+    chip = simkyt.Chip.from_yaml(str(CHIP_YAML))
+    chip.load_bitstream_physical(bres.words(0))
+    chip.register_panel("x1_out", "x1_in", dev)
+
+    out = []
+    state = {"stop": None}
+
+    def pump(limit):
+        idle = 0
+        for _ in range(200000):
+            st = chip.run(max_events=64)
+            if isinstance(st, dict):
+                state["stop"] = st.get("stop_reason", state["stop"])
+            got = chip.read_port_words_timed("x16_out")
+            if got:
+                idle = 0
+                out.extend(w & 0xFFFF for w, _d, _t in got)
+            else:
+                idle += 1
+                if idle > limit:
+                    return
+
+    for b in list(raw_bytes) + [EOB_SENTINEL]:
+        chip.queue_words_physical("x16_in", [
+            _wr(lin["hop"], lin["data_addrs"][0]), int(b) & 0xFFFF,
+            _jp(lin["hop"], lin["entry"])])
+        pump(idle_max)
+    pump(6 * idle_max)
+    return out, dev, state["stop"]
+
+
+_BUILD_CACHE: list = []
+
+
+def _auto_build_cached():
+    """The auto-placed + built design, built ONCE for the module.
+
+    Placement and build are deterministic here (the panel template lays the
+    block's own ``default_layout`` down — there is no CP-SAT search), so every
+    end-to-end case shares one build. Each case still gets a FRESH chip and a
+    FRESH panel device, so no state leaks between payloads.
+    """
+    if not _BUILD_CACHE:
+        _BUILD_CACHE.append(_auto_build())
+    return _BUILD_CACHE[0]
+
+
+def test_auto_pnr_places_every_cell_and_routes_the_corridors():
+    """THE PLACEMENT GATE. ``apply_panel_template`` places ALL FOURTEEN cells and
+    draws the three corridors, and the result passes DRC with no errors.
+
+    A short placement is a silent-dead build TWICE over: the missing cells are
+    simply absent from the ``Placement``, and the build binds programs to
+    ``placement.cells`` BY INDEX, so the remaining programs also land on the
+    wrong positions. This asserts the whole placement, not that something was
+    produced.
+    """
+    _need_chip()
+    from engine.catalog import BlockCatalog
+    from engine.drc import check_project
+    from engine.io.chip_type_io import load_chip_type
+    from engine.panel_pnr import apply_panel_template, synthesize_panel
+    from model.block import Block
+    from model.chip import ChipInstance
+    from model.connection import BlockEndpoint, ChipPortEndpoint, Connection
+    from model.project import Project, ProjectMetadata
+
+    cat = BlockCatalog.from_gr_kyttar()
+    ct = load_chip_type(str(CHIP_YAML))
+    p = Project(metadata=ProjectMetadata(name="lz4e"), chip_type="kyttar_10x12")
+    p.chips = [ChipInstance(0, "C0")]
+    p.blocks = [Block("enc", "LZ4EncoderBlock", library="lattrex.official",
+                      params={})]
+    p.connections = [
+        Connection("i", ChipPortEndpoint(0, "x16_in"), BlockEndpoint("enc", "b")),
+        Connection("o", BlockEndpoint("enc", "egress"),
+                   ChipPortEndpoint(0, "x16_out")),
+    ]
+    assert any("panel" in a for a in synthesize_panel(p, cat))
+    results, _notes = apply_panel_template(p, cat, ct)
+
+    blk = p.block("enc")
+    placed = {c.cell_id: (c.x, c.y) for c in blk.placement.cells}
+    n = LZ4EncoderBlock("probe").cell_count
+    assert len(placed) == n, (
+        f"the template placed {len(placed)} of {n} cells — the un-placed ones "
+        "are silently absent from the build")
+    assert sorted(placed) == list(range(n)), placed
+    ids = [c.cell_id for c in blk.placement.cells]
+    assert ids == sorted(ids), f"placement.cells is not in cell-id order: {ids}"
+    ctl = next(c for c in blk.placement.cells if c.cell_id == C_CTL)
+    assert (ctl.x, ctl.y) == (9, 11), "the controller must sit on x1_out"
+    ret = next(c for c in blk.placement.cells if c.cell_id == C_RET)
+    assert ret.y == 11, f"the return cell must sit on the x1_in row, got {ret.y}"
+    assert len({(c.x, c.y) for c in blk.placement.cells}) == n, "cells overlap"
+
+    named = {r.name for r in results}
+    assert {"in_to_block", "block_to_out"} <= named, named
+    assert any("panel_return" in nm for nm in named), named
+    assert all(r.ok for r in results)
+
+    drc = check_project(p, {"kyttar_10x12": ct}, catalog=cat)
+    errs = [f for f in drc.findings if getattr(f, "severity", "") == "error"]
+    assert not errs, "DRC errors: " + "; ".join(
+        f"{getattr(e, 'code', '?')}: {getattr(e, 'message', e)}" for e in errs)
+
+
+def test_build_lands_each_program_on_its_placed_cell():
+    """The BUILD binds each cell program to the position the template chose.
+
+    ``BuildResult.chips[N].cells`` exposes every cell's resolved 32-word memory,
+    entry address and face, so this reads the BUILT words back rather than
+    trusting the placement list.
+    """
+    _need_chip()
+    from engine.catalog import BlockCatalog
+    p, res = _auto_build_cached()
+    cb = res.chips[0]
+    cat = BlockCatalog.from_gr_kyttar()
+    inst = cat.instantiate("LZ4EncoderBlock", "probe", {},
+                           library="lattrex.official")
+    progs = inst.build_cell_programs()
+    pos = {c.cell_id: (c.x, c.y) for c in p.block("enc").placement.cells}
+    for cid, xy in pos.items():
+        built = cb.cells.get(xy)
+        assert built is not None, f"cell {cid} at {xy} was not built"
+        want = R.compute_entry_addresses(progs[cid])
+        assert built.get("entry") in want.values(), (
+            f"cell {cid} at {xy}: built entry {built.get('entry')} is not one "
+            f"of that program's entries {sorted(want.values())} — the programs "
+            "are bound to the wrong cells")
+
+
+@pytest.mark.parametrize("name", [
+    "short", "tiny", "overlap", "text", "repetitive", "random",
+])
+def test_THE_BUILT_CHIP_compresses_and_the_block_round_trips(name):
+    """THE END-TO-END GATE, and the one that matters.
+
+    The AUTO-PLACED, ROUTED, BUILT design compresses a real payload on a real
+    chip through a real SRAM panel, and the block it emits decodes back to the
+    input under the PUBLISHED golden decoder. Six payload classes, including
+    incompressible random data.
+
+    Every layer below this is a component check. This is those checks composed —
+    the two-pass control flow, the two panel regions, the hash probe, the match
+    verify, the length encoder and the placement, at once, from the same build
+    path the GUI's auto-P&R produces.
+    """
+    _need_chip()
+    payload = PAYLOADS[name]
+    project, bres = _auto_build_cached()
+    got, dev, stop = _encode_on_chip(project, bres, payload)
+    assert stop != "Deadlock", (
+        f"{name}: the chip WEDGED (stop_reason={stop!r}) — a circular wait, so "
+        "the geometry is at fault, not the program (INV-56 clause 1)")
+    assert got, (
+        f"{name}: the chip emitted NOTHING (stop_reason={stop!r}, panel writes "
+        f"committed: {dev.writes_committed})")
+    blk = bytes(b & 0xFF for b in got)
+    assert lz4_decompress_block(blk) == payload, (
+        f"{name}: the chip's block did not decode back to the input\n"
+        f"  payload[:24]={list(payload[:24])}\n"
+        f"  chip blk[:24]={list(blk[:24])}")
+
+
+def test_THE_BUILT_CHIP_matches_the_model_byte_for_byte():
+    """The chip's output equals ``encode_model``'s, byte for byte.
+
+    Stronger than round-trip alone: round-trip passes for ANY legal block, so it
+    cannot see a chip that picks different (still legal) matches from the model.
+    This pins that the silicon runs the algorithm the model describes.
+    """
+    _need_chip()
+    project, bres = _auto_build_cached()
+    for name in ("short", "overlap", "text"):
+        payload = PAYLOADS[name]
+        got, _dev, stop = _encode_on_chip(project, bres, payload)
+        assert stop != "Deadlock", (name, stop)
+        want = bytes(encode_model(payload)[0])
+        assert bytes(b & 0xFF for b in got) == want, (
+            f"{name}: chip {list(got[:24])} vs model {list(want[:24])}")
+
+
+@pytest.mark.skipif(not _HAVE_REF, reason="reference lz4 C binding not importable")
+def test_THE_BUILT_CHIP_output_is_accepted_by_the_INDEPENDENT_decoder():
+    """THE ACCEPTANCE GATE.
+
+    Blocks produced by the REAL BUILT CHIP are handed to the INDEPENDENT
+    reference **C** decoder (``lz4.block``), which this repository did not write,
+    and it returns the exact input. This is the only gate that can rule out an
+    encoder and a decoder being self-consistently wrong TOGETHER — and it is the
+    one the brief requires before this block may be called done.
+    """
+    _need_chip()
+    project, bres = _auto_build_cached()
+    names = ["short", "tiny", "overlap", "text", "repetitive", "random"]
+    jobs = []
+    for name in names:
+        got, _dev, stop = _encode_on_chip(project, bres, PAYLOADS[name])
+        assert stop != "Deadlock", (name, stop)
+        assert got, f"{name}: the chip emitted nothing (stop_reason={stop!r})"
+        jobs.append((bytes(b & 0xFF for b in got), len(PAYLOADS[name]) + 4096))
+    for name, (ok, val) in zip(names, _ref_decompress(jobs)):
+        assert ok, (
+            f"{name}: the REFERENCE C decoder REJECTED the CHIP's block: {val}")
+        assert val == PAYLOADS[name], (
+            f"{name}: the reference decoder returned {len(val)} bytes from the "
+            f"chip's block, expected {len(PAYLOADS[name])}")
+
+
+def test_THE_BUILT_CHIP_incompressible_bound():
+    """The 0.5% expansion bound, measured on the REAL CHIP rather than the
+    model."""
+    _need_chip()
+    project, bres = _auto_build_cached()
+    payload = PAYLOADS["random"]
+    got, _dev, stop = _encode_on_chip(project, bres, payload)
+    assert stop != "Deadlock", stop
+    growth = (len(got) - len(payload)) / len(payload)
+    assert growth <= 0.005, (
+        f"on chip, incompressible input expanded {growth * 100:.3f}%, "
+        "bound 0.5%")

@@ -756,7 +756,14 @@ def test_the_ring_runs_the_whole_rfc_schedule_on_a_built_chip():
     key = getattr(ct, "name", None) or "kyttar_10x12"
     ctrl = AppController(catalog=cat)
     ctrl.new_project("chacha", key)
-    blk = ctrl.place_block("ChaCha20KeystreamBlock", 0, 0, 1,
+    # Origin (0, 0). The fold's TOP band is now the reorder row, which carries
+    # both `out` (its east end) and the walk `seq`'s release trigger climbs, so
+    # the block starts at array row 0 and the chip's I/O corridor taps `seq` at
+    # (0, 1) from the west edge rather than from a free row above. Measured:
+    # origin y=0 routes both nets; y=1..4 all fail `in_blk` with "no free
+    # corridor between the ports", because a 7-tall block at y=1 leaves the
+    # input port no way in.
+    blk = ctrl.place_block("ChaCha20KeystreamBlock", 0, 0, 0,
                            library="lattrex.official", params={})
     ctrl.add_logical_connection(ChipPortEndpoint(chip=0, port="x16_in"),
                                 BlockEndpoint(block=blk, port="sample"),
@@ -793,7 +800,9 @@ def test_the_ring_runs_the_whole_rfc_schedule_on_a_built_chip():
 
     b = ChaCha20KeystreamBlock("gate")
     lay = b.default_layout()
-    name = {(y + 1) * 10 + x: c for c, (x, y, f) in lay.items()}
+    # The block is placed at origin (0, 0), so a layout offset IS its array
+    # cell id (row-major, 10 wide).
+    name = {y * 10 + x: c for c, (x, y, f) in lay.items()}
     R = CellProgramResolver()
     ent = {c: R.compute_entry_addresses(p)
            for c, p in b.build_cell_programs().items()}
@@ -833,19 +842,24 @@ def test_the_ring_runs_the_whole_rfc_schedule_on_a_built_chip():
     assert runs.get(("drn", "default")) == 4
     assert runs.get(("out", "default")) == 32
 
-    # ...and THE VALUE GATE: all sixteen state words, bit-exact, RFC 8439 S2.3.2.
+    # ...and THE VALUE GATE: all sixteen state words, bit-exact AND IN RFC 8439
+    # S2.3.2 ORDER, on the real placed + routed + built chip. This is the
+    # definition of done for this block.
+    #
+    # The drain still emits lap-major -- one lap empties one slot of every row,
+    # and that is structural (INV-55: one pass visiting every source once makes
+    # the source index the fast-varying half of the output position). The order
+    # is corrected at the COLLECTOR by the eight reorder-buffer stages: each
+    # adder's four words are held in a 4-deep FIFO built as `bufA_k -> bufB_k`,
+    # and the release walks the eight stages west to east, so output group `k`
+    # is exactly `add_k`'s four words in lap order.
     assert len(out) == 32, f"emitted {len(out)} words, want 32"
     got32 = [(out[2 * i] << 16) | out[2 * i + 1] for i in range(16)]
     want = list(g.RFC8439_BLOCK_EXPECTED_STATE)
-    # The drain is lap-major: emission position 4*i + k carries state[4*k + i].
-    expect = [want[4 * k + i] for i in range(4) for k in range(4)]
-    assert got32 == expect, (
-        "on-chip state words differ from RFC 8439 S2.3.2 (lap-major order):\n"
+    assert got32 == want, (
+        "on-chip state words differ from RFC 8439 S2.3.2:\n"
         f"  got  {[f'{v:#010x}' for v in got32]}\n"
-        f"  want {[f'{v:#010x}' for v in expect]}")
-    # ...and independently: the emitted SET is exactly the RFC's sixteen words,
-    # which is the assertion that does not depend on knowing the drain's order.
-    assert sorted(got32) == sorted(want)
+        f"  want {[f'{v:#010x}' for v in want]}")
 
 
 #: The sixteen quarter-round stages, as the block reuses them.
@@ -1067,100 +1081,91 @@ def test_the_reorder_buffer_misses_this_folds_cell_budget_by_three_words():
     assert (2 + 8 + 1 + 2) - (31 - len(with_counter)) + 1 == 3, (
         "the reorder buffer's overlap is no longer exactly three words")
 
+def test_the_two_row_reorder_band_is_BUILT_and_every_walk_resolves():
+    """The re-fold pass 6 specified, now BUILT -- checked walk by walk.
 
-def test_the_finish_row_is_SEALED_so_the_buffer_cannot_be_moved_off_it():
-    """No cell of the finish row can reach ANY free slot, on ANY face.
+    The block was 41 cells in a 10x6 fold whose top row (the four finish
+    adders) was SEALED: measured over every free slot of the bounding box x
+    every face, no cell of that row could reach ANY free slot, so the reorder
+    buffer the transpose needs had nowhere to live (INV-55 rule 2).
 
-    This is the geometric fact that forces the buffer to live on the finish row
-    (where there are exactly four free slots) rather than in the block's ample
-    free space, and it generalises the earlier pass's "``d3`` has ZERO
-    candidates" result: the obstruction is not about ``tap3``, it is that the
-    whole finish row is enclosed.
+    Pass 7 shifted the whole fold DOWN one array row and added a REORDER BAND
+    on top, giving each adder a PAIR of depth-2 buffer stages. The block is now
+    48 cells in a 10x7 fold:
 
-    * NORTH leaves the block entirely — the row is the fold's top band, and the
-      array row above it is the chip's I/O corridor. A block-internal ``WRITE``
-      into a cell the block does not own is a dead end.
-    * SOUTH lands on the STATE LINE, every cell of which rests EAST (a solved
-      constraint: ``wb``'s eight write-backs, ``wbk``'s rotates and boundary
-      spins, and ``drn``'s drain spins all need that one eastward walk), so the
-      word is swept along it and out at the frame collector.
-    * EAST and WEST stay on the row.
-
-    Measured over every free slot of the fold's bounding box x every face.
-    LAYER: block fold — a property of THIS layout, not of the substrate. The
-    re-fold that opens it is the two-row finish band, checked in the next gate.
-    """
-    from gr_kyttar.placement.blocks.chacha20_keystream_block import (
-        ChaCha20KeystreamBlock)
-    b = ChaCha20KeystreamBlock("sealed")
-    lay = b._geometry()
-    occupied = {(x, y) for (x, y, _f) in lay.values()}
-    free = [(x, y) for y in range(7) for x in range(10)
-            if (x, y) not in occupied]
-    assert free, "the fold's bounding box has no free slots at all"
-    finish_row = [c for c, (x, y, _f) in lay.items() if y == 0]
-    assert len(finish_row) == 10, finish_row
-    escapes = []
-    for cid in finish_row:
-        for slot in free:
-            probe = dict(lay)
-            probe["__probe__"] = (slot[0], slot[1], "east")
-            for face in FACE_OF.values():
-                if _walk(probe, cid, face, "__probe__") is not None:
-                    escapes.append((cid, slot, FACE_NAME[face]))
-    assert not escapes, (
-        "the finish row is no longer sealed — a buffer could move off it:\n  "
-        + "\n  ".join(f"{c} reaches {s} facing {f}" for c, s, f in escapes))
-
-
-def test_the_two_row_finish_band_refold_preserves_every_control_walk():
-    """The re-fold that WOULD close the three-word gap, checked walk by walk.
-
-    Shift the whole 10x6 fold DOWN one array row and put a second buffer row on
-    top. The array is 10x12 and the block sits at array row 1, so there is
-    room; the block grows from 41 cells to 49.
-
-        y=0  buffers:  bufB0 . bufB1 . bufB2 . bufB3 .
-        y=1  finish:   seq wbk add0 bufA0 add1 bufA1 add2 bufA2 add3 bufA3
+        y=0  reorder:  bpad0 bpad1 B0 A0 B1 A1 B2 A2 B3 A3
+        y=1  finish:   seq wbk add0 . add1 . add2 . add3 out
         y=2  state:    wb | row0 tap0 row1 tap1 row2 tap2 row3 tap3 | in0
-        y=3+ control column and the quarter-round legs, shifted down one
+        y=3+ the control column and the quarter-round legs, shifted down one
 
-    Each adder then feeds a PAIR of depth-2 buffers (``bufA_k`` then
-    ``bufB_k``), which is a 4-deep FIFO built as two stages. Depth 2 frees four
-    registers per cell, and the counter-plus-re-entry that overflowed the
-    depth-4 cell fits with room to spare.
+    Depth 2 is what makes the stage fit: it halves the state (four registers,
+    not eight) AND removes the release counter outright, because a depth-2 cell
+    can emit BOTH its words from one straight-line entry. Measured: the depth-4
+    form was 20 instructions against a ``base_addr`` of 11 with 13 live words --
+    INV-33's overlap by exactly three; the depth-2 stage is 22 against 9.
 
-    Everything checked here is a walk the CURRENT block already depends on,
-    re-measured after the shift — the shift must not break the state line's
-    hop-1/3/5/7 broadcast, the tap-to-adder abutment, or the
-    ``wb -> seq -> wbk`` hand-off. It also checks the one NEW walk the re-fold
-    needs, ``bufA_k -> bufB_k`` at hop 1 north.
-
-    This gate does not claim the re-fold is BUILT — it is not. It claims the
-    geometry is sound, so the next pass can execute it without re-searching.
+    This gate checks the built geometry, not a proposal: every walk the block
+    actually declares, re-measured on ``_geometry()`` itself.
     """
     from gr_kyttar.placement.blocks.chacha20_keystream_block import (
-        ChaCha20KeystreamBlock)
+        ChaCha20KeystreamBlock, BUFFER_CHAIN)
     b = ChaCha20KeystreamBlock("refold")
-    old = b._geometry()
-    lay = {c: (x, y + 1, f) for c, (x, y, f) in old.items()
-           if not (c.startswith("pass") or c == "out")}
-    for k in range(4):
-        lay[f"bufA{k}"] = (3 + 2 * k, 1, "east")
-        lay[f"bufB{k}"] = (3 + 2 * k, 0, "east")
+    lay = b._geometry()
     positions = [v[:2] for v in lay.values()]
-    assert len(set(positions)) == len(positions), "the re-fold self-overlaps"
-    assert max(y for _x, y in positions) <= 11, "the re-fold leaves the array"
+    assert len(set(positions)) == len(positions), "the fold self-overlaps"
+    assert max(y for _x, y in positions) <= 11, "the fold leaves the array"
+    assert len(lay) == 48, f"the fold is {len(lay)} cells, want 48"
 
     for k in range(4):
         # the tap still reaches its adder at hop 1, straight north
         assert _walk(lay, f"tap{k}", FACE_OF["north"], f"add{k}") == 1
-        # the adder still reaches its first buffer at hop 1, on its resting face
-        assert _walk(lay, f"add{k}", FACE_OF["east"], f"bufA{k}") == 1
-        # ...and the NEW walk the second buffer stage needs
-        assert _walk(lay, f"bufA{k}", FACE_OF["north"], f"bufB{k}") == 1
-        # the state line's broadcast pattern is untouched
+        # the adder rests NORTH and reaches its FIRST stage at hop 2, through
+        # the second stage that sits directly above it
+        assert _walk(lay, f"add{k}", FACE_OF["north"], f"bufA{k}") == 2
+        # ...and that stage spills WEST into the second at hop 1
+        assert _walk(lay, f"bufA{k}", FACE_OF["west"], f"bufB{k}") == 1
+        # the state line's broadcast pattern is untouched by the shift
         assert _walk(lay, "wbk", FACE_OF["south"], f"row{k}") == 1 + 2 * k
         assert _walk(lay, "drn", FACE_OF["north"], f"row{k}") == 1 + 2 * k
-    # and the control hand-off that `wb`'s one face flip pays for
+    # the control hand-off that `wb`'s one face flip pays for
     assert _walk(lay, "wb", FACE_OF["north"], "wbk") == 2
+    # the drain lap's baton still climbs the control column
+    assert _walk(lay, "tap3", FACE_OF["south"], "add_pad") == 19
+    assert _walk(lay, "add_pad", FACE_OF["east"], "drn") == 1
+
+    # THE RELEASE TRIGGER. The state line is a uniform EAST conveyor, so the
+    # only cells that can lift a word off it are the four TAPS -- each already
+    # owns a NORTH flip for its adder, and the adders rest north too, so a
+    # tap's inward walk passes THROUGH its adder onto the reorder row. That is
+    # what fixes the reorder row's columns: `bufB_k` sits directly above
+    # `add_k` so that `tap0`'s walk lands exactly on the chain's head.
+    assert _walk(lay, "drn", FACE_OF["north"], "tap0") == 2
+    assert _walk(lay, "tap0", FACE_OF["north"], "bufB0") == 2
+
+    # THE RELEASE CHAIN rides the row's own eastward resting face: every stage
+    # reaches the next at hop 1 and the egress at the hop its column implies.
+    for i, cid in enumerate(BUFFER_CHAIN[:-1]):
+        assert _walk(lay, cid, FACE_OF["east"], BUFFER_CHAIN[i + 1]) == 1
+    for i, cid in enumerate(BUFFER_CHAIN[:-1]):
+        assert _walk(lay, cid, FACE_OF["east"], "out") == 8 - i
+    # ...and the row's east end rests SOUTH, dropping into the egress below.
+    assert lay["bufA3"][2] == "south"
+    assert _walk(lay, "bufA3", FACE_OF["south"], "out") == 1
+
+
+def test_the_refold_gate_catches_a_broken_reorder_walk():
+    """INV-4 for the gate above. Move ONE buffer stage off its column and the
+    fill walk must break -- the adder's hop-2 north write is what pins the
+    reorder row's columns, and it is the constraint that decides where the
+    release chain's head can be."""
+    from gr_kyttar.placement.blocks.chacha20_keystream_block import (
+        ChaCha20KeystreamBlock)
+    b = ChaCha20KeystreamBlock("mutant")
+    lay = dict(b._geometry())
+    # Swap bufB0 and bufA0: the adder then feeds the FAR end of the FIFO and
+    # `tap0`'s trigger lands on the wrong stage.
+    lay["bufB0"], lay["bufA0"] = lay["bufA0"], lay["bufB0"]
+    assert _walk(lay, "add0", FACE_OF["north"], "bufA0") != 2, (
+        "the swapped layout must break the adder's hop-2 fill walk")
+    assert _walk(lay, "tap0", FACE_OF["north"], "bufB0") != 2, (
+        "the swapped layout must break the release trigger's landing")

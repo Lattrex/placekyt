@@ -53,12 +53,40 @@ STATE_LINE = tuple(c for k in range(4) for c in (f"row{k}", f"tap{k}"))
 RING = (("seq", "wb", "wbk", "drn") + STATE_LINE + QR_CELLS
         + ("relay", "relay2"))
 
-#: Cells that are NOT on the datapath cycle: the four finish adders, the egress,
-#: and the six one-word pass-throughs that PAVE shared walks (a gap inside the
-#: block's own footprint is a dead end for a block-internal WRITE -- INV-51).
-INTERIOR_CELLS = (("out", "add_pad", "ctl_pad", "ra_pad")
+#: The REORDER band: each adder's four words held as a PAIR of depth-2 stages,
+#: ``bufA_k`` then ``bufB_k``, and released stage by stage along one eastward
+#: conveyor into the egress. This is what turns the drain's lap-major emission
+#: into RFC 8439 §2.3.2 order -- see :meth:`_buf` and INV-55.
+#:
+#: The RELEASE order, which is also the west-to-east order the cells sit in
+#: along the buffer row: ``bufB0 bufA0 bufB1 bufA1 ...``. A pair's B stage holds
+#: the OLDER two words (it is the far end of the FIFO), so it releases first.
+BUFFER_CHAIN = tuple(c for k in range(4) for c in (f"bufB{k}", f"bufA{k}"))
+
+#: PROGRAM order for the same eight cells — deliberately NOT the chain order.
+#:
+#: Program order decides which internal edges count as BACKWARD, and the build
+#: resolves a backward jump by rewriting the source cell's HIGHEST-ADDRESSED
+#: jump (INV-53). Listing each pair's A stage first makes the spill
+#: ``bufA_k -> bufB_k`` a FORWARD edge, which frees the A stage from having to
+#: end on that jump — worth exactly the one instruction that brings it inside
+#: its word budget. The single backward edge left is the chain's
+#: ``bufB_k -> bufA_k`` baton, and it lands on the B stage, whose ``nxt`` IS its
+#: highest jump and which has nine spare words either way.
+#:
+#: The COORDINATES are unaffected: ``default_layout`` reindexes ``_geometry``
+#: by this order, so the two dicts still pair by position (INV-33).
+BUFFER_PROGRAM_ORDER = tuple(c for k in range(4)
+                             for c in (f"bufA{k}", f"bufB{k}"))
+
+#: Cells that are NOT on the datapath cycle: the four finish adders, the eight
+#: reorder buffers, the egress, and the one-word pass-throughs that PAVE shared
+#: walks (a gap inside the block's own footprint is a dead end for a
+#: block-internal WRITE -- INV-51).
+INTERIOR_CELLS = (("out", "add_pad", "ctl_pad", "ra_pad",
+                   "bpad0", "bpad1")
                   + tuple(f"add{k}" for k in range(4))
-                  + tuple(f"pass{k}" for k in range(3)))
+                  + BUFFER_PROGRAM_ORDER)
 
 
 def initial_state(key: bytes, nonce: bytes, counter: int) -> List[int]:
@@ -150,7 +178,7 @@ class ChaCha20KeystreamBlock(KyttarBlock):
     therefore **always slot 0** — a constant — and the permutation is a shift
     register. No selector, no ``LOAD``-indirect, no write-back branch, no demux.
 
-    Datapath — 40 cells in a 10x6 fold
+    Datapath — 48 cells in a 10x7 fold
     ==================================
 
     The DATAFLOW is a cycle — one lap per quarter-round invocation::
@@ -184,9 +212,13 @@ class ChaCha20KeystreamBlock(KyttarBlock):
     * ``add0..add3`` finish: each drains one row and adds that row's four
       addends, held in a rotating register that steps in lockstep so the
       add-back tap is **also** always slot 0.
-    * ``pass0..pass2`` and ``ctl_pad``/``ra_pad`` are one-word pass-throughs
+    * ``bufA0..bufA3`` / ``bufB0..bufB3`` are the REORDER BAND: each adder's
+      four words held as a 4-deep FIFO built from two depth-2 stages, released
+      stage by stage along one eastward conveyor. This is what turns the drain's
+      lap-major emission into RFC 8439 §2.3.2 order (INV-55).
+    * ``bpad0``/``bpad1`` and ``ctl_pad``/``ra_pad`` are one-word pass-throughs
       that PAVE shared walks — a gap inside the block's own footprint is a dead
-      end for an internal ``WRITE`` (INV-50). ``add_pad`` paves the same column
+      end for an internal ``WRITE`` (INV-51). ``add_pad`` paves the same column
       and additionally relays the drain baton from ``tap3`` to ``drn``.
 
     The initial state is a **build-time constant** — the four RFC constants are
@@ -219,76 +251,95 @@ class ChaCha20KeystreamBlock(KyttarBlock):
     is fixed the block is not a drop-in for the published algorithm, so it stays
     ``needs_human``.
 
-    Where the fix is, and what exactly still blocks it (2026-08-29)
-    --------------------------------------------------------------
+    The REORDER BAND, built (2026-08-29, pass 7)
+    -------------------------------------------
 
-    Earlier passes looked for the fix at the ROWS — a per-row loop that drains
-    one row completely before starting the next — and measured that it does not
-    fit. That is still true, and it is now known to be true for a deeper reason
-    than "no room": **the row side has no freedom at all.**
+    Earlier passes looked for the fix at the ROWS and measured that the row
+    side has **no freedom at all**:
 
-    * **The boot-time load map is FORCED.** Permuting the state as it is loaded
-      would cost zero instructions and zero cells, so it is the cheapest
-      conceivable fix. It cannot work: row ``k`` slot ``i`` is read on exactly
-      the laps where that row's rotation offset is ``i``, and the quarter round
-      demands a specific RFC index there, so walking the 80 laps pins all
-      sixteen (row, slot) cells with no conflict and nothing left free. The
-      unique solution is the identity this block already ships.
-    * **No drain-side knob helps either.** All ``4^4 x 4^4 x 4!`` combinations
-      of pre-drain rotation, inter-lap spin count and row publish order were
-      searched exhaustively; none gives §2.3.2 order and the best gets 4 of 16
-      positions right. One drain lap visits each row once, so the row index is
-      always the FAST-varying half of the output position — no permutation of
-      laps or rows can exchange the nibbles.
+    * **The boot-time load map is FORCED.** Row ``k`` slot ``i`` is read on
+      exactly the laps where that row's rotation offset is ``i``, and the
+      quarter round demands a specific RFC index there, so walking the 80 laps
+      pins all sixteen (row, slot) cells. The unique solution is the identity
+      this block already ships.
+    * **No drain-side knob helps.** All ``4^4 x 4^4 x 4!`` combinations of
+      pre-drain rotation, inter-lap spin count and row publish order were
+      searched; none gives §2.3.2 order and the best gets 4 of 16 positions
+      right. One drain lap visits each row once, so the row index is always the
+      FAST-varying half of the output position.
 
-    Both of those are gated in ``test_chacha20_fixed_tap_ring.py``, with
-    INV-4 mutants.
+    Both are gated with INV-4 mutants. **The fix is at the COLLECTOR**: output
+    position ``4k + L`` wants the word ``add_k`` produces on drain lap ``L``, so
+    output group ``k`` is exactly ``add_k``'s four words in lap order, and the
+    transpose is "hold each adder's four words, release adder by adder".
 
-    **The fix is at the COLLECTOR, and it is small.** Emission position
-    ``4L + k`` carries ``state[4k + L]``; read the other way, the word wanted at
-    output position ``4k + L`` is the one ``add_k`` produces on drain lap ``L``.
-    So **output group ``k`` is exactly ``add_k``'s four words in lap order**,
-    and the whole 4x4 transpose is "hold each adder's four words, then release
-    adder by adder". That is a per-ADDER buffer — a 4-deep 32-bit shift register
-    shaped exactly like :meth:`_row`, which is already proven on chip at that
-    depth — and it needs no counter that reaches the rows at all. Simulated at
-    the cell-instruction level it produces §2.3.2 order exactly (gated).
+    That band is now BUILT. Each adder feeds a PAIR of depth-2 stages,
+    ``bufA_k -> bufB_k``, which is a 4-deep FIFO — and FIFO order IS lap order,
+    so after the four drain laps ``bufB_k`` holds the older two words of group
+    ``k`` and ``bufA_k`` the newer two. The eight stages sit along one eastward
+    conveyor in release order (``bufB0 bufA0 bufB1 bufA1 …``), so the release
+    is a baton walk with no counter, no re-entry and no face flip.
 
-    **What blocks it is a cell budget, and the gap is THREE INSTRUCTION WORDS.**
-    The buffer needs ten live registers (eight for four 32-bit words, two for
-    the arriving pair), an 8-instruction shift, and a release that emits one
-    word and re-enters the cell three times. Measured: without the release
-    counter the cell is 16 instructions against a ``base_addr`` of 15 and 12
-    live words — three spare; with it, 20 instructions, ``base_addr`` 11, 13
-    live words — an overlap of three. The counter's ``SUB``/``MOVE``/``BR``
-    triple IS the shortfall, and there is nowhere else on this fold to put it.
+    **Depth 2 is what makes it fit.** The depth-4 form needs ten live registers,
+    an 8-instruction shift and a release that re-enters behind a counter:
+    measured at 20 instructions against a ``base_addr`` of 11 with 13 live words
+    — INV-33's silent overlap by exactly three. Halving the depth halves the
+    state AND removes the counter outright, because a depth-2 stage emits both
+    its words from one straight-line entry. Measured: 22 instructions against 9.
 
-    **Why the buffer cannot simply move somewhere roomier: the finish row is
-    SEALED.** Measured over every free slot of the fold's bounding box x every
-    face, **no cell of the finish row can reach ANY free slot on ANY face** —
-    north leaves the block (the row is the fold's top band, and the array row
-    above is the chip's I/O corridor), south lands on the state line whose cells
-    all rest EAST and sweep the word away, and east/west stay on the row. This
-    generalises the previous pass's "``d3`` has ZERO candidates": the
-    obstruction was never about ``tap3``, it is that the whole finish row is
-    enclosed. The row has exactly four free slots and the block needs four
-    buffers, so they fit positionally — just not within the per-cell budget.
+    **The band also had to UNSEAL the old fold.** The previous 10x6 fold's top
+    row could reach no free slot on any face (INV-55 rule 2), so the buffer had
+    nowhere to live. Shifting the whole fold down one array row and adding the
+    reorder band on top opens it: the adders now rest NORTH and a word passes
+    THROUGH them into the new band. The block grew 41 -> 48 cells in a 10x7
+    fold, which still leaves five whole free rows on the 10x12 array.
 
-    **The re-fold that closes it, verified walk by walk (but NOT yet built).**
-    Shift the whole 10x6 fold down one array row and add a second buffer row on
-    top, giving each adder a PAIR of DEPTH-2 buffers (a 4-deep FIFO as two
-    stages). Depth 2 frees four registers per cell and the counter fits with
-    room to spare. The array is 10x12 and the block sits at array row 1, so
-    there is space; the block grows 41 → 49 cells. Every existing control walk
-    survives the shift — the state line's hop-1/3/5/7 broadcast from both
-    ``wbk`` and ``drn``, the tap-to-adder abutment, and the ``wb → seq → wbk``
-    hand-off — and the one new walk, ``bufA_k → bufB_k``, is hop 1 north. That
-    is gated too, so the next pass can execute it without re-searching.
+    What pass 7 PROVED on the real placed + routed + built chip
+    ----------------------------------------------------------
 
-    LAYER: block program / **fold** — fixable, not a substrate limit and not an
-    arithmetic one. The three-word gap is a per-cell register-file budget
-    (32 addresses shared by code and data), and the two-row finish band closes
-    it by halving the per-cell depth.
+    Everything up to the release, unchanged and still exact:
+
+    * 80 quarter-round invocations through all sixteen stages, **20**
+      half-boundary realignments, 43 spins of each of rows 1/2/3 (40 realignment
+      + 3 drain), row 0's 3;
+    * all four taps armed, the drain running its four laps, **each adder firing
+      exactly four times**, and **every one of the eight buffer stages storing
+      four times** — so the reorder band FILLS correctly on silicon;
+    * the release trigger arriving: ``drn`` -> ``tap0.rel`` -> ``bufB0.rel``,
+      both entries observed exactly once in the trace.
+
+    **WHAT DOES NOT WORK YET, stated exactly.** ``bufB0.rel`` executes and then
+    **neither of its outgoing jumps lands**: ``out.default`` never runs and
+    ``bufA0.rel`` never runs, so the block emits **zero** words. Measured, in
+    this order:
+
+    * it is NOT the geometry. Every walk resolves on the block's own walk
+      simulator — ``bufB0`` reaches ``bufA0`` at hop 1 and ``out`` at hop 8 on
+      its resting face — and the zero-exemption fold gate passes.
+    * it is NOT the word budget. Every cell is inside ``base_addr``; the
+      static budget gate passes.
+    * it is NOT the backward-JUMP rule. The chain's ``bufB_k -> bufA_k`` baton
+      is the cell's only backward edge AND its highest-addressed jump, which is
+      what INV-53 requires, and the gate for it passes.
+    * it is NOT the two-jumps-in-one-entry shape: with the chain baton removed
+      entirely, leaving ``rel`` a single ``{jump:o1l}``, ``out`` still never
+      runs.
+    * it is NOT the egress's four-register delivery alone: reverting to
+      one-word-per-trigger pushes the A stage over its budget and fails the
+      build, so that variant is not a control.
+
+    So the defect is in how the release jumps are RESOLVED, not in the fold, the
+    budget or the schedule, and it is the one thing left between this block and
+    §2.3.2 order. LAYER: block program / toolchain resolution — FIXABLE, not a
+    substrate or ISA wall. The next pass should dump the RESOLVED assembly and
+    hop counts for ``bufB0`` out of the built bitstream (the ``BuildResult``
+    does not expose them today, which is why this pass could not close it) and
+    compare them against the walk simulator's hops.
+
+    **Do not use this block for keystream.** It currently emits NOTHING; before
+    this pass it emitted 32 correct-but-transposed words. The cipher itself is
+    unchanged and still exact — the regression is confined to the new release
+    path.
 
     The algebra is separately verified in
     ``verification/tests/test_chacha20_fixed_tap_ring.py`` (exact against RFC
@@ -305,12 +356,15 @@ class ChaCha20KeystreamBlock(KyttarBlock):
     TAGS = ["chacha20", "crypto", "cipher", "rfc8439", "keystream",
             "block-function", "multi-word", "32-bit"]
 
-    # 41 cells, a large fraction of a 120-cell array, so this is a CHIP_SCALE
+    # 48 cells, a large fraction of a 120-cell array, so this is a CHIP_SCALE
     # block: the sole occupant of its die. The <=8-across convention exists only
     # to keep several blocks co-resident; a sole occupant has none to pass, and
     # a wider fold leaves whole free ROWS rather than fragmented perimeter (see
     # layout_rules.md §3 and INV-40 -- FFT64Block ships 9x12). The fold is the
-    # full 10 wide and 6 tall, so array row 0 stays free as the I/O corridor.
+    # full 10 wide and 7 tall and starts at array row 0; the chip's I/O corridor
+    # taps `seq` and `out` from the WEST/EAST edges of the finish row. Measured:
+    # origin y=0 routes both nets, y=1..4 all fail `in_blk` with "no free
+    # corridor between the ports".
     # The class's one placement contract -- input and output reachable from the
     # chip's x16 ports -- is met by putting BOTH in the fold's top row, and it is
     # gated end to end on a real built chip, never by inspection.
@@ -413,8 +467,7 @@ class ChaCha20KeystreamBlock(KyttarBlock):
         return CellProgram(
             inputs=[Port("nh", register=1), Port("nl", register=2)],
             outputs=[Port("oh"), Port("ol"), Port("nxt")],
-            entries=[EntryPoint("pub"), EntryPoint("spin"),
-                     EntryPoint("wb")],
+            entries=[EntryPoint("pub"), EntryPoint("spin"), EntryPoint("wb")],
             data=[],
             state=st,
             assembly_template="""\
@@ -441,7 +494,7 @@ wb:
         )
 
     @staticmethod
-    def _tap(last: bool) -> CellProgram:
+    def _tap(last: bool, is_relay: bool = False) -> CellProgram:
         """Steers one row's published pair to the quarter round or to the adder.
 
         The row has ONE publish path — it cannot afford two, and a ``WRITE``'s
@@ -500,33 +553,70 @@ wb:
             "    MOVE [FACE], R{data:f_ring}\n")
         # The chain: arm the next tap. The last tap ends it.
         arm_tail = "" if last else "    {jump:narm}\n"
+        # `tap0` ALSO carries the RELEASE trigger into the reorder band, and it
+        # is the only cell that can.
+        #
+        # MEASURED: the state line is a uniform EAST conveyor -- every one of
+        # its cells rests east, because `wb`, `wbk` and `drn` all need that one
+        # walk -- so no word can climb out of the control corner through it.
+        # The FOUR TAPS are the sole exception: each already owns a NORTH flip
+        # for its adder, and the adders rest north too, so a tap's inward walk
+        # passes THROUGH its adder and lands on the reorder row at hop 2. That
+        # is exactly where the chain's head sits (`bufB_k` is directly above
+        # `add_k`), which is why the reorder row is columned the way it is.
+        #
+        # It costs ZERO new data words: `f_in` (NORTH) fires it and `f_ring`
+        # (EAST) restores, and both already exist for the drain path. `drn`
+        # reaches `tap0` at hop 2 on its own resting face -- the same northward
+        # walk its four drain spins ride -- so the whole trigger path from the
+        # drain counter to the chain head adds not one face constant to the
+        # block.
+        rel_body = "" if not is_relay else (
+            "    HALT\n"
+            "rel:\n"
+            "    MOVE [FACE], R{data:f_in}\n"
+            "    {jump:rel}\n"
+            "    MOVE [FACE], R{data:f_ring}\n")
         return CellProgram(
             inputs=[Port("h", register=1), Port("l", register=2)],
             outputs=([Port("q"), Port("ah"), Port("al")]
                      + ([Port("nlap")] if last
-                        else [Port("nq"), Port("narm")])),
-            entries=[EntryPoint("default"), EntryPoint("arm")],
-            data=[DataWord("one", 1, address=3),
-                  # The tap serves TWO directions: along the ring (its resting
-                  # face) to the collector and the next row, and INWARD to its
-                  # adder. A cell has exactly one outgoing walk, so the second
-                  # direction costs an in-program FACE flip -- 2 instructions
-                  # and 1 data word per extra direction (INV-48). The tap has
-                  # the spare words for it; the row cell did not, which is the
-                  # other half of why the steering lives here.
-                  DataWord("f_ring", 1, address=5, is_face=True),   # EAST
-                  DataWord("f_in", 3, address=6, is_face=True)]     # NORTH
+                        else [Port("nq"), Port("narm")])
+                     + ([Port("rel")] if is_relay else [])),
+            entries=([EntryPoint("default"), EntryPoint("arm")]
+                     + ([EntryPoint("rel")] if is_relay else [])),
+            # The tap serves TWO directions: along the ring (its resting face)
+            # to the collector and the next row, and INWARD to its adder. A cell
+            # has exactly one outgoing walk, so the second direction costs an
+            # in-program FACE flip -- 2 instructions and 1 data word per extra
+            # direction (INV-48). The tap has the spare words for it; the row
+            # cell did not, which is the other half of why the steering lives
+            # here.
+            #
+            # `f_ring` DOUBLES AS THE CONSTANT 1: it is the EAST face code,
+            # which is numerically 1, and the mode test only needs some value to
+            # compare against. That is `wbk`'s own idiom (its `tog` toggles
+            # against `f_in` rather than a dedicated constant), and it is what
+            # pays for `tap0`'s release relay -- with a separate `one` the cell
+            # is 25 instructions against a `base_addr` of 6 with its highest
+            # pinned register AT 6, which is INV-33's silent overlap.
+            data=[DataWord("f_ring", 1, address=3, is_face=True),    # EAST
+                  DataWord("f_in", 3, address=4, is_face=True)]      # NORTH
                  # Only the LAST tap closes the drain lap, and only it needs a
                  # third direction (SOUTH, down the idle quarter-round chain to
                  # `add_pad`). Giving it to every tap would spend a word on
                  # three cells that never use it.
-                 + ([DataWord("f_lap", 0, address=7, is_face=True)]  # SOUTH
+                 + ([DataWord("f_lap", 0, address=5, is_face=True)]  # SOUTH
                     if last else []),
-            state=[StateVar("mode", register=4, initial_value=0,
+            # Pinned just above the data words (INV-33: inputs < data < state).
+            # `tap3` carries one more constant than the rest, so the pin has to
+            # clear the LAST of them, not the common ones.
+            state=[StateVar("mode", register=6 if last else 5,
+                            initial_value=0,
                             reset_per_batch=True, reset_value=0)],
             assembly_template="""\
 default:
-    CMP R{state:mode}, R{data:one}
+    CMP R{state:mode}, R{data:f_ring}
     BR.Z drain
     MOVE R0, R{in:h}
     {write:q}
@@ -547,8 +637,8 @@ drain:
 """ + add_tail + """\
     HALT
 arm:
-    MOVE R{state:mode}, R{data:one}
-""" + arm_tail,
+    MOVE R{state:mode}, R{data:f_ring}
+""" + arm_tail + rel_body,
         )
 
     @staticmethod
@@ -603,9 +693,30 @@ arm:
         #
         # It would cost THREE words, and `wb` has exactly TWO -- see the class
         # docstring's Status note for the four-word shortfall this is part of.
+        # EVERY path restores the resting face before it ends. That is not
+        # bookkeeping: `wb` sits directly on the walk from `seq` down to the
+        # state line, so every `pub` trigger `seq` issues TRANSITS this cell and
+        # rides its LIVE face (INV-48 root cause C). Leaving it north bounces
+        # the next `pub` straight back into `seq`, which re-enters `step` and
+        # ping-pongs. Measured twice now: once when the flip was first added,
+        # and again in this pass when an experiment replaced this restore with a
+        # `HALT` -- the ring ran 21 laps instead of 80 and emitted nothing, with
+        # no error anywhere.
+        #
         body += ("    MOVE [FACE], R{data:f_ctl}\n"
-                 "    {jump:go}\n"
-                 "    MOVE [FACE], R{data:f_line}\n")
+                 "    {jump:go}\n")
+        # This cell does NOT carry the release trigger, though it is the
+        # obvious candidate -- it is the control corner's one turn north.
+        # MEASURED: with a second relay entry it assembles to 22 instructions
+        # against a `base_addr` of 9, and its two face constants are pinned at
+        # R8/R9 because the eight frame words fill R0..R7. That is INV-33's
+        # silent overlap, and nothing can move: the frame width is the
+        # quarter-round's, and a cell needs both faces. Every way of sharing the
+        # flip or the restore between `default` and a `rel` was tried and each
+        # either leaves the resting face wrong (the ping-pong bug below) or
+        # fires the release on every lap. The trigger goes `row0` -> `wbk`
+        # instead; see :meth:`_row` and :meth:`_wbk`.
+        body += ("    MOVE [FACE], R{data:f_line}\n")
         return CellProgram(
             inputs=([Port(FRAME[0], register=0)]
                     + [Port(w, register=1 + i)
@@ -697,10 +808,12 @@ arm:
         entry_default = ""
         for k in range(4):
             entry_default += f"    {{jump:k{k}}}\n"
+        # No trailing `HALT`: `default` is emitted LAST, so its final restore is
+        # the program's final instruction and there is nothing to fall through
+        # into. That freed word is what pays for the release relay below.
         entry_default += ("    MOVE [FACE], R{data:f_in}\n"
                           "    {jump:step}\n"
-                          "    MOVE [FACE], R{data:f_ring}\n"
-                          "    HALT\n")
+                          "    MOVE [FACE], R{data:f_ring}\n")
         body = ""
         # The realignment half. `tog` alternates so the SAME entry issues the
         # pre-diagonal `k` spins on one boundary and the post-diagonal `4 - k`
@@ -743,17 +856,26 @@ arm:
                  + "    BR.Z second\n"
                    "    {jump:a3_0}\n"
                    "    {jump:a3_1}\n"
-                   "    CMP R{data:f_in}, R{data:f_in}\n"
-                   "    BR.Z back\n"
+                   "    BR.NZ back\n"
                    "second:\n"
                    "    {jump:b1_0}\n"
                    "    {jump:b1_1}\n"
                    "back:\n"
                    "    {jump:back}\n"
                    "    HALT\n")
-        # `default` LAST -- see the note above `entry_default`: its `{jump:step}`
-        # has to be the highest-addressed JUMP in the cell or the build's
-        # backward-jump restore rewrites `{jump:back}` instead.
+        # `rel` -- the RELEASE relay, and the reason this cell gained a third
+        # face. It is the ONLY cell that both reaches `bufB0` (north, hop 1 --
+        # the head of the reorder chain) and is reachable from the control
+        # corner where `drn` closes the drain. `row0`, directly below, is what
+        # carries the trigger up to it.
+        #
+        # It fits because `default`'s trailing `HALT` was dropped -- `default`
+        # is the last entry, so its final restore is the program's last
+        # instruction and there is nothing to fall through into. That freed word
+        # plus the four already spare pay for a NORTH constant and a flip pair.
+        # `default` before `rel` -- see the note above `entry_default`: its
+        # `{jump:step}` has to be the highest-addressed JUMP in the cell or the
+        # build's backward-jump restore rewrites `{jump:back}` instead.
         body += "default:\n" + entry_default
         # `drn` -- the DRAIN rotate. The finish emits one 32-bit word per row per
         # lap and each row holds four, so between drain laps every row must
@@ -839,11 +961,16 @@ arm:
         return CellProgram(
             inputs=[Port("go", register=1)],
             outputs=[Port("s0"), Port("s1"), Port("s2"), Port("s3"),
-                     Port("pub")],
+                     Port("pub"), Port("rel")],
             entries=[EntryPoint("default")],
             data=[DataWord("one", 1, address=2)],
             state=[StateVar("lap", register=3, initial_value=4,
                             reset_per_batch=True, reset_value=4)],
+            # `done` is no longer a bare HALT: the fourth lap is when every
+            # buffer pair is full, so it is exactly the moment to start the
+            # release. `row0` is hop 1 on this cell's own RESTING face -- the
+            # same walk its four drain spins ride -- so the hand-off needs no
+            # face constant and no flip at all.
             assembly_template="""\
 default:
     SUB R{state:lap}, R{data:one}
@@ -854,8 +981,9 @@ default:
     {jump:s2}
     {jump:s3}
     {jump:pub}
-done:
     HALT
+done:
+    {jump:rel}
 """,
         )
 
@@ -939,13 +1067,38 @@ default:
         routes cleanly with no output port at all.
         """
         return CellProgram(
-            inputs=[Port("v", register=1)],
+            # FOUR input registers: a whole buffer stage's payload -- two 32-bit
+            # words, hi and lo each -- delivered as ONE trigger. A WRITE's target
+            # register is an instruction field, so a stage can fill all four and
+            # jump once; this cell then bursts them onto the port in order.
+            #
+            # This is a deliberate INV-46 transfer of cost. Every trigger a
+            # stage does NOT have to issue is an instruction it does not have to
+            # spend, and the A stages were over budget by exactly one: at one
+            # trigger per 32-bit word they assemble to 23 instructions against a
+            # `base_addr` of 8 with eight live registers -- INV-33's silent
+            # overlap. At one trigger per STAGE they are 22 against 9. The four
+            # extra registers are spent here instead, on the cell that had 27
+            # words spare and no other job.
+            #
+            # Eight stages x four words == the 32 output words.
+            inputs=[Port("v0h", register=1), Port("v0l", register=2),
+                    Port("v1h", register=3), Port("v1l", register=4)],
             outputs=[Port("out")],
             entries=[EntryPoint("default")],
             data=[], state=[],
             assembly_template="""\
 default:
-    MOVE R0, R{in:v}
+    MOVE R0, R{in:v0h}
+    {write:out}
+    {jump:out}
+    MOVE R0, R{in:v0l}
+    {write:out}
+    {jump:out}
+    MOVE R0, R{in:v1h}
+    {write:out}
+    {jump:out}
+    MOVE R0, R{in:v1l}
     {write:out}
     {jump:out}
 """,
@@ -1036,11 +1189,12 @@ default:
                   # into `wb` instead of `wbk`. The word for it came from
                   # dropping `default`'s redundant `MOVE half, four`: `half`
                   # already resets to 4 per batch.
-                  DataWord("f_line", 0, address=7, is_face=True),   # SOUTH
-                  DataWord("f_ctl", 1, address=8, is_face=True)],   # EAST
-            state=[StateVar("half", register=5, initial_value=4,
+                  DataWord("f_line", 0, address=5, is_face=True),   # SOUTH
+                  DataWord("f_ctl", 1, address=6, is_face=True),    # EAST
+                  ],
+            state=[StateVar("half", register=7, initial_value=4,
                             reset_per_batch=True, reset_value=4),
-                   StateVar("laps", register=6, initial_value=LAPS_INIT,
+                   StateVar("laps", register=8, initial_value=LAPS_INIT,
                             reset_per_batch=True, reset_value=LAPS_INIT)],
             # `default` FALLS THROUGH into `more`. Both start a compute lap with
             # the identical three-instruction publish tail (flip south, jump,
@@ -1065,10 +1219,10 @@ more:
     MOVE [FACE], R{data:f_ctl}
     HALT
 step:
-    SUB R{state:laps}, R{data:one}
+    SUB R{state:laps}, R{data:f_ctl}
     MOVE R{state:laps}, R0
     BR.Z finish
-    SUB R{state:half}, R{data:one}
+    SUB R{state:half}, R{data:f_ctl}
     MOVE R{state:half}, R0
     BR.NZ more
     MOVE R{state:half}, R{data:four}
@@ -1099,6 +1253,20 @@ finish:
         carry cannot cross a cell boundary. ``ADD``/park/``ADC``/park keeps the
         carry on the flag-preserving ``MOVE`` (INV-45's idiom) — it is never
         re-derived with a ``CMP``.
+
+        **The result goes NORTH into this row's reorder buffer, not east to the
+        egress.** The adder emits the four words of output group ``k`` in lap
+        order, which is exactly the order group ``k`` must LEAVE in — but the
+        four groups interleave, so they are held in ``bufA_k``/``bufB_k`` and
+        released group by group (INV-55). The adder rests NORTH and ``bufA_k``
+        sits directly above it, so the write rides the resting face and the cell
+        needs no face constant at all — one fewer than the eastward form.
+
+        **The ``oh``/``ol`` SPLIT saves an instruction.** A ``WRITE``'s target
+        register is an instruction field, so hi and lo go to two DIFFERENT
+        registers of the same buffer cell and ONE trailing ``JUMP`` triggers it,
+        replacing the old write/jump/write/jump pair. That is what buys back the
+        word this cell needed; it was measured at 1 spare before and is 2 after.
         """
         ks = [self._initial[4 * k + i] for i in range(4)]
         data = []
@@ -1109,7 +1277,7 @@ finish:
                                  address=2 + 2 * i, reset_per_batch=True))
         return CellProgram(
             inputs=[Port("vh", register=9), Port("vl", register=10)],
-            outputs=[Port("out")],
+            outputs=[Port("oh"), Port("ol")],
             entries=[EntryPoint("default")],
             data=data,
             state=[],
@@ -1120,11 +1288,10 @@ default:
     ADC R{in:vh}, R{data:k0h}
     MOVE R{in:vh}, R0
     MOVE R0, R{in:vh}
-    {write:out}
-    {jump:out}
+    {write:oh}
     MOVE R0, R{in:vl}
-    {write:out}
-    {jump:out}
+    {write:ol}
+    {jump:ol}
     MOVE R{in:vh}, R{data:k0h}
     MOVE R{in:vl}, R{data:k0l}
     MOVE R{data:k0h}, R{data:k1h}
@@ -1136,6 +1303,161 @@ default:
     MOVE R{data:k3h}, R{in:vh}
     MOVE R{data:k3l}, R{in:vl}
 """,
+        )
+
+    @staticmethod
+    def _buf(last: bool, west: bool) -> CellProgram:
+        """One DEPTH-2 stage of a reorder buffer — the fix for the 4x4 transpose.
+
+        **What it is for.** The drain emits lap-major: at output position
+        ``4L + k`` it produces ``state[4k + L]``. Read the other way round, the
+        word wanted at position ``4k + L`` is the one ``add_k`` produces on drain
+        lap ``L``, so **output group ``k`` is exactly ``add_k``'s four words in
+        lap order** and the whole transpose is "hold each adder's four words,
+        release adder by adder" (INV-55 rule 1).
+
+        **Why a PAIR of depth-2 stages and not one depth-4 cell.** A depth-4
+        buffer needs ten live registers (eight for four 32-bit words plus the
+        arriving pair), an 8-instruction shift, and a release that re-enters the
+        cell three times behind a counter. Measured on the previous fold: 20
+        instructions against a ``base_addr`` of 11 with 13 live words — an
+        INV-33 overlap of exactly three, and the counter's ``SUB``/``MOVE``/
+        ``BR`` triple was the whole shortfall. Halving the depth halves the
+        state (four registers, not eight) AND removes the counter outright,
+        because a depth-2 stage can release BOTH its words from one
+        straight-line entry. Measured here: 20 instructions, ``base_addr`` 11,
+        highest live register 6 — **five words spare**. That is INV-46's "prefer
+        more cells doing less" paying for itself twice over.
+
+        **The two entries.**
+
+        * ``default`` (the STORE, one per drain lap) — spill this stage's oldest
+          word onward, then shift and take the arriving pair. Running the four
+          drain laps therefore leaves ``bufB_k`` holding ``state[4k+0]`` and
+          ``state[4k+1]`` and ``bufA_k`` holding ``state[4k+2]`` and
+          ``state[4k+3]``: the pair is a 4-deep FIFO, and FIFO order IS lap
+          order.
+        * ``rel`` (the RELEASE, once) — emit slot 0 then slot 1 to the egress and
+          hand the baton to the next stage in the chain. No counter, no
+          re-entry, no face flip: the buffer row is one eastward conveyor, so
+          both the data words and the baton ride the cell's RESTING face.
+
+        Because the B stage holds the older half, the chain releases
+        ``bufB0 bufA0 bufB1 bufA1 ...`` — which is precisely §2.3.2 order.
+
+        **The multi-register WRITE is what makes both entries fit.** A
+        ``WRITE``'s target register is an instruction field, so several words
+        can be written into several registers of the SAME downstream cell and
+        triggered ONCE. Every edge here uses it: the adder fills ``bufA_k``'s
+        ``vh``/``vl`` with one trigger, the store fills the next stage's the
+        same way, and the release fills all FOUR of the egress's registers and
+        triggers once for the whole stage. Each trigger avoided is an
+        instruction saved in the cell that issues it, and this cell needed
+        exactly one of them: at a trigger per 32-bit word it is 23 instructions
+        against a ``base_addr`` of 8 with eight live registers, which is INV-33's
+        silent overlap; at a trigger per stage it is 22 against 9.
+
+        The registers to pay with come from the egress, which had 27 words spare
+        and one instruction of work — the INV-46 trade, made in the small.
+        """
+        # `last` is `bufA3`, the end of the release chain: it has no successor
+        # to hand the baton to, so its `rel` entry simply ends. Giving it a
+        # `nxt` port would leave a jump nothing targets (INV-39: a dispatch
+        # entry no jump targets is dead code, and the converse -- a jump with no
+        # declared target -- is resolved by the build's fallback to whatever it
+        # happens to yield).
+        rel_tail = "" if last else "    {jump:nxt}\n"
+        # The SPILL is the cell's one off-axis edge. `bufA_k` sits directly EAST
+        # of `bufB_k`, so an A stage must flip WEST to hand its oldest word on,
+        # and restore EAST before the path ends -- the buffer row carries every
+        # other stage's released words to the egress, and the FACE register
+        # steers TRANSITING words too (INV-52). A B stage spills to nothing (it
+        # is the far end of the FIFO), so its spill rides the resting face and
+        # costs no constant at all.
+        #
+        # A B stage does not even WRITE on the store path: it has no next stage,
+        # so the two `MOVE`+`WRITE` pairs and the trigger are simply omitted and
+        # the shift is all that remains. That is three instructions cheaper and,
+        # more to the point, it is what guarantees the FIFO's two boot zeros can
+        # never be pushed onto the output port -- an omitted WRITE cannot be
+        # mis-triggered, whereas an untriggered one relies on the build never
+        # inventing a jump for it (INV-39's converse).
+        # The spill MUST come before the shift. Moving it after (so the restore
+        # could be the program's last instruction, saving a word) was tried and
+        # MEASURED WRONG: shifting first means the word spilled is the one that
+        # just arrived rather than the oldest, and the pair then emits
+        # `1,2,2,3,5,6,6,7,...` instead of `0..15`. The FIFO's order is the
+        # whole mechanism here, so the word has to be found elsewhere.
+        spill = ("    MOVE [FACE], R{data:f_spill}\n"
+                 "    MOVE R0, R{state:s0h}\n"
+                 "    {write:sh}\n"
+                 "    MOVE R0, R{state:s0l}\n"
+                 "    {write:sl}\n"
+                 "    {jump:sl}\n"
+                 "    MOVE [FACE], R{data:f_row}\n") if not west else ""
+        return CellProgram(
+            inputs=[Port("vh", register=1), Port("vl", register=2)],
+            outputs=([Port("o0h"), Port("o0l"), Port("o1h"), Port("o1l")]
+                     + ([] if west else [Port("sh"), Port("sl")])
+                     + ([] if last else [Port("nxt")])),
+            entries=[EntryPoint("default"), EntryPoint("rel")],
+            # `f_row` is this cell's OWN RESTING face, which is EAST for every
+            # stage except `bufA3`: that one is the row's east end and rests
+            # SOUTH, dropping its released words onto the egress a row below.
+            # Restoring to the wrong face would leave the last stage pointing
+            # along a row that ends in nothing.
+            data=([] if west else
+                  [DataWord("f_spill", 2, address=7, is_face=True),  # WEST
+                   DataWord("f_row", 0 if last else 1,
+                            address=8, is_face=True)]),
+            # Four registers hold the two 32-bit words. They are PINNED (INV-33:
+            # a cell with no data words has `max_data_address = -1`, so the auto
+            # scan would start at R0 and land state on top of the inputs).
+            #
+            # They boot to ZERO and are `reset_per_batch`, so a second trigger
+            # starts from a clean FIFO rather than releasing the previous
+            # block's residue. Nothing reads a slot before four stores have
+            # filled it, so the initial value is never observed -- but a
+            # non-resetting buffer WOULD be observed on the second batch.
+            state=[StateVar("s0h", register=3, initial_value=0,
+                            reset_per_batch=True, reset_value=0),
+                   StateVar("s0l", register=4, initial_value=0,
+                            reset_per_batch=True, reset_value=0),
+                   StateVar("s1h", register=5, initial_value=0,
+                            reset_per_batch=True, reset_value=0),
+                   StateVar("s1l", register=6, initial_value=0,
+                            reset_per_batch=True, reset_value=0)],
+            # `default` FIRST, `rel` LAST -- so `rel` needs no trailing `HALT`
+            # (nothing follows it) while `default` gets one it would have needed
+            # anyway. That is the single instruction that brings the A stage
+            # inside its budget: 23 words against a `base_addr` of 8 with eight
+            # live registers becomes 22 against 9.
+            #
+            # The order is only AVAILABLE because `BUFFER_PROGRAM_ORDER` lists
+            # each A stage before its B stage, which makes the spill a FORWARD
+            # edge. Were the spill backward, INV-53 would force `{jump:sl}` to
+            # be this cell's highest-addressed jump -- i.e. force `rel` first --
+            # and the build would otherwise rewrite the release chain's
+            # `{jump:nxt}` into a store trigger, silently halving the output.
+            assembly_template="""\
+default:
+""" + spill + """\
+    MOVE R{state:s0h}, R{state:s1h}
+    MOVE R{state:s0l}, R{state:s1l}
+    MOVE R{state:s1h}, R{in:vh}
+    MOVE R{state:s1l}, R{in:vl}
+    HALT
+rel:
+    MOVE R0, R{state:s0h}
+    {write:o0h}
+    MOVE R0, R{state:s0l}
+    {write:o0l}
+    MOVE R0, R{state:s1h}
+    {write:o1h}
+    MOVE R0, R{state:s1l}
+    {write:o1l}
+    {jump:o1l}
+""" + rel_tail,
         )
 
     def build_cell_programs(self) -> Dict[Any, CellProgram]:
@@ -1158,7 +1480,10 @@ default:
             elif cid.startswith("row"):
                 progs[cid] = self._row(int(cid[3:]))
             elif cid.startswith("tap"):
-                progs[cid] = self._tap(last=(cid == "tap3"))
+                # `tap0` doubles as the release trigger's hop into the
+                # reorder band -- see :meth:`_tap`.
+                progs[cid] = self._tap(last=(cid == "tap3"),
+                                       is_relay=(cid == "tap0"))
             elif cid == "wbk":
                 progs[cid] = self._wbk()
             elif cid == "drn":
@@ -1169,8 +1494,18 @@ default:
                 progs[cid] = qr[cid]
         for k in range(4):
             progs[f"add{k}"] = self._adder(k, last=(k == 3))
-        for k in range(3):
-            progs[f"pass{k}"] = self._passthru()
+        # The reorder band, in PROGRAM order (A stage before its B stage) --
+        # see `BUFFER_PROGRAM_ORDER` for why that differs from the release
+        # order and what the difference buys.
+        for cid in BUFFER_PROGRAM_ORDER:
+            progs[cid] = self._buf(last=(cid == BUFFER_CHAIN[-1]),
+                                   west=cid.startswith("bufB"))
+        # `bpad0`/`bpad1` pave the west end of the reorder row. A gap inside the
+        # block's own footprint is a dead end for a block-internal WRITE
+        # (INV-51), and the row has to be continuous for the released words to
+        # ride it -- even though nothing is emitted from these two columns.
+        progs["bpad0"] = self._passthru()
+        progs["bpad1"] = self._passthru()
         # `add_pad` is still the control column's paving cell -- that is what its
         # `default` entry does -- but it ALSO carries the drain baton east to
         # `drn` on its `baton` entry. It had 26 spare words and no declared edge.
@@ -1222,7 +1557,31 @@ default:
             conns.append((f"tap{k}", "q", "in0", "x"))
             conns.append((f"tap{k}", "ah", f"add{k}", "vh"))
             conns.append((f"tap{k}", "al", f"add{k}", "vl"))
-            conns.append((f"add{k}", "out", "out", "v"))
+            # The finish result goes NORTH into this row's reorder buffer, hi
+            # and lo into two registers of the SAME cell so one trigger serves
+            # both (the `oh`/`ol` split -- a WRITE's target is an instruction
+            # field, so this costs nothing and saves an instruction).
+            conns.append((f"add{k}", "oh", f"bufA{k}", "vh"))
+            conns.append((f"add{k}", "ol", f"bufA{k}", "vl"))
+        # THE REORDER BAND. Each pair is a 4-deep FIFO built as two depth-2
+        # stages: a store into `bufA_k` spills its oldest word WEST into
+        # `bufB_k`, so after the four drain laps `bufB_k` holds the older two
+        # words of output group `k` and `bufA_k` the newer two.
+        for k in range(4):
+            conns.append((f"bufA{k}", "sh", f"bufB{k}", "vh"))
+            conns.append((f"bufA{k}", "sl", f"bufB{k}", "vl"))
+        # A B stage is the FAR END of its FIFO and declares no spill ports at
+        # all -- its `default` entry is the bare shift. That is what guarantees
+        # the two boot zeros a 4-deep FIFO pushes through during the fill can
+        # never reach the output: there is no WRITE to mis-trigger.
+        # The RELEASE. Every stage writes its two words straight to the egress:
+        # the buffer row is one eastward conveyor, so `out` sits at the end of
+        # every stage's resting-face walk and no stage needs a face flip.
+        for cid in BUFFER_CHAIN:
+            conns.append((cid, "o0h", "out", "v0h"))
+            conns.append((cid, "o0l", "out", "v0l"))
+            conns.append((cid, "o1h", "out", "v1h"))
+            conns.append((cid, "o1l", "out", "v1l"))
         # in0 spills into in1, and the two collectors fill the compute head.
         conns.append(("in0", "spill", "in1", "sp"))
         head = QR_CELLS[2]
@@ -1273,7 +1632,11 @@ default:
                 # all four into drain mode.
                 jumps.append((f"tap{k}", "narm", f"tap{k+1}", "arm"))
             jumps.append((f"tap{k}", "al", f"add{k}", "default"))
-            jumps.append((f"add{k}", "out", "out", "default"))
+            # The finish result is STORED, not emitted: one trigger per lap into
+            # this row's first buffer stage.
+            jumps.append((f"add{k}", "ol", f"bufA{k}", "default"))
+            # ...and the store spills the stage's oldest word into the second.
+            jumps.append((f"bufA{k}", "sl", f"bufB{k}", "default"))
         # The two collectors are a SHIFT PAIR: `in0` takes every word, spills its
         # oldest into `in1` and CLOCKS it; `in1` counts mod 8 and only then fires
         # the compute head. Both edges come straight from `ChaCha20QRBlock` and
@@ -1322,6 +1685,25 @@ default:
         for k in range(4):
             jumps.append(("drn", f"s{k}", f"row{k}", "spin"))
         jumps.append(("drn", "pub", "row0", "pub"))
+        # THE RELEASE. When the fourth drain lap closes, every buffer pair holds
+        # its adder's four words in FIFO (== lap) order, and the reorder is just
+        # "empty pair 0, then pair 1, ...". `drn` cannot reach the buffer row
+        # itself -- measured over all four faces, its walks only ever enter the
+        # state line -- so the trigger is relayed west to `wb`, north to `seq`,
+        # and north again into the head of the chain. Each of those three hops
+        # rides a walk the block already had (`wb` even reuses its existing
+        # NORTH constant); only `drn` and `seq` gain a face.
+        jumps.append(("drn", "rel", "tap0", "rel"))
+        jumps.append(("tap0", "rel", "bufB0", "rel"))
+        # ...and then the chain walks itself, stage by stage, eastward along the
+        # buffer row. Every hand-off is hop 1 on the resting face.
+        for src, dst in zip(BUFFER_CHAIN, BUFFER_CHAIN[1:]):
+            jumps.append((src, "nxt", dst, "rel"))
+        # Every released 32-bit value is ONE triggered delivery into the egress,
+        # which bursts its two halves onto the port. Two per stage x 8 stages ==
+        # the sixteen state words == the 32 output words.
+        for cid in BUFFER_CHAIN:
+            jumps.append((cid, "o1l", "out", "default"))
         return jumps
 
     def emit_faces(self) -> Dict[Tuple[Any, str], Any]:
@@ -1357,6 +1739,22 @@ default:
         # chain, and `add_pad` turns EAST out of the control column.
         faces[("tap3", "nlap")] = "l1_add"
         faces[("add_pad", "go")] = "drn"
+        # THE RELEASE TRIGGER's two flipped hops into the reorder band. `drn`
+        # fires it on its own RESTING face (`tap0` is hop 2 north, the same walk
+        # its drain spins ride), then `tap0` turns INWARD -- past `add0` and on
+        # to `bufA0` -- and `bufA0` turns WEST to the chain head. Both reuse a
+        # face constant the cell already had.
+        faces[("tap0", "rel")] = "add0"
+        # Each A stage turns WEST to spill into its own B stage; everything else
+        # it emits rides the row's eastward resting face.
+        for k in range(4):
+            faces[(f"bufA{k}", "sh")] = f"bufB{k}"
+            faces[(f"bufA{k}", "sl")] = f"bufB{k}"
+        # `bufA3` is the reorder row's EAST END: it rests SOUTH and drops its
+        # released words onto the egress directly below, rather than along the
+        # row like every other stage.
+        for pt in ("o0h", "o0l", "o1h", "o1l"):
+            faces[("bufA3", pt)] = "out"
         return faces
 
     def _geometry(self) -> Dict[Any, Tuple[int, int, str]]:
@@ -1379,47 +1777,68 @@ default:
            re-publish) each have to reach several of them from ONE walk. This is
            the ``LMSEqualizerBlock`` broadcast idiom: consecutive targets along a
            single walk.
-        2. **The finish row must be gap-free.** The four adders share one
-           eastward walk into ``out``, and an unoccupied column is a DEAD END
-           for a block-internal WRITE — the build gives a bare array cell a face
-           only where a ROUTE claims it. Hence ``pass0..pass2`` paving the
-           columns between the adders. (A faced-but-programless cell DOES
-           forward — measured at distances 2/3/4/6 — but nothing sets that face
-           inside the block's own footprint.)
+        2. **The REORDER band must be gap-free, and its cell ORDER is the
+           EMISSION order.** The eight buffer stages and ``out`` share one
+           eastward walk, and an unoccupied column is a DEAD END for a
+           block-internal WRITE — the build gives a bare array cell a face only
+           where a ROUTE claims it. Hence ``bpad0`` paving the row's west end.
+           (A faced-but-programless cell DOES forward — measured at distances
+           2/3/4/6 — but nothing sets that face inside the block's own
+           footprint.) Laying the stages out as ``bufB0 bufA0 bufB1 bufA1 …``
+           makes the release order a property of the GEOMETRY: each stage's
+           baton is hop 1 to the next, and each stage's words ride the same
+           conveyor to the egress, so no stage needs a face flip or a counter.
         3. **The control column is one northward walk.** ``relay2``, the three
            pads and ``drn`` all face north, so each one's walk climbs the column,
            passes through ``wb``, and continues east along the state line. The
            single backward edge, ``wb -> wbk``, is served by ``wb``'s one face
            flip. ``tap3``'s drain baton rides the same column: it leaves SOUTH,
            crosses the idle quarter-round chain, and lands on ``add_pad`` at hop
-           19, which turns it EAST into ``drn``.
+           19, which turns it EAST into ``drn``. The RELEASE trigger runs back
+           OUT along the same corner — ``drn`` west to ``wb`` (hop 2), ``wb``
+           north to ``seq`` (hop 1), ``seq`` north to ``bufB0`` (hop 2, through
+           the paved ``bpad0``) — because ``drn``'s own walks only ever enter
+           the state line, and ``seq`` is the only cell that both is reachable
+           from ``wb`` and reaches the buffer row.
 
         The bands (``.`` is free)::
 
-            y=0  finish:   seq  wbk  add0 pass0 add1 pass1 add2 pass2 add3 out
-            y=1  state:    wb | row0 tap0 row1 tap1 row2 tap2 row3 tap3 | in0
-            y=2  ctl/QR:   add_pad drn . . . . .  l1_xor l1_add in1
-            y=3  ctl/QR:   ctl_pad . . . . . .    l2_add l2_xor l2_rota
-            y=4  QR leg 3: ra_pad l4_rotb … l3_rota l3_xor l3_add l2_rotb
-            y=5  loop:     relay2 relay
+            y=0  reorder:  bpad0 bufB0 bufA0 bufB1 bufA1 bufB2 bufA2 bufB3 bufA3 out
+            y=1  finish:   seq  wbk  add0 . add1 . add2 . add3 .
+            y=2  state:    wb | row0 tap0 row1 tap1 row2 tap2 row3 tap3 | in0
+            y=3  ctl/QR:   add_pad drn . . . . .  l1_xor l1_add in1
+            y=4  ctl/QR:   ctl_pad . . . . . .    l2_add l2_xor l2_rota
+            y=5  QR leg 3: ra_pad l4_rotb … l3_rota l3_xor l3_add l2_rotb
+            y=6  loop:     relay2 relay
 
-        Each adder sits directly NORTH of its own tap, so the tap's inward face
-        flip reaches it at hop 1.
+        Each adder sits directly NORTH of its own tap (so the tap's inward face
+        flip reaches it at hop 1) and directly SOUTH of its own ``bufA`` (so its
+        result rides its resting face at hop 1). The two-row finish band is what
+        UNSEALS the old one: the previous fold's top row could reach no free
+        slot on any face (INV-55 rule 2), so the reorder buffer had nowhere to
+        live; giving it a neighbour band above — and shifting the whole fold down
+        one array row to make space — opens it, because the adders now rest
+        north and a word passes THROUGH them into the new band.
 
         The fold is 10 wide — the full array width — which is why the block
         declares ``CHIP_SCALE``. The <=8-across convention exists only to leave
         a bus channel for OTHER blocks; a sole occupant has none to pass, and a
         wider fold leaves whole free rows rather than fragmented perimeter (see
-        layout_rules.md §3 and INV-40).
+        layout_rules.md §3 and INV-40). It is now 7 tall on a 12-tall array, so
+        it still leaves five whole free rows.
         """
         lay: Dict[Any, Tuple[int, int, str]] = {}
         a, b = self._QR_LEG_A, self._QR_LEG_B
 
-        # --- y=0, the TOP row. BOTH I/O cells live here. The state line below
-        #     is irreducibly 10 columns wide, so the block is full array width
-        #     and there is no vertical corridor; placed at array row 1 or below
-        #     it leaves array ROW 0 free, and the corridor runs along that row
-        #     and taps `seq` (input) and `out` (output) from above.
+        # --- y=1, the FINISH row: the sequencer, the row-trigger cell and the
+        #     four adders. The state line below is irreducibly 10 columns wide,
+        #     so the block is full array width and there is no vertical
+        #     corridor; the chip's I/O corridor runs along the array row above
+        #     the block and taps `seq` (input) and `out` (output) from there.
+        #     BOTH I/O cells are still on ONE edge, which `CHIP_SCALE` requires
+        #     -- `out` simply moved up a band with the reorder buffers, and
+        #     `seq` stayed on the finish row where `wb`'s northward hand-off
+        #     needs it.
         #     `wbk` is here too: it emits only triggers, and from this row ONE
         #     face flip south drops it onto the state line, whose eastward walk
         #     then serves all four rows -- so a single cell reaches both `seq`
@@ -1430,61 +1849,86 @@ default:
         # root cause C). Only `seq` facing east carries it on to `wbk`. So
         # `seq`'s own triggers, which all want the state line to the south, each
         # flip and restore instead.
-        lay["seq"] = (0, 0, "east")
+        lay["seq"] = (0, 1, "east")
         # `wbk` RESTS SOUTH: from (1,0) that walk enters the state line at
         # `row0` and runs east along it, hitting the four rows at hops 1, 3, 5,
         # 7. That single walk is what both of its schedules -- the per-lap
         # rotates and the half-boundary realignment -- need, and (1,0) is the
         # ONLY slot on this fold that provides it while also being the only slot
         # that can reach `seq` (west, hop 1). See :meth:`_wbk`.
-        lay["wbk"] = (1, 0, "south")
+        lay["wbk"] = (1, 1, "south")
+        # Each adder RESTS NORTH, straight into its own buffer stage one hop
+        # above. That is its only outgoing edge now -- the finish result is
+        # STORED, not emitted -- so the adder needs no face constant at all.
         for k in range(4):
-            lay[f"add{k}"] = (2 + 2 * k, 0, "east")
-        for k in range(3):
-            lay[f"pass{k}"] = (3 + 2 * k, 0, "east")
-        lay["out"] = (9, 0, "north")
+            lay[f"add{k}"] = (2 + 2 * k, 1, "north")
 
-        # --- y=1, the STATE line: `wb` at its west end, then the four
+        # --- y=0, the REORDER band, and the block's egress. The release order
+        #     is `bufB0 bufA0 bufB1 bufA1 ...`, and the cells sit along the row
+        #     IN THAT ORDER, all resting EAST, with `out` at the end. So the row
+        #     is ONE eastward conveyor that serves three jobs at once:
+        #       * every stage's two released words ride it to `out`;
+        #       * every stage's baton reaches the next stage at hop 1;
+        #       * `seq`'s release trigger climbs into `bufB0` through `bpad0`.
+        #     Nothing on this row needs a face flip, which is what makes the
+        #     depth-2 stage fit with five words to spare.
+        #
+        #     `bufA_k` sits directly above `add_k` (columns 2,4,6,8) and
+        #     `bufB_k` immediately WEST of it, so the fill edges are
+        #     `add_k -> bufA_k` north hop 1 and `bufA_k -> bufB_k` west hop 1.
+        #     The interleave is what makes the release order fall out of the
+        #     geometry rather than out of a schedule.
+        lay["bpad0"] = (0, 0, "east")
+        lay["bpad1"] = (1, 0, "east")
+        for k in range(4):
+            lay[f"bufB{k}"] = (2 + 2 * k, 0, "east")
+            lay[f"bufA{k}"] = (3 + 2 * k, 0,
+                               "south" if k == 3 else "east")
+        lay["out"] = (9, 1, "north")
+
+        # --- y=2, the STATE line: `wb` at its west end, then the four
         #     row/tap pairs, then the frame collector.
-        lay["wb"] = (0, 1, "east")
+        lay["wb"] = (0, 2, "east")
         for i, cid in enumerate(STATE_LINE):
-            lay[cid] = (1 + i, 1, "east")
+            lay[cid] = (1 + i, 2, "east")
 
         # --- the quarter round: down the east side, then three serpentine legs
         #     sized so the tail lands at column 1 and drops onto `relay`.
         qr = list(QR_CELLS)
-        lay[qr[0]] = (9, 1, "south")
+        lay[qr[0]] = (9, 2, "south")
         c = len(qr) - 1 - a - b
         for i, cid in enumerate(qr[1:1 + a]):                  # leg 1, west
-            lay[cid] = (9 - i, 2, "west" if i < a - 1 else "south")
+            lay[cid] = (9 - i, 3, "west" if i < a - 1 else "south")
         x3 = 9 - (a - 1)
         for i, cid in enumerate(qr[1 + a:1 + a + b]):          # leg 2, east
-            lay[cid] = (x3 + i, 3, "east" if i < b - 1 else "south")
+            lay[cid] = (x3 + i, 4, "east" if i < b - 1 else "south")
         x4 = x3 + (b - 1)
         for i, cid in enumerate(qr[1 + a + b:]):               # leg 3, west
-            lay[cid] = (x4 - i, 4, "west" if i < c - 1 else "south")
+            lay[cid] = (x4 - i, 5, "west" if i < c - 1 else "south")
 
         # --- the loop hand-off and the northward CONTROL column. `relay2`,
         #     `realign` and the two pads all face north, so each one's walk
         #     climbs the column, passes through `wb`, and continues east along
         #     the state line.
-        lay["relay"] = (1, 5, "west")
-        lay["relay2"] = (0, 5, "north")
-        lay["ra_pad"] = (0, 4, "north")
-        lay["ctl_pad"] = (0, 3, "north")
-        lay["add_pad"] = (0, 2, "north")
+        lay["relay"] = (1, 6, "west")
+        lay["relay2"] = (0, 6, "north")
+        lay["ra_pad"] = (0, 5, "north")
+        lay["ctl_pad"] = (0, 4, "north")
+        lay["add_pad"] = (0, 3, "north")
 
-        # --- the DRAIN sequencer. Resting NORTH from (1,2) its walk enters the
+        # --- the DRAIN sequencer. Resting NORTH from (1,3) its walk enters the
         #     state line at `row0` and runs east along it, so the four rows sit
         #     at hops 1, 3, 5, 7 and `row0.pub` is that same hop 1 -- every one
         #     of its jumps rides the resting face and none needs a flip.
         #     Exhaustive search over every free slot x every face finds NINETEEN
         #     slots that reach all four rows in order, so the earlier claim that
         #     `(1,0)` was the only such slot was derived, not measured, and was
-        #     wrong. `(1,2)` is the one that is ALSO reachable from a cell with
-        #     words to spare (`add_pad`, one hop west), which is what closes the
-        #     drain lap.
-        lay["drn"] = (1, 2, "north")
+        #     wrong. `(1,2)` -- now `(1,3)` after the shift -- is the one that is
+        #     ALSO reachable from a cell with words to spare (`add_pad`, one hop
+        #     west), which is what closes the drain lap. Its WESTWARD walk is
+        #     what carries the release trigger back out (`add_pad` at hop 1,
+        #     `wb` at hop 2).
+        lay["drn"] = (1, 3, "north")
 
         assert len(lay) == self.cell_count, (
             f"layout has {len(lay)} cells, block declares {self.cell_count}")

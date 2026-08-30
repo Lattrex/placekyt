@@ -9,6 +9,94 @@ block-specific gotcha. Promote anything that generalizes across block classes in
 and superseded material merged into the surviving entries; no durable lesson was
 dropped) — append new entries above the oldest ones as before.
 
+## Poly1305MACBlock — DONE (block 120, the queue's last): the RFC 8439 §2.5.2 tag EXACT on chip, from an ALL-SERIAL redesign that made pass 1's hazard class unreachable  2026-08-30
+
+**Headline: the full 16-byte §2.5.2 tag — all eight words — on the real
+placed + routed + built chip**, plus all six even-length §A.3 vectors, a
+final-block residue sweep m=1..8, seeded randoms, the all-max carry ceiling,
+and the whole message driven saturated (`queue_words_physical` back-to-back,
+one continuous run). Seven INV-4 mutants, each placed+routed+built+run and
+each PROVEN able to fire before its chip result counts. 42 on-chip tests in
+`test_poly1305_mac.py` + the 70 model tests in `test_poly1305_golden.py`.
+
+### 1. Pass 1's scratch claims were RE-ESTABLISHED, not reused — and the re-measurement REPLACED the design
+
+The brief was explicit: pass 1's on-chip evidence (multiply 13/13 exact,
+normalise 3/9) lived only in scratch and had to be re-established. Rebuilding
+led somewhere better: pass 1's systolic ring + parallel fan sweeps spent its
+budget on the INV-58 staging hazards (adopt-and-forward atomicity, reverse
+firing order, the un-orderable fix-up cell, INV-59's stopped sweeps). **A MAC
+has no throughput requirement, so every phase became a SERIAL chain and the
+hazard class became unreachable** — see the INV-NEXT entry ("all-serial on
+one conveyor cycle"). The multiply, normalise, packing, probe, finish and
+egress were then proven together by the committed suite rather than
+piecewise in scratch. What DID carry over from pass 1, verified again by
+construction: INV-57's radix (2^10 / 13 limbs), the INV-58 7-instruction
+32-bit MAC order (its wrong order is now an on-chip mutant), the receiver-
+side x64, and the interface limit (odd-byte messages inexpressible).
+
+### 2. What the chip taught THIS pass (each measured, most now gated)
+
+* **A declared backward write delivered on a FLIP is re-patched to the
+  resting-corridor hop** — authored @1 became @21 and ping-ponged forever
+  (Deadlock on the very first limb post, with the whole multiply already
+  exact behind it). Fix: authored literal `WRITE @1, <resolved register>`,
+  edge deliberately undeclared. INV-NEXT clause 2; the jump-side sibling is
+  INV-63.
+* **A face constant that is not `is_face=True` is INVISIBLE to the router's
+  flip-face walk** — the flip edge then resolves along the resting face
+  around the whole 100-cell cycle (resolved distance 99; build refused).
+* **The input landing really is the FIRST program-dict cell** (INV-61.4
+  re-measured: with `ulk` first, injection landed there — 4 events, total
+  silence).
+* **The egress port pair**: from a non-port-cell egress the router resolved
+  the port write at 92 hops (through the whole ring). `RAW_OUTPUT_HOPS` +
+  authored `WRITE @3, 0 / JUMP @3, 0` on a north flip into the two-cell
+  corridor, valid for the pinned (0,1) anchor — INV-63's discipline, the
+  ChaCha20/LZ4 idiom.
+* **Hop-31 boundaries are real and near**: bnd's high-bit trigger for final
+  residue m=4 resolved at 32 and failed the build; m=5..7 needed a relay
+  chain through the unlock relays (u1, then u1+u2). Every long control edge
+  now has <= 30-hop segments; the walk gate is parametrised over residues.
+* **`MAC Ra,Rb` accumulates `(A*B)&0xFFFF` into R0** (measured, probe);
+  **`ADC Rz,Rz` captures the carry flag into R0** (measured) — the pair is
+  how the split rounds keep a 17-bit sum in single-word carries. A WRITE
+  between ADD and ADC still preserves C (re-measured).
+* **The serialize-LOCK (INV-20 idiom) serializes the whole per-word
+  pipeline**: lock at the landing gated to the cycle's return face, unlock
+  via `WRITE.CFG @1, 4` from the adjacent `ulk` cell, triggered around the
+  cycle. The saturated back-to-back RFC message is bit-exact with it.
+* **Stimulus for a mutant is a SEARCH, not a guess**: the one-stage-carry
+  mutant does not fire on random or even all-max messages; the committed
+  stimulus is candidate #143 of 3000, whose split round measurably reaches
+  v = 0x1001d. The firing proof (model prediction must differ) is asserted
+  before any chip comparison counts.
+
+### 3. Dead ends, so nobody repeats them
+
+* The SHIFTED systolic assignment (pub to `mulA_{k+1}`, coefficients
+  rotated) is algebraically broken: an element that wraps carries x5 for
+  ALL its remaining coefficients only under the natural r_0..r_12 order —
+  any cyclic shift ends on a coefficient that needs no fold while the
+  element already carries one. Model-refuted before silicon.
+* Hooks on ring row 1 flipping north into the sequencer row worked, but the
+  closure could feed EITHER the control row OR the ring head — never both —
+  which orphaned one class of wrap edge whichever way it pointed. The one
+  conveyor CYCLE (control row IS part of the ring) dissolved it.
+* Three or four cells per limb with cross-row transfers kept failing the
+  register budget by 2-7 words per arrangement until the group order
+  [mulA, lh, mulC, mulB, fin] made every inter-cell edge either conveyor-
+  forward or an abutting hop-1 flip.
+
+### 4. Numbers
+
+100 cells (94 programs + 6 face-only closure transits), CHIP_SCALE 10x10 at
+the pinned (0,1) anchor. ~25k simulated events for a 1-word message; the
+17-word RFC vector runs in well under a second wall-clock. Suites: 42
+on-chip + 70 model tests; 1219 placekyt baseline and 364 orientation
+untouched; binding/saturation/legality/chip-scale/reachability green; NO
+placekyt/engine or router.py changes.
+
 ## LZ4EncoderBlock — DONE (pass 2): the pass-1 diagnosis was wrong twice, and an exec-count trace found the truth in one run 2026-08-30
 
 **Headline: the scan loop never had a hop problem. It had two program

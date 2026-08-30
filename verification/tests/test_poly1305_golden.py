@@ -5,14 +5,12 @@ GNU Radio has no Poly1305 block, so — exactly as for ChaCha20 and LZ4 — the
 golden is the published algorithm, and it is pinned by the RFC's OWN test
 vectors BEFORE it is allowed to gate anything.
 
-Scope, stated plainly (AGENTS.md §"do not claim success you have not
-demonstrated"): **this file does NOT gate a built chip.** ``Poly1305MACBlock``
-is not finished — its multiply ring is proven bit-exact on real silicon, but the
-message packing, the carry-normalise phase, the final reduction and the tag
-egress are not built yet, and the block is NOT in the catalog. What is gated
-here is (a) the golden, against the RFC, and (b) the block's
-``process_reference``, which models the exact limb schedule the cells run,
-against that golden. The on-chip gate lands with the finished block.
+Scope: **this file gates the MODEL layer only** — (a) the golden, against the
+RFC, and (b) the block's ``process_reference``, which models the exact cell
+schedule, against that golden. The BUILT CHIP is gated by its sibling,
+``test_poly1305_mac.py``: the RFC 8439 §2.5.2 tag (and the even-length §A.3
+vectors, residue sweep, saturated drive and seven proven-firing INV-4
+mutants) on the real placed + routed + built chip.
 
 Run::
 

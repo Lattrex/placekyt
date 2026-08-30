@@ -4698,3 +4698,104 @@ clobbered — the measured `bufB3 == 0` reading), and the second-batch gate.
 INV-56 (the deadlock campaign this closed), INV-50/INV-52 (authored faces vs
 the router's/build's), INV-6/11 (why the literals must be derived), INV-38
 (the report emitted by the gate that proved all of this).
+
+---
+
+## INV-NEXT — A latency-tolerant block should be ALL-SERIAL on ONE conveyor cycle; and a FLIPPED backward write must be an AUTHORED literal, because the feedback pass re-patches it with the RESTING-corridor hop
+
+*(Number to be assigned at landing — parallel builders are running; main was
+at INV-63 when this was written.)*
+
+Found 2026-08-30 finishing `Poly1305MACBlock` (the queue's last block). Every
+claim measured on a real placed + routed + built chip.
+
+### 1. THE METHOD RESULT: if a block has no throughput requirement, build it as SERIAL CHAINS on ONE conveyor cycle. The whole INV-58 hazard class vanishes.
+
+Pass 1 built the Poly1305 field multiply as a systolic ring with parallel
+fan-fired sweeps, and spent most of its budget discovering and patching the
+sweep-staging hazards that INV-58 records: a stage cannot adopt-and-forward
+in one entry, sweeps must fire in reverse ring order, a fix-up cell cannot be
+ordered between sweeps, a programmed cell stops a broadcast walk. Those are
+all REAL — and all consequences of *concurrent* sweeps.
+
+A MAC authenticates one message; nothing about it needs cell-level
+parallelism. Rebuilt with **every phase a serial chain** — one cell executes
+at a time and hands the baton forward — the hazard class does not have to be
+solved because it cannot occur: read/write order IS program order. The 13
+serial multiply passes, the normalise rounds, the split rounds, the probe and
+the finish are all chains, and the coefficient rides the chain itself (each
+cell forwards `c` with the baton), which deletes the coefficient fan
+entirely.
+
+The fold that makes control cheap is **ONE CONVEYOR CYCLE**: control row
+(east) -> ring serpentine -> closure (bottom tail + column 0 north) -> back
+into the control row. Then:
+
+* every sequencer-to-chain-head injection is a plain hop-counted write on
+  resting faces (the ring heads sit just downstream of the control row);
+* every end-of-chain return rides the closure into small relay cells that
+  jump back down into the sequencers — each relay carrying exactly ONE
+  backward jump, kept highest-addressed (INV-53 satisfied by construction);
+* long control edges that exceed the 31-hop field are split at 2-instruction
+  relay interlopers ON the cycle (INV-36), chosen so every segment is <= 30
+  (measured: a direct edge that resolved at 32 failed the build; another at
+  exactly 31 was kept off the boundary deliberately).
+
+Cost: latency (~25k simulated events for a 1-word message). For a one-shot
+authenticator that is nothing. REACH: any block whose value is a final
+result rather than a sample stream — MACs, hashes, encoders run offline.
+The systolic form is still right when throughput matters.
+
+### 2. THE TOOLCHAIN RULE: a DECLARED backward write that is DELIVERED ON A FLIP gets re-patched to the RESTING-corridor hop. Author it as a literal.
+
+INV-63 recorded that a declared backward JUMP and the exit-cell port pair
+contest one instruction slot. This is the WRITE-side sibling, and it bites
+ANY cell, not just the exit:
+
+`_apply_internal_feedback` re-patches every connection that runs BACKWARD in
+program order by tracing the corridor between the cells — **on resting
+faces**. For an edge whose delivery is a hop-1 FLIP (`MOVE [FACE], …` +
+`WRITE @1`), that trace is the wrong path by construction. Measured: the
+limb post `mulC_k -> lh_k` (west-adjacent, flipped) was re-patched from the
+authored @1 to **@21**; at run time the word left on the flip face with 21
+hops on it, was forwarded straight back by the neighbour's resting face, and
+the pair ping-ponged forever — `stop_reason == "Deadlock"` on the first limb
+post, with the whole multiply already bit-exact behind it.
+
+**The rule:** a flip-delivered edge to an ABUTTING cell is authored as a
+literal `WRITE @1, <register>` with the register RESOLVED at
+`build_cell_programs` time from the target cell's own pinned ports (INV-63's
+discipline — never hand-typed), and the edge is deliberately NOT declared in
+`internal_connections`. Forward flip edges and backward RESTING-face edges
+are unaffected (the resting-corridor trace is exactly right for those — this
+block's closure returns depend on it).
+
+**Corollary, same family:** the router resolves a flip-emitted DECLARED edge
+only through faces it can SEE — the resting face plus `is_face=True` DATA
+words (`router._declared_flip_faces`). A face constant stored as a plain
+DataWord is invisible; the router then walks the resting face around the
+whole cycle (measured: resolved distance 99, build refused). Every face
+constant must be `is_face=True` — which INV-23/INV-61.3 already require for
+rotation, so the only way to hit this is to skip that rule.
+
+**SAY WHICH LAYER.** (1) is design method. (2) is a toolchain contract in
+`placekyt/engine/build.py::_apply_internal_feedback` (fixable there: skip
+re-patching edges whose source instruction is inside a flip window, or match
+authored hops for abutting pairs); until then it is a block-authoring
+contract, cheap to honour once known.
+
+**REACH.** (1) measured on one 100-cell block, but the argument is the
+absence of a hazard class, not a property of Poly1305. (2) is in the shared
+build path and applies to every multi-cell block with flipped hop-1
+deliveries — the [mulA lh mulC mulB fin] x13 groups here carry 39 of them.
+
+**Gated by:** `verification/tests/test_poly1305_mac.py` — the on-chip RFC
+tag (which transits all 39 literal flip writes), the 425-edge walk gate with
+its INV-4 negative, `test_flip_deliveries_are_abutting_pairs`, and the
+INV-53 audit.
+
+**Related:** INV-58 (the hazard class serial construction removes), INV-63
+(the jump-side sibling and the literal-authoring discipline), INV-52 (flips
+and the is_face machinery), INV-53 (why the closure relays exist), INV-36
+(the hop-31 splits), INV-20 (the serialize-LOCK this block's input uses to
+survive saturated drive).

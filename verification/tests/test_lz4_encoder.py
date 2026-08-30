@@ -1007,6 +1007,50 @@ def test_no_two_block_cells_rest_facing_each_other():
     assert not pairs, f"cells rest facing each other (INV-56): {pairs}"
 
 
+def test_KNOWN_GAP_the_fold_is_a_closed_ring():
+    """The fold closed into a RING, and that is why the scan loop saturates.
+
+    Every internal edge IS reachable on a resting face — the hops are not wrong,
+    they are LONG. Walking any cell's resting face from this fold enumerates the
+    whole fold and returns to the start with period 12, so a hand-off between two
+    physically ADJACENT cells can cost 11 hops the long way round, and each such
+    word occupies most of the ring for its entire flight. The literals-only tail
+    emits 3-9 bytes and fits; the scan loop, which issues a panel round trip per
+    byte per candidate, does not.
+
+    That is INV-51 clause 1 reached from a new direction: a ring does not only
+    trap its interior, it turns every hop into modular arithmetic. A SERPENTINE
+    has free ends and short hops both.
+
+    This test measures the ring's period. It FAILS when the fold is re-shaped —
+    which is the point: the next pass must re-fold, and this gate is how it knows
+    it succeeded.
+    """
+    b = LZ4EncoderBlock("enc")
+    lay = b.default_layout()
+    at = {(x, y): c for c, (x, y, _f) in lay.items()}
+    # walk one cell's resting face and see whether it returns to its origin
+    start = C_RET
+    x, y, _f = lay[start]
+    face = str(lay[start][2])
+    period = None
+    for step in range(1, 40):
+        dx, dy = _DELTA[face]
+        x, y = x + dx, y + dy
+        cid = at.get((x, y))
+        if cid is None:
+            break
+        if cid == start:
+            period = step
+            break
+        face = str(lay[cid][2])
+    assert period is not None, (
+        "THE FOLD IS NO LONGER A RING — re-run the on-chip scan-loop gates, "
+        "delete this test and the known-gap gate if they now pass")
+    assert period >= 8, (
+        f"ring period {period}; this gate pins the measured shape (12)")
+
+
 def test_INV4_the_head_on_gate_catches_a_forced_pair():
     """The negative for the gate above. Point two abutting cells at each other
     and assert the check SEES it — otherwise the green result certifies nothing."""

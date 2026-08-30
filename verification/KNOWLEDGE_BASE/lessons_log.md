@@ -137,15 +137,40 @@ edge sized against a walk the word does not take. Note `stop_reason` is
 MIS-ADDRESSED — which is exactly the distinction INV-56 clause 1 exists to make,
 and it is what localised this in one run.
 
-**LAYER: block FOLD — fixable, not a substrate or ISA wall.** The fix is either a
-fold whose resting-face walks reach their targets under the ROUTER's OWN distance
-function (my search's walk model and the router's still disagree — the next pass
-should score candidate folds by calling the router rather than by re-implementing
-it), or an `emit_faces()` declaration for every edge the router sizes wrong.
-Two measurements bound that search: a merged ADDR+RET cell (which would remove
-five of the 32 edges) is **41 instructions against 31 words**, so the split is
-forced; and 14 cells over rows 10-11 is exactly 14 slots, so that shape has no
-positional slack at all.
+**AND THE FOLD IS THE REASON — IT IS A CLOSED RING (INV-51 clause 1).** Checking
+the fold against the ROUTER's own numbers rather than my re-implementation
+settles it: **every one of the 36 internal cell-pair edges IS reachable on a
+resting face**, and the one exception (ADDR → CTL) is declared. The hops are not
+wrong. What is wrong is how LONG they are. Walking RET's resting face enumerates
+
+```
+hop  1 (5,11) VERIFY   hop  7 (7,9) LITS     hop 11 (4,10) HASH
+hop  3 (7,11) MATCH    hop  9 (6,10) SEQ     hop 12 (4,11) RET  <- back to start
+```
+
+— the walk **cycles with period 12**. The 14-cell fold closed into a 12-cell
+ring, so a hand-off between two cells that are physically ADJACENT can cost 11
+hops the long way round, and every such word occupies most of the ring for its
+whole flight. The tail path emits 3-9 bytes and fits; the scan loop issues a
+panel round trip per byte per candidate and does not. `stop_reason` is
+`"EventLimit"`, not `"Deadlock"`: nothing is wedged, the ring is simply
+saturated with long-haul words.
+
+This is exactly what INV-51 clause 1 warns about, arrived at from a new
+direction. That clause says a ring TRAPS ITS INTERIOR; the sibling cost, worth
+recording, is that **a ring makes every hop a modular arithmetic problem — an
+adjacent neighbour may be 1 hop or 11 depending on which way the faces run, and
+the router will correctly compute 11.** A serpentine has free ends and short
+hops both.
+
+**LAYER: block FOLD — fixable, not a substrate or ISA wall. THE NEXT PASS SHOULD
+RE-FOLD AS A SERPENTINE, NOT SEARCH HARDER.** Add "no cell may be more than K
+hops from any of its targets" to the fold score (K ≈ 4), which forbids the ring
+by construction; the current search only asked whether an edge DELIVERS, and a
+ring delivers everything eventually. Two measurements bound that search: a merged
+ADDR+RET cell (which would remove five of the 36 edges) is **41 instructions
+against 31 words**, so the split is forced; and 14 cells over rows 10-11 is
+exactly 14 slots, so that shape has no positional slack at all.
 
 **Gated by** `verification/tests/test_lz4_encoder.py` (80 passed, 9 skipped): the
 ten-payload round trip under the published golden AND the independent reference C

@@ -359,8 +359,9 @@ class LZ4EncoderBlock(KyttarBlock):
     # ------------------------------------------------------------------ shape
     @property
     def cell_count(self) -> int:
-        # ingest + seq + hash + verify + emit + addr + controller + egress
-        return 8
+        # ingest, seq, hash, verify, match, token, lenrun, lits, frame, addr,
+        # ret, egress, controller, seal.
+        return 14
 
     @property
     def interface(self) -> BlockInterface:
@@ -806,7 +807,7 @@ class LZ4EncoderBlock(KyttarBlock):
         # cell — so it is three cells, split at the seams the phases already have.
         token = CellProgram(
             inputs=[Port("v")],
-            outputs=[Port("out"), Port("go")],
+            outputs=[Port("out"), Port("go"), Port("m_park")],
             entries=[EntryPoint("seq")],
             data=[DataWord("f15", NIBBLE_ESCAPE, address=1)],
             state=[StateVar("lit", register=2, initial_value=0),
@@ -841,7 +842,13 @@ class LZ4EncoderBlock(KyttarBlock):
                 "    OR R0, R{state:hi}\n"
                 "    {write:out}\n"                  # the TOKEN
                 "    {jump:out}\n"
-                "    {jump:go}\n"                    # lenrun.lit_run
+                # The MATCH-length remainder is parked in LITS now, not in the run
+                # engine: the engine's `rest` is about to be consumed by the
+                # LITERAL run, and LITS is what re-arms it after the offset goes
+                # out. One value, delivered once, to the cell that will need it.
+                "    MOVE R0, R{state:mat}\n"
+                "    {write:m_park}\n"               # lits.mat
+                "    {jump:go}\n"                    # lenrun.enter (literal run)
                 "    HALT\n"
             ),
         )
@@ -852,25 +859,27 @@ class LZ4EncoderBlock(KyttarBlock):
         # of 15 or more is encoded as the nibble 15 followed by ``value - 15``
         # written as a run of 255s and a final byte below 255.
         #
-        # `nxt` says where to go when the run finishes, so the same loop serves the
-        # literal-length caller (-> the literal replay) and the match-length caller
-        # (-> the end of the sequence).
+        # ONE entry, and NO "where to go next" register: both callers hand back to
+        # the SAME place, LITS's `replay`, and LITS already knows which of the two
+        # it was from its own state — after the LITERAL run it still has literals
+        # to replay (p < end); after the MATCH-LENGTH run it does not (p == end)
+        # and its offset has been cleared, so it falls straight through to the end
+        # of the sequence.
+        #
+        # That removed a `nxt` register, its two seeds and a four-word dispatch —
+        # NINE words — from a cell that had none to spare, at a cost of one word
+        # in LITS. It also removed a REAL BUG the dispatch carried: its `BR.GE`
+        # read the flags of a preceding `MOVE`, and on this ISA `MOVE` does not
+        # set flags at all, so which caller it believed it had was whatever the
+        # last ALU operation happened to leave behind.
         lenrun = CellProgram(
             inputs=[Port("v")],
-            outputs=[Port("out"), Port("to_lits"), Port("to_end")],
-            entries=[EntryPoint("lit_run"), EntryPoint("mat_run")],
+            outputs=[Port("out"), Port("to_lits")],
+            entries=[EntryPoint("enter")],
             data=[DataWord("f15", NIBBLE_ESCAPE, address=1),
-                  DataWord("c255", CONT_ESCAPE, address=2),
-                  DataWord("one", 1, address=3),
-                  DataWord("zero", 0, address=4)],
-            state=[StateVar("rest", register=5, initial_value=0),
-                   StateVar("nxt", register=6, initial_value=0)],
+                  DataWord("c255", CONT_ESCAPE, address=2)],
+            state=[StateVar("rest", register=3, initial_value=0)],
             assembly_template=(
-                "lit_run:\n"
-                "    MOVE R{state:nxt}, R{data:zero}\n"
-                "    BR.GE enter\n"
-                "mat_run:\n"
-                "    MOVE R{state:nxt}, R{data:one}\n"
                 "enter:\n"
                 "    CMP R{state:rest}, R{data:f15}\n"
                 "    BR.LT fin\n"
@@ -890,12 +899,7 @@ class LZ4EncoderBlock(KyttarBlock):
                 "    {write:out}\n"
                 "    {jump:out}\n"
                 "fin:\n"
-                "    CMP R{state:nxt}, R{data:zero}\n"
-                "    BR.NZ toend\n"
                 "    {jump:to_lits}\n"               # lits.replay
-                "    HALT\n"
-                "toend:\n"
-                "    {jump:to_end}\n"                # seq.took
                 "    HALT\n"
             ),
         )
@@ -911,14 +915,11 @@ class LZ4EncoderBlock(KyttarBlock):
         # first. The `offset_big_endian` mutant swaps exactly those two emissions.
         lits = CellProgram(
             inputs=[Port("v")],
-            outputs=[Port("out"), Port("rd"), Port("mrun")],
+            outputs=[Port("out"), Port("rd"), Port("post")],
             entries=[EntryPoint("replay"), EntryPoint("byte")],
-            data=[DataWord("one", 1, address=1),
-                  DataWord("ff", 0xFF, address=2),
-                  DataWord("zero", 0, address=3)],
-            state=[StateVar("p", register=4, initial_value=0),
-                   StateVar("end", register=5, initial_value=0),
-                   StateVar("off", register=6, initial_value=0)],
+            data=[DataWord("one", 1, address=1)],
+            state=[StateVar("p", register=2, initial_value=0),
+                   StateVar("end", register=3, initial_value=0)],
             assembly_template=(
                 "replay:\n"
                 "    CMP R{state:p}, R{state:end}\n"
@@ -935,26 +936,66 @@ class LZ4EncoderBlock(KyttarBlock):
                 "    MOVE R{state:p}, R0\n"
                 "    BR.NZ replay\n"
                 "post:\n"
-                # A literals-only tail carries off == 0 and ENDS here — which is
-                # exactly the format's "the block ends right after its final
-                # literals". A real sequence emits the offset and then hands the
-                # match-length remainder back to the run engine.
+                "    {jump:post}\n"                  # seal.post
+                "    HALT\n"
+            ),
+        )
+
+        # ---------------------------------------------------------- cell 13 SEAL
+        # The tail of a sequence: the LITTLE-ENDIAN offset, the match-length
+        # re-arm, and the hand-back that resumes the scan. It is its own cell
+        # because folding it into the literal replay measured TEN words over a
+        # 32-word cell — INV-46 again, and the split is at a real seam (the replay
+        # is a loop over the panel; this is a fixed three-step epilogue).
+        #
+        # LZ4 rule 4 lives here: the offset is 16-bit and LITTLE-ENDIAN, LOW byte
+        # first. The `offset_big_endian` mutant swaps exactly those two emissions.
+        seal = CellProgram(
+            inputs=[Port("v")],
+            outputs=[Port("out"), Port("mrun"), Port("m_rest"), Port("adv")],
+            entries=[EntryPoint("post")],
+            data=[DataWord("one", 1, address=1),
+                  DataWord("ff", 0xFF, address=2),
+                  DataWord("zero", 0, address=3)],
+            state=[StateVar("off", register=4, initial_value=0),
+                   StateVar("sealed", register=5, initial_value=0),
+                   StateVar("mat", register=6, initial_value=0)],
+            assembly_template=(
+                # THREE cases land on this one entry, and the two registers tell
+                # them apart:
+                #   * off  > 0  — the literals of a MATCH sequence are out. Emit
+                #     the offset, clear `off`, re-arm the run engine with the
+                #     match-length remainder, and run it.
+                #   * off == 0, sealed — the match-length run has handed back.
+                #     The sequence is complete; resume the scan.
+                #   * off == 0, not sealed — the literals-only TAIL. VERIFY wrote
+                #     a zero offset because no candidate was accepted.
+                "post:\n"
                 "    CMP R{state:off}, R{data:zero}\n"
-                "    BR.Z fin\n"
+                "    BR.Z after\n"
                 "    AND R{state:off}, R{data:ff}\n"
-                "    {write:out}\n"                  # LOW byte  (little endian)
+                "    {write:out}\n"                  # LOW byte  (LITTLE endian)
                 "    {jump:out}\n"
                 "    SHR R{state:off}, #8\n"
                 "    {write:out}\n"                  # HIGH byte
                 "    {jump:out}\n"
-                # `off` is NOT cleared here: SEQ writes it before every sequence,
-                # including the literals-only tail (which writes 0), so a reset
-                # would be a redundant word — and this cell is exactly one word
-                # from its budget.
-                "    {jump:mrun}\n"                  # lenrun.mat_run
+                # Clearing `off` is what lets the run engine hand back to this
+                # same entry: the second visit takes the `after` path.
+                "    MOVE R{state:off}, R{data:zero}\n"
+                "    MOVE R{state:sealed}, R{data:one}\n"
+                "    MOVE R0, R{state:mat}\n"
+                "    {write:m_rest}\n"               # lenrun.rest = k - MINMATCH
+                "    {jump:mrun}\n"                  # lenrun.enter
+                "    HALT\n"
+                "after:\n"
+                "    CMP R{state:sealed}, R{data:zero}\n"
+                "    BR.Z fin\n"
+                "    MOVE R{state:sealed}, R{data:zero}\n"
+                "    {jump:adv}\n"                   # frame.adv — resume the scan
+                "    HALT\n"
                 "fin:\n"
                 # THE LITERALS-ONLY TAIL ENDS HERE, triggering NOTHING. That is
-                # the LZ4 rule "the block ends right after its final literals",
+                # the format's "the block ends right after its final literals",
                 # and it is also what terminates the whole encode: nothing hands
                 # control back to the scan, so the tail is emitted exactly once.
                 "    HALT\n"
@@ -1041,13 +1082,13 @@ class LZ4EncoderBlock(KyttarBlock):
             entries=[EntryPoint("store"), EntryPoint("htab"), EntryPoint("hist"),
                      EntryPoint("hist_m"), EntryPoint("hist_l")],
             data=[DataWord("htbase", htb & 0xFFFF, address=1),
-                  DataWord("ph_htab", PH_HTAB, address=2),
-                  DataWord("ph_hash", PH_HASH, address=3),
+                  # `zero` doubles as PH_HASH, which IS 0.
+                  DataWord("zero", PH_HASH, address=2),
+                  DataWord("ph_htab", PH_HTAB, address=3),
                   DataWord("ph_match", PH_MATCH, address=4),
                   DataWord("ph_lit", PH_LIT, address=5),
-                  DataWord("zero", 0, address=6),
-                  DataWord("face_panel", 1, address=7, is_face=True),
-                  DataWord("face_ring", 3, address=8, is_face=True)],
+                  DataWord("face_panel", 1, address=6, is_face=True),
+                  DataWord("face_ring", 3, address=7, is_face=True)],
             assembly_template=(
                 # FOUR entries — one per KIND of read — and each costs exactly TWO
                 # words, because ``SUB const, zero`` both loads the accumulator and
@@ -1075,8 +1116,8 @@ class LZ4EncoderBlock(KyttarBlock):
                 "    MOVE R0, R{in:a}\n"
                 "    {write:st}\n"                   # ctl.data = the byte
                 "    {jump:st}\n"                    # ctl.write  (wraddr++)
-                "    MOVE [FACE], R{data:face_ring}\n"
-                "    HALT\n"
+                "    SUB R{data:zero}, R{data:zero}\n"
+                "    BR.Z rest\n"                    # share the face restore
                 "htab:\n"
                 # The hash-table probe. This is the ONLY place the table's region
                 # base is added, so no other cell in the block ever holds an
@@ -1095,13 +1136,21 @@ class LZ4EncoderBlock(KyttarBlock):
                 "    BR.NZ go\n"
                 "hist:\n"
                 # A history read needs no base: an input position IS its address.
-                "    SUB R{data:ph_hash}, R{data:zero}\n"
+                # PH_HASH is 0, so the shared `zero` word IS its phase code — one
+                # word, two meanings, and the SUB that loads it also clears Z's
+                # partner flag so the fallthrough below is unconditional.
+                "    SUB R{data:zero}, R{data:zero}\n"
                 "go:\n"
                 "    {write:setph}\n"                # ret.ph — the return needs it
                 "    MOVE [FACE], R{data:face_panel}\n"
                 "    MOVE R0, R{in:a}\n"
                 "    {write:rd}\n"                   # ctl.data = the address
                 "    {jump:rd}\n"                    # ctl.lookup -> a push-read
+                "rest:\n"
+                # RESTORE at the TAIL (INV-52 clause 1). Both bursts share this
+                # one restore — the resting face is a contract with every walk
+                # that crosses this cell, and an UNRESTORED face silently deflects
+                # them (measured: 0/160 transits delivered).
                 "    MOVE [FACE], R{data:face_ring}\n"
                 "    HALT\n"
             ),
@@ -1192,9 +1241,17 @@ class LZ4EncoderBlock(KyttarBlock):
                                   addr_base=self._addr_base)
         ctl_cell = ctl.build_cell_programs()[0]
 
+        # PROGRAM ORDER IS A DESIGN LEVER, not bookkeeping (INV-53). Whether an
+        # internal jump counts as BACKWARD — and therefore gets re-resolved by
+        # the build, which rewrites the source cell's HIGHEST-ADDRESSED jump — is
+        # decided entirely by this dict's order. The order is ascending by cell
+        # id because the panel template places cells sorted by id and the build
+        # binds programs to placed cells BY POSITION (INV-51 clause 2); the two
+        # must iterate identically or whole cells get the wrong program with
+        # nothing raised.
         return {0: ingest, 1: seq, 2: hashc, 3: verify, 4: match, 5: token,
                 6: lenrun, 7: lits, 8: frame, 9: addr, 10: ret, 11: out_cell,
-                12: ctl_cell}
+                12: ctl_cell, 13: seal}
 
     # ------------------------------------------------------------ block wiring
     def internal_connections(self) -> List[Tuple[Any, str, Any, str]]:
@@ -1213,7 +1270,7 @@ class LZ4EncoderBlock(KyttarBlock):
             (3, "rd", 9, "a"),
             (3, "m_off", 4, "off"),
             (3, "m_ii", 4, "ii"),
-            (3, "li_off", 7, "off"),
+            (3, "li_off", 13, "off"),
             (4, "rd_c", 9, "a"),
             (4, "rd_i", 9, "a"),
             (4, "len", 1, "v"),
@@ -1228,9 +1285,12 @@ class LZ4EncoderBlock(KyttarBlock):
             (8, "li_end", 7, "end"),
             # --- the formatter's output rail --------------------------------
             (5, "out", 11, "b"),
+            (5, "m_park", 13, "mat"),
             (6, "out", 11, "b"),
             (7, "out", 11, "b"),
             (7, "rd", 9, "a"),
+            (13, "out", 11, "b"),
+            (13, "m_rest", 6, "rest"),
             # --- the panel port and its single return -----------------------
             (9, "setph", 10, "ph"),
             (9, "rd", 12, "data"),
@@ -1269,13 +1329,15 @@ class LZ4EncoderBlock(KyttarBlock):
             (4, "len", 1, "decide"),
             (8, "go", 5, "seq"),
             (5, "out", 11, "send"),
-            (5, "go", 6, "lit_run"),
+            (5, "go", 6, "enter"),
             (6, "out", 11, "send"),
             (6, "to_lits", 7, "replay"),
-            (6, "to_end", 8, "adv"),
             (7, "out", 11, "send"),
             (7, "rd", 9, "hist_l"),
-            (7, "mrun", 6, "mat_run"),
+            (7, "post", 13, "post"),
+            (13, "out", 11, "send"),
+            (13, "mrun", 6, "enter"),
+            (13, "adv", 8, "adv"),
             (9, "rd", 12, "lookup"),
             (9, "st", 12, "write"),
             (10, "to_hash", 2, "byte"),
@@ -1353,6 +1415,7 @@ class LZ4EncoderBlock(KyttarBlock):
             10: (-4, 0, "east"),      # RET    — on the x1_in row
             11: (-6, -2, "west"),     # OUT    — the egress
             12: (0, 0, "south"),      # CTL    — pinned on x1_out, facing the port
+            13: (-8, -2, "east"),     # SEAL
         }
         order = list(self.build_cell_programs().keys())
         assert set(order) == set(lay), (order, sorted(lay))

@@ -185,6 +185,9 @@ class Poly1305MACBlock(KyttarBlock):
     _interface = BlockInterface(
         entry_address=22, input_registers=[1], output_registers=[0])
 
+    #: The egress authors its own port pair (INV-63) — see ``out`` below.
+    RAW_OUTPUT_HOPS = True
+
     GRC_UNSUPPORTED_PARAMS = ()
 
     TAG_WORDS = TAG_WORDS
@@ -268,9 +271,12 @@ class Poly1305MACBlock(KyttarBlock):
           into ``ulk`` -> the control row. The ``cr*`` relays live on it;
           face-only ``transit_cl_*`` cells pave the rest.
         """
-        lay: Dict[str, Tuple[int, int, str]] = {"ulk": (0, 0, "east")}
+        # seq_top FIRST: the catalog derives the block's external input from
+        # the first cell (INV-61.4), and program order == dict order here.
+        lay: Dict[str, Tuple[int, int, str]] = {}
         for i, cid in enumerate(self._CONTROL):
             lay[cid] = (1 + i, 0, "east")
+        lay["ulk"] = (0, 0, "east")
         lay["transit_t0"] = (9, 0, "south")
 
         ring = self._ring_sequence()
@@ -544,19 +550,28 @@ f0:
     {jump:fst}
 """)
 
-        # out: the tag egress. ONE entry, ONLY the port pair, NO internal
-        # sources and NO backward jumps — the sink fixup's full-cell rewrite
-        # (INV-63) then rewrites exactly the two words we want it to.
+        # out: the tag egress. The cell RESTS EAST — its face is load-bearing
+        # for the conveyor (sequencer injections transit it into the ring) —
+        # so the port pair flips NORTH into the (8,0)->(9,0) corridor and
+        # restores. RAW_OUTPUT_HOPS (INV-63): the pair is AUTHORED literals
+        # (`WRITE @3, 0` / `JUMP @3, 0` — two corridor cells + the edge exit),
+        # valid for the block's pinned (0, 1) anchor; the sink fixup would
+        # otherwise rewrite hops resolved against a 92-hop resting-face walk
+        # (measured) and re-face this cell off its conveyor duty.
         progs["out"] = CellProgram(
             inputs=[Port("wr", register=1)],
             outputs=[Port("out")],
             entries=[EntryPoint("emit")],
-            data=[], state=[],
+            data=[DataWord("fN", 3, address=2, is_face=True),
+                  DataWord("fE", 1, address=3, is_face=True)],
+            state=[],
             assembly_template="""\
 emit:
     MOVE R0, R{in:wr}
-    {write:out}
-    {jump:out}
+    MOVE [FACE], R{data:fN}
+    WRITE @3, 0
+    JUMP @3, 0
+    MOVE [FACE], R{data:fE}
 """)
 
         # ---------------- pack cells ----------------
@@ -709,22 +724,31 @@ emit:
             # ---- lh_k
             fp = self._face_to(lay, f"lh_{k}", f"mulA_{k}")
             fr = self._rest(lay, f"lh_{k}")
+            # The pub delivery is a FLIPPED hop-1 write into an EARLIER cell:
+            # declared, _apply_internal_feedback would re-patch its hop by
+            # tracing the RESTING corridor (measured: @21, a permanent
+            # ping-pong deadlock at the turn cells). So it is an AUTHORED
+            # literal against mulA's pinned input registers (INV-63's escape),
+            # with the abutment guaranteed by the serpentine (checked in
+            # _face_to) and the registers asserted below.
+            a_reg = next(pt.register for pt in progs[f"mulA_{k}"].inputs
+                         if pt.name == "a")
+            ain_reg = next(pt.register for pt in progs[f"mulA_{k}"].inputs
+                           if pt.name == "ain")
             pub = ("pub:\n    MOVE [FACE], R{data:fp}\n"
-                   "    MOVE R0, R{in:lv}\n    {write:aup}\n"
-                   + ("    {write:ainup}\n" if k == 0 else "")
+                   "    MOVE R0, R{in:lv}\n    WRITE @1, %d\n" % a_reg
+                   + ("    WRITE @1, %d\n" % ain_reg if k == 0 else "")
                    + "    MOVE [FACE], R{data:fr}\n    {jump:pnx}\n")
-            outs = [Port("aup"), Port("pnx"), Port("gco"), Port("gnx"),
+            outs = [Port("pnx"), Port("gco"), Port("gnx"),
                     Port("lb"), Port("fj")]
-            if k == 0:
-                outs.append(Port("ainup"))
             progs[f"lh_{k}"] = CellProgram(
                 inputs=[Port("lv", register=1), Port("vin", register=2),
                         Port("cin", register=3)],
                 outputs=outs,
                 entries=[EntryPoint("addv"), EntryPoint("gprobe"),
                          EntryPoint("fpub"), EntryPoint("pub")],
-                data=[DataWord("fp", fp, address=5),
-                      DataWord("fr", fr, address=6)],
+                data=[DataWord("fp", fp, address=5, is_face=True),
+                      DataWord("fr", fr, address=6, is_face=True)],
                 state=[StateVar("t", register=4)],
                 assembly_template="""\
 addv:
@@ -751,13 +775,13 @@ fpub:
             progs[f"mulC_{k}"] = CellProgram(
                 inputs=[Port("hi", register=1), Port("lo", register=2),
                         Port("ain", register=3)],
-                outputs=[Port("co"), Port("lvout"), Port("snx2")],
+                outputs=[Port("co"), Port("snx2")],
                 entries=[EntryPoint("spl")],
                 data=[DataWord("c64", 64, address=5),
                       DataWord("m1023", 1023, address=6),
                       DataWord("z0", 0, address=7),
-                      DataWord("fp", fpC, address=8),
-                      DataWord("fr", frC, address=9)],
+                      DataWord("fp", fpC, address=8, is_face=True),
+                      DataWord("fr", frC, address=9, is_face=True)],
                 state=[StateVar("t", register=4)],
                 assembly_template="""\
 spl:
@@ -773,7 +797,7 @@ spl:
     AND R{in:lo}, R{data:m1023}
     MOVE R{in:lo}, R0
     MOVE [FACE], R{data:fp}
-    {write:lvout}
+    WRITE @1, 1
     MOVE [FACE], R{data:fr}
     {jump:snx2}
 """)
@@ -784,21 +808,20 @@ spl:
             progs[f"mulB_{k}"] = CellProgram(
                 inputs=[Port("hi", register=1), Port("lo", register=2),
                         Port("ain", register=3)],
-                outputs=[Port("co"), Port("nnx"), Port("x2h"), Port("x2l"),
-                         Port("x2nx")],
+                outputs=[Port("co"), Port("nnx"), Port("x2nx")],
                 entries=[EntryPoint("xfer2"), EntryPoint("nrm")],
                 data=[DataWord("c64", 64, address=5),
                       DataWord("z0", 0, address=6),
-                      DataWord("fp", fpB, address=7),
-                      DataWord("fr", frB, address=8)],
+                      DataWord("fp", fpB, address=7, is_face=True),
+                      DataWord("fr", frB, address=8, is_face=True)],
                 state=[StateVar("t", register=4)],
                 assembly_template="""\
 xfer2:
     MOVE [FACE], R{data:fp}
     MOVE R0, R{in:hi}
-    {write:x2h}
+    WRITE @1, 1
     MOVE R0, R{in:lo}
-    {write:x2l}
+    WRITE @1, 2
     MOVE [FACE], R{data:fr}
     {jump:x2nx}
     HALT
@@ -973,14 +996,10 @@ femit:
             conns += [
                 (f"mulA_{k}", "xh", f"mulB_{k}", "hi"),
                 (f"mulA_{k}", "xl", f"mulB_{k}", "lo"),
-                (f"mulB_{k}", "x2h", f"mulC_{k}", "hi"),
-                (f"mulB_{k}", "x2l", f"mulC_{k}", "lo"),
-                (f"mulC_{k}", "lvout", f"lh_{k}", "lv"),
-                (f"lh_{k}", "aup", f"mulA_{k}", "a"),
                 (f"lh_{k}", "lb", f"fin_{k}", "lb"),
             ]
-            if k == 0:
-                conns.append(("lh_0", "ainup", "mulA_0", "ain"))
+            # xfer2 (mulB->mulC), lvout (mulC->lh), pub (lh->mulA) are RAW
+            # literal @1 flip writes — deliberately UNDECLARED (see pub).
             if k < N_LIMBS - 1:
                 conns += [
                     (f"mulA_{k}", "rot", f"mulA_{k + 1}", "ain"),
@@ -1073,21 +1092,6 @@ femit:
                 jumps.append((f"fin_{k}", "cqj", f"fin_{nxt}", "wfw"))
         return jumps
 
-    def emit_faces(self) -> Dict[Tuple[Any, str], Any]:
-        """Neighbour-cell declarations for every port emitted while FLIPPED
-        (INV-52 clause 3) — the router derives the face from placed coords.
-
-        Only the three group-internal hop-1 deliveries flip; everything else
-        rides resting faces around the one conveyor cycle."""
-        ef: Dict[Tuple[Any, str], Any] = {}
-        for k in range(N_LIMBS):
-            ef[(f"lh_{k}", "aup")] = f"mulA_{k}"
-            if k == 0:
-                ef[("lh_0", "ainup")] = "mulA_0"
-            ef[(f"mulB_{k}", "x2h")] = f"mulC_{k}"
-            ef[(f"mulB_{k}", "x2l")] = f"mulC_{k}"
-            ef[(f"mulC_{k}", "lvout")] = f"lh_{k}"
-        return ef
 
     # ------------------------------------------------------------- reference
     def process_reference(self, input_words) -> np.ndarray:

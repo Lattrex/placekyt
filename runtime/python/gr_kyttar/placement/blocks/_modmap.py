@@ -90,6 +90,7 @@ BUILTIN_BLOCKS = {
     'Crc16Block': 'crc16_block',
     'ChaCha20KeystreamBlock': 'chacha20_keystream_block',
     'ChaCha20QRBlock': 'chacha20_qr_block',
+    'Poly1305MACBlock': 'poly1305_mac_block',
     'TransitProbeBlock': 'transit_probe_block',
     'PackKBitsBlock': 'pack_k_bits_block',
     'DiffEncoderBlock': 'diff_encoder_block',

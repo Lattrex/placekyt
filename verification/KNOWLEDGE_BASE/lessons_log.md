@@ -216,6 +216,79 @@ host-side LZ4). ChaCha's pending `counter_mode="increment"` changes none of
 this — the integration point stays "payload constant + keystream param" in
 whatever design lands.
 
+## examples/lz4_stream — DONE: the first TWO-panel-client design; encoder+decoder round-trip 1 KB byte-exact on one array  2026-08-31
+
+**Headline: both SRAM-panel-backed LZ4 blocks — the design limit — live on one
+10x12 chip sharing the single x1 pair, and the full 1 KB payload (512
+repetitive + 512 random bytes) round-trips byte-exactly: encoder output
+model-exact (540 bytes, 52.7%; repetitive half 31/512, random half 515/512),
+recovered payload exact, settle stop_reason QueueEmpty throughout, 77/120
+cells.** The generalizable rules were promoted to **INV-66**; the example
+specifics:
+
+* **The duplex panel template rejects two self-contained clients by design**
+  (`_apply_duplex_panel_template` wants one Varicode-shaped TX head + one RX
+  tail). The example hand-places instead: PURE TRANSLATIONS of both proven
+  folds (encoder CTL at (8,7), decoder CTL at (6,10)) — translation preserves
+  every internal edge, so neither fold needed re-derivation. Rotation was
+  deliberately avoided (the LZ4 blocks are not in the orientation suite's
+  coverage set).
+* **Corridor algebra that made one x1 pair serve two clients:** to-panel
+  corridors MERGE (same-direction, into the (9,11) exit); pull corridors FORK
+  at CrossoverBlocks — xoI splits the two x16_in streams, xoR/xoT chain the
+  encoder's push-read from the shared x1_in row up to its RET cell (two
+  re-emitting hops), xoO lifts the decoder egress across the encoder's panel
+  corridor onto col 9. Chained crossovers (push lands xoR, re-emits into xoT,
+  re-emits into RET) work exactly like single ones — each track is a uniform
+  (dest, entry, hop) stream.
+* **The client-side hand-off is the topology, not a workaround** (INV-66
+  rule 1): the compressed stream leaves the chip and is re-injected as the
+  'cmp' stream. In the .grc this is `raw_sink -> cmp_src` directly — legal
+  because raw words are symmetric floats — and the batch-session rendezvous
+  handles it naturally: the raw source dispatches alone (collect-window
+  expires), the cmp source dispatches a second generation once the compressed
+  floats exist.
+* **`addr_base` is lookup-only; the decoder must keep 0** (INV-66 rule 2).
+  MEASURED here first: decoder based at 36864 wrote [0,len) and read
+  36864+…, returning literals intact and every match byte 0. The shipped
+  design reuses [0,len) sequentially; the aliasing gate decodes the REVERSED
+  payload's stream after encoding the forward payload.
+* **Block order in the project is load-bearing** (INV-66 rule 3): decoder
+  first, or the build-time refresh re-aims xoI's `entry_a` at the encoder's
+  controller-cell entry and the raw stream lands with the wrong entry — a
+  zero-output QueueEmpty no-op.
+* **The variable-rate story is measurable on chip**: `read_port_words_timed`
+  timestamps give a pass-2 emission timeline — per time-eighth
+  [25, 0, 0, 0, 0, 0, 117, 398] for the mixed payload (sparse early tokens
+  from the repetitive half, the literal flood at the tail). The GRC scope
+  shows the same fact spatially: a worst-case 1044-slot buffer only ~540
+  full.
+* **The hosted server's per-sample event budget is a HEADER FIELD the
+  client never sent.** MEASURED on the user path: the duplex per-sample
+  drive runs each injected sample with `run(max_events=header.max_events_per
+  or 40000)` — and the LZ4 sentinel sample must run the WHOLE pass-2 scan
+  (millions of events) inside that one settle, so the server abandoned it
+  mid-scan and returned `raw:1025in->0out`. Fix (client-side only, engine
+  untouched): `kyttar_source` gained an optional `max_events_per` param
+  (yml + shim + batch session; duplex takes the max over submitting
+  sources), and the .grc sets 50M on both sources. `run()` returns at
+  quiescence, so the over-sized budget costs nothing on ordinary samples.
+  Any future example whose ONE sample triggers a long autonomous run needs
+  this knob.
+* **Gate design** (`test_lz4_stream_example.py`, 9 tests): flagship
+  round-trip + ratio gate (mutation-proven by the dead-hash-insert mutant,
+  whose all-literals output STILL round-trips — the ratio gate is the one
+  with teeth), the aliasing gate, a corrupted-byte round-trip negative,
+  INV-42 pins on the imported params AND the generated python (including the
+  exact payload vector), shipped-.kyt parity, and the hosted-server user
+  path.
+
+**Numbers.** 27 block cells (15+8+4 crossovers), 77/120 used. Suite: 9 gates;
+examples auto-gates (grc_valid / instantiate / kyt_route_transits) green with
+the new files; placement 364 green; placekyt/tests green (one pre-existing
+flake: the server-autostart test loses port 58950 to a concurrently running
+userpath suite, not a code change). Engine and router untouched.
+
 ## examples/tmr_pipeline — DONE: TMR + single-path co-resident on one array, both streams exact on chip and through the hosted user path  2026-08-31
 
 Assembly of proven blocks (StreamSplitter ×4, AddConst ×3, TMRVoter, Gain), so

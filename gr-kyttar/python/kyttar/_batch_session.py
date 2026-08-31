@@ -134,9 +134,13 @@ class DuplexRendezvous:
         # SATURATED drive for this Run — True if ANY source asked to be pipelined
         # (the honest full-speed drive; see _dispatch_all + sim_bridge duplex).
         self._pipelined = False
+        # Per-sample event-budget override for this Run (0 = server default).
+        # The MAX over the submitting sources wins; read-and-reset per Run.
+        self._max_events_per = 0
 
     def submit(self, host, port, stream_id, samples, complex_, raw,
-               collect_window=0.4, schedule="interleaved", pipelined=False):
+               collect_window=0.4, schedule="interleaved", pipelined=False,
+               max_events_per=0):
         """Register this stream's burst for the current Run. The leader (first in)
         waits ``collect_window`` s for peers, then dispatches the combined duplex
         RPC. Returns this stream's recovered words.
@@ -163,6 +167,10 @@ class DuplexRendezvous:
             # Any source opting into saturation makes the whole Run saturated.
             if pipelined:
                 self._pipelined = True
+            # The largest requested per-sample event budget wins for the Run.
+            if int(max_events_per) > 0:
+                self._max_events_per = max(self._max_events_per,
+                                           int(max_events_per))
             leader = not self._dispatching
             if leader:
                 self._dispatching = True
@@ -222,11 +230,18 @@ class DuplexRendezvous:
         with self._cv:
             _sched = self._schedule
             _pipe = self._pipelined
+            _mep = self._max_events_per
             self._schedule = "interleaved"
             self._pipelined = False
+            self._max_events_per = 0
         header = {"op": "process_batch_duplex", "port": "x16_out",
                   "in_port": "x16_in", "streams": streams_hdr, "schedule": _sched,
                   "pipelined": bool(_pipe)}
+        # Per-sample event budget: the server runs each injected sample with
+        # run(max_events=<this>). Only sent when a source asked (0 = keep the
+        # server default 40000); an older host ignores the field.
+        if _mep > 0:
+            header["max_events_per"] = int(_mep)
         # GRC-sync + LIVE tunables for the duplex path: markers register into the
         # device's default ('' stream) session — ship its snapshot exactly like
         # BatchSession.dispatch does for the single-stream path.
@@ -456,7 +471,7 @@ class BatchSession:
 
     def dispatch(self, host, port, iq, in_port="x16_in", out_port="x16_out",
                  data_addrs=(0, 1), raw=True, complex=True, stream_id="",
-                 pipelined=False):
+                 pipelined=False, max_events_per=0):
         """Send the whole burst to the placeKYT SimServer in one process_batch RPC;
         store the recovered words for the sink.
 
@@ -497,6 +512,9 @@ class BatchSession:
         # FULL-SPEED: drive the whole burst saturated (see docstring). Opt-in.
         if pipelined:
             header["pipelined"] = True
+        # Per-sample event budget for the paced drive (0 = server default).
+        if int(max_events_per) > 0:
+            header["max_events_per"] = int(max_events_per)
         # GRC-sync: advertise the flowgraph's per-block params alongside the burst
         # (additive header field). The placeKYT SimServer routes a present
         # ``grc_params`` to ``on_grc_params`` → the out-of-sync indicator. Absent

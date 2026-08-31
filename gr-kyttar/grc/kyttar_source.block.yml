@@ -71,7 +71,8 @@ templates:
     num_channels=${num_channels}, server_host=${server_host},
     server_port=${server_port}, complex_in=${complex_in.make_val}, burst_len=${burst_len},
     stream_id=${stream_id}, pipelined=${pipelined.make_val},
-    schedule=${schedule}, repeat=${repeat.make_val}, output_words=${output_words})
+    schedule=${schedule}, repeat=${repeat.make_val}, output_words=${output_words},
+    max_events_per=${max_events_per})
 
 parameters:
   - id: device_id
@@ -98,6 +99,16 @@ parameters:
     label: Server Port
     dtype: int
     default: '0'
+  # Per-sample event budget for the server's paced drive. 0 = the server
+  # default (40000 events per injected sample). Raise it for a design whose
+  # ONE sample triggers a long autonomous run (the LZ4 encoder's end-of-block
+  # sentinel runs the whole pass-2 scan inside one settle) — the server runs
+  # each sample to quiescence, so an over-sized budget costs nothing.
+  - id: max_events_per
+    label: Max events per sample
+    dtype: int
+    default: '0'
+    hide: part
   # Input stream type. An ENUM (not a bool) so the GRC stream dtype is set
   # DIRECTLY from the selected option's io_type attribute — no boolean-truthiness
   # ambiguity (a GRC bool param evaluates to the string 'False', which is truthy,

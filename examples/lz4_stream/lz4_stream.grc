@@ -1,0 +1,627 @@
+options:
+  parameters:
+    author: Lattrex
+    catch_exceptions: 'True'
+    category: '[GRC Hier Blocks]'
+    cmake_opt: ''
+    comment: ''
+    copyright: ''
+    description: 'LZ4 COMPRESSION as a variable-rate stream on one placeKYT array:
+      the SRAM-panel-backed LZ4 Encoder and LZ4 Decoder — TWO panel-backed blocks,
+      the design limit — share the chip''s single panel port pair. A 1 KB payload
+      that switches character mid-stream (512 highly repetitive bytes, then 512
+      random bytes) is compressed on chip; the compressed stream comes back to
+      this flowgraph, is displayed, and is re-injected into the on-chip decoder,
+      which recovers the payload byte-exactly. The client-side hand-off is the
+      panel contract: the per-sample paced server finishes the whole encode
+      before the first compressed byte exists, so the two panel clients never
+      burst at the same time. What to watch: the encoder output scope holds a
+      WORST-CASE buffer (1044 = 1024 + 1024/255 + 16, the LZ4 incompressible
+      bound) but only ~540 bytes per batch arrive — the first 512 input bytes
+      compress ~16:1, the random half is ~1:1 — a data-dependent output rate no
+      fixed-rate DSP pipeline can produce. Both kyttar sources set Output words
+      = Raw (bytes are integer words; the raw convention is symmetric, so no
+      q15 scaling on either side). The 256 at the end of the payload vector is
+      the encoder''s out-of-band end-of-block sentinel, not a byte.'
+    gen_cmake: 'On'
+    gen_linking: dynamic
+    generate_options: qt_gui
+    hier_block_src_path: '.:'
+    id: lz4_stream
+    max_nouts: '0'
+    output_language: python
+    placement: (0,0)
+    qt_qss_theme: ''
+    realtime_scheduling: ''
+    run: 'True'
+    run_command: '{python} -u {filename}'
+    run_options: prompt
+    sizing_mode: fixed
+    thread_safe_setters: ''
+    title: LZ4 stream (variable-rate compression on one array)
+    window_size: (1600,1000)
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 8
+    - 8
+    rotation: 0
+    state: enabled
+blocks:
+- name: samp_rate
+  id: variable
+  parameters:
+    comment: 'nominal display rate for the scopes'
+    value: '32000'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 8
+    - 100
+    rotation: 0
+    state: enabled
+- name: payload_len
+  id: variable
+  parameters:
+    comment: '1024 payload bytes + the end-of-block sentinel word (256)'
+    value: '1025'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 8
+    - 180
+    rotation: 0
+    state: enabled
+- name: cmp_len
+  id: variable
+  parameters:
+    comment: 'compressed length of the SHIPPED payload (measured; deterministic). The cmp source dispatches after exactly this many compressed bytes arrive. Update it if you change the payload - the encoder output scope shows the real length.'
+    value: '540'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 8
+    - 260
+    rotation: 0
+    state: enabled
+- name: cmp_worst
+  id: variable
+  parameters:
+    comment: 'WORST-CASE compressed length for 1024 input bytes (1024 + 1024/255 + 16, the LZ4 incompressible expansion bound ~+0.5%) - the encoder-output scope buffer is sized to it'
+    value: '1044'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 8
+    - 340
+    rotation: 0
+    state: enabled
+- name: payload_src
+  id: blocks_vector_source_x
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'the payload: 512 highly repetitive bytes ("KYTTAR LZ4 STREAM! "
+      repeated), then 512 random bytes (seed 7), then the 256 END-OF-BLOCK
+      sentinel. The mid-stream character switch is the demo: compression is a
+      function of the DATA.'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    repeat: 'False'
+    tags: '[]'
+    type: float
+    vector: [75, 89, 84, 84, 65, 82, 32, 76, 90, 52, 32, 83, 84, 82, 69, 65, 77, 33, 32, 75, 89, 84, 84, 65, 82, 32, 76, 90, 52, 32, 83, 84, 82, 69, 65, 77, 33, 32, 75, 89, 84, 84, 65, 82, 32, 76, 90, 52, 32, 83, 84, 82, 69, 65, 77, 33, 32, 75, 89, 84, 84, 65, 82, 32, 76, 90, 52, 32, 83, 84, 82, 69, 65, 77, 33, 32, 75, 89, 84, 84, 65, 82, 32, 76, 90, 52, 32, 83, 84, 82, 69, 65, 77, 33, 32, 75, 89, 84, 84, 65, 82, 32, 76, 90, 52, 32, 83, 84, 82, 69, 65, 77, 33, 32, 75, 89, 84, 84, 65, 82, 32, 76, 90, 52, 32, 83, 84, 82, 69, 65, 77, 33, 32, 75, 89, 84, 84, 65, 82, 32, 76, 90, 52, 32, 83, 84, 82, 69, 65, 77, 33, 32, 75, 89, 84, 84, 65, 82, 32, 76, 90, 52, 32, 83, 84, 82, 69, 65, 77, 33, 32, 75, 89, 84, 84, 65, 82, 32, 76, 90, 52, 32, 83, 84, 82, 69, 65, 77, 33, 32, 75, 89, 84, 84, 65, 82, 32, 76, 90, 52, 32, 83, 84, 82, 69, 65, 77, 33, 32, 75, 89, 84, 84, 65, 82, 32, 76, 90, 52, 32, 83, 84, 82, 69, 65, 77, 33, 32, 75, 89, 84, 84, 65, 82, 32, 76, 90, 52, 32, 83, 84, 82, 69, 65, 77, 33, 32, 75, 89, 84, 84, 65, 82, 32, 76, 90, 52, 32, 83, 84, 82, 69, 65, 77, 33, 32, 75, 89, 84, 84, 65, 82, 32, 76, 90, 52, 32, 83, 84, 82, 69, 65, 77, 33, 32, 75, 89, 84, 84, 65, 82, 32, 76, 90, 52, 32, 83, 84, 82, 69, 65, 77, 33, 32, 75, 89, 84, 84, 65, 82, 32, 76, 90, 52, 32, 83, 84, 82, 69, 65, 77, 33, 32, 75, 89, 84, 84, 65, 82, 32, 76, 90, 52, 32, 83, 84, 82, 69, 65, 77, 33, 32, 75, 89, 84, 84, 65, 82, 32, 76, 90, 52, 32, 83, 84, 82, 69, 65, 77, 33, 32, 75, 89, 84, 84, 65, 82, 32, 76, 90, 52, 32, 83, 84, 82, 69, 65, 77, 33, 32, 75, 89, 84, 84, 65, 82, 32, 76, 90, 52, 32, 83, 84, 82, 69, 65, 77, 33, 32, 75, 89, 84, 84, 65, 82, 32, 76, 90, 52, 32, 83, 84, 82, 69, 65, 77, 33, 32, 75, 89, 84, 84, 65, 82, 32, 76, 90, 52, 32, 83, 84, 82, 69, 65, 77, 33, 32, 75, 89, 84, 84, 65, 82, 32, 76, 90, 52, 32, 83, 84, 82, 69, 65, 77, 33, 32, 75, 89, 84, 84, 65, 82, 32, 76, 90, 52, 32, 83, 84, 82, 69, 65, 77, 33, 32, 75, 89, 84, 84, 65, 82, 32, 76, 90, 52, 32, 83, 84, 82, 69, 65, 77, 33, 32, 75, 89, 84, 84, 65, 82, 32, 76, 90, 52, 32, 83, 84, 82, 69, 65, 77, 33, 165, 77, 202, 24, 37, 48, 187, 29, 109, 19, 44, 222, 214, 35, 123, 46, 217, 30, 63, 114, 31, 203, 25, 113, 23, 68, 148, 214, 73, 60, 157, 92, 52, 96, 190, 49, 32, 30, 105, 254, 218, 160, 238, 232, 185, 153, 127, 92, 124, 41, 153, 253, 175, 229, 147, 37, 60, 214, 84, 175, 77, 250, 215, 20, 39, 160, 174, 179, 254, 233, 35, 47, 138, 242, 33, 31, 158, 228, 145, 197, 177, 11, 236, 181, 86, 59, 252, 30, 111, 147, 66, 126, 203, 200, 254, 41, 85, 229, 205, 142, 70, 220, 142, 212, 183, 194, 118, 77, 42, 90, 77, 118, 119, 6, 248, 93, 134, 144, 2, 74, 214, 189, 163, 64, 27, 233, 200, 203, 204, 201, 53, 246, 205, 31, 97, 34, 106, 225, 83, 56, 174, 26, 52, 0, 77, 51, 186, 13, 36, 106, 192, 76, 129, 177, 186, 242, 62, 59, 249, 238, 245, 247, 159, 43, 73, 52, 175, 135, 245, 82, 11, 105, 185, 75, 13, 152, 46, 133, 187, 85, 182, 114, 168, 114, 99, 122, 205, 116, 102, 252, 182, 14, 14, 143, 241, 132, 99, 176, 228, 178, 186, 41, 112, 52, 116, 240, 100, 172, 104, 247, 0, 245, 176, 43, 61, 198, 102, 244, 91, 222, 170, 44, 202, 237, 205, 43, 81, 87, 65, 14, 77, 238, 74, 242, 179, 79, 67, 10, 7, 52, 71, 222, 99, 108, 14, 128, 108, 149, 123, 166, 132, 214, 67, 31, 181, 234, 215, 66, 77, 9, 225, 93, 2, 76, 88, 72, 242, 61, 31, 166, 247, 54, 29, 127, 97, 141, 21, 50, 231, 14, 32, 226, 166, 102, 141, 231, 244, 126, 132, 103, 229, 70, 213, 62, 200, 226, 161, 37, 123, 219, 37, 108, 155, 62, 79, 187, 73, 129, 70, 239, 112, 48, 203, 249, 83, 114, 82, 220, 206, 173, 215, 100, 182, 163, 47, 187, 9, 173, 234, 225, 9, 196, 169, 151, 32, 57, 117, 53, 43, 135, 139, 20, 92, 138, 66, 216, 132, 207, 76, 253, 167, 45, 142, 29, 93, 217, 37, 137, 8, 45, 133, 42, 113, 34, 135, 62, 232, 5, 173, 213, 137, 66, 22, 122, 56, 82, 134, 25, 92, 103, 159, 156, 105, 148, 228, 91, 138, 177, 9, 128, 18, 7, 9, 97, 243, 125, 228, 54, 221, 253, 201, 157, 110, 117, 175, 101, 71, 207, 177, 27, 66, 7, 36, 130, 220, 83, 28, 43, 195, 144, 124, 150, 23, 235, 94, 80, 137, 228, 1, 134, 186, 168, 165, 125, 17, 158, 111, 182, 93, 0, 171, 195, 42, 243, 142, 102, 127, 2, 46, 135, 45, 73, 204, 21, 201, 11, 153, 155, 119, 43, 79, 199, 166, 253, 76, 145, 74, 22, 219, 71, 8, 117, 43, 15, 21, 68, 184, 53, 192, 231, 25, 9, 125, 250, 135, 1, 233, 35, 47, 33, 242, 129, 38, 135, 120, 105, 118, 235, 252, 195, 39, 245, 147, 23, 101, 39, 75, 169, 130, 155, 68, 6, 256]
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 72
+    - 156
+    rotation: 0
+    state: enabled
+- name: raw_src
+  id: kyttar_source
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'the raw stream into the on-chip LZ4 encoder. Output words = Raw:
+      bytes are integer WORDS (the raw convention is symmetric - the floats
+      are the word values themselves, no q15 scaling). Max events per sample is raised: the end-of-block sentinel runs the WHOLE pass-2 scan inside one sample settle'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    burst_len: payload_len
+    complex_in: float
+    device_id: '"kyttar_0"'
+    max_events_per: '50000000'
+    num_channels: '1'
+    output_words: '"raw"'
+    pipelined: 'no'
+    port_name: '"x16_in"'
+    repeat: 'no'
+    schedule: '"interleaved"'
+    server_host: '"127.0.0.1"'
+    server_port: '58950'
+    stream_id: '"raw"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 296
+    - 148
+    rotation: 0
+    state: enabled
+- name: enc
+  id: kyttar_lz4_encoder
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'SRAM-backed two-pass LZ4 block-format compressor (15 cells + the
+      panel: stored input at [0,32768), hash table at [32768,36864))'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    addr_base: '0'
+    device_id: '"kyttar_0"'
+    emit_entry: '0'
+    emit_hop: '2'
+    hash_bits: '12'
+    out_dest: '0'
+    panel_hop: '1'
+    read_jp_desc: '0'
+    read_wr_desc: '0'
+    window_words: '32768'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 488
+    - 156
+    rotation: 0
+    state: enabled
+- name: raw_sink
+  id: kyttar_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'drains the COMPRESSED byte stream (raw words). server_repeat loops
+      the genuine one-batch result so the scope keeps painting'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    device_id: '"kyttar_0"'
+    hold_secs: '8.0'
+    in_type: float
+    num_channels: '1'
+    port_name: '"x16_out"'
+    server_port: '58950'
+    server_repeat: 'True'
+    stream_id: '"raw"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 680
+    - 148
+    rotation: 0
+    state: enabled
+- name: cmp_src
+  id: kyttar_source
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'the compressed bytes back into the on-chip LZ4 decoder. The
+      client-side hand-off is the panel contract: the per-sample paced server
+      finished the whole encode before the first compressed byte existed, so
+      the two panel clients never burst at the same time. Dispatches after
+      cmp_len bytes (one compressed batch).'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    burst_len: cmp_len
+    complex_in: float
+    device_id: '"kyttar_0"'
+    max_events_per: '50000000'
+    num_channels: '1'
+    output_words: '"raw"'
+    pipelined: 'no'
+    port_name: '"x16_in"'
+    repeat: 'no'
+    schedule: '"interleaved"'
+    server_host: '"127.0.0.1"'
+    server_port: '58950'
+    stream_id: '"cmp"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 680
+    - 328
+    rotation: 0
+    state: enabled
+- name: dec
+  id: kyttar_lz4_decoder
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'SRAM-backed streaming LZ4 block-format decoder (8 cells + the
+      panel history window). addr_base stays 0 (its proven configuration): the
+      controller''s addr_base offsets only the LOOKUP path, so a based
+      read-write client would read a region it never wrote. The decoder reuses
+      [0, len) SEQUENTIALLY after the encoder - every read is of an address the
+      decoder itself wrote earlier in the same batch.'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    addr_base: '0'
+    device_id: '"kyttar_0"'
+    emit_entry: '0'
+    emit_hop: '2'
+    out_dest: '0'
+    panel_hop: '1'
+    read_jp_desc: '0'
+    read_wr_desc: '0'
+    window_words: '65536'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 872
+    - 336
+    rotation: 0
+    state: enabled
+- name: cmp_sink
+  id: kyttar_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: drains the RECOVERED payload (raw words)
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    device_id: '"kyttar_0"'
+    hold_secs: '8.0'
+    in_type: float
+    num_channels: '1'
+    port_name: '"x16_out"'
+    server_port: '58950'
+    server_repeat: 'True'
+    stream_id: '"cmp"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1064
+    - 328
+    rotation: 0
+    state: enabled
+- name: f2b_raw
+  id: blocks_float_to_uchar
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'marker-chain dtype adapter (the marker chain is cosmetic at GR runtime - the real data rides the kyttar batch session)'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 392
+    - 240
+    rotation: 0
+    state: enabled
+- name: b2f_enc
+  id: blocks_uchar_to_float
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'marker-chain dtype adapter (the marker chain is cosmetic at GR runtime - the real data rides the kyttar batch session)'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 584
+    - 240
+    rotation: 0
+    state: enabled
+- name: f2b_cmp
+  id: blocks_float_to_uchar
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'marker-chain dtype adapter (the marker chain is cosmetic at GR runtime - the real data rides the kyttar batch session)'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 776
+    - 420
+    rotation: 0
+    state: enabled
+- name: b2f_dec
+  id: blocks_uchar_to_float
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'marker-chain dtype adapter (the marker chain is cosmetic at GR runtime - the real data rides the kyttar batch session)'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 968
+    - 420
+    rotation: 0
+    state: enabled
+- name: cmp_scope
+  id: qtgui_time_sink_x
+  parameters:
+    affinity: ''
+    alias: ''
+    alpha1: '1.0'
+    alpha10: '1.0'
+    alpha2: '1.0'
+    alpha3: '1.0'
+    alpha4: '1.0'
+    alpha5: '1.0'
+    alpha6: '1.0'
+    alpha7: '1.0'
+    alpha8: '1.0'
+    alpha9: '1.0'
+    autoscale: 'False'
+    axislabels: 'True'
+    color1: blue
+    color10: dark blue
+    color2: red
+    color3: green
+    color4: black
+    color5: cyan
+    color6: magenta
+    color7: yellow
+    color8: dark red
+    color9: dark green
+    comment: 'THE DEMO PLOT - the encoder output against its worst-case buffer: only ~540 of 1044 slots carry a batch. The token-dense head is the repetitive half compressing ~16:1; the long literal tail is the random half at ~1:1. The output rate is a function of the data.'
+    ctrlpanel: 'False'
+    entags: 'True'
+    grid: 'False'
+    gui_hint: ''
+    label1: Signal 1
+    label10: Signal 10
+    label2: Signal 2
+    label3: Signal 3
+    label4: Signal 4
+    label5: Signal 5
+    label6: Signal 6
+    label7: Signal 7
+    label8: Signal 8
+    label9: Signal 9
+    legend: 'True'
+    marker1: '-1'
+    marker10: '-1'
+    marker2: '-1'
+    marker3: '-1'
+    marker4: '-1'
+    marker5: '-1'
+    marker6: '-1'
+    marker7: '-1'
+    marker8: '-1'
+    marker9: '-1'
+    name: '"encoder output - variable rate (worst-case buffer 1044)"'
+    nconnections: '1'
+    size: cmp_worst
+    srate: samp_rate
+    stemplot: 'True'
+    style1: '1'
+    style10: '1'
+    style2: '1'
+    style3: '1'
+    style4: '1'
+    style5: '1'
+    style6: '1'
+    style7: '1'
+    style8: '1'
+    style9: '1'
+    tr_chan: '0'
+    tr_delay: '0'
+    tr_level: '0.0'
+    tr_mode: qtgui.TRIG_MODE_FREE
+    tr_slope: qtgui.TRIG_SLOPE_POS
+    tr_tag: '""'
+    type: float
+    update_time: '0.10'
+    width1: '1'
+    width10: '1'
+    width2: '1'
+    width3: '1'
+    width4: '1'
+    width5: '1'
+    width6: '1'
+    width7: '1'
+    width8: '1'
+    width9: '1'
+    ylabel: compressed byte value
+    ymax: '300'
+    ymin: '-4'
+    yunit: '""'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 904
+    - 100
+    rotation: 0
+    state: enabled
+- name: rec_scope
+  id: qtgui_time_sink_x
+  parameters:
+    affinity: ''
+    alias: ''
+    alpha1: '1.0'
+    alpha10: '1.0'
+    alpha2: '1.0'
+    alpha3: '1.0'
+    alpha4: '1.0'
+    alpha5: '1.0'
+    alpha6: '1.0'
+    alpha7: '1.0'
+    alpha8: '1.0'
+    alpha9: '1.0'
+    autoscale: 'False'
+    axislabels: 'True'
+    color1: blue
+    color10: dark blue
+    color2: red
+    color3: green
+    color4: black
+    color5: cyan
+    color6: magenta
+    color7: yellow
+    color8: dark red
+    color9: dark green
+    comment: 'the recovered payload - byte-exact round trip of the full 1 KB (the repetitive text pattern, then the random half)'
+    ctrlpanel: 'False'
+    entags: 'True'
+    grid: 'False'
+    gui_hint: ''
+    label1: Signal 1
+    label10: Signal 10
+    label2: Signal 2
+    label3: Signal 3
+    label4: Signal 4
+    label5: Signal 5
+    label6: Signal 6
+    label7: Signal 7
+    label8: Signal 8
+    label9: Signal 9
+    legend: 'True'
+    marker1: '-1'
+    marker10: '-1'
+    marker2: '-1'
+    marker3: '-1'
+    marker4: '-1'
+    marker5: '-1'
+    marker6: '-1'
+    marker7: '-1'
+    marker8: '-1'
+    marker9: '-1'
+    name: '"recovered payload (1024 bytes, byte-exact)"'
+    nconnections: '1'
+    size: 1024
+    srate: samp_rate
+    stemplot: 'True'
+    style1: '1'
+    style10: '1'
+    style2: '1'
+    style3: '1'
+    style4: '1'
+    style5: '1'
+    style6: '1'
+    style7: '1'
+    style8: '1'
+    style9: '1'
+    tr_chan: '0'
+    tr_delay: '0'
+    tr_level: '0.0'
+    tr_mode: qtgui.TRIG_MODE_FREE
+    tr_slope: qtgui.TRIG_SLOPE_POS
+    tr_tag: '""'
+    type: float
+    update_time: '0.10'
+    width1: '1'
+    width10: '1'
+    width2: '1'
+    width3: '1'
+    width4: '1'
+    width5: '1'
+    width6: '1'
+    width7: '1'
+    width8: '1'
+    width9: '1'
+    ylabel: byte value
+    ymax: '300'
+    ymin: '-4'
+    yunit: '""'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1288
+    - 328
+    rotation: 0
+    state: enabled
+connections:
+- - payload_src
+  - '0'
+  - raw_src
+  - '0'
+- - raw_src
+  - '0'
+  - f2b_raw
+  - '0'
+- - f2b_raw
+  - '0'
+  - enc
+  - '0'
+- - enc
+  - '0'
+  - b2f_enc
+  - '0'
+- - b2f_enc
+  - '0'
+  - raw_sink
+  - '0'
+- - raw_sink
+  - '0'
+  - cmp_scope
+  - '0'
+- - raw_sink
+  - '0'
+  - cmp_src
+  - '0'
+- - cmp_src
+  - '0'
+  - f2b_cmp
+  - '0'
+- - f2b_cmp
+  - '0'
+  - dec
+  - '0'
+- - dec
+  - '0'
+  - b2f_dec
+  - '0'
+- - b2f_dec
+  - '0'
+  - cmp_sink
+  - '0'
+- - cmp_sink
+  - '0'
+  - rec_scope
+  - '0'
+metadata:
+  file_format: 1
+  grc_version: 3.10.12.0

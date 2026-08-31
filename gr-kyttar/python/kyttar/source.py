@@ -85,6 +85,7 @@ class source(gr.sync_block):
         schedule: str = "interleaved",
         repeat: bool = False,
         output_words: str = "auto",
+        max_events_per: int = 0,
     ):
         # SERVER-BATCH MODE (server_port > 0): drive a placeKYT-hosted chip via ONE
         # process_batch RPC instead of building/owning a local chip. The input is
@@ -161,6 +162,16 @@ class source(gr.sync_block):
         # word stream + run to completion) rather than per-sample-to-quiescence. Only
         # safe for a saturation-tolerant (point-to-point-routed) chip design.
         self._pipelined = bool(pipelined)
+        # PER-SAMPLE EVENT BUDGET override for the server's paced drive (the
+        # duplex/per-sample paths run each injected sample with
+        # run(max_events=<this>)). 0 = keep the server default (40000). A
+        # panel-backed block whose SINGLE sample triggers a long autonomous
+        # run — the LZ4 encoder's end-of-block sentinel starts the WHOLE
+        # pass-2 scan (millions of events) inside one sample's settle — needs
+        # a budget sized to that work, or the server abandons the run mid-
+        # scan and returns a truncated (or empty) stream. run() returns at
+        # quiescence, so an over-sized budget costs nothing on small samples.
+        self._max_events_per = int(max_events_per)
         # REPEAT (the live-demo burst loop): after the sink drains a burst's
         # result, re-arm and dispatch the NEXT burst_len samples — the flowgraph
         # becomes a continuous burst loop, so scopes refresh every burst and a
@@ -283,7 +294,8 @@ class source(gr.sync_block):
             out = rv.submit(self._server_host, self._server_port, self._stream_id,
                             self._inbuf, complex_=self._complex_in,
                             raw=self._raw_out, schedule=self._schedule,
-                            pipelined=self._pipelined)
+                            pipelined=self._pipelined,
+                            max_events_per=self._max_events_per)
             with sess._cv:            # deliver to this stream's sink
                 sess._result = out
                 sess._seq += 1
@@ -292,7 +304,8 @@ class source(gr.sync_block):
             out = sess.dispatch(self._server_host, self._server_port, self._inbuf,
                                 in_port=self._port_name, complex=self._complex_in,
                                 raw=self._raw_out, stream_id=self._stream_id,
-                                pipelined=self._pipelined)
+                                pipelined=self._pipelined,
+                                max_events_per=self._max_events_per)
         self._dispatched = True
         print(f"[kyttar.source] SERVER-BATCH: sent {len(self._inbuf)} samples "
               f"-> {len(out)} recovered ({'duplex' if self._stream_id else 'single'} RPC)",

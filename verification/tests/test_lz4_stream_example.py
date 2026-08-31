@@ -292,6 +292,11 @@ def test_generated_python_carries_the_shipped_flags():
     assert py.count("server_repeat=True") == 2, \
         "both sinks must loop the display batch"
     assert 'stream_id="raw"' in py and 'stream_id="cmp"' in py
+    # the per-sample event budget: the sentinel sample runs the WHOLE pass-2
+    # scan inside one settle; the server default (40000 events) abandons it
+    # mid-scan and returns nothing (measured: raw:1025in->0out)
+    assert py.count("max_events_per=50000000") == 2, \
+        "both sources must raise the server's per-sample event budget"
     # the pinned lengths: the raw burst (payload + sentinel), the measured
     # compressed batch, and the WORST-CASE encoder-output scope buffer
     assert "payload_len = 1025" in py

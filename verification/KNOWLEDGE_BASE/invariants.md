@@ -4933,3 +4933,66 @@ a NON-port edge) is untested and should be measured before use.
 
 **Related:** INV-56 (the port-cell rule's deadlock mechanism), INV-40 (fold
 shape vs free space), the corrected `layout_rules.md` §1 and checklist.
+
+## INV-66 — TWO SRAM-panel clients on one chip: word-level burst exclusivity, lookup-only addr_base, and the backed[0] refresh
+
+**Measured 2026-08-31** while assembling `examples/lz4_stream` — the first
+design with two READ-WRITE panel clients (LZ4EncoderBlock, 15 cells +
+LZ4DecoderBlock, 8 cells) on one array. Three rules, each with a measured
+failure behind it:
+
+1. **Two controllers' panel bursts must be TEMPORALLY EXCLUSIVE — chain the
+   clients through the CLIENT, never an on-chip net.** The panel register
+   protocol is single-outstanding per WORD (SRAM_PANEL.md §5), and the port
+   cell merges inbound faces word by word — two controllers bursting
+   concurrently interleave their `R2/R3/R4/R5` writes and trigger JUMPs at the
+   merge, so one client's commit lands at the other's address. A direct
+   encoder→decoder net would overlap the decoder's writes with the encoder's
+   pass-2 scan. The per-sample paced server (the panel contract) makes a
+   client-side hand-off exclusive BY CONSTRUCTION: the producer's whole run
+   settles inside its injection before the consumer's first byte exists. The
+   duplex Varicode transceiver was always implicitly protected the same way
+   (two independent per-sample streams); this makes the rule explicit for
+   PIPELINED clients.
+
+2. **`SramControllerBlock.addr_base` relocates ONLY the lookup path** — the
+   write counter always auto-increments from 0 (and the based variant omits
+   `set_addr` entirely). So a READ-WRITE client cannot be moved to a based
+   region: MEASURED, a decoder given `addr_base=36864` wrote `[0,len)` and
+   read `36864+…` — literals fine, every match byte 0. A RW client keeps
+   `addr_base=0` and shares `[0,len)` with the other client SEQUENTIALLY,
+   which is sound exactly when the format guarantees append-before-fetch
+   (every read is of an address the same client wrote earlier in the same
+   batch). **The aliasing gate that certifies this** (INV-61 flavor): decode
+   a stream whose content DISAGREES with the other client's leftovers — for
+   the encoder's own stream, leftovers and decoded bytes coincide at every
+   address, so a leftover-reading decoder passes the plain round trip.
+
+3. **`refresh_panel_params` serves `backed[0]` only, and also rewrites the
+   FIRST placed CrossoverBlock's `entry_a`/`hop_a` from `backed[0]`'s
+   CONTROLLER-cell entry map whenever any xo→backed[0] connection exists.**
+   MEASURED: with the encoder first and an input-relay crossover feeding it,
+   the build silently re-aimed the relay's JUMP at the controller cell's
+   entry — the stream landed on the ingest cell with the wrong entry and the
+   chip ran to QueueEmpty having written nothing. Order the panel-backed
+   blocks so backed[0] is the client whose return corridor matches the
+   direct-landing formula (route ending one short of the return cell), and
+   keep input-relay crossovers un-matchable by that refresh (no xo→backed[0]
+   conn, or accept and pre-verify the rewrite).
+
+Placement notes that made the two-client geometry work (all translation-only,
+so every internal edge of both proven folds is preserved): the two
+controllers' to-panel corridors MERGE same-direction into the port-exit cell
+(a routing cell merges inbound faces onto its one exit face); the shared
+`x1_in` and `x16_in` corridors FORK at CrossoverBlocks (pushes and injected
+streams are per-track uniform, so a re-emitting track preserves them; raw
+panel-protocol words are NOT uniform and may only TRANSIT a crossover on its
+resting face, never land on a track).
+
+LAYER: panel contract + build toolchain, all measured on the shipped
+simulator and build. REACH: any future multi-panel-client design (encode+
+decode pairs, MAC+cipher, any table pair with a RW side).
+
+**Related:** INV-61 (aliasing returns a wrong answer of the right length),
+INV-62 (the port corner's two client slots), SRAM_PANEL.md §5, the duplex
+template in `engine/panel_pnr.py`.

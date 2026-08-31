@@ -138,12 +138,13 @@ blocks:
     alias: ''
     comment: 'the raw stream into the on-chip LZ4 encoder. Output words = Raw:
       bytes are integer WORDS (the raw convention is symmetric - the floats
-      are the word values themselves, no q15 scaling)'
+      are the word values themselves, no q15 scaling). Max events per sample is raised: the end-of-block sentinel runs the WHOLE pass-2 scan inside one sample settle'
     maxoutbuf: '0'
     minoutbuf: '0'
     burst_len: payload_len
     complex_in: float
     device_id: '"kyttar_0"'
+    max_events_per: '50000000'
     num_channels: '1'
     output_words: '"raw"'
     pipelined: 'no'
@@ -231,6 +232,7 @@ blocks:
     burst_len: cmp_len
     complex_in: float
     device_id: '"kyttar_0"'
+    max_events_per: '50000000'
     num_channels: '1'
     output_words: '"raw"'
     pipelined: 'no'

@@ -170,6 +170,7 @@ _DSP_MAKES = {
     "kyttar_upsampler": "kyttar.upsampler()",
     "kyttar_frequency_modulator": "kyttar.frequency_modulator()",
     "kyttar_quadrature_demod": "kyttar.quadrature_demod()",
+    "kyttar_clarke_transform": "kyttar.clarke_transform()",
 }
 
 

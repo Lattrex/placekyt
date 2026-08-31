@@ -1,0 +1,25 @@
+{
+  "kyttar_block": "CordicRotateBlock",
+  "passed": true,
+  "metric": "exact",
+  "n_compared": 42,
+  "max_abs_err": 0,
+  "tolerance": 0,
+  "nmse_db": null,
+  "correlation": 1.0,
+  "bit_errors": 0,
+  "delay_used": 0,
+  "coverage": {
+    "edge": true,
+    "random": 3,
+    "param_sweep": 2,
+    "mutation": true,
+    "on_chip_three_arm_chain": true,
+    "full_circle_octants": 8,
+    "async_interleavings": 6,
+    "saturated": true,
+    "orientations": 8,
+    "float_bound_lsb_max": 24.75
+  },
+  "provenance": "session"
+}

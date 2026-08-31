@@ -215,6 +215,13 @@ BLOCKS = [
     # folded a cell back alongside the rendezvous (a 2x2 square, say) is caught
     # as a geometry regression rather than as an unexplained routing failure.
     ("TMRVoterBlock", {}),
+    # CORDIC rotation by a streamed angle: 20-cell 5x5 serpentine whose N=3
+    # rendezvous must stay a LEAF with column 0 to itself (three arm faces +
+    # the internal forward, the INV-46 face budget). Both sign variants share
+    # the footprint; cover sign=-1 too so the prep1 program-length change can
+    # never grow a cell into the reserved column unnoticed.
+    ("CordicRotateBlock", {"sign": 1}),
+    ("CordicRotateBlock", {"sign": -1}),
     # rows x cols block interleaver: 3-cell vertical column (rgen -> wctl ->
     # store), no internal transit cell; rows/cols/deinterleave change register
     # contents only (the footprint is always 1x3) — must stay pairwise-distinct

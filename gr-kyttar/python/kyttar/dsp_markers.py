@@ -1614,3 +1614,37 @@ class tmr_voter(_PassThrough):
         self._advertise_grc_params(
             device_id, "TMRVoterBlock",
             {"fault_sentinel": int(fault_sentinel)})
+
+
+class cordic_rotate(_PassThrough):
+    """CORDIC vector rotation by a streamed angle — GR marker (maps to
+    CordicRotateBlock).
+
+    placeKYT-NATIVE: general Q15 vector rotation (x', y') = R(sign*theta)
+    (x, y) — rotation-mode CORDIC, unity gain (the CORDIC gain K is
+    compensated on the chip). ``theta`` is a 16-bit angle in half-turn Q15
+    units (word/32768 * pi radians; the full circle is 65536 counts, so the
+    chip's 16-bit wrap IS arithmetic mod 2*pi). One block class, two
+    motor-control instances: a Park transform is ``sign=-1`` (rotate by
+    -theta), an inverse Park is ``sign=+1`` — and the same block serves any
+    polar/mixer rotation by an arbitrary streamed angle.
+
+    The three inputs (x, y, theta) are INDEPENDENT streams; on the chip they
+    arrive on three DISTINCT faces of a LOCK-rotation rendezvous, so any
+    relative arrival order pairs into matched triples. The output is one
+    complex sample x' + j*y' per triple.
+
+    MARKER CONVENTION: a plain pass-through of input 0 (markers don't
+    compute — the REAL rotation runs on the chip and the kyttar sink emits
+    the recovered [x', y'] pair stream). The face_x/face_y/face_t placement
+    knobs of the placed block are router-reconciled internals (see
+    CordicRotateBlock.GRC_UNSUPPORTED_PARAMS) and are intentionally NOT
+    exposed to GRC."""
+
+    def __init__(self, device_id="kyttar_0", sign=1):
+        super().__init__("Kyttar CORDIC Rotate", n_in=3, n_out=1,
+                         in_dtype=np.float32, out_dtype=np.complex64)
+        self.device_id = device_id
+        self.sign = int(sign)
+        self._advertise_grc_params(
+            device_id, "CordicRotateBlock", {"sign": int(sign)})

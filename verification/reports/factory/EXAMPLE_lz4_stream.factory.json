@@ -1,0 +1,43 @@
+{
+  "block": "EXAMPLE_lz4_stream",
+  "grc_block": "",
+  "tier": 0,
+  "wave": 10,
+  "schema_version": 2,
+  "started_utc": "2026-08-31T16:20:00Z",
+  "ended_utc": "2026-08-31T21:30:00Z",
+  "walltime_sec": 0.0,
+  "tokens": {
+    "input": 0,
+    "output": 418112,
+    "cache_read": 0,
+    "total": 418112
+  },
+  "turns": 0,
+  "attempts": 1,
+  "human_interventions": 1,
+  "intervention_reasons": [
+    "Interrupted by the API session limit with all work already committed; resume produced the report only. One post-merge gate failure was live port-58950 contention with a sibling agent (measured: its pytest held the port); passed on retry with the port free."
+  ],
+  "prompts": [
+    {
+      "role": "initial",
+      "text": "LZ4Encoder->Decoder example, 1KB split payload, rate-over-time demo, user-path gate."
+    }
+  ],
+  "verify_passed": true,
+  "quarantined": false,
+  "quarantine_reason": "",
+  "commit_sha": "merged to main",
+  "notes": "=== examples/lz4_stream (2026-08-31, claude-fable-5) \u2014 DONE ===\n1 KB split payload round-trips BYTE-EXACT on chip; encoder model-exact. Measured compression: mixed 1024->540 (52.7%); repetitive 512->31 (6.1%, ~16:1); random 512->515 (+0.6%, inside bound). Pass-2 emission per time-eighth [25,0,0,0,0,0,117,398] \u2014 the variable-rate story, measured from on-chip word timestamps. 27 block cells, 77/120 with corridors.\nMEASURED: duplex panel template rejects two self-contained clients -> hand-placed pure translations of both proven folds; to-panel corridors MERGE same-direction, shared input corridors FORK at crossovers (chained crossovers work); SramControllerBlock.addr_base offsets ONLY the lookup path (a based RW client writes [0,len) and reads offset \u2014 aliasing gate added); refresh_panel_params serves backed[0] only -> decoder-first block order is load-bearing (encoder-first = silent zero-output QueueEmpty); the server per-sample event budget (max_events_per, default 40k) abandoned pass-2 mid-scan -> kyttar_source gained an optional max_events_per param (client-only fix, engine untouched). All folded into INV-66 + lessons.\n9/9 gates incl. the hosted user path passed twice; ratio gate proven by the dead-hash-insert mutant; ORCHESTRATOR: 9/9 reproduced, placekyt/ diff empty, README clean, port-contention failure re-verified passing with the port free.",
+  "model": "claude-fable-5",
+  "by_model": [
+    {
+      "model": "claude-fable-5",
+      "attempts": 1,
+      "turns": 0,
+      "walltime_sec": 0.0,
+      "output_tokens": 418112
+    }
+  ]
+}

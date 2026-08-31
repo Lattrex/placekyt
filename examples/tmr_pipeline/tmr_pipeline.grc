@@ -1,0 +1,860 @@
+options:
+  parameters:
+    author: Lattrex
+    catch_exceptions: 'True'
+    category: '[GRC Hier Blocks]'
+    cmake_opt: ''
+    comment: ''
+    copyright: ''
+    description: 'TRIPLE-MODULAR REDUNDANCY on one placeKYT array, next to an ordinary
+      single-path stream on the SAME die. A 256-byte ramp fans out to three identical
+      identity workers (Stream Splitter relays); a depth-neutral fault injector
+      (Kyttar Add Const) sits on EVERY arm with constants 0 / f / 0, so the f
+      variable (one byte LSB in signal units, 1/32768) corrupts path B by exactly
+      one word without changing any arm''s depth; set f to 0.0 for the healthy run.
+      The TMR Voter tells the arms apart by arrival face, votes, and emits a
+      2-word [value, status] packet per sample: with f=0 every packet is
+      [ramp byte, 0]; with the fault every packet is [ramp byte, 2] — the value is STILL
+      the correct ramp byte (TMR corrects the fault) and the status names path B.
+      A second, independent stream rides the same array through a single Gain block
+      (0.5x), demonstrating that redundancy is chosen PER PATH at place-and-route
+      time: TMR for the safety-critical path, single-path for the rest, same die.
+      Both kyttar sources set Output words = Raw (byte and status words are not
+      Q15). Change f, re-import into placeKYT to rebuild, and re-run to compare.'
+    gen_cmake: 'On'
+    gen_linking: dynamic
+    generate_options: qt_gui
+    hier_block_src_path: '.:'
+    id: tmr_pipeline
+    max_nouts: '0'
+    output_language: python
+    placement: (0,0)
+    qt_qss_theme: ''
+    realtime_scheduling: ''
+    run: 'True'
+    run_command: '{python} -u {filename}'
+    run_options: prompt
+    sizing_mode: fixed
+    thread_safe_setters: ''
+    title: TMR pipeline (triple-redundant path + single path, one array)
+    window_size: (1600,1000)
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 8
+    - 8
+    rotation: 0
+    state: enabled
+blocks:
+- name: f
+  id: variable
+  parameters:
+    comment: 'fault injected on path B, in signal units. 3.0517578125e-05 = 1/32768
+      = exactly ONE word LSB (all packets [byte, 2] - value still correct); 0.0 =
+      healthy (all packets [byte, 0]). A float literal, NOT an expression: the
+      placeKYT importer resolves a marker param through one variable lookup and
+      keeps the block default for anything it cannot literal-coerce.'
+    value: 3.0517578125e-05
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 200
+    - 12
+    rotation: 0
+    state: enabled
+- name: burst_len
+  id: variable
+  parameters:
+    comment: ramp length in bytes
+    value: '256'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 320
+    - 12
+    rotation: 0
+    state: enabled
+- name: samp_rate
+  id: variable
+  parameters:
+    comment: display rate for the time sinks
+    value: '8000'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 440
+    - 12
+    rotation: 0
+    state: enabled
+- name: ramp_tmr
+  id: blocks_vector_source_x
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: the protected stream's stimulus - a 256-byte ramp
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    repeat: 'False'
+    tags: '[]'
+    type: byte
+    vector: list(range(burst_len))
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 72
+    - 156
+    rotation: 0
+    state: enabled
+- name: b2f_tmr
+  id: blocks_uchar_to_float
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 176
+    - 172
+    rotation: 0
+    state: enabled
+- name: tmr_src
+  id: kyttar_source
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'the TMR stream. Output words = Raw: byte values and status codes
+      are integer WORDS, not Q15 samples — and the raw convention is symmetric,
+      so the input floats are the word values themselves (0..255), no q15/32768
+      scaling on either side'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    burst_len: burst_len
+    complex_in: float
+    device_id: '"kyttar_0"'
+    num_channels: '1'
+    output_words: '"raw"'
+    pipelined: 'no'
+    port_name: '"x16_in"'
+    repeat: 'no'
+    schedule: '"interleaved"'
+    server_host: '"127.0.0.1"'
+    server_port: '58950'
+    stream_id: '"tmr"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 296
+    - 148
+    rotation: 0
+    state: enabled
+- name: split
+  id: kyttar_splitter
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 3-way fan-out onto the three redundant arms
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    device_id: '"kyttar_0"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 480
+    - 172
+    rotation: 0
+    state: enabled
+- name: worker_a
+  id: kyttar_splitter
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: redundant worker A - an exact, memoryless identity relay
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    device_id: '"kyttar_0"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 640
+    - 92
+    rotation: 0
+    state: enabled
+- name: worker_b
+  id: kyttar_splitter
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: redundant worker B
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    device_id: '"kyttar_0"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 640
+    - 172
+    rotation: 0
+    state: enabled
+- name: worker_c
+  id: kyttar_splitter
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: redundant worker C
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    device_id: '"kyttar_0"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 640
+    - 252
+    rotation: 0
+    state: enabled
+- name: inj_a
+  id: kyttar_add_const
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'depth-neutral fault injector, path A: const 0 (healthy)'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    const: '0.0'
+    device_id: '"kyttar_0"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 800
+    - 92
+    rotation: 0
+    state: enabled
+- name: inj_b
+  id: kyttar_add_const
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'depth-neutral fault injector, path B: adds f (0.0 = healthy, 1/32768
+      = one-word fault)'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    const: f
+    device_id: '"kyttar_0"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 800
+    - 172
+    rotation: 0
+    state: enabled
+- name: inj_c
+  id: kyttar_add_const
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'depth-neutral fault injector, path C: const 0 (healthy)'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    const: '0.0'
+    device_id: '"kyttar_0"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 800
+    - 252
+    rotation: 0
+    state: enabled
+- name: voter
+  id: kyttar_tmr_voter
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: majority vote + [value, status] packet per sample
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    device_id: '"kyttar_0"'
+    fault_sentinel: '65535'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 960
+    - 164
+    rotation: 0
+    state: enabled
+- name: tmr_sink
+  id: kyttar_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: drains the [value, status] packet stream (raw words)
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    device_id: '"kyttar_0"'
+    hold_secs: '8.0'
+    in_type: float
+    num_channels: '1'
+    port_name: '"x16_out"'
+    server_port: '58950'
+    server_repeat: 'True'
+    stream_id: '"tmr"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1120
+    - 148
+    rotation: 0
+    state: enabled
+- name: deint
+  id: blocks_deinterleave
+  parameters:
+    affinity: ''
+    alias: ''
+    blocksize: '1'
+    comment: 'splits the 2-word packets: out0 = voted values, out1 = status codes'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_streams: '2'
+    type: float
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1280
+    - 164
+    rotation: 0
+    state: enabled
+- name: values_scope
+  id: qtgui_time_sink_x
+  parameters:
+    affinity: ''
+    alias: ''
+    alpha1: '1.0'
+    alpha10: '1.0'
+    alpha2: '1.0'
+    alpha3: '1.0'
+    alpha4: '1.0'
+    alpha5: '1.0'
+    alpha6: '1.0'
+    alpha7: '1.0'
+    alpha8: '1.0'
+    alpha9: '1.0'
+    autoscale: 'False'
+    axislabels: 'True'
+    color1: blue
+    color10: dark blue
+    color2: red
+    color3: green
+    color4: black
+    color5: cyan
+    color6: magenta
+    color7: yellow
+    color8: dark red
+    color9: dark green
+    comment: 'voted values: the ramp 0..255, faulted or not'
+    ctrlpanel: 'False'
+    entags: 'True'
+    grid: 'False'
+    gui_hint: ''
+    label1: Signal 1
+    label10: Signal 10
+    label2: Signal 2
+    label3: Signal 3
+    label4: Signal 4
+    label5: Signal 5
+    label6: Signal 6
+    label7: Signal 7
+    label8: Signal 8
+    label9: Signal 9
+    legend: 'True'
+    marker1: '-1'
+    marker10: '-1'
+    marker2: '-1'
+    marker3: '-1'
+    marker4: '-1'
+    marker5: '-1'
+    marker6: '-1'
+    marker7: '-1'
+    marker8: '-1'
+    marker9: '-1'
+    name: '"voted values (the ramp, fault corrected)"'
+    nconnections: '1'
+    size: burst_len
+    srate: samp_rate
+    stemplot: 'True'
+    style1: '1'
+    style10: '1'
+    style2: '1'
+    style3: '1'
+    style4: '1'
+    style5: '1'
+    style6: '1'
+    style7: '1'
+    style8: '1'
+    style9: '1'
+    tr_chan: '0'
+    tr_delay: '0'
+    tr_level: '0.0'
+    tr_mode: qtgui.TRIG_MODE_FREE
+    tr_slope: qtgui.TRIG_SLOPE_POS
+    tr_tag: '""'
+    type: float
+    update_time: '0.10'
+    width1: '1'
+    width10: '1'
+    width2: '1'
+    width3: '1'
+    width4: '1'
+    width5: '1'
+    width6: '1'
+    width7: '1'
+    width8: '1'
+    width9: '1'
+    ylabel: byte value
+    ymax: '256'
+    ymin: '0'
+    yunit: '""'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1440
+    - 100
+    rotation: 0
+    state: enabled
+- name: status_scope
+  id: qtgui_time_sink_x
+  parameters:
+    affinity: ''
+    alias: ''
+    alpha1: '1.0'
+    alpha10: '1.0'
+    alpha2: '1.0'
+    alpha3: '1.0'
+    alpha4: '1.0'
+    alpha5: '1.0'
+    alpha6: '1.0'
+    alpha7: '1.0'
+    alpha8: '1.0'
+    alpha9: '1.0'
+    autoscale: 'False'
+    axislabels: 'True'
+    color1: red
+    color10: dark blue
+    color2: red
+    color3: green
+    color4: black
+    color5: cyan
+    color6: magenta
+    color7: yellow
+    color8: dark red
+    color9: dark green
+    comment: 'status codes: 0 = all agree, 2 = path B faulted (and corrected)'
+    ctrlpanel: 'False'
+    entags: 'True'
+    grid: 'False'
+    gui_hint: ''
+    label1: Signal 1
+    label10: Signal 10
+    label2: Signal 2
+    label3: Signal 3
+    label4: Signal 4
+    label5: Signal 5
+    label6: Signal 6
+    label7: Signal 7
+    label8: Signal 8
+    label9: Signal 9
+    legend: 'True'
+    marker1: '-1'
+    marker10: '-1'
+    marker2: '-1'
+    marker3: '-1'
+    marker4: '-1'
+    marker5: '-1'
+    marker6: '-1'
+    marker7: '-1'
+    marker8: '-1'
+    marker9: '-1'
+    name: '"vote status (0 = agree, 2 = path B faulted)"'
+    nconnections: '1'
+    size: burst_len
+    srate: samp_rate
+    stemplot: 'True'
+    style1: '1'
+    style10: '1'
+    style2: '1'
+    style3: '1'
+    style4: '1'
+    style5: '1'
+    style6: '1'
+    style7: '1'
+    style8: '1'
+    style9: '1'
+    tr_chan: '0'
+    tr_delay: '0'
+    tr_level: '0.0'
+    tr_mode: qtgui.TRIG_MODE_FREE
+    tr_slope: qtgui.TRIG_SLOPE_POS
+    tr_tag: '""'
+    type: float
+    update_time: '0.10'
+    width1: '1'
+    width10: '1'
+    width2: '1'
+    width3: '1'
+    width4: '1'
+    width5: '1'
+    width6: '1'
+    width7: '1'
+    width8: '1'
+    width9: '1'
+    ylabel: status code
+    ymax: '8'
+    ymin: '-0.5'
+    yunit: '""'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1440
+    - 280
+    rotation: 0
+    state: enabled
+- name: ramp_solo
+  id: blocks_vector_source_x
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: the ordinary (non-redundant) stream's stimulus - the same ramp
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    repeat: 'False'
+    tags: '[]'
+    type: byte
+    vector: list(range(burst_len))
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 72
+    - 460
+    rotation: 0
+    state: enabled
+- name: b2f_solo
+  id: blocks_uchar_to_float
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 176
+    - 476
+    rotation: 0
+    state: enabled
+- name: solo_src
+  id: kyttar_source
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'the single-path stream: same array, same run, no redundancy'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    burst_len: burst_len
+    complex_in: float
+    device_id: '"kyttar_0"'
+    num_channels: '1'
+    output_words: '"raw"'
+    pipelined: 'no'
+    port_name: '"x16_in"'
+    repeat: 'no'
+    schedule: '"interleaved"'
+    server_host: '"127.0.0.1"'
+    server_port: '58950'
+    stream_id: '"solo"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 296
+    - 452
+    rotation: 0
+    state: enabled
+- name: solo_gain
+  id: kyttar_gain
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: an ordinary single-path DSP stage (0.5x)
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    block_name: '""'
+    device_id: '"kyttar_0"'
+    gain: '0.5'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 480
+    - 468
+    rotation: 0
+    state: enabled
+- name: solo_sink
+  id: kyttar_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    device_id: '"kyttar_0"'
+    hold_secs: '8.0'
+    in_type: float
+    num_channels: '1'
+    port_name: '"x16_out"'
+    server_port: '58950'
+    server_repeat: 'True'
+    stream_id: '"solo"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 640
+    - 452
+    rotation: 0
+    state: enabled
+- name: solo_scope
+  id: qtgui_time_sink_x
+  parameters:
+    affinity: ''
+    alias: ''
+    alpha1: '1.0'
+    alpha10: '1.0'
+    alpha2: '1.0'
+    alpha3: '1.0'
+    alpha4: '1.0'
+    alpha5: '1.0'
+    alpha6: '1.0'
+    alpha7: '1.0'
+    alpha8: '1.0'
+    alpha9: '1.0'
+    autoscale: 'False'
+    axislabels: 'True'
+    color1: green
+    color10: dark blue
+    color2: red
+    color3: green
+    color4: black
+    color5: cyan
+    color6: magenta
+    color7: yellow
+    color8: dark red
+    color9: dark green
+    comment: the single-path stream's output (0.5x the ramp)
+    ctrlpanel: 'False'
+    entags: 'True'
+    grid: 'False'
+    gui_hint: ''
+    label1: Signal 1
+    label10: Signal 10
+    label2: Signal 2
+    label3: Signal 3
+    label4: Signal 4
+    label5: Signal 5
+    label6: Signal 6
+    label7: Signal 7
+    label8: Signal 8
+    label9: Signal 9
+    legend: 'True'
+    marker1: '-1'
+    marker10: '-1'
+    marker2: '-1'
+    marker3: '-1'
+    marker4: '-1'
+    marker5: '-1'
+    marker6: '-1'
+    marker7: '-1'
+    marker8: '-1'
+    marker9: '-1'
+    name: '"single-path stream (0.5x ramp, same array)"'
+    nconnections: '1'
+    size: burst_len
+    srate: samp_rate
+    stemplot: 'True'
+    style1: '1'
+    style10: '1'
+    style2: '1'
+    style3: '1'
+    style4: '1'
+    style5: '1'
+    style6: '1'
+    style7: '1'
+    style8: '1'
+    style9: '1'
+    tr_chan: '0'
+    tr_delay: '0'
+    tr_level: '0.0'
+    tr_mode: qtgui.TRIG_MODE_FREE
+    tr_slope: qtgui.TRIG_SLOPE_POS
+    tr_tag: '""'
+    type: float
+    update_time: '0.10'
+    width1: '1'
+    width10: '1'
+    width2: '1'
+    width3: '1'
+    width4: '1'
+    width5: '1'
+    width6: '1'
+    width7: '1'
+    width8: '1'
+    width9: '1'
+    ylabel: word value
+    ymax: '160'
+    ymin: '0'
+    yunit: '""'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 800
+    - 436
+    rotation: 0
+    state: enabled
+connections:
+- - ramp_tmr
+  - '0'
+  - b2f_tmr
+  - '0'
+- - b2f_tmr
+  - '0'
+  - tmr_src
+  - '0'
+- - tmr_src
+  - '0'
+  - split
+  - '0'
+- - split
+  - '0'
+  - worker_a
+  - '0'
+- - split
+  - '0'
+  - worker_b
+  - '0'
+- - split
+  - '0'
+  - worker_c
+  - '0'
+- - worker_a
+  - '0'
+  - inj_a
+  - '0'
+- - worker_b
+  - '0'
+  - inj_b
+  - '0'
+- - worker_c
+  - '0'
+  - inj_c
+  - '0'
+- - inj_a
+  - '0'
+  - voter
+  - '0'
+- - inj_b
+  - '0'
+  - voter
+  - '1'
+- - inj_c
+  - '0'
+  - voter
+  - '2'
+- - voter
+  - '0'
+  - tmr_sink
+  - '0'
+- - tmr_sink
+  - '0'
+  - deint
+  - '0'
+- - deint
+  - '0'
+  - values_scope
+  - '0'
+- - deint
+  - '1'
+  - status_scope
+  - '0'
+- - ramp_solo
+  - '0'
+  - b2f_solo
+  - '0'
+- - b2f_solo
+  - '0'
+  - solo_src
+  - '0'
+- - solo_src
+  - '0'
+  - solo_gain
+  - '0'
+- - solo_gain
+  - '0'
+  - solo_sink
+  - '0'
+- - solo_sink
+  - '0'
+  - solo_scope
+  - '0'
+metadata:
+  file_format: 1
+  grc_version: 3.10.12.0

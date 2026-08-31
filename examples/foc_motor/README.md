@@ -27,10 +27,13 @@ Q15 packet in fixed order a, b, c.
 
 The **measurement half** — the Clarke transform and the forward Park rotation,
 which turn two sensed phase currents into (i_d, i_q) — is not in this build.
-Both blocks ship and are chip-proven, and the sub-chain `Clarke →
-CordicRotate(sign=-1)` routes on its own. What does not fit is the *whole loop
-on one 10×12 array*, and the reason is worth stating precisely because it is
-not the obvious one:
+Both blocks ship and are chip-proven, and the sub-chain **routes, builds and
+runs bit-exactly on its own**: measured at 75 cells (Clarke + `CordicRotate
+(sign=-1)` + a relay per arm), three distinct arm hops, `QueueEmpty` on every
+run, output `0x868, 0x870` matching the host golden exactly.
+
+What does not fit is the *whole loop on one 10×12 array*, and the reason is
+worth stating precisely because it is not the obvious one:
 
 **the limit is routing, not cells.** The full chain is 55 block cells of 120 —
 under half the array. But each face-locking rendezvous needs its arms delivered

@@ -8,8 +8,8 @@ decoder uses (``verification/tests/lz4_golden.py``), and the acceptance bar is t
 **independent** LZ4 decoder — the reference C implementation through its Python binding
 (``lz4.block``) — accepts what this block produces.
 
-This is the sibling of :class:`~.lz4_decoder_block.LZ4DecoderBlock` and the THIRD
-SRAM-backed DSP block. Where the decoder writes one panel region (the history window)
+This is the sibling of :class:`~.lz4_decoder_block.LZ4DecoderBlock` and one of the
+SRAM-backed DSP blocks. Where the decoder writes one panel region (the history window)
 and reads it at a computed address, this block uses **two disjoint panel regions at
 once** — the stored input and a hash table — which is why the region split is a
 correctness property and not a tuning knob (see ``window_words``).

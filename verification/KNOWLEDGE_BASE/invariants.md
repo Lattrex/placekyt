@@ -4896,3 +4896,40 @@ INV-53 audit.
 and the is_face machinery), INV-53 (why the closure relays exist), INV-36
 (the hop-31 splits), INV-20 (the serialize-LOCK this block's input uses to
 survive saturated drive).
+
+## INV-65 — A full-width CHIP_SCALE block's I/O contract is SAME-PORT-FACING-EDGE at any span, not span-2 colocation
+
+**Measured 2026-08-30** (recorded during the KB audit; the counterexamples are
+four shipped, gate-green blocks). An earlier layout convention said a block's
+input and output terminals must be COLOCATED (within ~2 cells) for the I/O
+corridors to route. That is FALSE as a general statement, and was corrected in
+`layout_rules.md` §1 with these counterexamples:
+
+* **ChaCha20KeystreamBlock** (51 cells, 10x7, full-width): terminals NINE cells
+  apart on the port row — `seq` at (0,1) taking `x16_in`, `out` ON the
+  `x16_out` port cell at (9,0). Routes, builds, runs bit-exact.
+* **GRUClassifierBlock** (full-width): terminals three apart.
+* **Poly1305MACBlock** (100 cells, 10x10, full-width): same-edge, wide span.
+* **FFT64Block** (84 cells, 9x12, NOT full-width): I/O on **opposite edges** —
+  legal because a free column remains for the corridor.
+
+The true contract, by layer and reach:
+
+1. **Full-width block (spans the whole port edge):** both terminals must sit on
+   the PORT-FACING EDGE, at ANY span along it. The corridor cannot go around a
+   full-width block, so it must land directly on the edge — that is the real
+   constraint the old "colocate" rule was a shadow of.
+2. **Non-full-width block:** terminals may sit on different edges, opposite
+   edges included, so long as a free row/column remains for each corridor.
+3. **The output cell of a chip-scale fold wants to BE the port cell** where the
+   geometry allows it (measured on ChaCha20: a port word bursting THROUGH a
+   transited cell waits on that cell's queues — the two-cell wait of INV-56 —
+   and moving `out` onto (9,0) was the fix; see INV-56 §port-cell rule).
+
+LAYER: router/corridor geometry — toolchain behavior, but the shipped router's
+actual measured behavior, not a guess. REACH: the four blocks above plus every
+smaller block that colocates anyway; a fifth shape (full-width with terminals on
+a NON-port edge) is untested and should be measured before use.
+
+**Related:** INV-56 (the port-cell rule's deadlock mechanism), INV-40 (fold
+shape vs free space), the corrected `layout_rules.md` §1 and checklist.

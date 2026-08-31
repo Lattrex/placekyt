@@ -679,8 +679,10 @@ NEEDS_BESPOKE = {
     # on-chip cell is a run player driven by the panel push-read (one input char -> many
     # output samples: rate-changing, so bespoke). Full-chain bit-exact through the real panel
     # round-trip is gated in test_cw_keyer_sram.py.
+    # (A stale duplicate key carrying the pre-SRAM QUARANTINE string sat below this
+    # entry from 2026-08-29 to 2026-08-30 and, being later, silently WON the dict
+    # merge — flagged twice in lessons_log before removal.)
     "CWKeyerBlock": "SRAM-backed (INV-31): run-record player driven by the panel push-read (rate-changing, char->envelope); own gate test_cw_keyer_sram.py (full-chain bit-exact through real routing)",
-    "CWKeyerBlock": "QUARANTINE (INV-29): Morse table + timing FSM + click-edge overflow the cell; golden gated in test_cw_keyer.py; build RAISES",
     # 16-QAM modem blocks. The mapper is bit-in / COMPLEX-egress (I,Q pair per symbol)
     # and the slicer is COMPLEX-in (I,Q) / 4-bit-symbol-out — neither fits the single-
     # rail RATE_1IN / REAL_1IN harnesses. The Costas is a data-FEEDBACK loop (like

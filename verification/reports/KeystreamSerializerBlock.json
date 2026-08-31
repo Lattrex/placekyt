@@ -1,0 +1,29 @@
+{
+  "kyttar_block": "KeystreamSerializerBlock",
+  "passed": true,
+  "metric": "exact",
+  "n_compared": 64,
+  "max_abs_err": 0,
+  "tolerance": 0,
+  "nmse_db": null,
+  "correlation": null,
+  "bit_errors": 0,
+  "delay_used": 0,
+  "coverage": {
+    "golden": "RFC 8439 \u00a72.3 serialize() \u2014 chacha20_golden.py, pinned by the \u00a72.3.2 vector; no GNU Radio counterpart",
+    "anchors": "the sixteen \u00a72.3.2 state words as hi/lo halves -> the RFC's 64 keystream bytes, bit-exact IN ORDER on chip",
+    "edge": true,
+    "random": 3,
+    "rate": "1:2 (2 half-words in -> 4 byte-words out; burst on the lo trigger; a trailing hi half is held, emitting nothing)",
+    "saturated": "queue_words_physical back-to-back == per-sample (count and values), RFC burst + 2 random seeds",
+    "mid_chain": "Delay(2) -> serializer -> Delay(1) hand-placed on one chip, all nets routed, composed reference exact \u2014 plain routed egress, mid-chain friendly (INV-66)",
+    "orientation": "all 8 D4 on the full burst + the shared suite",
+    "batch": "odd batch -> batch_reset_writes -> RFC batch exact (reset_per_batch on hi+par)",
+    "mutation_onchip": "3 real mutants placed+routed+built+run: parity swapped / byte order reversed (== big-endian, asserted) / reset_per_batch stripped (first batch PASSES, second fails)",
+    "structural": "INV-33 overlap gate with INV-4 negative",
+    "cells": 1,
+    "stop_reason": "read for EVERY chip case; QueueEmpty required",
+    "note": "serializes ChaCha20KeystreamBlock's hi/lo half-word stream into RFC 8439 little-endian keystream bytes, one byte per 16-bit word (the data_link convention)"
+  },
+  "provenance": "session"
+}

@@ -251,6 +251,13 @@ RATE_1IN = {
     # counted-loop emit with no cross-sample feedback — memoryless per byte, so the
     # saturated flat stream equals the per-sample flat stream.
     "UnpackKBitsBlock": ("sample", "out", {"k": 8}),
+    # RFC 8439 keystream serializer (placeKYT-native, no GR counterpart): hi/lo
+    # half-word pairs -> the 32-bit word's 4 bytes little-endian, one byte per
+    # word (1:2 rate-EXPANDING; the hi trigger emits 0 words, the lo trigger 4).
+    # Single cell, feed-forward, NO feedback corridor and NO reconvergent fan-in
+    # (INV-19/20 N/A); the only cross-sample state is the hi/lo parity + the
+    # held hi half, so the saturated flat stream must equal the per-sample one.
+    "KeystreamSerializerBlock": ("word", "out", {}),
     # Hamming(7,4) FEC encoder: 4 bits -> one 7-bit codeword burst (4:7 rate-
     # EXPANDING). A straight 2-cell feed-forward chain (pack accumulator ->
     # expand burst) with NO feedback corridor and NO reconvergent fan-in

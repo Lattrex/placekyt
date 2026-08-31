@@ -9,6 +9,52 @@ block-specific gotcha. Promote anything that generalizes across block classes in
 and superseded material merged into the surviving entries; no durable lesson was
 dropped) — append new entries above the oldest ones as before.
 
+## KeystreamSerializerBlock — hi/lo half-words -> RFC 8439 keystream bytes, 1 cell, exact first build; the count-preserving mutant discipline; gain 1.0 is NOT identity on raw words  2026-08-31
+
+Closes the serializer half of the secure_link entry's WALL 3 (below): a small
+routable block now converts `ChaCha20KeystreamBlock`'s wire format (hi then lo
+16-bit halves per 32-bit state word) into RFC 8439 §2.3 serialization order —
+each 32-bit word as its four bytes LITTLE-ENDIAN, one keystream byte per
+16-bit word (the data-link convention). Rate 1:2, ONE cell, and — unlike every
+RAW-egress crypto block (INV-66, tail-only) — plain routed ingress AND egress,
+proven mid-chain on a real built chip (`Delay(2) -> serializer -> Delay(1)`,
+composed reference exact). The RFC §2.3.2 keystream (all 64 bytes, in order)
+is bit-exact on chip, per-sample AND saturated; suite
+`test_keystream_serializer.py`, 31 tests, tolerance 0.
+
+Datapath lessons (all small, all measured):
+
+* **The whole conversion is a parity FSM plus shifts/masks.** Input @R0, save
+  it FIRST (`MOVE` before any ALU op — every ALU op writes R0, INV-33);
+  parity 0 holds the hi half and HALTs (0 words out), parity 1 emits
+  `lo&FF, lo>>8, hi&FF, hi>>8` as four write+jump pairs (the UnpackKBits
+  burst idiom — the output port's single-outstanding handshake paces it).
+  `CMP` leaves R0 unchanged, so the dispatch runs before the save costs
+  nothing. 20 instructions, data @1..3, state pinned @4..6.
+* **A branch-sense-inverted "parity swap" mutant is NOT a parity swap.**
+  `BR.NZ -> BR.Z` makes EVERY trigger take the emit path (the save path
+  becomes unreachable): measured 128 output words instead of 64. It still
+  fails the gate, but as a COUNT failure — it cannot certify that the VALUE
+  gate discriminates. The faithful, count-preserving parity-swap mutant is
+  `par` booting at 1 (`initial_value=1`): 64 words, phase-skewed, and its
+  failure shape is asserted equal to the modeled skew (group k = hi_k's
+  bytes then the PREVIOUS lo's bytes). Design mutants to fail on VALUES with
+  the count unchanged wherever the claim being tested is a value claim.
+* **`reset_per_batch` is gate-able only across TWO batches, the first of
+  which must end mis-aligned.** An odd-length batch (a dangling hi half)
+  leaves the parity armed; the real block's `batch_reset_writes` (applied
+  exactly as the hosted bridge does) restore hi-phase and the second batch
+  is RFC-exact. The stripped-flag mutant PASSES the first batch — measured,
+  that is the point — and only the second-batch gate catches it. A
+  single-batch suite cannot see this defect class at all.
+* **Gain 1.0 is NOT identity on raw words — never use GainBlock as a
+  bit-exact chain neighbour.** Q15 gain 1.0 quantizes to 32767, and
+  `MULQ`'s `(v*32767)>>15` decrements almost every raw value: measured on
+  chip, 0x0001->0x0000, 0x00FF->0x00FE, 0x0010->0x000F, 0x1234->0x1233.
+  For raw-word composition gates use a MOVE-only block (`DelayBlock` —
+  bit-exact by construction; delay=2 keeps hi/lo pairing upstream, delay=1
+  shifts the byte stream downstream, both composable in the reference).
+
 ## examples/secure_link — NOT BUILT: the 4-die 2P2S AEAD+LZ4 topology is infeasible with today's shipped blocks; walls measured, spine proven, options recorded  2026-08-31
 
 The plan: ChaCha20-Poly1305 + LZ4 as ONE project across the 2P2S board — TX-A

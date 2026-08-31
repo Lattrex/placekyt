@@ -330,6 +330,15 @@ _CASES = [
     # the FULL 8-word-burst D4 check runs in
     # test_chacha20_qr.py::test_orientation_invariant_full_burst.
     ("ChaCha20QRBlock", {}, "real", ("x", "out")),
+    # RFC 8439 keystream serializer (placeKYT-native, no GR counterpart):
+    # single real rail in (one raw 16-bit half-word per trigger) -> a 4-word
+    # byte burst on every second trigger (little-endian bytes of the 32-bit
+    # word). ONE cell, no in-template FACE constants, no feedback corridor and
+    # no reconvergent fan-in — its per-trigger output must be IDENTICAL in
+    # every D4 orientation. The harness keeps the LAST word per trigger here;
+    # the FULL 4-word-burst D4 check runs in
+    # test_keystream_serializer.py::test_orientation_invariant_full_burst.
+    ("KeystreamSerializerBlock", {}, "real", ("word", "out")),
 ]
 
 # No orientation residuals remain: every block in _CASES is invariant in all 8 D4

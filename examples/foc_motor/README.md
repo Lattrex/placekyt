@@ -55,11 +55,18 @@ through the simulator and reading each output word's capture time with
 | latency to the first duty word | **17,576.9 ns** |
 | latency to the complete 3-word packet | **17,861.5 ns** |
 | cadence of the three duty words | 142.29 ns apart |
-| equivalent control-loop rate | **56.0 kHz** |
+| **sustained inter-iteration interval** | **17,925.1 ns** |
+| **sustained control-loop rate** | **55.8 kHz** |
 | cells | 87 / 120 (45 active in one iteration) |
 | instructions per iteration | 634 |
 
-56 kHz sits **above the 10–40 kHz band** typical of industrial FOC current
+The chain **streams**: consecutive control iterations, each with different
+inputs, every duty word bit-exact against the host golden and every simulator
+run settling `QueueEmpty`. The sustained figure is the mean interval between
+completed duty packets over six consecutive iterations; the spread across them
+is under 65 ns.
+
+55.8 kHz sits **above the 10–40 kHz band** typical of industrial FOC current
 loops, with the whole rotation, both PI controllers and the space-vector
 modulator on the fabric.
 
@@ -67,37 +74,33 @@ modulator on the fabric.
 placement and routing. They are not silicon-certified, and a real device will
 differ.
 
-### There is no steady-state throughput number here, and that is the finding
+### Fill versus steady state
 
-The brief asked for the sustained rate under full saturation, and the honest
-answer is that **this chain has no steady state**. Measured, three ways:
+The sustained interval (17,925 ns) is within 0.4% of the first packet's latency
+(17,861 ns). The two being equal is the finding: **this chain re-arms, it does
+not pipeline.** Each rendezvous bars its arms until the current group has
+cleared the block, so only one control iteration is ever in flight, and the
+steady-state period is therefore the whole-chain traversal time rather than the
+slowest single stage. There is no pipeline-fill discount to collect.
 
-* a **second** control iteration wedges — zero further words, every run
-  reporting `Deadlock` *after* the group closes (a real wedge by INV-67, not
-  the healthy mid-group hold);
-* an **arm-saturated** drive — one iteration's three arm words enqueued
-  back-to-back through `queue_words_physical`, the INV-19 saturated path —
-  wedges and emits nothing at all;
+For a host-paced controller that is the right shape: an FOC loop is one sample
+set per control period by construction, which is exactly how the example drives
+it. It also means the loop rate is bounded by chain *depth*, so shortening the
+chain — not widening it — is what buys rate here.
+
+Two drive patterns still do not stream, both pinned as guard tests:
+
+* an **arm-saturated** drive — the arm words enqueued back-to-back through
+  `queue_words_physical`, the INV-19 saturated path — wedges and emits nothing;
 * driving the arms in **reverse order** wedges.
 
-So the chain sustains exactly **one control iteration**, driven arm-by-arm in
-lock order, and that iteration is bit-exact. All three boundaries are pinned as
-guard tests: if any of them ever moves, a test fails and says so.
+Both are the same cause, and it is topological rather than arithmetic: the three
+arm corridors share cells, so a word held at a barred face blocks the segment a
+later arm must transit (INV-70). Saturated therefore does **not** equal
+per-sample at chain level, and the sustained figure above is the per-sample one.
 
-The cause is structural and already documented per block. Both
-`CordicRotateBlock` (N=3) and `SVPWMBlock` (N=2) carry a measured whole-burst
-depth of **one**, because the serialize-LOCK release has to ride the single
-cell abutting the rendezvous — there is no spare face for a release corridor of
-its own. Chained, those walls compose: the deeper chain is still holding the
-previous sample when the next group is admitted.
-
-For a host-paced controller this is not a defect — an FOC loop is one sample
-set per control period by construction, which is exactly how the example drives
-it. It does mean the fill-versus-steady-state gap this measurement was meant to
-expose cannot be measured on *this* chain: there is only fill.
-
-What *can* be measured is the same trade one stage down. `PIControllerBlock`
-alone, driven fully saturated:
+The per-stage trade is visible one level down. `PIControllerBlock` alone, driven
+fully saturated:
 
 | `pipeline_lock` | steady-state | per sample |
 |---|---|---|
@@ -107,7 +110,8 @@ alone, driven fully saturated:
 The lock costs about **6% of throughput**. The example keeps it on: the PI
 integrator is a feedback loop, and correctness under saturation is not
 tradeable for rate. Its single-shot latency is 1,338.5 ns against a 949.2 ns
-steady-state period — the pipeline fill the deeper chain never gets to show.
+steady-state period — a single stage *does* pipeline, which is precisely the
+overlap the whole chain's per-block arm bars give up.
 
 ## Where 16 bits is, and is not, enough
 
@@ -146,9 +150,9 @@ the extra precision has to go.
 QT_QPA_PLATFORM=offscreen .venv/bin/python examples/foc_motor/foc_motor_demo.py
 ```
 
-You will see the three duty words, the golden they are compared against, the
-per-iteration latency, the duty-word cadence, and the equivalent loop rate in
-kHz.
+You will see each iteration's three duty words against the golden they are
+compared to, the first-packet latency, the duty-word cadence, and the sustained
+inter-iteration interval and loop rate in kHz.
 
 To regenerate the `.kyt` (it is only written if the chip run is exact):
 

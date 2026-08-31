@@ -9,6 +9,109 @@ block-specific gotcha. Promote anything that generalizes across block classes in
 and superseded material merged into the surviving entries; no durable lesson was
 dropped) — append new entries above the oldest ones as before.
 
+## examples/foc_motor — the chain STREAMS: the one-iteration wall was INV-69 in CordicRotate, 55.8 kHz sustained  2026-08-31
+
+**THE WALL MOVED.** The FOC chain used to sustain exactly ONE control iteration;
+a second wedged with a post-group `Deadlock`. It now streams: six consecutive
+iterations with DIFFERENT inputs, every duty word bit-exact, every run
+`QueueEmpty`, at a sustained **55.8 kHz** (mean inter-packet interval 17,925.1
+ns, spread 62.2 ns over six iterations).
+
+**ROOT CAUSE — INV-69, in a block that never got the fix.** `CordicRotateBlock`'s
+serialize-LOCK release was the TMRVoter-style value-carrying
+`WRITE.CFG @1, 3`, whose LOCK_FACE value came from an AUTHORED `unlock_face`
+DataWord living in the abutting `pre` cell. The build's face-reconciliation pass
+(`_apply_rendezvous_input_faces`) patches face words **in the rendezvous cell
+only**, so that copy kept the authored WEST while the router actually landed arm
+x on NORTH. Iteration 0 completed correctly, the release re-pointed LOCK_FACE at
+WEST, and arm x's next word — arriving on NORTH — was barred forever.
+`SVPWMBlock` had already been fixed for exactly this (INV-69 even names
+CordicRotate as the shape it would bite); the two blocks were authored in
+parallel and the fix never crossed over.
+
+**THE FIX** (the shipped SVPWM construction, ported verbatim): give `rdv` a
+fourth entry `relock:` that does `MOVE [LOCK_FACE], R{data:face_x}` — reading
+the ONE copy the build reconciles — and make `pre`'s release a backward JUMP
+into it (`MOVE [FACE], unlock_face; {jump:unlock}; MOVE [FACE], face_tap`),
+declared in `internal_jumps` (NOT `internal_connections`: a data edge at a real
+input port makes portmap classify the arm as a feedback RETURN and drop it) and
+authored LAST so it is the cell's highest-addressed JUMP (INV-53). The
+`UNLOCK_CFG_ADDR = 3` declaration is deleted — there is no CONFIG write left to
+patch. Budgets after: `rdv` 18 instrs (base 13, state at R5-7), `pre` 10.
+
+**HOW THE DIAGNOSIS WENT WRONG, and the reading that fixed it.** The handed-over
+diagnosis was "the arrival registers `vx`/`vy`/`vt` are never cleared between
+iterations, so the second sample arrives at an occupied cell and holds — fix
+with `reset_per_batch`". Both halves were wrong, and dumping the cell is what
+showed it:
+
+* the WEDGED dump reads `[5]=0x00fa` (stale) but `[6]=0x0554`, `[7]=0x4000` —
+  iteration 1's NEW y and theta. So the arrival slots were being overwritten
+  normally; only arm x never arrived. Stale-looking state was the SYMPTOM of the
+  barred arm, not the cause. **A partially-stale dump is evidence the cell is
+  still accepting SOME arms — read every slot, not the first.**
+* `reset_per_batch` could not have worked anyway: it is applied by
+  `SimServer._apply_batch_reset` once per `process_batch` RPC (a packet
+  boundary), and this harness drives `inject_data_physical`/`chip.run` directly,
+  so the reset spec never executes. **Check where a reset is DELIVERED before
+  reaching for it.** It would also have been wrong in principle — an arrival
+  slot is written before it is read on every pass, so it needs no clearing.
+
+The decisive read was `chip.read_config(rdv)` across the stages: boot `0x7100`,
+after iteration 0 `0x6100`, unchanged when wedged. LOCK (bit 14) stayed set and
+LOCK_FACE (bits 12-13) went 3 (north) -> 2 (west) and stuck. That is a
+mis-aimed lock, not an occupied cell, and it points straight at the release.
+
+**SIBLINGS AUDITED, three of three correct — nothing else to fix:**
+
+* `ClarkeTransformBlock` (N=2): re-locks `LOCK_FACE = face_ia` INLINE in its own
+  single-cell rendezvous, so it reads its own reconciled word. INV-69's
+  degenerate-but-safe case.
+* `SVPWMBlock` (N=2): already carries the `relock`-entry construction.
+* `PIControllerBlock`: its release is a lock-CLEAR (`SUB R0,R0; WRITE.CFG @1,4`)
+  carrying no face value, so INV-69 does not apply. Its `iterm`/`acch`/`accl`
+  are correctly `reset_per_batch=True` — they MUST persist across samples within
+  a burst (INV-68) and cold-start per packet, which is exactly what that flag
+  does. Left alone.
+
+A whole-block StateVar audit confirms the pattern: every scratch/arrival slot in
+all four blocks is unflagged, and only the PI integrator carries the flag.
+
+**FILL vs STEADY STATE.** The sustained interval (17,925 ns) is within 0.4% of
+the first packet's latency (17,861 ns). The chain **re-arms, it does not
+pipeline**: each rendezvous bars its arms until the current group clears, so one
+iteration is in flight and the period is whole-chain depth, not the slowest
+stage. Loop rate here is bought by SHORTENING the chain, not widening it. (One
+stage alone does pipeline — `PIControllerBlock` saturated: 949.2 ns period
+against 1,338.5 ns single-shot latency.)
+
+**WHAT DID NOT MOVE, re-measured after the fix.** Saturated drive
+(`queue_words_physical`) still wedges — `EventLimit`, zero duty words — and the
+reversed arm order still wedges, with all three arms delivered and nothing
+emitted (so a real wedge, not INV-67's healthy hold). **Saturated does NOT equal
+per-sample at chain level.** Both are INV-70: the three arm corridors share
+cells, so an arbiter-held word's in-flight words block a segment a later arm
+must transit. That is routing topology, out of reach of a block change; the
+honest sustained figure is the per-sample one. Distinguishing test: the INV-69
+defect always COMPLETED iteration 0 and failed from the second; these wedge on
+the FIRST iteration, before any release runs.
+
+**GATES.** `test_foc_motor_example.py` 16 -> 21: the streaming exactness gate
+(6 iterations, whole-sequence golden), the all-`QueueEmpty` gate, a
+stimulus-distinctness gate (repeated packets would let a latching chain pass),
+the sustained-rate gate (fill/interval/steadiness bands), and an on-chip
+mutation gate. `test_cordic_rotate.py` 51 -> 52 (the old
+`unlock_cfg_is_lock_face` structural gate replaced by two that pin the new
+construction). INV-4 proof: pointing `relock` at `face_fwd` — geometry-
+preserving, so it still places/routes/builds — collapses the chain back to
+exactly ONE packet and fails all three streaming gates.
+
+**GOLDEN-CALL GOTCHA (INV-68, cost the first false "not exact" reading).** The
+PI integrators EVOLVE across samples, so `golden()` must be called ONCE over the
+whole input sequence. Calling it per iteration cold-starts the accumulator each
+time and disagrees with the chip from iteration 1 — which looks exactly like a
+chip defect and is not.
+
 ## examples/foc_motor — the FOC current loop on chip: 56 kHz measured, and the wall is ROUTING, not cells  2026-08-31
 
 **SHIPPED:** `examples/foc_motor` — `PI(d)`, `PI(q)` -> `CordicRotate(sign=+1, theta)`

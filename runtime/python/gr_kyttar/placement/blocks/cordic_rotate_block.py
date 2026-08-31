@@ -25,10 +25,22 @@ an N=3 LOCK-rotation rendezvous (the TMRVoterBlock mechanism, INV-46): the
 arbiter LOCK accepts from exactly ONE face at a time and rotates
 x -> y -> theta -> (barred), so no interleaving can ever mis-pair a triple.
 The face budget (N + 2 = 5 > 4) forces the rendezvous to be a LEAF of the fold
-and the serialize-LOCK release to ride the ONE abutting cell (``pre``), which
-re-points LOCK_FACE at arm x with a backward ``WRITE.CFG @N, 3``
-(UNLOCK_CFG_ADDR = 3 — this block RE-POINTS the rotating face lock, it never
-clears it).
+and the serialize-LOCK release to ride the ONE abutting cell (``pre``).
+
+THE RELEASE IS A BACKWARD JUMP, NOT A VALUE-CARRYING ``WRITE.CFG`` (INV-69).
+``pre`` jumps the rendezvous's own ``relock`` entry, which re-points LOCK_FACE
+from the rendezvous's ``face_x`` DataWord. That matters because the build's
+face-reconciliation pass (``_apply_rendezvous_input_faces``) patches face words
+**in the rendezvous cell only** — an authored ``unlock_face`` copy in ``pre``
+is never reconciled, so a release carrying its own constant aims the lock at
+whatever face the constant names rather than the face the router actually
+landed arm x on. Measured on the ``examples/foc_motor`` chain, where the router
+lands arm x NORTH while the authored constant says WEST: iteration 0 completes,
+the release re-points LOCK_FACE at WEST, arm x's next word arrives on NORTH and
+is barred forever — the chain wedges with a post-group ``Deadlock`` (INV-67).
+The release is race-free by construction: the relock jump arrives on the
+rendezvous's INTERNAL forward face, which the arbiter bars until ``got_t``'s
+final ``LOCK_FACE = face_fwd`` has run, so it cannot outrace the arm bar.
 
 NUMERICS (each stage mirrored bit-exactly by :func:`cordic_rotate_word`):
 
@@ -183,10 +195,11 @@ class CordicRotateBlock(KyttarBlock):
     # a silent no-op and the chain emits ZERO output — measured on TMRVoter).
     RENDEZVOUS_FACE_PORTS = (("x", "face_x"), ("y", "face_y"),
                              ("theta", "face_t"))
-    # The backward ``unlock`` edge RE-POINTS the rotating face lock
-    # (CONFIG 3 = LOCK_FACE); the build's default (4 = LOCK) would rewrite it
-    # into a lock-CLEAR that un-gates every face (desync after two samples).
-    UNLOCK_CFG_ADDR = 3
+    # NOTE: no ``UNLOCK_CFG_ADDR``. The serialize-LOCK release is a backward
+    # JUMP into the rendezvous's own ``relock`` entry (INV-69), not a
+    # value-carrying ``WRITE.CFG``, so there is no CONFIG address for the
+    # build to patch — the rendezvous re-points its own LOCK_FACE from the
+    # ONE ``face_x`` copy the build's reconciliation pass actually patches.
 
     # face_* are placement/routing internals the placer+router choose and the
     # build reconciles — never user-facing DSP params.
@@ -249,8 +262,16 @@ class CordicRotateBlock(KyttarBlock):
                     Port("y", register=0, entry="got_y"),
                     Port("theta", register=0, entry="got_t")],
             outputs=[Port("fx"), Port("fy"), Port("fz"), Port("ftrig")],
+            # got_x / got_y / got_t (NO arm entry — boots pre-locked) plus
+            # `relock`, the serialize-LOCK release target (INV-69): it
+            # re-points the lock from THIS cell's own `face_x` word, the copy
+            # the build's face-reconciliation pass patches to the ROUTED arm
+            # geometry. An authored copy in the release cell is NEVER
+            # reconciled, so a release that carries its own constant aims the
+            # lock at whatever face that constant names — see the class
+            # docstring.
             entries=[EntryPoint("got_x"), EntryPoint("got_y"),
-                     EntryPoint("got_t")],
+                     EntryPoint("got_t"), EntryPoint("relock")],
             data=[DataWord("face_x", fx, address=1, is_face=True),
                   DataWord("face_y", fy, address=2, is_face=True),
                   DataWord("face_t", ft, address=3, is_face=True),
@@ -277,7 +298,17 @@ class CordicRotateBlock(KyttarBlock):
                 "    MOVE R0, R{state:vt}\n"
                 "    {write:fz}\n"
                 "    {jump:ftrig}\n"
+                # Bar ALL THREE arms (lock to the internal face nothing
+                # drives) until `pre` has dispatched and jumps `relock`. This
+                # also ADMITS the release: the relock jump arrives on the
+                # internal forward face, so the arbiter holds it until this
+                # very instruction has run — the release cannot outrace the
+                # arm bar (INV-69's race-free-by-construction property).
                 "    MOVE [LOCK_FACE], R{data:face_fwd}\n"
+                "    HALT\n"
+                "relock:\n"
+                # Re-admit the next triple, from the RECONCILED face word.
+                "    MOVE [LOCK_FACE], R{data:face_x}\n"
                 "    HALT\n"
             ),
             initial_lock_face=fx,
@@ -310,12 +341,17 @@ class CordicRotateBlock(KyttarBlock):
                 "    MOVE R0, R{in:z}\n"
                 "    {write:z}\n"
                 "    {jump:trig}\n"
-                # THE RELEASE: flip back into the rendezvous, re-point its
-                # LOCK_FACE at arm x (admits the next triple), restore the
-                # forward face. No trailing HALT — R31 is always HALT.
+                # THE RELEASE (INV-69): flip back into the rendezvous, JUMP
+                # its `relock` entry — which re-points its own LOCK_FACE from
+                # its RECONCILED `face_x` word — then restore the forward
+                # face. NOT a value-carrying WRITE.CFG: the LOCK_FACE value
+                # must be arm x's ROUTED face, and only the rendezvous's own
+                # reconciled word knows it. The jump is authored LAST so it is
+                # the cell's HIGHEST-addressed JUMP (INV-53: that is the one a
+                # declared backward edge patch targets). No trailing HALT —
+                # R31 is always HALT.
                 "    MOVE [FACE], R{data:unlock_face}\n"
-                "    MOVE R0, R{data:unlock_face}\n"
-                "    WRITE.CFG @1, 3\n"
+                "    {jump:unlock}\n"
                 "    MOVE [FACE], R{data:face_tap}\n"
             ),
         )
@@ -581,15 +617,6 @@ class CordicRotateBlock(KyttarBlock):
             (f"it{NITER-1}", "x", "postx", "x"),
             (f"it{NITER-1}", "y", "postx", "y"),
             ("postx", "x", "posty", "x"), ("postx", "y", "posty", "y"),
-            # BACKWARD, CONFIG-ONLY: the serialize-LOCK release corridor.
-            # Carries no data — only the WRITE.CFG re-pointing the rendezvous
-            # LOCK_FACE at arm x. Declared so _apply_internal_feedback patches
-            # the authored @1 to the resolved corridor (a hardcoded hop
-            # deadlocks a re-placed layout — the INV-19 trap). The destination
-            # is `lock_cfg`, NOT a real input port: naming a real port makes
-            # portmap classify the edge as a feedback RETURN and DROP that arm
-            # from the block's external inputs (measured on TMRVoter).
-            ("pre", "unlock", "rdv", "lock_cfg"),
         ]
         return conns
 
@@ -610,6 +637,15 @@ class CordicRotateBlock(KyttarBlock):
             (f"it{NITER-1}", "trig", "postx", "default"),
             ("postx", "trig", "posty", "default"),
             ("posty", "trig", "__terminate__", "default"),
+            # The LAST edge is the BACKWARD serialize-LOCK release,
+            # pre -> rdv.relock (INV-69, see the `pre` cell's note). It
+            # carries NO data, so it lives here and not in
+            # internal_connections — a data edge aimed at a real input port
+            # would make portmap classify it as a feedback RETURN and DROP
+            # that arm from the block's external inputs (the TMRVoter trap).
+            # Authored LAST so the patch targets the highest-addressed JUMP
+            # (INV-53).
+            ("pre", "unlock", "rdv", "relock"),
         ]
         return jumps
 

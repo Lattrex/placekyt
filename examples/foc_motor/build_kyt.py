@@ -32,20 +32,30 @@ def main():
     used = sum(c.cell_count for c in bres.chips.values())
     print(f"  {used} cells of 120; arm landings {lands}")
 
-    print("reverifying on the real simulator...")
-    e_d, e_q, theta = 1000, 2000, 0x1234
-    want = golden([e_d], [e_q], [theta])
+    # Reverify STREAMING, not a single shot: consecutive iterations with
+    # DIFFERENT inputs. A one-iteration check cannot see a rendezvous whose
+    # release re-admits the wrong arm, which is correct for iteration 0 and
+    # wedges from iteration 1. The golden is one call over the whole sequence
+    # because the PI integrators evolve across samples.
+    print("reverifying on the real simulator (streaming)...")
+    e_d = [1000, 0x0333, -1500 & 0xFFFF, 300, 0x0700, -200 & 0xFFFF]
+    e_q = [2000, 0x1500, 900, -2200 & 0xFFFF, 0x0123, 1750]
+    theta = [0x1234, 0x4000, 0x8000, 0xC000, 0x2468, 0x9ABC]
+    want = golden(e_d, e_q, theta)
     chain = FocChain(bres, chip_for(bres, lands), lands)
-    chain.iteration(e_d, e_q, theta)
+    for i in range(len(e_d)):
+        chain.iteration(e_d[i], e_q[i], theta[i])
     got = chain.words
-    print(f"  chip   : {[hex(w) for w in got]}")
-    print(f"  golden : {[hex(w) for w in want]}")
+    for i in range(len(e_d)):
+        g, w = got[3 * i:3 * i + 3], want[3 * i:3 * i + 3]
+        print(f"  iter {i}: {[hex(v) for v in g]} "
+              f"{'==' if g == w else '!='} {[hex(v) for v in w]}")
     if got != want:
         raise SystemExit("verification FAILED — .kyt NOT saved")
     if set(chain.stops) != {"QueueEmpty"}:
         raise SystemExit(f"stop_reasons not all QueueEmpty: {chain.stops} "
                          f"— .kyt NOT saved")
-    print("  EXACT, and every run settled QueueEmpty.")
+    print(f"  EXACT over {len(e_d)} iterations, every run QueueEmpty.")
 
     from engine.io.project_io import save_project
     save_project(project, KYT_PATH)

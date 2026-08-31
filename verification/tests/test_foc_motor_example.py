@@ -335,3 +335,86 @@ def test_mutation_corrupted_block_constant_fails_ON_CHIP(built):
     assert mutant != golden([E_D], [E_Q], [THETA]), (
         "a 500-LSB corruption of the sqrt(3)/2 constant went UNDETECTED — the "
         "exactness gate has no teeth")
+
+
+# --------------------------------------------------------------------------- #
+#  The MEASUREMENT half — the README's claim, enforced                         #
+# --------------------------------------------------------------------------- #
+
+def test_measurement_half_routes_and_is_exact():
+    """The README says the measurement half (Clarke + FORWARD Park) routes,
+    builds and runs bit-exactly on its own — it is the WHOLE loop that does not
+    fit, not the front half. That claim is ENFORCED here rather than asserted.
+
+    MEASURED: 75 cells, three distinct arm hops, ``QueueEmpty`` on every run,
+    and output ``0x868 / 0x870`` exactly matching the golden.
+
+    The anchors are load-bearing for the same INV-46 Rule 4 reason as the main
+    chain — most routed layouts mis-deliver — so a probed set is pinned."""
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    import simkyt
+    from engine.catalog import BlockCatalog
+    from engine.io.chip_type_io import load_chip_type
+    from ui.controller import AppController
+    from model.connection import ChipPortEndpoint as CPE, BlockEndpoint as BE
+    from gr_kyttar.placement.blocks.clarke_transform_block import ClarkeTransformBlock
+    from gr_kyttar.placement.blocks.cordic_rotate_block import cordic_rotate_word
+    from foc_motor_demo import CHIP_YAML, LIB
+
+    A = {"cl": (4, 1), "pk": (4, 4), "r_ia": (0, 4), "r_ib": (9, 11), "r_th": (4, 8)}
+    cat = BlockCatalog.from_gr_kyttar()
+    ct = load_chip_type(CHIP_YAML)
+    ctk = getattr(ct, "name", None) or "kyttar_10x12"
+    ctrl = AppController(catalog=cat)
+    ctrl.new_project("foc_front", ctk)
+    cl = ctrl.place_block("ClarkeTransformBlock", 0, *A["cl"], library=LIB, params={})
+    pk = ctrl.place_block("CordicRotateBlock", 0, *A["pk"], library=LIB,
+                          params={"sign": -1})
+    relays = {n: ctrl.place_block("StreamSplitterBlock", 0, *A[n], library=LIB,
+                                  params={}) for n in ("r_ia", "r_ib", "r_th")}
+    C = ctrl.add_logical_connection
+    C(CPE(chip=0, port="x16_in"), BE(block=relays["r_ia"], port="x"), name="ia")
+    C(CPE(chip=0, port="x16_in"), BE(block=relays["r_ib"], port="x"), name="ib")
+    C(CPE(chip=0, port="x16_in"), BE(block=relays["r_th"], port="x"), name="th")
+    C(BE(block=relays["r_ia"], port="out"), BE(block=cl, port="ia"), name="w1")
+    C(BE(block=relays["r_ib"], port="out"), BE(block=cl, port="ib"), name="w2")
+    C(BE(block=relays["r_th"], port="out"), BE(block=pk, port="theta"), name="w3")
+    C(BE(block=cl, port="yi"), BE(block=pk, port="x"), name="cx")
+    C(BE(block=cl, port="yq"), BE(block=pk, port="y"), name="cy")
+    C(BE(block=pk, port="yi"), CPE(chip=0, port="x16_out"), name="o")
+
+    rep = ctrl.auto_route_all({ctk: ct})
+    assert rep.ok, [(r.name, r.reason) for r in (rep.failed or [])]
+    bres = ctrl.build()
+    assert bres.ok, [str(e)[:120] for e in (bres.errors or [])[:3]]
+
+    il = bres.chips[0].input_landings
+    lands = {n: (int(il[n]["hop"]) & 0x1F, int(il[n]["data_addrs"][0]),
+                 int(il[n]["entry"])) for n in ("ia", "ib", "th")}
+    assert len({h for h, _a, _e in lands.values()}) == 3, (
+        f"the front half's arms share a hop (one face) — INV-71: {lands}")
+
+    chip = simkyt.Chip.from_yaml(CHIP_YAML)
+    chip.load_bitstream_physical(bres.words(0))
+    chip.set_port_entry_address("x16_in", lands["ia"][2])
+    out, stops = [], []
+    for name, value in (("ia", 1000), ("ib", 2000), ("th", 0x1234)):
+        hop, addr, entry = lands[name]
+        chip.inject_data_physical([value], target_hop_cnt=hop, target_addr=addr)
+        chip.run(max_events=8_000)
+        chip.inject_jump_physical(target_hop_cnt=hop, entry_addr=entry)
+        res = chip.run(max_events=600_000)
+        stops.append(res.get("stop_reason") if isinstance(res, dict) else None)
+        while chip.output_available("x16_out"):
+            for v, _d, _t in chip.read_port_words_timed("x16_out"):
+                out.append(int(v) & 0xFFFF)
+            chip.release_output_ack("x16_out")
+            chip.run(max_events=8_000)
+
+    alpha_beta = ClarkeTransformBlock.process_reference_words([1000], [2000])
+    want = [w & 0xFFFF for w in
+            cordic_rotate_word(alpha_beta[0], alpha_beta[1], 0x1234, -1)]
+    assert out == want, (f"front half {[hex(w) for w in out]} != golden "
+                         f"{[hex(w) for w in want]}")
+    assert set(stops) == {"QueueEmpty"}, stops

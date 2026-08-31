@@ -9,6 +9,95 @@ block-specific gotcha. Promote anything that generalizes across block classes in
 and superseded material merged into the surviving entries; no durable lesson was
 dropped) — append new entries above the oldest ones as before.
 
+## examples/secure_link — NOT BUILT: the 4-die 2P2S AEAD+LZ4 topology is infeasible with today's shipped blocks; walls measured, spine proven, options recorded  2026-08-31
+
+The plan: ChaCha20-Poly1305 + LZ4 as ONE project across the 2P2S board — TX-A
+`{LZ4Enc + XorJoin + ChaCha20Keystream}`, TX-B `{Poly1305}`, RX-A `{XorJoin +
+ChaCha20Keystream + LZ4Dec}`, RX-B `{Poly1305}`, ciphertext fanned 1→3. Every
+block is individually done and chip-proven; the ASSEMBLY is what was de-risked
+first, cheaply, per the plan's own order — and four independent measured walls
+mean the example cannot be assembled as specified. Everything below is
+measured, not inferred.
+
+**WALL 1 — ChaCha20Keystream cannot cohabit a die with anything.** Placement
+ACCEPTS a co-resident XorJoin (CHIP_SCALE is a layout-caps waiver, not a
+placer constraint), but its mandatory y=0 full-width fold has rows 0–2 solid
+across all 10 columns: an impenetrable band between the port row and the free
+lower half. Measured over 8 co-resident positions: the trigger net routes;
+`out→XorJoin.a`, `x16_in→XorJoin.b` and `XorJoin.out→x16_out` ALL fail with
+"no free corridor between the ports", every time. Its `out` cell also IS the
+`x16_out` port cell (INV-65), so no co-resident block could egress even if a
+corridor existed. TX-A and RX-A as specified are geometrically dead.
+
+**WALL 2 — every big block's egress is RAW port literals, tail-only
+(INV-66).** ChaCha20Keystream, Poly1305MAC, LZ4Encoder and LZ4Decoder all
+carry `RAW_OUTPUT_HOPS`: their egress bursts authored literals at their OWN
+die's port. None can feed another block on the same die (`LZ4Enc → XorJoin`
+included), and crossing the carrier link corrupts the stream (measured:
+ChaCha-as-head delivered 36 mangled words for its 32-word burst). So each of
+these blocks is a port-to-port function that must sit where its words are
+read — and a ChaCha die monopolizes its entire chain (its `out` owns the tail
+egress path), consuming TWO dies for one keystream.
+
+**WALL 3 — the keystream's word format does not match the cipher stream.**
+ChaCha emits the 16 state words as 32 raw 16-bit words, HI half then LO half
+per 32-bit value (its gated §2.3.2 contract); XorJoin XORs whole 16-bit
+words; LZ4/data-link streams are one BYTE per word. RFC 8439 encryption needs
+keystream BYTES in serialization order (lo-byte-first, LO half before HI). No
+pack/unpack/serializer block exists — any on-chip `plaintext ⊕ keystream`
+needs either a new small block or a host-side repack of the keystream.
+
+**WALL 4 — SRAM panels do not exist in multi-chip designs.**
+`MultiChipSimEngine` has no panel support at all (no `register_panel`; the
+word "panel" does not appear in it), and the hosted server's `_setup_panels`
+returns early for a multi-chip project — its own comment: "multi-chip panel
+pumping not wired yet". Both LZ4 blocks are panel-backed, so NO 2P2S design
+can run them today, on any die.
+
+**Panel scoping (the INV-61 question), measured:** the ≤2-panel-backed-blocks
+limit is PER PROJECT — `panel_backed_blocks` iterates `project.blocks` with no
+chip filter — so TX-A + RX-A (one backed block each) would pass the COUNT.
+But `synthesize_panel` hardcodes the panel wiring to chip 0: with an encoder
+on chip 0 and a decoder on chip 2 it reported success and wired BOTH
+`panel_connections` to chip 0 — the far block's panel is silently dead. The
+per-chip fallback half-exists: `apply_panel_template(project, cat, ct,
+chip=2)` correctly places and routes the decoder's plumbing on chip 2; what
+is missing is the model/engine side (per-chip panels + WALL 4).
+
+**Die-count arithmetic (why no re-arrangement saves it):** Poly1305 is one
+message per build, so TX and RX tags need TWO Poly dies (each CHIP_SCALE
+10x10, rows 0/11 free — 20 cells in two disconnected 1-tall strips, no room
+for an LZ4 fold or a rendezvous). One on-chip ChaCha consumes a further TWO
+dies (WALL 2). That is 4 of 4 dies with the XORs and LZ4s unplaced. Full
+TX+RX AEAD with these blocks needs ≥6 dies even before WALLs 3–4.
+
+**What DOES work — the fan-out spine, proven and gated
+(`test_2p2s_fanout_spine.py`, 8 tests, all green):** the 1→3 ciphertext
+fan-out is realizable in the FPGA-mediated form — produce once, egress tagged
+via the chain tail, re-inject as three per-stream legs (same-chain tail
+block, far-chain head block, far-chain tail block), all word-exact with
+quiescent settles and a tamper tooth. The pure on-chip form (one source cell
+feeding a far block AND a tagged transit) is the measured engine limit pinned
+in INV-66's guard test.
+
+**Dead ends tried:** co-residency position sweep (8 placements, all fail);
+splitter dual-role in both declaration orders (far arm exact, tagged arm zero
+words both times); a relay-splitter to give each arm its own cell (worse:
+untagged zeros); ChaCha-as-head cross-link (mangled); every 4-die chip
+assignment enumerable under the tail-only + sole-occupancy constraints (none
+closes).
+
+**What would unblock `examples/secure_link`, in dependency order:** (1)
+multi-chip panel support (engine + server) and per-chip panel synthesis; (2)
+either routed-egress variants of the RAW blocks or an engine path that
+composes RAW egress across the link; (3) a keystream byte-serializer block
+(hi/lo 16-bit halves → lo-first bytes) or an accepted host-side repack; (4)
+the INV-66 dual-role fix, or acceptance of the FPGA-mediated fan-out; (5) a
+board with ≥6 usable dies for full TX+RX, or a reduced scope (TX-only, or
+host-side LZ4). ChaCha's pending `counter_mode="increment"` changes none of
+this — the integration point stays "payload constant + keystream param" in
+whatever design lands.
+
 ## examples/tmr_pipeline — DONE: TMR + single-path co-resident on one array, both streams exact on chip and through the hosted user path  2026-08-31
 
 Assembly of proven blocks (StreamSplitter ×4, AddConst ×3, TMRVoter, Gain), so

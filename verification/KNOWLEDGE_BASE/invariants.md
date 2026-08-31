@@ -4933,3 +4933,58 @@ a NON-port edge) is untested and should be measured before use.
 
 **Related:** INV-56 (the port-cell rule's deadlock mechanism), INV-40 (fold
 shape vs free space), the corrected `layout_rules.md` §1 and checklist.
+
+## INV-66 — What a 2P2S carrier link composes, measured: four per-stream leg shapes work; ONE source cell cannot both feed a far-chip block and emit a tagged transit stream; a RAW-literal egress is TAIL-ONLY
+
+**Measured 2026-08-31** (number assigned at landing — renumber on collision),
+during the `examples/secure_link` feasibility de-risk, on the real 4-die board
+wiring (both carrier links, `MultiChipSimEngine`, the hosted server's own
+`multi_chip_stream_targets` resolution). Gated by
+`verification/tests/test_2p2s_fanout_spine.py`.
+
+**What WORKS — all four per-stream leg shapes, word-exact, quiescent:**
+
+1. head-block stream whose TAGGED egress transits the link AND the tail chip
+   to the tail port (gain_2p2s stream-A shape);
+2. cross-chip ingress transiting the head into a TAIL block (stream-B shape;
+   the net ships a STUB route on the head-port cell — the auto-router refuses
+   cross-chip nets by design, and the injection hop is composed, not routed);
+3. a head-source EXIT net paired with a far-chip LANDING net (the fft128
+   port-pair encoding) delivering into a far block;
+4. several streams multiplexed over ONE link and ONE tail port, demuxed by
+   `out_tag` (`read_port_words_timed`).
+
+A 1→N fan-out is therefore REALIZABLE in the FPGA-mediated form: egress the
+produced stream once (shape 1), and re-inject the recovered words as N
+independent per-stream legs — the flowgraph is the fan-out. Proven end to end
+with a tamper tooth (a flipped channel word surfaces in exactly its output
+word).
+
+**What FAILS, silently — two composition limits:**
+
+* **A single source cell cannot carry BOTH a far-block arm and a tagged
+  transit arm.** One splitter cell with two arms — one exit-net+landing-net
+  pair to a far-chip block, one tagged egress meant to transit to the tail
+  port — delivers ONLY the far-block arm; the tagged arm emits ZERO words.
+  Build ok, routes ok, every settle `completed`. Measured identically in both
+  net-declaration orders; inserting a relay splitter so each arm leaves its
+  own cell degrades further (untagged zero words at the tail). The inter-chip
+  hop patch owns the exit cell's trailing writes and the tagged arm loses.
+* **A `RAW_OUTPUT_HOPS` egress must be the chain TAIL.** Its authored port
+  literals are valid only for its own die's port geometry; fed across the
+  link into a routed far-chip landing the stream arrives mangled (measured
+  with ChaCha20Keystream as head: 36 words for a 32-word burst, mostly zeros,
+  one recognizable keystream word). Corollary: every RAW-egress block
+  (ChaCha20Keystream, Poly1305MAC, LZ4Encoder, LZ4Decoder) can only sit where
+  its port words are READ, never relayed onward — and ChaCha20Keystream,
+  whose `out` cell IS its die's output-port cell, additionally monopolizes
+  that whole chain's egress (nothing else on its chain can reach the FPGA).
+
+LAYER: build inter-chip hop patch + link relay — toolchain behavior, measured,
+not a substrate law. REACH: every multi-chip example with fan-out, and any
+placement of a RAW-egress block off the chain tail. The known-limit guard in
+`test_2p2s_fanout_spine.py` FAILS the day the dual-role limit is lifted — that
+is the signal to move fan-outs on-chip.
+
+**Related:** INV-32 (corridor/broker deadlocks), INV-36 (hop field), INV-42
+(`output_words` symmetry), INV-56 (quiescence idiom), INV-63 (RAW literals).

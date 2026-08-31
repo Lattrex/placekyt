@@ -1,0 +1,43 @@
+{
+  "block": "ClarkeTransformBlock",
+  "grc_block": "kyttar_clarke_transform",
+  "tier": 3,
+  "wave": 11,
+  "schema_version": 2,
+  "started_utc": "2026-08-31T17:20:00Z",
+  "ended_utc": "2026-08-31T18:20:00Z",
+  "walltime_sec": 2281.2,
+  "tokens": {
+    "input": 0,
+    "output": 334866,
+    "cache_read": 0,
+    "total": 334866
+  },
+  "turns": 160,
+  "attempts": 1,
+  "human_interventions": 2,
+  "intervention_reasons": [
+    "Agent idled twice waiting on a background suite watcher that had already exited; nudged to read the result directly and close out. No technical intervention."
+  ],
+  "prompts": [
+    {
+      "role": "initial",
+      "text": "FOC wave F1: two-arm Clarke transform, Q15, saturating; golden + saturation corners + INV-4 mutants."
+    }
+  ],
+  "verify_passed": true,
+  "quarantined": false,
+  "quarantine_reason": "",
+  "commit_sha": "4140801,0a082d8 (merged to main)",
+  "notes": "=== PASS 1 (2026-08-31, claude-fable-5) \u2014 DONE, ONE CELL ===\n\n1 cell against a 3-5 estimate. XorJoin N=2 LOCK-by-face rendezvous carried over verbatim with the Clarke Q15 datapath folded into got_ib and a 2-rail complex packet out. 29/32 words via three proven tricks: the INV-15 halved coefficient (2/sqrt3 in Q14 quantizes to the SAME 18919 word as 1/sqrt3 in Q15 \u2014 one data word, ib term added twice); saturating-add restore from the OPERAND's sign (no saved-accumulator state); alpha emitted early while still in R0 (write ORDER steers rails, adjacency does not).\n\nON CHIP: EXACT (err 0 / tol 0) vs the pinned integer golden; measured float bound worst 3.57 LSB against a derived <=5; all saturation corners including both-arms-saturated sign combos; INV-19 saturated burst == per-sample including overflow pairs under load; all 4 anchors, both arrival orders, random interleavings.\n\nFIVE mutants proven to fire on chip. A REAL VACUITY CAUGHT: the first wrong-constant cut assigned to the frozen DataWord and silently failed to BUILD \u2014 geometry-preserving mutants now hard-fail on a None chain (gate tooth added).\n\nNEW: INV-67 (assigned at landing) \u2014 an arbiter-HELD word reports stop_reason 'Deadlock' MID-GROUP on a HEALTHY rendezvous; only a post-group Deadlock is real. Forwarded to the F2 CordicRotate builder (N=3 join).\n\nORCHESTRATOR VERIFICATION: 54/54 reproduced in-worktree; engine/router diff empty; merge conflict was lessons_log-only (both-sides append, resolved keeping both); 237 tests green post-merge across clarke/serializer/placement-legality; dashboard clean. placekyt 1218/1 in the builder's contended run = the known parallel-agent port-58950 contention, commits touch zero placekyt/ files.",
+  "model": "claude-fable-5",
+  "by_model": [
+    {
+      "model": "claude-fable-5",
+      "attempts": 1,
+      "turns": 160,
+      "walltime_sec": 2281.2,
+      "output_tokens": 334866
+    }
+  ]
+}

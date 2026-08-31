@@ -1,120 +1,121 @@
 {
- "kyttar_block": "LZ4EncoderBlock",
- "passed": true,
- "metric": "exact",
- "n_compared": 4910,
- "max_abs_err": 0,
- "tolerance": 0,
- "nmse_db": null,
- "correlation": null,
- "bit_errors": 0,
- "delay_used": 0,
- "coverage": {
-  "gr_equiv": "no stock GR block; LZ4 does not specify WHICH block a compressor must emit, so the gate is decode(encode(x)) == x under the published golden AND under the INDEPENDENT reference C decoder (lz4.block)",
-  "patterns": "12 payload classes at the model level, all round-tripping under both decoders; 12 of them BYTE-EXACT on the AUTO-PLACED + ROUTED + BUILT design on a real simkyt chip through a real SramPanelDevice, including the scan loop (2..2000 bytes)",
-  "mutation": true,
-  "onchip_mutation": "the first pass's missing-cursor-advance defect re-introduced and CAUGHT; a dead hash-table insert CAUGHT by the on-chip ratio gate (it still round-trips!); a corrupted return-count seed CAUGHT byte-exact",
-  "independent_decoder": "lz4.block (the reference C implementation, via its Python binding, run in the GNU-Radio interpreter)",
-  "independent_decoder_available": true,
-  "incompressible_expansion_pct": 0.45,
-  "cells": 15,
-  "onchip": {
-   "tiny": {
-    "in_bytes": 2,
-    "out_bytes": 3,
-    "matches_model": true,
-    "round_trips": true,
-    "stop_reason": "QueueEmpty",
-    "panel_writes": 2
-   },
-   "shortest": {
-    "in_bytes": 8,
-    "out_bytes": 9,
-    "matches_model": true,
-    "round_trips": true,
-    "stop_reason": "QueueEmpty",
-    "panel_writes": 8
-   },
-   "empty": {
-    "in_bytes": 0,
-    "out_bytes": 1,
-    "matches_model": true,
-    "round_trips": true,
-    "stop_reason": "QueueEmpty",
-    "panel_writes": 0
-   },
-   "short": {
-    "in_bytes": 30,
-    "out_bytes": 32,
-    "matches_model": true,
-    "round_trips": true,
-    "stop_reason": "QueueEmpty",
-    "panel_writes": 48
-   },
-   "overlap": {
-    "in_bytes": 132,
-    "out_bytes": 20,
-    "matches_model": true,
-    "round_trips": true,
-    "stop_reason": "QueueEmpty",
-    "panel_writes": 136
-   },
-   "text": {
-    "in_bytes": 404,
-    "out_bytes": 92,
-    "matches_model": true,
-    "round_trips": true,
-    "stop_reason": "QueueEmpty",
-    "panel_writes": 479
-   },
-   "repetitive": {
-    "in_bytes": 540,
-    "out_bytes": 58,
-    "matches_model": true,
-    "round_trips": true,
-    "stop_reason": "QueueEmpty",
-    "panel_writes": 583
-   },
-   "long_run": {
-    "in_bytes": 416,
-    "out_bytes": 24,
-    "matches_model": true,
-    "round_trips": true,
-    "stop_reason": "QueueEmpty",
-    "panel_writes": 422
-   },
-   "mixed": {
-    "in_bytes": 630,
-    "out_bytes": 27,
-    "matches_model": true,
-    "round_trips": true,
-    "stop_reason": "QueueEmpty",
-    "panel_writes": 641
-   },
-   "all_literal": {
-    "in_bytes": 256,
-    "out_bytes": 258,
-    "matches_model": true,
-    "round_trips": true,
-    "stop_reason": "QueueEmpty",
-    "panel_writes": 500
-   },
-   "minmatch3": {
-    "in_bytes": 492,
-    "out_bytes": 419,
-    "matches_model": true,
-    "round_trips": true,
-    "stop_reason": "QueueEmpty",
-    "panel_writes": 893
-   },
-   "random": {
-    "in_bytes": 2000,
-    "out_bytes": 2009,
-    "matches_model": true,
-    "round_trips": true,
-    "stop_reason": "QueueEmpty",
-    "panel_writes": 3988
-   }
-  }
- }
+  "kyttar_block": "LZ4EncoderBlock",
+  "passed": true,
+  "metric": "exact",
+  "n_compared": 4910,
+  "max_abs_err": 0,
+  "tolerance": 0,
+  "nmse_db": null,
+  "correlation": null,
+  "bit_errors": 0,
+  "delay_used": 0,
+  "coverage": {
+    "gr_equiv": "no stock GR block; LZ4 does not specify WHICH block a compressor must emit, so the gate is decode(encode(x)) == x under the published golden AND under the INDEPENDENT reference C decoder (lz4.block)",
+    "patterns": "12 payload classes at the model level, all round-tripping under both decoders; 12 of them BYTE-EXACT on the AUTO-PLACED + ROUTED + BUILT design on a real simkyt chip through a real SramPanelDevice, including the scan loop (2..2000 bytes)",
+    "mutation": true,
+    "onchip_mutation": "the first pass's missing-cursor-advance defect re-introduced and CAUGHT; a dead hash-table insert CAUGHT by the on-chip ratio gate (it still round-trips!); a corrupted return-count seed CAUGHT byte-exact",
+    "independent_decoder": "lz4.block (the reference C implementation, via its Python binding, run in the GNU-Radio interpreter)",
+    "independent_decoder_available": true,
+    "incompressible_expansion_pct": 0.45,
+    "cells": 15,
+    "onchip": {
+      "tiny": {
+        "in_bytes": 2,
+        "out_bytes": 3,
+        "matches_model": true,
+        "round_trips": true,
+        "stop_reason": "QueueEmpty",
+        "panel_writes": 2
+      },
+      "shortest": {
+        "in_bytes": 8,
+        "out_bytes": 9,
+        "matches_model": true,
+        "round_trips": true,
+        "stop_reason": "QueueEmpty",
+        "panel_writes": 8
+      },
+      "empty": {
+        "in_bytes": 0,
+        "out_bytes": 1,
+        "matches_model": true,
+        "round_trips": true,
+        "stop_reason": "QueueEmpty",
+        "panel_writes": 0
+      },
+      "short": {
+        "in_bytes": 30,
+        "out_bytes": 32,
+        "matches_model": true,
+        "round_trips": true,
+        "stop_reason": "QueueEmpty",
+        "panel_writes": 48
+      },
+      "overlap": {
+        "in_bytes": 132,
+        "out_bytes": 20,
+        "matches_model": true,
+        "round_trips": true,
+        "stop_reason": "QueueEmpty",
+        "panel_writes": 136
+      },
+      "text": {
+        "in_bytes": 404,
+        "out_bytes": 92,
+        "matches_model": true,
+        "round_trips": true,
+        "stop_reason": "QueueEmpty",
+        "panel_writes": 479
+      },
+      "repetitive": {
+        "in_bytes": 540,
+        "out_bytes": 58,
+        "matches_model": true,
+        "round_trips": true,
+        "stop_reason": "QueueEmpty",
+        "panel_writes": 583
+      },
+      "long_run": {
+        "in_bytes": 416,
+        "out_bytes": 24,
+        "matches_model": true,
+        "round_trips": true,
+        "stop_reason": "QueueEmpty",
+        "panel_writes": 422
+      },
+      "mixed": {
+        "in_bytes": 630,
+        "out_bytes": 27,
+        "matches_model": true,
+        "round_trips": true,
+        "stop_reason": "QueueEmpty",
+        "panel_writes": 641
+      },
+      "all_literal": {
+        "in_bytes": 256,
+        "out_bytes": 258,
+        "matches_model": true,
+        "round_trips": true,
+        "stop_reason": "QueueEmpty",
+        "panel_writes": 500
+      },
+      "minmatch3": {
+        "in_bytes": 492,
+        "out_bytes": 419,
+        "matches_model": true,
+        "round_trips": true,
+        "stop_reason": "QueueEmpty",
+        "panel_writes": 893
+      },
+      "random": {
+        "in_bytes": 2000,
+        "out_bytes": 2009,
+        "matches_model": true,
+        "round_trips": true,
+        "stop_reason": "QueueEmpty",
+        "panel_writes": 3988
+      }
+    }
+  },
+  "provenance": "session"
 }

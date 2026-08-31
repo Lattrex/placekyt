@@ -871,36 +871,31 @@ def test_the_ring_runs_the_whole_rfc_schedule_on_a_built_chip():
         f"  got  {[f'{v:#010x}' for v in got32]}\n"
         f"  want {[f'{v:#010x}' for v in want]}")
 
-    # The report is an ARTIFACT of this verified session (INV-38): it is
-    # written only after every assertion above has held, with the values this
-    # run actually measured.
-    import json
-    rep_path = _ROOT / "verification" / "reports" / "ChaCha20KeystreamBlock.json"
-    rep_path.write_text(json.dumps({
-        "kyttar_block": "ChaCha20KeystreamBlock",
-        "passed": True,
-        "metric": "exact",
-        "n_compared": 32,
-        "max_abs_err": 0,
-        "tolerance": 0,
-        "bit_errors": 0,
-        "delay_used": 0,
-        "coverage": {
-            "gr_equiv": ("no stock GR block; the golden is the published "
-                         "RFC 8439 S2.3 block function, pinned by the RFC's "
-                         "own S2.3.2 and S2.4.2 test vectors"),
-            "onchip": {
-                "stop_reason": "QueueEmpty",
-                "words": 32,
-                "order": "RFC 8439 S2.3.2, all sixteen words bit-exact",
-                "qr_invocations": 80,
-                "half_boundary_realignments": 20,
-                "buffer_store_counts": "4/4 at every stage (INV-56 signature clean)",
-            },
-            "cells": 51,
-            "mutation": True,
+    # The report is an ARTIFACT of this verified session (INV-38): the verdict
+    # is MEASURED from the comparison above, never typed in, and the write goes
+    # through the sanctioned writer so provenance and the clean-session gate
+    # decide whether a file appears at all.
+    from kyttar_verify import CompareResult, Metric, write_report
+    errs = sum(1 for a, b in zip(got32, want) if a != b) + abs(
+        len(got32) - len(want))
+    res = CompareResult(passed=(errs == 0), metric=Metric.EXACT,
+                        n_compared=len(want), bit_errors=errs, delay_used=0)
+    assert res.passed, res.summary()
+    write_report("ChaCha20KeystreamBlock", res, coverage={
+        "gr_equiv": ("no stock GR block; the golden is the published "
+                     "RFC 8439 S2.3 block function, pinned by the RFC's "
+                     "own S2.3.2 and S2.4.2 test vectors"),
+        "onchip": {
+            "stop_reason": "QueueEmpty",
+            "words": 32,
+            "order": "RFC 8439 S2.3.2, all sixteen words bit-exact",
+            "qr_invocations": 80,
+            "half_boundary_realignments": 20,
+            "buffer_store_counts": "4/4 at every stage (INV-56 signature clean)",
         },
-    }, indent=1) + "\n")
+        "cells": 51,
+        "mutation": True,
+    })
 
 
 #: The sixteen quarter-round stages, as the block reuses them.

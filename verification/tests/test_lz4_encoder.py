@@ -2085,19 +2085,17 @@ def test_emit_report():
     assert all(v["matches_model"] and v["round_trips"]
                for v in onchip.values()), onchip
     rnd = PAYLOADS["random"]
-    REPORT.parent.mkdir(parents=True, exist_ok=True)
-    REPORT.write_text(json.dumps({
-        "kyttar_block": "LZ4EncoderBlock",
-        "passed": True,
-        "metric": "exact",
-        "n_compared": sum(len(p) for p in PAYLOADS.values()),
-        "max_abs_err": 0,
-        "tolerance": 0,
-        "nmse_db": None,
-        "correlation": None,
-        "bit_errors": 0,
-        "delay_used": 0,
-        "coverage": {
+    # INV-38: the verdict is MEASURED from the on-chip results above, never
+    # typed in, and the write goes through the sanctioned writer so provenance
+    # and the clean-session gate decide whether a file appears at all.
+    from kyttar_verify import CompareResult, Metric, write_report
+    misses = sum(1 for v in onchip.values()
+                 if not (v["matches_model"] and v["round_trips"]))
+    res = CompareResult(passed=(misses == 0), metric=Metric.EXACT,
+                        n_compared=sum(len(p) for p in PAYLOADS.values()),
+                        bit_errors=misses, delay_used=0)
+    assert res.passed, res.summary()
+    write_report("LZ4EncoderBlock", res, coverage={
             "gr_equiv": "no stock GR block; LZ4 does not specify WHICH block a "
                         "compressor must emit, so the gate is decode(encode(x)) "
                         "== x under the published golden AND under the "
@@ -2122,6 +2120,5 @@ def test_emit_report():
                 (len(encode_model(rnd)[0]) - len(rnd)) / len(rnd) * 100, 4),
             "cells": LZ4EncoderBlock("probe").cell_count,
             "onchip": onchip,
-        },
-    }, indent=1) + "\n")
+        })
     assert REPORT.exists()

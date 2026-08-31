@@ -190,6 +190,73 @@ pipelined, all 8 D4 orientations, first build. Lessons that generalize:
   (where the constant floor cancels), not to `|u|` — first cut asserted the
   u-level number against the integral bound and failed honestly at 1.969.
 
+## SVPWMBlock — FOC wave F4: the first rendezvous WITH a datapath; the release must read the RECONCILED face; independent arms must not share corridors  2026-08-31
+
+Space-vector PWM by min-max injection: (v_alpha, v_beta) on a 2-arm
+LOCK-by-face join -> inverse Clarke (saturating) -> min/max compare tree (the
+six-sector logic IS the min/max — no separate sector switch) -> midpoint
+m = floor(max/2)+floor(min/2) (two MULQ-16384 halvings; a 16-bit max+min can
+overflow, the halved sum cannot) -> duty_i = sat(v_i - m) -> a 3-WORD packet
+(fixed order a,b,c; the FeaturePairJoin/TMRVoter burst egress at three).
+SEVEN cells, 7x1 colinear chain, rendezvous a LEAF. EXACT on the real
+placed+routed+built two-upstream chain, 52 tests, 0 skips over 6 consecutive
+runs: 48-step unit-vector rotation visiting all SIX (argmax,argmin) sectors
+and all six 60-degree boundaries exactly (four with exact pairwise phase
+ties), every word == the integer golden and <= 4 LSB from float (measured
+worst 2.84); the centering invariant max(d)+min(d) == (max(v)&1)+(min(v)&1)
+in {0,1,2} LSB on the chip words; overmodulation pinned with both clamp
+rails proven engaged; both arrival orders + random interleavings; INV-19
+pair-saturated == per-sample; whole-burst depth >= 2 wedges after exactly
+one packet (known limit, guarded; stop_reasons vary per INV-56: Deadlock at
+depth 2/3, EventLimit at 5); all 8 D4 orientations; six substrate mutants
+all FIRE on chip.
+
+The two promoted lessons (full write-ups in the INV-NEXT (SVPWM-a/b)
+entries of invariants.md):
+1. RELEASE VALUE vs ROUTED FACE. The TMRVoter-style WRITE.CFG release
+   carries an AUTHORED arm-face value, and `_apply_rendezvous_input_faces`
+   reconciles face words in the RENDEZVOUS CELL ONLY — under auto_pnr's
+   re-pack 69/96 built layouts landed arm alpha elsewhere and emitted
+   STALE-ALPHA packets (decoded as duties(previous_alpha, beta)) from
+   sample 2. Fix: a third rendezvous entry `relock: MOVE [LOCK_FACE],
+   R{data:face_alpha}; HALT` jumped backwards by `scale` — the lock is
+   re-pointed from the ONE copy the build reconciles. 96/96 after.
+   Race-free by construction: the relock jump rides the internal forward
+   face, which got_beta's own face_fwd bar is what admits.
+2. CORRIDOR-SHARING HEAD-OF-LINE. An arbiter-HELD early word occupies its
+   corridor tail; compact packs herd both arms into the port corner where
+   the corridors share cells, and 10/12 such layouts DEADLOCK on a
+   beta-first sample (pair never completes, zero egress) while being
+   PERFECT alpha-first. Harness: auto_route_all over spread anchors
+   (12/12 clean both orders) + the layout probe drives BOTH orders over two
+   consecutive samples. Diagnosis needed INV-67's discipline — the held
+   word's own Deadlock run is the HEALTHY signature; the wedge is the
+   post-group state.
+
+Smaller gotchas, each measured: (a) a </<= tie-flip in the min/max compares
+is VALUE-INVARIANT (a tie holds equal values), so the spec's
+wrong-sector-at-a-boundary mutant must be the compare INVERSION
+(BR.GE -> BR.LT) — the invariance is itself pinned by a model test so
+nobody writes the vacuous gate; (b) DataWord is a frozen dataclass — a
+data-word mutant must dataclasses.replace it or every build dies inside the
+engine and masquerades as 'pnr failed' (independently hit by the Clarke
+builder the same day; INV-67's corollary, and the mutation gate now
+hard-fails on a None chain for geometry-preserving mutants); (c) MULQ is a
+FLOOR shift (probed on chip via GainBlock gain=0.5 over negative odd values
+BEFORE authoring — the integer golden was right first try); (d) the emit
+cell must source NO internal edge and NO WRITE.CFG so the build's full-cell
+port patch covers all THREE bursts (FeaturePairJoin condition (b) at three;
+also why the serialize-LOCK release cannot ride the emit cell, INV-63).
+
+GRC: kyttar_svpwm + the svpwm marker (1:1 pass-through per the
+feature_pair_join/tmr_voter rate-expanding convention; split downstream with
+deinterleave at 3; sink output_words=q15 — the duties are VALUES, INV-42).
+face_alpha/face_beta in GRC_UNSUPPORTED_PARAMS. Baselines after landing the
+block (no placekyt/ file touched): orientation 364/364 green; placekyt suite
+1218 passed with the single known ENVIRONMENTAL failure
+(TestGnuradioServerAutostart — parallel-agent contention on host port 58950,
+pre-identified by the orchestrator, unrelated to this diff).
+
 ## examples/secure_link — NOT BUILT: the 4-die 2P2S AEAD+LZ4 topology is infeasible with today's shipped blocks; walls measured, spine proven, options recorded  2026-08-31
 
 The plan: ChaCha20-Poly1305 + LZ4 as ONE project across the 2P2S board — TX-A

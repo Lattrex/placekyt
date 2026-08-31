@@ -5179,3 +5179,115 @@ scramblers. **Gated by:** `verification/tests/test_chacha20_counter_increment.py
 the three mutants). **Related:** INV-45 (the wide add), INV-52 (face flips
 steer transits), INV-63 (derived literals), INV-56 (`stop_reason` read every
 batch), INV-33 (the two touched cells close at margin 2 and 1).
+
+## INV-NEXT (SVPWM-a) — A serialize-LOCK release whose VALUE must equal a ROUTED arm face cannot be an authored constant in another cell; re-point the lock FROM the rendezvous's own reconciled face word, via a backward JUMP into a release entry
+
+*(Number to be assigned at landing — authored by a parallel FOC-wave builder
+while main's highest entry was INV-67.)*
+
+Found 2026-08-30 building `SVPWMBlock` (the first N=2 LOCK-by-face rendezvous
+with a MULTI-CELL datapath — the shape every future rendezvous-plus-pipeline
+block, CordicRotate included, will have). Measured on the real placed +
+routed + built two-arm chain.
+
+**THE DEFECT.** The TMRVoter's serialize-LOCK release is a backward
+`WRITE.CFG @N, 3` whose written VALUE is an authored `unlock_face` DataWord —
+arm A's face, WEST at identity. That value must equal the face the router
+ACTUALLY landed arm A on, and the build's face-reconciliation pass
+(`_apply_rendezvous_input_faces`) patches face words **in the rendezvous cell
+only** — an authored copy in the release cell is NEVER reconciled. The
+TMRVoter survives because its suite's anchors happen to land arm A on the
+authored face and its probe discards the rest. For the SVPWM's 7-cell chain,
+`auto_pnr`'s compact re-pack relocated blocks freely and **69 of 96 built
+layouts** landed arm alpha elsewhere: the release then re-pointed the lock at
+whatever face the constant named — the BETA corridor, in the decoded case —
+and the next beta word barged in ahead of its alpha. The signature is a
+STALE-OPERAND packet (`duties(previous_alpha, beta)`, decoded by brute-forcing
+the packet against the model), or a wedge when the named face carries nothing.
+The chain builds, routes, probes clean on sample 1, and is wrong from
+sample 2.
+
+**THE FIX (measured 96/96 after; 27/96 before).** Give the rendezvous a third
+entry:
+
+    relock:
+        MOVE [LOCK_FACE], R{data:face_alpha}   ; the RECONCILED word
+        HALT
+
+and make the release a backward JUMP into it (`MOVE [FACE], face_back;
+{jump:unlock}; MOVE [FACE], face_tap` in the abutting cell, the edge declared
+in `internal_jumps` so INV-39 holds and the jump is authored LAST so it is the
+cell's highest-addressed JUMP per INV-53). The one copy of the arm face the
+build DOES reconcile is now the one the release reads. This is also
+RACE-FREE by construction: the relock jump arrives on the rendezvous's
+INTERNAL forward face, which the arbiter bars until `got_beta`'s final
+`LOCK_FACE = face_fwd` has run — the release cannot outrace the arm bar.
+(The single-cell N=2 blocks never hit this because they re-lock from their
+own face words inline — the same principle, degenerately.)
+
+**LAYER:** block-authoring contract over `_apply_rendezvous_input_faces`'s
+documented scope (toolchain, `placekyt/engine/build.py`) — permanent until
+that pass reconciles authored face copies block-wide, which nothing today
+needs.
+
+**Gated by:** `verification/tests/test_svpwm.py::
+test_rotation_has_three_stops_and_release_reads_the_reconciled_face`
+(structure) and the layout probe (values, both arrival orders, two
+consecutive samples). **Related:** INV-46 (Rule 3, the N+1th stop this
+release serves), INV-19 (the serialize-LOCK idiom), INV-53 (backward jumps
+resolve by address), INV-63 (why the release also cannot ride the emit cell:
+the 3-burst packet needs the full-cell port patch, which an inline release
+would break).
+
+---
+
+## INV-NEXT (SVPWM-b) — Two INDEPENDENT rendezvous arms whose corridors SHARE cells head-of-line DEADLOCK on out-of-order arrival: an arbiter-HELD word's in-flight words block the shared segment, and the completing arm can never deliver
+
+*(Number to be assigned at landing — authored by a parallel FOC-wave builder
+while main's highest entry was INV-67.)*
+
+Found 2026-08-31 building `SVPWMBlock`; measured on the real placed + routed +
+built two-arm chain. The LOCK-by-face rendezvous is DESIGNED to hold an
+early-arriving word (the arbiter bars the out-of-turn face; INV-67's healthy
+mid-group Deadlock). What the family docs did not say: the held word is not
+free — its in-flight WRITE/DATA/JUMP words occupy the TAIL CELLS of its
+delivery corridor while held. If the two arms' corridors share ANY cells
+(`auto_pnr`'s compact packs herd both arm blocks into the port corner, where
+both nets fork late off one broker), a beta-first sample wedges the chain:
+
+    beta held at the rendezvous -> its words back up the shared segment ->
+    the alpha word cannot transit -> the pair NEVER completes -> zero egress
+
+Measured: **10/12** compact-packed layouts wedge on a beta-first sample —
+and every one of them is PERFECT under alpha-first drive, so a probe that
+only drives the in-lock order certifies nothing about arrival robustness.
+Diagnosis needs INV-67's discipline: the held word's own `Deadlock` run is
+the healthy signature; the wedge is the POST-group state (the completing
+word blocked in transit, `chip.output_available` never true).
+
+**Rules.**
+1. A face-locking block's arms must have corridor-DISJOINT deliveries (past
+   the unavoidable port cell/first broker) in any design that drives them at
+   independent times. Route-preserving placement (`auto_route_all` over
+   spread-out authored anchors) achieved 12/12 both-order-clean layouts where
+   the compact re-pack achieved 2/12.
+2. A rendezvous suite's layout probe must drive BOTH arrival orders across
+   two consecutive samples (`test_svpwm.py`'s `_PROBE_ORDERS`); the
+   in-lock-order-only probe was measured to pass 96/96 layouts of which
+   10/12 wedge out-of-order.
+3. This is the held-word generalisation of INV-56's two-waves rule: there the
+   two flows travel opposite directions on one conveyor; here one flow is
+   PARKED by the arbiter on cells the other must transit. Same circular wait,
+   no motion required.
+
+**LAYER:** substrate topology (permanent physics of hold-until-accepted
+forwarding) + harness/design discipline. Nothing to fix in the block: the
+hold is the rendezvous working as specified.
+
+**Gated by:** `verification/tests/test_svpwm.py` — the both-orders probe in
+every chain build, `test_reversed_arrival_order_is_identical`,
+`test_random_interleavings_preserve_the_pairs`, and
+`test_stop_reason_signature_of_a_healthy_rendezvous` (the INV-67 pin).
+**Related:** INV-67 (the stop_reason reading), INV-46 (Rule 4 probing), INV-56
+(the moving-waves sibling), INV-24 (port fan-out forks at a broker — the
+shared prefix this hazard rides).

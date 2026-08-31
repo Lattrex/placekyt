@@ -231,6 +231,13 @@ BLOCKS = [
     # folded a cell back alongside the rendezvous (a 2x2 square, say) is caught
     # as a geometry regression rather than as an unexplained routing failure.
     ("TMRVoterBlock", {}),
+    # SVPWM modulator: 7-cell COLINEAR chain (rendezvous -> scale -> clarke ->
+    # maxsel -> minsel -> inject -> emit). Same face-budget-dictated shape as
+    # the TMR voter at N=2-with-a-datapath: the rendezvous must stay a LEAF
+    # (two arms + the forward + the release through `scale`), so a re-fold
+    # that gave it a second in-block neighbour must be caught here as a
+    # geometry regression rather than as an unexplained routing failure.
+    ("SVPWMBlock", {}),
     # rows x cols block interleaver: 3-cell vertical column (rgen -> wctl ->
     # store), no internal transit cell; rows/cols/deinterleave change register
     # contents only (the footprint is always 1x3) — must stay pairwise-distinct

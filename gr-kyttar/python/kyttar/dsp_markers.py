@@ -1614,3 +1614,36 @@ class tmr_voter(_PassThrough):
         self._advertise_grc_params(
             device_id, "TMRVoterBlock",
             {"fault_sentinel": int(fault_sentinel)})
+
+
+class svpwm(_PassThrough):
+    """Space-vector PWM by min-max injection — GR marker (maps to SVPWMBlock).
+
+    placeKYT-NATIVE: there is no stock GNU Radio counterpart — SVPWM is a
+    motor-drive modulator (the last stage of a field-oriented controller), and
+    GR has no three-phase inverter model. The block takes the (v_alpha,
+    v_beta) voltage command on two independent float streams, computes the
+    inverse Clarke three-phase set (saturating Q15), subtracts the min-max
+    midpoint, and emits the three duty cycles as a 3-word Q15 packet per
+    sample, fixed order a, b, c.
+
+    RATE / MARKER CONVENTION (the feature_pair_join/tmr_voter convention, and
+    it is load-bearing): on the chip this block is rate-EXPANDING — one
+    (v_alpha, v_beta) pair in becomes THREE words out. A ``sync_block`` cannot
+    express that, and a marker that fakes a rate change DEADLOCKS the client
+    scheduler at flowgraph end (sync work's return value is both produce AND
+    consume, so the input tail is never retired). So this marker is a plain
+    1:1 pass-through of input 0; the REAL modulator runs on the chip and the
+    kyttar SINK emits the recovered 3-word packet stream. Split it downstream
+    with ``blocks.deinterleave`` at 3, and set the sink to q15 output words
+    (the duties are Q15 VALUES, not packed bits — INV-42).
+
+    The face_alpha/face_beta placement knobs of the placed block are
+    router-reconciled internals (see SVPWMBlock.GRC_UNSUPPORTED_PARAMS) and
+    are intentionally NOT exposed to GRC."""
+
+    def __init__(self, device_id="kyttar_0"):
+        super().__init__("Kyttar SVPWM", n_in=2, n_out=1,
+                         in_dtype=np.float32, out_dtype=np.float32)
+        self.device_id = device_id
+        self._advertise_grc_params(device_id, "SVPWMBlock", {})

@@ -1,0 +1,57 @@
+id: kyttar_svpwm
+label: Kyttar SVPWM
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar SVPWM — space-vector PWM by min-max (common-mode) injection: the
+  (v_alpha, v_beta) voltage command in, the three phase duty cycles out as a
+  3-word Q15 packet per sample, fixed order a, b, c.
+
+  There is no stock GNU Radio counterpart: SVPWM is a motor-drive modulator
+  (the last stage of a field-oriented controller), and GR has no three-phase
+  inverter model. On the chip the block computes the inverse Clarke set
+  va = v_alpha, vb = -v_alpha/2 + (sqrt(3)/2) v_beta,
+  vc = -v_alpha/2 - (sqrt(3)/2) v_beta (saturating Q15), subtracts the
+  min-max midpoint m = (max + min)/2 from each phase, and emits the three
+  duties. The midpoint injection centers the set in the inverter's voltage
+  window — the ~15.5% linear-range advantage of SVPWM over plain sine PWM.
+  Overmodulation saturates predictably at the Q15 rails (never wraps).
+
+  The two inputs are INDEPENDENT streams: on the chip the block pairs them
+  with an arbiter-lock rendezvous keyed on arrival face (any relative arrival
+  order gives the identical result; a stalled arm stalls the modulator, never
+  mis-pairs). The arrival faces are chosen by the placer/router and are not
+  user parameters.
+
+  Output shape: THREE words per sample on one stream — duty_a, duty_b,
+  duty_c, each a Q15 VALUE. Set the Kyttar Sink to q15 output words and split
+  the packet downstream with a Deinterleave block at 3.
+
+  This block runs on the Kyttar chip. Place it between KyttarSource and
+  KyttarSink blocks, and ensure the device_id matches your KyttarDevice.
+
+  Parameters:
+  - Device ID: ID of the KyttarDevice block
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.svpwm(device_id=${device_id})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+
+inputs:
+  - label: v_alpha
+    dtype: float
+  - label: v_beta
+    dtype: float
+
+outputs:
+  - label: out
+    dtype: float
+
+file_format: 1

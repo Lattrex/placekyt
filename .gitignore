@@ -75,6 +75,7 @@ examples/psk31_transceiver/psk31_transceiver.py
 examples/qam16_modem/qam16_modem.py
 examples/qpsk_modem/qpsk_modem.py
 examples/robust_rx/robust_rx.py
+examples/tmr_pipeline/tmr_pipeline.py
 
 # Internal development / planning docs (NEVER checked in)
 dev_docs/

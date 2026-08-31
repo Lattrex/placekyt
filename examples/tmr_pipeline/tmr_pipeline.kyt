@@ -1,0 +1,225 @@
+project:
+  format_version: 1
+  name: TMR pipeline (triple-redundant path + single path, one array)
+  version: '1.0'
+chip_type: kyttar_10x12
+chips:
+- id: 0
+  label: Chip 0
+  position: {x: 0.0, y: 0.0}
+blocks:
+- name: streamsplitter
+  type: StreamSplitterBlock
+  library: lattrex.official
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 2, y: 1, face: south}
+    orientation:
+    - cw
+- name: streamsplitter_2
+  type: StreamSplitterBlock
+  library: lattrex.official
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 1, y: 5, face: east}
+- name: streamsplitter_3
+  type: StreamSplitterBlock
+  library: lattrex.official
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 4, y: 2, face: south}
+    orientation:
+    - cw
+- name: streamsplitter_4
+  type: StreamSplitterBlock
+  library: lattrex.official
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 2, y: 8, face: east}
+- name: addconst
+  type: AddConstBlock
+  library: lattrex.official
+  params:
+    const: 0.0
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 2, y: 5, face: east}
+- name: addconst_2
+  type: AddConstBlock
+  library: lattrex.official
+  params:
+    const: 3.0517578125e-05
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 4, y: 3, face: south}
+    orientation:
+    - cw
+- name: addconst_3
+  type: AddConstBlock
+  library: lattrex.official
+  params:
+    const: 0.0
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 4, y: 7, face: north}
+    orientation:
+    - ccw
+- name: tmrvoter
+  type: TMRVoterBlock
+  library: lattrex.official
+  params:
+    face_a: west
+    face_b: north
+    face_c: south
+    fault_sentinel: 65535
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: rendezvous, x: 4, y: 5, face: east}
+    - {cell_id: agree, x: 5, y: 5, face: east}
+    - {cell_id: disagree, x: 6, y: 5, face: east}
+    - {cell_id: emit, x: 7, y: 5, face: east}
+- name: gain
+  type: GainBlock
+  library: lattrex.official
+  params:
+    gain: 0.5
+    gain_range: 15
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 7, y: 1, face: east}
+connections:
+- name: net1
+  from: {chip_port: {chip: 0, port: x16_in}}
+  to: {block: streamsplitter, port: x}
+  route:
+  - {x: 0, y: 0}
+  - {x: 1, y: 0}
+  - {x: 2, y: 0}
+  stream_id: tmr
+  src_complex: false
+- name: net2
+  from: {block: streamsplitter, port: out}
+  to: {block: streamsplitter_2, port: x}
+  route:
+  - {x: 2, y: 1}
+  - {x: 2, y: 2}
+  - {x: 2, y: 3}
+  - {x: 2, y: 4}
+  - {x: 1, y: 4}
+- name: net3
+  from: {block: streamsplitter, port: out}
+  to: {block: streamsplitter_3, port: x}
+  route:
+  - {x: 2, y: 1}
+  - {x: 2, y: 2}
+  - {x: 2, y: 3}
+  - {x: 2, y: 4}
+  - {x: 1, y: 4}
+  - {x: 0, y: 4}
+  - {x: 0, y: 5}
+  - {x: 0, y: 6}
+  - {x: 0, y: 7}
+  - {x: 0, y: 8}
+  - {x: 1, y: 8}
+  - {x: 1, y: 7}
+  - {x: 1, y: 6}
+  - {x: 2, y: 6}
+  - {x: 3, y: 6}
+  - {x: 3, y: 5}
+  - {x: 3, y: 4}
+  - {x: 3, y: 3}
+  - {x: 3, y: 2}
+- name: net4
+  from: {block: streamsplitter, port: out}
+  to: {block: streamsplitter_4, port: x}
+  route:
+  - {x: 2, y: 1}
+  - {x: 2, y: 2}
+  - {x: 2, y: 3}
+  - {x: 2, y: 4}
+  - {x: 1, y: 4}
+  - {x: 0, y: 4}
+  - {x: 0, y: 5}
+  - {x: 0, y: 6}
+  - {x: 0, y: 7}
+  - {x: 0, y: 8}
+  - {x: 1, y: 8}
+- name: net5
+  from: {block: streamsplitter_2, port: out}
+  to: {block: addconst, port: x}
+  route: abutment
+- name: net6
+  from: {block: streamsplitter_3, port: out}
+  to: {block: addconst_2, port: x}
+  route: abutment
+- name: net7
+  from: {block: streamsplitter_4, port: out}
+  to: {block: addconst_3, port: x}
+  route:
+  - {x: 2, y: 8}
+  - {x: 3, y: 8}
+  - {x: 4, y: 8}
+- name: net8
+  from: {block: addconst, port: out}
+  to: {block: tmrvoter, port: a}
+  route:
+  - {x: 2, y: 5}
+  - {x: 3, y: 5}
+- name: net9
+  from: {block: addconst_2, port: out}
+  to: {block: tmrvoter, port: b}
+  route:
+  - {x: 4, y: 3}
+  - {x: 4, y: 4}
+- name: net10
+  from: {block: addconst_3, port: out}
+  to: {block: tmrvoter, port: c}
+  route:
+  - {x: 4, y: 7}
+  - {x: 4, y: 6}
+- name: net11
+  from: {block: tmrvoter, port: out}
+  to: {chip_port: {chip: 0, port: x16_out}}
+  route:
+  - {x: 7, y: 5}
+  - {x: 8, y: 5}
+  - {x: 9, y: 5}
+  - {x: 9, y: 4}
+  - {x: 9, y: 3}
+  - {x: 9, y: 2}
+  - {x: 9, y: 1}
+  - {x: 9, y: 0}
+  out_tag: 11
+- name: net12
+  from: {chip_port: {chip: 0, port: x16_in}}
+  to: {block: gain, port: sample}
+  route:
+  - {x: 0, y: 0}
+  - {x: 1, y: 0}
+  - {x: 2, y: 0}
+  - {x: 3, y: 0}
+  - {x: 4, y: 0}
+  - {x: 4, y: 1}
+  - {x: 5, y: 1}
+  - {x: 6, y: 1}
+  - {x: 7, y: 1}
+  stream_id: solo
+  src_complex: false
+- name: net13
+  from: {block: gain, port: out}
+  to: {chip_port: {chip: 0, port: x16_out}}
+  route:
+  - {x: 7, y: 1}
+  - {x: 8, y: 1}
+  - {x: 9, y: 1}
+  - {x: 9, y: 0}
+  out_tag: 27

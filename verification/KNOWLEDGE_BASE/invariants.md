@@ -4988,3 +4988,65 @@ is the signal to move fan-outs on-chip.
 
 **Related:** INV-32 (corridor/broker deadlocks), INV-36 (hop field), INV-42
 (`output_words` symmetry), INV-56 (quiescence idiom), INV-63 (RAW literals).
+
+---
+
+## INV-67 — A LOCK-rendezvous chip reports `stop_reason == "Deadlock"` for an arbiter-HELD word MID-GROUP while perfectly healthy; the diagnosis-bearing read is the run AFTER the group completes
+
+*(Number assigned at landing — authored by a parallel FOC-wave builder while
+main's highest entry was INV-66.)*
+
+Found 2026-08-31 building `ClarkeTransformBlock` (the N=2 LOCK-by-face join
+family: DualFloatToComplex, FeaturePairJoin, XorJoin, TMRVoter, Clarke — and
+every future N-arm rendezvous, the CordicRotate N=3 join included). Measured
+on the real placed + routed + built two-arm chain.
+
+**THE MEASUREMENT.** Drive the arms one word at a time and read
+`chip.run(...)`'s `stop_reason` after EVERY injection (INV-56 rule 1). With
+the in-lock-order drive (ia then ib) every run reports `"QueueEmpty"`. With
+the out-of-order drive (ib first — exactly what the rendezvous exists to
+survive) the sequence is:
+
+    inject ib   -> stop_reason "Deadlock", completed False   (word HELD)
+    inject ia#1 -> stop_reason "Deadlock", completed False   (still held)
+    inject ia#2 -> stop_reason "QueueEmpty", completed True  (pair emitted)
+
+and the emitted stream is EXACT. The `"Deadlock"` runs are the arbiter doing
+precisely its job: a word delivered to the barred face is held by the LOCK,
+the sender's handshake stays open, and a run that ends with any held word
+reports `Deadlock` — `completed` is `False` and the word count is 0, the
+same three signals a genuine wedge shows (INV-56: neither signal a driver
+checks tells them apart).
+
+**THE RULE.** For a face-locking block, `stop_reason` is only meaningful
+RELATIVE TO THE GROUP BOUNDARY:
+
+* `"Deadlock"` while a group is OPEN (some arms delivered, others not) is the
+  healthy hold signature. Do not chase it.
+* The run that COMPLETES the group, and every drain after it, must report
+  `"QueueEmpty"`. A `"Deadlock"` there is real — it is exactly how the TMR
+  voter's re-lock bug and its one-group-in-flight wall present (INV-46 Rule
+  3).
+
+So a rendezvous suite should PIN both halves: assert the mid-group hold CAN
+report `Deadlock` (so nobody later "fixes" the harness by treating any
+Deadlock as fatal), and assert the post-group flush IS `QueueEmpty` (the gate
+that catches a genuine wedge). `test_clarke_transform.py::
+test_stop_reason_signature_of_a_healthy_rendezvous` is the model.
+
+**COROLLARY (INV-4, mutation-gate teeth measured the same day):** a
+substrate mutant that is GEOMETRY-PRESERVING (same cells, ports, faces —
+a data-word value change, a template arithmetic edit) MUST place, route and
+build; treating its build failure as "rejected, gate passes" makes the gate
+vacuous. Measured: the first cut of Clarke's wrong-constant mutant assigned
+to a frozen `DataWord` field, every build failed with `cannot assign to
+field 'value'` — deterministically, at every anchor — and the mutation gate
+read it as an unroutable-rejection pass without ever running the mutant.
+(`DataWord` is a frozen dataclass: mutate with `dataclasses.replace` and
+rebuild the `data` list.) Reserve the "did not route = rejected" reading for
+mutants that genuinely change geometry (extra cells, spent faces).
+
+LAYER: simulator run-report semantics + verification-harness discipline —
+permanent. **Related:** INV-56 (read stop_reason first; the corollary that one
+case's stop_reason is a sample), INV-46 (the LOCK-rotation family and its
+Rule 3 re-lock deadlock), INV-19 (the lock IS the serialization at N=2).

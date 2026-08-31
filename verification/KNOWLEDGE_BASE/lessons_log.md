@@ -9,6 +9,78 @@ block-specific gotcha. Promote anything that generalizes across block classes in
 and superseded material merged into the surviving entries; no durable lesson was
 dropped) — append new entries above the oldest ones as before.
 
+## ClarkeTransformBlock — FOC wave F1: the XorJoin recipe composes with real Q15 arithmetic and a 2-rail complex emit; three measured gotchas  2026-08-31
+
+Two-input Clarke transform (i_alpha = ia; i_beta = (ia + 2*ib)/sqrt(3)), the
+first block of the FOC motor-control wave. ONE cell, 29/32 words: the
+XorJoinBlock N=2 LOCK-by-face rendezvous (cold-start `initial_lock_face`,
+per-port entries, re-lock LAST, `RENDEZVOUS_FACE_PORTS`, is_face words)
+carried over verbatim, with the XOR replaced by the Q15 datapath and the
+single-rail emit replaced by the ComplexMixer 2-rail (yi/yq) packet —
+`output_registers=[0, 1]` is the load-bearing declaration (every complex
+patcher keys on it). EXACT on the real placed+routed+built chip: edges
+including the +/-0x7FFF corners and all four both-arms-saturated sign
+combinations, a full-scale ladder sweep, 3 random seeds, both arrival
+orders, random interleavings, the saturated queue_words drive, all 8 D4
+orientations. 54 tests, 0 skips. Golden = pinned integer model of the
+shipped arithmetic (C = 18919 = round(32768/sqrt3), truncating MULQ, two
+saturating adds in evaluation order) + a DERIVED float bound (<= 5 LSB off
+the rails; measured worst 3.57).
+
+What made it fit one cell (each proven, not assumed):
+* INV-15 halved-coefficient: 2/sqrt(3) > 1 does not exist in Q15, but its
+  Q14 quantization IS the Q15 word for 1/sqrt(3) (both round to 18919), so
+  ONE data word serves both terms and the ib term is simply added twice.
+* Saturating-add restore from the OPERAND's sign, not a saved accumulator:
+  overflow implies both addends share a sign, so `BR.NV +3; MOVE R0,tb;
+  SHR #15; ADD satpos` needs no `asav` state and no save MOVE — 3 words
+  cheaper per add than the AddBlock form (valid whenever the operand is
+  still in a register at the add).
+* Emit alpha EARLY: `{write:yi}` fires right after the operands are secured,
+  while ia is still in R0 — write ORDER steers the rails, adjacency does
+  not, so the beta arithmetic can run between the two rail writes. Saves a
+  beta StateVar and two MOVEs.
+
+Three measured gotchas, in landing order:
+1. `MOVE [LOCK_FACE], Rn` assembles to a MOVE opcode (dest 35), NOT a
+   Write — so the handoff patchers never touch the rotation and a 2-rail
+   complex rendezvous is safe. (Verified by direct assembly before trusting
+   the fold; the family docstrings never said which opcode it was.)
+2. The structural disassembly gate must restrict its scan to the
+   INSTRUCTION address range (`31 - count_instructions .. 30`): the satpos
+   DATA word 0x7FFF disassembles as `Jump {hop 31, dest 31}` and a whole-
+   memory 'count the Jumps' check fires on a healthy cell.
+3. A geometry-preserving mutant that fails to BUILD is a VACUOUS gate, not
+   a rejection — the wrong-constant mutant assigned to the frozen DataWord
+   dataclass and died at build (`cannot assign to field 'value'`) at every
+   anchor while the gate read 'unroutable = rejected = pass'. Fixed with
+   `dataclasses.replace` + a hard `assert ch is not None` for
+   geometry-preserving mutants. Promoted, with the healthy-Deadlock
+   stop_reason signature below, to the new INV entry (INV-67 at
+   authoring time).
+
+stop_reason, measured per-injection (INV-56 discipline): an out-of-order arm
+drive reports `"Deadlock"`/completed=False for every run while the arbiter
+HOLDS the early word, then `"QueueEmpty"` on the run that completes the
+pair — the healthy signature CONTAINS Deadlock, and only a Deadlock AFTER
+the group boundary is real. Pinned as its own gate so the distinction
+survives.
+
+All five INV-4 mutants build, run, and FIRE on chip (in-memory program
+mutations — the stale-pyc addendum cannot apply): wrong constant (beta
+scaled 0.5), dropped ia term (beta = sat(2*t_b)), swapped rails ([beta,
+alpha] packets), non-saturating adds (corner wraps 32767 -> 56754, the sign
+flip — fires ONLY at the overflow corner, pinned by a model test showing it
+is byte-identical in range), dropped re-lock (2 packets then desync).
+
+GRC: kyttar_clarke_transform (ia/ib float in, one complex out — the Park
+stage's natural input) + a genuine 1:1 sync_block marker computing the
+float preview with the chip's clamp mirrored; face_ia/face_ib in
+GRC_UNSUPPORTED_PARAMS. Marker io_signature verified under the REAL GR
+interpreter from the repo file (the installed-OOT dtype gate row skips
+until gr-kyttar/install.sh is re-run — flagged to the user; OOT install
+boundary).
+
 ## KeystreamSerializerBlock — hi/lo half-words -> RFC 8439 keystream bytes, 1 cell, exact first build; the count-preserving mutant discipline; gain 1.0 is NOT identity on raw words  2026-08-31
 
 Closes the serializer half of the secure_link entry's WALL 3 (below): a small

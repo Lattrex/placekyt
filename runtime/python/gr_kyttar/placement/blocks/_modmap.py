@@ -137,4 +137,5 @@ BUILTIN_BLOCKS = {
     'LZ4DecoderBlock': 'lz4_decoder_block',
     'LZ4EncoderBlock': 'lz4_encoder_block',
     'XorJoinBlock': 'xor_join_block',
+    'ClarkeTransformBlock': 'clarke_transform_block',
 }

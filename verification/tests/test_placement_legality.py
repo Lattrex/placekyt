@@ -212,6 +212,13 @@ BLOCKS = [
     # would spend a face the rendezvous does not have to spare; catch that here
     # as a geometry regression rather than as an unexplained routing failure.
     ("XorJoinBlock", {}),
+    # Clarke (alpha-beta) transform: the same ONE-cell N=2 LOCK rendezvous as
+    # XorJoin (NEEDS_DISTINCT_INPUT_FACES) with the Q15 arithmetic folded into
+    # the got_ib entry and a 2-rail complex emit. Covered for the same reason:
+    # a future change that grew it a second cell would spend a face the
+    # rendezvous does not have to spare (INV-46: N + 2 = 4 at N=2) — catch
+    # that here as a geometry regression, not a routing mystery.
+    ("ClarkeTransformBlock", {}),
     # TMR majority voter: 4-cell COLINEAR chain (rendezvous -> agree -> disagree
     # -> emit). Its shape is dictated by a face budget, not by convenience — the
     # N=3 rendezvous needs all four of its faces (three arms + the forward), so

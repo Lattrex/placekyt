@@ -1,0 +1,65 @@
+id: kyttar_clarke_transform
+label: Kyttar Clarke Transform
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar Clarke Transform — the two-current Clarke (abc -> alpha-beta)
+  transform for 3-phase motor control (FOC):
+
+      i_alpha = ia
+      i_beta  = (ia + 2*ib) / sqrt(3)
+
+  The amplitude-invariant two-current form: with ia + ib + ic = 0 the third
+  phase current is redundant, so only ia and ib are sensed — the standard
+  two-shunt FOC front end. The output is ONE complex stream,
+  i_alpha + j*i_beta, the natural input for the Park rotation stage that
+  follows in a field-oriented control loop.
+
+  On the chip this is ONE cell. The two phase currents come from two separate
+  chains firing at independent, asynchronous times, so the cell tells the
+  streams apart by their ARRIVAL FACE: it uses the arbiter LOCK to accept
+  input from exactly one face at a time, advancing ia -> ib -> ia. A word on
+  the other face is simply held by the arbiter until it is that face's turn,
+  so the pairing survives ANY interleaving. Because the arrival face IS the
+  stream identity, the two inputs must reach the block on two DIFFERENT
+  faces; the placer arranges this and a design-rule check rejects a layout
+  where both land on one face.
+
+  Arithmetic is Q15 with SATURATING adds: |i_beta| reaches 1.73 at full-scale
+  same-sign inputs and clamps to the Q15 rails (+0.99997 / -1.0) instead of
+  wrapping. The 1/sqrt(3) and 2/sqrt(3) gains are exact Q15 constants (the
+  2/sqrt(3) coefficient is stored halved and applied twice).
+
+  Semantics: one complex sample per matched (ia, ib) pair, in order; no
+  output is ever emitted from a single arm; a starved arm STALLS the block
+  (it never reuses a stale operand) and resumes correctly when the missing
+  word arrives.
+
+  This block runs on the Kyttar chip. Place it between KyttarSource blocks
+  and a KyttarSink, and ensure the device_id matches your KyttarDevice.
+
+  Parameters:
+  - Device ID: ID of the KyttarDevice block
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.clarke_transform(device_id=${device_id})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+
+inputs:
+  - label: ia
+    dtype: float
+  - label: ib
+    dtype: float
+
+outputs:
+  - label: out
+    dtype: complex
+
+file_format: 1

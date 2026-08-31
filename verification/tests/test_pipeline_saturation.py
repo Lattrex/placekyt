@@ -618,6 +618,22 @@ NEEDS_BESPOKE = {
         "a mis-pairing (every cross-sample XOR is disjoint from every correct "
         "one), which matters more here than elsewhere because a desynced XOR "
         "emits a plausible-looking byte rather than an obvious failure.",
+    "ClarkeTransformBlock": "2-FACE LOCK RENDEZVOUS with TWO INDEPENDENT "
+        "upstream producers (the XorJoinBlock topology with the Q15 Clarke "
+        "alpha-beta arithmetic and a 2-rail complex emit instead of the XOR): "
+        "a 'sample' is one word on each of two DISTINCT faces from two "
+        "SEPARATE blocks, so no shared harness can drive it. Its saturated "
+        "behaviour is gated BESPOKE in "
+        "test_clarke_transform.py::test_saturated_equals_per_sample, which "
+        "enqueues the WHOLE burst (both arms, every sample — INCLUDING the "
+        "both-arms-saturated overflow pairs, so the saturating-add clamp "
+        "paths run under load) as raw WRITE/DATA/JUMP words via "
+        "queue_words_physical with NO inter-sample quiescence anywhere, and "
+        "asserts the VALUES and the one-packet-per-pair COUNT against the "
+        "per-sample drive. It PASSES structurally (the XorJoin argument): at "
+        "N=2 the face budget (INV-46: N + 2 = 4) lets the whole rendezvous + "
+        "datapath be ONE cell, and the arbiter LOCK it already carries IS the "
+        "serialization INV-19 prescribes — no internal datapath to pile into.",
     # INV-20 fan-in FIXED (2026-07-21): NCO + FrequencyModulator had the SAME phase->2-arm
     # ->emit reconvergent fan-in as the pre-fix ComplexMixer. The pipeline_lock=True
     # serialize-LOCK (relay arm-serializer + emit dual-FACE unlock + sign-inline interp)

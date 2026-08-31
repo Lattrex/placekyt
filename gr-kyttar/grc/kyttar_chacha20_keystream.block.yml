@@ -4,7 +4,8 @@ category: '[Kyttar]/FEC'
 
 templates:
   imports: from gnuradio import kyttar
-  make: kyttar.chacha20_keystream(${device_id}, ${key}, ${nonce}, ${counter})
+  make: kyttar.chacha20_keystream(${device_id}, ${key}, ${nonce}, ${counter},
+    ${counter_mode})
 
 parameters:
 - id: device_id
@@ -23,6 +24,12 @@ parameters:
   label: Block counter
   dtype: int
   default: '1'
+- id: counter_mode
+  label: Counter mode
+  dtype: enum
+  options: ['"fixed"', '"increment"']
+  option_labels: [Fixed, Increment per batch]
+  default: '"fixed"'
 
 inputs:
 - id: '0'
@@ -58,6 +65,15 @@ documentation: |-
   bytes, both given as hex strings; a wrong length raises rather than being
   silently padded.
 
+  Counter mode selects what a SECOND trigger computes. "fixed" (default):
+  every batch re-boots the whole state, so every trigger recomputes the SAME
+  keystream block. "increment": the 32-bit block counter persists across
+  batches and advances by one per batch — batch N emits block(key, nonce,
+  counter + N), exactly as RFC 8439 section 2.4 consumes the block function.
+  Increment mode is what multi-block encryption (any payload over 64 bytes)
+  needs: verified on chip against the RFC's own section 2.4.2 multi-block
+  vector, including the carry across a 0xFFFF counter.
+
   Ports:
     in  (in):  trigger words — one keystream block per trigger
     out:       raw 16-bit words, 32 per trigger (hi/lo pairs, RFC order)
@@ -67,6 +83,8 @@ documentation: |-
     Key:       the 256-bit key, 64 hex digits, RFC 8439 little-endian parsing.
     Nonce:     the 96-bit nonce, 24 hex digits.
     Block counter: the 32-bit initial block counter.
+    Counter mode:  "fixed" (recompute block counter every trigger) or
+                   "increment" (consecutive triggers emit consecutive blocks).
 
   Mapped by placeKYT (File -> Import GNURadio Flowgraph) to
   ChaCha20KeystreamBlock.

@@ -40,6 +40,11 @@ class chacha20_keystream(_PassThrough):
                    bytes object), parsed little-endian per RFC 8439 §2.3.
         nonce:     the 96-bit nonce — 12 bytes / 24 hex digits.
         counter:   the 32-bit initial block counter.
+        counter_mode: "fixed" (default — every trigger recomputes block
+                   ``counter``) or "increment" (the counter persists across
+                   batches and advances by one per batch, so consecutive
+                   triggers emit CONSECUTIVE keystream blocks — RFC 8439
+                   §2.4's consumption, what multi-block encryption needs).
 
     Input:  trigger words — one keystream block per trigger.
     Output: raw 16-bit words, 32 per trigger (the sixteen §2.3.2 state words
@@ -53,17 +58,22 @@ class chacha20_keystream(_PassThrough):
                  key="000102030405060708090a0b0c0d0e0f"
                      "101112131415161718191a1b1c1d1e1f",
                  nonce="000000090000004a00000000",
-                 counter: int = 1):
+                 counter: int = 1,
+                 counter_mode: str = "fixed"):
         super().__init__(name="Kyttar ChaCha20 Keystream", n_in=1, n_out=1,
                          in_dtype=np.int16, out_dtype=np.int16)
+        if counter_mode not in ("fixed", "increment"):
+            raise ValueError(
+                f"counter_mode is 'fixed' or 'increment'; got {counter_mode!r}")
         self._device_id = device_id
         self._key = _to_bytes(key, 32, "key")
         self._nonce = _to_bytes(nonce, 12, "nonce")
         self._counter = int(counter) & 0xFFFFFFFF
+        self._counter_mode = counter_mode
         self._advertise_grc_params(
             device_id, "ChaCha20KeystreamBlock",
             {"key": self._key, "nonce": self._nonce,
-             "counter": self._counter})
+             "counter": self._counter, "counter_mode": counter_mode})
 
     @property
     def block_words(self) -> int:

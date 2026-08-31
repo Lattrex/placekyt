@@ -352,6 +352,72 @@ the new files; placement 364 green; placekyt/tests green (one pre-existing
 flake: the server-autostart test loses port 58950 to a concurrently running
 userpath suite, not a code change). Engine and router untouched.
 
+## ChaCha20KeystreamBlock revision — counter_mode="increment": consecutive batches are consecutive RFC 8439 blocks, on chip, in the SAME 51 cells  2026-08-31
+
+The shipped block recomputes block `counter` on every trigger — correct as a
+block function, useless past 64 bytes of payload. The revision adds a
+parameter-selected COUNTER-INCREMENT mode (batch N emits
+`block(key, nonce, counter+N)`, RFC 8439 §2.4's consumption) with fixed mode
+measured BYTE-IDENTICAL to the shipped programs (a probe diffed every cell's
+template/ports/state/data against `git show HEAD` — NONE differ), so all 38
+shipped gates bind to unchanged bytes. No new cells: the increment lives in
+`drn` (17 words spare going in; 22 instr / base 9 / max pin 6 coming out) with
+`tap3` as a 6-instruction relay (24 / base 7 / max pin 5).
+
+What made it land first-try on chip — and what the next batch-evolving block
+should copy (promoted to the INV-NEXT entry in invariants.md):
+
+* **`reset_per_batch` restores by REGISTER, so "don't reset the counter slot"
+  is NOT persistence.** The row registers hold post-drain garbage at a batch
+  boundary; the initial state exists only as boot/reset VALUES. Persistence
+  needs an OWNER pair excluded from the reset spec (`drn`'s `ch`/`cl` — the
+  block's only non-resetting StateVars) plus on-chip writes that re-derive
+  every baked COPY of the word before the next batch consumes it. Exactly six
+  registers leave the reset spec (owner + row3 `s0h/s0l` + add3 `k0h/k0l`),
+  gated as a set-difference so a stale-state regression is loud.
+* **Increment at the END of the batch, where every copy is at a KNOWN
+  rotation.** At `drn.done` (fourth drain lap closed) the row is idle — its
+  slot-0 registers are about to become the next batch's boot state — and
+  `add3`'s addend register has rotated exactly 4 times = identity, so its
+  slot-0 addresses hold the counter again. An increment at batch START would
+  have to race the reset writes and the first publish; at batch end it races
+  nothing.
+* **Delivery reachability is about where a walk ENDS, not what it can
+  transit.** No walk in the block ends at `add3`: all four neighbours'
+  resting faces forward PAST it (bufB3/tap3 east, spad2 west, bufA3 north),
+  so the addend write MUST be an authored flip from an abutting cell.
+  Surveying the four: bufA3 has 0 spare words, bufB3 5, spad2 26 (but is
+  itself unreachable — its own neighbours all forward past IT), tap3 ~7 AND
+  already owns the north flip for its drain path. So: `drn` parks the halves
+  in `tap3`'s idle `h`/`l` inputs (hop 8 on the very walk its drain spins
+  ride — zero new face constants in `drn`) and `tap3.bump` plays two literal
+  `WRITE @1`s into `add3`'s pinned `k0h`/`k0l` addresses (operands resolved
+  from the adder's real program at build time, INV-63's discipline — the
+  slot is a DataWord pair, not a port, exactly like row3's slot is a StateVar
+  pair, so BOTH counter deliveries are authored literals, not declared
+  edges). `bump` falls through into `arm` — idempotent re-arm, one word
+  cheaper than a HALT.
+* **Emission order inside `done` is load-bearing (INV-52):** `{jump:rel}`
+  leaves LAST so the release trigger — which transiently flips `tap0` —
+  trails every counter word down the single-file state line. A counter word
+  behind that flip would deflect north into the reorder band.
+
+GATES (`test_chacha20_counter_increment.py`, 16): SEVEN consecutive on-chip
+batches, each ALL SIXTEEN words bit-exact in §2.3.2 order vs
+`block_function(counter+k)`, `stop_reason == "QueueEmpty"` read every batch;
+the 0xFFFF→0x10000 carry seam driven explicitly (counter0=0xFFFF); §2.4.2
+multi-block encryption reproduced from ON-CHIP keystream; the shipped budget/
+fold-walk/backward-jump/positional-pairing gates re-run over the increment
+programs (zero exemptions). INV-4: three REAL on-chip mutants, each built +
+placed + routed + run — frozen counter (`ADD cl, one`→`ADD cl, zero`) passes
+batch 0 and repeats it forever, failing every later batch (keystream reuse,
+the exact reason a single-batch gate certifies nothing); carry-less increment
+(`ADC`→`ADD`) is bit-perfect below the seam and wraps to block 0 at it (the
+failure SHAPE is asserted, not just inequality); and an increment-mode chip
+fails the shipped fixed-mode second-batch equality, proving the mode gates
+each other. Suites: chacha 38+23+69 shipped + 16 new, binding 516, placekyt
+1219, all green; fixed-mode byte-identity re-proven after the final edit.
+
 ## examples/tmr_pipeline — DONE: TMR + single-path co-resident on one array, both streams exact on chip and through the hosted user path  2026-08-31
 
 Assembly of proven blocks (StreamSplitter ×4, AddConst ×3, TMRVoter, Gain), so

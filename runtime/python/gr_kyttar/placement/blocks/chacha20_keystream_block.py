@@ -305,6 +305,24 @@ class ChaCha20KeystreamBlock(KyttarBlock):
     The algebra is separately verified exact against RFC 8439 §2.3.2 and
     §2.4.2 (with eight INV-4 mutants) in the same test file.
 
+    COUNTER MODES — what a second trigger computes
+    ==============================================
+
+    ``counter_mode="fixed"`` (default): key/nonce/counter are boot-time
+    constants and every batch re-boots the whole state, so every trigger
+    recomputes the SAME keystream block. ``counter_mode="increment"``: the
+    32-bit block counter PERSISTS across batches and advances by one per
+    batch — batch ``N`` emits ``block(key, nonce, counter + N)``, which is
+    exactly how RFC 8439 §2.4 consumes the block function and what multi-block
+    encryption needs. The authoritative counter lives in ``drn`` (the block's
+    one non-resetting StateVar pair); at the END of each batch — the one
+    schedule point where both baked copies of state word 12 are at a known
+    rotation — ``drn.done`` increments it 32-bit-wide and pushes it into
+    row3's slot-0 registers (authored literal writes on its own resting walk)
+    and, via ``tap3``'s bump relay, into ``add3``'s slot-0 addend. Those three
+    32-bit counter copies (six hi/lo registers) are the only ones excluded
+    from the batch reset. See :meth:`_drn` and :meth:`_tap`.
+
     Interface:
         - Entry: ``seq``'s default entry; one trigger runs the whole block.
         - Output: 32 raw 16-bit words (16 state words, hi then lo).
@@ -357,7 +375,8 @@ class ChaCha20KeystreamBlock(KyttarBlock):
     def __init__(self, name: str,
                  key: bytes = bytes(range(32)),
                  nonce: bytes = bytes.fromhex("000000090000004a00000000"),
-                 counter: int = 1):
+                 counter: int = 1,
+                 counter_mode: str = "fixed"):
         """RFC 8439 §2.3 block function.
 
         ``key`` is 32 bytes, ``nonce`` 12 bytes and ``counter`` a 32-bit block
@@ -367,8 +386,26 @@ class ChaCha20KeystreamBlock(KyttarBlock):
         They are build-time constants here: the initial state they define is
         baked into the finish stage as data words, which is what removes the
         need for a shadow copy of the state.
+
+        ``counter_mode`` selects what a SECOND trigger computes:
+
+        * ``"fixed"`` (default, the shipped behaviour) — every batch re-boots
+          the whole 16-word state, so every trigger recomputes THE SAME
+          keystream block ``counter``.
+        * ``"increment"`` — the block counter PERSISTS across batches and
+          advances by one per batch, exactly as RFC 8439 §2.4 consumes the
+          block function: batch ``N`` computes ``block(key, nonce,
+          counter + N)`` while the other fifteen state words still re-boot.
+          This is what makes multi-block encryption (a >64-byte payload) a
+          sequence of triggers instead of a sequence of reflashes. See
+          :meth:`_drn` for where the increment lives.
         """
-        super().__init__(name, key=key, nonce=nonce, counter=counter)
+        if counter_mode not in ("fixed", "increment"):
+            raise ValueError(
+                f"counter_mode is 'fixed' or 'increment'; got {counter_mode!r}")
+        super().__init__(name, key=key, nonce=nonce, counter=counter,
+                         counter_mode=counter_mode)
+        self.counter_mode = counter_mode
         # A GRC parameter arrives as a HEX STRING (the binding's dtype is
         # string — GRC has no bytes dtype), so coerce str -> bytes here rather
         # than requiring every caller to pre-parse. Length is still enforced
@@ -425,16 +462,27 @@ class ChaCha20KeystreamBlock(KyttarBlock):
         # and re-boots to them at every packet boundary (``reset_per_batch``),
         # so a second trigger recomputes the block from a cold start rather than
         # continuing to permute whatever the last run left behind.
+        #
+        # The ONE exception is the COUNTER SLOT in increment mode: state word
+        # 12 is row3's slot 0, and in ``counter_mode="increment"`` its two
+        # registers are EXCLUDED from the batch-reset spec — the drain
+        # sequencer overwrites them with the incremented counter at the END of
+        # each batch (a point where the row is idle and the value is about to
+        # become the NEXT batch's boot state), and a reset write after that
+        # would clobber the increment back to the boot constant. The other
+        # three words of this row (the nonce) still reset. See :meth:`_drn`.
         init = [self._initial[4 * k + i] for i in range(4)]
         st = []
         for i in range(4):
+            resets = not (self.counter_mode == "increment"
+                          and k == 3 and i == 0)
             st.append(StateVar(f"s{i}h", register=3 + 2 * i,
                                initial_value=(init[i] >> 16) & MASK16,
-                               reset_per_batch=True,
+                               reset_per_batch=resets,
                                reset_value=(init[i] >> 16) & MASK16))
             st.append(StateVar(f"s{i}l", register=4 + 2 * i,
                                initial_value=init[i] & MASK16,
-                               reset_per_batch=True,
+                               reset_per_batch=resets,
                                reset_value=init[i] & MASK16))
         return CellProgram(
             inputs=[Port("nh", register=1), Port("nl", register=2)],
@@ -466,7 +514,8 @@ wb:
         )
 
     @staticmethod
-    def _tap(last: bool, is_relay: bool = False) -> CellProgram:
+    def _tap(last: bool, is_relay: bool = False,
+             bump_addrs: Tuple[int, int] = None) -> CellProgram:
         """Steers one row's published pair to the quarter round or to the adder.
 
         The row has ONE publish path — it cannot afford two, and a ``WRITE``'s
@@ -502,6 +551,24 @@ wb:
         arming only the first tap leaves three of them still in compute mode.
         Both were measured here: the ring ran all 80 laps correctly, ``tap0.arm``
         fired exactly once, and then nothing at all happened.
+
+        ``bump_addrs`` (increment mode, ``tap3`` only) adds the COUNTER-BUMP
+        relay entry. ``add3``'s slot-0 addend is the counter's add-back copy
+        and must take the incremented counter once per batch, but NO walk in
+        the block ends at ``add3`` except a one-hop emission from a neighbour
+        — every neighbour's resting face forwards PAST it (bufB3 east, tap3
+        east, spad2 west, bufA3 north), so a delivery must be an authored
+        flip from one of them, and ``tap3`` is the one with the words to
+        spare AND the north flip already paid for. ``drn.done`` parks the new
+        counter halves in this cell's idle ``h``/``l`` inputs and triggers
+        ``bump``, which flips NORTH (the existing ``f_in``), plays the two
+        halves into ``add3``'s pinned ``k0h``/``k0l`` addresses as authored
+        literal hop-1 ``WRITE``s (the addresses are RESOLVED from ``add3``'s
+        real program at build time — INV-63's discipline), and restores. It
+        deliberately FALLS THROUGH into ``arm``: re-arming an armed tap is
+        idempotent (the mode flag is batch-reset at the boundary anyway), and
+        the fall-through is one instruction cheaper than a ``HALT`` in a cell
+        whose INV-33 margin the entry has already eaten most of.
         """
         qr_tail = "" if last else "    {jump:nq}\n"
         # At the END of the tap line a drain lap CLOSES. Each row holds four
@@ -544,6 +611,21 @@ wb:
             "    MOVE [FACE], R{data:f_in}\n"
             "    {jump:rel}\n"
             "    MOVE [FACE], R{data:f_ring}\n")
+        # The COUNTER-BUMP relay (increment mode, `tap3` only) -- see the
+        # docstring. It sits BETWEEN `drain` and `arm` and falls through into
+        # `arm` (idempotent, one word cheaper than a HALT). The two WRITEs are
+        # authored hop-1 literals into `add3`'s pinned addend addresses --
+        # `add3` is directly north, the same abutment the drain path's
+        # `ah`/`al` ride -- because the addend slots are DataWords, not
+        # declared input ports.
+        bump_body = "" if bump_addrs is None else (
+            "bump:\n"
+            "    MOVE [FACE], R{data:f_in}\n"
+            "    MOVE R0, R{in:h}\n"
+            f"    WRITE @1, {int(bump_addrs[0])}\n"
+            "    MOVE R0, R{in:l}\n"
+            f"    WRITE @1, {int(bump_addrs[1])}\n"
+            "    MOVE [FACE], R{data:f_ring}\n")
         return CellProgram(
             inputs=[Port("h", register=1), Port("l", register=2)],
             outputs=([Port("q"), Port("ah"), Port("al")]
@@ -551,7 +633,8 @@ wb:
                         else [Port("nq"), Port("narm")])
                      + ([Port("rel")] if is_relay else [])),
             entries=([EntryPoint("default"), EntryPoint("arm")]
-                     + ([EntryPoint("rel")] if is_relay else [])),
+                     + ([EntryPoint("rel")] if is_relay else [])
+                     + ([EntryPoint("bump")] if bump_addrs else [])),
             # The tap serves TWO directions: along the ring (its resting face)
             # to the collector and the next row, and INWARD to its adder. A cell
             # has exactly one outgoing walk, so the second direction costs an
@@ -595,6 +678,7 @@ drain:
     MOVE [FACE], R{data:f_ring}
 """ + add_tail + """\
     HALT
+""" + bump_body + """\
 arm:
     MOVE R{state:mode}, R{data:f_ring}
 """ + arm_tail + rel_body,
@@ -863,8 +947,7 @@ arm:
             assembly_template=body,
         )
 
-    @staticmethod
-    def _drn() -> CellProgram:
+    def _drn(self) -> CellProgram:
         """The DRAIN sequencer — run the finish four times, one slot per lap.
 
         Each row holds four 32-bit words and one drain lap publishes only the
@@ -917,21 +1000,66 @@ arm:
         TIME half — the lap-close baton that triggered this fourth entry was
         itself fired from the END of the store wave (``bufA3``, after its
         spill hand-off), so the release is causally after every store.
+
+        THE COUNTER INCREMENT lives here too (``counter_mode="increment"``)
+        ---------------------------------------------------------------------
+
+        RFC 8439 §2.4 consumes the block function with a counter that advances
+        by one per 64-byte block. On this fold the live counter is TWO baked
+        copies of state word 12 — row3's slot 0 (the word the rounds permute)
+        and ``add3``'s slot-0 addend (the add-back) — both restored to the boot
+        constant by the batch reset, which is why fixed mode recomputes block
+        ``counter`` forever.
+
+        In increment mode THIS cell owns the authoritative counter (``ch``/
+        ``cl``, the one StateVar pair in the block that does NOT
+        ``reset_per_batch``) and its ``done`` entry — the moment the fourth
+        drain lap closes — increments it 32-bit-wide (``ADD``/park/``ADC``/park,
+        INV-45's carry-on-the-MOVE idiom) and pushes the new value into both
+        baked copies for the NEXT batch:
+
+        * **row3 slot 0** — two AUTHORED LITERAL ``WRITE @{{hop}}``s straight
+          into the row's pinned ``s0h``/``s0l`` registers, riding this cell's
+          own RESTING-face walk (row3 is hop 7 on the very walk the drain spins
+          use — no flip, no new face constant). Literals because the slot is a
+          StateVar, not a declared input port, and the operands are RESOLVED
+          from row3's real program + the geometry at build time, never
+          hand-typed (the INV-63 discipline).
+        * **add3 slot-0 addend** — this cell cannot reach ``add3`` (no walk
+          from here ends there; every neighbour of ``add3`` forwards PAST it),
+          so the value is parked in ``tap3``'s idle ``h``/``l`` inputs (hop 8,
+          same resting walk) and ``tap3.bump`` — the one cell that already owns
+          the NORTH flip onto ``add3`` — relays it in (see :meth:`_tap`).
+
+        WHY THE END of the batch and not the start: this is the one point in
+        the schedule where BOTH copies are at a known rotation — the row is
+        idle with its slot registers about to become the next batch's boot
+        state, and ``add3``'s addend register has rotated exactly four times
+        (= identity) so its slot-0 addresses hold the counter again. The
+        emission ORDER inside ``done`` is load-bearing: ``{{jump:rel}}`` goes
+        LAST so the release trigger (which transiently flips ``tap0``) trails
+        every counter word down the state line — a word behind a flipping
+        transit cell would deflect (INV-52).
+
+        Fixed mode ships the EXACT program it always had — the increment form
+        is a separate template selected by the parameter, so the shipped gates
+        bind to unchanged bytes.
         """
-        return CellProgram(
-            inputs=[Port("go", register=1)],
-            outputs=[Port("s0"), Port("s1"), Port("s2"), Port("s3"),
-                     Port("pub"), Port("rel")],
-            entries=[EntryPoint("default")],
-            data=[DataWord("one", 1, address=2)],
-            state=[StateVar("lap", register=3, initial_value=4,
-                            reset_per_batch=True, reset_value=4)],
-            # `done` is no longer a bare HALT: the fourth lap is when every
-            # buffer pair is full, so it is exactly the moment to start the
-            # release. `row0` is hop 1 on this cell's own RESTING face -- the
-            # same walk its four drain spins ride -- so the hand-off needs no
-            # face constant and no flip at all.
-            assembly_template="""\
+        if self.counter_mode != "increment":
+            return CellProgram(
+                inputs=[Port("go", register=1)],
+                outputs=[Port("s0"), Port("s1"), Port("s2"), Port("s3"),
+                         Port("pub"), Port("rel")],
+                entries=[EntryPoint("default")],
+                data=[DataWord("one", 1, address=2)],
+                state=[StateVar("lap", register=3, initial_value=4,
+                                reset_per_batch=True, reset_value=4)],
+                # `done` is no longer a bare HALT: the fourth lap is when every
+                # buffer pair is full, so it is exactly the moment to start the
+                # release. `row0` is hop 1 on this cell's own RESTING face --
+                # the same walk its four drain spins ride -- so the hand-off
+                # needs no face constant and no flip at all.
+                assembly_template="""\
 default:
     SUB R{state:lap}, R{data:one}
     MOVE R{state:lap}, R0
@@ -944,6 +1072,66 @@ default:
     HALT
 done:
     {jump:rel}
+""",
+            )
+        # --- increment mode. The literal operands are DERIVED, never typed:
+        # row3's slot-0 registers from its real program, and the hop from the
+        # block's own geometry (drn's resting walk enters the state line at
+        # row0 and runs east, so row3 sits at 1 + its column offset — the same
+        # arithmetic the fold gate asserts as hops 1/3/5/7).
+        row3 = self._row(3)
+        regs = {sv.name: sv.register for sv in row3.state}
+        g = self._geometry()
+        row_hop = 1 + (g["row3"][0] - g["row0"][0])
+        counter0 = self.counter
+        return CellProgram(
+            inputs=[Port("go", register=1)],
+            outputs=[Port("s0"), Port("s1"), Port("s2"), Port("s3"),
+                     Port("pub"), Port("rel"),
+                     Port("cbh"), Port("cbl"), Port("bump")],
+            entries=[EntryPoint("default")],
+            data=[DataWord("one", 1, address=2),
+                  DataWord("zero", 0, address=3)],
+            # `ch`/`cl` are the block's ONE non-resetting StateVar pair: the
+            # 32-bit block counter, hi/lo. They boot to the `counter` param and
+            # then advance once per batch, surviving every packet boundary.
+            state=[StateVar("lap", register=4, initial_value=4,
+                            reset_per_batch=True, reset_value=4),
+                   StateVar("ch", register=5,
+                            initial_value=(counter0 >> 16) & MASK16),
+                   StateVar("cl", register=6,
+                            initial_value=counter0 & MASK16)],
+            # `done`, in order: advance the counter (the ADD's carry rides the
+            # flag-preserving MOVE into the ADC — INV-45), park both halves
+            # into row3's slot-0 registers and tap3's h/l, fire tap3's bump
+            # relay, and ONLY THEN start the release. All six emissions ride
+            # the resting face; `{jump:rel}` is deliberately the last word out
+            # so the release trigger trails the counter words through `tap0`.
+            assembly_template=f"""\
+default:
+    SUB R{{state:lap}}, R{{data:one}}
+    MOVE R{{state:lap}}, R0
+    BR.Z done
+    {{jump:s0}}
+    {{jump:s1}}
+    {{jump:s2}}
+    {{jump:s3}}
+    {{jump:pub}}
+    HALT
+done:
+    ADD R{{state:cl}}, R{{data:one}}
+    MOVE R{{state:cl}}, R0
+    ADC R{{state:ch}}, R{{data:zero}}
+    MOVE R{{state:ch}}, R0
+    WRITE @{row_hop}, {int(regs["s0h"])}
+    MOVE R0, R{{state:cl}}
+    WRITE @{row_hop}, {int(regs["s0l"])}
+    MOVE R0, R{{state:ch}}
+    {{write:cbh}}
+    MOVE R0, R{{state:cl}}
+    {{write:cbl}}
+    {{jump:bump}}
+    {{jump:rel}}
 """,
         )
 
@@ -1262,10 +1450,20 @@ finish:
         ks = [self._initial[4 * k + i] for i in range(4)]
         data = []
         for i, v in enumerate(ks):
+            # In increment mode ``add3``'s slot-0 addend IS the live counter's
+            # add-back copy: the addend register rotates exactly four times per
+            # batch (once per drain lap), so at every batch boundary it is back
+            # at identity rotation and ``k0h``/``k0l`` hold the CURRENT
+            # counter, which ``tap3``'s bump relay overwrites with the
+            # incremented one at the end of each batch. Excluding the pair from
+            # the batch-reset spec is what lets that write survive the
+            # boundary; the nonce addends still reset. See :meth:`_drn`.
+            resets = not (self.counter_mode == "increment"
+                          and k == 3 and i == 0)
             data.append(DataWord(f"k{i}h", (v >> 16) & MASK16,
-                                 address=1 + 2 * i, reset_per_batch=True))
+                                 address=1 + 2 * i, reset_per_batch=resets))
             data.append(DataWord(f"k{i}l", v & MASK16,
-                                 address=2 + 2 * i, reset_per_batch=True))
+                                 address=2 + 2 * i, reset_per_batch=resets))
         return CellProgram(
             inputs=[Port("vh", register=9), Port("vl", register=10)],
             outputs=[Port("oh"), Port("ol")],
@@ -1517,6 +1715,14 @@ rel:
         while emitting nothing (INV-47's wiring rule).
         """
         qr = ChaCha20QRBlock(f"{self.name}_qr").build_cell_programs()
+        # In increment mode `tap3` carries the counter-bump relay, whose two
+        # literal WRITEs land in `add3`'s pinned slot-0 addend addresses --
+        # resolved from the adder's REAL program here (a probe instance of the
+        # very builder used below), never hand-typed (INV-63, INV-6/11).
+        bump_addrs = None
+        if self.counter_mode == "increment":
+            a3 = {d.name: d.address for d in self._adder(3, last=True).data}
+            bump_addrs = (int(a3["k0h"]), int(a3["k0l"]))
         progs: Dict[Any, CellProgram] = {}
         for cid in RING:                       # ring order == layout order
             if cid == "wb":
@@ -1527,9 +1733,12 @@ rel:
                 progs[cid] = self._row(int(cid[3:]))
             elif cid.startswith("tap"):
                 # `tap0` doubles as the release trigger's hop into the
-                # reorder band -- see :meth:`_tap`.
-                progs[cid] = self._tap(last=(cid == "tap3"),
-                                       is_relay=(cid == "tap0"))
+                # reorder band; `tap3` (increment mode) as the counter-bump
+                # relay -- see :meth:`_tap`.
+                progs[cid] = self._tap(
+                    last=(cid == "tap3"),
+                    is_relay=(cid == "tap0"),
+                    bump_addrs=(bump_addrs if cid == "tap3" else None))
             elif cid == "wbk":
                 progs[cid] = self._wbk()
             elif cid == "drn":
@@ -1662,6 +1871,15 @@ rel:
             conns.append((cid, "o0l", "out", "v0l"))
             conns.append((cid, "o1h", "out", "v1h"))
             conns.append((cid, "o1l", "out", "v1l"))
+        # THE COUNTER BUMP's parking writes (increment mode): `drn.done` parks
+        # the incremented counter halves in `tap3`'s idle `h`/`l` inputs --
+        # hop 8 on `drn`'s own resting walk, the same conveyor its drain spins
+        # ride -- for the bump relay to play into `add3`. (Its writes into
+        # row3's slot-0 registers are authored literals, not declared edges:
+        # the slot is a StateVar pair, not an input port.)
+        if self.counter_mode == "increment":
+            conns.append(("drn", "cbh", "tap3", "h"))
+            conns.append(("drn", "cbl", "tap3", "l"))
         # in0 spills into in1, and the two collectors fill the compute head.
         conns.append(("in0", "spill", "in1", "sp"))
         head = QR_CELLS[2]
@@ -1777,6 +1995,13 @@ rel:
         # and north again into the head of the chain. Each of those three hops
         # rides a walk the block already had (`wb` even reuses its existing
         # NORTH constant); only `drn` and `seq` gain a face.
+        # THE COUNTER BUMP's trigger (increment mode): after parking the new
+        # counter in `tap3`, `drn.done` fires its bump relay -- a FORWARD edge
+        # (tap3 follows drn in program order) on the same resting walk, emitted
+        # BEFORE `{jump:rel}` so the release trigger (which transiently flips
+        # `tap0`) trails every counter word down the state line.
+        if self.counter_mode == "increment":
+            jumps.append(("drn", "bump", "tap3", "bump"))
         jumps.append(("drn", "rel", "tap0", "rel"))
         jumps.append(("tap0", "rel", "bufB0", "rel"))
         # ...and then the chain walks itself, stage by stage, eastward along the
@@ -2078,14 +2303,18 @@ rel:
         """The RFC 8439 §2.3 block function for this block's key/nonce/counter.
 
         The block takes no data input — one trigger emits one 64-byte keystream
-        block — so ``input_words`` only sets HOW MANY blocks are produced, with
-        the counter incrementing per block exactly as §2.3 specifies.
+        block — so ``input_words`` only sets HOW MANY blocks are produced.
+        Block ``b``'s counter follows ``counter_mode``: in ``"increment"`` it
+        is ``counter + b`` (§2.4's keystream consumption, what the chip does
+        across batches); in ``"fixed"`` every block is block ``counter`` —
+        which IS what the shipped fixed-mode chip computes on every trigger.
         """
         n = max(1, len(np.asarray(input_words).ravel()))
         out: List[int] = []
         for b in range(n):
-            for v in block_function(self.key, self.nonce,
-                                    (self.counter + b) & MASK32):
+            ctr = (self.counter + (b if self.counter_mode == "increment"
+                                   else 0)) & MASK32
+            for v in block_function(self.key, self.nonce, ctr):
                 out.append((v >> 16) & MASK16)
                 out.append(v & MASK16)
         return np.array(out, dtype=np.uint16)

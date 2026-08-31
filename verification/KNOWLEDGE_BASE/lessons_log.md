@@ -9,6 +9,45 @@ block-specific gotcha. Promote anything that generalizes across block classes in
 and superseded material merged into the surviving entries; no durable lesson was
 dropped) — append new entries above the oldest ones as before.
 
+## examples/tmr_pipeline — DONE: TMR + single-path co-resident on one array, both streams exact on chip and through the hosted user path  2026-08-31
+
+Assembly of proven blocks (StreamSplitter ×4, AddConst ×3, TMRVoter, Gain), so
+few surprises — but three were MEASURED and matter to the next example:
+
+* **`output_words="raw"` is SYMMETRIC — it selects the INPUT encoding too.**
+  INV-42 frames `output_words` as the chain's *output* semantics; on the wire
+  the same `raw` flag makes the server inject each input float as an INTEGER
+  word (`_float_to_raw_i16`), not Q15. So a raw-stream `.grc` must feed the
+  source the word values themselves (byte 5 → float 5.0) — the q15/32768
+  input rescale that every q15 example uses injected ~0.00778-max floats that
+  all truncated to word 0. The symptom was surgical: statuses stayed a
+  perfect `2` (the +1-LSB injector and the whole voter worked) while every
+  voted value was 0, because the actual arm triple was (0, 1, 0). Headless
+  direct-inject gates could never see it — only the hosted user path carries
+  the encoding flag. Gated by `test_shipped_grc_user_path`.
+* **A marker param that is an EXPRESSION imports as the block DEFAULT.**
+  `grc_import._coerce_params` resolves one level of variable substitution
+  then type-coerces; `const: f/32768.0` (f a GRC variable) silently became
+  `const=0.0` — a healthy chip claiming a fault demo. The shipped pattern:
+  the variable itself holds the float literal (`f: 3.0517578125e-05`, exactly
+  one word LSB) and the param is exactly the variable name. The gate pins the
+  imported value (`test_generated_python_carries_the_shipped_flags` +
+  `_inj_b` assertions), so a drift back to an expression fails loudly.
+* **The generic auto-P&R pack cannot place a 3-arm rendezvous; hand-place
+  it.** `auto_pnr` repacks from scratch (anchor seeds are discarded — and
+  `MoveBlockToChipCommand` is the wrong seeding tool anyway: it REMOVES the
+  block's nets). Every pack attempt failed with "no free DISTINCT-face
+  broker" / "no bus path to the broker tap". What ships is the modem-example
+  convention: hand placement (injectors W/N/S of the voter's rendezvous,
+  voter folded east, plain coordinate-shift of the imported provisional
+  cells) + `auto_route_all(use_bus="always")` — deterministic, and re-verified
+  full-ramp by `build_kyt.py` before saving. 12 block cells, 50/120 used.
+
+Also confirmed in passing: the voter's depth-one serialize limit is a
+non-issue behind a per-sample paced source (`pipelined: 'no'`), and the
+per-sample settle `stop_reason` (INV-56) read on all 256 samples × every gate
+case stayed `QueueEmpty` throughout.
+
 ## Poly1305MACBlock — DONE (block 120, the queue's last): the RFC 8439 §2.5.2 tag EXACT on chip, from an ALL-SERIAL redesign that made pass 1's hazard class unreachable  2026-08-30
 
 **Headline: the full 16-byte §2.5.2 tag — all eight words — on the real

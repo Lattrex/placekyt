@@ -1,0 +1,264 @@
+project:
+  format_version: 1
+  name: foc_motor
+  version: '1.0'
+chip_type: kyttar_10x12
+chips:
+- id: 0
+  label: Chip 0
+  position: {x: 0.0, y: 0.0}
+blocks:
+- name: picontroller
+  type: PIControllerBlock
+  library: lattrex.official
+  params:
+    kp: 0.25
+    ki: 0.01
+    limit: 1.0
+    pipeline_lock: true
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: front, x: 5, y: 8, face: east}
+    - {cell_id: sat, x: 6, y: 8, face: south}
+    - {cell_id: acc, x: 6, y: 9, face: north}
+- name: picontroller_1
+  type: PIControllerBlock
+  library: lattrex.official
+  params:
+    kp: 0.25
+    ki: 0.01
+    limit: 1.0
+    pipeline_lock: true
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: front, x: 2, y: 3, face: east}
+    - {cell_id: sat, x: 3, y: 3, face: south}
+    - {cell_id: acc, x: 3, y: 4, face: north}
+- name: cordicrotate
+  type: CordicRotateBlock
+  library: lattrex.official
+  params:
+    sign: 1
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: rdv, x: 5, y: 1, face: east}
+    - {cell_id: pre, x: 6, y: 1, face: east}
+    - {cell_id: prep1, x: 7, y: 1, face: east}
+    - {cell_id: prep2, x: 8, y: 1, face: east}
+    - {cell_id: it0, x: 9, y: 1, face: south}
+    - {cell_id: it1, x: 9, y: 2, face: west}
+    - {cell_id: it2, x: 8, y: 2, face: west}
+    - {cell_id: it3, x: 7, y: 2, face: west}
+    - {cell_id: it4, x: 6, y: 2, face: south}
+    - {cell_id: it5, x: 6, y: 3, face: east}
+    - {cell_id: it6, x: 7, y: 3, face: east}
+    - {cell_id: it7, x: 8, y: 3, face: east}
+    - {cell_id: it8, x: 9, y: 3, face: south}
+    - {cell_id: it9, x: 9, y: 4, face: west}
+    - {cell_id: it10, x: 8, y: 4, face: west}
+    - {cell_id: it11, x: 7, y: 4, face: west}
+    - {cell_id: it12, x: 6, y: 4, face: south}
+    - {cell_id: it13, x: 6, y: 5, face: east}
+    - {cell_id: postx, x: 7, y: 5, face: east}
+    - {cell_id: posty, x: 8, y: 5, face: east}
+- name: svpwm
+  type: SVPWMBlock
+  library: lattrex.official
+  params:
+    face_alpha: west
+    face_beta: south
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: rendezvous, x: 1, y: 10, face: east}
+    - {cell_id: scale, x: 2, y: 10, face: east}
+    - {cell_id: clarke, x: 3, y: 10, face: east}
+    - {cell_id: maxsel, x: 4, y: 10, face: east}
+    - {cell_id: minsel, x: 5, y: 10, face: east}
+    - {cell_id: inject, x: 6, y: 10, face: east}
+    - {cell_id: emit, x: 7, y: 10, face: east}
+- name: streamsplitter
+  type: StreamSplitterBlock
+  library: lattrex.official
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 0, y: 2, face: south}
+    orientation:
+    - cw
+- name: streamsplitter_1
+  type: StreamSplitterBlock
+  library: lattrex.official
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 1, y: 4, face: east}
+- name: streamsplitter_2
+  type: StreamSplitterBlock
+  library: lattrex.official
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 6, y: 7, face: north}
+    orientation:
+    - ccw
+connections:
+- name: e_d
+  from: {chip_port: {chip: 0, port: x16_in}}
+  to: {block: streamsplitter, port: x}
+  route:
+  - {x: 0, y: 0}
+  - {x: 0, y: 1}
+- name: e_q
+  from: {chip_port: {chip: 0, port: x16_in}}
+  to: {block: streamsplitter_1, port: x}
+  route:
+  - {x: 0, y: 0}
+  - {x: 0, y: 1}
+  - {x: 1, y: 1}
+  - {x: 1, y: 2}
+  - {x: 1, y: 3}
+- name: theta
+  from: {chip_port: {chip: 0, port: x16_in}}
+  to: {block: streamsplitter_2, port: x}
+  route:
+  - {x: 0, y: 0}
+  - {x: 0, y: 1}
+  - {x: 1, y: 1}
+  - {x: 1, y: 2}
+  - {x: 1, y: 3}
+  - {x: 0, y: 3}
+  - {x: 0, y: 4}
+  - {x: 0, y: 5}
+  - {x: 0, y: 6}
+  - {x: 0, y: 7}
+  - {x: 1, y: 7}
+  - {x: 2, y: 7}
+  - {x: 3, y: 7}
+  - {x: 4, y: 7}
+  - {x: 5, y: 7}
+  - {x: 6, y: 7}
+- name: w_ed
+  from: {block: streamsplitter, port: out}
+  to: {block: picontroller, port: sample}
+  route:
+  - {x: 0, y: 2}
+  - {x: 0, y: 3}
+  - {x: 0, y: 4}
+  - {x: 0, y: 5}
+  - {x: 0, y: 6}
+  - {x: 0, y: 7}
+  - {x: 1, y: 7}
+  - {x: 2, y: 7}
+  - {x: 3, y: 7}
+  - {x: 4, y: 7}
+  - {x: 5, y: 7}
+- name: w_eq
+  from: {block: streamsplitter_1, port: out}
+  to: {block: picontroller_1, port: sample}
+  route:
+  - {x: 1, y: 4}
+  - {x: 2, y: 4}
+- name: w_th
+  from: {block: streamsplitter_2, port: out}
+  to: {block: cordicrotate, port: theta}
+  route:
+  - {x: 6, y: 7}
+  - {x: 6, y: 6}
+  - {x: 5, y: 6}
+  - {x: 5, y: 5}
+  - {x: 5, y: 4}
+  - {x: 5, y: 3}
+  - {x: 5, y: 2}
+- name: vd
+  from: {block: picontroller, port: out}
+  to: {block: cordicrotate, port: x}
+  route:
+  - {x: 6, y: 9}
+  - {x: 7, y: 9}
+  - {x: 7, y: 8}
+  - {x: 7, y: 7}
+  - {x: 7, y: 6}
+  - {x: 6, y: 6}
+  - {x: 5, y: 6}
+  - {x: 5, y: 5}
+  - {x: 5, y: 4}
+  - {x: 5, y: 3}
+  - {x: 5, y: 2}
+  - {x: 4, y: 2}
+  - {x: 4, y: 1}
+  - {x: 4, y: 0}
+  - {x: 5, y: 0}
+- name: vq
+  from: {block: picontroller_1, port: out}
+  to: {block: cordicrotate, port: y}
+  route:
+  - {x: 3, y: 4}
+  - {x: 4, y: 4}
+  - {x: 4, y: 3}
+  - {x: 4, y: 2}
+  - {x: 4, y: 1}
+- name: va
+  from: {block: cordicrotate, port: yi}
+  to: {block: svpwm, port: v_alpha}
+  route:
+  - {x: 8, y: 5}
+  - {x: 8, y: 6}
+  - {x: 8, y: 7}
+  - {x: 8, y: 8}
+  - {x: 8, y: 9}
+  - {x: 8, y: 10}
+  - {x: 8, y: 11}
+  - {x: 7, y: 11}
+  - {x: 6, y: 11}
+  - {x: 5, y: 11}
+  - {x: 4, y: 11}
+  - {x: 3, y: 11}
+  - {x: 2, y: 11}
+  - {x: 1, y: 11}
+- name: vb
+  from: {block: cordicrotate, port: yq}
+  to: {block: svpwm, port: v_beta}
+  route:
+  - {x: 8, y: 5}
+  - {x: 8, y: 6}
+  - {x: 8, y: 7}
+  - {x: 8, y: 8}
+  - {x: 8, y: 9}
+  - {x: 8, y: 10}
+  - {x: 8, y: 11}
+  - {x: 7, y: 11}
+  - {x: 6, y: 11}
+  - {x: 5, y: 11}
+  - {x: 4, y: 11}
+  - {x: 3, y: 11}
+  - {x: 2, y: 11}
+  - {x: 1, y: 11}
+  - {x: 0, y: 11}
+  - {x: 0, y: 10}
+- name: duties
+  from: {block: svpwm, port: out}
+  to: {chip_port: {chip: 0, port: x16_out}}
+  route:
+  - {x: 7, y: 10}
+  - {x: 7, y: 9}
+  - {x: 7, y: 8}
+  - {x: 7, y: 7}
+  - {x: 7, y: 6}
+  - {x: 6, y: 6}
+  - {x: 5, y: 6}
+  - {x: 5, y: 5}
+  - {x: 5, y: 4}
+  - {x: 5, y: 3}
+  - {x: 5, y: 2}
+  - {x: 4, y: 2}
+  - {x: 4, y: 1}
+  - {x: 4, y: 0}
+  - {x: 5, y: 0}
+  - {x: 6, y: 0}
+  - {x: 7, y: 0}
+  - {x: 8, y: 0}
+  - {x: 9, y: 0}

@@ -94,6 +94,7 @@ from .multiply_cc import multiply_cc
 from .add_const import add_const
 from .xor import xor
 from .xor_join import xor_join
+from .clarke_transform import clarke_transform
 from .float_to_char import float_to_char
 from .fir_filter import fir_filter
 from .complex_fir_filter import complex_fir_filter
@@ -231,6 +232,7 @@ __all__ = [
     "add_const",
     "xor",
     "xor_join",
+    "clarke_transform",
     "float_to_char",
     "fir_filter",
     "complex_fir_filter",

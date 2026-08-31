@@ -124,6 +124,7 @@ BUILTIN_BLOCKS = {
     'VaricodeDecoderBlock': 'varicode_decoder_block',
     'ComplexToMagBlock': 'cordic_blocks',
     'ComplexToArgBlock': 'cordic_blocks',
+    'CordicRotateBlock': 'cordic_rotate_block',
     'RMSBlock': 'rms_block',
     'SigmoidBlock': 'activation_blocks',
     'TanhBlock': 'activation_blocks',

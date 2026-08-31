@@ -325,11 +325,17 @@ def stream_map(project, bres):
     return by_sid, tag_to_sid
 
 
-def run_roundtrip(project, bres, payload=PAYLOAD):
+def run_roundtrip(project, bres, payload=PAYLOAD, *, decode=True,
+                  cmp_override=None):
     """Drive the raw stream (payload + sentinel) per-sample on real simKYT
     with a real SramPanelDevice, collect the compressed bytes, then drive them
     per-sample into the decoder stream. Returns
     ``(compressed bytes, decoded bytes, info)``.
+
+    ``decode=False`` stops after the encode (mutation gates). A non-None
+    ``cmp_override`` is decoded INSTEAD of the encoder's own output — the
+    panel-aliasing gate decodes a stream that disagrees with what the encoder
+    left behind in the panel.
 
     ``info`` carries the INV-56 evidence (every settle ``stop_reason``), the
     panel-ack nudge count, and the pass-2 emission timeline
@@ -410,9 +416,11 @@ def run_roundtrip(project, bres, payload=PAYLOAD):
     tail = max(1200, 30 * len(payload))
     pump(tail, tail + 200000)
     cmp_bytes = list(out["raw"])
+    if not decode:
+        return cmp_bytes, [], info
     # the decode: one compressed byte per settle — the encoder is idle
     # throughout (temporal exclusivity of the two panel clients).
-    for b in cmp_bytes:
+    for b in (cmp_bytes if cmp_override is None else cmp_override):
         inject("cmp", b)
         pump(120, 6000)
     pump(2000, 20000)

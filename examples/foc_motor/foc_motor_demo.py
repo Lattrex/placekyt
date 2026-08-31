@@ -32,10 +32,16 @@ left 2 of 13 nets unrouted; the failures are always rendezvous-arm corridors).
 
 THE MEASUREMENT THIS FILE EXISTS FOR
 ------------------------------------
-Per-iteration control latency and the packet cadence, from the simulator's own
-timing model via ``read_port_words_timed`` (each word carries its capture time
-in ns) and ``performance_report()``. These are SIMULATED times from simKYT's
-timing model — they are not silicon-certified numbers.
+Control latency, the packet cadence, and the SUSTAINED iteration rate, from the
+simulator's own timing model via ``read_port_words_timed`` (each word carries
+its capture time in ns) and ``performance_report()``. These are SIMULATED times
+from simKYT's timing model — they are not silicon-certified numbers.
+
+The chain STREAMS: consecutive iterations with different inputs are each
+bit-exact, at a measured 55.8 kHz. The sustained interval essentially equals the
+first packet's latency, because each rendezvous bars its arms until the current
+group has cleared — one iteration is in flight at a time, so the chain re-arms
+rather than pipelines.
 
 Run::
 
@@ -276,34 +282,50 @@ def main():
     used = sum(c.cell_count for c in bres.chips.values())
     print(f"  built: {used} cells of 120 used; arm landings {lands}")
 
-    e_d, e_q, theta = 1000, 2000, 0x1234
-    exp = golden([e_d], [e_q], [theta])
+    # SIX consecutive iterations with DIFFERENT inputs — the chain streams.
+    # The golden is computed over the WHOLE sequence in one call because the PI
+    # integrators EVOLVE across samples; a per-iteration call would cold-start
+    # the accumulator each time and disagree with the chip.
+    e_d = [1000, 0x0333, -1500 & 0xFFFF, 300, 0x0700, -200 & 0xFFFF]
+    e_q = [2000, 0x1500, 900, -2200 & 0xFFFF, 0x0123, 1750]
+    theta = [0x1234, 0x4000, 0x8000, 0xC000, 0x2468, 0x9ABC]
+    exp = golden(e_d, e_q, theta)
 
     chip = chip_for(bres, lands)
     t_inject = chip.simulation_time          # after the bitstream load
     chain = FocChain(bres, chip, lands)
-    chain.iteration(e_d, e_q, theta)
+    for i in range(len(e_d)):
+        chain.iteration(e_d[i], e_q[i], theta[i])
 
     got = chain.words
     ok = got == exp
-    print(f"\n  duty packet: {[hex(w) for w in got]}")
-    print(f"  golden     : {[hex(w) for w in exp]}")
-    print(f"  EXACT      : {ok}")
-    print(f"  stop_reasons: {chain.stops}")
+    print()
+    for i in range(len(e_d)):
+        g, w = got[3 * i:3 * i + 3], exp[3 * i:3 * i + 3]
+        print(f"  iter {i}: {[hex(v) for v in g]} "
+              f"{'==' if g == w else '!='} golden {[hex(v) for v in w]}")
+    print(f"  EXACT (all {len(e_d)} iterations): {ok}")
+    print(f"  stop_reasons: {sorted(set(chain.stops))}")
 
     if chain.out:
+        ends = [chain.times[3 * i + 2] for i in range(len(chain.times) // 3)]
         t_first = chain.times[0] - t_inject
-        t_last = chain.times[-1] - t_inject
-        print(f"\n  per-iteration latency to the FIRST duty word : {t_first:,.1f} ns")
-        print(f"  per-iteration latency to the COMPLETE packet  : {t_last:,.1f} ns")
-        if len(chain.times) >= 2:
-            gaps = [chain.times[i + 1] - chain.times[i]
-                    for i in range(len(chain.times) - 1)]
-            print(f"  duty-word cadence within the packet          : "
-                  f"{sum(gaps) / len(gaps):,.2f} ns")
-        if t_last > 0:
-            print(f"  => {1e9 / t_last:,.0f} control iterations/s "
-                  f"({1e6 / t_last:,.2f} kHz) at one iteration in flight")
+        t_last = ends[0] - t_inject
+        print(f"\n  latency to the FIRST duty word     : {t_first:,.1f} ns")
+        print(f"  latency to the COMPLETE packet     : {t_last:,.1f} ns")
+        cad = [chain.times[3 * i + j + 1] - chain.times[3 * i + j]
+               for i in range(len(ends)) for j in range(2)]
+        print(f"  duty-word cadence within a packet  : "
+              f"{sum(cad) / len(cad):,.2f} ns")
+        if len(ends) >= 2:
+            gaps = [ends[i + 1] - ends[i] for i in range(len(ends) - 1)]
+            mean = sum(gaps) / len(gaps)
+            print(f"  SUSTAINED inter-iteration interval : {mean:,.1f} ns "
+                  f"(spread {max(gaps) - min(gaps):,.1f} ns)")
+            print(f"  => {1e9 / mean:,.0f} control iterations/s "
+                  f"({1e6 / mean:,.2f} kHz) sustained")
+            print(f"     the interval ~= the fill latency: the chain RE-ARMS "
+                  f"rather than pipelines (one iteration in flight).")
 
     perf = chip.performance_report()
     print(f"\n  perf: sim_time_ns={perf.get('simulation_time_ns'):,.1f} "

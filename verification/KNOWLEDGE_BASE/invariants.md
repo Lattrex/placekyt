@@ -8,7 +8,7 @@ or verifying a Kyttar block should read these first. Each is a *constraint* ("al
 
 *(Navigation note, 2026-08-30: entries appear in LANDING order, not numeric order —
 parallel builds landed out of sequence, so e.g. INV-39 sits between INV-33 and
-INV-34, and INV-48 before INV-47. All of INV-0..INV-64 exist exactly once; search
+INV-34, and INV-48 before INV-47. All of INV-0..INV-72 exist exactly once; search
 for `## INV-N —` to find one. Numbers are never reassigned.)*
 
 ---
@@ -5348,3 +5348,98 @@ blocks are individually chip-proven.
 **Related:** INV-46 (Rule 1 silent no-op, Rule 2 face budget, Rule 4 probe),
 INV-70 (corridor sharing), INV-24 (port fan-out diverts), INV-56
 (`QueueEmpty` + tiny event count = work never started), layout_rules §4b.
+
+---
+
+## INV-72 — A LOCK-rendezvous fix is a FAMILY obligation: an unreconciled release face is invisible until the router disagrees with the author, and a partially-stale rendezvous dump means a BARRED ARM, not an occupied cell
+
+*(Number assigned at landing — main's highest entry was INV-71.)*
+
+**Measured 2026-08-31** on `examples/foc_motor`, fixing the chain's
+one-iteration wall. Three separable rules; the first is the defect, the
+second and third are the diagnostic method that found it after a plausible
+wrong diagnosis.
+
+### 1. INV-69 IS A FAMILY OBLIGATION, NOT A PER-BLOCK FIX
+
+INV-69 was recorded against `SVPWMBlock` and its text explicitly names
+`CordicRotateBlock` as "the shape every future rendezvous-plus-pipeline block
+will have". CordicRotate was authored in PARALLEL by a different builder and
+shipped with the pre-INV-69 construction — the TMRVoter's value-carrying
+`WRITE.CFG` whose LOCK_FACE value is an AUTHORED constant in the release
+cell. Both blocks passed their own suites; the chain composed them and wedged
+from the second iteration.
+
+**The rule:** when a rendezvous-family defect is fixed in one member, AUDIT
+EVERY MEMBER in the same change. The family is
+`NEEDS_DISTINCT_INPUT_FACES`-declaring blocks; the cheap static check is that
+**no such block contains a `WRITE.CFG` carrying a face value**, because the
+only face copy the build reconciles is the rendezvous cell's own DataWord
+(`_apply_rendezvous_input_faces` patches that cell and nothing else). A
+release must therefore be a backward JUMP into a `relock` entry that reads
+that word — or, for a SINGLE-CELL rendezvous, an inline re-lock from its own
+word (Clarke's degenerate-but-safe form). A release that CLEARS the lock
+(value 0, no face) is exempt — PIControllerBlock's is, correctly.
+
+**Why per-block suites cannot see it:** the defect needs the ROUTER to
+disagree with the author. A block's own suite probes layouts and keeps one
+that works, so the authored face is usually the routed face. Composition is
+what moves the arms. Measured here: the FOC placement lands arm x NORTH while
+the constant said WEST.
+
+### 2. A PARTIALLY-STALE RENDEZVOUS DUMP MEANS A BARRED ARM
+
+The handed-over diagnosis read the wedged cell's memory, saw iteration 0's
+values in the arrival slots, and concluded the slots "never clear between
+iterations, so the second sample arrives at an occupied cell and holds". The
+full dump refutes it: of three arrival slots, ONE held the stale value and
+the other TWO held iteration 1's new words. A rendezvous that accepted two of
+three arms is not occupied — it is BARRED on the third.
+
+**The rule:** read EVERY arrival slot before concluding staleness, and treat
+a MIXED dump as localising the fault to the arm whose slot did not advance.
+Stale-looking state in a rendezvous is far more often the SYMPTOM of a
+mis-aimed lock than a missing reset.
+
+**The decisive read is `chip.read_config(cell)`, not cell memory.** LOCK is
+bit 14; LOCK_FACE is bits 12-13 (0=S, 1=E, 2=W, 3=N). Across boot /
+after-iteration-0 / wedged this chain read `0x7100` / `0x6100` / `0x6100`:
+LOCK still set, LOCK_FACE moved north -> west and stuck. A mis-aimed lock and
+an unreleased lock are different defects with the SAME `Deadlock` signature,
+and only the CONFIG read separates them.
+
+### 3. `reset_per_batch` IS A PACKET-BOUNDARY MECHANISM; CHECK THE DELIVERY PATH
+
+`reset_per_batch` StateVars are resolved by
+`build._resolve_batch_reset_writes` into `(x, y, addr, value)` writes on
+`ChipBuild.batch_reset_writes`, and applied by `SimServer._apply_batch_reset`
+**once per `process_batch` RPC**. A harness that drives the chip directly
+(`inject_data_physical` / `chip.run`, which is what every example demo and
+most gates do) NEVER executes them.
+
+**The rule:** before proposing `reset_per_batch` for a between-samples
+problem, confirm the drive path actually crosses a packet boundary. It cannot
+fix anything WITHIN a burst by construction. It is also the wrong tool for an
+arrival slot, which is written before it is read on every pass and needs no
+clearing; its correct use is loop MEMORY that must cold-start per packet
+while persisting within one (INV-68's converse — PI integrators, Costas
+phase, matched-filter delay lines).
+
+**LAYER:** block-authoring contract over the build's documented reconciliation
+scope (rules 1) + diagnostic method (rules 2, 3) — permanent until
+`_apply_rendezvous_input_faces` reconciles authored face copies block-wide.
+
+**Gated by:** `verification/tests/test_cordic_rotate.py::
+test_release_is_a_backward_jump_reading_the_reconciled_face` and
+`::test_relock_reads_the_same_word_the_build_reconciles` (structure, incl. the
+no-`WRITE.CFG` family check), and `test_foc_motor_example.py`'s streaming
+gates + `test_mutation_unreconciled_release_face_collapses_the_stream_ON_CHIP`
+(the INV-4 proof: re-pointing `relock` at an unreconciled word is
+geometry-preserving, still builds, and collapses the chain to exactly one
+packet).
+
+**Related:** INV-69 (the defect class this generalises), INV-46 (the
+LOCK-rotation family and its Rule 3 N+1th stop), INV-67 (mid-group Deadlock is
+healthy; post-group is real), INV-68 (state that must EVOLVE — the converse of
+rule 3), INV-70 (the saturated/reversed walls that did NOT move here), INV-56
+(read `stop_reason` for every run).

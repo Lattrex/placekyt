@@ -1044,26 +1044,71 @@ def test_positional_pairing_and_no_head_on_faces():
             f"{cid} and {nbr} rest facing each other (INV-56)")
 
 
-def test_backward_edges_are_config_only_and_unlock_cfg_is_lock_face():
-    """INV-53 audit: NO backward internal JUMPs at all, and exactly ONE
-    backward internal connection — the CONFIG-only `unlock` edge from `pre`
-    (the abutting cell, the face-budget consequence) targeting a phantom
-    port so portmap never classifies an arm as a feedback return. And the
-    block declares UNLOCK_CFG_ADDR = 3: the release RE-POINTS the rotating
-    LOCK_FACE, it must never be rewritten into a lock-CLEAR (INV-46)."""
+def test_release_is_a_backward_jump_reading_the_reconciled_face():
+    """INV-69: the serialize-LOCK release must re-point LOCK_FACE from the
+    RENDEZVOUS's OWN ``face_x`` word — the one copy the build's
+    face-reconciliation pass (``_apply_rendezvous_input_faces``) patches to
+    the ROUTED arm geometry.
+
+    THE DEFECT THIS PINS (measured on examples/foc_motor): the release used
+    to be a value-carrying ``WRITE.CFG @1, 3`` whose value came from an
+    AUTHORED ``unlock_face`` DataWord living in ``pre``. That copy is never
+    reconciled, so on any layout where the router lands arm x somewhere other
+    than the authored face the release aimed the lock at the wrong face and
+    the chain wedged from the SECOND triple onward. In the FOC chain the
+    router lands arm x NORTH while the constant said WEST.
+
+    So: NO value-carrying WRITE.CFG anywhere in the block, exactly ONE
+    backward edge (a JUMP into `relock`, in internal_jumps so portmap never
+    classifies an arm as a feedback RETURN), and `relock` reads `face_x`."""
     b = CordicRotateBlock("t")
-    order = list(b.build_cell_programs().keys())
+    cps = b.build_cell_programs()
+    order = list(cps.keys())
     idx = {c: i for i, c in enumerate(order)}
-    back_jumps = [(s, d) for (s, _sp, d, _dp) in b.internal_jumps()
+
+    # Exactly ONE backward edge, and it is a JUMP into the rendezvous's
+    # `relock` entry — not a data/CONFIG connection.
+    back_jumps = [(s, sp, d, dp) for (s, sp, d, dp) in b.internal_jumps()
                   if d != "__terminate__" and idx[d] < idx[s]]
-    assert back_jumps == [], back_jumps
+    assert back_jumps == [("pre", "unlock", "rdv", "relock")], back_jumps
     back_conns = [(s, sp, d, dp) for (s, sp, d, dp) in
                   b.internal_connections() if idx.get(d, 99) < idx[s]]
-    assert back_conns == [("pre", "unlock", "rdv", "lock_cfg")], back_conns
-    assert CordicRotateBlock.UNLOCK_CFG_ADDR == 3
-    assert "WRITE.CFG" in b.build_cell_programs()["pre"].assembly_template
-    assert "WRITE.CFG" not in b.build_cell_programs()["posty"] \
-        .assembly_template
+    assert back_conns == [], back_conns
+
+    # The release carries NO face value of its own: a value-carrying
+    # WRITE.CFG is exactly the unreconciled-constant defect.
+    for cid, cp in cps.items():
+        assert "WRITE.CFG" not in cp.assembly_template, (
+            f"{cid} carries a WRITE.CFG — the release must be a backward "
+            f"JUMP into `relock` so the lock value comes from the "
+            f"RECONCILED face_x word (INV-69)")
+
+    # `relock` re-points the lock from face_x, the reconciled word.
+    rdv = cps["rdv"].assembly_template
+    relock = rdv.split("relock:\n", 1)[1]
+    assert "MOVE [LOCK_FACE], R{data:face_x}" in relock, relock
+    # And the block declares no UNLOCK_CFG_ADDR: there is no CONFIG write to
+    # patch any more.
+    assert not hasattr(CordicRotateBlock, "UNLOCK_CFG_ADDR")
+
+
+def test_relock_reads_the_same_word_the_build_reconciles():
+    """The INV-69 property stated as an identity: the DataWord `relock`
+    writes into LOCK_FACE must be the SAME word named by
+    RENDEZVOUS_FACE_PORTS for the FIRST-accepted arm (the one the build
+    patches and boots the LOCK to). If these ever drift apart the release
+    re-admits the wrong arm and the chain mis-pairs from triple two."""
+    b = CordicRotateBlock("t")
+    first_port, first_word = CordicRotateBlock.RENDEZVOUS_FACE_PORTS[0]
+    assert first_port == "x"
+    cps = b.build_cell_programs()
+    relock = cps["rdv"].assembly_template.split("relock:\n", 1)[1]
+    assert f"MOVE [LOCK_FACE], R{{data:{first_word}}}" in relock, (
+        f"relock must write the FIRST-accepted arm's reconciled face word "
+        f"({first_word}); got:\n{relock}")
+    # And that word really is a reconciled is_face DataWord on the rdv cell.
+    fw = {d.name: d for d in cps["rdv"].data if getattr(d, "is_face", False)}
+    assert first_word in fw, sorted(fw)
 
 
 def test_every_declared_entry_is_jumped():
@@ -1151,7 +1196,11 @@ def test_rendezvous_boots_pre_locked_with_no_arm_entry():
     and mis-pairs (the exact failure the LOCK prevents)."""
     cp = CordicRotateBlock("t").build_cell_programs()["rdv"]
     assert cp.initial_lock_face is not None
-    assert [e.name for e in cp.entries] == ["got_x", "got_y", "got_t"]
+    # The three ARM entries, plus `relock` — the serialize-LOCK release target
+    # (INV-69). `relock` is NOT an arm: nothing external ever jumps it; the
+    # abutting `pre` cell does, on the internal forward face.
+    assert [e.name for e in cp.entries] == ["got_x", "got_y", "got_t",
+                                            "relock"]
 
 
 def test_block_declares_two_output_registers():

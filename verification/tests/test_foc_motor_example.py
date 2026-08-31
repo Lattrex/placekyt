@@ -23,14 +23,18 @@ WHAT IS EXPLICITLY NOT CLAIMED, and is pinned as a MEASURED LIMIT instead
 (``test_known_limit_*`` below — these are guards, so that if the boundary ever
 MOVES a test says so):
 
-  * the chain sustains **ONE control iteration**. A second iteration wedges,
-    an arm-saturated drive of even ONE iteration wedges, and a reversed arm
-    order wedges — all with a POST-group ``Deadlock`` (a real wedge by INV-67,
-    not a healthy mid-group hold).
-  * therefore there is **no steady-state throughput number** for this chain,
-    and the gate does not invent one. The honest rate figure is the
-    single-iteration latency, which the demo prints and
-    ``test_latency_ceiling`` pins.
+  * the chain **STREAMS**: six consecutive iterations with different inputs,
+    every duty word bit-exact, every run ``QueueEmpty``, at a sustained
+    **55.8 kHz** (``test_chain_streams_consecutive_iterations_bit_exact``,
+    ``test_sustained_iteration_rate``). It used to sustain exactly ONE
+    iteration; the wall was CordicRotateBlock's serialize-LOCK release
+    carrying an unreconciled face constant (INV-69) and it is fixed.
+  * the sustained interval ~= the fill latency, so the chain re-arms rather
+    than pipelines — the serialize-LOCK holds the next triple until the
+    current one clears, by construction.
+  * an arm-SATURATED drive still wedges, and a REVERSED arm order still
+    wedges — both re-measured after the fix and both INV-70 (arm corridors
+    share cells), i.e. routing topology rather than a block defect.
   * the measurement half of the loop (Clarke + forward Park) is not in this
     build; the whole FOC loop does not fit ONE 10x12 array on corridor/face
     budget (INV-71).
@@ -152,46 +156,130 @@ def test_every_arm_is_driven_through_its_own_relay():
 #  The MEASURED limits — guards, not claims                                    #
 # --------------------------------------------------------------------------- #
 
-def test_known_limit_chain_sustains_exactly_one_iteration(built):
-    """MEASURED WALL (AGENTS.md §6): a SECOND control iteration wedges.
+# The streaming stimulus: N iterations, DIFFERENT values each, so a chain that
+# merely repeats a latched triple cannot pass.
+STREAM_ED = [1000, 0x0333, -1500 & 0xFFFF, 300, 0x0700, -200 & 0xFFFF]
+STREAM_EQ = [2000, 0x1500, 900, -2200 & 0xFFFF, 0x0123, 1750]
+STREAM_TH = [0x1234, 0x4000, 0x8000, 0xC000, 0x2468, 0x9ABC]
 
-    Iteration 0 emits its packet and settles QueueEmpty; iteration 1 emits
-    nothing and every run reports Deadlock — POST-group, so a REAL wedge by
-    INV-67, not the healthy mid-group hold.
 
-    WHY: both the CordicRotateBlock (N=3) and the SVPWMBlock (N=2) carry a
-    measured whole-burst depth of ONE (their own suites guard it), because the
-    serialize-LOCK release must ride the single cell abutting the rendezvous.
-    Chained, the walls compose: the deeper chain still holds the previous
-    sample when the next group is admitted.
-
-    If this guard ever FAILS the wall has MOVED — that is good news; re-measure
-    and let the throughput gate drive a real burst."""
-    _project, bres, _cat, _ct = built
+def _stream(bres, n=len(STREAM_ED), order=ARMS):
+    """Drive n consecutive iterations with DIFFERENT inputs. Returns the
+    chain and the wall-clock origin."""
     lands = arm_landings(bres)
-    chain = FocChain(bres, chip_for(bres, lands), lands)
-    chain.iteration(E_D, E_Q, THETA)
-    assert len(chain.words) == 3, chain.words
+    chip = chip_for(bres, lands)
+    t0 = chip.simulation_time
+    chain = FocChain(bres, chip, lands)
+    for i in range(n):
+        chain.iteration(STREAM_ED[i], STREAM_EQ[i], STREAM_TH[i], order=order)
+    return chain, t0
+
+
+def test_chain_streams_consecutive_iterations_bit_exact(built):
+    """THE STREAMING GATE — the wall that MOVED.
+
+    The chain used to sustain exactly ONE control iteration: a second one
+    wedged with a post-group ``Deadlock`` (INV-67). ROOT CAUSE (INV-69, the
+    defect class SVPWMBlock had already been fixed for): CordicRotateBlock's
+    serialize-LOCK release was a value-carrying ``WRITE.CFG @1, 3`` whose face
+    value came from an AUTHORED ``unlock_face`` DataWord in the abutting
+    ``pre`` cell. The build's face-reconciliation pass patches face words in
+    the RENDEZVOUS cell only, so that copy kept the authored WEST while the
+    router actually landed arm x on NORTH. Iteration 0 completed, the release
+    re-pointed LOCK_FACE at WEST, and arm x's next word — arriving on NORTH —
+    was barred forever. FIX: the release is now a backward JUMP into a
+    ``relock`` entry that re-points the lock from the rendezvous's OWN
+    reconciled ``face_x`` word.
+
+    This gate drives SIX consecutive iterations with DIFFERENT inputs and
+    holds every duty word bit-exact.
+
+    NOTE ON THE GOLDEN (INV-68): the PI integrators EVOLVE across samples, so
+    the golden is computed over the WHOLE sequence in one call. Calling it
+    per-iteration would reset the accumulator each time and disagree with the
+    chip — which is a property of the model call, not of the chip."""
+    _project, bres, _cat, _ct = built
+    chain, _t0 = _stream(bres)
+    want = golden(STREAM_ED, STREAM_EQ, STREAM_TH)
+    assert len(chain.words) == 3 * len(STREAM_ED), (
+        f"expected {len(STREAM_ED)} duty packets, got "
+        f"{len(chain.words) / 3:.1f}: {[hex(w) for w in chain.words]}")
+    assert chain.words == want, (
+        f"chip {[hex(w) for w in chain.words]} != golden "
+        f"{[hex(w) for w in want]}")
+
+
+def test_every_streamed_run_settles_queue_empty(built):
+    """INV-56: read ``stop_reason`` for EVERY run, not one. Across all six
+    iterations every run must settle ``QueueEmpty`` — a single ``Deadlock``
+    here is the post-group wedge signature (INV-67) coming back."""
+    _project, bres, _cat, _ct = built
+    chain, _t0 = _stream(bres)
     assert set(chain.stops) == {"QueueEmpty"}, chain.stops
 
-    n_after_first = len(chain.words)
-    chain.iteration(0x0333, 0x1500, 0x4000)
-    assert len(chain.words) == n_after_first, (
-        f"the depth-1 boundary MOVED — a second iteration now emits "
-        f"{len(chain.words) - n_after_first} more words. GOOD NEWS if real: "
-        f"re-measure the wall, delete this guard, and make the rate gate "
-        f"drive a sustained burst.")
-    assert "Deadlock" in chain.stops[-3:], chain.stops[-3:]
+
+def test_each_streamed_iteration_differs_from_its_neighbours(built):
+    """The stimulus really does distinguish the iterations: if consecutive
+    packets were identical, a chain that latched one triple and repeated it
+    would sail through the exactness gate."""
+    want = golden(STREAM_ED, STREAM_EQ, STREAM_TH)
+    packets = [tuple(want[3 * i:3 * i + 3]) for i in range(len(STREAM_ED))]
+    assert len(set(packets)) == len(packets), (
+        f"the streaming stimulus produces repeated packets — it cannot "
+        f"distinguish a streaming chain from a latched one: {packets}")
+
+
+def test_sustained_iteration_rate(built):
+    """THE RATE GATE, now that there IS a steady state.
+
+    MEASURED (simKYT's timing model): the first packet lands 17,861.5 ns after
+    injection — the FILL latency, unchanged, because it is the pipeline depth
+    the first triple must traverse. Every packet after it follows ~17,925 ns
+    behind the previous one, i.e. **55.8 kHz sustained**.
+
+    FILL vs STEADY STATE: the interval essentially EQUALS the fill latency
+    here, so the chain is NOT pipelined across iterations — the serialize-LOCK
+    holds the next triple until the current one has cleared, by construction
+    (INV-46 Rule 3 / INV-69). What the fix bought is that the chain now
+    RE-ARMS instead of wedging; it did not make the stages overlap. So the
+    sustained rate is (correctly) about one-over-the-latency, not better.
+
+    Bands are set wide enough not to flap on build-to-build jitter while still
+    catching a real regression."""
+    _project, bres, _cat, _ct = built
+    chain, t0 = _stream(bres)
+    assert len(chain.times) == 3 * len(STREAM_ED), chain.times
+    ends = [chain.times[3 * i + 2] for i in range(len(STREAM_ED))]
+    fill = ends[0] - t0
+    gaps = [ends[i + 1] - ends[i] for i in range(len(ends) - 1)]
+    mean = sum(gaps) / len(gaps)
+
+    assert 12_000.0 <= fill <= 22_500.0, (
+        f"fill latency {fill:,.1f} ns outside the band (measured 17,861.5 ns)")
+    assert 12_000.0 <= mean <= 22_500.0, (
+        f"sustained interval {mean:,.1f} ns outside the band "
+        f"(measured 17,925 ns = 55.8 kHz)")
+    # The cadence must be STEADY — a chain that degrades iteration over
+    # iteration (a lock creeping out of phase) would show a widening spread.
+    assert max(gaps) - min(gaps) <= 2_000.0, (
+        f"the inter-iteration interval is not steady: {gaps}")
 
 
 def test_known_limit_arm_saturated_drive_wedges(built):
-    """MEASURED WALL: even ONE iteration's three arm words enqueued
-    back-to-back (``queue_words_physical`` — the INV-19 saturated path) wedges
-    the chain and emits nothing.
+    """MEASURED WALL, and this one did NOT move with the INV-69 fix: one
+    iteration's three arm words enqueued back-to-back
+    (``queue_words_physical`` — the INV-19 saturated path) still wedges.
 
-    This is why this example reports a LATENCY, not a saturated throughput:
-    there is no steady state to measure. Recording it as a guard keeps the
-    example honest and catches the day it changes."""
+    Re-measured after the fix, driving SIX iterations saturated: the run ends
+    ``EventLimit`` with ZERO duty words. So saturated does NOT equal
+    per-sample at chain level; the honest sustained figure is the per-sample
+    one ``test_sustained_iteration_rate`` pins.
+
+    WHY it is not the INV-69 defect: this wedges on the FIRST iteration, before
+    any release runs, whereas the INV-69 defect always completed iteration 0.
+    It is INV-70 — the three arms' corridors share cells, so an arbiter-HELD
+    word's in-flight words block the segment a later arm must transit. That is
+    routing topology, not a block defect."""
     _project, bres, _cat, _ct = built
     lands = arm_landings(bres)
     chip = chip_for(bres, lands)
@@ -216,13 +304,23 @@ def test_known_limit_arm_saturated_drive_wedges(built):
 
 
 def test_known_limit_reversed_arm_order_wedges(built):
-    """MEASURED: driving the arms in reverse (theta, e_q, e_d) emits nothing.
+    """MEASURED WALL, and this one did NOT move with the INV-69 fix: driving
+    the arms in reverse (theta, e_q, e_d) emits nothing.
 
-    A face-locking rendezvous is SPECIFIED to be arrival-order agnostic, and
-    each block proves that standalone. Here the arms are not independent — e_d
-    and e_q pass through the two PI controllers first — so the ordering the
-    chain tolerates is narrower than any single block's. Pinned so the
-    difference is documented rather than discovered."""
+    Re-measured after the fix and confirmed a REAL wedge, not a healthy hold:
+    all three arms are delivered and the chain STILL emits zero words, so the
+    group never completes (INV-67 — a mid-group ``Deadlock`` would clear once
+    the last arm lands; this does not).
+
+    This is INV-70, not the INV-69 defect: the theta word arrives on a barred
+    face, the arbiter holds it, and its in-flight words occupy corridor cells
+    the e_d/e_q arms must transit — a circular wait with no motion required.
+    Fixing it means corridor-DISJOINT arm deliveries, i.e. placement/routing,
+    which is out of scope for a block change.
+
+    Pinned so the difference between the block-level guarantee (each
+    rendezvous IS arrival-order agnostic standalone) and the chain-level
+    behaviour is documented rather than rediscovered."""
     _project, bres, _cat, _ct = built
     chain = _run_one(bres, order=("theta", "e_q", "e_d"))
     assert chain.words == [], (
@@ -340,6 +438,63 @@ def test_mutation_corrupted_block_constant_fails_ON_CHIP(built):
 # --------------------------------------------------------------------------- #
 #  The MEASUREMENT half — the README's claim, enforced                         #
 # --------------------------------------------------------------------------- #
+
+def test_mutation_unreconciled_release_face_collapses_the_stream_ON_CHIP(built):
+    """INV-4 STRONG FORM for the INV-69 fix: make the serialize-LOCK release
+    read an UNRECONCILED face word, rebuild on the chip, and assert the
+    streaming gate catches it.
+
+    The mutant re-points ``relock`` at ``face_fwd`` — a real is_face DataWord
+    on the same cell, so the mutation is GEOMETRY-PRESERVING (same cells,
+    ports, faces, register budget) and MUST still place, route and build
+    (INV-67's corollary: reading a mutant's build failure as "rejected, gate
+    passes" makes the gate vacuous). It differs from the true build only in
+    which face the release re-admits.
+
+    MEASURED: the mutant emits exactly ONE packet (3 words) and then wedges —
+    precisely the pre-fix wall — against six packets for the true build. So
+    the streaming gate is proven able to FAIL, and the property it protects is
+    specifically "the release reads the reconciled arm face".
+
+    The class is restored in a ``finally`` so a failure cannot leak the
+    mutant into another test."""
+    import dataclasses
+    from gr_kyttar.placement.blocks.cordic_rotate_block import CordicRotateBlock
+
+    original = CordicRotateBlock.build_cell_programs
+
+    def mutated(self):
+        cells = original(self)
+        rdv = cells["rdv"]
+        head, _sep, tail = rdv.assembly_template.partition("relock:\n")
+        assert _sep, "relock entry vanished — the mutation anchor is gone"
+        bad = head + _sep + tail.replace(
+            "MOVE [LOCK_FACE], R{data:face_x}",
+            "MOVE [LOCK_FACE], R{data:face_fwd}")
+        assert bad != rdv.assembly_template, "the mutation did not apply"
+        cells["rdv"] = dataclasses.replace(rdv, assembly_template=bad)
+        return cells
+
+    CordicRotateBlock.build_cell_programs = mutated
+    try:
+        _p, bres_mut, _c, _t = place_route_build()
+        chain, _t0 = _stream(bres_mut)
+        mutant_words = list(chain.words)
+    finally:
+        CordicRotateBlock.build_cell_programs = original
+
+    want = golden(STREAM_ED, STREAM_EQ, STREAM_TH)
+    assert mutant_words, (
+        "the mutant emitted NOTHING — a geometry-preserving face change must "
+        "still build and run its first iteration, else this gate proves "
+        "nothing about the streaming property specifically")
+    assert mutant_words != want, (
+        "an UNRECONCILED release face went UNDETECTED — the streaming gate "
+        "has no teeth")
+    assert len(mutant_words) < 3 * len(STREAM_ED), (
+        f"the mutant streamed {len(mutant_words) / 3:.1f} packets; the "
+        f"unreconciled release must collapse the stream")
+
 
 def test_measurement_half_routes_and_is_exact():
     """The README says the measurement half (Clarke + FORWARD Park) routes,

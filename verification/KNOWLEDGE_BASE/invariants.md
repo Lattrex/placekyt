@@ -6,6 +6,11 @@ Hard-won, model-agnostic rules that apply across block classes. An agent buildin
 or verifying a Kyttar block should read these first. Each is a *constraint* ("always
 / never X"), not a one-block idiosyncrasy. Per-block fixes go in `lessons_log.md`.
 
+*(Navigation note, 2026-08-30: entries appear in LANDING order, not numeric order —
+parallel builds landed out of sequence, so e.g. INV-39 sits between INV-33 and
+INV-34, and INV-48 before INV-47. All of INV-0..INV-64 exist exactly once; search
+for `## INV-N —` to find one. Numbers are never reassigned.)*
+
 ---
 
 ## RULE FOR WRITING IN THIS FILE — a stated LIMIT must carry its evidence
@@ -168,6 +173,26 @@ FAILS. Only then does a green result mean "the gate looked and found nothing," v
 "the gate can't see." Tolerances are derived/locked, never tuned by the agent to pass.
 
 **Applies to:** every block, no exceptions.
+
+### ADDENDUM (2026-08-30) — a FILE-level mutant can leave a stale `.pyc` serving the MUTANT bytecode
+
+Measured twice, same day, by the orchestrating session. A mutation gate that
+edits a block's SOURCE FILE, runs the test, and restores the file can complete
+the whole mutate→test→restore cycle **within ONE SECOND**. Python validates a
+cached `.pyc` by source mtime (SECONDS granularity) and size — and a
+one-character mutation keeps the size identical — so after the restore,
+`__pycache__` still holds the MUTANT's bytecode and serves it to every later
+import. Consequence observed both times: the restored, correct block appeared
+broken across multiple subsequent runs until `__pycache__` was cleared, which
+reads exactly like a real regression.
+
+**Rule:** a file-level mutant must clear the module's `__pycache__` on BOTH the
+mutate AND the restore. Program-level mutants (in-memory `CellProgram`
+mutation, no file edit) are immune and remain the preferred form.
+
+**Layer:** verification harness — but the underlying behavior (pyc validation =
+seconds-granularity mtime + size) is permanent Python, so the harness
+discipline is permanent too.
 
 ---
 
@@ -3315,8 +3340,9 @@ edge if you care about its hop.
 
 ## INV-52 — The FACE register is CELL state: it persists across entries, it steers TRANSITING words, and the router cannot see it
 
-*(Number to be assigned at landing — three numbering collisions have already
-happened because parallel builders cannot see each other's KB additions.)*
+*(Number assigned at landing — this entry was authored by a parallel builder
+before its number existed; three numbering collisions had already happened
+because parallel builders cannot see each other's KB additions.)*
 
 **Found 2026-08-30 while finishing `ChaCha20KeystreamBlock`. Every claim below is
 MEASURED on a real placed + routed + built chip, from execution traces.** It
@@ -3459,7 +3485,11 @@ and note (2) is bounded: the flip WINDOW is safe, the UNRESTORED face is what
 deflects (measured, table above). (3) is toolchain in `placement/router.py` and is
 now CLOSED for declared and inferable edges alike; only the positional-default
 hand-off keeps an estimate, by choice. (4) is method. (5) is toolchain, in the
-build's jump resolution, and is still open.
+build's jump resolution, and is ~~still open~~ **closed — RECONCILED 2026-08-30:
+INV-53 names the exact mechanism** (`_apply_internal_feedback` resolves a
+backward jump by rewriting the source cell's HIGHEST-ADDRESSED `JUMP`, and an
+entry-address coincidence can mask the damage). INV-63 and INV-64 §2 record the
+two later-found build passes that contest that same highest-addressed slot.
 
 **REACH.** Measured on one 40-cell block over 233 internal edges and ~167k
 simulated events, plus a second, independent fold (`LZ4DecoderBlock`, 8 cells /
@@ -3584,6 +3614,16 @@ coincidence).
 **Related:** INV-52 clause 5 (which this closes), INV-48 rule 2 and INV-49 (the
 "at most one backward jump" half, which is necessary but not sufficient),
 INV-6/11 (params-dependent entry addresses — the reason the collision moved).
+
+**Cross-references added 2026-08-30 (at landing):** two later entries touch the
+SAME highest-addressed-rewrite mechanism from other sides, and a reader landing
+here should know all three exist — **INV-63** (an EXIT cell's highest-addressed
+WRITE/JUMP are contested by this feedback pass AND the output-port sink fixup,
+so a declared backward jump and the external port pair cannot share a cell;
+`RAW_OUTPUT_HOPS` + build-time-resolved literals are the escape) and
+**INV-64 §2** (the WRITE-side sibling: a declared backward WRITE delivered on a
+hop-1 FLIP is re-patched with the RESTING-corridor hop and must be an authored
+literal instead).
 
 ---
 
@@ -3854,6 +3894,22 @@ face rules that make a band sealable at all), INV-49 (check whether a
 is, and that is why the load map has no freedom), INV-51 (a gap inside the
 footprint is a dead end).
 
+### 4. CLOSURE (2026-08-30) — the collector fix SHIPPED; the block is DONE
+
+The per-adder depth-2 buffer-pair collector of addendum 3 is the shipped
+design: `ChaCha20KeystreamBlock` is `done` at **51 cells**, and **all sixteen
+RFC 8439 §2.3.2 state words leave the built chip bit-exact, IN ORDER**
+(`verification/manifest.json`; `test_chacha20_fixed_tap_ring.py`'s on-chip
+ordered-value gate and second-batch gate). Any copy of this entry's earlier
+language found elsewhere — "the fold emits the transpose", "row-major does not
+fit this fold" — describes the PRE-FIX **producer** side only, and is
+SUPERSEDED as a statement about the block: it remains true (and still gated)
+that no producer-side knob can produce row-major order, and the order was
+fixed at the COLLECTOR — which is this invariant's rule 1 working exactly as
+stated. The deadlock the built reorder band then hit, and its landed fix (BOTH
+wave-separation shapes plus the port-cell egress rule), are recorded in
+INV-56's 2026-08-30 addendum.
+
 ---
 
 ## INV-56 — A single-file conveyor carrying TWO waves in OPPOSITE directions deadlocks; and `stop_reason` is the first thing to read when a block emits nothing
@@ -3884,6 +3940,19 @@ Note that `completed` is `False` for BOTH, and the emitted-word count is `0` for
 both, so neither of the two signals a driver usually checks tells them apart.
 A test-loop that spins `for _ in range(50): chip.run(...)` on a deadlocked chip
 gets `events_processed == 0` from the second iteration onward, forever.
+
+**Corollary (added 2026-08-30, so the rule appears ONCE, here): read
+`stop_reason` for EVERY case, not one.** `Poly1305MACBlock` measured the SAME
+defective layout reporting `"Deadlock"` on some seed values and `"QueueEmpty"`
+on others (the measurement is in INV-59), so one case's `stop_reason` is a
+sample, not a diagnosis. And when `stop_reason` alone cannot tell a COST story
+from a NON-TERMINATION story (`"EventLimit"` with plausible long hops in
+sight), count EXECUTIONS PER CELL against the model's expected counts in one
+traced run — the reading that disproved `LZ4EncoderBlock`'s "ring saturation"
+diagnosis (INV-61's CORRECTED block). Two further pairings sharpen the read:
+`stop_reason` + the store-count signature (rule 2 below) localises a wave
+collision; `stop_reason == "QueueEmpty"` + a TINY event count means the work
+never STARTED (a wrong injection landing, INV-60), not a block bug.
 
 ### 2. TWO WAVES, ONE CONVEYOR, OPPOSITE DIRECTIONS — the deadlock
 
@@ -3941,7 +4010,9 @@ block itself owns: `blk_out route = [(9,1), (9,0)]`.
 * `out` at (9,1) with `bufA3` at (9,1)/(9,0) swapped — DRC rejects
   `bufB3.nxt -> bufA3.rel` as not deliverable on any face.
 
-**THE FIX is a re-fold, and it is one of two shapes.** Either (a) separate the
+**THE FIX is a re-fold, and it is one of two shapes** *(superseded 2026-08-30
+— the landed fix needed BOTH shapes, plus the port-cell egress rule; see the
+pass-9 addendum below)*. Either (a) separate the
 two waves in TIME — the release must not start until the last store wave has
 fully drained, which needs a quiescence signal the drain does not currently have
 (firing it from the END of the store wave rather than from `drn` in parallel
@@ -4035,7 +4106,7 @@ geometry (spill corridors, port-cell egress, `bufA3`'s hop-21 lap baton).
 
 ## INV-57 — `MUL`/`MULHI` are SIGNED, so an exact unsigned 16x16->32 product needs BOTH operands under 2^15
 
-*(Number to be assigned at landing.)*
+*(Number assigned at landing.)*
 
 Found 2026-08-29 building `Poly1305MACBlock`. **MEASURED on a real placed +
 routed + built chip**, not read out of a table.
@@ -4084,7 +4155,7 @@ ISA claim that had to be measured rather than read).
 
 ## INV-58 — A 32-bit MAC must compute the HIGH half FIRST; and a SYSTOLIC stage cannot adopt and forward in one entry
 
-*(Number to be assigned at landing.)*
+*(Number assigned at landing.)*
 
 Found 2026-08-29 building `Poly1305MACBlock`'s 13-cell multiply ring. Two
 independent rules, both measured on a real placed + routed + built chip, both
@@ -4177,12 +4248,20 @@ twice), INV-46 (more cells doing less, which is why the fan is two cells and the
 egress is its own), INV-52 (the face/walk rules the collector violated), INV-54
 (a value gate must cover more than one element — met here as twelve-of-thirteen).
 
+**Status note (2026-08-30, reconciled with INV-64):** the systolic ring this
+entry's rule 2 was measured on is Poly1305's PASS-1 architecture; the SHIPPED
+`Poly1305MACBlock` (`done`, 100 cells, RFC 8439 §2.5.2 tag exact on chip,
+gated by `test_poly1305_mac.py`) was rebuilt ALL-SERIAL on one conveyor cycle
+— INV-64 §1 — precisely so that this whole concurrent-sweep hazard class
+cannot occur. Rule 1 (the seven-instruction MAC order) is in the shipped
+block; rule 2's measurements stay real and binding for any design that DOES
+run concurrent sweeps.
+
 ---
 
 ## INV-59 — A PROGRAMMED cell on a broadcast walk stops the sweep; only a face-only `transit_*` is transparent
 
-*(Number to be assigned at landing; main is at INV-56, so this is not one of
-1..56.)*
+*(Number assigned at landing — authored while main's highest entry was INV-56.)*
 
 Added 2026-08-30 from `Poly1305MACBlock`'s normalise ring. Measured on a real
 placed + routed + built chip.
@@ -4207,6 +4286,8 @@ defective layout reported `stop_reason == "Deadlock"` for some seed values and
 `"QueueEmpty"` for others. This is why INV-56's rule ("read `stop_reason`
 first") needs its corollary: **read it for EVERY case, not one**, because a
 layout fault can present as a wedge on one input and as silence on the next.
+*(2026-08-30: that corollary is now stated in INV-56 §1 itself, with this
+entry as its measurement — one home, cross-referenced, per the evidence rule.)*
 
 **SAY WHICH LAYER.** Hardware/toolchain boundary — the forwarding rule is
 hardware; which cells get a program is the block's own layout. Fixable in the
@@ -4224,7 +4305,7 @@ neutral — this is the same lesson for triggers rather than data), INV-56
 
 ## INV-60 — Read the hop the BUILD resolved; a manhattan guess is a harness bug that presents as a dead block
 
-*(Number to be assigned at landing.)*
+*(Number assigned at landing.)*
 
 Added 2026-08-30 from `Poly1305MACBlock`. This is INV-1's refinement, restated
 because it cost real time again and because the fix is now a one-liner.
@@ -4268,8 +4349,9 @@ pair that localises this in one run).
 
 ## INV-61 — Five silent failures a placed panel-backed block can have: a multi-region panel, a stale-flag branch, a stale FACE constant, an input landing off cell 0, and a fold whose edges all deliver but slowly
 
-*(Number to be assigned at landing — parallel builders cannot see each other's
-KB additions, and three numbering collisions have already happened.)*
+*(Number assigned at landing — authored by a parallel builder; parallel
+builders cannot see each other's KB additions, and three numbering collisions
+had already happened.)*
 
 **Found 2026-08-30 building `LZ4EncoderBlock`, the first block to use TWO panel
 regions at once.** Five separable rules, grouped because they share one property
@@ -4285,7 +4367,8 @@ Quick index:
    deadlock the layout check cannot see;
 4. an input landing that resolves off cell 0 → the whole first pass is a no-op;
 5. a fold where every edge delivers but the walks are long → saturation, not
-   deadlock.
+   deadlock *(this DIAGNOSIS was later DISPROVEN by trace — the fold-method
+   rule survived; see the CORRECTED 2026-08-30 block after the gate list)*.
 
 ### 1. TWO REGIONS IN ONE PANEL MUST BE PROVEN DISJOINT. (toolchain — fixable, and now guarded)
 
@@ -4425,6 +4508,13 @@ INV-51 clause 1 already says a ring traps its interior; the sibling cost is that
 cells can be 11 hops apart and the router will correctly compute 11. Under a
 per-sample inner loop those long-haul words saturate the ring and the block runs
 to `stop_reason == "EventLimit"` with no output — produced, not wedged.
+*(SUPERSEDED 2026-08-30 — this "ring saturation" reading of the `EventLimit`
+was DISPROVEN by an execution trace on the same build: the real cause was an
+infinite re-probe from two PROGRAM omissions — no `i += 1` on the miss path,
+and no hash-table INSERT ever issued. The hop arithmetic above is still true
+and the fold-method rule below still stands; the failure attribution does not.
+See the CORRECTED block after the gate list. The block is `done`: 15 cells +
+panel, every payload class including the scan loop byte-exact on chip.)*
 
 **MEASURED, including the negative result.** Adding a max-hop term to the fold
 score (penalise any edge over K hops) is the obvious fix and it is NOT
@@ -4506,12 +4596,13 @@ ON-CHIP INV-4 mutants in the block's suite and proven caught.
 INV-47 (the panel tier), INV-13 (no unconditional GOTO — the same flag-discipline
 family), INV-4 (both gates carry proven negatives).
 
-### CORRECTED 2026-08-30 addendum — see the correction block above the gate list
-### for what clause 5's failure diagnosis got wrong and what survived.
+*(Navigation fix 2026-08-30: an earlier pointer here said the correction block
+sits "above the gate list" — it does not; it sits directly BELOW the gate list,
+immediately above this line. Nothing else about it changed.)*
 
 ## INV-62 — The panel-port corner has exactly TWO reachable client slots; a second client can speak the RAW panel protocol THROUGH the controller if its commits are DEFERRED one transaction; and the panel bridge can drop an ack release on a run boundary
 
-*(Number to be assigned at landing — parallel builders are running.)*
+*(Number assigned at landing — authored by a parallel builder.)*
 
 **Found 2026-08-30 finishing `LZ4EncoderBlock` (its second pass), the first
 block with TWO on-chip panel clients.** Every claim is measured on a real
@@ -4630,7 +4721,8 @@ pass adds "and count executions per cell against the model").
 
 ## INV-63 — An EXIT cell's highest-addressed WRITE/JUMP are contested by TWO build passes: a declared backward jump and the external port pair cannot share a cell; RAW literals with build-time-resolved operands are the escape
 
-*(Number to be assigned at landing — parallel builders are running.)*
+*(Number assigned at landing — authored by a parallel builder before its number
+existed.)*
 
 Found 2026-08-30 finishing `ChaCha20KeystreamBlock`, whose egress must sit ON
 the chip's output-port cell (INV-56 addendum) and ALSO relay the pair-3 spill
@@ -4697,14 +4789,19 @@ clobbered — the measured `bufB3 == 0` reading), and the second-batch gate.
 **Related:** INV-53 (the highest-address resolution rule this collides with),
 INV-56 (the deadlock campaign this closed), INV-50/INV-52 (authored faces vs
 the router's/build's), INV-6/11 (why the literals must be derived), INV-38
-(the report emitted by the gate that proved all of this).
+(the report emitted by the gate that proved all of this). **Cross-reference
+added 2026-08-30:** INV-64 §2 is the WRITE-side sibling of this collision — a
+flip-delivered declared backward WRITE re-patched with the resting-corridor
+hop; INV-53 + this entry + INV-64 §2 are one family (three faces of the
+build's rewrite-by-address passes) and were landed by different builders —
+read all three together.
 
 ---
 
 ## INV-64 — A latency-tolerant block should be ALL-SERIAL on ONE conveyor cycle; and a FLIPPED backward write must be an AUTHORED literal, because the feedback pass re-patches it with the RESTING-corridor hop
 
-*(Number to be assigned at landing — parallel builders are running; main was
-at INV-63 when this was written.)*
+*(Number assigned at landing — authored by a parallel builder while main's
+highest entry was INV-63.)*
 
 Found 2026-08-30 finishing `Poly1305MACBlock` (the queue's last block). Every
 claim measured on a real placed + routed + built chip.

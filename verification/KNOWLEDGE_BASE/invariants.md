@@ -5116,7 +5116,7 @@ template in `engine/panel_pnr.py`.
 
 ---
 
-## INV-NEXT — Batch-EVOLVING state (a block counter) is an OWNER register excluded from the reset spec plus end-of-batch writes into every baked COPY, each made where that copy sits at a KNOWN rotation
+## INV-68 — Batch-EVOLVING state (a block counter) is an OWNER register excluded from the reset spec plus end-of-batch writes into every baked COPY, each made where that copy sits at a KNOWN rotation
 
 *(Number to be assigned at landing.)*
 
@@ -5180,7 +5180,7 @@ the three mutants). **Related:** INV-45 (the wide add), INV-52 (face flips
 steer transits), INV-63 (derived literals), INV-56 (`stop_reason` read every
 batch), INV-33 (the two touched cells close at margin 2 and 1).
 
-## INV-NEXT (SVPWM-a) — A serialize-LOCK release whose VALUE must equal a ROUTED arm face cannot be an authored constant in another cell; re-point the lock FROM the rendezvous's own reconciled face word, via a backward JUMP into a release entry
+## INV-69 (SVPWM-a) — A serialize-LOCK release whose VALUE must equal a ROUTED arm face cannot be an authored constant in another cell; re-point the lock FROM the rendezvous's own reconciled face word, via a backward JUMP into a release entry
 
 *(Number to be assigned at landing — authored by a parallel FOC-wave builder
 while main's highest entry was INV-67.)*
@@ -5241,7 +5241,7 @@ would break).
 
 ---
 
-## INV-NEXT (SVPWM-b) — Two INDEPENDENT rendezvous arms whose corridors SHARE cells head-of-line DEADLOCK on out-of-order arrival: an arbiter-HELD word's in-flight words block the shared segment, and the completing arm can never deliver
+## INV-70 (SVPWM-b) — Two INDEPENDENT rendezvous arms whose corridors SHARE cells head-of-line DEADLOCK on out-of-order arrival: an arbiter-HELD word's in-flight words block the shared segment, and the completing arm can never deliver
 
 *(Number to be assigned at landing — authored by a parallel FOC-wave builder
 while main's highest entry was INV-67.)*

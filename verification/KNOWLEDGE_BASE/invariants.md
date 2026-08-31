@@ -4933,3 +4933,69 @@ a NON-port edge) is untested and should be measured before use.
 
 **Related:** INV-56 (the port-cell rule's deadlock mechanism), INV-40 (fold
 shape vs free space), the corrected `layout_rules.md` §1 and checklist.
+
+---
+
+## INV-NEXT — Batch-EVOLVING state (a block counter) is an OWNER register excluded from the reset spec plus end-of-batch writes into every baked COPY, each made where that copy sits at a KNOWN rotation
+
+*(Number to be assigned at landing.)*
+
+**Measured 2026-08-31** building `ChaCha20KeystreamBlock`'s
+`counter_mode="increment"` (batch N must emit `block(key, nonce, counter+N)`
+— RFC 8439 §2.4's per-block counter). Every claim below was proven on the
+real placed + routed + built chip: seven consecutive batches bit-exact, the
+0xFFFF→0x10000 carry seam, and three on-chip mutants.
+
+**THE MECHANISM.** `reset_per_batch` restores by REGISTER at every packet
+boundary, and a working datapath CLOBBERS its registers during the batch (a
+row's slot registers hold post-drain garbage at the boundary; the boot state
+exists only as reset VALUES). Two corollaries:
+
+1. **Merely excluding a value's register from the reset is NOT persistence** —
+   the register keeps the garbage, not the value. State that must EVOLVE
+   across batches needs an OWNER: a StateVar pair in a cell whose program
+   never overwrites it, excluded from the reset spec, advanced once per batch
+   (32-bit-wide via `ADD`/park/`ADC`/park — INV-45; a carry-less advance is
+   bit-perfect until the 16-bit seam, so gate the seam EXPLICITLY with
+   `counter0=0xFFFF`).
+2. **Every baked COPY of the value must be re-derived by an on-chip write
+   before the next batch consumes it, and each write must land where that
+   copy is at a KNOWN rotation.** ChaCha's state word 12 has two baked
+   copies — the row's slot-0 boot registers and the adder's slot-0 addend
+   (a register that ROTATES during the batch). The END of the batch is the
+   natural point: the datapath is idle, a rotating register that stepped a
+   multiple of its period is back at IDENTITY (the adder fires exactly 4
+   times = its 4-slot period), and the writes race nothing — a batch-START
+   update would race the host's reset writes and the first publish.
+
+**Two placement sub-lessons the fix needed:**
+
+* **Delivery reachability is about where a walk ENDS, never what it
+  transits.** A hop-counted word is transparent to occupied cells, but its
+  walk bends to each transit cell's OWN face — so a cell ALL of whose
+  neighbours' resting faces forward PAST it (`add3`: bufB3/tap3 east, spad2
+  west, bufA3 north) can only be written by an authored FLIP from an abutting
+  cell. Survey the neighbours' word budgets before inventing relay cells: the
+  one that already owns the needed flip for another duty (`tap3`'s drain-path
+  north flip) makes the delivery nearly free. Both counter deliveries are
+  authored literals with build-time-resolved operands (INV-63): the targets
+  are StateVar/DataWord addresses, not declared input ports.
+* **Order the batch-close fan-out so triggers that FLIP a shared conveyor's
+  transit cell leave LAST** (INV-52's corollary): `drn.done` emits the
+  counter words down the state line and only then `{jump:rel}`, whose handler
+  transiently flips `tap0` — a counter word behind that flip would deflect
+  into the reorder band, silently.
+
+**MODE ISOLATION is part of the contract.** The default mode's programs must
+stay BYTE-IDENTICAL (diff every cell's template/ports/state/data against the
+shipped revision — measured NONE here), and the isolation must be mutation-
+proven BOTH ways: the increment chip FAILS the fixed-mode second-batch
+equality gate, and the fixed chip carries none of the increment machinery.
+
+**REACH.** Any block whose parameters must advance per batch on chip: block/
+sequence counters (AEAD nonces, rolling codes), frame indices, seed-evolving
+scramblers. **Gated by:** `verification/tests/test_chacha20_counter_increment.py`
+(the 7-batch value gate, the carry seam, §2.4.2 from on-chip keystream, and
+the three mutants). **Related:** INV-45 (the wide add), INV-52 (face flips
+steer transits), INV-63 (derived literals), INV-56 (`stop_reason` read every
+batch), INV-33 (the two touched cells close at margin 2 and 1).

@@ -135,6 +135,7 @@ from .chacha20_keystream import chacha20_keystream
 from .poly1305_mac import poly1305_mac
 from .chacha20_qr import chacha20_qr
 from .keystream_serializer import keystream_serializer
+from .pi_controller import pi_controller
 from .dot_product_mac import dot_product_mac
 from .conv_encoder_k7 import conv_encoder_k7
 from .hamming_encoder import hamming_encoder
@@ -275,6 +276,7 @@ __all__ = [
     "poly1305_mac",
     "chacha20_qr",
     "keystream_serializer",
+    "pi_controller",
     "dot_product_mac",
     "conv_encoder_k7",
     "hamming_encoder",

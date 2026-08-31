@@ -80,6 +80,11 @@ REAL_1IN = {
     "AGCBlock": ("in", "out", {}),
     "SquelchBlock": ("in", "out", {}),
     "IIRBiquadBlock": ("in", "out", {}),
+    # FOC PI controller: 3-cell iterm-feedback loop, serialize-LOCKed on its
+    # sat cell (INV-19) — the saturated stream must equal the per-sample
+    # stream bit-for-bit. A saturation-HEAVY bespoke pipelined gate (rails +
+    # anti-windup skip exercised) lives in test_pi_controller.py.
+    "PIControllerBlock": ("sample", "out", {}),
     # raw FIR needs explicit taps (the LowPass/HighPass/RRC variants supply their own).
     "FIRFilterBlock": ("in", "out", {"coefficients": [0.25, 0.5, 0.25]}),
     "LowPassFilter": ("in", "out", {}),

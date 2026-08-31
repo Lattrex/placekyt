@@ -131,6 +131,7 @@
 | **LZ4DecoderBlock** | (Kyttar-native, no single GR block) | 3 · new GRC block | ✅ done | err 0 / tol 0 LSB | mut |
 | **Poly1305MACBlock** | (Kyttar-native, no single GR block) | 3 · new GRC block | ✅ done | err 0 / tol 0 LSB | rand×8 residue-sweep messages (every final-block m=1..8) + 3 seeded randoms + the all-max carry-ceiling case, all bit-exact on chip |
 | **LZ4EncoderBlock** | (Kyttar-native, no single GR block) | 3 · new GRC block | ✅ done | err 0 / tol 0 LSB | mut |
+| **PIControllerBlock** | (Kyttar-native, no single GR block) | 3 · new GRC block | ✅ done | err 0 / tol 0 LSB | edge rand×3 sweep×7 mut |
 
 **Tiers** reflect verification difficulty (the build order): tier 1 = feed-forward, tier 2 = stateful/loop, tier 3 = new block to build. **🧪 proof-of-concept** blocks exist and work in a demo (e.g. the coherent BPSK receiver) but have NOT yet been through per-block GNU Radio equivalence verification — treat them as demo-quality, not drop-in-verified. **Won't-map** blocks are GRC blocks that do not translate to the Kyttar fabric (with a reason in the manifest).
 

@@ -127,6 +127,69 @@ Datapath lessons (all small, all measured):
   bit-exact by construction; delay=2 keeps hi/lo pairing upstream, delay=1
   shifts the byte stream downstream, both composable in the reference).
 
+## PIControllerBlock — DONE: FOC PI, 32-bit anti-windup integrator; the resolution gate answers "is 16 bits enough" by measurement; the self-lock-inside-atomic-execution shape  2026-08-31
+
+3 cells, exact (tol 0) vs its own integer model everywhere it was driven —
+edge/random/7-param sweep/1000-sample step/slow ramp/windup release, saturated
+pipelined, all 8 D4 orientations, first build. Lessons that generalize:
+
+* **THE HEADLINE (measured): a 16-bit integrator is NOT enough for FOC; a
+  32-bit pair is.** At `Ki*e = 0.030 LSB/step` (ki=0.001, e=30 LSB — an
+  entirely realistic current-loop regime), 1200 steps on the shipped block
+  grow the command 35 LSB with 0.97 LSB integral drift vs double precision;
+  the 16-bit-only-accumulator mutant (same chip, INV-4) integrates **exactly
+  0 LSB**. The whole 16-bit question, answered on hardware.
+* **Apply a gain's right-shift to the PRODUCT, not the read-out.** First cut
+  had `iterm = asr(acc_hi, ki_s)` — that caps the integral RANGE at
+  `2**15/2**ki_s` LSB (a deep-shift tiny Ki could never cancel a large
+  steady-state error). Computing `inc32 = (2*ki_m*e) >> ki_s` in front (a
+  cross-word 32-bit shift: SHR low | SHL high<<(16-j), bias-trick ASR high)
+  keeps `acc_hi` = the full-range Q15 integral at every ki. Costs ~6 words in
+  the producing cell, zero in the accumulator cell.
+* **The serialize-LOCK can guard a MID cell and be SELF-engaged, with no
+  window** — the lock tail runs at the END of the locked cell's own atomic
+  execution, and incoming words are arbiter-held while a cell executes, so
+  there is no instant between "dispatched the tail of the chain" and "locked"
+  that the next sample can slip through. sat locks itself (lock_face=south =
+  acc's resting face); the next sample's p/hi/lo/trigger queue on the WEST
+  arbiter; acc's backward `WRITE.CFG @1, 4` on its resting face clears it (the
+  AGC upd->hold shape verbatim: feedback WRITE + WRITE.CFG, same cell, same
+  @1). Proven by the saturated-pipelined == per-sample gate incl. rails-heavy
+  drive.
+* **Keep the lock-clear WRITE.CFG BELOW the external pair** in the emitting
+  cell: `_patch_last_write_handoff` (the mid-block output-cell route patch)
+  rewrites the HIGHEST-addressed WRITE by opcode and does NOT skip WRITE.CFG
+  (only the complex `_patch_last_n_write_handoff` does). Order in acc: iterm
+  WRITE, WRITE.CFG, `[FACE]` flip, `{write:out}`, `{jump:u_trig}` — the port
+  patch lands on `out`/`u_trig` and never on the unlock.
+* **A mid/exit output cell with only internal JUMPS is NOT
+  "carries-handoffs"** — `_output_cell_carries_handoffs` looks for an
+  internal_connections DATA edge or an inline WRITE.CFG on the exit cell;
+  jumps don't count, and without it the sink/route patch rewrites EVERY
+  write/jump in the cell (INV-63 clause 2). acc qualifies via its genuine
+  iterm feedback edge; a design whose exit cell only dispatches would need
+  restructuring, not a dummy edge.
+* **Complementary-BR pairs make free unconditional jumps** when the flag state
+  at the site is proven on every inbound path: after `CMP a,b / BR.LT taken`,
+  a later `BR.LT` is an always-branch (WRITE/JUMP/MOVE preserve flags); the
+  V-overflow path has SLT = N^V = 1 when N=0,V=1, matching the CMP path — so
+  sat's three-way clamp+dispatch needs no case register and no scratch state.
+* **Mutant hygiene that made INV-4 cheap:** patch `build_cell_programs` in
+  memory (the Poly1305 wrapper — no pyc hazard), assert the template fragment
+  is PRESENT before replacing it (a refactor cannot silently no-op a mutant),
+  predict the firing in a variant integer model first, and require chip ==
+  mutated-model (the failure is the predicted one). The carry-loss mutant
+  (ADC->ADD) was proven to keep the LOW accumulator word bit-exact for the
+  whole 120-sample run while the command diverges — INV-58's "invisible to a
+  one-word gate" class, demonstrated at gate level.
+* **Derive float-vs-chip bounds from the floors, and mind what the probe
+  includes.** MULQ-then-ASR composes to ONE floor of the exact `Kp*e` product
+  (<1 LSB); the `acc_hi` read-out is another floor (<1 LSB); per-step
+  increment truncation adds `N * 2**-16`. A command-level probe carries the
+  p-term floor, so the integral bound (1 + N/65536) applies to the GROWTH
+  (where the constant floor cancels), not to `|u|` — first cut asserted the
+  u-level number against the integral bound and failed honestly at 1.969.
+
 ## examples/secure_link — NOT BUILT: the 4-die 2P2S AEAD+LZ4 topology is infeasible with today's shipped blocks; walls measured, spine proven, options recorded  2026-08-31
 
 The plan: ChaCha20-Poly1305 + LZ4 as ONE project across the 2P2S board — TX-A

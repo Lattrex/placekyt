@@ -253,6 +253,7 @@ factory is named in the dashboard so you never have to guess the equivalent.
 | **LZ4DecoderBlock** | (Kyttar-native, no single GR block) | err 0 / tol 0 LSB |
 | **Poly1305MACBlock** | (Kyttar-native, no single GR block) | err 0 / tol 0 LSB |
 | **LZ4EncoderBlock** | (Kyttar-native, no single GR block) | err 0 / tol 0 LSB |
+| **PIControllerBlock** | (Kyttar-native, no single GR block) | err 0 / tol 0 LSB |
 <!-- BLOCK-STATUS:END -->
 
 - **[Block status dashboard → `verification/STATUS.md`](verification/STATUS.md)** —

@@ -1,0 +1,28 @@
+{
+  "kyttar_block": "PIControllerBlock",
+  "passed": true,
+  "metric": "exact",
+  "n_compared": 1200,
+  "max_abs_err": 0,
+  "tolerance": 0,
+  "resolution_gate": {
+    "ki_e_lsb_per_step": 0.03,
+    "steps": 1200,
+    "chip_integral_growth_lsb": 35,
+    "end_drift_vs_double_lsb": 1.9695,
+    "acc16_mutant_growth_lsb": 0
+  },
+  "coverage": {
+    "edge": true,
+    "random": 3,
+    "param_sweep": 7,
+    "step_1000": true,
+    "resolution_slow_ramp": true,
+    "anti_windup": true,
+    "saturated_pipelined": true,
+    "orientation_8d4": true,
+    "mutation": 8,
+    "structural_mutants_on_chip": 4
+  },
+  "provenance": "session"
+}

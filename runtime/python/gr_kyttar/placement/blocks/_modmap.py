@@ -92,6 +92,7 @@ BUILTIN_BLOCKS = {
     'ChaCha20QRBlock': 'chacha20_qr_block',
     'KeystreamSerializerBlock': 'keystream_serializer_block',
     'Poly1305MACBlock': 'poly1305_mac_block',
+    'PIControllerBlock': 'pi_controller_block',
     'TransitProbeBlock': 'transit_probe_block',
     'PackKBitsBlock': 'pack_k_bits_block',
     'DiffEncoderBlock': 'diff_encoder_block',

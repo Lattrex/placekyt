@@ -1,0 +1,66 @@
+id: kyttar_pi_controller
+label: Kyttar PI Controller
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar PI Controller - discrete PI control loop with a 32-bit anti-windup
+  integrator (the FOC current-loop primitive; placeKYT-native, no stock
+  GNU Radio streaming counterpart).
+
+  One Q15 error stream in, one Q15 command out, per sample:
+      u    = sat(kp*e + integral, +/-limit)
+      integral += ki*e     UNLESS the output is already saturated in the
+                           direction this step integrates (anti-windup)
+
+  The integrator is a 32-bit accumulator on the chip, so an integral gain
+  small enough that ki*e is far below one Q15 LSB per sample still
+  integrates correctly (measured on chip: ki*e = 0.03 LSB/step accumulates
+  within 1 LSB of the double-precision value; a 16-bit integrator loses it
+  entirely).
+
+  This block runs on the Kyttar chip. Place it between a KyttarSource and
+  KyttarSink block, and ensure the device_id matches your KyttarDevice.
+
+  Parameters:
+  - Device ID: ID of the KyttarDevice block
+  - Kp: proportional gain, |kp| < 1 (Q15 mantissa + right-shift scaling)
+  - Ki: integral gain per sample, |ki| < 1 (tiny values keep full
+    mantissa precision via the derived right-shift)
+  - Limit: symmetric output saturation bound, 0 < limit <= 1
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.pi_controller(device_id=${device_id}, kp=${kp}, ki=${ki}, limit=${limit})
+  callbacks:
+    - set_kp(${kp})
+    - set_ki(${ki})
+    - set_limit(${limit})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+  - id: kp
+    label: Kp
+    dtype: real
+    default: 0.25
+  - id: ki
+    label: Ki
+    dtype: real
+    default: 0.01
+  - id: limit
+    label: Limit
+    dtype: real
+    default: 1.0
+
+inputs:
+  - label: in
+    dtype: float
+
+outputs:
+  - label: out
+    dtype: float
+
+file_format: 1

@@ -9,6 +9,93 @@ block-specific gotcha. Promote anything that generalizes across block classes in
 and superseded material merged into the surviving entries; no durable lesson was
 dropped) — append new entries above the oldest ones as before.
 
+## examples/foc_motor — the FOC current loop on chip: 56 kHz measured, and the wall is ROUTING, not cells  2026-08-31
+
+**SHIPPED:** `examples/foc_motor` — `PI(d)`, `PI(q)` -> `CordicRotate(sign=+1, theta)`
+(inverse Park) -> `SVPWM` -> three duty words, 87 of 120 cells, hand-placed anchors,
+route-only, bit-exact on the real placed+routed+built chip. 16 gates in
+`verification/tests/test_foc_motor_example.py`.
+
+**THE HEADLINE NUMBERS** (simKYT timing model — simulated, not silicon-certified):
+
+| | measured |
+|---|---|
+| latency to the first duty word | 17,576.9 ns |
+| latency to the complete 3-word packet | 17,861.5 ns |
+| duty-word cadence inside the packet | 142.29 ns |
+| equivalent control-loop rate | **56.0 kHz** |
+| instructions per iteration | 634 (45 of 120 cells active) |
+
+56 kHz is above the 10-40 kHz industrial FOC current-loop band.
+
+**THERE IS NO STEADY-STATE THROUGHPUT, AND THAT IS THE RESULT.** Measured three
+ways on the built chain: a SECOND control iteration emits nothing and every run
+reports `Deadlock` POST-group (a real wedge by INV-67, not the healthy mid-group
+hold); an ARM-SATURATED drive of even ONE iteration (`queue_words_physical`, the
+INV-19 path) emits nothing; a REVERSED arm order emits nothing. The chain
+sustains exactly ONE iteration, driven arm-by-arm in lock order, and that one is
+exact. All three boundaries are pinned as guard tests that FAIL if the wall moves.
+
+The cause was already documented per block and simply composes: `CordicRotateBlock`
+(N=3) and `SVPWMBlock` (N=2) each carry a measured whole-burst depth of ONE,
+because the serialize-LOCK release must ride the single cell abutting the
+rendezvous. Chained, the deeper chain is still holding the previous sample when
+the next group is admitted. For a host-paced controller (one sample set per
+control period) this is not a defect — but it does mean the fill-vs-steady-state
+gap cannot be measured on this chain: there is only fill.
+
+**THE pipeline_lock TRADE, measured one stage down** (where a steady state does
+exist). `PIControllerBlock` alone, saturated:
+
+* `pipeline_lock=True`  — 949.2 ns/sample, 1,053,552 samples/s
+* `pipeline_lock=False` — 893.2 ns/sample, 1,119,608 samples/s
+
+The INV-19 serialize-LOCK costs ~6% of throughput. KEPT ON: the PI integrator is
+a feedback loop and correctness under saturation is not tradeable for rate.
+Single-shot latency 1,338.5 ns vs a 949.2 ns steady-state period — the pipeline
+fill the deeper chain never gets to show.
+
+**THE BIG LESSON — cost a face-locking chain by ARM COUNT, not cell count**
+(promoted to INV-71). The full FOC loop (Clarke + forward Park + the above) is 55
+block cells of 120 — under half the array — and does NOT fit. Three rendezvous
+(two CORDIC N=3, one SVPWM N=2) compete for corridors that must reach distinct
+faces without sharing cells. Over ~2600 placements (random, structured,
+hill-climbed) the best whole-chain result still left 2 of 13 nets unrouted, and
+the unrouted nets were ALWAYS rendezvous arms. The sub-chains route fine on their
+own — `Clarke -> CordicRotate` does, and the back half does at 87 cells.
+
+**THE TRAP THAT COST THE MOST TIME — a port fan-out is not an arm.** Wiring three
+nets straight from `x16_in` into the arms routes clean, builds clean, and reports
+`input_landings` with DISTINCT `entry` and `data_addrs` — exactly the signature the
+per-block suites accept as "distinct arms". But every landing carries the SAME
+`hop`, because they are the INV-24 port-divert turn programs on the port cell: all
+three words arrive on ONE face, the rendezvous LOCK bars them, and the chain emits
+ZERO words while every run reports `QueueEmpty` (INV-56's "work never started"
+signature, not `Deadlock`). Measured on a port-fed 2-arm SVPWM: route ok, build
+ok, 6 of 66 cells ever active, 0 words in either arrival order.
+
+**Fix:** one `StreamSplitterBlock` relay per arm, so the router gives each its own
+corridor terminating on its own face. **And assert the HOPS differ** — the demo's
+`arm_landings()` raises on equal hops rather than let a silent no-op ship.
+
+**Other measured gotchas:**
+
+* A CORDIC placed at the array edge fails the build with `dual_input_same_face`:
+  its `rdv` leaf needs three free ON-CHIP faces, and at a corner one of them is
+  off-fabric. Keep `rdv` off the edge.
+* The CORDIC footprint is NOT a solid 5x5 — column 0 holds only the `rdv`, so it
+  is 20 cells with rows 1-4 of column 0 FREE. A solid-rectangle occupancy model
+  rejects every legal placement (it rejected all 300 CORDIC-pair positions before
+  the model was fixed against the real `default_layout`).
+* `simulation_time` is a PROPERTY, not a method — `chip.simulation_time()` raises
+  `TypeError: 'float' object is not callable`.
+* `chip.simulation_time` after `load_bitstream_physical` is NOT zero (measured
+  64,875 ns — the bitstream load). Latency must be taken from the post-load time,
+  or it is inflated by the programming pass.
+* `performance_report()` returns `input_to_output_latency_ns = None` for this
+  chain; `output_throughput_per_us` is populated and matches the hand-computed
+  word cadence. Take latency from `read_port_words_timed` timestamps.
+
 ## ClarkeTransformBlock — FOC wave F1: the XorJoin recipe composes with real Q15 arithmetic and a 2-rail complex emit; three measured gotchas  2026-08-31
 
 Two-input Clarke transform (i_alpha = ia; i_beta = (ia + 2*ib)/sqrt(3)), the

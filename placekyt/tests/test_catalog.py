@@ -33,6 +33,9 @@ EXPECTED_CATEGORIES = {
     "type_conversion",  # char<->float, map_bb
     "modulators",       # RaisedCosineEnvelope / CW keyer (waveform shapers)
     "digital",          # misc digital blocks (map_bb / slicers family)
+    # Categories introduced by the FOC motor-control blocks:
+    "control",          # PIControllerBlock (closed-loop regulators)
+    "motor_control",    # SVPWMBlock (three-phase inverter modulation)
 }
 
 

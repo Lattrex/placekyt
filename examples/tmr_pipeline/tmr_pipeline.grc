@@ -133,33 +133,15 @@ blocks:
     - 172
     rotation: 0
     state: enabled
-- name: to_raw_tmr
-  id: blocks_multiply_const_vxx
-  parameters:
-    affinity: ''
-    alias: ''
-    comment: kyttar.source expects q15/32768 floats
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    const: 1.0/32768.0
-    type: float
-    vlen: '1'
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate:
-    - 176
-    - 260
-    rotation: 0
-    state: enabled
 - name: tmr_src
   id: kyttar_source
   parameters:
     affinity: ''
     alias: ''
-    comment: 'the TMR stream. Output words = Raw: byte values and status codes are
-      words, not Q15 samples'
+    comment: 'the TMR stream. Output words = Raw: byte values and status codes
+      are integer WORDS, not Q15 samples — and the raw convention is symmetric,
+      so the input floats are the word values themselves (0..255), no q15/32768
+      scaling on either side'
     maxoutbuf: '0'
     minoutbuf: '0'
     burst_len: burst_len
@@ -615,26 +597,6 @@ blocks:
     - 476
     rotation: 0
     state: enabled
-- name: to_raw_solo
-  id: blocks_multiply_const_vxx
-  parameters:
-    affinity: ''
-    alias: ''
-    comment: ''
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    const: 1.0/32768.0
-    type: float
-    vlen: '1'
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate:
-    - 176
-    - 564
-    rotation: 0
-    state: enabled
 - name: solo_src
   id: kyttar_source
   parameters:
@@ -815,10 +777,6 @@ connections:
   - '0'
 - - b2f_tmr
   - '0'
-  - to_raw_tmr
-  - '0'
-- - to_raw_tmr
-  - '0'
   - tmr_src
   - '0'
 - - tmr_src
@@ -882,10 +840,6 @@ connections:
   - b2f_solo
   - '0'
 - - b2f_solo
-  - '0'
-  - to_raw_solo
-  - '0'
-- - to_raw_solo
   - '0'
   - solo_src
   - '0'

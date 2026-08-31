@@ -305,6 +305,74 @@ blocks:
     - 328
     rotation: 0
     state: enabled
+- name: f2b_raw
+  id: blocks_float_to_uchar
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'marker-chain dtype adapter (the marker chain is cosmetic at GR runtime - the real data rides the kyttar batch session)'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 392
+    - 240
+    rotation: 0
+    state: enabled
+- name: b2f_enc
+  id: blocks_uchar_to_float
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'marker-chain dtype adapter (the marker chain is cosmetic at GR runtime - the real data rides the kyttar batch session)'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 584
+    - 240
+    rotation: 0
+    state: enabled
+- name: f2b_cmp
+  id: blocks_float_to_uchar
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'marker-chain dtype adapter (the marker chain is cosmetic at GR runtime - the real data rides the kyttar batch session)'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 776
+    - 420
+    rotation: 0
+    state: enabled
+- name: b2f_dec
+  id: blocks_uchar_to_float
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'marker-chain dtype adapter (the marker chain is cosmetic at GR runtime - the real data rides the kyttar batch session)'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 968
+    - 420
+    rotation: 0
+    state: enabled
 - name: cmp_scope
   id: qtgui_time_sink_x
   parameters:
@@ -510,9 +578,17 @@ connections:
   - '0'
 - - raw_src
   - '0'
+  - f2b_raw
+  - '0'
+- - f2b_raw
+  - '0'
   - enc
   - '0'
 - - enc
+  - '0'
+  - b2f_enc
+  - '0'
+- - b2f_enc
   - '0'
   - raw_sink
   - '0'
@@ -526,9 +602,17 @@ connections:
   - '0'
 - - cmp_src
   - '0'
+  - f2b_cmp
+  - '0'
+- - f2b_cmp
+  - '0'
   - dec
   - '0'
 - - dec
+  - '0'
+  - b2f_dec
+  - '0'
+- - b2f_dec
   - '0'
   - cmp_sink
   - '0'

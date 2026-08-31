@@ -1,0 +1,62 @@
+id: kyttar_keystream_serializer
+label: Kyttar Keystream Serializer
+category: '[Kyttar]/FEC'
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.keystream_serializer(${device_id})
+
+parameters:
+- id: device_id
+  label: Device ID
+  dtype: string
+  default: '"kyttar_0"'
+
+inputs:
+- id: '0'
+  label: in
+  domain: stream
+  dtype: short
+
+outputs:
+- id: '0'
+  label: out
+  domain: stream
+  dtype: short
+
+documentation: |-
+  Keystream serializer — a placeKYT-native [Kyttar] block (no stock GNU Radio
+  counterpart). It converts the ChaCha20 keystream wire convention into RFC
+  8439 serialization order:
+
+  Input: raw 16-bit words carrying each 32-bit keystream state word as its
+  16-bit HALVES, hi first then lo — exactly what the Kyttar ChaCha20 Keystream
+  block emits (32 words per 64-byte keystream block).
+
+  Output: raw 16-bit words carrying ONE keystream byte each, in RFC 8439
+  section 2.3 order — each 32-bit word emitted as its four bytes
+  LITTLE-ENDIAN. This is the byte stream RFC 8439 encryption XORs against the
+  plaintext, in the one-byte-per-16-bit-word data-link convention.
+
+  Rate: 2 words in -> 4 words out (1:2). The hi half is held; the four bytes
+  burst out when its lo half arrives. A trailing unpaired hi word produces no
+  output (it is held awaiting its lo half); a packet boundary resets the
+  hi/lo phase.
+
+  Set output_words="raw" on any sink reading this stream — these are raw byte
+  values (0..255), NOT Q15-scaled samples.
+
+  This block has no parameters: the serialization order is fixed by RFC 8439
+  (little-endian bytes per 32-bit word) — specification, not a user setting.
+
+  Ports:
+    in  (in):  raw 16-bit words, hi/lo halves of each 32-bit keystream word
+    out:       raw 16-bit words, one RFC-order keystream byte per word
+
+  Parameters:
+    Device ID: Which Kyttar device to use.
+
+  Mapped by placeKYT (File -> Import GNURadio Flowgraph) to
+  KeystreamSerializerBlock.
+
+file_format: 1

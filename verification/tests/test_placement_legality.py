@@ -134,6 +134,10 @@ BLOCKS = [
     # tallest fold in the crypto family — check it stays pairwise-distinct
     # under every D4 orientation and under user movement.
     ("ChaCha20QRBlock", {}),
+    # Single-cell RFC 8439 keystream serializer — no internal transit cell, no
+    # params at all; trivially non-self-overlapping in every D4 orientation and
+    # under movement.
+    ("KeystreamSerializerBlock", {}),
     # Single-cell windowed zero-crossing rate — no internal transit cell, no
     # footprint-growing param (window_size only changes a data word + a shift
     # immediate); trivially non-self-overlapping in every D4 orientation and

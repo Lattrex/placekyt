@@ -1,0 +1,41 @@
+{
+  "block": "EXAMPLE_foc_motor",
+  "grc_block": "",
+  "tier": 0,
+  "wave": 12,
+  "schema_version": 2,
+  "started_utc": "2026-08-31T23:00:00Z",
+  "ended_utc": "2026-09-01T00:10:00Z",
+  "walltime_sec": 2580.6,
+  "tokens": {
+    "input": 0,
+    "output": 360755,
+    "cache_read": 0,
+    "total": 360755
+  },
+  "turns": 262,
+  "attempts": 1,
+  "human_interventions": 0,
+  "intervention_reasons": [],
+  "prompts": [
+    {
+      "role": "initial",
+      "text": "FOC closed loop on one array; measure the loop rate under FULL SATURATION."
+    }
+  ],
+  "verify_passed": true,
+  "quarantined": false,
+  "quarantine_reason": "",
+  "commit_sha": "merged to main",
+  "notes": "=== examples/foc_motor (2026-08-31/09-01, claude-fable-5) \u2014 SHIPPED, PARTIAL SCOPE ===\n\nTHE NUMBER: 17,861.5 ns per control iteration to the complete duty packet (17,576.9 ns to the first word), duty-word cadence 142.29 ns, 634 instructions/iteration across 45 active cells => 56.0 kHz equivalent loop rate, ABOVE the 10-40 kHz industrial FOC band. simKYT timing model, NOT silicon-certified.\n\nTHE SATURATION REQUIREMENT COULD NOT BE MET, AND THAT IS THE RESULT. The chain has NO STEADY STATE: a SECOND iteration emits nothing (post-group Deadlock = a REAL wedge by INV-67, not a healthy hold); queue_words_physical arm-saturated drive of even ONE iteration emits nothing; reversed arm order emits nothing. Cause composes from documented per-block limits: CordicRotateBlock (N=3) and SVPWMBlock (N=2) each carry a measured whole-burst depth of ONE. All three boundaries pinned as guards that FAIL IF THE WALL MOVES, rather than quoting an indefensible rate. Consequences reported rather than papered over: (a) the INV-19 saturated==per-sample gate cannot be satisfied at CHAIN level (saturated drive yields zero output); (b) no closed-loop settle test \u2014 the MEASUREMENT half (Clarke + forward Park) does not co-fit with the command half on one array, so a host-plant settle test would have measured a chain that cannot be built. The builder stopped rather than ship a proxy that passes while proving nothing.\n\nSCOPE SHIPPED: the COMMAND half \u2014 2x PI -> CordicRotate(+theta, inverse Park) -> SVPWM -> three duties. 87/120 cells, hand-placed anchors + auto_route_all (route-only; auto_pnr repacks and triggers the INV-70 wedge). Bit-exact on the real placed+routed+built chip against a golden assembled from the blocks' own pinned integer models. A separate gate proves the MEASUREMENT half (Clarke + forward Park, 75 cells) routes and is bit-exact, so the README's claim about the other half is ENFORCED, not asserted.\n\nPIPELINE_LOCK TRADE, measured one stage down where a steady state exists (PI alone, saturated): True = 949.2 ns/sample (1.054 M/s), False = 893.2 ns (1.120 M/s) \u2014 ~6% cost, KEPT ON; correctness under saturation is not tradeable. Its single-shot 1,338.5 ns vs 949.2 ns steady state is the fill-vs-steady gap the deep chain never gets to show.\n\nINV-71: a chain of N=2/N=3 LOCK rendezvous blocks is ROUTING-bound, not cell-bound. The full loop is 55 cells of 120 and still does not fit; over ~2600 placements the best whole-chain result left 2 of 13 nets unrouted, ALWAYS an arm. Cost such designs by ARM COUNT (8 here), not cells. THE TRAP THAT COST THE MOST TIME: nets fanned straight from x16_in into arms report DISTINCT entry/data_addrs (the signature suites accept them as distinct arms) but the SAME hop, so all land on one face, the LOCK bars them, and the chain builds, routes and emits ZERO with every run reporting QueueEmpty. The gate now asserts three distinct HOPS.\n\nINCIDENTAL FIX: test_catalog.py::TestDiscovery was ALREADY BROKEN on pristine main \u2014 the FOC blocks landed earlier the same day introduced categories 'control' and 'motor_control' that were never registered. I independently CONFIRMED the 2 failures on main before the merge and 1219/1219 after. A same-day registration gap that no block's own suite could see.\n\nORCHESTRATOR VERIFICATION: engine/router diff EMPTY; 17/17 FOC gates reproduced; the two known-limit guards read and confirmed to assert the WALL (they demand re-measurement if it moves); test_catalog broken-then-fixed confirmed by running both trees; placekyt 1219 re-run post-merge; dashboard clean; INV-71 already numbered by the builder's landing.",
+  "model": "claude-fable-5",
+  "by_model": [
+    {
+      "model": "claude-fable-5",
+      "attempts": 1,
+      "turns": 262,
+      "walltime_sec": 2580.6,
+      "output_tokens": 360755
+    }
+  ]
+}

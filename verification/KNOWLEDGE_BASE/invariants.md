@@ -5291,3 +5291,60 @@ every chain build, `test_reversed_arrival_order_is_identical`,
 **Related:** INV-67 (the stop_reason reading), INV-46 (Rule 4 probing), INV-56
 (the moving-waves sibling), INV-24 (port fan-out forks at a broker — the
 shared prefix this hazard rides).
+
+---
+
+## INV-71 — A chain of N=2/N=3 LOCK rendezvous blocks is ROUTING-bound, not cell-bound: each arm needs its own relay landing on a DISTINCT face, and a chip-input port fan-out (the port-divert landing) does NOT satisfy an arm
+
+**Measured** while assembling `examples/foc_motor` (Clarke -> CordicRotate(-θ) ->
+2×PI -> CordicRotate(+θ) -> SVPWM) on the 10×12 array. The chain is **55 block
+cells of 120** — less than half the array — and yet the binding constraint is
+routing, not area.
+
+**1. THE PORT-DIVERT LANDING IS NOT AN ARM.** Wiring several nets from
+`x16_in` straight into a face-locking block's arms routes and builds clean, and
+the build reports DISTINCT `input_landings` (differing `entry` and
+`data_addrs`) — the exact signature the per-block suites accept as "distinct
+arms". But every landing carries the SAME `hop` (the port cell itself: the
+INV-24 port-divert turn programs), so the words all arrive on the SAME face.
+The rendezvous LOCK gates that face, and the chain emits **ZERO words** while
+every run reports `QueueEmpty` (not `Deadlock` — nothing is stuck; the work
+never started, INV-56's "tiny event count" signature). Measured on a
+port-fed 2-arm `SVPWMBlock`: `route ok, build ok`, 6/66 cells ever active,
+0 duty words in either arrival order.
+
+**The rule:** an arm of a `NEEDS_DISTINCT_INPUT_FACES` block must be driven
+through its OWN relay block (a `StreamSplitterBlock` is the shipped idiom, one
+per arm) so the router gives it an independent corridor terminating on its own
+face. Distinct `entry`/`data_addrs` in `input_landings` is NOT sufficient
+evidence of distinct arms — **compare the `hop` too**, and treat equal hops as
+one arm.
+
+**2. THE FACE BUDGET IS A CHIP-LEVEL BUDGET, NOT ONLY A BLOCK-LEVEL ONE.**
+layout_rules §4b sizes the N+2 face budget inside the fold. Chained, the same
+budget applies to the FREE SPACE around each rendezvous: a `CordicRotateBlock`
+needs THREE free on-chip faces at its `rdv` leaf AND three corridors that reach
+them without sharing cells (INV-70). Two CORDICs plus an SVPWM on one 10×12
+array means **three rendezvous competing for corridors**, and that is what runs
+out first. Measured over ~2600 placements of the six-block chain (random,
+structured, and hill-climbed), the best result was **2 of 13 nets unrouted**;
+the failures are always the rendezvous arms, reported as `no bus path from
+source to the broker tap` and `no free broker cell abutting the target input`.
+
+**3. THE SUB-CHAINS DO ROUTE.** `2×PI -> CordicRotate(+θ) -> SVPWM` (the FOC
+back half, **66 cells**) routes and builds. So does `Clarke -> CordicRotate`
+once the CORDIC's `rdv` corner is off the array edge (at the corner, north is
+off-chip and the DRC reports `dual_input_same_face`). The whole-chain wall is
+the SUM of the arm corridors, not any single edge.
+
+**Corollary for planning:** cost a face-locking chain by ARM COUNT, not cell
+count. This chain has 3 + 3 + 2 = 8 rendezvous arms plus 2 complex-rail pairs;
+that is the number to fit, and it is the number the 10×12 array runs out of.
+
+**LAYER:** substrate/router geometry (permanent on this array size), plus a
+harness/design discipline (relay-per-arm). Not a block defect: all four FOC
+blocks are individually chip-proven.
+
+**Related:** INV-46 (Rule 1 silent no-op, Rule 2 face budget, Rule 4 probe),
+INV-70 (corridor sharing), INV-24 (port fan-out diverts), INV-56
+(`QueueEmpty` + tiny event count = work never started), layout_rules §4b.

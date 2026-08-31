@@ -775,13 +775,16 @@ def _walk(lay, src, face, dst, limit=31):
     return None
 
 
-def test_every_internal_edge_is_on_a_real_forwarding_walk():
+@pytest.mark.parametrize("msg_words", [17, 1, 2, 3, 4, 5, 6, 7, 8])
+def test_every_internal_edge_is_on_a_real_forwarding_walk(msg_words):
     """Every declared edge must land on the resting-face walk within the
-    31-hop limit (INV-48/INV-36). The three flip families are RAW literal @1
-    writes (INV-63's escape from the backward-write repatch, which was
-    measured to re-aim them at hop 21 and deadlock) — their adjacency is
-    asserted separately below."""
-    b = _block()
+    31-hop limit (INV-48/INV-36), for EVERY final-block residue (the m=4..7
+    high-bit trigger routes through the unlock relays precisely because its
+    direct edge measured 32 hops and failed the build). The three flip
+    families are RAW literal @1 writes (INV-63's escape from the
+    backward-write repatch, which was measured to re-aim them at hop 21 and
+    deadlock) — their adjacency is asserted separately below."""
+    b = Poly1305MACBlock("s", msg_words=msg_words)
     lay = b._geometry()
     edges = ([("W", *e) for e in b.internal_connections()]
              + [("J", *e) for e in b.internal_jumps()])

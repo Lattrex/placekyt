@@ -178,7 +178,8 @@ class Poly1305MACBlock(KyttarBlock):
     TAGS = ["poly1305", "crypto", "mac", "authenticator", "rfc8439",
             "multi-word", "130-bit"]
 
-    # ~108 cells on a 10x11 fold: the sole occupant of its die.
+    # 100 cells (94 programs + 6 face-only closure transits) on a 10x10 fold:
+    # the sole occupant of its die, at the pinned (0,1) anchor.
     CHIP_SCALE = True
     CHIP_SCALE_ORIENTATIONS = ((),)
 

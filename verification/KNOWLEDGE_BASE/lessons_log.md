@@ -275,6 +275,15 @@ binding/legality/reachability/chip-scale 682. Final fold: 51 cells, 10x7.
 
 ## ChaCha20KeystreamBlock — the release does not have a JUMP bug; it DEADLOCKS 2026-08-29 (pass 8)
 
+> **SUPERSEDED 2026-08-30 (pass 9, above): the block is `done`.** The re-fold this
+> entry scoped out was executed — both INV-56 fix shapes (the store and release
+> waves separated in space AND time) plus the egress moved ON to the port cell —
+> and the chip emits all sixteen §2.3.2 words bit-exact, IN ORDER
+> (`stop_reason == "QueueEmpty"`, 38/38 in `test_chacha20_fixed_tap_ring.py`).
+> The closing line "The block still emits nothing; do not use it" no longer
+> holds. The method lesson (read `stop_reason` FIRST) and the head-on findings
+> stand and are INV-56.
+
 **Headline: pass 7's diagnosis was wrong, and the evidence it said was missing
 was already in `BuildResult`.** Two corrections, both worth more than the fix.
 
@@ -332,6 +341,14 @@ fix is a re-fold — separate the two waves in time or in space — and was out 
 this pass's scope. **The block still emits nothing; do not use it.**
 
 ## ChaCha20KeystreamBlock — the reorder band is BUILT; the release jumps do not land 2026-08-29 (pass 7)
+
+> **SUPERSEDED 2026-08-29/30 (passes 8–9, above).** Two of this entry's
+> conclusions were overturned by measurement: the release jumps DID land
+> (`bres.chips[N].cells` exposes the resolved image — no engine change was
+> needed for the observability this pass said `BuildResult` lacked), and the
+> real fault was the INV-56 two-wave deadlock, not a program-layer jump bug.
+> The block is now `done` (pass 9). The depth-2-pair costing, the FIFO-order
+> insight and the sealed-band finding (INV-55) all stand.
 
 **What was executed.** The two-row re-fold pass 6 specified. The whole 10x6 fold
 moved down one array row and a REORDER BAND went on top: each adder now feeds a
@@ -395,6 +412,18 @@ saturation, chip-scale and reachability all green (1016 + 78 + 24 passed). The
 one failure is the on-chip value gate, which now asserts the sixteen words in
 §2.3.2 order — the definition of done for this block.
 ## Poly1305MACBlock — the multiplier is SIGNED, which picks the radix; and a systolic ring CANNOT fuse adopt-and-forward into one entry 2026-08-29
+
+> **SUPERSEDED 2026-08-30 (top of log): the block is `done` — via an ALL-SERIAL
+> redesign that REPLACED the systolic ring described below.** A MAC has no
+> throughput requirement, so every phase became one serial conveyor chain and
+> the sweep-staging hazard class this entry maps (§4/§4b) is UNREACHABLE in the
+> shipped design (INV-64). Carried over from this pass and re-verified in the
+> shipped block: the signed-multiplier radix (2**10 / 13 limbs, §1 — INV-57),
+> the 7-instruction 32-bit MAC order (§2 — INV-58, now an on-chip mutant), the
+> two-stage carry split (§7a/b), and the interface limit. §4/§4b/§6/§7c remain
+> TRUE MEASUREMENTS of the substrate (INV-58/INV-59) — but they describe a
+> multiply architecture that did not ship, so do not size a new block by them
+> without checking whether an all-serial chain fits the latency budget first.
 
 First pass. **NOT done, and the manifest entry stays `planned`.** What IS
 finished and measured: the golden (both implementations, all RFC vectors), the
@@ -638,6 +667,20 @@ the golden, not at the block.
 
 ## LZ4EncoderBlock — a COMPRESSOR's gate is an INDEPENDENT decoder, and the panel's address space has INV-33's overlap hazard  2026-08-30
 
+> **SUPERSEDED 2026-08-30 (pass 2, above): the block is `done`, and THE OPEN
+> GAP'S DIAGNOSIS BELOW WAS WRONG TWICE.** One exec-count trace disproved both
+> recorded mechanisms: `to_hash` at hop 11 lands EXACTLY on HASH (it never
+> walked out of the footprint), and the EventLimit was not ring saturation — it
+> was an infinite re-probe of position 0, caused by two PROGRAM OMISSIONS (no
+> `i += 1` on the miss path; no hash-table insert ever issued on chip). The
+> 12-cell ring fold was KEPT deliberately (the panel's push-read return closes
+> the cycle externally); what changed was frequency-weighted hop assignment plus
+> the INS cell. The `test_KNOWN_GAP_the_scan_loop_does_not_terminate_on_chip`
+> gate is deleted, as this entry required. Findings 1–8 (the independent-decoder
+> bar, the panel-region overlap hazard, the insert-during-ingest dead end, the
+> MOVE-flags branch defect, the mutation discipline, the cell-0 landing rule)
+> all stand.
+
 The DSP is verified: ten payload classes round-trip, the reference **C** decoder
 (`lz4.block`, which this repository did not write) accepts every block, and
 incompressible data expands **0.45 %** against a 0.5 % bound. The per-cell chip
@@ -837,6 +880,13 @@ the scan loop works, so it must be deleted rather than left to rot.
 
 ## ChaCha20KeystreamBlock — the emission-order fix is at the COLLECTOR, and it misses this fold by exactly three words 2026-08-29
 
+> **SUPERSEDED 2026-08-30 (passes 7–9, above): the block is `done`.** The
+> two-row re-fold specified here was built (pass 7), deadlocked twice (passes
+> 7–8, both INV-56 mechanisms), and shipped in pass 9 with the reorder band
+> emitting §2.3.2 order on chip. The collector analysis (per-adder depth-2
+> buffer pairs) is exactly what shipped; "STATUS: still `needs_human`" is
+> history. The exhaustive knob searches and the sealed-row measurement stand.
+
 Sixth pass. The block arrives functionally correct — all sixteen RFC 8439 §2.3.2
 state words bit-exact on the real placed+routed+built chip — with one defect: the
 32 words leave in LAP-MAJOR order, the 4x4 transpose of §2.3.2's. **No code
@@ -951,6 +1001,13 @@ remaining work is a re-fold whose geometry is now proven and whose cell budget i
 now quantified. **LAYER: block program / fold — fixable, not a substrate limit.**
 
 ## ChaCha20KeystreamBlock — the cipher is CORRECT on chip: all 16 state words bit-exact. Two "verified" facts from the last pass were the two remaining bugs 2026-08-30
+
+> **SUPERSEDED 2026-08-30 (pass 9, top of log): the block is `done` and the
+> words leave IN §2.3.2 ORDER.** The transpose characterised below was fixed at
+> the COLLECTOR by the per-adder reorder band (pass 6's analysis, built in
+> passes 7–9) — not by the per-row loop this entry measured impossible on this
+> fold; that measurement stands. The gate-methodology lesson and INV-53/INV-54
+> stand.
 
 Fifth pass. The block was handed over as *"four words short of done"*, with a
 strongly-indicated fix (add a cell for the drain) and a named blocker (only `wbk`
@@ -1104,6 +1161,14 @@ recorded as open), and the last-closing-bracket rule.
 
 ## ChaCha20KeystreamBlock — the ring RUNS: all 80 laps and state word 0 bit-exact on chip. Every defect was a FACE, and the router could not see any of them 2026-08-30
 
+> **SUPERSEDED 2026-08-30 (passes 5–9, above): the block is `done`.** The drain
+> was completed in pass 5 (`drn` as its own cell — and this entry's "the rotate
+> must come from … only `wbk` at (1,0)" was measured WRONG there: NINETEEN
+> slots reach all four rows; the four-word shortfall was therefore never the
+> binding constraint), and the emission order was fixed by the reorder band
+> (passes 6–9). The flipped-edge router measurement and the face-fixpoint
+> discipline stand — they are INV-50/INV-52 now.
+
 Fourth pass, and a bounded one: the block was handed over as "one symptom away"
 — *places, routes and builds clean, emits no words, the ring never starts*. It
 now runs **the whole of RFC 8439's schedule on a real placed + routed + built
@@ -1246,6 +1311,12 @@ attempt at the four words must re-check `wbk`'s built words, not just the budget
 
 ## ChaCha20KeystreamBlock — the SELECTOR was unnecessary: a fixed-tap ring makes the permutation a shift register. Places/routes/builds, does NOT yet compute 2026-08-29
 
+> **SUPERSEDED 2026-08-30 (passes 4–9, above): the block is `done`.**
+> "Does NOT yet compute" is history: the non-starting ring was five FACE
+> defects (pass 4), and the shipped block is 51 cells / 10x7 with a reorder
+> band, bit-exact in §2.3.2 order on the built chip. The fixed-tap restatement
+> and the fold facts recorded here are what shipped.
+
 Second re-examination. **Outcome: still `needs_human`, and again for a smaller
 reason than before.** The architecture the previous pass settled on — 8 lane
 cells with a `LOAD`-indirect read, a 4-way `CMP`/`BR` write-back and a
@@ -1363,6 +1434,14 @@ programs.
 
 ## LZ4DecoderBlock — the cell cap was FICTION; it now PLACES and BUILDS clean, and the real blocker is measured 2026-08-29
 
+> **SUPERSEDED 2026-08-29: the decoder is `done`.** The one-word flip-budget
+> wall fell to an extra CELL, not to the set_addr diet weighed here: moving
+> ONLY the egress to an 8th cell seated between the emit cell and the
+> controller collapses the emit cell's face count, and the placed design
+> decodes reference-C blocks byte-exact on chip. See "Splitting a cell buys a
+> FACE, not just words" — filed near the BOTTOM of this log, out of date
+> order. The toolchain fixes and measurements recorded here stand.
+
 Re-opened from the quarantine below, which cited a panel-template **cell cap** that
 does not exist. Outcome: **still not `done`, but the wall is a different, smaller and
 fully measured one**, and four toolchain bugs were found and fixed on the way.
@@ -1446,6 +1525,14 @@ LAYER 5 records what each got wrong. New gates pin placement, the build binding,
 exact set of unroutable edges, and the flip budget — the last two fail the day the gap
 closes, and the written-and-ready end-to-end decode test is skipped until then.
 ## ChaCha20KeystreamBlock — RE-EXAMINED: two of the three quarantine walls were WRONG, and the block needs no SRAM panel 2026-08-29
+
+> **SUPERSEDED 2026-08-30: the block is `done` (pass 9, top of log).** The
+> architecture settled here was itself simplified further before shipping —
+> the LOAD-indirect selector / 4-way write-back / demux this entry retained
+> was unnecessary (the fixed-tap ring, next entry up) — and the wired block
+> shipped at 51 cells with no SRAM panel, as predicted here. The wall
+> re-measurements (the streaming relay refutes the transit ceiling) stand and
+> are INV-49.
 
 Re-opened the 2026-08-29 quarantine of the RFC 8439 §2.3 block function. **Outcome:
 still `needs_human`, but for a completely different and much smaller reason** — the
@@ -1620,6 +1707,16 @@ opposite of what one might assume, and it has to be that way round because a dat
 is 16 bits and the x1 port is one bit wide.
 ## ChaCha20KeystreamBlock — QUARANTINED: the transport ceiling forces a resident state, and the permutation becomes ADDRESS ARITHMETIC (proven on chip) 2026-08-29
 
+> **SUPERSEDED 2026-08-29/30 — two of the three walls below were WRONG, and the
+> shipped block uses NO SRAM panel.** See "RE-EXAMINED" above: wall 2 ("the
+> state cannot transit a cell at all") was DERIVED from INV-45's arithmetic and
+> never run — a streaming relay carries 128-word frames through real cells
+> bit-exact; wall 3 does not bind because the permutation is not data-dependent.
+> The panel-address architecture proven here was abandoned; the block is `done`
+> as a register-resident fixed-tap ring (pass 9, top of log). Wall 1 (reuse,
+> not unroll) stands, and so does the static per-cell budget gate this entry
+> introduced. Kept because its "cannot"s were copied into plans and INV-47.
+
 **Result: QUARANTINE (`needs_human`), with the architecture measured and its
 load-bearing mechanism proven on the real placed+routed chip.** The block source
 is NOT committed — it builds and routes but does not yet compute. The validated
@@ -1705,6 +1802,9 @@ has a DUPLICATE `CWKeyerBlock` key (lines 615/616); the second, stale
 `QUARANTINE (INV-29)` string wins the dict merge and is now factually wrong (the
 block is SRAM-backed and verified). Identical to the `VaricodeDecoderBlock`
 duplicate that was fixed at lines 592-593; the same removal was never done here.
+*(Re-checked 2026-08-30: the duplicate is STILL present — now at lines 682-683
+of `test_pipeline_saturation.py`; the stale QUARANTINE string still wins the
+dict merge.)*
 ## XorJoinBlock — the N=2 rendezvous at its cheapest, and a mutation test that proved nothing 2026-08-29
 
 `out = a ^ b` for two INDEPENDENT producers. **Outcome: `done`**, 59 tests, EXACT
@@ -2382,6 +2482,16 @@ than comparing only the output stream, is what turned a week-shaped problem into
 one-line fix.
 
 ## GardnerTimingRecovery retry — the quarantine's ROOT CAUSE WAS WRONG; the DSP is solved in Q15, the block stays quarantined on an ON-CHIP wall 2026-08-27
+
+> **SUPERSEDED 2026-08-27 (the SHIPS entry above): the block is `done`.**
+> Re-measured there: the Q15 recipe recorded here as "solved and re-derivable"
+> does NOT reach BER 0 as written — its best is 12/50 failing; the missing
+> structural piece is the ONE-strobe-per-symbol form. The on-chip "wall"
+> ("a single cell cannot be BOTH egress AND feedback source") was a consequence
+> of FUSING the roles, fixed by a two-cell split with NO engine change; and the
+> five-cycle parity constraint dissolves with a six-cell decomposition (parity
+> is a property of the DECOMPOSITION, not the block). The V0–V4 ablation and
+> the unbounded-phase-accumulator root cause stand.
 
 Second attempt at the block quarantined 2026-08-06. **Outcome: still `needs_human`, but
 with a corrected and much sharper diagnosis.** The Q15 signal-processing question is
@@ -3538,6 +3648,15 @@ against the offline chip-exact golden. The fix was one method on `GRUCellBlock`.
 
 ## GRUCellBlock RE-FOLD — a baked `is_face` literal PINS a fold, and the classifier's wall is corridor BUDGET, not fold shape 2026-08-24
 
+> **SUPERSEDED 2026-08-24 (the CHIP_SCALE entry above): the classifier ROUTES —
+> the wall fell to a WIDER fold, not to fewer blocks.** "The wall is the ten
+> nets' corridor budget" was true only under INV-9's ≤8-across cap, which is
+> self-imposed (INV-40): waiving it, the same 51 cells re-folded 10x6
+> CHIP_SCALE leave six full-width free rows and the ORIGINAL six-block chain
+> routes and builds at 102/120. The fused FeatureExtractorBlock lever named
+> below was designed and then not needed. The INV-37 baked-face finding (this
+> entry's real catch) stands.
+
 Dispatched to re-fold `GRUCellBlock` so the gru_classifier front end could route
 beside it on one 10x12. The fold moved and measurably improved; the wall did not
 fall. Both results are worth more than the one that was asked for.
@@ -4027,10 +4146,22 @@ picks it up: the blocks total only 65/120 cells, but `GRUCellBlock` is 51 of the
 in a RIGID 7×8 fold that partitions the free area into pockets the 4-block RMS
 arm cannot thread; the `join→GRU` tail alone routes at 72/120. The lever is the
 GRU's FOLD (narrower / reflowable) or an RMS arm with fewer separately-placed
-blocks — not the router. The three known-limit guards are deliberately left in
+blocks — not the router. *[Corrected 2026-08-24: the fold WAS the lever, but in
+the OPPOSITE direction — WIDER, not narrower: the 10x6 CHIP_SCALE re-fold
+leaves six full-width free rows and the chain routes at 102/120. See the
+SHIPPED entry above.]* The three known-limit guards are deliberately left in
 place and still hold; they fail the day the geometry gives.
 
 ## gru_classifier example — front end DERIVED and verified offline, whole-chain placement BLOCKED one net short 2026-08-24
+
+> **SUPERSEDED 2026-08-24: the example SHIPPED** — see "gru_classifier example
+> SHIPPED — a WIDE-FLAT (chip-scale) fold" above. The wall gave to the GRU's
+> 10x6 CHIP_SCALE re-fold (routed + built at 102/120, agreement 1.000000 on
+> chip); the >31-hop relay lever (option (c) below) landed separately and
+> measurably did NOT unblock this chain — the wall was corridor SHAPE, not
+> hops. The front-end derivations, tolerances and the Q15-clipping findings
+> below all stand. *(Editorial note 2026-08-30: this entry was committed FOUR
+> times verbatim by parallel merges; each copy now carries this same note.)*
 
 The end-to-end 4-class modulation classifier (SSB / BPSK / 4-FSK / noise) on one
 10x12 array. The feature front end is fully derived, measured, and bit-exact
@@ -4105,6 +4236,14 @@ placed + routed chip is NOT done, and no part of this entry claims otherwise.
   for >31-hop bus routes, which the router already plans but the build does not
   emit. The offline chain, the goldens, the derived tolerances, and the
   stimulus are all in place and re-usable the moment the geometry gives.
+
+> *(Editorial note 2026-08-30: the fragment below, up to the "### A block that
+> CANNOT be constructed…" section, is a MANGLED MERGE ARTIFACT — broken partial
+> lines of the FFT32Block entry that appears intact two headings down. Read the
+> intact entry for those facts. The "### A block that CANNOT be constructed
+> must leave the CATALOG" section that follows the fragment is NOT duplicated
+> elsewhere and remains valid — FFT128Block's catalog exclusion.)*
+
 `LargeFFTBlock` to N=32. Bit-exact on a real built chip, 75 gates green. It is
 enters at. **The cell is EXACTLY full at 32/32 words, and the count gate passes.** This is byte-for-byte
 state at 21 — 30/32 words at P=16 with the entry instruction two words clear of the state, where before they collided. **This also repairs one of
@@ -4293,6 +4432,15 @@ which the suite asserts (`test_layout_is_deterministic`).
 
 ## gru_classifier example — front end DERIVED and verified offline, whole-chain placement BLOCKED one net short 2026-08-24
 
+> **SUPERSEDED 2026-08-24: the example SHIPPED** — see "gru_classifier example
+> SHIPPED — a WIDE-FLAT (chip-scale) fold" above. The wall gave to the GRU's
+> 10x6 CHIP_SCALE re-fold (routed + built at 102/120, agreement 1.000000 on
+> chip); the >31-hop relay lever (option (c) below) landed separately and
+> measurably did NOT unblock this chain — the wall was corridor SHAPE, not
+> hops. The front-end derivations, tolerances and the Q15-clipping findings
+> below all stand. *(Editorial note 2026-08-30: this entry was committed FOUR
+> times verbatim by parallel merges; each copy now carries this same note.)*
+
 The end-to-end 4-class modulation classifier (SSB / BPSK / 4-FSK / noise) on one
 10x12 array. The feature front end is fully derived, measured, and bit-exact
 against the trained model's own offline definition; the assembled chain does
@@ -4369,6 +4517,15 @@ placed + routed chip is NOT done, and no part of this entry claims otherwise.
 
 ## gru_classifier example — front end DERIVED and verified offline, whole-chain placement BLOCKED one net short 2026-08-24
 
+> **SUPERSEDED 2026-08-24: the example SHIPPED** — see "gru_classifier example
+> SHIPPED — a WIDE-FLAT (chip-scale) fold" above. The wall gave to the GRU's
+> 10x6 CHIP_SCALE re-fold (routed + built at 102/120, agreement 1.000000 on
+> chip); the >31-hop relay lever (option (c) below) landed separately and
+> measurably did NOT unblock this chain — the wall was corridor SHAPE, not
+> hops. The front-end derivations, tolerances and the Q15-clipping findings
+> below all stand. *(Editorial note 2026-08-30: this entry was committed FOUR
+> times verbatim by parallel merges; each copy now carries this same note.)*
+
 The end-to-end 4-class modulation classifier (SSB / BPSK / 4-FSK / noise) on one
 10x12 array. The feature front end is fully derived, measured, and bit-exact
 against the trained model's own offline definition; the assembled chain does
@@ -4444,6 +4601,14 @@ placed + routed chip is NOT done, and no part of this entry claims otherwise.
   stimulus are all in place and re-usable the moment the geometry gives.
 
 ## FFT64 chip-scale — the STAGE-BAND wall was NOT real; the VERTICAL CTL/OUT SPINE places and flows, one dynamic fault left 2026-08-24
+
+> **SUPERSEDED — the remaining bug was fixed and FFT64 is `done`.** The two
+> INV-33 state/instruction overlaps root-caused here were re-fitted (see the
+> "two defect classes" entry above and FFT32's `s1_fetch_d` fix), the
+> unreachable `triv` dispatch entry was wired, and the block later measured
+> bit-exact 254/254 under saturated drive at ~2873 events/sample (the
+> shared-event-cap entry above). The parity theorem, the hopcheck audit and
+> the corridor check all stand and are gated.
 
 The previous entry (below) concluded FFT64 "does not fit" on a band cap and a row
 budget. **Both walls were artefacts of the layout convention, not the fabric.** 84
@@ -4551,6 +4716,15 @@ words with every data word genuinely used, so it needs an instruction or a data
 word removed, not a re-pin) and then re-run the on-chip gates. FFT128Block
 correctly raises with the spine-height shortfall.
 ## gru_classifier example — front end DERIVED and verified offline, whole-chain placement BLOCKED one net short 2026-08-24
+
+> **SUPERSEDED 2026-08-24: the example SHIPPED** — see "gru_classifier example
+> SHIPPED — a WIDE-FLAT (chip-scale) fold" above. The wall gave to the GRU's
+> 10x6 CHIP_SCALE re-fold (routed + built at 102/120, agreement 1.000000 on
+> chip); the >31-hop relay lever (option (c) below) landed separately and
+> measurably did NOT unblock this chain — the wall was corridor SHAPE, not
+> hops. The front-end derivations, tolerances and the Q15-clipping findings
+> below all stand. *(Editorial note 2026-08-30: this entry was committed FOUR
+> times verbatim by parallel merges; each copy now carries this same note.)*
 
 The end-to-end 4-class modulation classifier (SSB / BPSK / 4-FSK / noise) on one
 10x12 array. The feature front end is fully derived, measured, and bit-exact
@@ -4924,6 +5098,15 @@ Durable lessons:
 
 ## FFT64/FFT128 under the CHIP-SCALE class — arithmetic DONE, placement blocked by the STAGE-BAND geometry 2026-08-24
 
+> **SUPERSEDED 2026-08-24 (the "STAGE-BAND wall was NOT real" entry above):
+> placement completed and FFT64 is `done`.** The 2-row-band rule ("a stage
+> cannot spill out of its band") was an artefact of the layout convention —
+> the parity theorem plus a ONE-COLUMN ctl/out spine place all 84 cells, and
+> the row budget below is over-charged by one (row 0 IS usable when the spine
+> column avoids the port columns). The chip-scale class machinery, the
+> measured 9-cell octant-fold cost, and the N=128 spine-height ruling all
+> stand.
+
 The owner un-quarantined FFT64/FFT128 with a policy decision: a transform-scale
 block is typically the SOLE OCCUPANT of a die, so for a declared **chip-scale
 block class** the perimeter routing-channel reservation and the D4 rotation
@@ -5074,6 +5257,17 @@ argmax → sync) as ONE placed+routed 10x12 chip, saturated, SER 0/1000 at
   premise asserted).
 
 ## FFT64Block / FFT128Block — the single-block PLACEMENT wall, quarantined at the FIT CHECK 2026-08-23
+
+> **SUPERSEDED 2026-08-24 (the CHIP-SCALE entries above): the wall was the
+> LAYOUT CONVENTION, not the fabric.** The owner waived the 8x8 cap for a
+> declared chip-scale class; the stage-band premise was then measured false (a
+> one-column vertical ctl/out spine works), and `FFT64Block` shipped `done` at
+> 84 cells / 9x12, later measured bit-exact 254/254 under saturated drive.
+> FFT128 stays off a single die (spine height, 14 rows vs 12) and ships as the
+> 2-die split (`examples/fft128_2p2s`). The octant-fold math and the
+> "calibrate a floor formula against a shipped block" lesson stand; the
+> "cap is 8x8 = 64" premise was the self-imposed convention INV-40 and
+> layout_rules §3 later corrected.
 
 The first queue item stopped BEFORE authoring, on arithmetic alone — and that
 is the correct outcome, not a failure: the fit check was run first (as the
@@ -5906,7 +6100,8 @@ first placed run was already bit-exact end to end. Durable lessons:
   shipped form is the cordic_polar pattern — the SAME message bytes ride two
   streams ('tx' and 'txcrc'), the chip port still fans out 3 arms through
   the INV-24 broker machinery, and every arm's egress has its own claimable
-  tag. Deviation, mechanism, and code sites documented here on purpose.
+  tag. *(This 3-arm port fan-out is the measurement that retires the
+  2026-08-09 "port fan-out caps at ~2 arms" limit recorded further down.)* Deviation, mechanism, and code sites documented here on purpose.
 - **Interleaver framing arithmetic must include the PIPELINE ZEROS.** The
   streaming BlockInterleaver emits N zeros per stage (group delay), so two
   stages put 2N=24 zeros ahead of the coded stream — 24 mod 7 ≠ 0 misframes
@@ -6025,6 +6220,10 @@ to FAIL on the pre-fix block.
   CoherentRXBlock reuses the phase cell verbatim and inherits the fix. NOTE:
   QAM16ComplexCostasLoopBlock still carries the dphase-as-input pattern
   (same latency conditions); port the same recipe when it is next touched.
+  *[UNMEASURED (flagged 2026-08-30): that QAM16 claim is derived by
+  pattern-match from the source, never reproduced on the QAM16 block — its
+  gates never broker the input. It is a hypothesis to TEST when the block is
+  next touched, not an established defect.]*
 - All blast-radius gates green with no tolerance or gate adjustment:
   agc (13) / agc_cc (37) / complex_mag (22) / complex_harness /
   costas loop+build (58) / orientation+saturation (308) / QPSK-modem BER +
@@ -6060,7 +6259,12 @@ operating point (0.05 — see the loop-strength note below).
   fit; the complex-FIR budget mirror-image). The ×4 and the radians→phase-word
   unit map fold into the STORED gains: `ah = 4α/π`, `bh = 4β/π` (< 1 for
   bandwidth ≲ 0.55; raise beyond — a documented Q15 HW-deviation).
-- **The RING fold is the general shape for a big loop.** The whole sample pass
+- **The RING fold is the general shape for a big loop.** *[Revised 2026-08-17:
+  the perimeter ring's ENCLOSED INTERIOR walls 18 cells off from every other
+  block, and the fold was re-laid as a compact serpentine with all gates
+  unchanged-green — see the FLLBandEdgeBlock re-fold entry above. What
+  mattered was the single serial fwd-face trigger chain, not the ring shape.]*
+  The whole sample pass
   is ONE serial trigger chain around a W×H rectangle perimeter (interior
   empty), pi lands next to phase, and the leftover perimeter slots ARE the
   feedback transits — Costas's 4×2 fold, scaled to 22+ cells. Every internal
@@ -6215,7 +6419,10 @@ Durable lessons:
   THROUGH the x16_out port cell — the port-cell divert (entry stamped on
   x16_out) does NOT deliver: silent zero output, route reports ok (this
   silent-ship class is CLOSED 2026-08-16 — used-port transit is now a NAMED
-  failure; the ≤7-wide fold rule stands for ROUTABILITY). The same
+  failure; the ≤7-wide fold rule stands for ROUTABILITY. Reach note
+  2026-08-30: it binds ROTATABLE rings that must route in all 8 D4
+  orientations — a CHIP_SCALE full-width block with DECLARED orientations is
+  outside it: ChaCha20Keystream ships 10x7 and Poly1305 10x10). The same
   20 cells as a 7×5 perimeter ring leave a 2-column channel and every
   orientation routes cleanly. Residual: at anchor (1,1) the mirror_v+cw²
   orientation still forces the wrap (input cell adjacent to the output cell
@@ -7312,6 +7519,11 @@ rebuild. The server half existed with ZERO callers; plumbed end-to-end.
   only coverage of the hazard-disabled fallback (restored); `_HOP_COST`
   dominance is now asserted per chip against real W×H.
 - **OPEN DEFECT (pre-existing, marked strict xfail with full evidence):**
+  *(RESOLVED 2026-08-16, and this bullet's diagnosis was STALE: trace forensics
+  showed the `_apply_brokers` mixed branch DOES fire; the true causes were the
+  MAZE router abutting one arm of a mixed fan-out and the missing per-port JUMP
+  entries on the rendezvous target. See "CONVERTER-FLAVORS DEADLOCK CLOSED"
+  above — a recorded diagnosis is a hypothesis, not evidence.)*
   `test_converter_flavors_grc.py::test_runs_live_recovers_input` deadlocks —
   the ComplexMixer's MIXED 2-rail fan-out (yq ABUTTED, yi BROKERED) is not
   re-sequenced: the built mixer output cell holds ONE Write/Jump pair instead
@@ -7500,7 +7712,10 @@ duplex-template branch.
   under the auto abutment handoff** (fixed 2026-08-10, see the fan-out entry).
 - **LIMIT — port fan-out caps at ~2 arms** (a 3rd corridor reliably fails
   placement) — hence racks of 2-arm effects, and the importer's ≥3-arm
-  splitter splice.
+  splitter splice. *[Reach corrected 2026-08-16: this was an observation about
+  the THEN-CURRENT router, not a substrate limit — `fec_link` ships a 3-arm
+  port fan-out through the INV-24 broker machinery, and gru_classifier later
+  drove three tagged streams off one port. The fec_link measurement wins.]*
 - **LIMIT — a block's output cell cannot fan out** without the splitter
   machinery (fixed 2026-08-10).
 - **auto_pnr placements are NONDETERMINISTIC across runs** (wall-clock
@@ -7940,7 +8155,9 @@ LIVE GR: max_abs_err 4 LSB (tol 10), corr 0.99999999.
   test_runs_live_recovers_input` builds+routes fine but the live round-trip
   returns 0 egress — a fragile LIVE-recovery infra test, NOT a
   block-correctness issue (every converter block is individually GR-verified).
-  See the round-3 audit entry for the precise mixed-fan-out defect.
+  See the round-3 audit entry for the precise mixed-fan-out defect. *(That
+  diagnosis was later measured STALE; the fix and the two true causes are in
+  "CONVERTER-FLAVORS DEADLOCK CLOSED", 2026-08-16.)*
 
 ---
 
@@ -8080,6 +8297,11 @@ MID-chain, and the INV-20 unlock assumes the unlock cell IS
 variant); fully verified PER-SAMPLE, drive it un-saturated.
 
 **GardnerTimingRecovery — QUARANTINE: not a symbol_sync_cc(Gardner) drop-in on a Nyquist channel.**
+*[Corrected 2026-08-27 (the two Gardner entries above): the ROOT CAUSE recorded
+below was measured WRONG — removing the `>>1` alone reaches only 2/50 failing,
+never 0; the dominant defect was an UNBOUNDED PHASE ACCUMULATOR (the loop
+SLIPS, it does not jitter), plus the two-strobe topology. The block later
+shipped `done` with a modulo-1 counter + one-strobe-per-symbol redesign.]*
 The block had green tests that prove build + self-consistency on its OWN
 synthetic stimulus — the INV-26 trap: **GR's own symbol_sync_cc(Gardner)
 FAILS that stimulus (BER ~0.45)**, so the block was tuned to a signal GR

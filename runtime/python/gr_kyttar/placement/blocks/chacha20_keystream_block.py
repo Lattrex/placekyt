@@ -650,8 +650,9 @@ arm:
         # control column to here, and this cell is one of only two that can reach
         # `wbk` at all. So the baton lands here and is passed on.
         #
-        # It would cost THREE words, and `wb` has exactly TWO -- see the class
-        # docstring's Status note for the four-word shortfall this is part of.
+        # It would cost THREE words, and `wb` has exactly TWO -- part of the
+        # shortfall (measured at four words in pass 4) that forced the drain
+        # sequencer into its own cell instead; see :meth:`_drn`.
         # EVERY path restores the resting face before it ends. That is not
         # bookkeeping: `wb` sits directly on the walk from `seq` down to the
         # state line, so every `pub` trigger `seq` issues TRANSITS this cell and

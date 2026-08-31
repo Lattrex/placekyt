@@ -1,0 +1,44 @@
+{
+  "block": "CordicRotateBlock",
+  "grc_block": "kyttar_cordic_rotate",
+  "tier": 3,
+  "wave": 11,
+  "schema_version": 2,
+  "started_utc": "2026-08-31T17:20:00Z",
+  "ended_utc": "2026-08-31T22:40:00Z",
+  "walltime_sec": 0.0,
+  "tokens": {
+    "input": 0,
+    "output": 0,
+    "cache_read": 0,
+    "total": 0
+  },
+  "turns": 0,
+  "attempts": 1,
+  "human_interventions": 2,
+  "intervention_reasons": [
+    "Interrupted twice by API limits (session, then the Fable budget exhausting one step from the manifest flip).",
+    "Orchestrator finished the registration the builder could not reach (manifest/GRC/saturation/legality/dashboard) after independently verifying 51/51 and running a chip-side-only gain-constant mutation that the gate caught."
+  ],
+  "prompts": [
+    {
+      "role": "initial",
+      "text": "FOC F2: rotation-mode CORDIC on the shipped vectoring machinery, 3-arm join, general rotation."
+    }
+  ],
+  "verify_passed": true,
+  "quarantined": false,
+  "quarantine_reason": "",
+  "commit_sha": "87fd095,b11991f (merged)",
+  "notes": "=== PASS 1 (2026-08-31, claude-fable-5) \u2014 DONE ===\n\nRotation mode built on the SHIPPED vectoring machinery (same 14-iteration NITER, same atan(2^-i)/pi Q15 table, same _s16 semantics) \u2014 reuse, not reinvention, as briefed. Gain restore = MULQ by 1/K then two SATURATING doublings. Unrolled it0..it13 iteration cells; 3-arm LOCK join with orientation-aware arm placement (arms derived from the ROTATED rendezvous cell's free faces \u2014 the fix the builder was mid-flight on when the session limit hit).\n\n51 gates green including the full-circle sweep, both sign values (Park and inverse Park from ONE class), and the mutation set.\n\nORCHESTRATOR VERIFICATION: module resolved to the worktree; 51/51 reproduced; MY OWN chip-side-only mutation (kinv data word -40, model untouched, pycache cleared both sides) FAILED the exact gate and restore returned 51/51 \u2014 the gate discriminates chip from model. Note NITER is SHARED by model and chip, so an iteration-count mutation would not discriminate; the builder's dropped-mid-iteration mutant is the right form and fired. Token/turn figures unavailable: the agent died on the Fable budget before its final accounting, and the harness reported no usage for the terminal call.",
+  "model": "claude-fable-5",
+  "by_model": [
+    {
+      "model": "claude-fable-5",
+      "attempts": 1,
+      "turns": 0,
+      "walltime_sec": 0.0,
+      "output_tokens": 0
+    }
+  ]
+}

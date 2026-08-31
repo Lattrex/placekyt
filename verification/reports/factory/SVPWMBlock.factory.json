@@ -1,0 +1,43 @@
+{
+  "block": "SVPWMBlock",
+  "grc_block": "kyttar_svpwm",
+  "tier": 3,
+  "wave": 11,
+  "schema_version": 2,
+  "started_utc": "2026-08-31T17:20:00Z",
+  "ended_utc": "2026-08-31T22:20:00Z",
+  "walltime_sec": 693.4,
+  "tokens": {
+    "input": 0,
+    "output": 394414,
+    "cache_read": 0,
+    "total": 394414
+  },
+  "turns": 52,
+  "attempts": 1,
+  "human_interventions": 1,
+  "intervention_reasons": [
+    "Interrupted by the API session limit mid-diagnosis of a beta-first wedge; resumed with INV-67 forwarded from Clarke, which the builder then used to separate the healthy hold from the real wedge."
+  ],
+  "prompts": [
+    {
+      "role": "initial",
+      "text": "FOC F4: SVPWM min-max injection, six sectors + boundaries, INV-4 mutants."
+    }
+  ],
+  "verify_passed": true,
+  "quarantined": false,
+  "quarantine_reason": "",
+  "commit_sha": "266472d (merged)",
+  "notes": "=== PASS 1 (2026-08-31, claude-fable-5) \u2014 DONE, 7 CELLS ===\n\n7 cells, 7x1 colinear chain (rendezvous->scale->clarke->maxsel->minsel->inject->emit), rendezvous a LEAF per the INV-46 face budget. The signed CMP/BR.GE min-max TREE IS the sector logic; midpoint m = floor(max/2)+floor(min/2) (overflow-proof form); 3-word packet egress, emit cell handoff-free so the full-cell port patch covers all three bursts (INV-63).\n\nON CHIP: 48-step 0..2pi sweep, every duty word bit-exact vs the integer golden, within the 4-LSB float bound (worst 2.84); provably visits all six (argmax,argmin) sectors and all six 60 degree boundaries. MULQ floor semantics probed on chip BEFORE authoring. Boundary: four of six carry exact pairwise ties; 240/300 are 1 LSB off from Q15 rounding (recorded). A <-><= tie-flip is PROVEN VALUE-INVARIANT, so the spec's boundary mutant was implemented as the compare INVERSION \u2014 the form that can fire. Six mutants all fire.\n\nTWO NEW INVARIANTS (INV-69, INV-70 at landing): (a) a serialize-LOCK release whose VALUE must equal a ROUTED arm face cannot be an authored constant \u2014 face reconciliation patches the rendezvous cell only; 69/96 repacked layouts emitted stale-alpha packets; fixed by a backward JUMP into a relock entry reading the reconciled word (96/96 after). (b) corridor-sharing head-of-line: an arbiter-held word parks on shared corridor cells and 10/12 compact-packed layouts deadlock beta-first while perfect alpha-first.\n\nINV-67 USED AS INTENDED: the mid-group Deadlock was the healthy hold; the real wedge was the post-group empty stream. Clarke's finding, forwarded mid-flight, saved the diagnosis.\n\nORCHESTRATOR: 52/52 reproduced; manifest union-merged; registration gates 783 passed.",
+  "model": "claude-fable-5",
+  "by_model": [
+    {
+      "model": "claude-fable-5",
+      "attempts": 1,
+      "turns": 52,
+      "walltime_sec": 693.4,
+      "output_tokens": 394414
+    }
+  ]
+}

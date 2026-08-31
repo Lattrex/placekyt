@@ -1,0 +1,43 @@
+{
+  "block": "PIControllerBlock",
+  "grc_block": "kyttar_pi_controller",
+  "tier": 3,
+  "wave": 11,
+  "schema_version": 2,
+  "started_utc": "2026-08-31T17:20:00Z",
+  "ended_utc": "2026-08-31T22:10:00Z",
+  "walltime_sec": 385.1,
+  "tokens": {
+    "input": 0,
+    "output": 377280,
+    "cache_read": 0,
+    "total": 377280
+  },
+  "turns": 38,
+  "attempts": 1,
+  "human_interventions": 1,
+  "intervention_reasons": [
+    "Interrupted by the API session limit mid-suite-write; resumed with context, finished autonomously."
+  ],
+  "prompts": [
+    {
+      "role": "initial",
+      "text": "FOC F3: PI with 32-bit accumulator + anti-windup; the resolution gate is the point."
+    }
+  ],
+  "verify_passed": true,
+  "quarantined": false,
+  "quarantine_reason": "",
+  "commit_sha": "31a8e66,f9648fa (merged)",
+  "notes": "=== PASS 1 (2026-08-31, claude-fable-5) \u2014 DONE, 3 CELLS ===\n\nTHE RESOLUTION MEASUREMENT (the answer to 'is 16 bits enough for FOC'), on the real chip: at Ki*e = 0.030 LSB/step (ki=0.001, e=30 LSB), 1200 steps grow the command 35 LSB with 0.97 LSB integral drift vs double precision (command-level 1.97; the extra LSB is the Kp product floor \u2014 bounds DERIVED from the floors, not tuned). The 16-bit-only-accumulator mutant integrates EXACTLY 0 LSB over the same run. Answer: not in the integrator; the 32-bit hi/lo pair holds down to 2^-16 LSB/step contributions.\n\n3 cells (est. 4-8): 2x2 L-fold \u2014 front (Kp + full-precision 32-bit Ki*e increment, MULHI-first per INV-58), sat (iterm landing, V-pinned add, strict clamps, INV-19 serialize-LOCK inside the cell's atomic execution), acc (sign-gated 32-bit accumulate, backward iterm WRITE + WRITE.CFG lock-clear on the resting face).\n\nON CHIP: 1000-sample step bit-exact vs model (tol 0), peak 1.312 LSB vs double (bound 4); anti-windup exact, leaves the rail at release+0 same sample as golden; saturated == per-sample; all 8 D4 orientations bit-exact. Mutants all model-predicted THEN built+run: 16-bit acc (growth 0), low-half-first carry loss (fires with the LOW word bit-exact all run \u2014 the INV-58 one-word-gate-blind class), windup clamp removed (5 samples hung on the rail), saturation off-by-one.\n\nKB findings: apply the gain right-shift to the PRODUCT not the acc_hi read-out (read-out shifting caps integral range at 2^15/2^ki_s); the self-engaged mid-cell lock has no unlock window (tail runs inside atomic execution); keep the lock-clear WRITE.CFG BELOW the external pair (_patch_last_write_handoff does not skip WRITE.CFG).\n\nORCHESTRATOR: 41/41 reproduced; manifest union-merged (branch predated Clarke); registration gates 783 passed post-merge.",
+  "model": "claude-fable-5",
+  "by_model": [
+    {
+      "model": "claude-fable-5",
+      "attempts": 1,
+      "turns": 38,
+      "walltime_sec": 385.1,
+      "output_tokens": 377280
+    }
+  ]
+}

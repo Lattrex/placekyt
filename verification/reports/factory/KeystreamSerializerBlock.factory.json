@@ -1,0 +1,41 @@
+{
+  "block": "KeystreamSerializerBlock",
+  "grc_block": "kyttar_keystream_serializer",
+  "tier": 3,
+  "wave": 10,
+  "schema_version": 2,
+  "started_utc": "2026-08-31T16:40:00Z",
+  "ended_utc": "2026-08-31T17:10:00Z",
+  "walltime_sec": 1765.9,
+  "tokens": {
+    "input": 0,
+    "output": 296218,
+    "cache_read": 0,
+    "total": 296218
+  },
+  "turns": 168,
+  "attempts": 1,
+  "human_interventions": 0,
+  "intervention_reasons": [],
+  "prompts": [
+    {
+      "role": "initial",
+      "text": "Convert ChaCha hi/lo half-words to RFC little-endian keystream bytes; mid-chain composable; RFC vector + composition + INV-4 gates."
+    }
+  ],
+  "verify_passed": true,
+  "quarantined": false,
+  "quarantine_reason": "",
+  "commit_sha": "950fedc (merged to main)",
+  "notes": "=== PASS 1 (2026-08-31, claude-fable-5) \u2014 DONE, ONE CELL ===\n\n1 cell against a 2-5 estimate: a 20-instruction parity FSM (hi held; lo trigger bursts the four little-endian bytes). Plain routed ingress/egress \u2014 deliberately mid-chain composable, unlike the RAW-egress tail-only crypto blocks (INV-66 context; this block exists to fix the byte-format wall). ON CHIP: all 64 RFC 8439 S2.3.2 keystream bytes bit-exact in order; saturated == per-sample; all 8 orientations; mid-chain Delay->serializer->Delay composition exact. THREE on-chip mutants proven to fire, including the reset_per_batch strip whose FIRST batch still passes and second fails. Lessons: the tempting BR.NZ->BR.Z 'parity swap' is NOT a parity swap - it doubles the count (measured 128 words) and cannot certify the value gate.\n\nBASELINE NOTE, measured by the builder: placekyt 1218/1 with the server-autostart test failing ENVIRONMENTALLY \u2014 parallel factory agents contend for hosted-server port 58950; reproduces on the untouched shared checkout; the commit touches zero placekyt/ files. Same class as the cross-suite pollution seen 2026-08-30. The autostart fallback binds an OS port but leaves the QAction unchecked \u2014 flagged for a human look, out of scope for a block builder.\n\nORCHESTRATOR VERIFICATION: 31/31 reproduced in-worktree; engine/router diff empty; queue 121; dashboard clean; no INV-NEXT to assign.",
+  "model": "claude-fable-5",
+  "by_model": [
+    {
+      "model": "claude-fable-5",
+      "attempts": 1,
+      "turns": 168,
+      "walltime_sec": 1765.9,
+      "output_tokens": 296218
+    }
+  ]
+}

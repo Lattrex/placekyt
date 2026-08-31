@@ -1,0 +1,70 @@
+id: kyttar_cordic_rotate
+label: Kyttar CORDIC Rotate
+category: '[Kyttar]'
+flags: [ python ]
+
+documentation: |-
+  Kyttar CORDIC Rotate — general vector rotation by a STREAMED angle:
+
+    x' = x*cos(sign*theta) - y*sin(sign*theta)
+    y' = x*sin(sign*theta) + y*cos(sign*theta)
+
+  Rotation-mode CORDIC on the chip, unity gain (the CORDIC gain K = 1.6468
+  is compensated internally). theta is a 16-bit angle in HALF-TURN Q15
+  units: word/32768 * pi radians — the full circle is 65536 counts, so the
+  chip's plain 16-bit wrap IS arithmetic mod 2*pi and theta = -32768 (-pi)
+  equals +pi with no seam.
+
+  One block class covers a motor-control Park transform (sign = -1, rotate
+  by -theta), an inverse Park (sign = +1), and any polar or mixer rotation
+  by an arbitrary streamed angle.
+
+  The three inputs are INDEPENDENT streams. On the chip they arrive on
+  three DISTINCT faces of a LOCK-rotation rendezvous cell: the arbiter
+  accepts from exactly one face at a time (x, then y, then theta), so any
+  relative arrival order pairs into matched (x, y, theta) triples — a
+  slow or bursty stream can never mis-pair. The output is one complex
+  sample x' + j*y' per complete triple.
+
+  Accuracy (measured against float rotation saturated to Q15): max error
+  24.75 LSB, mean 6.2 LSB, over a 48k-case sweep including dense
+  full-circle scans at the Q15 corner vectors. Corner inputs whose rotated
+  magnitude exceeds 1.0 (e.g. x = y = 0x7FFF at 45 degrees) saturate to
+  the Q15 rails, exactly like the float reference clamped to Q15.
+
+  This block runs on the Kyttar chip. Place it between KyttarSource and
+  KyttarSink blocks, and ensure the device_id matches your KyttarDevice.
+
+  Parameters:
+  - Device ID: ID of the KyttarDevice block
+  - Sign: +1 rotates by +theta (inverse Park), -1 by -theta (Park)
+
+templates:
+  imports: from gnuradio import kyttar
+  make: kyttar.cordic_rotate(device_id=${device_id}, sign=${sign})
+
+parameters:
+  - id: device_id
+    label: Device ID
+    dtype: string
+    default: '"kyttar_0"'
+  - id: sign
+    label: Sign
+    dtype: enum
+    options: ['1', '-1']
+    option_labels: ['+theta (inverse Park)', '-theta (Park)']
+    default: '1'
+
+inputs:
+  - label: x
+    dtype: float
+  - label: y
+    dtype: float
+  - label: theta
+    dtype: float
+
+outputs:
+  - label: out
+    dtype: complex
+
+file_format: 1

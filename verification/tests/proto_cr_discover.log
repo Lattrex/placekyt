@@ -1,0 +1,5 @@
+cw: None (14s)
+cw+cw: ((1, 2), None, 2, (2, 0, 1)) (2s)
+mirror_v: ((3, 2), None, 2, (2, 0, 1)) (4s)
+mirror_v+cw: None (16s)
+mirror_v+cw+cw: None (17s)

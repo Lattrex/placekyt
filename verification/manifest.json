@@ -1323,14 +1323,14 @@
    "kyttar_block": "PIControllerBlock",
    "grc_block": "",
    "tier": 3,
-   "status": "in_progress",
+   "status": "done",
    "metric": "exact",
    "params": [
     "kp",
     "ki",
     "limit"
    ],
-   "notes": "IN PROGRESS: FOC PI current-loop primitive (PLAN_FOC_MOTOR F3)."
+   "notes": "DONE 2026-08-31. Discrete PI controller with 32-BIT ANTI-WINDUP INTEGRATOR -- the FOC current-loop primitive (PLAN F3); placeKYT-native, NO stock GR streaming counterpart. u = sat(kp*e + acc_hi, +/-limit); acc(32-bit) += (2*ki_m*e)>>ki_s at FULL precision (shift applied to the PRODUCT, so acc_hi keeps the whole Q15 integral range at every ki). Params kp/ki/limit (each gain derived internally as Q15 mantissa + right-shift, mantissa normalised into [0.5,1)); |kp|,|ki| >= 1 or limit outside (0,1] RAISE. 3 cells, 2x2 L-fold: front (MULQ+bias-ASR p term; MULHI-first parked + MUL + cross-word shift increment pair, INV-58 order) -> sat (iterm pinned-state feedback landing, V-pinned add, strict clamps, 3-entry dispatch, INV-19 serialize-LOCK inside the atomic execution) -> acc (sign-gated ADD/MOVE/ADC 32-bit accumulate, backward iterm WRITE + WRITE.CFG lock-clear @1 resting the AGC-upd shape, dual-FACE tap via output_face_addr). THE RESOLUTION GATE (the 16-bit question, MEASURED on the built chip): Ki*e = 0.030 LSB/step x 1200 steps grows the command 35 LSB, integral drift 0.97 LSB vs double (command-level 1.97 = + the Kp product floor); the 16-bit-only-accumulator mutant integrates EXACTLY 0. Gates (41 tests, tol 0 vs the exact integer model everywhere): edge+random+7-param sweep, 1000-sample step (peak 1.31 LSB vs double, derived bound 4), anti-windup release (leaves the rail with the golden, sample 0), saturated pipelined == per-sample (REAL_1IN + bespoke rails-heavy), orientation 8/8, placement legality. INV-4: four structural mutants patched in memory, each model-predicted then built+run+caught (16-bit acc: growth 0 vs 35; ADC->ADD carry loss with the LOW word proven bit-exact throughout; windup clamp removed: hangs 5 samples on the rail vs 0; limit off-by-one) + inverted/delay/wrong-param/empty. Anti-windup contract: conditional skip on the increment's high-word sign, strict > at the rails; unwinding always integrates."
   }
  ]
 }

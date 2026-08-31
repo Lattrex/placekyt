@@ -115,6 +115,11 @@ BLOCKS = [
     # serialize-LOCK adds no cells (the feedback is a direct @1 abutment), so
     # the footprint is param-independent; assert D4 + movement legality anyway.
     ("AGCCCBlock", {}),
+    # 3-cell FOC PI controller (2x2 L-fold, no internal transit cell): the
+    # footprint is param-independent (a deep ki shift only grows one cell's
+    # program, never the cell count); assert D4 + movement legality anyway.
+    ("PIControllerBlock", {}),
+    ("PIControllerBlock", {"kp": 0.05, "ki": 0.001, "limit": 0.25}),
     # Polyphase rational resampler: single-cell for every supported (L, M, taps)
     # combination (the params never grow the footprint — over-budget configs
     # RAISE at construction instead), so it can never self-overlap; assert the

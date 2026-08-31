@@ -27,7 +27,7 @@ led somewhere better: pass 1's systolic ring + parallel fan sweeps spent its
 budget on the INV-58 staging hazards (adopt-and-forward atomicity, reverse
 firing order, the un-orderable fix-up cell, INV-59's stopped sweeps). **A MAC
 has no throughput requirement, so every phase became a SERIAL chain and the
-hazard class became unreachable** — see the INV-NEXT entry ("all-serial on
+hazard class became unreachable** — see the INV-64 entry ("all-serial on
 one conveyor cycle"). The multiply, normalise, packing, probe, finish and
 egress were then proven together by the committed suite rather than
 piecewise in scratch. What DID carry over from pass 1, verified again by
@@ -41,7 +41,7 @@ side x64, and the interface limit (odd-byte messages inexpressible).
   resting-corridor hop** — authored @1 became @21 and ping-ponged forever
   (Deadlock on the very first limb post, with the whole multiply already
   exact behind it). Fix: authored literal `WRITE @1, <resolved register>`,
-  edge deliberately undeclared. INV-NEXT clause 2; the jump-side sibling is
+  edge deliberately undeclared. INV-64 clause 2; the jump-side sibling is
   INV-63.
 * **A face constant that is not `is_face=True` is INVISIBLE to the router's
   flip-face walk** — the flip edge then resolves along the resting face

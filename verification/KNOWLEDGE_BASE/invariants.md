@@ -4701,7 +4701,7 @@ the router's/build's), INV-6/11 (why the literals must be derived), INV-38
 
 ---
 
-## INV-NEXT — A latency-tolerant block should be ALL-SERIAL on ONE conveyor cycle; and a FLIPPED backward write must be an AUTHORED literal, because the feedback pass re-patches it with the RESTING-corridor hop
+## INV-64 — A latency-tolerant block should be ALL-SERIAL on ONE conveyor cycle; and a FLIPPED backward write must be an AUTHORED literal, because the feedback pass re-patches it with the RESTING-corridor hop
 
 *(Number to be assigned at landing — parallel builders are running; main was
 at INV-63 when this was written.)*

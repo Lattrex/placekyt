@@ -42,6 +42,32 @@ program, same DSP, a third of the cells and none of the full-width return route.
 (snake), not a line. Wrap the datapath across rows so that cells which must talk
 to each other end up physically adjacent.
 
+**Refined 2026-08-30 — the serpentine is the DEFAULT, not a law; two shipped
+classes choose a CYCLE deliberately.** What the Costas tale actually teaches is
+"put talking cells adjacent"; a snake is merely the usual way to get that. Two
+verified blocks get it with a closed cycle instead:
+
+* **A panel-backed scan loop whose back edge is closed EXTERNALLY.**
+  `LZ4EncoderBlock`'s scan is a genuine cycle (issue → read → return →
+  dispatch → issue) and the panel's push-read return closes it outside the
+  fabric, so a 12-cell ring is the shape that gets the back edge for free.
+  The cost a ring adds — every hop becomes modular, so an ADJACENT neighbour
+  can be 11 hops the long way round — is paid deliberately: the fold is
+  ordered so the per-position hot edges ride 1–6-hop walks and only the
+  once-per-sequence formatter edges take the long arcs
+  (**frequency-weighted hops**, gated in `test_lz4_encoder.py`).
+* **A latency-tolerant block gone ALL-SERIAL on ONE conveyor cycle.**
+  `Poly1305MACBlock` (100 cells, 10x10) runs every phase as a serial chain on
+  a single conveyor cycle, which makes INV-58's sweep-staging hazard class
+  unreachable by construction — see INV-64.
+
+A deliberate cycle still answers to the ring hazards: INV-51 (a closed ring
+traps its interior; LZ4's INS/egress sit where the walk can afford them),
+INV-55 (a uniformly-faced band is sealed from outside), and INV-56 (two waves
+in opposite directions on one conveyor deadlock — ChaCha20Keystream's reorder
+band needed both of INV-56's fix shapes). For a latency-SENSITIVE feedback
+loop the serpentine with adjacent producer/consumer remains the right default.
+
 ---
 
 ## The four conventions
@@ -64,8 +90,22 @@ forces it. **Corrected 2026-08-29:** this used to say a non-colocated block "doe
 not route". That is false — `io_colocated` is True for 66 and **False for 61** of
 the shipped, verified blocks, and the placer uses it only as a TIE-BREAK
 (`engine/autoplace.py`). Colocation shortens the route and makes placement
-forgiving; it is a design *target*, not a precondition. It IS mandatory for a
-`CHIP_SCALE` block, which has no reachable far side (§3).
+forgiving; it is a design *target*, not a precondition.
+
+**Corrected 2026-08-30:** the previous sentence here said colocation "IS
+mandatory for a `CHIP_SCALE` block". The span-2 `io_colocated` predicate is NOT
+what a chip-scale block needs, and the shipped full-width blocks violate it
+while working: `ChaCha20KeystreamBlock` (10x7) lands its input at the west end
+of its port-facing row and egresses ON the `x16_out` port cell (9,0) — same
+row, nine cells apart; `Poly1305MACBlock` (10x10) puts `seq_top` and `out`
+seven columns apart on its control row; `GRUCellBlock` (10x6) has `fin`/`oout`
+three apart. What a **full-width** block genuinely must do is put BOTH
+terminals where the chip's port row can reach them — nothing can route around
+to a full-width block's far side — i.e. same port-facing edge, any span (§3's
+statement of the trade). A chip-scale block that is *not* full width can even
+ship I/O on opposite edges: `FFT64Block` (9x12) has its landing at (4,0) and
+its exit at (4,11), reachable because the free column keeps the far side
+routable.
 
 Concretely: fold the block so its input landing cell and its output cell are both
 on the bus-facing edge. For an 8-cell block, a 2×4 vertical fold with input at
@@ -113,7 +153,10 @@ with no `CHIP_SCALE` waiver at all — `ComplexToMagBlock` **9×2** and
   `CHIP_SCALE`.** A full-width block leaves whole free ROWS — one contiguous
   through-channel. An 8-wide fold of the same block leaves *fragmented perimeter*,
   and a closed-ring block can never enclose a channel at all (a cycle cannot jump
-  a gap).
+  a gap). **Two more full-width ships, 2026-08-30:** `ChaCha20KeystreamBlock`
+  (51 cells, **10x7**) and `Poly1305MACBlock` (100 cells, **10x10** — the
+  largest block in the catalog), both bit-exact on the built chip with
+  `CHIP_SCALE_ORIENTATIONS` declared.
 
 **This is measured, not argued — see INV-40.** `GRUCellBlock` at the compliant
 8×7 left five fragmented free rows and its chain stayed **one net short across
@@ -263,8 +306,12 @@ asserts the input-near-driver invariant survives the full place+route flow.
       array. NOT a bare width check — see INV-40.
 - [ ] I/O ports on the **same** edge where practical (`io_colocated=True`).
       A preference, not a precondition — 61 of 127 shipped blocks are NOT
-      colocated and route fine; the placer uses it only as a tie-break. MANDATORY
-      for a `CHIP_SCALE` block, which has no reachable far side.
+      colocated and route fine; the placer uses it only as a tie-break. For a
+      FULL-WIDTH `CHIP_SCALE` block the same-PORT-FACING-EDGE half is mandatory
+      (no reachable far side), but the 2-cell colocation span is not —
+      ChaCha20Keystream's terminals sit nine cells apart on the port row, and a
+      non-full-width chip-scale block (FFT64, 9x12) even ships I/O on opposite
+      edges (corrected 2026-08-30; see §1).
 - [ ] Wavefront output port declared on the **last** cell; anything draining the
       block targets that cell, not cells[0].
 - [ ] Feedback producers/consumers folded adjacent (no full-width return path).

@@ -114,6 +114,39 @@ def _coerce_grc_params(params: dict, catalog, btype: str, library=None) -> dict:
     return _coerce_params(dict(params or {}), catalog, spec.type_name)
 
 
+# Parameters whose value is a function of the PLACED GEOMETRY, not of the DSP.
+#
+# The panel-backed blocks (LZ4 encoder/decoder, Varicode encoder/decoder, the CW
+# keyer/decoder, the SRAM controller) reach the SRAM panel and their egress port
+# over hand- or auto-routed corridors. The descriptors/hop counts/dest tags that
+# steer those corridors are DERIVED FROM THE ROUTES at build time — see
+# ``panel_pnr.refresh_panel_params``, which re-authors exactly these keys from
+# the current geometry every build, and the block .yml docs ("The remaining
+# parameters are placement-derived: the auto-P&R panel template fills them in
+# from the geometry it chooses").
+#
+# A GNURadio flowgraph has NO geometry, so a .grc can only ever advertise the
+# constructor DEFAULTS for these keys (panel_hop 1, emit_hop 2, descriptors 0).
+# Diffing those against a placed design's real corridor values flagged every
+# panel-backed example as permanently "out of sync" — measured on the shipped
+# lz4_stream, cw_transceiver and psk31_transceiver examples, all three reporting
+# "2 block(s) out of sync" on a freshly-opened, untouched design, with every
+# flagged key drawn from this set. Resyncing would have OVERWRITTEN the routed
+# values with the defaults and broken the chip.
+#
+# So: a placement-derived key is not a user-visible parameter change. It is
+# suppressed ONLY when the GRC side carries the block's own default (the "the
+# flowgraph never authored geometry" case). A .grc that hand-sets one of these
+# to a NON-default value is a deliberate hand-placed override and still flags.
+_PLACEMENT_DERIVED = frozenset({
+    "panel_hop", "emit_hop", "emit_dest", "emit_entry", "emit_jump_entry",
+    "done_entry", "out_dest", "read_wr_desc", "read_jp_desc", "read_dest",
+    "read_entry", "read_addr_hop", "run_dest", "run_entry",
+    "dest_b", "dest_c", "entry_c", "face_c", "hop_b", "hop_c",
+    "track_a", "track_b", "track_c", "restore_face",
+})
+
+
 def compute_param_diff(project, catalog, grc_params_by_block: dict) -> dict:
     """Diff each block's recorded GRC params against its placed-design params.
 
@@ -161,6 +194,11 @@ def compute_param_diff(project, catalog, grc_params_by_block: dict) -> dict:
             cur_val = cur_eff.get(key)
             if grc_val is None or cur_val is None:
                 continue  # unset/derived on either side — not a difference
+            if (key in _PLACEMENT_DERIVED
+                    and _values_equal(defaults.get(key), grc_val)):
+                # Geometry-derived key at its default: the flowgraph carries no
+                # placement, so this is "unspecified", not a change.
+                continue
             if not _values_equal(cur_val, grc_val):
                 changes[key] = (block.params.get(key), grc_val)
         if not changes:

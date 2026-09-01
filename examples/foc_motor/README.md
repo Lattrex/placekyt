@@ -1,6 +1,6 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 
-# FOC motor control — the current loop on one Kyttar array
+# FOC motor control — the current loop on Kyttar
 
 Field-oriented control is how you make a permanent-magnet synchronous motor
 (PMSM) produce smooth torque: measure the phase currents, rotate them into the
@@ -8,7 +8,7 @@ rotor's own reference frame so the torque-producing and flux-producing
 components separate, regulate each with its own PI controller, rotate the
 voltage command back out, and modulate it onto the three inverter legs.
 
-This example puts the **command half** of that loop on the array:
+The **shipped `.kyt`** puts the **command half** of that loop on one array:
 
 ```
 e_d ──> PI(d) ──┐
@@ -22,6 +22,10 @@ electrical angle. The output is the three inverter duty cycles, as one 3-word
 Q15 packet in fixed order a, b, c.
 
 **87 of the 120 cells** on a 10×12 array.
+
+`foc_motor.grc` is the **whole** loop — measurement half, command half, the
+host-side error former and a motor to close it. See **The full loop** below;
+it runs closed across two arrays at a measured **32.17 kHz**.
 
 ## What is not here, and why
 
@@ -113,6 +117,97 @@ tradeable for rate. Its single-shot latency is 1,338.5 ns against a 949.2 ns
 steady-state period — a single stage *does* pipeline, which is precisely the
 overlap the whole chain's per-block arm bars give up.
 
+## The full loop
+
+`foc_motor.grc` is the **whole** loop as a flowgraph — the measurement half,
+the host-side error former, the command half, and a PMSM plant that closes it:
+
+```
+ia ─┐                                              ┌─> PI(d) ─┐
+    ├─> Clarke ─> CordicRotate(sign=−1, θ) ─> (i_d, i_q)      ├─> CordicRotate(sign=+1, θ) ─> SVPWM ─> a,b,c
+ib ─┘              (forward Park)              │   └─> PI(q) ─┘                                          │
+                                               │                                                         │
+                                   e = ref − measured  (host)                                            │
+                                               ▲                                                         │
+                                               └──────────────── PMSM plant <───────────────────────────┘
+```
+
+The flowgraph is a **logical** description: it is what you place, not a
+placement. The whole loop does not route on one array (see above), so the
+natural split is **measurement half on one die, command half on the other**.
+The two are joined only by (i_d, i_q) out and (e_d, e_q) back, plus θ, so the
+crossing is narrow — and a chip crossing costs about **40 ns**, negligible
+against a ~31 µs loop period.
+
+### What the flowgraph is careful about
+
+* **Every ingress arm has its own `kyttar_source` with a distinct stream id,
+  and its own relay block.** A net fanned straight off the input port lands
+  every word on the port cell — hence on one face — which the rendezvous LOCK
+  bars, and the chain then builds, routes and emits nothing (INV-71).
+* **θ is delivered as two independent arms**, `th_park` and `th_ipark`, one per
+  rotation. It feeds both, and on-chip fan-out to two rendezvous arms is the
+  hard part; two deliveries sidestep it.
+* **SVPWM emits three words per sample** on one stream, so its sink is set to
+  q15 output words and the packet is split with a Deinterleave at 3.
+* **`server_port` is 58950 everywhere.** A `0` there makes `kyttar_source`
+  silently no-op — the flowgraph runs and does nothing, with no error.
+
+### The full-loop rate
+
+Measured with the loop actually closed across two arrays
+(`foc_loop_twochip.py`), reading each output word's capture time:
+
+| | measured |
+|---|---|
+| measurement half, sustained | **13,142.7 ns** (76.09 kHz alone) |
+| command half, sustained | **17,940.5 ns** (55.74 kHz alone) |
+| **the full loop, per sample** | **31,083.2 ns** |
+| **full-loop control rate** | **32.17 kHz** |
+| cells | 75 + 87 of 120 each |
+
+The two halves are **strictly serial within a control period** — sample *k*'s
+duties cannot be computed until sample *k*'s currents have been measured and
+rotated — so the loop costs their **sum**, not the larger of them. That is why
+a 55.8 kHz command half and a 76.1 kHz measurement half give a ~32 kHz loop.
+
+Every iteration is bit-exact against the host golden on **both** halves, and
+every simulator run settles `QueueEmpty`. **These are simulated times**, from
+simKYT's timing model — not silicon-certified.
+
+32.17 kHz sits inside the 10–40 kHz band typical of industrial FOC current
+loops, with the entire loop — both rotations, both PI controllers and the
+space-vector modulator — on the fabric.
+
+### Does the controller actually control?
+
+The rate says the loop is fast; it does not say the loop *regulates*. That is
+checked separately, in pure host simulation, with every on-chip stage computed
+by the blocks' own pinned integer models and the motor integrated by forward
+Euler:
+
+* **i_q converges to its reference** — within 2% by step 432, and it starts
+  from zero, so it genuinely had to get there;
+* **i_d holds at zero** (within 0.0005), which is what a surface PMSM wants:
+  the magnets already supply the rotor flux, so d-axis current is pure loss;
+* it does this **against the back-EMF**, 7 V of it on a 24 V bus at 200 rad/s
+  electrical — rejecting that disturbance is what a current loop is *for*.
+
+The plant is deliberately a current-loop model and not a drivetrain: `omega_e`
+is held constant, because a current loop closes two to three orders of
+magnitude faster than any real machine's mechanical pole. The inverter is
+ideal — no dead time, no device drop, no switching ripple. Those change a real
+drive's current ripple; they do not change whether the regulator regulates.
+
+**One trap worth naming**, because it is silent and it bites anyone closing
+this loop: `PIControllerBlock.process_reference_q15` is a **batch** function
+whose 32-bit accumulator is local to the call. Fed a whole error sequence it is
+exactly the chip. Fed one sample per call — the only thing a closed loop *can*
+do — the integrator resets every step, the integral action silently ceases to
+exist, the loop settles short of its reference, and changing `ki` changes
+nothing at all. `foc_loop_model.StatefulPI` carries the accumulator across
+calls and is gated bit-identical to the block's batch model.
+
 ## Where 16 bits is, and is not, enough
 
 Q15 I/O is at or above industrial practice: 12–14-bit current ADCs, 12–16-bit
@@ -139,12 +234,67 @@ the extra precision has to go.
 
 | file | what |
 |---|---|
-| `foc_motor.kyt` | the shipped placed + routed chip — open this directly |
-| `foc_motor_demo.py` | placement, build, drive, and the loop-rate measurement |
+| `foc_motor.kyt` | the shipped placed + routed chip (command half) — open this directly |
+| `foc_motor.grc` | **the FULL loop as a flowgraph** — every block, every connection |
+| `foc_motor_demo.py` | placement, build, drive, and the command-half rate measurement |
+| `foc_loop_model.py` | the PMSM plant and the whole-loop host golden |
+| `foc_loop_twochip.py` | the full loop closed across TWO arrays, with its rate |
 | `build_kyt.py` | regenerate the `.kyt`; reverifies on chip before saving |
-| `verification/tests/test_foc_motor_example.py` | the whole-chain gate suite |
+| `build_grc.py` | regenerate `foc_motor.grc` |
+| `verification/tests/test_foc_motor_example.py` | the command-half gate suite |
+| `verification/tests/test_foc_motor_grc.py` | the full-loop / flowgraph gate suite |
 
-## Running it
+## Run it
+
+### The flowgraph
+
+Two terminals, two commands — run both **from the repo root** (`placekyt/`).
+
+**1. Host the chip** (terminal 1):
+
+```bash
+.venv/bin/python placekyt/main.py examples/foc_motor/foc_motor.kyt
+```
+
+Then **Simulation → Run as GNURadio Server** (port **58950**). Leave placeKYT
+running.
+
+**2. Drive it** (terminal 2) — open the flowgraph in GNU Radio Companion and
+press **▶ Run** (F6):
+
+```bash
+gnuradio-companion examples/foc_motor/foc_motor.grc
+```
+
+Three scopes:
+
+- **measured rotor-frame currents i_d, i_q** — the demo plot. `i_q` climbs to
+  the torque reference while `i_d` is held at zero. This is the loop
+  regulating.
+- **inverter duty cycles a, b, c** — the min-max injected set the inverter legs
+  actually switch on.
+- **current errors e_d, e_q** — both converge to zero as the loop settles.
+
+The shipped `.kyt` holds the **command half**. The flowgraph describes the
+whole loop, so placing all of it is a two-die job — that is the exercise the
+file exists for. To regenerate the flowgraph:
+
+```bash
+.venv/bin/python examples/foc_motor/build_grc.py
+```
+
+### The full loop across two arrays, headless
+
+```bash
+QT_QPA_PLATFORM=offscreen \
+  .venv/bin/python examples/foc_motor/foc_loop_twochip.py 12
+```
+
+Builds both halves, closes the loop around the plant, and prints each
+iteration's measured currents and duties against the host golden, then the two
+halves' sustained intervals and the full-loop rate.
+
+### The command half alone
 
 ```bash
 QT_QPA_PLATFORM=offscreen .venv/bin/python examples/foc_motor/foc_motor_demo.py
@@ -163,8 +313,9 @@ QT_QPA_PLATFORM=offscreen .venv/bin/python examples/foc_motor/build_kyt.py
 The gates:
 
 ```bash
-QT_QPA_PLATFORM=offscreen \
-  .venv/bin/python -m pytest verification/tests/test_foc_motor_example.py -q
+QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest \
+  verification/tests/test_foc_motor_example.py \
+  verification/tests/test_foc_motor_grc.py -q
 ```
 
 ## Notes on the construction
@@ -184,7 +335,8 @@ re-packs the placement compactly and herds the arm corridors together, which is
 the INV-70 head-of-line wedge; the anchors here are one of the few sets that
 both route and deliver.
 
-**The plant is not modelled.** This example measures the controller, not a
-closed loop against a motor: `e_d`, `e_q` and `θ` are supplied by the host. A
-closed-loop settle test would need the measurement half of the chain, which —
-per the section above — does not fit alongside the command half on one array.
+**The `.kyt` measures the controller, the `.grc` closes the loop.** In the
+shipped `.kyt` the errors and `θ` are supplied by the host, so what it measures
+is the command half in isolation. The flowgraph adds the measurement half, a
+PMSM plant and the error former, and `foc_loop_twochip.py` runs the whole thing
+closed across two arrays — see **The full loop** below.

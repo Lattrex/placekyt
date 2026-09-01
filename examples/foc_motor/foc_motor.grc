@@ -1,0 +1,1252 @@
+options:
+  id: options
+  parameters:
+    author: Lattrex
+    catch_exceptions: 'True'
+    category: '[GRC Hier Blocks]'
+    cmake_opt: ''
+    comment: ''
+    copyright: ''
+    description: 'THE FULL FOC CURRENT LOOP as a logical flowgraph: the measurement half (Clarke + forward
+      Park), the host-side error former, and the command half (two PI controllers + inverse Park + SVPWM),
+      closed around an embedded PMSM plant so the loop actually runs. PLACEMENT IS THE READER''S JOB AND
+      THIS FILE DOES NOT PRESUME IT. The whole loop does NOT route on one 10x12 array: the limit is corridor/arm
+      budget, not cells (the full chain is 55 block cells of 120, yet the best of ~2600 whole-chain placements
+      still left 2 of 13 nets unrouted, and the unrouted nets were always rendezvous arms). The NATURAL
+      SPLIT is the measurement half on one die and the command half on another; the two halves are joined
+      only by (i_d, i_q) out and (e_d, e_q) back, plus theta, so the crossing is narrow. A chip crossing
+      costs about 40 ns, which is negligible against the ~35 us loop period. RATE: the command half alone
+      measures 55.8 kHz sustained on one array. The two halves are strictly SERIAL within a sample --
+      sample k''s duties cannot be computed until sample k''s currents have been measured and rotated
+      -- so the whole loop is expected near 28 kHz, which is the number this flowgraph exists to let you
+      verify. The chain RE-ARMS rather than pipelines: each rendezvous bars its arms until the current
+      group has cleared, so one iteration is in flight at a time and the period equals whole-chain depth.
+      EVERY ingress arm has its OWN kyttar_source with a DISTINCT stream id, and its OWN relay block:
+      a net fanned straight off the input port lands every word on the port cell, hence on ONE face, which
+      the rendezvous LOCK bars -- the chain then builds, routes and emits nothing. THETA fans out to BOTH
+      rotations and therefore has TWO sources and TWO relays, one per consumer. SVPWM emits THREE words
+      per sample (duty a, b, c) on one stream, so its sink is set to q15 output words and split with a
+      Deinterleave at 3. SINK PAIRING: each kyttar_sink names the stream id of the source that HEADS its
+      chain -- sink_idq takes ''ia'' and sink_duty takes ''e_d'' -- following the shipped multi-stream
+      convention. Note that each chain here is fed by THREE arms rather than one, so if you re-tag the
+      arms when you place this, keep each sink''s id equal to its chain''s head source.'
+    gen_cmake: 'On'
+    gen_linking: dynamic
+    generate_options: qt_gui
+    hier_block_src_path: '.:'
+    id: foc_motor
+    max_nouts: '0'
+    output_language: python
+    placement: (0,0)
+    qt_qss_theme: ''
+    realtime_scheduling: ''
+    run: 'True'
+    run_command: '{python} -u {filename}'
+    run_options: prompt
+    sizing_mode: fixed
+    thread_safe_setters: ''
+    title: "FOC motor control \u2014 the FULL current loop"
+    window_size: (2400,1200)
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 8
+    - 8
+    rotation: 0
+    state: enabled
+blocks:
+- name: samp_rate
+  id: variable
+  parameters:
+    comment: 'the CONTROL-LOOP rate the full loop targets: 28.6 kHz, i.e. a 35 us period. The command
+      half alone measures 55.8 kHz; the two halves are serial within a sample.'
+    value: '28600'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 8
+    - 100
+    rotation: 0
+    state: enabled
+- name: burst_len
+  id: variable
+  parameters:
+    comment: 'control iterations per burst. Sized to the settle horizon: the closed loop reaches 2% of
+      the q-axis reference by about step 432 with the shipped conservative ki.'
+    value: '600'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 8
+    - 172
+    rotation: 0
+    state: enabled
+- name: i_q_ref
+  id: variable
+  parameters:
+    comment: the TORQUE command, as a Q15 fraction of full-scale current (0.30 = 3 A at the 10 A i_base).
+      This is what an outer speed loop would drive.
+    value: '0.3'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 8
+    - 244
+    rotation: 0
+    state: enabled
+- name: i_d_ref
+  id: variable
+  parameters:
+    comment: 'the d-axis (flux) reference. ZERO for a surface PMSM: the magnets already supply the rotor
+      flux, so d-axis current is pure loss. Field weakening would drive it negative.'
+    value: '0.0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 8
+    - 316
+    rotation: 0
+    state: enabled
+- name: plant
+  id: epy_block
+  parameters:
+    _source_code: "\"\"\"THE MOTOR \u2014 a surface-PMSM plant, the part that is NOT on the chip.\n\n\
+      Three SVPWM duty cycles in (one packet per control period, order a, b, c),\nthe three sensed quantities\
+      \ out: phase currents ia, ib and the rotor\nelectrical angle theta. So this block speaks exactly\
+      \ the flowgraph's wire\nformat on both sides and closes the loop around the array.\n\nTHE MODEL.\
+      \ Surface PMSM (Ld == Lq == L) in the stationary two-phase frame,\nforward Euler at the control\
+      \ period dt:\n\n    L d(i_alpha)/dt = v_alpha - R*i_alpha - e_alpha\n    L d(i_beta )/dt = v_beta\
+      \  - R*i_beta  - e_beta\n\nwith a sinusoidal machine's back-EMF\n\n    e_alpha = -ke*omega_e*sin(theta_e)\n\
+      \    e_beta  = +ke*omega_e*cos(theta_e)\n\nand theta_e advancing at a constant electrical speed\
+      \ omega_e.\n\nWHAT IS HELD CONSTANT, and why that is honest: the mechanical dynamics.\nomega_e does\
+      \ not respond to the torque the loop produces. A current loop\ncloses two to three orders of magnitude\
+      \ faster than any real machine's\nmechanical pole, so constant speed over a current-loop settle\
+      \ is the standard\nmodelling assumption. This is a CURRENT-loop model, not a drivetrain.\n\nThe\
+      \ inverter is ideal: duty cycles are taken as applied phase voltages scaled\nby v_dc. No dead time,\
+      \ no device drop, no switching ripple \u2014 those change a\nreal drive's current ripple, not whether\
+      \ the regulator regulates.\n\nThe angle is emitted in the shipped 16-bit half-turn convention scaled\
+      \ to a\nQ15 FLOAT in [-1, 1): value = theta/pi. The currents are emitted as Q15\nfractions of i_base.\
+      \ That is what the kyttar sources inject.\n\"\"\"\nimport math\nimport numpy as np\nfrom gnuradio\
+      \ import gr\n\n\nclass blk(gr.sync_block):\n    def __init__(self, r_s=0.35, l_s=1.5e-3, ke=0.035,\
+      \ v_dc=24.0,\n                 i_base=10.0, omega_e=200.0, dt=35e-6):\n        gr.sync_block.__init__(\n\
+      \            self, name='PMSM plant (duties -> ia, ib, theta)',\n            in_sig=[np.float32,\
+      \ np.float32, np.float32],\n            out_sig=[np.float32, np.float32, np.float32])\n        self.r_s,\
+      \ self.l_s, self.ke = float(r_s), float(l_s), float(ke)\n        self.v_dc, self.i_base = float(v_dc),\
+      \ float(i_base)\n        self.omega_e, self.dt = float(omega_e), float(dt)\n        self.i_alpha\
+      \ = 0.0\n        self.i_beta = 0.0\n        self.theta_e = 0.0\n\n    def work(self, input_items,\
+      \ output_items):\n        da_in, db_in, dc_in = input_items[0], input_items[1], input_items[2]\n\
+      \        ia_o, ib_o, th_o = output_items[0], output_items[1], output_items[2]\n        n = len(da_in)\n\
+      \        for k in range(n):\n            # --- the sensors, BEFORE this period's update: what the\
+      \ drive\n            # --- measured is the state the duties were computed from.\n            ia\
+      \ = self.i_alpha\n            ib = (math.sqrt(3.0) * self.i_beta - ia) / 2.0\n            th = self.theta_e\
+      \ % (2.0 * math.pi)\n            if th >= math.pi:\n                th -= 2.0 * math.pi\n      \
+      \      ia_o[k] = ia / self.i_base\n            ib_o[k] = ib / self.i_base\n            th_o[k] =\
+      \ th / math.pi\n\n            # --- the plant update -------------------------------------------\n\
+      \            A, B, C = float(da_in[k]), float(db_in[k]), float(dc_in[k])\n            # forward\
+      \ Clarke of the duty set. The SVPWM's common-mode\n            # injection cancels here exactly\
+      \ as it does in an isolated-neutral\n            # machine: common mode drives no current.\n   \
+      \         v_alpha = (2.0 * A - B - C) / 3.0 * self.v_dc\n            v_beta = (B - C) / math.sqrt(3.0)\
+      \ * self.v_dc\n            amp = self.ke * self.omega_e\n            e_alpha = -amp * math.sin(self.theta_e)\n\
+      \            e_beta = amp * math.cos(self.theta_e)\n            self.i_alpha += (v_alpha - self.r_s\
+      \ * self.i_alpha - e_alpha) \\\n                / self.l_s * self.dt\n            self.i_beta +=\
+      \ (v_beta - self.r_s * self.i_beta - e_beta) \\\n                / self.l_s * self.dt\n        \
+      \    self.theta_e = (self.theta_e + self.omega_e * self.dt) \\\n                % (2.0 * math.pi)\n\
+      \        return n\n"
+    affinity: ''
+    alias: ''
+    comment: "THE MOTOR \u2014 the only block here that is not on the chip and never will be. Duties in,\
+      \ sensed ia/ib/theta out; this is what closes the loop."
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    r_s: '0.35'
+    l_s: '1.5e-3'
+    ke: '0.035'
+    v_dc: '24.0'
+    i_base: '10.0'
+    omega_e: '200.0'
+    dt: 1.0/samp_rate
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 200
+    - 620
+    rotation: 0
+    state: enabled
+- name: src_ia
+  id: kyttar_source
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'ingress arm: phase current ia. Its own stream id so the server resolves this burst to the
+      ia arm''s own entry/hop/data registers.'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    burst_len: '600'
+    complex_in: float
+    device_id: '"kyttar_0"'
+    max_events_per: '2000000'
+    num_channels: '1'
+    output_words: '"q15"'
+    pipelined: 'no'
+    port_name: '"x16_in"'
+    repeat: 'no'
+    schedule: '"interleaved"'
+    server_host: '"127.0.0.1"'
+    server_port: '58950'
+    stream_id: '"ia"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 440
+    - 560
+    rotation: 0
+    state: enabled
+- name: src_ib
+  id: kyttar_source
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'ingress arm: phase current ib. The two-shunt FOC front end senses only ia and ib; with ia+ib+ic=0
+      the third is redundant.'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    burst_len: '600'
+    complex_in: float
+    device_id: '"kyttar_0"'
+    max_events_per: '2000000'
+    num_channels: '1'
+    output_words: '"q15"'
+    pipelined: 'no'
+    port_name: '"x16_in"'
+    repeat: 'no'
+    schedule: '"interleaved"'
+    server_host: '"127.0.0.1"'
+    server_port: '58950'
+    stream_id: '"ib"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 440
+    - 680
+    rotation: 0
+    state: enabled
+- name: relay_ia
+  id: kyttar_splitter
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'per-arm relay (INV-71): without it this arm lands on the port cell and shares a face with
+      the others, which the Clarke rendezvous LOCK bars.'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    device_id: '"kyttar_0"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 632
+    - 560
+    rotation: 0
+    state: enabled
+- name: relay_ib
+  id: kyttar_splitter
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: "per-arm relay (INV-71) \u2014 see relay_ia."
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    device_id: '"kyttar_0"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 632
+    - 680
+    rotation: 0
+    state: enabled
+- name: clarke
+  id: kyttar_clarke_transform
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: "ON CHIP: the amplitude-invariant two-current Clarke. i_alpha = ia; i_beta = (ia + 2*ib)/sqrt(3).\
+      \ One cell, a two-arm face-locking rendezvous \u2014 the two inputs MUST reach it on two different\
+      \ faces."
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 824
+    - 608
+    rotation: 0
+    state: enabled
+- name: ab_split
+  id: blocks_complex_to_float
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: "type glue only \u2014 the importer splices this out, wiring Clarke's I rail to the rotation's\
+      \ x and its Q rail to y. No cell is spent."
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1016
+    - 608
+    rotation: 0
+    state: enabled
+- name: src_th_park
+  id: kyttar_source
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: "ingress arm: rotor electrical angle theta for the FORWARD Park rotation. theta feeds BOTH\
+      \ rotations, and on-chip fan-out to two rendezvous arms is the hard part \u2014 so it is delivered\
+      \ as TWO independent ingress arms, one per consumer, each with its own stream id and its own relay."
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    burst_len: '600'
+    complex_in: float
+    device_id: '"kyttar_0"'
+    max_events_per: '2000000'
+    num_channels: '1'
+    output_words: '"q15"'
+    pipelined: 'no'
+    port_name: '"x16_in"'
+    repeat: 'no'
+    schedule: '"interleaved"'
+    server_host: '"127.0.0.1"'
+    server_port: '58950'
+    stream_id: '"th_park"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 440
+    - 800
+    rotation: 0
+    state: enabled
+- name: relay_th_park
+  id: kyttar_splitter
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: per-arm relay for the forward Park's theta arm.
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    device_id: '"kyttar_0"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 632
+    - 800
+    rotation: 0
+    state: enabled
+- name: park
+  id: kyttar_cordic_rotate
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'ON CHIP: the FORWARD Park rotation, sign = -1 (rotate by -theta). Takes the measured stationary-frame
+      current vector into the rotor frame, where the torque- and flux-producing components separate. A
+      THREE-arm rendezvous: x, y and theta must land on three distinct faces.'
+    device_id: '"kyttar_0"'
+    sign: '-1'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1208
+    - 664
+    rotation: 0
+    state: enabled
+- name: sink_idq
+  id: kyttar_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: "drains the measurement half's result: the rotor-frame currents (i_d, i_q) interleaved. Q15\
+      \ floats \u2014 the sink emits word/32768."
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    device_id: '"kyttar_0"'
+    hold_secs: '8.0'
+    in_type: complex
+    num_channels: '1'
+    port_name: '"x16_out"'
+    server_port: '58950'
+    server_repeat: 'True'
+    stream_id: '"ia"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1400
+    - 664
+    rotation: 0
+    state: enabled
+- name: idq_split
+  id: blocks_deinterleave
+  parameters:
+    affinity: ''
+    alias: ''
+    blocksize: '1'
+    comment: "split the recovered interleaved [i_d, i_q, i_d, i_q, ...] float stream into the two rails\
+      \ the error former subtracts from. The kyttar sink emits FLOAT even for a complex on-chip stream\
+      \ \u2014 the rails come back interleaved."
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_streams: '2'
+    type: float
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1592
+    - 664
+    rotation: 0
+    state: enabled
+- name: err
+  id: epy_block
+  parameters:
+    _source_code: "\"\"\"THE ERROR FORMER \u2014 e = reference - measured, on the HOST.\n\nTwo inputs\
+      \ (the measured i_d and i_q that come back off the chip's\nmeasurement half), two outputs (the d-\
+      \ and q-axis current errors that go into\nthe chip's two PI controllers).\n\nThis subtraction is\
+      \ on the host BY CONSTRUCTION, not by omission: the\nreference is a supervisory quantity (a torque\
+      \ command from an outer speed\nloop, or an operator setpoint), it changes on a far slower timescale\
+      \ than the\ncurrent loop, and putting a two-input subtract on the array would spend a\nrendezvous\
+      \ \u2014 the scarcest resource in this design \u2014 on an operation the host\ndoes for free between\
+      \ bursts.\n\ni_d_ref is ZERO for a surface PMSM: the magnets already supply the rotor\nflux, so\
+      \ any d-axis current is pure loss. i_q_ref is the torque command.\n\nThe output saturates to the\
+      \ Q15 range, matching what the chip's PI input can\nrepresent.\n\"\"\"\nimport numpy as np\nfrom\
+      \ gnuradio import gr\n\n\nclass blk(gr.sync_block):\n    def __init__(self, i_d_ref=0.0, i_q_ref=0.30):\n\
+      \        gr.sync_block.__init__(\n            self, name='FOC error (ref - measured)',\n       \
+      \     in_sig=[np.float32, np.float32],\n            out_sig=[np.float32, np.float32])\n        self.i_d_ref\
+      \ = float(i_d_ref)\n        self.i_q_ref = float(i_q_ref)\n\n    def work(self, input_items, output_items):\n\
+      \        lim = 32767.0 / 32768.0\n        output_items[0][:] = np.clip(\n            self.i_d_ref\
+      \ - input_items[0], -1.0, lim)\n        output_items[1][:] = np.clip(\n            self.i_q_ref\
+      \ - input_items[1], -1.0, lim)\n        return len(input_items[0])\n"
+    affinity: ''
+    alias: ''
+    comment: "e = reference - measured, on the HOST by construction. The reference is supervisory and\
+      \ slow; spending an on-chip rendezvous \u2014 the scarcest resource here \u2014 on a subtraction\
+      \ the host does for free would be a poor trade."
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    i_d_ref: i_d_ref
+    i_q_ref: i_q_ref
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1784
+    - 664
+    rotation: 0
+    state: enabled
+- name: src_ed
+  id: kyttar_source
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'ingress arm: the d-axis current error into PI(d).'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    burst_len: '600'
+    complex_in: float
+    device_id: '"kyttar_0"'
+    max_events_per: '2000000'
+    num_channels: '1'
+    output_words: '"q15"'
+    pipelined: 'no'
+    port_name: '"x16_in"'
+    repeat: 'no'
+    schedule: '"interleaved"'
+    server_host: '"127.0.0.1"'
+    server_port: '58950'
+    stream_id: '"e_d"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 200
+    - 200
+    rotation: 0
+    state: enabled
+- name: src_eq
+  id: kyttar_source
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'ingress arm: the q-axis current error into PI(q).'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    burst_len: '600'
+    complex_in: float
+    device_id: '"kyttar_0"'
+    max_events_per: '2000000'
+    num_channels: '1'
+    output_words: '"q15"'
+    pipelined: 'no'
+    port_name: '"x16_in"'
+    repeat: 'no'
+    schedule: '"interleaved"'
+    server_host: '"127.0.0.1"'
+    server_port: '58950'
+    stream_id: '"e_q"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 200
+    - 320
+    rotation: 0
+    state: enabled
+- name: relay_ed
+  id: kyttar_splitter
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: per-arm relay (INV-71) for the e_d arm.
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    device_id: '"kyttar_0"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 392
+    - 200
+    rotation: 0
+    state: enabled
+- name: relay_eq
+  id: kyttar_splitter
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: per-arm relay (INV-71) for the e_q arm.
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    device_id: '"kyttar_0"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 392
+    - 320
+    rotation: 0
+    state: enabled
+- name: pi_d
+  id: kyttar_pi_controller
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: "ON CHIP: the d-axis current PI. 32-bit anti-windup integrator \u2014 the one place 16 bits\
+      \ is NOT enough: ki*e per step can fall below one Q15 LSB and would vanish silently in a 16-bit\
+      \ accumulator. Both axes share the tuning because Ld == Lq on a surface PMSM."
+    device_id: '"kyttar_0"'
+    kp: '0.25'
+    ki: '0.01'
+    limit: '1.0'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 584
+    - 200
+    rotation: 0
+    state: enabled
+- name: pi_q
+  id: kyttar_pi_controller
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: "ON CHIP: the q-axis current PI. 32-bit anti-windup integrator \u2014 the one place 16 bits\
+      \ is NOT enough: ki*e per step can fall below one Q15 LSB and would vanish silently in a 16-bit\
+      \ accumulator. Both axes share the tuning because Ld == Lq on a surface PMSM."
+    device_id: '"kyttar_0"'
+    kp: '0.25'
+    ki: '0.01'
+    limit: '1.0'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 584
+    - 320
+    rotation: 0
+    state: enabled
+- name: src_th_ipark
+  id: kyttar_source
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: "ingress arm: theta for the INVERSE Park rotation \u2014 the second of theta's two independent\
+      \ deliveries."
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    burst_len: '600'
+    complex_in: float
+    device_id: '"kyttar_0"'
+    max_events_per: '2000000'
+    num_channels: '1'
+    output_words: '"q15"'
+    pipelined: 'no'
+    port_name: '"x16_in"'
+    repeat: 'no'
+    schedule: '"interleaved"'
+    server_host: '"127.0.0.1"'
+    server_port: '58950'
+    stream_id: '"th_ipark"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 200
+    - 440
+    rotation: 0
+    state: enabled
+- name: relay_th_ipark
+  id: kyttar_splitter
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: per-arm relay for the inverse Park's theta arm.
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    device_id: '"kyttar_0"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 392
+    - 440
+    rotation: 0
+    state: enabled
+- name: ipark
+  id: kyttar_cordic_rotate
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'ON CHIP: the INVERSE Park rotation, sign = +1 (rotate by +theta). Carries the rotor-frame
+      voltage command (v_d, v_q) back to the stationary frame as (v_alpha, v_beta). A THREE-arm rendezvous.'
+    device_id: '"kyttar_0"'
+    sign: '1'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 776
+    - 296
+    rotation: 0
+    state: enabled
+- name: v_split
+  id: blocks_complex_to_float
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: "type glue \u2014 spliced out by the importer; the rotation's I rail becomes v_alpha and\
+      \ its Q rail v_beta."
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 968
+    - 296
+    rotation: 0
+    state: enabled
+- name: svpwm
+  id: kyttar_svpwm
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: "ON CHIP: space-vector PWM by min-max (common-mode) injection. Emits THREE words per sample\
+      \ on ONE stream, fixed order a, b, c \u2014 hence the q15 sink and the Deinterleave at 3 downstream.\
+      \ The midpoint injection buys SVPWM its ~15.5% linear-range advantage over sine PWM."
+    device_id: '"kyttar_0"'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1160
+    - 296
+    rotation: 0
+    state: enabled
+- name: sink_duty
+  id: kyttar_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'drains the SVPWM duty stream: three Q15 words per control period, order a, b, c.'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    device_id: '"kyttar_0"'
+    hold_secs: '8.0'
+    in_type: float
+    num_channels: '1'
+    port_name: '"x16_out"'
+    server_port: '58950'
+    server_repeat: 'True'
+    stream_id: '"e_d"'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1352
+    - 296
+    rotation: 0
+    state: enabled
+- name: duty_split
+  id: blocks_deinterleave
+  parameters:
+    affinity: ''
+    alias: ''
+    blocksize: '1'
+    comment: split the 3-word duty packet into the three per-phase duty streams. Deinterleave at 3 is
+      the documented way to unpack this block's output.
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_streams: '3'
+    type: float
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1544
+    - 296
+    rotation: 0
+    state: enabled
+- name: scope_idq
+  id: qtgui_time_sink_x
+  parameters:
+    affinity: ''
+    alias: ''
+    autoscale: 'False'
+    axislabels: 'True'
+    comment: "THE DEMO PLOT \u2014 the loop regulating. i_q climbs to the torque reference and i_d is\
+      \ held at zero. The buffer is a FULL burst: a short buffer paints nothing when the batch arrives\
+      \ at once, and the kyttar sink emits q15/32768 floats, so the y axis is in Q15 units."
+    ctrlpanel: 'False'
+    entags: 'True'
+    grid: 'True'
+    gui_hint: ''
+    legend: 'True'
+    name: '"measured rotor-frame currents i_d, i_q (Q15)"'
+    nconnections: '2'
+    size: burst_len
+    srate: samp_rate
+    stemplot: 'False'
+    tr_chan: '0'
+    tr_delay: '0'
+    tr_level: '0.0'
+    tr_mode: qtgui.TRIG_MODE_FREE
+    tr_slope: qtgui.TRIG_SLOPE_POS
+    tr_tag: '""'
+    type: float
+    update_time: '0.10'
+    ylabel: current (Q15 fraction of full scale)
+    ymax: '0.6'
+    ymin: '-0.6'
+    yunit: '""'
+    alpha1: '1.0'
+    color1: blue
+    label1: i_d (measured)
+    marker1: '-1'
+    style1: '1'
+    width1: '1'
+    alpha2: '1.0'
+    color2: red
+    label2: i_q (measured)
+    marker2: '-1'
+    style2: '1'
+    width2: '1'
+    alpha3: '1.0'
+    color3: green
+    label3: Signal 3
+    marker3: '-1'
+    style3: '1'
+    width3: '1'
+    alpha4: '1.0'
+    color4: black
+    label4: Signal 4
+    marker4: '-1'
+    style4: '1'
+    width4: '1'
+    alpha5: '1.0'
+    color5: cyan
+    label5: Signal 5
+    marker5: '-1'
+    style5: '1'
+    width5: '1'
+    alpha6: '1.0'
+    color6: magenta
+    label6: Signal 6
+    marker6: '-1'
+    style6: '1'
+    width6: '1'
+    alpha7: '1.0'
+    color7: yellow
+    label7: Signal 7
+    marker7: '-1'
+    style7: '1'
+    width7: '1'
+    alpha8: '1.0'
+    color8: dark red
+    label8: Signal 8
+    marker8: '-1'
+    style8: '1'
+    width8: '1'
+    alpha9: '1.0'
+    color9: dark green
+    label9: Signal 9
+    marker9: '-1'
+    style9: '1'
+    width9: '1'
+    alpha10: '1.0'
+    color10: dark blue
+    label10: Signal 10
+    marker10: '-1'
+    style10: '1'
+    width10: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1976
+    - 560
+    rotation: 0
+    state: enabled
+- name: scope_duty
+  id: qtgui_time_sink_x
+  parameters:
+    affinity: ''
+    alias: ''
+    autoscale: 'False'
+    axislabels: 'True'
+    comment: "the three SVPWM duty cycles \u2014 the min-max injected set the inverter legs actually switch\
+      \ on."
+    ctrlpanel: 'False'
+    entags: 'True'
+    grid: 'True'
+    gui_hint: ''
+    legend: 'True'
+    name: '"inverter duty cycles a, b, c (Q15)"'
+    nconnections: '3'
+    size: burst_len
+    srate: samp_rate
+    stemplot: 'False'
+    tr_chan: '0'
+    tr_delay: '0'
+    tr_level: '0.0'
+    tr_mode: qtgui.TRIG_MODE_FREE
+    tr_slope: qtgui.TRIG_SLOPE_POS
+    tr_tag: '""'
+    type: float
+    update_time: '0.10'
+    ylabel: duty (Q15)
+    ymax: '0.7'
+    ymin: '-0.7'
+    yunit: '""'
+    alpha1: '1.0'
+    color1: blue
+    label1: duty a
+    marker1: '-1'
+    style1: '1'
+    width1: '1'
+    alpha2: '1.0'
+    color2: red
+    label2: duty b
+    marker2: '-1'
+    style2: '1'
+    width2: '1'
+    alpha3: '1.0'
+    color3: green
+    label3: duty c
+    marker3: '-1'
+    style3: '1'
+    width3: '1'
+    alpha4: '1.0'
+    color4: black
+    label4: Signal 4
+    marker4: '-1'
+    style4: '1'
+    width4: '1'
+    alpha5: '1.0'
+    color5: cyan
+    label5: Signal 5
+    marker5: '-1'
+    style5: '1'
+    width5: '1'
+    alpha6: '1.0'
+    color6: magenta
+    label6: Signal 6
+    marker6: '-1'
+    style6: '1'
+    width6: '1'
+    alpha7: '1.0'
+    color7: yellow
+    label7: Signal 7
+    marker7: '-1'
+    style7: '1'
+    width7: '1'
+    alpha8: '1.0'
+    color8: dark red
+    label8: Signal 8
+    marker8: '-1'
+    style8: '1'
+    width8: '1'
+    alpha9: '1.0'
+    color9: dark green
+    label9: Signal 9
+    marker9: '-1'
+    style9: '1'
+    width9: '1'
+    alpha10: '1.0'
+    color10: dark blue
+    label10: Signal 10
+    marker10: '-1'
+    style10: '1'
+    width10: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1736
+    - 296
+    rotation: 0
+    state: enabled
+- name: scope_err
+  id: qtgui_time_sink_x
+  parameters:
+    affinity: ''
+    alias: ''
+    autoscale: 'False'
+    axislabels: 'True'
+    comment: "the two current errors driving the PI controllers \u2014 both converge to zero as the loop\
+      \ settles."
+    ctrlpanel: 'False'
+    entags: 'True'
+    grid: 'True'
+    gui_hint: ''
+    legend: 'True'
+    name: '"current errors e_d, e_q (Q15)"'
+    nconnections: '2'
+    size: burst_len
+    srate: samp_rate
+    stemplot: 'False'
+    tr_chan: '0'
+    tr_delay: '0'
+    tr_level: '0.0'
+    tr_mode: qtgui.TRIG_MODE_FREE
+    tr_slope: qtgui.TRIG_SLOPE_POS
+    tr_tag: '""'
+    type: float
+    update_time: '0.10'
+    ylabel: error (Q15)
+    ymax: '0.6'
+    ymin: '-0.6'
+    yunit: '""'
+    alpha1: '1.0'
+    color1: blue
+    label1: e_d
+    marker1: '-1'
+    style1: '1'
+    width1: '1'
+    alpha2: '1.0'
+    color2: red
+    label2: e_q
+    marker2: '-1'
+    style2: '1'
+    width2: '1'
+    alpha3: '1.0'
+    color3: green
+    label3: Signal 3
+    marker3: '-1'
+    style3: '1'
+    width3: '1'
+    alpha4: '1.0'
+    color4: black
+    label4: Signal 4
+    marker4: '-1'
+    style4: '1'
+    width4: '1'
+    alpha5: '1.0'
+    color5: cyan
+    label5: Signal 5
+    marker5: '-1'
+    style5: '1'
+    width5: '1'
+    alpha6: '1.0'
+    color6: magenta
+    label6: Signal 6
+    marker6: '-1'
+    style6: '1'
+    width6: '1'
+    alpha7: '1.0'
+    color7: yellow
+    label7: Signal 7
+    marker7: '-1'
+    style7: '1'
+    width7: '1'
+    alpha8: '1.0'
+    color8: dark red
+    label8: Signal 8
+    marker8: '-1'
+    style8: '1'
+    width8: '1'
+    alpha9: '1.0'
+    color9: dark green
+    label9: Signal 9
+    marker9: '-1'
+    style9: '1'
+    width9: '1'
+    alpha10: '1.0'
+    color10: dark blue
+    label10: Signal 10
+    marker10: '-1'
+    style10: '1'
+    width10: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate:
+    - 1976
+    - 800
+    rotation: 0
+    state: enabled
+connections:
+- - duty_split
+  - '0'
+  - plant
+  - '0'
+- - duty_split
+  - '1'
+  - plant
+  - '1'
+- - duty_split
+  - '2'
+  - plant
+  - '2'
+- - plant
+  - '0'
+  - src_ia
+  - '0'
+- - plant
+  - '1'
+  - src_ib
+  - '0'
+- - plant
+  - '2'
+  - src_th_park
+  - '0'
+- - plant
+  - '2'
+  - src_th_ipark
+  - '0'
+- - src_ia
+  - '0'
+  - relay_ia
+  - '0'
+- - src_ib
+  - '0'
+  - relay_ib
+  - '0'
+- - relay_ia
+  - '0'
+  - clarke
+  - '0'
+- - relay_ib
+  - '0'
+  - clarke
+  - '1'
+- - clarke
+  - '0'
+  - ab_split
+  - '0'
+- - ab_split
+  - '0'
+  - park
+  - '0'
+- - ab_split
+  - '1'
+  - park
+  - '1'
+- - src_th_park
+  - '0'
+  - relay_th_park
+  - '0'
+- - relay_th_park
+  - '0'
+  - park
+  - '2'
+- - park
+  - '0'
+  - sink_idq
+  - '0'
+- - sink_idq
+  - '0'
+  - idq_split
+  - '0'
+- - idq_split
+  - '0'
+  - err
+  - '0'
+- - idq_split
+  - '1'
+  - err
+  - '1'
+- - err
+  - '0'
+  - src_ed
+  - '0'
+- - err
+  - '1'
+  - src_eq
+  - '0'
+- - src_ed
+  - '0'
+  - relay_ed
+  - '0'
+- - src_eq
+  - '0'
+  - relay_eq
+  - '0'
+- - relay_ed
+  - '0'
+  - pi_d
+  - '0'
+- - relay_eq
+  - '0'
+  - pi_q
+  - '0'
+- - pi_d
+  - '0'
+  - ipark
+  - '0'
+- - pi_q
+  - '0'
+  - ipark
+  - '1'
+- - src_th_ipark
+  - '0'
+  - relay_th_ipark
+  - '0'
+- - relay_th_ipark
+  - '0'
+  - ipark
+  - '2'
+- - ipark
+  - '0'
+  - v_split
+  - '0'
+- - v_split
+  - '0'
+  - svpwm
+  - '0'
+- - v_split
+  - '1'
+  - svpwm
+  - '1'
+- - svpwm
+  - '0'
+  - sink_duty
+  - '0'
+- - sink_duty
+  - '0'
+  - duty_split
+  - '0'
+- - idq_split
+  - '0'
+  - scope_idq
+  - '0'
+- - idq_split
+  - '1'
+  - scope_idq
+  - '1'
+- - duty_split
+  - '0'
+  - scope_duty
+  - '0'
+- - duty_split
+  - '1'
+  - scope_duty
+  - '1'
+- - duty_split
+  - '2'
+  - scope_duty
+  - '2'
+- - err
+  - '0'
+  - scope_err
+  - '0'
+- - err
+  - '1'
+  - scope_err
+  - '1'
+metadata:
+  file_format: 1
+  grc_version: 3.10.12.0

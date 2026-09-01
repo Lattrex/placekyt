@@ -62,8 +62,8 @@ and the electrical angle advancing at a CONSTANT electrical speed,
 
 Forward Euler is chosen deliberately: it is the same explicit one-step update
 the controller itself is discretized with, it needs no matrix exponential to
-read, and at ``dt`` = 35 us against an electrical time constant L/R = 2 ms it
-is ~1.8% of a time constant per step — comfortably inside its stability
+read, and at ``dt`` = 35 us against an electrical time constant L/R = 4.3 ms
+it is ~0.8% of a time constant per step — comfortably inside its stability
 region and accurate enough that the settle this module demonstrates is a
 property of the CONTROLLER, not of the integrator.
 

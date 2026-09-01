@@ -94,11 +94,9 @@ EXPECTED_EDGES = [
     ("ab_split", "1", "park", "1"),          # i_beta  -> y
     ("park", "0", "sink_idq", "0"),
     ("sink_idq", "0", "idq_split", "0"),
-    # error formation, on the host
-    ("idq_split", "0", "err", "0"),
-    ("idq_split", "1", "err", "1"),
-    ("err", "0", "src_ed", "0"),
-    ("err", "1", "src_eq", "0"),
+    # error formation, on the host — inside foc_host, which also emits it
+    ("foc_host", "3", "src_ed", "0"),        # e_d
+    ("foc_host", "4", "src_eq", "0"),        # e_q
     # command half
     ("pi_d", "0", "ipark", "0"),             # v_d -> x
     ("pi_q", "0", "ipark", "1"),             # v_q -> y
@@ -107,14 +105,14 @@ EXPECTED_EDGES = [
     ("v_split", "1", "svpwm", "1"),          # v_beta
     ("svpwm", "0", "sink_duty", "0"),
     ("sink_duty", "0", "duty_split", "0"),
-    # the loop CLOSES through the plant
-    ("duty_split", "0", "plant", "0"),
-    ("duty_split", "1", "plant", "1"),
-    ("duty_split", "2", "plant", "2"),
-    ("plant", "0", "src_ia", "0"),
-    ("plant", "1", "src_ib", "0"),
-    ("plant", "2", "src_th_park", "0"),
-    ("plant", "2", "src_th_ipark", "0"),
+    # the loop CLOSES INSIDE foc_host — the feedback is an assignment, not a
+    # wire, because GNU Radio refuses to start a stream cycle. What the
+    # flowgraph shows is foc_host driving both halves with the live sensed
+    # quantities and the live errors of the period it is running.
+    ("foc_host", "0", "src_ia", "0"),        # sensed ia
+    ("foc_host", "1", "src_ib", "0"),        # sensed ib
+    ("foc_host", "2", "src_th_park", "0"),   # theta, arm 1 of 2
+    ("foc_host", "5", "src_th_ipark", "0"),  # theta, arm 2 of 2
 ]
 
 
@@ -165,13 +163,37 @@ def test_every_loop_connection_is_present(edges):
     assert not missing, f"the flowgraph is missing {len(missing)} loop edges: {missing}"
 
 
-def test_the_loop_actually_closes(edges):
-    """The plant's outputs must reach the ingress sources, or this is a chain
-    with a motor bolted on rather than a closed loop."""
-    for src_port, arm_src in ((0, "src_ia"), (1, "src_ib"),
-                              (2, "src_th_park"), (2, "src_th_ipark")):
-        assert ("plant", str(src_port), arm_src, "0") in edges, (
-            f"plant output {src_port} does not reach {arm_src} — the loop is open")
+def test_the_loop_actually_closes(blocks, edges):
+    """The loop must really be CLOSED — the duties must drive the motor and
+    the motor's sensed outputs must drive the next control period.
+
+    It closes INSIDE ``foc_host`` rather than through a wire, because GNU
+    Radio's stream scheduler refuses a cycle outright. So the proof is in two
+    parts: the block feeds every ingress arm of both halves (below), and its
+    source really does step the motor with the duties it just computed and
+    re-read what the motor then sensed (asserted here on the source text, and
+    behaviourally by the settle gates further down).
+    """
+    for out_port, arm_src in ((0, "src_ia"), (1, "src_ib"),
+                              (2, "src_th_park"), (5, "src_th_ipark")):
+        assert ("foc_host", str(out_port), arm_src, "0") in edges, (
+            f"foc_host output {out_port} does not reach {arm_src}")
+    for out_port, arm_src in ((3, "src_ed"), (4, "src_eq")):
+        assert ("foc_host", str(out_port), arm_src, "0") in edges, (
+            f"foc_host output {out_port} does not reach {arm_src}")
+
+    src = blocks["foc_host"]["parameters"]["_source_code"]
+    # The feedback assignment itself: this period's duties step the motor, and
+    # what it senses becomes the NEXT period's input. Note this is a text
+    # check and therefore the weaker half of the proof — dropping the
+    # assignment while keeping the call would slip past it. The gate that
+    # actually catches that is the behavioural one,
+    # ``test_the_shipped_block_closes_the_loop_and_settles``: with the
+    # feedback removed i_q sits at 0.00000 instead of reaching its reference.
+    assert "self._sensed = self.plant.step(da, db, dc)" in src, (
+        "foc_host never feeds the stepped motor back into the next control "
+        "period — the loop is OPEN and this example would be replaying a "
+        "stimulus rather than regulating")
 
 
 def test_theta_is_delivered_as_two_independent_arms(blocks, edges):
@@ -239,16 +261,35 @@ def test_svpwm_output_is_split_three_ways(blocks, edges):
     assert blocks["duty_split"]["id"] == "blocks_deinterleave"
     assert blocks["duty_split"]["parameters"]["num_streams"] == "3"
     for i in range(3):
-        assert ("duty_split", str(i), "plant", str(i)) in edges
+        assert ("duty_split", str(i), "scope_duty", str(i)) in edges, (
+            f"duty rail {i} off the array is not displayed")
 
 
 def test_the_plant_is_an_embedded_python_block(blocks):
     """The motor is host-side and always will be — it is the physical machine,
-    not a DSP stage."""
-    assert blocks["plant"]["id"] == "epy_block"
-    src = blocks["plant"]["parameters"]["_source_code"]
+    not a DSP stage. It lives inside ``foc_host`` together with the error
+    former and the feedback path, which is what keeps the flowgraph acyclic."""
+    assert blocks["foc_host"]["id"] == "epy_block"
+    src = blocks["foc_host"]["parameters"]["_source_code"]
     for token in ("back", "i_alpha", "i_beta", "theta_e", "omega_e"):
         assert token in src, f"the plant source does not mention {token}"
+
+
+def test_the_host_block_owns_the_error_former_too(blocks):
+    """The error former moved INTO the same block. It used to be its own
+    block, with the array between it and the motor — which is precisely what
+    made the flowgraph a ring the scheduler would not start."""
+    src = blocks["foc_host"]["parameters"]["_source_code"]
+    assert "i_d_ref" in src and "i_q_ref" in src, (
+        "foc_host does not form the error — the reference is missing")
+    assert "foc_loop_golden" in src, (
+        "foc_host does not run the loop's own pinned integer models")
+    # and the old two-block shape is really gone
+    assert "err" not in blocks, (
+        "the standalone error former is still in the flowgraph — the ring is "
+        "back")
+    assert "plant" not in blocks, (
+        "the standalone plant block is still in the flowgraph")
 
 
 def test_scopes_buffer_a_full_burst(blocks):
@@ -322,6 +363,172 @@ def test_grc_codegens_and_the_generated_python_parses(tmp_path):
         assert call in src, f"the generated Python never constructs {call}"
     assert src.count("kyttar.cordic_rotate(") == 2, "expected BOTH rotations"
     assert src.count("kyttar.pi_controller(") == 2, "expected BOTH PI axes"
+
+
+# --------------------------------------------------------------------------- #
+#  THE SCHEDULER ACCEPTS IT — the gate that codegen does NOT give you          #
+# --------------------------------------------------------------------------- #
+
+# Codegen and validation both PASS on a flowgraph GNU Radio will refuse to run.
+# "flow graph has loops!" is raised by the runtime scheduler inside
+# ``tb.start()``, downstream of the validator and downstream of grcc — so an
+# earlier version of this flowgraph passed every structural gate here and still
+# died instantly the moment a user pressed Run. Nothing short of STARTING it
+# catches that, so this gate starts it.
+#
+# A control loop IS a cycle, and GNU Radio forbids stream cycles outright: no
+# buffer sizing, no priming, no scheduler option makes a stream ring legal. The
+# loop is therefore closed INSIDE ``foc_host`` — motor, error former and
+# feedback path in one stateful block with no stream inputs — so what the
+# scheduler sees is a tree rather than a ring.
+
+_START_RUNNER = r"""
+import sys, time, traceback
+outdir = sys.argv[1]
+hold = float(sys.argv[2])
+try:
+    from PyQt5 import Qt
+    _qapp = Qt.QApplication(sys.argv[:1])
+except Exception:
+    _qapp = None
+sys.path.insert(0, outdir)
+try:
+    import foc_motor as M
+    tb = M.foc_motor()
+    tb.start()          # <-- where "flow graph has loops!" is raised
+    time.sleep(hold)
+    tb.stop()
+    tb.wait()
+    print("START_OK")
+except Exception as e:
+    print("START_FAILED: %s: %s" % (type(e).__name__, e))
+    traceback.print_exc(file=sys.stderr)
+    sys.exit(1)
+"""
+
+
+def _codegen_and_start(grc_path, tmp_path, hold=2.0):
+    """grcc ``grc_path``, then START the generated flowgraph in a subprocess.
+
+    Returns ``(returncode, stdout, stderr)`` of the START step. Raises if
+    codegen itself fails, so a codegen break is never mistaken for a topology
+    that the scheduler rejected."""
+    r = subprocess.run([GRCC, "-o", str(tmp_path), str(grc_path)],
+                       capture_output=True, text=True, env=_GR_ENV, timeout=900)
+    assert r.returncode == 0, f"grcc failed:\n{r.stdout[-2000:]}\n{r.stderr[-2000:]}"
+    runner = tmp_path / "_start_runner.py"
+    runner.write_text(_START_RUNNER)
+    # A stale .pyc of a PREVIOUS foc_motor.py in this directory would be
+    # imported instead of the one just generated (INV-4's stale-pyc trap).
+    shutil.rmtree(tmp_path / "__pycache__", ignore_errors=True)
+    env = dict(_GR_ENV, QT_QPA_PLATFORM="offscreen")
+    p = subprocess.run([GR_PY, str(runner), str(tmp_path), str(hold)],
+                       capture_output=True, text=True, env=env, timeout=600)
+    return p.returncode, p.stdout, p.stderr
+
+
+@pytest.mark.skipif(GRCC is None or GR_PY is None, reason="grcc not available")
+def test_the_flowgraph_actually_starts(tmp_path):
+    """THE GATE THAT MATTERS: GNU Radio's scheduler accepts this topology.
+
+    MEASURED: ``tb.start()`` returns, the graph runs, ``tb.stop()``/``wait()``
+    are clean. Before the loop was moved inside ``foc_host`` this same gate
+    reported ``RuntimeError: flow graph has loops!`` — which is exactly the
+    failure a user hit on Run while every structural gate here stayed green."""
+    rc, out, err = _codegen_and_start(_GRC, tmp_path)
+    assert "flow graph has loops!" not in (out + err), (
+        "GNU Radio refused the topology — the flowgraph contains a stream "
+        f"cycle:\n{out}\n{err[-2000:]}")
+    assert "START_OK" in out, (
+        f"the flowgraph did not start cleanly:\n{out}\n{err[-3000:]}")
+    assert rc == 0, f"the start runner exited {rc}:\n{out}\n{err[-3000:]}"
+
+
+@pytest.mark.skipif(GRCC is None or GR_PY is None, reason="grcc not available")
+def test_the_start_gate_fails_on_a_looped_flowgraph(tmp_path):
+    """INV-4: prove the start gate can FAIL.
+
+    Reintroduce the defect — wire a chip return back into the host block's
+    stimulus path, which is exactly the shape the flowgraph had before — and
+    the scheduler must refuse it. A gate that cannot see the bug it exists for
+    is not a gate.
+
+    This mutates a COPY in tmp_path; the shipped .grc is never touched."""
+    fg = yaml.safe_load(_GRC.read_text())
+
+    # Give foc_host a stream input fed from the chip's own return path. Any
+    # such edge closes the ring the scheduler walks.
+    src = None
+    for b in fg["blocks"]:
+        if b.get("name") == "foc_host":
+            src = b["parameters"]["_source_code"]
+            break
+    assert src is not None, "foc_host is not in the flowgraph"
+    looped = src.replace("in_sig=[],", "in_sig=[np.float32],")
+    assert looped != src, "could not inject an input port into foc_host"
+    for b in fg["blocks"]:
+        if b.get("name") == "foc_host":
+            b["parameters"]["_source_code"] = looped
+    fg["connections"].append(["idq_split", "0", "foc_host", "0"])
+
+    mutant = tmp_path / "foc_motor.grc"
+    mutant.write_text(yaml.safe_dump(fg, sort_keys=False,
+                                     default_flow_style=False, width=100))
+    rc, out, err = _codegen_and_start(mutant, tmp_path)
+    assert "flow graph has loops!" in (out + err), (
+        "a flowgraph with a stream cycle STARTED — the start gate has no "
+        f"teeth:\n{out}\n{err[-3000:]}")
+    assert rc != 0, "the looped flowgraph reported success"
+
+
+def test_the_host_block_has_no_stream_inputs(blocks):
+    """The CYCLE BREAK, asserted structurally so a future edit cannot quietly
+    reintroduce the ring and rediscover 'flow graph has loops!' in the GUI.
+
+    ``foc_host`` owns the motor, the error former and the feedback path. The
+    feedback is an internal assignment, not a wire — so the block takes no
+    stream input, and nothing in the flowgraph may connect INTO it."""
+    src = blocks["foc_host"]["parameters"]["_source_code"]
+    assert "in_sig=[]" in src, (
+        "foc_host declares a stream input — the loop is a ring again")
+
+
+def test_nothing_connects_into_the_host_block(edges):
+    """The same break, from the connection list."""
+    into = [e for e in edges if e[2] == "foc_host"]
+    assert not into, (
+        f"these connections feed foc_host and re-close the ring: {into}")
+
+
+def test_the_flowgraph_is_acyclic(edges):
+    """No stream cycle ANYWHERE, not just around the host block.
+
+    This is the property GNU Radio's scheduler checks, checked here where the
+    failure names the offending path instead of printing 'flow graph has
+    loops!' with no further detail."""
+    adj = {}
+    for a, _ap, b, _bp in edges:
+        adj.setdefault(a, set()).add(b)
+    seen, stack, onstack, cycles = set(), [], set(), []
+
+    def walk(n):
+        seen.add(n)
+        stack.append(n)
+        onstack.add(n)
+        for m in adj.get(n, ()):
+            if m in onstack:
+                cycles.append(stack[stack.index(m):] + [m])
+            elif m not in seen:
+                walk(m)
+        stack.pop()
+        onstack.discard(n)
+
+    for n in list(adj):
+        if n not in seen:
+            walk(n)
+    assert not cycles, ("the flowgraph contains stream cycles, which GNU "
+                        "Radio refuses to start: "
+                        + "; ".join(" -> ".join(c) for c in cycles))
 
 
 # --------------------------------------------------------------------------- #
@@ -497,6 +704,76 @@ def test_mutation_inverted_park_sign_breaks_the_settle():
     assert abs(got - ref) > 0.02 * abs(ref), (
         f"an INVERTED Park rotation still settled on the reference "
         f"({got:+.4f} vs {ref:+.4f}) — the settle gate has no teeth")
+
+
+# --------------------------------------------------------------------------- #
+#  The SHIPPED BLOCK's own closed loop                                         #
+# --------------------------------------------------------------------------- #
+
+_BLOCK_LOOP_RUNNER = r"""
+import sys
+outdir = sys.argv[1]
+try:
+    from PyQt5 import Qt
+    _qapp = Qt.QApplication(sys.argv[:1])
+except Exception:
+    _qapp = None
+sys.path.insert(0, outdir)
+import numpy as np
+import foc_motor as M
+
+tb = M.foc_motor()
+blk = tb.foc_host
+N = 600
+outs = [np.zeros(N, dtype=np.float32) for _ in range(11)]
+blk.work([], outs)
+print("RESULT %.6f %.6f %.6f %.6f %d" % (
+    outs[6][0], outs[6][-1], outs[7][0], outs[7][-1],
+    1 if np.array_equal(outs[2], outs[5]) else 0))
+"""
+
+
+@pytest.mark.skipif(GRCC is None or GR_PY is None, reason="grcc not available")
+def test_the_shipped_block_closes_the_loop_and_settles(tmp_path):
+    """THE CONTROL GATE, on the block the flowgraph actually ships.
+
+    The host-side settle gate above proves the loop MODEL regulates. This one
+    proves the block generated into ``foc_motor.py`` regulates — that moving
+    the motor, the error former and the feedback path into one block to break
+    the scheduler cycle did not change the control law or the discretization.
+
+    MEASURED, stepping it 600 control periods: i_q climbs from 0.0000 to
+    +0.30139 against a 0.30 reference and i_d holds at -0.00073. Those are the
+    host golden's own numbers, so the restructuring is behaviour-preserving."""
+    r = subprocess.run([GRCC, "-o", str(tmp_path), str(_GRC)],
+                       capture_output=True, text=True, env=_GR_ENV, timeout=900)
+    assert r.returncode == 0, f"grcc failed:\n{r.stdout[-2000:]}\n{r.stderr[-2000:]}"
+    runner = tmp_path / "_loop_runner.py"
+    runner.write_text(_BLOCK_LOOP_RUNNER)
+    shutil.rmtree(tmp_path / "__pycache__", ignore_errors=True)
+    env = dict(_GR_ENV, QT_QPA_PLATFORM="offscreen")
+    pr = subprocess.run([GR_PY, str(runner), str(tmp_path)],
+                        capture_output=True, text=True, env=env, timeout=600)
+    line = [l for l in pr.stdout.splitlines() if l.startswith("RESULT ")]
+    assert line, f"the block runner produced no result:\n{pr.stdout}\n{pr.stderr[-3000:]}"
+    d0, d1, q0, q1, th_same = line[0].split()[1:]
+    d0, d1, q0, q1 = float(d0), float(d1), float(q0), float(q1)
+    ref = 0.30
+
+    assert abs(q1 - ref) <= 0.02 * ref, (
+        f"the shipped block's q-axis current settled at {q1:+.5f}, "
+        f"reference {ref:+.4f}")
+    assert abs(d1) <= 0.005, (
+        f"the shipped block's d-axis current settled at {d1:+.5f}, should be ~0")
+    # It really had to CONVERGE. A block replaying a canned stimulus, or one
+    # whose feedback assignment was dropped, would start at the answer or
+    # never move — this is the gate that tells those apart.
+    assert abs(q0 - ref) > 0.5 * ref, (
+        f"the loop starts at its reference (i_q[0]={q0:+.5f}) — it is not "
+        f"regulating, it is replaying")
+    assert th_same == "1", (
+        "theta's two arms differ — they must be the SAME angle delivered "
+        "twice, one per rotation")
 
 
 # --------------------------------------------------------------------------- #

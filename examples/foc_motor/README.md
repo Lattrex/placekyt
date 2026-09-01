@@ -120,17 +120,35 @@ overlap the whole chain's per-block arm bars give up.
 ## The full loop
 
 `foc_motor.grc` is the **whole** loop as a flowgraph — the measurement half,
-the host-side error former, the command half, and a PMSM plant that closes it:
+the host-side error former, the command half, and a PMSM plant that closes it.
+
+**Where the loop closes.** GNU Radio's stream scheduler forbids cycles
+outright: a stream ring is refused at `tb.start()` with `flow graph has
+loops!`, and no buffer sizing or priming makes one legal. A control loop *is*
+a cycle, so the ring is closed **inside one block**. `foc_host` holds every
+piece of state that has to persist from one control period to the next — the
+motor's two stationary-frame currents and its rotor angle, and the two PI
+integrators — and advances a whole period per sample. Its feedback is an
+internal assignment rather than a wire, so it takes **no stream input at
+all**, and what the scheduler sees is a tree rather than a ring:
 
 ```
-ia ─┐                                              ┌─> PI(d) ─┐
-    ├─> Clarke ─> CordicRotate(sign=−1, θ) ─> (i_d, i_q)      ├─> CordicRotate(sign=+1, θ) ─> SVPWM ─> a,b,c
-ib ─┘              (forward Park)              │   └─> PI(q) ─┘                                          │
-                                               │                                                         │
-                                   e = ref − measured  (host)                                            │
-                                               ▲                                                         │
-                                               └──────────────── PMSM plant <───────────────────────────┘
+                       ┌─ ia, ib, θ ─> Clarke ─> CordicRotate(sign=−1, θ) ─> (i_d, i_q)
+                       │                            (forward Park)
+   foc_host ───────────┤
+   ┌──────────────┐    │                ┌─> PI(d) ─┐
+   │ PMSM plant   │    └─ e_d, e_q, θ ─>┤          ├─> CordicRotate(sign=+1, θ) ─> SVPWM ─> a,b,c
+   │ e = ref − i  │                     └─> PI(q) ─┘
+   │ feedback ↺   │
+   └──────────────┘   the loop closes HERE, as an assignment, not a wire
 ```
+
+Every word `foc_host` emits is the **live** value of that wire in the loop it
+is running right now, computed this period from the previous period's duties —
+this is a genuinely closed loop, not a replay of a canned recording. The array
+recomputes both halves from those words, and the scopes show the array's
+result over the host's own, so the two are compared on screen rather than the
+array's merely being displayed.
 
 The flowgraph is a **logical** description: it is what you place, not a
 placement. The whole loop does not route on one array (see above), so the
@@ -337,6 +355,6 @@ both route and deliver.
 
 **The `.kyt` measures the controller, the `.grc` closes the loop.** In the
 shipped `.kyt` the errors and `θ` are supplied by the host, so what it measures
-is the command half in isolation. The flowgraph adds the measurement half, a
-PMSM plant and the error former, and `foc_loop_twochip.py` runs the whole thing
-closed across two arrays — see **The full loop** below.
+is the command half in isolation. The flowgraph adds the measurement half and a
+host block holding the PMSM plant, the error former and the feedback path, and
+`foc_loop_twochip.py` runs the whole thing closed across two arrays — see **The full loop** below.

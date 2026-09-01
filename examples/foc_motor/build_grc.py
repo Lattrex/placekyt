@@ -2,7 +2,7 @@
 """Generate ``foc_motor.grc`` — the FULL FOC loop as a GNU Radio flowgraph.
 
 The flowgraph is large and highly regular (five on-chip blocks, four ingress
-arms each with its own source, a plant, an error former, three scopes), so it
+arms each with its own source, the host-side loop block, three scopes), so it
 is GENERATED rather than hand-maintained: every kyttar source gets the same
 server port, the same pacing parameters and a distinct stream id by
 construction, which is exactly the class of thing hand-editing YAML gets
@@ -120,14 +120,42 @@ def time_sink(name, title, nconn, size, ymin, ymax, ylabel, comment, x, y,
 #  The two embedded python blocks: the MOTOR and the ERROR FORMER              #
 # --------------------------------------------------------------------------- #
 
-PLANT_SRC = '''"""THE MOTOR — a surface-PMSM plant, the part that is NOT on the chip.
+HOST_LOOP_SRC = '''"""THE HOST SIDE OF THE LOOP — plant, error former and the FEEDBACK PATH,
+in ONE stateful block.
 
-Three SVPWM duty cycles in (one packet per control period, order a, b, c),
-the three sensed quantities out: phase currents ia, ib and the rotor
-electrical angle theta. So this block speaks exactly the flowgraph's wire
-format on both sides and closes the loop around the array.
+WHY ONE BLOCK. GNU Radio's stream scheduler forbids cycles outright, and a
+control loop IS a cycle: the duties drive the motor, the motor's sensed
+currents drive the next period's duties. Wiring that as streams — a plant
+block here, an error former there, the array between them — asks the
+scheduler for a ring, and it refuses at start() with "flow graph has loops!".
+No buffer sizing fixes it; there is no priming that makes a stream ring legal.
 
-THE MODEL. Surface PMSM (Ld == Lq == L) in the stationary two-phase frame,
+So the ring is closed INSIDE this block instead. It holds every piece of loop
+state that has to persist from one control period to the next — the motor's
+two stationary-frame currents and its rotor angle, and the two PI
+controllers' 32-bit integrators — and advances the WHOLE period in one step:
+
+    sensed (ia, ib, theta)            [this block's motor state]
+      -> Clarke -> forward Park       [the measurement half's models]
+      -> e = ref - measured           [the error former]
+      -> PI(d), PI(q) -> inverse Park -> SVPWM     [the command half's models]
+      -> three duties -> the motor    [the plant update]
+
+Because the feedback is an internal assignment rather than a stream, this
+block has NO stream inputs at all. Everything it emits is an OUTPUT, so the
+flowgraph the scheduler sees is a tree: this block at the root, the two
+on-chip halves hanging off it as feed-forward branches. That is the whole
+trick, and it is what GNU Radio users conventionally do with a control loop.
+
+WHAT THE ARRAY THEN DOES. The chip branches are not decoration and they are
+not replay of a canned recording: every word this block emits is the live
+value of that wire in the loop it is running right now, computed this period
+from the previous period's duties. The array recomputes the measurement half
+from the sensed currents and the command half from the errors, and the scopes
+show what came BACK off the array. The loop is genuinely closed; the array
+sits across it rather than inside the scheduler's ring.
+
+THE MOTOR MODEL. Surface PMSM (Ld == Lq) in the stationary two-phase frame,
 forward Euler at the control period dt:
 
     L d(i_alpha)/dt = v_alpha - R*i_alpha - e_alpha
@@ -150,103 +178,154 @@ The inverter is ideal: duty cycles are taken as applied phase voltages scaled
 by v_dc. No dead time, no device drop, no switching ripple — those change a
 real drive's current ripple, not whether the regulator regulates.
 
-The angle is emitted in the shipped 16-bit half-turn convention scaled to a
-Q15 FLOAT in [-1, 1): value = theta/pi. The currents are emitted as Q15
-fractions of i_base. That is what the kyttar sources inject.
-"""
-import math
-import numpy as np
-from gnuradio import gr
-
-
-class blk(gr.sync_block):
-    def __init__(self, r_s=0.35, l_s=1.5e-3, ke=0.035, v_dc=24.0,
-                 i_base=10.0, omega_e=200.0, dt=35e-6):
-        gr.sync_block.__init__(
-            self, name='PMSM plant (duties -> ia, ib, theta)',
-            in_sig=[np.float32, np.float32, np.float32],
-            out_sig=[np.float32, np.float32, np.float32])
-        self.r_s, self.l_s, self.ke = float(r_s), float(l_s), float(ke)
-        self.v_dc, self.i_base = float(v_dc), float(i_base)
-        self.omega_e, self.dt = float(omega_e), float(dt)
-        self.i_alpha = 0.0
-        self.i_beta = 0.0
-        self.theta_e = 0.0
-
-    def work(self, input_items, output_items):
-        da_in, db_in, dc_in = input_items[0], input_items[1], input_items[2]
-        ia_o, ib_o, th_o = output_items[0], output_items[1], output_items[2]
-        n = len(da_in)
-        for k in range(n):
-            # --- the sensors, BEFORE this period's update: what the drive
-            # --- measured is the state the duties were computed from.
-            ia = self.i_alpha
-            ib = (math.sqrt(3.0) * self.i_beta - ia) / 2.0
-            th = self.theta_e % (2.0 * math.pi)
-            if th >= math.pi:
-                th -= 2.0 * math.pi
-            ia_o[k] = ia / self.i_base
-            ib_o[k] = ib / self.i_base
-            th_o[k] = th / math.pi
-
-            # --- the plant update -------------------------------------------
-            A, B, C = float(da_in[k]), float(db_in[k]), float(dc_in[k])
-            # forward Clarke of the duty set. The SVPWM's common-mode
-            # injection cancels here exactly as it does in an isolated-neutral
-            # machine: common mode drives no current.
-            v_alpha = (2.0 * A - B - C) / 3.0 * self.v_dc
-            v_beta = (B - C) / math.sqrt(3.0) * self.v_dc
-            amp = self.ke * self.omega_e
-            e_alpha = -amp * math.sin(self.theta_e)
-            e_beta = amp * math.cos(self.theta_e)
-            self.i_alpha += (v_alpha - self.r_s * self.i_alpha - e_alpha) \\
-                / self.l_s * self.dt
-            self.i_beta += (v_beta - self.r_s * self.i_beta - e_beta) \\
-                / self.l_s * self.dt
-            self.theta_e = (self.theta_e + self.omega_e * self.dt) \\
-                % (2.0 * math.pi)
-        return n
-'''
-
-ERROR_SRC = '''"""THE ERROR FORMER — e = reference - measured, on the HOST.
-
-Two inputs (the measured i_d and i_q that come back off the chip's
-measurement half), two outputs (the d- and q-axis current errors that go into
-the chip's two PI controllers).
-
-This subtraction is on the host BY CONSTRUCTION, not by omission: the
+THE ERROR FORMER is on the host BY CONSTRUCTION, not by omission: the
 reference is a supervisory quantity (a torque command from an outer speed
 loop, or an operator setpoint), it changes on a far slower timescale than the
 current loop, and putting a two-input subtract on the array would spend a
 rendezvous — the scarcest resource in this design — on an operation the host
-does for free between bursts.
+does for free between bursts. i_d_ref is ZERO for a surface PMSM: the magnets
+already supply the rotor flux, so any d-axis current is pure loss.
 
-i_d_ref is ZERO for a surface PMSM: the magnets already supply the rotor
-flux, so any d-axis current is pure loss. i_q_ref is the torque command.
+THE INTEGRATOR TRAP, stated because it is silent when you hit it: the PI
+block's batch reference model keeps its 32-bit accumulator LOCAL to the call,
+so stepping it one sample at a time deletes the integral action entirely —
+the loop then runs proportional-only, settles short of its reference, and
+changing ki changes nothing at all. StatefulPI carries the accumulator across
+calls, and that is what this block steps.
 
-The output saturates to the Q15 range, matching what the chip's PI input can
-represent.
+WIRE FORMAT, unchanged on every port: currents are Q15 fractions of i_base,
+the angle is the 16-bit half-turn convention as a Q15 float in [-1, 1)
+(value = theta/pi), duties are Q15. That is exactly what the kyttar sources
+inject.
 """
+import os
+import sys
+
 import numpy as np
 from gnuradio import gr
 
+# The loop's arithmetic is the SHIPPED models — the same integer models the
+# gates and the two-array harness use — rather than a second transcription
+# that could drift from them.
+# GRC EVALUATES THIS SOURCE AT EDIT TIME, in a namespace with no __file__, so
+# the import path is discovered by SEARCH rather than relative to this file: an
+# unguarded __file__ here makes GRC fail to interpret the source, the block
+# then declares no ports, and every connection to it is reported unmakeable.
+def _add_model_paths():
+    seen = set(sys.path)
+    roots = []
+    for base in [os.getcwd()] + [p for p in sys.path if p]:
+        try:
+            base = os.path.abspath(base)
+        except Exception:
+            continue
+        d = base
+        for _ in range(6):
+            if d in roots:
+                break
+            roots.append(d)
+            nxt = os.path.dirname(d)
+            if nxt == d:
+                break
+            d = nxt
+    for r in roots:
+        cand = [os.path.join(r, 'examples', 'foc_motor'),
+                os.path.join(r, 'runtime', 'python'),
+                os.path.join(r, 'verification', 'tests')]
+        if not os.path.isfile(os.path.join(cand[0], 'foc_loop_model.py')):
+            continue
+        for c in cand:
+            if c not in seen and os.path.isdir(c):
+                sys.path.insert(0, c)
+                seen.add(c)
+        return True
+    return False
+
+
+_add_model_paths()
+
+from foc_loop_model import (PMSMPlant, MotorParams, StatefulPI, DEFAULT_PI,
+                            foc_loop_golden, q15, from_q15)
+
 
 class blk(gr.sync_block):
-    def __init__(self, i_d_ref=0.0, i_q_ref=0.30):
+    """The host half of the loop: motor + error former + feedback, no inputs.
+
+    Eleven outputs, all of them a live wire of the running loop:
+
+        0 ia          1 ib          2 theta      -> the measurement half
+        3 e_d         4 e_q         5 theta      -> the command half
+        6 i_d         7 i_q                      -> the host's own monitors
+        8 duty_a      9 duty_b     10 duty_c     -> what drove the motor
+
+    theta is emitted TWICE because it feeds BOTH rotations, and on-chip
+    fan-out to two rendezvous arms is the hard part — so it is delivered as
+    two independent ingress arms, one per consumer.
+    """
+
+    def __init__(self, r_s=0.35, l_s=1.5e-3, ke=0.035, v_dc=24.0,
+                 i_base=10.0, omega_e=200.0, dt=35e-6,
+                 kp=0.25, ki=0.01, limit=1.0,
+                 i_d_ref=0.0, i_q_ref=0.30):
         gr.sync_block.__init__(
-            self, name='FOC error (ref - measured)',
-            in_sig=[np.float32, np.float32],
-            out_sig=[np.float32, np.float32])
+            self, name='FOC host loop (motor + error + feedback)',
+            in_sig=[],
+            out_sig=[np.float32] * 11)
+        self.params = MotorParams(r_s=float(r_s), l_s=float(l_s),
+                                  ke=float(ke), v_dc=float(v_dc),
+                                  i_base=float(i_base))
+        self.plant = PMSMPlant(params=self.params, dt=float(dt),
+                               omega_e=float(omega_e))
+        pi = dict(DEFAULT_PI)
+        pi.update(kp=float(kp), ki=float(ki), limit=float(limit))
+        self.pi_d = StatefulPI('d', **pi)
+        self.pi_q = StatefulPI('q', **pi)
         self.i_d_ref = float(i_d_ref)
         self.i_q_ref = float(i_q_ref)
+        # The sensed state the FIRST control period is computed from: the
+        # motor at rest. Every later period reads what the previous period's
+        # duties left behind — that is the closed loop.
+        self._sensed = self.plant.sensed_words()
 
     def work(self, input_items, output_items):
-        lim = 32767.0 / 32768.0
-        output_items[0][:] = np.clip(
-            self.i_d_ref - input_items[0], -1.0, lim)
-        output_items[1][:] = np.clip(
-            self.i_q_ref - input_items[1], -1.0, lim)
-        return len(input_items[0])
+        n = len(output_items[0])
+        ref_d = q15(self.i_d_ref)
+        ref_q = q15(self.i_q_ref)
+        for k in range(n):
+            ia_w, ib_w, th_w = self._sensed
+
+            # ONE whole control period, every on-chip stage computed by that
+            # block's own pinned integer model, with the LIVE integrators.
+            da, db, dc, i_d, i_q = foc_loop_golden(
+                ia_w, ib_w, th_w, ref_d, ref_q, self.pi_d, self.pi_q)
+
+            e_d = from_q15(ref_d) - from_q15(i_d)
+            e_q = from_q15(ref_q) - from_q15(i_q)
+            lim = 32767.0 / 32768.0
+            e_d = min(max(e_d, -1.0), lim)
+            e_q = min(max(e_q, -1.0), lim)
+
+            # the measurement half's three ingress arms
+            output_items[0][k] = from_q15(ia_w)
+            output_items[1][k] = from_q15(ib_w)
+            output_items[2][k] = from_q15(th_w)
+            # the command half's three ingress arms
+            output_items[3][k] = e_d
+            output_items[4][k] = e_q
+            output_items[5][k] = from_q15(th_w)
+            # the host's own view of the loop
+            output_items[6][k] = from_q15(i_d)
+            output_items[7][k] = from_q15(i_q)
+            output_items[8][k] = from_q15(da)
+            output_items[9][k] = from_q15(db)
+            output_items[10][k] = from_q15(dc)
+
+            # CLOSE THE LOOP: this period's duties drive the motor, and what
+            # it then senses is what the NEXT period is computed from. This
+            # assignment is the feedback path — the thing that would be a
+            # stream cycle if it were wired instead of held.
+            self._sensed = self.plant.step(da, db, dc)
+        return n
 '''
 
 
@@ -268,7 +347,17 @@ DESCRIPTION = (
     "THE FULL FOC CURRENT LOOP as a logical flowgraph: the measurement half "
     "(Clarke + forward Park), the host-side error former, and the command "
     "half (two PI controllers + inverse Park + SVPWM), closed around an "
-    "embedded PMSM plant so the loop actually runs. "
+    "an embedded PMSM plant so the loop actually runs. "
+    "THE LOOP CLOSES INSIDE ONE HOST BLOCK. GNU Radio's stream scheduler "
+    "forbids cycles outright -- a stream ring is refused at start() with "
+    "'flow graph has loops!', and no buffer sizing fixes it -- so the motor, "
+    "the error former and the feedback path all live in a single stateful "
+    "block, foc_host, which therefore has NO stream inputs. The graph the "
+    "scheduler sees is a TREE: foc_host at the root, the measurement half and "
+    "the command half hanging off it as feed-forward branches. Every word "
+    "foc_host emits is the LIVE value of that wire in the loop it is running "
+    "now, computed this period from the previous period's duties -- this is a "
+    "genuinely closed loop, not a replay of a canned recording. "
     "PLACEMENT IS THE READER'S JOB AND THIS FILE DOES NOT PRESUME IT. The "
     "whole loop does NOT route on one 10x12 array: the limit is corridor/arm "
     "budget, not cells (the full chain is 55 block cells of 120, yet the best "
@@ -377,7 +466,7 @@ _TOP = 380
 # The pipeline, left to right. Row order within a lane follows the signal:
 # the measurement half on top, the command half beneath it.
 _LANES = [
-    ["plant"],
+    ["foc_host"],
     ["src_ia", "src_ib", "src_th_park", "src_ed", "src_eq", "src_th_ipark"],
     ["relay_ia", "relay_ib", "relay_th_park",
      "relay_ed", "relay_eq", "relay_th_ipark"],
@@ -386,7 +475,7 @@ _LANES = [
     ["park", "ipark"],
     ["sink_idq", "v_split"],
     ["idq_split", "svpwm"],
-    ["err", "sink_duty"],
+    ["sink_duty"],
     ["duty_split"],
     ["scope_idq", "scope_err", "scope_duty"],
 ]
@@ -420,13 +509,23 @@ def build():
                  8, 316),
     ]
 
-    # ----- the plant ------------------------------------------------------- #
-    blocks.append(epy("plant", PLANT_SRC,
-                      "THE MOTOR — the only block here that is not on the "
-                      "chip and never will be. Duties in, sensed ia/ib/theta "
-                      "out; this is what closes the loop.", 200, 620,
+    # ----- the HOST SIDE of the loop, in ONE block ------------------------- #
+    # THE CYCLE BREAK. The motor, the error former and the feedback path all
+    # live inside this block, so the loop closes as an internal assignment
+    # rather than a stream. It therefore has NO stream inputs, and the graph
+    # the GNU Radio scheduler sees is a TREE — this block at the root, the two
+    # on-chip halves hanging off it — instead of the ring it refuses to start.
+    blocks.append(epy("foc_host", HOST_LOOP_SRC,
+                      "THE HOST SIDE — the motor, the error former and the "
+                      "feedback path in one stateful block. Nothing here is "
+                      "on the chip and nothing here ever will be. It has no "
+                      "inputs on purpose: the loop closes INSIDE it, which is "
+                      "what keeps the flowgraph acyclic and startable.",
+                      200, 620,
                       r_s="0.35", l_s="1.5e-3", ke="0.035", v_dc="24.0",
-                      i_base="10.0", omega_e="200.0", dt="1.0/samp_rate"))
+                      i_base="10.0", omega_e="200.0", dt="1.0/samp_rate",
+                      kp="0.25", ki="0.01", limit="1.0",
+                      i_d_ref="i_d_ref", i_q_ref="i_q_ref"))
 
     # ----- MEASUREMENT HALF ------------------------------------------------ #
     # ia and ib are two independent ingress arms into the Clarke rendezvous.
@@ -514,15 +613,6 @@ def build():
                                   "vlen": "1"},
                    "states": st(1592, 664)})
 
-    # ----- the host-side error former -------------------------------------- #
-    blocks.append(epy("err", ERROR_SRC,
-                      "e = reference - measured, on the HOST by construction. "
-                      "The reference is supervisory and slow; spending an "
-                      "on-chip rendezvous — the scarcest resource here — on a "
-                      "subtraction the host does for free would be a poor "
-                      "trade.", 1784, 664,
-                      i_d_ref="i_d_ref", i_q_ref="i_q_ref"))
-
     # ----- COMMAND HALF ---------------------------------------------------- #
     blocks += [
         ksource("src_ed", "e_d",
@@ -605,17 +695,14 @@ def build():
                                   "vlen": "1"},
                    "states": st(1544, 296)})
 
-    # ----- close the loop -------------------------------------------------- #
-    # duties -> plant -> sensed ia, ib, theta -> the four ingress sources.
-    C("duty_split", 0, "plant", 0)
-    C("duty_split", 1, "plant", 1)
-    C("duty_split", 2, "plant", 2)
-    C("plant", 0, "src_ia", 0)
-    C("plant", 1, "src_ib", 0)
-    C("plant", 2, "src_th_park", 0)
-    C("plant", 2, "src_th_ipark", 0)
-
-    # measurement half
+    # ----- the loop, and where it CLOSES ----------------------------------- #
+    # The feedback edge (duties -> motor -> sensed currents) is NOT a
+    # connection here: it is an assignment inside foc_host. That is precisely
+    # why this flowgraph starts. What remains are two feed-forward branches.
+    # measurement half: the three sensed quantities, live off the motor
+    C("foc_host", 0, "src_ia", 0)          # ia
+    C("foc_host", 1, "src_ib", 0)          # ib
+    C("foc_host", 2, "src_th_park", 0)     # theta, arm 1 of 2
     C("src_ia", 0, "relay_ia", 0)
     C("src_ib", 0, "relay_ib", 0)
     C("relay_ia", 0, "clarke", 0)          # ia
@@ -628,13 +715,10 @@ def build():
     C("park", 0, "sink_idq", 0)
     C("sink_idq", 0, "idq_split", 0)
 
-    # error formation
-    C("idq_split", 0, "err", 0)            # i_d
-    C("idq_split", 1, "err", 1)            # i_q
-
-    # command half
-    C("err", 0, "src_ed", 0)
-    C("err", 1, "src_eq", 0)
+    # command half: the two current errors, formed on the host this period
+    C("foc_host", 3, "src_ed", 0)          # e_d
+    C("foc_host", 4, "src_eq", 0)          # e_q
+    C("foc_host", 5, "src_th_ipark", 0)    # theta, arm 2 of 2
     C("src_ed", 0, "relay_ed", 0)
     C("src_eq", 0, "relay_eq", 0)
     C("relay_ed", 0, "pi_d", 0)
@@ -651,19 +735,26 @@ def build():
 
     # ----- the scopes ------------------------------------------------------ #
     blocks.append(time_sink(
-        "scope_idq", "measured rotor-frame currents i_d, i_q (Q15)", 2,
+        "scope_idq", "rotor-frame currents i_d, i_q — array vs host (Q15)", 4,
         "burst_len", -0.6, 0.6, "current (Q15 fraction of full scale)",
         "THE DEMO PLOT — the loop regulating. i_q climbs to the torque "
-        "reference and i_d is held at zero. The buffer is a FULL burst: a "
+        "reference and i_d is held at zero. FOUR traces: the two the ARRAY "
+        "returned and the two the host computed for the same control periods, "
+        "so the array's measurement half is checked against its own golden on "
+        "screen rather than merely displayed. The buffer is a FULL burst: a "
         "short buffer paints nothing when the batch arrives at once, and the "
         "kyttar sink emits q15/32768 floats, so the y axis is in Q15 units.",
-        1976, 560, labels=["i_d (measured)", "i_q (measured)"]))
+        1976, 560, labels=["i_d (array)", "i_q (array)",
+                           "i_d (host)", "i_q (host)"]))
     blocks.append(time_sink(
-        "scope_duty", "inverter duty cycles a, b, c (Q15)", 3, "burst_len",
-        -0.7, 0.7, "duty (Q15)",
+        "scope_duty", "inverter duty cycles a, b, c — array vs host (Q15)", 6,
+        "burst_len", -0.7, 0.7, "duty (Q15)",
         "the three SVPWM duty cycles — the min-max injected set the inverter "
-        "legs actually switch on.",
-        1736, 296, labels=["duty a", "duty b", "duty c"]))
+        "legs actually switch on — as the ARRAY returned them, over the three "
+        "the host computed for the same periods. The host set is the one that "
+        "actually drove the motor this run; the array set is the check on it.",
+        1736, 296, labels=["duty a (array)", "duty b (array)", "duty c (array)",
+                           "duty a (host)", "duty b (host)", "duty c (host)"]))
     blocks.append(time_sink(
         "scope_err", "current errors e_d, e_q (Q15)", 2, "burst_len",
         -0.6, 0.6, "error (Q15)",
@@ -676,8 +767,13 @@ def build():
     C("duty_split", 0, "scope_duty", 0)
     C("duty_split", 1, "scope_duty", 1)
     C("duty_split", 2, "scope_duty", 2)
-    C("err", 0, "scope_err", 0)
-    C("err", 1, "scope_err", 1)
+    C("foc_host", 6, "scope_idq", 2)       # i_d, as the host computed it
+    C("foc_host", 7, "scope_idq", 3)       # i_q, as the host computed it
+    C("foc_host", 8, "scope_duty", 3)      # duty a, host
+    C("foc_host", 9, "scope_duty", 4)      # duty b, host
+    C("foc_host", 10, "scope_duty", 5)     # duty c, host
+    C("foc_host", 3, "scope_err", 0)       # e_d
+    C("foc_host", 4, "scope_err", 1)       # e_q
 
     options = {"id": "options", "parameters": {
         "author": "Lattrex", "catch_exceptions": "True",

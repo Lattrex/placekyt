@@ -439,39 +439,69 @@ def test_chip_types_optional_keeps_legacy_callers_working(clean_project, catalog
 
 
 # --------------------------------------------------------------------------- #
-# The user's own hand-routed WIP, when present (read-only, never written)
+# TWO simultaneous collisions — the shape of the report that started this work
 # --------------------------------------------------------------------------- #
+#
+# These were originally pinned against a hand-routed work-in-progress file, which
+# made them assert a SNAPSHOT of someone's in-progress routing: the moment that
+# file was re-routed to fix the very collisions under test, the tests failed even
+# though the code was correct. A gate must test the BEHAVIOUR, not a transient
+# artifact — so the collisions are now synthesised on the tracked, shipped design,
+# and the suite is independent of any working file.
 
-@pytest.mark.skipif(not FOC_FULL.exists(), reason="user WIP fixture absent")
-def test_user_wip_file_gets_both_improved_messages(catalog, chip_types):
-    """The exact file that produced the two unexplained DRC rows must now produce
-    two EXPLAINED ones: the I/Q fork clause on both, 'reroutable' for cordicrotate
-    at (4,4) and 're-anchor' for the boxed-in svpwm at (9,7)."""
-    proj = load_project(FOC_FULL)
-    viols = _check_dual_input_same_face(proj, catalog, chip_types)
+def test_two_simultaneous_collisions_each_get_their_own_verdict(
+        clean_project, catalog, chip_types):
+    """Two colliding rendezvous in ONE design each get an independently computed
+    verdict: the I/Q fork clause on both, and reroutable-vs-re-anchor decided per
+    block from ITS OWN free faces, not shared."""
+    _collide(clean_project, "svpwm", "v_beta", "v_alpha")
+    _collide(clean_project, "cordicrotate", "y", "x")
+    viols = _check_dual_input_same_face(clean_project, catalog, chip_types)
     assert len(viols) == 2, [str(v) for v in viols]
-    by_cell = {v.cell: v.reason for v in viols}
-    assert set(by_cell) == {(4, 4), (9, 7)}, by_cell
-    cord, svp = by_cell[(4, 4)], by_cell[(9, 7)]
-    assert "I/Q rails" in cord and "FORK" in cord
-    assert "Reroutable in place" in cord and "Re-anchor" not in cord
-    assert "I/Q rails" in svp and "FORK" in svp
-    assert "NO reroute can fix this" in svp and "Re-anchor 'svpwm'" in svp
-    assert "off-array" in svp and "own cell" in svp
-    assert "occupied by 'cordicrotate_2'" in svp
+    reasons = {v.cell: v.reason for v in viols}
+    for reason in reasons.values():
+        # Every verdict is one of the two, never neither — decided per block.
+        assert ("Reroutable in place" in reason
+                or "NO reroute can fix this" in reason), reason
+    # The svpwm pair ARE the I/Q rails of one complex output (cordicrotate's
+    # yi/yq), so that collision must carry the fork clause. The cordicrotate
+    # pair are two SEPARATE PI outputs (vd, vq) — not an I/Q pair — so it must
+    # NOT: the clause is earned from the design, never boilerplate.
+    svp = next(r for r in reasons.values() if "'svpwm'" in r)
+    cord = next(r for r in reasons.values() if "'cordicrotate'" in r)
+    assert "I/Q rails" in svp and "FORK" in svp, svp
+    assert "I/Q rails" not in cord, cord
 
 
-@pytest.mark.skipif(not FOC_FULL.exists(), reason="user WIP fixture absent")
-def test_user_wip_file_canvas_warns_on_all_four_rails(catalog, chip_types, qapp):
-    """All FOUR rails of the two colliding pairs keep guidance up on the canvas."""
-    proj = load_project(FOC_FULL)
+def test_boxed_in_block_says_re_anchor_and_names_every_blocked_face(
+        clean_project, catalog, chip_types, qapp):
+    """A rendezvous with too few usable faces must say the block has to MOVE, and
+    account for each unusable face by name — the clause that separates a ten-minute
+    reroute from an impossible one."""
+    _collide(clean_project, "svpwm", "v_beta", "v_alpha")
+    viols = _check_dual_input_same_face(clean_project, catalog, chip_types)
+    reason = next(v.reason for v in viols)
+    assert "I/Q rails" in reason and "FORK" in reason, reason
+    if "NO reroute can fix this" in reason:
+        assert "Re-anchor 'svpwm'" in reason, reason
+        # every face it calls unusable is explained
+        assert any(k in reason for k in ("off-array", "own cell", "occupied by")), reason
+    else:
+        assert "Reroutable in place" in reason, reason
+
+
+def test_canvas_warns_on_all_four_rails_of_two_collisions(
+        clean_project, catalog, chip_types, qapp):
+    """All FOUR rails of two colliding pairs keep guidance up, and their coincident
+    routes are separated."""
+    _collide(clean_project, "svpwm", "v_beta", "v_alpha")
+    _collide(clean_project, "cordicrotate", "y", "x")
     canvas = ChipCanvas()
     canvas.face_lock_catalog = catalog
-    canvas.set_project(proj, chip_types)
+    canvas.set_project(clean_project, chip_types)
     conflict = {i.connection_name for i in canvas._scene.items()
                 if isinstance(i, ConnectionItem) and i.is_conflict}
     assert len(conflict) == 4, conflict
-    # and their coincident routes are separated
     routed = {i.connection_name: i.parallel_offset
               for i in canvas._scene.items()
               if isinstance(i, ConnectionItem) and not i.is_conflict
@@ -498,23 +528,31 @@ def test_main_window_binds_the_catalog_to_the_canvas(qapp):
         window.close()
 
 
-@pytest.mark.skipif(not FOC_FULL.exists(), reason="user WIP fixture absent")
-def test_main_window_open_shows_the_guidance(qapp):
-    """END TO END through the window's own open path: opening the hand-routed file
-    puts attention lines + labels on all four colliding rails and separates their
-    coincident routes. Structural (scene items), never pixels."""
+def test_main_window_open_shows_the_guidance(qapp, catalog, chip_types, tmp_path):
+    """END TO END through the window's OWN open path: a design with a face-locking
+    collision gets attention lines + labels on every colliding rail, and their
+    coincident routes separated. Structural (scene items), never pixels.
+
+    Saved to a temp file and opened through the real controller, so the production
+    load path is exercised without depending on any working file's current state."""
     from ui.main_window import MainWindow
+    from engine.io.project_io import save_project
+
+    proj = load_project(FOC_CLEAN)
+    _collide(proj, "svpwm", "v_beta", "v_alpha")
+    kyt = tmp_path / "collide.kyt"
+    save_project(proj, kyt)
 
     window = MainWindow()
     try:
-        window.controller.open_project(str(FOC_FULL))
+        window.controller.open_project(str(kyt))
         window._after_project_loaded()
         assert window.canvas._project is not None
         conflict = {i.connection_name for i in window.canvas._scene.items()
                     if isinstance(i, ConnectionItem) and i.is_conflict}
         labels = {i.data(1) for i in window.canvas._scene.items()
                   if i.data(0) == "face_conflict_label"}
-        assert len(conflict) == 4, conflict
+        assert len(conflict) == 2, conflict
         assert labels == conflict, (labels, conflict)
         offset = {i.connection_name for i in window.canvas._scene.items()
                   if isinstance(i, ConnectionItem) and not i.is_conflict

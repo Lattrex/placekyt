@@ -145,3 +145,80 @@ def test_cw_server_panel_registered_and_bit_exact(qapp):
     finally:
         if sim.gr_server_running:
             sim.stop_gnuradio_server()
+
+
+# ---------------------------------------------------------------------------
+# LZ4 over the server: the waveform must POPULATE (the "traces don't show up
+# automatically" report).
+#
+# examples/lz4_stream chains its two streams through the CLIENT: the `cmp`
+# source is fed by the compressed bytes the `raw` stream produced ON the chip,
+# so it cannot rendezvous into the leader's collect window — ONE GRC Run reaches
+# the server as TWO sequential ``process_batch_duplex`` RPCs.
+#
+# _process_batch_duplex used to fire on_new_run + _clear_chip_trace on EVERY
+# RPC, so the second RPC wiped the first stream's finished trace and the last
+# RPC's reset left the pane empty for the whole Run (seeded rows reading
+# "Analog: —" over a collapsed ~0..1 ns ruler). Measured before the fix on the
+# real chip: x1_out tag2=320 tag5=455 after `raw`, then 0/0 (0 ports) after the
+# `cmp` RPC. This drives the REAL hosted server over a REAL socket and asserts
+# the TraceModel still holds both streams at the end of the Run.
+# ---------------------------------------------------------------------------
+LZ4_KYT = _ROOT / "examples" / "lz4_stream" / "lz4_stream.kyt"
+
+
+def _duplex(port, streams, payload):
+    """One process_batch_duplex RPC, exactly as the GR rendezvous dispatches."""
+    c = socket.socket()
+    c.settimeout(600.0)
+    c.connect(("127.0.0.1", port))
+    try:
+        send_message(c, {"op": "process_batch_duplex", "port": "x16_out",
+                         "in_port": "x16_in", "streams": streams,
+                         "schedule": "interleaved"},
+                     np.asarray(payload, dtype=np.float32))
+        hdr, out = recv_message(c)
+    finally:
+        c.close()
+    assert hdr.get("ok"), hdr
+    return hdr, out
+
+
+@pytest.mark.skipif(not LZ4_KYT.exists(), reason="lz4_stream .kyt absent")
+def test_lz4_duplex_run_keeps_both_streams_in_the_waveform(qapp):
+    """Two data-dependent duplex RPCs = ONE Run: the waveform TraceModel must
+    end the Run holding BOTH streams' port samples, not an empty pane."""
+    ctrl, sim, port = _serve(LZ4_KYT, 58975)
+    try:
+        assert sim.panel_device(0) is not None, "no panel on the server chip"
+
+        # RPC 1 — the `raw` (encode) stream. A short payload keeps the gate fast;
+        # the trace population is what is under test, not the compression ratio.
+        raw = [b / 32768.0 for b in list(b"KYTTAR LZ4 STREAM! " * 4)] \
+            + [256 / 32768.0]
+        _duplex(port, [{"stream_id": "raw", "complex": False, "raw": False,
+                        "n_samples": len(raw)}], raw)
+        sim.refresh_debug_from_chip(force=True, full_capture=True)
+        after_raw = sim.trace_model.port_streams_by_tag()
+        raw_ports = {k: len(v) for k, v in after_raw.items() if v}
+        assert raw_ports, "the raw stream produced NO port samples at all"
+
+        # RPC 2 — the `cmp` (decode) stream of the SAME Run. Before the fix this
+        # reset the trace and the pane went empty.
+        cmp_payload = [b / 32768.0 for b in (1, 2, 3, 4)]
+        _duplex(port, [{"stream_id": "cmp", "complex": False, "raw": False,
+                        "n_samples": len(cmp_payload)}], cmp_payload)
+        sim.refresh_debug_from_chip(force=True, full_capture=True)
+        after_cmp = sim.trace_model.port_streams_by_tag()
+
+        assert after_cmp, (
+            "the waveform TraceModel is EMPTY at the end of the Run — the "
+            "second duplex RPC wiped the Run's trace (the reported bug)")
+        for key, n in raw_ports.items():
+            assert len(after_cmp.get(key, [])) >= n, (
+                f"stream {key} LOST samples across the second duplex RPC "
+                f"({len(after_cmp.get(key, []))} < {n}) — the Run-boundary "
+                f"reset fired inside a single Run")
+    finally:
+        if sim.gr_server_running:
+            sim.stop_gnuradio_server()

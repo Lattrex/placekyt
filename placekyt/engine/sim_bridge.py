@@ -505,6 +505,11 @@ class SimServer:
                 # A new flowgraph run — rehost a fresh chip if the host supports
                 # it (so the second run starts from clean state).
                 self._tag_buf.clear()
+                # An explicit reset IS a Run boundary, so the stream-cycling
+                # detector must start the next Run with an empty seen-set —
+                # otherwise the next Run's first stream would look like a repeat
+                # (or, worse, its streams would be folded into the finished Run).
+                self._run_seen_streams = set()
                 if self._on_reset is not None:
                     new_chip = self._on_reset()
                     if new_chip is not None:
@@ -1168,9 +1173,36 @@ class SimServer:
         streams_hdr = list(header.get("streams") or [])
         if not streams_hdr:
             return {"ok": False, "error": "process_batch_duplex: no streams"}, None
-        # A duplex batch IS one whole Run (all streams in one RPC) → signal a new
-        # Run once so the host resets the waveform trace for it.
-        if self._on_new_run is not None:
+        # NEW-RUN DETECTION by STREAM CYCLING — the SAME invariant the
+        # single-stream process_batch path uses (see the note there). A duplex
+        # batch is NOT automatically a whole Run: it is one Run's worth of
+        # streams only when every source rendezvoused into ONE RPC. Streams that
+        # are DATA-DEPENDENT cannot — a source whose samples are derived from a
+        # previous stream's recovered output (the LZ4 encode→decode chain: the
+        # compressed bytes come off the chip and are re-injected) submits long
+        # after the leader's collect window has closed, so ONE GRC Run arrives as
+        # SEVERAL sequential process_batch_duplex RPCs.
+        #
+        # Firing on_new_run + clearing the chip trace unconditionally per RPC
+        # therefore wiped the finished stream's trace at the next stream's RPC,
+        # and the LAST RPC's reset left the waveform pane EMPTY for the whole Run
+        # (measured on examples/lz4_stream: 320 + 455 samples on x1_out tags 2/5
+        # after the raw stream, 0 samples and 0 ports after the cmp stream's
+        # boundary — the reported "traces don't show up automatically", with the
+        # seeded rows reading "Analog: —" on a collapsed 0..1 ns ruler).
+        #
+        # So gate the boundary on a stream_id REPEATING, exactly like
+        # process_batch: within one Run each stream_id appears at most once, so a
+        # repeat means a genuinely new Run. Streams of the SAME Run then
+        # ACCUMULATE in the viewer instead of erasing each other.
+        _run_keys = [sh.get("stream_id") if sh.get("stream_id") is not None
+                     else "__single__" for sh in streams_hdr]
+        _new_run = any(k in self._run_seen_streams for k in _run_keys)
+        if _new_run:
+            self._run_seen_streams = set(_run_keys)
+        else:
+            self._run_seen_streams.update(_run_keys)
+        if _new_run and self._on_new_run is not None:
             try:
                 self._on_new_run()
             except Exception:  # noqa: BLE001
@@ -1183,8 +1215,12 @@ class SimServer:
         # start, pushing Run N's events ~1e6 ns off the visible window → EVERY trace
         # renders blank on the rerun (the reported "empty on every subsequent run").
         # Clearing here — race-free, the server owns the chip and no batch has run —
-        # guarantees this Run's drain contains ONLY this Run's events.
-        self._clear_chip_trace()
+        # guarantees this Run's drain contains ONLY this Run's events. Gated on the
+        # SAME new-Run decision as on_new_run above: clearing on every duplex RPC
+        # would drop the earlier streams' events of the CURRENT Run before the GUI
+        # ingests them (see the note above).
+        if _new_run:
+            self._clear_chip_trace()
         # Fresh-build guard + loop-memory reset, ONCE for the whole duplex run.
         if self._on_before_batch is not None:
             new_chip, err = self._on_before_batch()

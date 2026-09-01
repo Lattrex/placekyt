@@ -417,3 +417,117 @@ def test_bottleneck_busy_accumulates_across_drain():
     assert rep is not None
     busy = rep["busy"]
     assert busy[(0, 0, 0)] > busy[(0, 1, 0)]
+
+
+# ---------------------------------------------------------------------------
+# DUPLEX RUN-BOUNDARY: data-dependent streams arrive as SEPARATE duplex RPCs
+# within ONE GRC Run, and must ACCUMULATE in the waveform instead of erasing
+# each other.
+#
+# Root cause of the reported "the LZ4 traces don't show up automatically":
+# _process_batch_duplex fired on_new_run + _clear_chip_trace UNCONDITIONALLY on
+# every RPC, on the assumption that a duplex batch is always one whole Run (all
+# streams rendezvous into one RPC). That assumption fails for DATA-DEPENDENT
+# streams: examples/lz4_stream's `cmp` source is fed by the compressed bytes the
+# `raw` stream produced ON the chip, so it cannot submit inside the leader's
+# 0.4 s collect window — one Run arrives as TWO sequential duplex RPCs. The
+# second RPC's unconditional reset wiped the first stream's finished trace, and
+# the LAST RPC's reset left the pane empty for the entire Run (the seeded rows
+# read "Analog: —" over a collapsed ~0..1 ns ruler).
+#
+# MEASURED against the real shipped lz4 chip, before the fix:
+#     after the raw stream : x1_out tag2=320  tag5=455  ports=6
+#     after the cmp RPC    : x1_out tag2=0    tag5=0    ports=0
+# The fix gates BOTH the on_new_run signal and the chip-trace clear on a
+# stream_id REPEATING, exactly as the single-stream process_batch path does.
+# ---------------------------------------------------------------------------
+def _duplex_boundary_decider():
+    """Exercise the SHIPPED _process_batch_duplex Run-boundary prologue.
+
+    Executes the real source region (not a copy) against a stub carrying only
+    the collaborators that prologue touches, so the gate tracks the shipped
+    decision and fails if that logic reverts to unconditional."""
+    import inspect
+
+    from engine.sim_bridge import SimServer
+
+    src = inspect.getsource(SimServer._process_batch_duplex)
+    start = src.index("_run_keys = [")
+    end = src.index("# Fresh-build guard")
+    prologue = inspect.cleandoc(src[start:end])
+    # The prologue MUST gate the clear (the pre-fix code called it outright).
+    assert "if _new_run:" in prologue and "_clear_chip_trace()" in prologue, (
+        "duplex prologue no longer gates the Run-boundary chip-trace clear")
+    code = compile(prologue, "<duplex-prologue>", "exec")
+
+    class _Srv:
+        def __init__(self):
+            self._run_seen_streams = set()
+            self.new_runs = 0
+            self.clears = 0
+
+        def _on_new_run(self):
+            self.new_runs += 1
+
+        def _clear_chip_trace(self):
+            self.clears += 1
+
+    srv = _Srv()
+
+    def decide(stream_ids):
+        ns = {"self": srv,
+              "streams_hdr": [{"stream_id": s} for s in stream_ids]}
+        exec(code, ns)
+        return bool(ns["_new_run"])
+
+    return srv, decide
+
+
+def test_duplex_data_dependent_streams_are_one_run():
+    """Two DATA-DEPENDENT streams (separate duplex RPCs, distinct stream_ids)
+    are ONE Run: no reset, no chip-trace clear on the second RPC."""
+    srv, decide = _duplex_boundary_decider()
+    assert decide(["raw"]) is False
+    assert decide(["cmp"]) is False          # same Run — must NOT reset
+    assert srv.new_runs == 0
+    assert srv.clears == 0
+    assert srv._run_seen_streams == {"raw", "cmp"}
+
+
+def test_duplex_repeated_stream_id_starts_a_new_run():
+    """A stream_id REPEATING means a genuinely new Run — reset and clear fire
+    exactly once, and the seen-set restarts from that RPC's streams."""
+    srv, decide = _duplex_boundary_decider()
+    decide(["raw"])
+    decide(["cmp"])
+    assert decide(["raw"]) is True           # Run 2
+    assert srv.new_runs == 1
+    assert srv.clears == 1
+    assert srv._run_seen_streams == {"raw"}
+    assert decide(["cmp"]) is False          # accumulates into Run 2
+    assert srv.new_runs == 1
+
+
+def test_duplex_rendezvoused_streams_still_one_run():
+    """The classic full-duplex case (both streams in ONE RPC) is unchanged:
+    first RPC is not a boundary, the same pair repeating starts Run 2."""
+    srv, decide = _duplex_boundary_decider()
+    assert decide(["tx", "rx"]) is False
+    assert decide(["tx", "rx"]) is True
+    assert srv.new_runs == 1
+    assert srv.clears == 1
+
+
+def test_reset_op_clears_the_run_seen_streams():
+    """An explicit ``reset`` RPC is a Run boundary: the stream-cycling seen-set
+    must be emptied so the NEXT Run's first stream is not mistaken for a repeat
+    (and its streams are not folded into the finished Run)."""
+    import inspect
+
+    from engine.sim_bridge import SimServer
+
+    src = inspect.getsource(SimServer)
+    i = src.index('if op == "reset":')
+    body = src[i:i + 900]
+    assert "self._run_seen_streams = set()" in body, (
+        "the reset op no longer clears the Run-boundary stream seen-set")

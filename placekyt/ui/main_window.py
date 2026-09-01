@@ -503,6 +503,10 @@ class MainWindow(QMainWindow):
         self.canvas.footprint_provider = self._block_footprint
         # Resolve a block port name → its cell_id (auto-P&R P2.3 flylines/stubs).
         self.canvas.port_cell_provider = self._block_port_cells
+        # Catalog for the face-locking arrival-face check: a rail routed onto an
+        # already-taken face of a NEEDS_DISTINCT_INPUT_FACES block keeps showing
+        # guidance instead of silently reading as done.
+        self.canvas.face_lock_catalog = self.controller.catalog
         # Click-to-wire a logical net between two block-port stubs (P2.3).
         self.canvas.logical_wire_requested.connect(self._on_logical_wire)
         # Any model change → re-render canvas + refresh edit actions.

@@ -33,6 +33,13 @@ from .connection_item import ConnectionItem
 from .footprint_item import FootprintItem
 from .port_item import PortItem
 
+# Perpendicular separation between COINCIDENT routes (px). Enough to see two wires,
+# small enough that each still reads as running through its own cells.
+COINCIDENT_OFFSET_PX = 5.0
+# Hard cap on how far the outermost net of a big shared trunk is pushed, so a line
+# always stays inside the cells it routes through.
+COINCIDENT_SPREAD_PX = 12.0
+
 # MIME type for library → canvas block drag-drop (§3.4).
 BLOCK_MIME = "application/x-placekyt-block"
 
@@ -182,6 +189,11 @@ class ChipCanvas(QGraphicsView):
         # PortMap, for anchoring unrouted-connection flylines + port stubs at the
         # right block cell (auto-P&R P2.3). Set by MainWindow.
         self.port_cell_provider = None
+        # Block catalog, for the face-locking (NEEDS_DISTINCT_INPUT_FACES) arrival-face
+        # check that keeps a face-conflicting rail showing guidance (see
+        # ``_face_conflict_nets``). Set by MainWindow; None ⇒ the check is a no-op and
+        # every routed net draws as an ordinary green route (the old behaviour).
+        self.face_lock_catalog = None
         # Show labelled block-port stubs (auto-P&R P2.3). Off by default — the
         # dense edit view stays uncluttered until the user wants to wire blocks.
         self._show_port_stubs = False
@@ -306,6 +318,92 @@ class ChipCanvas(QGraphicsView):
                 return True
         return False
 
+    def _face_conflict_nets(self) -> set:
+        """Names of ROUTED connections that must keep showing guidance because their
+        arrival face is ALREADY TAKEN by a sibling input of a face-locking block.
+
+        A ``NEEDS_DISTINCT_INPUT_FACES`` block tells its independent async input
+        streams apart ONLY by which FACE each word arrives on, so two inputs landing
+        on one face is a dead design. Today the editor gives no sign: the rail is
+        routed, its fly line disappears, and — when it is the synthesised Q rail of a
+        complex link, whose route often coincides exactly with the I rail — the two
+        even paint as ONE line. The user is then held to a rule the canvas never
+        states. Reusing the DRC's own arrival-face computation (``bus_drc``, the
+        single authority) keeps "routed" and "legally faced" as separate visual
+        states, so the second rail cannot look finished until its face is legal.
+
+        Returns an empty set when no catalog is bound or the design has no such
+        block (the overwhelmingly common case — this costs nothing then)."""
+        if self._project is None or self.face_lock_catalog is None:
+            return set()
+        try:
+            from engine.bus_drc import face_lock_arrivals
+            arrivals = face_lock_arrivals(self._project, self.face_lock_catalog)
+        except Exception:  # noqa: BLE001 — never let guidance break the render
+            return set()
+        out: set = set()
+        for rec in arrivals.values():
+            for port in rec.colliding:
+                name = rec.nets.get(port)
+                if name is not None:
+                    out.add(name)
+        return out
+
+    @staticmethod
+    def _coincident_offsets(routed) -> dict:
+        """``{connection_name: perpendicular_px}`` separating routes that OVERLAP.
+
+        ``routed`` is a list of ``(name, chip_id, [(x, y), ...])``. Two nets whose
+        waypoint paths share a segment paint exactly on top of each other and read as
+        ONE wire — which is how a hand-routed I/Q pair silently looks complete. Nets
+        are grouped by any shared undirected SEGMENT (so a partial overlap counts, not
+        only an identical path) and each member of a group ≥2 gets a distinct nudge,
+        fanned symmetrically about the true centre line so no single net looks
+        "displaced". Order is by name, so the assignment is stable across renders."""
+        seg_users: dict = {}
+        for name, chip_id, pts in routed:
+            for a, b in zip(pts, pts[1:]):
+                key = (chip_id, min(a, b), max(a, b))
+                seg_users.setdefault(key, set()).add(name)
+        # Union-find over nets that share at least one segment.
+        parent: dict = {}
+
+        def find(a):
+            parent.setdefault(a, a)
+            while parent[a] != a:
+                parent[a] = parent[parent[a]]
+                a = parent[a]
+            return a
+
+        def union(a, b):
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[ra] = rb
+
+        for users in seg_users.values():
+            if len(users) < 2:
+                continue
+            it = sorted(users)
+            for other in it[1:]:
+                union(it[0], other)
+        groups: dict = {}
+        for name in parent:
+            groups.setdefault(find(name), []).append(name)
+        out: dict = {}
+        for members in groups.values():
+            if len(members) < 2:
+                continue
+            members.sort()
+            n = len(members)
+            for i, name in enumerate(members):
+                # Fan symmetrically: 2 nets -> -2.5/+2.5 px, 3 -> -5/0/+5, ...
+                # Cap the fan so a big shared trunk never pushes a line out of its
+                # own cells: the widest net sits at most COINCIDENT_SPREAD_PX off.
+                step = min(COINCIDENT_OFFSET_PX,
+                           (2.0 * COINCIDENT_SPREAD_PX) / (n - 1))
+                out[name] = (i - (n - 1) / 2.0) * step
+        return out
+
     def _render_connections(self) -> None:
         """Draw each routed connection as a line through its waypoints, plus a
         selectable routing-cell marker on each intermediate waypoint (§3.2)."""
@@ -319,6 +417,19 @@ class ChipCanvas(QGraphicsView):
             if b.placement is not None:
                 block_cells.setdefault(b.placement.chip, set()).update(
                     (c.x, c.y) for c in b.placement.cells)
+
+        # Routed nets whose ARRIVAL FACE collides with a sibling input of a
+        # face-locking block: they get the ATTENTION line ON TOP of their route, so a
+        # rail that is routed but illegally faced never reads as done.
+        conflict_nets = self._face_conflict_nets()
+        # Nets whose waypoint paths overlap: fan them apart so two coincident wires
+        # are visibly two (the synthesised I/Q Q-rail otherwise hides under the I).
+        routed_paths = []
+        for conn in self._project.connections:
+            if conn.is_routed and isinstance(conn.route, list) and conn.route:
+                routed_paths.append((conn.name, self._route_chip_of(conn),
+                                     [(p.x, p.y) for p in conn.route]))
+        offsets = self._coincident_offsets(routed_paths)
 
         for conn in self._project.connections:
             if not conn.is_routed:
@@ -341,6 +452,8 @@ class ChipCanvas(QGraphicsView):
             # link is invisible and reads as "not wired".
             if conn.is_abutment:
                 self._render_abutment_link(conn, chip_id, origin)
+                if conn.name in conflict_nets:
+                    self._render_face_conflict_line(conn)
                 continue
             pts = [(p.x, p.y) for p in conn.route]
             end = None
@@ -358,8 +471,17 @@ class ChipCanvas(QGraphicsView):
                     conn.target, chip_id)
                 if in_center is not None and (not pts or pts[-1] != in_cell):
                     end = in_center
-            self._scene.addItem(
-                ConnectionItem(pts, origin, name=conn.name, end_point=end))
+            item = ConnectionItem(pts, origin, name=conn.name, end_point=end)
+            off = offsets.get(conn.name)
+            if off:
+                item.set_parallel_offset(off)
+            self._scene.addItem(item)
+            if conn.name in conflict_nets:
+                # Guidance stays UP on a face-conflicting rail: an attention-styled
+                # line from the source anchor to the target anchor, drawn over the
+                # (offset) route so the user can see WHICH net is the problem without
+                # having to decode a DRC row about faces.
+                self._render_face_conflict_line(conn)
             # Routing-cell markers on intermediate waypoints (not the endpoints,
             # which sit on block cells). Face = direction to the next waypoint.
             for i in range(len(pts)):
@@ -455,6 +577,44 @@ class ChipCanvas(QGraphicsView):
             return
         self._scene.addItem(
             ConnectionItem.fly_line(start, end, name=conn.name))
+
+    def _render_face_conflict_line(self, conn) -> None:
+        """Keep guidance UP on a ROUTED rail whose arrival face is already taken by a
+        sibling input of a face-locking block (see ``_face_conflict_nets``).
+
+        Draws the magenta attention line between the net's endpoint anchors — the
+        same anchoring an unrouted fly line uses, so it is obvious which net it is —
+        plus a label naming the net and its target port. Skipped when either endpoint
+        can't be anchored (an unplaced block); the DRC still reports it."""
+        start = self._endpoint_anchor(conn.source)
+        end = self._endpoint_anchor(conn.target)
+        if start is None or end is None:
+            return
+        item = ConnectionItem.face_conflict_line(start, end, name=conn.name)
+        item.setZValue(7)   # above the routed line it is warning about
+        self._scene.addItem(item)
+        self._add_face_conflict_label(conn, start, end)
+
+    def _add_face_conflict_label(self, conn, start, end) -> None:
+        """Name the offending net at the midpoint of its attention line, so the user
+        can tell WHICH of two overlapping rails needs a different face."""
+        from PySide6.QtWidgets import QGraphicsSimpleTextItem
+
+        port = getattr(conn.target, "port", None)
+        text = f"{conn.name}\u2192{port}" if port else str(conn.name)
+        label = QGraphicsSimpleTextItem(text)
+        label.setBrush(QColor(255, 70, 190))
+        font = label.font()
+        font.setPointSizeF(max(6.0, font.pointSizeF() - 1))
+        font.setBold(True)
+        label.setFont(font)
+        label.setZValue(8)
+        br = label.boundingRect()
+        label.setPos((start.x() + end.x()) / 2 - br.width() / 2,
+                     (start.y() + end.y()) / 2 - br.height() / 2)
+        label.setData(0, "face_conflict_label")
+        label.setData(1, conn.name)
+        self._scene.addItem(label)
 
     def set_show_port_stubs(self, show: bool) -> None:
         """Toggle the labelled block-port stubs (auto-P&R P2.3) and re-render."""

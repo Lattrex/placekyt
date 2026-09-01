@@ -30,6 +30,10 @@ _PREVIEW_COLOR = QColor(230, 210, 90)      # in-progress draw: amber
 _FLY_COLOR = QColor(150, 150, 150)         # unrouted fly line: gray dashed
 _SELECT_COLOR = QColor(120, 220, 255)      # selected route highlight
 _RELATED_COLOR = QColor(255, 200, 80)      # bus-highlight from an I/O-cell select
+# FACE-CONFLICT guidance: a rail that IS routed but lands on an already-taken face of
+# a face-locking (NEEDS_DISTINCT_INPUT_FACES) block. Magenta so it reads as "attention"
+# and is unmistakable against BOTH the green routed line and the gray fly line.
+_CONFLICT_COLOR = QColor(255, 70, 190)
 _HIT_WIDTH = 14                            # clickable hit area around the line
 
 
@@ -48,15 +52,26 @@ class ConnectionItem(QGraphicsItem):
     def __init__(self, points: list[tuple[int, int]], chip_origin: tuple[float, float],
                  *, preview: bool = False, name: str | None = None,
                  end_point: QPointF | None = None, fly: bool = False,
+                 conflict: bool = False, offset: QPointF | None = None,
                  parent: QGraphicsItem | None = None):
         super().__init__(parent)
         ox, oy = chip_origin
         self._pts = [_cell_center(ox, oy, x, y) for x, y in points]
+        # COINCIDENT-ROUTE separation: two nets sharing a waypoint path paint exactly
+        # on top of each other and read as ONE wire (the synthesised I/Q Q-rail hides
+        # under the I-rail the user drew). A per-segment perpendicular nudge makes the
+        # second net visibly a second net. Purely visual: the model route, the hit
+        # shape's endpoint cells and the build are untouched, and the offset is small
+        # enough that the line still reads as running through its cells.
+        self._offset_px = 0.0
         if end_point is not None:
             # Extend the line to a final scene point (e.g. a chip port marker)
             # so the route visually reaches the port, not the last cell centre.
             self._pts.append(end_point)
         self._preview = preview
+        # A routed rail whose ARRIVAL FACE collides with a sibling input of a
+        # face-locking block: still guidance, NOT completion (see _CONFLICT_COLOR).
+        self._conflict = bool(conflict)
         # A FLY line is a logical (unrouted) net — dashed gray, distinct from an
         # in-progress preview (amber) and a routed line (green). P2.3.
         self._fly = fly
@@ -109,6 +124,49 @@ class ConnectionItem(QGraphicsItem):
             item.setAcceptHoverEvents(True)
         return item
 
+    @classmethod
+    def face_conflict_line(cls, start: QPointF, end: QPointF, *,
+                           name: str | None = None,
+                           parent: QGraphicsItem | None = None) -> "ConnectionItem":
+        """A magenta dashed ATTENTION line for a rail that IS routed but arrives on a
+        face of a face-locking block that a sibling input already occupies.
+
+        Drawing nothing (the routed-line default) makes the second rail of a complex
+        pair look FINISHED the moment it shares the first rail's corridor — the two
+        identical routes paint as one green line and the only feedback is a DRC error
+        naming a face the user has no way to see. This keeps guidance ON the net until
+        its face is actually legal: a third style, distinct from the green routed line
+        and the gray unrouted fly line, so "routed" and "legal" stay separate states."""
+        item = cls([], (0.0, 0.0), name=name, fly=False, conflict=True, parent=parent)
+        item._pts = [start, end]
+        if name is not None:
+            item.setFlag(QGraphicsItem.ItemIsSelectable, True)
+            item.setAcceptHoverEvents(True)
+        return item
+
+    def set_parallel_offset(self, px: float) -> None:
+        """Nudge this line ``px`` perpendicular to each of its segments, so a route
+        that COINCIDES with another net's route is visibly a separate wire.
+
+        Visual only — ``covers_io_cell`` and the model route are unaffected — but the
+        hit ``shape()`` follows the drawn line so clicking either of two overlapping
+        nets still selects the right one."""
+        px = float(px)
+        if px != self._offset_px:
+            self._offset_px = px
+            self.prepareGeometryChange()
+            self.update()
+
+    @property
+    def parallel_offset(self) -> float:
+        """The perpendicular nudge applied for coincident-route separation."""
+        return self._offset_px
+
+    @property
+    def is_conflict(self) -> bool:
+        """True for the face-conflict ATTENTION line (routed but illegally faced)."""
+        return self._conflict
+
     @property
     def is_fly(self) -> bool:
         """True for a logical-net fly line (unrouted), False for a routed line."""
@@ -133,9 +191,45 @@ class ConnectionItem(QGraphicsItem):
             return False
         return any(r.contains(scene_point) for r in self._endpoint_rects)
 
+    def _drawn_pts(self) -> list[QPointF]:
+        """The points actually painted — ``self._pts`` shifted perpendicular by
+        ``_offset_px`` when a coincident-route separation is set.
+
+        Each segment is offset along its own normal and consecutive offset segments
+        are joined at the shifted vertex, so a poly-line keeps its corners instead of
+        breaking apart at every turn."""
+        import math
+
+        pts = self._pts
+        if not self._offset_px or len(pts) < 2:
+            return pts
+        d = self._offset_px
+        shifted: list[QPointF] = []
+        for i, p in enumerate(pts):
+            # Normal of the segment(s) meeting at p: average the incoming and
+            # outgoing segment normals so a corner shifts diagonally.
+            nx = ny = 0.0
+            segs = []
+            if i > 0:
+                segs.append((p.x() - pts[i - 1].x(), p.y() - pts[i - 1].y()))
+            if i < len(pts) - 1:
+                segs.append((pts[i + 1].x() - p.x(), pts[i + 1].y() - p.y()))
+            for dx, dy in segs:
+                ln = math.hypot(dx, dy)
+                if ln:
+                    nx += -dy / ln
+                    ny += dx / ln
+            ln = math.hypot(nx, ny)
+            if ln:
+                shifted.append(QPointF(p.x() + d * nx / ln, p.y() + d * ny / ln))
+            else:
+                shifted.append(p)
+        return shifted
+
     def _path(self) -> QPainterPath:
-        path = QPainterPath(self._pts[0]) if self._pts else QPainterPath()
-        for p in self._pts[1:]:
+        pts = self._drawn_pts()
+        path = QPainterPath(pts[0]) if pts else QPainterPath()
+        for p in pts[1:]:
             path.lineTo(p)
         return path
 
@@ -146,7 +240,14 @@ class ConnectionItem(QGraphicsItem):
         if len(self._pts) < 2:
             return super().shape()
         stroker = QPainterPathStroker()
-        stroker.setWidth(_HIT_WIDTH)
+        # A route separated from a COINCIDENT sibling gets a narrower hit band, so the
+        # two fat bands stop overlapping and a click near one line resolves to THAT
+        # net rather than whichever happened to be added last. Never narrower than the
+        # drawn line plus a small margin — the line stays easy to grab.
+        width = _HIT_WIDTH
+        if self._offset_px:
+            width = max(6.0, min(_HIT_WIDTH, 2.0 * abs(self._offset_px)))
+        stroker.setWidth(width)
         return stroker.createStroke(self._path())
 
     def boundingRect(self) -> QRectF:  # noqa: N802
@@ -154,7 +255,7 @@ class ConnectionItem(QGraphicsItem):
             return QRectF()
         xs = [p.x() for p in self._pts]
         ys = [p.y() for p in self._pts]
-        pad = _HIT_WIDTH / 2 + 2
+        pad = _HIT_WIDTH / 2 + 2 + abs(self._offset_px)
         return QRectF(min(xs) - pad, min(ys) - pad,
                       max(xs) - min(xs) + 2 * pad, max(ys) - min(ys) + 2 * pad)
 
@@ -182,7 +283,13 @@ class ConnectionItem(QGraphicsItem):
                 painter.setBrush(fill)
                 for r in self._endpoint_rects:
                     painter.drawRect(r)
-        if self._fly:
+        if self._conflict:
+            # Routed, but its arrival face collides with a sibling input of a
+            # face-locking block — draw ATTENTION, not completion.
+            pen = QPen(_CONFLICT_COLOR)
+            pen.setWidth(3)
+            pen.setStyle(Qt.DashDotLine)
+        elif self._fly:
             pen = QPen(_FLY_COLOR)
             pen.setWidth(2)
             pen.setStyle(Qt.DashLine)

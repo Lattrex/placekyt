@@ -361,7 +361,7 @@ def check_project_bus(project, chip_types, catalog=None) -> list[Violation]:
     viols = check_bus(project, routes, chip_types, exempt_cells=exempt,
                       egress=egress)
     viols.extend(_check_single_cell_inout(project))
-    viols.extend(_check_dual_input_same_face(project, catalog))
+    viols.extend(_check_dual_input_same_face(project, catalog, chip_types))
     return viols
 
 
@@ -446,7 +446,200 @@ def _check_single_cell_inout(project) -> list[Violation]:
     return out
 
 
-def _check_dual_input_same_face(project, catalog) -> list[Violation]:
+DIR_NAMES = {0: "S", 1: "E", 2: "W", 3: "N"}
+_DIR_DELTA = {0: (0, 1), 1: (1, 0), 2: (-1, 0), 3: (0, -1)}
+
+
+def _needs_distinct_faces(blk, catalog, cache) -> bool:
+    """True when ``blk``'s type declares ``NEEDS_DISTINCT_INPUT_FACES``.
+
+    Cached per ``(type, library)`` in the caller-supplied ``cache`` dict; False for
+    any block whose spec can't be instantiated (never a false alarm)."""
+    if catalog is None:
+        return False
+    key = (blk.type, blk.library)
+    if key not in cache:
+        try:
+            inst = catalog.instantiate(blk.type, "__drc_probe__",
+                                       getattr(blk, "params", None),
+                                       library=blk.library)
+            cache[key] = bool(getattr(inst, "NEEDS_DISTINCT_INPUT_FACES", False))
+        except Exception:  # noqa: BLE001
+            cache[key] = False
+    return cache[key]
+
+
+@dataclass
+class FaceLockArrivals:
+    """Arrival-face geometry of ONE face-locking block, shared by the DRC and the UI.
+
+    ``cell`` is the block's head (input) cell; ``faces`` maps target PORT name →
+    arrival face code (S/E/W/N ints); ``nets`` maps that port → the connection NAME
+    that delivers it; ``colliding`` is the set of ports whose face is shared with at
+    least one sibling port (empty when the layout is legal)."""
+
+    block: str
+    cell: tuple
+    faces: dict
+    nets: dict
+    colliding: set
+
+    @property
+    def collision_faces(self) -> set:
+        """The face codes that carry more than one input."""
+        return {self.faces[p] for p in self.colliding}
+
+
+def face_lock_arrivals(project, catalog) -> dict:
+    """``{block_name: FaceLockArrivals}`` for every placed NEEDS_DISTINCT_INPUT_FACES
+    block in ``project``, computed from the ROUTED geometry.
+
+    This is the SINGLE source of truth for "which face does each input of a
+    face-locking block arrive on, and do any of them collide". The build DRC
+    (:func:`_check_dual_input_same_face`) and the canvas both call it, so the editor
+    can show the same constraint the DRC enforces INSTEAD of only reporting it after
+    the fact. Qt-free by construction — it reads only the project model.
+
+    Arrival face = the direction from the block's head cell toward the route's last
+    corridor waypoint; for an ABUTMENT (no waypoints) it is the direction toward the
+    driving block's output cell."""
+    if catalog is None:
+        return {}
+
+    flag_cache: dict = {}
+    out: dict = {}
+    for blk in project.blocks:
+        pl = blk.placement
+        if pl is None or not pl.cells:
+            continue
+        if not _needs_distinct_faces(blk, catalog, flag_cache):
+            continue
+        out[blk.name] = FaceLockArrivals(
+            block=blk.name, cell=(pl.cells[0].x, pl.cells[0].y),
+            faces={}, nets={}, colliding=set())
+
+    if not out:
+        return out
+
+    for conn in project.connections:
+        if not isinstance(conn.target, BlockEndpoint):
+            continue
+        rec = out.get(conn.target.block)
+        if rec is None:
+            continue
+        cell = rec.cell
+        # Route waypoints may include non-coordinate sentinels (e.g. an ABUTMENT
+        # marker); keep only real (x, y) points.
+        pts = [(p.x, p.y) for p in (conn.route or []) if hasattr(p, "x")]
+        f = None
+        if pts:
+            last = pts[-1]
+            src = pts[-2] if (last == cell and len(pts) >= 2) else last
+            f = _step_dir(cell, src)
+        else:
+            # Abutment (no real waypoints): arrival face is toward the driver's
+            # output cell.
+            db = project.block(getattr(conn.source, "block", None) or "")
+            if db is not None and db.placement and db.placement.cells:
+                oc = (db.placement.cells[-1].x, db.placement.cells[-1].y)
+                f = _step_dir(cell, oc)
+        if f is not None:
+            rec.faces[conn.target.port] = f
+            rec.nets[conn.target.port] = conn.name
+
+    for rec in out.values():
+        if len(rec.faces) < 2:
+            continue   # <2 routed inputs — single/logical feed, no lock hazard
+        by_face: dict = {}
+        for port, f in rec.faces.items():
+            by_face.setdefault(f, []).append(port)
+        for ports in by_face.values():
+            if len(ports) > 1:
+                rec.colliding.update(ports)
+    return out
+
+
+def _iq_rail_pair(project, catalog, block, ports):
+    """``(source_block, (i_port, q_port))`` when the colliding input ``ports`` of
+    ``block`` are fed by the I and Q rails of ONE complex output of ONE source block,
+    else ``None``.
+
+    A complex GNU Radio link is ONE port but TWO placeKYT nets — the importer
+    SYNTHESISES the Q rail, so the user never drew it and has no reason to expect a
+    second wire. Detecting that case lets the message say WHY two nets left the same
+    cell. The sibling naming rules live in ``grc_import._iq_sibling`` (the single
+    authority: ``yi``/``yq``, ``re``/``im``, and the position-1 tapped forms); they
+    are consulted here, never re-derived."""
+    try:
+        from engine.grc_import import _iq_sibling
+    except Exception:  # noqa: BLE001 — importer unavailable ⇒ no enrichment
+        return None
+    if catalog is None or len(ports) != 2:
+        return None
+    srcs: dict = {}
+    for conn in project.connections:
+        if not isinstance(conn.target, BlockEndpoint) \
+                or conn.target.block != block or conn.target.port not in ports:
+            continue
+        if not isinstance(conn.source, BlockEndpoint):
+            return None
+        srcs[conn.target.port] = (conn.source.block, conn.source.port)
+    if len(srcs) != 2:
+        return None
+    (pa, (sba, spa)), (pb, (sbb, spb)) = sorted(srcs.items())
+    if sba != sbb:
+        return None                     # two different driver cells — not one pair
+    sblk = project.block(sba)
+    if sblk is None:
+        return None
+    params = getattr(sblk, "params", None)
+    for i_port, q_port, i_in, q_in in ((spa, spb, pa, pb), (spb, spa, pb, pa)):
+        if _iq_sibling(catalog, sblk.type, i_port, want_out=True,
+                       params=params) == q_port:
+            return sba, (i_in, q_in)
+    return None
+
+
+def _free_faces(project, cell, block, chip_types, chip_id):
+    """``(usable, blocked)`` faces of ``cell``: ``usable`` is the list of face codes a
+    corridor could still arrive on; ``blocked`` is ``{face_code: reason}``.
+
+    A face is unusable when the neighbouring cell is OUT OF BOUNDS, is one of the
+    block's OWN cells, or is occupied by ANOTHER block — in each case no corridor can
+    ever deliver there, so no reroute at this anchor can fix a face collision."""
+    ct = None
+    if chip_types:
+        chip = project.chip(chip_id) if hasattr(project, "chip") else None
+        name = getattr(chip, "type_name", None) or getattr(
+            project, "chip_type", None)
+        ct = chip_types.get(name)
+    occ: dict = {}
+    for b in project.blocks:
+        if b.placement is None:
+            continue
+        if getattr(b.placement, "chip", 0) != chip_id:
+            continue
+        for c in b.placement.cells:
+            occ[(c.x, c.y)] = b.name
+
+    usable: list = []
+    blocked: dict = {}
+    for f, (dx, dy) in _DIR_DELTA.items():
+        n = (cell[0] + dx, cell[1] + dy)
+        if ct is not None and not ct.in_bounds(n[0], n[1]):
+            blocked[f] = "off-array"
+            continue
+        owner = occ.get(n)
+        if owner == block:
+            blocked[f] = "own cell"
+        elif owner is not None:
+            blocked[f] = f"occupied by '{owner}'"
+        else:
+            usable.append(f)
+    return usable, blocked
+
+
+def _check_dual_input_same_face(project, catalog, chip_types=None) -> list[Violation]:
     """DRC the DISTINCT-INPUT-FACE requirement of a face-locking rendezvous block.
 
     A block declaring ``NEEDS_DISTINCT_INPUT_FACES`` (the DualFloatToComplex LOCK
@@ -457,80 +650,68 @@ def _check_dual_input_same_face(project, catalog) -> list[Violation]:
     So this is a HARD ERROR, the mirror of the single-cell in!=out DRC: read the two input
     nets' arrival faces from the routed geometry and ERROR (NAMED) when they coincide.
 
+    The message is ACTIONABLE, not just diagnostic. Beyond naming the shared face it
+    reports, computed from the design:
+
+      * the two NET names and the source ports feeding them, and — when the pair is
+        the I/Q rails of one complex output — that the two rails LEAVE THE SAME CELL
+        and must FORK (a complex GNU Radio link imports as two nets, only one of which
+        the user drew, so an identical route for both looks like ONE finished wire);
+      * whether a REROUTE can still fix it at this anchor, or the block must MOVE:
+        the target cell's four neighbours are classified (off-array / the block's own
+        cell / occupied by another block), and when fewer faces remain usable than
+        there are inputs to separate, the message says so and lists why.
+
     Requires ``catalog`` to read the block's flag (via instantiate); a no-op without it or
-    for any block that does not declare the flag."""
-    if catalog is None:
+    for any block that does not declare the flag. ``chip_types`` (optional) enables the
+    OFF-ARRAY neighbour classification; without it an out-of-bounds face is simply
+    counted as free (the pre-existing, less specific behaviour)."""
+    arrivals = face_lock_arrivals(project, catalog)
+    if not arrivals:
         return []
-    from model.connection import BlockEndpoint
-
-    # Which placed blocks declare NEEDS_DISTINCT_INPUT_FACES (cell -> name), cached.
-    flag_cache: dict = {}
-
-    def _needs(blk):
-        key = (blk.type, blk.library)
-        if key not in flag_cache:
-            try:
-                inst = catalog.instantiate(blk.type, "__drc_probe__",
-                                           getattr(blk, "params", None),
-                                           library=blk.library)
-                flag_cache[key] = bool(
-                    getattr(inst, "NEEDS_DISTINCT_INPUT_FACES", False))
-            except Exception:  # noqa: BLE001
-                flag_cache[key] = False
-        return flag_cache[key]
-
-    targets: dict = {}   # block name -> (cell, {port -> arrival_face})
-    for blk in project.blocks:
-        pl = blk.placement
-        if pl is None or not pl.cells:
-            continue
-        if not _needs(blk):
-            continue
-        targets[blk.name] = ((pl.cells[0].x, pl.cells[0].y), {})
-
-    if not targets:
-        return []
-
-    for conn in project.connections:
-        if not isinstance(conn.target, BlockEndpoint):
-            continue
-        rec = targets.get(conn.target.block)
-        if rec is None:
-            continue
-        cell, faces = rec
-        # Route waypoints may include non-coordinate sentinels (e.g. an ABUTMENT marker);
-        # keep only real (x, y) points.
-        pts = [(p.x, p.y) for p in (conn.route or []) if hasattr(p, "x")]
-        f = None
-        if pts:
-            last = pts[-1]
-            src = pts[-2] if (last == cell and len(pts) >= 2) else last
-            f = _step_dir(cell, src)
-        else:
-            # Abutment (no real waypoints): arrival face is toward the driver's output cell.
-            db = project.block(getattr(conn.source, "block", None) or "")
-            if db is not None and db.placement and db.placement.cells:
-                oc = (db.placement.cells[-1].x, db.placement.cells[-1].y)
-                f = _step_dir(cell, oc)
-        if f is not None:
-            faces[conn.target.port] = f
 
     out: list[Violation] = []
-    dir_names = {0: "S", 1: "E", 2: "W", 3: "N"}
-    for name, (cell, faces) in targets.items():
-        if len(faces) < 2:
-            continue   # <2 routed inputs — single/logical feed, no lock hazard
-        vals = list(faces.values())
-        if len(set(vals)) < len(vals):
-            same = dir_names.get(vals[0], "?")
-            out.append(Violation(
-                cell=cell, kind="dual_input_same_face",
-                reason=f"face-locking block '{name}' (NEEDS_DISTINCT_INPUT_FACES) has "
-                       f"two inputs arriving on the SAME face ({same}) — its LOCK "
-                       "rendezvous distinguishes the two async streams ONLY by arrival "
-                       "face, so same-face inputs cannot be paired. Place/route so the "
-                       "two inputs land on DIFFERENT faces.",
-                nets=tuple(faces.keys())))
+    for name, rec in arrivals.items():
+        if not rec.colliding:
+            continue
+        ports = sorted(rec.colliding)
+        same = "/".join(sorted(DIR_NAMES.get(f, "?") for f in rec.collision_faces))
+        nets = [rec.nets.get(p, p) for p in ports]
+        blk = project.block(name)
+        chip_id = getattr(getattr(blk, "placement", None), "chip", 0) or 0
+
+        msg = [f"face-locking block '{name}' (NEEDS_DISTINCT_INPUT_FACES) has inputs "
+               f"{', '.join(ports)} (nets {', '.join(nets)}) arriving on the SAME face "
+               f"({same}) — its LOCK rendezvous distinguishes the async streams ONLY by "
+               "arrival face, so same-face inputs cannot be paired."]
+
+        pair = _iq_rail_pair(project, catalog, name, ports)
+        if pair is not None:
+            sblk, (i_in, q_in) = pair
+            msg.append(
+                f"These are the I/Q rails of ONE complex output of '{sblk}': a complex "
+                f"link is TWO nets, so both rails LEAVE THE SAME CELL and an identical "
+                f"route for each draws as one line. They must FORK — share the corridor "
+                f"for the long haul, then diverge near '{name}' so {i_in} and {q_in} "
+                "enter on different faces.")
+
+        usable, blocked = _free_faces(project, rec.cell, name, chip_types, chip_id)
+        need = len(rec.faces)
+        if len(usable) < need:
+            why = ", ".join(f"{DIR_NAMES[f]} {blocked[f]}" for f in sorted(blocked))
+            msg.append(
+                f"NO reroute can fix this at cell {rec.cell}: it needs {need} usable "
+                f"faces but has {len(usable)} "
+                f"({', '.join(DIR_NAMES[f] for f in sorted(usable)) or 'none'}) — "
+                f"{why}. Re-anchor '{name}' where {need} faces are free.")
+        else:
+            free = ", ".join(DIR_NAMES[f] for f in sorted(usable))
+            msg.append(
+                f"Reroutable in place: cell {rec.cell} has {len(usable)} usable faces "
+                f"({free}); bring one input in on a different one.")
+
+        out.append(Violation(cell=rec.cell, kind="dual_input_same_face",
+                             reason=" ".join(msg), nets=tuple(ports)))
     return out
 
 

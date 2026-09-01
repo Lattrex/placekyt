@@ -8,7 +8,7 @@ or verifying a Kyttar block should read these first. Each is a *constraint* ("al
 
 *(Navigation note, 2026-08-30: entries appear in LANDING order, not numeric order —
 parallel builds landed out of sequence, so e.g. INV-39 sits between INV-33 and
-INV-34, and INV-48 before INV-47. All of INV-0..INV-72 exist exactly once; search
+INV-34, and INV-48 before INV-47. All of INV-0..INV-73 exist exactly once; search
 for `## INV-N —` to find one. Numbers are never reassigned.)*
 
 ---
@@ -5443,3 +5443,62 @@ LOCK-rotation family and its Rule 3 N+1th stop), INV-67 (mid-group Deadlock is
 healthy; post-group is real), INV-68 (state that must EVOLVE — the converse of
 rule 3), INV-70 (the saturated/reversed walls that did NOT move here), INV-56
 (read `stop_reason` for every run).
+
+## INV-73 — The two RAILS of one complex output leave the SAME cell, so a hand-route that sends them down one corridor lands them on ONE face and fails the face-locking DRC; the rails must FORK, and one must travel further
+
+*(Number assigned at landing — main's highest entry was INV-72.)*
+
+A complex-valued on-chip output (`yi`/`yq`) is TWO nets that originate at the
+SAME source cell. A face-locking consumer (`NEEDS_DISTINCT_INPUT_FACES`:
+Clarke, CordicRotate, SVPWM) distinguishes its async input streams ONLY by
+arrival face. So the natural hand-route — run both rails down one corridor to
+the consumer, because they start together and end together — is exactly the
+route that CANNOT work: identical path ⇒ identical final step ⇒ same arrival
+face ⇒ `dual_input_same_face` DRC error.
+
+MEASURED on a hand-routed full FOC loop (`foc_motor.full.kyt`), two errors,
+both this shape:
+
+```
+cordicrotate head=(4,4)
+   theta  from West   (via (3,4))
+   x      from East   (via (5,4))    <- clarketransform.yi
+   y      from East   (via (5,4))    <- clarketransform.yq
+svpwm head=(9,7)
+   v_alpha from South (via (9,8))    <- cordicrotate_2.yi
+   v_beta  from South (via (9,8))    <- cordicrotate_2.yq
+```
+
+net17/net18 carry the IDENTICAL waypoint list `[(7,4),(6,4),(5,4),(4,4)]`;
+net19/net20 likewise. The DRC is CORRECT and the geometry is genuinely broken —
+there is no missing fly line and no false positive. The GUI draws one visible
+corridor because the two rails overlap perfectly, which is why the error looks
+like it has no cause on screen: **a same-face collision is INVISIBLE as a fly
+line precisely because the two nets coincide.**
+
+The shipped working `foc_motor.kyt` solves the same pair by making the rails
+FORK late — `yq` continues two cells past `yi`'s turn-in:
+
+```
+cordicrotate.yi -> svpwm.v_alpha: [...(2,11),(1,11)]              enters (1,10) from South
+cordicrotate.yq -> svpwm.v_beta:  [...(2,11),(1,11),(0,11),(0,10)] enters (1,10) from West
+```
+
+So the rule for hand-routing (and for reading such a DRC error):
+
+1. Two nets from the same source block to the same face-locking consumer must
+   DIVERGE somewhere and approach on different faces. Share the corridor for
+   the long haul if convenient, then fork near the destination.
+2. The consumer needs a free neighbour cell on a second face for the forked
+   rail to enter from. Check occupancy FIRST: on the measured failure the
+   svpwm head (9,7) had E out of bounds (x=10 on a 10-wide array), N and W
+   occupied by blocks, leaving only S — one face, so NO route could satisfy
+   the rule at that anchor and the block had to move, not the wires.
+3. `dual_input_same_face` names the block, the shared face and the nets. Read
+   the FACE, then the source of each named net: if the two nets share a source
+   block, this is the rails-not-forked shape, not a placement-density problem.
+
+Related: INV-71 (arm count, not cell count, is the binding constraint),
+INV-70 (arms whose corridors share cells head-of-line deadlock — forking the
+rails also reduces shared segment length), INV-24 (port-divert landings all
+arrive on one face for the same reason).

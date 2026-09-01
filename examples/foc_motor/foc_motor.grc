@@ -46,7 +46,7 @@ options:
     sizing_mode: fixed
     thread_safe_setters: ''
     title: "FOC motor control \u2014 the FULL current loop"
-    window_size: (2400,1200)
+    window_size: (2600,1400)
   states:
     bus_sink: false
     bus_source: false
@@ -180,8 +180,8 @@ blocks:
     bus_source: false
     bus_structure: null
     coordinate:
-    - 200
-    - 620
+    - 8
+    - 1155
     rotation: 0
     state: enabled
 - name: src_ia
@@ -211,8 +211,8 @@ blocks:
     bus_source: false
     bus_structure: null
     coordinate:
-    - 440
-    - 560
+    - 268
+    - 380
     rotation: 0
     state: enabled
 - name: src_ib
@@ -242,8 +242,8 @@ blocks:
     bus_source: false
     bus_structure: null
     coordinate:
-    - 440
-    - 680
+    - 268
+    - 675
     rotation: 0
     state: enabled
 - name: relay_ia
@@ -261,8 +261,8 @@ blocks:
     bus_source: false
     bus_structure: null
     coordinate:
-    - 632
-    - 560
+    - 528
+    - 920
     rotation: 0
     state: enabled
 - name: relay_ib
@@ -279,8 +279,8 @@ blocks:
     bus_source: false
     bus_structure: null
     coordinate:
-    - 632
-    - 680
+    - 528
+    - 1035
     rotation: 0
     state: enabled
 - name: clarke
@@ -299,8 +299,8 @@ blocks:
     bus_source: false
     bus_structure: null
     coordinate:
-    - 824
-    - 608
+    - 788
+    - 1047
     rotation: 0
     state: enabled
 - name: ab_split
@@ -318,8 +318,8 @@ blocks:
     bus_source: false
     bus_structure: null
     coordinate:
-    - 1016
-    - 608
+    - 1048
+    - 1207
     rotation: 0
     state: enabled
 - name: src_th_park
@@ -350,8 +350,8 @@ blocks:
     bus_source: false
     bus_structure: null
     coordinate:
-    - 440
-    - 800
+    - 268
+    - 970
     rotation: 0
     state: enabled
 - name: relay_th_park
@@ -368,8 +368,8 @@ blocks:
     bus_source: false
     bus_structure: null
     coordinate:
-    - 632
-    - 800
+    - 528
+    - 1150
     rotation: 0
     state: enabled
 - name: park
@@ -389,8 +389,8 @@ blocks:
     bus_source: false
     bus_structure: null
     coordinate:
-    - 1208
-    - 664
+    - 1308
+    - 1135
     rotation: 0
     state: enabled
 - name: sink_idq
@@ -415,8 +415,8 @@ blocks:
     bus_source: false
     bus_structure: null
     coordinate:
-    - 1400
-    - 664
+    - 1568
+    - 1097
     rotation: 0
     state: enabled
 - name: idq_split
@@ -438,8 +438,8 @@ blocks:
     bus_source: false
     bus_structure: null
     coordinate:
-    - 1592
-    - 664
+    - 1828
+    - 1127
     rotation: 0
     state: enabled
 - name: err
@@ -476,8 +476,8 @@ blocks:
     bus_source: false
     bus_structure: null
     coordinate:
-    - 1784
-    - 664
+    - 2088
+    - 1082
     rotation: 0
     state: enabled
 - name: src_ed
@@ -506,8 +506,8 @@ blocks:
     bus_source: false
     bus_structure: null
     coordinate:
-    - 200
-    - 200
+    - 268
+    - 1265
     rotation: 0
     state: enabled
 - name: src_eq
@@ -536,8 +536,8 @@ blocks:
     bus_source: false
     bus_structure: null
     coordinate:
-    - 200
-    - 320
+    - 268
+    - 1560
     rotation: 0
     state: enabled
 - name: relay_ed
@@ -554,8 +554,8 @@ blocks:
     bus_source: false
     bus_structure: null
     coordinate:
-    - 392
-    - 200
+    - 528
+    - 1265
     rotation: 0
     state: enabled
 - name: relay_eq
@@ -572,8 +572,8 @@ blocks:
     bus_source: false
     bus_structure: null
     coordinate:
-    - 392
-    - 320
+    - 528
+    - 1380
     rotation: 0
     state: enabled
 - name: pi_d
@@ -595,8 +595,8 @@ blocks:
     bus_source: false
     bus_structure: null
     coordinate:
-    - 584
-    - 200
+    - 788
+    - 1162
     rotation: 0
     state: enabled
 - name: pi_q
@@ -618,8 +618,8 @@ blocks:
     bus_source: false
     bus_structure: null
     coordinate:
-    - 584
-    - 320
+    - 788
+    - 1322
     rotation: 0
     state: enabled
 - name: src_th_ipark
@@ -649,8 +649,8 @@ blocks:
     bus_source: false
     bus_structure: null
     coordinate:
-    - 200
-    - 440
+    - 268
+    - 1855
     rotation: 0
     state: enabled
 - name: relay_th_ipark
@@ -667,8 +667,8 @@ blocks:
     bus_source: false
     bus_structure: null
     coordinate:
-    - 392
-    - 440
+    - 528
+    - 1495
     rotation: 0
     state: enabled
 - name: ipark
@@ -687,8 +687,8 @@ blocks:
     bus_source: false
     bus_structure: null
     coordinate:
-    - 776
-    - 296
+    - 1308
+    - 1265
     rotation: 0
     state: enabled
 - name: v_split
@@ -706,8 +706,8 @@ blocks:
     bus_source: false
     bus_structure: null
     coordinate:
-    - 968
-    - 296
+    - 1568
+    - 1317
     rotation: 0
     state: enabled
 - name: svpwm
@@ -726,8 +726,8 @@ blocks:
     bus_source: false
     bus_structure: null
     coordinate:
-    - 1160
-    - 296
+    - 1828
+    - 1287
     rotation: 0
     state: enabled
 - name: sink_duty
@@ -751,8 +751,8 @@ blocks:
     bus_source: false
     bus_structure: null
     coordinate:
-    - 1352
-    - 296
+    - 2088
+    - 1227
     rotation: 0
     state: enabled
 - name: duty_split
@@ -773,8 +773,8 @@ blocks:
     bus_source: false
     bus_structure: null
     coordinate:
-    - 1544
-    - 296
+    - 2348
+    - 1185
     rotation: 0
     state: enabled
 - name: scope_idq
@@ -874,8 +874,8 @@ blocks:
     bus_source: false
     bus_structure: null
     coordinate:
-    - 1976
-    - 560
+    - 2608
+    - 980
     rotation: 0
     state: enabled
 - name: scope_duty
@@ -974,8 +974,8 @@ blocks:
     bus_source: false
     bus_structure: null
     coordinate:
-    - 1736
-    - 296
+    - 2608
+    - 1360
     rotation: 0
     state: enabled
 - name: scope_err
@@ -1074,8 +1074,8 @@ blocks:
     bus_source: false
     bus_structure: null
     coordinate:
-    - 1976
-    - 800
+    - 2608
+    - 1170
     rotation: 0
     state: enabled
 connections:

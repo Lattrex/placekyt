@@ -302,6 +302,96 @@ DESCRIPTION = (
 )
 
 
+
+# --------------------------------------------------------------------------- #
+#  Auto-layout                                                                 #
+# --------------------------------------------------------------------------- #
+# The coordinates authored inline above are LOGICAL (which lane, which row).
+# GRC renders a block as a title bar plus one line per VISIBLE parameter, so a
+# kyttar_source (13 visible params) is ~230 px tall while a splitter is ~45 px.
+# Hand-authored coordinates on a uniform pitch therefore overlap badly: the
+# first cut of this flowgraph packed 120 px rows against 230 px blocks and the
+# result was unreadable.
+#
+# So the layout is COMPUTED. Blocks are assigned to a lane (a pipeline stage,
+# left to right) and ordered within it; this pass measures each block's
+# rendered height and packs each lane top-down with a real gutter, then centres
+# every lane vertically so the signal flow reads straight across.
+
+_ROW_PX = 15            # GRC's per-parameter line height
+_TITLE_PX = 30          # the title bar
+_VGUTTER = 70           # vertical clearance between blocks in a lane
+_LANE_X = 260           # horizontal pitch between lanes
+
+# Parameters GRC does not render in the block body.
+_UNRENDERED = {"affinity", "alias", "comment", "maxoutbuf", "minoutbuf"}
+
+# A qtgui time sink declares ~83 params but renders only a handful (the rest
+# are per-trace styling, hidden unless enabled). Measured against the shipped
+# examples: it draws about the height of a 6-param block.
+_HEIGHT_OVERRIDE = {"qtgui_time_sink_x": _TITLE_PX + 6 * _ROW_PX}
+
+
+def _height(b):
+    over = _HEIGHT_OVERRIDE.get(b["id"])
+    if over is not None:
+        return over
+    vis = [k for k, v in b.get("parameters", {}).items()
+           if k not in _UNRENDERED and str(v) != ""]
+    return _TITLE_PX + max(1, len(vis)) * _ROW_PX
+
+
+def _apply_layout(blocks, lanes):
+    """Place ``blocks`` by ``lanes`` — a list of lists of block NAMES, one per
+    column, in top-to-bottom order within the column.
+
+    Every block named in ``lanes`` is repositioned; anything not named keeps
+    the coordinate it was authored with (the Options block, the variables).
+    """
+    by_name = {b["name"]: b for b in blocks}
+    missing = [n for lane in lanes for n in lane if n not in by_name]
+    if missing:
+        raise KeyError(f"lane names not in the flowgraph: {missing}")
+
+    # Pack each lane top-down, then record its total extent so it can be centred.
+    packed, extents = [], []
+    for lane in lanes:
+        y, col = 0, []
+        for name in lane:
+            col.append((name, y))
+            y += _height(by_name[name]) + _VGUTTER
+        packed.append(col)
+        extents.append(y - _VGUTTER if col else 0)
+
+    tallest = max(extents) if extents else 0
+    for i, col in enumerate(packed):
+        x = 8 + i * _LANE_X
+        offset = (tallest - extents[i]) // 2      # centre the lane vertically
+        for name, y in col:
+            by_name[name]["states"]["coordinate"] = [x, _TOP + offset + y]
+
+
+# The variables column occupies the top-left, so the graph starts below it.
+_TOP = 380
+
+# The pipeline, left to right. Row order within a lane follows the signal:
+# the measurement half on top, the command half beneath it.
+_LANES = [
+    ["plant"],
+    ["src_ia", "src_ib", "src_th_park", "src_ed", "src_eq", "src_th_ipark"],
+    ["relay_ia", "relay_ib", "relay_th_park",
+     "relay_ed", "relay_eq", "relay_th_ipark"],
+    ["clarke", "pi_d", "pi_q"],
+    ["ab_split"],
+    ["park", "ipark"],
+    ["sink_idq", "v_split"],
+    ["idq_split", "svpwm"],
+    ["err", "sink_duty"],
+    ["duty_split"],
+    ["scope_idq", "scope_err", "scope_duty"],
+]
+
+
 def build():
     blocks = []
     conns = []
@@ -600,8 +690,10 @@ def build():
         "run_command": "{python} -u {filename}", "run_options": "prompt",
         "sizing_mode": "fixed", "thread_safe_setters": "",
         "title": "FOC motor control — the FULL current loop",
-        "window_size": "(2400,1200)"},
+        "window_size": "(2600,1400)"},
         "states": st(8, 8)}
+
+    _apply_layout(blocks, _LANES)
 
     return {"options": options, "blocks": blocks, "connections": conns,
             "metadata": {"file_format": 1, "grc_version": "3.10.12.0"}}

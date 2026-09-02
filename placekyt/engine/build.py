@@ -3315,31 +3315,113 @@ def _reassert_internal_forward_faces(cell_map, blocks: list, gr_blocks: dict) ->
         # internal-forwarding input cell then keeps whatever face the incoming route
         # last stamped — SOUTH toward the corridor instead of the authored internal
         # direction — so the block's wavefront dies at some orientations).
-        fwd_src_ids = {s for (s, _sp, _d, _dp) in internal
-                       if isinstance(s, (int, str))}
         cells = blk.placement.cells
-        # Resolve each source id to its placement cell: an int is a direct index; a
-        # string matches the cell's ``cell_id`` name.
         by_name = {getattr(pc, "cell_id", None): pc for pc in cells}
-        for sid in fwd_src_ids:
-            if isinstance(sid, int):
-                pc = cells[sid] if 0 <= sid < len(cells) else None
-            else:
-                pc = by_name.get(sid)
-            if pc is None:
-                continue
+
+        def _pc(cid):
+            if isinstance(cid, int):
+                return cells[cid] if 0 <= cid < len(cells) else None
+            return by_name.get(cid)
+
+        def _authored(pc):
             face = getattr(pc, "face", None)
             if face is None:
-                continue
-            cfg = cell_map.get_cell(pc.x, pc.y)
-            if cfg is None:
-                continue
+                return None
             code = _PORT_FACE_CODE.get(getattr(face, "value", face))
             if code is None and hasattr(face, "name"):
                 code = {"SOUTH": 0, "EAST": 1, "WEST": 2,
                         "NORTH": 3}.get(face.name)
+            return code
+
+        # A cell that SOURCES an internal handoff must forward toward its handoff
+        # DESTINATION. The AUTHORED per-cell face is that direction for a rigidly
+        # placed (or D4-transformed) block — but NOT for a block the user RESHAPED
+        # by hand in the GUI (moved one cell round a corner): the hop count
+        # re-derives from adjacency at build time, but the stored face still aims
+        # at the cell's OLD neighbour, so the internal wavefront fires into a
+        # foreign cell and the block's chain never runs. So: when the handoff
+        # destination is placed ADJACENT to the source, face the source toward
+        # WHERE IT ACTUALLY IS; fall back to the authored face only for a
+        # non-adjacent (transit-lane) handoff, which the reshape cannot create.
+        adj = {}   # (x,y) source cell -> face toward an adjacent internal dst
+        for (sid, _sp, did, _dp) in internal:
+            spc, dpc = _pc(sid), _pc(did)
+            if spc is None or dpc is None:
+                continue
+            f = _step_face(spc.x, spc.y, dpc.x, dpc.y)
+            if f is not None:
+                adj.setdefault((spc.x, spc.y), set()).add(f)
+        src_ids = {s for (s, _sp, _d, _dp) in internal if isinstance(s, (int, str))}
+        for sid in src_ids:
+            pc = _pc(sid)
+            if pc is None:
+                continue
+            cfg = cell_map.get_cell(pc.x, pc.y)
+            if cfg is None:
+                continue
+            cands = adj.get((pc.x, pc.y), set())
+            code = next(iter(cands)) if len(cands) == 1 else _authored(pc)
             if code is not None:
                 cfg.fwd_face = _CM_FACE(code)
+
+        # IN-PROGRAM FACE WORDS for INTERNAL handoffs. A v2 rendezvous steers a
+        # handoff that does NOT ride the cell's static fwd_face with
+        # ``MOVE [FACE], R{data:<name>}`` / ``MOVE [LOCK_FACE], R{data:<name>}``
+        # — the CORDIC's forward ``face_fwd`` (rdv->pre) and its serialize-LOCK
+        # relock ``unlock_face`` (pre->rdv, INV-69). The orientation pass rotates
+        # these rigidly with the block, exact for a rotated/mirrored placement
+        # but NOT for a hand RESHAPED one: the word still aims at the cell's OLD
+        # neighbour, so the forward wavefront or the relock fires into a foreign
+        # cell and the block is bit-exact on iteration 0 then wedges. Re-derive
+        # each is_face word whose AUTHORED direction pointed at an internal-
+        # handoff SIBLING to the direction toward where that sibling ACTUALLY
+        # sits. Arm-ARRIVAL faces (their authored direction points at an arm
+        # source, not a sibling) are left to _apply_rendezvous_input_faces.
+        try:
+            edges = set()
+            for (sc, _s, dc, _d) in gb.internal_connections() or []:
+                edges.add((sc, dc))
+            for (sc, _s, dc, _d) in gb.internal_jumps() or []:
+                edges.add((sc, dc))
+            cps = gb.build_cell_programs() or {}
+        except Exception:  # noqa: BLE001
+            edges, cps = set(), {}
+        _INV = {0: (0, 1), 1: (1, 0), 2: (-1, 0), 3: (0, -1)}
+        for scid, cp in cps.items():
+            spc = _pc(scid)
+            if spc is None:
+                continue
+            cfg = cell_map.get_cell(spc.x, spc.y)
+            if cfg is None:
+                continue
+            sib_cells = [_pc(dc) for (sc, dc) in edges
+                         if sc == scid and isinstance(dc, (int, str))]
+            sib_xy = {(c.x, c.y) for c in sib_cells if c is not None}
+            for d in getattr(cp, "data", []) or []:
+                if not getattr(d, "is_face", False) or d.address is None:
+                    continue
+                v = d.value
+                if isinstance(v, str):
+                    v = {"south": 0, "east": 1, "west": 2, "north": 3}.get(v.lower())
+                if not isinstance(v, int):
+                    continue
+                dxdy = _INV[v & 3]
+                authored_dst = (spc.x + dxdy[0], spc.y + dxdy[1])
+                # Only touch a word whose authored direction pointed at an
+                # internal sibling (a handoff face), never an arm-arrival face.
+                if authored_dst not in sib_xy:
+                    continue
+                dst = next((c for c in sib_cells
+                            if c is not None
+                            and (c.x, c.y) != (spc.x, spc.y)
+                            and abs(c.x - spc.x) + abs(c.y - spc.y) == 1
+                            and _step_face(spc.x, spc.y, c.x, c.y) is not None), None)
+                if dst is None:
+                    continue
+                nf = _step_face(spc.x, spc.y, dst.x, dst.y)
+                if nf is not None and d.address in cfg.memory:
+                    cfg.memory[d.address] = ((cfg.memory[d.address] & ~0x3)
+                                             | (nf & 0x3))
 
 
 def _apply_orientation_face_words(cell_map, blocks: list, gr_blocks: dict) -> None:

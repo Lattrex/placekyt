@@ -91,6 +91,85 @@ def test_crossover_program_demuxes_two_streams_on_chip(qapp):
     assert chip.read_cell_memory(sinkE, 8) == 0x2222, "EAST stream mis-delivered"
 
 
+def _fanout_through_crossover(per_track_regs):
+    """Two rails of ONE source diverging at a crossover — the fan-out form: BOTH
+    bursts are WRITTEN before EITHER track JUMP fires. Returns what the WEST
+    and EAST sinks received."""
+    import simkyt
+    from gr_kyttar.placement.cell_map import CellMap, CellConfig, Face
+    from gr_kyttar.bitstream.generator import BitstreamGenerator
+    from engine.build import _crossover_program
+
+    tracks = [("yi", 2, 1, 7, 0), ("yq", 1, 1, 8, 0)]
+    regs: dict = {}
+    by_conn, memory = _crossover_program(tracks, burst_out=regs,
+                                         per_track_regs=per_track_regs)
+    cm = CellMap(width=12, height=12)
+    cross = CellConfig(block_name="_crossover")
+    cross.memory.update(memory)
+    cross.entry_addr = min(by_conn.values())
+    cm.set_cell(5, 5, cross)
+    cm.set_cell(4, 5, CellConfig(fwd_face=Face.WEST, block_name="_sinkW"))
+    cm.set_cell(6, 5, CellConfig(fwd_face=Face.EAST, block_name="_sinkE"))
+    gen = BitstreamGenerator(str(CT_PATH))
+    gen.load_cell_map(cm)
+    chip = simkyt.Chip.from_yaml(str(CT_PATH))
+    chip.load_bitstream_physical(list(gen.generate().words))
+    cross_id = chip.cell_id_at(5, 5)
+    # The source's two WRITEs land first (each into the register the build
+    # steered that rail to), THEN its two JUMPs fire the tracks.
+    chip.write_cell_memory(cross_id, regs["yi"], 0x1111)
+    chip.write_cell_memory(cross_id, regs["yq"], 0x2222)
+    chip.inject_jump(cross_id, by_conn["yi"])
+    chip.run(max_events=4000)
+    chip.inject_jump(cross_id, by_conn["yq"])
+    chip.run(max_events=4000)
+    return (chip.read_cell_memory(chip.cell_id_at(4, 5), 7),
+            chip.read_cell_memory(chip.cell_id_at(6, 5), 8)), regs
+
+
+def test_two_rails_of_one_source_need_their_own_landing_registers(qapp):
+    """A complex source's yi/yq rails diverging at ONE crossover WRITE both
+    operands before either JUMP fires, so a SHARED landing register is
+    clobbered by the second rail before the first track relays it — the
+    inverse-Park → SVPWM v_alpha loss (measured on the FOC loop: Deadlock, no
+    duties). Per-track registers deliver both; the shared-R0 program (kept
+    byte-for-byte for independent crossing streams) provably cannot."""
+    got, regs = _fanout_through_crossover(per_track_regs=True)
+    assert regs["yi"] != regs["yq"] and 0 not in regs.values(), regs
+    assert got == (0x1111, 0x2222), f"per-track landing regs mis-delivered: {got}"
+    clobbered, regs0 = _fanout_through_crossover(per_track_regs=False)
+    assert set(regs0.values()) == {0}, "the shared program lands every track in R0"
+    assert clobbered != (0x1111, 0x2222), (
+        "the shared-R0 crossover delivered both rails — the clobber this fix "
+        "exists for no longer reproduces; re-measure before keeping it")
+
+
+def test_repoint_fanout_rails_steers_each_rail_in_place():
+    """``_repoint_fanout_rails`` steers rail i's WRITE to its own landing
+    register and rail i's JUMP to its own track entry, in program order,
+    without touching the earlier (internal) words."""
+    from gr_kyttar.placement.cell_map import CellConfig
+    from engine.build import (_repoint_fanout_rails, _read_fanout_rail_exits,
+                              _WRITE, _JUMP, encode_hop_cnt)
+
+    def w(hop, dest):
+        return _WRITE | (encode_hop_cnt(hop) << 5) | dest
+
+    def j(hop, entry):
+        return _JUMP | (encode_hop_cnt(hop) << 5) | entry
+
+    cfg = CellConfig(block_name="src")
+    cfg.entry_addr = 18
+    cfg.memory.update({18: 0x4040, 19: w(6, 1), 28: 0x4000, 29: w(6, 1),
+                       30: j(6, 25), 31: j(6, 25)})
+    _repoint_fanout_rails(cfg, [(2, 1, 21), (2, 2, 26)])
+    assert cfg.memory[19] == w(2, 1) and cfg.memory[29] == w(2, 2)
+    assert cfg.memory[30] == j(2, 21) and cfg.memory[31] == j(2, 26)
+    assert cfg.memory[18] == 0x4040 and cfg.memory[28] == 0x4000
+    assert _read_fanout_rail_exits(cfg, 2) == [(1, 21, 2), (2, 26, 2)]
+
+
 # --------------------------------------------------------------------------- #
 # (2) The router NAMES the crossover cells; the DRC PASSES them but FAILS an
 #     un-crossover'd conflict (P3.4 — a silent corruption becomes a named one).

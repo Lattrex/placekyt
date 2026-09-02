@@ -2121,7 +2121,7 @@ def _read_source_exit(cfg, gb):
     return dest, entry, hop
 
 
-def _crossover_program(tracks):
+def _crossover_program(tracks, burst_out=None, per_track_regs=False):
     """Assemble a CROSSOVER cell program — the proven :class:`CrossoverBlock` demux
     (``kyttar_block.py``): per crossing net an entry that sets the cell's output
     FACE, then re-emits the landed burst (R0) onward with that net's REMAINING hop
@@ -2137,31 +2137,54 @@ def _crossover_program(tracks):
          or a harmless local entry for a chip-output-port egress),
       4. ``HALT``.
 
+    ``per_track_regs``: land track ``i``'s burst in its OWN register ``R(1+i)``
+    (face constants pack above them) instead of the shared R0. Needed when TWO
+    RAILS OF ONE SOURCE diverge at this cell — the fan-out form WRITEs both
+    operands BEFORE either JUMP fires, so a shared landing register is clobbered
+    by the second rail before the first track relays it (measured: the
+    inverse-Park yi/yq → SVPWM v_alpha/v_beta split lost v_alpha, Deadlock).
+    Independent streams crossing here each JUMP right after their own WRITE, so
+    the shared-R0 program is kept byte-identical for them. The per-track
+    landing register map is returned through ``burst_out`` (a dict) so the
+    ``(by_conn, memory)`` return shape is unchanged.
+
     Returns ``(entry_addr_by_conn, {addr: word})`` (the resolver computes the entry
     addresses; the build re-points each source's JUMP at its track's entry)."""
     from gr_kyttar.placement.block import (CellProgram, DataWord, EntryPoint,
                                              Port)
     from gr_kyttar.placement.resolver import CellProgramResolver
 
-    # face constants pack from addr 1 up; R0 is the burst landing reg.
+    # face constants pack from addr 1 up; R0 is the burst landing reg (shared),
+    # or R1.. per track (then the faces pack above the landing regs).
+    n = len(tracks)
     data = []
     entries = []
     tmpl_parts = []
+    burst_ports = [] if per_track_regs else [Port("burst", register=0)]
+    burst_reg_by_conn = {}
     for i, (conn, exit_face, out_hop, out_dest, out_entry) in enumerate(tracks):
         label = f"track{i}"
         fname = f"face{i}"
-        data.append(DataWord(fname, int(exit_face) & 0x3, address=1 + i))
+        if per_track_regs:
+            burst_ports.append(Port(f"burst{i}", register=1 + i))
+            burst_reg_by_conn[conn] = 1 + i
+            data.append(DataWord(fname, int(exit_face) & 0x3, address=1 + n + i))
+            take = f"    MOVE R0, R{{in:burst{i}}}\n"
+        else:
+            burst_reg_by_conn[conn] = 0
+            data.append(DataWord(fname, int(exit_face) & 0x3, address=1 + i))
+            take = "    MOVE R0, R{in:burst}\n"
         entries.append(EntryPoint(label))
         tmpl_parts.append(
             f"{label}:\n"
             f"    MOVE [FACE], R{{data:{fname}}}\n"
-            "    MOVE R0, R{in:burst}\n"
+            + take +
             f"    WRITE @{int(out_hop)}, {int(out_dest)}\n"
             f"    JUMP @{int(out_hop)}, {int(out_entry)}\n"
             "    HALT\n"
         )
     prog = CellProgram(
-        inputs=[Port("burst", register=0)],
+        inputs=burst_ports,
         outputs=[Port("out")],
         entries=entries,
         data=data,
@@ -2173,7 +2196,37 @@ def _crossover_program(tracks):
     entry_addrs = resolver.compute_entry_addresses(prog)
     by_conn = {tracks[i][0]: entry_addrs[f"track{i}"]
                for i in range(len(tracks)) if f"track{i}" in entry_addrs}
+    if burst_out is not None:
+        burst_out.update(burst_reg_by_conn)
     return by_conn, dict(resolved.memory)
+
+
+def _read_fanout_rail_exits(cfg, n):
+    """Per-rail ``(dest, entry, hop)`` of a source exit cell in the FAN-OUT form
+    (:func:`_patch_fanout_source_handoff`: one WRITE per rail in program order,
+    one JUMP per rail): rail ``i`` is the i-th of the ``n`` highest-address
+    non-CONFIG WRITEs; its JUMP is the tail JUMP with the same hop (address
+    order among equal hops, which is rail order — the re-sequencer hands equal
+    hops out in rail order). ``None`` when the cell does not carry ``n`` of
+    each — the caller then falls back to :func:`_read_source_exit`."""
+    write_addrs = sorted(a for a, w in cfg.memory.items()
+                         if _is_instruction_addr(cfg, a) and (w & 0xF000) == _WRITE
+                         and not (w & _WRITE_CONFIG_BIT))
+    jump_addrs = sorted(a for a, w in cfg.memory.items()
+                        if _is_instruction_addr(cfg, a) and (w & 0xF000) == _JUMP)
+    if len(write_addrs) < n or len(jump_addrs) < n:
+        return None
+    jumps = [(decode_hop_cnt((cfg.memory[a] >> 5) & 0x1F), cfg.memory[a] & 0x1F)
+             for a in jump_addrs[-n:]]
+    out = []
+    for a in write_addrs[-n:]:
+        w = cfg.memory[a]
+        hop = decode_hop_cnt((w >> 5) & 0x1F)
+        k = next((i for i, (jh, _je) in enumerate(jumps) if jh == hop), None)
+        if k is None:
+            return None
+        out.append((w & 0x1F, jumps.pop(k)[1], hop))
+    return out
 
 
 def _relay_program(exit_face, out_hop, out_dest, out_entry):
@@ -2278,9 +2331,16 @@ def _apply_crossovers(cell_map, gr_placement, blocks, connections, project,
 
     # Build each crossover's track emissions by reading every crossing net's CURRENT
     # source exit (the full downstream delivery), then SPLIT it at the crossover.
+    _order = {c.name: i for i, c in enumerate(connections)}   # the fan-out rail order
     for (cx, cy), tap in taps.items():
-        emit_tracks = []        # (conn, exit_face, out_hop, out_dest, out_entry)
-        repoints = []           # (conn, head) — source re-point after entry resolve
+        # Group the block-sourced crossing nets by SOURCE EXIT CELL first: TWO
+        # RAILS OF ONE SOURCE (a complex yi/yq pair) diverging here are the
+        # fan-out form — both WRITEs land before either JUMP fires — so each
+        # rail needs its OWN landing register + track entry, read from its OWN
+        # exit WRITE/JUMP. Every other net is an independent stream on the
+        # shared-R0 program (byte-identical to before).
+        rails_by_src: dict = {}   # id(scfg) -> [conn_name, ...] in rail order
+        src_of: dict = {}         # conn_name -> (scfg, gb)
         for trk in tap.tracks:
             conn = conn_by_name.get(trk.conn)
             if conn is None:
@@ -2291,7 +2351,26 @@ def _apply_crossovers(cell_map, gr_placement, blocks, connections, project,
                 # design's chains are block-sourced past the input splitter). Skip —
                 # the residual face conflict is then NAMED by the DRC (P3.4).
                 continue
-            dest, entry, full_hop = _read_source_exit(scfg, gb)
+            src_of[trk.conn] = (scfg, gb)
+            rails_by_src.setdefault(id(scfg), []).append(trk.conn)
+        for rails in rails_by_src.values():
+            rails.sort(key=lambda cn: _order.get(cn, 1 << 30))
+        multi_rail = any(len(r) > 1 for r in rails_by_src.values())
+
+        emit_tracks = []        # (conn, exit_face, out_hop, out_dest, out_entry)
+        repoints = []           # (conn, head) — source re-point after entry resolve
+        for trk in tap.tracks:
+            if trk.conn not in src_of:
+                continue
+            scfg, gb = src_of[trk.conn]
+            rails = rails_by_src[id(scfg)]
+            dest = entry = full_hop = None
+            if len(rails) > 1:
+                per_rail = _read_fanout_rail_exits(scfg, len(rails))
+                if per_rail is not None:
+                    dest, entry, full_hop = per_rail[rails.index(trk.conn)]
+            if full_hop is None:
+                dest, entry, full_hop = _read_source_exit(scfg, gb)
             if full_hop is None:
                 continue
             out_hop = max(1, int(full_hop) - int(trk.head))
@@ -2304,7 +2383,9 @@ def _apply_crossovers(cell_map, gr_placement, blocks, connections, project,
 
         if not emit_tracks:
             continue
-        by_conn, memory = _crossover_program(emit_tracks)
+        burst_by_conn: dict = {}
+        by_conn, memory = _crossover_program(emit_tracks, burst_out=burst_by_conn,
+                                             per_track_regs=multi_rail)
 
         cfg = cell_map.get_cell(cx, cy)
         if cfg is None:
@@ -2320,18 +2401,33 @@ def _apply_crossovers(cell_map, gr_placement, blocks, connections, project,
             cfg.block_name = "_crossover"
 
         # Re-point each crossing net's source to LAND at the crossover.
+        head_of = dict(repoints)
+        done_src: set = set()
         for (conn_name, head) in repoints:
-            conn = conn_by_name[conn_name]
-            scfg, gb = _source_exit_cfg(conn)
-            if scfg is None or conn_name not in by_conn:
+            if conn_name not in by_conn:
                 continue
+            scfg, gb = src_of[conn_name]
+            rails = [cn for cn in rails_by_src[id(scfg)] if cn in by_conn]
             t_entry = by_conn[conn_name]
-            if _output_cell_carries_handoffs(gb):
-                _patch_last_write_handoff(scfg, head, dest=BROKER_BURST_REG)
-                _patch_last_jump_handoff(scfg, head, entry=t_entry)
-            else:
-                _patch_cell_handoff(scfg, head, dest=BROKER_BURST_REG,
-                                    entry=t_entry)
+            t_reg = burst_by_conn.get(conn_name, BROKER_BURST_REG)
+            if len(rails) <= 1:
+                if _output_cell_carries_handoffs(gb):
+                    _patch_last_write_handoff(scfg, head, dest=t_reg)
+                    _patch_last_jump_handoff(scfg, head, entry=t_entry)
+                else:
+                    _patch_cell_handoff(scfg, head, dest=t_reg, entry=t_entry)
+                continue
+            # MULTI-RAIL source: steer rail i's WRITE to ITS landing register
+            # and rail i's JUMP to ITS track entry, in place. The single-net
+            # patch above rewrote the cell's LAST WRITE/JUMP once per track, so
+            # the second track won and both rails fired into ONE track
+            # (measured: both JUMPs → the same entry, v_alpha never delivered).
+            if id(scfg) in done_src:
+                continue
+            done_src.add(id(scfg))
+            _repoint_fanout_rails(
+                scfg, [(head_of[cn], burst_by_conn.get(cn, BROKER_BURST_REG),
+                        by_conn[cn]) for cn in rails])
 
 
 def _apply_relays(cell_map, gr_placement, blocks, connections, project,
@@ -3916,6 +4012,37 @@ def _patch_last_n_write_handoff(cfg, hop, n, base_tag=0) -> None:
         word = (word & ~(0x1F << 5)) | (hop_cnt << 5)
         word = (word & ~0x1F) | ((int(base_tag) + k) & 0x1F)
         cfg.memory[addr] = word & 0xFFFF
+
+
+def _repoint_fanout_rails(cfg, specs) -> None:
+    """Steer an exit cell ALREADY in the fan-out form (one WRITE and one JUMP
+    per rail, :func:`_patch_fanout_source_handoff`) to new per-rail
+    ``(hop, dest_reg, entry)`` specs IN PLACE — no new words. Rail ``i`` is the
+    i-th of the tail WRITEs in program order; the tail JUMPs are assigned in
+    ascending address in the same rail order (every rail lands on the same
+    crossover here, so the hops are equal and the fan-out's farthest-first
+    rule is moot). Falls back to the full re-sequencer when the cell does not
+    yet carry a JUMP per rail."""
+    write_addrs = sorted(a for a, w in cfg.memory.items()
+                         if _is_instruction_addr(cfg, a) and (w & 0xF000) == _WRITE
+                         and not (w & _WRITE_CONFIG_BIT))
+    jump_addrs = sorted(a for a, w in cfg.memory.items()
+                        if _is_instruction_addr(cfg, a) and (w & 0xF000) == _JUMP)
+    if len(jump_addrs) < len(specs) or len(write_addrs) < len(specs):
+        _patch_fanout_source_handoff(cfg, specs)
+        return
+    tail_w = write_addrs[-len(specs):]
+    tail_j = jump_addrs[-len(specs):]
+    for i, (hop, dest, entry) in enumerate(specs):
+        hc = encode_hop_cnt(hop)
+        w = cfg.memory[tail_w[i]]
+        w = (w & ~(0x1F << 5)) | (hc << 5)
+        w = (w & ~0x1F) | (int(dest) & 0x1F)
+        cfg.memory[tail_w[i]] = w & 0xFFFF
+        j = cfg.memory[tail_j[i]]
+        j = (j & ~(0x1F << 5)) | (hc << 5)
+        j = (j & ~0x1F) | (int(entry) & 0x1F)
+        cfg.memory[tail_j[i]] = j & 0xFFFF
 
 
 def _patch_fanout_source_handoff(cfg, specs) -> None:

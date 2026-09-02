@@ -386,7 +386,7 @@ class BuildEngine:
         # routing program so it REPLACES the port cell's latent transit program with the
         # turn program (fwd_face unchanged → the riding stream is untouched). Returns
         # the diverted nets' host-injection landings (merged into input_landings below).
-        port_divert_landings = _apply_port_diverts(
+        port_divert_landings, port_deliveries = _apply_port_diverts(
             cell_map, blocks_here, conns_here, project, chip_id, chip_type,
             self.catalog, broker_conn_entry, broker_conn_burst)
 
@@ -410,6 +410,21 @@ class BuildEngine:
         # it AT the port cell (its turn entry / hop / burst regs), NOT ride it straight
         # (which would forward it down the OTHER stream's face and lose it).
         input_landings.update(port_divert_landings)
+
+        # FORK BROKERS (INV-74): a port net that leaves the shared input bus
+        # several cells before its block was brokered at the route's last free
+        # cell and relayed ``@1`` — so it landed on a bare transit cell at the
+        # fork and rode one cell further down the bus, never reaching the block.
+        # For EXACTLY the nets whose resolved landing does not deliver (the
+        # landing's deliver JUMP misses the block's own entry), program the fork
+        # cell as the broker and relay ``@N`` the true remaining distance. A net
+        # the corridor already delivers is not touched.
+        for msg, cell in _apply_fork_brokers(
+                cell_map, blocks_here, conns_here, project, chip_id, chip_type,
+                self.catalog, broker_conn_entry, broker_conn_burst,
+                input_landings, port_deliveries):
+            result.warnings.append(drc_warning(
+                "fork_broker", msg, chip=chip_id, x=cell[0], y=cell[1]))
 
         # Per-cell address classification (data / state / instruction) from the
         # v2 CellProgram of each block, so the Inspector can tell DATA words
@@ -1450,11 +1465,13 @@ def _broker_program(deliveries, bus_face: int):
             pname = f"op{gi}_{op_reg}"
             burst_ports.append(Port(pname, register=op_reg))
             lines.append(f"    MOVE R0, R{{in:{pname}}}")
-            lines.append(f"    WRITE @1, {int(dv.in_reg)}")
+            lines.append(f"    WRITE @{int(dv.hops)}, {int(dv.in_reg)}")
             burst_reg_by_conn[dv.conn] = op_reg   # ABSOLUTE reg the source WRITEs to
         # ONE trigger after ALL operands (the complex-sample contract). Every
-        # delivery in a group targets the same cell/entry, so use the first.
-        lines.append(f"    JUMP @1, {int(group[0].in_entry)}")
+        # delivery in a group targets the same cell/entry (and distance), so use
+        # the first. ``@N`` is 1 for an abutting broker; a FORK broker on a shared
+        # chip-input corridor relays the true remaining distance (INV-74).
+        lines.append(f"    JUMP @{int(group[0].hops)}, {int(group[0].in_entry)}")
         lines.append("    MOVE [FACE], R{data:bus_face}")
         lines.append("    HALT")
         tmpl_parts.append("\n".join(lines) + "\n")
@@ -2561,9 +2578,13 @@ def _apply_port_diverts(cell_map, blocks, connections, project, chip_id,
     ``fwd_face``, so the riding stream's HOP<31 transit is unchanged). A no-op when the
     port fans out one way (every net rides its face — the common single-stream path).
 
-    Returns ``{conn_name: {"cell", "entry", "hop", "data_addrs"}}`` — the host-injection
-    landing for each diverted net (land AT the port cell, run its turn entry). The
-    build merges these into ``input_landings`` (overriding the straight resolution)."""
+    Returns ``({conn_name: {"cell", "entry", "hop", "data_addrs"}}, deliveries)`` —
+    the host-injection landing for each diverted net (land AT the port cell, run its
+    turn entry), plus the :class:`BrokerDelivery` list the port program was assembled
+    from (empty when the port is not a broker), so a later pass can re-assemble the
+    same program with ONE net's delivery corrected (:func:`_apply_fork_brokers`). The
+    build merges the landings into ``input_landings`` (overriding the straight
+    resolution)."""
     from model.connection import BlockEndpoint, ChipPortEndpoint, ABUTMENT_ROUTE
     from .bus_router import (BROKER_BURST_REG, BrokerDelivery, _phys_pts,
                              _target_input_cell)
@@ -2571,14 +2592,14 @@ def _apply_port_diverts(cell_map, blocks, connections, project, chip_id,
     in_port = next((p for p in chip_type.ports
                     if p.direction.value == "input"), None)
     if in_port is None:
-        return {}
+        return {}, []
     port_cell = (in_port.cell_x, in_port.cell_y)
     pcfg = cell_map.get_cell(*port_cell)
     if pcfg is None:
-        return {}
+        return {}, []
     port_face = getattr(pcfg, "fwd_face", None)
     if port_face is None:
-        return {}
+        return {}, []
     port_face = int(port_face)
 
     # Every port-source input net on this chip, with its route first step. Use the RAW
@@ -2610,7 +2631,7 @@ def _apply_port_diverts(cell_map, blocks, connections, project, chip_id,
     diverting = [(conn, pts, step) for (conn, pts, step) in port_nets
                  if step is not None and step != port_face]
     if not diverting:
-        return {}
+        return {}, []
 
     # Build the port-cell broker deliveries: one group per diverting net, targeting
     # the net's DOWNSTREAM broker (route cell pts[1]) — its burst regs + deliver entry
@@ -2668,7 +2689,7 @@ def _apply_port_diverts(cell_map, blocks, connections, project, chip_id,
         landing_meta[conn.name] = (n, down_regs)
 
     if not deliveries:
-        return {}
+        return {}, []
 
     # Assemble the port-cell broker program: restore face = the port's static face
     # (the riding stream's direction) so a transiting word (TX) still forwards right.
@@ -2701,7 +2722,290 @@ def _apply_port_diverts(cell_map, blocks, connections, project, chip_id,
         landings[conn.name] = {
             "cell": port_cell, "entry": int(by_conn[conn.name]),
             "hop": 30 & 0x1F, "data_addrs": data_addrs}
-    return landings
+    return landings, deliveries
+
+
+def _read_deliver_jump(cfg, entry):
+    """The first JUMP word of the program that starts at ``entry`` in ``cfg``
+    (scanning forward to the next HALT / end of memory), or None."""
+    if cfg is None:
+        return None
+    for a in range(int(entry) & 0x1F, 32):
+        w = int(cfg.memory.get(a, 0)) & 0xFFFF
+        if w == 0:                              # HALT — end of this entry's program
+            return None
+        if (w & 0xF000) == _JUMP:
+            return w
+    return None
+
+
+def _is_universal_transit(cfg) -> bool:
+    """True when ``cfg`` carries exactly the universal routing program for its
+    ``fwd_face`` (:func:`_universal_routing_program`) — a bare transit cell that
+    nothing addresses by entry. Decided from the PROGRAM, not the cell's name
+    (the router names every routing cell ``_routing``, brokers included)."""
+    if cfg is None:
+        return False
+    fwd = getattr(cfg, "fwd_face", None)
+    if fwd is None:
+        return False
+    _ent, mem = _universal_routing_program(int(fwd))
+    return ({a: int(w) for a, w in cfg.memory.items() if w}
+            == {a: int(w) for a, w in mem.items() if w})
+
+
+def _port_net_delivered(cell_map, landing, in_cell, want_entry) -> bool:
+    """The built-landing predicate (INV-74): a chip-input-port net is delivered
+    iff the host lands it ON the block's own input cell, or the landing cell's
+    deliver program (at the landing entry) ends in a JUMP whose entry field is
+    the block's own entry. A landing on a bare transit cell (the universal
+    routing program) can only relay the word one cell further down the bus —
+    it never reaches the block, whatever its entry number happens to be."""
+    land = tuple(landing["cell"])
+    if land == tuple(in_cell):
+        return True
+    cfg = cell_map.get_cell(*land)
+    if cfg is None or _is_universal_transit(cfg):
+        return False
+    jw = _read_deliver_jump(cfg, landing["entry"])
+    return jw is not None and (jw & 0x1F) == (int(want_entry) & 0x1F)
+
+
+def _port_net_operand_count(conn, in_regs) -> int:
+    """How many operands the host injects for one port net — the sizing rule
+    :func:`_resolve_input_landings` uses for a brokered landing: a COMPLEX
+    source fills every input reg of a complex block (a two-pair AddCC-family
+    block gets ONE pair per stream); a FLOAT source injects one operand."""
+    if in_regs and len(in_regs) > 1 and conn.src_complex is not False:
+        n = len(in_regs)
+        if n > 2 and conn.src_complex is True:
+            n = 2
+        return n
+    return 1
+
+
+def _apply_fork_brokers(cell_map, blocks, connections, project, chip_id,
+                        chip_type, catalog, broker_conn_entry, broker_conn_burst,
+                        input_landings, port_deliveries) -> list:
+    """Re-broker, AT ITS FORK, every chip-input-port net the built corridor does
+    NOT deliver (INV-74) — and nothing else.
+
+    A port net's broker is planned at the route's LAST free cell (adjacent to the
+    block) and relays ``@1``. That delivers only when the net rides the shared
+    input bus straight to a cell abutting its block. A net that FORKS off the bus
+    early (its route leaves the bus's forwarding direction several cells before
+    the block) lands at the fork — a cell carrying only the universal transit
+    program — and the entry it was given belongs to the far broker: the fork
+    relays the word ONE cell further down the bus, into a transit cell, and it
+    dies (measured: the FOC loop's ia/th_park/e_d/e_q arms settled QueueEmpty
+    without their block ever executing).
+
+    The fix: the broker for such a net is the FORK cell itself, and its relay is
+    ``WRITE @N`` / ``JUMP @N`` with N the true number of cells from the fork to
+    the block's input cell along the built faces. When the walk from the fork
+    meets a second turn that the net's planned broker already performs (a cell
+    two nets leave in different directions), the fork relays ``@N`` to THAT
+    broker's entry and burst reg(s) and the broker finishes ``@1`` as planned.
+
+    GATE — the only nets touched are those failing :func:`_port_net_delivered`,
+    read from the RESOLVED landing and the BUILT cell program (never from route
+    geometry). A net whose landing already delivers is provably untouched: this
+    pass neither reads nor writes anything about it. The cells it programs are
+    bare transit cells (whose universal program nothing addresses) and the
+    port-divert broker — re-assembled from its own delivery list with only the
+    mis-delivered net's delivery replaced, and applied only if every other
+    diverted net's entry and burst reg come out unchanged.
+
+    Runs LAST, after :func:`_resolve_input_landings` (whose result it corrects in
+    place). Returns ``[(message, cell)]`` warnings for nets it could not fix."""
+    from model.connection import BlockEndpoint, ChipPortEndpoint
+    from .bus_router import (BROKER_BURST_REG, BrokerDelivery, _phys_pts,
+                             _target_input_cell)
+
+    in_port = next((p for p in chip_type.ports
+                    if p.direction.value == "input"), None)
+    if in_port is None:
+        return []
+    port_cell = (in_port.cell_x, in_port.cell_y)
+
+    def _face_of(cell):
+        cfg = cell_map.get_cell(*cell)
+        f = getattr(cfg, "fwd_face", None) if cfg is not None else None
+        return int(f) if f is not None else None
+
+    warnings: list = []
+    # fork cell -> [(conn, fork_index, deliver_face, hops, target_cell, entry, regs)]
+    plans: dict = {}
+    for conn in connections:
+        if not (isinstance(conn.source, ChipPortEndpoint)
+                and conn.source.chip == chip_id
+                and conn.source.port == in_port.name
+                and isinstance(conn.target, BlockEndpoint)):
+            continue
+        landing = input_landings.get(conn.name)
+        if landing is None:
+            continue
+        blk = project.block(conn.target.block)
+        if (blk is None or blk.placement is None or not blk.placement.cells
+                or blk.placement.chip != chip_id):
+            continue
+        in_cell = _target_input_cell(blk, conn.target.port, catalog)
+        if in_cell is None:
+            continue
+        b_entry, in_regs = catalog.resolved_io(
+            blk.type, blk.params, library=blk.library)
+        want_entry = _target_port_entry(catalog, blk, conn.target.port, b_entry)
+        if getattr(conn, "entry_override", None) is not None:
+            want_entry = int(conn.entry_override)
+        # THE GATE: a delivered net is left exactly as resolved.
+        if _port_net_delivered(cell_map, landing, in_cell, want_entry):
+            continue
+        pts = _phys_pts(project, conn, catalog) if conn.is_routed else []
+        if not pts or tuple(pts[0]) != port_cell:
+            continue                     # direct-on-port placement: no corridor
+        full = [tuple(p) for p in pts]
+        if full[-1] != tuple(in_cell):
+            full.append(tuple(in_cell))
+        # The FORK: the first corridor cell (the port included — the port
+        # forwards an injected word on its bus face too) whose built face does
+        # not forward toward the net's next waypoint.
+        fork = None
+        for i in range(0, len(full) - 1):
+            want = _step_face(full[i][0], full[i][1], full[i + 1][0], full[i + 1][1])
+            if want is None or _face_of(full[i]) != want:
+                fork = i
+                break
+        if fork is None:
+            warnings.append((
+                f"{conn.name}: landing at {tuple(landing['cell'])} entry "
+                f"{landing['entry']} does not deliver into {conn.target.block} "
+                f"(entry {want_entry}) yet every corridor cell forwards along the "
+                f"route — not a fork; left as resolved", tuple(landing["cell"])))
+            continue
+        # Walk on from the fork along the BUILT faces: the word rides them until
+        # the block's input cell, or a cell that turns away from the route.
+        stop = len(full) - 1
+        for j in range(fork + 1, len(full) - 1):
+            want = _step_face(full[j][0], full[j][1], full[j + 1][0], full[j + 1][1])
+            if want is None or _face_of(full[j]) != want:
+                stop = j
+                break
+        hops = stop - fork
+        face = _step_face(full[fork][0], full[fork][1],
+                          full[fork + 1][0], full[fork + 1][1])
+        n_ops = _port_net_operand_count(conn, in_regs)
+        if stop == len(full) - 1:
+            # Straight into the block: its own entry and input reg(s).
+            entry = int(want_entry)
+            if n_ops == 1:
+                regs = ([_target_port_reg(catalog, blk, conn.target.port, in_regs)]
+                        if in_regs and len(in_regs) > 1
+                        else [int(in_regs[0]) if in_regs else 0])
+            elif n_ops < len(in_regs):
+                r0 = _target_port_reg(catalog, blk, conn.target.port, in_regs)
+                i0 = list(in_regs).index(r0) if r0 in in_regs else 0
+                regs = [int(r) for r in list(in_regs)[i0:i0 + n_ops]]
+            else:
+                regs = [int(r) for r in in_regs]
+            target = tuple(in_cell)
+        else:
+            # A second turn. Only the net's PLANNED broker (the route's last free
+            # cell, already programmed to deliver @1 into the block) can make it.
+            cell = full[stop]
+            b_ent = broker_conn_entry.get(conn.name)
+            jw = (_read_deliver_jump(cell_map.get_cell(*cell), b_ent)
+                  if (cell == tuple(pts[-1]) and b_ent is not None) else None)
+            if jw is None or (jw & 0x1F) != (int(want_entry) & 0x1F):
+                warnings.append((
+                    f"{conn.name}: forks off the input bus at {full[fork]} but "
+                    f"turns again at {cell}, which carries no delivery of this "
+                    f"net into {conn.target.block}; left as resolved", cell))
+                continue
+            entry = int(b_ent)
+            last = BROKER_BURST_REG + int(broker_conn_burst.get(conn.name, 0))
+            regs = [last - (n_ops - 1) + k for k in range(n_ops)]
+            target = cell
+        plans.setdefault(full[fork], []).append(
+            (conn, fork, int(face), int(hops), target, entry, regs))
+
+    for fcell, items in plans.items():
+        cfg = cell_map.get_cell(*fcell)
+        fwd = getattr(cfg, "fwd_face", None) if cfg is not None else None
+        if cfg is None or fwd is None:
+            for (conn, *_r) in items:
+                warnings.append((f"{conn.name}: fork cell {fcell} has no bus "
+                                 f"face; left as resolved", fcell))
+            continue
+        bus_face = int(fwd)
+        owner = getattr(cfg, "block_name", "") or ""
+        keep: dict = {}          # other diverted nets whose (entry, regs) must not move
+        if fcell == port_cell and port_deliveries:
+            # The port-divert broker: swap ONLY the mis-delivered net's delivery
+            # group (same operand count → every other group's words are the same).
+            deliveries = list(port_deliveries)
+            fixed = []
+            for it in items:
+                conn, _f, face, hops, target, entry, regs = it
+                idx = [k for k, d in enumerate(deliveries) if d.conn == conn.name]
+                if len(idx) != len(regs):
+                    warnings.append((
+                        f"{conn.name}: port-divert group has {len(idx)} operand(s), "
+                        f"fork delivery needs {len(regs)}; left as resolved", fcell))
+                    continue
+                for k, r in zip(idx, regs):
+                    deliveries[k] = BrokerDelivery(
+                        conn=conn.name, in_cell=target, in_reg=int(r),
+                        in_entry=int(entry), deliver_face=int(face),
+                        src_cell=deliveries[k].src_cell, hops=int(hops))
+                fixed.append(it)
+            items = fixed
+            for d in port_deliveries:
+                if d.conn not in {it[0].name for it in items}:
+                    ld = input_landings.get(d.conn)
+                    if ld is not None:
+                        keep[d.conn] = (int(ld["entry"]), list(ld["data_addrs"]))
+        elif _is_universal_transit(cfg):
+            # A bare transit cell: nothing addresses its universal program, so it
+            # becomes this/these net(s)' fork broker (bus face unchanged).
+            deliveries = [
+                BrokerDelivery(conn=conn.name, in_cell=target, in_reg=int(r),
+                               in_entry=int(entry), deliver_face=int(face),
+                               src_cell=("port_fork", conn.name), hops=int(hops))
+                for (conn, _f, face, hops, target, entry, regs) in items
+                for r in regs]
+        else:
+            for (conn, *_r) in items:
+                warnings.append((
+                    f"{conn.name}: forks off the input bus at {fcell}, which "
+                    f"already carries the program of '{owner}'; left as resolved",
+                    fcell))
+            continue
+        if not items:
+            continue
+        by_conn, memory, burst_reg_by_conn = _broker_program(deliveries, bus_face)
+        moved = [c for c, (e, regs) in keep.items()
+                 if by_conn.get(c) != e
+                 or burst_reg_by_conn.get(c) != regs[-1]]
+        if moved:
+            for (conn, *_r) in items:
+                warnings.append((
+                    f"{conn.name}: re-brokering at the port would move the landing "
+                    f"of {moved}; left as resolved", fcell))
+            continue
+        cfg.memory.clear()
+        cfg.memory.update(memory)
+        cfg.entry_addr = min(by_conn.values()) if by_conn else cfg.entry_addr
+        cfg.fwd_face = _CM_FACE(bus_face)
+        if not owner or owner == "_routing":
+            cfg.block_name = "_broker"
+        for (conn, fork, _face, _hops, _target, _entry, regs) in items:
+            last = int(burst_reg_by_conn[conn.name])
+            n = len(regs)
+            input_landings[conn.name] = {
+                "cell": tuple(fcell), "entry": int(by_conn[conn.name]),
+                "hop": (30 - int(fork)) & 0x1F,
+                "data_addrs": [last - (n - 1) + k for k in range(n)]}
+    return warnings
 
 
 def _patch_last_jump_handoff(cfg, hop, entry=None) -> None:

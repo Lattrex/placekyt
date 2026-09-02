@@ -105,6 +105,11 @@ class BrokerDelivery:
     in_entry: int
     deliver_face: int
     src_cell: tuple = None
+    # ``@N`` for the relay WRITE/JUMP: the number of cells from this broker to
+    # ``in_cell`` along the built faces. 1 for every abutting broker (the default,
+    # unchanged for every delivery planned here); a FORK broker on a shared
+    # chip-input corridor (build._apply_fork_brokers) reaches farther.
+    hops: int = 1
 
 
 @dataclass

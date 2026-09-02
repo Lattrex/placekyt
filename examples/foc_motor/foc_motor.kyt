@@ -1,6 +1,6 @@
 project:
   format_version: 1
-  name: foc_motor
+  name: FOC motor control — the FULL current loop
   version: '1.0'
 chip_type: kyttar_10x12
 chips:
@@ -8,6 +8,95 @@ chips:
   label: Chip 0
   position: {x: 0.0, y: 0.0}
 blocks:
+- name: streamsplitter
+  type: StreamSplitterBlock
+  library: lattrex.official
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 2, y: 1, face: south}
+    orientation:
+    - ccw
+    - mirror_v
+- name: streamsplitter_2
+  type: StreamSplitterBlock
+  library: lattrex.official
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 1, y: 2, face: east}
+- name: clarketransform
+  type: ClarkeTransformBlock
+  library: lattrex.official
+  params:
+    face_ia: west
+    face_ib: south
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 2, y: 2, face: south}
+    orientation:
+    - cw
+- name: streamsplitter_3
+  type: StreamSplitterBlock
+  library: lattrex.official
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 3, y: 2, face: south}
+    orientation:
+    - cw
+- name: cordicrotate
+  type: CordicRotateBlock
+  library: lattrex.official
+  params:
+    sign: -1
+    face_x: west
+    face_y: north
+    face_t: south
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: rdv, x: 3, y: 3, face: north}
+    - {cell_id: pre, x: 4, y: 3, face: north}
+    - {cell_id: prep1, x: 4, y: 2, face: north}
+    - {cell_id: prep2, x: 4, y: 1, face: north}
+    - {cell_id: it0, x: 4, y: 0, face: east}
+    - {cell_id: it1, x: 5, y: 0, face: south}
+    - {cell_id: it2, x: 5, y: 1, face: south}
+    - {cell_id: it3, x: 5, y: 2, face: south}
+    - {cell_id: it4, x: 5, y: 3, face: east}
+    - {cell_id: it5, x: 6, y: 3, face: north}
+    - {cell_id: it6, x: 6, y: 2, face: north}
+    - {cell_id: it7, x: 6, y: 1, face: north}
+    - {cell_id: it8, x: 6, y: 0, face: east}
+    - {cell_id: it9, x: 7, y: 0, face: south}
+    - {cell_id: it10, x: 7, y: 1, face: south}
+    - {cell_id: it11, x: 7, y: 2, face: south}
+    - {cell_id: it12, x: 7, y: 3, face: east}
+    - {cell_id: it13, x: 8, y: 3, face: north}
+    - {cell_id: postx, x: 8, y: 2, face: north}
+    - {cell_id: posty, x: 8, y: 1, face: north}
+    orientation:
+    - ccw
+- name: streamsplitter_4
+  type: StreamSplitterBlock
+  library: lattrex.official
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 1, y: 8, face: south}
+    orientation:
+    - cw
+- name: streamsplitter_5
+  type: StreamSplitterBlock
+  library: lattrex.official
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 0, y: 9, face: south}
+    orientation:
+    - cw
 - name: picontroller
   type: PIControllerBlock
   library: lattrex.official
@@ -19,10 +108,13 @@ blocks:
   placement:
     chip: 0
     cells:
-    - {cell_id: front, x: 5, y: 8, face: east}
-    - {cell_id: sat, x: 6, y: 8, face: south}
-    - {cell_id: acc, x: 6, y: 9, face: north}
-- name: picontroller_1
+    - {cell_id: front, x: 1, y: 9, face: south}
+    - {cell_id: sat, x: 1, y: 10, face: east}
+    - {cell_id: acc, x: 2, y: 10, face: west}
+    orientation:
+    - ccw
+    - mirror_v
+- name: picontroller_2
   type: PIControllerBlock
   library: lattrex.official
   params:
@@ -33,37 +125,52 @@ blocks:
   placement:
     chip: 0
     cells:
-    - {cell_id: front, x: 2, y: 3, face: east}
-    - {cell_id: sat, x: 3, y: 3, face: south}
-    - {cell_id: acc, x: 3, y: 4, face: north}
-- name: cordicrotate
+    - {cell_id: front, x: 0, y: 10, face: south}
+    - {cell_id: sat, x: 0, y: 11, face: east}
+    - {cell_id: acc, x: 1, y: 11, face: west}
+    orientation:
+    - ccw
+    - mirror_v
+- name: streamsplitter_6
+  type: StreamSplitterBlock
+  library: lattrex.official
+  placement:
+    chip: 0
+    cells:
+    - {cell_id: 0, x: 3, y: 6, face: south}
+    orientation:
+    - cw
+- name: cordicrotate_2
   type: CordicRotateBlock
   library: lattrex.official
   params:
     sign: 1
+    face_x: west
+    face_y: north
+    face_t: south
   placement:
     chip: 0
     cells:
-    - {cell_id: rdv, x: 5, y: 1, face: east}
-    - {cell_id: pre, x: 6, y: 1, face: east}
-    - {cell_id: prep1, x: 7, y: 1, face: east}
-    - {cell_id: prep2, x: 8, y: 1, face: east}
-    - {cell_id: it0, x: 9, y: 1, face: south}
-    - {cell_id: it1, x: 9, y: 2, face: west}
-    - {cell_id: it2, x: 8, y: 2, face: west}
-    - {cell_id: it3, x: 7, y: 2, face: west}
-    - {cell_id: it4, x: 6, y: 2, face: south}
-    - {cell_id: it5, x: 6, y: 3, face: east}
-    - {cell_id: it6, x: 7, y: 3, face: east}
-    - {cell_id: it7, x: 8, y: 3, face: east}
-    - {cell_id: it8, x: 9, y: 3, face: south}
-    - {cell_id: it9, x: 9, y: 4, face: west}
-    - {cell_id: it10, x: 8, y: 4, face: west}
-    - {cell_id: it11, x: 7, y: 4, face: west}
-    - {cell_id: it12, x: 6, y: 4, face: south}
-    - {cell_id: it13, x: 6, y: 5, face: east}
-    - {cell_id: postx, x: 7, y: 5, face: east}
-    - {cell_id: posty, x: 8, y: 5, face: east}
+    - {cell_id: rdv, x: 3, y: 7, face: east}
+    - {cell_id: pre, x: 4, y: 7, face: east}
+    - {cell_id: prep1, x: 5, y: 7, face: east}
+    - {cell_id: prep2, x: 6, y: 7, face: east}
+    - {cell_id: it0, x: 7, y: 7, face: south}
+    - {cell_id: it1, x: 7, y: 8, face: west}
+    - {cell_id: it2, x: 6, y: 8, face: west}
+    - {cell_id: it3, x: 5, y: 8, face: west}
+    - {cell_id: it4, x: 4, y: 8, face: south}
+    - {cell_id: it5, x: 4, y: 9, face: east}
+    - {cell_id: it6, x: 5, y: 9, face: east}
+    - {cell_id: it7, x: 6, y: 9, face: east}
+    - {cell_id: it8, x: 7, y: 9, face: south}
+    - {cell_id: it9, x: 7, y: 10, face: west}
+    - {cell_id: it10, x: 6, y: 10, face: west}
+    - {cell_id: it11, x: 5, y: 10, face: west}
+    - {cell_id: it12, x: 4, y: 10, face: south}
+    - {cell_id: it13, x: 4, y: 11, face: east}
+    - {cell_id: postx, x: 5, y: 11, face: east}
+    - {cell_id: posty, x: 6, y: 11, face: east}
 - name: svpwm
   type: SVPWMBlock
   library: lattrex.official
@@ -73,192 +180,212 @@ blocks:
   placement:
     chip: 0
     cells:
-    - {cell_id: rendezvous, x: 1, y: 10, face: east}
-    - {cell_id: scale, x: 2, y: 10, face: east}
-    - {cell_id: clarke, x: 3, y: 10, face: east}
-    - {cell_id: maxsel, x: 4, y: 10, face: east}
-    - {cell_id: minsel, x: 5, y: 10, face: east}
-    - {cell_id: inject, x: 6, y: 10, face: east}
-    - {cell_id: emit, x: 7, y: 10, face: east}
-- name: streamsplitter
-  type: StreamSplitterBlock
-  library: lattrex.official
-  placement:
-    chip: 0
-    cells:
-    - {cell_id: 0, x: 0, y: 2, face: south}
-    orientation:
-    - cw
-- name: streamsplitter_1
-  type: StreamSplitterBlock
-  library: lattrex.official
-  placement:
-    chip: 0
-    cells:
-    - {cell_id: 0, x: 1, y: 4, face: east}
-- name: streamsplitter_2
-  type: StreamSplitterBlock
-  library: lattrex.official
-  placement:
-    chip: 0
-    cells:
-    - {cell_id: 0, x: 6, y: 7, face: north}
+    - {cell_id: rendezvous, x: 9, y: 7, face: north}
+    - {cell_id: scale, x: 9, y: 6, face: north}
+    - {cell_id: clarke, x: 9, y: 5, face: north}
+    - {cell_id: maxsel, x: 9, y: 4, face: north}
+    - {cell_id: minsel, x: 9, y: 3, face: north}
+    - {cell_id: inject, x: 9, y: 2, face: north}
+    - {cell_id: emit, x: 9, y: 1, face: north}
     orientation:
     - ccw
 connections:
-- name: e_d
+- name: net1
   from: {chip_port: {chip: 0, port: x16_in}}
   to: {block: streamsplitter, port: x}
   route:
   - {x: 0, y: 0}
   - {x: 0, y: 1}
-- name: e_q
-  from: {chip_port: {chip: 0, port: x16_in}}
-  to: {block: streamsplitter_1, port: x}
-  route:
-  - {x: 0, y: 0}
-  - {x: 0, y: 1}
   - {x: 1, y: 1}
-  - {x: 1, y: 2}
-  - {x: 1, y: 3}
-- name: theta
+  - {x: 2, y: 1}
+  stream_id: ia
+  src_complex: false
+- name: net2
   from: {chip_port: {chip: 0, port: x16_in}}
   to: {block: streamsplitter_2, port: x}
   route:
   - {x: 0, y: 0}
   - {x: 0, y: 1}
-  - {x: 1, y: 1}
+  - {x: 0, y: 2}
   - {x: 1, y: 2}
-  - {x: 1, y: 3}
-  - {x: 0, y: 3}
-  - {x: 0, y: 4}
-  - {x: 0, y: 5}
-  - {x: 0, y: 6}
-  - {x: 0, y: 7}
-  - {x: 1, y: 7}
-  - {x: 2, y: 7}
-  - {x: 3, y: 7}
-  - {x: 4, y: 7}
-  - {x: 5, y: 7}
-  - {x: 6, y: 7}
-- name: w_ed
+  stream_id: ib
+  src_complex: false
+- name: net3
   from: {block: streamsplitter, port: out}
-  to: {block: picontroller, port: sample}
+  to: {block: clarketransform, port: ia}
   route:
+  - {x: 2, y: 1}
+  - {x: 2, y: 2}
+- name: net4
+  from: {block: streamsplitter_2, port: out}
+  to: {block: clarketransform, port: ib}
+  route:
+  - {x: 1, y: 2}
+  - {x: 2, y: 2}
+- name: net5
+  from: {chip_port: {chip: 0, port: x16_in}}
+  to: {block: streamsplitter_3, port: x}
+  route:
+  - {x: 0, y: 0}
+  - {x: 1, y: 0}
+  - {x: 2, y: 0}
+  - {x: 3, y: 0}
+  - {x: 3, y: 1}
+  - {x: 3, y: 2}
+  stream_id: th_park
+  src_complex: false
+- name: net6
+  from: {block: streamsplitter_3, port: out}
+  to: {block: cordicrotate, port: theta}
+  route:
+  - {x: 3, y: 2}
+  - {x: 3, y: 3}
+- name: net7
+  from: {block: cordicrotate, port: yi}
+  to: {chip_port: {chip: 0, port: x16_out}}
+  route:
+  - {x: 8, y: 1}
+  - {x: 8, y: 0}
+  - {x: 9, y: 0}
+  out_tag: 24
+- name: net8
+  from: {chip_port: {chip: 0, port: x16_in}}
+  to: {block: streamsplitter_4, port: x}
+  route:
+  - {x: 0, y: 0}
+  - {x: 0, y: 1}
   - {x: 0, y: 2}
   - {x: 0, y: 3}
   - {x: 0, y: 4}
   - {x: 0, y: 5}
   - {x: 0, y: 6}
   - {x: 0, y: 7}
-  - {x: 1, y: 7}
+  - {x: 0, y: 8}
+  - {x: 1, y: 8}
+  stream_id: e_d
+  src_complex: false
+- name: net9
+  from: {chip_port: {chip: 0, port: x16_in}}
+  to: {block: streamsplitter_5, port: x}
+  route:
+  - {x: 0, y: 0}
+  - {x: 0, y: 1}
+  - {x: 0, y: 2}
+  - {x: 0, y: 3}
+  - {x: 0, y: 4}
+  - {x: 0, y: 5}
+  - {x: 0, y: 6}
+  - {x: 0, y: 7}
+  - {x: 0, y: 8}
+  - {x: 0, y: 9}
+  stream_id: e_q
+  src_complex: false
+- name: net10
+  from: {block: streamsplitter_4, port: out}
+  to: {block: picontroller, port: sample}
+  route:
+  - {x: 1, y: 8}
+  - {x: 1, y: 9}
+- name: net11
+  from: {block: streamsplitter_5, port: out}
+  to: {block: picontroller_2, port: sample}
+  route:
+  - {x: 0, y: 9}
+  - {x: 0, y: 10}
+- name: net12
+  from: {block: picontroller, port: out}
+  to: {block: cordicrotate_2, port: x}
+  route:
+  - {x: 2, y: 10}
+  - {x: 2, y: 9}
+  - {x: 2, y: 8}
   - {x: 2, y: 7}
   - {x: 3, y: 7}
-  - {x: 4, y: 7}
-  - {x: 5, y: 7}
-- name: w_eq
-  from: {block: streamsplitter_1, port: out}
-  to: {block: picontroller_1, port: sample}
+- name: net13
+  from: {block: picontroller_2, port: out}
+  to: {block: cordicrotate_2, port: y}
   route:
-  - {x: 1, y: 4}
-  - {x: 2, y: 4}
-- name: w_th
-  from: {block: streamsplitter_2, port: out}
-  to: {block: cordicrotate, port: theta}
-  route:
-  - {x: 6, y: 7}
-  - {x: 6, y: 6}
-  - {x: 5, y: 6}
-  - {x: 5, y: 5}
-  - {x: 5, y: 4}
-  - {x: 5, y: 3}
-  - {x: 5, y: 2}
-- name: vd
-  from: {block: picontroller, port: out}
-  to: {block: cordicrotate, port: x}
-  route:
-  - {x: 6, y: 9}
-  - {x: 7, y: 9}
-  - {x: 7, y: 8}
-  - {x: 7, y: 7}
-  - {x: 7, y: 6}
-  - {x: 6, y: 6}
-  - {x: 5, y: 6}
-  - {x: 5, y: 5}
-  - {x: 5, y: 4}
-  - {x: 5, y: 3}
-  - {x: 5, y: 2}
-  - {x: 4, y: 2}
-  - {x: 4, y: 1}
-  - {x: 4, y: 0}
-  - {x: 5, y: 0}
-- name: vq
-  from: {block: picontroller_1, port: out}
-  to: {block: cordicrotate, port: y}
-  route:
-  - {x: 3, y: 4}
-  - {x: 4, y: 4}
-  - {x: 4, y: 3}
-  - {x: 4, y: 2}
-  - {x: 4, y: 1}
-- name: va
-  from: {block: cordicrotate, port: yi}
-  to: {block: svpwm, port: v_alpha}
-  route:
-  - {x: 8, y: 5}
-  - {x: 8, y: 6}
-  - {x: 8, y: 7}
-  - {x: 8, y: 8}
-  - {x: 8, y: 9}
-  - {x: 8, y: 10}
-  - {x: 8, y: 11}
-  - {x: 7, y: 11}
-  - {x: 6, y: 11}
-  - {x: 5, y: 11}
-  - {x: 4, y: 11}
-  - {x: 3, y: 11}
-  - {x: 2, y: 11}
   - {x: 1, y: 11}
-- name: vb
-  from: {block: cordicrotate, port: yq}
-  to: {block: svpwm, port: v_beta}
-  route:
-  - {x: 8, y: 5}
-  - {x: 8, y: 6}
-  - {x: 8, y: 7}
-  - {x: 8, y: 8}
-  - {x: 8, y: 9}
-  - {x: 8, y: 10}
-  - {x: 8, y: 11}
-  - {x: 7, y: 11}
-  - {x: 6, y: 11}
-  - {x: 5, y: 11}
-  - {x: 4, y: 11}
-  - {x: 3, y: 11}
   - {x: 2, y: 11}
-  - {x: 1, y: 11}
-  - {x: 0, y: 11}
-  - {x: 0, y: 10}
-- name: duties
+  - {x: 3, y: 11}
+  - {x: 3, y: 10}
+  - {x: 3, y: 9}
+  - {x: 3, y: 8}
+  - {x: 3, y: 7}
+- name: net14
+  from: {chip_port: {chip: 0, port: x16_in}}
+  to: {block: streamsplitter_6, port: x}
+  route:
+  - {x: 0, y: 0}
+  - {x: 0, y: 1}
+  - {x: 0, y: 2}
+  - {x: 0, y: 3}
+  - {x: 0, y: 4}
+  - {x: 0, y: 5}
+  - {x: 1, y: 5}
+  - {x: 2, y: 5}
+  - {x: 3, y: 5}
+  - {x: 3, y: 6}
+  stream_id: th_ipark
+  src_complex: false
+- name: net15
+  from: {block: streamsplitter_6, port: out}
+  to: {block: cordicrotate_2, port: theta}
+  route:
+  - {x: 3, y: 6}
+  - {x: 3, y: 7}
+- name: net16
   from: {block: svpwm, port: out}
   to: {chip_port: {chip: 0, port: x16_out}}
   route:
-  - {x: 7, y: 10}
-  - {x: 7, y: 9}
-  - {x: 7, y: 8}
-  - {x: 7, y: 7}
-  - {x: 7, y: 6}
-  - {x: 6, y: 6}
-  - {x: 5, y: 6}
-  - {x: 5, y: 5}
-  - {x: 5, y: 4}
-  - {x: 5, y: 3}
-  - {x: 5, y: 2}
-  - {x: 4, y: 2}
-  - {x: 4, y: 1}
-  - {x: 4, y: 0}
-  - {x: 5, y: 0}
-  - {x: 6, y: 0}
-  - {x: 7, y: 0}
+  - {x: 9, y: 1}
+  - {x: 9, y: 0}
+  out_tag: 28
+- name: net17
+  from: {block: clarketransform, port: yi}
+  to: {block: cordicrotate, port: x}
+  route:
+  - {x: 2, y: 2}
+  - {x: 2, y: 3}
+  - {x: 2, y: 4}
+  - {x: 3, y: 4}
+  - {x: 3, y: 3}
+- name: net18
+  from: {block: clarketransform, port: yq}
+  to: {block: cordicrotate, port: y}
+  route:
+  - {x: 2, y: 2}
+  - {x: 2, y: 3}
+  - {x: 3, y: 3}
+- name: net19
+  from: {block: cordicrotate_2, port: yi}
+  to: {block: svpwm, port: v_alpha}
+  route:
+  - {x: 6, y: 11}
+  - {x: 7, y: 11}
+  - {x: 8, y: 11}
+  - {x: 8, y: 10}
+  - {x: 8, y: 9}
+  - {x: 8, y: 8}
+  - {x: 8, y: 7}
+  - {x: 9, y: 7}
+- name: net20
+  from: {block: cordicrotate_2, port: yq}
+  to: {block: svpwm, port: v_beta}
+  route:
+  - {x: 6, y: 11}
+  - {x: 7, y: 11}
+  - {x: 8, y: 11}
+  - {x: 9, y: 11}
+  - {x: 9, y: 10}
+  - {x: 9, y: 9}
+  - {x: 9, y: 8}
+  - {x: 9, y: 7}
+- name: net21
+  from: {block: cordicrotate, port: yq}
+  to: {chip_port: {chip: 0, port: x16_out}}
+  route:
+  - {x: 8, y: 1}
   - {x: 8, y: 0}
   - {x: 9, y: 0}
+  out_tag: 25

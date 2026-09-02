@@ -277,6 +277,19 @@ class BuildEngine:
         # must rotate identically — same D4 map the cell `.face` already got.
         _apply_orientation_face_words(cell_map, blocks_here, gr_blocks)
 
+        # A block the user RESHAPED by hand in the GUI (moved one cell round a
+        # corner, so its cells are no longer any rigid D4 image of the authored
+        # layout) still carries faces authored for the OLD neighbours: the hop
+        # re-derives from adjacency at build time, the faces did not. Re-derive
+        # each INTERNAL-handoff face — the static forward face and every
+        # in-program ``is_face`` word that encodes a handoff (the CORDIC
+        # ``face_fwd`` rdv->pre and its INV-69 relock ``unlock_face`` pre->rdv)
+        # — from where the sibling ACTUALLY sits. MUST run after the orientation
+        # pass (it rewrites the very words orientation just mapped) and its
+        # forward-face result is re-asserted by _reassert_internal_forward_faces
+        # below. A rigidly placed or D4-transformed block is byte-identical.
+        _apply_reshaped_internal_faces(cell_map, blocks_here, gr_blocks)
+
         # Face every cell STRICTLY from the user's drawn routes (each routed
         # connection's waypoints), and set each routed block's exit hop from its
         # route length (unless the block authors its own hops). Nothing is
@@ -3321,6 +3334,11 @@ def _reassert_internal_forward_faces(cell_map, blocks: list, gr_blocks: dict) ->
         # Resolve each source id to its placement cell: an int is a direct index; a
         # string matches the cell's ``cell_id`` name.
         by_name = {getattr(pc, "cell_id", None): pc for pc in cells}
+        # A hand-RESHAPED block's authored face may aim at a cell's OLD
+        # neighbour; the reshape repair (applied right after orientation)
+        # knows the direction toward where the sibling actually sits. Empty
+        # for a rigid placement, so that path is unchanged.
+        reshaped = _reshaped_internal_face_repairs(blk, gb)
         for sid in fwd_src_ids:
             if isinstance(sid, int):
                 pc = cells[sid] if 0 <= sid < len(cells) else None
@@ -3338,8 +3356,137 @@ def _reassert_internal_forward_faces(cell_map, blocks: list, gr_blocks: dict) ->
             if code is None and hasattr(face, "name"):
                 code = {"SOUTH": 0, "EAST": 1, "WEST": 2,
                         "NORTH": 3}.get(face.name)
+            fix = reshaped.get(getattr(pc, "cell_id", sid), (None, {}))[0]
+            if fix is not None:
+                code = fix
             if code is not None:
                 cfg.fwd_face = _CM_FACE(code)
+
+
+def _block_is_reshaped(blk, gb) -> bool:
+    """True when the block's PLACED cell geometry is NOT a rigid D4 image
+    (rotation/mirror, any translation) of its authored ``default_layout`` —
+    i.e. the user moved a cell by hand in the GUI. A rigidly placed block keeps
+    every authored face and face word exactly as the orientation pass produced
+    them; only a genuinely reshaped block needs its internal faces re-derived."""
+    pl = getattr(blk, "placement", None)
+    if pl is None or not pl.cells or len(pl.cells) < 2:
+        return False
+    try:
+        layout = gb.default_layout() or {}
+    except Exception:  # noqa: BLE001
+        return False
+    placed = {getattr(pc, "cell_id", None): (pc.x, pc.y) for pc in pl.cells
+              if getattr(pc, "cell_id", None) in layout}
+    if len(placed) < 2:
+        return False
+    ids = sorted(placed, key=str)
+    a0 = (layout[ids[0]][0], layout[ids[0]][1])
+    p0 = placed[ids[0]]
+    rel_a = [(layout[c][0] - a0[0], layout[c][1] - a0[1]) for c in ids]
+    rel_p = [(placed[c][0] - p0[0], placed[c][1] - p0[1]) for c in ids]
+    d4 = (lambda x, y: (x, y), lambda x, y: (-y, x), lambda x, y: (-x, -y),
+          lambda x, y: (y, -x), lambda x, y: (-x, y), lambda x, y: (x, -y),
+          lambda x, y: (y, x), lambda x, y: (-y, -x))
+    return not any(all(f(*ra) == rp for ra, rp in zip(rel_a, rel_p))
+                   for f in d4)
+
+
+def _reshaped_internal_face_repairs(blk, gb) -> dict:
+    """The INTERNAL-handoff faces a hand-RESHAPED block needs, from where its
+    cells ACTUALLY sit: ``{cell_id: (fwd_code | None, {word_addr: code})}``.
+    EMPTY for a rigidly placed / D4-transformed block (nothing to repair) and
+    for a block without an authored layout.
+
+    A block authors every internal handoff direction in its ``default_layout``
+    frame: the static per-cell face (the direction the cell's WRITE/JUMP leave
+    on) and any ``is_face`` DataWord a ``MOVE [FACE]`` flips to for a handoff
+    that does not ride the static face — the CORDIC's ``face_fwd`` (rdv->pre,
+    the lock the arms are barred behind) and its serialize-LOCK relock
+    ``unlock_face`` (pre->rdv, INV-69). The orientation pass maps them all
+    rigidly, which is exact for a rotated/mirrored placement — and wrong for a
+    cell the user moved round a corner: the hop re-derives from adjacency at
+    build time, the face still aims at the OLD neighbour, the handoff fires
+    into a foreign cell and the block wedges after its first sample.
+
+    Rule, per internal edge ``src -> dst`` (``internal_connections`` and
+    ``internal_jumps``) whose cells are adjacent in BOTH the authored and the
+    placed geometry: the authored direction ``src -> dst`` identifies which
+    faces encode that handoff — the cell's authored static face if it equals
+    it, and every ``is_face`` word whose AUTHORED value equals it — and each
+    of those is re-derived to the PLACED direction ``src -> dst``. A face whose
+    authored direction points at no sibling (an arm arrival, an egress) is
+    not a handoff and is left to the passes that own it."""
+    if not _block_is_reshaped(blk, gb):
+        return {}
+    try:
+        layout = gb.default_layout() or {}
+        cps = gb.build_cell_programs() or {}
+        edges = [(s, d) for (s, _sp, d, _dp) in (gb.internal_connections() or [])]
+        ij = getattr(gb, "internal_jumps", None)
+        edges += [(s, d) for (s, _sp, d, _dp) in ((ij() if callable(ij) else []) or [])]
+    except Exception:  # noqa: BLE001
+        return {}
+    placed = {getattr(pc, "cell_id", None): (pc.x, pc.y) for pc in blk.placement.cells}
+    out: dict = {}
+    for (src, dst) in edges:
+        if src not in layout or dst not in layout \
+                or src not in placed or dst not in placed:
+            continue
+        auth_dir = _step_face(layout[src][0], layout[src][1],
+                              layout[dst][0], layout[dst][1])
+        placed_dir = _step_face(placed[src][0], placed[src][1],
+                                placed[dst][0], placed[dst][1])
+        if auth_dir is None or placed_dir is None:
+            continue                      # a transit-lane handoff: not adjacent
+        if abs(layout[src][0] - layout[dst][0]) + abs(layout[src][1] - layout[dst][1]) != 1 \
+                or abs(placed[src][0] - placed[dst][0]) + abs(placed[src][1] - placed[dst][1]) != 1:
+            continue
+        fwd, words = out.get(src, (None, {}))
+        auth_face = layout[src][2] if len(layout[src]) > 2 else None
+        auth_face = _PORT_FACE_CODE.get(str(auth_face).lower()) if auth_face is not None else None
+        if auth_face == auth_dir:
+            fwd = placed_dir
+        cp = cps.get(src)
+        for d in (getattr(cp, "data", []) if cp is not None else []) or []:
+            if not getattr(d, "is_face", False) or d.address is None:
+                continue
+            v = getattr(d, "value", None)
+            if isinstance(v, str):
+                v = _PORT_FACE_CODE.get(v.lower())
+            if isinstance(v, int) and (v & 0x3) == auth_dir:
+                words = dict(words)
+                words[int(d.address)] = placed_dir
+        out[src] = (fwd, words)
+    return {k: v for k, v in out.items() if v[0] is not None or v[1]}
+
+
+def _apply_reshaped_internal_faces(cell_map, blocks: list, gr_blocks: dict) -> None:
+    """Apply :func:`_reshaped_internal_face_repairs` to the built cells: the
+    static ``fwd_face`` and the 2-bit face field of each repaired ``is_face``
+    word. Runs AFTER :func:`_apply_orientation_face_words` (which maps the
+    same words rigidly and would otherwise undo this). No-op for every block
+    whose placement is a rigid image of its authored layout."""
+    for blk in blocks:
+        gb = gr_blocks.get(blk.name)
+        if gb is None or blk.placement is None or not blk.placement.cells:
+            continue
+        repairs = _reshaped_internal_face_repairs(blk, gb)
+        if not repairs:
+            continue
+        pos_of = {getattr(pc, "cell_id", None): (pc.x, pc.y)
+                  for pc in blk.placement.cells}
+        for cid, (fwd, words) in repairs.items():
+            pos = pos_of.get(cid)
+            cfg = cell_map.get_cell(*pos) if pos is not None else None
+            if cfg is None:
+                continue
+            if fwd is not None:
+                cfg.fwd_face = _CM_FACE(fwd)
+            for addr, code in words.items():
+                if addr in cfg.memory:
+                    cfg.memory[addr] = ((cfg.memory[addr] & ~0x3)
+                                        | (int(code) & 0x3)) & 0xFFFF
 
 
 def _apply_orientation_face_words(cell_map, blocks: list, gr_blocks: dict) -> None:
@@ -3438,6 +3585,10 @@ def _apply_rotate_tap_face(cell_map, gr_placement, blocks, gr_blocks) -> None:
             cps = gb.build_cell_programs()
         except Exception:  # noqa: BLE001
             continue
+        # A hand-RESHAPED block's resting face may aim at an OLD neighbour;
+        # its internal consumer's real direction comes from the reshape
+        # repair (empty for a rigid placement).
+        reshaped = _reshaped_internal_face_repairs(blk, gb)
         for pc in blk.placement.cells:
             cp = cps.get(pc.cell_id)
             if cp is None:
@@ -3457,6 +3608,9 @@ def _apply_rotate_tap_face(cell_map, gr_placement, blocks, gr_blocks) -> None:
             if cfg is None:
                 continue
             rest = _fcode(getattr(pc, "face", None))        # default_layout face
+            _fix = reshaped.get(pc.cell_id, (None, {}))[0]
+            if _fix is not None:
+                rest = _fix
             fwd = getattr(cfg, "fwd_face", None)            # route-overridden face
             fwd = int(fwd) & 0x3 if fwd is not None else rest
             if internal is not None and rest is not None \

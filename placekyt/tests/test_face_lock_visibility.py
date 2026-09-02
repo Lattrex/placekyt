@@ -103,6 +103,19 @@ def _collide(project, block, port, onto_port):
     return victim, donor
 
 
+def _rail_nets(project, block, *ports):
+    """``{net_name: port}`` of the nets feeding ``block.<port>`` for each port —
+    read from the fixture, never hardcoded (the shipped file's net names are
+    the loader's, and change whenever the design is re-drawn)."""
+    return {c.name: c.target.port for c in project.connections
+            if getattr(c.target, "block", None) == block
+            and getattr(c.target, "port", None) in ports}
+
+
+# The SVPWM rendezvous pair: the two rails of the inverse-Park complex output.
+SVPWM_RAILS = ("v_alpha", "v_beta")
+
+
 # --------------------------------------------------------------------------- #
 # (0) the shared arrival-face helper — ONE authority for DRC + canvas
 # --------------------------------------------------------------------------- #
@@ -148,7 +161,9 @@ def test_drc_and_canvas_agree_on_the_same_nets(clean_project, catalog, chip_type
     arr = face_lock_arrivals(clean_project, catalog)
     by_cell = {rec.cell: rec for rec in arr.values()}
     from_drc = {by_cell[v.cell].nets[port] for v in viols for port in v.nets}
-    assert from_canvas == from_drc == {"va", "vb"}, (from_canvas, from_drc)
+    rails = set(_rail_nets(clean_project, "svpwm", *SVPWM_RAILS))
+    assert len(rails) == 2, rails
+    assert from_canvas == from_drc == rails, (from_canvas, from_drc)
 
 
 # --------------------------------------------------------------------------- #
@@ -167,7 +182,7 @@ def test_canvas_draws_attention_line_for_a_face_colliding_rail(
 
     conflict = {i.connection_name for i in canvas._scene.items()
                 if isinstance(i, ConnectionItem) and i.is_conflict}
-    assert conflict == {"va", "vb"}, conflict
+    assert conflict == set(_rail_nets(clean_project, "svpwm", *SVPWM_RAILS)), conflict
     for item in canvas._scene.items():
         if isinstance(item, ConnectionItem) and item.is_conflict:
             # a THIRD style: not the gray fly line, not the green routed line
@@ -185,8 +200,10 @@ def test_attention_line_is_labelled_with_its_net(clean_project, catalog,
     canvas.set_project(clean_project, chip_types)
     labels = {i.data(1): i.text() for i in canvas._scene.items()
               if i.data(0) == "face_conflict_label"}
-    assert set(labels) == {"va", "vb"}, labels
-    assert "v_alpha" in labels["va"] and "v_beta" in labels["vb"], labels
+    rails = _rail_nets(clean_project, "svpwm", *SVPWM_RAILS)
+    assert set(labels) == set(rails), labels
+    for net, port in rails.items():
+        assert port in labels[net], labels
 
 
 def test_clean_design_draws_no_attention_line(clean_project, catalog,
@@ -224,11 +241,12 @@ def test_coincident_routes_get_distinct_geometry(clean_project, catalog,
     canvas = ChipCanvas()
     canvas.face_lock_catalog = catalog
     canvas.set_project(clean_project, chip_types)
+    rails = _rail_nets(clean_project, "svpwm", *SVPWM_RAILS)
     routed = {i.connection_name: i for i in canvas._scene.items()
               if isinstance(i, ConnectionItem) and not i.is_conflict
-              and i.connection_name in ("va", "vb")}
-    assert set(routed) == {"va", "vb"}
-    a, b = routed["va"], routed["vb"]
+              and i.connection_name in rails}
+    assert set(routed) == set(rails) and len(routed) == 2, routed
+    a, b = routed.values()
     assert a.parallel_offset != b.parallel_offset
     ga = [(round(p.x(), 3), round(p.y(), 3)) for p in a._drawn_pts()]
     gb = [(round(p.x(), 3), round(p.y(), 3)) for p in b._drawn_pts()]
@@ -243,9 +261,11 @@ def test_coincident_routes_stay_separately_selectable(clean_project, catalog,
     canvas = ChipCanvas()
     canvas.face_lock_catalog = catalog
     canvas.set_project(clean_project, chip_types)
+    rails = _rail_nets(clean_project, "svpwm", *SVPWM_RAILS)
     routed = {i.connection_name: i for i in canvas._scene.items()
               if isinstance(i, ConnectionItem) and not i.is_conflict
-              and i.connection_name in ("va", "vb")}
+              and i.connection_name in rails}
+    assert set(routed) == set(rails) and len(routed) == 2, routed   # not vacuous
     for name, item in routed.items():
         pts = item._drawn_pts()
         probe = pts[len(pts) // 2]
@@ -286,23 +306,26 @@ def test_coincident_fan_is_capped_inside_the_cell(qapp):
 def test_message_names_nets_and_the_iq_fork(clean_project, catalog, chip_types):
     """A synthesised Q rail is a net the user never drew. The message must name both
     nets AND say they are the I/Q rails of one complex output that must FORK."""
-    _collide(clean_project, "svpwm", "v_beta", "v_alpha")
+    victim, donor = _collide(clean_project, "svpwm", "v_beta", "v_alpha")
     viols = _check_dual_input_same_face(clean_project, catalog, chip_types)
     assert len(viols) == 1
     msg = viols[0].reason
     assert "v_alpha" in msg and "v_beta" in msg
-    assert "va" in msg and "vb" in msg, "net names missing"
+    assert victim.name in msg and donor.name in msg, "net names missing"
     assert "I/Q rails" in msg and "FORK" in msg, msg
-    assert "cordicrotate" in msg, "the shared source cell must be named"
+    src = donor.source.block
+    assert f"'{src}'" in msg, f"the shared source cell {src!r} must be named"
 
 
 def test_message_says_reroutable_when_faces_remain(clean_project, catalog,
                                                    chip_types):
-    """cordicrotate in the shipped layout has free neighbours ⇒ fixable in place."""
-    _collide(clean_project, "cordicrotate", "y", "x")
+    """The svpwm rendezvous in the shipped layout has as many free neighbours
+    as it has inputs ⇒ fixable in place (the CORDICs need three faces and sit
+    against their theta relays, so they are the re-anchor case)."""
+    _collide(clean_project, "svpwm", "v_beta", "v_alpha")
     viols = [v for v in _check_dual_input_same_face(clean_project, catalog,
                                                     chip_types)
-             if "cordicrotate" in v.reason]
+             if "'svpwm'" in v.reason]
     assert len(viols) == 1
     msg = viols[0].reason
     assert "Reroutable in place" in msg, msg
@@ -323,15 +346,24 @@ def test_message_says_re_anchor_when_no_face_is_left(clean_project, catalog,
     # usable face for two inputs, which no reroute can ever satisfy. Both input
     # routes are re-pointed at the surviving (S) neighbour so the geometry is a real
     # arrival, not an orphaned route.
-    head = svpwm.placement.cells[0]
-    dx, dy = (ct.width - 1) - head.x, 0 - head.y
+    head, nxt = svpwm.placement.cells[0], svpwm.placement.cells[1]
+    # The block's own next cell takes one face; box the head into the corner
+    # whose two off-array faces are the OTHER two, leaving exactly one.
+    if nxt.x == head.x:                       # a vertical chain: E off-array
+        cx = ct.width - 1
+        cy = ct.height - 1 if nxt.y < head.y else 0
+        survivor = (cx - 1, cy)
+    else:                                     # a horizontal chain: N off-array
+        cy = 0
+        cx = ct.width - 1 if nxt.x < head.x else 0
+        survivor = (cx, cy + 1)
+    dx, dy = cx - head.x, cy - head.y
     for c in svpwm.placement.cells:
         c.x, c.y = c.x + dx, c.y + dy
     new_head = (head.x, head.y)
-    south = (new_head[0], new_head[1] + 1)
     for conn in proj.connections:
         if getattr(conn.target, "block", None) == "svpwm":
-            conn.route = [_pt(south), _pt(new_head)]
+            conn.route = [_pt(survivor), _pt(new_head)]
 
     viols = [v for v in _check_dual_input_same_face(proj, catalog, chip_types)
              if "svpwm" in v.reason]
@@ -455,7 +487,7 @@ def test_two_simultaneous_collisions_each_get_their_own_verdict(
     verdict: the I/Q fork clause on both, and reroutable-vs-re-anchor decided per
     block from ITS OWN free faces, not shared."""
     _collide(clean_project, "svpwm", "v_beta", "v_alpha")
-    _collide(clean_project, "cordicrotate", "y", "x")
+    _collide(clean_project, "cordicrotate_2", "y", "x")
     viols = _check_dual_input_same_face(clean_project, catalog, chip_types)
     assert len(viols) == 2, [str(v) for v in viols]
     reasons = {v.cell: v.reason for v in viols}
@@ -463,12 +495,14 @@ def test_two_simultaneous_collisions_each_get_their_own_verdict(
         # Every verdict is one of the two, never neither — decided per block.
         assert ("Reroutable in place" in reason
                 or "NO reroute can fix this" in reason), reason
-    # The svpwm pair ARE the I/Q rails of one complex output (cordicrotate's
-    # yi/yq), so that collision must carry the fork clause. The cordicrotate
-    # pair are two SEPARATE PI outputs (vd, vq) — not an I/Q pair — so it must
-    # NOT: the clause is earned from the design, never boilerplate.
+    # The svpwm pair ARE the I/Q rails of one complex output (the inverse
+    # Park's yi/yq), so that collision must carry the fork clause. The inverse
+    # Park's own x/y pair are two SEPARATE PI outputs (vd, vq) — not an I/Q
+    # pair — so it must NOT: the clause is earned from the design, never
+    # boilerplate. (The forward Park is fed by the Clarke's yi/yq — an I/Q
+    # pair — which is why it is not the counter-example here.)
     svp = next(r for r in reasons.values() if "'svpwm'" in r)
-    cord = next(r for r in reasons.values() if "'cordicrotate'" in r)
+    cord = next(r for r in reasons.values() if "'cordicrotate_2'" in r)
     assert "I/Q rails" in svp and "FORK" in svp, svp
     assert "I/Q rails" not in cord, cord
 

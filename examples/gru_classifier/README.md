@@ -52,7 +52,8 @@ multi-arm flowgraph has to set them too.
 
 ### Why the GRU block is folded wide and flat
 
-`GRUCellBlock` is placed as a **`CHIP_SCALE`** block: 10 cells wide by 5 tall,
+`GRUCellBlock` is placed as a **`CHIP_SCALE`** block: 10 cells wide by 6 tall
+(a 10×5 ring box plus its egress relay row),
 with its input and output on the same edge. That shape is what makes the rest of
 the chain fit.
 
@@ -146,7 +147,7 @@ scheduler strands the tail of a finite stream.
 > hosts the shipped `.kyt` on 58950, GRC-generates and runs the shipped `.grc`,
 > and asserts the class stream the scope receives is bit-exact to the golden and
 > inside the scope's y-axis. What is still unasserted is the rendered pixels —
-> see *What is still NOT verified* above.
+> see *What is not verified* above.
 
 **Rebuild the `.kyt`:**
 
@@ -214,7 +215,9 @@ Q15 LSB the bound is **input-level dependent**:
 Measured over 1600 windows spanning four classes and five peak levels:
 **0 violations**, tightest case at **64 %** of the bound. On the shipped clip the
 errors run **−14 … −75 LSB**. A flat tolerance would have been wrong — the same
-chain reads −14 LSB on a loud window and −218 on a quiet one.
+chain reads −14 LSB on a loud window and −218 on a quiet one. (These specific
+values were measured at authoring; the shipped gate asserts the bound and the
+non-vacuity check, not these numbers.)
 
 ## Verification
 

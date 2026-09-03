@@ -78,7 +78,7 @@ $ python examples/audio_meter/audio_meter_demo.py
 RESULT: WITHIN DERIVED BOUNDS — all three placed streams match stock GNU Radio
 ```
 
-62/120 cells, 8 blocks. Whole-chain proof for 8 analog blocks that previously
+62/120 cells (35 block cells + routing), 8 blocks. Whole-chain proof for 8 analog blocks that previously
 had only per-block gates: DCBlocker, AGC, BandRejectFilter, Squelch, Abs,
 MovingAverage, Nlog10, RMS. Not verified: the literal Qt window rendering.
 
@@ -122,7 +122,7 @@ gnuradio-companion examples/audio_meter/audio_meter.grc
 
 | File | What |
 |------|------|
-| `audio_meter.grc` | GRC-first source (kyttar markers, two tagged streams). |
+| `audio_meter.grc` | GRC-first source (kyttar markers, three tagged streams). |
 | `audio_meter.kyt` | Auto-generated placed+routed project. |
 | `build_kyt.py` | Regenerates the `.kyt`. |
 | `audio_meter_demo.py` | Headless END-TO-END demo. |

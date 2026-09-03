@@ -29,6 +29,10 @@ model (`verification/tests/test_cordic_blocks.py`).
 
 ## Run it
 
+> **Open the `.kyt`, not the `.grc`.** Importing `cordic_polar.grc` into
+> placeKYT does **not** auto-route it cleanly. Always open the shipped
+> `cordic_polar.kyt`, which is already placed and routed.
+
 1. Open **`cordic_polar.kyt`** in placeKYT. (Open the `.kyt` directly — the
    two CORDIC chains are dense guided-anchor placements the auto-router does
    not currently route cleanly from a fresh `.grc` import; an import can end

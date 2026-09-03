@@ -96,6 +96,11 @@ marker (it took a long-dead `alpha` arg; GRC Run would TypeError) — re-run
 
 ## Run it
 
+> **Open the `.kyt`, not the `.grc`.** This design is a hand-guided placement;
+> importing `audio_meter.grc` into placeKYT does **not** auto-route it cleanly
+> (the import can end with an unrouted net). Always open the shipped
+> `audio_meter.kyt`, which is already placed and routed.
+
 Two terminals, two commands — run both **from the repo root** (`placekyt/`).
 
 **1. Host the chip** (terminal 1):

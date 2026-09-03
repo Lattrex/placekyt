@@ -81,6 +81,11 @@ rate.)
 
 ## Run it
 
+> **Open the `.kyt`, not the `.grc`.** The modem runs from the shipped
+> `fsk4_modem.kyt` (already placed and routed). Importing `fsk4_modem.grc` into
+> placeKYT does **not** auto-route the placement — the `.grc` is the flowgraph
+> you drive it with from GNU Radio, not the placeKYT design to open.
+
 Two terminals, two commands — run both **from the repo root** (`placekyt/`).
 
 **1. Host the chip** (terminal 1) — launch placeKYT with the pre-built design:

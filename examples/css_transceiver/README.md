@@ -2,6 +2,10 @@
 
 # CSS receiver — chirp spread spectrum, the whole receive spine on one array
 
+> **Name note:** this example is a **receiver only** — there is no transmitter on
+> the chip (see "This is an RX example" below). The `css_transceiver/` folder name
+> is a misnomer kept for path stability; read it as *css_receiver*.
+
 **The story this demo tells:** a chirp-spread-spectrum symbol is a linear
 up-chirp that has been *cyclically shifted*, and the shift **is** the symbol.
 Multiply the incoming stream by the **conjugate** of the un-shifted reference

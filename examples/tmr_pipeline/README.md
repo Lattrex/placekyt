@@ -102,6 +102,11 @@ RESULT: EXACT — voter packets and single-path stream both match the pinned gol
 
 ## Run it
 
+> **Open the `.kyt`, not the `.grc`.** The three-arm voter is a hand-placed
+> rendezvous; importing `tmr_pipeline.grc` into placeKYT does **not** place and
+> route it correctly. Always open the shipped `tmr_pipeline.kyt`, which is
+> already placed and routed.
+
 Two terminals, two commands — run both **from the repo root** (`placekyt/`).
 
 **1. Host the chip** (terminal 1):

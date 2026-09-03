@@ -6,7 +6,9 @@ A complete coherent BPSK receiver running on the Kyttar cell array: an RRC match
 filter, a Costas loop for carrier recovery, Gardner timing recovery, and a BPSK
 slicer. The input is an RRC pulse-shaped BPSK signal carrying **both** a carrier
 frequency offset and a fractional timing offset; the chip recovers the bits with
-**BER 0**. The Gardner timing block is a **verified drop-in** for GNU Radio's
+**BER 0** (gated on the `.grc` import → auto-P&R path in
+`placekyt/tests/test_coherent_rx_grc_autopnr.py`; the shipped `.kyt` is that same
+design saved). The Gardner timing block is a **verified drop-in** for GNU Radio's
 `symbol_sync_cc(TED_GARDNER)` — bit-exact on chip across the fractional-offset
 sweep; see [`verification/STATUS.md`](../../verification/STATUS.md).
 
@@ -22,7 +24,7 @@ sweep; see [`verification/STATUS.md`](../../verification/STATUS.md).
 |------|------------|
 | `coherent_bpsk_rx.grc` | The GNU Radio flowgraph: BPSK stimulus → Kyttar receiver blocks → QT GUI plots. Open this in **both** placeKYT (to host the chip) and `gnuradio-companion` (to drive it). |
 | `coherent_bpsk_rx.kyt` | The pre-built placeKYT design (the four catalog blocks — ComplexRRCMatchedFilter → ComplexCostasLoop → Gardner → BPSKSlicer — auto-placed and bus/broker-routed). Open this directly if you'd rather not import the `.grc`. |
-| `batch_check.py` | A headless verifier: streams the burst through the hosted chip and prints the recovered bits + BER. No GNU Radio needed. |
+| `batch_check.py` | A headless verifier: streams the burst through the hosted chip and prints the recovered bits + BER. No GNU Radio needed. Host `coherent_bpsk_rx.kyt` as in step 1 — ignore the script header's mention of a `_autopnr.kyt`, which no longer exists. |
 
 ## Run it (the demo)
 

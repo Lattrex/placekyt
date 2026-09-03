@@ -18,6 +18,8 @@ and watch it run — all the core user features in one tiny package.
 |------|------------|
 | `gain.grc` | The GNU Radio flowgraph: a source → the Kyttar gain block → a sink. Open in **both** placeKYT (to host the chip) and `gnuradio-companion` (to drive it). |
 | `gain.kyt` | The placeKYT design hosting a single gain block on the cell array, already placed and routed. Open it directly to explore the canvas, inspector, and simulator. |
+| `gain_stimulus.kbs` | The default simulator stimulus the `.kyt` references. |
+| `gain_golden.kbs` | The expected output the simulator checks against. |
 
 ## Run it
 

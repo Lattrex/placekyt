@@ -22,9 +22,11 @@ placeKYT) — a headless test can drive it directly.
 """
 
 import json
+import os
 import socket
 import struct
 import threading
+import time as _time
 
 import numpy as np
 
@@ -32,6 +34,25 @@ _HDR = struct.Struct(">I")
 _LOCK = threading.Lock()
 _SESSIONS = {}   # (device_id, stream_id) -> BatchSession
 _RENDEZVOUS = {}  # device_id -> DuplexRendezvous
+
+# DEBUG TRACE (opt-in): set PLACEKYT_DEBUG=1 in the GR-python environment before a
+# GRC Run to trace the client-side duplex rendezvous — every source's submit, the
+# leader's collect window, the assembled batch, the dispatch, the reply, and each
+# stream's result/timeout. This is where a duplex Run stalls when the sources do
+# not all rendezvous into ONE RPC (a source arriving after the leader's collect
+# window dispatched submits alone, then blocks on the 10 s result wait — the GRC
+# flowgraph then hangs and returns "0 recovered"). Off by default (no noise).
+# DISTINCT from the simulator's KYTTAR_DEBUG (the per-cell chip firehose) so these
+# rendezvous markers stay readable during a real Run.
+_DEBUG = os.environ.get("PLACEKYT_DEBUG", "") not in ("", "0", "no", "false")
+_T0 = _time.time()
+
+
+def _dbg(msg):
+    if _DEBUG:
+        import sys as _s
+        _s.stderr.write(f"[kyttar.rv +{_time.time() - _T0:7.3f}s] {msg}\n")
+        _s.stderr.flush()
 
 
 def _default_block_name(placekyt_type):
@@ -159,6 +180,9 @@ class DuplexRendezvous:
                 "stream_id": str(stream_id), "samples": np.asarray(samples),
                 "complex": bool(complex_), "raw": bool(raw),
             }
+            _dbg(f"submit stream={stream_id!r} n={len(np.asarray(samples))} "
+                 f"complex={bool(complex_)} raw={bool(raw)} "
+                 f"pending_now={sorted(self._pending)} dispatching={self._dispatching}")
             # Non-default schedule wins (a source that leaves it at "interleaved"
             # must not clobber a peer that asked for "sequential").
             sched = str(schedule or "interleaved").lower()
@@ -174,20 +198,33 @@ class DuplexRendezvous:
             leader = not self._dispatching
             if leader:
                 self._dispatching = True
+        _dbg(f"stream={stream_id!r} leader={leader} collect_window={collect_window}")
         if leader:
             # Give peer sources a moment to submit, then dispatch everything.
             import time as _t
             _t.sleep(collect_window)
+            with self._cv:
+                _dbg(f"LEADER {stream_id!r} dispatching after {collect_window}s "
+                     f"window; pending={sorted(self._pending)}")
             self._dispatch_all(host, port)
         # Wait for THIS run's results (leader has them; peers wait for the leader).
         with self._cv:
             g = self._taken.get(str(stream_id), 0)
+            _waits = 0
             while self._gen <= g or str(stream_id) not in self._results:
                 if not self._cv.wait(timeout=10.0):
+                    _waits += 1
+                    _dbg(f"stream={stream_id!r} RESULT WAIT TIMEOUT #{_waits} "
+                         f"(gen={self._gen} taken_g={g} "
+                         f"have_result={str(stream_id) in self._results} "
+                         f"results_now={sorted(self._results)}) -- this is the "
+                         f"hang: this stream never made it into a dispatched batch")
                     break
                 g = self._taken.get(str(stream_id), 0)
             self._taken[str(stream_id)] = self._gen
-            return self._results.get(str(stream_id), np.array([], dtype=np.float32))
+            res = self._results.get(str(stream_id), np.array([], dtype=np.float32))
+            _dbg(f"stream={stream_id!r} RETURN {len(res)} recovered words")
+            return res
 
     def _dispatch_all(self, host, port):
         """Build + send ONE process_batch_duplex from all pending streams; split
@@ -197,6 +234,8 @@ class DuplexRendezvous:
         with self._cv:
             subs = list(self._pending.values())
             self._pending = {}
+        _dbg(f"_dispatch_all: batching {len(subs)} stream(s): "
+             f"{[s['stream_id'] for s in subs]}")
         # Build header stream list + concatenated payload (stream order preserved).
         streams_hdr = []
         parts = []
@@ -252,10 +291,16 @@ class DuplexRendezvous:
         except Exception:  # noqa: BLE001 — advertising is best-effort
             pass
         _note_endpoint(self.device_id, host, port)  # enable live param pushes
+        _dbg(f"_dispatch_all: connecting {host}:{port} schedule={_sched} "
+             f"pipelined={_pipe} n_payload={payload.size}")
         conn = socket.create_connection((host, int(port)))
         try:
             _send_message(conn, header, payload)
+            _dbg("_dispatch_all: sent process_batch_duplex; awaiting reply "
+                 "(if it hangs HERE the SERVER is wedged on the chip drive)")
             reply, out = _recv_message(conn)
+            _dbg(f"_dispatch_all: reply ok={reply.get('ok')} "
+                 f"lengths={reply.get('lengths')} ids={reply.get('stream_ids')}")
         finally:
             conn.close()
         if not reply.get("ok"):

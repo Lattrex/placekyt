@@ -199,6 +199,12 @@ def stream_targets(project, registry, catalog, chip_id: int = 0,
     # INPUT block by walking forward block→block. For the simple linear chains the
     # modem uses, that's a forward reachability walk from each input block.
     out_tag_of_block = _chain_out_tags(project, chip_id, in_port.name)
+    # INV-70 arm-ordering: rank each stream by the LOCK order of the first
+    # face-locking rendezvous its chain feeds, so the live bridge injects a
+    # sample's arms first-accepted-face-first (out-of-order arrival on a shared
+    # corridor deadlocks the rendezvous). All-equal for a rendezvous-free design.
+    lock_order_of_block = _rendezvous_lock_order(
+        project, catalog, chip_id, in_port.name)
 
     targets: dict = {}
     for conn in project.connections:
@@ -331,6 +337,8 @@ def stream_targets(project, registry, catalog, chip_id: int = 0,
             "out_tag": out_tag,
             "complex_out": complex_out,
             "landings": [landing],
+            # INV-70: the arm's first-accepted rank at the rendezvous it feeds.
+            "lock_order": lock_order_of_block.get(blk.name, 1_000),
         }
     # TWO-INPUT-STREAM CHAINS (AddCC / SubCC / MultiplyCC): both ingress streams
     # walk forward to the SAME chain-output net, so both would claim its out_tag
@@ -888,6 +896,82 @@ def _chain_out_tags(project, chip_id, in_port_name):
                 break
             frontier.extend(tb for tb, _et in nxt)
         result[conn.target.block] = (tag, term)
+    return result
+
+
+def _rendezvous_lock_order(project, catalog, chip_id, in_port_name):
+    """``{input-block name: rank}`` — for each block fed directly by the input
+    port, the LOCK-ORDER rank of the arm its forward chain uses to enter the first
+    face-locking rendezvous downstream (INV-70).
+
+    A ``NEEDS_DISTINCT_INPUT_FACES`` block distinguishes its two async input arms by
+    ARRIVAL FACE and boots LOCKed to its FIRST-accepted arm's face, rotating to the
+    next only after that arm lands (``RENDEZVOUS_FACE_PORTS`` lists the ports in
+    first-accepted order). When two such arms' input corridors SHARE cells, an arm
+    delivered OUT of that order backs up the shared segment before the locked arm can
+    land, so the LOCK never rotates and the pair deadlocks — the whole chain wedges,
+    zero egress. The host therefore must inject a sample's arms in this rank order.
+
+    Rank = the index, in the downstream rendezvous block's ``RENDEZVOUS_FACE_PORTS``,
+    of the port through which THIS input stream's forward chain enters that block.
+    A stream reaching no rendezvous gets a large default (driven last, harmless — it
+    gates nobody). Derived entirely from the project graph + block declarations, so it
+    holds for any placement and any design; a design with no rendezvous yields all-equal
+    ranks and the server's stable sort is a no-op (byte-identical to before)."""
+    # block->list[(downstream block, target port)] over block→block nets.
+    fwd: dict[str, list[tuple]] = {}
+    for conn in project.connections:
+        s, t = conn.source, conn.target
+        if isinstance(s, BlockEndpoint) and isinstance(t, BlockEndpoint):
+            fwd.setdefault(s.block, []).append((t.block, t.port))
+
+    def _face_ports(block_name):
+        blk = project.block(block_name)
+        if blk is None:
+            return None
+        try:
+            gb = catalog.instantiate(blk.type, "probe", blk.params,
+                                     library=blk.library)
+        except Exception:  # noqa: BLE001
+            return None
+        if not bool(getattr(gb, "NEEDS_DISTINCT_INPUT_FACES", False)):
+            return None
+        spec = getattr(gb, "RENDEZVOUS_FACE_PORTS", None)
+        if not spec:
+            return None
+        return [pn for (pn, _wn) in spec]
+
+    _DEFAULT = 1_000  # reaches no rendezvous → driven last
+
+    result: dict[str, int] = {}
+    for conn in project.connections:
+        if not (isinstance(conn.source, ChipPortEndpoint)
+                and conn.source.chip == chip_id
+                and conn.source.port == in_port_name
+                and isinstance(conn.target, BlockEndpoint)):
+            continue
+        head = conn.target.block
+        # BFS forward from the head block; the first rendezvous reached and the
+        # port through which the chain enters it gives the rank. Track the entry
+        # PORT of the frontier block so a rendezvous hit knows its arm.
+        seen: set = set()
+        # frontier holds (block, entry_port_into_that_block).
+        frontier = [(head, conn.target.port)]
+        rank = _DEFAULT
+        while frontier:
+            b, enter_port = frontier.pop(0)
+            if b in seen:
+                continue
+            seen.add(b)
+            fps = _face_ports(b)
+            if fps is not None:
+                # This chain enters rendezvous ``b`` via ``enter_port``; its rank is
+                # that port's first-accepted index (unknown port → after the named).
+                rank = fps.index(enter_port) if enter_port in fps else len(fps)
+                break
+            for (nb, nport) in fwd.get(b, []):
+                frontier.append((nb, nport))
+        result[head] = rank
     return result
 
 

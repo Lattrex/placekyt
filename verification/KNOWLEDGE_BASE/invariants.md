@@ -8,7 +8,7 @@ or verifying a Kyttar block should read these first. Each is a *constraint* ("al
 
 *(Navigation note, 2026-08-30: entries appear in LANDING order, not numeric order —
 parallel builds landed out of sequence, so e.g. INV-39 sits between INV-33 and
-INV-34, and INV-48 before INV-47. All of INV-0..INV-73 exist exactly once; search
+INV-34, and INV-48 before INV-47. All of INV-0..INV-75 exist exactly once; search
 for `## INV-N —` to find one. Numbers are never reassigned.)*
 
 ---
@@ -4934,7 +4934,7 @@ a NON-port edge) is untested and should be measured before use.
 **Related:** INV-56 (the port-cell rule's deadlock mechanism), INV-40 (fold
 shape vs free space), the corrected `layout_rules.md` §1 and checklist.
 
-## INV-66 — What a 2P2S carrier link composes, measured: four per-stream leg shapes work; ONE source cell cannot both feed a far-chip block and emit a tagged transit stream; a RAW-literal egress is TAIL-ONLY
+## INV-75 — What a 2P2S carrier link composes, measured: four per-stream leg shapes work; ONE source cell cannot both feed a far-chip block and emit a tagged transit stream; a RAW-literal egress is TAIL-ONLY
 
 **Measured 2026-08-31** (number assigned at landing — renumber on collision),
 during the `examples/secure_link` feasibility de-risk, on the real 4-die board
@@ -5456,7 +5456,8 @@ the consumer, because they start together and end together — is exactly the
 route that CANNOT work: identical path ⇒ identical final step ⇒ same arrival
 face ⇒ `dual_input_same_face` DRC error.
 
-MEASURED on a hand-routed full FOC loop (`foc_motor.full.kyt`), two errors,
+MEASURED on the hand-routed full FOC loop (the file now shipped as
+`examples/foc_motor/foc_motor.kyt`, promoted from the hand-edit), two errors,
 both this shape:
 
 ```
@@ -5476,13 +5477,12 @@ corridor because the two rails overlap perfectly, which is why the error looks
 like it has no cause on screen: **a same-face collision is INVISIBLE as a fly
 line precisely because the two nets coincide.**
 
-The shipped working `foc_motor.kyt` solves the same pair by making the rails
-FORK late — `yq` continues two cells past `yi`'s turn-in:
-
-```
-cordicrotate.yi -> svpwm.v_alpha: [...(2,11),(1,11)]              enters (1,10) from South
-cordicrotate.yq -> svpwm.v_beta:  [...(2,11),(1,11),(0,11),(0,10)] enters (1,10) from West
-```
+The now-superseded command-half `foc_motor` layout solved the same complex
+pair by making the rails FORK late — `yq` continued two cells past `yi`'s
+turn-in, so `yi` entered its consumer from South and `yq` from West rather than
+both from one face. The user resolved the full-loop collision the same way:
+one rail forks off further along so the two enter the rendezvous on distinct
+faces.
 
 So the rule for hand-routing (and for reading such a DRC error):
 
@@ -5502,3 +5502,83 @@ Related: INV-71 (arm count, not cell count, is the binding constraint),
 INV-70 (arms whose corridors share cells head-of-line deadlock — forking the
 rails also reduces shared segment length), INV-24 (port-divert landings all
 arrive on one face for the same reason).
+
+## INV-74 — A chip-input-port net is delivered CORRECTLY iff its landing cell's deliver JUMP targets the block's OWN entry; when a net forks off the shared input bus and its target is >1 hop past the fork, the broker must sit AT THE FORK and relay `@N` (the true distance), never `@1`
+
+*(Number assigned at landing — main's highest entry was INV-73.)*
+
+**The testable predicate (MEASURED, the ground truth to reason from).** For a
+`x16_in → block` net, read the built landing cell and disassemble its deliver
+program from the landing `entry`. The net is delivered correctly **iff that
+program's JUMP targets the TARGET BLOCK's own entry address**. If the JUMP
+targets a UNIVERSAL-routing-program entry instead — `transmit`=19 or
+`relay`=25 (from `_universal_routing_program` in `placekyt/engine/build.py`) —
+the word is relayed one hop further ALONG THE BUS into a plain transit cell,
+the block never fires, and the chain settles `QueueEmpty` with no output (an
+`exec_tick` trace shows the arm touching NO block — the one-step diagnostic).
+
+Measured on chip, two real designs:
+
+```
+shipped command-half foc_motor (now superseded):
+   e_d/e_q/theta  land -> deliver JUMP -> block entry 14   ALL CORRECT
+the full FOC loop (examples/foc_motor/foc_motor.kyt):
+   net2   land (0,2) JUMP -> 14  (block entry)   CORRECT
+   net1   land (0,1) JUMP -> 19  (bus transmit)  BROKEN
+   net5   land (0,0) JUMP -> 25  (bus relay)     BROKEN
+   net8   land (0,5) JUMP -> 19                  BROKEN
+   net9   land (0,5) JUMP -> 19                  BROKEN
+```
+
+**Root cause.** `broker_plan` (`placekyt/engine/bus_router.py`) seats a port
+net's broker at the route's LAST FREE CELL — the cell abutting the block — and
+the relay is emitted `@1`. That is correct ONLY when the net rides the bus
+straight to a cell adjacent to its block (the shipped command-half arms). When
+a net FORKS OFF the bus early (its route leaves the bus's forwarding direction
+at a cell well before the block) and then travels several cells to its input
+cell, the fork cell carries only the universal bus program, so the injected
+word rides past its turn-off; and even a broker seated correctly would fail if
+its relay were `@1` while the block sits farther away.
+
+**The fix, as specified.** The broker for such a net is placed AT THE FORK — the
+cell where the route leaves the bus's forwarding direction — and its relay is
+`WRITE @N` / `JUMP @N` where N is the LINEAR number of cells from the fork to
+the block's input cell (the intervening corridor cells forward the word on
+their own faces, so a turn between fork and block needs nothing from the relay
+instruction). The relocation applies to a net ONLY when the predicate above
+says it is mis-delivered — a net whose deliver JUMP already reaches the block
+entry is delivered correctly by the existing machinery and MUST be left
+byte-identical. This is the essential scoping constraint: it is the built-
+landing predicate, NOT any route-geometry heuristic (several geometry
+heuristics — "last free cell abuts the block", "tail rides straight",
+majority-through-direction — were each tried and each misclassified some
+shipped net, breaking a different working example every time).
+
+**Ruled out with a working design each — do NOT re-chase these:**
+
+* Shared hop counts are fine. `hop_cnt = 31 − transits` is a DISTANCE, not an
+  address; `complex_math` ships three arm pairs on colliding hops and works.
+* Shared corridor cells are fine. `complex_math` shares 11 ingress cells; the
+  broker/divert machinery exists to handle that.
+* Identical `(cell, entry, addrs)` landings are fine. `complex_math` has one
+  and delivers.
+* A rendezvous fed ONE arm that reports `Deadlock`/`QueueEmpty` is the LOCK
+  WORKING, not a defect — feed EVERY arm before reading `stop_reason`.
+* The face-lock DRC was correct every time; when a design built clean but did
+  not deliver, the built PROGRAMS were wrong, not the DRC.
+
+**Status (2026-09-02): SPECIFIED + ROOT-CAUSED, fix IN PROGRESS.** The engine
+is clean main; the predicate above is the acceptance test. The full FOC loop
+(`examples/foc_motor/foc_motor.kyt` — the promoted hand-routed file) does NOT
+deliver on clean main and is the driving case; a bit-exact six-iteration
+streaming gate for it is drafted at
+`verification/tests/test_foc_full_loop_gates.py` (skips until the loop
+delivers). Do not record a delivery/throughput number for the full loop until
+it is measured on the committed engine.
+
+Related: INV-1 (hop is placement-dependent; distance = ROUTED corridor length),
+INV-24 (the shared-input-port fork and the `_apply_port_diverts` primitive —
+its "chaining two @1 brokers" note is the `@1` hack this supersedes),
+INV-69 (a reshaped rendezvous also needs its relock face re-derived from where
+its cells actually sit), INV-71/73 (rendezvous arm faces), INV-56 (read
+`stop_reason`; `QueueEmpty` is not proof the work ran).

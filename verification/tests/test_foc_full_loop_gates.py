@@ -68,6 +68,15 @@ def built():
     return cat, ct, proj, bres
 
 
+def _registry(ct):
+    """A ChipTypeRegistry carrying just this design's chip type — stream_targets
+    needs it to resolve the input port and the per-arm landings."""
+    from engine.registry import ChipTypeRegistry
+    reg = ChipTypeRegistry()
+    reg.register_file(str(CHIP_YAML))
+    return reg
+
+
 def _port_nets(proj):
     from model.connection import ChipPortEndpoint, BlockEndpoint
     return [c for c in proj.connections
@@ -282,3 +291,104 @@ def test_full_loop_streams_bit_exact_on_one_array(built):
     got_c = got.get(t_duty, [])
     assert got_m == want_m, f"measurement half diverged: got {got_m[:3]}… want {want_m[:3]}…"
     assert got_c == want_c, f"command half diverged: got {got_c[:6]}… want {want_c[:6]}…"
+
+
+# --------------------------------------------------------------------------- #
+# THE order-robustness gate: the DUPLEX BATCH path streams bit-exact even when
+# the CLIENT submits the arms out of lock order (the GRC-run wedge, INV-70).
+# --------------------------------------------------------------------------- #
+
+def _from_q15(w: int) -> float:
+    """uint16 Q15 word → float in [-1, 1) — the value ``foc_host`` emits per arm
+    (the GRC sources are ``output_words='q15'``)."""
+    w &= 0xFFFF
+    return (w - 65536 if w >= 32768 else w) / 32768.0
+
+
+def test_duplex_batch_streams_regardless_of_client_arm_order(built):
+    """Drive the WHOLE loop through the real ``_process_batch_duplex`` server path
+    with the six arms submitted in a DELIBERATELY out-of-lock CLIENT order (each
+    face-locking rendezvous' arms reversed: ib before ia, e_q before e_d) and
+    recover bit-exact against the same golden as the in-order per-arm drive.
+
+    The streams are Q15 (``raw=False``), and the payload is ``from_q15(word)`` —
+    the EXACT encoding the GRC ``foc_host`` block emits and the ``kyttar_source``
+    (``output_words='q15'``) carries (a raw-word payload would instead be re-read
+    through the ``_float_to_raw_i16`` clamp, which corrupts a word ≥ 0x8000 — an
+    artefact of the wrong stream type, not the chip). Proves the hosted duplex
+    batch is order-robust on this placement: each arm runs to quiescence, so an
+    arbiter-held out-of-turn arm (INV-70's transient ``Deadlock``) is released
+    when its partner lands, and the recovered stream is identical either way. The
+    server's placement-derived lock-order arm sort (port_config ``lock_order``)
+    additionally makes the injection itself first-accepted-face-first."""
+    import numpy as np
+    import simkyt
+    import foc_loop_model as M
+    from engine.port_config import stream_targets
+    from engine.sim_bridge import SimServer
+
+    cat, ct, proj, bres = built
+    tgt = stream_targets(proj, _registry(ct), cat, 0, build_result=bres)
+    for s in ("ia", "ib", "th_park", "e_d", "e_q", "th_ipark"):
+        assert s in tgt, f"stream '{s}' has no resolved target"
+
+    N = 6
+    ia = [1000, 0x0333, -1500 & 0xFFFF, 300, 0x0700, -200 & 0xFFFF]
+    ib = [2000, 0x1500, 900, -2200 & 0xFFFF, 0x0123, 1750]
+    th = [0x1234, 0x4000, 0x8000, 0xC000, 0x2468, 0x9ABC]
+    ed = [1500, 0x0210, -900 & 0xFFFF, 400, 0x0650, -150 & 0xFFFF]
+    eq = [2500, 0x1200, 700, -1800 & 0xFFFF, 0x0333, 1400]
+    want_m = [(a & 0xFFFF, b & 0xFFFF) for a, b in M.measurement_half(ia, ib, th)]
+    want_c = [w & 0xFFFF for w in M.command_half(ed, eq, th)]
+
+    vals = {"ia": ia, "ib": ib, "th_park": th, "e_d": ed, "e_q": eq, "th_ipark": th}
+    # ADVERSARIAL client order: each rendezvous pair reversed (ib before ia,
+    # e_q before e_d). The server's lock-order sort re-orders injection; the
+    # per-arm-to-quiescence drive makes the recovery order-robust regardless.
+    order = ["ib", "ia", "th_park", "e_q", "e_d", "th_ipark"]
+
+    chip = simkyt.Chip.from_yaml(str(CHIP_YAML))
+    chip.load_bitstream_physical(bres.words(0))
+    srv = SimServer(chip, stream_targets=tgt)
+
+    # Q15 REAL streams (raw=False); payload = from_q15(word), the GRC encoding.
+    streams_hdr = [{"stream_id": s, "complex": False, "raw": False, "n_samples": N}
+                   for s in order]
+    payload = np.concatenate(
+        [np.asarray([_from_q15(w) for w in vals[s]], dtype="<f4") for s in order]
+    ).astype("<f4")
+    header = {"port": "x16_out", "schedule": "interleaved", "streams": streams_hdr}
+    reply, out = srv._process_batch_duplex(header, payload)
+    assert reply["ok"], reply
+
+    # Split the concatenated reply per stream; convert Q15 floats back to words.
+    got = {}
+    off = 0
+    for s, ln in zip(order, reply["lengths"]):
+        got[s] = [round(float(v) * 32768) & 0xFFFF for v in out[off:off + ln]]
+        off += ln
+    from model.connection import ChipPortEndpoint
+    tags = sorted({int(c.out_tag) for c in proj.connections
+                   if isinstance(c.target, ChipPortEndpoint) and c.out_tag is not None})
+    assert len(tags) == 3, f"expected 3 egress tags: {tags}"
+    # Map tag -> owning stream (out_tag, and out_tag+1 for a complex-egress pair).
+    owner = {}
+    for s in order:
+        ot = tgt[s].get("out_tag")
+        if ot is None:
+            continue
+        owner[int(ot)] = s
+        if tgt[s].get("complex_out"):
+            owner[int(ot) + 1] = s
+    meas_stream = owner.get(tags[0])
+    cmd_stream = owner.get(tags[2])
+    assert meas_stream and cmd_stream, (owner, tags)
+    meas = got[meas_stream]
+    got_m = list(zip(meas[0::2], meas[1::2]))
+    got_c = got[cmd_stream]
+    assert got_m == want_m, (
+        f"measurement half diverged under out-of-order client submission: "
+        f"got {got_m[:3]}… want {want_m[:3]}… (INV-70 arm ordering)")
+    assert got_c == want_c, (
+        f"command half diverged under out-of-order client submission: "
+        f"got {got_c[:6]}… want {want_c[:6]}… (INV-70 arm ordering)")

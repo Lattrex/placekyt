@@ -28,12 +28,36 @@ import json
 import os
 import socket
 import struct
+import sys
 import threading
 import time
 
 import numpy as np
 
 _HDR = struct.Struct(">I")  # 4-byte big-endian frame-header length
+
+# SERVER-SIDE DEBUG TRACE (opt-in): set PLACEKYT_DEBUG=1 in the placeKYT server
+# environment to trace a duplex batch's on-chip drive — the streams it received,
+# each sample's per-arm stop reason, and the drained word counts. Pairs with the
+# GR-client `[kyttar.rv]` trace: if the client logs "awaiting reply" and the
+# server logs the batch entry but never finishes the sample loop, the wedge is
+# on the chip (a rendezvous that never releases); if the server never logs the
+# batch at all, the request never arrived (a client-rendezvous / socket issue).
+# NOTE: a DISTINCT var from the simulator's own KYTTAR_DEBUG (which turns on the
+# per-cell INSTR_ARRIVAL firehose) — these are high-level batch markers, not the
+# chip event stream, so they stay readable during a real Run.
+_DEBUG = os.environ.get("PLACEKYT_DEBUG", "") not in ("", "0", "no", "false")
+# The per-SAMPLE drive trace is one line per sample (600+ on a real Run) — far too
+# noisy for the default. It rides a SECOND var so `PLACEKYT_DEBUG=1` stays a
+# readable batch-level view (ENTER / EXIT / rendezvous) and the firehose is opt-in.
+_DEBUG_SAMPLES = os.environ.get("PLACEKYT_DEBUG_SAMPLES", "") not in (
+    "", "0", "no", "false")
+
+
+def _srv_dbg(msg):
+    if _DEBUG:
+        sys.stderr.write(f"[placeKYT srv] {msg}\n")
+        sys.stderr.flush()
 
 
 class BatchAborted(Exception):
@@ -1173,6 +1197,12 @@ class SimServer:
         streams_hdr = list(header.get("streams") or [])
         if not streams_hdr:
             return {"ok": False, "error": "process_batch_duplex: no streams"}, None
+        _srv_dbg("process_batch_duplex ENTER streams="
+                 + str([(s.get("stream_id"), s.get("n_samples"),
+                         "cplx" if s.get("complex") else "real",
+                         "raw" if s.get("raw") else "q15") for s in streams_hdr])
+                 + f" schedule={header.get('schedule')} "
+                   f"pipelined={header.get('pipelined')}")
         # NEW-RUN DETECTION by STREAM CYCLING — the SAME invariant the
         # single-stream process_batch path uses (see the note there). A duplex
         # batch is NOT automatically a whole Run: it is one Run's worth of
@@ -1259,9 +1289,11 @@ class SimServer:
             a0, a1, out_tag, in_name = 0, 1, None, "x16_in"
             landings = None
             complex_out = False
+            lock_order = 1_000
             if sid and sid in self._stream_targets:
                 tgt = self._stream_targets[sid]
                 complex_out = bool(tgt.get("complex_out"))
+                lock_order = int(tgt.get("lock_order", 1_000))
                 entry = int(tgt["entry_addr"]) & 0xFF
                 hop = int(tgt["hop_count"]) & 0x1F
                 das = list(tgt.get("data_addrs") or [])
@@ -1289,6 +1321,10 @@ class SimServer:
                 "sid": sid, "complex": is_complex, "raw": raw, "n": n,
                 "seg": seg, "entry": entry, "hop": hop, "a0": a0, "a1": a1,
                 "landings": landings,
+                # INV-70 arm-ordering rank (first-accepted rendezvous face first);
+                # the per-sample interleaved drive injects arms in this order so an
+                # out-of-order arrival can't wedge a shared-corridor rendezvous.
+                "lock_order": lock_order,
                 # COMPLEX chain egress: the terminal cell's I and Q rails exit on
                 # tags (out_tag, out_tag+1); this stream owns BOTH, collected in
                 # arrival order (yi then yq — the co-routed emit order), so the
@@ -1352,7 +1388,11 @@ class SimServer:
                         self._chip.run(max_events=3000)
                     self._chip.inject_jump_physical(target_hop_cnt=l_hop,
                                                     entry_addr=l_entry)
-                    self._chip.run(max_events=mx)
+                    _r = self._chip.run(max_events=mx)
+                    _sr = (_r or {}).get("stop_reason")
+                    s["_last_stop"] = _sr
+                    if _DEBUG and _sr is not None:
+                        s.setdefault("_stops", set()).add(_sr)
             else:
                 self._chip.inject_data_physical([xi], target_hop_cnt=hop,
                                                 target_addr=int(a0))
@@ -1363,7 +1403,11 @@ class SimServer:
                     self._chip.run(max_events=3000)
                 self._chip.inject_jump_physical(target_hop_cnt=hop,
                                                 entry_addr=entry)
-                self._chip.run(max_events=mx)
+                _r = self._chip.run(max_events=mx)
+                _sr = (_r or {}).get("stop_reason")
+                s["_last_stop"] = _sr
+                if _DEBUG and _sr is not None:
+                    s.setdefault("_stops", set()).add(_sr)
             # Drain + demux by tag into EACH stream's bucket.
             # SINGLE-UNTAGGED-STREAM FALLBACK: with exactly one stream and no
             # resolved out_tag (a duplex RPC carrying one plain stream), every
@@ -1482,10 +1526,14 @@ class SimServer:
                 # by another stream's words. We interleave at PACKET granularity: emit
                 # stream A's whole sample-k packet, then stream B's, then A's k+1, …. Each
                 # stream lands at its OWN cell/hop, so packets are independent.
-                per = [_stream_words_by_sample(s) for s in streams]
+                # INV-70: emit each sample's per-stream packets in LOCK order (see
+                # the per-sample paced branch) so the shared corridor delivers each
+                # rendezvous's first-accepted arm ahead of its partner.
+                ordered_sat = sorted(streams, key=lambda s: s["lock_order"])
+                per = [_stream_words_by_sample(s) for s in ordered_sat]
                 merged = []
                 for k in range(n_max):
-                    for pi in range(len(streams)):
+                    for pi in range(len(ordered_sat)):
                         if k < len(per[pi]):
                             data_words, jump_word = per[pi][k]
                             merged += data_words
@@ -1567,11 +1615,27 @@ class SimServer:
                         if (k & 31) == 31 and not self._client_alive():
                             raise BatchAborted()
             else:
+                # INV-70: within ONE sample, inject arms in LOCK order (each
+                # rendezvous's first-accepted face first) so an arm that must land
+                # BEFORE its partner never queues behind it on a shared input
+                # corridor — the out-of-order-arrival wedge the GRC duplex batch hit
+                # (10-11/12 runs returning 0, the flowgraph then hanging on the
+                # never-completing RPC). ``lock_order`` is placement-derived
+                # (port_config); a rendezvous-free design has all-equal ranks so this
+                # stable sort preserves header order (byte-identical to before).
+                ordered = sorted(streams, key=lambda s: s["lock_order"])
                 for k in range(n_max):
-                    for s in streams:
+                    for s in ordered:
                         if k >= s["n"]:
                             continue
                         _drive_one(s, k)
+                    if _DEBUG_SAMPLES:
+                        _srv_dbg(
+                            f"  sample {k}: "
+                            + " ".join(
+                                f"{s['sid']}:{s.get('_last_stop')}"
+                                f"(out={len(s['out'])})"
+                                for s in ordered if k < s["n"]))
                     # GRC STOP / client disconnect: abort promptly.
                     if (k & 31) == 31 and not self._client_alive():
                         raise BatchAborted()
@@ -1598,6 +1662,11 @@ class SimServer:
             _sys.stderr.write(
                 f"[placeKYT duplex] {schedule.upper()} {summary}\n")
             _sys.stderr.flush()
+        if _DEBUG:
+            _stopsum = " ".join(
+                f"{s['sid']}:{sorted(s.get('_stops', {'?'}))}" for s in streams)
+            _srv_dbg(f"process_batch_duplex EXIT aborted={aborted} "
+                     f"lengths={lengths} dt={_dt:.3f}s per-arm-stops[{_stopsum}]")
         if self._on_activity is not None:
             try:
                 self._on_activity(samples=n_max, seconds=_dt,

@@ -53,8 +53,9 @@ through the simulator and reading each output word's capture time with
 |---|---|
 | **sustained inter-iteration interval** | **29,004.9 ns** |
 | **sustained control-loop rate** | **34.48 kHz** |
-| latency to the first duty word (fill) | 109,654.0 ns |
+| latency to the first duty word (includes ~81 µs one-time startup) | 109,654.0 ns |
 | latency to the complete 3-word packet | 109,938.6 ns |
+| whole-loop compute span, per iteration (trace) | 28,956.5 ns |
 | cadence of the three duty words | 142.29 ns apart |
 | cells | 60 block cells / 120 (plus routing corridors; 72 active in one iteration) |
 | instructions per iteration | ~1,064 |
@@ -72,20 +73,23 @@ space-vector modulator — on one fabric.
 placement and routing. They are not silicon-certified, and a real device will
 differ.
 
-### Fill versus steady state
+### Startup versus steady state
 
-The first duty packet lands at ~109,939 ns, but the sustained interval between
-packets is ~29,005 ns — the fill latency is about **four times** the steady-state
-period. That gap is the finding: **the full loop OVERLAPS successive iterations.**
-The chain is deep enough (both rotations, both PI stages and the modulator in
-series) that more than one control iteration is in flight at once, so the
-steady-state period is well under the whole-chain traversal time — there is a
-real pipeline-fill discount here, unlike the command half in isolation (where
-the shorter chain re-arms and its latency equals its interval).
+The first duty packet lands at ~109,939 ns, but every packet after it arrives
+~29,005 ns apart. Those two numbers are **not** a pipeline-fill effect — the
+loop does not overlap iterations. Tracing the first iteration shows why: the
+first cell does not execute until **81,067 ns**, and the loop's compute then
+runs 81,067 → 110,023 ns, a span of **28,956 ns** with no idle gap inside it
+larger than ~200 ns. So the ~81 µs is a one-time startup cost paid before the
+first iteration's six words are in the chip; the loop itself takes ~29 µs
+per iteration, every iteration.
 
-For a host-paced controller this still behaves as one sample set per control
-period by construction, which is how the example drives it; the overlap simply
-means the sustained rate is higher than the single-shot latency would suggest.
+The drive makes overlap impossible by construction: each arm is injected and
+run to quiescence before the next, and the six arms of iteration *k+1* are not
+injected until iteration *k* has emitted its duty packet. This is a
+sample-by-sample controller — one sample set per control period — and the
+29 µs figure is the true whole-loop traversal time, which is why the sustained
+rate (34.48 kHz) equals one over that traversal.
 
 Two drive patterns of the **command-half chain** (`foc_motor_demo.py`) still do
 not stream on the per-arm drive, both pinned as guard tests in
@@ -115,8 +119,10 @@ fully saturated:
 The lock costs about **6% of throughput**. The example keeps it on: the PI
 integrator is a feedback loop, and correctness under saturation is not
 tradeable for rate. Its single-shot latency is 1,338.5 ns against a 949.2 ns
-steady-state period — a single stage *does* pipeline, which is precisely the
-overlap the whole chain's per-block arm bars give up.
+steady-state period — a single stage driven saturated *does* pipeline. The
+whole chain never gets that discount: it is driven sample-by-sample, and each
+rendezvous bars its arms until the group clears, so its per-iteration time is
+the full 29 µs traversal with no overlap.
 
 ## The full loop
 

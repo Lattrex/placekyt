@@ -66,11 +66,14 @@ examples/fft128_2p2s/fft128_2p2s_grc_to_db.py
 examples/fft_spectrum/fft_spectrum.py
 examples/fft_spectrum/fft_spectrum_32.py
 examples/fsk4_modem/fsk4_modem.py
+examples/foc_motor/foc_motor.py
+examples/foc_motor/foc_motor_foc_host.py
 examples/gain/gain_demo.py
 examples/gain_2p2s/gain_2p2s_demo.py
 examples/gain_hw/gain_hw.py
 examples/gru_classifier/gru_classifier_grc.py
 examples/lms_equalizer/lms_equalizer.py
+examples/lz4_stream/lz4_stream.py
 examples/psk31_transceiver/psk31_transceiver.py
 examples/qam16_modem/qam16_modem.py
 examples/qpsk_modem/qpsk_modem.py

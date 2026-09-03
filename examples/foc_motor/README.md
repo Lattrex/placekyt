@@ -41,6 +41,14 @@ Measured on the real placed + routed + built chip, driving the shipped `.kyt`
 through the simulator and reading each output word's capture time with
 `read_port_words_timed`:
 
+> **Known gap.** These whole-loop figures were measured once, by hand, on the
+> shipped `.kyt` (2026-09-03). **No shipped script reproduces this `.kyt` or
+> this table yet** — `foc_motor_demo.py` and `build_kyt.py` both build only the
+> *command half* (see **Files**). The only shipped driver of the whole loop on
+> one array is the bit-exactness gate
+> `verification/tests/test_foc_full_loop_gates.py`, which has no timing
+> measurement. A timed whole-loop script is the next thing this example needs.
+
 | | measured |
 |---|---|
 | **sustained inter-iteration interval** | **29,004.9 ns** |
@@ -48,7 +56,7 @@ through the simulator and reading each output word's capture time with
 | latency to the first duty word (fill) | 109,654.0 ns |
 | latency to the complete 3-word packet | 109,938.6 ns |
 | cadence of the three duty words | 142.29 ns apart |
-| cells | 60 / 120 (72 active in one iteration) |
+| cells | 60 block cells / 120 (plus routing corridors; 72 active in one iteration) |
 | instructions per iteration | ~1,064 |
 
 The chain **streams**: six consecutive control iterations, each with different
@@ -79,7 +87,9 @@ For a host-paced controller this still behaves as one sample set per control
 period by construction, which is how the example drives it; the overlap simply
 means the sustained rate is higher than the single-shot latency would suggest.
 
-Two drive patterns still do not stream, both pinned as guard tests:
+Two drive patterns of the **command-half chain** (`foc_motor_demo.py`) still do
+not stream on the per-arm drive, both pinned as guard tests in
+`test_foc_motor_example.py`:
 
 * an **arm-saturated** drive — the arm words enqueued back-to-back through
   `queue_words_physical`, the INV-19 saturated path — wedges and emits nothing;
@@ -89,6 +99,10 @@ Both are the same cause, and it is topological rather than arithmetic: the three
 arm corridors share cells, so a word held at a barred face blocks the segment a
 later arm must transit (INV-70). Saturated therefore does **not** equal
 per-sample at chain level, and the sustained figure above is the per-sample one.
+
+The shipped **whole-loop** `.kyt`, driven through the hosted duplex batch path,
+is order-robust: `test_foc_full_loop_gates.py` submits every rendezvous's arms
+in reversed order and still recovers bit-exact.
 
 The per-stage trade is visible one level down. `PIControllerBlock` alone, driven
 fully saturated:
@@ -150,8 +164,9 @@ placement. The shipped `foc_motor.kyt` places the whole thing on one 10×12 arra
 * **θ is delivered as two independent arms**, `th_park` and `th_ipark`, one per
   rotation. It feeds both, and on-chip fan-out to two rendezvous arms is the
   hard part; two deliveries sidestep it.
-* **SVPWM emits three words per sample** on one stream, so its sink is set to
-  q15 output words and the packet is split with a Deinterleave at 3.
+* **SVPWM emits three words per sample** on one stream; the sources are q15
+  (`output_words = q15`), so the sink returns word/32768 floats, and the packet
+  is split with a Deinterleave at 3.
 * **`server_port` is 58950 everywhere.** A `0` there makes `kyttar_source`
   silently no-op — the flowgraph runs and does nothing, with no error.
 
@@ -164,7 +179,7 @@ Euler:
 
 * **i_q converges to its reference** — within 2% by step 432, and it starts
   from zero, so it genuinely had to get there;
-* **i_d holds at zero** (within 0.0005), which is what a surface PMSM wants:
+* **i_d holds at zero** (within 0.005, the gated bound), which is what a surface PMSM wants:
   the magnets already supply the rotor flux, so d-axis current is pure loss;
 * it does this **against the back-EMF**, 7 V of it on a 24 V bus at 200 rad/s
   electrical — rejecting that disturbance is what a current loop is *for*.
@@ -212,13 +227,15 @@ the extra precision has to go.
 |---|---|
 | `foc_motor.kyt` | the shipped placed + routed chip — **the whole loop on one array** — open this directly |
 | `foc_motor.grc` | **the FULL loop as a flowgraph** — every block, every connection |
-| `foc_motor_demo.py` | placement, build, drive, and the loop-rate measurement |
+| `foc_motor_demo.py` | the **command half alone** (PI×2 + inverse Park + SVPWM) placed from its own anchors, built, driven and rate-measured (~55.8 kHz). It does **not** load or exercise the shipped whole-loop `.kyt`. |
 | `foc_loop_model.py` | the PMSM plant and the whole-loop host golden |
 | `foc_loop_twochip.py` | an alternative two-die split of the same loop |
-| `build_kyt.py` | regenerate the `.kyt`; reverifies on chip before saving |
+| `build_kyt.py` | regenerates the **command-half** design only. **Do not run it against the shipped file** — it writes `foc_motor.kyt` and would overwrite the whole-loop design with the command half. |
 | `build_grc.py` | regenerate `foc_motor.grc` |
-| `verification/tests/test_foc_motor_example.py` | the command-half gate suite |
-| `verification/tests/test_foc_motor_grc.py` | the full-loop / flowgraph gate suite |
+| `foc_motor.py`, `foc_motor_foc_host.py` | GRC's generated flowgraph and the embedded `foc_host` block — regenerated output, do not edit |
+| `verification/tests/test_foc_full_loop_gates.py` | **the whole-loop-on-one-array gate for the shipped `.kyt`** (bit-exact, six iterations, order-robust) |
+| `verification/tests/test_foc_motor_example.py` | the command-half chain gate suite (the `foc_motor_demo.py` design) |
+| `verification/tests/test_foc_motor_grc.py` | the flowgraph / host-closure gate suite |
 
 ## Run it
 
@@ -258,15 +275,24 @@ array. To regenerate the flowgraph:
 .venv/bin/python examples/foc_motor/build_grc.py
 ```
 
-### The loop headless (the shipped one-array design)
+### The command half headless
 
 ```bash
 QT_QPA_PLATFORM=offscreen .venv/bin/python examples/foc_motor/foc_motor_demo.py
 ```
 
-You will see each iteration's three duty words against the golden they are
-compared to, the first-packet latency, the duty-word cadence, and the sustained
-inter-iteration interval and loop rate in kHz.
+This runs the **command half only** (PI×2 → inverse Park → SVPWM), placed from
+its own anchors — not the shipped whole-loop `.kyt`. You will see each
+iteration's three duty words against the golden they are compared to, the
+first-packet latency, the duty-word cadence, and the sustained inter-iteration
+interval and loop rate in kHz (~55.8 kHz for this shorter chain).
+
+To drive the shipped **whole loop** on one array, run its gate:
+
+```bash
+QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest \
+  verification/tests/test_foc_full_loop_gates.py -q
+```
 
 ### An alternative: the loop split across two arrays
 
@@ -280,16 +306,16 @@ one, command on the other) instead of one — a study in splitting a loop across
 carrier link. It builds both halves, closes the loop around the plant, and
 prints each iteration's measured currents and duties against the host golden.
 
-To regenerate the `.kyt` (it is only written if the chip run is exact):
-
-```bash
-QT_QPA_PLATFORM=offscreen .venv/bin/python examples/foc_motor/build_kyt.py
-```
+> **Do not run `build_kyt.py` against the shipped file.** It regenerates the
+> **command-half** design only and writes it to `foc_motor.kyt`, so it would
+> overwrite the shipped whole-loop `.kyt` with the command half. There is no
+> shipped regenerator for the whole-loop `.kyt` yet (see **Known gap** above).
 
 The gates:
 
 ```bash
 QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest \
+  verification/tests/test_foc_full_loop_gates.py \
   verification/tests/test_foc_motor_example.py \
   verification/tests/test_foc_motor_grc.py -q
 ```

@@ -16,9 +16,9 @@ x ─▶ FloatToComplex ─▶ FreqXlatingFIR(9 taps, −9 kHz) ─▶ ComplexLo
 The golden is the IDENTICAL stock-GNU-Radio chain (`float_to_complex`,
 `freq_xlating_fir_filter_ccf`, `fir_filter_ccf` fed `firdes.low_pass` — the
 demo ASSERTS the chip block designs the same firdes taps —
-`multiply_const_cc`, `complex_to_imag`). The bound is **DERIVED** from the
+`multiply_const_cc`, `conjugate_cc`, `complex_to_imag`). The bound is **DERIVED** from the
 per-block verified error reports, never tuned: FloatToComplex 0 + FXF 16 +
-ComplexLowPass 32 + MultiplyConstComplex 13 + ComplexToImag 0 = **61 LSB**.
+ComplexLowPass 32 + MultiplyConstComplex 13 + Conjugate 0 + ComplexToImag 0 = **61 LSB**.
 Measured: **25 LSB** worst over 320 samples.
 
 `verification/tests/test_channel_selector_example.py` (5 tests): the derived
@@ -39,8 +39,8 @@ $ python examples/channel_selector/channel_selector_demo.py
 RESULT: WITHIN DERIVED BOUNDS — placed chain matches stock GNU Radio
 ```
 
-43/120 cells (abutment-first pack), 6 blocks. Whole-chain proof for FloatToComplex, FreqXlatingFIR,
-ComplexLowPassFilter, MultiplyConstComplex, ComplexToImag.
+43/120 cells (39 block cells + routing, abutment-first pack), 6 blocks. Whole-chain proof for FloatToComplex, FreqXlatingFIR,
+ComplexLowPassFilter, MultiplyConstComplex, Conjugate, ComplexToImag.
 
 ## Run it
 

@@ -42,7 +42,8 @@ things make that work:
   *disagrees* with what the encoder left behind.
 
 27 block cells on the 10×12 array (77/120 used including routing corridors
-and the panel machinery). The example is **hand-placed** (open the shipped
+and the panel machinery, as measured at authoring — the demo prints the live
+count). The example is **hand-placed** (open the shipped
 `.kyt` — don't re-import): both folds are pure translations of the blocks'
 proven layouts (encoder controller at (8,7), decoder controller at (6,10)),
 the two controllers' to-panel corridors merge same-direction into the port
@@ -140,3 +141,4 @@ encoder-output scope shows it), then re-run `build_kyt.py` and re-host.
 | `lz4_stream.kyt` | Hand-placed, on-chip-verified project — open this. |
 | `build_kyt.py` | Regenerates + re-verifies the `.kyt` from the `.grc`. |
 | `lz4_stream_demo.py` | Headless END-TO-END demo (full 1 KB round trip). |
+| `lz4_stream.py` | GRC's generated flowgraph — regenerated output, do not edit. |

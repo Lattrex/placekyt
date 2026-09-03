@@ -5567,14 +5567,17 @@ shipped net, breaking a different working example every time).
 * The face-lock DRC was correct every time; when a design built clean but did
   not deliver, the built PROGRAMS were wrong, not the DRC.
 
-**Status (2026-09-02): SPECIFIED + ROOT-CAUSED, fix IN PROGRESS.** The engine
-is clean main; the predicate above is the acceptance test. The full FOC loop
-(`examples/foc_motor/foc_motor.kyt` — the promoted hand-routed file) does NOT
-deliver on clean main and is the driving case; a bit-exact six-iteration
-streaming gate for it is drafted at
-`verification/tests/test_foc_full_loop_gates.py` (skips until the loop
-delivers). Do not record a delivery/throughput number for the full loop until
-it is measured on the committed engine.
+**Status (2026-09-03): DONE — fix landed and measured.** Three engine passes
+carry the predicate: the fork-broker relays `@N` at the split (`004f0ba`), a
+hand-reshaped block re-derives its internal handoff faces (`7704bb5`), and two
+rails of one source diverging at a crossover land in DISTINCT registers
+(`03439af`). The full FOC loop (`examples/foc_motor/foc_motor.kyt`, the promoted
+hand-routed file) streams BIT-EXACT on the built chip — six iterations, every
+run `QueueEmpty`, measurement (i_d, i_q) and the three duties matching the host
+golden — gated by `verification/tests/test_foc_full_loop_gates.py`
+(`test_full_loop_streams_bit_exact_on_one_array`, no longer skipped). Measured
+on-chip loop rate ~55 kHz (18.1 µs/iteration); the loop was later run
+end-to-end through GRC and converges (i_q → ref, i_d ≈ 0, errors → 0).
 
 Related: INV-1 (hop is placement-dependent; distance = ROUTED corridor length),
 INV-24 (the shared-input-port fork and the `_apply_port_diverts` primitive —

@@ -35,7 +35,7 @@ burst, the chip cold-starts its taps at the packet boundary, and the
 convergence replays. The **"Convergence playback"** slider paces how fast
 the equalized stream reaches the displays.
 
-The equalizer is `LMSEqualizerBlock` (14 program cells + 1 transit): a
+The equalizer is `LMSEqualizerBlock` (15 program cells + 1 transit = 16 cells, an 8×2 fold): a
 complex FFE with on-chip decision-directed tap adaptation, GR-equivalent to
 `digital.linear_equalizer(5, 1, adaptive_algorithm_lms(...))` up to the
 proven scale covariance (`verification/tests/test_lms_equalizer.py`). The

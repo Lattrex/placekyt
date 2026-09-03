@@ -8,7 +8,7 @@ or verifying a Kyttar block should read these first. Each is a *constraint* ("al
 
 *(Navigation note, 2026-08-30: entries appear in LANDING order, not numeric order —
 parallel builds landed out of sequence, so e.g. INV-39 sits between INV-33 and
-INV-34, and INV-48 before INV-47. All of INV-0..INV-75 exist exactly once; search
+INV-34, and INV-48 before INV-47. All of INV-0..INV-96 exist exactly once; search
 for `## INV-N —` to find one. Numbers are never reassigned.)*
 
 ---
@@ -88,6 +88,17 @@ built from the SAME params. One default config is not "done".
 **If unsure whether a deviation is truly hardware-forced: STOP and ASK. Never
 decide it unilaterally and never deviate without saying so.**
 
+**EXTENDED 2026-09-03 (from QuadratureDemodBlock) — MATCH THE FUNCTION, NOT GR'S
+LITERAL OP.** Before grinding a multi-cell transcendental, ask whether the GR
+block's MATH is needed or only its OUTPUT: GR's `quadrature_demod_cf` computes
+`gain·atan2(Im d, Re d)` (a ~45-cell CORDIC here), while an FM demod needs the
+rate of change of phase — the discriminator `gain·Im(x·conj(x[n-1]))`, 2 MAC
+cells — and the two agree on the constant-|x| signal a real FM RX operates on. A
+maintainer-approved deviation of this kind is a CORRELATION-GATE contract, not a
+bit-exact one, and must be documented loudly WITH its regime (measured corr
+0.99999 at low deviation → 0.997 at ~1.3 rad/sample, degrading gracefully).
+Where atan2 genuinely IS the function (ComplexToArg) ship the CORDIC.
+
 ---
 
 ## INV-1 — The port target hop count is PLACEMENT-DEPENDENT, never a constant
@@ -164,6 +175,16 @@ correct Q15 rounding, not an error — expect ≤1 LSB on a single MULQ.
 
 **Applies to:** every amplitude-metric block; especially gain/mixer/filter at full scale.
 
+**EXTENDED 2026-09-03 — the STIMULUS side of the same rule.** (1) Stimulus
+amplitude must stay under Q15 full scale INCLUDING filter overshoot: a QPSK burst
+at amp 0.9 clips (both axes carry ±0.707 and the RRC overshoot passes full
+scale) and mis-locks a Costas — which looks EXACTLY like a fold/routing bug. QPSK
+needs amp ≤ 0.7. When a complex chain shows BER that is INSENSITIVE to placement,
+suspect Q15 clipping first; a lock-magnitude check is necessary, not sufficient
+— gate on end-to-end BER. (2) SNAP the GR-equivalence stimulus to the Q15 grid
+(MultiplyCC) so input-quantization error cannot stack on the derived tolerance
+floor.
+
 ---
 
 ## INV-4 — A verification gate is worthless until it is proven to FAIL
@@ -199,6 +220,37 @@ mutation, no file edit) are immune and remain the preferred form.
 **Layer:** verification harness — but the underlying behavior (pyc validation =
 seconds-granularity mtime + size) is permanent Python, so the harness
 discipline is permanent too.
+
+**EXTENDED 2026-09-03 — five more ways a gate can certify nothing (each measured):**
+
+* **A mutation must be applied to the BUILT chip.** A model-level mutant can
+  assemble to a no-op — XorJoin's "emit before latching the second operand"
+  swapped `MOVE R0, R{in:b}` with the XOR, but both ports land at R0 so that
+  MOVE is `MOVE R0, R0` and the mutant emitted the correct stream. Mutate the
+  REAL block's assembly, rebuild on the REAL chip, assert divergence
+  (`_SUBSTRATE_MUTANTS`). Likewise mutate a face constant DIRECTLY IN LOADED CHIP
+  MEMORY and choose faces that genuinely leave the route — a wrong-exit-face
+  mutation that a lucky neighbour forwarded back onto the corridor LEAKED (relay
+  emission); a mutation a geometry can repair is a weak mutation.
+* **A probing harness that moves to the next anchor on failure must FAIL, never
+  skip, when no layout routes.** Corrupting XorJoin's XOR to an AND turned 35
+  tests into SKIPS and only 6 into failures — a suite that reads "passed" at a
+  glance. `test_the_probing_harness_actually_routes_this_block` fails outright;
+  every face-locking block's suite wants that guard (INV-46 Rule 4).
+* **Never DOCTOR the golden.** The FIR convolved with taps REVERSED vs real GR for
+  asymmetric filters, hidden because the test golden DELIBERATELY reversed taps
+  before feeding GR (with a false comment). A golden that "adjusts" its input to
+  match the DUT is a second copy of the bug: call GR exactly as a user would, and
+  verify every convolution with ASYMMETRIC stimulus and an undoctored golden.
+* **A regression test that uses a LIVE block as its hazard generator breaks the
+  day the block improves.** The port-transit guard used the FLL's 8-wide ring as
+  its pinch; the re-fold removed the pinch. Pin the HISTORICAL layout as a
+  fixture (`legacy_fll_ring`).
+* **When a gate fails ONLY under the full suite, suspect PYTHONHASHSEED / set
+  order before load or layout lottery** — and separate the two with N parallel
+  single-repro PROCESSES, not N trials in one process (which share one seed).
+  fec_link's tag collision failed in the full-suite process, passed 8 isolated
+  repros, and reproduced in 2 of 4 parallel processes.
 
 ---
 
@@ -270,6 +322,16 @@ cell, and `test_fir_filter.py` verifies 7/8/11/16/20/32/**64**-tap FIRs
 bit-exact. The "~7 taps" figure above was also off by one.
 
 **Applies to:** FIR, decimator, IIR, and any block that grows past one cell.
+
+**EXTENDED 2026-09-03 — pre-build cell ESTIMATES are not budgets.** The manifest
+carried "~49-57 cells" (FFT64) and "~65-75, should fit" (FFT128), both wrong by
+~50%, written before FFT16 existed. Once ONE calibrated instance ships, re-derive
+every scaling estimate from its MEASURED per-stage cost, and require the floor
+formula to REPRODUCE the shipped block (FFT16: floor 43 + its one documented
+layout-padding delay cell = 44) before trusting it for the next size. Ten minutes
+of arithmetic stopped a doomed multi-day build. And a "tall" fold is not an
+escape from a width cap: the D4 gate rotates an 8×10 fold to 10 wide (the cap
+itself was later waived per class — INV-40 — but the calibration rule stands).
 
 ---
 
@@ -496,6 +558,18 @@ wrap-mutation models the OLD no-headroom UNSCALED+wrap DUT and must FAIL the gat
 **Applies to:** FIR, IIR, complex mixer, correlators — any Q15 MAC chain. See
 [[layout_rules]] for how the per-cell tap density + the S>0 last-cell cap set the fold.
 
+**EXTENDED 2026-09-03 — the POST-ROUNDING headroom guard (DotProductMAC, re-applied
+per row in GRUCell).** `S = max(0, ceil(log2(Σ|c| + |b|)))` from the float
+coefficients is not enough: after quantizing at S, if `Σ|q| > 32767` bump S and
+requantize. The guard is LOAD-BEARING and trips in practice — `Σ|c| == 1.0`
+exactly ALWAYS trips it (four 0.25s -> 8192 each, sum 32768), and a float-sum-<1
+set trips it via round-up. The wrap mutant needs `Σ|q| >= 32769` (round-up on ≥5
+stored words) driven by a full-scale `0x8000` vector — positive overflow is
+unreachable (truncation eats ~1 LSB per product) and the −32768 rail means
+`Σ|q| == 32768` does NOT wrap. Tool fact from the same family (Hamming/Multiply):
+`{write:}` / `{jump:}` placeholders must be ALONE on their line — the resolver
+regex is line-anchored.
+
 ---
 
 ## INV-14 — A serpentine fold co-locates I/O on one edge ONLY with an EVEN column count
@@ -682,6 +756,20 @@ split block performs.
 **Applies to:** ComplexMixer, NCO, IQUpconvert, and EVERY block whose output cell
 emits an I/Q rail pair — i.e. any block a future agent writes with a complex output.
 
+**EXTENDED 2026-09-03 — the emit cell's lock-clear `WRITE.CFG` is NOT a data
+WRITE.** A locked complex block (NCO/FM under INV-20's serialize-LOCK) emits
+`WRITE yi; WRITE yq; WRITE.CFG (lock clear); JUMP`. Three build patchers each
+counted or clobbered that trailing config WRITE as one of the "last N data
+WRITEs" — `_patch_complex_packet_last_handoff`'s tail selection, the single-net
+complex+carries-handoffs branch, and the ABUTTED-pair last-write LAST-WINS that
+auto_pnr's compact pack triggers — so every locked-block→BLOCK chain shipped
+SHIFTED rails (the consumer read `(yq, 0)`) in every placement; the fsk4 modem
+never saw it because its FM feeds the PORT. Rule for any patcher: skip config
+WRITEs when selecting the last-N data WRITEs, and patch an abutted complex pair
+ONCE per source cell (`_patch_complex_abutment_tail_handoff`). Gate:
+`verification/tests/test_locked_chain_autopnr.py` (INV-4 pin: pre-fix `(4320, 0)`
+vs ref `(24184, 4320)`). Related: INV-63 (the exit cell's contested last
+WRITE/JUMP), INV-94 (a MIXED abutted+brokered fan-out is unbuildable).
 
 ## INV-18 — A complex FILTER stage is ONE block (fir_filter_ccf), not a split + 2 FIRs
 
@@ -794,6 +882,18 @@ the SATURATION GATE MUST assert BIT-equality (sign), not word-equality. Also: us
    (saturated symbols barged into a mid-flight iteration; A/B: value 0x4000 fails, value 1
    locks). Reuse an existing data word for the lock-set ONLY if its **bit 0 is set**;
    otherwise spend the dedicated `one` word. (Matches PROGRAMMING_GUIDE §3's "write 1".)
+
+**EXTENDED 2026-09-03 — an EVENT-CAP expiry is NOT a livelock until the per-sample
+event cost is MEASURED on the per-sample path.** `run_block_dut_pipelined` caps a
+saturated run at `max(50_000, 2_000 * n_samples)` and reports expiry as "block
+livelocks when the pipeline is full" — a message that names a conclusion, not a
+symptom. Measured per-sample costs: FFT64 2873 events/sample (127 samples > the
+254k cap; completed 254/254 bit-exact at a real budget), FLLBandEdge ~2500,
+AGCCC ~4k. A genuine livelock never reaches quiescence at ANY budget; a cap
+shortfall completes as soon as the budget is real. Raising a cap is legitimate
+only when the number is DERIVED (measured cost × a margin) and recorded beside
+the constant — a cap tuned until the gate went green is a loosened tolerance
+wearing a different hat.
 
 ---
 
@@ -913,6 +1013,30 @@ lock needed THREE NCO-specific moves (each was a distinct failure mode found via
   shapes (INV-4 proven: pre-fix every consumer case failed), plus a locked-NCO consumer case.
   The fsk4 modem's hand-placed `.kyt` remains the shipped form for DENSITY reasons only (a
   fresh import of the full modem does not route).
+
+**EXTENDED 2026-09-03 — two more shapes of the same hazard class.**
+
+* **A RATE-EXPANDING block (1 in → N words out) can deadlock INPUT-side under
+  saturated drive.** Measured 2026-07-27 on a bit → 4-passband-word TX: ≤2
+  inputs in flight OK, 3+ deadlock; continuous output draining does NOT help;
+  rate-REDUCING chains are safe (why only the 16-QAM TX shipped saturated).
+  Re-measured on fec_link's 1:14 tx chain: 1/252 words on a long-corridor layout
+  and EXACT on the shortest-path layout — so the hazard is LAYOUT-dependent
+  (corridor depth), which is also why `UpsamplerBlock` passes the shared RATE_1IN
+  saturated gate standalone with no lock and bpsk_modem verified saturated on its
+  shipped layout. The fix when it bites is the serialize-LOCK on the expanding
+  block; until a chain is proven saturated on ITS shipped layout it stays
+  per-sample — never flip `pipelined: yes` blind.
+* **An UNWIRED output port is a LIVE hazard, not a no-op.** Its default-resolved
+  `@1` WRITE/JUMPs fire into whatever neighbour the layout leaves there: measured
+  on R2Butterfly's second complex pair, (a) a jump into a corridor cell
+  re-emitting stored words (phantom, DATA-DEPENDENT port words — some stimuli
+  "worked"), (b) a mutual `@1` ping-pong between two corridor/broker cells, a
+  self-sustaining livelock (the `__terminate__`-into-corridor shape above,
+  reachable from ANY dangling trigger). A StreamSplitter "dump" consumer only
+  moves the hazard downstream. Every declared output must be wired or terminated;
+  a two-complex-output block declares `output_cell_ids()` and per-rail
+  `out_tag`s.
 
 ---
 
@@ -1034,6 +1158,30 @@ that raises) must be declared in the class attribute `GRC_UNSUPPORTED_PARAMS = (
 ONLY legitimate way to omit a param; `*_range` GUI-slider hints are auto-excluded. "Green
 DSP test" is not done; "placeable in GRC with every param" is.
 
+**EXTENDED 2026-09-03 — three clauses from the example audits and the backfill campaign.**
+
+* **The GRC binding is THREE layers, and each fails differently:** (1) the yml
+  dtypes (what GRC draws as arrows); (2) the marker's `io_signature`, enforced at
+  `connect()` — a dtype mismatch here means the flowgraph can NEVER Run, whatever
+  the yml says; (3) the INSTALLED tree. A schema-invalid yml silently loads as
+  "Missing Block" with its connections dropped. A gate that substitutes its own
+  client script does not verify the artifact the user opens
+  (`test_examples_grc_instantiate.py` instantiates the shipped `.grc` under the
+  real interpreter).
+* **THE INSTALL BOUNDARY.** GRC, the GUI and `grcc` import the INSTALLED OOT
+  (dist-packages), a SEPARATE copy from the repo; a worktree venv resolves to the
+  MAIN checkout. Repo edits "pass" in-process while the GUI runs stale code.
+  Verify `module.__file__` before believing any OOT edit is live; headless tests
+  can bypass with `PYTHONPATH=gr-kyttar/python`, the GUI cannot
+  (`gr-kyttar/install.sh` needs sudo). A demo `stim` module added to the OOT is
+  likewise invisible to `grcc` until re-synced (`_installed_kyttar_py_stale`).
+* **Triage a gate-reported missing param as REAL / DRIFT / UNSUPPORTED** — only
+  `GRC_UNSUPPORTED_PARAMS` is a legitimate omission. `spec.params` comes from
+  `inspect.signature`, so None-default kwargs count; a manifest short name is a
+  catalog ALIAS, not the class name — resolve through `_MANIFEST_ALIASES` +
+  `_TYPE_OVERRIDES`, never a second `_specs` key. The yml `make:` kwargs must be
+  accepted by the shim's `__init__` (`test_done_block_yaml_make_kwargs_accepted_by_shim`).
+
 
 ## INV-23 — A block must be ORIENTATION-INVARIANT; its internal cells are FIRST-CLASS
 
@@ -1113,6 +1261,18 @@ cell it cannot reach on the port's static face.
 **Applies to:** every block; especially multi-cell feedback/complex blocks (Costas,
 Gardner, complex MF, IQUpconvert, ComplexMixer, NCO). See [[layout_rules]] and the
 lessons_log orientation entries.
+
+**EXTENDED 2026-09-03 — the campaign's harness rules.** (1) Prove datapath
+invariance by DIFFING per-cell programs across all 8 orientations BEFORE chasing
+the router: internal cells are byte-identical in every orientation, only the
+OUTPUT cell's egress hop differs, so every "orientation failure" is at the
+block↔chip-port I/O boundary (corridor, landing, egress). (2) A "flaky"
+orientation test is a real deterministic bug — reproduce it in-process outside
+pytest and it is stable (the four failure modes above were exactly that).
+(3) Drive a coherent baseband RX harness with a SMALL residual offset the loop
+can pull in (foff = 0.008), never the TX upconvert frequency (0.125 ≈ 16× the
+pull-in range gives BER ~0.68 on ANY correct RX and masquerades as a delivery
+bug) — this cost hours, twice.
 
 ---
 
@@ -1234,6 +1394,21 @@ against GR on a channel GR can't do, which is just as blind.
 
 **Applies to:** any recovery/adaptive/timing block whose test uses a hand-built channel.
 Pin GR's competence on the channel FIRST, then gate the DUT against it.
+
+**EXTENDED 2026-09-03 — REGIME-MIRROR the GR golden for feedback/adaptive blocks
+(audio_meter, sharpened on AGC/AGCCC/RMS).** Run GR at the CHIP-QUANTIZED
+constants and clamps (`rate_q`/`ref_q`/`gain_q` as floats; the Q15 gain ceiling
+32767/32768 in place of an uncapped `agc_ff`) over the SAME quantized stimulus.
+Uncapped GR gain exceeded 1.0 near zero-crossings, the chip clamped, and the
+trajectories split ~15% for hundreds of samples. Symptom signature: **a large
+error that DECAYS at the loop rate is a REGIME mismatch, not accumulation** — the
+first theory (upstream warm-up error integrating in the loop) failed a
+back-of-envelope by 300×. Do the arithmetic before believing a mechanism. The
+settled level is then rate-independent, so a long default-rate convergence can be
+closed model-vs-GR with the chip linked by the bit-exact gate (send a >argv-limit
+stimulus to the GR subprocess via a temp file). Tool fact from the same example:
+derived stream `out_tag`s must fit the 5-bit DEST field (2..31) — hashed tags of
+36/47 wrapped silently to zero egress; they are confined with collision probing.
 
 ---
 
@@ -1499,6 +1674,11 @@ reason ("port-transit hazard") via a relaxed diagnostic probe. Gates:
 **Applies to:** every auto-routed design; any future router change must keep
 the ratchet green and the saturated example gates green.
 
+**EXTENDED 2026-09-03 (Example-audit round 6):** never change `use_bus="auto"`'s
+greedy-first semantics INSIDE `_run_router` — route-quality policy (which router
+to prefer, when to escalate) belongs to the CALLER; 451 harness tests depend on
+the greedy-first contract.
+
 ## INV-33 — The cell register-allocation CONTRACT: inputs < data < state; R0 is the ACCUMULATOR, not a mailbox
 
 **Symptom (all hit building the LMS equalizer):** (a) "No register space for
@@ -1572,6 +1752,18 @@ target already holds the right value, or a ``CMP`` re-deriving a flag an earlier
 ACCUMULATOR-DELIVERY idiom above — it arrives in R0 and the cell's FIRST
 instruction re-emits it, freeing both the input register and the staging MOVE.
 
+**EXTENDED 2026-09-03 — the OVERLAP HALF also covers INPUTS (GolayEncoder).** The
+resolver never checks a non-R0 INPUT register against the instruction region
+either: `par2` declared `pw` at register 12 while its 19 instructions resolved to
+12..30 — no error; `{in:pw}` read instruction word `0x4009` (the cell's own first
+MOVE) as data, and BOTH upstream WRITEs assembled to dest R0. Symptom: correct
+burst COUNT, garbage values with a CONSTANT bite (`0x4009 << 6 = 0x240`) in the
+parity half; `read_cell_memory` dumps of all four cells named the wrong word
+instantly. Count non-R0 input registers in the ≤30 budget, keep them below
+`31 - n_instructions` AND outside any LOAD-table range, and make the static gate
+cover inputs as well as data and state
+(`test_register_layout_no_silent_collision`).
+
 ## INV-39 — A dispatch ENTRY that no jump targets is DEAD CODE, and only the chip can tell you
 
 **The rule:** in the multi-entry dispatch idiom (a cell whose PATH identity travels
@@ -1600,7 +1792,10 @@ twiddles per cycle put the ENTIRE odd-bin half of every output frame wrong.
    An 80-sample FFT64 run was bit-exact and proved nothing: the first valid output
    is at index ``N-1``, and frame slots ``0..N/2-1`` are the EVEN bins (the sum
    branch). The twiddled half is not touched until output ``N-1 + N/2``. State the
-   reach of every streaming gate explicitly.
+   reach of every streaming gate explicitly — **size every streaming gate by what it
+   REACHES, not by how many samples it sends**: at N=64 a run must reach output 95
+   before it has tested the twiddled half at all, and an 80-sample chip run that
+   was clean proved nothing (folded in 2026-09-03 from the FFT64 defect-class entry).
 3. **When no arithmetic model reproduces an on-chip divergence, stop modelling and
    read the intermediate state off the chip.** Exhaustive searches over wrong
    twiddle words, slot substitutions, pointer stalls, ring-timing offsets and
@@ -1693,8 +1888,9 @@ with only `transit_*` entries after, and (b) the last program cell is
 `verification/tests/test_gru_cell.py`
 (`test_every_program_cell_precedes_every_transit_in_the_layout`,
 `test_egress_relay_is_the_last_program_cell`). This sits alongside the
-ROUTE-TIME FACE RULE (lessons_log, FFT16): that one governs which face a cell
-ends up with, this one governs which CELL a handoff resolves to.
+ROUTE-TIME FACE RULE (INV-88, promoted 2026-09-03 from the FFT16 entry): that
+one governs which face a cell ends up with, this one governs which CELL a
+handoff resolves to.
 
 ---
 
@@ -1902,6 +2098,14 @@ quiescent" symptom is a sibling false-lead), INV-39 (a dispatch entry no jump
 targets is dead code — this is the converse: an entry that fires when it
 shouldn't).
 
+**EXTENDED 2026-09-03 — assembly traps in PATCHABLE cells (from the counting
+join).** (a) An unmatched entry label resolves to the FIRST instruction — label
+the body `default:`. (b) `GOTO` assembles to an opcode-0x7 word that the exit-cell
+handoff patcher rewrites into an external trigger — this is the TOOLCHAIN
+mechanism above, not hardware fall-through; converge paths with fall-through
+ordering or `BR.cond`, never a GOTO in a patchable cell. (c) R0 is both the ALU
+result and input `a0` — save/restore it across a shared tail (`jsav`).
+
 ---
 
 ## INV-44 — A block's EXTERNAL-EGRESS cell and its INTERNAL-FEEDBACK source must be DIFFERENT cells
@@ -2012,6 +2216,12 @@ backward internal edge. See
 and `::test_feedback_closes_under_rotation` (the latter matters because a
 rotation that puts a feedback transit under an external corridor kills the loop
 SILENTLY — the route pass runs first and overwrites the transit's authored face).
+
+**EXTENDED 2026-09-03 — the parity fix (FFT64 spine).** The grid is bipartite, so
+only an EVEN-length chain can land its last cell edge-adjacent to its first
+(INV-14's column rule is the same theorem). When a chain of ODD length must close
+by abutment, pad a delay line by one cell — `_delay_segments(..., extra_cells=1)`
+in `fft_large.py` — rather than reshaping the fold.
 
 ---
 
@@ -2138,6 +2348,11 @@ This is not really about JSON. Any file, dashboard row, or status string that
 be **absent** when the verification did not complete. A green default is a lie
 waiting for a crash. If you cannot compute the verdict, emit nothing.
 
+**EXTENDED 2026-09-03 — the operator side of absence-is-safe (ChaCha20QR).** A
+FAILED full verification run UNLINKS the report JSONs of every writer whose own
+file failed (~57 of 118 in one session, before the 2026-08-29 scoping). Never
+`git add -A` after such a run — it stages dozens of report DELETIONS as if they
+were a decision. Restore `verification/reports/` and stage edited files BY NAME.
 
 ---
 
@@ -2215,6 +2430,16 @@ convention this deliberately waives, per class), INV-23/`CHIP_SCALE_ORIENTATIONS
 (orientation), INV-37 (derive `is_face` constants from the fold — without which a
 re-fold this large is a silent-garbage trap rather than a one-method change).
 
+**EXTENDED 2026-09-03 — two clauses from the re-folds.** (1) A complex consumer
+fed from a chip port must be driven at the BROKER landing: read the build's
+`input_landings` and let the landing's own address count decide the delivery
+shape — never assume the rail count (the gru_classifier on-chip mutation gate
+drives the broker's two burst registers). (2) Two folds of the same area are NOT
+interchangeable, and the block's own suite cannot tell them apart: Gardner's
+shipped 3×3 was chosen by re-running BOTH design families through the shipped
+designs (12/50 vs 0/50 on the chain), and a grown block is re-seated by minimum
+route excess against the route-quality ratchet (INV-32), not by its own gates.
+
 ---
 
 ## INV-41 — A complex block port is TWO rails but ONE stored net; never identify a rail by its net alone
@@ -2269,6 +2494,19 @@ rejects duplicated / swapped / empty / one-sample-delayed rails).
 `add_logical_connection` — i.e. every complex example. Related: INV-6/11 (resolve
 ports WITH params), and the `fft_spectrum` lessons-log entries for the landing
 bug this shares a symptom with.
+
+**EXTENDED 2026-09-03 — the EGRESS side, scoped.** To a CHIP OUTPUT PORT (contrast
+INV-73: to a face-locking on-chip consumer the two rails must FORK to distinct
+faces) a complex block's two egress rails are ONE routed corridor — yi on
+`out_tag` T, yq on T+1, both from ONE emit cell — and the router cannot draw a
+second distinct path from the same source to the same port. An unrouted yq whose
+yi sibling routed therefore takes the SAME waypoints
+(`controller._resolve_complex_egress_corails`, 2026-07-22; idempotent, a no-op
+for single-rail egress; first proven on the hand-placed fsk4 modem). The older
+harness note "wire ONE net, not two … egress SILENTLY ZERO" describes the
+pre-2026-07-22 controller; wiring a second net to the same port still builds a
+duplicate net onto the same register (a frame of pure zeros, no error), so
+`add_logical_connection`'s synthesised Q sibling remains the only Q net.
 
 ---
 
@@ -2334,6 +2572,16 @@ the sibling two-die project this one was cloned from had no user-path gate at
 all — a copied generator clones the fault, so fixing one sibling is not fixing
 the class.
 Related: INV-22 (a binding that resolves is not a binding that is correct).
+
+**EXTENDED 2026-09-03 — `output_words='raw'` is SYMMETRIC, and gain 1.0 is not
+identity on raw words.** (1) `raw` selects the INPUT encoding too: the server
+injects each input float as a raw integer word (`sim_bridge._float_to_raw_i16`),
+so a raw `.grc` must feed WORD values, not q15/32768 floats (tmr_pipeline's
+`_inj_b` gate). (2) Q15 gain 1.0 quantises to 32767, so a `GainBlock` in a raw
+chain DECREMENTS almost every word (`0x00FF -> 0x00FE`, measured on
+KeystreamSerializer) — never use GainBlock as a bit-exact chain neighbour; use a
+MOVE-only `DelayBlock`. An expression marker param importing as the block
+default is INV-79.
 
 ---
 
@@ -2421,6 +2669,12 @@ constant, each add-as-xor, and the DROPPED CARRY are proven to fail; plus
 registers), wide CRCs, any extended-precision accumulator. Related: INV-33 (the
 register contract and the overlap half), INV-34 (shift counts are immediates), INV-13
 (Q15 saturation — which multi-word arithmetic must NOT inherit).
+
+**EXTENDED 2026-09-03 — ALU flags are PER-CELL.** A multi-word add's carry chain
+(the ChaCha20 32-bit add-back) must live in ONE cell: a carry cannot cross a cell
+boundary, because the `ADC` in the second cell sees that cell's own flags, not
+the flags the low `ADD` set elsewhere. Split a wide value across cells by
+DATA, never mid-carry.
 
 ## INV-46 — The LOCK-rotation rendezvous is generic over N; every constraint and DRC that serves it must be too, and the FACE BUDGET (N + 2) decides how far it goes
 
@@ -2537,6 +2791,34 @@ rendezvous is one cell, so the LOCK alone is the serialization).
 Related: INV-19/20 (the serialize-LOCK idiom this extends), INV-23 (every face
 constant is `is_face` so it D4-transforms), INV-39 (a multi-entry dispatch cell's
 entries must all be jumped).
+
+**EXTENDED 2026-09-03 — three clauses from FeaturePairJoin (measured).**
+
+* **(a) The arm-OVERHANG depth is 2, mechanism-wide.** An arm may run at most TWO
+  timesteps ahead of the other; at depth 3 the surplus words are LOST, not
+  queued — the face LOCK bars the running-ahead arm, back-pressure fills its
+  single-outstanding link, its producer wedges, and the chain emits nothing even
+  after the other arm catches up. `DualFloatToComplexBlock` hits the identical
+  boundary in the same chain, so it is a property of the LOCK-by-face mechanism.
+  Harmless for equal-rate arms off one stream (overhang 0 or 1); pinned by
+  `test_known_limit_arm_overhang_depth_is_two`.
+* **(b) N sequential deliveries into ONE entry = N authored WRITE+JUMP pairs in a
+  single-rail cell** — declare exactly ONE output register (with >1 the build
+  routes the cell to `_patch_complex_*`, which steers the WRITEs to consecutive
+  registers with ONE trigger, silently converting the two-burst block back into
+  the Dual's packet shape) and keep that cell free of internal handoffs and
+  inline `WRITE.CFG` (else only the LAST pair is patched). The ordinary
+  `_patch_cell_handoff` then sets every WRITE and JUMP to the same
+  `(hop, dest, entry)`; never reach for the complex patchers or RAW hops for the
+  sequential case. A draft docstring's "known limit" (a >1-register consumer
+  breaks this) was WRONG — the executable guard proved it on first run.
+* **(c) A build pass keyed on port or data-word NAMES is a per-block pass in
+  disguise.** `_apply_rendezvous_input_faces` looked up `"i"`/`"q"` and
+  `face_i`/`face_q` — the Dual's names — so for every other face-locking block it
+  was a SILENT NO-OP: the LOCK gated the authored placeholders, the real arms
+  were barred, and the chain built, routed and emitted ZERO (placement DRC clean
+  is the tell). The block declares `RENDEZVOUS_FACE_PORTS = ((port, face_word),
+  ...)` in first-accepted order (`build.py`), the Dual's names as the fallback.
 
 ---
 
@@ -4648,6 +4930,14 @@ expected counts — which the trace gives in one run (`enable_trace()` +
 a Counter over `exec_tick` events). Both program omissions are re-introduced as
 ON-CHIP INV-4 mutants in the block's suite and proven caught.
 
+### 6. VERIFY THE EMISSION THE WAY A DOWNSTREAM BLOCK CONSUMES IT, NOT ONLY AT A PORT. (added 2026-09-03, from the SRAM-panel chains END-TO-END entry)
+
+A chip PORT captures every passing WRITE, but a downstream BLOCK runs only when
+JUMP-triggered. An emit cell that wrote its bits with no per-bit JUMP passed its
+own SRAM port gate and fired the consumer ONCE PER CHAR in the placed chain. Any
+block whose gate ends at a port has this blind spot; the chain test that runs
+the placed consumer is the one that sees it.
+
 **Related:** INV-33 (the overlap contract this extends to the panel), INV-31 and
 INV-47 (the panel tier), INV-13 (no unconditional GOTO — the same flag-discipline
 family), INV-4 (both gates carry proven negatives).
@@ -4851,6 +5141,13 @@ flip-delivered declared backward WRITE re-patched with the resting-corridor
 hop; INV-53 + this entry + INV-64 §2 are one family (three faces of the
 build's rewrite-by-address passes) and were landed by different builders —
 read all three together.
+
+**EXTENDED 2026-09-03 (PIControllerBlock):** `_patch_last_write_handoff` rewrites
+the HIGHEST-addressed WRITE by opcode and does NOT skip `WRITE.CFG` — so a
+lock-clear `WRITE.CFG` placed ABOVE the external pair is what gets patched into
+the port handoff. Keep the lock-clear `WRITE.CFG` BELOW the external WRITE/JUMP
+pair (the self-lock-inside-atomic-execution shape); contrast INV-17's extension,
+where the complex patchers must SKIP config WRITEs in their last-N selection.
 
 ---
 
@@ -5661,3 +5958,797 @@ its "chaining two @1 brokers" note is the `@1` hack this supersedes),
 INV-69 (a reshaped rendezvous also needs its relock face re-derived from where
 its cells actually sit), INV-71/73 (rendezvous arm faces), INV-56 (read
 `stop_reason`; `QueueEmpty` is not proof the work ran).
+
+---
+
+## INV-76 — DISPLAY CONTRACT: a user-path gate must tap what the display is PAINTED with (the display block's own output), never stop at the kyttar sink
+
+*(Promoted 2026-09-03 from four lessons_log entries — FFT128 DISPLAY, the qtgui
+NoPen defect, css_transceiver LOOKED broken, the display frame reader — all
+measured on shipped examples through the hosted server.)*
+
+**The rule.** A bit-exact sink stream can still paint a WRONG or BLANK plot. The
+sink is not what the user looks at; the display glue downstream of it is. So the
+gate must tap the display blocks' own outputs (`verification/grc_userpath_run.py`
+takes extra `block.port` taps; a vector port needs its vlen from
+`output_signature().sizeof_stream_item(port)` or the flowgraph refuses to
+connect), and when the display is the deliverable, render the Qt window offscreen
+(`tb.grab().save(png)`) and LOOK. A headless trace gate asserts the DATA fed to
+the scope, which was always correct while every one of the defects below shipped.
+
+**Measured ways a correct stream paints wrong:**
+
+1. **Framing.** `burst_len` 384 vs `latency + 2*n_fft` = 383: a frame reader that
+   consumes across the burst boundary builds every third frame from ONE real
+   sample plus 127 of the next burst's zero-fill — 4728 frames in a perfectly
+   regular good/good/blank cycle under `server_repeat`. A frame reader must drop
+   each burst's ragged tail.
+2. **A placed FFT needs a display CHAIN, not a scope:** de-interleave the complex
+   pair, strip the N−1 latency, un-reverse the DIF slots, fftshift. Skipping any
+   one leaves a plausible wrong plot (clean lines at wrong frequencies). Copy the
+   sibling example's chain rather than re-deriving it.
+3. **Two producers on different clocks.** A chip-gated stream and a free-running
+   `vector_source` drift: 75130 reference items vs 58750 decoded in 60 s; an
+   offset of just 3 items turned 22 of 24 correct symbols into mismatches. Derive
+   the reference from the decoded stream's OWN item index, inside one block, so
+   the two cannot drift by construction.
+4. **`qtgui.time_sink_f` line style 0 (NoPen) silently drops every channel above
+   channel 0** — reproduced standalone with two sources of different amplitude, on
+   a real X display and offscreen. Never leave a multi-channel trace on style 0.
+   The highest-numbered channel is painted LAST, so the trace that must survive an
+   exact overlay goes there (decoded X inside the reference ring).
+5. **A QT time sink sized == its burst never fills** — the scheduler strands a
+   finite stream's tail. Size the scope below the burst and loop the genuine
+   one-batch result with `server_repeat` (a scope on a `repeat = True` source is
+   exempt; it streams forever).
+
+**A demo whose CORRECT output reads as a failure is a defect, even with every
+number right.** An on-chip negative control drawn on the same axis as the lock
+was reported as "the −10 dB doesn't work at all" — a precise description of the
+demo working. One panel per verdict, each title carrying it (`CONTROL` /
+`EXPECTED`), the measured figure published beside the panel. A noise-driven
+control needs a band with TWO meaningful ends: css_transceiver's `[0.40, 0.75)`
+— the floor rejects a control that quietly decodes, the ceiling (the cheapest
+stuck-at score, 0.75) rejects a dead constant-output chain that `ser_b > 0.2`
+would have accepted.
+
+**Gated by:** `verification/tests/test_css_transceiver_example.py` (the `.grc`
+structure: panel count, per-panel channel split, line styles, marker
+distinctness, the title words) and the display-tap user-path gates in
+`test_examples_grc_userpath.py` (fft128_2p2s, fft_spectrum), each with mutations
+that replay the original defects.
+
+**Related:** INV-42 (raw-vs-q15 aliasing on the same path — the OTHER way a
+correct chip reads wrong), INV-41 (rail naming), INV-77 (hosted verification),
+the AGENTS §5b blank-scope contract.
+
+---
+
+## INV-77 — HEADLESS != HOSTED: an example is verified only through its DOCUMENTED user path, with the REAL client stack
+
+*(Promoted 2026-09-03 from "gru_classifier shipped BROKEN" (2026-08-24) and "The
+REAL GR client loop gate" (2026-08-09).)*
+
+**The rule.** An example whose documented workflow is "open the `.kyt`, run the
+`.grc`" is UNVERIFIED until that exact path is a gate against the hosted server,
+using the REAL client stack — genuine `kyttar.source`/`kyttar.sink` plus the
+marker chain in a real `gr.top_block` under the GNU Radio interpreter in a
+subprocess (`verification/tests/test_examples_grc_userpath.py`,
+`placekyt/tests/test_gr_client_loop_examples.py`). That is what pressing Run in
+GRC executes, minus the Qt window. **A hand-rolled RPC is not the client:** a
+"server path verified" socket test sent a plain `process_batch` while the real
+`kyttar.source` with a `stream_id` dispatches `process_batch_duplex` — the path
+that honoured `pipelined: true` unconditionally and produced the CW char-slam
+(302/1530 samples). The fix (`SimServer.force_per_sample`, set by the HOST for
+panel designs) lives server-side, not trusted from the flowgraph.
+
+**Measured.** gru_classifier shipped with 34 green gates and a headless on-chip
+run at agreement 1.000000, and in the owner's hands sent 15360 samples and
+recovered 0. The headless runner reads `input_landings` and drives the arms
+ITSELF, so it never exercises the server's stream resolution — where all three
+faults lived. The shipping commit even said "NOT verified: the .grc has not been
+run against a live hosted server" and shipped anyway. "Green" and "verified" are
+different claims; only the hosted gate makes the second one.
+
+**Two server contracts that fell out of it:**
+
+* **At most ONE landing per target block — keep the richest.** A complex source
+  into a complex block is TWO port→block nets (`re`, `im`) that the router
+  resolves to ALTERNATIVE landings for the same block (the shared broker's two
+  burst registers `[1,2]` and the block's own input cell `[0,1]`); they are one
+  delivery, not two arms. Driving both writes Im into the Re register. A
+  2-address landing takes the (Re, Im) pair as ONE delivery; a 1-address landing
+  takes Re only (`sim_bridge._drive_one` is arity-driven).
+* **A hand-placed multi-arm `.kyt` must carry `stream_id`/`out_tag` itself.** The
+  GRC importer sets them; a builder's hand placement did not, and
+  `port_config.stream_targets` resolves a landing ONLY for a named stream
+  (`stream_targets resolved: {}` at server start is the tell). coherent_bpsk_rx
+  works without them only because both its arms target ONE block on registers 0
+  and 1 — the fallback's hardcoded default. A coincidence, not a precedent.
+
+**Gated by:** the two test files above (the gru gate was demonstrated FAILING
+against the broken state), plus millisecond structural guards in
+`test_gru_classifier_example.py` for a regenerated `.kyt` losing its metadata.
+
+**Related:** INV-24 (prove a modem the way it is USED), INV-42, INV-76, INV-78,
+INV-84 (every hosting path).
+
+---
+
+## INV-78 — HOSTED-PATH INGRESS CONTRACT: name the stream, do not `repeat` a frame-aligned source, drive below the 0.999 clamp, OWN port 58950
+
+*(Promoted 2026-09-03 from "fft_spectrum example SHIPPED — three LIVE-PATH
+defects" (2026-08-24); the stream_id fault re-hit by gru_classifier.)*
+
+Each of these produced a PLAUSIBLE spectrum while every headless gate was green.
+
+1. **A landing that is not `(0, 1)` needs a `stream_id` on the ingress net AND on
+   both `.grc` markers.** The GR client fills the `process_batch` header from its
+   own `data_addrs=(0, 1)`; the server substitutes the build-resolved landing only
+   for a burst whose `stream_id` is in `engine.port_config.stream_targets`.
+   Measured: a chain landing on `[1, 2]` received a REAL input (Im went to
+   register 1), so the tone split into two conjugate-symmetric quarter-power
+   peaks — two 6635 words at bins 11 and 53 where one 26539 was expected. It
+   looks like a DSP bug and is an addressing bug. `stream_targets == {}` is the
+   tell.
+2. **A `repeat = yes` source ROTATES the frame grid** (it re-arms mid-vector;
+   "samples arriving in between are consumed and dropped"): a 55-sample rotation
+   moved the peak from slot 52 to 43. Harmless for a memoryless chain, fatal for
+   anything frame-aligned. Use `repeat = no` on the source + `server_repeat = yes`
+   on the sink — one genuine burst from index 0, looped for the display — and
+   gate the loop as a byte-identical replay.
+3. **The host clamps input at 0.999** (`sim_bridge._float_to_q15`:
+   `max(-1.0, min(0.999, f))`), so `32767/32768` becomes word 32735. A user-path
+   gate that demands bit-exactness must drive below the clamp (the example uses
+   0.9, where server and reference agree on every sample).
+4. **A user-path harness must OWN port 58950.** `start_gnuradio_server` returned
+   `None` while another session held the port, the flowgraph talked to THAT
+   server, and the suite analysed somebody else's chip output (304215 foreign
+   words, read as a spectrum defect). `_serve` retries until it holds the port
+   itself and asserts the exclusive bind — copy that, not a bare
+   `assert bound == _PORT`. The userpath gates self-contend on 58950 (TIME_WAIT
+   40–140 s): run them standalone; a bind failure there is contention.
+
+**Related:** INV-24 (shared-port fan-out), INV-41 (the un-named-stream symptom),
+INV-42 (`output_words`), INV-77, INV-76.
+
+---
+
+## INV-79 — GRC IMPORTER: a block param must be a LITERAL; an expression silently degrades to the yml DEFAULT and builds the WRONG chip with every gate green
+
+*(Promoted 2026-09-03 from "CSS receiver example — a `.grc` block param that is
+not a LITERAL" (2026-08-24); independently re-hit by tmr_pipeline and fec_link.)*
+
+**Mechanism.** The placeKYT importer evaluates block parameters without the
+flowgraph's `stim` module (a `from gnuradio.kyttar import …`, resolvable only in
+the GR interpreter); `grc_import._coerce_params` resolves ONE variable level.
+Anything it cannot evaluate does not raise — it falls back to the block's yml
+DEFAULT. Measured three times: `n: n_css` (`n_css = stim.N`) built a 128-sample
+chirp receiver while the host sent 16-sample chirps (import, route, build,
+`auto_pnr.ok`, DRC all clean; 6 garbage words instead of 50 — the tell was a
+bitstream diff against a hand-built chain: 5 differing words decoding as the data
+constants `128,128,128` and `512` vs `4096`); `stim.crc_frame_len()` was dropped
+for the default (fec_link); a marker param `const: f/32768.0` imported as `0.0`
+(tmr_pipeline). A marker param that is an EXPRESSION imports as the block
+default.
+
+**The rule.** Block params must be literals (or a bare variable holding a
+literal); scope-sizing variables may stay `stim.*` expressions — GRC evaluates
+those and the importer never reads them. Pin the literal at import
+(`_assert_chirp_len`; `test_import_pnr_build_ok` asserting the placed Crc16 got
+its `frame_len`/`poly`/`init`). Hex literals coerce (`int(s, 0)`).
+
+**Related:** INV-22 (a binding that resolves is not a binding that is correct),
+INV-42 (an unrecognised enum value likewise resolves to the default), INV-77.
+
+---
+
+## INV-80 — A `.grc` flowgraph id must never equal a hand-written `.py` in its directory; generated flowgraphs are untracked
+
+*(Promoted 2026-09-03 from the 2026-08-26 entry, whose header called this
+"INV-43" — a numbering collision; INV-43 is the remote-JUMP rule. `.gitignore`
+carries the same stale label.)*
+
+GRC's **Generate** writes `<flowgraph id>.py` into the `.grc`'s own directory and
+destroys a same-named hand-written module silently — the loss reads as an
+ordinary modification in `git status` and lands in whatever commit is open. It
+happened twice: `examples/gru_classifier/gru_classifier.py` (the 534-line design
+module — topology, anchors, on-chip runner — replaced by its 273-line flowgraph;
+the suite went to 23 failed / 8 errors while the README advertised it green) and
+`examples/fft128_2p2s/fft128_2p2s_demo.py` (found only because its README
+documented a `--samples` run nothing in the tree could still perform).
+
+**The rule:** the flowgraph id is `<name>_grc` or `<name>_demo`, never the name
+of a hand-written module. When a `gen_grc.py` is the generator of record, change
+the id THERE — changing only the `.grc` reintroduces the collision on the next
+regeneration. Generated flowgraphs are not tracked at all (`.gitignore`);
+`grc_userpath_run.py` regenerates into a tempdir.
+
+**Gated by:**
+`test_examples_grc_valid.py::test_grc_generate_target_is_not_a_hand_written_module`
+— Generate may only target a file carrying GRC's own generated-file banner.
+
+---
+
+## INV-81 — MULTI-CHIP BOARD PROJECT CONTRACT: instantiate EVERY die, carry `project.board`, and never treat per-chip sim clocks as a shared time base
+
+*(Promoted 2026-09-03 from "FFT128 retargeted to the 2P2S board + the 'dies
+don't run in parallel' report" (2026-08-25). Measured on the real 4-die
+`dev2p2s` board wiring.)*
+
+1. **Instantiate ALL the board's dies, not just the ones you use.** A 2-die
+   design on a 4-die board is a 4-chip project (`add_chip()` ×3, labelled the
+   way the board does, BOTH chains' carrier links wired). Only then can
+   `engine.drc.check_project(..., board=...)` verify every declared link is a
+   wire the carrier physically provides. The idle chain's dies still build (~34
+   cells of port infrastructure each).
+2. **`.kyt` carries `project.board = BoardRef(name, config)`** and it round-trips;
+   without it an opened design does not know which board it targets.
+3. **Give the board DRC teeth and assert the idle chain is SILENT** — a cross-chain
+   link (chip0 -> chip3) must be REJECTED, and the unused chain must emit no
+   words and no trace events, or "DRC clean" and "two independent chains" are
+   unproven.
+4. **Per-chip sim clocks are NOT a shared time base.** Each chip keeps its own
+   clock and they DIVERGE (die 1's ran 2.27× die 0's after 200 samples, the gap
+   growing every sample). Sorting merged animation steps by `time_ns` therefore
+   reproduces the batched playback exactly; interleave by each chip's progress
+   through its OWN burst (`SimController._interleave_chip_steps`). The engine
+   itself never batched — every trigger had both dies working — and within one
+   trigger the dies are CAUSALLY sequential (die 0's crossing word is the last
+   thing it produces, event 1208 of 1209); the round budget is not the lever.
+5. **A chain crossing the carrier resolves its egress tag from the TERMINAL
+   block's DECLARED output registers, never from the nets.** `stream_targets`
+   walks block→block WITHIN one chip, so a chain whose tagged egress net is on
+   the tail chip resolved `out_tag=None` and the host dropped every word
+   (`_tail_egress_tag` closes it); and only the I rail is ever wired to a net,
+   so the fabric emits a Q tag the project graph never mentions — the multi-chip
+   demux matched `d == out_tag` only and returned a HALF-LENGTH stream with the
+   imaginary part gone.
+
+**Gated by:** `test_the_animation_interleaves_the_dies_rather_than_batching_them`,
+`test_the_dies_are_concurrent_across_the_run`,
+`test_within_one_trigger_the_dies_are_causally_sequential` (the 99.9% figure,
+pinned so an early crossing word is adopted deliberately), the board-DRC
+rejection and idle-chain-silence gates in `test_fft128_2p2s`.
+
+**Related:** INV-75 (what the carrier link composes), INV-42 (the third
+live-path fault on the same example), INV-85 (the driver is a part).
+
+---
+
+## INV-82 — ONE TAGGED EGRESS PER SOURCE STREAM: a second egress of the same stream parks forever — duplicate the ingress stream instead
+
+*(Promoted 2026-09-03 from the fec_link example (2026-08-16).)*
+
+`port_config.stream_targets` resolves a SINGLE `out_tag` per `stream_id` (BFS to
+the FIRST output net) and `sim_bridge` buckets only that tag per stream; a second
+egress of the same stream parks unclaimed in `_tag_buf` forever. So "one stream,
+two arms with dual tagged egress" is NOT expressible on the client path. The
+shipped form is the cordic_polar / fec_link pattern: the SAME message bytes ride
+two streams (`tx` and `txcrc`), the chip port fans out through the INV-24 broker
+machinery (three arms measured on fec_link), and every arm's egress has its own
+claimable tag. Derived tags must also fit the 5-bit DEST field and must probe past
+the FIXED tags (`_stream_tag('txcrc')` hash-derived to 10 == the fixed `tx` tag;
+which sink won flipped with PYTHONHASHSEED because converter splicing iterated a
+set — now `sorted(conv_names)` and probing past `set(_STREAM_TAGS.values()) | used`).
+
+**Gated by:** `test_fec_link_example.py::test_stream_tag_never_collides_with_fixed_tags`
+and the control test's distinct-tags assertion.
+
+**Related:** INV-24, INV-26 (the 5-bit DEST clause), INV-77, INV-78.
+
+---
+
+## INV-83 — auto_pnr placement is WALL-CLOCK nondeterministic: ship and gate the `.kyt`; "works on my import" is not evidence — and a GR marker is a plain 1:1 pass-through
+
+*(Promoted 2026-09-03 from channel_selector + audio_effects (2026-08-09).)*
+
+**Scope, stated precisely so it does not contradict INV-85:** the nondeterminism
+is the TIME-BUDGETED `auto_pnr` attempt sweep (`time_budget_s` stops it at
+different points on different runs). The CP-SAT ROUTER is seeded
+(`random_seed = 0` + `interleave_search = True`, `cpsat_router.py`) and
+deterministic — a given placement routes identically every time. So: ship the
+`.kyt` the example was verified on, gate THAT file (build → run → assert), and
+never report an example as working on the strength of a fresh import.
+
+**Marker rule.** A GR marker block must be a plain 1:1 pass-through: the
+`keep_one_in_n` marker faked its rate change client-side (`set_relative_rate` +
+a partial-return `work` on a `gr.sync_block`, whose return is BOTH produce and
+consume), the input tail never drained and `tb.run()` hung forever. A REQUIRED
+input the flowgraph leaves unconnected (`float_to_complex.im`) is spliced from
+`blocks_null_source`; the importer drops the null source.
+
+**Related:** INV-22, INV-77, INV-85 (determinism is a finding), INV-40 (a
+re-pin with the explanation written down).
+
+---
+
+## INV-84 — A subsystem hook added to one chip-hosting path must be audited on EVERY hosting path
+
+*(Promoted 2026-09-03 from "GUI Run as GNURadio Server of panel designs"
+(2026-08-09).)*
+
+`_setup_panels` (register the `SramPanelDevice`, preload the ROM, held-ack) ran
+ONLY on the local-Sim path; all three SERVER hosting paths — server start,
+reset-RPC rehost, per-batch dirty rebuild — loaded the bitstream and never
+registered panels: no output, empty panel Inspector, while the headless suite was
+green. **"The headless pipeline is the same code path as the GUI" is only true
+for the parts you proved.** The paths to audit: local run, server start, rehost,
+dirty rebuild, hardware. The fix runs the hook after every server-side
+`engine.load` (Qt-free, safe on the server thread).
+
+**Gated by:** `test_server_panel_examples_e2e.py` — the EXACT GUI server path on
+the SHIPPED `.kyt` over a real socket.
+
+**Related:** INV-77 (the client side of the same discipline), INV-31/INV-62
+(the panel tier).
+
+---
+
+## INV-85 — DECOMPOSE BEFORE DIAGNOSING; the DRIVER is a part; a FLAKY gate is a FINDING
+
+*(Promoted 2026-09-03 from "VERIFY THE PARTS SEPARATELY" and "FFT128 2-die: the
+'livelocked crossing' was the DRIVER" (both 2026-08-24).)*
+
+**1. Decompose, and feed each part the stream it ACTUALLY receives.** A
+feed-forward two-die design has three independently checkable parts: die 0, die
+1, the crossing. Built ALONE, die 0 was 80/80 and die 1 was 200/200 *when fed die
+0's own output stream* — the fault was localised by two cheap single-chip runs
+instead of inferred from a dead system. A passing stage-2 gate on raw input says
+nothing about the assembled chain.
+
+**2. Diff the same block built both ways.** The identical die built for one chip
+and for two, exit cell compared: `WRITE @1 x3 + WRITE @19 x2 + JUMP @19` vs ALL
+FIVE at `@23`. Same block, same anchor, same cell — so the difference is the
+build path. Reach for this whenever a component works in one context and not
+another.
+
+**3. The DRIVER is a part.** "Each part works, the assembly doesn't" had a sound
+decomposition and an incomplete parts list: both single-die runs went through
+`run_block_dut_complex`, which paces a complex sample as a THREE-PART
+transaction (`WRITE xi` → pump → `WRITE xq` → pump → `JUMP` → settle: 24/24;
+queued back to back: 0/24; one WRITE+JUMP per word: 48, double-fired); the two-die
+run used a hand-written driver that did not. Enumerate what the ASSEMBLY
+introduced — the harness included. And a larger budget can HIDE the bug it is
+meant to rule out (`run(400_000, 4000)` churned an hour where a derived budget
+finishes in minutes). An engine path exercised by exactly one trivial example
+(the GainBlock 2-chip demo) is untested for every non-trivial one.
+
+**4. A flaky gate is a finding, never a tolerance to loosen.** The "shipped
+`.kyt` rebuilds to the verified bitstream" gate failed on a coin-flip while the
+design was correct: `cpsat_router` ran 8 workers with no `random_seed`, and its
+objective (minimise active faces; sharing is free) has TIES by construction —
+three distinct 17-cell routes for one net across five identical builds, every
+variant bit-exact on chip. Fixed at the source (`random_seed = 0` +
+`interleave_search = True`, which constrain WHICH optimum, never how good). The
+tempting "same size" assertion would have left every CP-SAT-routed design
+irreproducible and thrown away the only symptom. Narrow a flake by MEASURING the
+inputs (the router's BFS was deterministic and its arguments identical — which
+eliminated placement, occupancy, net order and the spine in one step), not by
+reading code.
+
+**Corollary (cascade shape).** When a suite reports 120 failures, find the ONE
+cause first: all in one test NAME, all passing alone = a cascade (here INV-38's
+session gate poisoned every report writer downstream of 8 pre-existing PyQt5
+errors). Deselect the cascading layer; do not fix its victims.
+
+**Gated by:** `test_the_dies_are_concurrent_across_the_run`,
+`test_within_one_trigger_the_dies_are_causally_sequential`, the bitstream
+reproducibility gate, `test_walled_in_nets_really_are_shortest` (an exception
+that checks its own premise), the chip-aware `test_kyt_route_transits.py`.
+
+**Related:** INV-83 (auto_pnr is the deliberately time-bounded exception),
+INV-38, INV-60 (a manhattan guess is a harness bug), INV-81, INV-86.
+
+---
+
+## INV-86 — THE PROXY-GATE FAILURE MODE: a structural pre-check standing in for the router/build/placer is a PROXY unless it models SEQUENCING, TERMINATION and BOUNDS — and when check and engine disagree, the CHECK is the bug
+
+*(Promoted 2026-09-03 from the 2026-08-24 entry; it cost the FFT campaign three
+separate investigations.)*
+
+**The rule.** A cheap check that stands in for a real engine must model that
+engine's **sequencing** (nets are routed one at a time with SHARED occupancy, in
+the CALLER's connection order — a placement validated for one order fails on the
+other, so require BOTH orders), its **termination** (a corridor ends ON the
+landing cell, not beside it — "some neighbour is reachable" passes a walled-in
+landing), and its **resource bounds** (HOP_CNT is 5 bits: 31 hops, and an egress
+corridor spends one more leaving the array — connectivity is not routability; a
+26-hop detour measured before the block's own hops). Miss any one and the check
+passes designs the engine rejects. **Never widen the engine to match a proxy,
+and never conclude "no solution exists" from a proxy's verdict.** A proxy
+usually hides more than one discrepancy — keep re-running the REAL engine after
+each fix.
+
+**The fifth discrepancy, which invalidates the other four:** `place_block(x, y)`
+NORMALISES a layout to its bounding box (`x + dx - min_dx`), so a plan reasoned
+in absolute coordinates with `min x = 1` arrives at the router shifted one column
+left and seals the input port. The fix is a DECLARED anchor
+(`default_anchor = (min_dx, min_dy)`, at which the plan is reproduced verbatim),
+not a rejection of un-normalised plans — die 0 HAS to reach column 1 to keep its
+corridors open, and the rejection threw away the only valid geometry. If a
+planner reasons in absolute coordinates, the placement API must be told where
+those coordinates are valid. It hid because the shipped N=64 fold touched x=0 and
+y=0; a contract exercised by exactly one instance is not yet a contract.
+
+**Corollary (the spine planner, same campaign):** ask whether the GENERATOR can
+see the constraint the TEST enforces. `_corridors_ok` rejected 0 of 400
+candidate folds correctly and the planner never proposed a placeable one because
+it enumerated port-blind. Strip the constraint and re-ask.
+
+**Gated by:** `LargeFFTBlock._corridors_ok` now mirrors the engine (egress first,
+ingress over what egress left, both orders, both terminating ON their landings,
+hop-bounded) and the placement the router rejected fails it honestly;
+`default_anchor` is declared on the block.
+
+**Related:** INV-60 (a manhattan guess is the same shape at the hop level),
+INV-32 (strict shortest paths), INV-36 (the hop bound), INV-87 (what licenses a
+planner change).
+
+---
+
+## INV-87 — A planner/placer change (or merge) is licensed only by a pinned LAYOUT HASH; a fallback lives OUTSIDE the recursion
+
+*(Promoted 2026-09-03 from "MERGING TWO AGENTS' WORK ON ONE PLANNER" (2026-08-24);
+the layout-hash paragraph of the proxy-gate entry moved here.)*
+
+**The hash.** A planner change is not safe because the block "still places" or
+"still passes its structural gates": a DIFFERENT working layout silently
+invalidates every on-chip measurement taken against the old one, and nothing in
+the suite would say so. Hash the resolved layout and assert it is UNCHANGED for
+every already-verified size:
+
+```python
+hashlib.sha256(json.dumps(sorted(lay.items()), sort_keys=True).encode()).hexdigest()
+```
+
+FFT64 held at `e27f020b27441656` (spine column 4, 84 cells, `s0_ctl (4,0,east)`,
+`s5_out (4,11,east)`) through five corridor-check changes, a search-order change
+and the two-agent merge; FFT32's fold came back byte-identical to main's. Those
+two numbers are what made the merge distinguishable from a silent regression.
+
+**The fallback.** A fallback inside a backtracking search multiplies the tree:
+a generator yielding k candidate batches per stage is consulted at EVERY level,
+so the search grows by `k**n_stages` — FFT32's sub-second solve had not finished
+in minutes while its layout was perfectly acceptable. A fallback must be a
+WHOLE-SEARCH retry outside the recursion (pass 1 = exactly the original path;
+pass 2 re-runs the entire search with a capped board only if pass 1 finds
+nothing), unreachable for inputs the original path already handles — zero cost
+and a bit-identical layout for every size that already places.
+
+**Merge rule:** when two agents fix one defect, the deliverable is ONE fix —
+pick on margin and simplicity (FFT32's roomier `_fetch_cell`, 30/32, over
+FFT64's 31/32), not on authorship.
+
+**Gated by:** `test_layout_is_deterministic` (FFT32/FFT64) and the pinned hashes.
+
+**Related:** INV-86, INV-85 (determinism), INV-33 (the overlap both agents hit).
+
+---
+
+## INV-88 — THE ROUTE-TIME FACE RULE: a cell's route-time face comes from its LAST-listed internal connection when that dst is ADJACENT; an adjacent NON-successor mis-faces every trace through it, and a SEARCHED fold must enforce this as a CONSTRAINT
+
+*(Promoted 2026-09-03 from the FFT16 entry (2026-08-23) and the FFT32 clause;
+INV-35 deferred to the lessons_log for this rule until now.)*
+
+**Mechanism.** Internal write/jump DISTANCES are resolved by TRACING each cell's
+`fwd_face` in the cell map — but at ROUTE time a cell's face comes from its
+LAST-listed `internal_connections` entry **when that dst is physically
+adjacent**, else from the dict-NEXT cell; the authored `default_layout` faces are
+applied only later in the build. A cell whose last-listed connection targets an
+ADJACENT NON-SUCCESSOR (FFT16: the diff leg sitting directly above the delay-line
+push cell) gets a route-time face pointing off the serpentine, every trace
+crossing it fails, and those writes silently resolve to MANHATTAN hops — wrong
+for any folded path — landing mid-chain in other cells' registers. Symptom: the
+stages whose geometry avoided the adjacency were bit-exact; the two that did not
+produced stale/garbled rails. (INV-50 has since made the NON-adjacent unreachable
+internal edge raise a named `RouterError`; the adjacent-non-successor case is
+still silent, which is why this rule stands.)
+
+**The rule.** For every cell, its last-listed internal-connection dst must be its
+chain successor OR non-adjacent; audit `(cell, last-dst)` adjacency when
+authoring any fold (the FFT16 chain runs ctl → sumi → sumq → diffi → diffq for
+exactly this reason, and `prods` lists p4 before p1..p3).
+
+**A rule a hand-placed block satisfies by craftsmanship becomes a CONSTRAINT the
+moment the layout is searched.** FFT32's spine planner enumerates folds, so the
+rule is enforced INSIDE the search (`_face_rule_ok` inside `_solve_spine`), not
+audited after it — an audit would reject the search's answers one at a time.
+
+**Gated by:** `test_fft16.py` (bit-exact all stages), `test_fft32.py`
+(`test_layout_is_deterministic`, the spine gates), `_face_rule_ok`.
+
+**Related:** INV-35 (which CELL a handoff resolves to — this governs which FACE),
+INV-50 (the walk itself), INV-52 (the face register), INV-87 (a searched fold
+is pinned by its hash).
+
+---
+
+## INV-89 — ISA FACTS EVERY CELL AUTHOR NEEDS (each one cost a debug cycle somewhere)
+
+*(Promoted 2026-09-03 and consolidated from ComplexToMag/Arg, BinArgmax,
+Gardner SHIPS, R2Butterfly, Crc16, Nlog10, the 2026-08-06 factory batch, the
+SRAM-backed wave, the single-cell batch and the PSK31/CW transceivers. Field
+tables: `PROGRAMMING_GUIDE.md` §4. INV-34 (shift counts are immediates) and
+INV-57 (MUL/MULHI are signed) are the two ISA facts that already had their own
+invariant.)*
+
+* **Every ALU / shift / logic result lands in R0** — MOVE it back where it must
+  live. R0 is BOTH the accumulator and input `a0`, so an input you read twice must
+  be saved first (the PackKBits `AND -> R0` bite; the ADD-leaves-result-in-R0
+  trap). `OP R0, R{in:x}` reads the input latch ONCE and the result is in R0
+  regardless of operand order (dest-register-free subtraction, minuend from
+  state).
+* **WRITE always sends R0**; the destination register is by output-port ORDER.
+  **WRITE and MOVE PRESERVE the flags** — only ALU/logic/shift/CMP set them
+  (SHL/SHR DO set flags; `SHL` sets C = the shifted-out bit 15; MOVE does not set
+  Z), so a sign-test SHR can drive a branch ACROSS an interleaved `{write:...}`,
+  and `SUB len, one` doubles as a loop test.
+* **MULQ FLOORS toward −∞** (no rounding bias; probed on chip with GainBlock 0.5
+  over negative odd values) — model it as arithmetic `>> 15`, never
+  round-to-nearest, or the reference disagrees by LSBs after a restore.
+* **SHR is LOGICAL** — the ISA has no ASR. `MULQ`/`MACQ`/`MSUQ` by `0x4000` IS the
+  arithmetic-shift-right-by-1 (one instruction + one shared data word).
+* **A signed compare is `CMP` + `BR.GE`/`BR.LT` (SLT = N ^ V), never a bare N
+  test:** the 16-bit difference overflows for opposite-sign pairs (the −32768
+  re-arm sentinel vs any x ≥ 0 — the FIRST compare of every frame on magnitude
+  inputs) and N alone orders them backwards. Proven with ±full-scale frames on
+  BinArgmax.
+* **After `BR.NV` on an int16 wrap, the WRAPPED sign is the OPPOSITE of the true
+  sign** — clamp to `0x8000` when the wrapped value reads POSITIVE and to
+  `0x7FFF` when it reads negative (Gardner's `c - c_prev`; AddBlock's rail).
+* **`GOTO label` is a local JUMP (hop 31) and the ONLY unconditional branch.**
+  `BR.A` is NOT "always" — flag A = "result was all ones". GOTO does NOT fall
+  through (INV-43, measured); its hazard is the exit-cell handoff pass rewriting
+  opcode-0x7 words — no GOTO in an exit cell.
+* **There is no `BR.GT`/`BR.LE`, no `BR.POS`/`BR.NEG`, no `TST`, no `JMP`, no
+  `MULU`, no `CLZ`, and no indirect STORE** (`LOAD [Rn]` is the only indirect op
+  — INV-49; the runtime patch-slot idiom, INV-90, is the escape). The branch
+  table is C/Z/N/V/P/A/SLT; `ys < 1` via `CMP ys, one; BR.GE` covers zero and
+  every negative word in one overflow-correct branch.
+* **Decrement in 2 instructions, not 3:** ALU ops are two-source —
+  `SUB Rn, Rone; MOVE Rn, R0`.
+* **An internal data WRITE is delivered by ABUTMENT, not routed** — programmed
+  cells in between do not relay it (Gardner).
+* **`{write:}` / `{jump:}` placeholders must be ALONE on their line** (the
+  resolver regex is line-anchored; a shared line fails loudly as
+  `Unknown opcode`).
+
+**Related:** INV-33 (register contract; R0 as accumulator), INV-34, INV-43,
+INV-45 (multi-word carries), INV-49, INV-57, INV-90.
+
+---
+
+## INV-90 — THE RUNTIME PATCH-SLOT idiom is the ISA's missing indirect STORE
+
+*(Promoted 2026-09-03 from BlockInterleaverBlock (2026-08-16); reused by
+Sigmoid/Tanh for the sign unfold. Extends INV-49's "there is no `STORE [Rn]`".)*
+
+`LOAD` is the only indirect op (`R0 = mem[mem[Rn] & 0x1F]`); every WRITE/MOVE
+destination is an instruction field. To store a sample at a COMPUTED address:
+construct the instruction word at runtime — `0x63E0 | dest` is `WRITE @0, dest`
+(HOP_CNT = 31 = a LOCAL store, dest in bits [4:0]) — and WRITE it into a known
+program slot of the executing cell (a `HALT` at build); the slot then runs as the
+computed store. Cost: one ADD + the patch WRITE in the producer, one slot
+instruction in the executor. **Derive the base constant by assembling
+`WRITE @0, 0`, never by hand-encoding.** Verified end-to-end with the patch
+arriving as an EXTERNAL WRITE from the neighbouring cell, under saturated
+back-to-back drive, in all 8 D4 orientations — a memory ADDRESS does not rotate,
+so no `is_face` words are needed.
+
+**Resolver contract that makes it routable:** an explicitly declared input
+`Port` pinned INSIDE the instruction range (the patch slot) keeps its input role
+(`resolver.py`; data/state keep instruction-wins). Pre-fix,
+`classify_addresses`' final sweep reclassified it as "instruction", the router's
+`_resolve_named_input` fell back to the cell's FIRST input register, and the
+patch landed in R0 — zero output, no error.
+
+**Gated by:**
+`test_block_interleaver.py::test_pinned_input_in_instruction_range_keeps_input_role`
+plus the interleaver's saturated and 8-orientation gates.
+
+**Related:** INV-49, INV-47 (the panel is the OTHER computed-destination path),
+INV-33, INV-89.
+
+---
+
+## INV-91 — A bare `MULQ(alpha_q, d)` IIR STALLS at small alpha; use the full-precision ERROR-FEEDBACK accumulator
+
+*(Promoted 2026-09-03 from RMSBlock + RMSCFBlock (2026-08-16); the same defect
+was found or pre-empted in AGC (ADC idiom), FLLBandEdge (integrator) and AGCCC.)*
+
+**Mechanism.** Truncation zeroes every increment with `|d| < 2^15 / alpha_q`
+LSB. At GR's DEFAULT `alpha = 1e-4` (`alpha_q = 3`) the averager stalls up to
+10923 LSB — a third of full scale — short. It is DIRECTION-ASYMMETRIC: floor
+truncation zeroes only POSITIVE sub-LSB increments (a negative error still steps
+−1), so only the RISING regime stalls; a falling loop self-repairs and would
+false-pass the mutation (pin the stall with a rising start, not a falling one).
+
+**The fix.** Keep `S = y * 2^15 + acc_lo` as two 16-bit words:
+`alpha_q * d = (MULQ << 15) + (MUL & 0x7FFF)` EXACTLY (floor-division identity —
+MULQ truncates toward −∞), so `t = acc_lo + lo15; y += MULQ + (t >> 15);
+acc_lo = t & 0x7FFF` loses nothing and y converges within ±1 LSB at ANY
+representable alpha. Cost: 8 instructions + 2 state registers over the naive
+form (fits one cell with the x² front, 19 words). Where the mask word does not
+fit, AGC's ADC-idiom variant is the same accumulator.
+
+**Verification shape for an averager:** the settled tail is alpha-INDEPENDENT,
+so a wrong-alpha mutation needs a TRANSIENT window (amplitude-STEP stimulus, full
+post-warm-up trajectory) to have teeth; warm-up is derived (`n = ceil(10 /
+alpha_eff)`).
+
+**Gated by:** `test_rms.py` / `test_agc.py` /
+`test_fll_band_edge.py::test_mut_dropped_error_feedback_accumulator` /
+`test_agc_cc.py` — each with the no-accumulator mutant proven to stall.
+
+**Related:** INV-13 (headroom, the other Q15 accumulation trap), INV-26
+(regime-mirror the golden at the quantised constants), INV-89 (MULQ floors).
+
+---
+
+## INV-92 — A FEEDBACK-LANDING register must be a pinned STATE var, never an input `Port`; and a ROTATABLE ring must fold ≤7 wide on the 10-wide chip
+
+*(Promoted 2026-09-03 from AGCCCBlock (2026-08-16); reproduced on
+ComplexCostasLoop in the latent-defect sweep.)*
+
+**1. The feedback landing.** `resolved_io` treats every input-role register as a
+host-injected operand, and `broker_plan`'s port-complex expansion relays ONE
+delivery per such register. With the loop's increment landing declared as an
+input `Port` (the Costas `dphase` pattern), any orientation whose input corridor
+gets BROKERED relays a stale third word into the feedback register EVERY sample
+and the loop runs silently OPEN — output == the frozen-gain trace. Found on AGCCC
+at cw³ by comparing against a rate≈0 run; ComplexCostasLoop carried the same
+latent hazard (pre-fix 194/200 samples diverged, post-fix 0). Declare the landing
+a pinned `StateVar` (AGCCC: `ginc`@R2, the hole below the data words) so the
+operand group stays exactly `[xi, xq]`; the backward WRITE resolves to the state
+register by name (state names match before input names). The
+QAM16ComplexCostasLoop `Port("dphase", register=2)` is flagged as the same
+pattern but UNMEASURED — pattern-matched from source, never reproduced.
+
+**2. The ring width.** An 8×4 ring leaves 1-cell channels: it passes every
+identity gate and dies at 180° — under cw² the router (INV-32's own-broker guard
+forbidding the short path) wrapped both corridors around the die and diverted
+the input THROUGH the `x16_out` port cell (silent zero output, route ok; that
+silent-ship class is now the named `port_transit` failure, INV-32). The same 20
+cells as a 7×5 perimeter ring leave a 2-column channel and every orientation
+routes. **REACH:** this binds ROTATABLE rings that must route in all 8 D4
+orientations; a CHIP_SCALE full-width block with DECLARED orientations is outside
+it (ChaCha20Keystream 10×7, Poly1305 10×10 — INV-40).
+
+**Gated by:** `test_agc_cc.py` (8-orientation + the open-loop mutant),
+`test_complex_costas_loop.py`'s INV-4 pin (dphase as Port -> divergence).
+
+**Related:** INV-33 (register roles), INV-23 (orientation), INV-24 (brokered
+corridors), INV-40, INV-26.
+
+---
+
+## INV-93 — MULTI-STREAM block topology is FORCED by the machinery: all external operand registers land in ONE cell; per-rail decomposition lives DOWNSTREAM of the join
+
+*(Promoted 2026-09-03 from AddCCBlock + SubCCBlock (2026-08-16); MultiplyCCBlock
+was built on the same topology and driven through the same harness unchanged.)*
+
+Three engine contracts pick the topology of any block that consumes two or more
+external streams: (1) `build_port_map`/`resolved_io` expose external INPUTS only
+from THE ONE landing cell (the first cell that declares inputs) — a per-rail
+landing split (`ai` on one cell, `aq` on another) is UNWIRABLE from GRC;
+(2) `_iq_sibling` synthesises a stream's Q net only for a SAME-CELL / SAME-ENTRY
+pair; (3) `_elect_join_triggers` resolves ONE join address from the landing cell
+for ALL arms. Therefore: ONE landing cell holds all operand registers
+(`ai`@R0, `aq`@R1, `bi`@R2, `bq`@R3, `entries[0] = join`), the 2-arm toggle
+COUNTING JOIN paces two whole PACKETS (each source's complex pair is multi-WRITE +
+ONE JUMP, so two jumps per sample in ANY order single-fire the compute), and the
+per-rail arithmetic is downstream: `rail_i` computes `yi` and forwards
+`(yi, aq, bq)` + one trigger, `rail_q` computes `yq` and emits the INV-17 packet.
+A single-cell 4-input form measures ~39 words — that IS the old "4-operand wall",
+quantified.
+
+**The driver:** `kyttar_verify.run_block_dut_complex2` (+ `_pipelined`) — four
+operands as two (re, im) packets, two JUMPs per sample, hop and join entry from
+the build's `input_landings`. Saturation coverage is `NEEDS_BESPOKE`: the shared
+harnesses emit ONE jump per sample and would leave the join half-fired.
+
+**Importer contract that came with it:** for blocks with ≥2 complete on-cell
+input I/Q pairs, a GRC numeric port index selects I-HALVES only (`[mixb,'0',comb,
+'1']` used to map to `aq`, so stream b's `yi` landed on stream a's Q rail).
+
+**Related:** INV-17 (the packet form), INV-24, INV-46 (rendezvous — the
+face-locked alternative when the producers are independent blocks), INV-41.
+
+---
+
+## INV-94 — A multi-entry input cell must declare PER-PORT JUMP entries (`Port(entry=...)`); a fan-out that mixes an ABUTTED arm with a BROKERED arm is unbuildable, and every router must keep it fully routed
+
+*(Promoted 2026-09-03 from "CONVERTER-FLAVORS DEADLOCK CLOSED" (2026-08-16).
+Extends INV-17 / INV-46.)*
+
+1. **Mixed fan-out.** The exit cell has ONE output face; every fan-out patcher
+   (INV-17) steers arms by HOP down that single face. When one rail ABUTS its
+   consumer (east) while the other's corridor leaves NORTH, the brokered rail's
+   `@hop` WRITE and its trigger sail into the abutted consumer (trace: the data
+   landed in the abutted gain's registers and the trigger halted there) and the
+   downstream starves. Prevent it at ROUTING, never re-sequence it: a source
+   exit cell whose fan-out group mixes plain abutments with routed/port arms
+   keeps EVERY arm fully routed (the bus router already did; the maze router's
+   `is_abutment` did not). The all-routed form — arms share one corridor, each
+   peels off at its own broker — is the proven one.
+2. **Per-port entries.** A rendezvous target that runs DIFFERENT code per input
+   (DualFloatToComplex: `got_i` latch + relock; `got_q` latch + emit) was given
+   the block's single default entry by every entry-resolution site, so the q arm
+   JUMPed `got_i` and the rendezvous never emitted. `Port` carries a declarative
+   `entry` (an entry-point NAME); the PortMap resolves it per port and
+   `target_io`/`_target_port_entry` steer every delivering net's JUMP. Blocks
+   that declare nothing are byte-identical.
+3. **A recorded diagnosis is a HYPOTHESIS.** The xfail's reason text blamed the
+   `_apply_brokers` mixed branch; the per-cell trace (`enable_trace` /
+   `get_trace`) showed it fired and located both true causes in one session.
+   Re-derive from the trace before coding.
+
+**Gated by:** `verification/tests/test_mixed_fanout_rails.py` (per-port entries
+distinct; a brokered `dual.q` delivery JUMPs `got_q` in the built fabric; the
+maze keeps a mixed fan-out fully routed — all three fail on the pre-fix engine).
+
+**Related:** INV-17, INV-24, INV-46, INV-56 (`stop_reason` first), INV-85.
+
+---
+
+## INV-95 — GOLDEN-WITH-NO-GR recipe: cite the catalogue model, pin the python golden against an INDEPENDENT implementation, anchor published check vectors ON-CHIP, run the strongest mutants as REAL on-chip blocks
+
+*(Promoted 2026-09-03 from Crc16Block (2026-08-16), the template followed by
+Golay, Hamming, BinArgmax, ZCR, DotProduct and BlockInterleaver. Extends
+INV-25/INV-26 to blocks with no GNU Radio counterpart.)*
+
+1. **Cite the exact catalogue model** (CRC RevEng CRC-16/CCITT-FALSE: poly 0x1021,
+   init 0xFFFF, refin/refout false, xorout 0, check 0x29B1; MacWilliams & Sloane
+   for Golay's B; Sklar / Lin & Costello for the interleaver order).
+2. **Pin the pure-python golden against an INDEPENDENT stdlib/numpy
+   implementation BEFORE any DUT compare** (`binascii.crc_hqx` IS the 0x1021
+   engine; a numpy reshape/transpose for the interleaver; a separately
+   transcribed true-17-bit RHE for the butterfly halving; `np.argmax`'s
+   first-occurrence tie pinned as its own test so a numpy change surfaces
+   loudly).
+3. **Anchor MULTIPLE published check vectors ON-CHIP** (XMODEM 0x31C3, AUG-CCITT
+   0xE5CC, UMTS 0xFEE8, CMS 0xAEE7; Golay's exhaustive weight distribution
+   1/759/2576/759/1) so the parameter space is pinned by vectors, not
+   self-consistency.
+4. **Run the strongest INV-4 mutants as REAL on-chip mutant blocks** (wrong-poly
+   DUT, wrong-init DUT), model-level only where a real mutant is impossible —
+   and assert the mutation's sensitivity precondition (Golay's wrong-B-row gate
+   was green because no stimulus word exercised the row).
+
+**Corollary (LZ4):** a compressor / format block's gate is
+`decode(encode(x)) == x` under an INDEPENDENT decoder nobody here wrote —
+pairing an encoder and decoder from the same repo makes them self-consistently
+wrong (the byte-order mutant survives such a pairing).
+
+**Related:** INV-4, INV-25, INV-26, INV-61 (the LZ4 gates).
+
+---
+
+## INV-96 — Any DECISION-DIRECTED stage needs its input at NOMINAL scale — gain-stage after a pre-scaled matched filter, never before a constant-modulus loop; and prove the CASCADE on-chip early
+
+*(Promoted 2026-09-03 from "Full-duplex 16-QAM modem" (2026-07-24); the converse
+measured on the QPSK Gardner -> MMTiming swap (2026-08-16).)*
+
+**The rule.** The M&M TED, a DD Costas and a slicer all decide against FIXED
+level thresholds. A matched filter with a ÷2 tap pre-scale compresses the
+constellation ~2.8×, so every decision is wrong; a `ComplexGain` ≈ 2.4 between MF
+and the DD loops (robust window [2.3, 2.45]) restores nominal scale — an
+RMS/outer-level match, not peak scaling. **The converse holds for constant-
+modulus input:** the order-4 Costas output already sits at ±0.707 per axis and
+slices consistently, and a 1.34 gain stage there caused double-strobing (~316
+outputs for 160 symbols, BER ~0.65) — do NOT gain-stage toward the 0.949 outer
+level unless the input is multilevel.
+
+**Prove the cascade on-chip EARLY.** Per-block `process_reference`s do not
+compose (different shapes; DD loops are scale-sensitive), so the composition
+proof is the ON-CHIP cascade — BER 0 on the chain before authoring the `.kyt`.
+A swap candidate that matches the incumbent's pass/fail map exactly (toff 0.3
+fails for BOTH Gardner and MMTiming) has found a CHAIN-level envelope, upstream
+of the block under test.
+
+**Gated by:** `placekyt/tests/test_qam16_modem_ber.py::test_shipped_kyt_recovers_ber_zero`
+and its QPSK twin (the stream-routed batch path on the shipped `.kyt`).
+
+**Related:** INV-25 (the ComplexGain poc bug this same gain stage hid), INV-26,
+INV-24 (drive a duplex modem through `stream_targets`, never raw injection).

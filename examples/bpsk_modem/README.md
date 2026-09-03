@@ -86,6 +86,7 @@ See [`../README.md`](../README.md) for the workflow shared by every demo, and
 ## Key parameters
 
 Set at the top of the flowgraph (GNU Radio variables): `samp_rate = 32000`,
-`sps = 4` (→ 8 kBaud symbol rate), TX `carrier = 8000` Hz, and RRC `alpha = 0.35`,
-`ntaps = 33` (span 8 at 4 sps) on both the pulse shaper and the matched filter. The Costas loop runs at
-`loop_bw = 0.05`.
+`sps = 4` (→ 8 kBaud symbol rate), TX `carrier = 8000` Hz, and RRC `alpha = 0.35`
+on both filters. TX pulse shaper: `ntaps = 33` (span 8 at 4 sps). RX matched filter:
+span 8 at **2 sps** (17 taps) — the RX stream (`stim.rx_burst`) is a 2-sps RRC-BPSK
+burst, independent of the TX `sps = 4`. The Costas loop runs at `loop_bw = 0.05`.

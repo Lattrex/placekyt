@@ -86,8 +86,10 @@ matching could retune the wrong die.
 
 ## Board
 
-Targets `placekyt/resources/boards/dev2p2s.kdb` — 4 chips, chain A (chip0→chip1) +
-chain B (chip2→chip3), each chain's head `x16_in` and tail `x16_out` on the FPGA.
+Mirrors the topology of `placekyt/resources/boards/dev2p2s.kdb` — 4 chips, chain A
+(chip0→chip1) + chain B (chip2→chip3), each chain's head `x16_in` and tail `x16_out`
+on the FPGA. (The `.kyt` wires the two carrier links itself and does not declare
+the board; `fft128_2p2s` shows a board-bound design.)
 
 ## Run it (two terminals, from the repo root)
 

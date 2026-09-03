@@ -3100,6 +3100,12 @@ three are worth generalising because each **looks like an arithmetic bug and is 
    running into the next word. Order the two entries so the path you want falls
    through naturally and the other branches FORWARD over it (`CMP Rz,Rz; BR.Z`) —
    MOVE does not touch the flags, so the compare must be explicit.
+   *[CORRECTED per INV-43 (measured 2026-08-29): GOTO neither falls through nor
+   transfers inline — after a GOTO the next instruction did NOT run (R20 stayed 0).
+   The real hazard is the exit-cell handoff pass rewriting opcode-0x7 words
+   (`build._patch_cell_handoff`), which turns the GOTO into a second external
+   trigger. Keep the advice — no GOTO in an exit cell, converge with fall-through /
+   BR.cond — drop the hardware mechanism.]*
 3. **An overflow-saturation's sign polarity is INVERTED from how it reads.** On an
    int16 `SUB` that overflows, the WRAPPED result's sign bit is the OPPOSITE of the
    true sign. So after `BR.NV`, clamp to `0x8000` when the wrapped value reads
@@ -8678,7 +8684,10 @@ restore ×4 with two saturating `ADD R0,R0` doublings, pinning to x's sign via
 via `chip.get_trace()`): (1) `GOTO` over a sat block compiles to an EXTERNAL
 output JUMP AND falls through — each rail written TWICE; use CONDITIONAL
 branches only and converge paths at a REAL-instruction anchor (`MOVE R0,R0`),
-never a placeholder label. (2) **Hardware MULQ TRUNCATES toward −∞** (no
+never a placeholder label. *[CORRECTED per INV-43, 2026-08-29: GOTO does NOT fall
+through — the double write came from the exit-cell handoff pass rewriting the
+opcode-0x7 word into a second external trigger. Keep "avoid GOTO near the exit
+tail"; drop the fall-through mechanism.]* (2) **Hardware MULQ TRUNCATES toward −∞** (no
 rounding bias) — model it as arithmetic `>>15` in the reference or it
 disagrees ±4 LSB after the `<<2`. Derived tolerance 7 LSB
 (= 2^S·(coeff 0.5 + trunc 1.0) + 1); measured 6.
@@ -8732,7 +8741,10 @@ GR uses a RIGHT-shifting **Fibonacci** LFSR (`out = sr & 1`;
 `newbit = parity(sr & mask)`; `sr = (sr>>1) | (newbit<<len)`), confirmed by
 reading `next_bit()` out of live GR — NOT a left-shifting Galois. THE BUG: a
 `GOTO` just before the shared `{write}/{jump}` tail assembled to a local JUMP
-that did NOT stop fall-through — the newbit=1 path double-shifted the
+that did NOT stop fall-through *[CORRECTED per INV-43, 2026-08-29: the mechanism
+was the handoff pass rewriting the opcode-0x7 word near the tail, not
+fall-through — GOTO does not fall through; the advice "avoid GOTO near the exit
+tail" stands]* — the newbit=1 path double-shifted the
 register exactly when parity was odd. FIX = a branchless merge (`MOVE` does
 not touch flags, so P survives for the branch; one shared
 `SHR sr,#1; OR R0,fb; MOVE sr,R0` tail). `AND sr,mask` sets P =

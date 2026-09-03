@@ -124,6 +124,12 @@ from the built faces, so the real modem was never affected — only the self-pla
 harness used the manhattan shortcut. When a rotated single-rail block gives zero output,
 suspect the harness hop BEFORE the block.
 
+**UPDATED 2026-09-03:** `run_block_dut` now takes hop/entry from the build's own
+`BuildResult.chips[0].input_landings` FIRST (`dut_runner.py`); `len(route)` / the
+manhattan span is only the fallback — and it mis-drives the BROKERED landing shape,
+where the router legally ends the corridor at a broker cell and the host must land
+at the broker's burst register and JUMP the broker's deliver entry (INV-23, INV-60).
+
 **Applies to:** every block driven through x16_in by a harness that places blocks itself.
 
 ---
@@ -282,8 +288,13 @@ delay = 13 cells).
 **Fix:** lay the block out as a **serpentine fold**, with the external input
 port(s) and the output port on the **same** (bus-facing) edge, within ~2 cells —
 `portmap.py` then derives `io_colocated=True`. This is *observed, not enforced*:
-nothing forces it, but a non-colocated block does not tap a single bus → does not
-route on this chip. Author an explicit `default_layout` to fold; the base-class
+nothing forces it. **CORRECTED 2026-09-03:** this used to continue "a non-colocated
+block does not tap a single bus → does not route on this chip" — FALSE. About half of
+the shipped, verified blocks (60 of the 120 catalog-resolvable `done` blocks) are NOT
+colocated and route fine; the placer uses `io_colocated` only as a tie-break
+(`engine/autoplace.py`; `layout_rules.md` §1 carries the same correction). Colocation
+shortens the route and makes placement forgiving — a design target, not a
+precondition. Author an explicit `default_layout` to fold; the base-class
 auto-snake makes the block *compact* but does NOT guarantee same-edge I/O.
 
 **Applies to:** every block of 2+ cells, especially anything with feedback.
@@ -301,8 +312,9 @@ where it was doing the most damage.
 **Refuted by shipped, verified blocks:** `FFT64Block` **9×12** (84 cells, done),
 `FFT128Die1` 9×12, `FFT32Block` 9×10, `GRUCellBlock` **10×6** — and, with **no
 `CHIP_SCALE` waiver at all**, `ComplexToMagBlock` **9×2** and `CoherentRXBlock`
-**10×2**. `layout_caps()` has no placer or DRC caller; the number was never
-enforced anywhere.
+**10×2**. `layout_caps()` has no placer or DRC caller — it is gated only in the
+per-block test suites of the `CHIP_SCALE` classes; the number was never enforced
+by the engine.
 
 **Backwards, measured — see INV-40.** `GRUCellBlock` folded to the *compliant*
 8×7 left fragmented perimeter free space and its chain stayed **one net short
@@ -338,8 +350,11 @@ finished output. A harness/driver that derives its drain from
 
 **Fix:** declare the output port on the last cell; anything draining the block
 (verification harness, bus tap) must target that cell's position, not cells[0].
-Extending the single-block harness to drive cell 0 but drain the last cell is the
-known capability gap behind the FIR multi-cell ceiling (INV-7).
+The harness drains the routed output port by PORT NAME (`dut_runner.py` wires
+`x16_in -> block -> x16_out` and lets the router resolve the output cell), so the
+former "drive cell 0 but drain the last cell" capability gap is CLOSED (corrected
+2026-09-03; 7..64-tap FIRs are verified through it). INV-11 covers the
+param-resolved PortMap that locates the last cell.
 
 **Applies to:** FIR, RRC, decimator, and any chained/wavefront multi-cell block.
 ---
@@ -459,8 +474,8 @@ Exhaustively verified equal to `clamp(acc·2^S)` for all acc, S∈0..15.
 **Build-engine gotcha (cost me real time):** do NOT use a `GOTO`/branch whose target
 LABELS a `{write}`/`{jump}` placeholder — the build engine rewrites that jump with
 the placeholder's OUTPUT routing (it becomes a stray output JUMP, not a local goto),
-silently corrupting control flow (a pre-existing latent bug also present in
-SquelchBlock's `GOTO update`). Instead, branch to a label on a REAL instruction, and
+silently corrupting control flow (a latent bug that once existed in
+SquelchBlock's `GOTO update`, since removed). Instead, branch to a label on a REAL instruction, and
 use the two-path / duplicated-`{write}` + terminal `HALT` structure above (the
 in-range path's HALT is REQUIRED — a remote JUMP does NOT stop local execution, so
 without it the in-range path falls into the sat block and double-emits).
@@ -653,13 +668,16 @@ it. If the cell is at its full memory budget, the fan-out won't fit.
 
 **Fix / status:** the general fan-out transform lives in `engine/build.py`
 `_apply_brokers` (proven: mixer→2×LowPass hits corr ~1.0; complex→complex packet
-path is byte-identical to before — mixer→Costas still BER 0). The ComplexToFloat
-"split" BLOCK is a dead end — a complex pair is ALREADY two words multiplexed on the
-bus (I in R0, Q in R1); a downstream block that wants only the I rail just reads R0.
-Steering is a build/routing job (which register each downstream WRITE targets), NOT
-a physical block. (If GRC ergonomics ever need a visible "split" node, it must be a
-LOGICAL-ONLY adapter that DISSOLVES at import — 0 cells on hardware — never a placed
-block.)
+path is byte-identical to before — mixer→Costas still BER 0). **CORRECTED
+2026-09-03:** this paragraph used to call a ComplexToFloat "split" BLOCK "a dead end
+… never a placed block". `ComplexToFloatBlock` SHIPS as a 1-cell placed GR-parity
+block (`complex_float_block.py`, identity datapath, manifest `done`, verified vs
+`blocks.complex_to_float`) — it is a legitimate GR type-conversion. What remains
+true is the STEERING half: a complex pair is ALREADY two words multiplexed on the
+bus (I in R0, Q in R1); a downstream block that wants only the I rail just reads R0,
+and steering the two rails to two different consumers is a build/routing job
+(`_apply_brokers` — which register each downstream WRITE targets), NOT something a
+split block performs.
 
 **Applies to:** ComplexMixer, NCO, IQUpconvert, and EVERY block whose output cell
 emits an I/Q rail pair — i.e. any block a future agent writes with a complex output.
@@ -688,7 +706,7 @@ The block RAISES a clear ValueError instead of silently rescaling (matches GR ma
 — RULE #0). A low-pass at `gain≤1` is Σ|h|≤1 by construction; band filters at gain=1.0
 often exceed it, so pass a smaller gain (0.4–0.9) — correlation is gain-invariant.
 Gated by placekyt/tests/test_complex_fir_budget.py + verification/tests/test_complex_fir.py
-(GNU-Radio parity, 12 tests).
+(GNU-Radio parity, 11 tests / 17 cases).
 
 ## INV-19 — A FEEDBACK block must survive SATURATED (pipelined) drive, not just inject-and-flush
 
@@ -1077,7 +1095,8 @@ mismatched output under some orientation is a real bug in one of these handoff s
 3. **Router wove egress / a fan-in THROUGH the block body.** CP-SAT drew a block's output
    egress corridor across the block's OWN input cell (one cell, one fwd_face → the egress
    word is swallowed), or split a complex fan-in's two rails onto divergent corridors. Fix:
-   read-only report validators in `controller._run_router` (`_routes_cross_block_body`,
+   read-only report validators in `controller._run_router` (the UI controller,
+   `placekyt/ui/controller.py`; `_routes_cross_block_body`,
    `_port_complex_fanin_split`) escalate ONLY an invalid report to the node-disjoint maze
    router (block cells = hard obstacles). Clean designs never trigger it.
 
@@ -1141,7 +1160,7 @@ manhattan ≥2 from a fan-out port) and auto_pnr's acceptance gate
 (`_port_fanout_abuts_port`) rejects any layout that violates it.
 
 **Applies to:** any full-duplex / shared-input-port design (the BPSK modem, the QPSK
-modem, the upcoming 4FSK modem) — a TX and an RX chain multiplexed on one `x16_in`. Prove
+modem, the FSK4 modem — shipped, BER 0 TX+RX) — a TX and an RX chain multiplexed on one `x16_in`. Prove
 it end-to-end on the HOSTED chip (load `.kyt` → build → `stream_targets` → `SimServer` →
 drive both `stream_id`s), NOT with a synthetic single-block harness — the shared-port fork
 only exercises when both streams are present. See [[layout_rules]] duplex pattern.
@@ -1174,10 +1193,14 @@ the example uses), include full-scale/overload edges, and expect to find and fix
 bugs. Do not mark it `done` on the strength of an example; only the gate (INV-4) makes it
 done. "It's used in a working modem" is not verification.
 
-**Applies to:** every `poc: true` entry in the manifest (`ComplexRRCMatchedFilterBlock`,
-`ComplexCostasLoopBlock`, `GardnerTimingRecovery`, `BPSKSlicerBlock`, …). See
-[[FACTORY]] for the queue and the per-block dispatch, and the manifest-status note in
-`AGENTS.md` §5.
+**Applies to:** every `poc: true` entry in the manifest. **Status 2026-09-03 — the
+2026-07 poc queue (`ComplexRRCMatchedFilterBlock`, `ComplexCostasLoopBlock`,
+`GardnerTimingRecovery`, `BPSKSlicerBlock`, …) has since been verified in full; the
+queue is EMPTY** (manifest: every block `done`, no `planned` entries). The one
+remaining `poc: true` flag (ComplexRRCMatchedFilterBlock, status `done`, "PoC bugs
+found + fixed (INV-25)") is a manifest inconsistency, not a live poc. The rule stays
+for the next poc anyone writes. See [[FACTORY]] for the queue and the per-block
+dispatch, and the manifest-status note in `AGENTS.md` §5.
 
 ---
 
@@ -1192,10 +1215,15 @@ stimulus that GNU Radio itself cannot process correctly.
 stimulus (`_make_bpsk_2sps`) on which **GR's own `symbol_sync_cc(Gardner)` recovers at
 BER ~0.45** (i.e. does not lock). The block was tuned to that non-Nyquist stimulus. On the
 true matched-filter Nyquist channel — where GR locks at BER 0 across the timing-offset
-sweep — the Q15 Gardner TED (which `>>1`-halves both samples to fit int16 before the
-product) jitters too hard and recovers at BER ~4–12%. The block was quarantined
-(`needs_human`); MMTimingRecovery is the verified alternative. Extends the documented
-Gardner 4-PAM limit (see the M17/4FSK lessons_log entries) to 2-level BPSK on a Nyquist channel.
+sweep — the Q15 Gardner recovered at BER ~4–12% and was quarantined (`needs_human`).
+**UPDATED 2026-09-03 (outcome):** the 2026-08-06 diagnosis recorded here — "the TED's
+`>>1` halving jitters too hard" — was WRONG (an ablation of that halving reached only
+BER 0.0122); the real defect was an UNBOUNDED phase accumulator with no modulo that
+wrapped int16. `GardnerTimingRecovery` is `done` since 2026-08-27: BER 0 across the
+whole fractional-offset sweep on the matched-filter Nyquist channel, on-chip
+bit-exact. MMTimingRecovery is a verified PEER, not "the" alternative. The
+documented Gardner 4-PAM limit (see the M17/4FSK lessons_log entries) is a separate
+matter and still stands.
 
 **The rule:** a verification stimulus is only valid if GR ITSELF produces the correct
 answer on it. Before comparing DUT-vs-GR, assert the GOLDEN is real — GR meets the pass
@@ -1295,17 +1323,24 @@ quarantined on the SAME wall, and it is now a measured, repeatable substrate bou
 
 **The rule / what fits vs what doesn't:** the Q15 cell substrate hosts *DSP math* (filters,
 mixers, loops, small constellations, per-sample transforms) but NOT *table-heavy protocol/
-waveform logic*. The dividing line is the ~21-entry LOAD table and the 32-word cell. Such
+waveform logic*. The dividing line is the 32-entry `LOAD`-indirect table (the ISA limit)
+and the 32-word cell — less whatever the block's own program and state consume (compute
+the block's own budget; 21 was MapBB's). Such
 blocks need the **external SRAM panel** driven by `SramControllerBlock` (the hardened
 FPGA-controller macro — see INV-31) — a memory-interface construction, not a single-cell
-drop-in. When scoping a block, estimate the table/state footprint FIRST; if it exceeds ~21
-LOAD entries or ~31 registers, it is an SRAM-panel block, and building it single-cell will
+drop-in. When scoping a block, estimate the table/state footprint FIRST; if it exceeds
+the block's own LOAD-table budget or ~31 registers, it is an SRAM-panel block, and building it single-cell will
 QUARANTINE. This is a real capability boundary (a paper data point about the architecture),
 NOT a builder failure. The long ON/OFF emit-loop itself IS representable (proven) — the wall
 is the register footprint, so on-the-fly generation (NCO cosine) beats a table where possible.
 Note the honest workflow value: each such block still ships a bit-exact Python GOLDEN
 (Varicode from fldigi, Morse from ITU-R M.1677) so the spec is proven and the SRAM-panel
 build has a reference. See the SRAM-backed-block-wave lessons_log entries.
+
+**RESOLVED 2026-09-03:** all five ham blocks shipped — VaricodeEncoder/Decoder and
+CWDecoder SRAM-backed (INV-31), RaisedCosineEnvelope generated ON-THE-FLY (no table, no
+deep buffer), CWKeyer v2 on an SRAM Morse ROM. The wall stands for SINGLE-CELL designs
+only; the panel and on-the-fly generation are the two ways past it.
 
 ---
 
@@ -1363,7 +1398,7 @@ arrives via the push-read. This is the heterogeneous compute-next-to-memory patt
 chip generalizes to embedded panels.
 
 **Ground truth:** `SramControllerBlock` is VERIFIED — `placekyt/tests/test_sram_panel.py`
-(21 tests) incl. a write-then-read-back-out-the-port round-trip through REAL routing
+(24 tests) incl. a write-then-read-back-out-the-port round-trip through REAL routing
 (`0xCAFE`→addr 3→emerges on `x16_out`) + the runnable `engine/sram_demo.py`. The older,
 naive `FpgaRamBlock` (2-cell orchestrator, passive pull-read, no address registers) was
 DELETED 2026-08-07 — do not resurrect it; `SramControllerBlock` is the one true SRAM path.
@@ -1618,10 +1653,11 @@ it as an ORDERED list, and a multi-cell block that ignores either ordering
 builds and routes cleanly and then computes garbage.
 
 **1. Program cells come first, in exactly `build_cell_programs()` order;
-FACE-only `transit_*` cells come last.** The router resolves a declared
-internal handoff by indexing the PLACED CELL LIST positionally against the
-`cell_programs` keys — `pb.cells[keys.index(dst_cell_id)]` — and `pb.cells`
-is built from `default_layout`. Emitting a transit at its natural *chain*
+FACE-only `transit_*` cells come last.** The block-library router
+(`runtime/python/gr_kyttar/placement/router.py` — not `engine/bus_router.py`)
+resolves a declared internal handoff by indexing the PLACED CELL LIST positionally
+against the `cell_programs` keys — `pb.cells[keys.index(dst_cell_id)]` — and
+`pb.cells` is built from `default_layout`. Emitting a transit at its natural *chain*
 position (the obvious thing to do when the layout function walks a serpentine
 in order) shifts every later program cell's resolved destination by the number
 of preceding transits. Nothing errors: the writes land in some other cell's
@@ -2042,7 +2078,8 @@ things in this order — the order is load-bearing:
    Read the accumulated per-test outcomes recorded by
    `verification/tests/conftest.py` on the running pytest `Config`, filtered to
    the calling test FILE. Any failure or error **in that file** means **no
-   write**, and the writer itself FAILS,
+   write**, and the writer itself FAILS, naming the offending gates so a
+   report-less run is never mistaken for a skip.
 
    **UPDATED 2026-08-29 — this used to be session-wide, and that was
    destructive.** Combined with unlink-first, ONE failing gate anywhere deleted
@@ -2058,7 +2095,6 @@ things in this order — the order is load-bearing:
    failure. Gated by
    `test_report_provenance.py::test_failure_scope_is_the_writers_own_file_not_the_session`,
    proven to fail when the scoping is reverted.
-   naming the offending gates so a report-less run is never mistaken for a skip.
 3. **Stamp the provenance.** The written body carries `"provenance": "session"`,
    so an auditor can tell an artifact from a literal by inspection.
 
@@ -2140,8 +2176,8 @@ placement forgiving — with a free channel on each side, any edge will do. At
 full width there is no way to reach the far side, so a chip-scale block **MUST
 put its input and output on ONE edge**, and that edge must face the chip's
 ports. State it in the fold's docstring and assert it in the block's suite
-(`GRUCellBlock`: `fin` and `oout` three cells apart on the north edge, facing
-the 10×12's two row-0 ports).
+(`GRUCellBlock`: `fin` at (0,1) facing south and `oout` at (3,0) — three COLUMNS
+apart, with `oout` alone on the north edge, facing the 10×12's two row-0 ports).
 
 **Do not measure the wrong thing.** A wide fold is not necessarily cheaper for
 its OWN port corridors, and judging it that way inverts the result. Measured:
@@ -2331,7 +2367,7 @@ from built cell programs, not estimates. Reuse them; do not re-derive:
 | `ROTL(x, n)`, n < half-width | **7** over 2 cells | 4 (`ROL` each half) + 3 (masked merge) |
 
 **1. `ADC` is the carry — never synthesise it.** `MOVE` is flag-preserving (only ALU
-ops touch the flags, guide §4.2/§4.8), so the park between the low `ADD` and the high
+ops touch the flags, `PROGRAMMING_GUIDE.md` §4.2/§4.8), so the park between the low `ADD` and the high
 `ADC` does not disturb the carry. No `CMP`, no mask, no compare-against-operand trick.
 `SBC` is the same story for subtraction. Extends to any width: N halves = N-1 `ADC`s.
 
@@ -2729,8 +2765,10 @@ mutation gate that corrupts the real block and rebuilds on chip.
      JUMP in the exit cell to the output-port hop. Correct for a plain sink;
      destroys a cell that also speaks a protocol. Now honours `RAW_OUTPUT_HOPS`
      (new `BlockDefinition.raw_output_hops`, set by the build).
-   * `build._apply_output_port_routes` had no `RAW_OUTPUT_HOPS` guard, unlike its
-     sibling `_apply_routes`. Same failure, different pass.
+   * `build._apply_port_route_faces_and_hops` (and the `_apply_brokers` pass) had
+     no `RAW_OUTPUT_HOPS` guard, unlike their sibling `_apply_routes`. Same failure,
+     different pass. *(Corrected 2026-09-03: this bullet used to name a
+     `build._apply_output_port_routes` that never existed.)*
    * `build._patch_one_handoff` identifies the WRITE to patch by DESTINATION
      REGISTER alone and takes the lowest-addressed match — and returns after the
      FIRST hit, so a cell that issues the SAME hand-off from several branches
@@ -2811,7 +2849,7 @@ through rather than a structure replicated per iteration.
 
 **The second half, which is the part that is easy to miss.** Making the value
 resident also solves a problem the substrate otherwise cannot solve at all. A
-`WRITE`'s `HOP_CNT` and `DEST` are **instruction fields** (guide §4), and there
+`WRITE`'s `HOP_CNT` and `DEST` are **instruction fields** (`PROGRAMMING_GUIDE.md` §4), and there
 is no cross-cell register addressing — so **a cell cannot compute where to send a
 word**. Any algorithm whose dataflow is data-dependent (a permutation, a
 gather/scatter, an indexed shuffle) is therefore un-expressible as ROUTING. The
@@ -2828,7 +2866,7 @@ it does not fit.**
 > shipped blocks, and a builder who reads "panel or nothing" will reach for the
 > panel when it is not needed:
 >
-> 1. **`FACE` is runtime-writable** (CONFIG **1**, read/write; guide §3). A cell
+> 1. **`FACE` is runtime-writable** (CONFIG **1**, read/write; `PROGRAMMING_GUIDE.md` §3). A cell
 >    can compute its output *direction* mid-program (`MOVE [FACE], Rn`), and
 >    `DataWord(is_face=True)` exists so the placer D4-transforms the constant.
 >    So *direction* is data-dependent even though hop count and destination are
@@ -3408,6 +3446,12 @@ Two details the same measurement pins, both sharpening clause 1:
 
 So clause 1's rule ("every path RESTORES the resting face before it ends") is not
 merely good hygiene — it is the entire precondition that makes clause 2 survivable.
+
+*(Reconciliation 2026-09-03: a single design — LZ4Decoder, 2026-08-29, the
+lessons_log entry "Splitting a cell buys a FACE" — observed 180 transits with zero
+misdeliveries DURING a flip/write/restore burst; that `proto_*` harness is not in
+the tree, so treat the observation as unverified. The rule stands: every path
+RESTORES the resting face; a cell LEFT flipped at rest misroutes.)*
 
 ### 3. The router cannot size a FLIPPED edge. (TOOLCHAIN — partly fixed)
 
@@ -4297,6 +4341,14 @@ block, always, by moving the programmed cell off the walk.
 shared forwarding path and applies to any block that broadcasts along a walk
 crossing its own cells.
 
+**SCOPE (reconciled 2026-09-03 vs INV-48 and the hop-19 measurement).** This rule
+applies to BROADCAST/SWEEP walks — a programmed cell that is TRIGGERED mid-sweep
+stops the sweep (the collector here was triggered). A HOP-COUNTED word transits a
+programmed-but-IDLE cell transparently (measured: hop 19 through fourteen idle
+quarter-round stages on ChaCha20Keystream; INV-48's forwarding rule); what deflects
+such a word is the cell's resting FACE (INV-52), not its program. The two are not
+in contradiction — one is about triggers on a sweep, the other about data on a walk.
+
 **Related:** INV-48 (the forwarding rule), INV-52 (a cell on a walk is not
 neutral — this is the same lesson for triggers rather than data), INV-56
 (`stop_reason`, which this sharpens).
@@ -4480,10 +4532,14 @@ silently deadlocking. Keep `default_layout()` free of any call back into
 
 The corridor and the landing are resolved by two different mechanisms. The panel
 template draws the `x16_in` corridor to `panel_requirements()["input_cell"]`,
-but the HOST-INJECTION LANDING comes from the catalog's PortMap, which derives a
-block's external input from the FIRST cell's first input port — and
-`bus_router._target_input_cell` falls back to `placement.cells[0]`. The two agree
-only when the input cell IS cell 0.
+but the HOST-INJECTION LANDING comes from the catalog's PortMap, which picks
+**the first templated cell that declares inputs, in `build_cell_programs()`
+order** (`placekyt/engine/portmap.py`); `bus_router._target_input_cell` resolves
+the NAMED port through that PortMap and only falls back to `placement.cells[0]`
+when no PortMap in-port matches. *(Restated 2026-09-03 — this used to say "the
+FIRST cell's first input port".)* The rule, therefore: **the ingest cell must be
+the FIRST cell in program order that declares any input; pinning it at index 0 is
+the simplest way to guarantee that.**
 
 **MEASURED:** with another cell at index 0, the landing resolved to THAT cell's
 input register at THAT cell's position. Pass 1 was never entered; the chip ran
@@ -4908,7 +4964,8 @@ corridors to route. That is FALSE as a general statement, and was corrected in
 * **ChaCha20KeystreamBlock** (51 cells, 10x7, full-width): terminals NINE cells
   apart on the port row — `seq` at (0,1) taking `x16_in`, `out` ON the
   `x16_out` port cell at (9,0). Routes, builds, runs bit-exact.
-* **GRUClassifierBlock** (full-width): terminals three apart.
+* **GRUCellBlock** (51 cells, 10x6, full-width): `fin` (0,1) / `oout` (3,0),
+  three columns apart.
 * **Poly1305MACBlock** (100 cells, 10x10, full-width): same-edge, wide span.
 * **FFT64Block** (84 cells, 9x12, NOT full-width): I/O on **opposite edges** —
   legal because a free column remains for the corridor.
@@ -4937,7 +4994,8 @@ shape vs free space), the corrected `layout_rules.md` §1 and checklist.
 ## INV-75 — What a 2P2S carrier link composes, measured: four per-stream leg shapes work; ONE source cell cannot both feed a far-chip block and emit a tagged transit stream; a RAW-literal egress is TAIL-ONLY
 
 **Measured 2026-08-31** (number assigned at landing — renumber on collision),
-during the `examples/secure_link` feasibility de-risk, on the real 4-die board
+during the feasibility de-risk for a planned secure-link (AEAD) example (no such
+example directory ships), on the real 4-die board
 wiring (both carrier links, `MultiChipSimEngine`, the hosted server's own
 `multi_chip_stream_targets` resolution). Gated by
 `verification/tests/test_2p2s_fanout_spine.py`.
@@ -5345,6 +5403,14 @@ that is the number to fit, and it is the number the 10×12 array runs out of.
 harness/design discipline (relay-per-arm). Not a block defect: all four FOC
 blocks are individually chip-proven.
 
+**STATUS 2026-09-03:** the whole six-block chain WAS subsequently placed and
+hand-routed on ONE 10×12 array (`examples/foc_motor/foc_motor.kyt`; INV-73 /
+INV-74; `test_foc_full_loop_gates.py::test_full_loop_streams_bit_exact_on_one_array`
+is live). §2's "runs out of arm corridors" was an AUTO-placement SEARCH result,
+not a substrate limit — the corollary "cost by arm count" stands; the "runs out"
+conclusion does not. The LAYER line above is narrowed accordingly: the routing
+bound is real, the array is not too small for this chain.
+
 **Related:** INV-46 (Rule 1 silent no-op, Rule 2 face budget, Rule 4 probe),
 INV-70 (corridor sharing), INV-24 (port fan-out diverts), INV-56
 (`QueueEmpty` + tiny event count = work never started), layout_rules §4b.
@@ -5386,6 +5452,14 @@ disagree with the author. A block's own suite probes layouts and keeps one
 that works, so the authored face is usually the routed face. Composition is
 what moves the arms. Measured here: the FOC placement lands arm x NORTH while
 the constant said WEST.
+
+**KNOWN UN-CONVERTED MEMBER (recorded 2026-09-03):** `TMRVoterBlock` still
+ships the value-carrying release `WRITE.CFG @1, 3` with `UNLOCK_CFG_ADDR = 3`
+(`tmr_voter_block.py`) — the family audit this rule demands was applied to
+CordicRotate and SVPWM, not to TMRVoter, which survives only because its suite's
+anchors land arm A on the authored face (INV-69). Convert it (or land the
+family-wide static check) before composing it in a chain whose router may
+disagree.
 
 ### 2. A PARTIALLY-STALE RENDEZVOUS DUMP MEANS A BARRED ARM
 
@@ -5431,8 +5505,10 @@ scope (rules 1) + diagnostic method (rules 2, 3) — permanent until
 
 **Gated by:** `verification/tests/test_cordic_rotate.py::
 test_release_is_a_backward_jump_reading_the_reconciled_face` and
-`::test_relock_reads_the_same_word_the_build_reconciles` (structure, incl. the
-no-`WRITE.CFG` family check), and `test_foc_motor_example.py`'s streaming
+`::test_relock_reads_the_same_word_the_build_reconciles` (structure; the
+`assert "WRITE.CFG" not in cp.assembly_template` check there and its twin in
+`test_svpwm.py` scan ONLY their own block — **no test iterates the
+`NEEDS_DISTINCT_INPUT_FACES` family, corrected 2026-09-03**), and `test_foc_motor_example.py`'s streaming
 gates + `test_mutation_unreconciled_release_face_collapses_the_stream_ON_CHIP`
 (the INV-4 proof: re-pointing `relock` at an unreconciled word is
 geometry-preserving, still builds, and collapses the chain to exactly one

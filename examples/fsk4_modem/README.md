@@ -16,7 +16,8 @@ RX (stream 'rx'):  4FSK FM ─▶ QuadratureDemod ─▶ RRCPulseShaper(matched)
   `(1,0)→+3, (0,0)→+1, (0,1)→−1, (1,1)→−3`) to one of four PAM deviation levels,
   zero-stuffs to `sps=2`, RRC pulse-shapes, and FM-modulates it (`FrequencyModulator`,
   `sensitivity = π/2`, so a full-scale `+3` level advances π/2 rad/sample = **+2400 Hz**;
-  the four levels give **±2400/±800 Hz** deviations at a 9600-symbol/s rate).
+  the four levels give **±2400/±800 Hz** deviations at **4800 symbols/s** —
+  9600 bit/s, from `samp_rate = 9600` at `sps = 2`).
 - **RX (demodulator):** an FM discriminator (`QuadratureDemod`), an RRC matched filter,
   **sync-word timing recovery**, and a 4FSK hard-decision slicer — recovers the dibits
   at **BER 0**.

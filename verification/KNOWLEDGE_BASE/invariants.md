@@ -1577,7 +1577,7 @@ twiddles per cycle put the ENTIRE odd-bin half of every output frame wrong.
 a constant across the frame, so a phase error reads directly as a rotation
 (``512 -> (510, -50)``, which is exactly ``512 * W_64^1``) instead of as noise.
 
-## INV-34 — ISA: shift counts are IMMEDIATE instruction fields; the silicon design is the authority for ISA claims
+## INV-34 — ISA: shift counts are IMMEDIATE instruction fields; the PROGRAMMING_GUIDE field tables are the authority for ISA claims
 
 **The rule:** a shift/rotate word is `OP | ROT[11] | RSVD[10] | CNT[9:6] |
 SRC[5:0]` — CNT is an immediate count (0-15) and bit[10] is reserved
@@ -1595,14 +1595,14 @@ proven in shipping blocks):
   being shifted survives the test.
 - **Shift-by-one loop** with a counter, for genuinely variable counts.
 
-**Authority order for any ISA claim: the silicon design > the spec's
-FIELD TABLES > simulator/assembler prose.** The instruction field tables
-(PROGRAMMING_GUIDE.md §4) are canonical; prose and examples elsewhere can lag
-them, and the simulator is kept conformant to the design. Before relying on a
-"discovered" feature that appears only in prose or in simulator behavior,
+**Authority order for any ISA claim: the spec's FIELD TABLES
+(PROGRAMMING_GUIDE.md §4) > simulator/assembler prose.** The instruction field
+tables are canonical; prose and examples elsewhere can lag them, and the
+simulator and assembler are kept conformant to the field tables. Before relying
+on a "discovered" feature that appears only in prose or in simulator behavior,
 check it against the field tables.
 
-Gate: `verification/tests/test_silicon_isa_subset.py` — source-scans every
+Gate: `verification/tests/test_isa_field_table_subset.py` — source-scans every
 block for `[Rm]` shift syntax and asserts the assembler rejects it.
 
 Confirmed-real for contrast: `GOTO label` is assembler sugar for a local

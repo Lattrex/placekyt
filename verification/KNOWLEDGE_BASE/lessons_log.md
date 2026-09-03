@@ -7556,17 +7556,17 @@ sees a derotated constellation and the example keeps its foff=0.008 showcase).
   behavioral gain (Gardner is BER-0-verified in those demos; the README
   honesty note stays). Revisit if a real-rail M&M variant ever ships.
 
-## ISA CONFORMANCE — shift counts are immediate fields; sim + docs aligned to the design (INV-34) 2026-08-13
+## ISA CONFORMANCE — shift counts are immediate fields; sim + docs aligned to the field tables (INV-34) 2026-08-13
 
-A design-review pass confirmed the shifter's contract from the silicon up: the
-barrel shifter takes its count from the immediate `CNT[9:6]` field and bit[10]
-is reserved (exactly what the instruction FIELD TABLE says — PROGRAMMING_GUIDE
-§4.3). Prose elsewhere and the simulator had drifted from the field table and
-described a register-count variant — both are now aligned to the design at the
-root: the assembler rejects `[Rm]` count syntax outright, the decoder treats
-bit[10] as reserved, and the mode is unrepresentable in the instruction type.
+The instruction FIELD TABLE (PROGRAMMING_GUIDE §4.3) is the authority for the
+shifter's contract: the count comes from the immediate `CNT[9:6]` field and
+bit[10] is reserved. Prose elsewhere and the simulator had drifted from the
+field table and described a register-count variant — both are now aligned to
+the field tables: the assembler rejects `[Rm]` count syntax outright, the
+decoder treats bit[10] as reserved, and the mode is unrepresentable in the
+instruction type.
 INV-34 records the rule + a source-scan gate
-(`verification/tests/test_silicon_isa_subset.py`).
+(`verification/tests/test_isa_field_table_subset.py`).
 
 Two blocks that had leaned on the drifted simulator behavior were restructured
 to immediate-count constructions — both SMALLER than before:

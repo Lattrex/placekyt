@@ -74,7 +74,10 @@ Two terminals, two commands — run both **from the repo root** (`placekyt/`).
 
 **1. Host the chip** (terminal 1) — open the hand-placed design directly. **Do NOT
 import the `.grc`** for this demo — it's dense and hand-routed, and auto-P&R will not
-route it (see above). Opening the `.kyt` is the whole point here:
+route it: the placement succeeds, but the router threads only ~8 of the 14 nets
+(the complex-packet fan-in into the mixers/upconverts is what it cannot yet do), so
+the remaining nets are routed by hand in the shipped `.kyt`. Opening the `.kyt` is
+the whole point here:
 
 ```bash
 .venv/bin/python placekyt/main.py examples/ssb_weaver/ssb_weaver.kyt
@@ -89,8 +92,8 @@ placeKYT running.
 gnuradio-companion examples/ssb_weaver/ssb_weaver.grc
 ```
 
-Two scopes plot the **input audio** (two tones) against the **recovered audio**
-coming back from the chip.
+Three scopes plot the **input audio** (800 + 1800 Hz tones), the **TX SSB
+passband**, and the **recovered audio** coming back from the chip.
 
 > **Watch it work.** Tick **Enable cell animation** on the placeKYT Simulation
 > toolbar before running to see this dense hand-routed Weaver transceiver flow — the

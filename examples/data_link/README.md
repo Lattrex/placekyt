@@ -13,8 +13,7 @@ loopback identity asserted on top. Watch the GRC window: the "recovered
 bytes" stem plot prints the payload's byte values (the sink emits q15/32768
 floats, so a ×32768 rescale feeds the scope; the sink LOOPS the genuine
 one-batch result for display — `server_repeat=True` — because GNU Radio
-strands the tail of a finite stream and an exact-size buffer never paints;
-pixel-proven).
+strands the tail of a finite stream and an exact-size buffer never paints).
 
 ```
 bytes ─▶ UnpackKBits(8) ─▶ Not ─▶ AndConst(1) ─▶ MapBB([1,0]) ─▶ LFSRScrambler
@@ -61,8 +60,8 @@ $ python examples/data_link/data_link_demo.py "ANY PAYLOAD"
 RESULT: EXACT — placed chain == stock GNU Radio == the payload
 ```
 
-14/120 cells — the whole 11-block chain is a single ABUTTED column
-(placement is abutment-first; only the port ingress and the
+14/120 cells — the whole 11-block chain is a single ABUTTED serpentine
+(rows 0–2, x 1–8; placement is abutment-first; only the port ingress and the
 egress corridor are routed at all). Not verified: the literal Qt window (the data path is
 gate-covered; see the ham examples' READMEs for the server/client gates that
 cover the GRC run mechanics generally).

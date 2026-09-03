@@ -61,6 +61,22 @@ def _send_single(port, n=256):
     return (float(np.std(pay)) if pay is not None and len(pay) else 0.0)
 
 
+def _send_duplex(port, stream_ids, n=64):
+    """One duplex batch carrying the named streams (so the server records THEIR
+    stream_ids in its per-Run seen-set). Complex Q15 streams, tiny payload."""
+    from engine.sim_bridge import recv_message, send_message
+    iq = np.tile(np.array([0.2, 0.0], dtype=np.float32), n)  # n complex samples
+    payload = np.concatenate([iq for _ in stream_ids]).astype(np.float32)
+    streams = [{"stream_id": s, "complex": True, "raw": False, "n_samples": n}
+               for s in stream_ids]
+    c = socket.create_connection(("127.0.0.1", port))
+    send_message(c, {"op": "process_batch_duplex", "port": "x16_out",
+                     "in_port": "x16_in", "schedule": "interleaved",
+                     "streams": streams}, payload)
+    _h, _pay = recv_message(c)
+    c.close()
+
+
 def test_switch_design_reresolves_targets(monkeypatch):
     from PySide6.QtWidgets import QApplication
     QApplication.instance() or QApplication([])
@@ -97,6 +113,57 @@ def test_switch_design_reresolves_targets(monkeypatch):
             "server kept design A's stale stream_targets after switching to B")
         # The single-stream fallback entry must be gain's own, NOT SSB tx's 18.
         assert sim._gr_server._default_entries.get("x16_in") != 18 or True
+    finally:
+        sim.stop_gnuradio_server()
+
+
+def test_switch_design_resets_the_trace(monkeypatch):
+    """Opening a DIFFERENT example and Running it must NOT redisplay the previous
+    design's waveforms. Opening a project clears the waveform PANEL view but not
+    the SimController's TraceModel; the per-connection on_new_run reset does not
+    cover an open-then-Run where the trace was never dropped on open, so the new
+    Run re-seeded its default traces from the OLD design's leftover samples and
+    the previous example's traces repopulated (user-reported). The fix: the
+    dirty-rebuild that fires on a project switch (a changed id(project), never a
+    mid-Run second batch) requests a trace reset, consumed on the GUI thread
+    before the new batch's samples are appended."""
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    from engine.catalog import BlockCatalog
+    from ui.controller import AppController
+    from ui.sim_controller import SimController
+
+    cat = BlockCatalog.from_gr_kyttar()
+    app = AppController(catalog=cat)
+    app.open_project(SSB_KYT)
+    app.build()
+    sim = SimController(app)
+    sim.set_animate_cells(False)
+    port = sim.start_gnuradio_server(host="127.0.0.1", port=0)
+    try:
+        # Run design A as a DUPLEX batch so the server records A's OWN stream_ids
+        # (tx/rx) in its per-Run seen-set. This is the crux: the server's new-Run
+        # detection is by stream-id CYCLING, and B's stream_ids must NOT collide
+        # with A's — otherwise cycling alone would reset and mask the bug.
+        _send_duplex(port, ["tx", "rx"])
+        sim.refresh_debug_from_chip(full_capture=True)
+        sim._pending_trace_reset = False  # A's own run-reset already consumed
+
+        # Switch to design B (gain: a stream-less '__single__' design whose run
+        # key is NOT in A's {tx, rx} seen-set). Same design_version so only the
+        # id(project) guard forces the rebuild.
+        app.open_project(GAIN_KYT)
+        app.build()
+        app.project.design_version = sim._hosted_design_version
+
+        # B's single-stream batch does NOT cycle any of A's stream_ids, so the
+        # stream-cycling new-Run reset never fires. The project-switch rebuild is
+        # the ONLY thing that can drop A's leftover trace — it must request the
+        # reset, else A's waveforms repopulate on B's Run (the user's bug).
+        _send_single(port)
+        assert sim._pending_trace_reset is True, (
+            "project switch did not request a trace reset — the previous design's "
+            "waveforms would repopulate on the new example's Run")
     finally:
         sim.stop_gnuradio_server()
 

@@ -2222,6 +2222,19 @@ class SimController(QObject):
             # The trace reset now happens ONCE per Run in the on_new_run handler
             # (a fresh client connection), so a Run's streams ACCUMULATE.
             return None, None                      # design unchanged — fast path
+        # A DIFFERENT project (pid changed), not a same-project live edit, means the
+        # user opened another example. The stale TraceModel still holds the PREVIOUS
+        # design's captured samples: on_new_run's per-connection reset does NOT
+        # cover an open-then-Run where the trace was never dropped on open (opening a
+        # design clears the waveform PANEL view but not this controller's TraceModel),
+        # so the new Run re-seeds its default traces from the old design's leftover
+        # data and the previous example's waveforms repopulate. A project switch can
+        # never be a mid-Run second batch (that is always the SAME pid), so it is
+        # always safe to force a trace reset here. Consumed on the GUI thread.
+        project_switched = (self._hosted_project_id is not None
+                            and self._hosted_project_id != cur_pid)
+        if project_switched:
+            self._pending_trace_reset = True
         import sys, time as _t
         print(f"[placeKYT PERF] design edited since last run (v{self._hosted_design_version}"
               f"→v{cur_ver}) — REBUILDING (this is the SLOW per-run rebuild if it keeps firing)",

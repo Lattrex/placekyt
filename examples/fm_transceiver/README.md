@@ -52,7 +52,7 @@ Summary panel shows.
 
 Power is total draw (active + idle) while that direction runs alone; **idle ~0.5 mW**.
 The RX is just a quadrature discriminator (a MAC of the conjugate product, no loops) on
-3 active cells, so its per-chain rate is the highest of any demod here. The array is
+2 block cells (plus one routing cell), so its per-chain rate is the highest of any demod here. The array is
 asynchronous — only active cells draw power. To reproduce: open the
 `.kyt`, Run as GNURadio Server, set the Kyttar Source **Full-speed (saturated) = Yes**
 and **Duplex schedule = Sequential**, Run, and read each direction's Settled rate. (Set

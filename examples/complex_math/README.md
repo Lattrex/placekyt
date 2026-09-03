@@ -73,7 +73,7 @@ $ python examples/complex_math/complex_math_demo.py
 RESULT: EXACT — all three chip streams bit-match their references; the mixer adds the tone frequencies
 ```
 
-25/120 cells, 3 blocks. Not verified: the literal Qt windows (the recovered
+25/120 cells (6 block cells + routing), 3 blocks. Not verified: the literal Qt windows (the recovered
 data paths, including what each scope is fed, are gate-covered end to end).
 Pacing: per-sample (`pipelined: 'no'` — the per-sample-paced join is the
 documented two-stream client contract).
@@ -103,6 +103,9 @@ gnuradio-companion examples/complex_math/complex_math.grc
 |------|------|
 | `complex_math.grc` | GRC-first source (six sources, three combiners, three complex sinks + scopes). |
 | `complex_math.kyt` | Auto-generated placed+routed project. |
-| `complex_math.py` | GRC-generated top block (+ the three `*_iq2c.py` epy display-glue modules). |
 | `build_kyt.py` | Regenerates the `.kyt`. |
+
+(`complex_math.py` and the three `complex_math_{sum,diff,prod}_iq2c.py` epy
+display-glue modules are GRC build output, extracted from the `.grc` when you
+press **Generate** — they are not checked in, so a fresh clone will not have them.)
 | `complex_math_demo.py` | Headless END-TO-END demo — all three streams + the mixer bin, one command. |

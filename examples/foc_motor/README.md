@@ -8,45 +8,32 @@ rotor's own reference frame so the torque-producing and flux-producing
 components separate, regulate each with its own PI controller, rotate the
 voltage command back out, and modulate it onto the three inverter legs.
 
-The **shipped `.kyt`** puts the **command half** of that loop on one array:
+The **shipped `.kyt`** puts the **whole current loop** on one array — the
+measurement half (Clarke + forward Park) and the command half (two PI
+controllers + inverse Park + SVPWM), all six blocks on one 10×12 die:
 
 ```
+ia, ib ─> Clarke ─> CordicRotate(sign=−1, θ) ─> (i_d, i_q)     [measurement half]
+                       (forward Park)
 e_d ──> PI(d) ──┐
-                 ├──> CordicRotate(sign=+1, θ) ──> SVPWM ──> duty a, b, c
+                 ├──> CordicRotate(sign=+1, θ) ─> SVPWM ─> duty a, b, c   [command half]
 e_q ──> PI(q) ──┘         (inverse Park)
-θ ────────────────────────^
+θ ────────────────────────^          (fed to both rotations)
 ```
 
-`e_d` and `e_q` are the d- and q-axis current errors, `θ` is the rotor
-electrical angle. The output is the three inverter duty cycles, as one 3-word
-Q15 packet in fixed order a, b, c.
+`ia, ib` are the two sensed phase currents; `e_d`/`e_q` are the d- and q-axis
+current errors; `θ` is the rotor electrical angle. The output is the three
+inverter duty cycles, as one 3-word Q15 packet in fixed order a, b, c.
 
-**87 of the 120 cells** on a 10×12 array.
+**60 of the 120 cells** on a 10×12 array — the whole loop, measurement side
+included, on a single die. (An earlier build shipped only the command half,
+because the whole loop did not route on one array; the build fixes recorded in
+INV-74 — fork-broker `@N` delivery, reshaped internal faces, and crossover
+fan-out — closed that, so it now places, routes and streams bit-exact on one
+array.)
 
-`foc_motor.grc` is the **whole** loop — measurement half, command half, the
-host-side error former and a motor to close it. See **The full loop** below;
-it runs closed across two arrays at a measured **32.17 kHz**.
-
-## What is not here, and why
-
-The **measurement half** — the Clarke transform and the forward Park rotation,
-which turn two sensed phase currents into (i_d, i_q) — is not in this build.
-Both blocks ship and are chip-proven, and the sub-chain **routes, builds and
-runs bit-exactly on its own**: measured at 75 cells (Clarke + `CordicRotate
-(sign=-1)` + a relay per arm), three distinct arm hops, `QueueEmpty` on every
-run, output `0x868, 0x870` matching the host golden exactly.
-
-What does not fit is the *whole loop on one 10×12 array*, and the reason is
-worth stating precisely because it is not the obvious one:
-
-**the limit is routing, not cells.** The full chain is 55 block cells of 120 —
-under half the array. But each face-locking rendezvous needs its arms delivered
-on *distinct faces* by *corridors that do not share cells*, and the full loop
-has three rendezvous (two CORDIC at N=3, one SVPWM at N=2) competing for the
-same free space. Over roughly 2600 placements — random, structured and
-hill-climbed — the best whole-chain result still left 2 of 13 nets unrouted,
-and the unrouted nets were always rendezvous arms. Cost a design like this by
-**arm count**, not cell count. (Recorded as INV-71.)
+`foc_motor.grc` is the same loop as a flowgraph you drive from GNU Radio, with a
+host-side error former and a PMSM plant to close it. See **The full loop** below.
 
 ## The loop rate
 
@@ -56,23 +43,22 @@ through the simulator and reading each output word's capture time with
 
 | | measured |
 |---|---|
-| latency to the first duty word | **17,576.9 ns** |
-| latency to the complete 3-word packet | **17,861.5 ns** |
+| **sustained inter-iteration interval** | **29,004.9 ns** |
+| **sustained control-loop rate** | **34.48 kHz** |
+| latency to the first duty word (fill) | 109,654.0 ns |
+| latency to the complete 3-word packet | 109,938.6 ns |
 | cadence of the three duty words | 142.29 ns apart |
-| **sustained inter-iteration interval** | **17,925.1 ns** |
-| **sustained control-loop rate** | **55.8 kHz** |
-| cells | 87 / 120 (45 active in one iteration) |
-| instructions per iteration | 634 |
+| cells | 60 / 120 (72 active in one iteration) |
+| instructions per iteration | ~1,064 |
 
-The chain **streams**: consecutive control iterations, each with different
+The chain **streams**: six consecutive control iterations, each with different
 inputs, every duty word bit-exact against the host golden and every simulator
 run settling `QueueEmpty`. The sustained figure is the mean interval between
-completed duty packets over six consecutive iterations; the spread across them
-is under 65 ns.
+completed duty packets over the six; the spread across them is under 75 ns.
 
-55.8 kHz sits **above the 10–40 kHz band** typical of industrial FOC current
-loops, with the whole rotation, both PI controllers and the space-vector
-modulator on the fabric.
+34.48 kHz sits **inside the 10–40 kHz band** typical of industrial FOC current
+loops, with the whole loop — both rotations, both PI controllers and the
+space-vector modulator — on one fabric.
 
 **These are simulated times.** They come from simKYT's timing model for this
 placement and routing. They are not silicon-certified, and a real device will
@@ -80,17 +66,18 @@ differ.
 
 ### Fill versus steady state
 
-The sustained interval (17,925 ns) is within 0.4% of the first packet's latency
-(17,861 ns). The two being equal is the finding: **this chain re-arms, it does
-not pipeline.** Each rendezvous bars its arms until the current group has
-cleared the block, so only one control iteration is ever in flight, and the
-steady-state period is therefore the whole-chain traversal time rather than the
-slowest single stage. There is no pipeline-fill discount to collect.
+The first duty packet lands at ~109,939 ns, but the sustained interval between
+packets is ~29,005 ns — the fill latency is about **four times** the steady-state
+period. That gap is the finding: **the full loop OVERLAPS successive iterations.**
+The chain is deep enough (both rotations, both PI stages and the modulator in
+series) that more than one control iteration is in flight at once, so the
+steady-state period is well under the whole-chain traversal time — there is a
+real pipeline-fill discount here, unlike the command half in isolation (where
+the shorter chain re-arms and its latency equals its interval).
 
-For a host-paced controller that is the right shape: an FOC loop is one sample
-set per control period by construction, which is exactly how the example drives
-it. It also means the loop rate is bounded by chain *depth*, so shortening the
-chain — not widening it — is what buys rate here.
+For a host-paced controller this still behaves as one sample set per control
+period by construction, which is how the example drives it; the overlap simply
+means the sustained rate is higher than the single-shot latency would suggest.
 
 Two drive patterns still do not stream, both pinned as guard tests:
 
@@ -151,11 +138,8 @@ result over the host's own, so the two are compared on screen rather than the
 array's merely being displayed.
 
 The flowgraph is a **logical** description: it is what you place, not a
-placement. The whole loop does not route on one array (see above), so the
-natural split is **measurement half on one die, command half on the other**.
-The two are joined only by (i_d, i_q) out and (e_d, e_q) back, plus θ, so the
-crossing is narrow — and a chip crossing costs about **40 ns**, negligible
-against a ~31 µs loop period.
+placement. The shipped `foc_motor.kyt` places the whole thing on one 10×12 array
+(see **The loop rate** above for the measured on-chip result).
 
 ### What the flowgraph is careful about
 
@@ -170,32 +154,6 @@ against a ~31 µs loop period.
   q15 output words and the packet is split with a Deinterleave at 3.
 * **`server_port` is 58950 everywhere.** A `0` there makes `kyttar_source`
   silently no-op — the flowgraph runs and does nothing, with no error.
-
-### The full-loop rate
-
-Measured with the loop actually closed across two arrays
-(`foc_loop_twochip.py`), reading each output word's capture time:
-
-| | measured |
-|---|---|
-| measurement half, sustained | **13,142.7 ns** (76.09 kHz alone) |
-| command half, sustained | **17,940.5 ns** (55.74 kHz alone) |
-| **the full loop, per sample** | **31,083.2 ns** |
-| **full-loop control rate** | **32.17 kHz** |
-| cells | 75 + 87 of 120 each |
-
-The two halves are **strictly serial within a control period** — sample *k*'s
-duties cannot be computed until sample *k*'s currents have been measured and
-rotated — so the loop costs their **sum**, not the larger of them. That is why
-a 55.8 kHz command half and a 76.1 kHz measurement half give a ~32 kHz loop.
-
-Every iteration is bit-exact against the host golden on **both** halves, and
-every simulator run settles `QueueEmpty`. **These are simulated times**, from
-simKYT's timing model — not silicon-certified.
-
-32.17 kHz sits inside the 10–40 kHz band typical of industrial FOC current
-loops, with the entire loop — both rotations, both PI controllers and the
-space-vector modulator — on the fabric.
 
 ### Does the controller actually control?
 
@@ -252,11 +210,11 @@ the extra precision has to go.
 
 | file | what |
 |---|---|
-| `foc_motor.kyt` | the shipped placed + routed chip (command half) — open this directly |
+| `foc_motor.kyt` | the shipped placed + routed chip — **the whole loop on one array** — open this directly |
 | `foc_motor.grc` | **the FULL loop as a flowgraph** — every block, every connection |
-| `foc_motor_demo.py` | placement, build, drive, and the command-half rate measurement |
+| `foc_motor_demo.py` | placement, build, drive, and the loop-rate measurement |
 | `foc_loop_model.py` | the PMSM plant and the whole-loop host golden |
-| `foc_loop_twochip.py` | the full loop closed across TWO arrays, with its rate |
+| `foc_loop_twochip.py` | an alternative two-die split of the same loop |
 | `build_kyt.py` | regenerate the `.kyt`; reverifies on chip before saving |
 | `build_grc.py` | regenerate `foc_motor.grc` |
 | `verification/tests/test_foc_motor_example.py` | the command-half gate suite |
@@ -293,26 +251,14 @@ Three scopes:
   actually switch on.
 - **current errors e_d, e_q** — both converge to zero as the loop settles.
 
-The shipped `.kyt` holds the **command half**. The flowgraph describes the
-whole loop, so placing all of it is a two-die job — that is the exercise the
-file exists for. To regenerate the flowgraph:
+The shipped `.kyt` holds the **whole loop** (measurement + command half) on one
+array. To regenerate the flowgraph:
 
 ```bash
 .venv/bin/python examples/foc_motor/build_grc.py
 ```
 
-### The full loop across two arrays, headless
-
-```bash
-QT_QPA_PLATFORM=offscreen \
-  .venv/bin/python examples/foc_motor/foc_loop_twochip.py 12
-```
-
-Builds both halves, closes the loop around the plant, and prints each
-iteration's measured currents and duties against the host golden, then the two
-halves' sustained intervals and the full-loop rate.
-
-### The command half alone
+### The loop headless (the shipped one-array design)
 
 ```bash
 QT_QPA_PLATFORM=offscreen .venv/bin/python examples/foc_motor/foc_motor_demo.py
@@ -321,6 +267,18 @@ QT_QPA_PLATFORM=offscreen .venv/bin/python examples/foc_motor/foc_motor_demo.py
 You will see each iteration's three duty words against the golden they are
 compared to, the first-packet latency, the duty-word cadence, and the sustained
 inter-iteration interval and loop rate in kHz.
+
+### An alternative: the loop split across two arrays
+
+```bash
+QT_QPA_PLATFORM=offscreen \
+  .venv/bin/python examples/foc_motor/foc_loop_twochip.py 12
+```
+
+`foc_loop_twochip.py` places the two halves on two separate dies (measurement on
+one, command on the other) instead of one — a study in splitting a loop across a
+carrier link. It builds both halves, closes the loop around the plant, and
+prints each iteration's measured currents and duties against the host golden.
 
 To regenerate the `.kyt` (it is only written if the chip run is exact):
 
@@ -353,8 +311,9 @@ re-packs the placement compactly and herds the arm corridors together, which is
 the INV-70 head-of-line wedge; the anchors here are one of the few sets that
 both route and deliver.
 
-**The `.kyt` measures the controller, the `.grc` closes the loop.** In the
-shipped `.kyt` the errors and `θ` are supplied by the host, so what it measures
-is the command half in isolation. The flowgraph adds the measurement half and a
-host block holding the PMSM plant, the error former and the feedback path, and
-`foc_loop_twochip.py` runs the whole thing closed across two arrays — see **The full loop** below.
+**The `.kyt` runs the loop on chip, the `.grc` closes it around a motor.** The
+shipped `.kyt` computes the whole loop on one array — Clarke and forward Park to
+get (i_d, i_q), then the two PI controllers, inverse Park and SVPWM to the
+duties — with its inputs (the sensed currents, the errors and `θ`) supplied by
+the host. The flowgraph feeds those inputs from a host block holding the PMSM
+plant, the error former and the feedback path, so the loop actually closes.

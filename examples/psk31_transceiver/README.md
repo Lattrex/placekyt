@@ -71,7 +71,8 @@ runs the **genuine GR client** — two real `kyttar.source`/`kyttar.sink` pairs
 through the DuplexRendezvous against the hosted `.kyt` — and holds the same
 exactness (the GUI Run data path minus the literal Qt window).
 
-69/120 cells, 9 blocks, 256-word panel image (both tables). The RX drive in
+69/120 cells (as reported by `psk31_transceiver_demo.py` at build time), 9 blocks,
+256-word panel image (both tables). The RX drive in
 the demo is the diff-encoded ±0.9 symbol stream of the golden Varicode bits —
 what a coherent PSK31 demodulator hands the slicer at symbol rate (the
 coherent front end itself is the proven `coherent_bpsk_rx` spine).
@@ -103,3 +104,4 @@ gnuradio-companion examples/psk31_transceiver/psk31_transceiver.grc
 | `psk31_transceiver.kyt` | Auto-generated placed+routed project (open in placeKYT, Run as GNURadio Server). |
 | `build_kyt.py` | Regenerates the `.kyt`. |
 | `psk31_transceiver_demo.py` | Headless END-TO-END duplex demo. |
+| `psk31_tx_golden.py` | The sample-exact PSK31 transmitter golden model (Varicode → DBPSK → ±1 → hold ×8 → raised-cosine envelope) the built TX is gated against. |

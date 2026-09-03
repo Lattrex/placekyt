@@ -58,8 +58,8 @@ index never leaves the chip.
 
 * **ON-CHIP** — one placed + routed array, real corridors and hand-offs: the
   whole **receive spine** (dechirp, FFT16, magnitude, alignment delay,
-  framewise argmax). **82 of the array's 120 cells** (60 block cells + the
-  routing corridors).
+  framewise argmax). **82 of the array's 120 cells** (59 block cells + 23
+  routing/port cells).
 * **HOST-SIDE** — numpy, in `gr-kyttar/python/kyttar/css_demo_stim.py`: the
   **transmitter** (`ChirpSymbolMapperBlock` + `ChirpGeneratorBlock`) and the
   channel (attenuation + AWGN, then Q15 quantization — a channel is numpy by

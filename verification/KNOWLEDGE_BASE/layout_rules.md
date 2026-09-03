@@ -11,9 +11,12 @@ What is and is not enforced (corrected 2026-08-29 — this preamble used to say
 * a block extending past the fabric **is** caught, loudly, as `unplaced_cell`
   (`engine/drc.py`, repeated in `engine/build.py`);
 * I/O colocation is genuinely **not** enforced — `io_colocated` is derived only
-  (`engine/portmap.py`) and 61 of 127 shipped blocks are not colocated;
-* the ≤8 width cap is enforced **nowhere** — `layout_caps()` has no placer or DRC
-  caller. See §3.
+  (`engine/portmap.py`) and about half of the shipped blocks are not colocated
+  (60 of the 120 catalog-resolvable `done` blocks; the manifest lists 125 done —
+  counts re-probed 2026-09-03);
+* the ≤8 width cap is not enforced by the placer or the DRC — `layout_caps()`
+  has no placer or DRC caller; it is gated only in the per-block test suites of
+  the `CHIP_SCALE` classes. See §3.
 
 > **Scope note — this is a CONVENTION, not an architectural rule.** The pressure
 > here comes entirely from this chip being **10×12** — very few cells, very few
@@ -32,11 +35,13 @@ we hit: an early Costas loop was **7 cells in a row plus a 6-cell full-width
 return path** to carry a *one-sample* feedback value back to the front — 13 cells
 to delay a single sample. The feedback had to travel the entire width of the
 block because the producer (last cell) and consumer (first cell) sat at opposite
-ends.
+ends. (That line is still in the catalog as the legacy `CostasLoopBlock` — a 7×1
+line, input at (0,0), outputs at (6,0), no manifest status — do not copy it.)
 
 Folding the same datapath into a compact **~2×4 block** put the producer and
 consumer one cell apart, so the feedback returns in ~1 hop instead of 6. Same
 program, same DSP, a third of the cells and none of the full-width return route.
+(The fold is the shipped `ComplexCostasLoopBlock`, 4×2, manifest `done`.)
 
 **The rule that falls out:** lay a multi-cell block out as a **serpentine fold**
 (snake), not a line. Wrap the datapath across rows so that cells which must talk
@@ -50,7 +55,8 @@ verified blocks get it with a closed cycle instead:
 * **A panel-backed scan loop whose back edge is closed EXTERNALLY.**
   `LZ4EncoderBlock`'s scan is a genuine cycle (issue → read → return →
   dispatch → issue) and the panel's push-read return closes it outside the
-  fabric, so a 12-cell ring is the shape that gets the back edge for free.
+  fabric, so a 12-cell scan CYCLE inside its 15-cell 3×7 fold (ingest, INS and
+  egress sit off the cycle — INV-51) is the shape that gets the back edge for free.
   The cost a ring adds — every hop becomes modular, so an ADJACENT neighbour
   can be 11 hops the long way round — is paid deliberately: the fold is
   ordered so the per-position hot edges ride 1–6-hop walks and only the
@@ -87,17 +93,18 @@ The engine *observes* whether you did this: `portmap.py` derives
 `io_colocated=True` when the input and output ports share the bus-facing edge and
 sit within `COLOCATION_SPAN` (2) cells. **It is derived, not required** — nothing
 forces it. **Corrected 2026-08-29:** this used to say a non-colocated block "does
-not route". That is false — `io_colocated` is True for 66 and **False for 61** of
-the shipped, verified blocks, and the placer uses it only as a TIE-BREAK
+not route". That is false — `io_colocated` is True for 60 and **False for 60** of
+the 120 catalog-resolvable shipped blocks (re-probed 2026-09-03), and the placer uses it only as a TIE-BREAK
 (`engine/autoplace.py`). Colocation shortens the route and makes placement
 forgiving; it is a design *target*, not a precondition.
 
 **Corrected 2026-08-30:** the previous sentence here said colocation "IS
 mandatory for a `CHIP_SCALE` block". The span-2 `io_colocated` predicate is NOT
 what a chip-scale block needs, and the shipped full-width blocks violate it
-while working: `ChaCha20KeystreamBlock` (10x7) lands its input at the west end
-of its port-facing row and egresses ON the `x16_out` port cell (9,0) — same
-row, nine cells apart; `Poly1305MACBlock` (10x10) puts `seq_top` and `out`
+while working: `ChaCha20KeystreamBlock` (10x7) lands its input `seq` at (0,1)
+— one row BELOW the port row, at the west end — and egresses ON the `x16_out`
+port cell `out` (9,0): nine columns apart (corrected 2026-09-03; this used to
+say "same row"); `Poly1305MACBlock` (10x10) puts `seq_top` and `out`
 seven columns apart on its control row; `GRUCellBlock` (10x6) has `fin`/`oout`
 three apart. What a **full-width** block genuinely must do is put BOTH
 terminals where the chip's port row can reach them — nothing can route around
@@ -130,8 +137,9 @@ The fact above stands. **Corrected 2026-08-29:** a paragraph here used to call
 draining the last cell "the capability to add (see INV-7)". That gap was closed
 long ago — `verification/kyttar_verify/dut_runner.py` wires `x16_in -> block ->
 x16_out` by PORT NAME and lets the router resolve the output cell, and 44
-multi-cell blocks are verified through it, including an 84-cell one. INV-7's
-matching "still to be built" clause is stale for the same reason.
+multi-cell blocks are verified through it, including an 84-cell one. (INV-7 was
+corrected on the same date; the last copy of the stale "capability gap" clause
+sat in INV-10 and was corrected 2026-09-03.)
 
 ### 3. Fold for the SHAPE of the free space, not for a width number
 
@@ -142,8 +150,10 @@ fails — silently," and called it "a hard constraint in practice." That was
 verified blocks that exceed 8 across: `FFT64Block` **9×12** (84 cells),
 `FFT128Die1` 9×12, `FFT32Block` 9×10, `GRUCellBlock` **10×6**, and —
 with no `CHIP_SCALE` waiver at all — `ComplexToMagBlock` **9×2** and
-`CoherentRXBlock` **10×2**. `layout_caps()` is read by no placer and no DRC; the
-≤8 number was self-imposed convention.
+`CoherentRXBlock` **10×2** (a catalog composite exercised by
+`examples/coherent_bpsk_rx/batch_check.py`; it has no manifest row of its own).
+`layout_caps()` is read by no placer and no DRC; the ≤8 number was self-imposed
+convention.
 
 **The rule that is actually true:**
 
@@ -189,30 +199,37 @@ auto-snake will not do it for you.
 ### 4b. A multi-input FACE-LOCKING block: the rendezvous cell must be a LEAF
 
 If a block declares `NEEDS_DISTINCT_INPUT_FACES` (the LOCK-rotation rendezvous
-family — see INV-45), its input cell tells its N producers apart by ARRIVAL FACE.
+family — see INV-46), its input cell tells its N producers apart by ARRIVAL FACE.
 A cell has four faces, and that cell needs:
 
     N (one per arm) + 1 (forward into the datapath) + 1 (a release corridor back)
 
-At **N=2** that is 4 and fits — and the shipped N=2 blocks are single-cell, so
-they need neither a forward nor a release. At **N=3** it is FIVE, and the cell has
-four. The consequences are layout consequences, so they belong here:
+At **N=2** that is 4 and fits. (Corrected 2026-09-03: this used to say "the
+shipped N=2 blocks are single-cell" — XorJoin, DualFloatToComplex,
+FeaturePairJoin and ClarkeTransform are, and need neither a forward nor a
+release; `SVPWMBlock` is N=2 and SEVEN cells, 7×1, with both.) At **N=3** it is
+FIVE, and the cell has four. The consequences are layout consequences, so they
+belong here:
 
 - **The rendezvous cell must be a LEAF of the fold** — exactly ONE in-block
   neighbour — so three faces stay free for the three arms. A compact 2×2 square
   (the obvious 4-cell fold) gives EVERY cell two in-block neighbours and cannot
   host an N=3 rendezvous: the maze router reports *"no free DISTINCT-face broker
   for a face-locking block's input"* and the chain does not route at all.
-- **Such a block is therefore a CHAIN, not a square** — a longitudinal strip,
-  which is normally exactly what §1–§3 warn against. It is FORCED here, and it is
-  affordable because the block's inputs land on one cell from N different sides
-  rather than tapping a single bus edge, so the co-located-I/O convention (§1)
-  does not apply to it. Keep the chain ≤8 across (§3) — that still binds.
+- **The rendezvous CELL must be a leaf; the rest of the fold is free.**
+  (Corrected 2026-09-03: this used to say "such a block is therefore a CHAIN,
+  not a square" — over-stated. `TMRVoterBlock` (N=3, 4×1) is the chain case, but
+  `CordicRotateBlock` (N=3: x/y/theta, 20 cells) ships a 5×5 SERPENTINE whose
+  rendezvous is a leaf at (0,0) with column 0 holding only the rendezvous.) A
+  chain is affordable where it is chosen because the block's inputs land on one
+  cell from N different sides rather than tapping a single bus edge, so the
+  co-located-I/O convention (§1) does not apply to it; keep any chain ≤8 across
+  (§3) — that still binds for a small block.
 - **The serialize-LOCK release cannot have a corridor of its own** at N=3; it must
   ride back through the one abutting cell. A dedicated `transit_*` unlock lane
   (§5, the ComplexMixer pattern) needs a face to enter the rendezvous on, and
   there is none — the placer/DRC then reject the layout because an arm loses its
-  face. See INV-45 Rule 3 for what that costs in pipeline depth.
+  face. See INV-46 Rule 3 for what that costs in pipeline depth.
 - **N ≥ 4 is not placeable** as a single rendezvous. Build a TREE of N=2/N=3
   rendezvous blocks.
 
@@ -264,7 +281,9 @@ direction" heuristic, which could seat a block's input FARTHER from its driver
 than its output — backwards, and longer to route.
 
 **(b) Prefer the fold aspect that CO-LOCATES I/O on the bus-facing edge.** When
-two orientations tie on flyline, the placer prefers the one whose input and
+two orientations tie on flyline, the placer's sort key is
+`(flyline, travel_rank, colo_rank, ident_rank)` (`autoplace.py`): it FIRST prefers
+an output facing the travel direction, THEN the one whose input and
 output sit on the same bus-facing edge (`PortMap.io_colocated` — convention 1's
 cheap 1-D tap), then identity (never transform a block needlessly). So a block
 that can fold either W×H or H×W is oriented to keep both ports tappable from one
@@ -283,18 +302,22 @@ edge directly (convention 1). Feed-forward wavefronts (e.g. FIR) declare no
 internal connections — their forwarding faces come from `default_layout` and DO
 transform correctly — so they remain freely orientable.
 
-**The route-pass orient must respect the placer's applied orientation.** Route
-All (`auto_route_all`) runs a SECOND, older orient pass before routing
-(`AutoRouter.orient_for_flow`, "output faces the dominant consumer"). That pass
-scores a block's output face — but it must score against the block's *current*
-orientation, NOT the as-authored catalog PortMap. The flyline placer may have
-already rotated the block (e.g. a vertical-column FIR turned `ccw` so its input
-lands nearest its driver); the bare PortMap still reads as the un-rotated layout,
-so scoring it re-recommends the SAME rotation, which then composes on top
-(`ccw∘ccw` = 180°) and flips the block back — input FARTHEST from its driver
-(the bug). `orient_for_flow` therefore composes `placement.orientation` onto the
+**The route-pass orient must agree with the placer.** Route All
+(`auto_route_all`) runs an orient pass before routing
+(`AutoRouter.orient_for_flow`). **Updated 2026-09-03:** that pass is now the SAME
+full-flyline optimiser as the placer (`autoroute.py` documents that it MUST agree
+with the placer's own flyline-minimising orient), not the older
+"output faces the dominant consumer" heuristic this paragraph used to describe;
+it also skips any block whose input cell is anchored on a chip input port. The
+historical bug is still the reason the two must agree: a pass that scores the
+as-authored catalog PortMap instead of the block's *current* orientation
+re-recommends a rotation the flyline placer already applied (e.g. a
+vertical-column FIR turned `ccw` so its input lands nearest its driver), which
+composes on top (`ccw∘ccw` = 180°) and flips the block back — input FARTHEST
+from its driver. `orient_for_flow` composes `placement.orientation` onto the
 PortMap before scoring, so an already-correctly-oriented block is left untouched
-(suggestion `None`). Regression: `tests/test_fir_orient_input_near_driver.py`
+(suggestion `None`). Regression:
+`placekyt/tests/test_fir_orient_input_near_driver.py`
 asserts the input-near-driver invariant survives the full place+route flow.
 
 ---
@@ -305,11 +328,13 @@ asserts the input-near-driver invariant survives the full place+route flow.
       for a small block; FULL width + `CHIP_SCALE` for a block that dominates the
       array. NOT a bare width check — see INV-40.
 - [ ] I/O ports on the **same** edge where practical (`io_colocated=True`).
-      A preference, not a precondition — 61 of 127 shipped blocks are NOT
-      colocated and route fine; the placer uses it only as a tie-break. For a
+      A preference, not a precondition — about half of the shipped blocks
+      (60 of 120 probed) are NOT colocated and route fine; the placer uses it
+      only as a tie-break. For a
       FULL-WIDTH `CHIP_SCALE` block the same-PORT-FACING-EDGE half is mandatory
       (no reachable far side), but the 2-cell colocation span is not —
-      ChaCha20Keystream's terminals sit nine cells apart on the port row, and a
+      ChaCha20Keystream's terminals sit nine columns apart, its landing one row
+      below the port row (`seq` (0,1) vs `out` (9,0)), and a
       non-full-width chip-scale block (FFT64, 9x12) even ships I/O on opposite
       edges (corrected 2026-08-30; see §1).
 - [ ] Wavefront output port declared on the **last** cell; anything draining the
@@ -341,7 +366,8 @@ up every analog demo (AM, SSB, anything with a local oscillator):
    the data, and the mixer runs its own carrier. No standalone NCO.
 
 2. **A cell's output goes to exactly ONE consumer** (writing to two clobbers). So a SHARED
-   oscillator feeding N mixers is expensive fan-out the router must broker. **REPLICATE the
+   oscillator feeding N mixers is fan-out that costs a splitter/broker (N-arm fan-out is
+   brokered by `StreamSplitterBlock` — it works, it is just not free). **REPLICATE the
    cheap phase-accumulator per consumer instead of sharing it.** Cells are plentiful (120);
    wires/fan-out are the scarce resource. Two mixers at the same freq, each started at phase
    0 from sample 0, stay coherent — no shared carrier needed.
@@ -354,9 +380,11 @@ up every analog demo (AM, SSB, anything with a local oscillator):
 - **FM** — the model to emulate: VCO (input-driven phase accumulator) + discriminator (MAC,
   no oscillator). No shared oscillator anywhere → tiny (12 cells), routes trivially.
 - **AM (DSB)** — `audio → iq_upconvert@fc → iq_upconvert@fc → LowPass → Gain`. Each mixer
-  self-carriers; 4 blocks, routes 5/5.
+  self-carriers; 4 blocks, 33 cells, routes 6/6 (figures re-read from the shipped .kyt
+  2026-09-03).
 - **SSB Weaver** — down-mix = 1 ComplexMixer (both rails); each up-mix = 1 lean IQUpconvert
-  (one rail: `xi`→cos, `xq`→−sin, so the combine is an ADD). 77 cells, no NCO, no fan-out.
+  (one rail: `xi`→cos, `xq`→−sin, so the combine is an ADD). 7 blocks, 67 cells, routes
+  13/13, no NCO, no fan-out.
   (SSB is *inherently* 4 mixers + 2 filters/half — "big" is the algorithm, not the fabric.)
 
 **Block-choice cheat sheet for a carrier multiply:**

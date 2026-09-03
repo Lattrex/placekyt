@@ -114,6 +114,15 @@ chip defect and is not.
 
 ## examples/foc_motor — the FOC current loop on chip: 56 kHz measured, and the wall is ROUTING, not cells  2026-08-31
 
+> **CORRECTED (see the entry above, 2026-08-31, and INV-71's 2026-09-03 status):**
+> the headline "sustains exactly ONE iteration / no steady state" and the three
+> "guard tests that FAIL if the wall moves" were OVERTURNED — the one-iteration
+> wall was a `CordicRotateBlock` INV-69 defect (an unreconciled release face),
+> not a chain property; the chain streams six iterations at 55.8 kHz, the whole
+> six-block loop was later placed on ONE 10x12 array, and commit 85bb9f3 rewrote
+> the gates to test the streaming behaviour. The measured harness gotchas at the
+> bottom stand.
+
 **SHIPPED:** `examples/foc_motor` — `PI(d)`, `PI(q)` -> `CordicRotate(sign=+1, theta)`
 (inverse Park) -> `SVPWM` -> three duty words, 87 of 120 cells, hand-placed anchors,
 route-only, bit-exact on the real placed+routed+built chip. 16 gates in
@@ -138,6 +147,7 @@ hold); an ARM-SATURATED drive of even ONE iteration (`queue_words_physical`, the
 INV-19 path) emits nothing; a REVERSED arm order emits nothing. The chain
 sustains exactly ONE iteration, driven arm-by-arm in lock order, and that one is
 exact. All three boundaries are pinned as guard tests that FAIL if the wall moves.
+*[OVERTURNED — see the banner above; the "wall" was INV-69 in CordicRotate.]*
 
 The cause was already documented per block and simply composes: `CordicRotateBlock`
 (N=3) and `SVPWMBlock` (N=2) each carry a measured whole-burst depth of ONE,
@@ -280,7 +290,7 @@ routable block now converts `ChaCha20KeystreamBlock`'s wire format (hi then lo
 16-bit halves per 32-bit state word) into RFC 8439 §2.3 serialization order —
 each 32-bit word as its four bytes LITTLE-ENDIAN, one keystream byte per
 16-bit word (the data-link convention). Rate 1:2, ONE cell, and — unlike every
-RAW-egress crypto block (INV-66, tail-only) — plain routed ingress AND egress,
+RAW-egress crypto block (INV-75, tail-only) — plain routed ingress AND egress,
 proven mid-chain on a real built chip (`Delay(2) -> serializer -> Delay(1)`,
 composed reference exact). The RFC §2.3.2 keystream (all 64 bytes, in order)
 is bit-exact on chip, per-sample AND saturated; suite
@@ -405,7 +415,7 @@ one packet (known limit, guarded; stop_reasons vary per INV-56: Deadlock at
 depth 2/3, EventLimit at 5); all 8 D4 orientations; six substrate mutants
 all FIRE on chip.
 
-The two promoted lessons (full write-ups in the INV-(see invariants; assigned at landing) (SVPWM-a/b)
+The two promoted lessons (full write-ups in the INV-69 / INV-70 (SVPWM-a/b)
 entries of invariants.md):
 1. RELEASE VALUE vs ROUTED FACE. The TMRVoter-style WRITE.CFG release
    carries an AUTHORED arm-face value, and `_apply_rendezvous_input_faces`
@@ -472,7 +482,7 @@ lower half. Measured over 8 co-resident positions: the trigger net routes;
 corridor existed. TX-A and RX-A as specified are geometrically dead.
 
 **WALL 2 — every big block's egress is RAW port literals, tail-only
-(INV-66).** ChaCha20Keystream, Poly1305MAC, LZ4Encoder and LZ4Decoder all
+(INV-75).** ChaCha20Keystream, Poly1305MAC, LZ4Encoder and LZ4Decoder all
 carry `RAW_OUTPUT_HOPS`: their egress bursts authored literals at their OWN
 die's port. None can feed another block on the same die (`LZ4Enc → XorJoin`
 included), and crossing the carrier link corrupts the stream (measured:
@@ -520,7 +530,7 @@ via the chain tail, re-inject as three per-stream legs (same-chain tail
 block, far-chain head block, far-chain tail block), all word-exact with
 quiescent settles and a tamper tooth. The pure on-chip form (one source cell
 feeding a far block AND a tagged transit) is the measured engine limit pinned
-in INV-66's guard test.
+in INV-75's guard test.
 
 **Dead ends tried:** co-residency position sweep (8 placements, all fail);
 splitter dual-role in both declaration orders (far arm exact, tagged arm zero
@@ -534,7 +544,7 @@ multi-chip panel support (engine + server) and per-chip panel synthesis; (2)
 either routed-egress variants of the RAW blocks or an engine path that
 composes RAW egress across the link; (3) a keystream byte-serializer block
 (hi/lo 16-bit halves → lo-first bytes) or an accepted host-side repack; (4)
-the INV-66 dual-role fix, or acceptance of the FPGA-mediated fan-out; (5) a
+the INV-75 dual-role fix, or acceptance of the FPGA-mediated fan-out; (5) a
 board with ≥6 usable dies for full TX+RX, or a reduced scope (TX-only, or
 host-side LZ4). ChaCha's pending `counter_mode="increment"` changes none of
 this — the integration point stays "payload constant + keystream param" in
@@ -626,7 +636,7 @@ shipped gates bind to unchanged bytes. No new cells: the increment lives in
 `tap3` as a 6-instruction relay (24 / base 7 / max pin 5).
 
 What made it land first-try on chip — and what the next batch-evolving block
-should copy (promoted to the INV-(see invariants; assigned at landing) entry in invariants.md):
+should copy (promoted to the INV-68 entry in invariants.md):
 
 * **`reset_per_batch` restores by REGISTER, so "don't reset the counter slot"
   is NOT persistence.** The row registers hold post-drain garbage at a batch
@@ -984,73 +994,6 @@ zero exemptions, the chip-scale declared-orientation gate, the second-batch
 gate); QR + golden 92; placekyt/tests 1219; orientation + saturation 442;
 binding/legality/reachability/chip-scale 682. Final fold: 51 cells, 10x7.
 
-## ChaCha20KeystreamBlock — the release does not have a JUMP bug; it DEADLOCKS 2026-08-29 (pass 8)
-
-> **SUPERSEDED 2026-08-30 (pass 9, above): the block is `done`.** The re-fold this
-> entry scoped out was executed — both INV-56 fix shapes (the store and release
-> waves separated in space AND time) plus the egress moved ON to the port cell —
-> and the chip emits all sixteen §2.3.2 words bit-exact, IN ORDER
-> (`stop_reason == "QueueEmpty"`, 38/38 in `test_chacha20_fixed_tap_ring.py`).
-> The closing line "The block still emits nothing; do not use it" no longer
-> holds. The method lesson (read `stop_reason` FIRST) and the head-on findings
-> stand and are INV-56.
-
-**Headline: pass 7's diagnosis was wrong, and the evidence it said was missing
-was already in `BuildResult`.** Two corrections, both worth more than the fix.
-
-**1. `BuildResult` DOES expose the resolved per-cell image.** Pass 7 closed
-saying "the missing evidence is the RESOLVED assembly and hop counts out of the
-built bitstream, which `BuildResult` does not currently expose", and stopped.
-It does expose them: `bres.chips[N].cells` is `{(x, y): {"entry", "memory"[32],
-"face", "cell_id", "block", "routing_only", "classes"}}`. With
-`_is_instruction_addr`'s rule (an address below `entry` is a data word) and the
-v0.11 encoding (`op = word & 0xF000`; `HOP_CNT = bits[9:5]`, `@N = 31 - HOP_CNT`;
-entry/dest = `bits[4:0]`), a ~15-line test-side disassembler prints any cell.
-**No engine change was needed for the observability this pass was chartered to
-add.** Cost of not looking: one whole pass.
-
-**2. The jumps were never dead.** `bufB0.rel` resolves to
-`[29] JUMP @8 entry=19` (19 IS `out`'s entry) and `[30] JUMP @1 entry=21`
-(21 IS `bufA0.rel`). The words physically leave: the first release pair is
-`0xe4e7`/`0xf110` = `0xE4E7F110`, RFC 8439 word 0, correct.
-
-**The actual root cause: `stop_reason == "Deadlock"`.** The reorder band is one
-eastward single-file row carrying two waves in OPPOSITE directions — the STORE
-wave spills WEST (each A stage into its own B stage, once per drain lap) and the
-RELEASE wave rides EAST to the egress. On the fourth drain lap they overlap and
-two abutting cells each hold the word the other must accept:
-
-```
-bufA3 (9,0)  output_ready face=W -> neighbor 8 (bufB3)   # store spill, westward
-bufB3 (8,0)  output_ready face=E -> neighbor 9 (bufA3)   # release word, eastward
-```
-
-Promoted to **INV-56**, with the head-on static check and its INV-4 mutant.
-
-**THE METHOD LESSON, which is the reusable part.** When a block emits nothing,
-**read `chip.run(...)["stop_reason"]` FIRST.** `completed` is `False` and the
-word count is `0` for both failure modes, so neither tells them apart, but:
-
-* `"QueueEmpty"` = ran to quiescence -> look at the PROGRAM;
-* `"Deadlock"` = wedged in a circular wait -> look at the GEOMETRY.
-
-Pass 7 read the trace and the word count, saw `bufB0.rel` execute and no output,
-and concluded "the jump didn't land" — a program-layer story for a
-geometry-layer fault. One field, available on every run, would have redirected
-the entire pass. And the confirming experiment is one line: suppress ONLY the
-release trigger and the chip flips to `"QueueEmpty"`.
-
-**Diagnostic signatures worth reusing.** A FIFO whose stages do not all store
-the same number of times has lost a word to a collision — here every stage
-stored 4 times except `bufB3`, which stored 3. And a head-on resting-face pair
-is findable statically from `_geometry()` alone, with no chip run, in ~10 lines.
-
-**Measured dead ends** (all four `out` resting faces deadlock; removing
-`bufA3`'s spill just moves the collision west; shifting the band one column west
-hits `overlap` DRC; `bufA3` resting EAST breaks `bufA0.o0h -> out.v0h`). The
-fix is a re-fold — separate the two waves in time or in space — and was out of
-this pass's scope. **The block still emits nothing; do not use it.**
-
 ## ChaCha20KeystreamBlock — the reorder band is BUILT; the release jumps do not land 2026-08-29 (pass 7)
 
 > **SUPERSEDED 2026-08-29/30 (passes 8–9, above).** Two of this entry's
@@ -1175,207 +1118,12 @@ one measurement. LAYER: hardware/ISA — permanent. REACH: the signedness is a
 property of the ALU and applies to every block using `MUL`/`MULHI`; the radix
 conclusion is specific to Poly1305's modulus.
 
-### 2. A 32-bit MAC is SEVEN instructions, and the obvious six-instruction order is silently wrong
-
-`acc += a*b` on a hi/lo pair. The natural order —
-`MUL / ADD / MOVE / MULHI / ADC / MOVE` — is **wrong**: `MULHI` is an ALU op and
-sets all flags, so it **destroys the carry** the `ADD` just produced. Measured,
-the accumulator carries a constant `+0x10000` error from the first
-accumulation onward, **while the low word stays bit-exact in every one of six
-successive MACs**. A gate that checks one word, or only the low half, sees
-nothing.
-
-The correct order computes the high half FIRST and parks it, keeping
-`ADD`→`ADC` adjacent in flag terms:
-
-```
-MULHI c, a  /  MOVE t, R0  /  MUL c, a  /  ADD R0, lo
-MOVE lo, R0 /  ADC t, hi   /  MOVE hi, R0
-```
-
-Verified exact over six successive accumulations of `921 * 5115`. Related and
-worth stating alongside INV-45's "`ADC` is the carry — never synthesise it":
-the park may be a `MOVE` **or a `{write}`** — measured, a `WRITE` between `ADD`
-and `ADC` also preserves the carry. It is only the ALU ops that clobber it.
-
-### 3. A hop-counted broadcast to N cells works, and it needs a COLLECTOR to observe
-
-One cell writing to several downstream cells at hops 1, 2, 3 delivers three
-**distinct** values correctly — the mechanism a systolic ring's coefficient
-distribution needs. It measured as broken on the first attempt (all three sinks
-held the first value) for a reason that is *not* the broadcast: each sink had
-declared its own external `out` port, and the build re-resolved those into chain
-hand-offs, rewriting the sinks' programs. Re-probed with the sinks reporting
-into a single collector, all three values came back correct. **Only the last
-cell may own the block's external output**; an intermediate cell that declares
-one gets its program rewritten.
-
-### 4. THE STRUCTURAL RESULT: a systolic ring cannot fuse ADOPT and FORWARD
-
-This is the pass's most valuable finding, and it is a statement about the
-substrate rather than about Poly1305.
-
-The multiply is a cyclic convolution, which folds into a ring: cell `k` owns
-accumulator `k` (resident — the accumulator must never move, or INV-45's
-transport ceiling kills the design), the limb line ROTATES through the cells,
-and the coefficient is broadcast. Verified equal to the plain dot-product form
-over 400 random limb pairs, with the `2**130 ≡ 5` fold riding the limb line as a
-single `×5` at the one wrap edge.
-
-The natural cell program is one entry doing *adopt the predecessor's limb → MAC
-→ forward to the successor*. **It is wrong, and it is wrong in all six
-permutations of those three steps, in both trigger orders — twelve variants,
-zero correct** (enumerated exhaustively against the reference). Measured on chip
-first, as every cell's limb register holding the *same* value: a cell entry is
-atomic, so whichever cell runs second in a pass already sees the first cell's
-forward, and one value sweeps the entire ring in a single pass instead of
-advancing one position.
-
-**The fix is to STAGE the sweeps as two separate entries** fired by two separate
-fan cells:
-
-```
-sweep 1 (entry `mac`)   :  acc += c * a ;  successor's a_in <- a
-sweep 2 (entry `adopt`) :  a <- a_in
-```
-
-Because the whole ring finishes sweep 1 before any cell runs sweep 2, no cell
-can observe the current pass's forward. Verified over 500 random limb pairs in
-both trigger orders. Putting the MAC sweep first also removes the need to prime
-the line or special-case pass 0.
-
-Two cells rather than one because `1 MOVE + 13 WRITE + 26 JUMP` is 40 words
-against a 31-word budget (INV-46: more cells doing less).
-
-LAYER: hardware — a consequence of atomic cell entries, permanent. REACH: any
-block whose datapath is a rotating line of cells that both consume and forward
-the same value — systolic convolutions, ring accumulators, shift-register
-folds. Stated generally: **on this substrate a systolic stage's "read old
-value / write new value" cannot live in one entry; the read and the write must
-be separated by a full sweep of the ring.**
-
-### 4b. …and BOTH sweeps must fire in REVERSE ring order
-
-Staging alone was not sufficient on chip, and the residual is a second,
-independent fact. With the sweeps staged but fired FORWARD (mac0 first), twelve
-of the thirteen accumulators were bit-exact and **the wrap cell alone was
-exactly one pass stale**. Cause: a cell's `JUMP`s are issued in program order,
-but the substrate is asynchronous, so "later in the entry" is not "later in
-time" at a distant cell — mac12's closing write around the ring landed *after*
-mac0's adopt. Firing the ring backwards puts the longest-latency trigger first
-and the defect disappears.
-
-The same fact killed a third variant: a dedicated `×5` wrap CELL between mac12
-and mac0 cannot be ordered between the two sweeps by trigger placement at all —
-its write landed one pass late no matter which cell fired it (tried from mac12,
-from the MAC fan, and from the adopt fan). **Folding the `×5` into mac12's own
-forward** makes it just another sweep-1 write, and those are proven visible to
-sweep 2. That also keeps all thirteen MAC cells identical.
-
-**And the egress must not ride a MAC cell.** Folding the drain onto mac6 (two
-`is_face` words plus a flip-and-restore) shifted that cell's register map and
-left **its accumulator, and only its accumulator, wrong** while the other twelve
-stayed bit-exact. Twelve-of-thirteen is precisely the shape a one-value gate
-cannot see — the brief's warning, met in practice.
-
-**RESULT, measured on the real placed + routed + built chip:** with the sweeps
-staged, both fired in reverse, the `×5` inline and the egress off the ring, all
-**13/13 accumulators are bit-exact over 11 cases** — all-zero, `a=max r=max`
-(every accumulator at its 27-bit peak, the full carry chain), `a=max r=1`, a
-single limb, the `r=1` identity, and 6 random pairs.
-
-### 5. The INV-33 overlap gate earned its keep twice, statically
-
-The static per-cell budget check (`no data address, state register or pinned
-input >= 31 - instr_count`) caught the wrap cell at **exactly one word over**
-before any chip run — twice, on two different revisions. The fix both times was
-INV-46's: move the work to another cell. The `×5` fold now lives in its own
-2-instruction `wrapx5` cell on the ring's closing edge instead of costing every
-MAC cell a data word and an instruction, which also made all 13 MAC cells
-**identical**.
-
-### 6. The collector must not sit on the ring either
-
-Before that, the collector had been placed ON the ring, and it emitted
-`0x3760376` — the broadcast coefficient `886` in both halves of every
-accumulator. A cell on a walk is not neutral: it sat on the coefficient
-broadcast walk, the two fan cells then disagreed about which walk position was
-which MAC cell (one skipped distance 8, the other distance 9), and it was
-triggered during a MAC sweep. INV-52 clause 2 from the other side. Moving it
-off the walk fixed it.
-
-### 7. The CARRY-NORMALISE phase: three more measured facts (second sitting)
-
-The normalise reuses the same 13-cell ring — the carries rotate exactly like
-the limbs, and a carry crossing the closing edge takes the same `×5`, so the
-phase needs **no new cells**, only new entries and more fan sweeps. Validated
-against the golden first (RFC §2.5.2, all nine §A.3, 400 random messages, at
-just **2 rounds**; worst case measured at 2 rounds after the add and 3 after
-the multiply). Then built and run on chip, which produced three findings:
-
-**(a) A 27-bit accumulator cannot yield a 10-bit limb AND a one-word carry in
-the same step.** The obvious split sends `hi*64 + (lo >> 10)`; for the true
-maximum accumulator `68024385` that is `66430` — SEVENTEEN bits. The fix is
-two stages per round: stage A carries the HIGH WORD (`≤ 1037`) and the
-**receiver** applies the `×64`, so the wire never holds `hi*64`; stage B then
-splits the 16-bit residue at bit 10. Worst carries measured 1037 and 386
-against a 65535 limit. *This was caught by the on-chip case list including the
-all-maximum corner — a random sample never reached it.*
-
-**(b) `carry × 64` needs `MULHI` too — the same trap as the MAC, from the
-other side.** `MUL` gives only the low 16 bits, and `1037 × 64 = 66368`
-overflows, silently truncating to 832. Fixed with the same MULHI-first pairing
-the 32-bit MAC uses.
-
-**(c) A PROGRAMMED cell sitting on the ring's walk STOPS THE SWEEP DEAD.**
-With the collector placed on the ring at walk distance 11, the fans reached
-`c0..c6` and `c7..c12` were **never triggered** — and `stop_reason` was
-`Deadlock` for some inputs and `QueueEmpty` for others, which is exactly why
-INV-56 says to read it first. Replacing it with a face-only transit and
-hanging the collector off the walk removed the deadlock outright. A face-only
-`transit_*` cell forwards a hop-counted word untouched; a programmed cell does
-not.
-
-**(d) THE HARNESS BUG THAT LOOKED LIKE A BLOCK BUG (INV-1, again).** With
-everything above fixed the ring still did nothing: **8 events** on the jump
-run. The cause was the harness deriving the injection hop from a manhattan
-guess (30) when the build had resolved it to 28, with the landing on a
-different cell and a different entry. Taking `BuildResult.chips[0].
-input_landings` instead — `{'cell': (2,0), 'entry': 25, 'hop': 28,
-'data_addrs': [1]}` — turned 8 events into **1445** and every cell processed.
-*Never derive the hop; read the one the build resolved.*
-
-Where the normalise stands: it runs, all cases report `QueueEmpty`, and the
-values land in the right range, with **3 of 9 cases exact**. The remainder are
-short by exactly `carry_in × 64` (and cell 0 by `5 × 64`, the wrap) — i.e.
-stage A's carry is read one sweep before it arrives, the same staging problem
-already solved for the multiply, now to be solved for this phase. That is the
-next step and it is understood, not mysterious.
-
-### 8. Where the block stands overall
-
-Proven on a real placed + routed + built chip: **the field multiply**
-(13/13 accumulators, 11 cases). Running but not yet exact: the
-carry-normalise (3/9). Not yet built: message-word-to-limb packing (its
-bit-serial model is validated over 500 blocks), the final reduction plus
-`+ s`, and the tag egress. **No RFC tag has been produced on chip**, so the
-block is not done and the manifest entry stays `planned`.
-
-### What is already gated
-
-`verification/tests/poly1305_golden.py` ships two INDEPENDENT implementations —
-a plain big-integer transcription and the 13-limb radix-`2**10` model the chip
-computes in — and both reproduce **RFC 8439 §2.5.2** (including its published
-intermediate `r` and `s`) and **all nine §A.3 edge-case vectors**, and agree
-with each other over 500 random message/key pairs. The block's
-`process_reference` runs the exact cell-level schedule (systolic passes, the
-wrap-`×5`, the carry-normalise sweeps) and is exact against the golden on the
-RFC vectors and 200 random word-aligned messages.
-
-INTERFACE NOTE, honestly stated: the block consumes the message as 16-bit
-words, so an ODD-length byte message is not expressible at this interface.
-Three of the nine §A.3 vectors have odd byte lengths and are therefore gated at
-the golden, not at the block.
+*(KEEP-TRIMMED 2026-09-03: the ~200 lines that followed — §2 the 32-bit MAC order,
+§4/§4b the systolic adopt-and-forward ring and its reverse ordering, §6/§7c the
+programmed-cell-stops-the-sweep measurement, §7d the harness hop — described the
+multiply architecture that did NOT ship and are fully promoted: INV-57, INV-58,
+INV-59, INV-60, with the carry split and interface limit restated in the DONE entry
+above. Only the banner caution and the §1 radix enumeration are kept here.)*
 
 ## LZ4EncoderBlock — a COMPRESSOR's gate is an INDEPENDENT decoder, and the panel's address space has INV-33's overlap hazard  2026-08-30
 
@@ -1502,83 +1250,16 @@ is to DERIVE every in-program face from the layout (`_resting_face()` /
 `_face_to()`) and never write a literal. After it, the same payload ran to
 `QueueEmpty` and matched the model exactly.
 
-**THE OPEN GAP, and its layer.** **Payloads shorter than `MF_LIMIT` (12 bytes)
-are byte-exact on the BUILT CHIP and accepted by the reference C decoder;
-payloads that ENTER THE SCAN LOOP emit nothing.** The boundary is measured and
-sharp: 2, 3, 5 and 8 bytes match the model exactly; 24, 30 and 40 bytes produce
-zero output and end in `stop_reason == "EventLimit"` after ~1.3M events. A
-payload under 12 bytes has `lim = n - 12 <= 0` and goes straight to the
-literals-only tail, so it never enters the scan.
-
-The cause is located from the trace: **RET's `to_hash` hand-off leaves on RET's
-resting face (EAST) carrying the hop the ROUTER computed (11), and the word then
-walks out of the block's footprint — 115, 116, 117, 118, 108, 107, 97 — instead
-of landing on HASH, which is ONE cell NORTH.** That is INV-50's residual, the
-edge sized against a walk the word does not take. Note `stop_reason` is
-`"EventLimit"`, not `"Deadlock"`: nothing is wedged, the words are produced and
-MIS-ADDRESSED — which is exactly the distinction INV-56 clause 1 exists to make,
-and it is what localised this in one run.
-
-**AND THE FOLD IS THE REASON — IT IS A CLOSED RING (INV-51 clause 1).** Checking
-the fold against the ROUTER's own numbers rather than my re-implementation
-settles it: **every one of the 36 internal cell-pair edges IS reachable on a
-resting face**, and the one exception (ADDR → CTL) is declared. The hops are not
-wrong. What is wrong is how LONG they are. Walking RET's resting face enumerates
-
-```
-hop  1 (5,11) VERIFY   hop  7 (7,9) LITS     hop 11 (4,10) HASH
-hop  3 (7,11) MATCH    hop  9 (6,10) SEQ     hop 12 (4,11) RET  <- back to start
-```
-
-— the walk **cycles with period 12**. The 14-cell fold closed into a 12-cell
-ring, so a hand-off between two cells that are physically ADJACENT can cost 11
-hops the long way round, and every such word occupies most of the ring for its
-whole flight. The tail path emits 3-9 bytes and fits; the scan loop issues a
-panel round trip per byte per candidate and does not. `stop_reason` is
-`"EventLimit"`, not `"Deadlock"`: nothing is wedged, the ring is simply
-saturated with long-haul words.
-
-This is exactly what INV-51 clause 1 warns about, arrived at from a new
-direction. That clause says a ring TRAPS ITS INTERIOR; the sibling cost, worth
-recording, is that **a ring makes every hop a modular arithmetic problem — an
-adjacent neighbour may be 1 hop or 11 depending on which way the faces run, and
-the router will correctly compute 11.** A serpentine has free ends and short
-hops both.
-
-**LAYER: block FOLD — fixable, not a substrate or ISA wall.** The obvious next
-move is "re-fold as a serpentine", and it was tried: the fold search was given a
-MAX-HOP term (penalise any edge needing more than K hops), which forbids a ring
-by construction where the previous score only asked whether an edge DELIVERS —
-and a ring delivers everything eventually.
-
-**MEASURED, and this is the useful negative result: it does not help.** Over
-~500 annealing restarts across three slot shapes with K = 6 and K = 7, the best
-fold still needs **11 hops** for some edge (best cost 18, worst hop 11; the
-zero-cost folds found WITHOUT the max-hop term all have worst hop 11 or 12). So
-the long walks are not an artefact of a bad search — **the EDGE GRAPH forces
-them.** 36 distinct cell-pair edges over 14 cells, with four cells that are
-4-way hubs (ADDR is written by five cells; RET writes four; OUT is written by
-four), cannot be laid on a 10×12 grid with every hub adjacent to all its
-partners.
-
-**So the fix is to SHRINK THE GRAPH, not to re-search it.** Three concrete
-levers, in the order they look cheapest:
-
-1. **Give the hot inner loop its own short walk.** The scan loop's traffic is
-   HASH ⇄ ADDR ⇄ RET and MATCH ⇄ ADDR ⇄ RET. Those five cells want to be a
-   compact 5-cell neighbourhood; the formatter (TOKEN, LENRUN, LITS, SEAL, OUT,
-   FRAME) only runs once per SEQUENCE and can afford long hops. The current score
-   treats all 36 edges alike — weight them by how often they FIRE.
-2. **Make the panel return land directly.** RET exists only because the block has
-   ONE push-read descriptor pair and four consumers. Its four outgoing edges are
-   the worst offenders. If the phase-to-consumer dispatch moved INTO each
-   consumer (each re-checks whether the byte is for it), RET's fan-out collapses
-   to one broadcast walk — INV-46's "more cells doing less" applied to EDGES.
-3. **A merged ADDR+RET would remove five edges but does NOT fit** — measured at
-   **41 instructions against 31 words** — so that particular shortcut is closed.
-
-Also measured: 14 cells over rows 10-11 is exactly 14 slots, so that shape has no
-positional slack at all; the workable shapes are 3-4 rows.
+*(The ~90-line "OPEN GAP" section that stood here — RET's `to_hash` walking
+out of the footprint at hop 11; the 12-cell ring saturating under the scan loop
+— was trimmed 2026-09-03: BOTH recorded mechanisms were DISPROVED by the pass-2
+exec-count trace (the DONE entry above): `to_hash` landed exactly on HASH, and
+the `EventLimit` was an infinite re-probe of position 0 caused by two program
+omissions. Findings 1–8 above stand. What survived of the section is what pass 2
+shipped: weight fold edges by how often they FIRE — hot inner-loop edges short,
+once-per-sequence formatter edges long — gated by
+`test_the_fold_is_FREQUENCY_WEIGHTED_hot_edges_are_short`; and the measured
+negative that a merged ADDR+RET does not fit (41 instructions vs 31 words).)*
 
 **Gated by** `verification/tests/test_lz4_encoder.py` (80 passed, 9 skipped): the
 ten-payload round trip under the published golden AND the independent reference C
@@ -1586,9 +1267,9 @@ decoder, the 0.5 % incompressible bound, the four format rules as separate
 properties, three INV-4 mutants each proven to fail, the static cell contracts
 (budget INCLUDING inputs, positional pairing, entry reachability, backward jumps,
 face restore, stale-flag branches, head-on pairs, cell-0 landing), the per-cell
-chip layer, and four WHOLE-DESIGN on-chip gates. The gap itself is a gate
-(`test_KNOWN_GAP_the_scan_loop_does_not_terminate_on_chip`) that FAILS the day
-the scan loop works, so it must be deleted rather than left to rot.
+chip layer, and four WHOLE-DESIGN on-chip gates. (The
+`test_KNOWN_GAP_the_scan_loop_does_not_terminate_on_chip` gate that pinned the
+gap was deleted when pass 2 closed it, as it was designed to be.)
 
 ## ChaCha20KeystreamBlock — the emission-order fix is at the COLLECTOR, and it misses this fold by exactly three words 2026-08-29
 
@@ -1871,156 +1552,6 @@ Two candidate invariants, assigned at landing as **INV-53** and **INV-54** in `i
 backward-jump-by-address rule (which **closes INV-52 clause 5**, previously
 recorded as open), and the last-closing-bracket rule.
 
-## ChaCha20KeystreamBlock — the ring RUNS: all 80 laps and state word 0 bit-exact on chip. Every defect was a FACE, and the router could not see any of them 2026-08-30
-
-> **SUPERSEDED 2026-08-30 (passes 5–9, above): the block is `done`.** The drain
-> was completed in pass 5 (`drn` as its own cell — and this entry's "the rotate
-> must come from … only `wbk` at (1,0)" was measured WRONG there: NINETEEN
-> slots reach all four rows; the four-word shortfall was therefore never the
-> binding constraint), and the emission order was fixed by the reorder band
-> (passes 6–9). The flipped-edge router measurement and the face-fixpoint
-> discipline stand — they are INV-50/INV-52 now.
-
-Fourth pass, and a bounded one: the block was handed over as "one symptom away"
-— *places, routes and builds clean, emits no words, the ring never starts*. It
-now runs **the whole of RFC 8439's schedule on a real placed + routed + built
-chip**: 80 quarter-round invocations through all sixteen stages, 19 half-boundary
-realignments, 37/38/39 realignment spins of rows 1/2/3, all four taps armed for
-the finish — and **state word 0 comes out bit-exact, `0xE4E7 0xF110`**. A wrong
-20-round permutation cannot produce those bytes, so the datapath, the write-back,
-the fixed tap and the realignment are all confirmed correct on silicon.
-
-Still `needs_human`, for a much smaller and fully-characterised reason: the drain
-does not repeat, so 8 of 32 words come out. See the bottom of this entry.
-
-### Every single defect was the same class, and it was candidate cause #2
-
-The handoff listed four candidates. It was **INV-48 root cause C — a face that
-misses — five times over**, in five different disguises. Not a missing `HALT`,
-not boot ordering. INV-50 was involved, but as an *accomplice*: it is what let
-all five hide.
-
-**1. Face CONSTANTS pointing the wrong way.** Four cells had `is_face` DataWords
-naming the wrong compass direction outright — `wbk`'s row triggers NORTH, which
-is off the top of the array; the four taps' inward flip SOUTH when their adders
-are NORTH; `wb`'s hand-off SOUTH when `wbk` is NORTH; `wbk`'s lap-advance EAST
-when `seq` is WEST. **This one constant — `wbk`'s `f_ring` = NORTH — is the whole
-of "the ring never starts".** `wbk` never executed at all in the trace: zero
-events, because `wb`'s jump to it left on the wrong face.
-
-**2. The FACE register PERSISTS across entries, and an entry that does not set it
-inherits whatever the last path left.** `wbk.default` flipped WEST for the lap
-advance and never restored, so the *next* lap's four row triggers fired west into
-`seq`. `seq.default` flipped SOUTH and never restored, so the boundary hand-off
-fired south into `wb`. The discipline that fixes it is one line: **every path
-restores the resting face before it ends, so every path may assume the resting
-face on entry.**
-
-**3. A cell's flip also deflects words that merely TRANSIT it.** This was the
-sharpest one. `wb` sits at `(0,1)`, directly on `seq`'s walk down to the state
-line, and left its face pointing north at `wbk`. Every `pub` trigger `seq` issued
-therefore bounced off `wb` straight back into `seq`, which re-entered `step`,
-decremented the lap counter again, and ping-ponged. Measured: the ring completed
-exactly ONE lap and then oscillated, with no output and no error. **A cell's
-resting face is a contract with every walk that crosses it, not just with its own
-edges** — and `seq`'s own resting face is FORCED to EAST by `wb`'s jump needing
-to transit it, which is why `seq` pays for a flip on every one of its own edges.
-
-**4. An internal edge the block never declared.** `in0.trig -> in1.default` comes
-straight from `ChaCha20QRBlock` and was simply absent from `internal_jumps()`,
-while the assembly still emitted the word. It happened to resolve correctly; it
-is now declared.
-
-**5. The router faced `tap3` at its ADDER and sized `tap3.q -> in0` at three
-hops.** `tap3` has internal connections to both `in0` (east, 1 hop) and `add3`
-(north, 1 hop); `router._place_block_cells` faces a cell at "the" declared
-destination, picking whichever the dict yields, then `_get_routing_distance`
-walks *that* face. It found the real path `tap3 -> add3 -> out -> in0` and
-returned 3. At run time the word leaves EAST and overshot `in0` by two, landing
-in `l1_add`. **The effect: every frame reached the collector TWO WORDS SHORT**,
-`in1`'s mod-8 counter never hit a frame boundary in step with the ring, and the
-whole cipher ran five laps and stalled. This is the single fix that took the
-block from 5 laps to all 80.
-
-### THE MEASUREMENT THAT MATTERS: the router cannot size a FLIPPED edge
-
-Classifying all 233 internal edges by whether the emitting path is on the cell's
-resting face or a flipped one:
-
-| emit face | resolved correctly | resolved WRONG |
-|---|---|---|
-| resting | **211** | **0** |
-| flipped | 16 | 6 |
-
-**Every flipped edge that works does so by coincidence.** `_get_routing_distance`
-walks resting faces only; for a flipped emit it either (a) misses, falls back to
-Manhattan, and Manhattan happens to equal the true distance — which is how all 16
-"correct" ones pass, every one of them a straight-line hop of 1 or 2 — or (b)
-*succeeds spuriously* on a path the word never takes, which is what killed
-`tap3`. This is INV-50's real shape: the Manhattan fallback is not the only
-failure mode, and it is not even the worst one. A successful walk from the wrong
-starting face is worse, because nothing looks anomalous.
-
-### Two toolchain fixes, both regression-tested at the 1219 baseline
-
-* **`router._place_block_cells` looked programs up by the raw positional INDEX**
-  (`if i in block_def.cell_programs`), which is False for every string-keyed
-  block — the DFE's `ff0`, ChaCha20's `tap3`. So a string-keyed block silently
-  got no program copied there and, sharply, **never had its declared `fwd_face`
-  honoured**; the router kept its own guess and sized every edge against it.
-  Fixed to look up by the positional KEY, falling back to the index.
-* **`_get_routing_distance` gained an optional `start_face`**, and blocks may now
-  declare `emit_faces() -> {(cell_id, port): neighbour_id}` for ports they emit
-  while flipped. The value is a **cell id, not a compass direction**, so the
-  router derives the face from the two cells' PLACED coordinates — which the
-  placer has already rotated. That is what keeps it orientation-correct by
-  construction (INV-23) instead of needing the hand rotation that regressed
-  `test_rotated_feedback_block_computes_identically` last time. `placekyt/tests/`
-  is **1219 passed**, the orientation suite green, and the ChaCha20 + binding +
-  legality + saturation suites all green.
-
-### A model that flatters the design, part two
-
-The previous pass's lesson was that a fold checker must read `MOVE [FACE]` out of
-the real programs. That is necessary but not sufficient. The checker written this
-pass **symbolically executes every path, over both sides of every branch, and
-iterates the face register to a FIXPOINT** — seed with the resting face, collect
-what each path can *leave behind*, re-seed, repeat. A checker that assumes each
-entry starts clean is exactly a checker that cannot see defect 2 or defect 3, and
-those two were half the bugs. It is now `test_every_internal_edge_lands_on_a_real
-_forwarding_walk` with an INV-4 negative that re-points the original constants and
-asserts each of them misses.
-
-### What remains — measured, and it is a WORD BUDGET, not a wall
-
-Each row holds four 32-bit words and one drain lap emits the head of each, so the
-finish must run four laps with a plain rotate (`row.spin`) between them. The
-rotate must come from a cell that reaches all four rows on ONE walk — on this fold
-that is only `wbk` at `(1,0)` — and the lap must be closed by a cell that can
-reach `wbk`, which is only `wb` or `seq`: **the tap line and the finish row both
-run one-way AWAY from the control corner**, measured over all four faces from
-every tap, every adder and the egress. That costs a `drn` entry on `wbk` (5
-words), a relay entry on `wb` (3) and a lap counter on `tap3` (6).
-
-**Shortfall: four words**, after compressing `wbk`'s realignment from twelve jumps
-to eight by hoisting the spins common to both halves (row1 x1, row2 x2, row3 x1 —
-verified behaviour-identical: the spin counts stayed 37/38/39). LAYER: block
-program / fold. Not routing, not arithmetic, not the substrate.
-
-### The trap that cost the last hour, and is worth its own line
-
-Freeing that word by dropping `seq`'s `MOVE half, four` (redundant — `half` is
-`reset_per_batch`) **fits, and breaks the block.** Shortening `seq` moves
-`seq.step`'s entry address from 15 to 14, and the build then mis-resolves
-`wbk.back` to it instead of to `row0.pub`, which is also at 15. The realignment
-ran perfectly and then handed control to the lap counter; the ring stopped at the
-first boundary with a flawless trace up to that point. **Entry addresses are
-params-dependent (INV-6/11) and that hazard reaches INTERNAL edges too** — so
-changing a control cell's LENGTH can silently re-target another cell's jump. Any
-attempt at the four words must re-check `wbk`'s built words, not just the budget.
-
----
-
 ## ChaCha20KeystreamBlock — the SELECTOR was unnecessary: a fixed-tap ring makes the permutation a shift register. Places/routes/builds, does NOT yet compute 2026-08-29
 
 > **SUPERSEDED 2026-08-30 (passes 4–9, above): the block is `done`.**
@@ -2096,7 +1627,7 @@ order**. The router and the build walk the programs and the placed cells in
 lockstep *by position*; both dicts are keyed by cell id, which **hides** a
 mismatch. The design places, routes, builds and DRCs clean and whole cells come
 out with **empty memory**. Symptom: a block that builds green and emits nothing.
-Cost here: one debug cycle. It is INV-33's positional-pairing clause, and it now
+Cost here: one debug cycle. It is INV-51's positional-pairing clause, and it now
 has a test.
 
 ### The three structural facts that fixed the fold
@@ -2228,7 +1759,11 @@ proven on, so it needs its own silicon re-verification and was not taken.
 
 Also corrected: the block declared no `output_cell_id()`, so the port map put its output
 on the *controller*; and its docstring repeated the false "x1 is one bit wide" claim
-(x1 is a SERDES — `width: 1` is a PIN COUNT).
+(x1 is a SERDES — `width: 1` is a PIN COUNT). *[TRUTH-UNVERIFIED 2026-09-03: no
+repo doc mentions SERDES, and the QUARANTINED entry below says the opposite ("the
+x1 port is one bit wide"); the shipped panel-on-x1 / data-on-x16 topology
+justification rests on whichever is true — settle it from `SRAM_PANEL.md` / the
+engine before citing either.]*
 
 ### Test suite
 
@@ -2325,7 +1860,9 @@ PLACEMENT, and the wall is sharp enough to be actionable. Promoted to **INV-48**
 Also confirmed while doing this: the shipped panel topology is **panel on the x1 pair,
 data on x16** (`engine/sram_demo.py`, `engine/panel_pnr.py`, `psk31_transceiver`) — the
 opposite of what one might assume, and it has to be that way round because a data word
-is 16 bits and the x1 port is one bit wide.
+is 16 bits and the x1 port is one bit wide. *[TRUTH-UNVERIFIED 2026-09-03 —
+contradicted by the "cell cap was FICTION" entry above ("x1 is a SERDES; `width: 1`
+is a pin count"); neither claim is confirmed by a repo doc.]*
 
 ## ChaCha20KeystreamBlock — QUARANTINED: the transport ceiling forces a resident state, and the permutation becomes ADDRESS ARITHMETIC (proven on chip) 2026-08-29
 
@@ -2424,9 +1961,9 @@ has a DUPLICATE `CWKeyerBlock` key (lines 615/616); the second, stale
 `QUARANTINE (INV-29)` string wins the dict merge and is now factually wrong (the
 block is SRAM-backed and verified). Identical to the `VaricodeDecoderBlock`
 duplicate that was fixed at lines 592-593; the same removal was never done here.
-*(Re-checked 2026-08-30: the duplicate is STILL present — now at lines 682-683
-of `test_pipeline_saturation.py`; the stale QUARANTINE string still wins the
-dict merge.)*
+*(Re-checked 2026-09-03: `test_pipeline_saturation.py` now carries ONE
+`CWKeyerBlock` key — the duplicate has been removed; an earlier "STILL present"
+postscript here was dropped.)*
 
 ## XorJoinBlock — the N=2 rendezvous at its cheapest, and a mutation test that proved nothing 2026-08-29
 
@@ -2817,42 +2354,12 @@ vector is gated from all 8 anchors it fits, not just the harness default (1,1). 
 exact; no anchor-dependent fragility here, but the gate is cheap and the hazard is
 real for the bigger blocks this family will grow into.
 
-### The full suite is RED at this commit, and none of it is this block
-
-Recorded so the next builder does not mistake a pre-existing red suite for their own
-regression. A full `verification/tests/` run at this commit reports ~68 failures, of
-which ~57 are CASCADE: the INV-38 session guard makes every `test_emit_report` /
-`test_write_report` refuse to write once ANY gate has failed in the session, and those
-writers then fail themselves. The real failures are ~11, and **ChaCha20QRBlock appears
-in none of them** (0 occurrences of "chacha" anywhere in the failure list).
-
-Six were reproduced IDENTICALLY at the parent commit `8db6e49` in the untouched main
-checkout, so they are pre-existing:
-
-* `test_route_quality[fft128_2p2s]`, `test_route_quality[fft_spectrum_32]`
-* `test_iir_biquad::test_iir_matches_gnuradio_production_range[0.1]`
-* `test_qam16_costas_report::test_qam16_costas_chain_ber_zero_and_report`
-* `test_fec_link_example::test_shipped_grc_user_path`
-* `test_examples_grc_userpath::test_fft128_2p2s_shipped_grc_user_path`
-
-(`test_route_quality` + `test_iir_biquad` give exactly `3 failed, 53 passed, 1 skipped`
-on BOTH trees — same tests, same counts.)
-
-**A failed full run DELETES report JSONs, so never `git add -A` after one.** INV-38's
-"absence is the safe state" means each writer UNLINKS its report before the verdict is
-known; when the session then fails, ~57 reports stay deleted on disk. A reflexive
-`git add -A && git commit` after such a run stages all of those deletions — I did
-exactly that here and had to `reset --soft HEAD~1` + `git checkout -- verification/
-reports/` to undo it. After any failed suite run, restore the reports before
-committing, and stage the files you actually edited BY NAME.
-
-The remaining `*_shipped_grc_user_path` failures (complex_math, lms_equalizer,
-gru_classifier, cw, psk31, robust_rx) are **not stable between runs of the identical
-tree**: two full runs of the same commit produced different subsets, and the ones that
-fail inside the full suite pass when run in a smaller session. These examples host a
-GRC server on a fixed port, so the signature is port contention / ordering, not a
-datapath defect. Do not chase them as a regression without first re-running the subset
-alone, and do not read the cascade count as a failure count.
+*(A "full suite is RED at this commit" section — status bound to commit
+`8db6e49`, naming failures that are no longer current facts — was trimmed
+2026-09-03. Its two durable nuggets survive elsewhere: never `git add -A` after a
+failed run, because INV-38's unlink-first leaves report JSONs deleted (now in
+INV-38); and the `*_shipped_grc_user_path` gates contend on port 58950 inside a
+full run — re-run the subset alone before reading them as a regression (INV-78).)*
 
 **Gates:** 69 in `test_chacha20_qr.py`, all green — 2 RFC vectors on chip, 4 random
 seeds, 7 wrapping corners (WRAPS, never saturates — a Q15 datapath would clamp and
@@ -2862,7 +2369,8 @@ each of the four adds swapped for a XOR, the DROPPED CARRY, the rot16 hi/lo swap
 reversed, frame word order reversed, hi/lo swapped, +1 frame shift, identity
 passthrough, empty), 3 ON-CHIP mutants, and the structural gates above. Also
 registered in the shared orientation (INV-23), saturation (INV-19), placement-legality
-(INV-25) and GRC-binding (INV-22) suites.
+(INV-23's movement clause — this used to cite INV-25, the poc rule) and GRC-binding
+(INV-22) suites.
 
 ## GardnerTimingRecovery SHIPS — the second quarantine's wall was a TOPOLOGY choice, not a substrate limit; and the DSP had a THIRD defect nobody had named 2026-08-27
 
@@ -3526,7 +3034,7 @@ and an axis read without the fftshift (natural bin 11 on the centred axis reads
 > **PROMOTED 2026-09-03 -> INV-81:** the multi-chip board project contract (every die instantiated, `project.board`, board-DRC teeth, per-chip clocks are not a shared time base, `_tail_egress_tag`, complex egress from DECLARED output registers). Residue: the causal-sequential 99.9% measurement.
 
 `examples/fft128_2p2s` replaces the ad-hoc two-chip `fft128_2die` project with the
-real **2P2S dev board** (`resources/boards/dev2p2s.kdb` — four dies, two parallel
+real **2P2S dev board** (`placekyt/resources/boards/dev2p2s.kdb` — four dies, two parallel
 daisy-chains). Same verified split (die 0 = stage 0, die 1 = stages 1..6), now on
 chain A's head and tail, joined by the board's own **on-carrier series link**.
 200/200 samples bit-exact, 400 words, DRC-clean against the board file.
@@ -4115,65 +3623,6 @@ against the offline chip-exact golden. The fix was one method on `GRUCellBlock`.
   future chain saturates the array again — but the cheaper lever is to ask
   whether a dominant block's FREE SPACE has the right shape.
 
-## GRUCellBlock RE-FOLD — a baked `is_face` literal PINS a fold, and the classifier's wall is corridor BUDGET, not fold shape 2026-08-24
-
-> **SUPERSEDED 2026-08-24 (the CHIP_SCALE entry above): the classifier ROUTES —
-> the wall fell to a WIDER fold, not to fewer blocks.** "The wall is the ten
-> nets' corridor budget" was true only under INV-9's ≤8-across cap, which is
-> self-imposed (INV-40): waiving it, the same 51 cells re-folded 10x6
-> CHIP_SCALE leave six full-width free rows and the ORIGINAL six-block chain
-> routes and builds at 102/120. The fused FeatureExtractorBlock lever named
-> below was designed and then not needed. The INV-37 baked-face finding (this
-> entry's real catch) stands.
-
-Dispatched to re-fold `GRUCellBlock` so the gru_classifier front end could route
-beside it on one 10x12. The fold moved and measurably improved; the wall did not
-fall. Both results are worth more than the one that was asked for.
-
-- **THE REAL BUG THE RE-FOLD FOUND (now INV-37).** Three `is_face=True` data words
-  — `fin`'s `LOCK_FACE`, `amx`'s `face_out`/`face_ring` — were LITERALS matching the
-  as-authored fold. Every re-fold tried (a solid 5x10 Hamiltonian ring, the
-  transpose, a reversed traversal of the same ring) produced a perfectly legal
-  layout — closed cycle, in-cap bbox, clean route-time face rule, right dict order
-  — that BUILT and then computed garbage: 20 of 52 gates failed, the recurrence
-  never landed, `h` froze at its timestep-0 value, and the sim ran to `EventLimit`.
-  The geometry gates cannot see this because the geometry is fine. Deriving the
-  three words from the fold (`_face_from(a, b)` over the ring positions) made the
-  SAME transposed fold pass all 52 unchanged. **A closed ring is direction-free for
-  @N distances but NOT for faces** — reversing the traversal reverses every resting
-  face, which is why "it's just a relabelling" is wrong for any block that MOVEs a
-  literal into `[FACE]`/`[LOCK_FACE]`.
-
-- **THE FOLD THAT SHIPPED: 8x7, the landed serpentine TRANSPOSED.** Chosen by
-  exhaustive search over the comb / row-comb / spine-snake closed-cycle families x
-  8 D4 images x 100 start-and-direction pairs, filtered on every fold rule and
-  ranked by PORT COST — min over anchors of `|fin - x16_in| + |oout - x16_out|`,
-  which matters because the 10x12's two 16-bit ports are BOTH on row 0. The old
-  7x8 put the input on the north-west corner and buried the egress two rows down
-  the WEST edge, pointing away from the output port: cost 11, and `gru_out` alone
-  measured 15-17 corridor cells. The transpose spans the north edge (fin (0,0),
-  oout (2,0)): cost 7, and five free ROWS instead of three free columns. On the
-  identical lane search the old fold bottomed out 2 nets short, the new one 1.
-  BEHAVIOUR IS PRESERVED EXACTLY, re-verified on chip after the re-fold: 36,000
-  on-chip steps at agreement 1.000000 against the golden, clip vote 0.9667
-  on-chip == 0.9667 offline over 120 held-out clips, all 53 gates green.
-
-- **BUT THE FOLD IS NOT THE LEVER, AND NEITHER IS THE ARM.** Under INV-9's 8x8 D4
-  cap a 51-cell block has only three possible bounding boxes (7x8, 8x7, 8x8), and a
-  CLOSED RING can never contain a free through-channel — a cycle cannot jump a gap,
-  so all its free space is perimeter. Free-space quality therefore measured
-  IDENTICAL (29 3x3-anchors, 48 2x2) for every legal fold; only port proximity
-  varies. Shrinking the RMS arm was swept too: 65 block cells -> 4 nets short,
-  62 -> 2, 57 -> 1, 56 -> 1. **The wall is the ten nets' corridor budget.** Measured:
-  65 block cells leave 55 for routing; the tail's six nets already cost 51 (8.5/net),
-  so ten nets want ~85. 4180 further layouts on the re-folded block stayed at
-  exactly one net short.
-
-- **NEXT LEVER, NAMED.** Not the router, not the fold, not the boxcar length: FEWER
-  SEPARATELY PLACED BLOCKS. One fused feature block in place of the four-block RMS
-  arm removes block cells *and three of the ten nets* — and nets, not cells, are
-  what the array has run out of. Otherwise, a two-chip topology.
-
 ## VERIFY THE PARTS SEPARATELY — how a 2-die split localised its own failure, and 3 engine defects the shipped 2-chip example could never expose 2026-08-24
 
 > **PROMOTED 2026-09-03 -> INV-85:** decompose before diagnosing; diff the same block built both ways. Residue: the three inter-chip engine defects and the honesty note.
@@ -4505,21 +3954,10 @@ placed + routed chip is NOT done, and no part of this entry claims otherwise.
   emit. The offline chain, the goldens, the derived tolerances, and the
   stimulus are all in place and re-usable the moment the geometry gives.
 
-> *(Editorial note 2026-08-30: the fragment below, up to the "### A block that
-> CANNOT be constructed…" section, is a MANGLED MERGE ARTIFACT — broken partial
-> lines of the FFT32Block entry that appears intact two headings down. Read the
-> intact entry for those facts. The "### A block that CANNOT be constructed
-> must leave the CATALOG" section that follows the fragment is NOT duplicated
-> elsewhere and remains valid — FFT128Block's catalog exclusion.)*
+*(A mangled merge fragment of the FFT32Block entry — broken partial lines — sat
+here and was excised 2026-09-03; the intact FFT32 entry is two headings down.
+The CATALOG section below is preserved: it is recorded nowhere else.)*
 
-`LargeFFTBlock` to N=32. Bit-exact on a real built chip, 75 gates green. It is
-enters at. **The cell is EXACTLY full at 32/32 words, and the count gate passes.** This is byte-for-byte
-state at 21 — 30/32 words at P=16 with the entry instruction two words clear of the state, where before they collided. **This also repairs one of
-at N=16 over the SAME 40 seeds shows **the shipped FFT16 reaches the same
-clamp on 3 of 40 — the identical rate** — and FFT16's OWN gated seed (101)
-measures ZERO clamps, so its published 78.8 dB figure for that class simply
-used a seed that did not clamp. So this is a property of the pinned numerics at both sizes, not an N=32
-The spine solve is a backtracking search costing ~28 s, so it is now memoized
 ### A block that CANNOT be constructed must leave the CATALOG, not just fail
 
 Found while regression-testing this build, and PRE-EXISTING on main (verified
@@ -6974,7 +6412,7 @@ assembly job. Durable notes:
 
 ## QPSK modem: Gardner → MMTimingRecovery swap (certified timing in the flagship) 2026-08-16
 
-The quarantined complex Gardner was replaced by the certified
+The (then-quarantined) complex Gardner was replaced by the certified
 MMTimingRecoveryBlock in the QPSK modem — chain order UNCHANGED
 (MF → Costas(order=4) → timing → slicer; carrier-first, so the DD timing loop
 sees a derotated constellation and the example keeps its foff=0.008 showcase).
@@ -7008,8 +6446,9 @@ sees a derotated constellation and the example keeps its foff=0.008 showcase).
   chains carry the Costas order-2 SINGLE REAL rail into the timing block;
   MMTiming is complex-in, so a swap needs a null-Q splice into a mid-chain
   complex block plus a dangling-yq egress answer — plumbing risk with no
-  behavioral gain (Gardner is BER-0-verified in those demos; the README
-  honesty note stays). Revisit if a real-rail M&M variant ever ships.
+  behavioral gain (Gardner is BER-0-verified in those demos, and has been
+  `done` since 2026-08-27 — the "quarantined" caveat that used to sit here is
+  stale; the README honesty note stays). Revisit if a real-rail M&M variant ever ships.
 
 ## ISA CONFORMANCE — shift counts are immediate fields; sim + docs aligned to the field tables (INV-34) 2026-08-13
 
@@ -7351,7 +6790,9 @@ rebuild. The server half existed with ZERO callers; plumbed end-to-end.
   chip-output egress as the consumer. (c) KNOWN LIMIT: designs carrying a
   StreamSplitterBlock keep the serpentine layout — the abutted pack
   intermittently breaks the splitter's replicated exit tail; abutment-first is
-  auto-disabled for them until proven.
+  auto-disabled for them until proven. *[TRUTH-UNVERIFIED 2026-09-03: no such
+  StreamSplitter guard is found under `placekyt/engine` by grep — confirm the
+  limit still exists, or record its closure.]*
 - **ROUTE-QUALITY SELECTION IN THE SWEEP:** clean layouts are scored by TOTAL
   route excess; near-optimal (≤4) accepts immediately, else the sweep
   continues (budget-bounded) and the lowest-excess clean layout wins.
@@ -7690,6 +7131,8 @@ after three root-cause fixes — none was "widen the tolerance":
   rebuild to EXACT output; refresh is a NO-OP on a fresh auto-P&R. KNOWN GAP
   (unchanged): the refresh re-derives only the FIRST panel-backed block's
   params — a duplex design's second (RX-half) panel block stays template-only.
+  *[Re-checked 2026-09-03 against INV-66: `refresh_panel_params` still serves
+  `backed[0]` only; the gap stands.]*
 
 ---
 
@@ -8039,28 +7482,6 @@ LIVE GR: max_abs_err 4 LSB (tol 10), corr 0.99999999.
 - **HW-DEVIATION:** the chip emits `(n·log10(in)+k)/db_scale` with db_scale an
   auto-derived power of two; in≤0 floors at −db_scale dB (0x8000) vs GR's
   ~FLT_MIN clamp.
-
----
-
-## Pre-existing test failures cleaned up; converter_flavors live-recovery documented 2026-08-08
-
-- Catalog-enumeration tests built every block at its GR-verbatim default;
-  char_to_float's default scale=1 is unrepresentable and correctly RAISES —
-  build it at scale=128 via the tests' per-block override map.
-- ssb_weaver_cfir: stale hardcoded expectations vs a correct build
-  (IQUpconvert is 8 cells with its INV-20 lock, not 6).
-- BPSK loopback fixtures asserted a bits-in==bits-out identity that was true
-  only by ACCIDENT (two inversions cancelling). Fixed the RIGHT way:
-  PSKSymbolMapper gained `bpsk_bit0_positive` (default True; False = GR
-  constellation_bpsk) so the fixtures use a TRUE identity. The real bpsk
-  example was never affected (BER is inversion-immune).
-- **KNOWN-FRAGILE, documented:** `test_converter_flavors_grc::
-  test_runs_live_recovers_input` builds+routes fine but the live round-trip
-  returns 0 egress — a fragile LIVE-recovery infra test, NOT a
-  block-correctness issue (every converter block is individually GR-verified).
-  See the round-3 audit entry for the precise mixed-fan-out defect. *(That
-  diagnosis was later measured STALE; the fix and the two true causes are in
-  "CONVERTER-FLAVORS DEADLOCK CLOSED", 2026-08-16.)*
 
 ---
 
@@ -8519,8 +7940,8 @@ GR on 0/16 symbols — purged). The durable recipes:
   self-overlap is invisible (this was THE one the auto-placer hit). **Any
   "does this block collide?" check that builds a SET of positions silently
   swallows self-overlap — compare the CELL LIST to its unique positions.**
-- NEW GATE `verification/tests/test_placement_legality.py` (INV-25 movement
-  clause): per multi-cell block — no self-overlap in any D4 orientation,
+- NEW GATE `verification/tests/test_placement_legality.py` (INV-23 movement
+  clause — this used to cite INV-25, the poc rule): per multi-cell block — no self-overlap in any D4 orientation,
   `move_cell` rejects colliding moves, move-then-rotate never overlaps. A
   "rotation test" that only rotates a pristine block misses the failure mode
   that actually bites users.
@@ -8765,8 +8186,11 @@ corr 1.0.
 - **Substrate conventions this block established (most promoted to
   invariants/guides):** never drive multiple cells from ONE output port —
   emit one write per destination (a fan-out of one output to 3 cells silently
-  drops the 3rd); a long forward across ~8 skipped cells arrives 0 — hop
-  values through a cheap relay every ≤4 cells, or recompute locally; folded
+  drops the 3rd); a long forward across ~8 skipped cells arrived 0 *[causation
+  CORRECTED 2026-09-03: distance was NOT the mechanism — the hop field is good to
+  31 (INV-36) and hop-19/21 transits through idle programmed cells are measured;
+  the words were deflected by PROGRAMMED cells on the walk / resting FACES (INV-59,
+  INV-52). The ≤4-cell relay stays as this block's design, not as a rule]*; folded
   egress needs the output cell's FACE = its bus direction; explicit input
   registers do NOT reserve themselves from the state gap — place data past
   the highest input reg; amplitude-then-sign order must match the reference
@@ -8783,10 +8207,12 @@ corr 1.0.
 The complex mixer (= `in·exp(jθ)`) reuses the verified NCO cos/sin pipeline
 verbatim (sign-applying interp) + a mixer cell doing the full complex product
 (4 MULQ). **THE fix — a mid-pipeline RELAY cell for the signal:** the signal
-must travel phase→mixer, but a forward across ~8 skipped cells arrives 0, and
+must travel phase→mixer, but a forward across ~8 skipped cells arrived 0, and
 budget-tight pipeline cells can't passthrough 2 extra values. A CHEAP relay
-cell (2 state, ~6 instr) mid-chain makes both hops ≤4 — the general "hop
-long-haul values through relays" rule. Overflow note: `|I·cos − Q·sin|` can
+cell (2 state, ~6 instr) mid-chain makes both hops ≤4. *[The general "hop
+long-haul values through relays" rule was RETRACTED 2026-09-03: the mechanism
+was faces / programmed cells on the walk (INV-52, INV-59), not distance — INV-36
+measures hop-19 transits; the relay remains this block's design.]* Overflow note: `|I·cos − Q·sin|` can
 exceed Q15 at full scale; the reference models the wrap and the GR-amplitude
 stimulus stays ≤ 0.5 amplitude.
 
@@ -8799,7 +8225,10 @@ stimulus stays ≤ 0.5 amplitude.
 - **Complex output egress — wire ONE net, not two:** both rails ride the same
   corridor interleaved `[yi,yq,…]` (de-interleave in the harness); wiring a
   second net creates a dual-route-to-one-port conflict and egress is SILENTLY
-  ZERO.
+  ZERO. *[Scoped 2026-09-03: the "silently zero" mechanism describes the
+  pre-2026-07-22 controller; since `_resolve_complex_egress_corails` (INV-41)
+  the synthesised Q sibling co-routes with yi. Still wire ONE net — a hand-added
+  second net builds a duplicate onto the same register.]*
 - **The complex comparator gates BOTH channels** (swapped I/Q, negated Q, and
   Q-only latency mutations each FAIL — an I-only check misses them).
 - **LLR metric = SIGN agreement (exact, outside a near-zero dead zone) +
@@ -9063,16 +8492,30 @@ is INV-46's "prefer more cells doing less" paying off in FACES rather than
 instructions — the axis that was actually short.
 
 **2. Three substrate facts, each measured, each the opposite of the cautious
-guess** (`proto_*` harnesses, all on real simkyt):
+guess** (`proto_*` harnesses, all on real simkyt — *those harnesses are NOT in
+the tree, so facts 1 and 2 are TRUTH-UNVERIFIED until re-measured on a committed
+harness; annotated 2026-09-03*):
 
 * **An OCCUPIED cell is TRANSPARENT to a hop-counted word.** A cell with a real
   program forwards a transiting word on its own face without executing; only a
   word that LANDS (HOP_CNT == 31) runs the program. This is what makes the
-  "put the egress cell in the middle" trick legal at all.
+  "put the egress cell in the middle" trick legal at all. *[Scope, 2026-09-03:
+  this is a HOP-COUNTED word transiting an idle programmed cell (INV-48, and
+  the measured hop-19 transits on ChaCha20). INV-59 — "a PROGRAMMED cell on a
+  broadcast walk stops the sweep" — is about a cell TRIGGERED mid-sweep; the
+  scopes differ, see INV-59's reconciliation line.]*
 * **A cell may FLIP while words TRANSIT it.** Measured: 180 concurrent transits
   across a cell running a flip/write/restore burst, ZERO losses or misdeliveries.
   The race everyone assumes is there is not there, and assuming it is rules out
   the whole class of layouts that actually work.
+  *[TRUTH-UNVERIFIED — RECONCILIATION REQUIRED vs INV-52 clause 2 (measured on
+  the shipped ChaCha20Keystream chip: a cell's flip DEFLECTS transiting words;
+  every path must RESTORE the resting face). Probable reconciliation: INV-52 =
+  a cell LEFT flipped at rest between activations misroutes; this entry = the
+  transient DURING a flip/write/restore burst was safe in this one design (INV-52's
+  own "BOUNDED 2026-08-29" table agrees for the restored case). Until measured
+  on a re-runnable harness, INV-52 governs; do NOT read this as licence to leave a
+  transit cell flipped. Annotated 2026-09-03.]*
 * **A blank cell faced across the walk DOES deflect.** The egress cell is not
   transparent — that half of the folklore is true, and it is why the egress must
   belong to a cell whose walk can afford to end there.
@@ -9101,7 +8544,7 @@ passes precisely while the block is broken and fails the day it is fixed. It is
 now the reverse (every cell resolves; the flip is present and restored on both
 bursts), which is strictly stronger and cannot rot into a pinned wall.
 
-**Gated by** `verification/tests/test_lz4_decoder.py` (62 tests, no skips):
+**Gated by** `verification/tests/test_lz4_decoder.py` (42 `def test_` functions as of 2026-09-03 — the "62 tests" originally recorded here is stale; no skips):
 golden vs reference C both ways, the FSM model, per-cell chip gates, a real match
 copy through a real panel, 8 end-to-end payload classes on the placed design,
 reference-C blocks on the placed design, three whole-chip mutations, and the 8

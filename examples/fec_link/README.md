@@ -99,7 +99,8 @@ RESULT: EXACT — burst dispersed, corrected, and CRC-verified
 Not verified: the literal Qt windows (the recovered data paths, including
 what each scope is fed, are gate-covered end to end; the display pattern —
 ×32768 rescale + `server_repeat` looping with scope size = burst length — is
-the pixel-proven data_link one).
+the same pattern data_link uses; the data path is gate-covered, the window
+itself is not pixel-checked).
 
 Pacing note: the `.grc` runs per-sample (`pipelined: 'no'`). The shipped
 `.kyt` (44/120 cells, every corridor shortest-path) is saturated-proven, but

@@ -82,7 +82,7 @@ the corrected complex stream), so the demo shows the *effect* of convergence
 — clean bits after the ~150-symbol acquisition — not the estimate itself.
 
 Pacing note: per-sample (`pipelined: 'no'`). The FLL is a fully-serial
-21-cell serpentine loop (saturation-proven bespoke in its block gate at ~2500
+21-cell serpentine loop (+1 feedback transit cell = the 22 above; saturation-proven bespoke in its block gate at ~2500
 events/sample); per-sample is exact on every layout.
 
 ## Run it

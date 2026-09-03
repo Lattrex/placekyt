@@ -14,7 +14,7 @@ the Kyttar dev-kit board.
 | Design | one gain block (`gain.kyt`) | two gain blocks, streams a/b (`gain_hw.kyt`) |
 | Stimulus | `vector_source` (one fixed burst, `repeat`) | two `sig_source` sines (continuous) |
 | Data flow | **batch** — one `process_batch` RPC per burst | **streaming** — samples flow continuously |
-| Why | the sim is ~7.6k samples/s, too slow to stream | the board runs at USB speed, so it streams |
+| Why | the simulator is a batch (per-burst) model, orders of magnitude too slow to stream | the board runs at USB speed, so it streams |
 
 **The Kyttar source/sink blocks are identical in both.** They auto-detect batch vs
 streaming from the placeKYT **server** (it reports its mode over the wire): simulator →

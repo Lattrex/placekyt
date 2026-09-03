@@ -54,7 +54,8 @@ packet is `[ramp byte, 0]`. The solo stream is 0.5× the ramp throughout.
 | `kyttar_tmr_voter` | TMRVoterBlock | face-rotation majority voter (4 cells) |
 | `kyttar_gain` | GainBlock | the single-path stream (`gain=0.5`) |
 
-12 block cells on the 10×12 array (50/120 used including routing corridors).
+12 block cells on the 10×12 array (50/120 used including routing corridors,
+as measured at authoring — the demo prints the live count).
 The example is **hand-placed** (open the shipped `.kyt` — don't re-import): the
 voter's rendezvous cell needs its three arms delivered on three **distinct
 faces**, so the three injectors sit west/north/south of it with the voter's own
@@ -135,3 +136,4 @@ change `f` on the chip, edit the path-B `AddConstBlock`'s `const` in placeKYT
 | `tmr_pipeline.kyt` | Hand-placed, routed, on-chip-verified project — open this. |
 | `build_kyt.py` | Regenerates + re-verifies the `.kyt` from the `.grc`. |
 | `tmr_pipeline_demo.py` | Headless END-TO-END demo (both streams, full ramp). |
+| `tmr_pipeline.py` | GRC's generated flowgraph — regenerated output, do not edit. |

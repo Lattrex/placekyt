@@ -309,6 +309,10 @@ looks exactly like a livelock.
 | one WRITE + one JUMP *per word* (the generic head path) | 48 of 24 — **double-fires** |
 | **WRITE, pump, WRITE, pump, JUMP, settle** (shipped) | **24** of 24 ✅ |
 
+(Measured during the original bring-up — see the knowledge-base lessons log;
+the shipped gate asserts the unpaced drive delivers strictly fewer words than
+the paced one.)
+
 Two things are worth separating, because they are different mistakes:
 
 1. **The pumps are load-bearing**, not defensive padding.

@@ -16,7 +16,8 @@ Both chains share the chip through the stream-id duplex (streams `"mag"` /
 `blocks.complex_to_arg`) — the traces sit on top of each other:
 
 - **Envelope window** — GR `|x|` (blue) vs the chip's CORDIC magnitude (red):
-  the 0.25–0.80 AM envelope, worst error ≲ 18 Q15 LSB.
+  the 0.25–0.80 AM envelope, worst error inside the 40-LSB verification gate
+  (mean ≤ 17 LSB).
 - **Phase window** — GR `arg/π` (blue) vs the chip's half-turn angle (red): a
   ±1 sawtooth (the 10-cycle phase ramp wrapping at ±π). The chip emits
   **half-turn units** (`word/32768 × π` radians — 16-bit wrap *is* mod 2π);

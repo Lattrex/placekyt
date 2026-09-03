@@ -1978,6 +1978,21 @@ class MainWindow(QMainWindow):
         # have to hand-delete stale traces when switching projects. The next
         # run auto-seeds this project's default traces.
         self.waveform_panel.clear_traces()
+        # CLEAR THE TRACE MODEL TOO, not just the panel VIEW. The panel re-seeds
+        # its default traces from sim.trace_model on the next run's trace_updated;
+        # if the model still holds the PREVIOUS project's captured samples, those
+        # rows come straight back and the old example's waveforms repopulate atop
+        # the new one (user-reported: open FOC, run; open AM, run -> FOC traces
+        # return). The server-side new-Run reset does NOT cover this: opening a
+        # project RESTARTS the GRC server (below), and a fresh SimServer starts
+        # with an EMPTY stream-cycling seen-set, so the new design's first batch is
+        # never detected as a new Run and on_new_run never fires. We own the GUI
+        # thread here and the old server is already stopped, so clear directly (no
+        # batch can race it); also arm _pending_trace_reset so the fresh server's
+        # first batch re-clears if anything re-appended during startup.
+        self.sim.trace_model.clear()
+        self.sim._pending_trace_reset = True
+        self.sim.trace_updated.emit(self.sim.trace_model)
         # Start (or restart) the GRC server for THIS project. Two cases converge
         # here: a server was already running and must be re-pointed at the new
         # design, or "Run as GNURadio Server" is checked — which it is by

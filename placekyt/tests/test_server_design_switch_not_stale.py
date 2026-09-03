@@ -117,55 +117,49 @@ def test_switch_design_reresolves_targets(monkeypatch):
         sim.stop_gnuradio_server()
 
 
-def test_switch_design_resets_the_trace(monkeypatch):
-    """Opening a DIFFERENT example and Running it must NOT redisplay the previous
-    design's waveforms. Opening a project clears the waveform PANEL view but not
-    the SimController's TraceModel; the per-connection on_new_run reset does not
-    cover an open-then-Run where the trace was never dropped on open, so the new
-    Run re-seeded its default traces from the OLD design's leftover samples and
-    the previous example's traces repopulated (user-reported). The fix: the
-    dirty-rebuild that fires on a project switch (a changed id(project), never a
-    mid-Run second batch) requests a trace reset, consumed on the GUI thread
-    before the new batch's samples are appended."""
+def test_switch_design_resets_the_trace():
+    """Opening a DIFFERENT example must DROP the previous design's captured trace,
+    not just clear the panel view. User-reported: open FOC, run; open AM, run ->
+    the FOC waveforms repopulate atop AM's. Root cause: MainWindow._after_project_
+    loaded cleared the waveform PANEL but not sim.trace_model, and the panel
+    re-seeds its default traces from that model on the next run. The server-side
+    new-Run reset does NOT cover it because opening a project RESTARTS the GRC
+    server, and a fresh SimServer starts with an EMPTY stream-cycling seen-set —
+    so the new design's first batch is never seen as a new Run and on_new_run
+    never fires. The fix clears trace_model in _after_project_loaded.
+
+    Driven through the REAL path (MainWindow._after_project_loaded), which is where
+    the bug lives — a controller-only test misses it entirely."""
     from PySide6.QtWidgets import QApplication
     QApplication.instance() or QApplication([])
     from engine.catalog import BlockCatalog
     from ui.controller import AppController
-    from ui.sim_controller import SimController
+    from ui.main_window import MainWindow
 
     cat = BlockCatalog.from_gr_kyttar()
     app = AppController(catalog=cat)
-    app.open_project(SSB_KYT)
-    app.build()
-    sim = SimController(app)
-    sim.set_animate_cells(False)
-    port = sim.start_gnuradio_server(host="127.0.0.1", port=0)
+    win = MainWindow(controller=app)
     try:
-        # Run design A as a DUPLEX batch so the server records A's OWN stream_ids
-        # (tx/rx) in its per-Run seen-set. This is the crux: the server's new-Run
-        # detection is by stream-id CYCLING, and B's stream_ids must NOT collide
-        # with A's — otherwise cycling alone would reset and mask the bug.
-        _send_duplex(port, ["tx", "rx"])
-        sim.refresh_debug_from_chip(full_capture=True)
-        sim._pending_trace_reset = False  # A's own run-reset already consumed
+        # Open + settle design A (a duplex modem), as the GUI does.
+        app.open_project(SSB_KYT)
+        win._after_project_loaded()
+        # Simulate A having produced trace data (a run leaves samples in the model).
+        tm = win.sim.trace_model
+        tm.ingest(0, [{"cell_id": 0, "time_ns": 1000.0, "kind": "exec_tick"}], 10)
+        assert tm.transactions, \
+            "precondition: model should hold A's data before the switch"
 
-        # Switch to design B (gain: a stream-less '__single__' design whose run
-        # key is NOT in A's {tx, rx} seen-set). Same design_version so only the
-        # id(project) guard forces the rebuild.
+        # Open design B — this is the exact user action. _after_project_loaded must
+        # drop A's trace so B's run does not redisplay it.
         app.open_project(GAIN_KYT)
-        app.build()
-        app.project.design_version = sim._hosted_design_version
+        win._after_project_loaded()
 
-        # B's single-stream batch does NOT cycle any of A's stream_ids, so the
-        # stream-cycling new-Run reset never fires. The project-switch rebuild is
-        # the ONLY thing that can drop A's leftover trace — it must request the
-        # reset, else A's waveforms repopulate on B's Run (the user's bug).
-        _send_single(port)
-        assert sim._pending_trace_reset is True, (
-            "project switch did not request a trace reset — the previous design's "
-            "waveforms would repopulate on the new example's Run")
+        assert not win.sim.trace_model.transactions, (
+            "opening a new example did not clear the trace model — the previous "
+            "design's waveforms will repopulate on the new example's run")
     finally:
-        sim.stop_gnuradio_server()
+        if win.sim._gr_server is not None:
+            win.sim.stop_gnuradio_server()
 
 
 def test_rebuild_keeps_targets_when_reresolve_is_transiently_empty(monkeypatch):

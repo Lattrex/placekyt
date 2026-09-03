@@ -74,8 +74,9 @@ exactly like a real transmitter and like the QPSK modem's `time_sink_f`), while 
 `verification/tests/`.
 
 > **Open the `.kyt` — don't import the `.grc`.** Like the [FSK4 modem](../fsk4_modem/),
-> this is a dense hand-placed design. `MMTimingRecoveryBlock` is a 14-cell feedback block
-> (Farrow interpolator + M&M TED + PI loop + a routed feedback ring), and the whole duplex
+> this is a dense hand-placed design. `MMTimingRecoveryBlock` is a 21-cell feedback block
+> (14 compute cells — Farrow interpolator + M&M TED + PI loop — plus a 7-cell routed
+> feedback ring), and the whole duplex
 > chain plus its long M&M → Costas corridor congests the auto-router from a fresh import.
 > The shipped `qam16_modem.kyt` is a DRC-clean, hand-placed + routed **full-duplex** modem —
 > so **open the `.kyt`** to host the chip. The `.grc` is the reference flowgraph (it imports
@@ -105,8 +106,10 @@ rate.)
 |------|------------|
 | `qam16_modem.kyt` | The pre-placed, pre-routed **full-duplex** modem — **open this**. |
 | `qam16_modem.grc` | The GNU Radio flowgraph (full-duplex TX + RX; imports with zero unknown blocks — but the design is hand-placed, so open the `.kyt`). |
-| `qam16_modem.py`  | The flowgraph compiled to Python (hand-maintained to match the `.grc`). |
 | `pnr_trace.py`    | A runnable placeKYT command trace that reproduces the hand place + route of the `.kyt`. |
+
+(`qam16_modem.py` is GRC build output, created by pressing **Generate** in GRC — it is
+not checked in, so a fresh clone will not have it until you generate it.)
 | `batch_check.py`  | Headless BER-0 check over the SimServer batch RPC. |
 
 ## Run it
